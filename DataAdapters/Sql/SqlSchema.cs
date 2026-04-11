@@ -413,5 +413,40 @@ public static class SqlSchema
     CREATE INDEX IF NOT EXISTS idx_roles_query_policies_gin         ON roles USING GIN (query_policies);
     CREATE INDEX IF NOT EXISTS idx_permissions_query_policies_gin   ON permissions USING GIN (query_policies);
     CREATE INDEX IF NOT EXISTS idx_spaces_query_policies_gin        ON spaces USING GIN (query_policies);
+
+    -- ============================================================
+    -- FORWARD-COMPAT COLUMN PATCHES
+    -- ------------------------------------------------------------
+    -- dmart's Python port was developed with Alembic migrations, and existing
+    -- deployments may have been created at an older revision that predates some
+    -- columns we now reference in SELECTs/INSERTs. `CREATE TABLE IF NOT EXISTS`
+    -- won't add missing columns on an already-existing table, so we patch
+    -- individual columns here with `ADD COLUMN IF NOT EXISTS`. This is the C#
+    -- equivalent of running Alembic's upgrade head — safe to re-run, no effect
+    -- when the column already exists. Add new columns to this list when you
+    -- extend a SQL SELECT/INSERT so older DBs get patched automatically.
+    ALTER TABLE users       ADD COLUMN IF NOT EXISTS device_id             TEXT;
+    ALTER TABLE users       ADD COLUMN IF NOT EXISTS google_id             TEXT;
+    ALTER TABLE users       ADD COLUMN IF NOT EXISTS facebook_id           TEXT;
+    ALTER TABLE users       ADD COLUMN IF NOT EXISTS social_avatar_url     TEXT;
+    ALTER TABLE users       ADD COLUMN IF NOT EXISTS attempt_count         INTEGER;
+    ALTER TABLE users       ADD COLUMN IF NOT EXISTS last_login            JSONB;
+    ALTER TABLE users       ADD COLUMN IF NOT EXISTS notes                 TEXT;
+    ALTER TABLE users       ADD COLUMN IF NOT EXISTS locked_to_device      BOOLEAN NOT NULL DEFAULT FALSE;
+    ALTER TABLE users       ADD COLUMN IF NOT EXISTS last_checksum_history TEXT;
+    ALTER TABLE users       ADD COLUMN IF NOT EXISTS query_policies        TEXT[] NOT NULL DEFAULT '{}';
+    ALTER TABLE roles       ADD COLUMN IF NOT EXISTS last_checksum_history TEXT;
+    ALTER TABLE roles       ADD COLUMN IF NOT EXISTS query_policies        TEXT[] NOT NULL DEFAULT '{}';
+    ALTER TABLE permissions ADD COLUMN IF NOT EXISTS last_checksum_history TEXT;
+    ALTER TABLE permissions ADD COLUMN IF NOT EXISTS query_policies        TEXT[] NOT NULL DEFAULT '{}';
+    ALTER TABLE entries     ADD COLUMN IF NOT EXISTS last_checksum_history TEXT;
+    ALTER TABLE entries     ADD COLUMN IF NOT EXISTS query_policies        TEXT[] NOT NULL DEFAULT '{}';
+    ALTER TABLE spaces      ADD COLUMN IF NOT EXISTS last_checksum_history TEXT;
+    ALTER TABLE spaces      ADD COLUMN IF NOT EXISTS query_policies        TEXT[] NOT NULL DEFAULT '{}';
+    ALTER TABLE spaces      ADD COLUMN IF NOT EXISTS active_plugins        JSONB;
+    ALTER TABLE spaces      ADD COLUMN IF NOT EXISTS hide_folders          JSONB;
+    ALTER TABLE spaces      ADD COLUMN IF NOT EXISTS hide_space            BOOLEAN;
+    ALTER TABLE spaces      ADD COLUMN IF NOT EXISTS ordinal               INTEGER;
+    ALTER TABLE spaces      ADD COLUMN IF NOT EXISTS mirrors               JSONB;
     """;
 }

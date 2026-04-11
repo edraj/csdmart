@@ -57,7 +57,31 @@ public sealed class UserService(UserRepository users, PasswordHasher hasher, Jwt
             await users.IncrementAttemptAsync(user.Shortname, ct);
             return Result<(string, string, User)>.Fail("invalid_credentials", "incorrect password");
         }
+
+        // Python-parity device_id check for mobile users: if the stored
+        // device_id differs from the one in the login body, either reject
+        // outright (account locked to a single device) or require OTP.
+        // See dmart Python api/user/router.py lines 460-482.
+        if (user.Type == UserType.Mobile
+            && !string.IsNullOrEmpty(user.DeviceId)
+            && (string.IsNullOrEmpty(req.DeviceId) || req.DeviceId != user.DeviceId))
+        {
+            if (user.LockedToDevice)
+                return Result<(string, string, User)>.Fail("inactive", "account locked to a unique device");
+            return Result<(string, string, User)>.Fail("invalid_otp", "new device detected, login with otp");
+        }
+
         await users.ResetAttemptsAsync(user.Shortname, ct);
+
+        // Python's process_user_login persists the new device_id onto the user
+        // row after a successful login (mirrors user_updates["device_id"] = device_id).
+        // Only write when the caller actually supplied one so we don't clobber.
+        if (!string.IsNullOrEmpty(req.DeviceId) && req.DeviceId != user.DeviceId)
+        {
+            user = user with { DeviceId = req.DeviceId, UpdatedAt = DateTime.UtcNow };
+            await users.UpsertAsync(user, ct);
+        }
+
         var access = jwt.IssueAccess(user.Shortname, user.Roles);
         var refresh = jwt.IssueRefresh(user.Shortname);
         return Result<(string, string, User)>.Ok((access, refresh, user));
@@ -77,6 +101,10 @@ public sealed class UserService(UserRepository users, PasswordHasher hasher, Jwt
             Displayname = patch.TryGetValue("displayname", out var dn) && dn is not null
                 ? new Translation(En: dn.ToString())
                 : user.Displayname,
+            // Python's POST /user/profile accepts device_id in the patch and
+            // writes it through. Mirror that so the device-gated login check
+            // picks up the updated value on the next sign-in.
+            DeviceId = patch.TryGetValue("device_id", out var did) ? did?.ToString() : user.DeviceId,
             UpdatedAt = DateTime.UtcNow,
         };
         await users.UpsertAsync(updated, ct);
