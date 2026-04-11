@@ -1,0 +1,31 @@
+# Build output
+bin/
+obj/
+
+# NuGet
+*.nupkg
+**/packages/
+
+# User-specific
+*.user
+*.suo
+*.DotSettings.user
+
+# IDE
+.vs/
+.vscode/
+.idea/
+*.swp
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Publish output
+publish/
+
+# Secrets
+appsettings.*.json
+!appsettings.json
+!appsettings.Development.json
