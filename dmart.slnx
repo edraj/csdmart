@@ -1,0 +1,4 @@
+<Solution>
+  <Project Path="dmart.csproj" />
+  <Project Path="dmart.Tests/dmart.Tests.csproj" />
+</Solution>
