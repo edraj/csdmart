@@ -25,26 +25,32 @@ public static class CxbMiddleware
     public static IApplicationBuilder UseCxb(this IApplicationBuilder app)
     {
         var assembly = Assembly.GetExecutingAssembly();
-        ManifestEmbeddedFileProvider? provider;
+        ManifestEmbeddedFileProvider? subProvider;
         try
         {
-            provider = new ManifestEmbeddedFileProvider(assembly);
+            // Try the sub-provider directly first (more resilient to AOT quirks).
+            subProvider = new ManifestEmbeddedFileProvider(assembly, "cxb/dist/client");
         }
         catch
         {
-            // No embedded manifest — CXB files weren't built/embedded.
-            // This is fine for dev builds without running build-cxb.sh.
-            return app;
+            try
+            {
+                // Fallback: root provider — some AOT runtimes need this path.
+                var rootProvider = new ManifestEmbeddedFileProvider(assembly);
+                var check = rootProvider.GetFileInfo("cxb/dist/client/index.html");
+                if (!check.Exists) return app;
+                subProvider = new ManifestEmbeddedFileProvider(assembly, "cxb/dist/client");
+            }
+            catch
+            {
+                // No embedded manifest at all — CXB not built/embedded.
+                return app;
+            }
         }
 
-        // The manifest preserves the physical directory structure
-        // cxb/dist/client/ from the EmbeddedResource Include path.
-        var indexFile = provider.GetFileInfo("cxb/dist/client/index.html");
+        // Verify CXB files exist in the provider.
+        var indexFile = subProvider.GetFileInfo("index.html");
         if (!indexFile.Exists) return app;
-
-        // Serve static files from embedded resources at URL path /cxb.
-        // Use a sub-provider rooted at the dist output directory.
-        var subProvider = new ManifestEmbeddedFileProvider(assembly, "cxb/dist/client");
         app.UseStaticFiles(new StaticFileOptions
         {
             FileProvider = subProvider,
