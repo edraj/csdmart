@@ -1,12 +1,11 @@
 # Stage 1: Build CXB frontend
 FROM node:22-alpine AS cxb-build
+RUN apk add --no-cache git
 WORKDIR /cxb
 COPY cxb/package.json cxb/yarn.lock* cxb/package-lock.json* ./
-RUN if [ -f yarn.lock ]; then yarn install --frozen-lockfile; \
-    else npm ci; fi
+RUN yarn install || npm install
 COPY cxb/ .
-RUN if [ -f yarn.lock ]; then yarn build; \
-    else npm run build; fi
+RUN yarn build || npm run build
 
 # Stage 2: Build C# AOT binary with embedded CXB
 FROM mcr.microsoft.com/dotnet/sdk:10.0-alpine AS build
