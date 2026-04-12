@@ -1,0 +1,12 @@
+bin/
+obj/
+dmart.Tests/bin/
+dmart.Tests/obj/
+dmart.Tests/TestResults/
+cxb/node_modules/
+cxb/dist/
+cxb/.svelte-kit/
+.git/
+*.tar.gz
+*.zip
+publish/
