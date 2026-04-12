@@ -457,6 +457,206 @@ else
 fi
 
 # ============================================================================
+# 24. Login response shape: records[] not attributes{}
+# ============================================================================
+printf '%-45s' "Login response has records[]:" >&2
+if echo "$LOGIN_BODY" | jq -e '.records[0].attributes.access_token' > /dev/null 2>&1; then
+    ok
+else
+    nope "login body missing records[0].attributes.access_token: $LOGIN_BODY"
+fi
+
+# ============================================================================
+# 25. Query management/users → resource_type: "user"
+# ============================================================================
+RESP=$(curl -s -H "$AUTH_HEADER" -H "$CT" \
+    -d '{"type":"subpath","space_name":"management","subpath":"users","limit":2}' \
+    "$API_URL/managed/query")
+printf '%-45s' "Query users → type=user:" >&2
+if echo "$RESP" | jq -e '.records[0].resource_type == "user"' > /dev/null 2>&1; then
+    ok
+else
+    nope "$RESP"
+fi
+
+# ============================================================================
+# 26. Query management/roles → resource_type: "role"
+# ============================================================================
+RESP=$(curl -s -H "$AUTH_HEADER" -H "$CT" \
+    -d '{"type":"subpath","space_name":"management","subpath":"roles","limit":2}' \
+    "$API_URL/managed/query")
+printf '%-45s' "Query roles → type=role:" >&2
+if echo "$RESP" | jq -e '.records[0].resource_type == "role"' > /dev/null 2>&1; then
+    ok
+else
+    nope "$RESP"
+fi
+
+# ============================================================================
+# 27. Query response envelope has total + returned
+# ============================================================================
+printf '%-45s' "Query attrs has total+returned:" >&2
+if echo "$RESP" | jq -e '.attributes.total != null and .attributes.returned != null' > /dev/null 2>&1; then
+    ok
+else
+    nope "missing total/returned: $RESP"
+fi
+
+# ============================================================================
+# 28. Query history returns history records
+# ============================================================================
+RESP=$(curl -s -H "$AUTH_HEADER" -H "$CT" \
+    -d '{"type":"history","space_name":"management","subpath":"users","limit":2}' \
+    "$API_URL/managed/query")
+expect_success "Query history:" "$RESP"
+
+# ============================================================================
+# 29. Query counters returns total in attributes
+# ============================================================================
+RESP=$(curl -s -H "$AUTH_HEADER" -H "$CT" \
+    -d '{"type":"counters","space_name":"management","subpath":"/","limit":1}' \
+    "$API_URL/managed/query")
+printf '%-45s' "Query counters has total:" >&2
+if echo "$RESP" | jq -e '.attributes.total != null' > /dev/null 2>&1; then
+    ok
+else
+    nope "$RESP"
+fi
+
+# ============================================================================
+# 30. Validate password (correct)
+# ============================================================================
+RESP=$(curl -s -H "$AUTH_HEADER" -H "$CT" \
+    -d "{\"password\":\"$ADMIN_PASSWORD\"}" \
+    "$API_URL/user/validate_password")
+printf '%-45s' "Validate password (correct):" >&2
+if echo "$RESP" | jq -e '.attributes.valid == true' > /dev/null 2>&1; then
+    ok
+else
+    nope "$RESP"
+fi
+
+# ============================================================================
+# 31. Validate password (wrong)
+# ============================================================================
+RESP=$(curl -s -H "$AUTH_HEADER" -H "$CT" \
+    -d '{"password":"definitely-wrong-password"}' \
+    "$API_URL/user/validate_password")
+printf '%-45s' "Validate password (wrong):" >&2
+if echo "$RESP" | jq -e '.attributes.valid == false' > /dev/null 2>&1; then
+    ok
+else
+    nope "$RESP"
+fi
+
+# ============================================================================
+# 32. Check-existing returns per-field booleans
+# ============================================================================
+RESP=$(curl -s -H "$AUTH_HEADER" "$API_URL/user/check-existing?shortname=$ADMIN_SHORTNAME&email=nonexistent@example.com")
+printf '%-45s' "Check-existing per-field shape:" >&2
+if echo "$RESP" | jq -e '.attributes.shortname == true and .attributes.email == false and .attributes.msisdn == false' > /dev/null 2>&1; then
+    ok
+else
+    nope "$RESP"
+fi
+
+# ============================================================================
+# 33. Profile has Python-parity fields
+# ============================================================================
+RESP=$(curl -s -H "$AUTH_HEADER" "$API_URL/user/profile")
+printf '%-45s' "Profile has type+groups+force_pwd:" >&2
+if echo "$RESP" | jq -e '.attributes | has("type","groups","force_password_change")' > /dev/null 2>&1; then
+    ok
+else
+    nope "$RESP"
+fi
+
+# ============================================================================
+# 34. Correlation ID header present
+# ============================================================================
+printf '%-45s' "Correlation-ID header present:" >&2
+HEADERS=$(curl -sI "$API_URL/")
+if echo "$HEADERS" | grep -qi 'X-Correlation-ID'; then
+    ok
+else
+    nope "no X-Correlation-ID in: $HEADERS"
+fi
+
+# ============================================================================
+# 35. Security headers present
+# ============================================================================
+printf '%-45s' "Security headers present:" >&2
+if echo "$HEADERS" | grep -qi 'X-Frame-Options' && echo "$HEADERS" | grep -qi 'X-Content-Type-Options' && echo "$HEADERS" | grep -qi 'Strict-Transport-Security'; then
+    ok
+else
+    nope "missing security headers"
+fi
+
+# ============================================================================
+# 36. CORS headers present
+# ============================================================================
+printf '%-45s' "CORS headers present:" >&2
+if echo "$HEADERS" | grep -qi 'Access-Control-Allow-Methods'; then
+    ok
+else
+    nope "missing CORS headers"
+fi
+
+# ============================================================================
+# 37. Info/me endpoint
+# ============================================================================
+RESP=$(curl -s -H "$AUTH_HEADER" "$API_URL/info/me")
+expect_success "Info/me:" "$RESP"
+
+# ============================================================================
+# 38. Info/settings endpoint
+# ============================================================================
+RESP=$(curl -s -H "$AUTH_HEADER" "$API_URL/info/settings")
+expect_success "Info/settings:" "$RESP"
+
+# ============================================================================
+# 39. Public query (no auth)
+# ============================================================================
+RESP=$(curl -s -H "$CT" \
+    -d '{"type":"subpath","space_name":"applications","subpath":"api","limit":1}' \
+    "$API_URL/public/query")
+expect_success "Public query (no auth):" "$RESP"
+
+# ============================================================================
+# 40. OPTIONS preflight returns 204
+# ============================================================================
+printf '%-45s' "OPTIONS preflight → 204:" >&2
+STATUS=$(curl -s -o /dev/null -w '%{http_code}' -X OPTIONS "$API_URL/managed/request")
+if [[ "$STATUS" == "204" ]]; then
+    ok
+else
+    nope "expected 204, got $STATUS"
+fi
+
+# ============================================================================
+# 41. User records don't leak password
+# ============================================================================
+RESP=$(curl -s -H "$AUTH_HEADER" -H "$CT" \
+    -d '{"type":"subpath","space_name":"management","subpath":"users","limit":1}' \
+    "$API_URL/managed/query")
+printf '%-45s' "User query hides password:" >&2
+if echo "$RESP" | jq -e '.records[0].attributes | has("password") | not' > /dev/null 2>&1; then
+    ok
+else
+    nope "password leaked in user query"
+fi
+
+# ============================================================================
+# 42. Null error field omitted on success
+# ============================================================================
+printf '%-45s' "Success omits error:null:" >&2
+if echo "$RESP" | jq -e 'has("error") | not' > /dev/null 2>&1; then
+    ok
+else
+    nope "error:null leaked on success response"
+fi
+
+# ============================================================================
 # Summary
 # ============================================================================
 echo "" >&2
