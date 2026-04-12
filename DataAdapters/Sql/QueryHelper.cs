@@ -21,18 +21,18 @@ public static class QueryHelper
         var sql = new System.Text.StringBuilder("space_name = $1 ");
         args.Add(new() { Value = q.SpaceName });
 
-        if (!string.IsNullOrEmpty(q.Subpath) && q.Subpath != "/")
+        // exact_subpath=true: only entries at this exact subpath (including "/").
+        // exact_subpath=false + subpath="/": no filter (return all subpaths).
+        // exact_subpath=false + subpath!="/": hierarchical match (subpath + children).
+        if (q.ExactSubpath)
         {
-            if (q.ExactSubpath)
-            {
-                args.Add(new() { Value = q.Subpath });
-                sql.Append($"AND subpath = ${args.Count} ");
-            }
-            else
-            {
-                args.Add(new() { Value = q.Subpath });
-                sql.Append($"AND (subpath = ${args.Count} OR subpath LIKE ${args.Count} || '/%') ");
-            }
+            args.Add(new() { Value = q.Subpath ?? "/" });
+            sql.Append($"AND subpath = ${args.Count} ");
+        }
+        else if (!string.IsNullOrEmpty(q.Subpath) && q.Subpath != "/")
+        {
+            args.Add(new() { Value = q.Subpath });
+            sql.Append($"AND (subpath = ${args.Count} OR subpath LIKE ${args.Count} || '/%') ");
         }
 
         if (q.FilterTypes is { Count: > 0 })
