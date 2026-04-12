@@ -23,6 +23,7 @@ public sealed class EntryRepository(Db db)
 
     public async Task<Entry?> GetAsync(string spaceName, string subpath, string shortname, ResourceType type, CancellationToken ct = default)
     {
+        // Try with the specified resource_type first (most callers know the type).
         await using var conn = await db.OpenAsync(ct);
         await using var cmd = new NpgsqlCommand(
             $"{SelectAllColumns} WHERE space_name = $1 AND subpath = $2 AND shortname = $3 AND resource_type = $4",
@@ -31,6 +32,30 @@ public sealed class EntryRepository(Db db)
         cmd.Parameters.Add(new() { Value = subpath });
         cmd.Parameters.Add(new() { Value = shortname });
         cmd.Parameters.Add(new() { Value = JsonbHelpers.EnumMember(type) });
+        await using var reader = await cmd.ExecuteReaderAsync(ct);
+        if (await reader.ReadAsync(ct)) return Hydrate(reader);
+
+        // Fallback: the URL may specify a generic resource_type (e.g. "content")
+        // but the actual row has a different type (e.g. "schema"). Since the
+        // entries table UNIQUE constraint is (shortname, space_name, subpath),
+        // resource_type is redundant for uniqueness. Python's SQL adapter
+        // doesn't strictly filter by resource_type on single-entry loads —
+        // the class_type parameter selects the Python model class, not the
+        // SQL WHERE filter. Mirror that by retrying without the type filter.
+        return await GetAsync(spaceName, subpath, shortname, ct);
+    }
+
+    // Lookup without resource_type filter — used as fallback when the caller's
+    // type hint doesn't match the actual row.
+    public async Task<Entry?> GetAsync(string spaceName, string subpath, string shortname, CancellationToken ct = default)
+    {
+        await using var conn = await db.OpenAsync(ct);
+        await using var cmd = new NpgsqlCommand(
+            $"{SelectAllColumns} WHERE space_name = $1 AND subpath = $2 AND shortname = $3",
+            conn);
+        cmd.Parameters.Add(new() { Value = spaceName });
+        cmd.Parameters.Add(new() { Value = subpath });
+        cmd.Parameters.Add(new() { Value = shortname });
         await using var reader = await cmd.ExecuteReaderAsync(ct);
         return await reader.ReadAsync(ct) ? Hydrate(reader) : null;
     }
