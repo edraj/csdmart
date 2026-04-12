@@ -17,8 +17,13 @@ fi
 
 echo "Building CXB frontend..."
 cd "$CXB_DIR"
-yarn install --frozen-lockfile 2>/dev/null || npm ci
-yarn build || npm run build
+if command -v yarn &> /dev/null; then
+    yarn install
+    yarn build
+else
+    npm install
+    npm run build
+fi
 cd - > /dev/null
 
 echo "Copying dist to $DEST/..."
