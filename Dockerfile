@@ -23,7 +23,7 @@ RUN dotnet publish dmart.csproj -r linux-musl-x64 -p:PublishAot=true -p:StripSym
 
 # Stage 3: Minimal runtime image
 FROM alpine:latest
-RUN apk add --no-cache icu-libs krb5-libs
+RUN apk add --no-cache krb5-libs
 COPY --from=build --chmod=755 /out /app
 COPY --from=cxb-build --chmod=755 /cxb/dist/client/ /app/cxb/
 WORKDIR /app
