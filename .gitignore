@@ -37,3 +37,4 @@ appsettings.*.json
 cxb/node_modules/
 cxb/dist/
 cxb/.svelte-kit/
+dist/
