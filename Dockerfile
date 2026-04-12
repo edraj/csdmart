@@ -18,7 +18,8 @@ COPY . .
 # Copy the freshly-built CXB dist into cxb/dist/client/ so the
 # EmbeddedResource glob in dmart.csproj picks it up.
 COPY --from=cxb-build /cxb/dist/client/ cxb/dist/client/
-RUN dotnet publish dmart.csproj -r linux-musl-x64 -p:PublishAot=true -c Release -o /out
+RUN dotnet publish dmart.csproj -r linux-musl-x64 -p:PublishAot=true -p:StripSymbols=true -c Release -o /out \
+    && rm -f /out/*.dbg /out/*.pdb /out/*.Development.json /out/*.staticwebassets* /out/*.deps.json
 
 # Stage 3: Minimal runtime image
 FROM alpine:latest
