@@ -90,6 +90,9 @@ public class FullParityTests : IClassFixture<DmartFactory>
         if (!DmartFactory.HasPg) return;
         var users = _factory.Services.GetRequiredService<UserRepository>();
 
+        // Reset first (in case a prior test left attempts accumulated).
+        await users.ResetAttemptsAsync(_factory.AdminShortname);
+
         // Set attempt_count to max-1 so one more failure locks it
         var db = _factory.Services.GetRequiredService<Db>();
         await using var conn = await db.OpenAsync();

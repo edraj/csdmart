@@ -657,6 +657,145 @@ else
 fi
 
 # ============================================================================
+# 43. __root__ magic word resolves to root subpath
+# ============================================================================
+printf '%-45s' "__root__ → / subpath:" >&2
+ROOT_RESP=$(curl -s -H "$AUTH_HEADER" "$API_URL/managed/entry/folder/hr/__root__/employees")
+if echo "$ROOT_RESP" | jq -e '.shortname == "employees"' > /dev/null 2>&1; then
+    ok
+else
+    nope "$ROOT_RESP"
+fi
+
+# ============================================================================
+# 44. Entry lookup falls back when resource_type mismatches
+# ============================================================================
+printf '%-45s' "Entry type fallback (content→schema):" >&2
+FALL_RESP=$(curl -s -H "$AUTH_HEADER" "$API_URL/managed/entry/content/hr/schema/employee")
+if echo "$FALL_RESP" | jq -e '.shortname == "employee"' > /dev/null 2>&1; then
+    ok
+else
+    nope "$FALL_RESP"
+fi
+
+# ============================================================================
+# 45. Entry routing: space type → spaces table
+# ============================================================================
+printf '%-45s' "Entry space → spaces table:" >&2
+SPACE_RESP=$(curl -s -H "$AUTH_HEADER" "$API_URL/managed/entry/space/hr/__root__/hr")
+if echo "$SPACE_RESP" | jq -e '.shortname == "hr"' > /dev/null 2>&1; then
+    ok
+else
+    nope "$SPACE_RESP"
+fi
+
+# ============================================================================
+# 46. Entry routing: user type → users table
+# ============================================================================
+printf '%-45s' "Entry user → users table:" >&2
+USER_RESP=$(curl -s -H "$AUTH_HEADER" "$API_URL/managed/entry/user/management/__root__/dmart")
+if echo "$USER_RESP" | jq -e '.shortname == "dmart"' > /dev/null 2>&1; then
+    ok
+else
+    nope "$USER_RESP"
+fi
+
+# ============================================================================
+# 47. Profile returns records[] with permissions
+# ============================================================================
+RESP=$(curl -s -H "$AUTH_HEADER" "$API_URL/user/profile")
+printf '%-45s' "Profile has permissions dict:" >&2
+if echo "$RESP" | jq -e '.records[0].attributes.permissions | length > 0' > /dev/null 2>&1; then
+    ok
+else
+    nope "$RESP"
+fi
+
+# ============================================================================
+# 48. Auto shortname (shortname="auto" → UUID[:8])
+# ============================================================================
+printf '%-45s' "Auto shortname generates UUID prefix:" >&2
+AUTO_RESP=$(curl -s -H "$AUTH_HEADER" -H "$CT" \
+    -d "{\"space_name\":\"$SPACE\",\"request_type\":\"create\",\"records\":[{\"resource_type\":\"space\",\"subpath\":\"/\",\"shortname\":\"$SPACE\",\"attributes\":{\"is_active\":true}}]}" \
+    "$API_URL/managed/request" > /dev/null 2>&1)
+# Create a content entry with auto shortname inside the test space
+AUTO_RESP=$(curl -s -H "$AUTH_HEADER" -H "$CT" \
+    -d "{\"space_name\":\"$SPACE\",\"request_type\":\"create\",\"records\":[{\"resource_type\":\"folder\",\"subpath\":\"/\",\"shortname\":\"testfolder\",\"attributes\":{\"is_active\":true}}]}" \
+    "$API_URL/managed/request" > /dev/null 2>&1)
+AUTO_RESP=$(curl -s -H "$AUTH_HEADER" -H "$CT" \
+    -d "{\"space_name\":\"$SPACE\",\"request_type\":\"create\",\"records\":[{\"resource_type\":\"content\",\"subpath\":\"testfolder\",\"shortname\":\"auto\",\"attributes\":{\"payload\":{\"content_type\":\"json\",\"body\":{\"x\":1}}}}]}" \
+    "$API_URL/managed/request")
+AUTO_SN=$(echo "$AUTO_RESP" | jq -r '.records[0].shortname // empty')
+AUTO_UUID=$(echo "$AUTO_RESP" | jq -r '.records[0].uuid // empty')
+if [[ ${#AUTO_SN} -eq 8 ]] && [[ "$AUTO_SN" != "auto" ]] && [[ "$AUTO_UUID" == "$AUTO_SN"* ]]; then
+    ok
+else
+    nope "shortname=$AUTO_SN uuid=$AUTO_UUID"
+fi
+# Cleanup auto test
+curl -s -H "$AUTH_HEADER" -H "$CT" \
+    -d "{\"space_name\":\"$SPACE\",\"request_type\":\"delete\",\"records\":[{\"resource_type\":\"space\",\"subpath\":\"/\",\"shortname\":\"$SPACE\",\"attributes\":{}}]}" \
+    "$API_URL/managed/request" > /dev/null
+
+# ============================================================================
+# 49. Space create triggers schema folder plugin
+# ============================================================================
+printf '%-45s' "Space create → /schema folder:" >&2
+curl -s -H "$AUTH_HEADER" -H "$CT" \
+    -d '{"space_name":"plugtest2","request_type":"create","records":[{"resource_type":"space","subpath":"/","shortname":"plugtest2","attributes":{"is_active":true}}]}' \
+    "$API_URL/managed/request" > /dev/null
+sleep 1
+SCHEMA_RESP=$(curl -s -H "$AUTH_HEADER" "$API_URL/managed/entry/folder/plugtest2/__root__/schema")
+if echo "$SCHEMA_RESP" | jq -e '.shortname == "schema"' > /dev/null 2>&1; then
+    ok
+else
+    nope "$SCHEMA_RESP"
+fi
+curl -s -H "$AUTH_HEADER" -H "$CT" \
+    -d '{"space_name":"plugtest2","request_type":"delete","records":[{"resource_type":"space","subpath":"/","shortname":"plugtest2","attributes":{}}]}' \
+    "$API_URL/managed/request" > /dev/null
+
+# ============================================================================
+# 50. CXB index.html served from embedded resources
+# ============================================================================
+printf '%-45s' "CXB /cxb/index.html served:" >&2
+CXB_STATUS=$(curl -s -o /dev/null -w '%{http_code}' "$API_URL/cxb/index.html")
+if [[ "$CXB_STATUS" == "200" ]]; then
+    ok
+else
+    nope "expected 200, got $CXB_STATUS"
+fi
+
+# ============================================================================
+# 51. CXB SPA fallback
+# ============================================================================
+printf '%-45s' "CXB SPA fallback → index.html:" >&2
+SPA_BODY=$(curl -s "$API_URL/cxb/management/some/route")
+if echo "$SPA_BODY" | grep -qi 'doctype html'; then
+    ok
+else
+    nope "SPA fallback didn't return HTML"
+fi
+
+# ============================================================================
+# 52. exact_subpath honored at root
+# ============================================================================
+printf '%-45s' "exact_subpath=true at / filters:" >&2
+EXACT=$(curl -s -H "$AUTH_HEADER" -H "$CT" \
+    -d '{"type":"search","space_name":"hr","subpath":"/","exact_subpath":true,"limit":100}' \
+    "$API_URL/managed/query")
+NOEXACT=$(curl -s -H "$AUTH_HEADER" -H "$CT" \
+    -d '{"type":"search","space_name":"hr","subpath":"/","exact_subpath":false,"limit":100}' \
+    "$API_URL/managed/query")
+EXACT_N=$(echo "$EXACT" | jq '.attributes.returned // 0')
+NOEXACT_N=$(echo "$NOEXACT" | jq '.attributes.returned // 0')
+if [[ "$NOEXACT_N" -ge "$EXACT_N" ]]; then
+    ok
+else
+    nope "exact=$EXACT_N non-exact=$NOEXACT_N"
+fi
+
+# ============================================================================
 # Summary
 # ============================================================================
 echo "" >&2
