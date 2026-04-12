@@ -2,6 +2,7 @@ using Dmart.Config;
 using Microsoft.AspNetCore.Hosting;
 using Microsoft.AspNetCore.Mvc.Testing;
 using Microsoft.Extensions.Configuration;
+using Microsoft.Extensions.Logging;
 
 namespace Dmart.Tests.Integration;
 
@@ -65,6 +66,13 @@ public sealed class DmartFactory : WebApplicationFactory<Program>
         // Suppress Program.cs's DotEnv.Load() so the test overrides are
         // authoritative. /dev/null exists on Linux but has no content.
         Environment.SetEnvironmentVariable("BACKEND_ENV", "/dev/null");
+
+        // Suppress noisy info/warn/fail log output during tests — only show
+        // errors that actually cause test failures.
+        builder.ConfigureLogging(logging =>
+        {
+            logging.SetMinimumLevel(LogLevel.Error);
+        });
 
         builder.ConfigureAppConfiguration((_, cfg) =>
         {
