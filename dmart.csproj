@@ -7,6 +7,8 @@
     <PublishAot>true</PublishAot>
     <!--StaticExecutable>true</StaticExecutable-->
     <PublishSelfContained>true</PublishSelfContained>
+    <!-- Required for ManifestEmbeddedFileProvider to enumerate embedded CXB assets -->
+    <GenerateEmbeddedFilesManifest>true</GenerateEmbeddedFilesManifest>
   </PropertyGroup>
 
   <ItemGroup>
@@ -16,6 +18,18 @@
     <Compile Remove="dmart.Tests/**" />
     <Content Remove="dmart.Tests/**" />
     <None Remove="dmart.Tests/**" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <!-- CXB frontend (Svelte SPA) — embedded into the binary so the published
+         executable is fully self-contained. Run ./build-cxb.sh to populate
+         cxb-dist/ from the ../cxb Vite project, then dotnet publish embeds
+         everything via ManifestEmbeddedFileProvider. The cxb-dist/ directory
+         is excluded from Compile/Content to avoid interference with the
+         Web SDK's default globs. -->
+    <Compile Remove="cxb-dist/**" />
+    <Content Remove="cxb-dist/**" />
+    <EmbeddedResource Include="cxb-dist/**" LinkBase="cxb" />
   </ItemGroup>
 
   <ItemGroup>
@@ -35,6 +49,7 @@
     <!--PackageReference Include="Scalar.AspNetCore" Version="2.13.22" /-->
     <DirectPInvoke Include="libc" />
     <PackageReference Include="Npgsql" Version="10.0.2" />
+    <PackageReference Include="Microsoft.Extensions.FileProviders.Embedded" Version="10.0.5" />
   </ItemGroup>
 
 </Project>

@@ -178,6 +178,10 @@ app.Use(async (ctx, next) =>
 // authentication so OPTIONS preflight short-circuits don't require a JWT.
 app.UseDmartResponseHeaders();
 
+// CXB Svelte frontend — served from embedded resources at /cxb.
+// Must come before auth so static assets don't require JWT.
+app.UseCxb();
+
 app.UseAuthentication();
 app.UseAuthorization();
 
