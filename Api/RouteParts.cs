@@ -27,6 +27,11 @@ public static class RouteParts
     /// Splits "subpath/.../shortname" → ("subpath/...", "shortname"). When `rest`
     /// has no slash the subpath is treated as "/" and the whole string is the shortname.
     /// </summary>
+    // Python magic word: __root__ in a URL subpath means "/". This is used by
+    // the CXB frontend when constructing URLs for entries at the root of a space.
+    // settings.root_subpath_mw = "__root__"
+    private const string RootMagicWord = "__root__";
+
     public static (string Subpath, string Shortname) SplitSubpathAndShortname(string rest)
     {
         if (string.IsNullOrEmpty(rest)) return ("/", "");
@@ -34,7 +39,8 @@ public static class RouteParts
         if (lastSlash < 0) return ("/", rest);
         var subpath = rest[..lastSlash];
         var shortname = rest[(lastSlash + 1)..];
-        return (string.IsNullOrEmpty(subpath) ? "/" : subpath, shortname);
+        if (string.IsNullOrEmpty(subpath) || subpath == RootMagicWord) subpath = "/";
+        return (subpath, shortname);
     }
 
     /// <summary>
