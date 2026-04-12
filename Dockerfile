@@ -12,22 +12,21 @@ RUN yarn build || npm run build
 
 # Stage 2: Build C# AOT binary with embedded CXB
 FROM mcr.microsoft.com/dotnet/sdk:10.0-alpine AS build
-RUN apk add --no-cache clang build-base zlib-dev zlib-static openssl-dev openssl-libs-static
+RUN apk add --no-cache clang build-base zlib-dev
 WORKDIR /src
 COPY . .
 # Copy the freshly-built CXB dist into cxb/dist/client/ so the
 # EmbeddedResource glob in dmart.csproj picks it up.
 COPY --from=cxb-build /cxb/dist/client/ cxb/dist/client/
-# Build a fully static binary — no runtime deps on libssl, libgssapi, libicu.
 RUN dotnet publish dmart.csproj -r linux-musl-x64 \
       -p:PublishAot=true \
       -p:StripSymbols=true \
-      -p:StaticExecutable=true \
       -c Release -o /out \
     && rm -f /out/*.dbg /out/*.pdb /out/*.Development.json /out/*.staticwebassets* /out/*.deps.json
 
-# Stage 3: Minimal runtime image — no runtime libs needed (static binary)
+# Stage 3: Minimal runtime image with musl + OpenSSL (needed by Npgsql)
 FROM alpine:latest
+RUN apk add --no-cache libssl3 libcrypto3 krb5-libs
 COPY --from=build --chmod=755 /out /app
 COPY --from=cxb-build --chmod=755 /cxb/dist/client/ /app/cxb/
 WORKDIR /app
