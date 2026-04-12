@@ -22,14 +22,13 @@
 
   <ItemGroup>
     <!-- CXB frontend (Svelte SPA) — embedded into the binary so the published
-         executable is fully self-contained. Run ./build-cxb.sh to populate
-         cxb-dist/ from the ../cxb Vite project, then dotnet publish embeds
-         everything via ManifestEmbeddedFileProvider. The cxb-dist/ directory
-         is excluded from Compile/Content to avoid interference with the
-         Web SDK's default globs. -->
-    <Compile Remove="cxb-dist/**" />
-    <Content Remove="cxb-dist/**" />
-    <EmbeddedResource Include="cxb-dist/**" LinkBase="cxb" />
+         executable is fully self-contained. Run ./build-cxb.sh to build the
+         frontend, then dotnet publish embeds the dist output via
+         ManifestEmbeddedFileProvider. The cxb/ source tree is excluded from
+         Compile/Content to avoid interference with the Web SDK's default globs. -->
+    <Compile Remove="cxb/**" />
+    <Content Remove="cxb/**" />
+    <EmbeddedResource Include="cxb/dist/client/**" LinkBase="cxb-dist" />
   </ItemGroup>
 
   <ItemGroup>

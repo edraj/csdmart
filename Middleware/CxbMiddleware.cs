@@ -37,18 +37,14 @@ public static class CxbMiddleware
             return app;
         }
 
-        // The manifest preserves the physical directory name "cxb-dist/"
-        // regardless of LinkBase. Verify the CXB index.html actually exists.
-        var indexFile = provider.GetFileInfo("cxb-dist/index.html");
+        // The manifest preserves the physical directory structure
+        // cxb/dist/client/ from the EmbeddedResource Include path.
+        var indexFile = provider.GetFileInfo("cxb/dist/client/index.html");
         if (!indexFile.Exists) return app;
 
         // Serve static files from embedded resources at URL path /cxb.
-        // The embedded files live under "cxb-dist/" in the manifest, so we
-        // need to map URL /cxb/* → provider path cxb-dist/*.
-        // UseStaticFiles with RequestPath="/cxb" strips "/cxb" from the URL
-        // before looking up in the provider. But our provider has "cxb-dist/"
-        // as the root dir. We use a sub-provider rooted at "cxb-dist".
-        var subProvider = new ManifestEmbeddedFileProvider(assembly, "cxb-dist");
+        // Use a sub-provider rooted at the dist output directory.
+        var subProvider = new ManifestEmbeddedFileProvider(assembly, "cxb/dist/client");
         app.UseStaticFiles(new StaticFileOptions
         {
             FileProvider = subProvider,

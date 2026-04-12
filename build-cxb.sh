@@ -1,17 +1,17 @@
 #!/bin/bash
-# Build the CXB Svelte frontend and copy the dist into the C# project
-# for embedding into the binary.
+# Build the CXB Svelte frontend in-tree.
+# The cxb/ directory lives inside the C# project and its dist/client/
+# output is embedded into the binary via EmbeddedResource in the .csproj.
 #
 # Usage: ./build-cxb.sh
-# Prerequisites: yarn (or npm) available, cxb project at ../cxb
+# Prerequisites: yarn (or npm) available
 
 set -eu
 
-CXB_DIR="${CXB_DIR:-../cxb}"
-DEST="cxb-dist"
+CXB_DIR="cxb"
 
-if [ ! -d "$CXB_DIR" ]; then
-    echo "cxb project not found at $CXB_DIR — set CXB_DIR" >&2
+if [ ! -f "$CXB_DIR/package.json" ]; then
+    echo "cxb/package.json not found — is the CXB source present?" >&2
     exit 1
 fi
 
@@ -26,9 +26,5 @@ else
 fi
 cd - > /dev/null
 
-echo "Copying dist to $DEST/..."
-rm -rf "$DEST"
-cp -r "$CXB_DIR/dist/client" "$DEST"
-
-echo "Done. $(find "$DEST" -type f | wc -l) files in $DEST/ ($(du -sh "$DEST" | cut -f1))"
-echo "Run 'dotnet publish' to embed them into the binary."
+echo "Done. $(find "$CXB_DIR/dist/client" -type f | wc -l) files ($(du -sh "$CXB_DIR/dist/client" | cut -f1))"
+echo "Run './build.sh' to embed them into the binary."

@@ -29,4 +29,8 @@ publish/
 appsettings.*.json
 !appsettings.json
 !appsettings.Development.json
-cxb-dist/
+
+# CXB frontend build artifacts (source is committed, dist is rebuilt)
+cxb/node_modules/
+cxb/dist/
+cxb/.svelte-kit/

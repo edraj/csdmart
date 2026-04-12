@@ -1,0 +1,46 @@
+{
+  "compilerOptions": {
+    "module": "es2022",
+    "moduleResolution": "node",
+    "target": "es2022",
+    "strict": true,
+    "isolatedModules": true,
+    "lib": ["es2022", "dom", "dom.iterable"],
+    "allowJs": true,
+    "checkJs": true,
+    "esModuleInterop": true,
+    "forceConsistentCasingInFileNames": true,
+    "verbatimModuleSyntax": true,
+    "resolveJsonModule": true,
+    "skipLibCheck": true,
+    "sourceMap": true,
+    "paths": {
+      "@": [
+        "./src"
+      ],
+      "@/*": [
+        "./src/*"
+      ]
+    },
+    "noImplicitAny": false,
+    "types": [
+      "vitest/globals"
+    ]
+
+  },
+  "include": [
+    "vite-env.d.ts",
+    "src/**/*.d.ts",
+    "src/**/*.ts",
+    "src/**/*.js",
+    "src/**/*.svelte",
+    ".routify/**.js",
+    "test/**/*.ts",
+    "test/**/*.js"
+  ],
+  "exclude": [
+    ".routify/**/*.svelte",
+    "node_modules/**/*.svelte",
+    "node_modules/**/*.ts"
+  ]
+}
