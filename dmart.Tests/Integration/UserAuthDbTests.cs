@@ -83,7 +83,9 @@ public class UserAuthDbTests : IClassFixture<DmartFactory>
         resp.StatusCode.ShouldBe(HttpStatusCode.OK);
         var body = await resp.Content.ReadFromJsonAsync(DmartJsonContext.Default.Response);
         body!.Status.ShouldBe(Status.Success);
-        body.Attributes!["shortname"]!.ToString().ShouldBe(_factory.AdminShortname);
+        // Profile now returns records[] (Python parity), not attributes{}.
+        body.Records.ShouldNotBeNull();
+        body.Records![0].Shortname.ShouldBe(_factory.AdminShortname);
     }
 
     [Fact]

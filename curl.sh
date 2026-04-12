@@ -565,7 +565,7 @@ fi
 # ============================================================================
 RESP=$(curl -s -H "$AUTH_HEADER" "$API_URL/user/profile")
 printf '%-45s' "Profile has type+groups+force_pwd:" >&2
-if echo "$RESP" | jq -e '.attributes | has("type","groups","force_password_change")' > /dev/null 2>&1; then
+if echo "$RESP" | jq -e '.records[0].attributes | has("type","groups","force_password_change")' > /dev/null 2>&1; then
     ok
 else
     nope "$RESP"

@@ -254,8 +254,10 @@ public class FullParityTests : IClassFixture<DmartFactory>
         var resp = await client.GetAsync("/user/profile");
         var body = await resp.Content.ReadFromJsonAsync(DmartJsonContext.Default.Response);
         body!.Status.ShouldBe(Status.Success);
-        var attrs = body.Attributes!;
-        attrs.ShouldContainKey("shortname");
+        // Profile now returns records[] (Python parity).
+        body.Records.ShouldNotBeNull();
+        body.Records!.Count.ShouldBeGreaterThan(0);
+        var attrs = body.Records![0].Attributes!;
         attrs.ShouldContainKey("email");
         attrs.ShouldContainKey("type");
         attrs.ShouldContainKey("roles");
@@ -265,6 +267,7 @@ public class FullParityTests : IClassFixture<DmartFactory>
         attrs.ShouldContainKey("force_password_change");
         attrs.ShouldContainKey("displayname");
         attrs.ShouldContainKey("description");
+        attrs.ShouldContainKey("permissions");
     }
 
     // ==================== validate_password ====================

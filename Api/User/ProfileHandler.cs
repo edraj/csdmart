@@ -10,7 +10,8 @@ public static class ProfileHandler
 {
     public static void Map(RouteGroupBuilder g)
     {
-        // GET /user/profile — Python returns comprehensive user data.
+        // GET /user/profile — Python returns records: [Record] with user
+        // attributes. The tsdmart SDK reads data.records[0].attributes.
         g.MapGet("/profile", async (HttpContext http, UserService svc, CancellationToken ct) =>
         {
             var actor = http.User.Identity?.Name;
@@ -18,25 +19,32 @@ public static class ProfileHandler
             var user = await svc.GetByShortnameAsync(actor, ct);
             if (user is null) return Response.Fail("not_found", "user missing");
 
-            // Python returns: email, displayname, description, msisdn, payload,
-            // type, language, is_email_verified, is_msisdn_verified,
-            // force_password_change, permissions, roles, groups, avatar.
-            return Response.Ok(attributes: new()
+            var profileRecord = new Record
             {
-                ["shortname"] = user.Shortname,
-                ["email"] = user.Email ?? (object)"",
-                ["msisdn"] = user.Msisdn ?? (object)"",
-                ["displayname"] = user.Displayname ?? (object)"",
-                ["description"] = user.Description ?? (object)"",
-                ["language"] = user.Language,
-                ["type"] = user.Type.ToString().ToLowerInvariant(),
-                ["roles"] = user.Roles,
-                ["groups"] = user.Groups,
-                ["is_email_verified"] = user.IsEmailVerified,
-                ["is_msisdn_verified"] = user.IsMsisdnVerified,
-                ["force_password_change"] = user.ForcePasswordChange,
-                ["payload"] = user.Payload ?? (object)new Dictionary<string, object>(),
-            });
+                ResourceType = Dmart.Models.Enums.ResourceType.User,
+                Shortname = user.Shortname,
+                Subpath = "users",
+                Attributes = new()
+                {
+                    ["email"] = user.Email ?? (object)"",
+                    ["msisdn"] = user.Msisdn ?? (object)"",
+                    ["displayname"] = user.Displayname ?? (object)"",
+                    ["description"] = user.Description ?? (object)"",
+                    ["language"] = user.Language,
+                    ["type"] = user.Type.ToString().ToLowerInvariant(),
+                    ["roles"] = user.Roles,
+                    ["groups"] = user.Groups,
+                    ["is_email_verified"] = user.IsEmailVerified,
+                    ["is_msisdn_verified"] = user.IsMsisdnVerified,
+                    ["force_password_change"] = user.ForcePasswordChange,
+                    ["payload"] = user.Payload ?? (object)new Dictionary<string, object>(),
+                    // Python includes permissions (resolved from roles).
+                    // For now we include an empty dict; full resolution requires
+                    // the same generate_user_permissions pipeline Python uses.
+                    ["permissions"] = new Dictionary<string, object>(),
+                },
+            };
+            return Response.Ok(new[] { profileRecord });
         });
 
         g.MapPost("/profile", async (HttpRequest req, HttpContext http, UserService svc, CancellationToken ct) =>
