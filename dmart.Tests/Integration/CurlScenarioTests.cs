@@ -44,7 +44,7 @@ public class CurlScenarioTests : IClassFixture<DmartFactory>
         var loginBody = await loginResp.Content.ReadFromJsonAsync(DmartJsonContext.Default.Response);
         loginBody.ShouldNotBeNull();
         loginBody!.Status.ShouldBe(Status.Success);
-        var token = loginBody.Attributes!["access_token"].ToString()!;
+        var token = loginBody.Records![0].Attributes!["access_token"].ToString()!;
         token.ShouldNotBeNullOrEmpty();
 
         // Cookie should also be set (dmart parity check from curl.sh).

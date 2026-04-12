@@ -84,6 +84,14 @@ public sealed class DmartSettings
     public bool LogoutOnPwdChange { get; set; } = true;
     public int RequestTimeout { get; set; } = 35;
 
+    // CSV list of "space.schema" pairs allowed for public /submit endpoints.
+    // Empty means allow all. Python: allowed_submit_models.
+    public string AllowedSubmitModels { get; set; } = "";
+
+    // CSV list of payload field names users can't update via POST /user/profile.
+    // Python: user_profile_payload_protected_fields.
+    public string UserProfilePayloadProtectedFields { get; set; } = "";
+
     // CORS allowlist — mirrors Python's utils/settings.py::allowed_cors_origins.
     // When non-empty, the response-headers middleware reflects matching Origin
     // values into Access-Control-Allow-Origin. When empty, the middleware

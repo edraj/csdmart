@@ -1,5 +1,4 @@
 using Dmart.DataAdapters.Sql;
-using Dmart.Models.Core;
 
 namespace Dmart.Services;
 
@@ -10,4 +9,9 @@ public sealed class ShortLinkService(LinkRepository links)
 
     public Task<string> CreateAsync(string targetUrl, CancellationToken ct = default)
         => links.CreateAsync(targetUrl, ct);
+
+    public async Task CreateAsync(string token, string targetUrl, TimeSpan expires, CancellationToken ct = default)
+    {
+        await links.CreateWithTokenAsync(token, targetUrl, DateTime.UtcNow.Add(expires), ct);
+    }
 }

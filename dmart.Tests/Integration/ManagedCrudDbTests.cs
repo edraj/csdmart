@@ -138,6 +138,6 @@ public class ManagedCrudDbTests : IClassFixture<DmartFactory>
         var login = new UserLoginRequest(_factory.AdminShortname, null, null, _factory.AdminPassword, null);
         var resp = await client.PostAsJsonAsync("/user/login", login, DmartJsonContext.Default.UserLoginRequest);
         var body = await resp.Content.ReadFromJsonAsync(DmartJsonContext.Default.Response);
-        return body!.Attributes!["access_token"]!.ToString()!;
+        return body!.Records![0].Attributes!["access_token"]!.ToString()!;
     }
 }

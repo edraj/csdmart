@@ -50,14 +50,30 @@ public static class AuthHandler
                 Path = "/",
             });
 
-            return Results.Json(Response.Ok(attributes: new()
+            // Python's process_user_login returns:
+            //   Response(status=success, records=[Record(
+            //     resource_type="user", shortname=user.shortname,
+            //     attributes={access_token, type, displayname?})])
+            // We mirror that plus include refresh_token and roles for parity
+            // with clients that already depend on those being in the response.
+            var loginRecord = new Record
             {
-                ["access_token"] = access,
-                ["refresh_token"] = refresh,
-                ["shortname"] = user.Shortname,
-                ["roles"] = user.Roles,
-                ["type"] = user.Type.ToString().ToLowerInvariant(),
-            }), DmartJsonContext.Default.Response);
+                ResourceType = Dmart.Models.Enums.ResourceType.User,
+                Shortname = user.Shortname,
+                Subpath = "users",
+                Attributes = new()
+                {
+                    ["access_token"] = access,
+                    ["refresh_token"] = refresh,
+                    ["type"] = user.Type.ToString().ToLowerInvariant(),
+                    ["roles"] = user.Roles,
+                },
+            };
+            if (user.Displayname is not null)
+                loginRecord.Attributes["displayname"] = user.Displayname;
+
+            return Results.Json(Response.Ok(new[] { loginRecord }),
+                DmartJsonContext.Default.Response);
         });
 
         g.MapPost("/logout", async Task<Response> (HttpContext http, UserService svc, CancellationToken ct) =>

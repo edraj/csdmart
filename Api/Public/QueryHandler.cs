@@ -26,8 +26,25 @@ public static class QueryHandler
             return await svc.ExecuteAsync(q, actor: null, ct);
         });
 
-        g.MapGet("/query/{type}/{space_name}/{subpath}",
-            (string type, string space_name, string subpath)
-                => Response.Fail("not_implemented", "url-param query pending"));
+        // Python: GET /public/query-via-url — query via URL parameters (for embedding).
+        // Also: GET /public/query/{type}/{space_name}/{subpath}
+        g.MapGet("/query/{type}/{space_name}/{subpath}", async (
+            string type, string space_name, string subpath,
+            int? limit, int? offset, string? search,
+            QueryService svc, CancellationToken ct) =>
+        {
+            if (!Enum.TryParse<Dmart.Models.Enums.QueryType>(type, ignoreCase: true, out var qt))
+                return Response.Fail("bad_request", $"unknown query type: {type}");
+            var q = new Query
+            {
+                Type = qt,
+                SpaceName = space_name,
+                Subpath = subpath,
+                Limit = limit ?? 10,
+                Offset = offset ?? 0,
+                Search = search,
+            };
+            return await svc.ExecuteAsync(q, actor: null, ct);
+        });
     }
 }

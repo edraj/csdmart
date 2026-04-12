@@ -4,6 +4,7 @@ using System.Net.Http.Json;
 using System.Text.Json;
 using Dmart.Models.Api;
 using Dmart.Models.Json;
+using Microsoft.Extensions.DependencyInjection;
 using Shouldly;
 using Xunit;
 
@@ -28,8 +29,11 @@ public class UserAuthDbTests : IClassFixture<DmartFactory>
         var body = await resp.Content.ReadFromJsonAsync(DmartJsonContext.Default.Response);
         body.ShouldNotBeNull();
         body!.Status.ShouldBe(Status.Success);
-        body.Attributes.ShouldNotBeNull();
-        body.Attributes!.ContainsKey("access_token").ShouldBeTrue();
+        // Login now returns records[{attributes: {access_token}}] (Python parity).
+        body.Records.ShouldNotBeNull();
+        body.Records!.Count.ShouldBeGreaterThan(0);
+        body.Records![0].Attributes.ShouldNotBeNull();
+        body.Records![0].Attributes!.ContainsKey("access_token").ShouldBeTrue();
     }
 
     [Fact]
@@ -41,6 +45,11 @@ public class UserAuthDbTests : IClassFixture<DmartFactory>
         var login = new UserLoginRequest(_factory.AdminShortname, null, null, "definitely-wrong", null);
         var resp = await client.PostAsJsonAsync("/user/login", login, DmartJsonContext.Default.UserLoginRequest);
         resp.StatusCode.ShouldBe(HttpStatusCode.Unauthorized);
+
+        // Reset attempt counter so this test's failed login doesn't lock out
+        // cstest for other tests (account lockout enforcement is now active).
+        var users = _factory.Services.GetRequiredService<Dmart.DataAdapters.Sql.UserRepository>();
+        await users.ResetAttemptsAsync(_factory.AdminShortname);
     }
 
     [Fact]
@@ -99,6 +108,7 @@ public class UserAuthDbTests : IClassFixture<DmartFactory>
         var resp = await client.PostAsJsonAsync("/user/login", login, DmartJsonContext.Default.UserLoginRequest);
         if (!resp.IsSuccessStatusCode) return null;
         var body = await resp.Content.ReadFromJsonAsync(DmartJsonContext.Default.Response);
-        return body?.Attributes?["access_token"]?.ToString();
+        // Login now returns records[{attributes: {access_token}}] (Python parity).
+        return body?.Records?.FirstOrDefault()?.Attributes?["access_token"]?.ToString();
     }
 }

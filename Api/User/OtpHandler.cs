@@ -34,11 +34,32 @@ public static class OtpHandler
             return Response.Ok();
         });
 
-        g.MapPost("/otp-confirm", async (ConfirmOTPRequest req, OtpRepository repo, CancellationToken ct) =>
+        // Python's otp-confirm verifies the OTP and then marks the email/msisdn
+        // as verified on the user row. We need the user context to do that.
+        g.MapPost("/otp-confirm", async (ConfirmOTPRequest req, OtpRepository repo,
+            UserRepository users, HttpContext http, CancellationToken ct) =>
         {
             var dest = req.Msisdn ?? req.Email ?? "";
             var ok = await repo.VerifyAndConsumeAsync(dest, req.Code, ct);
-            return ok ? Response.Ok() : Response.Fail("invalid_otp", "code mismatch or expired");
+            if (!ok) return Response.Fail("invalid_otp", "code mismatch or expired");
+
+            // If the caller is authenticated, update their verified flags.
+            var actor = http.User.Identity?.Name;
+            if (actor is not null)
+            {
+                var user = await users.GetByShortnameAsync(actor, ct);
+                if (user is not null)
+                {
+                    var updated = user with
+                    {
+                        IsEmailVerified = !string.IsNullOrEmpty(req.Email) || user.IsEmailVerified,
+                        IsMsisdnVerified = !string.IsNullOrEmpty(req.Msisdn) || user.IsMsisdnVerified,
+                        UpdatedAt = DateTime.UtcNow,
+                    };
+                    await users.UpsertAsync(updated, ct);
+                }
+            }
+            return Response.Ok();
         });
     }
 }

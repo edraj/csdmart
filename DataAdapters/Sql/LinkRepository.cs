@@ -19,6 +19,20 @@ public sealed class LinkRepository(Db db)
         return token;
     }
 
+    public async Task CreateWithTokenAsync(string token, string url, DateTime expiresAt, CancellationToken ct = default)
+    {
+        await using var conn = await db.OpenAsync(ct);
+        await using var cmd = new NpgsqlCommand("""
+            INSERT INTO urlshorts (uuid, token_uuid, url, timestamp)
+            VALUES (gen_random_uuid(), $1, $2, $3)
+            ON CONFLICT (token_uuid) DO UPDATE SET url = EXCLUDED.url, timestamp = EXCLUDED.timestamp
+            """, conn);
+        cmd.Parameters.Add(new() { Value = token });
+        cmd.Parameters.Add(new() { Value = url });
+        cmd.Parameters.Add(new() { Value = expiresAt });
+        await cmd.ExecuteNonQueryAsync(ct);
+    }
+
     public async Task<string?> ResolveAsync(string token, CancellationToken ct = default)
     {
         await using var conn = await db.OpenAsync(ct);

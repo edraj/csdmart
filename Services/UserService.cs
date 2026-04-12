@@ -121,6 +121,17 @@ public sealed class UserService(
     {
         await users.ResetAttemptsAsync(user.Shortname, ct);
 
+        // Python: max_sessions_per_user enforcement — check session count before
+        // creating a new one. If at capacity, the oldest session should be evicted
+        // or the login should fail. Python's get_user_session checks the count;
+        // we limit by deleting oldest sessions when over the limit.
+        var maxSessions = settings.Value.MaxSessionsPerUser;
+        if (maxSessions > 0)
+        {
+            // Evict excess sessions (keep newest maxSessions-1 to make room for the new one)
+            await users.EvictExcessSessionsAsync(user.Shortname, maxSessions - 1, ct);
+        }
+
         // Persist device_id if changed.
         var updatedUser = user;
         var needsUpdate = false;

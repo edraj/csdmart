@@ -45,7 +45,7 @@ public class CsvRoundTripTests : IClassFixture<DmartFactory>
         var loginBody = await loginResp.Content.ReadFromJsonAsync(DmartJsonContext.Default.Response);
         loginBody.ShouldNotBeNull();
         loginBody!.Status.ShouldBe(Status.Success);
-        var token = loginBody.Attributes!["access_token"].ToString()!;
+        var token = loginBody.Records![0].Attributes!["access_token"].ToString()!;
         client.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Bearer", token);
 
         try

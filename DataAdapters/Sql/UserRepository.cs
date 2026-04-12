@@ -233,6 +233,24 @@ public sealed class UserRepository(Db db, AuthzCacheRefresher refresher)
         await cmd.ExecuteNonQueryAsync(ct);
     }
 
+    // Keep only the `keep` newest sessions for a user, evicting the rest.
+    // Used to enforce max_sessions_per_user before creating a new session.
+    public async Task EvictExcessSessionsAsync(string shortname, int keep, CancellationToken ct = default)
+    {
+        if (keep < 0) keep = 0;
+        await using var conn = await db.OpenAsync(ct);
+        await using var cmd = new NpgsqlCommand("""
+            DELETE FROM sessions WHERE shortname = $1
+            AND uuid NOT IN (
+                SELECT uuid FROM sessions WHERE shortname = $1
+                ORDER BY timestamp DESC LIMIT $2
+            )
+            """, conn);
+        cmd.Parameters.Add(new() { Value = shortname });
+        cmd.Parameters.Add(new() { Value = keep });
+        await cmd.ExecuteNonQueryAsync(ct);
+    }
+
     private static void AddJsonb(NpgsqlCommand cmd, string? json)
     {
         cmd.Parameters.Add(new()
