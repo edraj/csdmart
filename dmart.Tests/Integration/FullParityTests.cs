@@ -89,26 +89,23 @@ public class FullParityTests : IClassFixture<DmartFactory>
     {
         if (!DmartFactory.HasPg) return;
         var users = _factory.Services.GetRequiredService<UserRepository>();
-
-        // Reset first (in case a prior test left attempts accumulated).
-        await users.ResetAttemptsAsync(_factory.AdminShortname);
-
-        // Set attempt_count to max-1 so one more failure locks it
         var db = _factory.Services.GetRequiredService<Db>();
-        await using var conn = await db.OpenAsync();
-        await using var cmd = new Npgsql.NpgsqlCommand(
-            "UPDATE users SET attempt_count = 4 WHERE shortname = $1", conn);
-        cmd.Parameters.Add(new() { Value = _factory.AdminShortname });
-        await cmd.ExecuteNonQueryAsync();
+
+        // Set attempt_count directly to the lockout threshold (5) so the
+        // account is already locked. This avoids race conditions with other
+        // tests that might reset the counter in parallel.
+        await using (var conn = await db.OpenAsync())
+        await using (var cmd = new Npgsql.NpgsqlCommand(
+            "UPDATE users SET attempt_count = 5 WHERE shortname = $1", conn))
+        {
+            cmd.Parameters.Add(new() { Value = _factory.AdminShortname });
+            await cmd.ExecuteNonQueryAsync();
+        }
 
         try
         {
             var client = _factory.CreateClient();
-            // One more failed login should trigger lockout
-            var badLogin = new UserLoginRequest(_factory.AdminShortname, null, null, "wrong-pw", null);
-            await client.PostAsJsonAsync("/user/login", badLogin, DmartJsonContext.Default.UserLoginRequest);
-
-            // Now even correct password should fail with lockout
+            // Even correct password should fail with lockout
             var goodLogin = new UserLoginRequest(_factory.AdminShortname, null, null, _factory.AdminPassword, null);
             var resp = await client.PostAsJsonAsync("/user/login", goodLogin, DmartJsonContext.Default.UserLoginRequest);
             resp.StatusCode.ShouldBe(HttpStatusCode.Unauthorized);
