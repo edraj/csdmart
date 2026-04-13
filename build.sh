@@ -18,7 +18,7 @@ cat > info.json << EOF
 EOF
 echo "Generated info.json: $(cat info.json)"
 
-rm -rf bin obj
+# rm -rf bin obj
 
 dotnet publish dmart.csproj -r linux-x64 \
   -p:PublishAot=true \

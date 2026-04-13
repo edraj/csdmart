@@ -63,9 +63,9 @@ public class CsvRoundTripTests : IClassFixture<DmartFactory>
                 """{"space_name":"itest_csv","request_type":"create","records":[{"resource_type":"folder","subpath":"/","shortname":"items","attributes":{"is_active":true}}]}"""))
                 .ShouldBeTrue("folder create");
 
-            (await PostOk(client, "/managed/request",
-                """{"space_name":"itest_csv","request_type":"create","records":[{"resource_type":"folder","subpath":"/","shortname":"schema","attributes":{"is_active":true}}]}"""))
-                .ShouldBeTrue("schema folder create");
+            // /schema may already exist (auto-created by resource_folders_creation plugin)
+            await PostOk(client, "/managed/request",
+                """{"space_name":"itest_csv","request_type":"create","records":[{"resource_type":"folder","subpath":"/","shortname":"schema","attributes":{"is_active":true}}]}""");
 
             // Permissive schema — additionalProperties:true with no required fields,
             // so every CSV row (all-string values) validates cleanly.

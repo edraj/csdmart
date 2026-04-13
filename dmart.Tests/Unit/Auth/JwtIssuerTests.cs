@@ -2,6 +2,7 @@ using System.Text;
 using System.Text.Json;
 using Dmart.Auth;
 using Dmart.Config;
+using Dmart.Models.Enums;
 using Microsoft.Extensions.Options;
 using Shouldly;
 using Xunit;
@@ -59,6 +60,54 @@ public class JwtIssuerTests
         var a = jwt.IssueAccess("alice");
         var b = jwt.IssueAccess("alice");
         a.ShouldNotBe(b);
+    }
+
+    [Fact]
+    public void Payload_Contains_Python_Compatible_Data_And_Expires()
+    {
+        var token = NewIssuer().IssueAccess("alice", new[] { "admin" });
+        var root = DecodePayload(token);
+        // Python dmart puts { "data": { "shortname": "...", "type": "..." }, "expires": N }
+        root.TryGetProperty("data", out var data).ShouldBeTrue("missing data object");
+        data.GetProperty("shortname").GetString().ShouldBe("alice");
+        data.GetProperty("type").GetString().ShouldBe("web");
+        root.TryGetProperty("expires", out var expires).ShouldBeTrue("missing expires");
+        expires.GetInt64().ShouldBe(root.GetProperty("exp").GetInt64(),
+            "expires should equal exp");
+    }
+
+    [Fact]
+    public void Data_Type_Reflects_UserType_Parameter()
+    {
+        var token = NewIssuer().IssueAccess("bob", null, UserType.Mobile);
+        var root = DecodePayload(token);
+        root.GetProperty("data").GetProperty("type").GetString().ShouldBe("mobile");
+    }
+
+    [Fact]
+    public void Refresh_Token_Also_Contains_Python_Data()
+    {
+        var token = NewIssuer().IssueRefresh("carol", UserType.Bot);
+        var root = DecodePayload(token);
+        root.GetProperty("data").GetProperty("shortname").GetString().ShouldBe("carol");
+        root.GetProperty("data").GetProperty("type").GetString().ShouldBe("bot");
+        root.TryGetProperty("expires", out _).ShouldBeTrue();
+    }
+
+    [Fact]
+    public void Validate_Accepts_Token_With_New_Claims()
+    {
+        var issuer = NewIssuer();
+        var token = issuer.IssueAccess("alice", new[] { "admin" }, UserType.Web);
+        var principal = issuer.Validate(token);
+        principal.ShouldNotBeNull();
+        principal!.Identity!.Name.ShouldBe("alice");
+    }
+
+    private static JsonElement DecodePayload(string token)
+    {
+        var payloadJson = Encoding.UTF8.GetString(Base64UrlDecode(token.Split('.')[1]));
+        return JsonDocument.Parse(payloadJson).RootElement;
     }
 
     private static byte[] Base64UrlDecode(string s)

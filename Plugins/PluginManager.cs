@@ -323,6 +323,14 @@ public sealed class PluginManager(
         return new HashSet<string>(space.ActivePlugins ?? new(), StringComparer.Ordinal);
     }
 
+    // Invalidate the cached space entry so the next lookup hits the DB.
+    // Call this after creating, updating, or deleting a space so that
+    // AfterActionAsync sees the fresh active_plugins list.
+    public void InvalidateSpaceCache(string spaceName)
+    {
+        lock (_spaceCache) { _spaceCache.Remove(spaceName); }
+    }
+
     private async Task<Space?> GetSpaceCachedAsync(string spaceName, CancellationToken ct)
     {
         var now = Environment.TickCount64 * TimeSpan.TicksPerMillisecond;
@@ -332,9 +340,15 @@ public sealed class PluginManager(
                 return cached.Space;
         }
         var space = await spaces.GetAsync(spaceName, ct);
-        lock (_spaceCache)
+        // Only cache non-null results — caching a null for a not-yet-created
+        // space prevents AfterAction hooks from firing after the space is
+        // created within the cache TTL window.
+        if (space is not null)
         {
-            _spaceCache[spaceName] = (Environment.TickCount64 * TimeSpan.TicksPerMillisecond, space);
+            lock (_spaceCache)
+            {
+                _spaceCache[spaceName] = (Environment.TickCount64 * TimeSpan.TicksPerMillisecond, space);
+            }
         }
         return space;
     }

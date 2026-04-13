@@ -71,6 +71,11 @@ public static class RequestHandler
                     if (rec.ResourceType is ResourceType.User or ResourceType.Role
                         or ResourceType.Permission or ResourceType.Space)
                     {
+                        // Invalidate the space cache so AfterAction hooks see
+                        // the freshly created/updated space's active_plugins.
+                        if (rec.ResourceType is ResourceType.Space)
+                            plugins.InvalidateSpaceCache(rec.Shortname);
+
                         var actionType = req.RequestType switch
                         {
                             RequestType.Create => ActionType.Create,

@@ -244,6 +244,38 @@ else
     nope "could not decode JWT header"
 fi
 
+# Decode JWT payload and verify Python-compatible data claims
+JWT_PAYLOAD=$(echo "$AUTH_TOKEN" | cut -d '.' -f 2)
+case $((${#JWT_PAYLOAD} % 4)) in
+    2) JWT_PAYLOAD="${JWT_PAYLOAD}==" ;;
+    3) JWT_PAYLOAD="${JWT_PAYLOAD}=" ;;
+esac
+JWT_PAYLOAD=$(echo "$JWT_PAYLOAD" | tr '_-' '/+')
+JWT_BODY=$(echo "$JWT_PAYLOAD" | base64 -d 2>/dev/null)
+
+printf '%-45s' "JWT payload has data.shortname:" >&2
+if echo "$JWT_BODY" | jq -e ".data.shortname == \"$ADMIN_SHORTNAME\"" > /dev/null 2>&1; then
+    ok
+else
+    nope "$(echo "$JWT_BODY" | jq .data)"
+fi
+
+printf '%-45s' "JWT payload has data.type:" >&2
+if echo "$JWT_BODY" | jq -e '.data.type' > /dev/null 2>&1; then
+    ok
+else
+    nope "missing data.type in JWT payload"
+fi
+
+printf '%-45s' "JWT payload expires == exp:" >&2
+JWT_EXP=$(echo "$JWT_BODY" | jq '.exp')
+JWT_EXPIRES=$(echo "$JWT_BODY" | jq '.expires')
+if [[ "$JWT_EXP" == "$JWT_EXPIRES" ]] && [[ "$JWT_EXP" != "null" ]]; then
+    ok
+else
+    nope "exp=$JWT_EXP expires=$JWT_EXPIRES"
+fi
+
 # ============================================================================
 # 2. Profile
 # ============================================================================
@@ -284,7 +316,12 @@ for FOLDER in myfolder posts workflows schema; do
     RESP=$(curl -s -H "$AUTH_HEADER" -H "$CT" \
         -d "{\"space_name\":\"$SPACE\",\"request_type\":\"create\",\"records\":[{\"resource_type\":\"folder\",\"subpath\":\"/\",\"shortname\":\"$FOLDER\",\"attributes\":{\"is_active\":true,\"tags\":[\"one\",\"two\"]}}]}" \
         "$API_URL/managed/request")
-    expect_success "Create folder ($FOLDER):" "$RESP"
+    # /schema may already exist (auto-created by resource_folders_creation plugin)
+    if [[ "$FOLDER" == "schema" ]] && echo "$RESP" | jq -e '.status == "failed"' > /dev/null 2>&1; then
+        printf '%-45s' "Create folder ($FOLDER):" >&2; ok "(already exists)"
+    else
+        expect_success "Create folder ($FOLDER):" "$RESP"
+    fi
 done
 
 # ============================================================================

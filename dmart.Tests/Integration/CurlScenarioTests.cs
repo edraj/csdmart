@@ -64,6 +64,26 @@ public class CurlScenarioTests : IClassFixture<DmartFactory>
         using (var doc = JsonDocument.Parse(headerJson))
             doc.RootElement.GetProperty("alg").GetString().ShouldBe("HS256");
 
+        // 2b. JWT payload contains Python-compatible data + standard claims.
+        var payloadSeg = token.Split('.')[1].Replace('-', '+').Replace('_', '/');
+        payloadSeg += new string('=', (4 - payloadSeg.Length % 4) % 4);
+        var payloadJson = Encoding.UTF8.GetString(Convert.FromBase64String(payloadSeg));
+        using (var pdoc = JsonDocument.Parse(payloadJson))
+        {
+            var p = pdoc.RootElement;
+            // Standard claims
+            p.GetProperty("sub").GetString().ShouldBe(_factory.AdminShortname);
+            p.TryGetProperty("exp", out _).ShouldBeTrue();
+            p.TryGetProperty("iss", out _).ShouldBeTrue();
+            p.TryGetProperty("aud", out _).ShouldBeTrue();
+            // Python-compatible claims
+            p.TryGetProperty("data", out var data).ShouldBeTrue("JWT missing data object");
+            data.GetProperty("shortname").GetString().ShouldBe(_factory.AdminShortname);
+            data.TryGetProperty("type", out _).ShouldBeTrue("JWT data missing type");
+            p.TryGetProperty("expires", out var expires).ShouldBeTrue("JWT missing expires");
+            expires.GetInt64().ShouldBe(p.GetProperty("exp").GetInt64());
+        }
+
         // ---------------------------------------------------------------------
         // 3. Profile
         // ---------------------------------------------------------------------
@@ -100,7 +120,10 @@ public class CurlScenarioTests : IClassFixture<DmartFactory>
                 "{\"space_name\":\"itest_scenario\",\"request_type\":\"create\",\"records\":[" +
                 "{\"resource_type\":\"folder\",\"subpath\":\"/\",\"shortname\":\"" + folder +
                 "\",\"attributes\":{\"is_active\":true,\"tags\":[\"one\",\"two\"]}}]}";
-            (await PostJsonAsResponse(client, "/managed/request", body)).Status.ShouldBe(Status.Success);
+            var fResp = await PostJsonAsResponse(client, "/managed/request", body);
+            // /schema may already exist (auto-created by resource_folders_creation plugin)
+            if (folder == "schema" && fResp.Status == Status.Failed) continue;
+            fResp.Status.ShouldBe(Status.Success, $"create folder {folder}");
         }
 
         // ---------------------------------------------------------------------
