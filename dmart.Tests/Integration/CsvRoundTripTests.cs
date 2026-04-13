@@ -42,10 +42,12 @@ public class CsvRoundTripTests : IClassFixture<DmartFactory>
             "\",\"password\":\"" + _factory.AdminPassword + "\"}";
         var loginResp = await client.PostAsync("/user/login",
             new StringContent(loginJson, Encoding.UTF8, "application/json"));
-        var loginBody = await loginResp.Content.ReadFromJsonAsync(DmartJsonContext.Default.Response);
-        loginBody.ShouldNotBeNull();
-        loginBody!.Status.ShouldBe(Status.Success);
-        var token = loginBody.Records![0].Attributes!["access_token"].ToString()!;
+        var loginRaw = await loginResp.Content.ReadAsStringAsync();
+        var loginBody = JsonSerializer.Deserialize(loginRaw, DmartJsonContext.Default.Response);
+        loginBody.ShouldNotBeNull($"Login deserialization failed: {loginRaw}");
+        loginBody!.Status.ShouldBe(Status.Success, $"Login failed: {loginRaw}");
+        var token = loginBody.Records?.FirstOrDefault()?.Attributes?["access_token"]?.ToString()
+            ?? throw new InvalidOperationException($"Login failed for '{_factory.AdminShortname}': {loginResp.StatusCode} {loginRaw}");
         client.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Bearer", token);
 
         try

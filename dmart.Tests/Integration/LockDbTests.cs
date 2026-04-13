@@ -1,6 +1,7 @@
 using System.Net;
 using System.Net.Http.Headers;
 using System.Net.Http.Json;
+using System.Text.Json;
 using Dmart.Models.Api;
 using Dmart.Models.Enums;
 using Dmart.Models.Json;
@@ -45,7 +46,9 @@ public class LockDbTests : IClassFixture<DmartFactory>
     {
         var login = new UserLoginRequest(_factory.AdminShortname, null, null, _factory.AdminPassword, null);
         var resp = await client.PostAsJsonAsync("/user/login", login, DmartJsonContext.Default.UserLoginRequest);
-        var body = await resp.Content.ReadFromJsonAsync(DmartJsonContext.Default.Response);
-        return body!.Records![0].Attributes!["access_token"]!.ToString()!;
+        var raw = await resp.Content.ReadAsStringAsync();
+        var body = JsonSerializer.Deserialize(raw, DmartJsonContext.Default.Response);
+        return body?.Records?.FirstOrDefault()?.Attributes?["access_token"]?.ToString()
+            ?? throw new InvalidOperationException($"Login failed for '{_factory.AdminShortname}': {resp.StatusCode} {raw}");
     }
 }

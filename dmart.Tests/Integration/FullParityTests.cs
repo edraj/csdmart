@@ -27,8 +27,10 @@ public class FullParityTests : IClassFixture<DmartFactory>
         var client = _factory.CreateClient();
         var login = new UserLoginRequest(_factory.AdminShortname, null, null, _factory.AdminPassword, null);
         var resp = await client.PostAsJsonAsync("/user/login", login, DmartJsonContext.Default.UserLoginRequest);
-        var body = await resp.Content.ReadFromJsonAsync(DmartJsonContext.Default.Response);
-        var token = body!.Records![0].Attributes!["access_token"]!.ToString()!;
+        var raw = await resp.Content.ReadAsStringAsync();
+        var body = JsonSerializer.Deserialize(raw, DmartJsonContext.Default.Response);
+        var token = body?.Records?.FirstOrDefault()?.Attributes?["access_token"]?.ToString()
+            ?? throw new InvalidOperationException($"Login failed for '{_factory.AdminShortname}': {resp.StatusCode} {raw}");
         client.DefaultRequestHeaders.Authorization = new System.Net.Http.Headers.AuthenticationHeaderValue("Bearer", token);
         return (client, token);
     }
