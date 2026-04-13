@@ -72,7 +72,7 @@ public static class WebSocketHandler
 
             // Send connection success (matches Python's connection_response).
             await mgr.SendMessageAsync(userShortname,
-                JsonSerializer.Serialize(new { type = "connection_response", message = new { status = "success" } }));
+                "{\"type\":\"connection_response\",\"message\":{\"status\":\"success\"}}");
 
             // Read loop — handle subscribe/unsubscribe messages.
             var buffer = new byte[4096];
@@ -127,19 +127,19 @@ public static class WebSocketHandler
         app.MapPost("/send-message/{user_shortname}", async (
             string user_shortname, HttpRequest req, WsConnectionManager mgr) =>
         {
-            var body = await JsonSerializer.DeserializeAsync<JsonElement>(req.Body);
+            var body = await JsonSerializer.DeserializeAsync(req.Body, DmartJsonContext.Default.JsonElement);
             var msgType = body.TryGetProperty("type", out var t) ? t.GetString() ?? "" : "";
             var message = body.TryGetProperty("message", out var m) ? m.GetRawText() : "{}";
             var formatted = $"{{\"type\":\"{msgType}\",\"message\":{message}}}";
             var sent = await mgr.SendMessageAsync(user_shortname, formatted);
-            return Results.Json(new { status = "success", message_sent = sent });
+            return Results.Text($"{{\"status\":\"success\",\"message_sent\":{sent.ToString().ToLower()}}}", "application/json");
         });
 
         // POST /broadcast-to-channels — broadcast to subscribed clients.
         // Used by realtime_updates_notifier plugin after CRUD events.
         app.MapPost("/broadcast-to-channels", async (HttpRequest req, WsConnectionManager mgr) =>
         {
-            var body = await JsonSerializer.DeserializeAsync<JsonElement>(req.Body);
+            var body = await JsonSerializer.DeserializeAsync(req.Body, DmartJsonContext.Default.JsonElement);
             var msgType = body.TryGetProperty("type", out var t) ? t.GetString() ?? "" : "";
             var message = body.TryGetProperty("message", out var m) ? m.GetRawText() : "{}";
             var formatted = $"{{\"type\":\"{msgType}\",\"message\":{message}}}";
@@ -154,23 +154,17 @@ public static class WebSocketHandler
                         sent |= await mgr.BroadcastToChannelAsync(channelName, formatted);
                 }
             }
-            return Results.Json(new { status = "success", message_sent = sent });
+            return Results.Text($"{{\"status\":\"success\",\"message_sent\":{sent.ToString().ToLower()}}}", "application/json");
         });
 
         // GET /ws-info — list connected clients + channels (admin debugging).
         app.MapGet("/ws-info", (WsConnectionManager mgr) =>
         {
-            return Results.Json(new
-            {
-                status = "success",
-                data = new
-                {
-                    connected_clients = mgr.ConnectionCount,
-                    channels = mgr.Channels.ToDictionary(
-                        kv => kv.Key,
-                        kv => kv.Value.ToArray()),
-                },
-            });
+            var channelsJson = string.Join(",", mgr.Channels.Select(kv =>
+                $"\"{kv.Key}\":[{string.Join(",", kv.Value.Select(u => $"\"{u}\""))}]"));
+            return Results.Text(
+                $"{{\"status\":\"success\",\"data\":{{\"connected_clients\":{mgr.ConnectionCount},\"channels\":{{{channelsJson}}}}}}}",
+                "application/json");
         });
     }
 }
