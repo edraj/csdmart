@@ -322,6 +322,14 @@ public static class SqlSchema
     );
 
     -- ============================================================
+    -- USERPERMISSIONSCACHE  (resolved permissions per user)
+    -- ============================================================
+    CREATE TABLE IF NOT EXISTS userpermissionscache (
+        user_shortname VARCHAR(64) PRIMARY KEY,
+        permissions    JSONB
+    );
+
+    -- ============================================================
     -- COUNT_HISTORY  (analytics — populated by both dmart Python and dmart C#)
     -- ============================================================
     CREATE TABLE IF NOT EXISTS count_history (
