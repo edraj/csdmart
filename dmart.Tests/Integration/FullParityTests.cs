@@ -197,7 +197,7 @@ public class FullParityTests : IClassFixture<DmartFactory>
         var svc = _factory.Services.GetRequiredService<QueryService>();
         var resp = await svc.ExecuteAsync(new Query
         {
-            Type = QueryType.Tags, SpaceName = "applications", Subpath = "/", Limit = 50,
+            Type = QueryType.Tags, SpaceName = "management", Subpath = "/", Limit = 50,
         }, _factory.AdminShortname);
         resp.Status.ShouldBe(Status.Success);
         // Tags query returns a single record with tags + tag_counts in attributes.
@@ -216,7 +216,7 @@ public class FullParityTests : IClassFixture<DmartFactory>
         var svc = _factory.Services.GetRequiredService<QueryService>();
         var resp = await svc.ExecuteAsync(new Query
         {
-            Type = QueryType.Counters, SpaceName = "applications", Subpath = "/", Limit = 10,
+            Type = QueryType.Counters, SpaceName = "management", Subpath = "/", Limit = 10,
         }, _factory.AdminShortname);
         resp.Status.ShouldBe(Status.Success);
         resp.Records.ShouldNotBeNull();

@@ -69,7 +69,7 @@ public class SecurityAndRobustnessTests : IClassFixture<DmartFactory>
         var resp = await svc.ExecuteAsync(new Query
         {
             Type = Dmart.Models.Enums.QueryType.Subpath,
-            SpaceName = "applications",
+            SpaceName = "management",
             Subpath = "/",
             Limit = 999999,
         }, _factory.AdminShortname);

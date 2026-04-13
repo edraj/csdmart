@@ -66,14 +66,14 @@ public class QueryResponseShapeTests : IClassFixture<DmartFactory>
         var query = Resolve();
 
         // Ask for a limit of 1 against a subpath we know has multiple rows
-        // (applications/api — live DB has 17 rows there per the head-to-head
+        // (management/ — always has entries there per the head-to-head
         // run). If `total` is the page count instead of the true count, this
         // assertion fails and flags the regression.
         var resp = await query.ExecuteAsync(new Query
         {
             Type = QueryType.Subpath,
-            SpaceName = "applications",
-            Subpath = "api",
+            SpaceName = "management",
+            Subpath = "/",
             Limit = 1,
         }, _factory.AdminShortname);
 
@@ -153,8 +153,8 @@ public class QueryResponseShapeTests : IClassFixture<DmartFactory>
         var resp = await query.ExecuteAsync(new Query
         {
             Type = QueryType.Subpath,
-            SpaceName = "applications",
-            Subpath = "api",
+            SpaceName = "management",
+            Subpath = "/",
             Limit = 1,
         }, _factory.AdminShortname);
 
@@ -189,8 +189,8 @@ public class QueryResponseShapeTests : IClassFixture<DmartFactory>
         var resp = await query.ExecuteAsync(new Query
         {
             Type = QueryType.Subpath,
-            SpaceName = "applications",
-            Subpath = "api",
+            SpaceName = "management",
+            Subpath = "/",
             Limit = 1,
             // RetrieveTotal left as null
         }, _factory.AdminShortname);
@@ -209,8 +209,8 @@ public class QueryResponseShapeTests : IClassFixture<DmartFactory>
         var resp = await query.ExecuteAsync(new Query
         {
             Type = QueryType.Subpath,
-            SpaceName = "applications",
-            Subpath = "api",
+            SpaceName = "management",
+            Subpath = "/",
             Limit = 1,
             RetrieveTotal = false,
         }, _factory.AdminShortname);
