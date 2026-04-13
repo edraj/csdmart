@@ -1,25 +1,21 @@
-using System.Net.Http.Json;
 using System.Text.Json;
-using Dmart.Config;
 using Dmart.DataAdapters.Sql;
 using Dmart.Models.Core;
-using Dmart.Models.Json;
-using Microsoft.Extensions.Options;
+using Dmart.Services;
 
 namespace Dmart.Plugins.BuiltIn;
 
 // Port of dmart/backend/plugins/realtime_updates_notifier/plugin.py.
 //
 // For every matching event, compute the set of channels the event belongs to
-// (walking subpath prefixes and crossing action/state/schema_shortname against
-// __ALL__) and POST them to {WebsocketUrl}/broadcast-to-channels.
+// (walking subpath prefixes × action/state/schema_shortname × __ALL__) and
+// broadcast directly to connected WebSocket clients via WsConnectionManager.
 //
-// If WebsocketUrl is not configured, the plugin is a no-op — matching Python's
-// `if not settings.websocket_url: return`. This lets the config.json stay
-// active without forcing every deployment to run a websocket bridge.
+// In Python, this was an HTTP POST to a separate websocket process. In C# the
+// WebSocket server runs in the same process, so we call the manager directly —
+// no HTTP round-trip, no WebsocketUrl config needed.
 public sealed class RealtimeUpdatesNotifierPlugin(
-    IOptions<DmartSettings> settings,
-    IHttpClientFactory? clients,
+    WsConnectionManager wsMgr,
     ILogger<RealtimeUpdatesNotifierPlugin> log) : IHookPlugin
 {
     private const string AllMkw = "__ALL__";
@@ -28,17 +24,12 @@ public sealed class RealtimeUpdatesNotifierPlugin(
 
     public async Task HookAsync(Event e, CancellationToken ct = default)
     {
-        var websocketUrl = settings.Value.WebsocketUrl;
-        if (string.IsNullOrEmpty(websocketUrl)) return;
-        if (clients is null) return;
-
         var state = e.Attributes.TryGetValue("state", out var s) ? s?.ToString() ?? AllMkw : AllMkw;
         var actionStr = JsonbHelpers.EnumMember(e.ActionType);
         var channels = new HashSet<string>(StringComparer.Ordinal);
 
         // Walk subpath prefixes: "a/b/c" → "/a", "/a/b", "/a/b/c". For each
-        // prefix we add the 4 __ALL__ / schema / action / state combinations
-        // Python builds.
+        // prefix we add the 4 __ALL__ / schema / action / state combinations.
         var buffer = "";
         foreach (var part in e.Subpath.Split('/', StringSplitOptions.RemoveEmptyEntries))
         {
@@ -61,45 +52,28 @@ public sealed class RealtimeUpdatesNotifierPlugin(
             buffer += "/";
         }
 
-        var payload = new RealtimeBroadcastBody(
-            Type: "notification_subscription",
-            Channels: channels.ToList(),
-            Message: new RealtimeMessageBody(
-                Title: "updated",
-                Subpath: e.Subpath,
-                Space: e.SpaceName,
-                Shortname: e.Shortname,
-                ActionType: actionStr,
-                OwnerShortname: e.UserShortname));
+        // Broadcast directly to connected WebSocket clients — no HTTP round-trip.
+        var message = JsonSerializer.Serialize(new
+        {
+            type = "notification_subscription",
+            message = new
+            {
+                title = "updated",
+                subpath = e.Subpath,
+                space = e.SpaceName,
+                shortname = e.Shortname,
+                action_type = actionStr,
+                owner_shortname = e.UserShortname,
+            },
+        });
 
-        try
+        foreach (var channel in channels)
         {
-            var http = clients.CreateClient("realtime_updates");
-            var url = $"{websocketUrl.TrimEnd('/')}/broadcast-to-channels";
-            using var body = new StringContent(
-                JsonSerializer.Serialize(payload, DmartJsonContext.Default.RealtimeBroadcastBody),
-                System.Text.Encoding.UTF8,
-                "application/json");
-            using var resp = await http.PostAsync(url, body, ct);
-        }
-        catch (Exception ex)
-        {
-            log.LogWarning(ex, "realtime_updates_notifier: POST failed");
+            try { await wsMgr.BroadcastToChannelAsync(channel, message); }
+            catch (Exception ex)
+            {
+                log.LogWarning(ex, "realtime_updates_notifier: broadcast to {Channel} failed", channel);
+            }
         }
     }
 }
-
-// Serialized wire form for the broadcast POST body. Snake_case is handled by
-// DmartJsonContext's top-level naming policy.
-public sealed record RealtimeBroadcastBody(
-    string Type,
-    List<string> Channels,
-    RealtimeMessageBody Message);
-
-public sealed record RealtimeMessageBody(
-    string Title,
-    string Subpath,
-    string Space,
-    string? Shortname,
-    string ActionType,
-    string OwnerShortname);
