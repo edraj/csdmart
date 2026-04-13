@@ -15,9 +15,15 @@
 
 set -u
 
-API_URL="${DMART_URL:-http://127.0.0.1:5099}"
-ADMIN_SHORTNAME="${DMART_ADMIN:-cstest}"
-ADMIN_PASSWORD="${DMART_PWD:-cstest-password-123}"
+# Read defaults from config.env if present (same file the server uses).
+_read_config() { grep -m1 "^$1" config.env 2>/dev/null | sed 's/^[^=]*=//' | tr -d '"' | tr -d "'" || true; }
+
+API_URL="${DMART_URL:-http://127.0.0.1:$(_read_config LISTENING_PORT)}"
+API_URL="${API_URL:-http://127.0.0.1:5099}"
+ADMIN_SHORTNAME="${DMART_ADMIN:-$(_read_config ADMIN_SHORTNAME)}"
+ADMIN_SHORTNAME="${ADMIN_SHORTNAME:-cstest}"
+ADMIN_PASSWORD="${DMART_PWD:-$(_read_config ADMIN_PASSWORD)}"
+ADMIN_PASSWORD="${ADMIN_PASSWORD:-cstest-password-123}"
 SPACE="${DMART_TEST_SPACE:-dummy}"
 SHORTNAME="97326c47"
 SUBPATH="posts"
