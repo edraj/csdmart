@@ -41,22 +41,29 @@ public sealed class DmartFactory : WebApplicationFactory<Program>
     public static string? PgConn => _pgConn;
     public static bool HasPg => !string.IsNullOrEmpty(PgConn);
 
+    // Cache config.env values in static fields so they are resolved ONCE,
+    // before ConfigureWebHost poisons BACKEND_ENV with /dev/null.
+    private static readonly Dictionary<string, string> _configEnvCache = LoadConfigEnv();
+
     public string AdminShortname { get; } =
         Environment.GetEnvironmentVariable("DMART_TEST_ADMIN")
-        ?? ReadFromConfigEnv("ADMIN_SHORTNAME")
+        ?? _configEnvCache.GetValueOrDefault("ADMIN_SHORTNAME")
         ?? "testadmin";
 
     public string AdminPassword { get; } =
         Environment.GetEnvironmentVariable("DMART_TEST_PWD")
-        ?? ReadFromConfigEnv("ADMIN_PASSWORD")
+        ?? _configEnvCache.GetValueOrDefault("ADMIN_PASSWORD")
         ?? "testpassword12345";
+
+    private static Dictionary<string, string> LoadConfigEnv()
+    {
+        var configFile = DotEnv.FindConfigFile();
+        return configFile is not null ? DotEnv.Parse(configFile) : new();
+    }
 
     private static string? ReadFromConfigEnv(string key)
     {
-        var configFile = DotEnv.FindConfigFile();
-        if (configFile is null) return null;
-        var raw = DotEnv.Parse(configFile);
-        return raw.GetValueOrDefault(key);
+        return _configEnvCache.GetValueOrDefault(key);
     }
 
     protected override void ConfigureWebHost(IWebHostBuilder builder)
