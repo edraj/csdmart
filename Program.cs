@@ -173,7 +173,16 @@ switch (subcommand)
         cmd.Parameters.Add(new() { Value = hashed });
         cmd.Parameters.Add(new() { Value = username });
         var rows = await cmd.ExecuteNonQueryAsync();
-        Console.WriteLine(rows > 0 ? $"Password updated for {username}" : $"User {username} not found");
+        if (rows > 0)
+        {
+            Console.WriteLine($"Password updated for {username}");
+            // Update ~/.dmart/cli.ini so dmart-cli picks up the new password
+            UpdateCliIni(username, password, s);
+        }
+        else
+        {
+            Console.WriteLine($"User {username} not found");
+        }
         return;
     }
 
@@ -289,24 +298,83 @@ switch (subcommand)
 
     case "init":
     {
-        // Initialize ~/.dmart directory with sample config
+        // Initialize ~/.dmart directory with all config files
         var dmartHome = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.UserProfile), ".dmart");
         Directory.CreateDirectory(dmartHome);
-        var sampleConfig = Path.Combine(AppContext.BaseDirectory, "config.env.sample");
-        var targetConfig = Path.Combine(dmartHome, "config.env");
-        if (File.Exists(sampleConfig) && !File.Exists(targetConfig))
+        Console.WriteLine($"Initialized {dmartHome}/");
+
+        // 1. config.env — dmart server configuration
+        var configEnvPath = Path.Combine(dmartHome, "config.env");
+        if (!File.Exists(configEnvPath))
         {
-            File.Copy(sampleConfig, targetConfig);
-            Console.WriteLine($"Created {targetConfig} from sample");
-        }
-        else if (File.Exists(targetConfig))
-        {
-            Console.WriteLine($"{targetConfig} already exists");
+            var sampleConfig = Path.Combine(AppContext.BaseDirectory, "config.env.sample");
+            if (File.Exists(sampleConfig))
+                File.Copy(sampleConfig, configEnvPath);
+            else
+                File.WriteAllText(configEnvPath, """
+                    # dmart server configuration
+                    # See config.env.sample for all available settings
+                    APP_NAME="dmart"
+                    APP_URL="http://127.0.0.1:5099"
+                    LISTENING_HOST="0.0.0.0"
+                    LISTENING_PORT=5099
+                    DATABASE_HOST="localhost"
+                    DATABASE_PORT=5432
+                    DATABASE_USERNAME="dmart"
+                    DATABASE_PASSWORD="somepassword"
+                    DATABASE_NAME="dmart"
+                    JWT_SECRET="change-me-change-me-change-me-32b-minimum-length"
+                    ADMIN_SHORTNAME="dmart"
+                    ADMIN_PASSWORD="change-me-on-first-login"
+
+                    """.Replace("                    ", ""));
+            Console.WriteLine($"  Created {configEnvPath}");
         }
         else
+            Console.WriteLine($"  {configEnvPath} already exists");
+
+        // 2. config.json — CXB frontend configuration
+        var configJsonPath = Path.Combine(dmartHome, "config.json");
+        if (!File.Exists(configJsonPath))
         {
-            Console.WriteLine($"Initialized {dmartHome}/ (no sample config found to copy)");
+            File.WriteAllText(configJsonPath, """
+                {
+                  "title": "DMART Unified Data Platform",
+                  "footer": "dmart.cc unified data platform",
+                  "short_name": "dmart",
+                  "display_name": "dmart",
+                  "description": "dmart unified data platform",
+                  "default_language": "en",
+                  "languages": { "ar": "العربية", "en": "English" },
+                  "backend": "http://localhost:5099",
+                  "websocket": "ws://localhost:5099/ws"
+                }
+
+                """.Replace("                ", ""));
+            Console.WriteLine($"  Created {configJsonPath}");
         }
+        else
+            Console.WriteLine($"  {configJsonPath} already exists");
+
+        // 3. cli.ini — dmart-cli configuration
+        var cliIniPath = Path.Combine(dmartHome, "cli.ini");
+        if (!File.Exists(cliIniPath))
+        {
+            File.WriteAllText(cliIniPath, """
+                # dmart-cli configuration
+                url=http://localhost:5099
+                shortname=dmart
+                password=dmart
+                default_space=management
+                query_limit=50
+                pagination=50
+
+                """.Replace("                ", ""));
+            Console.WriteLine($"  Created {cliIniPath}");
+        }
+        else
+            Console.WriteLine($"  {cliIniPath} already exists");
+
         return;
     }
 
@@ -537,4 +605,43 @@ app.MapWebSocket();
 app.Run();
 
 // Exposed so dmart.Tests can use WebApplicationFactory<Program>.
-public partial class Program;
+public partial class Program
+{
+    // Updates ~/.dmart/cli.ini with the new password (and url/shortname)
+    // so dmart-cli picks up the credentials after set_password.
+    static void UpdateCliIni(string shortname, string password, DmartSettings s)
+    {
+        var dmartHome = Path.Combine(
+            Environment.GetFolderPath(Environment.SpecialFolder.UserProfile), ".dmart");
+        Directory.CreateDirectory(dmartHome);
+        var cliIniPath = Path.Combine(dmartHome, "cli.ini");
+
+        // Read existing values or start fresh
+        var values = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+        if (File.Exists(cliIniPath))
+        {
+            foreach (var line in File.ReadAllLines(cliIniPath))
+            {
+                var t = line.Trim();
+                if (t.Length == 0 || t.StartsWith('#')) continue;
+                var eq = t.IndexOf('=');
+                if (eq <= 0) continue;
+                values[t[..eq].Trim()] = t[(eq + 1)..].Trim().Trim('"').Trim('\'');
+            }
+        }
+
+        // Update credentials
+        values["shortname"] = shortname;
+        values["password"] = password;
+        // Ensure url is set (use the server's own address)
+        if (!values.ContainsKey("url"))
+            values["url"] = $"http://{s.ListeningHost}:{s.ListeningPort}";
+
+        // Write back
+        var lines = new List<string> { "# dmart-cli configuration (updated by dmart set_password)" };
+        foreach (var (k, v) in values)
+            lines.Add($"{k}={v}");
+        File.WriteAllLines(cliIniPath, lines);
+        Console.WriteLine($"Updated {cliIniPath} with credentials for {shortname}");
+    }
+}

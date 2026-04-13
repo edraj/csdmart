@@ -41,3 +41,6 @@ config.env
 dmart
 dmart (2)/
 *.tar.gz
+
+# RPM build output
+dist/out/

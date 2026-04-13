@@ -17,6 +17,9 @@
     <Compile Remove="dmart.Tests/**" />
     <Content Remove="dmart.Tests/**" />
     <None Remove="dmart.Tests/**" />
+    <Compile Remove="dmart.Cli/**" />
+    <Content Remove="dmart.Cli/**" />
+    <None Remove="dmart.Cli/**" />
   </ItemGroup>
 
   <ItemGroup>

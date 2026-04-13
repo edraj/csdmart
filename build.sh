@@ -20,20 +20,36 @@ echo "Generated info.json: $(cat info.json)"
 
 # rm -rf bin obj
 
-dotnet publish dmart.csproj -r linux-x64 \
+RID="linux-x64"
+
+# AOT publish the server
+dotnet publish dmart.csproj -r "$RID" \
   -p:PublishAot=true \
   -p:StripSymbols=true \
   -c Release
 
+# Publish the CLI tool
+dotnet publish dmart.Cli/dmart.Cli.csproj -r "$RID" -c Release
+
 # Clean up dev-only files from publish output
-PUBLISH_DIR="bin/Release/net10.0/linux-x64/publish"
+PUBLISH_DIR="bin/Release/net10.0/${RID}/publish"
 rm -f "$PUBLISH_DIR"/*.dbg "$PUBLISH_DIR"/*.pdb \
       "$PUBLISH_DIR"/*.Development.json \
       "$PUBLISH_DIR"/*.staticwebassets* \
       "$PUBLISH_DIR"/*.deps.json \
       info.json
 
+# Copy binaries to top-level bin/ for easy access
+mkdir -p bin
+cp "$PUBLISH_DIR/dmart" bin/
+cp "dmart.Cli/bin/Release/net10.0/${RID}/publish/dmart-cli" bin/ 2>/dev/null \
+  || cp "dmart.Cli/bin/Release/net10.0/dmart-cli" bin/ 2>/dev/null \
+  || echo "Warning: dmart-cli binary not found"
+
 echo ""
 echo "Published to $PUBLISH_DIR/"
 ls -lh "$PUBLISH_DIR/dmart"
 du -sh "$PUBLISH_DIR/"
+echo ""
+echo "Binaries copied to bin/:"
+ls -lh bin/dmart bin/dmart-cli 2>/dev/null
