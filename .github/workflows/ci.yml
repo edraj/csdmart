@@ -39,15 +39,17 @@ jobs:
         run: |
           PUBLISH_DIR="bin/Release/net10.0/linux-x64/publish"
           cp config.env "$PUBLISH_DIR/"
-          cd "$PUBLISH_DIR" && ./dmart serve &
+          # Read the port from config.env (fallback to 5099)
+          DMART_PORT=$(grep -m1 '^LISTENING_PORT' config.env | sed 's/.*=//' | tr -d '"' || echo 5099)
+          # Start server from the publish directory
+          (cd "$PUBLISH_DIR" && ./dmart serve) &
           SERVER_PID=$!
-          cd -
           sleep 3
           for i in $(seq 1 15); do
-            curl -sf http://127.0.0.1:5099/ >/dev/null 2>&1 && break
+            curl -sf "http://127.0.0.1:${DMART_PORT}/" >/dev/null 2>&1 && break
             sleep 1
           done
-          ./curl.sh
+          DMART_URL="http://127.0.0.1:${DMART_PORT}" ./curl.sh
           CURL_RC=$?
           kill $SERVER_PID 2>/dev/null || true
           wait $SERVER_PID 2>/dev/null || true
