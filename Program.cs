@@ -325,6 +325,22 @@ switch (subcommand)
 
 var builder = WebApplication.CreateSlimBuilder(serverArgs);
 
+// Structured JSON logging — mirrors Python's pythonjsonlogger .ljson output.
+// Configured via LOG_FORMAT=json in config.env (default: text for dev).
+{
+    var logFormat = builder.Configuration.GetSection("Dmart")["LogFormat"]
+                ?? dotenvValues.GetValueOrDefault("Dmart:LogFormat");
+    if (string.Equals(logFormat, "json", StringComparison.OrdinalIgnoreCase))
+    {
+        builder.Logging.AddJsonConsole(o =>
+        {
+            o.JsonWriterOptions = new System.Text.Json.JsonWriterOptions { Indented = false };
+            o.TimestampFormat = "yyyy-MM-ddTHH:mm:ss.fffZ";
+            o.UseUtcTimestamp = true;
+        });
+    }
+}
+
 builder.Services.ConfigureHttpJsonOptions(o =>
 {
     o.SerializerOptions.TypeInfoResolver = DmartJsonContext.Default;
@@ -466,6 +482,11 @@ app.UseCxb();
 
 app.UseAuthentication();
 app.UseAuthorization();
+
+// Structured per-request logging (after auth so ctx.User is populated).
+// Mirrors Python's set_logging() — logs method, path, status, duration, user.
+// Output is JSON when LOG_FORMAT=json in config.env.
+app.UseRequestLogging();
 
 app.MapGet("/", () => "dmart-csharp");
 

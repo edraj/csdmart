@@ -84,6 +84,14 @@ public sealed class DmartSettings
     public bool LogoutOnPwdChange { get; set; } = true;
     public int RequestTimeout { get; set; } = 35;
 
+    // Logging format: "text" (default console) or "json" (structured JSON lines).
+    // Python uses pythonjsonlogger → .ljson.log files. Set to "json" for
+    // production deployments where logs are consumed by ELK/Loki/CloudWatch.
+    public string LogFormat { get; set; } = "text";
+    // Optional log file path. Empty = stdout only (container-friendly).
+    // Python default: "../logs/dmart.ljson.log"
+    public string LogFile { get; set; } = "";
+
     // CSV list of "space.schema" pairs allowed for public /submit endpoints.
     // Empty means allow all. Python: allowed_submit_models.
     public string AllowedSubmitModels { get; set; } = "";
