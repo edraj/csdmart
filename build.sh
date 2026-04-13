@@ -18,7 +18,6 @@ cat > info.json << EOF
 EOF
 echo "Generated info.json: $(cat info.json)"
 
-dotnet clean dmart.csproj -q 2>/dev/null || true
 rm -rf bin obj
 
 dotnet publish dmart.csproj -r linux-x64 \
