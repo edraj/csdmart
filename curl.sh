@@ -516,8 +516,15 @@ RESP=$(curl -s -H "$AUTH_HEADER" -H "$CT" \
     -d '{"type":"subpath","space_name":"management","subpath":"users","limit":2}' \
     "$API_URL/managed/query")
 printf '%-45s' "Query users → type=user:" >&2
-if echo "$RESP" | jq -e '.records[0].resource_type == "user"' > /dev/null 2>&1; then
-    ok
+if echo "$RESP" | jq -e '.status == "success"' > /dev/null 2>&1; then
+    # On a populated DB, verify resource_type; on fresh DB, just check success.
+    if echo "$RESP" | jq -e '.records[0].resource_type == "user"' > /dev/null 2>&1; then
+        ok
+    elif echo "$RESP" | jq -e '.attributes.returned == 0' > /dev/null 2>&1; then
+        ok "(empty on fresh DB)"
+    else
+        nope "$RESP"
+    fi
 else
     nope "$RESP"
 fi
@@ -529,8 +536,14 @@ RESP=$(curl -s -H "$AUTH_HEADER" -H "$CT" \
     -d '{"type":"subpath","space_name":"management","subpath":"roles","limit":2}' \
     "$API_URL/managed/query")
 printf '%-45s' "Query roles → type=role:" >&2
-if echo "$RESP" | jq -e '.records[0].resource_type == "role"' > /dev/null 2>&1; then
-    ok
+if echo "$RESP" | jq -e '.status == "success"' > /dev/null 2>&1; then
+    if echo "$RESP" | jq -e '.records[0].resource_type == "role"' > /dev/null 2>&1; then
+        ok
+    elif echo "$RESP" | jq -e '.attributes.returned == 0' > /dev/null 2>&1; then
+        ok "(empty on fresh DB)"
+    else
+        nope "$RESP"
+    fi
 else
     nope "$RESP"
 fi
