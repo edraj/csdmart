@@ -28,8 +28,10 @@ dotnet publish dmart.csproj -r "$RID" \
   -p:StripSymbols=true \
   -c Release
 
-# Publish the CLI tool
-dotnet publish dmart.Cli/dmart.Cli.csproj -r "$RID" -c Release
+# Publish the CLI tool as AOT native binary
+dotnet publish dmart.Cli/dmart.Cli.csproj -r "$RID" -c Release \
+  -p:PublishAot=true \
+  -p:StripSymbols=true
 
 # Clean up dev-only files from publish output
 PUBLISH_DIR="bin/Release/net10.0/${RID}/publish"

@@ -1,0 +1,99 @@
+%define _binaries_in_noarch_packages_terminate_build 0
+%define debug_package %{nil}
+
+Name:           dmart
+Version:        %{?version}%{!?version:0.1.0}
+Release:        1%{?dist}
+Summary:        dmart — Unified Data Platform (REST API server + CLI)
+License:        AGPL-3.0
+URL:            https://github.com/edraj/csdmart
+Source0:        %{name}-%{version}.tar.gz
+
+# No auto-dependency detection — the AOT binary is self-contained
+AutoReqProv:    no
+
+Requires:       postgresql-server
+Requires(pre):  shadow-utils
+
+%description
+dmart is a unified data platform providing a REST API backed by PostgreSQL.
+This package includes the native AOT server binary, the CLI client tool,
+built-in plugin configurations, and a systemd service unit.
+
+%prep
+%setup -q
+
+%install
+# Binaries
+install -D -m 0755 dmart       %{buildroot}/usr/bin/dmart
+install -D -m 0755 dmart-cli   %{buildroot}/usr/bin/dmart-cli
+
+# Plugin configs
+for dir in plugins/*/; do
+    name=$(basename "$dir")
+    install -D -m 0644 "$dir/config.json" \
+        "%{buildroot}/usr/lib/dmart/plugins/$name/config.json"
+done
+
+# Config sample
+install -D -m 0644 config.env.sample %{buildroot}/usr/share/dmart/config.env.sample
+
+# Systemd unit
+install -D -m 0644 dmart.service %{buildroot}/usr/lib/systemd/system/dmart.service
+
+# Runtime directories
+install -d -m 0755 %{buildroot}/etc/dmart
+install -d -m 0755 %{buildroot}/var/lib/dmart
+install -d -m 0755 %{buildroot}/var/lib/dmart/spaces
+install -d -m 0755 %{buildroot}/var/lib/dmart/custom_plugins
+
+%pre
+# Create dmart system user if it doesn't exist
+getent group dmart >/dev/null || groupadd -r dmart
+getent passwd dmart >/dev/null || \
+    useradd -r -g dmart -d /var/lib/dmart -s /sbin/nologin \
+    -c "dmart data platform" dmart
+exit 0
+
+%post
+# Install default config.env if missing
+if [ ! -f /etc/dmart/config.env ]; then
+    cp /usr/share/dmart/config.env.sample /etc/dmart/config.env
+    chmod 0640 /etc/dmart/config.env
+    chown root:dmart /etc/dmart/config.env
+    echo "Installed default config: /etc/dmart/config.env"
+    echo "Edit it with your database credentials and JWT secret, then run:"
+    echo "  systemctl enable --now dmart"
+fi
+# Reload systemd
+systemctl daemon-reload >/dev/null 2>&1 || true
+
+%preun
+# Stop service on uninstall (not upgrade)
+if [ "$1" = "0" ]; then
+    systemctl stop dmart >/dev/null 2>&1 || true
+    systemctl disable dmart >/dev/null 2>&1 || true
+fi
+
+%postun
+systemctl daemon-reload >/dev/null 2>&1 || true
+# Remove user only on full uninstall
+if [ "$1" = "0" ]; then
+    userdel dmart >/dev/null 2>&1 || true
+    groupdel dmart >/dev/null 2>&1 || true
+fi
+
+%files
+%attr(0755, root, root) /usr/bin/dmart
+%attr(0755, root, root) /usr/bin/dmart-cli
+/usr/lib/dmart/plugins/
+/usr/share/dmart/config.env.sample
+/usr/lib/systemd/system/dmart.service
+%dir %attr(0750, root, dmart) /etc/dmart
+%dir %attr(0755, dmart, dmart) /var/lib/dmart
+%dir %attr(0755, dmart, dmart) /var/lib/dmart/spaces
+%dir %attr(0755, dmart, dmart) /var/lib/dmart/custom_plugins
+
+%changelog
+* Mon Apr 14 2026 dmart <admin@dmart.cc> - 0.1.0-1
+- Initial RPM package with AOT server binary, CLI client, plugin configs

@@ -396,12 +396,17 @@ switch (subcommand)
 var builder = WebApplication.CreateSlimBuilder(serverArgs);
 
 // All logging config from config.env — no appsettings.json needed.
-// LOG_FORMAT: "text" (default) or "json" (structured JSON lines)
-// LOG_FILE: path to log file (empty = stdout only)
+// LOG_FORMAT: "text" (default, human-readable) or "json" (structured JSON lines)
+//             When running under systemd, "json" is recommended — journald captures
+//             it natively and you can filter with: journalctl -u dmart -o json
+// LOG_FILE: path to log file (empty = stdout only, which goes to journald under systemd)
 // LOG_LEVEL: trace/debug/information/warning/error/critical/none
 {
     var dmartCfg = builder.Configuration.GetSection("Dmart");
-    var logFormat = dmartCfg["LogFormat"] ?? dotenvValues.GetValueOrDefault("Dmart:LogFormat") ?? "text";
+    // Default to "json" under systemd (INVOCATION_ID is set by systemd)
+    var isSystemd = !string.IsNullOrEmpty(Environment.GetEnvironmentVariable("INVOCATION_ID"));
+    var defaultFormat = isSystemd ? "json" : "text";
+    var logFormat = dmartCfg["LogFormat"] ?? dotenvValues.GetValueOrDefault("Dmart:LogFormat") ?? defaultFormat;
     var logFile = dmartCfg["LogFile"] ?? dotenvValues.GetValueOrDefault("Dmart:LogFile") ?? "";
     var logLevelStr = dmartCfg["LogLevel"] ?? dotenvValues.GetValueOrDefault("Dmart:LogLevel") ?? "information";
 

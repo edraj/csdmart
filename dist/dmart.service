@@ -1,0 +1,39 @@
+[Unit]
+Description=dmart - Unified Data Platform
+Documentation=https://github.com/edraj/csdmart
+After=network.target postgresql.service
+Wants=postgresql.service
+
+[Service]
+Type=simple
+User=dmart
+Group=dmart
+WorkingDirectory=/var/lib/dmart
+ExecStart=/usr/bin/dmart serve
+ExecReload=/bin/kill -HUP $MAINPID
+Restart=on-failure
+RestartSec=5
+LimitNOFILE=65536
+
+# config.env lookup: $BACKEND_ENV → ./config.env → ~/.dmart/config.env
+Environment=BACKEND_ENV=/etc/dmart/config.env
+
+# Logging goes to journald automatically (stdout/stderr).
+# dmart auto-detects systemd and uses JSON format for structured logs.
+# View logs:   journalctl -u dmart -f
+# Filter:      journalctl -u dmart --since "1 hour ago" -p err
+# JSON output: journalctl -u dmart -o json-pretty
+# Override log level in /etc/dmart/config.env: LOG_LEVEL=debug
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=dmart
+
+# Hardening
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/var/lib/dmart
+PrivateTmp=true
+
+[Install]
+WantedBy=multi-user.target

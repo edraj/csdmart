@@ -5,6 +5,8 @@ using System.Text.Json;
 namespace Dmart.Cli;
 
 // HTTP client for dmart REST API — mirrors Python cli.py's DMart class.
+// All JSON request bodies are built as literal strings for AOT compatibility
+// (no reflection-based serialization).
 public sealed class DmartClient : IDisposable
 {
     private readonly HttpClient _http;
@@ -31,7 +33,7 @@ public sealed class DmartClient : IDisposable
         HttpResponseMessage resp;
         try
         {
-            var body = JsonContent($"{{\"shortname\":\"{_settings.Shortname}\",\"password\":\"{_settings.Password}\"}}");
+            var body = Json($"{{\"shortname\":\"{Esc(_settings.Shortname)}\",\"password\":\"{Esc(_settings.Password)}\"}}");
             resp = await _http.PostAsync("/user/login", body);
         }
         catch (HttpRequestException ex)
@@ -57,12 +59,12 @@ public sealed class DmartClient : IDisposable
         if (!force && SpaceNames.Count > 0) return SpaceNames;
         try
         {
-            var resp = await PostQueryAsync(new { type = "spaces", space_name = "management", subpath = "/" });
+            var resp = await PostQueryAsync(
+                $"{{\"type\":\"spaces\",\"space_name\":\"management\",\"subpath\":\"/\"}}");
             if (resp.TryGetProperty("records", out var recs))
                 SpaceNames = recs.EnumerateArray().Select(r => r.GetProperty("shortname").GetString()!).ToList();
         }
         catch { /* query failed — use whatever we have */ }
-        // Ensure the current/default space is always in the list
         if (!SpaceNames.Contains(CurrentSpace))
             SpaceNames.Insert(0, CurrentSpace);
         return SpaceNames;
@@ -72,14 +74,9 @@ public sealed class DmartClient : IDisposable
 
     public async Task ListAsync()
     {
-        var resp = await PostQueryAsync(new
-        {
-            space_name = CurrentSpace,
-            type = "subpath",
-            subpath = CurrentSubpath.Replace("//", "/"),
-            retrieve_json_payload = true,
-            limit = 100,
-        });
+        var sub = CurrentSubpath.Replace("//", "/");
+        var resp = await PostQueryAsync(
+            $"{{\"space_name\":\"{Esc(CurrentSpace)}\",\"type\":\"subpath\",\"subpath\":\"{Esc(sub)}\",\"retrieve_json_payload\":true,\"limit\":100}}");
         CurrentEntries.Clear();
         if (resp.TryGetProperty("records", out var recs))
             CurrentEntries = recs.EnumerateArray().ToList();
@@ -87,66 +84,27 @@ public sealed class DmartClient : IDisposable
 
     // ---- CRUD ----
 
-    public async Task<JsonElement> CreateFolderAsync(string shortname)
-    {
-        return await ManagedRequestAsync("create", new
-        {
-            resource_type = "folder",
-            subpath = CurrentSubpath,
-            shortname,
-            attributes = new { is_active = true },
-        });
-    }
+    public Task<JsonElement> CreateFolderAsync(string shortname)
+        => ManagedRequestAsync("create", RecordJson("folder", CurrentSubpath, shortname, "\"is_active\":true"));
 
-    public async Task<JsonElement> CreateEntryAsync(string shortname, string resourceType)
-    {
-        return await ManagedRequestAsync("create", new
-        {
-            resource_type = resourceType,
-            subpath = CurrentSubpath,
-            shortname,
-            attributes = new { is_active = true },
-        });
-    }
+    public Task<JsonElement> CreateEntryAsync(string shortname, string resourceType)
+        => ManagedRequestAsync("create", RecordJson(resourceType, CurrentSubpath, shortname, "\"is_active\":true"));
 
-    public async Task<JsonElement> DeleteAsync(string shortname, string resourceType)
-    {
-        return await ManagedRequestAsync("delete", new
-        {
-            resource_type = resourceType,
-            subpath = CurrentSubpath,
-            shortname,
-            attributes = new { },
-        });
-    }
+    public Task<JsonElement> DeleteAsync(string shortname, string resourceType)
+        => ManagedRequestAsync("delete", RecordJson(resourceType, CurrentSubpath, shortname, null));
 
     public async Task<JsonElement> MoveAsync(string resourceType, string srcSubpath, string srcShortname,
         string destSubpath, string destShortname)
     {
-        return await ManagedRequestAsync("move", new
-        {
-            resource_type = resourceType,
-            subpath = CurrentSubpath,
-            shortname = srcShortname,
-            attributes = new
-            {
-                src_subpath = srcSubpath,
-                src_shortname = srcShortname,
-                dest_subpath = destSubpath,
-                dest_shortname = destShortname,
-            },
-        });
+        var attrs = $"\"src_subpath\":\"{Esc(srcSubpath)}\",\"src_shortname\":\"{Esc(srcShortname)}\",\"dest_subpath\":\"{Esc(destSubpath)}\",\"dest_shortname\":\"{Esc(destShortname)}\"";
+        return await ManagedRequestAsync("move",
+            RecordJson(resourceType, CurrentSubpath, srcShortname, attrs));
     }
 
     public async Task<JsonElement> ManageSpaceAsync(string spaceName, string requestType)
     {
-        var json = Serialize(new
-        {
-            space_name = spaceName,
-            request_type = requestType,
-            records = new[] { new { resource_type = "space", subpath = "/", shortname = spaceName, attributes = new { } } },
-        });
-        var resp = await _http.PostAsync("/managed/request", JsonContent(json));
+        var json = $"{{\"space_name\":\"{Esc(spaceName)}\",\"request_type\":\"{Esc(requestType)}\",\"records\":[{{\"resource_type\":\"space\",\"subpath\":\"/\",\"shortname\":\"{Esc(spaceName)}\",\"attributes\":{{}}}}]}}";
+        var resp = await _http.PostAsync("/managed/request", Json(json));
         var result = await ParseAsync(resp);
         await FetchSpacesAsync(force: true);
         return result;
@@ -160,16 +118,10 @@ public sealed class DmartClient : IDisposable
 
     // ---- Upload ----
 
-    public async Task<JsonElement> UploadSchemaAsync(string shortname, string filePath)
+    public Task<JsonElement> UploadSchemaAsync(string shortname, string filePath)
     {
-        var record = new
-        {
-            resource_type = "schema",
-            subpath = "schema",
-            shortname,
-            attributes = new { schema_shortname = "meta_schema", is_active = true },
-        };
-        return await UploadWithPayloadAsync(record, filePath);
+        var recordJson = $"{{\"resource_type\":\"schema\",\"subpath\":\"schema\",\"shortname\":\"{Esc(shortname)}\",\"attributes\":{{\"schema_shortname\":\"meta_schema\",\"is_active\":true}}}}";
+        return UploadWithPayloadAsync(recordJson, filePath);
     }
 
     public async Task<JsonElement> UploadCsvAsync(string resourceType, string subpath, string schemaShortname, string filePath)
@@ -182,16 +134,11 @@ public sealed class DmartClient : IDisposable
         return await ParseAsync(resp);
     }
 
-    public async Task<JsonElement> AttachAsync(string shortname, string entryShortname, string payloadType, string filePath)
+    public Task<JsonElement> AttachAsync(string shortname, string entryShortname, string payloadType, string filePath)
     {
-        var record = new
-        {
-            shortname,
-            resource_type = payloadType,
-            subpath = $"{CurrentSubpath}/{entryShortname}".Replace("//", "/"),
-            attributes = new { is_active = true },
-        };
-        return await UploadWithPayloadAsync(record, filePath);
+        var sub = $"{CurrentSubpath}/{entryShortname}".Replace("//", "/");
+        var recordJson = $"{{\"shortname\":\"{Esc(shortname)}\",\"resource_type\":\"{Esc(payloadType)}\",\"subpath\":\"{Esc(sub)}\",\"attributes\":{{\"is_active\":true}}}}";
+        return UploadWithPayloadAsync(recordJson, filePath);
     }
 
     // ---- Import / Export ----
@@ -208,7 +155,7 @@ public sealed class DmartClient : IDisposable
     public async Task<string> ExportAsync(string queryJsonPath)
     {
         var queryJson = await File.ReadAllTextAsync(queryJsonPath);
-        var resp = await _http.PostAsync("/managed/export", JsonContent(queryJson));
+        var resp = await _http.PostAsync("/managed/export", Json(queryJson));
         if (!resp.IsSuccessStatusCode)
         {
             var err = await ParseAsync(resp);
@@ -224,10 +171,8 @@ public sealed class DmartClient : IDisposable
 
     // ---- Query ----
 
-    public async Task<JsonElement> QueryAsync(object queryObj)
-    {
-        return await PostQueryAsync(queryObj);
-    }
+    public Task<JsonElement> QueryAsync(string queryJson)
+        => PostQueryAsync(queryJson);
 
     // ---- Meta / Payload ----
 
@@ -248,34 +193,28 @@ public sealed class DmartClient : IDisposable
     public async Task<JsonElement> RequestFromFileAsync(string filePath)
     {
         var json = await File.ReadAllTextAsync(filePath);
-        var resp = await _http.PostAsync("/managed/request", JsonContent(json));
+        var resp = await _http.PostAsync("/managed/request", Json(json));
         return await ParseAsync(resp);
     }
 
     // ---- Internals ----
 
-    private async Task<JsonElement> ManagedRequestAsync(string requestType, object record)
+    private async Task<JsonElement> ManagedRequestAsync(string requestType, string recordJson)
     {
-        var json = Serialize(new
-        {
-            space_name = CurrentSpace,
-            request_type = requestType,
-            records = new[] { record },
-        });
-        var resp = await _http.PostAsync("/managed/request", JsonContent(json));
+        var json = $"{{\"space_name\":\"{Esc(CurrentSpace)}\",\"request_type\":\"{Esc(requestType)}\",\"records\":[{recordJson}]}}";
+        var resp = await _http.PostAsync("/managed/request", Json(json));
         return await ParseAsync(resp);
     }
 
-    private async Task<JsonElement> PostQueryAsync(object queryObj)
+    private async Task<JsonElement> PostQueryAsync(string queryJson)
     {
-        var resp = await _http.PostAsync("/managed/query", JsonContent(Serialize(queryObj)));
+        var resp = await _http.PostAsync("/managed/query", Json(queryJson));
         return await ParseAsync(resp);
     }
 
-    private async Task<JsonElement> UploadWithPayloadAsync(object record, string filePath)
+    private async Task<JsonElement> UploadWithPayloadAsync(string recordJson, string filePath)
     {
         using var form = new MultipartFormDataContent();
-        var recordJson = Serialize(record);
         form.Add(new StringContent(recordJson, Encoding.UTF8, "application/json"), "request_record", "record.json");
         form.Add(new StringContent(CurrentSpace), "space_name");
         await using var fs = File.OpenRead(filePath);
@@ -284,18 +223,26 @@ public sealed class DmartClient : IDisposable
         return await ParseAsync(resp);
     }
 
-    private static StringContent JsonContent(string json)
+    // Build a single record JSON object for /managed/request
+    private static string RecordJson(string resourceType, string subpath, string shortname, string? attrsInner)
+    {
+        var attrs = attrsInner is not null ? $"{{{attrsInner}}}" : "{}";
+        return $"{{\"resource_type\":\"{Esc(resourceType)}\",\"subpath\":\"{Esc(subpath)}\",\"shortname\":\"{Esc(shortname)}\",\"attributes\":{attrs}}}";
+    }
+
+    private static StringContent Json(string json)
         => new(json, Encoding.UTF8, "application/json");
 
     private static async Task<JsonElement> ParseAsync(HttpResponseMessage resp)
     {
         var text = await resp.Content.ReadAsStringAsync();
         try { return JsonDocument.Parse(text).RootElement; }
-        catch { return JsonDocument.Parse($"{{\"raw\":\"{text}\"}}").RootElement; }
+        catch { return JsonDocument.Parse($"{{\"raw\":\"{Esc(text)}\"}}").RootElement; }
     }
 
-    private static string Serialize(object obj)
-        => JsonSerializer.Serialize(obj, new JsonSerializerOptions { PropertyNamingPolicy = JsonNamingPolicy.SnakeCaseLower });
+    // Escape a string for embedding in JSON
+    private static string Esc(string s)
+        => s.Replace("\\", "\\\\").Replace("\"", "\\\"").Replace("\n", "\\n").Replace("\r", "\\r");
 
     public void Dispose() => _http.Dispose();
 }
