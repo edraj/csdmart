@@ -87,6 +87,7 @@ public class SecurityAndRobustnessTests : IClassFixture<DmartFactory>
     [Fact]
     public async Task Query_Error_Does_Not_Leak_Exception_Details()
     {
+        if (!DmartFactory.HasPg) return;
         var (client, _) = await LoginAsync();
         // Send malformed JSON to /managed/query — error should be generic.
         var resp = await client.PostAsync("/managed/query",
