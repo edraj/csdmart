@@ -132,10 +132,21 @@ public class PluginManagerIntegrationTests : IClassFixture<DmartFactory>
                 await Task.Delay(100);
             }
             schemaFolder.ShouldNotBeNull("resource_folders_creation should have materialized /schema");
+            // Let the plugin's fire-and-forget background task finish its
+            // transaction before we try to delete — avoids a deadlock between
+            // the plugin's INSERT and our DELETE.
+            await Task.Delay(500);
         }
         finally
         {
-            await spaces.DeleteAsync(spaceName);
+            // Retry once on deadlock — the concurrent plugin hook may still
+            // be finishing its transaction.
+            try { await spaces.DeleteAsync(spaceName); }
+            catch (Npgsql.PostgresException ex) when (ex.SqlState == "40P01")
+            {
+                await Task.Delay(500);
+                await spaces.DeleteAsync(spaceName);
+            }
         }
     }
 
