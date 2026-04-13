@@ -62,53 +62,14 @@ public sealed class AdminBootstrap(
 
         try
         {
-            // Ensure the management space and its standard folders exist.
-            // Python dmart creates these during schema init; we do it here so
-            // the admin user, roles, and permissions have a home.
-            var mgmtSpace = await spaces.GetAsync(MgmtSpace, ct);
-            if (mgmtSpace is null)
-            {
-                mgmtSpace = new Space
-                {
-                    Uuid = Guid.NewGuid().ToString(),
-                    Shortname = MgmtSpace,
-                    SpaceName = MgmtSpace,
-                    Subpath = "/",
-                    OwnerShortname = s.AdminShortname,
-                    IsActive = true,
-                    Displayname = new Translation(En: "Management"),
-                    Description = new Translation(En: "Management space"),
-                    Languages = new() { Language.En },
-                    ActivePlugins = new() { "resource_folders_creation", "audit" },
-                    CreatedAt = DateTime.UtcNow,
-                    UpdatedAt = DateTime.UtcNow,
-                };
-                await spaces.UpsertAsync(mgmtSpace, ct);
-                log.LogInformation("admin bootstrap: created management space");
-            }
+            // ORDER MATTERS — every table has owner_shortname FK → users.
+            // 1. User first (self-referential FK is fine)
+            // 2. Space (FK → users via owner_shortname)
+            // 3. Entries/folders (FK → users via owner_shortname)
+            // 4. Permission (FK → users via owner_shortname)
+            // 5. Role (FK → users via owner_shortname)
 
-            // Standard folders under management
-            foreach (var folder in new[] { "users", "roles", "permissions", "schema" })
-            {
-                var f = await entries.GetAsync(MgmtSpace, "/", folder, ResourceType.Folder, ct);
-                if (f is not null) continue;
-                await entries.UpsertAsync(new Entry
-                {
-                    Uuid = Guid.NewGuid().ToString(),
-                    Shortname = folder,
-                    SpaceName = MgmtSpace,
-                    Subpath = "/",
-                    ResourceType = ResourceType.Folder,
-                    IsActive = true,
-                    OwnerShortname = s.AdminShortname,
-                    CreatedAt = DateTime.UtcNow,
-                    UpdatedAt = DateTime.UtcNow,
-                }, ct);
-            }
-
-            // Create the admin user — permissions and roles have FK
-            // constraints on owner_shortname → users, so the user must exist
-            // before we can insert permission/role rows.
+            // 1. Create the admin user
             var existing = await users.GetByShortnameAsync(s.AdminShortname, ct);
             if (existing is null)
             {
@@ -133,7 +94,49 @@ public sealed class AdminBootstrap(
                 log.LogInformation("admin bootstrap: created admin user {Shortname}", s.AdminShortname);
             }
 
-            // Ensure the super_manager permission exists (super_admin role
+            // 2. Ensure the management space exists
+            var mgmtSpace = await spaces.GetAsync(MgmtSpace, ct);
+            if (mgmtSpace is null)
+            {
+                mgmtSpace = new Space
+                {
+                    Uuid = Guid.NewGuid().ToString(),
+                    Shortname = MgmtSpace,
+                    SpaceName = MgmtSpace,
+                    Subpath = "/",
+                    OwnerShortname = s.AdminShortname,
+                    IsActive = true,
+                    Displayname = new Translation(En: "Management"),
+                    Description = new Translation(En: "Management space"),
+                    Languages = new() { Language.En },
+                    ActivePlugins = new() { "resource_folders_creation", "audit" },
+                    CreatedAt = DateTime.UtcNow,
+                    UpdatedAt = DateTime.UtcNow,
+                };
+                await spaces.UpsertAsync(mgmtSpace, ct);
+                log.LogInformation("admin bootstrap: created management space");
+            }
+
+            // 3. Standard folders under management
+            foreach (var folder in new[] { "users", "roles", "permissions", "schema" })
+            {
+                var f = await entries.GetAsync(MgmtSpace, "/", folder, ResourceType.Folder, ct);
+                if (f is not null) continue;
+                await entries.UpsertAsync(new Entry
+                {
+                    Uuid = Guid.NewGuid().ToString(),
+                    Shortname = folder,
+                    SpaceName = MgmtSpace,
+                    Subpath = "/",
+                    ResourceType = ResourceType.Folder,
+                    IsActive = true,
+                    OwnerShortname = s.AdminShortname,
+                    CreatedAt = DateTime.UtcNow,
+                    UpdatedAt = DateTime.UtcNow,
+                }, ct);
+            }
+
+            // 4. Ensure the super_manager permission exists (super_admin role
             // attaches it). super_manager grants every action on every resource type
             // across every space + subpath via dmart's __all_spaces__/__all_subpaths__
             // magic words. This matches the row dmart Python writes during its own
