@@ -30,7 +30,8 @@ PUBLISH_DIR="bin/Release/net10.0/linux-x64/publish"
 rm -f "$PUBLISH_DIR"/*.dbg "$PUBLISH_DIR"/*.pdb \
       "$PUBLISH_DIR"/*.Development.json \
       "$PUBLISH_DIR"/*.staticwebassets* \
-      "$PUBLISH_DIR"/*.deps.json
+      "$PUBLISH_DIR"/*.deps.json \
+      info.json
 
 echo ""
 echo "Published to $PUBLISH_DIR/"

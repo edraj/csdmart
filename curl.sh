@@ -619,7 +619,7 @@ expect_success "Info/settings:" "$RESP"
 # 39. Public query (no auth)
 # ============================================================================
 RESP=$(curl -s -H "$CT" \
-    -d '{"type":"subpath","space_name":"applications","subpath":"api","limit":1}' \
+    -d "{\"type\":\"subpath\",\"space_name\":\"management\",\"subpath\":\"/\",\"limit\":1}" \
     "$API_URL/public/query")
 expect_success "Public query (no auth):" "$RESP"
 
@@ -661,8 +661,8 @@ fi
 # 43. __root__ magic word resolves to root subpath
 # ============================================================================
 printf '%-45s' "__root__ → / subpath:" >&2
-ROOT_RESP=$(curl -s -H "$AUTH_HEADER" "$API_URL/managed/entry/folder/hr/__root__/employees")
-if echo "$ROOT_RESP" | jq -e '.shortname == "employees"' > /dev/null 2>&1; then
+ROOT_RESP=$(curl -s -H "$AUTH_HEADER" "$API_URL/managed/entry/folder/management/__root__/users")
+if echo "$ROOT_RESP" | jq -e '.shortname == "users"' > /dev/null 2>&1; then
     ok
 else
     nope "$ROOT_RESP"
@@ -671,9 +671,9 @@ fi
 # ============================================================================
 # 44. Entry lookup falls back when resource_type mismatches
 # ============================================================================
-printf '%-45s' "Entry type fallback (content→schema):" >&2
-FALL_RESP=$(curl -s -H "$AUTH_HEADER" "$API_URL/managed/entry/content/hr/schema/employee")
-if echo "$FALL_RESP" | jq -e '.shortname == "employee"' > /dev/null 2>&1; then
+printf '%-45s' "Entry type fallback (content→folder):" >&2
+FALL_RESP=$(curl -s -H "$AUTH_HEADER" "$API_URL/managed/entry/content/management/__root__/users")
+if echo "$FALL_RESP" | jq -e '.shortname == "users"' > /dev/null 2>&1; then
     ok
 else
     nope "$FALL_RESP"
@@ -683,8 +683,8 @@ fi
 # 45. Entry routing: space type → spaces table
 # ============================================================================
 printf '%-45s' "Entry space → spaces table:" >&2
-SPACE_RESP=$(curl -s -H "$AUTH_HEADER" "$API_URL/managed/entry/space/hr/__root__/hr")
-if echo "$SPACE_RESP" | jq -e '.shortname == "hr"' > /dev/null 2>&1; then
+SPACE_RESP=$(curl -s -H "$AUTH_HEADER" "$API_URL/managed/entry/space/management/__root__/management")
+if echo "$SPACE_RESP" | jq -e '.shortname == "management"' > /dev/null 2>&1; then
     ok
 else
     nope "$SPACE_RESP"
@@ -783,10 +783,10 @@ fi
 # ============================================================================
 printf '%-45s' "exact_subpath=true at / filters:" >&2
 EXACT=$(curl -s -H "$AUTH_HEADER" -H "$CT" \
-    -d '{"type":"search","space_name":"hr","subpath":"/","exact_subpath":true,"limit":100}' \
+    -d "{\"type\":\"search\",\"space_name\":\"$SPACE\",\"subpath\":\"/\",\"exact_subpath\":true,\"limit\":100}" \
     "$API_URL/managed/query")
 NOEXACT=$(curl -s -H "$AUTH_HEADER" -H "$CT" \
-    -d '{"type":"search","space_name":"hr","subpath":"/","exact_subpath":false,"limit":100}' \
+    -d "{\"type\":\"search\",\"space_name\":\"$SPACE\",\"subpath\":\"/\",\"exact_subpath\":false,\"limit\":100}" \
     "$API_URL/managed/query")
 EXACT_N=$(echo "$EXACT" | jq '.attributes.returned // 0')
 NOEXACT_N=$(echo "$NOEXACT" | jq '.attributes.returned // 0')
