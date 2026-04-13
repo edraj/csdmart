@@ -1,9 +1,11 @@
 using System.Text.Json;
+using Dmart.Config;
 using Dmart.Models.Api;
 using Dmart.Models.Core;
 using Dmart.Models.Enums;
 using Dmart.Models.Json;
 using Dmart.Services;
+using Microsoft.Extensions.Options;
 
 namespace Dmart.Api.Public;
 
@@ -13,32 +15,42 @@ public static class SubmitHandler
     {
         // POST /public/submit/{space}/{schema}/{subpath} — implicit content
         g.MapPost("/submit/{space}/{schema}/{subpath}",
-            async (string space, string schema, string subpath, HttpRequest req, EntryService entries, CancellationToken ct) =>
-                await SubmitAsync(space, ResourceType.Content, schema, subpath, workflow: null, req, entries, ct));
+            async (string space, string schema, string subpath, HttpRequest req, EntryService entries, IOptions<DmartSettings> settings, CancellationToken ct) =>
+                await SubmitAsync(space, ResourceType.Content, schema, subpath, workflow: null, req, entries, settings, ct));
 
         // POST /public/submit/{space}/{resource_type}/{schema}/{subpath}
         g.MapPost("/submit/{space}/{resource_type}/{schema}/{subpath}",
-            async (string space, string resource_type, string schema, string subpath, HttpRequest req, EntryService entries, CancellationToken ct) =>
+            async (string space, string resource_type, string schema, string subpath, HttpRequest req, EntryService entries, IOptions<DmartSettings> settings, CancellationToken ct) =>
             {
                 if (!Enum.TryParse<ResourceType>(resource_type, true, out var rt))
                     return Response.Fail("bad_type", "unknown resource type");
-                return await SubmitAsync(space, rt, schema, subpath, workflow: null, req, entries, ct);
+                return await SubmitAsync(space, rt, schema, subpath, workflow: null, req, entries, settings, ct);
             });
 
         // POST /public/submit/{space}/{resource_type}/{workflow}/{schema}/{subpath}
         g.MapPost("/submit/{space}/{resource_type}/{workflow}/{schema}/{subpath}",
-            async (string space, string resource_type, string workflow, string schema, string subpath, HttpRequest req, EntryService entries, CancellationToken ct) =>
+            async (string space, string resource_type, string workflow, string schema, string subpath, HttpRequest req, EntryService entries, IOptions<DmartSettings> settings, CancellationToken ct) =>
             {
                 if (!Enum.TryParse<ResourceType>(resource_type, true, out var rt))
                     return Response.Fail("bad_type", "unknown resource type");
-                return await SubmitAsync(space, rt, schema, subpath, workflow, req, entries, ct);
+                return await SubmitAsync(space, rt, schema, subpath, workflow, req, entries, settings, ct);
             });
     }
 
     private static async Task<Response> SubmitAsync(
         string space, ResourceType rt, string schema, string subpath, string? workflow,
-        HttpRequest req, EntryService entries, CancellationToken ct)
+        HttpRequest req, EntryService entries, IOptions<DmartSettings> settings, CancellationToken ct)
     {
+        // Validate space.schema against AllowedSubmitModels (CSV of "space.schema" pairs).
+        var allowed = settings.Value.AllowedSubmitModels;
+        if (!string.IsNullOrWhiteSpace(allowed))
+        {
+            var pairs = allowed.Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
+            var key = $"{space}.{schema}";
+            if (!pairs.Contains(key, StringComparer.OrdinalIgnoreCase))
+                return Response.Fail("not_allowed", $"submit not allowed for {key}");
+        }
+
         // Read the body as a raw JsonElement so we can carry it into Payload.Body losslessly.
         using var doc = await JsonDocument.ParseAsync(req.Body, cancellationToken: ct);
         var body = doc.RootElement.Clone();

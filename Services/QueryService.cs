@@ -35,6 +35,11 @@ public sealed class QueryService(
 {
     public async Task<Response> ExecuteAsync(Query q, string? actor, CancellationToken ct = default)
     {
+        // Clamp limit to MaxQueryLimit to prevent unbounded result sets.
+        var maxLimit = settings.Value.MaxQueryLimit;
+        if (maxLimit > 0 && q.Limit > maxLimit)
+            q = q with { Limit = maxLimit };
+
         if (string.IsNullOrEmpty(q.SpaceName))
             return Response.Fail("bad_query", "space_name is required");
 

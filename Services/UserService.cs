@@ -182,6 +182,18 @@ public sealed class UserService(
         var user = await users.GetByShortnameAsync(shortname, ct);
         if (user is null) return Result<User>.Fail("not_found", "user missing");
 
+        // Reject patches targeting protected payload fields.
+        var protectedCsv = settings.Value.UserProfilePayloadProtectedFields;
+        if (!string.IsNullOrWhiteSpace(protectedCsv))
+        {
+            var protectedFields = protectedCsv.Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
+            foreach (var key in patch.Keys)
+            {
+                if (protectedFields.Contains(key, StringComparer.OrdinalIgnoreCase))
+                    return Result<User>.Fail("bad_request", $"field '{key}' is protected and cannot be updated");
+            }
+        }
+
         // Password change: Python requires old_password unless force_password_change.
         string? newPasswordHash = null;
         if (patch.TryGetValue("password", out var pwObj) && pwObj is not null)

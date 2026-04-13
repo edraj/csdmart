@@ -282,7 +282,7 @@ public static class QueryHelper
             var likeConditions = new List<string>();
             for (var i = 0; i < queryPolicies.Count; i++)
             {
-                var pattern = queryPolicies[i].Replace("*", "%");
+                var pattern = queryPolicies[i].Replace("%", "\\%").Replace("_", "\\_").Replace("*", "%");
                 args.Add(new() { Value = pattern });
                 likeConditions.Add($"qp LIKE ${args.Count}");
             }

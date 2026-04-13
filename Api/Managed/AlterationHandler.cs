@@ -51,9 +51,9 @@ public static class AlterationHandler
                 {
                     query = JsonSerializer.Deserialize(qEl.GetRawText(), DmartJsonContext.Default.Query);
                 }
-                catch (JsonException ex)
+                catch (JsonException)
                 {
-                    return Response.Fail(InternalErrorCode.INVALID_DATA, $"target_query invalid: {ex.Message}", "request");
+                    return Response.Fail(InternalErrorCode.INVALID_DATA, "invalid request body", "request");
                 }
                 if (query is null)
                     return Response.Fail(InternalErrorCode.MISSING_DATA, "target_query empty", "request");

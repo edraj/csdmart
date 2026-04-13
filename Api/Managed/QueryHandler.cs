@@ -15,9 +15,9 @@ public static class QueryHandler
             {
                 q = await JsonSerializer.DeserializeAsync(req.Body, DmartJsonContext.Default.Query, ct);
             }
-            catch (JsonException ex)
+            catch (JsonException)
             {
-                return Response.Fail("bad_request", $"invalid Query JSON: {ex.Message}");
+                return Response.Fail("bad_request", "invalid request body");
             }
             if (q is null) return Response.Fail("bad_request", "empty body");
             return await svc.ExecuteAsync(q, http.User.Identity?.Name, ct);

@@ -86,9 +86,9 @@ public static class ResourceWithPayloadHandler
             await using var recStream = requestRecordFile.OpenReadStream();
             record = await JsonSerializer.DeserializeAsync(recStream, DmartJsonContext.Default.Record, ct);
         }
-        catch (JsonException ex)
+        catch (JsonException)
         {
-            return Response.Fail(InternalErrorCode.INVALID_DATA, $"invalid request_record JSON: {ex.Message}", "request");
+            return Response.Fail(InternalErrorCode.INVALID_DATA, "invalid request body", "request");
         }
         if (record is null)
             return Response.Fail(InternalErrorCode.INVALID_DATA, "request_record is empty", "request");
@@ -105,6 +105,10 @@ public static class ResourceWithPayloadHandler
             await src.CopyToAsync(ms, ct);
             fileBytes = ms.ToArray();
         }
+
+        const int MaxPayloadSize = 50 * 1024 * 1024; // 50 MB
+        if (fileBytes.Length > MaxPayloadSize)
+            return Response.Fail(InternalErrorCode.INVALID_DATA, $"payload file exceeds {MaxPayloadSize / (1024 * 1024)}MB limit", "request");
 
         var checksum = Convert.ToHexString(SHA256.HashData(fileBytes)).ToLowerInvariant();
         if (!string.IsNullOrEmpty(sha) && !string.Equals(sha, checksum, StringComparison.OrdinalIgnoreCase))
@@ -156,10 +160,10 @@ public static class ResourceWithPayloadHandler
         {
             await attachments.UpsertAsync(attachment, ct);
         }
-        catch (Exception ex)
+        catch (Exception)
         {
             return Response.Fail(InternalErrorCode.OBJECT_NOT_SAVED,
-                $"failed to save attachment: {ex.Message}", "attachment");
+                "failed to save attachment", "attachment");
         }
 
         return Response.Ok(records: new[] { record with { Uuid = attachment.Uuid } });
@@ -178,10 +182,10 @@ public static class ResourceWithPayloadHandler
             using var doc = JsonDocument.Parse(fileBytes);
             body = doc.RootElement.Clone();
         }
-        catch (JsonException ex)
+        catch (JsonException)
         {
             return Response.Fail(InternalErrorCode.INVALID_DATA,
-                $"payload file is not valid JSON: {ex.Message}", "request");
+                "invalid request body", "request");
         }
 
         var entry = new Entry

@@ -67,9 +67,9 @@ public sealed class EntryService(
         // caller can surface a structured error without leaking the stack.
         var beforeEvent = BuildEvent(toSave, ActionType.Create, actor);
         try { await plugins.BeforeActionAsync(beforeEvent, ct); }
-        catch (Exception ex)
+        catch (Exception)
         {
-            return Result<Entry>.Fail("bad_request", $"plugin rejected create: {ex.Message}");
+            return Result<Entry>.Fail("bad_request", "plugin rejected create");
         }
 
         await entries.UpsertAsync(toSave, ct);
