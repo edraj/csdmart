@@ -101,7 +101,7 @@ switch (subcommand)
 
     case "settings":
     {
-        // Print effective DmartSettings as JSON (mirrors Python's settings.model_dump_json).
+        // Print effective DmartSettings as colorized JSON (masks secrets).
         var cfgBuilder = new ConfigurationBuilder();
         cfgBuilder.AddJsonFile("appsettings.json", optional: true);
         if (dotenvPath is not null) cfgBuilder.AddInMemoryCollection(dotenvValues);
@@ -109,23 +109,34 @@ switch (subcommand)
         var cfg = cfgBuilder.Build();
         var s = new DmartSettings();
         cfg.GetSection("Dmart").Bind(s);
-        // Print key settings (avoid leaking secrets — mask password/jwt)
-        Console.WriteLine($"{{");
-        Console.WriteLine($"  \"database_host\": \"{s.DatabaseHost}\",");
-        Console.WriteLine($"  \"database_port\": {s.DatabasePort},");
-        Console.WriteLine($"  \"database_username\": \"{s.DatabaseUsername}\",");
-        Console.WriteLine($"  \"database_name\": \"{s.DatabaseName}\",");
-        Console.WriteLine($"  \"listening_host\": \"{s.ListeningHost}\",");
-        Console.WriteLine($"  \"listening_port\": {s.ListeningPort},");
-        Console.WriteLine($"  \"management_space\": \"{s.ManagementSpace}\",");
-        Console.WriteLine($"  \"jwt_issuer\": \"{s.JwtIssuer}\",");
-        Console.WriteLine($"  \"jwt_access_minutes\": {s.JwtAccessMinutes},");
-        Console.WriteLine($"  \"is_registrable\": {s.IsRegistrable.ToString().ToLower()},");
-        Console.WriteLine($"  \"max_failed_login_attempts\": {s.MaxFailedLoginAttempts},");
-        Console.WriteLine($"  \"max_sessions_per_user\": {s.MaxSessionsPerUser},");
-        Console.WriteLine($"  \"allowed_cors_origins\": \"{s.AllowedCorsOrigins}\",");
-        Console.WriteLine($"  \"websocket_url\": \"{s.WebsocketUrl ?? ""}\"");
-        Console.WriteLine($"}}");
+        var json = $@"{{
+  ""database_host"": ""{s.DatabaseHost}"",
+  ""database_port"": {s.DatabasePort},
+  ""database_username"": ""{s.DatabaseUsername}"",
+  ""database_name"": ""{s.DatabaseName}"",
+  ""listening_host"": ""{s.ListeningHost}"",
+  ""listening_port"": {s.ListeningPort},
+  ""app_name"": ""{s.AppName}"",
+  ""app_url"": ""{s.AppUrl}"",
+  ""management_space"": ""{s.ManagementSpace}"",
+  ""spaces_root"": ""{s.SpacesRoot}"",
+  ""jwt_issuer"": ""{s.JwtIssuer}"",
+  ""jwt_audience"": ""{s.JwtAudience}"",
+  ""jwt_access_minutes"": {s.JwtAccessMinutes},
+  ""jwt_refresh_days"": {s.JwtRefreshDays},
+  ""admin_shortname"": ""{s.AdminShortname}"",
+  ""is_registrable"": {s.IsRegistrable.ToString().ToLower()},
+  ""max_failed_login_attempts"": {s.MaxFailedLoginAttempts},
+  ""max_sessions_per_user"": {s.MaxSessionsPerUser},
+  ""max_query_limit"": {s.MaxQueryLimit},
+  ""lock_period"": {s.LockPeriod},
+  ""log_format"": ""{s.LogFormat}"",
+  ""log_level"": ""{s.LogLevel}"",
+  ""allowed_cors_origins"": ""{s.AllowedCorsOrigins}"",
+  ""websocket_url"": ""{s.WebsocketUrl ?? ""}""
+}}";
+        PrintColorJson(System.Text.Json.JsonDocument.Parse(json).RootElement, 0);
+        Console.WriteLine();
         return;
     }
 
