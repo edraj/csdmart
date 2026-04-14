@@ -70,10 +70,10 @@ public class RecentParityTests : IClassFixture<DmartFactory>
         {
             var resp = await client.GetAsync($"/managed/entry/folder/{TestSpace}/__root__/testfolder");
             resp.StatusCode.ShouldBe(HttpStatusCode.OK);
-            var body = await resp.Content.ReadFromJsonAsync(DmartJsonContext.Default.Entry);
-            body.ShouldNotBeNull();
-            body!.Shortname.ShouldBe("testfolder");
-            body.Subpath.ShouldBe("/");
+            var json = await resp.Content.ReadAsStringAsync();
+            using var doc = System.Text.Json.JsonDocument.Parse(json);
+            doc.RootElement.GetProperty("shortname").GetString().ShouldBe("testfolder");
+            doc.RootElement.GetProperty("subpath").GetString().ShouldBe("/");
         }
         finally { await CleanupTestSpaceAsync(client); }
     }
@@ -90,10 +90,10 @@ public class RecentParityTests : IClassFixture<DmartFactory>
         {
             var resp = await client.GetAsync($"/managed/entry/content/{TestSpace}/__root__/testfolder");
             resp.StatusCode.ShouldBe(HttpStatusCode.OK);
-            var body = await resp.Content.ReadFromJsonAsync(DmartJsonContext.Default.Entry);
-            body.ShouldNotBeNull();
-            body!.Shortname.ShouldBe("testfolder");
-            body.ResourceType.ShouldBe(ResourceType.Folder);
+            var json = await resp.Content.ReadAsStringAsync();
+            using var doc = System.Text.Json.JsonDocument.Parse(json);
+            doc.RootElement.GetProperty("shortname").GetString().ShouldBe("testfolder");
+            doc.RootElement.GetProperty("resource_type").GetString().ShouldBe("folder");
         }
         finally { await CleanupTestSpaceAsync(client); }
     }

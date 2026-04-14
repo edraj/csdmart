@@ -24,13 +24,39 @@ using Microsoft.Extensions.Options;
 //   dmart help        Print available subcommands
 // ============================================================================
 
-// Parse subcommand from args.
-var subcommand = "help";
+
+// Top-level exception handler — clean error message, no stack trace, no core dump.
+// Disabled when flag-like args are present (WebApplicationFactory injects --contentRoot).
+if (args.Length == 0 || !args[0].StartsWith('-'))
+{
+    AppDomain.CurrentDomain.UnhandledException += (_, e) =>
+    {
+        var ex = e.ExceptionObject as Exception;
+        Console.Error.WriteLine($"\u001b[31mError: {ex?.Message ?? "unknown error"}\u001b[0m");
+        if (ex?.InnerException is not null)
+            Console.Error.WriteLine($"\u001b[33m  {ex.InnerException.Message}\u001b[0m");
+        Environment.Exit(1);
+    };
+}
+
+// Parse subcommand from args. Default to "serve".
+// Flag-like args (--contentRoot etc.) are left for the web builder;
+// only our known flags (-v, -h) are treated as subcommands.
+var subcommand = "serve";
 var serverArgs = args;
 if (args.Length > 0)
 {
-    subcommand = args[0].ToLowerInvariant();
-    serverArgs = args[1..];
+    var first = args[0].ToLowerInvariant();
+    if (first is "-v" or "--version" or "-h" or "--help")
+    {
+        subcommand = first;
+        serverArgs = args[1..];
+    }
+    else if (!first.StartsWith('-'))
+    {
+        subcommand = first;
+        serverArgs = args[1..];
+    }
 }
 
 // Load config.env early so non-server subcommands can read DB settings.
@@ -650,6 +676,7 @@ app.MapWebSocket();
 }
 
 app.Run();
+
 
 // Exposed so dmart.Tests can use WebApplicationFactory<Program>.
 public partial class Program

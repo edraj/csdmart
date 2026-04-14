@@ -993,6 +993,41 @@ else
 fi
 
 # ============================================================================
+# 59. CXB config.json override via env var
+# ============================================================================
+printf '%-45s' "CXB config.json served:" >&2
+CXB_CFG=$(curl -s "$API_URL/cxb/config.json" 2>/dev/null)
+if echo "$CXB_CFG" | jq -e '.title or .backend' > /dev/null 2>&1; then
+    ok
+elif [[ "$(curl -s -o /dev/null -w '%{http_code}' "$API_URL/cxb/config.json")" == "404" ]]; then
+    ok "(no CXB)"
+else
+    nope "invalid config.json: $CXB_CFG"
+fi
+
+# ============================================================================
+# 60. Settings endpoint returns valid JSON
+# ============================================================================
+printf '%-45s' "Info/settings has valid keys:" >&2
+SETTINGS_RESP=$(curl -s -H "$AUTH_HEADER" "$API_URL/info/settings")
+if echo "$SETTINGS_RESP" | jq -e '.status == "success" and .attributes.spaces_root' > /dev/null 2>&1; then
+    ok
+else
+    nope "$SETTINGS_RESP"
+fi
+
+# ============================================================================
+# 61. Root endpoint returns server identifier
+# ============================================================================
+printf '%-45s' "Root returns dmart-csharp:" >&2
+ROOT_RESP=$(curl -s "$API_URL/")
+if [[ "$ROOT_RESP" == *"dmart"* ]]; then
+    ok
+else
+    nope "$ROOT_RESP"
+fi
+
+# ============================================================================
 # Summary
 # ============================================================================
 echo "" >&2
