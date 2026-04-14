@@ -848,12 +848,25 @@ curl -s -H "$AUTH_HEADER" -H "$CT" \
 # 49. Space create triggers schema folder plugin
 # ============================================================================
 printf '%-45s' "Space create → /schema folder:" >&2
+# Clean up from any previous run
 curl -s -H "$AUTH_HEADER" -H "$CT" \
-    -d '{"space_name":"plugtest2","request_type":"create","records":[{"resource_type":"space","subpath":"/","shortname":"plugtest2","attributes":{"is_active":true}}]}' \
+    -d '{"space_name":"plugtest2","request_type":"delete","records":[{"resource_type":"space","subpath":"/","shortname":"plugtest2","attributes":{}}]}' \
+    "$API_URL/managed/request" > /dev/null 2>&1
+# Create with explicit active_plugins to ensure the plugin fires
+curl -s -H "$AUTH_HEADER" -H "$CT" \
+    -d '{"space_name":"plugtest2","request_type":"create","records":[{"resource_type":"space","subpath":"/","shortname":"plugtest2","attributes":{"is_active":true,"active_plugins":["resource_folders_creation","audit"]}}]}' \
     "$API_URL/managed/request" > /dev/null
-sleep 1
-SCHEMA_RESP=$(curl -s -H "$AUTH_HEADER" "$API_URL/managed/entry/folder/plugtest2/__root__/schema")
-if echo "$SCHEMA_RESP" | jq -e '.shortname == "schema"' > /dev/null 2>&1; then
+# Poll for the /schema folder — the plugin fires as a background task
+SCHEMA_FOUND=false
+for i in $(seq 1 20); do
+    SCHEMA_RESP=$(curl -s -H "$AUTH_HEADER" "$API_URL/managed/entry/folder/plugtest2/__root__/schema")
+    if echo "$SCHEMA_RESP" | jq -e '.shortname == "schema"' > /dev/null 2>&1; then
+        SCHEMA_FOUND=true
+        break
+    fi
+    sleep 0.5
+done
+if [[ "$SCHEMA_FOUND" == "true" ]]; then
     ok
 else
     nope "$SCHEMA_RESP"

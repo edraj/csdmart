@@ -71,10 +71,18 @@ public sealed class PluginManager(
     // an empty dispatch table — that's a valid state.
     public async Task LoadAsync(CancellationToken ct = default)
     {
-        var root = Path.Combine(AppContext.BaseDirectory, "plugins");
-        if (!Directory.Exists(root))
+        // Search order: CWD (dotnet run), binary dir (publish), /usr/lib/dmart (RPM)
+        var candidates = new[]
         {
-            log.LogInformation("plugins dir not found at {Root} — no plugins loaded", root);
+            Path.Combine(Directory.GetCurrentDirectory(), "plugins"),
+            Path.Combine(AppContext.BaseDirectory, "plugins"),
+            "/usr/lib/dmart/plugins",
+        };
+        var root = candidates.FirstOrDefault(Directory.Exists);
+        if (root is null)
+        {
+            log.LogInformation("plugins dir not found (searched: {Paths}) — no plugins loaded",
+                string.Join(", ", candidates));
             return;
         }
 
