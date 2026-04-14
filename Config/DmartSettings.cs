@@ -116,6 +116,10 @@ public sealed class DmartSettings
     // splits on commas at request time, trimming whitespace.
     public string AllowedCorsOrigins { get; set; } = "*";
 
+    // URL path prefix for the CXB frontend. Python default: "/cxb".
+    // Change to "/" to serve CXB at the root, or "/admin" for a custom path.
+    public string CxbUrl { get; set; } = "/cxb";
+
     // Helper — split the CSV into a trimmed string array. Done here (not in the
     // middleware) so tests can assert the parsing behavior directly.
     public string[] ParseAllowedCorsOrigins()
