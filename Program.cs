@@ -109,32 +109,37 @@ switch (subcommand)
         var cfg = cfgBuilder.Build();
         var s = new DmartSettings();
         cfg.GetSection("Dmart").Bind(s);
-        var json = $@"{{
-  ""database_host"": ""{s.DatabaseHost}"",
-  ""database_port"": {s.DatabasePort},
-  ""database_username"": ""{s.DatabaseUsername}"",
-  ""database_name"": ""{s.DatabaseName}"",
-  ""listening_host"": ""{s.ListeningHost}"",
-  ""listening_port"": {s.ListeningPort},
-  ""app_name"": ""{s.AppName}"",
-  ""app_url"": ""{s.AppUrl}"",
-  ""management_space"": ""{s.ManagementSpace}"",
-  ""spaces_root"": ""{s.SpacesRoot}"",
-  ""jwt_issuer"": ""{s.JwtIssuer}"",
-  ""jwt_audience"": ""{s.JwtAudience}"",
-  ""jwt_access_minutes"": {s.JwtAccessMinutes},
-  ""jwt_refresh_days"": {s.JwtRefreshDays},
-  ""admin_shortname"": ""{s.AdminShortname}"",
-  ""is_registrable"": {s.IsRegistrable.ToString().ToLower()},
-  ""max_failed_login_attempts"": {s.MaxFailedLoginAttempts},
-  ""max_sessions_per_user"": {s.MaxSessionsPerUser},
-  ""max_query_limit"": {s.MaxQueryLimit},
-  ""lock_period"": {s.LockPeriod},
-  ""log_format"": ""{s.LogFormat}"",
-  ""log_level"": ""{s.LogLevel}"",
-  ""allowed_cors_origins"": ""{s.AllowedCorsOrigins}"",
-  ""websocket_url"": ""{s.WebsocketUrl ?? ""}""
-}}";
+        using var ms = new MemoryStream();
+        using (var w = new System.Text.Json.Utf8JsonWriter(ms, new System.Text.Json.JsonWriterOptions { Indented = false }))
+        {
+            w.WriteStartObject();
+            w.WriteString("database_host", s.DatabaseHost);
+            w.WriteNumber("database_port", s.DatabasePort);
+            w.WriteString("database_username", s.DatabaseUsername);
+            w.WriteString("database_name", s.DatabaseName);
+            w.WriteString("listening_host", s.ListeningHost);
+            w.WriteNumber("listening_port", s.ListeningPort);
+            w.WriteString("app_name", s.AppName);
+            w.WriteString("app_url", s.AppUrl);
+            w.WriteString("management_space", s.ManagementSpace);
+            w.WriteString("spaces_root", s.SpacesRoot);
+            w.WriteString("jwt_issuer", s.JwtIssuer);
+            w.WriteString("jwt_audience", s.JwtAudience);
+            w.WriteNumber("jwt_access_minutes", s.JwtAccessMinutes);
+            w.WriteNumber("jwt_refresh_days", s.JwtRefreshDays);
+            w.WriteString("admin_shortname", s.AdminShortname);
+            w.WriteBoolean("is_registrable", s.IsRegistrable);
+            w.WriteNumber("max_failed_login_attempts", s.MaxFailedLoginAttempts);
+            w.WriteNumber("max_sessions_per_user", s.MaxSessionsPerUser);
+            w.WriteNumber("max_query_limit", s.MaxQueryLimit);
+            w.WriteNumber("lock_period", s.LockPeriod);
+            w.WriteString("log_format", s.LogFormat);
+            w.WriteString("log_level", s.LogLevel);
+            w.WriteString("allowed_cors_origins", s.AllowedCorsOrigins ?? "");
+            w.WriteString("websocket_url", s.WebsocketUrl ?? "");
+            w.WriteEndObject();
+        }
+        var json = System.Text.Encoding.UTF8.GetString(ms.ToArray());
         PrintColorJson(System.Text.Json.JsonDocument.Parse(json).RootElement, 0);
         Console.WriteLine();
         return;
