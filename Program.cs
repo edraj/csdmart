@@ -290,7 +290,8 @@ switch (subcommand)
                 new AccessRepository(dbInst, refresher), refresher),
             new PluginManager(Array.Empty<IHookPlugin>(), Array.Empty<IApiPlugin>(),
                 new SpaceRepository(dbInst), nlog.CreateLogger<PluginManager>()),
-            new SchemaValidator(entryRepo, nlog.CreateLogger<SchemaValidator>()));
+            new SchemaValidator(entryRepo, nlog.CreateLogger<SchemaValidator>()),
+            new WorkflowEngine(entryRepo, nlog.CreateLogger<WorkflowEngine>()));
         var exportService = new ImportExportService(entryRepo, entryService, nlog.CreateLogger<ImportExportService>());
 
         var spaceRepo = new SpaceRepository(dbInst);

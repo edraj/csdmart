@@ -1,3 +1,5 @@
+using System.Text.Json;
+using System.Text.Json.Nodes;
 using Dmart.DataAdapters.Sql;
 using Dmart.Models.Api;
 using Dmart.Models.Core;
@@ -11,11 +13,10 @@ public static class EntryHandler
 {
     public static void Map(RouteGroupBuilder g)
     {
-        // Catchall {**rest} captures multi-segment subpaths AND the trailing shortname.
         // Mirrors dmart Python's `/entry/{resource_type}/{space}/{subpath:path}/{shortname}`.
-        // Python's db.load() dispatches to different tables based on class_type:
-        //   Space → spaces table, User → users table, Role → roles, Permission → permissions
-        //   everything else → entries table
+        // Python returns {**meta.model_dump(exclude_none=True), "attachments": {...}}
+        // — a flat dict with ALL model fields at the top level (state, is_open,
+        // workflow_shortname, etc.), NOT nested under "attributes".
         //
         // Query parameters (matching Python):
         //   retrieve_json_payload   — include payload.body in the response (default false)
@@ -38,8 +39,7 @@ public static class EntryHandler
 
                 var actor = http.User.Identity?.Name;
 
-                // Route to the correct table based on resource_type.
-                // Non-entry types are returned directly (no attachment support).
+                // Non-entry types: direct serialization.
                 switch (rt)
                 {
                     case ResourceType.Space:
@@ -64,18 +64,11 @@ public static class EntryHandler
                     }
                 }
 
-                // Entry-flavor types: load, convert to Record (matching Python's dict
-                // response shape), and optionally attach child attachments.
                 var entry = await svc.GetAsync(new Locator(rt, space, subpath, shortname), actor, ct);
                 if (entry is null) return Results.NotFound();
 
-                var record = EntryMapper.ToRecord(entry, space, retrieve_json_payload == true);
-
-                // Python always includes "attachments" in the response (empty dict
-                // when not requested or no children). Match that by defaulting to
-                // an empty dictionary so the key is never omitted.
+                // Build attachments dict (Python always includes the key, even empty).
                 Dictionary<string, List<Record>> attachmentsDict = new();
-
                 if (retrieve_attachments == true)
                 {
                     var children = await attachmentRepo.ListForParentAsync(space, subpath, shortname, ct);
@@ -89,8 +82,12 @@ public static class EntryHandler
                     }
                 }
 
-                record = record with { Attachments = attachmentsDict };
-                return Results.Json(record, DmartJsonContext.Default.Record);
+                // Build the flat response matching Python's meta.model_dump() + attachments.
+                // Serialize Entry via source-gen (AOT-safe), then merge attachments in.
+                var node = EntryToJsonNode.Convert(entry, retrieve_json_payload == true);
+                var attNode = JsonSerializer.SerializeToNode(attachmentsDict, DmartJsonContext.Default.DictionaryStringListRecord);
+                node["attachments"] = attNode;
+                return Results.Content(node.ToJsonString(DmartJsonContext.Default.Options), "application/json");
             });
 
         g.MapGet("/byuuid/{uuid}", async (string uuid, EntryService svc, CancellationToken ct) =>
@@ -105,5 +102,29 @@ public static class EntryHandler
             var entry = await svc.GetBySlugAsync(slug, ct);
             return entry is null ? Results.NotFound() : Results.Json(entry, DmartJsonContext.Default.Entry);
         });
+    }
+}
+
+/// <summary>
+/// Serializes an Entry to a JsonNode (mutable JSON DOM) using the source-gen context,
+/// then strips the payload body if not requested. This avoids Dictionary&lt;string, object&gt;
+/// serialization issues with AOT while producing the flat response Python returns.
+/// </summary>
+internal static class EntryToJsonNode
+{
+    public static JsonNode Convert(Entry entry, bool includePayloadBody)
+    {
+        // Serialize via source-gen → guaranteed correct for all nested types.
+        var json = JsonSerializer.Serialize(entry, DmartJsonContext.Default.Entry);
+        var node = JsonNode.Parse(json)!.AsObject();
+
+        // Remove internal-only field that Python doesn't return.
+        node.Remove("query_policies");
+
+        // Strip payload.body if not requested.
+        if (!includePayloadBody && node["payload"] is JsonObject payload)
+            payload.Remove("body");
+
+        return node;
     }
 }

@@ -1,4 +1,6 @@
+using System.Text.Json;
 using Dmart.Api;
+using Dmart.Api.Managed;
 using Dmart.DataAdapters.Sql;
 using Dmart.Models.Api;
 using Dmart.Models.Core;
@@ -25,8 +27,6 @@ public static class EntryHandler
                 var entry = await svc.GetAsync(new Locator(rt, space, subpath, shortname), actor: null, ct);
                 if (entry is null) return Results.NotFound();
 
-                var record = EntryMapper.ToRecord(entry, space, retrieve_json_payload == true);
-
                 Dictionary<string, List<Record>> attachmentsDict = new();
                 if (retrieve_attachments == true)
                 {
@@ -41,8 +41,10 @@ public static class EntryHandler
                     }
                 }
 
-                record = record with { Attachments = attachmentsDict };
-                return Results.Json(record, DmartJsonContext.Default.Record);
+                var node = EntryToJsonNode.Convert(entry, retrieve_json_payload == true);
+                var attNode = JsonSerializer.SerializeToNode(attachmentsDict, DmartJsonContext.Default.DictionaryStringListRecord);
+                node["attachments"] = attNode;
+                return Results.Content(node.ToJsonString(DmartJsonContext.Default.Options), "application/json");
             });
 
         g.MapGet("/byuuid/{uuid}", async (string uuid, EntryService svc, CancellationToken ct) =>

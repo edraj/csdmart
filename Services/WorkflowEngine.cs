@@ -27,6 +27,10 @@ public sealed class WorkflowEngine(EntryRepository entries, ILogger<WorkflowEngi
         bool? IsOpen,
         bool ResolutionRequired);
 
+    // Mirrors Python's transite() from ticket_sys_utils.py.
+    // Workflow next-state entries use "state" (not "to") for the target state name.
+    // Open/closed is determined by whether the target state has a "next" array
+    // (Python's check_open_state), not by a separate "closed_states" list.
     public async Task<TransitionResult> EvaluateAsync(
         string spaceName, string workflowShortname, string currentState, string action,
         IReadOnlyCollection<string> actorRoles, CancellationToken ct = default)
@@ -38,7 +42,7 @@ public sealed class WorkflowEngine(EntryRepository entries, ILogger<WorkflowEngi
         if (!workflow.RootElement.TryGetProperty("states", out var states) || states.ValueKind != JsonValueKind.Array)
             return new TransitionResult(false, "workflow has no states", null, null, false);
 
-        // Find the current state's transitions
+        // Find the current state's definition
         JsonElement? matchedState = null;
         foreach (var s in states.EnumerateArray())
         {
@@ -57,30 +61,80 @@ public sealed class WorkflowEngine(EntryRepository entries, ILogger<WorkflowEngi
         foreach (var t in next.EnumerateArray())
         {
             if (!t.TryGetProperty("action", out var act) || act.GetString() != action) continue;
-            if (!t.TryGetProperty("to", out var to)) continue;
 
-            // Optional role gate
+            // Python's workflow format uses "state" for the target state name.
+            // Also support "to" for backwards compat with some workflow definitions.
+            string? newState = null;
+            if (t.TryGetProperty("state", out var stateEl))
+                newState = stateEl.GetString()?.Trim();
+            else if (t.TryGetProperty("to", out var toEl))
+                newState = toEl.GetString()?.Trim();
+            if (string.IsNullOrEmpty(newState)) continue;
+
+            // Role gate — mirrors Python's transite(): if the transition has "roles",
+            // the actor MUST have at least one matching role.
             if (t.TryGetProperty("roles", out var rolesEl) && rolesEl.ValueKind == JsonValueKind.Array)
             {
                 var allowedRoles = rolesEl.EnumerateArray().Select(r => r.GetString()).ToHashSet();
-                if (!actorRoles.Any(r => allowedRoles.Contains(r)) && !actorRoles.Contains("super_admin"))
-                    return new TransitionResult(false, $"action '{action}' requires one of: {string.Join(",", allowedRoles)}", null, null, false);
+                if (!actorRoles.Any(r => allowedRoles.Contains(r)))
+                    return new TransitionResult(false,
+                        $"You don't have the permission to progress this ticket with action {action}",
+                        null, null, false);
             }
 
-            var newState = to.GetString()!;
-            var resolutionRequired = t.TryGetProperty("resolution_required", out var rr) && rr.ValueKind == JsonValueKind.True;
-            var isOpen = !IsClosedState(workflow.RootElement, newState);
+            // Python's check_open_state: a state is "open" if it has a "next" array.
+            var isOpen = CheckOpenState(states, newState);
+            var resolutionRequired = t.TryGetProperty("resolution_required", out var rr)
+                                     && rr.ValueKind == JsonValueKind.True;
             return new TransitionResult(true, null, newState, isOpen, resolutionRequired);
         }
 
-        return new TransitionResult(false, $"action '{action}' not allowed from state '{currentState}'", null, null, false);
+        return new TransitionResult(false,
+            $"You can't progress from {currentState} using {action}", null, null, false);
     }
 
-    private static bool IsClosedState(JsonElement root, string state)
+    /// <summary>
+    /// Mirrors Python's set_init_state_from_record: loads the workflow entry and
+    /// returns its initial_state string. Returns null if the workflow or field is missing.
+    /// </summary>
+    public async Task<string?> GetInitialStateAsync(string spaceName, string workflowShortname, CancellationToken ct = default)
     {
-        if (!root.TryGetProperty("closed_states", out var closed) || closed.ValueKind != JsonValueKind.Array) return false;
-        foreach (var s in closed.EnumerateArray())
-            if (s.ValueKind == JsonValueKind.String && s.GetString() == state) return true;
+        var workflow = await LoadWorkflowAsync(spaceName, workflowShortname, ct);
+        if (workflow is null) return null;
+
+        if (workflow.RootElement.TryGetProperty("initial_state", out var init))
+        {
+            if (init.ValueKind == JsonValueKind.String)
+                return init.GetString();
+            if (init.ValueKind == JsonValueKind.Array)
+            {
+                string? fallback = null;
+                foreach (var item in init.EnumerateArray())
+                {
+                    var name = item.TryGetProperty("name", out var n) ? n.GetString() : null;
+                    if (name is null) continue;
+                    fallback ??= name;
+                    if (item.TryGetProperty("roles", out var roles) && roles.ValueKind == JsonValueKind.Array)
+                    {
+                        foreach (var r in roles.EnumerateArray())
+                            if (r.GetString() == "default") return name;
+                    }
+                }
+                return fallback;
+            }
+        }
+        return null;
+    }
+
+    // Mirrors Python's check_open_state: a state is "open" if it has a "next" field.
+    // States without "next" are terminal (closed).
+    private static bool CheckOpenState(JsonElement statesArray, string stateName)
+    {
+        foreach (var s in statesArray.EnumerateArray())
+        {
+            if (s.TryGetProperty("state", out var name) && name.GetString() == stateName)
+                return s.TryGetProperty("next", out _);
+        }
         return false;
     }
 

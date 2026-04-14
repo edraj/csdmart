@@ -15,7 +15,8 @@ public sealed class EntryService(
     HistoryRepository history,
     PermissionService perms,
     PluginManager plugins,
-    SchemaValidator schemas)
+    SchemaValidator schemas,
+    WorkflowEngine workflows)
 {
     public async Task<Entry?> GetAsync(Locator l, string? actor, CancellationToken ct = default)
     {
@@ -54,10 +55,26 @@ public sealed class EntryService(
         var validationError = await ValidatePayloadAsync(entry, ct);
         if (validationError is not null) return Result<Entry>.Fail("invalid_data", validationError);
 
+        // Ticket initialization: resolve initial_state from the workflow definition
+        // and set is_open = true. Mirrors Python's set_init_state_from_record().
+        var ticketState = entry.State;
+        var ticketIsOpen = entry.IsOpen;
+        if (entry.ResourceType == ResourceType.Ticket && !string.IsNullOrEmpty(entry.WorkflowShortname))
+        {
+            var initialState = await workflows.GetInitialStateAsync(entry.SpaceName, entry.WorkflowShortname, ct);
+            if (initialState is not null)
+            {
+                ticketState = initialState;
+                ticketIsOpen = true;
+            }
+        }
+
         var toSave = entry with
         {
             Uuid = string.IsNullOrEmpty(entry.Uuid) ? Guid.NewGuid().ToString() : entry.Uuid,
             OwnerShortname = string.IsNullOrEmpty(entry.OwnerShortname) ? (actor ?? "anonymous") : entry.OwnerShortname,
+            State = ticketState,
+            IsOpen = ticketIsOpen ?? (entry.ResourceType == ResourceType.Ticket ? true : null),
             CreatedAt = DateTime.UtcNow,
             UpdatedAt = DateTime.UtcNow,
         };
@@ -258,6 +275,36 @@ public sealed class EntryService(
         Translation? TrFromString(string key, Translation? fallback)
             => patch.TryGetValue(key, out var v) && v is not null ? new Translation(En: v.ToString()) : fallback;
 
+        bool? PatchBool(string key, bool? fallback)
+        {
+            if (!patch.TryGetValue(key, out var v) || v is null) return fallback;
+            if (v is bool bv) return bv;
+            if (v is JsonElement je)
+            {
+                if (je.ValueKind == JsonValueKind.True) return true;
+                if (je.ValueKind == JsonValueKind.False) return false;
+            }
+            return fallback;
+        }
+
+        // Payload body merge: if the patch contains "payload" with a "body" dict,
+        // merge it into the existing payload. Mirrors Python's update_payload which
+        // does {**existing_body, **new_body}.
+        var payload = existing.Payload;
+        if (patch.TryGetValue("payload", out var payloadRaw) && payloadRaw is not null)
+        {
+            JsonElement? patchBody = null;
+            if (payloadRaw is JsonElement pe && pe.ValueKind == JsonValueKind.Object
+                && pe.TryGetProperty("body", out var bodyEl))
+                patchBody = bodyEl;
+            else if (payloadRaw is Dictionary<string, object> pd && pd.TryGetValue("body", out var bodyObj)
+                     && bodyObj is JsonElement bje)
+                patchBody = bje;
+
+            if (patchBody is not null && payload is not null)
+                payload = payload with { Body = patchBody };
+        }
+
         return existing with
         {
             Displayname = TrFromString("displayname", existing.Displayname),
@@ -265,10 +312,13 @@ public sealed class EntryService(
             Slug = Str("slug", existing.Slug),
             OwnerShortname = Str("owner_shortname", existing.OwnerShortname) ?? existing.OwnerShortname,
             State = Str("state", existing.State),
+            IsOpen = PatchBool("is_open", existing.IsOpen),
             WorkflowShortname = Str("workflow_shortname", existing.WorkflowShortname),
+            ResolutionReason = Str("resolution_reason", existing.ResolutionReason),
             Tags = patch.TryGetValue("tags", out var tagsRaw) && tagsRaw is IEnumerable<object> tags
                 ? tags.Select(t => t?.ToString() ?? "").ToList() : existing.Tags,
             IsActive = patch.TryGetValue("is_active", out var ia) && ia is bool b ? b : existing.IsActive,
+            Payload = payload,
             UpdatedAt = DateTime.UtcNow,
         };
     }

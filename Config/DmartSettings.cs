@@ -114,7 +114,7 @@ public sealed class DmartSettings
     // (ALLOWED_CORS_ORIGINS="http://a.com,http://b.com") and appsettings.json
     // ("AllowedCorsOrigins": "http://a.com,http://b.com"). The middleware
     // splits on commas at request time, trimming whitespace.
-    public string AllowedCorsOrigins { get; set; } = "";
+    public string AllowedCorsOrigins { get; set; } = "*";
 
     // Helper — split the CSV into a trimmed string array. Done here (not in the
     // middleware) so tests can assert the parsing behavior directly.
