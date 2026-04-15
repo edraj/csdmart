@@ -10,8 +10,8 @@ command_background="true"
 # config.env lookup
 export BACKEND_ENV="/root/.dmart/config.env"
 
-output_log="/home/logs/dmart-out"
-error_log="/home/logs/dmart-err"
+output_log="/var/log/dmart-out"
+error_log="/var/log/dmart-err"
 
 depend() {
   use net localmount logger
