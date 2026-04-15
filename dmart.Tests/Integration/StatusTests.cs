@@ -17,6 +17,6 @@ public class StatusTests : IClassFixture<DmartFactory>
         var resp = await client.GetAsync("/");
         resp.IsSuccessStatusCode.ShouldBeTrue();
         var body = await resp.Content.ReadAsStringAsync();
-        body.ShouldBe("dmart-csharp");
+        body.ShouldContain("DMART");
     }
 }

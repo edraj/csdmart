@@ -99,5 +99,5 @@ fi
 %dir %attr(0755, dmart, dmart) /var/lib/dmart/custom_plugins
 
 %changelog
-* Mon Apr 14 2026 dmart <admin@dmart.cc> - 0.1.0-1
+* Wed Apr 15 2026 dmart <admin@dmart.cc> - 0.1.0-1
 - Initial RPM package with AOT server binary, CLI client, plugin configs
