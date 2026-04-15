@@ -361,13 +361,40 @@ public sealed class QueryService(
 
     private async Task<Response> QueryCountersAsync(Query q, string? actor, CancellationToken ct)
     {
+        // Python runs the full query through table routing (users/roles/permissions/entries),
+        // then returns records=[] with total and returned counts in attributes.
+        // We route to the correct table's count method and compute returned from total/limit/offset.
+        var resp = await DispatchCountersTable(q, actor, ct);
+        return resp;
+    }
+
+    private async Task<Response> DispatchCountersTable(Query q, string? actor, CancellationToken ct)
+    {
+        var mgmt = settings.Value.ManagementSpace;
         var probe = new Locator(ResourceType.Content, q.SpaceName, q.Subpath ?? "/", "*");
         if (!await perms.CanReadAsync(actor, probe, ct))
             return Response.Fail("forbidden", "no read access for subpath");
 
-        var total = await entries.CountQueryAsync(q, ct);
-        // Python returns records=[] for counters, total in attributes.
-        return Response.Ok(Array.Empty<Record>(), new() { ["total"] = total, ["returned"] = 0 });
+        int total;
+        if (string.Equals(q.SpaceName, mgmt, StringComparison.Ordinal))
+        {
+            var sub = (q.Subpath ?? "/").TrimStart('/');
+            if (sub == "users" || sub.StartsWith("users/", StringComparison.Ordinal))
+                total = await users.CountQueryAsync(q, ct);
+            else if (sub == "roles" || sub.StartsWith("roles/", StringComparison.Ordinal))
+                total = await access.CountRolesQueryAsync(q, ct);
+            else if (sub == "permissions" || sub.StartsWith("permissions/", StringComparison.Ordinal))
+                total = await access.CountPermissionsQueryAsync(q, ct);
+            else
+                total = await entries.CountQueryAsync(q, ct);
+        }
+        else
+        {
+            total = await entries.CountQueryAsync(q, ct);
+        }
+
+        var returned = Math.Min(Math.Max(total - Math.Max(0, q.Offset), 0), Math.Max(1, q.Limit));
+        return Response.Ok(Array.Empty<Record>(), new() { ["total"] = total, ["returned"] = returned });
     }
 
     // ====================================================================

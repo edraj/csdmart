@@ -100,138 +100,585 @@ public static class QueryHelper
     // ====================================================================
     // REDISEARCH-STYLE SEARCH PARSING
     // ====================================================================
-    // Python regex: r'-?@[^:\s]+:"[^"]*"|-?@[^:\s]+:[^\s]+|\S+'
-    // Matches: -?@field:"quoted value" | -?@field:unquoted | plain_word
+    // Two-phase architecture matching Python's parser:
+    //   Phase 1: ParseSearchExpression → list of SearchGroups (handles parens, "and")
+    //   Phase 2: SQL generation from SearchGroups
+
+    // Token regex — extended to capture bracket ranges as a single token.
+    // Matches (in order): @field:[range] | @field:"quoted" | @field:value | plain_word
     private static readonly Regex SearchTokenRegex = new(
-        @"-?@[^:\s]+:""[^""]*""|-?@[^:\s]+:[^\s]+|\S+",
+        @"-?@[^:\s]+:\[[^\]]*\]|-?@[^:\s]+:""[^""]*""|-?@[^:\s]+:[^\s]+|\S+",
         RegexOptions.Compiled);
 
-    // Comparison operators at the start of a value: >=, <=, >, <, !
     private static readonly Regex ComparisonRegex = new(
         @"^(>=|<=|>|<|!)(.+)$", RegexOptions.Compiled);
 
-    private static void AppendSearchClauses(System.Text.StringBuilder sql, string search, List<NpgsqlParameter> args)
+    private static readonly Regex NumericRegex = new(
+        @"^-?\d+(?:\.\d+)?$", RegexOptions.Compiled);
+
+    private static readonly Regex RangeRegex = new(
+        @"^\[(.+?)[\s,](.+?)\]$", RegexOptions.Compiled);
+
+    // Known JSONB array columns across dmart tables.
+    private static readonly HashSet<string> JsonbArrayColumns = new(StringComparer.Ordinal)
+        { "tags", "roles", "groups", "query_policies" };
+
+    private static readonly HashSet<string> BooleanColumns = new(StringComparer.Ordinal)
+        { "is_active", "is_open" };
+
+    // ── Parsed search data structures ──────────────────────────────────
+
+    private sealed class SearchField
     {
-        var tokens = SearchTokenRegex.Matches(search);
-        if (tokens.Count == 0) return;
+        public List<string> Values { get; set; } = new();
+        public string Operation { get; set; } = "AND";   // AND | OR | RANGE
+        public bool Negative { get; set; }
+        public string ValueType { get; set; } = "string"; // string | numeric | boolean
+        public string? ComparisonOperator { get; set; }
+        public bool IsRange { get; set; }
+    }
 
-        var andClauses = new List<string>();
+    private sealed class SearchGroup
+    {
+        public Dictionary<string, SearchField> Fields { get; } = new(StringComparer.Ordinal);
+        public List<string> TextTerms { get; } = new();
+    }
 
-        foreach (Match token in tokens)
+    // ── Phase 1: Parse ─────────────────────────────────────────────────
+
+    private static List<SearchGroup> ParseSearchExpression(string search)
+    {
+        bool hasParens = search.Contains('(') || search.Contains(')');
+
+        if (!hasParens)
         {
-            var raw = token.Value;
-
-            // Check for @field:value pattern
-            if (raw.Contains('@') && raw.Contains(':'))
+            var tokens = SearchTokenRegex.Matches(search);
+            var fieldTokens = new List<string>();
+            var textTerms = new List<string>();
+            foreach (Match t in tokens)
             {
-                var negate = raw.StartsWith('-');
-                if (negate) raw = raw[1..];
+                var v = t.Value;
+                if (v.Equals("and", StringComparison.OrdinalIgnoreCase)) continue;
+                if (v.StartsWith('@') || v.StartsWith("-@"))
+                    fieldTokens.Add(v);
+                else
+                    textTerms.Add(v);
+            }
+            var group = new SearchGroup();
+            ParseSearchString(fieldTokens, group.Fields);
+            group.TextTerms.AddRange(textTerms);
+            return new List<SearchGroup> { group };
+        }
 
-                // Split on first ':'
-                var atIdx = raw.IndexOf('@');
-                var colonIdx = raw.IndexOf(':', atIdx);
-                if (colonIdx < 0) continue;
+        // Parentheses grouping: AND within group, OR between groups.
+        var normalized = search.Replace("(", " ( ").Replace(")", " ) ");
+        var allTokens = SearchTokenRegex.Matches(normalized);
 
-                var field = raw[(atIdx + 1)..colonIdx];
-                var value = raw[(colonIdx + 1)..].Trim('"');
+        var groups = new List<SearchGroup>();
+        var curFields = new List<string>();
+        var curText = new List<string>();
+        int depth = 0;
 
-                // Handle OR values (pipe-separated: @status:active|pending)
-                var orValues = value.Split('|', StringSplitOptions.RemoveEmptyEntries);
-                var orClauses = new List<string>();
+        void Flush()
+        {
+            if (curFields.Count == 0 && curText.Count == 0) return;
+            var g = new SearchGroup();
+            ParseSearchString(curFields, g.Fields);
+            g.TextTerms.AddRange(curText);
+            groups.Add(g);
+        }
 
-                foreach (var v in orValues)
+        foreach (Match tok in allTokens)
+        {
+            var v = tok.Value;
+            if (v == "(")
+            {
+                if (depth == 0) { Flush(); curFields.Clear(); curText.Clear(); }
+                depth++;
+                continue;
+            }
+            if (v == ")")
+            {
+                depth = Math.Max(0, depth - 1);
+                if (depth == 0) { Flush(); curFields.Clear(); curText.Clear(); }
+                continue;
+            }
+            if (v.Equals("and", StringComparison.OrdinalIgnoreCase)) continue;
+            if (v.StartsWith('@') || v.StartsWith("-@"))
+                curFields.Add(v);
+            else
+                curText.Add(v);
+        }
+        Flush();
+
+        return groups.Count > 0 ? groups : new List<SearchGroup> { new() };
+    }
+
+    private static void ParseSearchString(List<string> tokens, Dictionary<string, SearchField> result)
+    {
+        foreach (var token in tokens)
+        {
+            var raw = token;
+            var negative = raw.StartsWith("-@");
+            if (negative) raw = raw[1..]; // strip leading '-'
+
+            if (!raw.StartsWith('@')) continue;
+            var colonIdx = raw.IndexOf(':', 1);
+            if (colonIdx < 0) continue;
+
+            var field = raw[1..colonIdx];
+            var value = raw[(colonIdx + 1)..].Trim('"');
+
+            // Check comparison operator (only when ! or value is numeric)
+            string? compOp = null;
+            var compMatch = ComparisonRegex.Match(value);
+            if (compMatch.Success)
+            {
+                var potOp = compMatch.Groups[1].Value;
+                var potVal = compMatch.Groups[2].Value;
+                if (potOp == "!" || NumericRegex.IsMatch(potVal))
                 {
-                    var clause = BuildFieldClause(field, v.Trim(), args, negate);
-                    if (clause is not null) orClauses.Add(clause);
+                    compOp = potOp;
+                    value = potVal;
                 }
+            }
 
-                if (orClauses.Count > 0)
+            // Range: [v1 v2] or [v1,v2]
+            var rangeMatch = RangeRegex.Match(value);
+            if (rangeMatch.Success)
+            {
+                var v1 = rangeMatch.Groups[1].Value.Trim();
+                var v2 = rangeMatch.Groups[2].Value.Trim();
+                bool allNum = NumericRegex.IsMatch(v1) && NumericRegex.IsMatch(v2);
+                result[field] = new SearchField
                 {
-                    var combined = orClauses.Count == 1
-                        ? orClauses[0]
-                        : $"({string.Join(negate ? " AND " : " OR ", orClauses)})";
-                    andClauses.Add(combined);
+                    Values = new() { v1, v2 },
+                    Operation = "RANGE",
+                    Negative = negative,
+                    ValueType = allNum ? "numeric" : "string",
+                    IsRange = true,
+                };
+                continue;
+            }
+
+            // OR values (pipe)
+            var values = value.Split('|', StringSplitOptions.RemoveEmptyEntries)
+                .Select(v => v.Trim()).ToList();
+            var operation = values.Count > 1 ? "OR" : "AND";
+
+            // Detect value type
+            var valueType = "string";
+            bool allBool = values.All(v =>
+                v.Equals("true", StringComparison.OrdinalIgnoreCase) ||
+                v.Equals("false", StringComparison.OrdinalIgnoreCase));
+            bool allNumeric = values.All(v => NumericRegex.IsMatch(v));
+            if (allBool) valueType = "boolean";
+            else if (allNumeric) valueType = "numeric";
+
+            // Same-field accumulation (for `@k:v1 and @k:v2`)
+            if (result.TryGetValue(field, out var existing))
+            {
+                if (existing.Negative != negative)
+                {
+                    result[field] = new SearchField
+                    {
+                        Values = values, Operation = operation, Negative = negative,
+                        ValueType = valueType, ComparisonOperator = compOp,
+                    };
+                }
+                else
+                {
+                    existing.Values.AddRange(values);
+                    if (operation == "OR") existing.Operation = "OR";
                 }
             }
             else
             {
-                // Plain text search — substring match across common text fields.
-                // Python's RediSearch indexes all fields; we match by searching
-                // shortname + displayname + description + tags + payload text.
-                args.Add(new() { Value = $"%{raw}%" });
-                andClauses.Add(
+                result[field] = new SearchField
+                {
+                    Values = values, Operation = operation, Negative = negative,
+                    ValueType = valueType, ComparisonOperator = compOp,
+                };
+            }
+        }
+    }
+
+    // ── Phase 2: SQL generation ────────────────────────────────────────
+
+    private static void AppendSearchClauses(System.Text.StringBuilder sql, string search, List<NpgsqlParameter> args)
+    {
+        var groups = ParseSearchExpression(search);
+        var allGroupSql = new List<string>();
+
+        foreach (var group in groups)
+        {
+            var conditions = new List<string>();
+
+            foreach (var (field, data) in group.Fields)
+            {
+                var clause = BuildSearchFieldSql(field, data, args);
+                if (clause is not null) conditions.Add(clause);
+            }
+
+            foreach (var term in group.TextTerms)
+            {
+                args.Add(new() { Value = $"%{term}%" });
+                conditions.Add(
                     $"(shortname ILIKE ${args.Count} OR payload::text ILIKE ${args.Count} OR displayname::text ILIKE ${args.Count} OR description::text ILIKE ${args.Count} OR tags::text ILIKE ${args.Count})");
+            }
+
+            if (conditions.Count > 0)
+                allGroupSql.Add("(" + string.Join(" AND ", conditions) + ")");
+        }
+
+        if (allGroupSql.Count == 0) return;
+        if (allGroupSql.Count == 1)
+            sql.Append($"AND {allGroupSql[0]} ");
+        else
+            sql.Append($"AND ({string.Join(" OR ", allGroupSql)}) ");
+    }
+
+    // ── Field-level SQL builders ───────────────────────────────────────
+
+    private static string? BuildSearchFieldSql(string field, SearchField data, List<NpgsqlParameter> args)
+    {
+        if (data.Values.Count == 0) return null;
+
+        // Existence check: @k:* → IS NOT NULL,  -@k:* → IS NULL
+        if (data.Values.Count == 1 && data.Values[0] == "*" && !data.IsRange)
+        {
+            var nullCheck = data.Negative ? "IS NULL" : "IS NOT NULL";
+            if (field.StartsWith("payload.", StringComparison.Ordinal))
+            {
+                var parts = field["payload.".Length..].Split('.');
+                var arrowPath = string.Join("->", parts.Select(p => $"'{p}'"));
+                return $"payload::jsonb->{arrowPath} {nullCheck}";
+            }
+            return $"{field} {nullCheck}";
+        }
+
+        // Payload JSONB paths
+        if (field.StartsWith("payload.", StringComparison.Ordinal))
+            return BuildPayloadSql(field["payload.".Length..], data, args);
+
+        // JSONB array columns (tags, roles, groups, query_policies)
+        if (JsonbArrayColumns.Contains(field))
+            return BuildJsonbArraySql(field, data, args);
+
+        // Dotted path into a JSONB column (e.g. collaborators.user1)
+        if (field.Contains('.'))
+        {
+            var dot = field.IndexOf('.');
+            var col = field[..dot];
+            var sub = field[(dot + 1)..];
+
+            if (sub == "*")
+                return BuildWildcardTextSql(col, data, args);
+
+            var expr = BuildJsonbPath(col, sub);
+            return BuildScalarSql(expr, data, args);
+        }
+
+        // Boolean columns
+        if (BooleanColumns.Contains(field))
+            return BuildBooleanColumnSql(field, data, args);
+
+        // Default: direct column as text
+        return BuildScalarSql($"{field}::text", data, args);
+    }
+
+    // — Payload (JSONB) ————————————————————————————————————————————————
+
+    private static string? BuildPayloadSql(string path, SearchField data, List<NpgsqlParameter> args)
+    {
+        var parts = path.Split('.');
+
+        // Wildcard: payload.body.*  or  payload.*
+        if (parts.Contains("*"))
+        {
+            var wildcardIdx = Array.IndexOf(parts, "*");
+            string baseExpr;
+            if (wildcardIdx == 0)
+            {
+                baseExpr = "payload::jsonb";
+            }
+            else
+            {
+                var sb = new System.Text.StringBuilder("payload::jsonb");
+                for (int i = 0; i < wildcardIdx; i++) sb.Append($"->'{parts[i]}'");
+                baseExpr = sb.ToString();
+            }
+            return BuildWildcardTextSql($"({baseExpr})", data, args);
+        }
+
+        // Build extraction path:  payload::jsonb->'body'->'k'  (arrow form for typeof)
+        //                          payload::jsonb->'body'->>'k' (text extraction)
+        var arrowPath = string.Join("->", parts.Select(p => $"'{p}'"));
+        string textExtract;
+        if (parts.Length > 1)
+        {
+            var nested = string.Join("->", parts[..^1].Select(p => $"'{p}'"));
+            textExtract = $"payload::jsonb->{nested}->>'{parts[^1]}'";
+        }
+        else
+        {
+            textExtract = $"payload::jsonb->>'{parts[0]}'";
+        }
+
+        // Range query: BETWEEN
+        if (data.IsRange && data.Values.Count == 2)
+        {
+            var v1 = data.Values[0];
+            var v2 = data.Values[1];
+            if (data.ValueType == "numeric")
+            {
+                if (double.TryParse(v1, out var d1) && double.TryParse(v2, out var d2) && d1 > d2)
+                    (v1, v2) = (v2, v1);
+                args.Add(new() { Value = v1 });
+                var p1 = args.Count;
+                args.Add(new() { Value = v2 });
+                var p2 = args.Count;
+                var cond = $"(jsonb_typeof(payload::jsonb->{arrowPath}) = 'number' AND (payload::jsonb->{arrowPath})::float {(data.Negative ? "NOT " : "")}BETWEEN CAST(${p1} AS float) AND CAST(${p2} AS float))";
+                return cond;
+            }
+            // String/date range — lexicographic BETWEEN on text extraction
+            if (string.Compare(v1, v2, StringComparison.Ordinal) > 0) (v1, v2) = (v2, v1);
+            args.Add(new() { Value = v1 });
+            var sp1 = args.Count;
+            args.Add(new() { Value = v2 });
+            var sp2 = args.Count;
+            return $"({textExtract} {(data.Negative ? "NOT " : "")}BETWEEN ${sp1} AND ${sp2})";
+        }
+
+        // Type-aware value matching (mirrors Python's jsonb_typeof checks)
+        return BuildPayloadValueSql(arrowPath, textExtract, data, args);
+    }
+
+    private static string? BuildPayloadValueSql(
+        string arrowPath, string textExtract, SearchField data, List<NpgsqlParameter> args)
+    {
+        var conditions = new List<string>();
+        var compOp = data.ComparisonOperator;
+
+        if (data.ValueType == "boolean")
+        {
+            foreach (var v in data.Values)
+            {
+                var bv = v.Equals("true", StringComparison.OrdinalIgnoreCase);
+                args.Add(new() { Value = bv, NpgsqlDbType = NpgsqlDbType.Boolean });
+                var p = args.Count;
+                var eq = (data.Negative || compOp == "!") ? "!=" : "=";
+                conditions.Add(
+                    $"((jsonb_typeof(payload::jsonb->{arrowPath}) = 'boolean' AND ({textExtract})::boolean {eq} ${p}) OR " +
+                    $"(jsonb_typeof(payload::jsonb->{arrowPath}) = 'string' AND ({textExtract})::boolean {eq} ${p}))");
+            }
+            return JoinConditions(conditions, data.Operation, data.Negative);
+        }
+
+        foreach (var value in data.Values)
+        {
+            bool isNum = NumericRegex.IsMatch(value);
+
+            args.Add(new() { Value = value });
+            var pVal = args.Count;
+            args.Add(new() { Value = ToJsonArray(value) });
+            var pJsonArr = args.Count;
+
+            // Numeric comparison operator
+            if (isNum && compOp is not null)
+            {
+                var sqlOp = compOp switch { "!" => "!=", ">" => ">", ">=" => ">=", "<" => "<", "<=" => "<=", _ => "=" };
+                args.Add(new() { Value = double.Parse(value) });
+                var pNum = args.Count;
+                conditions.Add(
+                    $"(jsonb_typeof(payload::jsonb->{arrowPath}) = 'number' AND ({textExtract})::float {sqlOp} CAST(${pNum} AS float))");
+            }
+            else if (data.Negative || compOp == "!")
+            {
+                // Negation: NOT in array AND != as string
+                var arrayCond = $"(jsonb_typeof(payload::jsonb->{arrowPath}) = 'array' AND NOT (payload::jsonb->{arrowPath} @> CAST(${pJsonArr} AS jsonb)))";
+                var stringCond = $"(jsonb_typeof(payload::jsonb->{arrowPath}) = 'string' AND {textExtract} != ${pVal})";
+                if (isNum)
+                {
+                    args.Add(new() { Value = double.Parse(value) });
+                    var pNum = args.Count;
+                    var numCond = $"(jsonb_typeof(payload::jsonb->{arrowPath}) = 'number' AND ({textExtract})::float != CAST(${pNum} AS float))";
+                    conditions.Add($"({arrayCond} OR {stringCond} OR {numCond})");
+                }
+                else
+                {
+                    conditions.Add($"({arrayCond} OR {stringCond})");
+                }
+            }
+            else
+            {
+                // Positive match: in array OR == string OR direct jsonb match
+                var arrayCond = $"(jsonb_typeof(payload::jsonb->{arrowPath}) = 'array' AND payload::jsonb->{arrowPath} @> CAST(${pJsonArr} AS jsonb))";
+                var stringCond = $"(jsonb_typeof(payload::jsonb->{arrowPath}) = 'string' AND {textExtract} = ${pVal})";
+                args.Add(new() { Value = ToJsonString(value) });
+                var pJsonDirect = args.Count;
+                var directCond = $"(payload::jsonb->{arrowPath} = CAST(${pJsonDirect} AS jsonb))";
+
+                if (isNum)
+                {
+                    args.Add(new() { Value = double.Parse(value) });
+                    var pNum = args.Count;
+                    var numCond = $"(jsonb_typeof(payload::jsonb->{arrowPath}) = 'number' AND ({textExtract})::float = CAST(${pNum} AS float))";
+                    conditions.Add($"({arrayCond} OR {stringCond} OR {directCond} OR {numCond})");
+                }
+                else
+                {
+                    conditions.Add($"({arrayCond} OR {stringCond} OR {directCond})");
+                }
             }
         }
 
-        if (andClauses.Count > 0)
-            sql.Append($"AND ({string.Join(" AND ", andClauses)}) ");
+        return JoinConditions(conditions, data.Operation, data.Negative);
     }
 
-    // Builds a single field-level WHERE clause for @field:value.
-    // Python maps field paths to JSONB accessors: payload.body.email → payload::jsonb->'body'->>'email'
-    private static string? BuildFieldClause(string field, string value, List<NpgsqlParameter> args, bool negate)
+    // — JSONB array columns (tags, roles, groups) ——————————————————————
+
+    private static string? BuildJsonbArraySql(string column, SearchField data, List<NpgsqlParameter> args)
     {
-        // Check for comparison operator
-        string op = "ILIKE";
-        var compMatch = ComparisonRegex.Match(value);
-        if (compMatch.Success)
+        var conditions = new List<string>();
+        foreach (var value in data.Values)
         {
-            op = compMatch.Groups[1].Value switch
+            args.Add(new() { Value = value });
+            var pVal = args.Count;
+            args.Add(new() { Value = ToJsonArray(value) });
+            var pJson = args.Count;
+
+            if (data.Negative)
             {
-                ">" => ">",
-                ">=" => ">=",
-                "<" => "<",
-                "<=" => "<=",
-                "!" => "!=",
-                _ => "ILIKE",
-            };
-            value = compMatch.Groups[2].Value;
+                conditions.Add(
+                    $"((jsonb_typeof({column}) = 'array' AND NOT ({column} @> CAST(${pJson} AS jsonb))) OR " +
+                    $"(jsonb_typeof({column}) = 'object' AND NOT ({column}::text ILIKE '%' || ${pVal} || '%')))");
+            }
+            else
+            {
+                conditions.Add(
+                    $"((jsonb_typeof({column}) = 'array' AND {column} @> CAST(${pJson} AS jsonb)) OR " +
+                    $"(jsonb_typeof({column}) = 'object' AND {column}::text ILIKE '%' || ${pVal} || '%'))");
+            }
         }
+        return JoinConditions(conditions, data.Operation, data.Negative);
+    }
 
-        // Build the SQL expression for the field path.
-        // Fields starting with "payload.body." are JSONB paths into the payload column.
-        // Fields starting with "payload." are JSONB paths.
-        // Other fields are direct column references (displayname, shortname, etc.)
-        string fieldExpr;
-        if (field.StartsWith("payload.body.", StringComparison.Ordinal))
-        {
-            fieldExpr = BuildJsonbPath("payload", field["payload.".Length..]);
-        }
-        else if (field.StartsWith("payload.", StringComparison.Ordinal))
-        {
-            fieldExpr = BuildJsonbPath("payload", field["payload.".Length..]);
-        }
-        else if (field.Contains('.'))
-        {
-            // Generic dotted path — assume first segment is the column, rest is JSONB path
-            var dot = field.IndexOf('.');
-            var col = field[..dot];
-            fieldExpr = BuildJsonbPath(col, field[(dot + 1)..]);
-        }
-        else
-        {
-            // Direct column — cast to text for ILIKE compatibility
-            fieldExpr = $"{field}::text";
-        }
+    // — Wildcard text search on a JSONB subtree ———————————————————————
 
-        // Build the comparison
-        if (op == "ILIKE")
+    private static string? BuildWildcardTextSql(string baseExpr, SearchField data, List<NpgsqlParameter> args)
+    {
+        var conditions = new List<string>();
+        foreach (var value in data.Values)
         {
             args.Add(new() { Value = $"%{value}%" });
-            return negate
-                ? $"({fieldExpr} IS NULL OR {fieldExpr} NOT ILIKE ${args.Count})"
-                : $"{fieldExpr} ILIKE ${args.Count}";
+            conditions.Add(data.Negative
+                ? $"({baseExpr}::text NOT ILIKE ${args.Count})"
+                : $"({baseExpr}::text ILIKE ${args.Count})");
         }
-        else
+        return JoinConditions(conditions, data.Operation, data.Negative);
+    }
+
+    // — Boolean column ————————————————————————————————————————————————
+
+    private static string? BuildBooleanColumnSql(string column, SearchField data, List<NpgsqlParameter> args)
+    {
+        var conditions = new List<string>();
+        foreach (var value in data.Values)
         {
-            // Numeric/date comparison
-            args.Add(new() { Value = value });
-            var cast = op is ">" or ">=" or "<" or "<=" ? "::numeric" : "";
-            return negate
-                ? $"NOT ({fieldExpr}{cast} {op} ${args.Count}{cast})"
-                : $"{fieldExpr}{cast} {op} ${args.Count}{cast}";
+            var bv = value.Equals("true", StringComparison.OrdinalIgnoreCase);
+            args.Add(new() { Value = bv, NpgsqlDbType = NpgsqlDbType.Boolean });
+            var eq = (data.Negative || data.ComparisonOperator == "!") ? "!=" : "=";
+            conditions.Add($"(CAST({column} AS BOOLEAN) {eq} ${args.Count})");
         }
+        return JoinConditions(conditions, data.Operation, data.Negative);
+    }
+
+    // — Scalar text/numeric column ————————————————————————————————————
+
+    private static string? BuildScalarSql(string fieldExpr, SearchField data, List<NpgsqlParameter> args)
+    {
+        var compOp = data.ComparisonOperator;
+        var conditions = new List<string>();
+
+        // Range
+        if (data.IsRange && data.Values.Count == 2)
+        {
+            var v1 = data.Values[0];
+            var v2 = data.Values[1];
+            if (data.ValueType == "numeric")
+            {
+                if (double.TryParse(v1, out var d1) && double.TryParse(v2, out var d2) && d1 > d2)
+                    (v1, v2) = (v2, v1);
+                args.Add(new() { Value = v1 });
+                var p1 = args.Count;
+                args.Add(new() { Value = v2 });
+                var p2 = args.Count;
+                return $"(CAST({fieldExpr} AS FLOAT) {(data.Negative ? "NOT " : "")}BETWEEN CAST(${p1} AS float) AND CAST(${p2} AS float))";
+            }
+            if (string.Compare(v1, v2, StringComparison.Ordinal) > 0) (v1, v2) = (v2, v1);
+            args.Add(new() { Value = v1 });
+            var sp1 = args.Count;
+            args.Add(new() { Value = v2 });
+            var sp2 = args.Count;
+            return $"({fieldExpr} {(data.Negative ? "NOT " : "")}BETWEEN ${sp1} AND ${sp2})";
+        }
+
+        foreach (var value in data.Values)
+        {
+            if (compOp is not null && compOp != "!")
+            {
+                // Numeric comparison
+                args.Add(new() { Value = value });
+                var cast = "::numeric";
+                conditions.Add(data.Negative
+                    ? $"NOT ({fieldExpr}{cast} {compOp} ${args.Count}{cast})"
+                    : $"{fieldExpr}{cast} {compOp} ${args.Count}{cast}");
+            }
+            else if (data.Negative || compOp == "!")
+            {
+                args.Add(new() { Value = value });
+                conditions.Add($"{fieldExpr} != ${args.Count}");
+            }
+            else
+            {
+                // Default: exact match for non-payload text columns
+                args.Add(new() { Value = $"%{value}%" });
+                conditions.Add($"{fieldExpr} ILIKE ${args.Count}");
+            }
+        }
+        return JoinConditions(conditions, data.Operation, data.Negative);
+    }
+
+    // — JSON literal helpers (AOT-safe, no JsonSerializer) —————————————
+
+    private static string ToJsonArray(string value)
+    {
+        var escaped = value.Replace("\\", "\\\\").Replace("\"", "\\\"");
+        return $"[\"{escaped}\"]";
+    }
+
+    private static string ToJsonString(string value)
+    {
+        var escaped = value.Replace("\\", "\\\\").Replace("\"", "\\\"");
+        return $"\"{escaped}\"";
+    }
+
+    // — Join helpers ——————————————————————————————————————————————————
+
+    private static string? JoinConditions(List<string> conditions, string operation, bool negative)
+    {
+        if (conditions.Count == 0) return null;
+        if (conditions.Count == 1) return conditions[0];
+
+        // Python logic: when negative, swap AND↔OR for joining
+        string joinOp;
+        if (negative)
+            joinOp = operation == "AND" ? " OR " : " AND ";
+        else
+            joinOp = operation == "AND" ? " AND " : " OR ";
+
+        return "(" + string.Join(joinOp, conditions) + ")";
     }
 
     // Converts a dotted JSONB path like "body.user.email" into
