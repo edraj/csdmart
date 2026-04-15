@@ -443,6 +443,7 @@ for (var i = 0; i < serverArgs.Length - 1; i++)
 }
 
 var builder = WebApplication.CreateSlimBuilder(serverArgs);
+builder.Services.AddOpenApi();
 
 // All logging config from config.env — no appsettings.json needed.
 // LOG_FORMAT: "text" (default, human-readable) or "json" (structured JSON lines)
@@ -633,7 +634,22 @@ app.UseAuthorization();
 // Output is JSON when LOG_FORMAT=json in config.env.
 app.UseRequestLogging();
 
-app.MapGet("/", () => "dmart-csharp");
+app.MapOpenApi("/docs/openapi.json");
+app.MapGet("/docs", () => Results.Content("""
+<html>
+<head>
+    <link rel="stylesheet" href="https://unpkg.com/swagger-ui-dist/swagger-ui.css" />
+</head>
+<body>
+    <div id="swagger-ui"></div>
+    <script src="https://unpkg.com/swagger-ui-dist/swagger-ui-bundle.js"></script>
+    <script>
+        SwaggerUIBundle({ url: '/docs/openapi.json', dom_id: '#swagger-ui' });
+    </script>
+</body>
+</html>
+""", "text/html"));
+app.MapGet("/", () => Results.Content("{\"status\":\"success\",\"message\":\"DMART-CS API\"}", "application/json"));
 
 app.MapGroup("/managed").RequireAuthorization().MapManaged();
 app.MapGroup("/public").MapPublic();
