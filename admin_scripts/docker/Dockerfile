@@ -1,10 +1,10 @@
-# All-in-one Alpine container: dmart (AOT) + PostgreSQL + OpenRC
+# All-in-one Alpine container: dmart (AOT) + PostgreSQL
 #
 # Prerequisites: build CXB first: ./build-cxb.sh
 #
 # Usage:
 #   podman build -t dmart -f admin_scripts/docker/Dockerfile .
-#   podman run --name dmart -p 8000:8000 -d -it dmart
+#   podman run --name dmart -p 8000:8000 -d dmart
 
 ARG VERSION=unknown
 
@@ -18,30 +18,12 @@ RUN dotnet publish dmart.csproj -r linux-musl-x64 \
     && rm -f /out/*.dbg /out/*.pdb /out/*.Development.json \
              /out/*.staticwebassets* /out/*.deps.json
 
-# Stage 2: Minimal runtime with PostgreSQL + OpenRC
+# Stage 2: Minimal runtime
 FROM alpine:edge
 
-RUN set -eux \
-  # PostgreSQL + runtime essentials only
-  && apk add --no-cache \
-       postgresql18 postgresql18-contrib postgresql18-openrc \
-       openrc bash curl tzdata icu-libs krb5-libs \
-  # System user
-  && adduser -DH dmart \
-  # OpenRC container fixes
-  && sed -i 's/^\(tty\d\:\:\)/#\1/g' /etc/inittab \
-  && sed -i \
-     -e 's/#rc_sys=".*"/rc_sys="docker"/g' \
-     -e 's/#rc_env_allow=".*"/rc_env_allow="\*"/g' \
-     -e 's/#rc_crashed_stop=.*/rc_crashed_stop=NO/g' \
-     -e 's/#rc_crashed_start=.*/rc_crashed_start=YES/g' \
-     -e 's/#rc_provide=".*"/rc_provide="loopback net"/g' \
-     /etc/rc.conf \
-  && rm -f /etc/init.d/hwdrivers /etc/init.d/hwclock \
-     /etc/init.d/modules /etc/init.d/modules-load \
-     /etc/init.d/modloop /etc/init.d/machine-id \
-  && > /usr/libexec/rc/sh/rc-cgroup.sh \
-  && sed -i 's/VSERVER/DOCKER/Ig' /usr/libexec/rc/sh/init.sh
+RUN apk add --no-cache \
+      postgresql18 postgresql18-contrib \
+      bash curl tzdata icu-libs krb5-libs
 
 # Copy dmart binary + plugin configs
 COPY --from=build --chmod=755 /out/dmart /usr/bin/dmart
@@ -50,22 +32,14 @@ COPY --from=build /out/plugins/ /usr/lib/dmart/plugins/
 # CXB static files (pre-built locally via ./build-cxb.sh)
 COPY cxb/dist/client/ /usr/lib/dmart/cxb/
 
-# OpenRC service + entrypoint
-COPY admin_scripts/docker/dmart.sysv /etc/init.d/dmart
+# Entrypoint
 COPY --chmod=755 admin_scripts/docker/entrypoint.sh /entrypoint.sh
-RUN chmod +x /etc/init.d/dmart
 
-# Initialize dmart config + register services (no DB init — deferred to first run)
-RUN set -eux \
-  && dmart init \
-  # Override config.json to point to exposed port (8000)
+# Initialize dmart config (no DB init — deferred to first run via entrypoint)
+RUN dmart init \
   && printf '{\n  "title": "DMART Unified Data Platform",\n  "footer": "dmart.cc unified data platform",\n  "short_name": "dmart",\n  "display_name": "dmart",\n  "description": "dmart unified data platform",\n  "default_language": "en",\n  "languages": { "ar": "العربية", "en": "English" },\n  "backend": "http://localhost:8000",\n  "websocket": "ws://localhost:8000/ws"\n}\n' > /root/.dmart/config.json \
-  # dmart listens on 8000 directly — no reverse proxy needed
   && echo "LISTENING_PORT=8000" >> /root/.dmart/config.env \
-  && echo 'ALLOWED_CORS_ORIGINS="http://localhost:8000"' >> /root/.dmart/config.env \
-  # Register services with OpenRC
-  && rc-update add postgresql \
-  && rc-update add dmart
+  && echo 'ALLOWED_CORS_ORIGINS="http://localhost:8000"' >> /root/.dmart/config.env
 
 ENV DOTNET_SYSTEM_NET_SECURITY_DISABLEGSSAPIPAL=true
 

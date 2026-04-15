@@ -27,7 +27,7 @@ $ENGINE build \
     .
 
 # 3. Run the container
-$ENGINE run --name dmart -p 8000:8000 -d -it dmart
+$ENGINE run --name dmart -p 8000:8000 -d dmart
 
 echo ""
 echo "=== dmart container started ==="
@@ -41,5 +41,5 @@ echo "Check version:"
 echo "  $ENGINE exec -it dmart dmart -v"
 echo ""
 echo "View logs:"
-echo "  $ENGINE exec -it dmart cat /var/log/dmart-out"
-echo "  $ENGINE exec -it dmart cat /var/log/dmart-err"
+echo "  $ENGINE logs dmart"
+echo "  $ENGINE logs -f dmart   # follow"
