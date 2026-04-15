@@ -1019,9 +1019,9 @@ fi
 # ============================================================================
 # 61. Root endpoint returns server identifier
 # ============================================================================
-printf '%-45s' "Root returns dmart-csharp:" >&2
+printf '%-45s' "Root returns DMART identifier:" >&2
 ROOT_RESP=$(curl -s "$API_URL/")
-if [[ "$ROOT_RESP" == *"dmart"* ]]; then
+if echo "$ROOT_RESP" | grep -qi "dmart"; then
     ok
 else
     nope "$ROOT_RESP"

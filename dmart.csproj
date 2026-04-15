@@ -5,6 +5,7 @@
     <Nullable>enable</Nullable>
     <ImplicitUsings>enable</ImplicitUsings>
     <PublishAot>true</PublishAot>
+    <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
     <PublishSelfContained>true</PublishSelfContained>
     <!-- Required for ManifestEmbeddedFileProvider to enumerate embedded CXB assets -->
     <GenerateEmbeddedFilesManifest>true</GenerateEmbeddedFilesManifest>
@@ -17,6 +18,9 @@
     <Compile Remove="dmart.Tests/**" />
     <Content Remove="dmart.Tests/**" />
     <None Remove="dmart.Tests/**" />
+    <Compile Remove="custom_plugins_sdk/**" />
+    <Content Remove="custom_plugins_sdk/**" />
+    <None Remove="custom_plugins_sdk/**" />
   </ItemGroup>
 
   <ItemGroup>

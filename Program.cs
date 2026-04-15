@@ -10,6 +10,7 @@ using Dmart.Middleware;
 using Dmart.Models.Json;
 using Dmart.Plugins;
 using Dmart.Plugins.BuiltIn;
+using Dmart.Plugins.Native;
 using Dmart;
 using Dmart.Api;
 using Dmart.Services;
@@ -571,6 +572,9 @@ builder.Services.AddSingleton<IHookPlugin, SystemNotificationSenderPlugin>();
 builder.Services.AddSingleton<IHookPlugin, LocalNotificationPlugin>();
 builder.Services.AddSingleton<IHookPlugin, LdapManagerPlugin>();
 builder.Services.AddSingleton<IApiPlugin, DbSizeInfoPlugin>();
+
+// Native .so plugins from ~/.dmart/plugins/ — no rebuild needed.
+builder.Services.AddNativePlugins();
 
 // Per-request context
 builder.Services.AddScoped<RequestContext>();

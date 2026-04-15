@@ -3,6 +3,7 @@ using System.Text.Json.Serialization;
 using Dmart.Models.Api;
 using Dmart.Models.Core;
 using Dmart.Models.Enums;
+using Dmart.Plugins.Native;
 
 namespace Dmart.Models.Json;
 
@@ -70,4 +71,6 @@ namespace Dmart.Models.Json;
 [JsonSerializable(typeof(Dictionary<string, List<string>>))]
 [JsonSerializable(typeof(Dictionary<string, List<Record>>))]
 [JsonSerializable(typeof(Dictionary<string, string>))]
+[JsonSerializable(typeof(Event))]
+[JsonSerializable(typeof(NativeApiRequest))]
 public partial class DmartJsonContext : JsonSerializerContext;

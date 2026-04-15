@@ -71,41 +71,48 @@ public sealed class PluginManager(
     // an empty dispatch table — that's a valid state.
     public async Task LoadAsync(CancellationToken ct = default)
     {
-        // Search order: CWD (dotnet run), binary dir (publish), /usr/lib/dmart (RPM)
+        // Scan ALL existing plugin directories and merge configs.
+        // Built-in plugins, RPM-installed, and user plugins (~/.dmart/plugins/).
+        var home = Environment.GetFolderPath(Environment.SpecialFolder.UserProfile);
         var candidates = new[]
         {
             Path.Combine(Directory.GetCurrentDirectory(), "plugins"),
             Path.Combine(AppContext.BaseDirectory, "plugins"),
             "/usr/lib/dmart/plugins",
+            string.IsNullOrEmpty(home) ? "" : Path.Combine(home, ".dmart", "plugins"),
         };
-        var root = candidates.FirstOrDefault(Directory.Exists);
-        if (root is null)
-        {
-            log.LogInformation("plugins dir not found (searched: {Paths}) — no plugins loaded",
-                string.Join(", ", candidates));
-            return;
-        }
 
         var configs = new List<PluginWrapper>();
-        foreach (var dir in Directory.EnumerateDirectories(root))
+        var scanned = false;
+
+        foreach (var root in candidates)
         {
-            var configPath = Path.Combine(dir, "config.json");
-            if (!File.Exists(configPath)) continue;
-            try
+            if (string.IsNullOrEmpty(root) || !Directory.Exists(root)) continue;
+            scanned = true;
+
+            foreach (var dir in Directory.EnumerateDirectories(root))
             {
-                var bytes = await File.ReadAllBytesAsync(configPath, ct);
-                var wrapper = JsonSerializer.Deserialize(bytes, DmartJsonContext.Default.PluginWrapper);
-                if (wrapper is null) continue;
-                // Python overwrites shortname with the directory basename. Mirror
-                // that so config files don't have to spell it twice.
-                wrapper.Shortname = Path.GetFileName(dir);
-                configs.Add(wrapper);
-            }
-            catch (Exception ex)
-            {
-                log.LogError(ex, "PLUGIN_ERROR: failed to parse {Config}", configPath);
+                var configPath = Path.Combine(dir, "config.json");
+                if (!File.Exists(configPath)) continue;
+                try
+                {
+                    var bytes = await File.ReadAllBytesAsync(configPath, ct);
+                    var wrapper = JsonSerializer.Deserialize(bytes, DmartJsonContext.Default.PluginWrapper);
+                    if (wrapper is null) continue;
+                    wrapper.Shortname = Path.GetFileName(dir);
+                    // Skip duplicates (first occurrence wins)
+                    if (configs.Any(c => c.Shortname == wrapper.Shortname)) continue;
+                    configs.Add(wrapper);
+                }
+                catch (Exception ex)
+                {
+                    log.LogError(ex, "PLUGIN_ERROR: failed to parse {Config}", configPath);
+                }
             }
         }
+
+        if (!scanned)
+            log.LogInformation("plugins dir not found — no plugins loaded");
 
         Register(configs);
     }
