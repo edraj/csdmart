@@ -1,0 +1,67 @@
+name: Release RPMs
+
+on:
+  release:
+    types: [created]
+
+permissions:
+  contents: write
+
+jobs:
+  build-fedora-rpm:
+    name: Build Fedora RPM
+    runs-on: self-hosted
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0  # full history for git describe
+
+      - name: Build CXB frontend
+        run: |
+          if [ -f cxb/package.json ]; then
+            cd cxb && yarn install && yarn build && cd ..
+          fi
+
+      - name: Build Fedora RPM
+        run: |
+          VERSION="${GITHUB_REF_NAME#v}"
+          VERSION="${VERSION:-0.1.0}"
+          VERSION="$VERSION" ./dist/build-rpm.sh
+
+      - name: Upload Fedora RPM to release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          RPM=$(ls dist/out/*fc*.x86_64.rpm 2>/dev/null | head -1)
+          if [ -n "$RPM" ]; then
+            gh release upload "$GITHUB_REF_NAME" "$RPM" --clobber
+          fi
+
+  build-el9-rpm:
+    name: Build RHEL 9 RPM
+    runs-on: self-hosted
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Build CXB frontend
+        run: |
+          if [ -f cxb/package.json ]; then
+            cd cxb && yarn install && yarn build && cd ..
+          fi
+
+      - name: Build EL9 RPM via podman
+        run: |
+          VERSION="${GITHUB_REF_NAME#v}"
+          VERSION="${VERSION:-0.1.0}"
+          VERSION="$VERSION" ./dist/build-rpm.sh el9
+
+      - name: Upload EL9 RPM to release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          RPM=$(ls dist/out/*el9*.x86_64.rpm 2>/dev/null | head -1)
+          if [ -n "$RPM" ]; then
+            gh release upload "$GITHUB_REF_NAME" "$RPM" --clobber
+          fi
