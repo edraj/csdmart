@@ -1,0 +1,134 @@
+---
+# Deploy dmart RPM to Fedora and RHEL 9 servers.
+#
+# Usage:
+#   # Build RPMs first
+#   ./dist/build-rpm.sh          # Fedora
+#   ./dist/build-rpm.sh el9      # RHEL 9
+#
+#   # Deploy
+#   cd admin_scripts/ansible
+#   ansible-playbook -i inventory.ini deploy.yml
+#
+#   # Deploy to specific group
+#   ansible-playbook -i inventory.ini deploy.yml --limit fedora
+#   ansible-playbook -i inventory.ini deploy.yml --limit el9
+
+- name: Deploy dmart to Fedora servers
+  hosts: fedora
+  become: true
+  vars:
+    rpm_pattern: "{{ dmart_rpm_dir }}/dmart-*fc*.x86_64.rpm"
+  tasks:
+    - name: Find Fedora RPM
+      delegate_to: localhost
+      become: false
+      find:
+        paths: "{{ dmart_rpm_dir }}"
+        patterns: "dmart-*fc*.x86_64.rpm"
+      register: fedora_rpms
+
+    - name: Fail if no Fedora RPM found
+      fail:
+        msg: "No Fedora RPM found in {{ dmart_rpm_dir }}. Run ./dist/build-rpm.sh first."
+      when: fedora_rpms.files | length == 0
+
+    - name: Copy RPM to server
+      copy:
+        src: "{{ (fedora_rpms.files | sort(attribute='mtime') | last).path }}"
+        dest: /tmp/dmart.rpm
+
+    - name: Reinstall RPM (force upgrade/downgrade)
+      command: dnf install -y --allowerasing /tmp/dmart.rpm
+      register: dnf_result
+      changed_when: "'Complete!' in dnf_result.stdout"
+
+    # - name: Ensure config.env exists
+    #   copy:
+    #     src: /usr/share/dmart/config.env.sample
+    #     dest: /etc/dmart/config.env
+    #     remote_src: true
+    #     force: false
+    #     owner: root
+    #     group: dmart
+    #     mode: "0640"
+
+    # - name: Enable and restart dmart
+    #   systemd:
+    #     name: dmart
+    #     enabled: true
+    #     state: restarted
+    #     daemon_reload: true
+    #
+    # - name: Wait for dmart to be ready
+    #   uri:
+    #     url: "http://127.0.0.1:{{ dmart_port | default(5099) }}/"
+    #     status_code: 200
+    #   register: health
+    #   retries: 10
+    #   delay: 2
+    #   until: health.status == 200
+
+    - name: Clean up RPM
+      file:
+        path: /tmp/dmart.rpm
+        state: absent
+
+
+- name: Deploy dmart to RHEL 9 servers
+  hosts: el9
+  become: true
+  tasks:
+    - name: Find EL9 RPM
+      delegate_to: localhost
+      become: false
+      find:
+        paths: "{{ dmart_rpm_dir }}"
+        patterns: "dmart-*el9*.x86_64.rpm"
+      register: el9_rpms
+
+    - name: Fail if no EL9 RPM found
+      fail:
+        msg: "No EL9 RPM found in {{ dmart_rpm_dir }}. Run ./dist/build-rpm.sh el9 first."
+      when: el9_rpms.files | length == 0
+
+    - name: Copy RPM to server
+      copy:
+        src: "{{ (el9_rpms.files | sort(attribute='mtime') | last).path }}"
+        dest: /tmp/dmart.rpm
+
+    - name: Reinstall RPM (force upgrade/downgrade)
+      command: dnf install -y --allowerasing /tmp/dmart.rpm
+      register: dnf_result
+      changed_when: "'Complete!' in dnf_result.stdout"
+
+    # - name: Ensure config.env exists
+    #   copy:
+    #     src: /usr/share/dmart/config.env.sample
+    #     dest: /etc/dmart/config.env
+    #     remote_src: true
+    #     force: false
+    #     owner: root
+    #     group: dmart
+    #     mode: "0640"
+    #
+    # - name: Enable and restart dmart
+    #   systemd:
+    #     name: dmart
+    #     enabled: true
+    #     state: restarted
+    #     daemon_reload: true
+    #
+    # - name: Wait for dmart to be ready
+    #   uri:
+    #     url: "http://127.0.0.1:{{ dmart_port | default(5099) }}/"
+    #     status_code: 200
+    #   register: health
+    #   retries: 10
+    #   delay: 2
+    #   until: health.status == 200
+
+    - name: Clean up RPM
+      file:
+        path: /tmp/dmart.rpm
+        state: absent
