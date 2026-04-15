@@ -12,6 +12,10 @@ Source0:        %{name}-%{version}.tar.gz
 # No auto-dependency detection — the AOT binary is self-contained
 AutoReqProv:    no
 
+BuildRequires:  dotnet-sdk-10.0
+BuildRequires:  clang
+BuildRequires:  zlib-devel
+
 Requires:       postgresql-server
 Requires(pre):  shadow-utils
 
@@ -23,9 +27,17 @@ built-in plugin configurations, and a systemd service unit.
 %prep
 %setup -q
 
+%build
+# Build AOT native binary from source
+dotnet publish dmart.csproj -r linux-x64 \
+    -p:PublishAot=true \
+    -p:StripSymbols=true \
+    -c Release \
+    -o %{_builddir}/%{name}-%{version}/out
+
 %install
-# Binaries
-install -D -m 0755 dmart       %{buildroot}/usr/bin/dmart
+# Binary
+install -D -m 0755 out/dmart %{buildroot}/usr/bin/dmart
 
 # Plugin configs
 for dir in plugins/*/; do
