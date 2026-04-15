@@ -5,12 +5,8 @@ namespace Dmart.Config;
 // code somewhere — we don't mirror Python fields that have no C# consumer yet.
 //
 // Config sources, in override order (later wins):
-//   1. {BaseDir}/appsettings.json
-//   2. config.env (loaded via DotEnv.Load() — Python-compatible lookup order)
-//   3. Environment variables (Dmart__Xxx via the standard EnvironmentVariables
-//      provider)
-//   4. appsettings.{Environment}.json
-// See Program.cs for the provider order.
+//   1. config.env ($BACKEND_ENV → ./config.env → ~/.dmart/config.env)
+//   2. Environment variables (Dmart__Xxx)
 public sealed class DmartSettings
 {
     public string SpacesRoot { get; set; } = "./spaces";
@@ -43,10 +39,10 @@ public sealed class DmartSettings
     public string DefaultLanguage { get; set; } = "en";
     public bool EnableSqlBackend { get; set; }
 
-    // First-run admin bootstrap. If AdminShortname is set and the user doesn't
-    // exist, a super_admin role + admin user are created on startup.
-    public string AdminShortname { get; set; } = "dmart";
-    public string AdminPassword { get; set; } = "dmart";
+    // Admin user "dmart" is created on first startup. Passwordless by default —
+    // use `dmart set_password` to set the password. If AdminPassword is set in
+    // config.env, the bootstrap hashes and stores it (used by tests and CI).
+    public string? AdminPassword { get; set; }
     public string? AdminEmail { get; set; }
 
     // count_history snapshot cadence (in minutes). Set to a large value to
@@ -114,7 +110,8 @@ public sealed class DmartSettings
     // (ALLOWED_CORS_ORIGINS="http://a.com,http://b.com") and appsettings.json
     // ("AllowedCorsOrigins": "http://a.com,http://b.com"). The middleware
     // splits on commas at request time, trimming whitespace.
-    public string AllowedCorsOrigins { get; set; } = "*";
+    // MUST be configured for production. Empty = same-host only fallback.
+    public string AllowedCorsOrigins { get; set; } = "";
 
     // URL path prefix for the CXB frontend. Python default: "/cxb".
     // Change to "/" to serve CXB at the root, or "/admin" for a custom path.

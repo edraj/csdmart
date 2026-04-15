@@ -100,7 +100,7 @@ public static class RequestHandler
                                         UserShortname = actor,
                                     });
                                 }
-                                catch { /* plugin errors don't fail the request */ }
+                                catch (Exception ex) { Console.Error.WriteLine($"WARN: after-action plugin error: {ex.Message}"); }
                             }, CancellationToken.None);
                         }
                     }

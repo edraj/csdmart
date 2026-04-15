@@ -792,7 +792,7 @@ public static class QueryHelper
         while (await reader.ReadAsync(ct))
         {
             try { results.Add(hydrate(reader)); }
-            catch { /* skip row with bad data */ }
+            catch (Exception ex) { Console.Error.WriteLine($"WARN: skipped row with bad data: {ex.Message}"); }
         }
         return results;
     }

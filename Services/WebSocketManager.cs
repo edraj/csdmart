@@ -62,21 +62,11 @@ public sealed class WsConnectionManager
 
     public void RemoveAllSubscriptions(string userShortname)
     {
-        foreach (var (_, users) in _channels)
-        {
-            // ConcurrentBag doesn't have Remove — rebuild without this user.
-            // Acceptable because subscription changes are rare relative to messages.
-            var filtered = new ConcurrentBag<string>(users.Where(u => u != userShortname));
-            // No atomic swap on ConcurrentDictionary values — tolerable for this use case.
-        }
-        // Simpler approach: rebuild affected channels
         foreach (var key in _channels.Keys.ToArray())
         {
-            if (_channels.TryGetValue(key, out var users))
-            {
-                var filtered = new ConcurrentBag<string>(users.Where(u => u != userShortname));
-                _channels[key] = filtered;
-            }
+            _channels.AddOrUpdate(key,
+                _ => new ConcurrentBag<string>(),
+                (_, users) => new ConcurrentBag<string>(users.Where(u => u != userShortname)));
         }
     }
 

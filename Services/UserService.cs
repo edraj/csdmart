@@ -75,13 +75,16 @@ public sealed class UserService(
             return Result<(string, string, User)>.Fail("invalid_credentials", "incorrect password");
         }
 
-        // Device lock check for mobile users.
-        if (user.Type == UserType.Mobile
-            && !string.IsNullOrEmpty(user.DeviceId)
+        // Device lock check — applies regardless of user type.
+        if (user.LockedToDevice && !string.IsNullOrEmpty(user.DeviceId)
             && (string.IsNullOrEmpty(req.DeviceId) || req.DeviceId != user.DeviceId))
         {
-            if (user.LockedToDevice)
-                return Result<(string, string, User)>.Fail("inactive", "account locked to a unique device");
+            return Result<(string, string, User)>.Fail("inactive", "account locked to a unique device");
+        }
+        // New device detection for mobile users (OTP required).
+        if (user.Type == UserType.Mobile && !string.IsNullOrEmpty(user.DeviceId)
+            && !string.IsNullOrEmpty(req.DeviceId) && req.DeviceId != user.DeviceId)
+        {
             return Result<(string, string, User)>.Fail("invalid_otp", "new device detected, login with otp");
         }
 

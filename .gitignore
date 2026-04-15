@@ -27,9 +27,6 @@ publish/
 
 
 # Secrets
-appsettings.*.json
-!appsettings.json
-!appsettings.Development.json
 
 # CXB frontend build artifacts (source is committed, dist is rebuilt)
 cxb/node_modules/

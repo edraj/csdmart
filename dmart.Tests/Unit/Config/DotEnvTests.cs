@@ -179,7 +179,7 @@ public class DotEnvTests
             s.DatabasePassword.ShouldBe("s3cret");
             s.DatabaseName.ShouldBe("dmart_prod");
             s.JwtSecret.ShouldBe("test-secret-test-secret-test-secret-32");
-            s.AdminShortname.ShouldBe("alice");
+            // AdminShortname removed — hardcoded to "dmart" in AdminBootstrap
         }
         finally { File.Delete(tmp); }
     }

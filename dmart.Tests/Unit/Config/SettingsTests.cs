@@ -26,7 +26,6 @@ public class SettingsTests
             {
                 ["Dmart:JwtSecret"] = "test-secret-test-secret-test-secret-32",
                 ["Dmart:JwtAccessMinutes"] = "30",
-                ["Dmart:AdminShortname"] = "alice",
                 ["Dmart:AdminPassword"] = "hunter22hunter",
             })
             .Build();
@@ -34,7 +33,6 @@ public class SettingsTests
         cfg.GetSection("Dmart").Bind(s);
         s.JwtSecret.ShouldBe("test-secret-test-secret-test-secret-32");
         s.JwtAccessMinutes.ShouldBe(30);
-        s.AdminShortname.ShouldBe("alice");
         s.AdminPassword.ShouldBe("hunter22hunter");
     }
 }

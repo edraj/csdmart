@@ -130,7 +130,7 @@ switch (subcommand)
     {
         // Print effective DmartSettings as colorized JSON (masks secrets).
         var cfgBuilder = new ConfigurationBuilder();
-        cfgBuilder.AddJsonFile("appsettings.json", optional: true);
+
         if (dotenvPath is not null) cfgBuilder.AddInMemoryCollection(dotenvValues);
         cfgBuilder.AddEnvironmentVariables();
         var cfg = cfgBuilder.Build();
@@ -154,7 +154,7 @@ switch (subcommand)
             w.WriteString("jwt_audience", s.JwtAudience);
             w.WriteNumber("jwt_access_minutes", s.JwtAccessMinutes);
             w.WriteNumber("jwt_refresh_days", s.JwtRefreshDays);
-            w.WriteString("admin_shortname", s.AdminShortname);
+            w.WriteString("admin_shortname", "dmart");
             w.WriteBoolean("is_registrable", s.IsRegistrable);
             w.WriteNumber("max_failed_login_attempts", s.MaxFailedLoginAttempts);
             w.WriteNumber("max_sessions_per_user", s.MaxSessionsPerUser);
@@ -184,7 +184,7 @@ switch (subcommand)
 
         // Build minimal DI to get Db + UserRepository + PasswordHasher
         var cfgBuilder = new ConfigurationBuilder();
-        cfgBuilder.AddJsonFile("appsettings.json", optional: true);
+
         if (dotenvPath is not null) cfgBuilder.AddInMemoryCollection(dotenvValues);
         cfgBuilder.AddEnvironmentVariables();
         var cfg = cfgBuilder.Build();
@@ -218,7 +218,7 @@ switch (subcommand)
         // Run health checks — mirrors Python's check subcommand.
         var space = serverArgs.Length > 0 ? serverArgs[0] : null;
         var cfgBuilder = new ConfigurationBuilder();
-        cfgBuilder.AddJsonFile("appsettings.json", optional: true);
+
         if (dotenvPath is not null) cfgBuilder.AddInMemoryCollection(dotenvValues);
         cfgBuilder.AddEnvironmentVariables();
         var cfg = cfgBuilder.Build();
@@ -272,7 +272,7 @@ switch (subcommand)
         if (!output.EndsWith(".zip", StringComparison.OrdinalIgnoreCase)) output += ".zip";
 
         var cfgBuilder = new ConfigurationBuilder();
-        cfgBuilder.AddJsonFile("appsettings.json", optional: true);
+
         if (dotenvPath is not null) cfgBuilder.AddInMemoryCollection(dotenvValues);
         cfgBuilder.AddEnvironmentVariables();
         var cfg = cfgBuilder.Build();
@@ -335,26 +335,28 @@ switch (subcommand)
         if (!File.Exists(configEnvPath))
         {
             var sampleConfig = Path.Combine(AppContext.BaseDirectory, "config.env.sample");
+            var jwtSecret = Convert.ToHexString(System.Security.Cryptography.RandomNumberGenerator.GetBytes(32));
             if (File.Exists(sampleConfig))
-                File.Copy(sampleConfig, configEnvPath);
+            {
+                // Copy sample and replace the placeholder JWT secret with a random one
+                var content = File.ReadAllText(sampleConfig);
+                content = content.Replace("change-me-change-me-change-me-32b-minimum-length", jwtSecret);
+                File.WriteAllText(configEnvPath, content);
+            }
             else
-                File.WriteAllText(configEnvPath, """
-                    # dmart server configuration
-                    # See config.env.sample for all available settings
-                    APP_NAME="dmart"
-                    APP_URL="http://127.0.0.1:5099"
-                    LISTENING_HOST="0.0.0.0"
-                    LISTENING_PORT=5099
-                    DATABASE_HOST="localhost"
-                    DATABASE_PORT=5432
-                    DATABASE_USERNAME="dmart"
-                    DATABASE_PASSWORD="somepassword"
-                    DATABASE_NAME="dmart"
-                    JWT_SECRET="change-me-change-me-change-me-32b-minimum-length"
-                    ADMIN_SHORTNAME="dmart"
-                    ADMIN_PASSWORD="change-me-on-first-login"
-
-                    """.Replace("                    ", ""));
+                File.WriteAllText(configEnvPath,
+                    "# dmart server configuration\n" +
+                    "APP_NAME=\"dmart\"\n" +
+                    "APP_URL=\"http://127.0.0.1:5099\"\n" +
+                    "LISTENING_HOST=\"0.0.0.0\"\n" +
+                    "LISTENING_PORT=5099\n" +
+                    "DATABASE_HOST=\"localhost\"\n" +
+                    "DATABASE_PORT=5432\n" +
+                    "DATABASE_USERNAME=\"dmart\"\n" +
+                    "DATABASE_PASSWORD=\"somepassword\"\n" +
+                    "DATABASE_NAME=\"dmart\"\n" +
+                    $"JWT_SECRET=\"{jwtSecret}\"\n" +
+                    "# Admin user 'dmart' is created passwordless. Set password via: dmart set_password\n");
             Console.WriteLine($"  Created {configEnvPath}");
         }
         else
@@ -446,7 +448,7 @@ for (var i = 0; i < serverArgs.Length - 1; i++)
 var builder = WebApplication.CreateSlimBuilder(serverArgs);
 builder.Services.AddOpenApi();
 
-// All logging config from config.env — no appsettings.json needed.
+// All logging config from config.env.
 // LOG_FORMAT: "text" (default, human-readable) or "json" (structured JSON lines)
 //             When running under systemd, "json" is recommended — journald captures
 //             it natively and you can filter with: journalctl -u dmart -o json
@@ -461,11 +463,11 @@ builder.Services.AddOpenApi();
     var logFile = dmartCfg["LogFile"] ?? dotenvValues.GetValueOrDefault("Dmart:LogFile") ?? "";
     var logLevelStr = dmartCfg["LogLevel"] ?? dotenvValues.GetValueOrDefault("Dmart:LogLevel") ?? "information";
 
-    // Set minimum log level from config.env (replaces appsettings.json Logging section).
+    // Set minimum log level from config.env.
     if (Enum.TryParse<LogLevel>(logLevelStr, ignoreCase: true, out var minLevel))
         builder.Logging.SetMinimumLevel(minLevel);
 
-    // Suppress noisy ASP.NET framework logs (previously in appsettings.json).
+    // Suppress noisy ASP.NET framework logs.
     builder.Logging.AddFilter("Microsoft.AspNetCore", LogLevel.Warning);
     builder.Logging.AddFilter("Microsoft.Hosting.Lifetime", LogLevel.Information);
 
@@ -582,6 +584,9 @@ builder.Services.AddScoped<RequestContext>();
 // GZip compression
 builder.Services.AddResponseCompression(o => { o.EnableForHttps = true; });
 
+// Global request body size limit (50 MB)
+builder.WebHost.ConfigureKestrel(k => k.Limits.MaxRequestBodySize = 50 * 1024 * 1024);
+
 var app = builder.Build();
 
 // Exception handler
@@ -590,11 +595,15 @@ app.Use(async (ctx, next) =>
     try { await next(); }
     catch (Exception ex)
     {
+        var cid = ctx.Response.Headers["X-Correlation-ID"].ToString();
+        var logger = ctx.RequestServices.GetService<ILoggerFactory>()?.CreateLogger("ExceptionHandler");
+        logger?.LogError(ex, "Unhandled exception cid={Cid}", cid);
         if (!ctx.Response.HasStarted)
         {
             ctx.Response.StatusCode = StatusCodes.Status500InternalServerError;
             ctx.Response.ContentType = "application/json";
-            var body = Dmart.Models.Api.Response.Fail("internal_error", ex.Message, "exception");
+            var body = Dmart.Models.Api.Response.Fail("internal_error",
+                $"An internal error occurred. Reference: {cid}", "exception");
             await ctx.Response.WriteAsJsonAsync(body, DmartJsonContext.Default.Response);
         }
     }

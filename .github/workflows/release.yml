@@ -1,4 +1,4 @@
-name: Release RPMs
+name: Release
 
 on:
   release:
@@ -6,6 +6,7 @@ on:
 
 permissions:
   contents: write
+  packages: write
 
 jobs:
   build-srpm:
@@ -94,3 +95,50 @@ jobs:
           if [ -n "$RPM" ]; then
             gh release upload "$GITHUB_REF_NAME" "$RPM" --clobber
           fi
+
+  build-container:
+    name: Build & Push Container Image
+    runs-on: self-hosted
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Build CXB frontend
+        run: |
+          if [ -f cxb/package.json ]; then
+            cd cxb && yarn install && yarn build && cd ..
+          fi
+
+      - name: Set version
+        id: version
+        run: |
+          VERSION="${GITHUB_REF_NAME#v}"
+          echo "version=${VERSION:-0.1.0}" >> "$GITHUB_OUTPUT"
+
+      - name: Login to GitHub Container Registry
+        run: |
+          echo "${{ secrets.GITHUB_TOKEN }}" | podman login ghcr.io -u "${{ github.actor }}" --password-stdin
+
+      - name: Build all-in-one container image
+        run: |
+          podman build \
+            -t ghcr.io/${{ github.repository }}:${{ steps.version.outputs.version }} \
+            -t ghcr.io/${{ github.repository }}:latest \
+            -f admin_scripts/docker/Dockerfile \
+            --build-arg VERSION=${{ steps.version.outputs.version }} \
+            .
+
+      - name: Push container image
+        run: |
+          podman push ghcr.io/${{ github.repository }}:${{ steps.version.outputs.version }}
+          podman push ghcr.io/${{ github.repository }}:latest
+
+      - name: Print image info
+        run: |
+          echo "Pushed:"
+          echo "  ghcr.io/${{ github.repository }}:${{ steps.version.outputs.version }}"
+          echo "  ghcr.io/${{ github.repository }}:latest"
+          echo ""
+          echo "Run with:"
+          echo "  podman run --name dmart -p 8000:8000 -d -it ghcr.io/${{ github.repository }}:${{ steps.version.outputs.version }}"

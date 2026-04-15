@@ -122,11 +122,11 @@ public sealed class EntryService(
         if (!await perms.CanUpdateAsync(actor, locator, PermissionService.FromEntry(existing), patch, ct))
             return Result<Entry>.Fail("forbidden", "no update access");
 
-        // If the patch updates the payload body, re-run schema validation.
-        var validationError = await ValidatePayloadAsync(existing, ct);
-        if (validationError is not null) return Result<Entry>.Fail("invalid_data", validationError);
-
         var merged = ApplyPatch(existing, patch);
+
+        // Validate the MERGED entry (not the old one) so patches can't bypass schema rules.
+        var validationError = await ValidatePayloadAsync(merged, ct);
+        if (validationError is not null) return Result<Entry>.Fail("invalid_data", validationError);
 
         var beforeEvent = BuildEvent(merged, ActionType.Update, actor);
         try { await plugins.BeforeActionAsync(beforeEvent, ct); }

@@ -13,11 +13,9 @@ public static class JwtBearerSetup
         services.AddAuthentication(JwtBearerDefaults.AuthenticationScheme).AddJwtBearer();
 
         // Bind JwtBearerOptions LAZILY against IOptions<DmartSettings> so the secret
-        // resolves AFTER any test/in-memory config sources have been merged into
-        // builder.Configuration. Reading cfg directly at AddDmartAuth-time would bake
-        // in the original appsettings.json value before WebApplicationFactory adds its
-        // overrides — that mismatch is what made the JWT validator reject tokens that
-        // JwtIssuer signed with the test secret.
+        // resolves AFTER any test/in-memory config sources have been merged.
+        // Reading cfg directly here would bake in the config.env value before
+        // WebApplicationFactory adds its test overrides.
         services.AddOptions<JwtBearerOptions>(JwtBearerDefaults.AuthenticationScheme)
             .Configure<IOptions<DmartSettings>>((bearer, dmartOpts) =>
             {
@@ -29,8 +27,10 @@ public static class JwtBearerSetup
                 }
                 var signingKey = new SymmetricSecurityKey(Encoding.UTF8.GetBytes(s.JwtSecret));
 
-                bearer.RequireHttpsMetadata = false;
-                bearer.IncludeErrorDetails = true;
+                // Only require HTTPS in production; dev/test use HTTP.
+                var env = Environment.GetEnvironmentVariable("ASPNETCORE_ENVIRONMENT");
+                bearer.RequireHttpsMetadata = env != "Development" && env != "Testing";
+                bearer.IncludeErrorDetails = env == "Development";
                 bearer.MapInboundClaims = false;
                 bearer.TokenValidationParameters = new TokenValidationParameters
                 {

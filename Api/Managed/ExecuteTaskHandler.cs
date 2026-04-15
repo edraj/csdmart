@@ -12,11 +12,11 @@ public static class ExecuteTaskHandler
 {
     public static void Map(RouteGroupBuilder g)
     {
-        // POST /managed/excute/{task_type}/{space_name}
+        // POST /managed/execute/{task_type}/{space_name}
         // dmart's only defined task_type is "query": load a saved query entry by
         // shortname (provided in the body or URL), parse its payload.body as a Query,
         // and execute via QueryService.
-        g.MapPost("/excute/{task_type}/{space_name}",
+        g.MapPost("/execute/{task_type}/{space_name}",
             async (string task_type, string space_name, HttpRequest req,
                    EntryRepository entries, QueryService queries, HttpContext http,
                    CancellationToken ct) =>

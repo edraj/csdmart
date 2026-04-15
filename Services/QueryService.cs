@@ -35,10 +35,11 @@ public sealed class QueryService(
 {
     public async Task<Response> ExecuteAsync(Query q, string? actor, CancellationToken ct = default)
     {
-        // Clamp limit to MaxQueryLimit to prevent unbounded result sets.
+        // Clamp limit: default to 100, cap at MaxQueryLimit.
         var maxLimit = settings.Value.MaxQueryLimit;
-        if (maxLimit > 0 && q.Limit > maxLimit)
-            q = q with { Limit = maxLimit };
+        var limit = q.Limit <= 0 ? 100 : q.Limit;
+        if (maxLimit > 0 && limit > maxLimit) limit = maxLimit;
+        q = q with { Limit = limit };
 
         if (string.IsNullOrEmpty(q.SpaceName))
             return Response.Fail("bad_query", "space_name is required");
@@ -290,9 +291,14 @@ public sealed class QueryService(
         // If retrieve_attachments, fetch and attach for each record.
         if (q.RetrieveAttachments && records.Count > 0)
         {
-            var tasks = records.Select((rec, _) =>
-                attachments.ListForParentAsync(q.SpaceName, rec.Subpath, rec.Shortname, ct)
-            ).ToArray();
+            // Limit concurrency to avoid exhausting the DB connection pool
+            var semaphore = new SemaphoreSlim(5);
+            var tasks = records.Select(async (rec, _) =>
+            {
+                await semaphore.WaitAsync(ct);
+                try { return await attachments.ListForParentAsync(q.SpaceName, rec.Subpath, rec.Shortname, ct); }
+                finally { semaphore.Release(); }
+            }).ToArray();
             var allAttachments = await Task.WhenAll(tasks);
             for (var i = 0; i < records.Count; i++)
             {

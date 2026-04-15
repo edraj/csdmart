@@ -80,6 +80,8 @@ public sealed class CsvService(QueryService queries, EntryService entries)
         while ((line = await reader.ReadLineAsync(ct)) is not null)
         {
             rowNumber++;
+            if (rowNumber > 100_000)
+                return Response.Fail("bad_request", "CSV exceeds maximum of 100,000 rows");
             if (string.IsNullOrWhiteSpace(line)) continue;
             var fields = ParseCsvLine(line);
             if (fields.Count != headers.Count)

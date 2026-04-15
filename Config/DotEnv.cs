@@ -10,7 +10,7 @@ namespace Dmart.Config;
 //
 // We then translate those entries into IConfiguration keys under the Dmart
 // section so the existing Options<DmartSettings> pipeline picks them up with
-// no extra work. Env vars and appsettings.json still override dotenv values,
+// no extra work. Env vars (Dmart__Xxx) still override dotenv values,
 // matching pydantic-settings' layered resolution.
 //
 // Deliberately hand-rolled (no Microsoft.Extensions.Configuration.Ini or a

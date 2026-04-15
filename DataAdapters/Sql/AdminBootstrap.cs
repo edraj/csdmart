@@ -33,12 +33,17 @@ public sealed class AdminBootstrap(
 
     public async Task StartAsync(CancellationToken ct)
     {
-        // C2: Warn loudly if production-dangerous defaults are active.
+        // Refuse to start in Production with insecure defaults.
         var s = settings.Value;
+        var env = Environment.GetEnvironmentVariable("ASPNETCORE_ENVIRONMENT");
+        var isProduction = env is null or "Production";
         if (s.JwtSecret.Contains("change-me", StringComparison.OrdinalIgnoreCase))
+        {
+            if (isProduction)
+                throw new InvalidOperationException(
+                    "JWT_SECRET is still the default value. Set a strong secret (32+ bytes) in config.env before running in production.");
             log.LogCritical("JWT_SECRET is set to the default value — change it before production use!");
-        if (!string.IsNullOrEmpty(s.AdminPassword) && s.AdminPassword.Contains("change-me", StringComparison.OrdinalIgnoreCase))
-            log.LogCritical("ADMIN_PASSWORD is set to the default value — change it before production use!");
+        }
 
         if (!db.IsConfigured) return;
         await BootstrapAdminAsync(ct);
@@ -46,19 +51,11 @@ public sealed class AdminBootstrap(
         await SnapshotCountHistoryAsync(ct);
     }
 
+    private const string AdminShortname = "dmart";
+
     private async Task BootstrapAdminAsync(CancellationToken ct)
     {
         var s = settings.Value;
-        if (string.IsNullOrWhiteSpace(s.AdminShortname))
-        {
-            log.LogDebug("admin bootstrap: AdminShortname unset, skipping");
-            return;
-        }
-        if (string.IsNullOrEmpty(s.AdminPassword))
-        {
-            log.LogWarning("admin bootstrap: AdminShortname set but AdminPassword empty — refusing to create passwordless admin");
-            return;
-        }
 
         try
         {
@@ -69,19 +66,19 @@ public sealed class AdminBootstrap(
             // 4. Permission (FK → users via owner_shortname)
             // 5. Role (FK → users via owner_shortname)
 
-            // 1. Create the admin user
-            var existing = await users.GetByShortnameAsync(s.AdminShortname, ct);
+            // 1. Create the admin user (passwordless — set via `dmart set_password`)
+            var existing = await users.GetByShortnameAsync(AdminShortname, ct);
             if (existing is null)
             {
                 var admin = new User
                 {
                     Uuid = Guid.NewGuid().ToString(),
-                    Shortname = s.AdminShortname,
+                    Shortname = AdminShortname,
                     SpaceName = MgmtSpace,
                     Subpath = "users",
-                    OwnerShortname = s.AdminShortname,
+                    OwnerShortname = AdminShortname,
                     Email = string.IsNullOrWhiteSpace(s.AdminEmail) ? null : s.AdminEmail,
-                    Password = hasher.Hash(s.AdminPassword),
+                    Password = string.IsNullOrEmpty(s.AdminPassword) ? null : hasher.Hash(s.AdminPassword),
                     Roles = new() { "super_admin" },
                     Language = ParseLanguage(s.DefaultLanguage),
                     Type = UserType.Web,
@@ -91,7 +88,7 @@ public sealed class AdminBootstrap(
                     UpdatedAt = DateTime.UtcNow,
                 };
                 await users.UpsertAsync(admin, ct);
-                log.LogInformation("admin bootstrap: created admin user {Shortname}", s.AdminShortname);
+                log.LogInformation("admin bootstrap: created admin user {Shortname}", AdminShortname);
             }
 
             // 2. Ensure the management space exists
@@ -104,7 +101,7 @@ public sealed class AdminBootstrap(
                     Shortname = MgmtSpace,
                     SpaceName = MgmtSpace,
                     Subpath = "/",
-                    OwnerShortname = s.AdminShortname,
+                    OwnerShortname = AdminShortname,
                     IsActive = true,
                     Displayname = new Translation(En: "Management"),
                     Description = new Translation(En: "Management space"),
@@ -130,7 +127,7 @@ public sealed class AdminBootstrap(
                     Subpath = "/",
                     ResourceType = ResourceType.Folder,
                     IsActive = true,
-                    OwnerShortname = s.AdminShortname,
+                    OwnerShortname = AdminShortname,
                     CreatedAt = DateTime.UtcNow,
                     UpdatedAt = DateTime.UtcNow,
                 }, ct);
@@ -150,7 +147,7 @@ public sealed class AdminBootstrap(
                     Shortname = "super_manager",
                     SpaceName = MgmtSpace,
                     Subpath = "permissions",
-                    OwnerShortname = s.AdminShortname,
+                    OwnerShortname = AdminShortname,
                     IsActive = true,
                     Displayname = new Translation(En: "Super Manager"),
                     Description = new Translation(En: "Grants every action on every resource in every space"),
@@ -181,7 +178,7 @@ public sealed class AdminBootstrap(
                     Shortname = "super_admin",
                     SpaceName = MgmtSpace,
                     Subpath = "roles",
-                    OwnerShortname = s.AdminShortname,
+                    OwnerShortname = AdminShortname,
                     Permissions = new() { "super_manager" },
                     IsActive = true,
                     Displayname = new Translation(En: "Super Admin"),

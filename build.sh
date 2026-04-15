@@ -14,7 +14,7 @@ if [ -f cxb/dist/client/index.html ]; then
     echo "CXB frontend already built, skipping"
 elif [ -f cxb/package.json ]; then
     echo "=== Building CXB frontend ==="
-    ./build-cxb.sh
+    ./build-cxb.sh || { echo "CXB build failed"; exit 1; }
 else
     echo "Skipping CXB build (no cxb source or dist found)"
 fi

@@ -45,11 +45,9 @@ public sealed class DmartFactory : WebApplicationFactory<Program>
     // before ConfigureWebHost poisons BACKEND_ENV with /dev/null.
     private static readonly Dictionary<string, string> _configEnvCache = LoadConfigEnv();
 
-    public string AdminShortname { get; } =
-        Environment.GetEnvironmentVariable("DMART_TEST_ADMIN")
-        ?? _configEnvCache.GetValueOrDefault("ADMIN_SHORTNAME")
-        ?? "testadmin";
-
+    // Admin is always "dmart" (hardcoded in AdminBootstrap).
+    // Tests set a password via config override so login works.
+    public string AdminShortname { get; } = "dmart";
     public string AdminPassword { get; } =
         Environment.GetEnvironmentVariable("DMART_TEST_PWD")
         ?? _configEnvCache.GetValueOrDefault("ADMIN_PASSWORD")
@@ -96,7 +94,6 @@ public sealed class DmartFactory : WebApplicationFactory<Program>
                 ["Dmart:JwtIssuer"] = "dmart",
                 ["Dmart:JwtAudience"] = "dmart",
                 ["Dmart:JwtAccessMinutes"] = "5",
-                ["Dmart:AdminShortname"] = AdminShortname,
                 ["Dmart:AdminPassword"] = AdminPassword,
                 ["Dmart:AdminEmail"] = "admin@test.local",
             });
