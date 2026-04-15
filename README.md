@@ -143,7 +143,7 @@ cat > ~/.dmart/plugins/my_plugin/config.json << 'EOF'
 EOF
 ```
 
-Plugins export C-ABI functions: `get_info()`, `hook()` or `handle_request()`, `free_string()`. Can be written in any language (C#, Rust, C, Go). See `custom_plugins_sdk/` for samples.
+Plugins export C-ABI functions: `get_info()`, `hook()` or `handle_request()`, `free_string()`. Can be written in any language (C#, Rust, C, Go). See [custom_plugins_sdk/README.md](custom_plugins_sdk/README.md) for the full development guide with working examples.
 
 ## Building
 
