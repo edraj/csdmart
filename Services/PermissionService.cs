@@ -149,6 +149,76 @@ public sealed class PermissionService(UserRepository users, AccessRepository acc
         return false;
     }
 
+    // Check if the user has ANY permission that references this space (by name or
+    // via __all_spaces__). Used for the spaces listing — a user should see a space
+    // if they have any grant within it, regardless of resource_type.
+    public async Task<bool> HasAnyAccessToSpaceAsync(string? actorShortname, string spaceName, CancellationToken ct = default)
+    {
+        if (actorShortname is null) return false;
+
+        List<Permission> perms;
+        var cached = cache.GetCachedUserAccess(actorShortname);
+        if (cached is not null)
+        {
+            perms = cached.Permissions;
+        }
+        else
+        {
+            var user = await users.GetByShortnameAsync(actorShortname, ct);
+            if (user is null || !user.IsActive || user.Roles.Count == 0) return false;
+            var roles = await access.GetRolesAsync(user.Roles, ct);
+            var permNames = roles.SelectMany(r => r.Permissions).Distinct().ToArray();
+            perms = permNames.Length == 0 ? new() : await access.GetPermissionsAsync(permNames, ct);
+            cache.SetCachedUserAccess(actorShortname, new(user, perms));
+        }
+
+        foreach (var p in perms)
+        {
+            if (!p.IsActive) continue;
+            if (p.Subpaths.ContainsKey(spaceName) || p.Subpaths.ContainsKey(AllSpacesMw))
+                return true;
+        }
+        return false;
+    }
+
+    // Check if the user has ANY permission that covers a specific subpath within a space.
+    // Used for folder visibility — if a user can access entries inside a folder, they
+    // should be able to view the folder itself.
+    public async Task<bool> HasAnyAccessToSubpathAsync(string? actorShortname, string spaceName, string subpath, CancellationToken ct = default)
+    {
+        if (actorShortname is null) return false;
+
+        List<Permission> perms;
+        var cached = cache.GetCachedUserAccess(actorShortname);
+        if (cached is not null)
+        {
+            perms = cached.Permissions;
+        }
+        else
+        {
+            var user = await users.GetByShortnameAsync(actorShortname, ct);
+            if (user is null || !user.IsActive || user.Roles.Count == 0) return false;
+            var roles = await access.GetRolesAsync(user.Roles, ct);
+            var permNames = roles.SelectMany(r => r.Permissions).Distinct().ToArray();
+            perms = permNames.Length == 0 ? new() : await access.GetPermissionsAsync(permNames, ct);
+            cache.SetCachedUserAccess(actorShortname, new(user, perms));
+        }
+
+        foreach (var p in perms)
+        {
+            if (!p.IsActive) continue;
+            // Check the space (or __all_spaces__) for a matching subpath pattern.
+            List<string>? patterns = null;
+            if (p.Subpaths.TryGetValue(spaceName, out patterns) || p.Subpaths.TryGetValue(AllSpacesMw, out patterns))
+            {
+                if (patterns.Contains(subpath, StringComparer.Ordinal) ||
+                    patterns.Contains(AllSubpathsMw, StringComparer.Ordinal))
+                    return true;
+            }
+        }
+        return false;
+    }
+
     // ----- back-compat convenience overloads (keep old call sites compiling) -----
 
     public Task<bool> CanReadAsync(string? actor, Locator l, CancellationToken ct = default)
