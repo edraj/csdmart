@@ -136,7 +136,16 @@ public sealed class PermissionService(UserRepository users, AccessRepository acc
         var rt = JsonbHelpers.EnumMember(target.Type);
 
         // 4. Hierarchical subpath walk + global-form magic word at each level.
-        foreach (var candidate in BuildSubpathWalk(target.Subpath))
+        //    Python appends the entry shortname for folder resource types so that
+        //    a folder "users" at subpath "/" also checks the "users" permission key.
+        var walkPath = target.Subpath;
+        if (target.Type == ResourceType.Folder && !string.IsNullOrEmpty(target.Shortname) && target.Shortname != "*")
+        {
+            walkPath = walkPath == "/"
+                ? target.Shortname
+                : $"{walkPath.TrimEnd('/')}/{target.Shortname}";
+        }
+        foreach (var candidate in BuildSubpathWalk(walkPath))
         {
             if (CheckAtCandidate(perms, target.SpaceName, candidate, rt, action, achieved, recordAttributes))
                 return true;

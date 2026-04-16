@@ -27,19 +27,8 @@ public sealed class EntryService(
         // path it's free because we'd have loaded the entry anyway.
         var entry = await entries.GetAsync(l.SpaceName, l.Subpath, l.Shortname, l.Type, ct);
         if (entry is null) return null;
-        if (await perms.CanReadAsync(actor, l, PermissionService.FromEntry(entry), ct)) return entry;
-
-        // For folders: the user may have permission for entries *inside* this folder
-        // (e.g. permission for subpath "users") but not at the folder's own subpath ("/").
-        // Allow viewing the folder if the user has any permission for the child subpath.
-        if (entry.ResourceType == Models.Enums.ResourceType.Folder)
-        {
-            var childSubpath = l.Subpath == "/" ? l.Shortname : $"{l.Subpath.TrimEnd('/')}/{l.Shortname}";
-            if (await perms.HasAnyAccessToSubpathAsync(actor, l.SpaceName, childSubpath, ct))
-                return entry;
-        }
-
-        return null;
+        if (!await perms.CanReadAsync(actor, l, PermissionService.FromEntry(entry), ct)) return null;
+        return entry;
     }
 
     public Task<Entry?> GetByUuidAsync(Guid uuid, CancellationToken ct = default)
