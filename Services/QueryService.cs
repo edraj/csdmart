@@ -382,24 +382,42 @@ public sealed class QueryService(
     private async Task<Response> DispatchCountersTable(Query q, string? actor, CancellationToken ct)
     {
         var mgmt = settings.Value.ManagementSpace;
-        if (!await CanQueryAsync(actor, ResourceType.Content, q.SpaceName, q.Subpath ?? "/", ct))
-            return Response.Fail("forbidden", "no read access for subpath");
 
+        // Route to the correct table and use the matching resource type for the
+        // permission probe — management/users needs ResourceType.User, not Content.
         int total;
         if (string.Equals(q.SpaceName, mgmt, StringComparison.Ordinal))
         {
             var sub = (q.Subpath ?? "/").TrimStart('/');
             if (sub == "users" || sub.StartsWith("users/", StringComparison.Ordinal))
+            {
+                if (!await CanQueryAsync(actor, ResourceType.User, q.SpaceName, q.Subpath ?? "/", ct))
+                    return Response.Fail("forbidden", "no read access for subpath");
                 total = await users.CountQueryAsync(q, ct);
+            }
             else if (sub == "roles" || sub.StartsWith("roles/", StringComparison.Ordinal))
+            {
+                if (!await CanQueryAsync(actor, ResourceType.Role, q.SpaceName, q.Subpath ?? "/", ct))
+                    return Response.Fail("forbidden", "no read access for subpath");
                 total = await access.CountRolesQueryAsync(q, ct);
+            }
             else if (sub == "permissions" || sub.StartsWith("permissions/", StringComparison.Ordinal))
+            {
+                if (!await CanQueryAsync(actor, ResourceType.Permission, q.SpaceName, q.Subpath ?? "/", ct))
+                    return Response.Fail("forbidden", "no read access for subpath");
                 total = await access.CountPermissionsQueryAsync(q, ct);
+            }
             else
+            {
+                if (!await CanQueryAsync(actor, ResourceType.Content, q.SpaceName, q.Subpath ?? "/", ct))
+                    return Response.Fail("forbidden", "no read access for subpath");
                 total = await entries.CountQueryAsync(q, ct);
+            }
         }
         else
         {
+            if (!await CanQueryAsync(actor, ResourceType.Content, q.SpaceName, q.Subpath ?? "/", ct))
+                return Response.Fail("forbidden", "no read access for subpath");
             total = await entries.CountQueryAsync(q, ct);
         }
 
