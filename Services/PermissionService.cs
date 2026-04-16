@@ -37,6 +37,11 @@ public sealed class PermissionService(UserRepository users, AccessRepository acc
     // dmart sentinel values from utils/settings.py.
     public const string AllSpacesMw   = "__all_spaces__";
     public const string AllSubpathsMw = "__all_subpaths__";
+    // __current_user__ inside a permission subpath resolves to the caller's shortname
+    // at check time. Used for per-user personal paths like
+    // "people/__current_user__/protected" — see access_personal in the sample data.
+    // Python: data_adapters/helpers.py::trans_magic_words.
+    public const string CurrentUserMw = "__current_user__";
 
     // Compact bag of the resource being checked. We accept it as a record so callers
     // can synthesize one from an Entry, User, Role, etc. without coupling
@@ -54,6 +59,13 @@ public sealed class PermissionService(UserRepository users, AccessRepository acc
     public static ResourceContext FromUser(User u) =>
         new(u.IsActive, u.OwnerShortname, u.OwnerGroupShortname, u.Acl);
 
+    // Every authenticated user implicitly gains this role. Python: SQL adapter's
+    // get_user_roles injects the 'logged_in' role for every non-anonymous user,
+    // which is what grants access_personal/access_protected/etc. to ordinary
+    // logins. Without this, roles like 'sub_dealer' with no explicit personal-space
+    // grants would be locked out of their own /people/{shortname}/* subtree.
+    private const string ImplicitAuthenticatedRole = "logged_in";
+
     // Resolves the user + flattened permission list, using the in-memory cache.
     // Shared by CanAsync and HasAnyAccessToSpaceAsync to avoid duplicating the
     // user → roles → permissions loading logic.
@@ -68,13 +80,11 @@ public sealed class PermissionService(UserRepository users, AccessRepository acc
         if (user is null || !user.IsActive)
             return (user, new());
 
-        if (user.Roles.Count == 0)
-        {
-            cache.SetCachedUserAccess(actorShortname, new(user, new()));
-            return (user, new());
-        }
+        var roleNames = user.Roles.Contains(ImplicitAuthenticatedRole, StringComparer.Ordinal)
+            ? user.Roles
+            : user.Roles.Append(ImplicitAuthenticatedRole).ToList();
 
-        var roles = await access.GetRolesAsync(user.Roles, ct);
+        var roles = await access.GetRolesAsync(roleNames, ct);
         var permNames = roles.SelectMany(r => r.Permissions).Distinct().ToArray();
         var perms = permNames.Length == 0 ? new() : await access.GetPermissionsAsync(permNames, ct);
         cache.SetCachedUserAccess(actorShortname, new(user, perms));
@@ -151,11 +161,11 @@ public sealed class PermissionService(UserRepository users, AccessRepository acc
         }
         foreach (var candidate in BuildSubpathWalk(walkPath))
         {
-            if (CheckAtCandidate(perms, effectiveSpace, candidate, rt, action, achieved, recordAttributes))
+            if (CheckAtCandidate(perms, effectiveSpace, candidate, rt, action, achieved, recordAttributes, actorShortname))
                 return true;
             var global = ToGlobalForm(candidate);
             if (global is not null && global != candidate &&
-                CheckAtCandidate(perms, effectiveSpace, global, rt, action, achieved, recordAttributes))
+                CheckAtCandidate(perms, effectiveSpace, global, rt, action, achieved, recordAttributes, actorShortname))
                 return true;
         }
 
@@ -246,7 +256,8 @@ public sealed class PermissionService(UserRepository users, AccessRepository acc
         string resourceType,
         string action,
         HashSet<string> achievedConditions,
-        Dictionary<string, object>? recordAttributes)
+        Dictionary<string, object>? recordAttributes,
+        string? actor)
     {
         foreach (var p in perms)
         {
@@ -257,13 +268,9 @@ public sealed class PermissionService(UserRepository users, AccessRepository acc
 
             // Subpath match: try the request's space first, then the __all_spaces__ bucket.
             var matched = false;
-            if (p.Subpaths.TryGetValue(spaceName, out var patterns) &&
-                (patterns.Contains(subpathKey, StringComparer.Ordinal) ||
-                 patterns.Contains(AllSubpathsMw, StringComparer.Ordinal)))
+            if (p.Subpaths.TryGetValue(spaceName, out var patterns) && MatchesAnyPattern(patterns, subpathKey, actor))
                 matched = true;
-            else if (p.Subpaths.TryGetValue(AllSpacesMw, out var globalPatterns) &&
-                     (globalPatterns.Contains(subpathKey, StringComparer.Ordinal) ||
-                      globalPatterns.Contains(AllSubpathsMw, StringComparer.Ordinal)))
+            else if (p.Subpaths.TryGetValue(AllSpacesMw, out var globalPatterns) && MatchesAnyPattern(globalPatterns, subpathKey, actor))
                 matched = true;
             if (!matched) continue;
 
@@ -271,6 +278,26 @@ public sealed class PermissionService(UserRepository users, AccessRepository acc
             if (!CheckRestrictions(p.RestrictedFields, p.AllowedFieldsValues, action, recordAttributes)) continue;
 
             return true;
+        }
+        return false;
+    }
+
+    // Patterns are mostly literal subpaths, but two magic words are honored:
+    //   - __all_subpaths__ matches anything at this walk level (dmart's wildcard).
+    //   - __current_user__ is replaced with the caller's shortname before comparison,
+    //     so permissions like "people/__current_user__/protected" grant the caller
+    //     access to their own personal subtree.
+    internal static bool MatchesAnyPattern(List<string> patterns, string subpathKey, string? actor)
+    {
+        foreach (var pattern in patterns)
+        {
+            if (pattern == AllSubpathsMw) return true;
+            if (pattern == subpathKey) return true;
+            if (actor is not null && pattern.Contains(CurrentUserMw, StringComparison.Ordinal))
+            {
+                var resolved = pattern.Replace(CurrentUserMw, actor, StringComparison.Ordinal);
+                if (resolved == subpathKey) return true;
+            }
         }
         return false;
     }

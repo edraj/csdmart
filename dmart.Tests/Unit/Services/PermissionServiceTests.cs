@@ -189,6 +189,67 @@ public class PermissionServiceTests
             new() { ["other"] = "x" }).ShouldBeTrue();
     }
 
+    // ==================== MatchesAnyPattern (__current_user__ + __all_subpaths__) ====================
+
+    [Fact]
+    public void Pattern_Matches_Literal_Subpath()
+    {
+        PermissionService.MatchesAnyPattern(
+            new() { "people/alice/protected" },
+            "people/alice/protected",
+            "alice").ShouldBeTrue();
+    }
+
+    [Fact]
+    public void Pattern_AllSubpaths_Matches_Anything()
+    {
+        PermissionService.MatchesAnyPattern(
+            new() { "__all_subpaths__" },
+            "people/alice/anything",
+            "alice").ShouldBeTrue();
+    }
+
+    [Fact]
+    public void Pattern_CurrentUser_Resolves_To_Actor_Shortname()
+    {
+        PermissionService.MatchesAnyPattern(
+            new() { "people/__current_user__/protected" },
+            "people/alice/protected",
+            "alice").ShouldBeTrue();
+    }
+
+    [Fact]
+    public void Pattern_CurrentUser_Does_Not_Match_Other_Users_Paths()
+    {
+        // Actor "alice" should NOT match a pattern resolving to "people/alice/..."
+        // against a candidate like "people/bob/...".
+        PermissionService.MatchesAnyPattern(
+            new() { "people/__current_user__/protected" },
+            "people/bob/protected",
+            "alice").ShouldBeFalse();
+    }
+
+    [Fact]
+    public void Pattern_CurrentUser_Requires_Actor()
+    {
+        PermissionService.MatchesAnyPattern(
+            new() { "people/__current_user__/protected" },
+            "people/alice/protected",
+            actor: null).ShouldBeFalse();
+    }
+
+    [Fact]
+    public void Pattern_Matches_Global_Form_For_AllSubpaths_Wildcard()
+    {
+        // An access_protected-style pattern: people/__all_subpaths__/protected.
+        // The caller passes the ToGlobalForm-rewritten candidate for a walk step
+        // like "people/bob/protected", which becomes "people/__all_subpaths__/protected".
+        PermissionService.MatchesAnyPattern(
+            new() { "people/__all_subpaths__/protected" },
+            "people/__all_subpaths__/protected",
+            "anyone").ShouldBeTrue();
+    }
+
     // ==================== FlattenAttrs ====================
 
     [Fact]
