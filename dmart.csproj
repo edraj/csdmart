@@ -11,6 +11,27 @@
     <GenerateEmbeddedFilesManifest>true</GenerateEmbeddedFilesManifest>
   </PropertyGroup>
 
+  <!-- Bake git version into the assembly so dmart -v and /info/manifest always show it.
+       build.sh can still override with -p:InformationalVersion=... for release builds.
+       IncludeSourceRevisionInInformationalVersion=false prevents .NET from appending +SHA. -->
+  <PropertyGroup>
+    <IncludeSourceRevisionInInformationalVersion>false</IncludeSourceRevisionInInformationalVersion>
+  </PropertyGroup>
+  <Target Name="SetGitVersion" BeforeTargets="GetAssemblyVersion"
+          Condition="'$(InformationalVersion)' == ''">
+    <Exec Command="git describe --tags --always 2>/dev/null || echo dev"
+          ConsoleToMSBuild="true" StandardOutputImportance="low" IgnoreExitCode="true">
+      <Output TaskParameter="ConsoleOutput" PropertyName="GitDescribe" />
+    </Exec>
+    <Exec Command="git rev-parse --abbrev-ref HEAD 2>/dev/null || echo unknown"
+          ConsoleToMSBuild="true" StandardOutputImportance="low" IgnoreExitCode="true">
+      <Output TaskParameter="ConsoleOutput" PropertyName="GitBranch" />
+    </Exec>
+    <PropertyGroup>
+      <InformationalVersion>$(GitDescribe) branch=$(GitBranch) date=$([System.DateTime]::UtcNow.ToString("yyyy-MM-dd"))</InformationalVersion>
+    </PropertyGroup>
+  </Target>
+
   <ItemGroup>
     <!-- The test project lives under dmart.Tests/ inside this project's source tree.
          The Web SDK's default Compile glob would otherwise pull its .cs files into the
