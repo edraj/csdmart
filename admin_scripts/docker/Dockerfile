@@ -21,32 +21,18 @@ RUN dotnet publish dmart.csproj -r linux-musl-x64 \
 # Stage 2: Minimal runtime
 FROM alpine:edge
 
+# Install packages + copy all files in one layer
 RUN apk add --no-cache \
       postgresql18 postgresql18-contrib \
       bash curl tzdata icu-libs krb5-libs
 
-# Copy dmart binary + plugin configs
 COPY --from=build --chmod=755 /out/dmart /usr/bin/dmart
 COPY --from=build /out/plugins/ /usr/lib/dmart/plugins/
-
-# CXB static files (pre-built locally via ./build-cxb.sh)
 COPY cxb/dist/client/ /usr/lib/dmart/cxb/
-
-# Entrypoint
 COPY --chmod=755 admin_scripts/docker/entrypoint.sh /entrypoint.sh
 
-# Initialize dmart config (no DB init — deferred to first run via entrypoint)
-RUN dmart init \
-  && printf '{\n  "title": "DMART Unified Data Platform",\n  "footer": "dmart.cc unified data platform",\n  "short_name": "dmart",\n  "display_name": "dmart",\n  "description": "dmart unified data platform",\n  "default_language": "en",\n  "languages": { "ar": "العربية", "en": "English" },\n  "backend": "http://localhost:8000",\n  "websocket": "ws://localhost:8000/ws"\n}\n' > /root/.dmart/config.json \
-  && echo "LISTENING_PORT=8000" >> /root/.dmart/config.env \
-  && echo 'ALLOWED_CORS_ORIGINS="http://localhost:8000"' >> /root/.dmart/config.env
-
 ENV DOTNET_SYSTEM_NET_SECURITY_DISABLEGSSAPIPAL=true
-
-LABEL name="dmart" \
-      vendor="dmart.cc" \
-      version="${VERSION}" \
-      license="AGPLv3+" \
+LABEL name="dmart" vendor="dmart.cc" version="${VERSION}" license="AGPLv3+" \
       org.opencontainers.image.name="dmart" \
       org.opencontainers.image.vendor="dmart.cc" \
       org.opencontainers.image.version="${VERSION}" \
@@ -54,7 +40,5 @@ LABEL name="dmart" \
       org.opencontainers.image.url="https://dmart.cc" \
       org.opencontainers.image.source="https://github.com/edraj/csdmart" \
       org.opencontainers.image.license="AGPLv3+"
-
 EXPOSE 8000
-
 CMD ["/entrypoint.sh"]
