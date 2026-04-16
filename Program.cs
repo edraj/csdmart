@@ -664,11 +664,11 @@ app.MapGet("/docs", () => Results.Content("""
 """, "text/html"));
 app.MapGet("/", () => Results.Content("{\"status\":\"success\",\"message\":\"DMART-CS API\"}", "application/json"));
 
-app.MapGroup("/managed").RequireAuthorization().MapManaged();
-app.MapGroup("/public").MapPublic();
-app.MapGroup("/user").MapUser();
-app.MapGroup("/info").RequireAuthorization().MapInfo();
-app.MapGroup("/qr").MapQr();
+app.MapGroup("/managed").RequireAuthorization().AddEndpointFilter<FailedResponseFilter>().MapManaged();
+app.MapGroup("/public").AddEndpointFilter<FailedResponseFilter>().MapPublic();
+app.MapGroup("/user").AddEndpointFilter<FailedResponseFilter>().MapUser();
+app.MapGroup("/info").RequireAuthorization().AddEndpointFilter<FailedResponseFilter>().MapInfo();
+app.MapGroup("/qr").AddEndpointFilter<FailedResponseFilter>().MapQr();
 
 // WebSocket server — port of dmart/websocket.py.
 // /ws?token=<jwt>, /send-message/{user}, /broadcast-to-channels, /ws-info
@@ -680,7 +680,7 @@ app.MapWebSocket();
     await pluginManager.LoadAsync();
     foreach (var apiPlugin in pluginManager.ActiveApiPlugins)
     {
-        var group = app.MapGroup($"/{apiPlugin.Shortname}").RequireAuthorization();
+        var group = app.MapGroup($"/{apiPlugin.Shortname}").RequireAuthorization().AddEndpointFilter<FailedResponseFilter>();
         apiPlugin.MapRoutes(group);
     }
 }

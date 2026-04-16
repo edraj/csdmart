@@ -1,3 +1,4 @@
+using Dmart.Api;
 using Dmart.Models.Api;
 using Shouldly;
 using Xunit;
@@ -59,5 +60,28 @@ public class ErrorTests
         resp.Error.ShouldBeNull();
         resp.Records.ShouldNotBeNull();
         resp.Attributes!["total"].ShouldBe(0);
+    }
+
+    // FailedResponseFilter HTTP status mapping
+    [Theory]
+    [InlineData(InternalErrorCode.NOT_ALLOWED, 401)]
+    [InlineData(InternalErrorCode.NOT_AUTHENTICATED, 401)]
+    [InlineData(InternalErrorCode.INVALID_TOKEN, 401)]
+    [InlineData(InternalErrorCode.EXPIRED_TOKEN, 401)]
+    [InlineData(InternalErrorCode.INVALID_USERNAME_AND_PASS, 401)]
+    [InlineData(InternalErrorCode.USER_ACCOUNT_LOCKED, 401)]
+    [InlineData(InternalErrorCode.SHORTNAME_DOES_NOT_EXIST, 404)]
+    [InlineData(InternalErrorCode.OBJECT_NOT_FOUND, 404)]
+    [InlineData(InternalErrorCode.CONFLICT, 409)]
+    [InlineData(InternalErrorCode.SHORTNAME_ALREADY_EXIST, 409)]
+    [InlineData(InternalErrorCode.LOCKED_ENTRY, 423)]
+    [InlineData(InternalErrorCode.LOCK_UNAVAILABLE, 423)]
+    [InlineData(InternalErrorCode.INVALID_DATA, 400)]
+    [InlineData(InternalErrorCode.OTP_INVALID, 400)]
+    [InlineData(InternalErrorCode.SOMETHING_WRONG, 400)]
+    [InlineData(null, 400)]
+    public void FailedResponseFilter_Maps_ErrorCode_To_HttpStatus(int? code, int expectedHttp)
+    {
+        FailedResponseFilter.MapErrorToHttpStatus(code).ShouldBe(expectedHttp);
     }
 }

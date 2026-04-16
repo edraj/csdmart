@@ -33,10 +33,13 @@ public class LockDbTests : IClassFixture<DmartFactory>
 
         // Trying to lock again as the same user is also a no-op success since the row exists.
         var secondLock = await client.PutAsync($"/managed/lock/content/{space}/{subpath}/{shortname}", null);
-        secondLock.StatusCode.ShouldBe(HttpStatusCode.OK);
         var secondBody = await secondLock.Content.ReadFromJsonAsync(DmartJsonContext.Default.Response);
-        // It returns either Success (idempotent) or Failed("locked") depending on race;
+        // It returns either Success (HTTP 200) or Failed("locked", HTTP 423) depending on race;
         // both are acceptable. The contract is: no exception, no 5xx.
+        if (secondBody?.Status == Dmart.Models.Api.Status.Success)
+            secondLock.StatusCode.ShouldBe(HttpStatusCode.OK);
+        else
+            secondLock.StatusCode.ShouldBe((HttpStatusCode)423);
 
         var unlockResp = await client.DeleteAsync($"/managed/lock/{space}/{subpath}/{shortname}");
         unlockResp.StatusCode.ShouldBe(HttpStatusCode.OK);
