@@ -92,6 +92,29 @@ public sealed class DmartSettings
     public string MockOtpCode { get; set; } = "123456";
     public bool MockSmtpApi { get; set; }
     public bool MockSmppApi { get; set; }
+
+    // ---- External SMS gateway (Python parity) ----
+    // Base URL the CXB front-end uses to assemble invitation links that are
+    // delivered via SMS/email. Python substitutes this into the template
+    //   {invitation_link}/auth/invitation?invitation={token}&lang={lang}&user-type={type}
+    // Leave empty to disable invitation-URL assembly (C# still returns the
+    // raw JWT on the HTTP response when delivery is not configured).
+    public string InvitationLink { get; set; } = "";
+
+    // HTTP "auth-key" header value sent on every call to the SMS gateway
+    // endpoints below. Mirrors Python's `smpp_auth_key` — gateway-specific.
+    public string SmppAuthKey { get; set; } = "";
+
+    // POST endpoint the OTP flow calls to deliver numeric OTP codes over SMS.
+    // Python: `send_sms_otp_api`. Body is JSON {"msisdn":"...","text":"..."}.
+    // Empty disables OTP SMS delivery — the code is then only retrievable
+    // from server logs (dev) or via MOCK_OTP_CODE (when MOCK_SMPP_API=true).
+    public string SendSmsOtpApi { get; set; } = "";
+
+    // POST endpoint the general SMS flow calls (e.g. to deliver invitation
+    // links to msisdn users). Python: `send_sms_api`. Same request shape as
+    // `SendSmsOtpApi`. Empty disables outbound SMS for invitation delivery.
+    public string SendSmsApi { get; set; } = "";
     public bool LogoutOnPwdChange { get; set; } = true;
     public int RequestTimeout { get; set; } = 35;
 

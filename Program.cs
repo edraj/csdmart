@@ -608,6 +608,7 @@ builder.Services.AddSingleton<WsConnectionManager>();
 // Auth
 builder.Services.AddSingleton<JwtIssuer>();
 builder.Services.AddSingleton<InvitationJwt>();
+builder.Services.AddSingleton<SmsSender>();
 builder.Services.AddSingleton<InvitationService>();
 builder.Services.AddSingleton<PasswordHasher>();
 builder.Services.AddSingleton<OtpProvider>();
