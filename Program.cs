@@ -477,6 +477,12 @@ builder.Services.AddOpenApi();
     var logFile = dmartCfg["LogFile"] ?? dotenvValues.GetValueOrDefault("Dmart:LogFile") ?? "";
     var logLevelStr = dmartCfg["LogLevel"] ?? dotenvValues.GetValueOrDefault("Dmart:LogLevel") ?? "information";
 
+    // When LOG_FILE is set, Python's ljson.log is unconditionally JSON. Match
+    // that: force json output regardless of LOG_FORMAT so the file is always
+    // a clean stream of JSON lines.
+    if (!string.IsNullOrEmpty(logFile))
+        logFormat = "json";
+
     // Set minimum log level from config.env.
     if (Enum.TryParse<LogLevel>(logLevelStr, ignoreCase: true, out var minLevel))
         builder.Logging.SetMinimumLevel(minLevel);
@@ -495,11 +501,15 @@ builder.Services.AddOpenApi();
         });
     }
 
+    // LogSink is always registered so RequestLoggingMiddleware can resolve
+    // it from DI unconditionally; it internally no-ops when LogFile is
+    // empty. When LogFile IS set, hook it up as an ILoggerProvider too so
+    // every generic ILogger event lands in the same JSONL file.
+    builder.Services.AddSingleton<LogSink>();
     if (!string.IsNullOrEmpty(logFile))
     {
-        var logDir = Path.GetDirectoryName(logFile);
-        if (!string.IsNullOrEmpty(logDir)) Directory.CreateDirectory(logDir);
-        builder.Logging.AddProvider(new FileLoggerProvider(logFile, logFormat));
+        builder.Logging.Services.AddSingleton<ILoggerProvider>(sp =>
+            new FileLoggerProvider(sp.GetRequiredService<LogSink>()));
     }
 }
 
