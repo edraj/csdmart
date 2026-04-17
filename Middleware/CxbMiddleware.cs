@@ -165,13 +165,14 @@ public static class CxbMiddleware
         return app;
     }
 
-    // Parse config.json, overwrite `backend` with the request's own origin,
-    // and return the rewritten bytes. Any other fields pass through untouched.
+    // Parse config.json and only FILL IN `backend` when it's missing or
+    // blank — an explicit value set by the admin (e.g. a reverse-proxy
+    // public URL that differs from the request host) is respected verbatim.
     // The SPA derives its WebSocket URL (ws(s)://{host}/ws) from `backend` at
-    // the call site — config carries only the single source of truth.
+    // the call site, so config carries only that single source of truth.
     private static byte[] RewriteCxbConfig(byte[] source, HttpContext ctx)
     {
-        var backend = $"{ctx.Request.Scheme}://{ctx.Request.Host.Value}";
+        var requestOrigin = $"{ctx.Request.Scheme}://{ctx.Request.Host.Value}";
 
         try
         {
@@ -187,8 +188,16 @@ public static class CxbMiddleware
                 {
                     if (prop.NameEquals("backend"))
                     {
-                        writer.WriteString("backend", backend);
                         sawBackend = true;
+                        var configured = prop.Value.ValueKind == JsonValueKind.String
+                            ? prop.Value.GetString()
+                            : null;
+                        // Only auto-fill when the admin hasn't set a value.
+                        // Preserve anything non-empty exactly as written.
+                        if (string.IsNullOrWhiteSpace(configured))
+                            writer.WriteString("backend", requestOrigin);
+                        else
+                            prop.WriteTo(writer);
                     }
                     else if (prop.NameEquals("websocket"))
                     {
@@ -200,7 +209,7 @@ public static class CxbMiddleware
                         prop.WriteTo(writer);
                     }
                 }
-                if (!sawBackend) writer.WriteString("backend", backend);
+                if (!sawBackend) writer.WriteString("backend", requestOrigin);
                 writer.WriteEndObject();
             }
             return ms.ToArray();
