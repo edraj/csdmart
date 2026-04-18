@@ -28,6 +28,9 @@ public static class SettingsSerializer
         // SMS gateway token — outbound credentials must not leak.
         nameof(DmartSettings.SmppAuthKey),
         nameof(DmartSettings.EmbeddingApiKey),
+        nameof(DmartSettings.GoogleClientSecret),
+        nameof(DmartSettings.FacebookClientSecret),
+        nameof(DmartSettings.AppleClientSecretPrivateKey),
     };
 
     /// <summary>

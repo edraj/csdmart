@@ -281,7 +281,11 @@ public sealed class UserService(
     }
 
     // Shared post-authentication flow. Mirrors Python's process_user_login().
-    private async Task<Result<(string Access, string Refresh, User User)>> ProcessLoginAsync(
+    // Internal rather than private: OAuth handlers (GoogleProvider / Facebook /
+    // Apple) resolve a User on their own, then need to issue session + JWT
+    // through the same code path as password/OTP/invitation login. Keeping it
+    // internal localizes exposure to the assembly while allowing reuse.
+    internal async Task<Result<(string Access, string Refresh, User User)>> ProcessLoginAsync(
         User user, UserLoginRequest req,
         Dictionary<string, string>? requestHeaders, CancellationToken ct)
     {

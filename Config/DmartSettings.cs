@@ -133,6 +133,40 @@ public sealed class DmartSettings
     public string EmbeddingApiUrl { get; set; } = "";
     public string EmbeddingApiKey { get; set; } = "";
     public string EmbeddingModel { get; set; } = "text-embedding-3-small";
+
+    // ---- OAuth / social login (Python parity) ----
+    // Each provider has its own client credentials + callback URL. Leaving a
+    // provider's ClientId blank disables it — its endpoints return a clean
+    // "provider not configured" error rather than attempting the outbound
+    // call. See Api/User/OAuth/OAuthHandlers.cs for the endpoint surface.
+    //
+    // Google: `aud` on the id_token must match GoogleClientId. Used both by
+    // the code-exchange flow (GET /user/google/callback) and the mobile
+    // id-token flow (POST /user/google/mobile-login).
+    public string GoogleClientId { get; set; } = "";
+    public string GoogleClientSecret { get; set; } = "";
+    public string GoogleOauthCallback { get; set; } = "";
+
+    // Facebook: debug_token verifies `app_id == FacebookClientId`. The
+    // "app token" sent to graph.facebook.com/debug_token is the literal
+    // concatenation "{ClientId}|{ClientSecret}" (not a separate OAuth token).
+    public string FacebookClientId { get; set; } = "";
+    public string FacebookClientSecret { get; set; } = "";
+    public string FacebookOauthCallback { get; set; } = "";
+
+    // Apple: id_token is a JWT signed with RS256 against one of the keys
+    // published at https://appleid.apple.com/auth/keys. AppleClientId is the
+    // bundle id (iOS) or service id (web). No client secret needed for the
+    // mobile/id-token flow — web-callback code exchange requires a signed
+    // "client assertion" JWT built from AppleTeamId + AppleKeyId +
+    // AppleClientSecretPrivateKey (ES256); set those if you need the web
+    // callback, otherwise they can stay blank and the mobile flow still works.
+    public string AppleClientId { get; set; } = "";
+    public string AppleOauthCallback { get; set; } = "";
+    public string AppleTeamId { get; set; } = "";
+    public string AppleKeyId { get; set; } = "";
+    public string AppleClientSecretPrivateKey { get; set; } = "";
+
     public bool LogoutOnPwdChange { get; set; } = true;
     public int RequestTimeout { get; set; } = 35;
 

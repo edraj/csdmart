@@ -625,6 +625,7 @@ builder.Services.AddSingleton<OtpProvider>();
 builder.Services.AddSingleton<Dmart.Auth.OAuth.GoogleProvider>();
 builder.Services.AddSingleton<Dmart.Auth.OAuth.FacebookProvider>();
 builder.Services.AddSingleton<Dmart.Auth.OAuth.AppleProvider>();
+builder.Services.AddSingleton<Dmart.Auth.OAuth.OAuthUserResolver>();
 builder.Services.AddDmartAuth(builder.Configuration);
 
 // Plugins
