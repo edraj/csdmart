@@ -138,6 +138,216 @@ public sealed class McpEndpointTests : IClassFixture<DmartFactory>
         body.ShouldBeEmpty();
     }
 
+    // ---- v0.2 write-path round trip ----
+
+    [Fact]
+    public async Task CreateReadUpdateDelete_RoundTrip()
+    {
+        if (!DmartFactory.HasPg) return;
+        using var client = await LoginClient();
+
+        var suffix = Guid.NewGuid().ToString("N")[..10];
+        var shortname = $"mcp_rt_{suffix}";
+        var space = "management";
+        var subpath = "/";
+        var resourceType = "content";
+
+        try
+        {
+            // 1. Create
+            var createResp = await client.PostAsync("/mcp", JsonRpc(
+                "tools/call", id: 100,
+                paramsJson: $$"""
+                {
+                  "name": "dmart.create",
+                  "arguments": {
+                    "space_name": "{{space}}",
+                    "subpath": "{{subpath}}",
+                    "shortname": "{{shortname}}",
+                    "resource_type": "{{resourceType}}"
+                  }
+                }
+                """));
+            createResp.StatusCode.ShouldBe(HttpStatusCode.OK);
+            var createBody = await ReadJson(createResp);
+            var createdText = createBody.GetProperty("result").GetProperty("content")[0]
+                .GetProperty("text").GetString()!;
+            using (var created = JsonDocument.Parse(createdText))
+            {
+                created.RootElement.GetProperty("status").GetString().ShouldBe("created");
+                created.RootElement.GetProperty("shortname").GetString().ShouldBe(shortname);
+            }
+
+            // 2. Read back via dmart.read — confirm it's there.
+            var readResp = await client.PostAsync("/mcp", JsonRpc(
+                "tools/call", id: 101,
+                paramsJson: $$"""
+                {
+                  "name": "dmart.read",
+                  "arguments": {
+                    "space_name": "{{space}}",
+                    "subpath": "{{subpath}}",
+                    "shortname": "{{shortname}}",
+                    "resource_type": "{{resourceType}}"
+                  }
+                }
+                """));
+            var readBody = await ReadJson(readResp);
+            var readText = readBody.GetProperty("result").GetProperty("content")[0]
+                .GetProperty("text").GetString()!;
+            using (var readDoc = JsonDocument.Parse(readText))
+            {
+                var records = readDoc.RootElement.GetProperty("records");
+                records.GetArrayLength().ShouldBe(1);
+                records[0].GetProperty("shortname").GetString().ShouldBe(shortname);
+            }
+
+            // 3. Update — add a tag via the patch payload.
+            var updateResp = await client.PostAsync("/mcp", JsonRpc(
+                "tools/call", id: 102,
+                paramsJson: $$"""
+                {
+                  "name": "dmart.update",
+                  "arguments": {
+                    "space_name": "{{space}}",
+                    "subpath": "{{subpath}}",
+                    "shortname": "{{shortname}}",
+                    "resource_type": "{{resourceType}}",
+                    "patch": { "tags": ["mcp-rt"] }
+                  }
+                }
+                """));
+            var updateBody = await ReadJson(updateResp);
+            var updatedText = updateBody.GetProperty("result").GetProperty("content")[0]
+                .GetProperty("text").GetString()!;
+            using (var updated = JsonDocument.Parse(updatedText))
+            {
+                updated.RootElement.GetProperty("status").GetString().ShouldBe("updated");
+            }
+
+            // 4. Delete WITHOUT confirm — rejected.
+            var deleteNoConfirmResp = await client.PostAsync("/mcp", JsonRpc(
+                "tools/call", id: 103,
+                paramsJson: $$"""
+                {
+                  "name": "dmart.delete",
+                  "arguments": {
+                    "space_name": "{{space}}",
+                    "subpath": "{{subpath}}",
+                    "shortname": "{{shortname}}",
+                    "resource_type": "{{resourceType}}"
+                  }
+                }
+                """));
+            var noConfirmBody = await ReadJson(deleteNoConfirmResp);
+            var noConfirmResult = noConfirmBody.GetProperty("result");
+            noConfirmResult.GetProperty("isError").GetBoolean().ShouldBeTrue();
+
+            // 5. Delete WITH confirm — succeeds.
+            var deleteResp = await client.PostAsync("/mcp", JsonRpc(
+                "tools/call", id: 104,
+                paramsJson: $$"""
+                {
+                  "name": "dmart.delete",
+                  "arguments": {
+                    "space_name": "{{space}}",
+                    "subpath": "{{subpath}}",
+                    "shortname": "{{shortname}}",
+                    "resource_type": "{{resourceType}}",
+                    "confirm": true
+                  }
+                }
+                """));
+            var deleteBody = await ReadJson(deleteResp);
+            var deletedText = deleteBody.GetProperty("result").GetProperty("content")[0]
+                .GetProperty("text").GetString()!;
+            using (var deleted = JsonDocument.Parse(deletedText))
+            {
+                deleted.RootElement.GetProperty("status").GetString().ShouldBe("deleted");
+            }
+        }
+        finally
+        {
+            // Best-effort cleanup if a test step failed mid-flow.
+            try
+            {
+                var cleanup = "{\"name\":\"dmart.delete\",\"arguments\":"
+                    + $"{{\"space_name\":\"{space}\",\"subpath\":\"{subpath}\","
+                    + $"\"shortname\":\"{shortname}\",\"resource_type\":\"{resourceType}\","
+                    + "\"confirm\":true}}";
+                await client.PostAsync("/mcp", JsonRpc("tools/call", id: 999, paramsJson: cleanup));
+            }
+            catch { /* swallow — best effort */ }
+        }
+    }
+
+    // ---- v0.3 ----
+
+    [Fact]
+    public async Task History_Returns_CreateEvent()
+    {
+        if (!DmartFactory.HasPg) return;
+        using var client = await LoginClient();
+
+        var suffix = Guid.NewGuid().ToString("N")[..10];
+        var shortname = $"mcp_hist_{suffix}";
+        var space = "management";
+        var subpath = "/";
+        var resourceType = "content";
+
+        try
+        {
+            // Seed an entry — history for this is the create record.
+            var createCall = "{\"name\":\"dmart.create\",\"arguments\":"
+                + $"{{\"space_name\":\"{space}\",\"subpath\":\"{subpath}\","
+                + $"\"shortname\":\"{shortname}\",\"resource_type\":\"{resourceType}\""
+                + "}}";
+            var createResp = await client.PostAsync("/mcp",
+                JsonRpc("tools/call", id: 200, paramsJson: createCall));
+            createResp.StatusCode.ShouldBe(HttpStatusCode.OK);
+
+            var histCall = "{\"name\":\"dmart.history\",\"arguments\":"
+                + $"{{\"space_name\":\"{space}\",\"subpath\":\"{subpath}\","
+                + $"\"shortname\":\"{shortname}\""
+                + "}}";
+            var histResp = await client.PostAsync("/mcp",
+                JsonRpc("tools/call", id: 201, paramsJson: histCall));
+            histResp.StatusCode.ShouldBe(HttpStatusCode.OK);
+            var body = await ReadJson(histResp);
+            var text = body.GetProperty("result").GetProperty("content")[0]
+                .GetProperty("text").GetString()!;
+            using var doc = JsonDocument.Parse(text);
+            doc.RootElement.GetProperty("status").GetString().ShouldBe("success");
+            doc.RootElement.GetProperty("records").GetArrayLength().ShouldBeGreaterThanOrEqualTo(1);
+        }
+        finally
+        {
+            var cleanup = "{\"name\":\"dmart.delete\",\"arguments\":"
+                + $"{{\"space_name\":\"{space}\",\"subpath\":\"{subpath}\","
+                + $"\"shortname\":\"{shortname}\",\"resource_type\":\"{resourceType}\","
+                + "\"confirm\":true}}";
+            try { await client.PostAsync("/mcp", JsonRpc("tools/call", id: 998, paramsJson: cleanup)); }
+            catch { }
+        }
+    }
+
+    [Fact]
+    public async Task Download_UnknownEntry_ReturnsToolError()
+    {
+        if (!DmartFactory.HasPg) return;
+        using var client = await LoginClient();
+
+        var resp = await client.PostAsync("/mcp", JsonRpc(
+            "tools/call", id: 210,
+            paramsJson: """
+            {"name":"dmart.download","arguments":{"space_name":"management","shortname":"definitely_nonexistent_entry_mcp","resource_type":"content"}}
+            """));
+        resp.StatusCode.ShouldBe(HttpStatusCode.OK);
+        var body = await ReadJson(resp);
+        var result = body.GetProperty("result");
+        result.GetProperty("isError").GetBoolean().ShouldBeTrue();
+    }
+
     // ---- helpers ----
 
     private async Task<HttpClient> LoginClient()
