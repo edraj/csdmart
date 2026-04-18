@@ -12,8 +12,18 @@ ARG VERSION=unknown
 FROM mcr.microsoft.com/dotnet/sdk:10.0-alpine AS build
 RUN apk add --no-cache clang build-base zlib-dev
 WORKDIR /src
+
+# Restore NuGet packages in a cacheable layer of their own — only the
+# project file is needed for restore, so unrelated source changes don't
+# invalidate the cache.
+COPY dmart.csproj ./
+RUN dotnet restore dmart.csproj -r linux-musl-x64
+
+# Bring in the full source and publish. .dockerignore filters out
+# dmart.Tests/, cxb/ source, bin/, obj/, .git/, and other bulk that
+# shouldn't inflate the build layer.
 COPY . .
-RUN dotnet publish dmart.csproj -r linux-musl-x64 \
+RUN dotnet publish dmart.csproj -r linux-musl-x64 --no-restore \
         -p:PublishAot=true -p:StripSymbols=true -c Release -o /out \
     && rm -f /out/*.dbg /out/*.pdb /out/*.Development.json \
              /out/*.staticwebassets* /out/*.deps.json

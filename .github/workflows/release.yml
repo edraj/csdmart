@@ -100,6 +100,19 @@ jobs:
             cd cxb && yarn install && yarn build && cd ..
           fi
 
+      # Reclaim podman storage WITHOUT touching the dmart-el9-builder
+      # container. build-rpm.sh keeps that container (with dotnet-sdk-10.0,
+      # rpm-build, and clang pre-installed) around so subsequent runs just
+      # `podman start` it instead of reinstalling the SDK — a 3-5 min save
+      # per release. Pruning builder cache + dangling images is enough to
+      # reclaim the space without breaking that reuse.
+      - name: Reclaim podman storage
+        run: |
+          df -h ~ || true
+          podman builder prune -af || true
+          podman image prune -f || true
+          df -h ~ || true
+
       - name: Build EL9 RPM via podman
         run: |
           pkill -f 'dmart serve' 2>/dev/null || true
@@ -130,9 +143,40 @@ jobs:
     name: Build & Push Container Image
     runs-on: self-hosted
     steps:
+      # fetch-depth: 1 — the container build reads the source tree, not
+      # git history. The RPM jobs above need fetch-depth: 0 for
+      # `git describe`, but this job doesn't.
       - uses: actions/checkout@v4
         with:
-          fetch-depth: 0
+          fetch-depth: 1
+
+      # Reclaim podman storage WITHOUT wiping base images or the long-lived
+      # el9 builder container. `podman system prune -af` would also blow
+      # away `mcr.microsoft.com/dotnet/sdk:10.0-alpine`, `alpine:edge`, and
+      # the almalinux:9 layers that the dmart-el9-builder depends on —
+      # forcing re-pulls and full SDK reinstalls on every release.
+      #
+      # We instead target just the real hogs:
+      #   1. Build cache (podman builder prune) — where prior `podman build`
+      #      intermediate layers pile up.
+      #   2. Dangling images (no `-a`) — images with no tag, typically orphans.
+      #   3. Old ghcr.io/edraj/csdmart:<version> tags, keeping :latest and
+      #      the version we're about to push.
+      - name: Reclaim podman storage
+        run: |
+          df -h ~ || true
+          podman builder prune -af || true
+          podman image prune -f || true
+          # Delete superseded versioned images of this repo, keep :latest
+          # and the incoming version. Safe because the push step tags both.
+          KEEP_VER="${GITHUB_REF_NAME#v}"
+          KEEP_VER="${KEEP_VER:-0.1.0}"
+          podman image ls --format '{{.Repository}}:{{.Tag}}' \
+            | grep '^ghcr.io/${{ github.repository }}:' \
+            | grep -v ':latest$' \
+            | grep -v ":${KEEP_VER}$" \
+            | xargs -r -n1 podman rmi -f || true
+          df -h ~ || true
 
       - name: Build CXB frontend
         run: |

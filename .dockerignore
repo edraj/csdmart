@@ -1,13 +1,32 @@
+# Never copy build output, test projects, or scratch into the build context.
+# Only source files the AOT publish actually needs.
 bin/
 obj/
-dmart.Tests/bin/
-dmart.Tests/obj/
-dmart.Tests/TestResults/
+publish/
+
+# The test project builds an xUnit DLL that the container never runs. Its
+# sources would only pull ~100 MB of test NuGets through `dotnet restore`.
+dmart.Tests/
+
+# CXB is built separately by the workflow (build-cxb.sh) and lives under
+# cxb/dist/client/. Don't ship source, node_modules, or svelte-kit cache.
 cxb/node_modules/
+cxb/.svelte-kit/
 cxb/dist/
 !cxb/dist/client/
-cxb/.svelte-kit/
+cxb/src/
+cxb/static/
+cxb/tests/
+
+# Git history is irrelevant at build time; build.sh bakes git-describe into
+# the binary via -p:InformationalVersion long before docker.
 .git/
+.github/
+
+# Local scratch.
 *.tar.gz
 *.zip
-publish/
+*.log
+.dmart/
+config.env
+memory/
