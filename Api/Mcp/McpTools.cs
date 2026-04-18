@@ -21,12 +21,12 @@ namespace Dmart.Api.Mcp;
 // via MCP's ToolsCallResult.IsError convention (not as JSON-RPC errors).
 public static class McpTools
 {
-    // Hard cap on query results — prevents a runaway `dmart.query` from
+    // Hard cap on query results — prevents a runaway `dmart_query` from
     // eating the model's context window regardless of what `limit` it asks
     // for. dmart's own MaxQueryLimit still applies on top.
     private const int MaxQueryLimit = 50;
 
-    // ---- dmart.me ----
+    // ---- dmart_me ----
 
     public static async Task<JsonElement> MeAsync(
         JsonElement? arguments, HttpContext http, CancellationToken ct)
@@ -64,7 +64,7 @@ public static class McpTools
         return ParseBytes(ms.ToArray());
     }
 
-    // ---- dmart.spaces ----
+    // ---- dmart_spaces ----
 
     public static async Task<JsonElement> SpacesAsync(
         JsonElement? arguments, HttpContext http, CancellationToken ct)
@@ -82,7 +82,7 @@ public static class McpTools
         return SerializeResponse(resp);
     }
 
-    // ---- dmart.query ----
+    // ---- dmart_query ----
 
     public static async Task<JsonElement> QueryAsync(
         JsonElement? arguments, HttpContext http, CancellationToken ct)
@@ -139,7 +139,7 @@ public static class McpTools
         return SerializeResponse(resp);
     }
 
-    // ---- dmart.read ----
+    // ---- dmart_read ----
 
     public static async Task<JsonElement> ReadAsync(
         JsonElement? arguments, HttpContext http, CancellationToken ct)
@@ -174,7 +174,7 @@ public static class McpTools
         return SerializeResponse(resp);
     }
 
-    // ---- dmart.schema ----
+    // ---- dmart_schema ----
 
     public static async Task<JsonElement> SchemaAsync(
         JsonElement? arguments, HttpContext http, CancellationToken ct)
@@ -202,7 +202,7 @@ public static class McpTools
         return SerializeResponse(resp);
     }
 
-    // ---- dmart.create ----
+    // ---- dmart_create ----
 
     public static async Task<JsonElement> CreateAsync(
         JsonElement? arguments, HttpContext http, CancellationToken ct)
@@ -255,7 +255,7 @@ public static class McpTools
             created.ResourceType, created.Uuid, "created");
     }
 
-    // ---- dmart.update ----
+    // ---- dmart_update ----
 
     public static async Task<JsonElement> UpdateAsync(
         JsonElement? arguments, HttpContext http, CancellationToken ct)
@@ -293,7 +293,7 @@ public static class McpTools
             updated.ResourceType, updated.Uuid, "updated");
     }
 
-    // ---- dmart.delete ----
+    // ---- dmart_delete ----
     //
     // Destructive. Requires an explicit `confirm: true` argument — without
     // it, the tool rejects up-front. This is a lightweight guard pending
@@ -358,7 +358,7 @@ public static class McpTools
         return ParseBytes(ms.ToArray());
     }
 
-    // ---- dmart.semantic_search ----
+    // ---- dmart_semantic_search ----
 
     public static async Task<JsonElement> SemanticSearchAsync(
         JsonElement? arguments, HttpContext http, CancellationToken ct)
@@ -392,7 +392,7 @@ public static class McpTools
         return SerializeResponse(resp);
     }
 
-    // ---- dmart.history ----
+    // ---- dmart_history ----
 
     public static async Task<JsonElement> HistoryAsync(
         JsonElement? arguments, HttpContext http, CancellationToken ct)
@@ -421,7 +421,7 @@ public static class McpTools
         return SerializeResponse(resp);
     }
 
-    // ---- dmart.download ----
+    // ---- dmart_download ----
     //
     // Fetches the bytes/text of a payload-bearing resource. Two cases:
     //

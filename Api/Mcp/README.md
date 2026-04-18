@@ -49,17 +49,17 @@ argument guard.
 
 | Name            | Input                                                    | Delegates to                               |
 |-----------------|----------------------------------------------------------|--------------------------------------------|
-| `dmart.me`      | —                                                        | `UserService` + `AccessRepository`         |
-| `dmart.spaces`  | —                                                        | `QueryService` (type=spaces)               |
-| `dmart.query`   | `space_name`, `subpath?`, `type?`, `resource_types?`, `filter_shortnames?`, `search?`, `limit?` (hard cap 50) | `QueryService.ExecuteAsync` |
-| `dmart.read`    | `space_name`, `subpath?`, `shortname`, `resource_type?`  | `QueryService` (single-shortname filter)   |
-| `dmart.schema`  | `space_name`, `shortname`                                | `QueryService` against `/schema` subpath   |
-| `dmart.create`  | `space_name`, `subpath?`, `shortname`, `resource_type`, `payload?`, `schema_shortname?` | `EntryService.CreateAsync` |
-| `dmart.update`  | `space_name`, `subpath?`, `shortname`, `resource_type?`, `patch` | `EntryService.UpdateAsync` |
-| `dmart.delete`  | `space_name`, `subpath?`, `shortname`, `resource_type?`, `confirm?` | `EntryService.DeleteAsync`. If the client advertised `capabilities.elicitation`, server sends `elicitation/create` over SSE instead of requiring `confirm:true`; the tool waits ≤ 2 min for the reply and cancels cleanly on decline. |
-| `dmart.history` | `space_name`, `subpath?`, `shortname`, `limit?` (max 50) | `QueryService` (QueryType.History) |
-| `dmart.download`| `space_name`, `subpath?`, `shortname`, `resource_type?` | Attachment bytes (base64) or entry payload (JSON). 5 MB hard cap. |
-| `dmart.semantic_search` | `query`, `space_name?`, `subpath?`, `resource_types?`, `limit?` | pgvector + embedding provider (see "Semantic search setup" below). Auto-disabled when either is missing. |
+| `dmart_me`      | —                                                        | `UserService` + `AccessRepository`         |
+| `dmart_spaces`  | —                                                        | `QueryService` (type=spaces)               |
+| `dmart_query`   | `space_name`, `subpath?`, `type?`, `resource_types?`, `filter_shortnames?`, `search?`, `limit?` (hard cap 50) | `QueryService.ExecuteAsync` |
+| `dmart_read`    | `space_name`, `subpath?`, `shortname`, `resource_type?`  | `QueryService` (single-shortname filter)   |
+| `dmart_schema`  | `space_name`, `shortname`                                | `QueryService` against `/schema` subpath   |
+| `dmart_create`  | `space_name`, `subpath?`, `shortname`, `resource_type`, `payload?`, `schema_shortname?` | `EntryService.CreateAsync` |
+| `dmart_update`  | `space_name`, `subpath?`, `shortname`, `resource_type?`, `patch` | `EntryService.UpdateAsync` |
+| `dmart_delete`  | `space_name`, `subpath?`, `shortname`, `resource_type?`, `confirm?` | `EntryService.DeleteAsync`. If the client advertised `capabilities.elicitation`, server sends `elicitation/create` over SSE instead of requiring `confirm:true`; the tool waits ≤ 2 min for the reply and cancels cleanly on decline. |
+| `dmart_history` | `space_name`, `subpath?`, `shortname`, `limit?` (max 50) | `QueryService` (QueryType.History) |
+| `dmart_download`| `space_name`, `subpath?`, `shortname`, `resource_type?` | Attachment bytes (base64) or entry payload (JSON). 5 MB hard cap. |
+| `dmart_semantic_search` | `query`, `space_name?`, `subpath?`, `resource_types?`, `limit?` | pgvector + embedding provider (see "Semantic search setup" below). Auto-disabled when either is missing. |
 
 ## Resources
 
@@ -116,7 +116,7 @@ curl -s -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/json" \
   http://127.0.0.1:5099/mcp | jq .
 
 curl -s -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/json" \
-  -d '{"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"dmart.me","arguments":{}}}' \
+  -d '{"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"dmart_me","arguments":{}}}' \
   http://127.0.0.1:5099/mcp | jq .
 ```
 
@@ -138,7 +138,7 @@ source-gen discipline.
 
 ## Semantic search setup
 
-`dmart.semantic_search` + `POST /managed/semantic-search` are opt-in. Three
+`dmart_semantic_search` + `POST /managed/semantic-search` are opt-in. Three
 pieces have to line up:
 
 ### 1. Install pgvector in PostgreSQL
@@ -216,10 +216,10 @@ admin endpoint is a candidate for a later version.
 
 ## Safety defaults
 
-- **Hard 50-result cap** on `dmart.query` regardless of what the model asks
+- **Hard 50-result cap** on `dmart_query` regardless of what the model asks
   for. Stops runaway queries from eating the model's context window.
 - **Attachment bytes never inline** — v0.1 tools return metadata only. A
-  dedicated `dmart.download` tool with size guards will land in v0.3.
+  dedicated `dmart_download` tool with size guards will land in v0.3.
 - **401 → clean MCP error** (`-32002 Unauthenticated`), no stack traces.
 - **Tool errors surface via `ToolsCallResult.IsError=true`** rather than as
   JSON-RPC errors, so the model can see the message and react.
@@ -227,11 +227,11 @@ admin endpoint is a candidate for a later version.
 ## Roadmap
 
 - **v0.1** (shipped): read-only tools + resources, SSE skeleton.
-- **v0.2** (shipped): `dmart.create`, `dmart.update`, `dmart.delete` with
+- **v0.2** (shipped): `dmart_create`, `dmart_update`, `dmart_delete` with
   explicit `confirm: true` guard on delete.
-- **v0.3** (shipped): `dmart.download` (attachment bytes, 5 MB cap),
-  `dmart.history`.
-- **v0.4** (shipped): `dmart.semantic_search` — pgvector + configurable
+- **v0.3** (shipped): `dmart_download` (attachment bytes, 5 MB cap),
+  `dmart_history`.
+- **v0.4** (shipped): `dmart_semantic_search` — pgvector + configurable
   embedding provider. Auto-disables when either is missing.
 - **v0.5** (shipped): OAuth 2.1 HTTP transport — `.well-known` discovery,
   RFC 7591 dynamic client registration, authorization-code grant with

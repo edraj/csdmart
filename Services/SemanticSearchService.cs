@@ -10,12 +10,12 @@ namespace Dmart.Services;
 // Runs cosine-similarity queries against the pgvector-backed
 // `entries.embedding` column. Returns compact match records — space,
 // subpath, shortname, resource_type, similarity — leaving it to the caller
-// to `dmart.read` each hit for full content. That keeps response size
+// to `dmart_read` each hit for full content. That keeps response size
 // bounded regardless of how many matches come back.
 //
 // Permission filtering: for each hit we check
 // `PermissionService.CanReadAsync`, so the caller only sees entries they
-// could see through `dmart.read` / `dmart.query`. Hits the user can't see
+// could see through `dmart_read` / `dmart_query`. Hits the user can't see
 // are silently dropped from the result set — we over-fetch from SQL to
 // keep the final count close to `limit`.
 public sealed class SemanticSearchService(

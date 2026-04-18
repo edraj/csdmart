@@ -19,26 +19,31 @@ public static class McpRegistry
     public static IReadOnlyList<McpTool> Tools { get; } = BuildTools();
 
     public static IReadOnlyDictionary<string, McpToolHandler> Handlers { get; } =
+        // Tool names use underscore (dmart_X) not dot (dmart.X) — Anthropic's
+        // tool-use API enforces the pattern ^[a-zA-Z0-9_-]{1,128}$ and rejects
+        // any request containing dotted names with a 400 error, even though
+        // the MCP spec itself allows dots. Underscore keeps us cross-compat
+        // with every major LLM provider (OpenAI, Gemini, and Anthropic).
         new Dictionary<string, McpToolHandler>(StringComparer.Ordinal)
         {
-            ["dmart.me"]      = McpTools.MeAsync,
-            ["dmart.spaces"]  = McpTools.SpacesAsync,
-            ["dmart.query"]   = McpTools.QueryAsync,
-            ["dmart.read"]    = McpTools.ReadAsync,
-            ["dmart.schema"]  = McpTools.SchemaAsync,
-            ["dmart.create"]  = McpTools.CreateAsync,
-            ["dmart.update"]  = McpTools.UpdateAsync,
-            ["dmart.delete"]  = McpTools.DeleteAsync,
-            ["dmart.history"]          = McpTools.HistoryAsync,
-            ["dmart.download"]         = McpTools.DownloadAsync,
-            ["dmart.semantic_search"]  = McpTools.SemanticSearchAsync,
+            ["dmart_me"]              = McpTools.MeAsync,
+            ["dmart_spaces"]          = McpTools.SpacesAsync,
+            ["dmart_query"]           = McpTools.QueryAsync,
+            ["dmart_read"]            = McpTools.ReadAsync,
+            ["dmart_schema"]          = McpTools.SchemaAsync,
+            ["dmart_create"]          = McpTools.CreateAsync,
+            ["dmart_update"]          = McpTools.UpdateAsync,
+            ["dmart_delete"]          = McpTools.DeleteAsync,
+            ["dmart_history"]         = McpTools.HistoryAsync,
+            ["dmart_download"]        = McpTools.DownloadAsync,
+            ["dmart_semantic_search"] = McpTools.SemanticSearchAsync,
         };
 
     private static List<McpTool> BuildTools() =>
     [
         new McpTool
         {
-            Name = "dmart.me",
+            Name = "dmart_me",
             Description = "Returns the caller's identity — shortname, email, " +
                           "roles, groups, language, and the list of accessible " +
                           "permission keys (space:subpath:resource_type). Call " +
@@ -54,7 +59,7 @@ public static class McpRegistry
         },
         new McpTool
         {
-            Name = "dmart.spaces",
+            Name = "dmart_spaces",
             Description = "Lists the spaces the caller has any access to. Use " +
                           "this to discover top-level containers before issuing " +
                           "a more specific query.",
@@ -69,7 +74,7 @@ public static class McpRegistry
         },
         new McpTool
         {
-            Name = "dmart.query",
+            Name = "dmart_query",
             Description = "Runs a query against dmart and returns up to 50 " +
                           "matching records. Permissions are enforced — the " +
                           "caller only sees what they're allowed to see. " +
@@ -94,7 +99,7 @@ public static class McpRegistry
         },
         new McpTool
         {
-            Name = "dmart.read",
+            Name = "dmart_read",
             Description = "Reads a single entry by (space_name, subpath, " +
                           "shortname, resource_type). Returns the entry's " +
                           "full attributes + payload body. Respects caller " +
@@ -115,10 +120,10 @@ public static class McpRegistry
         },
         new McpTool
         {
-            Name = "dmart.schema",
+            Name = "dmart_schema",
             Description = "Fetches a JSON Schema definition from the space's " +
-                          "/schema subpath. Use BEFORE calling `dmart.create` " +
-                          "or `dmart.update` to ensure the attributes + " +
+                          "/schema subpath. Use BEFORE calling `dmart_create` " +
+                          "or `dmart_update` to ensure the attributes + " +
                           "payload you supply are schema-valid.",
             InputSchema = ParseSchema("""
                 {
@@ -134,11 +139,11 @@ public static class McpRegistry
         },
         new McpTool
         {
-            Name = "dmart.create",
+            Name = "dmart_create",
             Description = "Creates a new entry. Permissions enforced — the " +
                           "caller must have `create` access on " +
                           "(space, subpath, resource_type). Call " +
-                          "`dmart.schema` first if the target has a schema " +
+                          "`dmart_schema` first if the target has a schema " +
                           "so the payload validates.",
             InputSchema = ParseSchema("""
                 {
@@ -158,7 +163,7 @@ public static class McpRegistry
         },
         new McpTool
         {
-            Name = "dmart.update",
+            Name = "dmart_update",
             Description = "Patches an existing entry. The `patch` object is " +
                           "applied to the entry's attributes; nested objects " +
                           "are merged. Respects schema validation on the " +
@@ -180,7 +185,7 @@ public static class McpRegistry
         },
         new McpTool
         {
-            Name = "dmart.delete",
+            Name = "dmart_delete",
             Description = "Deletes an entry. DESTRUCTIVE — requires " +
                           "explicit user approval. DO NOT call this without " +
                           "first asking the user to confirm, then passing " +
@@ -203,7 +208,7 @@ public static class McpRegistry
         },
         new McpTool
         {
-            Name = "dmart.history",
+            Name = "dmart_history",
             Description = "Returns the audit history for an entry — who " +
                           "changed what and when. Records are ordered " +
                           "newest first. Capped at 50 rows. Anonymous " +
@@ -224,7 +229,7 @@ public static class McpRegistry
         },
         new McpTool
         {
-            Name = "dmart.semantic_search",
+            Name = "dmart_semantic_search",
             Description = "Vector-similarity search across dmart entries. " +
                           "Returns matches ranked by semantic closeness to " +
                           "`query`, with a `similarity` score in [0,1]. " +
@@ -249,7 +254,7 @@ public static class McpRegistry
         },
         new McpTool
         {
-            Name = "dmart.download",
+            Name = "dmart_download",
             Description = "Fetches the payload bytes or text of a " +
                           "resource. Text content (text/*, application/" +
                           "json) is returned as utf8; binary is returned " +

@@ -126,7 +126,7 @@ public sealed class DmartSettings
     // Semantic search is an opt-in feature. When both the pgvector extension
     // is installed in PostgreSQL AND EmbeddingApiUrl is set, dmart will embed
     // every entry it creates/updates and expose POST /managed/semantic-search
-    // + the `dmart.semantic_search` MCP tool. When either is missing, those
+    // + the `dmart_semantic_search` MCP tool. When either is missing, those
     // features silently no-op and existing workloads are unaffected.
     //
     // Request shape sent to the endpoint (OpenAI-compatible):

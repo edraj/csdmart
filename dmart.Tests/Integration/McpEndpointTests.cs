@@ -67,11 +67,11 @@ public sealed class McpEndpointTests : IClassFixture<DmartFactory>
         var names = new List<string>();
         foreach (var tool in tools.EnumerateArray())
             names.Add(tool.GetProperty("name").GetString()!);
-        names.ShouldContain("dmart.me");
-        names.ShouldContain("dmart.spaces");
-        names.ShouldContain("dmart.query");
-        names.ShouldContain("dmart.read");
-        names.ShouldContain("dmart.schema");
+        names.ShouldContain("dmart_me");
+        names.ShouldContain("dmart_spaces");
+        names.ShouldContain("dmart_query");
+        names.ShouldContain("dmart_read");
+        names.ShouldContain("dmart_schema");
 
         // Every tool carries an input schema.
         foreach (var tool in tools.EnumerateArray())
@@ -86,7 +86,7 @@ public sealed class McpEndpointTests : IClassFixture<DmartFactory>
 
         var resp = await client.PostAsync("/mcp", JsonRpc(
             "tools/call", id: 3,
-            paramsJson: """{"name":"dmart.me","arguments":{}}"""));
+            paramsJson: """{"name":"dmart_me","arguments":{}}"""));
         resp.StatusCode.ShouldBe(HttpStatusCode.OK);
         var root = await ReadJson(resp);
         var content = root.GetProperty("result").GetProperty("content")[0];
@@ -159,7 +159,7 @@ public sealed class McpEndpointTests : IClassFixture<DmartFactory>
                 "tools/call", id: 100,
                 paramsJson: $$"""
                 {
-                  "name": "dmart.create",
+                  "name": "dmart_create",
                   "arguments": {
                     "space_name": "{{space}}",
                     "subpath": "{{subpath}}",
@@ -178,12 +178,12 @@ public sealed class McpEndpointTests : IClassFixture<DmartFactory>
                 created.RootElement.GetProperty("shortname").GetString().ShouldBe(shortname);
             }
 
-            // 2. Read back via dmart.read — confirm it's there.
+            // 2. Read back via dmart_read — confirm it's there.
             var readResp = await client.PostAsync("/mcp", JsonRpc(
                 "tools/call", id: 101,
                 paramsJson: $$"""
                 {
-                  "name": "dmart.read",
+                  "name": "dmart_read",
                   "arguments": {
                     "space_name": "{{space}}",
                     "subpath": "{{subpath}}",
@@ -207,7 +207,7 @@ public sealed class McpEndpointTests : IClassFixture<DmartFactory>
                 "tools/call", id: 102,
                 paramsJson: $$"""
                 {
-                  "name": "dmart.update",
+                  "name": "dmart_update",
                   "arguments": {
                     "space_name": "{{space}}",
                     "subpath": "{{subpath}}",
@@ -230,7 +230,7 @@ public sealed class McpEndpointTests : IClassFixture<DmartFactory>
                 "tools/call", id: 103,
                 paramsJson: $$"""
                 {
-                  "name": "dmart.delete",
+                  "name": "dmart_delete",
                   "arguments": {
                     "space_name": "{{space}}",
                     "subpath": "{{subpath}}",
@@ -248,7 +248,7 @@ public sealed class McpEndpointTests : IClassFixture<DmartFactory>
                 "tools/call", id: 104,
                 paramsJson: $$"""
                 {
-                  "name": "dmart.delete",
+                  "name": "dmart_delete",
                   "arguments": {
                     "space_name": "{{space}}",
                     "subpath": "{{subpath}}",
@@ -271,7 +271,7 @@ public sealed class McpEndpointTests : IClassFixture<DmartFactory>
             // Best-effort cleanup if a test step failed mid-flow.
             try
             {
-                var cleanup = "{\"name\":\"dmart.delete\",\"arguments\":"
+                var cleanup = "{\"name\":\"dmart_delete\",\"arguments\":"
                     + $"{{\"space_name\":\"{space}\",\"subpath\":\"{subpath}\","
                     + $"\"shortname\":\"{shortname}\",\"resource_type\":\"{resourceType}\","
                     + "\"confirm\":true}}";
@@ -298,7 +298,7 @@ public sealed class McpEndpointTests : IClassFixture<DmartFactory>
         try
         {
             // Seed an entry — history for this is the create record.
-            var createCall = "{\"name\":\"dmart.create\",\"arguments\":"
+            var createCall = "{\"name\":\"dmart_create\",\"arguments\":"
                 + $"{{\"space_name\":\"{space}\",\"subpath\":\"{subpath}\","
                 + $"\"shortname\":\"{shortname}\",\"resource_type\":\"{resourceType}\""
                 + "}}";
@@ -306,7 +306,7 @@ public sealed class McpEndpointTests : IClassFixture<DmartFactory>
                 JsonRpc("tools/call", id: 200, paramsJson: createCall));
             createResp.StatusCode.ShouldBe(HttpStatusCode.OK);
 
-            var histCall = "{\"name\":\"dmart.history\",\"arguments\":"
+            var histCall = "{\"name\":\"dmart_history\",\"arguments\":"
                 + $"{{\"space_name\":\"{space}\",\"subpath\":\"{subpath}\","
                 + $"\"shortname\":\"{shortname}\""
                 + "}}";
@@ -322,7 +322,7 @@ public sealed class McpEndpointTests : IClassFixture<DmartFactory>
         }
         finally
         {
-            var cleanup = "{\"name\":\"dmart.delete\",\"arguments\":"
+            var cleanup = "{\"name\":\"dmart_delete\",\"arguments\":"
                 + $"{{\"space_name\":\"{space}\",\"subpath\":\"{subpath}\","
                 + $"\"shortname\":\"{shortname}\",\"resource_type\":\"{resourceType}\","
                 + "\"confirm\":true}}";
@@ -347,7 +347,7 @@ public sealed class McpEndpointTests : IClassFixture<DmartFactory>
 
         var resp = await client.PostAsync("/mcp", JsonRpc(
             "tools/call", id: 220,
-            paramsJson: """{"name":"dmart.semantic_search","arguments":{"query":"anything"}}"""));
+            paramsJson: """{"name":"dmart_semantic_search","arguments":{"query":"anything"}}"""));
         resp.StatusCode.ShouldBe(HttpStatusCode.OK);
         var body = await ReadJson(resp);
         var result = body.GetProperty("result");
@@ -377,7 +377,7 @@ public sealed class McpEndpointTests : IClassFixture<DmartFactory>
         var resp = await client.PostAsync("/mcp", JsonRpc(
             "tools/call", id: 210,
             paramsJson: """
-            {"name":"dmart.download","arguments":{"space_name":"management","shortname":"definitely_nonexistent_entry_mcp","resource_type":"content"}}
+            {"name":"dmart_download","arguments":{"space_name":"management","shortname":"definitely_nonexistent_entry_mcp","resource_type":"content"}}
             """));
         resp.StatusCode.ShouldBe(HttpStatusCode.OK);
         var body = await ReadJson(resp);

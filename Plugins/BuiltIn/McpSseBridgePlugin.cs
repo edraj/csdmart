@@ -82,7 +82,7 @@ public sealed class McpSseBridgePlugin(
     // `notifications/resources/updated` per MCP spec:
     //   { "method":"notifications/resources/updated", "params":{"uri":"..."} }
     // We also tuck an `action` + `owner` into params so clients that care can
-    // render richer diffs without calling back into dmart.read.
+    // render richer diffs without calling back into dmart_read.
     private static string BuildNotification(string uri, Event e)
     {
         using var ms = new MemoryStream();
