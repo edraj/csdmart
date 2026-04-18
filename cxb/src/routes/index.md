@@ -55,31 +55,31 @@ One initial category of usecases targets organizations and individuals to establ
 
 ## Backend
 
-- Programming language : Python 3.13 (latest revision)
-- Microframework : FastAPI (microframework for python) with full leverage of async programming paradigm
-- API validation : Pydantic v2 (rust-based)
-- Live-update : Web socket
-- Operational store : PostgreSQL 16
-- Viewing logs and building dashboards (optional): Grafana/Loki/Alloy (based on golang)
-- Container : Podman (or Docker) for fast setup using light-wieght Alpine linux and OpenRC.
-- System/User level OS service management : Systemd.
+- Programming language : C# on .NET 10 compiled with Native AOT (no JIT, no runtime reflection)
+- Framework : ASP.NET Core Minimal APIs with async-first design
+- API validation : JSON Schema via `JsonSchema.Net` + source-generated `System.Text.Json` serialization (AOT-safe, zero-reflection)
+- Live-update : WebSocket (native Kestrel)
+- Operational store : PostgreSQL 16+ via Npgsql
+- Viewing logs and building dashboards (optional): Grafana/Loki/Alloy — or `journalctl` directly (JSON-lines logs under systemd)
+- Container : Podman (or Docker) — Alpine/musl AOT image for all-in-one, or distro-native RPMs for Fedora/RHEL
+- System/User level OS service management : Systemd
 - Reverse-proxy : Caddy (with automatic SSL/Let's encrypt integration)
 
 ----
 
 ## Frontend
 
-- Single-Page-Application : Svelte with Typescript (compiled as static files)
+- Single-Page-Application : Svelte with Typescript (compiled as static files, embedded into the server binary)
 - CSS/UI framework : Flowbite with Tailwind and full RTL support
 
 ----
 
 ## High-quality code
 
-- Heavy leverage of type hinting
-- Automated tests via pytest and curl (curl.sh) tests
-- Full compliance with pyright, ruff and mypi (pylint.sh)
-- Load testing with locust vegeta ab appache
+- Strict static typing end-to-end + source-generated JSON for every wire-format type
+- Automated tests via xUnit (unit + integration against a real PostgreSQL) and curl-scenario smoke tests (`curl.sh`)
+- 0 warnings / 0 errors Release build under Roslyn analyzers; trimming + AOT enforced in CI
+- Load testing with vegeta / ab / Apache JMeter
 
 </div>
 </div>

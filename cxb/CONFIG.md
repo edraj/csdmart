@@ -30,7 +30,6 @@ No rebuild is required - the configuration is loaded fresh on each session.
 | default_language | Default language code (e.g., "en", "ar") |
 | languages | Object mapping language codes to display names |
 | backend | Backend API URL |
-| websocket | WebSocket URL (optional) |
 
 ## Example Configuration
 
@@ -43,8 +42,7 @@ No rebuild is required - the configuration is loaded fresh on each session.
   "description": "dmart unified data platform",
   "default_language": "ar",
   "languages": { "ar": "العربية", "en": "English" },
-  "backend": "http://localhost:8282",
-  "websocket": "ws://0.0.0.0:8484/ws"
+  "backend": "http://localhost:8282"
 }
 ```
 
