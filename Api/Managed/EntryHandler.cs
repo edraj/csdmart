@@ -32,10 +32,26 @@ public static class EntryHandler
                    AccessRepository access,
                    HttpContext http, CancellationToken ct) =>
             {
+                // Python parity: every failure path returns the structured
+                // {status:"failed", error:{type, code, message}} envelope. The
+                // caller's Python client decodes api.Error — bare 404/400 HTML
+                // breaks that contract.
+                static IResult NotFoundMedia() => Results.Json(
+                    Response.Fail(InternalErrorCode.OBJECT_NOT_FOUND,
+                        "Request object is not available", "media"),
+                    DmartJsonContext.Default.Response, statusCode: 400);
+
                 if (!Enum.TryParse<ResourceType>(resource_type, true, out var rt))
-                    return Results.BadRequest();
+                    return Results.Json(
+                        Response.Fail(InternalErrorCode.INVALID_DATA,
+                            $"invalid resource_type '{resource_type}'", "request"),
+                        DmartJsonContext.Default.Response, statusCode: 400);
                 var (subpath, shortname) = RouteParts.SplitSubpathAndShortname(rest);
-                if (string.IsNullOrEmpty(shortname)) return Results.BadRequest();
+                if (string.IsNullOrEmpty(shortname))
+                    return Results.Json(
+                        Response.Fail(InternalErrorCode.INVALID_DATA,
+                            "shortname required", "request"),
+                        DmartJsonContext.Default.Response, statusCode: 400);
 
                 var actor = http.User.Identity?.Name;
 
@@ -45,27 +61,27 @@ public static class EntryHandler
                     case ResourceType.Space:
                     {
                         var s = await spaces.GetAsync(shortname, ct);
-                        return s is null ? Results.NotFound() : Results.Json(s, DmartJsonContext.Default.Space);
+                        return s is null ? NotFoundMedia() : Results.Json(s, DmartJsonContext.Default.Space);
                     }
                     case ResourceType.User:
                     {
                         var u = await users.GetByShortnameAsync(shortname, ct);
-                        return u is null ? Results.NotFound() : Results.Json(u, DmartJsonContext.Default.User);
+                        return u is null ? NotFoundMedia() : Results.Json(u, DmartJsonContext.Default.User);
                     }
                     case ResourceType.Role:
                     {
                         var r = await access.GetRoleAsync(shortname, ct);
-                        return r is null ? Results.NotFound() : Results.Json(r, DmartJsonContext.Default.Role);
+                        return r is null ? NotFoundMedia() : Results.Json(r, DmartJsonContext.Default.Role);
                     }
                     case ResourceType.Permission:
                     {
                         var p = await access.GetPermissionAsync(shortname, ct);
-                        return p is null ? Results.NotFound() : Results.Json(p, DmartJsonContext.Default.Permission);
+                        return p is null ? NotFoundMedia() : Results.Json(p, DmartJsonContext.Default.Permission);
                     }
                 }
 
                 var entry = await svc.GetAsync(new Locator(rt, space, subpath, shortname), actor, ct);
-                if (entry is null) return Results.NotFound();
+                if (entry is null) return NotFoundMedia();
 
                 // Build attachments grouped by type. Each attachment is flat —
                 // attributes are spread at root, not nested under "attributes".
