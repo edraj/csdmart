@@ -255,21 +255,32 @@ public class PermissionServiceTests
     [Fact]
     public void Pattern_LeadingSlash_Matches_Slashless_Walk_Key()
     {
-        // Real-world shape: `permissions.world` stored with `"/denominations"`
-        // vs the walk's `"denominations"` (slash-stripped by BuildSubpathWalk).
-        // Without the normalization these never matched → anonymous got 0 results.
+        // Permission rows written with a leading slash ("/foo") should still
+        // match the slash-stripped walk key "foo" that BuildSubpathWalk emits.
+        // This mirrors Python's trans_magic_words normalization.
         PermissionService.MatchesAnyPattern(
-            new() { "/denominations" },
-            "denominations",
+            new() { "/foo" },
+            "foo",
             actor: null).ShouldBeTrue();
+    }
+
+    [Fact]
+    public void Pattern_MultiPattern_List_Matches_Any_Entry()
+    {
+        // The matcher must iterate the full list — guard against a
+        // "short-circuit on the first pattern" regression.
+        var patterns = new List<string> { "/alpha", "/bravo" };
+        PermissionService.MatchesAnyPattern(patterns, "alpha", null).ShouldBeTrue();
+        PermissionService.MatchesAnyPattern(patterns, "bravo", null).ShouldBeTrue();
+        PermissionService.MatchesAnyPattern(patterns, "charlie", null).ShouldBeFalse();
     }
 
     [Fact]
     public void Pattern_TrailingSlash_Matches_Slashless_Walk_Key()
     {
         PermissionService.MatchesAnyPattern(
-            new() { "denominations/" },
-            "denominations",
+            new() { "foo/" },
+            "foo",
             actor: null).ShouldBeTrue();
     }
 
@@ -294,13 +305,13 @@ public class PermissionServiceTests
     [Fact]
     public void NormalizePermissionSubpath_Pure_Cases()
     {
-        PermissionService.NormalizePermissionSubpath("/denominations").ShouldBe("denominations");
-        PermissionService.NormalizePermissionSubpath("denominations/").ShouldBe("denominations");
+        PermissionService.NormalizePermissionSubpath("/foo").ShouldBe("foo");
+        PermissionService.NormalizePermissionSubpath("foo/").ShouldBe("foo");
         PermissionService.NormalizePermissionSubpath("/a/b/").ShouldBe("a/b");
         PermissionService.NormalizePermissionSubpath("a//b").ShouldBe("a/b");
         PermissionService.NormalizePermissionSubpath("/").ShouldBe("/");
         PermissionService.NormalizePermissionSubpath("").ShouldBe("/");
-        PermissionService.NormalizePermissionSubpath("denominations").ShouldBe("denominations");
+        PermissionService.NormalizePermissionSubpath("foo").ShouldBe("foo");
     }
 
     // ==================== FlattenAttrs ====================
