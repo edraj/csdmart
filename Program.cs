@@ -130,6 +130,7 @@ switch (subcommand)
             Subcommands:
               serve          Start the HTTP server
                              Options: --cxb-config <path>
+              migrate        Create/update the PG schema (idempotent; no server)
               version        Print version and build info
               settings       Print effective settings as JSON
               set_password   Set password for a user interactively
@@ -472,6 +473,92 @@ switch (subcommand)
         //   dmart cli s <script_file>           # Script mode
         var exitCode = await Dmart.Cli.CliRunner.RunAsync(serverArgs);
         Environment.ExitCode = exitCode;
+        return;
+    }
+
+    case "migrate":
+    {
+        // Schema migration — creates/updates the PG schema without starting
+        // the HTTP server. Equivalent to Python's `alembic upgrade head`.
+        // Runs SqlSchema.CreateAll which contains:
+        //   * CREATE TABLE IF NOT EXISTS (new tables)
+        //   * ALTER TABLE ... ADD COLUMN IF NOT EXISTS (new columns)
+        //   * CREATE INDEX IF NOT EXISTS (new indexes)
+        //   * CREATE MATERIALIZED VIEW IF NOT EXISTS (authz views)
+        // Idempotent — safe to re-run. Captures PG NOTICE messages so the
+        // caller sees exactly what was created vs. skipped.
+        //
+        // Options:
+        //   -q, --quiet    Suppress per-statement output (show summary only)
+        var quiet = serverArgs.Contains("-q") || serverArgs.Contains("--quiet");
+
+        var cfgBuilder = new ConfigurationBuilder();
+        if (dotenvPath is not null) cfgBuilder.AddInMemoryCollection(dotenvValues);
+        cfgBuilder.AddEnvironmentVariables();
+        var cfg = cfgBuilder.Build();
+        var s = new DmartSettings();
+        cfg.GetSection("Dmart").Bind(s);
+        var dbInst = new Db(Microsoft.Extensions.Options.Options.Create(s));
+        if (!dbInst.IsConfigured)
+        {
+            Console.Error.WriteLine("Error: Database not configured. Set DATABASE_HOST/PORT/USERNAME/PASSWORD/NAME in config.env.");
+            Environment.ExitCode = 1;
+            return;
+        }
+
+        try
+        {
+            Console.WriteLine($"Migrating {s.DatabaseName}@{s.DatabaseHost}:{s.DatabasePort} ...");
+
+            await using var conn = await dbInst.OpenAsync();
+            // PG emits NOTICE when `IF NOT EXISTS` guards short-circuit — capture
+            // those so the operator sees what was applied vs skipped. The sink
+            // also counts "actually ran" events (no NOTICE = a real CREATE/ALTER).
+            var notices = new List<string>();
+            conn.Notice += (_, e) =>
+            {
+                notices.Add(e.Notice.MessageText);
+                if (!quiet) Console.WriteLine($"  [pg] {e.Notice.Severity}: {e.Notice.MessageText}");
+            };
+
+            // Advisory lock 1 — same lock SchemaInitializer uses, so running
+            // `migrate` alongside a live server is serialized at PG level.
+            await using (var lk = new Npgsql.NpgsqlCommand("SELECT pg_advisory_lock(1)", conn))
+                await lk.ExecuteNonQueryAsync();
+            try
+            {
+                await using var cmd = new Npgsql.NpgsqlCommand(SqlSchema.CreateAll, conn);
+                await cmd.ExecuteNonQueryAsync();
+                await conn.ReloadTypesAsync();
+
+                // Second pass: detect columns that the C# models expect but the
+                // live DB is missing. CreateAll's static ALTER list only covers
+                // historical additions — this picks up anything newer that the
+                // maintainer forgot to add to the forward-compat block.
+                var applied = await ApplyExpectedColumnPatches(conn, quiet);
+
+                // Summary: "actually applied" = real CREATE/ALTER (no NOTICE
+                // saying "already exists"). NOTICE count is a rough proxy for
+                // "skipped" when IF NOT EXISTS guards fired.
+                var skipped = notices.Count(n =>
+                    n.Contains("already exists", StringComparison.OrdinalIgnoreCase));
+                Console.WriteLine($"dmart schema ready. {applied} dynamic column patches applied, {skipped} statements already-in-sync.");
+            }
+            finally
+            {
+                await using var ul = new Npgsql.NpgsqlCommand("SELECT pg_advisory_unlock(1)", conn);
+                await ul.ExecuteNonQueryAsync();
+            }
+            Npgsql.NpgsqlConnection.ClearAllPools();
+        }
+        catch (Exception ex)
+        {
+            Console.Error.WriteLine($"Error: migration failed: {ex.Message}");
+            if (ex.InnerException is not null)
+                Console.Error.WriteLine($"  {ex.InnerException.Message}");
+            Environment.ExitCode = 1;
+            return;
+        }
         return;
     }
 
@@ -915,6 +1002,98 @@ app.Run();
 // Exposed so dmart.Tests can use WebApplicationFactory<Program>.
 public partial class Program
 {
+    // Columns the C# code expects to read/write on each table. Compared against
+    // information_schema.columns during `dmart migrate` — any that are missing
+    // get an ALTER TABLE ADD COLUMN issued dynamically. This is the fallback
+    // path for schema drift beyond what SqlSchema.CreateAll's static forward-
+    // compat block covers. Shape: table → [(column, ddl_type_and_constraints)].
+    private static readonly Dictionary<string, (string Column, string Ddl)[]> ExpectedColumns = new()
+    {
+        ["users"] = new[]
+        {
+            ("device_id", "TEXT"),
+            ("google_id", "TEXT"),
+            ("facebook_id", "TEXT"),
+            ("social_avatar_url", "TEXT"),
+            ("attempt_count", "INTEGER"),
+            ("last_login", "JSONB"),
+            ("notes", "TEXT"),
+            ("locked_to_device", "BOOLEAN NOT NULL DEFAULT FALSE"),
+            ("last_checksum_history", "TEXT"),
+            ("query_policies", "TEXT[] NOT NULL DEFAULT '{}'"),
+        },
+        ["roles"] = new[]
+        {
+            ("last_checksum_history", "TEXT"),
+            ("query_policies", "TEXT[] NOT NULL DEFAULT '{}'"),
+        },
+        ["permissions"] = new[]
+        {
+            ("last_checksum_history", "TEXT"),
+            ("query_policies", "TEXT[] NOT NULL DEFAULT '{}'"),
+        },
+        ["entries"] = new[]
+        {
+            ("last_checksum_history", "TEXT"),
+            ("query_policies", "TEXT[] NOT NULL DEFAULT '{}'"),
+        },
+        ["spaces"] = new[]
+        {
+            ("last_checksum_history", "TEXT"),
+            ("query_policies", "TEXT[] NOT NULL DEFAULT '{}'"),
+            ("active_plugins", "JSONB"),
+            ("hide_folders", "JSONB"),
+            ("hide_space", "BOOLEAN"),
+            ("ordinal", "INTEGER"),
+            ("mirrors", "JSONB"),
+        },
+        ["sessions"] = new[]
+        {
+            ("firebase_token", "TEXT"),
+        },
+    };
+
+    // Compares each table's live columns to ExpectedColumns and issues
+    // ALTER TABLE ADD COLUMN for any missing entries. Returns the count of
+    // ALTERs actually issued. Skips tables that don't exist (they'll be
+    // created by SqlSchema.CreateAll in the same pass).
+    static async Task<int> ApplyExpectedColumnPatches(Npgsql.NpgsqlConnection conn, bool quiet)
+    {
+        var applied = 0;
+        foreach (var (table, cols) in ExpectedColumns)
+        {
+            // Skip tables that don't exist yet — CreateAll creates them fully
+            // with every column, so there's nothing to patch.
+            await using (var check = new Npgsql.NpgsqlCommand(
+                "SELECT 1 FROM information_schema.tables WHERE table_schema = 'public' AND table_name = $1", conn))
+            {
+                check.Parameters.Add(new() { Value = table });
+                if (await check.ExecuteScalarAsync() is null) continue;
+            }
+
+            // Load the live column set once per table.
+            var existing = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+            await using (var q = new Npgsql.NpgsqlCommand(
+                "SELECT column_name FROM information_schema.columns WHERE table_schema = 'public' AND table_name = $1", conn))
+            {
+                q.Parameters.Add(new() { Value = table });
+                await using var r = await q.ExecuteReaderAsync();
+                while (await r.ReadAsync()) existing.Add(r.GetString(0));
+            }
+
+            foreach (var (column, ddl) in cols)
+            {
+                if (existing.Contains(column)) continue;
+                var sql = $"ALTER TABLE {table} ADD COLUMN IF NOT EXISTS {column} {ddl}";
+                await using var alter = new Npgsql.NpgsqlCommand(sql, conn);
+                await alter.ExecuteNonQueryAsync();
+                applied++;
+                if (!quiet) Console.WriteLine($"  + {table}.{column} ({ddl})");
+            }
+        }
+        return applied;
+    }
+
     // Updates ~/.dmart/cli.ini with the new password (and url/shortname)
     // so dmart-cli picks up the credentials after set_password.
     static void UpdateCliIni(string shortname, string password, DmartSettings s)
