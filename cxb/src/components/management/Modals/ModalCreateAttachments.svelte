@@ -424,7 +424,7 @@
                         {#if contentType === ContentType.image}
                             <div>
                                 <Label for="imageFile">Image File</Label>
-                                <Fileupload id="imageFile" type="file" accept="image/png, image/jpeg, image/webp" clearable
+                                <Fileupload id="imageFile" type="file" accept="image/png, image/jpeg, image/webp, image/svg+xml" clearable
                                             bind:files={payloadFiles}/>
                             </div>
                         {:else if contentType === ContentType.pdf}
