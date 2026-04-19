@@ -302,8 +302,15 @@ public sealed class UserService(
                 InternalErrorCode.USER_ISNT_VERIFIED, "This user is not verified", "auth");
 
         // Validate OTP code.
-        var dest = user.Msisdn ?? user.Email ?? user.Shortname;
-        if (string.IsNullOrEmpty(req.Otp) || !await otp.VerifyAndConsumeAsync(dest, req.Otp, ct))
+        // Python parity: key is derived from the REQUEST identifier, not the
+        // user record. When the caller sent `shortname`, Python falls back to
+        // `user.msisdn` because /otp-request-login writes to msisdn for the
+        // shortname path — same scheme here.
+        var dest = !string.IsNullOrEmpty(req.Shortname)
+            ? user.Msisdn
+            : (req.Msisdn ?? req.Email?.ToLowerInvariant());
+        if (string.IsNullOrEmpty(dest) || string.IsNullOrEmpty(req.Otp)
+            || !await otp.VerifyAndConsumeAsync(dest, req.Otp, ct))
             return Result<(string, string, User)>.Fail(
                 InternalErrorCode.OTP_INVALID, "Wrong OTP", "auth");
 

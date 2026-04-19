@@ -75,13 +75,54 @@ public static class OtpHandler
             return Response.Ok();
         }).RequireRateLimiting("auth-by-ip");
 
+        // Python parity: accepts shortname/msisdn/email (exactly one), looks up
+        // the user, and sends an OTP for login. Key-scheme is the same as
+        // /otp-request so /user/login's OTP verification finds the code at the
+        // same destination key (Python: both endpoints call send_otp which
+        // writes to `users:otp:otps/{msisdn}` — no `login:` prefix).
+        //
+        // Anti-enumeration: when the user isn't found, Python still returns
+        // {status: success} so callers can't probe which identifiers exist.
         g.MapPost("/otp-request-login", async (SendOTPRequest req, OtpProvider otp, OtpRepository repo,
-            IOptions<DmartSettings> settings, CancellationToken ct) =>
+            UserRepository users, IOptions<DmartSettings> settings, CancellationToken ct) =>
         {
-            var dest = req.Msisdn ?? req.Email ?? "";
+            var provided = (string.IsNullOrEmpty(req.Shortname) ? 0 : 1)
+                         + (string.IsNullOrEmpty(req.Msisdn) ? 0 : 1)
+                         + (string.IsNullOrEmpty(req.Email) ? 0 : 1);
+            if (provided != 1)
+                return Response.Fail(InternalErrorCode.OTP_ISSUE,
+                    "one of msisdn, email or shortname must be provided", "auth");
+
+            Models.Core.User? user;
+            string? dest;
+            if (!string.IsNullOrEmpty(req.Shortname))
+            {
+                user = await users.GetByShortnameAsync(req.Shortname, ct);
+                // Shortname path: OTP is sent to the user's msisdn (Python parity).
+                dest = user?.Msisdn;
+            }
+            else if (!string.IsNullOrEmpty(req.Msisdn))
+            {
+                user = await users.GetByMsisdnAsync(req.Msisdn, ct);
+                dest = req.Msisdn;
+            }
+            else
+            {
+                var lower = req.Email!.ToLowerInvariant();
+                user = await users.GetByEmailAsync(lower, ct);
+                dest = lower;
+            }
+
+            // Anti-enumeration: missing user, or shortname lookup with no
+            // msisdn to SMS, both return silent success.
+            if (user is null || !user.IsActive || string.IsNullOrEmpty(dest))
+                return Response.Ok();
+
+            var s = settings.Value;
             var code = otp.Generate();
-            var expiresAt = DateTime.UtcNow.AddSeconds(settings.Value.OtpTokenTtl);
-            await repo.StoreAsync($"login:{dest}", code, expiresAt, ct);
+            var expiresAt = DateTime.UtcNow.AddSeconds(s.OtpTokenTtl);
+            await repo.StoreAsync(dest, code, expiresAt, ct);
+            await otp.SendAsync(dest, code, ct);
             return Response.Ok();
         }).RequireRateLimiting("auth-by-ip");
 
