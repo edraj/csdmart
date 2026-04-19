@@ -395,10 +395,40 @@ public static class RequestHandler
                 if (existing is null)
                     return (Response.Fail(InternalErrorCode.SHORTNAME_DOES_NOT_EXIST, "space not found", "request"), rec);
                 var attrs = rec.Attributes ?? new();
+
+                // Python parity: every Space-specific attribute on the wire is
+                // written through. Previously only hide_space + is_active were
+                // patched, so frontend "save space settings" silently dropped
+                // icon/primary_website/languages/active_plugins/etc.
+                var languages = attrs.TryGetValue("languages", out var lgRaw)
+                    ? ExtractLanguages(lgRaw) ?? existing.Languages
+                    : existing.Languages;
+
                 var updated = existing with
                 {
-                    HideSpace = attrs.TryGetValue("hide_space", out var hs) ? IsTruthy(hs) : existing.HideSpace,
+                    // Metas base fields — the frontend form posts all of these.
+                    Slug = attrs.TryGetValue("slug", out var sl) ? ConvertToString(sl) : existing.Slug,
+                    Displayname = attrs.TryGetValue("displayname", out var dn) ? ParseTranslation(dn) : existing.Displayname,
+                    Description = attrs.TryGetValue("description", out var desc) ? ParseTranslation(desc) : existing.Description,
+                    Tags = ExtractStringList(attrs, "tags") ?? existing.Tags,
                     IsActive = attrs.TryGetValue("is_active", out var ia) ? !IsExplicitlyFalse(ia) : existing.IsActive,
+
+                    // Space-specific fields.
+                    RootRegistrationSignature = attrs.TryGetValue("root_registration_signature", out var rrs)
+                        ? (ConvertToString(rrs) ?? "") : existing.RootRegistrationSignature,
+                    PrimaryWebsite = attrs.TryGetValue("primary_website", out var pw)
+                        ? (ConvertToString(pw) ?? "") : existing.PrimaryWebsite,
+                    IndexingEnabled = attrs.TryGetValue("indexing_enabled", out var ie) ? IsTruthy(ie) : existing.IndexingEnabled,
+                    CaptureMisses = attrs.TryGetValue("capture_misses", out var cm) ? IsTruthy(cm) : existing.CaptureMisses,
+                    CheckHealth = attrs.TryGetValue("check_health", out var ch) ? IsTruthy(ch) : existing.CheckHealth,
+                    Languages = languages,
+                    Icon = attrs.TryGetValue("icon", out var ic) ? (ConvertToString(ic) ?? "") : existing.Icon,
+                    Mirrors = attrs.ContainsKey("mirrors") ? ExtractStringList(attrs, "mirrors") : existing.Mirrors,
+                    HideFolders = attrs.ContainsKey("hide_folders") ? ExtractStringList(attrs, "hide_folders") : existing.HideFolders,
+                    HideSpace = attrs.TryGetValue("hide_space", out var hs) ? IsTruthy(hs) : existing.HideSpace,
+                    ActivePlugins = attrs.ContainsKey("active_plugins") ? ExtractStringList(attrs, "active_plugins") : existing.ActivePlugins,
+                    Ordinal = attrs.TryGetValue("ordinal", out var ord) ? ParseInt(ord) ?? existing.Ordinal : existing.Ordinal,
+
                     UpdatedAt = DateTime.UtcNow,
                 };
                 await spaces.UpsertAsync(updated, ct);
@@ -696,6 +726,42 @@ public static class RequestHandler
         "fr" or "french"  => Language.Fr,
         "tr" or "turkish" => Language.Tr,
         _                 => Language.En,
+    };
+
+    // Space.languages is posted as a string array, e.g. ["english", "ar", "ku"].
+    // Map each entry through ParseLanguage so both short codes ("en") and long
+    // names ("english") resolve. Returns null when the attribute is absent or
+    // not an array, so the caller can fall back to the existing list.
+    private static List<Language>? ExtractLanguages(object? raw)
+    {
+        var names = NormalizeStringArray(raw);
+        if (names is null) return null;
+        return names.Select(ParseLanguage).Distinct().ToList();
+    }
+
+    private static List<string>? NormalizeStringArray(object? raw)
+    {
+        if (raw is null) return null;
+        if (raw is JsonElement el && el.ValueKind == JsonValueKind.Array)
+        {
+            var list = new List<string>();
+            foreach (var item in el.EnumerateArray())
+                if (item.ValueKind == JsonValueKind.String) list.Add(item.GetString()!);
+            return list;
+        }
+        if (raw is List<string> sl) return sl;
+        return null;
+    }
+
+    private static int? ParseInt(object? raw) => raw switch
+    {
+        null => null,
+        int i => i,
+        long l => (int)l,
+        JsonElement el when el.ValueKind == JsonValueKind.Number && el.TryGetInt32(out var n) => n,
+        JsonElement el when el.ValueKind == JsonValueKind.String && int.TryParse(el.GetString(), out var s) => s,
+        string ss when int.TryParse(ss, out var sv) => sv,
+        _ => null,
     };
 
     private static Translation? ParseTranslation(object? value)
