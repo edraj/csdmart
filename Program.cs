@@ -800,23 +800,33 @@ app.UseDmartResponseHeaders();
 // Python parity: unmatched API routes return INVALID_ROUTE (230) under
 // type=request with HTTP 422, instead of an empty 404 body. Registered BEFORE
 // UseCxb so its post-next pass runs AFTER CxbMiddleware's SPA fallback has had
-// a chance to turn /cxb/* 404s into index.html. Only transforms 404 → 422
-// when no other middleware has written a body yet.
-app.Use(async (ctx, next) =>
+// a chance to turn /cxb/* 404s into index.html. Skip the CXB URL prefix so
+// deployments without a built-in CXB bundle (CI runners, minimal containers)
+// still return a plain 404 for /cxb/* — transforming it would trip the
+// `if (resp.StatusCode == NotFound) return;` skip branches in the CXB tests.
 {
-    await next();
-    if (ctx.Response.StatusCode == 404
-        && !ctx.Response.HasStarted
-        && ctx.Response.ContentLength is null or 0)
+    var cxbPrefix = (app.Services.GetRequiredService<Microsoft.Extensions.Options.IOptions<DmartSettings>>()
+                       .Value.CxbUrl?.Trim().TrimEnd('/') ?? "/cxb");
+    if (!cxbPrefix.StartsWith('/')) cxbPrefix = "/" + cxbPrefix;
+    var cxbPath = new PathString(cxbPrefix);
+
+    app.Use(async (ctx, next) =>
     {
-        var body = Dmart.Models.Api.Response.Fail(
-            Dmart.Models.Api.InternalErrorCode.INVALID_ROUTE,
-            $"Route not found: {ctx.Request.Method} {ctx.Request.Path}",
-            "request");
-        ctx.Response.StatusCode = 422;
-        await ctx.Response.WriteAsJsonAsync(body, Dmart.Models.Json.DmartJsonContext.Default.Response);
-    }
-});
+        await next();
+        if (ctx.Response.StatusCode == 404
+            && !ctx.Response.HasStarted
+            && (ctx.Response.ContentLength is null or 0)
+            && !ctx.Request.Path.StartsWithSegments(cxbPath))
+        {
+            var body = Dmart.Models.Api.Response.Fail(
+                Dmart.Models.Api.InternalErrorCode.INVALID_ROUTE,
+                $"Route not found: {ctx.Request.Method} {ctx.Request.Path}",
+                "request");
+            ctx.Response.StatusCode = 422;
+            await ctx.Response.WriteAsJsonAsync(body, Dmart.Models.Json.DmartJsonContext.Default.Response);
+        }
+    });
+}
 
 // CXB Svelte frontend (embedded resources at /cxb)
 app.UseCxb();
