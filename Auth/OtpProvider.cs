@@ -8,6 +8,7 @@ namespace Dmart.Auth;
 public sealed class OtpProvider(
     IOptions<DmartSettings> settings,
     SmsSender sms,
+    SmtpSender smtp,
     ILogger<OtpProvider> log)
 {
     public string Generate()
@@ -26,17 +27,33 @@ public sealed class OtpProvider(
     {
         // Dispatch:
         //   msisdn-shaped destination → SEND_SMS_OTP_API (configured) or log.
-        //   anything else → log only (email delivery is still a TODO — the
-        //   SMTP gateway hasn't been ported from Python yet).
+        //   email-shaped destination  → SMTP gateway (configured) or log.
+        //   anything else             → log only.
         if (IsMsisdn(destination))
         {
             var sent = await sms.SendOtpAsync(destination, $"Your OTP code is {code}", language: null, ct);
             if (sent) return;
         }
+        else if (IsEmail(destination))
+        {
+            // Python parity: email_send_otp() — HTML body containing the code.
+            var sent = await smtp.SendEmailAsync(
+                destination, "OTP", $"<p>Your OTP code is <b>{code}</b></p>", ct);
+            if (sent) return;
+        }
 
         // Fallback: log so developers can retrieve the code from server logs.
-        log.LogInformation("OTP for {Destination}: {Code} (delivery not implemented or SMS gateway unavailable)",
+        log.LogInformation("OTP for {Destination}: {Code} (delivery not implemented or gateway unavailable)",
             destination, code);
+    }
+
+    // Lightweight email heuristic — good enough for dispatch routing; the OTP
+    // flow validates the full address format upstream when the user registered.
+    private static bool IsEmail(string destination)
+    {
+        if (string.IsNullOrWhiteSpace(destination)) return false;
+        var at = destination.IndexOf('@');
+        return at > 0 && at < destination.Length - 1 && destination.IndexOf('.', at) > at;
     }
 
     // Phone-number heuristic: +<digits> or pure digits of length 6+. Matches

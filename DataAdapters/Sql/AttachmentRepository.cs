@@ -132,7 +132,7 @@ public sealed class AttachmentRepository(Db db)
     // ----- query support (used by QueryService for type=attachments) -----
 
     public Task<List<Attachment>> QueryAsync(Models.Api.Query q, CancellationToken ct = default)
-        => QueryHelper.RunQueryAsync(db, SelectAllColumns, q, Hydrate, ct);
+        => QueryHelper.RunQueryAsync(db, SelectAllColumns, q, Hydrate, ct, tableName: "attachments");
 
     public Task<int> CountQueryAsync(Models.Api.Query q, CancellationToken ct = default)
         => QueryHelper.RunCountAsync(db, "attachments", q, ct);

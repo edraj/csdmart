@@ -1,10 +1,12 @@
 using System.Text.Json;
 using Dmart.Auth;
+using Dmart.Config;
 using Dmart.DataAdapters.Sql;
 using Dmart.Models.Api;
 using Dmart.Models.Core;
 using Dmart.Models.Enums;
 using Dmart.Services;
+using Microsoft.Extensions.Options;
 
 namespace Dmart.Api.Managed;
 
@@ -29,9 +31,11 @@ public static class RequestHandler
                                   AccessRepository access, SpaceRepository spaces,
                                   AttachmentRepository attachments, PasswordHasher hasher,
                                   Plugins.PluginManager plugins,
+                                  IOptions<DmartSettings> dmartSettings,
                                   HttpContext http, CancellationToken ct) =>
             {
                 var actor = http.User.Identity?.Name ?? "anonymous";
+                var managementSpace = dmartSettings.Value.ManagementSpace;
                 var responses = new List<Record>();
                 // Python parity: don't bail on the first failure — try every
                 // record and aggregate failures. Python's shape (utils.py:serve_request_delete):
@@ -51,7 +55,7 @@ public static class RequestHandler
                             await DispatchUpdateAsync(rec, req.SpaceName, actor,
                                 entries, users, access, spaces, attachments, hasher, ct),
                         RequestType.Delete =>
-                            await DispatchDeleteAsync(rec, req.SpaceName, actor,
+                            await DispatchDeleteAsync(rec, req.SpaceName, actor, managementSpace,
                                 entries, users, access, spaces, attachments, ct),
                         RequestType.Move =>
                             await DispatchMoveAsync(rec, req.SpaceName, actor, entries, ct),
@@ -460,7 +464,7 @@ public static class RequestHandler
     // ============================================================================
 
     private static async Task<(Response Response, Record UpdatedRecord)> DispatchDeleteAsync(
-        Record rec, string space, string actor,
+        Record rec, string space, string actor, string managementSpace,
         EntryService entries, UserRepository users, AccessRepository access,
         SpaceRepository spaces, AttachmentRepository attachments, CancellationToken ct)
     {
@@ -472,6 +476,11 @@ public static class RequestHandler
                 await users.DeleteAsync(rec.Shortname, ct);
                 return (Response.Ok(), rec);
             case ResourceType.Space:
+                // Python parity: serve_space_delete refuses to drop the
+                // management space — it's where users/roles/permissions live.
+                if (string.Equals(rec.Shortname, managementSpace, StringComparison.Ordinal))
+                    return (Response.Fail(InternalErrorCode.CANNT_DELETE,
+                        $"cannot delete the management space '{managementSpace}'", "request"), rec);
                 await spaces.DeleteAsync(rec.Shortname, ct);
                 return (Response.Ok(), rec);
             // Role/Permission live in their own tables, not `entries` — falling

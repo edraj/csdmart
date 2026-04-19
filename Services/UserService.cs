@@ -238,7 +238,7 @@ public sealed class UserService(
                 InternalErrorCode.USERNAME_NOT_EXIST, "Invalid username or password", "auth");
         if (!user.IsActive)
             return Result<(string, string, User)>.Fail(
-                InternalErrorCode.USER_ACCOUNT_LOCKED, "Account has been locked.", "auth");
+                InternalErrorCode.USER_ISNT_VERIFIED, "This user is not verified", "auth");
 
         // Account lockout after max_failed_login_attempts (Python: handle_failed_login_attempt).
         var maxAttempts = settings.Value.MaxFailedLoginAttempts;
@@ -299,7 +299,7 @@ public sealed class UserService(
                 InternalErrorCode.USERNAME_NOT_EXIST, "Invalid username or password", "auth");
         if (!user.IsActive)
             return Result<(string, string, User)>.Fail(
-                InternalErrorCode.USER_ACCOUNT_LOCKED, "Account has been locked.", "auth");
+                InternalErrorCode.USER_ISNT_VERIFIED, "This user is not verified", "auth");
 
         // Validate OTP code.
         var dest = user.Msisdn ?? user.Email ?? user.Shortname;
@@ -358,7 +358,7 @@ public sealed class UserService(
                 InternalErrorCode.INVALID_INVITATION, "Expired or invalid invitation", "jwtauth");
         if (!user.IsActive)
             return Result<(string, string, User)>.Fail(
-                InternalErrorCode.USER_ACCOUNT_LOCKED, "Account has been locked.", "auth");
+                InternalErrorCode.USER_ISNT_VERIFIED, "This user is not verified", "auth");
 
         // Optional body-level cross-check: if the client passed shortname/email/msisdn
         // alongside the JWT, at least one must line up with the resolved user.
@@ -495,6 +495,11 @@ public sealed class UserService(
         if (patch.TryGetValue("password", out var pwObj) && pwObj is not null)
         {
             var newPw = pwObj.ToString();
+            // Python parity: profile endpoint rejects a password that fails
+            // the PASSWORD regex with INVALID_PASSWORD_RULES under type=jwtauth.
+            if (!string.IsNullOrEmpty(newPw) && !Auth.PasswordRules.IsValid(newPw))
+                return Result<User>.Fail(
+                    InternalErrorCode.INVALID_PASSWORD_RULES, "Invalid username or password", "jwtauth");
             if (!user.ForcePasswordChange)
             {
                 if (!patch.TryGetValue("old_password", out var oldPwObj) || oldPwObj is null)

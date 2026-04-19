@@ -31,6 +31,8 @@ public static class SettingsSerializer
         nameof(DmartSettings.GoogleClientSecret),
         nameof(DmartSettings.FacebookClientSecret),
         nameof(DmartSettings.AppleClientSecretPrivateKey),
+        // SMTP credentials — same risk profile as SmppAuthKey.
+        nameof(DmartSettings.MailPassword),
     };
 
     /// <summary>

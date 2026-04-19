@@ -177,7 +177,7 @@ public sealed class EntryRepository(Db db)
     }
 
     public Task<List<Entry>> QueryAsync(Query q, CancellationToken ct = default)
-        => QueryHelper.RunQueryAsync(db, SelectAllColumns, q, Hydrate, ct);
+        => QueryHelper.RunQueryAsync(db, SelectAllColumns, q, Hydrate, ct, tableName: "entries");
 
     public Task<int> CountQueryAsync(Query q, CancellationToken ct = default)
         => QueryHelper.RunCountAsync(db, "entries", q, ct);

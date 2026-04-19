@@ -213,6 +213,22 @@ public sealed class DmartSettings
     // Change to "/" to serve CXB at the root, or "/admin" for a custom path.
     public string CxbUrl { get; set; } = "/cxb";
 
+    // ---- SMTP email gateway (Python parity) ----
+    // Used by OtpProvider to deliver email OTP codes and by InvitationService
+    // once email channels are enabled. When MailHost is empty the sender logs
+    // a warning and falls back to the on-server log (same failure mode as the
+    // SMS sender). MockSmtpApi short-circuits delivery for dev/CI.
+    //
+    // Python's dotenv keys: MAIL_HOST, MAIL_PORT, MAIL_USERNAME, MAIL_PASSWORD,
+    // MAIL_FROM_ADDRESS, MAIL_FROM_NAME, MAIL_USE_TLS.
+    public string MailHost { get; set; } = "";
+    public int MailPort { get; set; } = 587;
+    public string MailUsername { get; set; } = "";
+    public string MailPassword { get; set; } = "";
+    public string MailFromAddress { get; set; } = "noreply@admin.com";
+    public string MailFromName { get; set; } = "";
+    public bool MailUseTls { get; set; } = true;
+
     // Helper — split the CSV into a trimmed string array. Done here (not in the
     // middleware) so tests can assert the parsing behavior directly.
     public string[] ParseAllowedCorsOrigins()

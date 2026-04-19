@@ -756,13 +756,52 @@ public static class QueryHelper
     // ORDER + PAGING
     // ====================================================================
 
-    public static void AppendOrderAndPaging(System.Text.StringBuilder sql, Query q, List<NpgsqlParameter> args)
+    // Per-table column whitelists for the Query.sort_by clause. Python's adapter
+    // accepts any attribute/JSON path, but we emit raw SQL, so an open mapping
+    // would let a hostile wire value smuggle arbitrary SQL. Whitelist is safer
+    // and still covers every column end-users actually sort by. If sort_by is
+    // null or not in the whitelist we fall back to updated_at (preserves
+    // previous default behaviour). JSON-path sort (sort_by=payload.body.x) is
+    // deferred — Python implements it via transform_keys_to_sql.
+    private static readonly HashSet<string> SharedSortColumns = new(StringComparer.Ordinal)
+    {
+        "shortname", "created_at", "updated_at", "displayname", "description",
+        "is_active", "resource_type", "owner_shortname", "owner_group_shortname",
+        "uuid", "slug", "payload_content_type"
+    };
+    private static readonly Dictionary<string, HashSet<string>> TableSortColumns = new(StringComparer.Ordinal)
+    {
+        ["entries"] = new(SharedSortColumns, StringComparer.Ordinal) { "schema_shortname", "state" },
+        ["attachments"] = new(SharedSortColumns, StringComparer.Ordinal) { "schema_shortname" },
+        ["users"] = new(SharedSortColumns, StringComparer.Ordinal) { "email", "msisdn", "type", "language" },
+        ["spaces"] = new(SharedSortColumns, StringComparer.Ordinal) { "space_name", "subpath" },
+        ["roles"] = new(SharedSortColumns, StringComparer.Ordinal),
+        ["permissions"] = new(SharedSortColumns, StringComparer.Ordinal),
+        ["histories"] = new(SharedSortColumns, StringComparer.Ordinal),
+    };
+
+    // Resolve the effective sort column for the given table, honoring Python's
+    // "strip attributes. prefix" convention. Returns null if the caller-supplied
+    // value is absent or not in the whitelist — caller falls back to updated_at.
+    private static string? ResolveSortColumn(string? sortBy, string? tableName)
+    {
+        if (string.IsNullOrWhiteSpace(sortBy)) return null;
+        var col = sortBy.StartsWith("attributes.", StringComparison.Ordinal) ? sortBy[11..] : sortBy;
+        if (col.Length == 0) return null;
+        var allowed = tableName is not null && TableSortColumns.TryGetValue(tableName, out var set)
+            ? set
+            : SharedSortColumns;
+        return allowed.Contains(col) ? col : null;
+    }
+
+    public static void AppendOrderAndPaging(System.Text.StringBuilder sql, Query q, List<NpgsqlParameter> args, string? tableName = null)
     {
         if (q.Type == QueryType.Random)
             sql.Append("ORDER BY RANDOM() ");
         else
         {
-            sql.Append("ORDER BY updated_at ");
+            var column = ResolveSortColumn(q.SortBy, tableName) ?? "updated_at";
+            sql.Append($"ORDER BY {column} ");
             sql.Append(q.SortType == SortType.Ascending ? "ASC " : "DESC ");
         }
 
@@ -791,7 +830,7 @@ public static class QueryHelper
         if (userShortname is not null && tableName is not null)
             AppendAclFilter(sql, args, userShortname, tableName, queryPolicies);
 
-        AppendOrderAndPaging(sql, q, args);
+        AppendOrderAndPaging(sql, q, args, tableName);
 
         await using var conn = await db.OpenAsync(ct);
         await using var cmd = new NpgsqlCommand(sql.ToString(), conn);
@@ -882,7 +921,7 @@ public static class QueryHelper
         }
 
         // ORDER + LIMIT
-        AppendOrderAndPaging(sql, q, args);
+        AppendOrderAndPaging(sql, q, args, tableName);
 
         await using var conn = await db.OpenAsync(ct);
         await using var cmd = new NpgsqlCommand(sql.ToString(), conn);

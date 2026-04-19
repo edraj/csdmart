@@ -636,4 +636,82 @@ public class QueryHelperTests
         var where = BuildSearch("@payload.body.config.db:*");
         where.ShouldContain("payload::jsonb->'body'->'config'->'db' IS NOT NULL");
     }
+
+    // ==================== sort_by / sort_type ====================
+
+    private static string BuildOrder(Query q, string? tableName = null)
+    {
+        var sql = new System.Text.StringBuilder();
+        var args = new List<NpgsqlParameter>();
+        QueryHelper.AppendOrderAndPaging(sql, q, args, tableName);
+        return sql.ToString();
+    }
+
+    [Fact]
+    public void SortBy_Null_OrdersByUpdatedAt_Desc()
+    {
+        var q = new Query { Type = QueryType.Subpath, SpaceName = "t", Subpath = "/" };
+        BuildOrder(q, "entries").ShouldContain("ORDER BY updated_at DESC");
+    }
+
+    [Fact]
+    public void SortBy_Shortname_Asc_EmitsOrderByShortnameAsc()
+    {
+        var q = new Query { Type = QueryType.Subpath, SpaceName = "t", Subpath = "/",
+            SortBy = "shortname", SortType = SortType.Ascending };
+        BuildOrder(q, "entries").ShouldContain("ORDER BY shortname ASC");
+    }
+
+    [Fact]
+    public void SortBy_CreatedAt_Desc_EmitsOrderByCreatedAtDesc()
+    {
+        var q = new Query { Type = QueryType.Subpath, SpaceName = "t", Subpath = "/",
+            SortBy = "created_at", SortType = SortType.Descending };
+        BuildOrder(q, "entries").ShouldContain("ORDER BY created_at DESC");
+    }
+
+    [Fact]
+    public void SortBy_AttributesPrefix_Stripped()
+    {
+        var q = new Query { Type = QueryType.Subpath, SpaceName = "t", Subpath = "/",
+            SortBy = "attributes.shortname" };
+        BuildOrder(q, "entries").ShouldContain("ORDER BY shortname");
+    }
+
+    [Fact]
+    public void SortBy_Unknown_FallsBackToUpdatedAt()
+    {
+        var q = new Query { Type = QueryType.Subpath, SpaceName = "t", Subpath = "/",
+            SortBy = "; DROP TABLE entries; --" };
+        var order = BuildOrder(q, "entries");
+        order.ShouldContain("ORDER BY updated_at");
+        order.ShouldNotContain("DROP");
+    }
+
+    [Fact]
+    public void SortBy_UserTableSpecific_Column_Allowed()
+    {
+        var q = new Query { Type = QueryType.Subpath, SpaceName = "t", Subpath = "/",
+            SortBy = "email", SortType = SortType.Ascending };
+        BuildOrder(q, "users").ShouldContain("ORDER BY email ASC");
+    }
+
+    [Fact]
+    public void SortBy_EntryTableColumn_Rejected_On_UserTable()
+    {
+        // state is whitelisted for entries but not users — caller on users table must fall back.
+        var q = new Query { Type = QueryType.Subpath, SpaceName = "t", Subpath = "/",
+            SortBy = "state" };
+        BuildOrder(q, "users").ShouldContain("ORDER BY updated_at");
+    }
+
+    [Fact]
+    public void SortBy_RandomQuery_Ignores_SortBy()
+    {
+        var q = new Query { Type = QueryType.Random, SpaceName = "t", Subpath = "/",
+            SortBy = "shortname" };
+        var order = BuildOrder(q, "entries");
+        order.ShouldContain("ORDER BY RANDOM()");
+        order.ShouldNotContain("shortname");
+    }
 }

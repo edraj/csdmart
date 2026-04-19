@@ -330,10 +330,52 @@ switch (subcommand)
 
     case "import":
     {
-        var target = serverArgs.Length > 0 ? serverArgs[0] : ".";
-        Console.WriteLine($"Import from: {target}");
-        Console.WriteLine("Note: CLI import requires the full migration pipeline (json_to_db).");
-        Console.WriteLine("Use the /managed/import HTTP endpoint for zip import instead.");
+        var zipPath = serverArgs.FirstOrDefault(a => !a.StartsWith('-'));
+        if (string.IsNullOrEmpty(zipPath))
+        {
+            Console.Error.WriteLine("Usage: dmart import <zip-file>");
+            Environment.ExitCode = 1;
+            return;
+        }
+        if (!File.Exists(zipPath))
+        {
+            Console.Error.WriteLine($"File not found: {zipPath}");
+            Environment.ExitCode = 1;
+            return;
+        }
+
+        var cfgBuilder = new ConfigurationBuilder();
+        if (dotenvPath is not null) cfgBuilder.AddInMemoryCollection(dotenvValues);
+        cfgBuilder.AddEnvironmentVariables();
+        var cfg = cfgBuilder.Build();
+        var s = new DmartSettings();
+        cfg.GetSection("Dmart").Bind(s);
+        var dbInst = new Db(Microsoft.Extensions.Options.Options.Create(s));
+        if (!dbInst.IsConfigured) { Console.Error.WriteLine("Database not configured"); Environment.ExitCode = 1; return; }
+
+        var nlog = Microsoft.Extensions.Logging.Abstractions.NullLoggerFactory.Instance;
+        var refresher = new AuthzCacheRefresher(dbInst, nlog.CreateLogger<AuthzCacheRefresher>());
+        var entryRepo = new EntryRepository(dbInst);
+        var entryService = new EntryService(entryRepo,
+            new AttachmentRepository(dbInst),
+            new HistoryRepository(dbInst),
+            new PermissionService(new UserRepository(dbInst, refresher),
+                new AccessRepository(dbInst, refresher), refresher),
+            new PluginManager(Array.Empty<IHookPlugin>(), Array.Empty<IApiPlugin>(),
+                new SpaceRepository(dbInst), nlog.CreateLogger<PluginManager>()),
+            new SchemaValidator(entryRepo, nlog.CreateLogger<SchemaValidator>()),
+            new WorkflowEngine(entryRepo, nlog.CreateLogger<WorkflowEngine>()),
+            nlog.CreateLogger<EntryService>());
+        var importService = new ImportExportService(entryRepo, entryService, nlog.CreateLogger<ImportExportService>());
+
+        await using var zipStream = File.OpenRead(zipPath);
+        // Actor for imported entries — "dmart" is the hardcoded admin shortname
+        // (same as AdminBootstrap uses); matches the export subcommand above.
+        var resp = await importService.ImportZipAsync(zipStream, "dmart");
+        var inserted = resp.Attributes?.GetValueOrDefault("inserted") ?? 0;
+        var failedCount = resp.Attributes?.GetValueOrDefault("failed_count") ?? 0;
+        Console.WriteLine($"Imported {inserted} entries from {zipPath} ({failedCount} failed)");
+        Environment.ExitCode = (failedCount is int fc && fc > 0) ? 2 : 0;
         return;
     }
 
@@ -636,6 +678,7 @@ builder.Services.AddSingleton<WsConnectionManager>();
 builder.Services.AddSingleton<JwtIssuer>();
 builder.Services.AddSingleton<InvitationJwt>();
 builder.Services.AddSingleton<SmsSender>();
+builder.Services.AddSingleton<SmtpSender>();
 builder.Services.AddSingleton<InvitationService>();
 builder.Services.AddSingleton<PasswordHasher>();
 builder.Services.AddSingleton<OtpProvider>();
@@ -753,6 +796,27 @@ app.Use(async (ctx, next) =>
 
 // CORS + security headers + OPTIONS preflight
 app.UseDmartResponseHeaders();
+
+// Python parity: unmatched API routes return INVALID_ROUTE (230) under
+// type=request with HTTP 422, instead of an empty 404 body. Registered BEFORE
+// UseCxb so its post-next pass runs AFTER CxbMiddleware's SPA fallback has had
+// a chance to turn /cxb/* 404s into index.html. Only transforms 404 → 422
+// when no other middleware has written a body yet.
+app.Use(async (ctx, next) =>
+{
+    await next();
+    if (ctx.Response.StatusCode == 404
+        && !ctx.Response.HasStarted
+        && ctx.Response.ContentLength is null or 0)
+    {
+        var body = Dmart.Models.Api.Response.Fail(
+            Dmart.Models.Api.InternalErrorCode.INVALID_ROUTE,
+            $"Route not found: {ctx.Request.Method} {ctx.Request.Path}",
+            "request");
+        ctx.Response.StatusCode = 422;
+        await ctx.Response.WriteAsJsonAsync(body, Dmart.Models.Json.DmartJsonContext.Default.Response);
+    }
+});
 
 // CXB Svelte frontend (embedded resources at /cxb)
 app.UseCxb();
