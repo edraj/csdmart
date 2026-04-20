@@ -21,6 +21,6 @@ public static class QueryHandler
             }
             if (q is null)
                 return Response.Fail(InternalErrorCode.INVALID_DATA, "empty body", "request");
-            return await svc.ExecuteAsync(q, http.User.Identity?.Name, ct);
+            return await svc.ExecuteAsync(q, http.Actor(), ct);
         });
 }

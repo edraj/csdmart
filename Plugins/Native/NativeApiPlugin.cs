@@ -69,7 +69,7 @@ internal sealed class NativeApiPlugin : IApiPlugin
             Query = query,
             Headers = headers,
             Body = body,
-            User = ctx.User.Identity?.Name,
+            User = ctx.Actor(),
         };
 
         var requestJson = JsonSerializer.Serialize(envelope, DmartJsonContext.Default.NativeApiRequest);

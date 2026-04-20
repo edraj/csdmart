@@ -7,7 +7,7 @@ public static class MeHandler
     public static void Map(RouteGroupBuilder g) =>
         g.MapGet("/me", (HttpContext http) => Response.Ok(attributes: new()
         {
-            ["shortname"] = http.User.Identity?.Name ?? "anonymous",
+            ["shortname"] = http.ActorOrAnonymous(),
             ["authenticated"] = http.User.Identity?.IsAuthenticated ?? false,
         }));
 }

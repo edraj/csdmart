@@ -15,7 +15,7 @@ public static class ProfileHandler
         g.MapGet("/profile", async (HttpContext http, UserService svc,
             DataAdapters.Sql.AccessRepository access, CancellationToken ct) =>
         {
-            var actor = http.User.Identity?.Name;
+            var actor = http.Actor();
             if (actor is null)
                 return Response.Fail(InternalErrorCode.NOT_AUTHENTICATED, "login required", "auth");
             var user = await svc.GetByShortnameAsync(actor, ct);
@@ -58,7 +58,7 @@ public static class ProfileHandler
 
         g.MapPost("/profile", async (HttpRequest req, HttpContext http, UserService svc, CancellationToken ct) =>
         {
-            var actor = http.User.Identity?.Name;
+            var actor = http.Actor();
             if (actor is null)
                 return Response.Fail(InternalErrorCode.NOT_AUTHENTICATED, "login required", "auth");
 
@@ -109,7 +109,7 @@ public static class ProfileHandler
 
         g.MapPost("/delete", async (HttpContext http, UserService svc, CancellationToken ct) =>
         {
-            var actor = http.User.Identity?.Name;
+            var actor = http.Actor();
             if (actor is null)
                 return Response.Fail(InternalErrorCode.NOT_AUTHENTICATED, "login required", "auth");
             await svc.DeleteAsync(actor, ct);
@@ -126,7 +126,7 @@ public static class ProfileHandler
             UserRepository users, InvitationService invitationService,
             CancellationToken ct) =>
         {
-            var actor = http.User.Identity?.Name;
+            var actor = http.Actor();
             if (actor is null)
                 return Response.Fail(InternalErrorCode.NOT_AUTHENTICATED, "login required", "auth");
 
@@ -176,7 +176,7 @@ public static class ProfileHandler
         // requires authentication. Returns {valid: bool}.
         g.MapPost("/validate_password", async (HttpRequest req, HttpContext http, UserService svc, CancellationToken ct) =>
         {
-            var actor = http.User.Identity?.Name;
+            var actor = http.Actor();
             if (actor is null)
                 return Response.Fail(InternalErrorCode.NOT_AUTHENTICATED, "login required", "auth");
 

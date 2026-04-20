@@ -34,7 +34,7 @@ public static class RequestHandler
                                   IOptions<DmartSettings> dmartSettings,
                                   HttpContext http, CancellationToken ct) =>
             {
-                var actor = http.User.Identity?.Name ?? "anonymous";
+                var actor = http.ActorOrAnonymous();
                 var managementSpace = dmartSettings.Value.ManagementSpace;
                 var responses = new List<Record>();
                 // Python parity: don't bail on the first failure — try every

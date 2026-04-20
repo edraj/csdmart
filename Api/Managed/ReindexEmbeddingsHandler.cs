@@ -29,7 +29,7 @@ public static class ReindexEmbeddingsHandler
             HttpRequest req, SemanticIndexerService svc,
             HttpContext http, CancellationToken ct) =>
         {
-            var actor = http.User.Identity?.Name;
+            var actor = http.Actor();
             if (string.IsNullOrEmpty(actor))
                 return Response.Fail(InternalErrorCode.NOT_AUTHENTICATED,
                     "login required", "auth");

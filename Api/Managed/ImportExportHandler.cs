@@ -27,7 +27,7 @@ public static class ImportExportHandler
                     // dmart Python also accepts a raw application/zip body
                     zipStream = req.Body;
                 }
-                return await io.ImportZipAsync(zipStream, http.User.Identity?.Name, ct);
+                return await io.ImportZipAsync(zipStream, http.Actor(), ct);
             }).DisableAntiforgery();
 
         g.MapPost("/export",
@@ -36,7 +36,7 @@ public static class ImportExportHandler
             {
                 if (string.IsNullOrEmpty(space))
                     return Results.BadRequest(Response.Fail(InternalErrorCode.INVALID_SPACE_NAME, "space required", "request"));
-                var stream = await io.ExportAsync(space, subpath, http.User.Identity?.Name, ct);
+                var stream = await io.ExportAsync(space, subpath, http.Actor(), ct);
                 return Results.Stream(stream, "application/zip", $"{space}.zip");
             });
     }

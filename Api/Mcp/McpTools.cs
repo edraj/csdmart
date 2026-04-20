@@ -12,7 +12,7 @@ namespace Dmart.Api.Mcp;
 // Handler implementations for every MCP tool. Each handler:
 //   1. Reads and validates its arguments from the `JsonElement?` params.
 //   2. Resolves services it needs from `http.RequestServices`.
-//   3. Uses `http.User.Identity?.Name` as the actor so downstream services
+//   3. Uses `http.Actor()` as the actor so downstream services
 //      enforce the caller's permissions (identical to how ProfileHandler and
 //      every other authenticated endpoint works).
 //   4. Builds a JSON result and returns it as a JsonElement.
@@ -601,7 +601,7 @@ public static class McpTools
     }
 
     private static string RequireActor(HttpContext http) =>
-        http.User.Identity?.Name
+        http.Actor()
             ?? throw new UnauthorizedAccessException("login required");
 
     private static JsonElement SerializeResponse(Response resp)

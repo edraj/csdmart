@@ -40,7 +40,7 @@ public static class ResourceWithPayloadHandler
                                   AttachmentRepository attachments,
                                   ILogger<ResourceWithPayloadMarker> log, HttpContext http,
                                   CancellationToken ct) =>
-                await HandleAsync(req, entries, attachments, http.User.Identity?.Name ?? "anonymous", log, ct))
+                await HandleAsync(req, entries, attachments, http.ActorOrAnonymous(), log, ct))
           .DisableAntiforgery();
 
         g.MapPost("/resources_from_csv/{resource_type}/{space}/{subpath}/{schema}",
@@ -60,7 +60,7 @@ public static class ResourceWithPayloadHandler
                 await using var stream = csvFile.OpenReadStream();
                 return await csv.ImportAsync(space, "/" + subpath.TrimStart('/'), rt,
                     string.IsNullOrEmpty(schema) ? null : schema,
-                    stream, http.User.Identity?.Name, ct);
+                    stream, http.Actor(), ct);
             })
           .DisableAntiforgery();
     }

@@ -246,7 +246,7 @@ public static class McpEndpoint
         // Stamp the authenticated user on the session so the event-bus bridge
         // can fan notifications out to the right sessions. Identity comes from
         // the same JwtBearer middleware that protects the rest of /mcp.
-        session.UserShortname = http.User.Identity?.Name;
+        session.UserShortname = http.Actor();
 
         // Elicitation capability: the client opts in by sending
         // `capabilities.elicitation: {}`. If present, the delete tool (and any

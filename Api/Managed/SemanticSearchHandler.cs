@@ -84,6 +84,6 @@ public static class SemanticSearchHandler
                         "`query` is required", "request");
 
                 return await svc.SearchAsync(query, space, subpath, types, limit,
-                    http.User.Identity?.Name, ct);
+                    http.Actor(), ct);
             });
 }

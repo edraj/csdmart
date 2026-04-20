@@ -32,7 +32,7 @@ public static class McpResourceResolver
         if (!uri.StartsWith("dmart://", StringComparison.Ordinal))
             throw new ArgumentException($"unsupported URI scheme: {uri}");
 
-        var actor = http.User.Identity?.Name
+        var actor = http.Actor()
             ?? throw new UnauthorizedAccessException("login required");
         var qs = http.RequestServices.GetRequiredService<QueryService>();
 

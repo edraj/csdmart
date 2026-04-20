@@ -73,7 +73,7 @@ public static class RequestLoggingMiddleware
         var log = ctx.RequestServices.GetRequiredService<ILoggerFactory>()
             .CreateLogger("Dmart.RequestLog");
         var status = ctx.Response.StatusCode;
-        var user = ctx.User.Identity?.Name ?? "anonymous";
+        var user = ctx.ActorOrAnonymous();
         var correlationId = ctx.Response.Headers["X-Correlation-ID"].ToString();
         var durationMs = sw.ElapsedMilliseconds;
 
@@ -128,7 +128,7 @@ public static class RequestLoggingMiddleware
         var level = status >= 500 ? LogLevel.Error
                   : status >= 400 ? LogLevel.Warning
                   : LogLevel.Information;
-        var user = ctx.User.Identity?.Name ?? "anonymous";
+        var user = ctx.ActorOrAnonymous();
         var correlationId = ctx.Response.Headers["X-Correlation-ID"].ToString();
 
         var record = new Dictionary<string, object?>

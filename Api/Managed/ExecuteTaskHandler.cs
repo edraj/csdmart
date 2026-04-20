@@ -65,7 +65,7 @@ public static class ExecuteTaskHandler
                 if (overrides.HasValue && overrides.Value.ValueKind == JsonValueKind.Object)
                     query = ApplyOverrides(query, overrides.Value);
 
-                return await queries.ExecuteAsync(query, http.User.Identity?.Name, ct);
+                return await queries.ExecuteAsync(query, http.Actor(), ct);
             });
 
         // Apply-alteration is wired in AlterationHandler.cs.

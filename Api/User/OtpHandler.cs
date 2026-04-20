@@ -148,7 +148,7 @@ public static class OtpHandler
                     "code mismatch or expired", "auth");
 
             // If the caller is authenticated, update their verified flags.
-            var actor = http.User.Identity?.Name;
+            var actor = http.Actor();
             if (actor is not null)
             {
                 var user = await users.GetByShortnameAsync(actor, ct);

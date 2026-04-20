@@ -13,7 +13,7 @@ public sealed class RequestContextMiddleware(RequestContext ctx)
     public async Task InvokeAsync(HttpContext http, RequestDelegate next)
     {
         ctx.RequestId = http.TraceIdentifier;
-        ctx.UserShortname = http.User.Identity?.Name;
+        ctx.UserShortname = http.Actor();
         ctx.Language = http.Request.Headers.AcceptLanguage.FirstOrDefault() ?? "en";
         await next(http);
     }

@@ -21,6 +21,6 @@ public static class ProgressTicketHandler
                 var (subpath, shortname, action) = parts.Value;
                 return await wf.ProgressAsync(
                     new Locator(ResourceType.Ticket, space, subpath, shortname),
-                    action, http.User.Identity?.Name, attrs: null, ct);
+                    action, http.Actor(), attrs: null, ct);
             });
 }

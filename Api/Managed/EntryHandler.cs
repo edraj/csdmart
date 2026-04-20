@@ -55,7 +55,7 @@ public static class EntryHandler
                             "shortname required", "request"),
                         DmartJsonContext.Default.Response, statusCode: 400);
 
-                var actor = http.User.Identity?.Name;
+                var actor = http.Actor();
 
                 // Non-entry types: direct serialization.
                 switch (rt)

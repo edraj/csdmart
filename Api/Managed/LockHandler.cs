@@ -21,7 +21,7 @@ public static class LockHandler
                 if (string.IsNullOrEmpty(shortname))
                     return Response.Fail(InternalErrorCode.MISSING_DATA, "shortname required", "request");
                 return await svc.LockAsync(new Locator(rt, space, subpath, shortname),
-                    http.User.Identity?.Name, ct);
+                    http.Actor(), ct);
             });
 
         // DELETE /lock/{space}/{subpath:path}/{shortname}
@@ -34,7 +34,7 @@ public static class LockHandler
                     return Response.Fail(InternalErrorCode.MISSING_DATA, "shortname required", "request");
                 return await svc.UnlockAsync(
                     new Locator(ResourceType.Content, space, subpath, shortname),
-                    http.User.Identity?.Name, ct);
+                    http.Actor(), ct);
             });
     }
 }

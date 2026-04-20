@@ -63,7 +63,7 @@ public static class AlterationHandler
                 var matches = await entries.QueryAsync(query, ct);
                 var updated = 0;
                 var failed = new List<Dictionary<string, object>>();
-                var actor = http.User.Identity?.Name;
+                var actor = http.Actor();
 
                 foreach (var entry in matches)
                 {

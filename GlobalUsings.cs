@@ -4,6 +4,7 @@ global using Microsoft.AspNetCore.Routing;
 global using Microsoft.Extensions.Configuration;
 global using Microsoft.Extensions.DependencyInjection;
 global using Microsoft.Extensions.Logging;
+global using Dmart.Utils;
 
 // Expose `internal` helpers (e.g. PermissionService.BuildSubpathWalk) to the test
 // project so unit tests can exercise pure logic without going through the public DI
