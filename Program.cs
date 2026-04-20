@@ -788,7 +788,6 @@ builder.Services.AddSingleton<IHookPlugin, AuditPlugin>();
 builder.Services.AddSingleton<IHookPlugin, AdminNotificationSenderPlugin>();
 builder.Services.AddSingleton<IHookPlugin, SystemNotificationSenderPlugin>();
 builder.Services.AddSingleton<IHookPlugin, LocalNotificationPlugin>();
-builder.Services.AddSingleton<IHookPlugin, LdapManagerPlugin>();
 builder.Services.AddSingleton<IHookPlugin, SemanticIndexerPlugin>();
 builder.Services.AddSingleton<IHookPlugin, McpSseBridgePlugin>();
 builder.Services.AddSingleton<Dmart.Api.Mcp.McpSessionStore>();
