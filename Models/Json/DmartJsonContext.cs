@@ -76,6 +76,7 @@ namespace Dmart.Models.Json;
 // similarity score (double).
 [JsonSerializable(typeof(double))]
 [JsonSerializable(typeof(float))]
+[JsonSerializable(typeof(string))]
 [JsonSerializable(typeof(Dictionary<string, List<string>>))]
 [JsonSerializable(typeof(Dictionary<string, List<Record>>))]
 [JsonSerializable(typeof(Dictionary<string, string>))]

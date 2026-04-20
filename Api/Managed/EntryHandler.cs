@@ -143,8 +143,9 @@ internal static class EntryToJsonNode
     public static JsonNode Convert(Entry entry, bool includePayloadBody)
     {
         // Serialize via source-gen → guaranteed correct for all nested types.
-        var json = JsonSerializer.Serialize(entry, DmartJsonContext.Default.Entry);
-        var node = JsonNode.Parse(json)!.AsObject();
+        // SerializeToNode skips the string encode→parse round-trip that we
+        // used to run here (Serialize + JsonNode.Parse) — same output, one pass.
+        var node = JsonSerializer.SerializeToNode(entry, DmartJsonContext.Default.Entry)!.AsObject();
 
         // Remove fields that Python's Meta.model_dump() doesn't include.
         // These live on the DB row / Locator, not on the Meta model.

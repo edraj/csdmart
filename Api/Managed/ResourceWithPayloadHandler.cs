@@ -228,15 +228,10 @@ public static class ResourceWithPayloadHandler
         return Response.Ok(records: new[] { record with { Uuid = result.Value!.Uuid } });
     }
 
-    // AOT-safe JsonElement of kind String — built without going through reflection
-    // serialization (which trips IL2026/IL3050).
+    // AOT-safe JsonElement of kind String. Source-gen typeinfo routes through
+    // the context so we don't trip IL2026/IL3050.
     private static JsonElement StringJsonElement(string value)
-    {
-        using var ms = new MemoryStream();
-        using (var writer = new Utf8JsonWriter(ms))
-            writer.WriteStringValue(value);
-        return JsonDocument.Parse(ms.ToArray()).RootElement.Clone();
-    }
+        => JsonSerializer.SerializeToElement(value, DmartJsonContext.Default.String);
 
     // dmart's set of attachment-flavor resource types (anything stored in the
     // attachments table). All other types live in the entries table.
