@@ -329,6 +329,39 @@ See `RequestHandler.cs:Dispatch{Create,Update,Delete}Async`:
 Get this wrong and you'll silently no-op — Role/Permission updates used
 to fall through to `EntryService` and do nothing until commit 8cbb999.
 
+### Resource types by category
+
+A quick orienting map. The exhaustive enum lives in
+`Models/Enums/ResourceType.cs`; this table just groups it by intent.
+
+| Category | Members |
+|---|---|
+| Core (security + structure) | `space`, `folder`, `user`, `role`, `permission`, `group` |
+| Data | `content`, `schema`, `json`, `file`, `media` |
+| Social / interaction | `post`, `comment`, `reply`, `reaction`, `share` |
+| Workflow | `ticket` |
+| System / auditing | `log`, `notification`, `plugin_wrapper`, `history`, `lock`, `alteration` |
+| Analytics / big-data | `parquet`, `csv`, `jsonl`, `sqlite`, `duckdb`, `data_asset` |
+| Relationships | `relationship` |
+
+## `/managed/request` supported actions
+
+One unified endpoint, multiple actions. `RequestType` lives in
+`Models/Enums/RequestType.cs`; the dispatch is in
+`Api/Managed/RequestHandler.cs`. On a failure inside a multi-record
+batch, the response carries the aggregate envelope described in
+[contributing.md](./contributing.md).
+
+| `request_type` | What it does |
+|---|---|
+| `create` | Insert a new entry (User/Role/Permission/Space/entries/attachments routed per the dispatch table above). Auto-generates UUIDs when `"shortname":"auto"`. |
+| `update` | Full-or-partial write. Every wire-visible attribute is patched; omitted fields keep their stored value. |
+| `patch` | Alias of `update` with partial semantics (wire-compat). |
+| `delete` | Remove the entry + clean up attachment payloads / cascade effects. Protected rows (the management space itself) refuse with `CANNT_DELETE`. |
+| `move` | Re-parent an entry to a different `(space, subpath)` or rename it. Rewrites `attachments.parent_subpath` + history pointers. |
+| `assign` | Change the entry's collaborators list (see `Entry.Collaborators`). |
+| `update_acl` | Replace the per-entry ACL JSONB array without touching other fields. |
+
 ## Where to go next
 
 - How queries filter these tables → [query.md](./query.md)

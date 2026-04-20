@@ -159,6 +159,21 @@ The admin user `dmart` is created passwordless on first startup. Set a password 
 | Info | `GET /info/settings` | Yes | Effective settings |
 | WebSocket | `GET /ws?token=<jwt>` | Token | Real-time channel subscriptions |
 
+## Client libraries
+
+Official SDKs for talking to the dmart REST API:
+
+| Language / runtime | Package | Install |
+|---|---|---|
+| Python | [`pydmart`](https://pypi.org/project/pydmart/) | `pip install pydmart` |
+| Python | [`dmart`](https://pypi.org/project/dmart/) (core + CLI) | `pip install dmart` |
+| TypeScript / JavaScript (Node, Deno, Bun, browsers) | [`@edraj/tsdmart`](https://www.npmjs.com/package/@edraj/tsdmart) | `npm install @edraj/tsdmart` |
+| Dart / Flutter | [`dmart`](https://pub.dev/packages/dmart) | `flutter pub add dmart` |
+
+MCP-capable AI agents (Zed, Claude Code, Cursor, …) can connect directly
+to `/mcp` on any dmart instance — no SDK needed. See
+[docs/plugins-and-mcp.md](./docs/plugins-and-mcp.md).
+
 ## Plugin System
 
 ### Built-in Plugins
