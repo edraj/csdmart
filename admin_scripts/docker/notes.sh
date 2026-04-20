@@ -14,10 +14,10 @@ BUILDER="dmart-alpine-builder"
 BUILDER_IMAGE="mcr.microsoft.com/dotnet/sdk:10.0-alpine"
 VERSION="$(git describe --tags 2>/dev/null || echo dev)"
 
-# 0. Build CXB frontend locally (if not already built)
-if [ ! -f cxb/dist/client/index.html ]; then
-    echo "Building CXB frontend..."
-    ./build-cxb.sh
+# 0. Build UI frontends locally (cxb + catalog) if any dist is missing
+if [ ! -f cxb/dist/client/index.html ] || [ ! -f catalog/dist/index.html ]; then
+    echo "Building UI frontends..."
+    ./build-ui.sh
 fi
 
 # 1. Ensure builder container exists

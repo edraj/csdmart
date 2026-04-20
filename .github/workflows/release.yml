@@ -18,11 +18,8 @@ jobs:
         with:
           fetch-depth: 0
 
-      - name: Build CXB frontend
-        run: |
-          if [ -f cxb/package.json ]; then
-            cd cxb && yarn install && yarn build && cd ..
-          fi
+      - name: Build UI frontends (cxb + catalog)
+        run: ./build-ui.sh
 
       - name: Build SRPM
         run: |
@@ -56,11 +53,8 @@ jobs:
         with:
           fetch-depth: 0
 
-      - name: Build CXB frontend
-        run: |
-          if [ -f cxb/package.json ]; then
-            cd cxb && yarn install && yarn build && cd ..
-          fi
+      - name: Build UI frontends (cxb + catalog)
+        run: ./build-ui.sh
 
       - name: Build Fedora RPM
         run: |
@@ -94,11 +88,8 @@ jobs:
         with:
           fetch-depth: 0
 
-      - name: Build CXB frontend
-        run: |
-          if [ -f cxb/package.json ]; then
-            cd cxb && yarn install && yarn build && cd ..
-          fi
+      - name: Build UI frontends (cxb + catalog)
+        run: ./build-ui.sh
 
       # Reclaim podman storage WITHOUT touching the dmart-el9-builder
       # container. build-rpm.sh keeps that container (with dotnet-sdk-10.0,
@@ -157,16 +148,13 @@ jobs:
         with:
           node-version: '20'
 
-      - name: Build CXB frontend
+      - name: Build UI frontends (cxb + catalog)
         shell: bash
         run: |
-          if [ -f cxb/package.json ]; then
-            cd cxb
-            npm install --global yarn
-            yarn install
-            yarn build
-            cd ..
-          fi
+          # Windows runner has no yarn by default — install globally once
+          # before invoking build-ui.sh, which will then pick it up.
+          npm install --global yarn
+          ./build-ui.sh
 
       - name: Set version
         id: version
@@ -250,11 +238,8 @@ jobs:
             | xargs -r -n1 podman rmi -f || true
           df -h ~ || true
 
-      - name: Build CXB frontend
-        run: |
-          if [ -f cxb/package.json ]; then
-            cd cxb && yarn install && yarn build && cd ..
-          fi
+      - name: Build UI frontends (cxb + catalog)
+        run: ./build-ui.sh
 
       - name: Set version
         id: version

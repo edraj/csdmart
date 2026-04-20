@@ -1,0 +1,50 @@
+{
+  "compilerOptions": {
+    "module": "es2022",
+    "moduleResolution": "bundler",
+    "target": "es2022",
+    "strict": true,
+    "isolatedModules": true,
+    "allowJs": true,
+    "checkJs": true,
+    "forceConsistentCasingInFileNames": true,
+    // Required by the Svelte compiler when using <script lang="ts"> — do not
+    // turn this off. Any false-positive errors svelte-check reports against
+    // raw .ts files inside @edraj/tsdmart are a consequence of that package
+    // shipping unbundled source; they're noise (tsc run standalone reports
+    // zero errors on those files), not real type violations.
+    "verbatimModuleSyntax": true,
+    "resolveJsonModule": true,
+    "skipLibCheck": true,
+    "sourceMap": true,
+    "paths": {
+      "@": [
+        "./src"
+      ],
+      "@/*": [
+        "./src/*"
+      ]
+    }
+  },
+  "include": [
+    "vite-env.d.ts",
+    "src/**/*.d.ts",
+    "src/**/*.ts",
+    "src/**/*.js",
+    "src/**/*.svelte",
+    ".routify/**.js",
+    "test/**/*.ts",
+    "test/**/*.js"
+  ],
+  "exclude": [
+    // Exclude the whole .routify tree — the `[...404].svelte` auto-generated
+    // file has square brackets in its name that TypeScript's glob engine
+    // misinterprets as a character class, so the finer-grained pattern
+    // `.routify/**/*.svelte` failed to match it. A plain directory exclude
+    // sidesteps the bracket-parsing quirk.
+    ".routify",
+    ".routify/**/*",
+    "node_modules/**/*.svelte",
+    "node_modules/**/*.ts"
+  ]
+}

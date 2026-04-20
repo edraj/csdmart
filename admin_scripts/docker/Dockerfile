@@ -1,6 +1,6 @@
 # All-in-one Alpine container: dmart (AOT) + PostgreSQL
 #
-# Prerequisites: build CXB first: ./build-cxb.sh
+# Prerequisites: build UI first: ./build-ui.sh
 #
 # Usage:
 #   podman build -t dmart -f admin_scripts/docker/Dockerfile .

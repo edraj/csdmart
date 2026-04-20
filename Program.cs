@@ -895,10 +895,15 @@ app.UseDmartResponseHeaders();
 // still return a plain 404 for /cxb/* — transforming it would trip the
 // `if (resp.StatusCode == NotFound) return;` skip branches in the CXB tests.
 {
-    var cxbPrefix = (app.Services.GetRequiredService<Microsoft.Extensions.Options.IOptions<DmartSettings>>()
-                       .Value.CxbUrl?.Trim().TrimEnd('/') ?? "/cxb");
-    if (!cxbPrefix.StartsWith('/')) cxbPrefix = "/" + cxbPrefix;
-    var cxbPath = new PathString(cxbPrefix);
+    var dmartSettings = app.Services.GetRequiredService<Microsoft.Extensions.Options.IOptions<DmartSettings>>().Value;
+    static PathString NormalizedPrefix(string? raw, string fallback)
+    {
+        var p = (raw?.Trim().TrimEnd('/') ?? fallback);
+        if (!p.StartsWith('/')) p = "/" + p;
+        return new PathString(p);
+    }
+    var cxbPath = NormalizedPrefix(dmartSettings.CxbUrl, "/cxb");
+    var catPath = NormalizedPrefix(dmartSettings.CatUrl, "/cat");
 
     app.Use(async (ctx, next) =>
     {
@@ -906,7 +911,8 @@ app.UseDmartResponseHeaders();
         if (ctx.Response.StatusCode == 404
             && !ctx.Response.HasStarted
             && (ctx.Response.ContentLength is null or 0)
-            && !ctx.Request.Path.StartsWithSegments(cxbPath))
+            && !ctx.Request.Path.StartsWithSegments(cxbPath)
+            && !ctx.Request.Path.StartsWithSegments(catPath))
         {
             var body = Dmart.Models.Api.Response.Fail(
                 Dmart.Models.Api.InternalErrorCode.INVALID_ROUTE,
@@ -918,8 +924,9 @@ app.UseDmartResponseHeaders();
     });
 }
 
-// CXB Svelte frontend (embedded resources at /cxb)
+// Embedded SPAs (CXB at /cxb, Catalog at /cat by default).
 app.UseCxb();
+app.UseCatalog();
 
 app.UseAuthentication();
 app.UseAuthorization();

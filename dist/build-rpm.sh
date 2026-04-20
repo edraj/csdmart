@@ -84,11 +84,15 @@ if [[ "$TARGET" == "el9" || "$TARGET" == "rhel9" ]]; then
         VERSION="${BASE_VER}${MINOR:+.$MINOR}"
     fi
     echo "Building dmart-${VERSION} RPM for RHEL 9 via ${ENGINE}..."
-    # Build CXB locally (static files, no platform dependency). Fail the whole
-    # RPM build if CXB fails — otherwise the RPM ships with a stale frontend.
-    if [ -f cxb/package.json ] && [ ! -f cxb/dist/client/index.html ]; then
-        echo "Building CXB frontend locally..."
-        ./build-cxb.sh || { echo "CXB build failed" >&2; exit 1; }
+    # Build UI frontends locally (static files, no platform dependency). Fail
+    # the whole RPM build if the UI build fails — otherwise the RPM ships with
+    # stale assets. build-ui.sh covers both cxb/ and catalog/.
+    _need_ui_build=false
+    { [ -f cxb/package.json ]     && [ ! -f cxb/dist/client/index.html ]; } && _need_ui_build=true
+    { [ -f catalog/package.json ] && [ ! -f catalog/dist/index.html ]; }    && _need_ui_build=true
+    if [ "$_need_ui_build" = "true" ]; then
+        echo "Building UI frontends locally..."
+        ./build-ui.sh || { echo "UI build failed" >&2; exit 1; }
     fi
     mkdir -p dist/out
     CONTAINER_NAME="dmart-el9-builder"

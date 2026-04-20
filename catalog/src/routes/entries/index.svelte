@@ -1,0 +1,949 @@
+<script lang="ts">
+  import { onMount } from "svelte";
+  import { goto, params } from "@roxi/routify";
+  import { getMyEntities } from "@/lib/dmart_services";
+  import {
+    formatDate,
+    formatNumberInText,
+    truncateString,
+  } from "@/lib/helpers";
+  import { errorToastMessage } from "@/lib/toasts_messages";
+  import { _, locale } from "@/i18n";
+  import { derived as derivedStore } from "svelte/store";
+  import {
+    ClockOutline,
+    EditOutline,
+    EyeOutline,
+    FolderOutline,
+    HeartSolid,
+    MessagesSolid,
+    PhoneOutline,
+    PlusOutline,
+    SearchOutline,
+    TagOutline,
+    LayersSolid,
+    UploadOutline,
+    DownloadOutline,
+  } from "flowbite-svelte-icons";
+  import ModalCSVUpload from "@/components/management/Modals/ModalCSVUpload.svelte";
+  import ModalCSVDownload from "@/components/management/Modals/ModalCSVDownload.svelte";
+
+  $goto;
+  let entities = $state<any[]>([]);
+  let filteredEntities = $state<any[]>([]);
+  let availableSpaces = $state<any[]>([]);
+  let isLoading = $state(true);
+  let searchTerm = $state("");
+  let statusFilter = $state("all");
+  let resourceTypeFilter = $state("all");
+  let spaceFilter = $state("all");
+  let sortBy = $state("updated_at");
+  let sortOrder = $state("desc");
+  let isCSVUploadModalOpen = $state(false);
+  let isCSVDownloadModalOpen = $state(false);
+
+  const isRTL = derivedStore(
+    locale,
+    ($locale: any) => $locale === "ar" || $locale === "ku",
+  );
+
+  function getLocalizedDisplayName(entity: any) {
+    const displayname = entity.attributes?.displayname;
+
+    if (!displayname) {
+      return entity.shortname || $_("my_entries.untitled");
+    }
+
+    if (typeof displayname === "string") {
+      return displayname;
+    }
+
+    const localizedName =
+      displayname[$locale ?? ""] ||
+      displayname.en ||
+      displayname.ar ||
+      displayname.ku;
+    return localizedName || entity.shortname || $_("my_entries.untitled");
+  }
+
+  function getLocalizedSpaceName(space: any) {
+    const displayname = space.attributes?.displayname;
+
+    if (!displayname) {
+      return space.shortname;
+    }
+
+    if (typeof displayname === "string") {
+      return displayname;
+    }
+
+    const localizedName =
+      displayname[$locale ?? ""] ||
+      displayname.en ||
+      displayname.ar ||
+      displayname.ku;
+    return localizedName || space.shortname;
+  }
+
+  function getContentPreview(entity: any) {
+    const payload = entity.attributes?.payload;
+    if (!payload || !payload.body) return "";
+
+    const body = payload.body;
+
+    if (entity.resource_type === "content") {
+      if (payload.content_type === "html" && typeof body === "string") {
+        return body;
+      }
+
+      if (payload.content_type === "json") {
+        if (typeof body === "object") {
+          if (body.body && typeof body.body === "string") {
+            return body.body;
+          }
+          return JSON.stringify(body).substring(0, 100) + "...";
+        }
+        if (typeof body === "string") {
+          return body;
+        }
+      }
+
+      if (typeof body === "string") {
+        return body;
+      }
+    }
+
+    return "";
+  }
+
+  function getResourceTypeIcon(resourceType: any) {
+    switch (resourceType) {
+      case "content":
+        return EditOutline;
+      case "media":
+        return PhoneOutline;
+      case "folder":
+        return FolderOutline;
+      default:
+        return EditOutline;
+    }
+  }
+
+  function getResourceTypeColor(resourceType: any) {
+    switch (resourceType) {
+      case "content":
+        return "bg-blue-100 text-blue-800";
+      case "media":
+        return "bg-purple-100 text-purple-800";
+      case "folder":
+        return "bg-yellow-100 text-yellow-800";
+      default:
+        return "bg-gray-100 text-gray-800";
+    }
+  }
+
+  onMount(async () => {
+    await fetchEntities();
+  });
+
+  function extractUserSpaces() {
+    availableSpaces = [];
+
+    if (!entities || entities.length === 0) {
+      return;
+    }
+
+    const spaceCountMap = new Map();
+
+    entities.forEach((entity: any) => {
+      if (entity.space_name) {
+        const count = spaceCountMap.get(entity.space_name) || 0;
+        spaceCountMap.set(entity.space_name, count + 1);
+      }
+    });
+
+    availableSpaces = Array.from(spaceCountMap.keys())
+      .sort()
+      .map((spaceName: any) => ({
+        shortname: spaceName,
+        entryCount: spaceCountMap.get(spaceName),
+        attributes: {
+          displayname: spaceName,
+        },
+      }));
+  }
+
+  $effect(() => {
+    if ($params.space_name && $params.subpath && $params.shortname) {
+      fetchEntities();
+    }
+    if (searchTerm !== undefined) {
+      handleSearch();
+    }
+  });
+
+  async function fetchEntities() {
+    isLoading = true;
+    try {
+      const response = await getMyEntities();
+
+      const rawEntities = (response as any)?.records || response || [];
+
+      entities = rawEntities.map((entity: any) => ({
+        resource_type: entity?.resource_type || "",
+        shortname: entity.shortname,
+        uuid: entity?.uuid,
+        title: getLocalizedDisplayName(entity),
+        content: getContentPreview(entity),
+        tags: entity.attributes?.tags || [],
+        state: entity.attributes?.state || null,
+        is_active: entity.attributes?.is_active !== false,
+        created_at: entity.attributes?.created_at
+          ? formatDate(entity.attributes.created_at)
+          : "",
+        updated_at: entity.attributes?.updated_at
+          ? formatDate(entity.attributes.updated_at)
+          : "",
+        raw_created_at: entity.attributes?.created_at || "",
+        raw_updated_at: entity.attributes?.updated_at || "",
+        space_name: entity.attributes?.space_name || "",
+        subpath: entity?.subpath || "",
+        owner_shortname: entity.attributes?.owner_shortname || "",
+        comment: entity.attachments?.comment?.length ?? 0,
+        reaction: entity.attachments?.reaction?.length ?? 0,
+        _raw: entity,
+      }));
+    } catch (error) {
+      console.error("Error fetching entities:", error);
+      errorToastMessage($_("my_entries.error.fetch_failed"));
+      entities = [];
+    } finally {
+      isLoading = false;
+      extractUserSpaces();
+      filterAndSortEntities();
+    }
+  }
+
+  function filterAndSortEntities() {
+    let filtered = [...entities];
+
+    if (searchTerm.trim()) {
+      const search = searchTerm.toLowerCase();
+      filtered = filtered.filter(
+        (entity: any) =>
+          entity.title?.toLowerCase().includes(search) ||
+          entity.content?.toLowerCase().includes(search) ||
+          entity.tags?.some((tag: any) => tag.toLowerCase().includes(search)) ||
+          entity.resource_type?.toLowerCase().includes(search) ||
+          entity.space_name?.toLowerCase().includes(search),
+      );
+    }
+
+    if (resourceTypeFilter !== "all") {
+      filtered = filtered.filter(
+        (entity: any) => entity.resource_type === resourceTypeFilter,
+      );
+    }
+
+    if (spaceFilter !== "all") {
+      filtered = filtered.filter((entity: any) => entity.space_name === spaceFilter);
+    }
+
+    filtered.sort((a: any, b: any) => {
+      let aValue, bValue;
+
+      switch (sortBy) {
+        case "title":
+          aValue = a.title || "";
+          bValue = b.title || "";
+          break;
+        case "created_at":
+          aValue = new Date(a.raw_created_at);
+          bValue = new Date(b.raw_created_at);
+          break;
+        case "reactions":
+          aValue = a.reaction || 0;
+          bValue = b.reaction || 0;
+          break;
+        case "comments":
+          aValue = a.comment || 0;
+          bValue = b.comment || 0;
+          break;
+        default:
+          aValue = new Date(a.raw_updated_at);
+          bValue = new Date(b.raw_updated_at);
+      }
+
+      if (sortOrder === "asc") {
+        return aValue > bValue ? 1 : -1;
+      } else {
+        return aValue < bValue ? 1 : -1;
+      }
+    });
+
+    filteredEntities = filtered;
+  }
+
+  function handleSearch() {
+    filterAndSortEntities();
+  }
+
+  function handleFilterChange() {
+    filterAndSortEntities();
+  }
+
+  function handleSortChange() {
+    filterAndSortEntities();
+  }
+
+  function filterBySpace(spaceName: any) {
+    spaceFilter = spaceName;
+    filterAndSortEntities();
+  }
+
+  function clearAllFilters() {
+    searchTerm = "";
+    spaceFilter = "all";
+    resourceTypeFilter = "all";
+    filterAndSortEntities();
+  }
+
+  function viewEntity(entity: any) {
+    $goto("/entries/[space_name]/[subpath]/[shortname]/[resource_type]", {
+      shortname: entity.shortname,
+      space_name: entity.space_name,
+      subpath: entity.subpath,
+      resource_type: entity.resource_type,
+    });
+  }
+
+  function editEntity(entity: any) {
+    $goto("/entries/[space_name]/[subpath]/[shortname]/[resource_type]/edit", {
+      shortname: entity.shortname,
+      space_name: entity.space_name,
+      subpath: entity.subpath,
+      resource_type: entity.resource_type,
+    });
+  }
+
+  function createNewEntry() {
+    $goto("/entries/create");
+  }
+
+  function getStatusBadge(entity: any) {
+    if (!entity.is_active) {
+      return {
+        text: $_("my_entries.status.draft"),
+        class: "bg-gray-100 text-gray-800",
+      };
+    } else if (entity.state === "pending") {
+      return {
+        text: $_("my_entries.status.pending"),
+        class: "bg-yellow-100 text-yellow-800",
+      };
+    } else if (entity.state === "approved") {
+      return {
+        text: $_("my_entries.status.published"),
+        class: "bg-green-100 text-green-800",
+      };
+    } else if (entity.state === "rejected") {
+      return {
+        text: $_("my_entries.status.rejected"),
+        class: "bg-red-100 text-red-800",
+      };
+    } else {
+      return {
+        text: $_("my_entries.status.active"),
+        class: "bg-blue-100 text-blue-800",
+      };
+    }
+  }
+</script>
+
+<div class="min-h-screen" class:rtl={$isRTL}>
+  <div class="mx-auto py-8 px-4 sm:px-6 max-w-[1400px]">
+    <!-- Header -->
+    <div
+      class="mb-8 flex flex-col sm:flex-row sm:items-center justify-between gap-5"
+    >
+      <div>
+        <h1 class="text-2xl font-bold text-gray-900 mb-1 tracking-tight">
+          {$_("my_entries.title") || "My Entries"}
+        </h1>
+        <p class="text-gray-500 text-sm">
+          {$_("my_entries.subtitle") ||
+            "Manage and track your content submissions"}
+        </p>
+      </div>
+      <div class="flex items-center gap-2.5">
+        <button
+          aria-label="Upload CSV"
+          onclick={() => isCSVUploadModalOpen = true}
+          class="bg-white hover:bg-gray-50 text-gray-600 border border-gray-200 hover:border-gray-300 px-3.5 py-2 rounded-xl font-medium flex items-center justify-center gap-1.5 transition-all text-[13px]"
+        >
+          <UploadOutline class="w-3.5 h-3.5" />
+          Import
+        </button>
+        <button
+          aria-label="Download CSV"
+          onclick={() => isCSVDownloadModalOpen = true}
+          class="bg-white hover:bg-gray-50 text-gray-600 border border-gray-200 hover:border-gray-300 px-3.5 py-2 rounded-xl font-medium flex items-center justify-center gap-1.5 transition-all text-[13px]"
+        >
+          <DownloadOutline class="w-3.5 h-3.5" />
+          Export
+        </button>
+        <button
+          aria-label={$_("my_entries.create_new") || "Create New Entry"}
+          onclick={createNewEntry}
+          class="bg-indigo-600 hover:bg-indigo-700 text-white px-5 py-2 rounded-xl font-semibold flex items-center justify-center gap-1.5 transition-all shadow-[0_2px_8px_rgba(99,102,241,0.25)] hover:shadow-[0_4px_14px_rgba(99,102,241,0.3)] text-[13px]"
+        >
+          <PlusOutline class="w-3.5 h-3.5" />
+          {$_("my_entries.create_new") || "Create New Entry"}
+        </button>
+      </div>
+    </div>
+
+    <!-- Top Bar (Search & Filters) -->
+    <div
+      class="bg-white rounded-2xl border border-gray-100 p-2.5 mb-5 shadow-sm flex flex-col md:flex-row gap-2.5"
+    >
+      <!-- Search -->
+      <div class="relative flex-grow min-w-[200px]">
+        <SearchOutline
+          class="absolute left-4 top-1/2 transform -translate-y-1/2 w-[18px] h-[18px] text-gray-400"
+        />
+        <input
+          type="text"
+          bind:value={searchTerm}
+          placeholder={$_("route_labels.placeholder_search_entries")}
+          class="w-full pl-11 pr-4 py-2.5 bg-gray-50/50 border border-transparent rounded-xl text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500 focus:bg-white transition-all text-gray-700 placeholder-gray-400"
+        />
+      </div>
+
+      <!-- Resource Type Filter -->
+      <div class="relative min-w-[150px] md:max-w-[180px]">
+        <select
+          bind:value={resourceTypeFilter}
+          onchange={handleFilterChange}
+          class="w-full appearance-none px-4 py-2.5 bg-gray-50/50 border border-transparent rounded-xl text-sm font-semibold text-gray-600 focus:outline-none focus:ring-2 focus:ring-indigo-500 focus:bg-white transition-all cursor-pointer"
+        >
+          <option value="all">All Types</option>
+          <option value="content">Content</option>
+          <option value="media">Media</option>
+          <option value="folder">Folder</option>
+        </select>
+        <div
+          class="pointer-events-none absolute inset-y-0 right-4 flex items-center text-gray-400"
+        >
+        </div>
+      </div>
+
+      <!-- Space Filter -->
+      <div class="relative min-w-[150px] md:max-w-[200px]">
+        <LayersSolid
+          class="absolute left-4 top-1/2 transform -translate-y-1/2 w-4 h-4 text-gray-400"
+        />
+        <select
+          bind:value={spaceFilter}
+          onchange={handleFilterChange}
+          class="w-full appearance-none pl-11 pr-10 py-2.5 bg-gray-50/50 border border-transparent rounded-xl text-sm font-semibold text-gray-600 focus:outline-none focus:ring-2 focus:ring-indigo-500 focus:bg-white transition-all cursor-pointer"
+        >
+          <option value="all">All Spaces</option>
+          {#each availableSpaces as space}
+            <option value={space.shortname}>
+              {getLocalizedSpaceName(space)} ({space.entryCount})
+            </option>
+          {/each}
+        </select>
+        <div
+          class="pointer-events-none absolute inset-y-0 right-4 flex items-center text-gray-400"
+        >
+       
+        </div>
+      </div>
+
+      <!-- Sort By -->
+      <div class="relative min-w-[150px] md:max-w-[180px]">
+        <select
+          bind:value={sortBy}
+          onchange={handleSortChange}
+          class="w-full appearance-none px-4 py-2.5 bg-gray-50/50 border border-transparent rounded-xl text-sm font-semibold text-gray-600 focus:outline-none focus:ring-2 focus:ring-indigo-500 focus:bg-white transition-all cursor-pointer"
+        >
+          <option value="updated_at">Last Updated</option>
+          <option value="created_at">Date Created</option>
+          <option value="title">Title</option>
+          <option value="reactions">Reactions</option>
+          <option value="comments">Comments</option>
+        </select>
+        <div
+          class="pointer-events-none absolute inset-y-0 right-4 flex items-center text-gray-400"
+        >
+        
+        </div>
+      </div>
+    </div>
+
+    <!-- Active Filters Display -->
+    {#if spaceFilter !== "all" || statusFilter !== "all" || resourceTypeFilter !== "all" || searchTerm.trim()}
+      <div class="mb-6 flex flex-wrap gap-2 items-center">
+        <!-- Render tags cleanly -->
+        {#if searchTerm.trim()}
+          <span
+            class="inline-flex items-center px-3 py-1 rounded-full text-xs font-semibold bg-gray-100 text-gray-600 border border-gray-200"
+          >
+            Search: {searchTerm}
+            <button
+              aria-label="Clear search"
+              onclick={() => {
+                searchTerm = "";
+                handleSearch();
+              }}
+              class="ml-1.5 hover:text-gray-900"
+              ><svg
+                class="w-3.5 h-3.5"
+                fill="none"
+                stroke="currentColor"
+                viewBox="0 0 24 24"
+              >
+                <path
+                  stroke-linecap="round"
+                  stroke-linejoin="round"
+                  stroke-width="2"
+                  d="M6 18L18 6M6 6l12 12"
+                >
+                </path>
+              </svg></button
+            >
+          </span>
+        {/if}
+        {#if resourceTypeFilter !== "all"}
+          <span
+            class="inline-flex items-center px-3 py-1 rounded-full text-xs font-semibold bg-gray-100 text-gray-600 border border-gray-200"
+          >
+            Type: {resourceTypeFilter}
+            <button
+              aria-label="Clear type filter"
+              onclick={() => {
+                resourceTypeFilter = "all";
+                handleFilterChange();
+              }}
+              class="ml-1.5
+                    hover:text-gray-900"
+              ><svg
+                class="w-3.5 h-3.5"
+                fill="none"
+                stroke="currentColor"
+                viewBox="0 0 24 24"
+              >
+                <path
+                  stroke-linecap="round"
+                  stroke-linejoin="round"
+                  stroke-width="2"
+                  d="M6 18L18 6M6 6l12 12"
+                >
+                </path>
+              </svg></button
+            >
+          </span>
+        {/if}
+        {#if spaceFilter !== "all"}
+          <span
+            class="inline-flex items-center px-3 py-1 rounded-full text-xs font-semibold bg-gray-100 text-gray-600 border border-gray-200"
+          >
+            Space: {spaceFilter}
+            <button
+              aria-label="Clear space filter"
+              onclick={() => {
+                spaceFilter = "all";
+                handleFilterChange();
+              }}
+              class="ml-1.5
+                    hover:text-gray-900"
+              ><svg
+                class="w-3.5 h-3.5"
+                fill="none"
+                stroke="currentColor"
+                viewBox="0 0 24 24"
+              >
+                <path
+                  stroke-linecap="round"
+                  stroke-linejoin="round"
+                  stroke-width="2"
+                  d="M6 18L18 6M6 6l12 12"
+                >
+                </path>
+              </svg></button
+            >
+          </span>
+        {/if}
+        <button
+          onclick={clearAllFilters}
+          class="text-xs font-semibold text-indigo-600 hover:text-indigo-800 ml-2"
+          >Clear all</button
+        >
+      </div>
+    {/if}
+
+    {#if isLoading}
+      <div class="flex justify-center items-center py-32">
+        <div
+          class="animate-spin rounded-full h-10 w-10 border-2 border-indigo-200 border-t-indigo-600"
+        ></div>
+      </div>
+    {:else}
+      <!-- Stats Summary -->
+      <div class="grid grid-cols-1 md:grid-cols-2 gap-4 mb-6">
+        <div
+          class="bg-white rounded-xl p-5 border border-gray-100 shadow-sm flex items-center justify-between hover:shadow-md transition-shadow"
+        >
+          <div>
+            <p
+              class="text-[11px] font-semibold text-gray-400 uppercase tracking-wider mb-1"
+            >
+              Total Entries
+            </p>
+            <p class="text-3xl font-bold text-gray-900">
+              {formatNumberInText(entities.length, $locale ?? "")}
+            </p>
+          </div>
+          <div
+            class="w-11 h-11 bg-indigo-50 rounded-xl flex items-center justify-center"
+          >
+            <svg
+              class="w-5 h-5 text-indigo-500"
+              fill="none"
+              stroke="currentColor"
+              viewBox="0 0 24 24"
+            >
+              <path
+                stroke-linecap="round"
+                stroke-linejoin="round"
+                stroke-width="2"
+                d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z"
+              >
+              </path>
+            </svg>
+          </div>
+        </div>
+
+        <div
+          class="bg-white rounded-xl p-5 border border-gray-100 shadow-sm flex items-center justify-between hover:shadow-md transition-shadow"
+        >
+          <div>
+            <p
+              class="text-[11px] font-semibold text-gray-400 uppercase tracking-wider mb-1"
+            >
+              Spaces Used
+            </p>
+            <p class="text-3xl font-bold text-emerald-500">
+              {formatNumberInText(
+                new Set(entities.map((e: any) => e.space_name)).size,
+                $locale ?? "",
+              )}
+            </p>
+          </div>
+          <div
+            class="w-11 h-11 bg-emerald-50 rounded-xl flex items-center justify-center"
+          >
+            <svg
+              class="w-5 h-5 text-emerald-500"
+              fill="none"
+              stroke="currentColor"
+              viewBox="0 0 24 24"
+            >
+              <path
+                stroke-linecap="round"
+                stroke-linejoin="round"
+                stroke-width="2"
+                d="M21 12a9 9 0 01-9 9m9-9a9 9 0 00-9-9m9 9H3m9 9a9 9 0 01-9-9m9 9c1.657 0 3-4.03 3-9s-1.343-9-3-9m0 18c-1.657 0-3-4.03-3-9s1.343-9 3-9m-9 9a9 9 0 019-9"
+              >
+              </path>
+            </svg>
+          </div>
+        </div>
+      </div>
+
+      {#if filteredEntities.length === 0}
+        <div
+          class="text-center py-24 bg-white rounded-3xl border border-gray-100 shadow-sm mt-8"
+        >
+          <svg
+            class="w-12 h-12 text-gray-300 mx-auto mb-4"
+            fill="none"
+            stroke="currentColor"
+            viewBox="0 0 24 24"
+          >
+            <path
+              stroke-linecap="round"
+              stroke-linejoin="round"
+              stroke-width="2"
+              d="M20 13V6a2 2 0 00-2-2H6a2 2 0 00-2 2v7m16 0v5a2 2 0 01-2 2H6a2 2 0 01-2-2v-5m16 0h-2.586a1 1 0 00-.707.293l-2.414 2.414a1 1 0 01-.707.293h-3.172a1 1 0 01-.707-.293l-2.414-2.414A1 1 0 006.586 13H4"
+            >
+            </path>
+          </svg>
+          <h3 class="text-xl font-bold text-gray-900">
+            {entities.length === 0 ? "No entries found" : "No matching entries"}
+          </h3>
+          <p class="text-gray-500 mt-2">
+            {entities.length === 0
+              ? "Create your first entry to get started."
+              : "Try adjusting your search or filters."}
+          </p>
+          {#if entities.length === 0}
+            <button
+              onclick={createNewEntry}
+              class="mt-6 bg-indigo-600 hover:bg-indigo-700 text-white px-6 py-2 rounded-full font-semibold transition-colors shadow-sm text-sm inline-flex items-center gap-2"
+            >
+              <PlusOutline class="w-4 h-4" /> Create First Entry
+            </button>
+          {/if}
+        </div>
+      {:else}
+        <!-- Entries Table -->
+        <div
+          class="bg-white rounded-2xl border border-gray-100 shadow-sm overflow-hidden"
+        >
+          <div class="overflow-x-auto">
+            <table class="w-full text-left whitespace-nowrap">
+              <thead>
+                <tr class="border-b border-gray-100">
+                  <th
+                    class="px-8 py-5 text-[11px] font-bold text-gray-400 uppercase tracking-widest bg-white"
+                  >
+                    ENTRY</th
+                  >
+                  <th
+                    class="px-6 py-5 text-[11px] font-bold text-gray-400 uppercase tracking-widest bg-white"
+                  >
+                    TYPE</th
+                  >
+                  <th
+                    class="px-6 py-5 text-[11px] font-bold text-gray-400 uppercase tracking-widest bg-white"
+                  >
+                    SPACE</th
+                  >
+                  <th
+                    class="px-6 py-5 text-[11px] font-bold text-gray-400 uppercase tracking-widest bg-white"
+                  >
+                    STATUS</th
+                  >
+                  <th
+                    class="px-6 py-5 text-[11px] font-bold text-gray-400 uppercase tracking-widest bg-white"
+                  >
+                    ENGAGEMENT</th
+                  >
+                  <th
+                    class="px-6 py-5 text-[11px] font-bold text-gray-400 uppercase tracking-widest bg-white"
+                  >
+                    UPDATED</th
+                  >
+                  <th
+                    class="px-8 py-5 text-[11px] font-bold text-gray-400 uppercase tracking-widest text-right bg-white"
+                  >
+                    ACTIONS</th
+                  >
+                </tr>
+              </thead>
+              <tbody class="divide-y divide-gray-50">
+                {#each filteredEntities as entity}
+                  <tr class="hover:bg-gray-50/50 transition-colors group">
+                    <!-- ENTRY -->
+                    <td class="px-8 py-5 flex items-start gap-4">
+                      <div
+                        class="w-10 h-10 rounded-xl bg-gray-50 border border-gray-100 flex items-center justify-center flex-shrink-0 mt-0.5"
+                      >
+                        <svg
+                          class="w-5 h-5 text-gray-400"
+                          fill="none"
+                          stroke="currentColor"
+                          viewBox="0 0 24 24"
+                        >
+                          <path
+                            stroke-linecap="round"
+                            stroke-linejoin="round"
+                            stroke-width="2"
+                            d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z"
+                          >
+                          </path>
+                        </svg>
+                      </div>
+                      <div class="min-w-0 max-w-[280px]">
+                        <h3
+                          class="text-[14px] font-bold text-gray-900 truncate tracking-tight"
+                        >
+                          {entity.title || "Untitled"}
+                        </h3>
+                        <p
+                          class="text-[12px] text-gray-400 truncate mt-0.5 font-medium"
+                        >
+                          #{entity.tags?.join(" #") || "general"}
+                        </p>
+                      </div>
+                    </td>
+
+                    <!-- TYPE -->
+                    <td class="px-6 py-5">
+                      {#if entity.resource_type === "media"}
+                        <span
+                          class="inline-flex items-center px-3 py-1 rounded-full text-[11px] font-bold bg-purple-50 text-purple-600"
+                          >media</span
+                        >
+                      {:else if entity.resource_type === "content"}
+                        <span
+                          class="inline-flex items-center px-3 py-1 rounded-full text-[11px] font-bold bg-cyan-50 text-cyan-600"
+                          >content</span
+                        >
+                      {:else if entity.resource_type === "json"}
+                        <span
+                          class="inline-flex items-center px-3 py-1 rounded-full text-[11px] font-bold bg-green-50 text-green-600"
+                          >json</span
+                        >
+                      {:else if entity.resource_type === "poll"}
+                        <span
+                          class="inline-flex items-center px-3 py-1 rounded-full text-[11px] font-bold bg-pink-50 text-pink-600"
+                          >poll</span
+                        >
+                      {:else if entity.resource_type === "template"}
+                        <span
+                          class="inline-flex items-center px-3 py-1 rounded-full text-[11px] font-bold bg-orange-50 text-orange-600"
+                          >template</span
+                        >
+                      {:else}
+                        <span
+                          class="inline-flex items-center px-3 py-1 rounded-full text-[11px] font-bold bg-gray-100 text-gray-600"
+                          >{entity.resource_type || "unknown"}</span
+                        >
+                      {/if}
+                    </td>
+
+                    <!-- SPACE -->
+                    <td class="px-6 py-5">
+                      <span
+                        class="inline-flex items-center px-3 py-1 rounded-full text-[11px] font-bold bg-[#f1f5f9] text-[#64748b]"
+                      >
+                        {entity.space_name}
+                      </span>
+                    </td>
+
+                    <!-- STATUS -->
+                    <td class="px-6 py-5">
+                      {#if entity.is_active && entity.state !== "pending" && entity.state !== "rejected"}
+                        <div
+                          class="flex items-center gap-1.5 text-[12px] font-extrabold text-[#00d084]"
+                        >
+                          <div
+                            class="w-1.5 h-1.5 rounded-full bg-[#00d084]"
+                          ></div>
+                           Active
+                        </div>
+                      {:else}
+                        <div
+                          class="flex items-center gap-1.5 text-[12px] font-extrabold text-orange-400"
+                        >
+                          <div
+                            class="w-1.5 h-1.5 rounded-full bg-orange-400"
+                          ></div>
+                           Draft
+                        </div>
+                      {/if}
+                    </td>
+
+                    <!-- ENGAGEMENT -->
+                    <td class="px-6 py-5">
+                      <div
+                        class="flex items-center gap-3 text-[13px] font-medium text-gray-400"
+                      >
+                        <div class="flex items-center gap-1">
+                          <svg
+                            class="w-4 h-4 text-red-400"
+                            fill="none"
+                            stroke="currentColor"
+                            viewBox="0 0 24 24"
+                          >
+                            <path
+                              stroke-linecap="round"
+                              stroke-linejoin="round"
+                              stroke-width="2"
+                              d="M4.318 6.318a4.5 4.5 0 000 6.364L12 20.364l7.682-7.682a4.5 4.5 0 00-6.364-6.364L12 7.636l-1.318-1.318a4.5 4.5 0 00-6.364 0z"
+                            >
+                            </path>
+                          </svg>
+                          {formatNumberInText(entity.reaction, $locale ?? "") || 0}
+                        </div>
+                        <div class="flex items-center gap-1">
+                          <svg
+                            class="w-4 h-4 text-blue-400"
+                            fill="none"
+                            stroke="currentColor"
+                            viewBox="0 0 24 24"
+                          >
+                            <path
+                              stroke-linecap="round"
+                              stroke-linejoin="round"
+                              stroke-width="2"
+                              d="M8 12h.01M12 12h.01M16 12h.01M21 12c0 4.418-4.03 8-9 8a9.863 9.863 0 01-4.255-.949L3 20l1.395-3.72C3.512 15.042 3 13.574 3 12c0-4.418 4.03-8 9-8s9 3.582 9 8z"
+                            >
+                            </path>
+                          </svg>
+                          {formatNumberInText(entity.comment, $locale ?? "") || 0}
+                        </div>
+                      </div>
+                    </td>
+
+                    <!-- UPDATED -->
+                    <td class="px-6 py-5 text-[12px] font-medium text-gray-400">
+                      {entity.updated_at.replace(",", "")}
+                    </td>
+
+                    <!-- ACTIONS -->
+                    <td class="px-8 py-5 text-right">
+                      <div
+                        class="flex items-center justify-end gap-3 opacity-0 group-hover:opacity-100 transition-opacity"
+                      >
+                        <button
+                          onclick={() => viewEntity(entity)}
+                          class="flex items-center gap-1 text-[12px]
+                                        font-bold text-gray-400 hover:text-indigo-600 transition-colors"
+                        >
+                          <EyeOutline class="w-4 h-4" /> View
+                        </button>
+                        <button
+                          onclick={() => editEntity(entity)}
+                          class="flex items-center gap-1 text-[12px]
+                                        font-bold text-gray-400 hover:text-indigo-600 transition-colors"
+                        >
+                          <EditOutline class="w-4 h-4" /> Edit
+                        </button>
+                      </div>
+                    </td>
+                  </tr>
+                {/each}
+              </tbody>
+            </table>
+          </div>
+          <div
+            class="py-4 border-t border-gray-50 text-center text-xs font-semibold text-indigo-400 bg-white"
+          >
+            Showing {filteredEntities.length} of {entities.length} entries
+          </div>
+        </div>
+      {/if}
+    {/if}
+  </div>
+</div>
+
+<!-- CSV Import/Export Modals -->
+<ModalCSVUpload 
+  space_name={spaceFilter !== "all" ? spaceFilter : (availableSpaces[0]?.shortname || "catalog")}
+  subpath="/" 
+  bind:isOpen={isCSVUploadModalOpen}
+  onUploadSuccess={fetchEntities}
+  availableSpaces={availableSpaces.map(s => ({ shortname: s.shortname, displayname: getLocalizedSpaceName(s) }))}
+/>
+
+<ModalCSVDownload 
+  space_name={spaceFilter !== "all" ? spaceFilter : (availableSpaces[0]?.shortname || "catalog")}
+  subpath="/" 
+  bind:isOpen={isCSVDownloadModalOpen}
+  availableSpaces={availableSpaces.map(s => ({ shortname: s.shortname, displayname: getLocalizedSpaceName(s) }))}
+/>

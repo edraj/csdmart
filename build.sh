@@ -9,14 +9,16 @@ VERSION_DATE=$(git show --pretty=format:%ad --date=iso -q 2>/dev/null | head -1 
 INFORMATIONAL_VERSION="${TAG:-${COMMIT:-0.1.0}} branch=${BRANCH} date=${VERSION_DATE}"
 echo "Version: $INFORMATIONAL_VERSION"
 
-# Build CXB frontend (embedded into the dmart binary)
-if [ -f cxb/dist/client/index.html ]; then
-    echo "CXB frontend already built, skipping"
-elif [ -f cxb/package.json ]; then
-    echo "=== Building CXB frontend ==="
-    ./build-cxb.sh || { echo "CXB build failed"; exit 1; }
+# Build UI frontends (cxb + catalog, both embedded into the dmart binary).
+# Skip the build when *both* dist outputs already exist; build-ui.sh itself
+# skips a missing source dir gracefully.
+if [ -f cxb/dist/client/index.html ] && [ -f catalog/dist/index.html ]; then
+    echo "UI frontends already built, skipping"
+elif [ -f cxb/package.json ] || [ -f catalog/package.json ]; then
+    echo "=== Building UI frontends ==="
+    ./build-ui.sh || { echo "UI build failed"; exit 1; }
 else
-    echo "Skipping CXB build (no cxb source or dist found)"
+    echo "Skipping UI build (no cxb or catalog source found)"
 fi
 
 RID="linux-x64"

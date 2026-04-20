@@ -212,6 +212,11 @@ public sealed class DmartSettings
     // Change to "/" to serve CXB at the root, or "/admin" for a custom path.
     public string CxbUrl { get; set; } = "/cxb";
 
+    // URL path prefix for the Catalog frontend — second embedded SPA,
+    // served by CatalogMiddleware. Default matches the <base href="/cat/">
+    // in catalog/index.html. Share config.json lookup with CXB.
+    public string CatUrl { get; set; } = "/cat";
+
     // ---- SMTP email gateway (Python parity) ----
     // Used by OtpProvider to deliver email OTP codes and by InvitationService
     // once email channels are enabled. When MailHost is empty the sender logs
