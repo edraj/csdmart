@@ -59,24 +59,23 @@ flowchart TD
 
 ## Anonymous + `world`
 
-Python parity is **strict**: for anonymous to see anything at all,
+The contract is strict: for an anonymous caller to see anything at all,
 
 1. A user row with shortname `"anonymous"` must exist.
 2. That user must have **at least one role** in `users.roles`.
 3. Either that role's `permissions` list covers the target, OR a permission
-   row with shortname `"world"` exists and the role loop runs (which it only
-   does if anonymous has ≥1 role — Python's `adapter.py:3283-3290` appends
-   `world` INSIDE the role iteration).
+   row with shortname `"world"` exists and gets folded in — `world` is
+   appended to each role's permission set during resolution, so a zero-role
+   anonymous user gets nothing even if `world` is defined.
 
-Fails we've hit in the field:
+Fails seen in practice:
 - No anonymous user → CanAsync returns false silently → `/public/query`
   returns `{total:0}`.
 - Anonymous user exists but `roles=[]` → `world` never consulted → same
   outcome.
-- `world.subpaths.evd` stored as `["/categories", "/denominations"]`
-  (leading slashes, Python writer's style) — our matcher normalizes both
-  sides via `NormalizePermissionSubpath`, so `/denominations` matches
-  the walk key `denominations`.
+- `world.subpaths.<space>` stored as `["/foo", "/bar"]` (leading slashes) —
+  the matcher normalizes both sides via `NormalizePermissionSubpath`, so
+  `/foo` matches the walk key `foo`.
 
 Verify on a live DB:
 
@@ -173,10 +172,10 @@ achieved for the grant to apply:
 | `is_active` | `resource.IsActive == true` |
 | `own` | `resource.OwnerShortname == actor` OR `resource.OwnerGroupShortname` is in `user.Groups` |
 
-**Exception:** `create` and `query` actions are exempt from condition checks.
-Python's `access_control.py:218` does the same — the rationale is that you
-can't ask "is the entry active" before it exists (create), and queries are
-filtered post-hoc at the SQL level.
+**Exception:** `create` and `query` actions are exempt from condition
+checks. The rationale: you can't ask "is the entry active" before it
+exists (create), and query results are filtered post-hoc at the SQL
+level.
 
 This is why `CanQueryAsync` tries `"view"` first, then `"query"`:
 
@@ -216,7 +215,7 @@ AND (owner_shortname = $N
 ```
 
 The `query_policies` text[] is the **precomputed** authz filter —
-`Services/QueryPolicyHelper` (and its Python equivalent) walks the user's
+`Services/QueryPolicyHelper` walks the user's
 permissions and generates `space:subpath:resource_type:is_active:owner` LIKE
 patterns. Every entry's `query_policies` column holds its own set of
 patterns. Intersection happens at SQL, so we never round-trip large lists.

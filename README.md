@@ -1,6 +1,7 @@
-# DMART — Unified Data Platform (C# Port)
+# DMART — Unified Data Platform
 
-Native AOT port of [dmart](https://github.com/edraj/dmart) from Python to C# (.NET 10). Same PostgreSQL schema, same REST API, same CXB admin frontend — 30x faster on queries, 24x less RAM, 15x faster cold start.
+A fast, AOT-native headless information-management backend on .NET 10,
+PostgreSQL, and Svelte. Ships as a single ~37 MB self-contained binary.
 
 ## What is DMART?
 
@@ -252,7 +253,7 @@ custom_plugins_sdk/       # Sample native plugin projects
 ## Technology Stack
 
 - **.NET 10** with Native AOT (single binary, no runtime needed)
-- **PostgreSQL** (same schema as Python dmart)
+- **PostgreSQL 13+** — schema lives in `DataAdapters/Sql/SqlSchema.cs`
 - **Svelte** (CXB admin frontend, embedded in binary)
 - **PostgreSQL** client libs (Npgsql, no ORM)
 

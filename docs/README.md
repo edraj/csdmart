@@ -1,7 +1,7 @@
-# dmart C# port — Engineering documentation
+# dmart — Engineering documentation
 
 This folder is a tour of the codebase for engineers who need to understand,
-debug, or extend the C# port. The top-level [README.md](../README.md) covers
+debug, or extend dmart. The top-level [README.md](../README.md) covers
 install/run/CLI — this folder goes into the **how** and **why**.
 
 ## Reading order
@@ -38,7 +38,7 @@ install/run/CLI — this folder goes into the **how** and **why**.
 
 ## Conventions
 
-- **Wire format matches Python dmart byte-for-byte.** Snake_case keys, `status: "success"|"failed"`, `error.code` int, cookie auth, `[EnumMember]` on every enum. When a wire detail differs from Python it's a bug, not a feature.
-- **Schema matches dmart's actual PostgreSQL layout.** Verified against a live DB created by dmart Python. See [data-model.md](./data-model.md).
+- **Wire format is snake_case everywhere**, `status: "success"|"failed"`, `error.code` int, cookie auth, `[EnumMember]` on every enum. See [data-model.md](./data-model.md) for the full spec.
+- **Schema lives in `DataAdapters/Sql/SqlSchema.cs`** — CREATE TABLE + `ALTER TABLE ADD COLUMN IF NOT EXISTS` patches at the bottom for forward-compat migrations on existing DBs.
 - **Native AOT publish is the ship target.** No reflection-based JSON, no `JwtSecurityTokenHandler`, no runtime IL emit. See [debugging.md](./debugging.md) for AOT gotchas.
-- **`Response.Fail(int code, string message, string type, List<Dictionary<string, object>>? info = null)`** is the only way to fail. `code` is `InternalErrorCode.*` (mirrors Python's integer codes). `type` is one of `auth`/`jwtauth`/`db`/`request`/`internal`/`qr`/`catchall`.
+- **`Response.Fail(int code, string message, string type, List<Dictionary<string, object>>? info = null)`** is the only way to fail. `code` is `InternalErrorCode.*` (integer codes enumerated in `Models/Api/InternalErrorCode.cs`). `type` is one of `auth`/`jwtauth`/`db`/`request`/`internal`/`qr`/`catchall`.

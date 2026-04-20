@@ -48,8 +48,8 @@ Alternatively if the error is in production, verify that
 Walk the permission tree. See [permissions.md](./permissions.md) for the
 SQL snippets. Most common causes:
 
-1. No `anonymous` user row + trying `/public/query`. Python parity =
-   anonymous needs a row + at least one role.
+1. No `anonymous` user row + trying `/public/query`. Anonymous needs
+   a row + at least one role before any permission applies.
 2. Permission's `subpaths` stored with leading slash (`"/items"`), and
    you're on a pre-slash-normalization build. Rebuild or patch
    `PermissionService.NormalizePermissionSubpath`.
@@ -182,15 +182,15 @@ exclusion constraint matching the ON CONFLICT specification`.
 ### Materialized views need `REFRESH CONCURRENTLY`-capable unique indexes
 
 `mv_user_roles` and `mv_role_permissions` have `idx_mv_*_unique` indexes.
-Without them, `REFRESH MATERIALIZED VIEW CONCURRENTLY` fails. Both
-dmart Python and our `SqlSchema.cs` create them.
+Without them, `REFRESH MATERIALIZED VIEW CONCURRENTLY` fails.
+`SqlSchema.cs` creates them.
 
 ### `CREATE TABLE IF NOT EXISTS` doesn't add columns to existing tables
 
-If dmart Python provisioned a DB earlier, older column sets linger.
-`SqlSchema.cs` has a **forward-compat patches block** at the bottom with
-idempotent `ALTER TABLE … ADD COLUMN IF NOT EXISTS` statements. Every
-time you reference a new column in a SELECT/INSERT, add a matching
+On a pre-existing DB, older column sets can linger. `SqlSchema.cs` has
+a **forward-compat patches block** at the bottom with idempotent
+`ALTER TABLE … ADD COLUMN IF NOT EXISTS` statements. Every time you
+reference a new column in a SELECT/INSERT, add a matching
 `ADD COLUMN IF NOT EXISTS` to that block — the CREATE TABLE block is
 only consulted on brand-new DBs.
 
@@ -266,9 +266,9 @@ PGPASSWORD=tramd psql -h localhost -U dmart -d dmart \
 PGPASSWORD=tramd psql -h localhost -U dmart -d dmart \
   -c "SELECT * FROM entries WHERE space_name='X' AND subpath='/Y' AND shortname='Z';"
 
-# Version + indexes
+# Schema version + indexes
 PGPASSWORD=tramd psql -h localhost -U dmart -d dmart \
-  -c "SELECT version_num FROM alembic_version;"
+  -c "SELECT version_num FROM alembic_version;"   # if migrated from a historical deployment
 PGPASSWORD=tramd psql -h localhost -U dmart -d dmart \
   -c "SELECT indexname FROM pg_indexes WHERE tablename='entries';"
 
@@ -289,7 +289,7 @@ PGPASSWORD=tramd psql -h localhost -U dmart -d dmart \
 4. **Run `dmart settings`** — prints the effective redacted configuration.
 5. **Bisect through history** — `git log --oneline` and test the last
    few commits.
-6. **Read the Python source** — when a wire detail feels off, fetch
-   `https://raw.githubusercontent.com/edraj/dmart/master/backend/<path>.py`
-   or read the local uvenv install at `~/.uvenv/lib/python3.14/site-packages/dmart/`.
-   Python is the spec.
+6. **Read the handler and service** — every HTTP path is a thin handler
+   in `Api/` that delegates to a service in `Services/`. Reading both,
+   plus the relevant repository in `DataAdapters/Sql/`, is usually
+   enough to explain any unexpected behavior.

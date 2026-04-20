@@ -1,8 +1,8 @@
 # Data model
 
-The C# port runs against the same PostgreSQL schema as dmart Python. This
-document describes (a) the wire shapes clients see, (b) the tables, (c) the
-non-obvious rules that keep the two in sync.
+This document covers (a) the wire shapes clients see, (b) the PostgreSQL
+tables backing them, and (c) the non-obvious encoding rules that bridge
+the two.
 
 ## Wire envelope
 
@@ -17,7 +17,7 @@ Every HTTP response uses this shape:
 }
 ```
 
-- `status` is a string, not an int — Python's `StrEnum`.
+- `status` is a string literal (`"success"` or `"failed"`), not an int.
 - `error` is omitted entirely on success (not `"error": null`).
 - `records[]` on list endpoints; on single-entry GETs the record shape is
   spread at the top level.
@@ -69,15 +69,14 @@ The slash dance is the #1 confusion source.
 | Wire (`Query.subpath`) | either — normalized on set | `"api/v1"` or `"/api/v1"` |
 | Storage (`entries.subpath`, `attachments.subpath`) | leading slash | `"/api/v1"` |
 | Root | `"/"` in both | `"/"` |
-| Permission row `subpaths` value | **slash-free after Python's `trans_magic_words` normalization** — but Python writers sometimes store with a leading slash. Our matcher normalizes at compare time. | `"denominations"` OR `"/denominations"` |
+| Permission row `subpaths` value | **slash-free after `NormalizePermissionSubpath`** — some historical rows are stored with a leading slash; the matcher normalizes at compare time so both forms resolve. | `"items"` OR `"/items"` |
 
 See `Models/Core/Locator.NormalizeSubpath(string)` — adds the leading slash
 unless the input is empty or already `"/"`.
 
-`Services/PermissionService.NormalizePermissionSubpath(string)` — Python's
-`data_adapters/helpers.py::trans_magic_words` tail: collapses `//`, strips
-leading/trailing slash (unless whole pattern is `/`). This is the one that
-rescues mismatched-slash permission rows.
+`Services/PermissionService.NormalizePermissionSubpath(string)` collapses
+`//`, strips leading/trailing slash (unless the whole pattern is `/`).
+This is the one that rescues mismatched-slash permission rows.
 
 ## Entity-relationship
 
@@ -243,7 +242,7 @@ returns `"[]"` and `ToJsonbDict(null)` returns `"{}"`.
 
 ### `filter_schema_names=["meta"]` is a sentinel, not a filter
 
-Python's `Query.filter_schema_names` defaults to `["meta"]` (Pydantic default).
+`Query.filter_schema_names` defaults to `["meta"]` on the wire.
 `QueryHelper.BuildWhereClause` strips the literal `"meta"` and only emits a
 SQL filter for the remainder. Internal callers that want all schemas must
 pass `FilterSchemaNames = new()` (empty list).

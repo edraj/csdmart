@@ -207,12 +207,12 @@ need per-request state.
 
 ## Add a new enum value
 
-1. Add the member to the enum in `Models/Enums/*.cs` with `[EnumMember(Value="python_wire_value")]`.
+1. Add the member to the enum in `Models/Enums/*.cs` with `[EnumMember(Value="wire_value")]`.
 2. If the enum appears in a DB column (e.g. `usertype`, `language`,
    `resource_type`), `JsonbHelpers.EnumNameLower<T>` uses the C# member
-   name lowercased. Ensure the PG enum type accepts the new value —
-   if the DB was provisioned by Python dmart, the PG enum type is
-   authoritative.
+   name lowercased. The PG enum type is authoritative — extend it with
+   `ALTER TYPE ... ADD VALUE IF NOT EXISTS` in `SqlSchema.cs` if the new
+   value has to land in an existing column.
 3. Source-gen JSON uses the `[EnumMember]` value via
    `EnumMemberConverterBase<T>` — no other registration needed.
 4. Update `curl.sh` and tests if the new value should appear in payloads.
@@ -335,13 +335,14 @@ If the scenario depends on optional components (a plugin, CXB), use the
 - [ ] No new `System.Reflection.*`, `JsonSerializer.SerializeToElement<T>`,
       `JwtSecurityTokenHandler`, or dynamic MVC features — all AOT-hostile.
 - [ ] Any memory-touching change (DI registration, cache invalidation,
-      MV refresh) preserves Python-parity semantics. See [permissions.md](./permissions.md)
-      and [data-model.md](./data-model.md) for the non-obvious invariants.
+      MV refresh) preserves the invariants in [permissions.md](./permissions.md)
+      and [data-model.md](./data-model.md).
 
 ## Where to ask for guidance
 
 1. Check the docs in this folder.
 2. `git log --oneline` for prior work on the same area.
-3. `./curl.sh` — the canonical spec for expected HTTP-level behavior.
-4. The Python source — `https://raw.githubusercontent.com/edraj/dmart/master/backend/<path>.py`
-   — is the wire-parity spec.
+3. `./curl.sh` — the canonical smoke for expected HTTP-level behavior.
+4. The tests in `dmart.Tests/Integration/` document the public contract
+   for each endpoint; read the tests covering the area you're touching
+   before starting.

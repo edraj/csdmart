@@ -14,7 +14,7 @@ and where ACL filtering happens.
   "subpath": "items",           // wire accepts either form, normalized to "/items" internally
   "exact_subpath": false,       // true = only at this subpath, not descendants
   "filter_types": [],           // ResourceType[] narrowing (content, folder, user, ...)
-  "filter_schema_names": [],    // if ["meta"] → treated as sentinel "no filter"; Pydantic default
+  "filter_schema_names": [],    // if ["meta"] → treated as sentinel "no filter" (wire default)
   "filter_shortnames": [],      // shortname IN (...)
   "filter_tags": [],            // tags ?| (...)
   "search": "query string",     // RediSearch-style; see below
@@ -95,7 +95,7 @@ pin the emitted SQL shape for every combination.
 
 ## sort_by
 
-Fully Python-parity via `QueryHelper.BuildOrderClauseBody`:
+Resolved by `QueryHelper.BuildOrderClauseBody`:
 
 - `null` → `ORDER BY updated_at <DESC|ASC>`
 - bare column name → validated against a per-table whitelist
@@ -103,8 +103,8 @@ Fully Python-parity via `QueryHelper.BuildOrderClauseBody`:
   to `updated_at`
 - JSON path (contains `.`) → transformed to `payload::jsonb -> 'body' ->> 'rank'`
   with a `CASE WHEN expr ~ '^-?[0-9]+(\.[0-9]+)?$' THEN (expr)::float END`
-  wrap so numeric values sort numerically (1, 2, 10) — matches Python's
-  `adapter.py::set_sql_statement_from_query`
+  wrap so numeric values sort numerically (1, 2, 10) rather than
+  alphabetically (1, 10, 2)
 - Comma-separated list → each token handled independently, emitted as
   `expr1 <dir>, expr2 <dir>` for multi-column sort
 
@@ -199,11 +199,10 @@ or a jsonb path (`@payload.body.foo`). Same sanitation as sort_by.
 
 ## Joins (client-side)
 
-`Query.join` is a Python-parity field. When present, the main query runs
-first; for each result the join queries run (against the same or
-different space/subpath). Current C# port has the field bound for
-shape-parity and the join logic implemented in
-`QueryService.ApplyClientJoinsAsync` for the common case.
+`Query.join` runs a secondary query per primary result, against the same
+or a different space/subpath. The field is bound on the wire and the
+join logic lives in `QueryService.ApplyClientJoinsAsync` for the common
+case.
 
 ## Response shape
 

@@ -27,7 +27,7 @@ flowchart TD
 
 ## The login response shape
 
-Python-parity: tokens ride in `records[0].attributes`:
+Tokens ride in `records[0].attributes`:
 
 ```json
 {
@@ -74,8 +74,8 @@ Access token payload:
 
 Refresh token payload: same shape minus `data.type`, longer `exp`.
 
-Why `data` wraps the real claims: Python dmart uses the same shape, so the
-token is interoperable with the Python binary. `JwtBearerSetup` parses
+`data` wraps the identity claims so the envelope stays stable even if
+we add more top-level metadata later. `JwtBearerSetup` parses
 `data.shortname` for `ctx.User.Identity.Name`.
 
 ### The cookie-or-bearer dance
@@ -116,13 +116,13 @@ no `kid`, so we MUST set
 Format: PHC string
 `$argon2id$v=19$m=102400,t=3,p=8$<b64-no-pad-salt>$<b64-no-pad-hash>`.
 
-Parameters match `argon2-cffi`'s defaults: `memory_cost=102400, time_cost=3,
-parallelism=8`. Verified byte-identical to Python-written hashes via
-comparing real DB rows.
+Parameters: `memory_cost=102400, time_cost=3, parallelism=8`. The PHC
+string is self-describing, so hashes are portable across any
+conformant Argon2id implementation.
 
 ## Password rules (PASSWORD regex)
 
-`Auth/PasswordRules.cs` — source-gen regex, Python parity:
+`Auth/PasswordRules.cs` — source-gen regex:
 
 ```
 ^(?=.*[0-9\u0660-\u0669])(?=.*[A-Z\u0621-\u064a])
@@ -135,13 +135,12 @@ comparing real DB rows.
 - Whitelisted symbols only
 
 `UserService.UpdateProfileAsync` rejects weak passwords with
-`INVALID_PASSWORD_RULES` (17) + type=`jwtauth` — matches Python's
-`/profile` endpoint.
+`INVALID_PASSWORD_RULES` (17) + type=`jwtauth`.
 
 ## Login error shapes
 
-Pinned Python-exact by `dmart.Tests/Integration/LoginErrorCodesTests.cs` and
-`ErrorCodeParityTests.cs`:
+Pinned by `dmart.Tests/Integration/LoginErrorCodesTests.cs` and
+`dmart.Tests/Integration/ErrorCodeParityTests.cs`:
 
 | Condition | `type` | `code` | `message` |
 |---|---|---|---|
@@ -209,9 +208,9 @@ sequenceDiagram
     API->>U: records[{access_token, refresh_token, ...}] + Set-Cookie
 ```
 
-`InvitationJwt` payload shape is **Python-compatible** `{data, expires}` —
-same format Python mints. `InvitationRepository` is the DB side; the row
-is the single-use enforcement even if the JWT is still within `exp`.
+`InvitationJwt` payload shape: `{data, expires}`.
+`InvitationRepository` is the DB side; the row is the single-use
+enforcement even if the JWT is still within `exp`.
 
 ## OAuth providers (Google / Facebook / Apple)
 
@@ -262,8 +261,8 @@ row with an empty permissions list.
 
 ## Anonymous
 
-Python-reserved shortname. Not auto-created. See
-[permissions.md](./permissions.md) for how anonymous resolution works.
+A reserved shortname used for unauthenticated callers. Not auto-created.
+See [permissions.md](./permissions.md) for how anonymous resolution works.
 
 ## Rate limiting (auth endpoints)
 

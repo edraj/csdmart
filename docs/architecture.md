@@ -178,7 +178,7 @@ Notable:
 | JSON | `System.Text.Json` via `DmartJsonContext` source-gen | AOT + snake_case + `[EnumMember]` |
 | Auth | `Microsoft.AspNetCore.Authentication.JwtBearer` (lazy configured) | See [auth.md](./auth.md) |
 | JWT | hand-rolled HS256 via `Microsoft.IdentityModel.JsonWebTokens` | Avoids reflective `JwtSecurityTokenHandler` |
-| Password hashing | `Konscious.Security.Cryptography.Argon2` 1.3.1 | Round-trips with Python's argon2-cffi |
+| Password hashing | `Konscious.Security.Cryptography.Argon2` 1.3.1 | PHC-string Argon2id, `memory_cost=102400, time_cost=3, parallelism=8` |
 | WebSocket | built-in `WebSocketManager` + custom channel manager | |
 | Admin UI | Svelte (`cxb/`) served from embedded resources or filesystem | |
 | Plugins | built-in C# + loadable `.so` via C-ABI | See [plugins-and-mcp.md](./plugins-and-mcp.md) |
@@ -256,7 +256,7 @@ dmart/
 │   ├── JwtIssuer.cs                    HS256 access/refresh token mint
 │   ├── InvitationJwt.cs                {data, expires} payload shape
 │   ├── PasswordHasher.cs               Argon2id wrapper
-│   ├── PasswordRules.cs                Python-parity PASSWORD regex
+│   ├── PasswordRules.cs                PASSWORD regex — source-gen
 │   ├── OtpProvider.cs                  Generate + dispatch (SMS/email/log)
 │   └── OAuth/                          GoogleProvider, FacebookProvider, AppleProvider, OAuthUserResolver
 │
@@ -319,23 +319,26 @@ sequenceDiagram
 
 ## Design principles
 
-1. **Wire parity with Python.** When Python's behavior and ours diverge,
-   ours is the bug. See [data-model.md](./data-model.md) for the non-obvious
-   rules (subpath slashes, filter_schema_names=["meta"] sentinel,
-   enum member strings, hash format).
+1. **The wire format is the spec.** Snake_case keys, `status: "success"|"failed"`,
+   integer `error.code`, cookie auth, `[EnumMember]` on every enum. See
+   [data-model.md](./data-model.md) for the non-obvious rules (subpath
+   slashes, `filter_schema_names=["meta"]` sentinel, enum member strings,
+   hash format).
 
 2. **AOT-first.** No `JwtSecurityTokenHandler`, no reflective serialization,
    no `UseMiddleware<T>` (inline `app.Use`). Source-gen JSON via
    `DmartJsonContext` is the one allowed reflection alternative — and even
    it has quirks (see [debugging.md](./debugging.md)).
 
-3. **Tables, not ORM.** `QueryHelper` emits raw parameterized SQL. We match
-   the schema dmart Python's Alembic migrations produced. `SqlSchema.cs`
-   has forward-compat `ALTER TABLE … ADD COLUMN IF NOT EXISTS` patches.
+3. **Tables, not ORM.** `QueryHelper` emits raw parameterized SQL.
+   `SqlSchema.cs` owns the schema with `CREATE TABLE IF NOT EXISTS` plus
+   a forward-compat `ALTER TABLE … ADD COLUMN IF NOT EXISTS` block at the
+   bottom.
 
 4. **One canonical error shape.** `Response.Fail(int code, string message, string type)`.
-   `code` is `InternalErrorCode.*` (mirrors Python integers). No string-keyed
-   error codes, no multiple overloads.
+   `code` is `InternalErrorCode.*` (integer codes enumerated in
+   `Models/Api/InternalErrorCode.cs`). No string-keyed error codes, no
+   multiple overloads.
 
 5. **Process-local caches, MV-backed authz.** `AuthzCacheRefresher` holds the
    in-memory user-access dict AND runs `REFRESH MATERIALIZED VIEW CONCURRENTLY`
