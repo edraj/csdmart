@@ -446,8 +446,11 @@ public sealed class UserService(
             await users.EvictExcessSessionsAsync(user.Shortname, maxSessions - 1, ct);
         }
 
-        // Persist device_id if changed.
-        var updatedUser = user;
+        // Sync the in-memory copy with ResetAttemptsAsync — without this, a
+        // later UpsertAsync (triggered by device_id or last_login changes)
+        // would restore the stale pre-login attempt_count via
+        // `attempt_count = EXCLUDED.attempt_count` in the ON CONFLICT clause.
+        var updatedUser = user with { AttemptCount = 0 };
         var needsUpdate = false;
         if (!string.IsNullOrEmpty(req.DeviceId) && req.DeviceId != user.DeviceId)
         {

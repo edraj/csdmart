@@ -102,6 +102,47 @@ public class UserAuthDbTests : IClassFixture<DmartFactory>
         ((JsonElement)body.Attributes!["field"]!).GetString().ShouldBe("shortname");
     }
 
+    [Fact]
+    public async Task Successful_Login_Resets_AttemptCount_To_Zero()
+    {
+        if (!DmartFactory.HasPg) return;
+
+        var users = _factory.Services.GetRequiredService<Dmart.DataAdapters.Sql.UserRepository>();
+        var db = _factory.Services.GetRequiredService<Dmart.DataAdapters.Sql.Db>();
+
+        // Seed: admin row with attempt_count=3 (simulating 3 prior failed tries
+        // that didn't cross the lockout threshold).
+        await using (var conn = await db.OpenAsync())
+        await using (var cmd = new Npgsql.NpgsqlCommand(
+            "UPDATE users SET attempt_count = 3 WHERE shortname = $1", conn))
+        {
+            cmd.Parameters.Add(new() { Value = _factory.AdminShortname });
+            await cmd.ExecuteNonQueryAsync();
+        }
+
+        try
+        {
+            var client = _factory.CreateClient();
+            var login = new UserLoginRequest(_factory.AdminShortname, null, null, _factory.AdminPassword, null);
+            var resp = await client.PostAsJsonAsync("/user/login", login, DmartJsonContext.Default.UserLoginRequest);
+            resp.StatusCode.ShouldBe(HttpStatusCode.OK);
+
+            // Verify attempt_count was reset to 0 and persisted (not overwritten
+            // by the follow-up UpsertAsync in ProcessLoginAsync).
+            await using var conn = await db.OpenAsync();
+            await using var cmd = new Npgsql.NpgsqlCommand(
+                "SELECT attempt_count FROM users WHERE shortname = $1", conn);
+            cmd.Parameters.Add(new() { Value = _factory.AdminShortname });
+            var stored = await cmd.ExecuteScalarAsync();
+            var count = stored is int i ? i : (stored is null || stored is DBNull ? (int?)null : Convert.ToInt32(stored));
+            (count ?? 0).ShouldBe(0);
+        }
+        finally
+        {
+            await users.ResetAttemptsAsync(_factory.AdminShortname);
+        }
+    }
+
     private async Task<string?> LoginAdminAndGetTokenAsync(HttpClient client)
     {
         var login = new UserLoginRequest(_factory.AdminShortname, null, null, _factory.AdminPassword, null);
