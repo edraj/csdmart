@@ -20,6 +20,7 @@ namespace Dmart.Tests.Integration;
 //   4. Cleans up after itself so the DB stays usable for other tests.
 //
 // Each scenario uses a unique user shortname so parallel runs don't collide.
+[Collection(AnonymousWorldCollection.Name)]
 public class PermissionServiceIntegrationTests : IClassFixture<DmartFactory>
 {
     private readonly DmartFactory _factory;
@@ -430,34 +431,38 @@ public class PermissionServiceIntegrationTests : IClassFixture<DmartFactory>
         }
     }
 
-    // Regression guard: real-world shape. The world permission stored with
-    // `subpaths: {"evd": ["/denominations"]}` (leading slash — Python writes
-    // it that way), `conditions: ["is_active"]`, `actions: ["view", "query"]`
-    // used to zero-result on /public/query because (a) my subpath matcher
-    // didn't strip the leading slash before comparing against the walk key,
-    // and (b) CanQueryAsync gated the "query"-action fallback on `actor is
-    // not null`, so anonymous only tried "view" — which fails the condition
-    // check (no resource loaded yet → "is_active" not in achieved set).
+    // Regression guard for a permission row written with leading-slash
+    // subpaths + `conditions:["is_active"]` + `actions:["view","query"]`.
+    // Two bugs used to conspire to zero-result /public/query against that
+    // shape: (a) the subpath matcher didn't strip the leading slash before
+    // comparing against the walk key, (b) CanQueryAsync gated the "query"
+    // action fallback on `actor is not null`, so anonymous only tried "view"
+    // — which fails the condition check when no resource is loaded yet.
     [Fact]
-    public async Task Anonymous_Query_With_LeadingSlash_Subpath_And_IsActive_Condition_Succeeds()
+    public async Task Anonymous_Query_With_MultiLeadingSlash_Subpaths_And_IsActive_Condition_Succeeds()
     {
         if (!DmartFactory.HasPg) return;
         var (perms, users, access) = Resolve();
 
-        const string anonUser = "anonymous";
-        const string worldPerm = "world";
+        const string anonUser = "anonymous";   // Python-reserved shortname
+        const string worldPerm = "world";      // Python-reserved shortname
         var anonRole = $"itest_anon_role_{Guid.NewGuid():N}".Substring(0, 24);
+        // Use a throwaway space name unique to this test so we're not coupled
+        // to any specific deployment's fixture data.
+        var space = $"itest_space_{Guid.NewGuid():N}".Substring(0, 24);
 
         var priorAnon = await users.GetByShortnameAsync(anonUser);
         var priorWorld = await access.GetPermissionAsync(worldPerm);
 
         try
         {
-            // Exact shape from the field-reported evd deployment.
+            // Single permission listing MULTIPLE leading-slash subpaths under
+            // one space. Both must resolve — the matcher must iterate the
+            // list, not short-circuit on the first pattern.
             await access.UpsertPermissionAsync(BuildPerm(
                 worldPerm,
                 spaceName: "management",
-                subpaths: new() { ["testspace"] = new() { "/denominations" } }, // leading slash
+                subpaths: new() { [space] = new() { "/alpha", "/bravo" } }, // leading slash
                 actions: new() { "view", "query" },
                 resourceTypes: new() { "content" },
                 conditions: new() { "is_active" }));
@@ -465,17 +470,27 @@ public class PermissionServiceIntegrationTests : IClassFixture<DmartFactory>
             await users.UpsertAsync(BuildUser(anonUser, anonRole));
             await access.InvalidateAllCachesAsync();
 
-            // Query probe with * shortname (like QueryService.CanQueryAsync builds).
-            var probe = new Locator(ResourceType.Content, "testspace", "/denominations", "*");
-            (await perms.CanAsync(null, "query", probe)).ShouldBeTrue(
-                "query action must bypass the is_active condition for anonymous (Python parity)");
-            // view WITH a resource context that is is_active=true succeeds too
-            // — confirms subpath normalization matches "/denominations" against
-            // the walk's "denominations".
             var activeResource = new PermissionService.ResourceContext(
                 IsActive: true, OwnerShortname: null, OwnerGroupShortname: null, Acl: null);
-            (await perms.CanAsync(null, "view", probe, resource: activeResource)).ShouldBeTrue(
-                "view with is_active=true resource must grant access against /denominations subpath");
+
+            // Probe 1: second entry in the subpaths list.
+            var bravoProbe = new Locator(ResourceType.Content, space, "/bravo", "*");
+            (await perms.CanAsync(null, "query", bravoProbe)).ShouldBeTrue(
+                "query action must bypass is_active for anonymous (Python parity)");
+            (await perms.CanAsync(null, "view", bravoProbe, resource: activeResource)).ShouldBeTrue(
+                "view with is_active=true resource must match leading-slash subpath");
+
+            // Probe 2: first entry — same permission row, different token.
+            var alphaProbe = new Locator(ResourceType.Content, space, "/alpha", "*");
+            (await perms.CanAsync(null, "query", alphaProbe)).ShouldBeTrue(
+                "multi-pattern subpath list must match any token, not just the first");
+            (await perms.CanAsync(null, "view", alphaProbe, resource: activeResource)).ShouldBeTrue();
+
+            // Probe 3: a subpath NOT in the list stays denied — the fix must
+            // not turn the matcher into a blanket grant.
+            var unlistedProbe = new Locator(ResourceType.Content, space, "/charlie", "*");
+            (await perms.CanAsync(null, "query", unlistedProbe)).ShouldBeFalse(
+                "unlisted subpath must not match");
         }
         finally
         {

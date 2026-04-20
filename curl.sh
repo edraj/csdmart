@@ -1252,6 +1252,89 @@ curl -s -H "$CT" -H "$AUTH_HEADER" "$API_URL/managed/request" -d "{
 }" > /dev/null 2>&1
 
 # ============================================================================
+# 71–73. Anonymous /public/query via world permission
+# ============================================================================
+# End-to-end: bootstrap anonymous + role + world permission (leading-slash
+# subpath + is_active condition — the field-reported shape) against an
+# isolated throwaway space, seed one entry, query anonymously, verify a
+# non-zero response. Guards the two bugs fixed recently: (a) permission
+# subpath slash normalization, (b) anonymous "query" action bypass.
+#
+# Uses the existing $SPACE (already created + cleaned up by this script) to
+# avoid touching evd/management. Cleans up permission + role + user rows on
+# completion so reruns stay idempotent.
+WPERM="curltest_world_$(date +%s)"
+WROLE="curltest_anon_role_$(date +%s)"
+WSUBPATH="/public_items"
+WSHORT="curltest_anon_item_$(date +%s)"
+
+# 71. Seed: create a folder + content entry in $SPACE/public_items.
+curl -s -H "$CT" -H "$AUTH_HEADER" "$API_URL/managed/request" -d "{
+  \"space_name\":\"$SPACE\",\"request_type\":\"create\",\"records\":[
+    {\"resource_type\":\"folder\",\"subpath\":\"/\",\"shortname\":\"public_items\",\"attributes\":{\"is_active\":true}},
+    {\"resource_type\":\"content\",\"subpath\":\"$WSUBPATH\",\"shortname\":\"$WSHORT\",
+     \"attributes\":{\"is_active\":true,\"payload\":{\"content_type\":\"json\",\"body\":{\"rank\":7}}}}
+  ]
+}" > /dev/null 2>&1
+
+# Create the world permission, anonymous role, and anonymous user.
+# Admin privilege required — we have $AUTH_HEADER from the earlier login.
+curl -s -H "$CT" -H "$AUTH_HEADER" "$API_URL/managed/request" -d "{
+  \"space_name\":\"management\",\"request_type\":\"create\",\"records\":[
+    {\"resource_type\":\"permission\",\"subpath\":\"/permissions\",\"shortname\":\"$WPERM\",
+     \"attributes\":{\"is_active\":true,
+                    \"subpaths\":{\"$SPACE\":[\"$WSUBPATH\"]},
+                    \"resource_types\":[\"content\"],
+                    \"actions\":[\"view\",\"query\"],
+                    \"conditions\":[\"is_active\"]}},
+    {\"resource_type\":\"role\",\"subpath\":\"/roles\",\"shortname\":\"$WROLE\",
+     \"attributes\":{\"is_active\":true,\"permissions\":[\"$WPERM\"]}},
+    {\"resource_type\":\"user\",\"subpath\":\"/users\",\"shortname\":\"anonymous\",
+     \"attributes\":{\"is_active\":true,\"roles\":[\"$WROLE\"],\"type\":\"web\"}}
+  ]
+}" > /dev/null 2>&1
+curl -s -H "$AUTH_HEADER" "$API_URL/managed/reload-security-data" > /dev/null 2>&1
+
+# 72. Query /public/query as anonymous (no Authorization header).
+printf '%-45s' "Anonymous /public/query sees seeded entry:" >&2
+PUB_RESP=$(curl -s -H "$CT" \
+    -d "{\"type\":\"search\",\"space_name\":\"$SPACE\",\"subpath\":\"public_items\",
+         \"sort_by\":\"payload.body.rank\",\"sort_type\":\"ascending\",
+         \"retrieve_json_payload\":true,\"limit\":10}" \
+    "$API_URL/public/query")
+if echo "$PUB_RESP" | jq -e ".status == \"success\" and (.records | map(.shortname) | contains([\"$WSHORT\"]))" > /dev/null 2>&1; then
+    ok
+else
+    nope "$PUB_RESP"
+fi
+
+# 73. Unlisted subpath stays denied — the fix must not be a blanket grant.
+printf '%-45s' "Anonymous /public/query denied elsewhere:" >&2
+DENIED_RESP=$(curl -s -H "$CT" \
+    -d "{\"type\":\"search\",\"space_name\":\"$SPACE\",\"subpath\":\"not_permitted\",\"limit\":10}" \
+    "$API_URL/public/query")
+if echo "$DENIED_RESP" | jq -e '.status == "success" and .attributes.total == 0' > /dev/null 2>&1; then
+    ok
+else
+    nope "expected empty result, got $DENIED_RESP"
+fi
+
+# Cleanup: delete anonymous user + world role + world permission + seeded content.
+curl -s -H "$CT" -H "$AUTH_HEADER" "$API_URL/managed/request" -d "{
+  \"space_name\":\"management\",\"request_type\":\"delete\",\"records\":[
+    {\"resource_type\":\"user\",\"subpath\":\"/users\",\"shortname\":\"anonymous\"},
+    {\"resource_type\":\"role\",\"subpath\":\"/roles\",\"shortname\":\"$WROLE\"},
+    {\"resource_type\":\"permission\",\"subpath\":\"/permissions\",\"shortname\":\"$WPERM\"}
+  ]
+}" > /dev/null 2>&1
+curl -s -H "$CT" -H "$AUTH_HEADER" "$API_URL/managed/request" -d "{
+  \"space_name\":\"$SPACE\",\"request_type\":\"delete\",\"records\":[
+    {\"resource_type\":\"content\",\"subpath\":\"$WSUBPATH\",\"shortname\":\"$WSHORT\"},
+    {\"resource_type\":\"folder\",\"subpath\":\"/\",\"shortname\":\"public_items\"}
+  ]
+}" > /dev/null 2>&1
+
+# ============================================================================
 # Summary
 # ============================================================================
 echo "" >&2

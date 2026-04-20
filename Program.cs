@@ -123,7 +123,7 @@ switch (subcommand)
     case "--help":
     case "-h":
         Console.WriteLine("""
-            dmart — Structured CMS/IMS (C# port)
+            dmart — Structured CMS / IMS
 
             Usage: dmart [subcommand] [options]
 
