@@ -308,7 +308,6 @@ public static class ResourceWithPayloadHandler
                 "jsonl" or "ndjson" => ContentType.Jsonl,
                 "py"   => ContentType.Python,
                 "apk"  => ContentType.Apk,
-                "duckdb" => ContentType.Duckdb,
                 "sqlite" or "db" => ContentType.Sqlite,
                 "parquet" => ContentType.Parquet,
                 _ => ContentType.Json,
