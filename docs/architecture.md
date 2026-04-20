@@ -98,8 +98,8 @@ flowchart TD
         QHelp[QueryHelper<br/>shared SQL]
     end
 
-    subgraph PG[(PostgreSQL 13+)]
-        Tables[entries · users · roles · permissions · spaces · attachments · histories · sessions · invitations · locks · otp · urlshorts · count_history]
+    subgraph PG["PostgreSQL 13+"]
+        Tables[("entries · users · roles · permissions · spaces · attachments · histories · sessions · invitations · locks · otp · urlshorts · count_history")]
     end
 
     Middleware --> Routing
@@ -129,31 +129,31 @@ sequenceDiagram
 
     C->>K: HTTP POST /managed/query
     K->>M: request
-    M->>M: CORS / security headers
-    M->>M: JwtBearer: header or auth_token cookie
-    M->>M: UseCxb (path-prefix check; passes through)
-    M->>M: UseAuthentication / UseAuthorization
-    M->>M: UseRequestLogging (start timer)
+    M->>M: CORS and security headers
+    M->>M: JwtBearer header or auth_token cookie
+    M->>M: UseCxb path-prefix check, passes through
+    M->>M: UseAuthentication then UseAuthorization
+    M->>M: UseRequestLogging start timer
     M->>R: routed
-    R->>H: handler(body, services, HttpContext)
-    H->>H: parse body (JsonSerializer + DmartJsonContext)
-    H->>S: QueryService.ExecuteAsync(query, actor)
-    S->>P: CanQueryAsync(actor, type, space, subpath)
-    P->>DB: load user + roles + permissions (on cache miss)
-    P-->>S: allow / deny
+    R->>H: handler with body, services, HttpContext
+    H->>H: parse body via source-gen JSON
+    H->>S: QueryService.ExecuteAsync
+    S->>P: CanQueryAsync actor, type, space, subpath
+    P->>DB: load user, roles, permissions on cache miss
+    P-->>S: allow or deny
     alt allowed
-        S->>DB: SELECT … FROM entries WHERE … ORDER BY … LIMIT
-        S-->>H: Response.Ok(records, attrs)
+        S->>DB: SELECT FROM entries WHERE ORDER BY LIMIT
+        S-->>H: Response.Ok records and attrs
     else denied
-        S-->>H: Response.Ok(empty, total:0)
+        S-->>H: Response.Ok empty, total 0
     end
-    H-->>F: Response (object)
-    F->>F: Status.Failed → Results.Json with MapErrorToHttpStatus
+    H-->>F: Response object
+    F->>F: Status.Failed maps to HTTP status
     F-->>M: HTTP response
-    M->>M: trailing: request log (status, duration, user)
-    M->>M: INVALID_ROUTE post-pass (only if still 404 and not under /cxb)
+    M->>M: trailing request log with status, duration, user
+    M->>M: INVALID_ROUTE post-pass if still 404 and not under /cxb
     M-->>K: response
-    K-->>C: HTTP 200/4xx + JSON body
+    K-->>C: HTTP 200 or 4xx + JSON body
 ```
 
 Notable:
