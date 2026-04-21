@@ -10,18 +10,19 @@ INFORMATIONAL_VERSION="${TAG:-${COMMIT:-0.1.0}} branch=${BRANCH} date=${VERSION_
 echo "Version: $INFORMATIONAL_VERSION"
 
 # Build UI frontends (cxb + catalog, both embedded into the dmart binary).
-# Pre-built dists → skip. Missing dists with a JS toolchain on PATH → build.
-# Missing dists with no toolchain → fail with an actionable message (this is
-# the el9/alpine RPM container path: host must pre-build via build-ui.sh).
-if [ -f cxb/dist/client/index.html ] && [ -f catalog/dist/client/index.html ]; then
-    echo "UI frontends already built, skipping"
+# Each SPA is optional and tracked independently: a SPA "needs building" only
+# when its source exists AND its dist output is missing. An absent source is
+# fine (the csproj's EmbeddedResource glob simply matches zero files), which
+# matches sparse checkouts or forks that ship only one of the two.
+needs_build=false
+[ -f cxb/package.json ]     && [ ! -f cxb/dist/client/index.html ]     && needs_build=true
+[ -f catalog/package.json ] && [ ! -f catalog/dist/client/index.html ] && needs_build=true
+
+if [ "$needs_build" = "false" ]; then
+    echo "UI frontends ready (dists present or sources absent), skipping"
 elif command -v yarn > /dev/null 2>&1 || command -v npm > /dev/null 2>&1; then
-    if [ -f cxb/package.json ] || [ -f catalog/package.json ]; then
-        echo "=== Building UI frontends ==="
-        ./build-ui.sh || { echo "UI build failed"; exit 1; }
-    else
-        echo "Skipping UI build (no cxb or catalog source found)"
-    fi
+    echo "=== Building UI frontends ==="
+    ./build-ui.sh || { echo "UI build failed"; exit 1; }
 else
     echo "Error: UI dist missing and no yarn/npm on PATH." >&2
     echo "       Run ./build-ui.sh on the host (which has a JS toolchain)" >&2
