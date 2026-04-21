@@ -208,6 +208,21 @@ cat > ~/.dmart/plugins/my_plugin/config.json << 'EOF'
 EOF
 ```
 
+### Building Custom Plugins
+
+1. Build
+```
+cd ~/projects/open-source/csdmart/custom_plugins_sdk/<name>                                                                                                                
+dotnet publish <name>.csproj -c Release -r linux-x64 -o /tmp/<name>-build
+```
+
+2. Drop in the new .so (+ source files if you want them co-located)
+```
+cp /tmp/<name>-build/<name>.so ~/.dmart/plugins/<name>/                                                                                                                    
+cp Plugin.cs <name>.csproj ~/.dmart/plugins/<name>/
+```
+
+
 Plugins export C-ABI functions: `get_info()`, `hook()` or `handle_request()`, `free_string()`. Can be written in any language (C#, Rust, C, Go). See [custom_plugins_sdk/README.md](custom_plugins_sdk/README.md) for the full development guide with working examples.
 
 ## Building
