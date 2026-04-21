@@ -820,7 +820,8 @@
       "remove_file": "Remove file {name}",
       "section_title": "Attachments ({count})",
       "shortname_label": "Shortname",
-      "shortname_placeholder": "Leave empty to auto-generate"
+      "shortname_placeholder": "Leave empty to auto-generate",
+      "uploading_progress": "Uploading {done}/{total}…"
     },
     "buttons": {
       "publish_now": "Publish Now",

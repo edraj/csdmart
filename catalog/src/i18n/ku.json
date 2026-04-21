@@ -50,6 +50,7 @@
   "create_entry.attachments.displayname_placeholder": "چۆن ئەم پاشکۆیە پیشان دەدرێت",
   "create_entry.attachments.description_label": "وەسف",
   "create_entry.attachments.description_placeholder": "وەسفی ئەم پاشکۆیە بکە",
+  "create_entry.attachments.uploading_progress": "بارکردن {done}/{total}…",
   "create_entry.error.load_spaces_failed": "شکستی بارکردنی بۆشاییەکان.",
   "create_entry.error.load_subpaths_failed": "شکستی بارکردنی ڕێگا لاوەکیەکان.",
   "create_entry.error.select_space": "تکایە بۆشاییەک هەڵبژێرە.",

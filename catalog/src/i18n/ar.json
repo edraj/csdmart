@@ -752,7 +752,8 @@
       "remove_file": "إزالة الملف {name}",
       "section_title": "المرفقات ({count})",
       "shortname_label": "الاسم المختصر",
-      "shortname_placeholder": "اتركه فارغاً للتوليد التلقائي"
+      "shortname_placeholder": "اتركه فارغاً للتوليد التلقائي",
+      "uploading_progress": "جاري رفع {done}/{total}…"
     },
     "buttons": {
       "publish_now": "نشر الآن",

@@ -19,7 +19,9 @@
     successToastMessage,
   } from "@/lib/toasts_messages";
   import {
+    CheckCircleSolid,
     CloseCircleOutline,
+    CloseCircleSolid,
     CloudArrowUpOutline,
     FileCheckSolid,
     FileImportSolid,
@@ -386,11 +388,14 @@
 
   type AttachmentTranslation = { en: string; ar: string; ku: string };
 
+  type AttachmentStatus = "pending" | "uploading" | "success" | "error";
+
   type AttachmentEntry = {
     file: File;
     shortname: string;
     displayname: AttachmentTranslation;
     description: AttachmentTranslation;
+    status: AttachmentStatus;
   };
 
   function emptyAttachmentTranslation(): AttachmentTranslation {
@@ -409,6 +414,20 @@
 
   let attachments = $state<AttachmentEntry[]>([]);
 
+  const uploadingCount = $derived(
+    attachments.filter((a) => a.status === "uploading").length,
+  );
+  const uploadedCount = $derived(
+    attachments.filter((a) => a.status === "success").length,
+  );
+  const isUploadingAttachments = $derived(
+    attachments.some((a) => a.status === "uploading"),
+  );
+  const showUploadBanner = $derived(
+    attachments.length > 0 &&
+      attachments.some((a) => a.status !== "pending"),
+  );
+
   function handleFileChange(event: any) {
     const input = event.target;
     if (input.files) {
@@ -418,6 +437,7 @@
           shortname: "",
           displayname: emptyAttachmentTranslation(),
           description: emptyAttachmentTranslation(),
+          status: "pending",
         }),
       );
       attachments = [...attachments, ...newEntries];
@@ -777,19 +797,33 @@
 
     if (response) {
       successToastMessage(msg);
-      for (const attachment of attachments) {
-        const r = await attachAttachmentsToEntity(
-          response,
-          selectedSpace,
-          resolvedSubpath,
-          attachment.file,
-          {
-            shortname: attachment.shortname,
-            displayname: toAttachmentTranslationPayload(attachment.displayname),
-            description: toAttachmentTranslationPayload(attachment.description),
-          },
-        );
-        if (r === false) {
+      for (let i = 0; i < attachments.length; i++) {
+        const attachment = attachments[i];
+        attachments[i] = { ...attachment, status: "uploading" };
+        try {
+          const r = await attachAttachmentsToEntity(
+            response,
+            selectedSpace,
+            resolvedSubpath,
+            attachment.file,
+            {
+              shortname: attachment.shortname,
+              displayname: toAttachmentTranslationPayload(attachment.displayname),
+              description: toAttachmentTranslationPayload(attachment.description),
+            },
+          );
+          if (r === false) {
+            attachments[i] = { ...attachments[i], status: "error" };
+            errorToastMessage(
+              $_("create_entry.error.attachment_failed", {
+                values: { name: attachment.file.name },
+              }),
+            );
+          } else {
+            attachments[i] = { ...attachments[i], status: "success" };
+          }
+        } catch (err) {
+          attachments[i] = { ...attachments[i], status: "error" };
           errorToastMessage(
             $_("create_entry.error.attachment_failed", {
               values: { name: attachment.file.name },
@@ -1114,6 +1148,35 @@
         </div>
       </div>
     </div>
+
+    {#if showUploadBanner}
+      <div
+        class="attachments-upload-banner"
+        role="status"
+        aria-live="polite"
+      >
+        <span class="attachments-upload-banner-spinner" aria-hidden="true"></span>
+        <div class="attachments-upload-banner-text">
+          <strong>
+            {$_("create_entry.attachments.uploading_progress", {
+              default: "Uploading {done}/{total}…",
+              values: { done: uploadedCount, total: attachments.length },
+            })}
+          </strong>
+          <div
+            class="attachments-upload-banner-progress"
+            aria-hidden="true"
+          >
+            <div
+              class="attachments-upload-banner-progress-fill"
+              style="width: {attachments.length
+                ? Math.round((uploadedCount / attachments.length) * 100)
+                : 0}%"
+            ></div>
+          </div>
+        </div>
+      </div>
+    {/if}
 
     <div class="action-section">
       <div class="action-content">
@@ -1825,6 +1888,7 @@
           <button
             aria-label={$_("create_entry.attachments.add_files")}
             class="add-files-button"
+            disabled={isLoading}
             onclick={() => document.getElementById("fileInput")?.click()}
           >
             <UploadOutline class="icon button-icon" />
@@ -1835,7 +1899,7 @@
           {#if attachments.length > 0}
             <div class="attachments-list">
               {#each attachments as attachment, index}
-                <div class="attachment-row">
+                <div class="attachment-row" data-status={attachment.status}>
                   <div class="attachment-preview">
                     {#if getPreviewUrl(attachment.file)}
                       {#if attachment.file.type.startsWith("image/")}
@@ -1867,6 +1931,19 @@
                     {:else}
                       <div class="file-preview">
                         <FileImportSolid class="file-icon" />
+                      </div>
+                    {/if}
+                    {#if attachment.status === "uploading"}
+                      <div class="attachment-status-overlay uploading" aria-label="Uploading">
+                        <span class="attachment-spinner" aria-hidden="true"></span>
+                      </div>
+                    {:else if attachment.status === "success"}
+                      <div class="attachment-status-overlay success" aria-label="Uploaded">
+                        <CheckCircleSolid class="status-icon" />
+                      </div>
+                    {:else if attachment.status === "error"}
+                      <div class="attachment-status-overlay error" aria-label="Upload failed">
+                        <CloseCircleSolid class="status-icon" />
                       </div>
                     {/if}
                   </div>
@@ -1944,6 +2021,8 @@
                       values: { name: attachment.file.name },
                     })}
                     class="remove-attachment"
+                    disabled={attachment.status === "uploading" ||
+                      attachment.status === "success"}
                     onclick={() => removeAttachment(index)}
                   >
                     <TrashBinSolid class="icon" />
@@ -2627,6 +2706,114 @@
     box-shadow: 0 0 0 2px rgba(99, 102, 241, 0.15);
   }
 
+  .attachment-status-overlay {
+    position: absolute;
+    inset: 0;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    pointer-events: none;
+  }
+
+  .attachment-status-overlay.uploading {
+    background: rgba(17, 24, 39, 0.45);
+  }
+
+  .attachment-status-overlay.success {
+    background: rgba(16, 185, 129, 0.35);
+    color: #047857;
+  }
+
+  .attachment-status-overlay.error {
+    background: rgba(239, 68, 68, 0.35);
+    color: #b91c1c;
+  }
+
+  .attachment-status-overlay :global(.status-icon) {
+    width: 2.25rem;
+    height: 2.25rem;
+    filter: drop-shadow(0 1px 2px rgba(0, 0, 0, 0.25));
+  }
+
+  .attachment-spinner {
+    width: 1.75rem;
+    height: 1.75rem;
+    border: 3px solid rgba(255, 255, 255, 0.35);
+    border-top-color: #ffffff;
+    border-radius: 50%;
+    animation: attachment-spin 0.75s linear infinite;
+  }
+
+  @keyframes attachment-spin {
+    to { transform: rotate(360deg); }
+  }
+
+  .attachment-row[data-status="uploading"],
+  .attachment-row[data-status="success"] {
+    pointer-events: none;
+  }
+
+  .attachment-row[data-status="uploading"] .attachment-body,
+  .attachment-row[data-status="success"] .attachment-body,
+  .attachment-row[data-status="error"] .attachment-body {
+    opacity: 0.75;
+  }
+
+  .attachments-upload-banner {
+    display: flex;
+    align-items: center;
+    gap: 1rem;
+    margin-bottom: 1rem;
+    padding: 1rem 1.25rem;
+    background: linear-gradient(
+      135deg,
+      rgba(99, 102, 241, 0.08) 0%,
+      rgba(99, 102, 241, 0.15) 100%
+    );
+    border: 1px solid rgba(99, 102, 241, 0.25);
+    border-radius: var(--radius-lg, 0.75rem);
+    color: var(--primary-color, #4f46e5);
+  }
+
+  .attachments-upload-banner-spinner {
+    flex: 0 0 1.5rem;
+    width: 1.5rem;
+    height: 1.5rem;
+    border: 3px solid rgba(99, 102, 241, 0.25);
+    border-top-color: var(--primary-color, #4f46e5);
+    border-radius: 50%;
+    animation: attachment-spin 0.75s linear infinite;
+  }
+
+  .attachments-upload-banner-text {
+    flex: 1 1 auto;
+    display: flex;
+    flex-direction: column;
+    gap: 0.5rem;
+    min-width: 0;
+  }
+
+  .attachments-upload-banner-text strong {
+    font-size: 0.875rem;
+    font-weight: 600;
+    color: var(--primary-color, #4f46e5);
+  }
+
+  .attachments-upload-banner-progress {
+    width: 100%;
+    height: 0.375rem;
+    background: rgba(99, 102, 241, 0.15);
+    border-radius: 999px;
+    overflow: hidden;
+  }
+
+  .attachments-upload-banner-progress-fill {
+    height: 100%;
+    background: var(--primary-color, #4f46e5);
+    border-radius: 999px;
+    transition: width 0.25s ease;
+  }
+
   .remove-attachment {
     position: absolute;
     top: 0.5rem;
@@ -2643,6 +2830,11 @@
     cursor: pointer;
     transition: all 0.2s ease;
     opacity: 0;
+  }
+
+  .remove-attachment:disabled {
+    cursor: not-allowed;
+    opacity: 0 !important;
   }
 
   .attachment-row:hover .remove-attachment {
