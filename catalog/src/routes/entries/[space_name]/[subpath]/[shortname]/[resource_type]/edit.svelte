@@ -48,7 +48,30 @@
   let isEditing = $state(false);
   let tags = $state<any[]>([]);
   let newTag = $state("");
-  let attachments = $state<any[]>([]);
+  type AttachmentTranslation = { en: string; ar: string; ku: string };
+
+  type AttachmentEntry = {
+    file: File;
+    shortname: string;
+    displayname: AttachmentTranslation;
+    description: AttachmentTranslation;
+  };
+
+  function emptyAttachmentTranslation(): AttachmentTranslation {
+    return { en: "", ar: "", ku: "" };
+  }
+
+  function toAttachmentTranslationPayload(
+    t: AttachmentTranslation,
+  ): Record<string, string> {
+    const out: Record<string, string> = {};
+    if (t.en?.trim()) out.en = t.en.trim();
+    if (t.ar?.trim()) out.ar = t.ar.trim();
+    if (t.ku?.trim()) out.ku = t.ku.trim();
+    return out;
+  }
+
+  let attachments = $state<AttachmentEntry[]>([]);
   let htmlEditor = $state("");
   let editorReady = $state(false);
   let isTemplateBasedItem = $state(false);
@@ -123,7 +146,15 @@
   function handleFileChange(event: Event) {
     const input = event.target as HTMLInputElement;
     if (input.files) {
-      attachments = [...attachments, ...Array.from(input.files)];
+      const newEntries: AttachmentEntry[] = Array.from(input.files).map(
+        (file) => ({
+          file,
+          shortname: "",
+          displayname: emptyAttachmentTranslation(),
+          description: emptyAttachmentTranslation(),
+        }),
+      );
+      attachments = [...attachments, ...newEntries];
     }
   }
 
@@ -205,11 +236,16 @@
           $params.shortname,
           $params.space_name,
           $params.subpath,
-          attachment
+          attachment.file,
+          {
+            shortname: attachment.shortname,
+            displayname: toAttachmentTranslationPayload(attachment.displayname),
+            description: toAttachmentTranslationPayload(attachment.description),
+          }
         );
         if (r === false) {
           errorToastMessage(
-            $_("entry_edit.attachment_error") + { name: attachment.name }
+            $_("entry_edit.attachment_error") + { name: attachment.file.name }
           );
         }
       }
@@ -703,15 +739,15 @@
         </div>
         <div class="section-content">
           {#if attachments.length > 0}
-            <div class="attachments-grid">
+            <div class="attachments-list">
               {#each attachments as attachment, index}
-                <div class="attachment-card">
+                <div class="attachment-row">
                   <div class="attachment-preview">
-                    {#if getPreviewUrl(attachment)}
-                      {#if attachment.type.startsWith("image/") || attachment.type.startsWith("video/") || attachment.type === "application/pdf"}
+                    {#if getPreviewUrl(attachment.file)}
+                      {#if attachment.file.type.startsWith("image/") || attachment.file.type.startsWith("video/") || attachment.file.type === "application/pdf"}
                         <img
-                          src={getPreviewUrl(attachment) || "/placeholder.svg"}
-                          alt={attachment.name || "no-image"}
+                          src={getPreviewUrl(attachment.file) || "/placeholder.svg"}
+                          alt={attachment.file.name || "no-image"}
                           class="attachment-image"
                         />
                       {:else}
@@ -725,15 +761,96 @@
                       </div>
                     {/if}
                   </div>
-                  <div class="attachment-info" class:text-right={$isRTL}>
-                    <p class="attachment-name">{attachment.name}</p>
-                    <p class="attachment-size">
-                      {(attachment.size / 1024).toFixed(1)} KB
-                    </p>
+                  <div class="attachment-body">
+                    <div class="attachment-info" class:text-right={$isRTL}>
+                      <p class="attachment-name">{attachment.file.name}</p>
+                      <p class="attachment-size">
+                        {(attachment.file.size / 1024).toFixed(1)} KB
+                      </p>
+                    </div>
+                    <div class="attachment-metadata">
+                      <label class="metadata-field">
+                        <span class="metadata-label">
+                          {$_("create_entry.attachments.shortname_label", {
+                            default: "Shortname",
+                          })}
+                        </span>
+                        <input
+                          type="text"
+                          class="metadata-input"
+                          bind:value={attachments[index].shortname}
+                          placeholder={$_(
+                            "create_entry.attachments.shortname_placeholder",
+                            { default: "Leave empty to auto-generate" },
+                          )}
+                        />
+                      </label>
+                      <div class="metadata-field">
+                        <span class="metadata-label">
+                          {$_("create_entry.attachments.displayname_label", {
+                            default: "Display Name",
+                          })}
+                        </span>
+                        <div class="metadata-lang-grid">
+                          <input
+                            type="text"
+                            class="metadata-input"
+                            bind:value={attachments[index].displayname.en}
+                            placeholder="English"
+                          />
+                          <input
+                            type="text"
+                            class="metadata-input"
+                            bind:value={attachments[index].displayname.ar}
+                            placeholder="العربية"
+                            dir="rtl"
+                          />
+                          <input
+                            type="text"
+                            class="metadata-input"
+                            bind:value={attachments[index].displayname.ku}
+                            placeholder="کوردی"
+                            dir="rtl"
+                          />
+                        </div>
+                      </div>
+                      <div class="metadata-field">
+                        <span class="metadata-label">
+                          {$_("create_entry.attachments.description_label", {
+                            default: "Description",
+                          })}
+                        </span>
+                        <div class="metadata-lang-grid">
+                          <textarea
+                            class="metadata-input"
+                            rows="2"
+                            bind:value={attachments[index].description.en}
+                            placeholder="English"
+                          ></textarea>
+                          <textarea
+                            class="metadata-input"
+                            rows="2"
+                            bind:value={attachments[index].description.ar}
+                            placeholder="العربية"
+                            dir="rtl"
+                          ></textarea>
+                          <textarea
+                            class="metadata-input"
+                            rows="2"
+                            bind:value={attachments[index].description.ku}
+                            placeholder="کوردی"
+                            dir="rtl"
+                          ></textarea>
+                        </div>
+                      </div>
+                    </div>
                   </div>
                   <button
                     class="remove-attachment"
                     onclick={() => removeAttachment(index)}
+                    aria-label={$_("entry_edit.remove_attachment", {
+                      default: "Remove attachment",
+                    })}
                   >
                     <TrashBinSolid class="icon" />
                   </button>
@@ -1354,33 +1471,38 @@
     box-shadow: var(--shadow-md);
   }
 
-  .attachments-grid {
-    display: grid;
-    grid-template-columns: repeat(auto-fill, minmax(200px, 1fr));
-    gap: 1.5rem;
+  .attachments-list {
+    display: flex;
+    flex-direction: column;
+    gap: 1rem;
   }
 
-  .attachment-card {
+  .attachment-row {
     background: var(--white);
     border: 1px solid var(--gray-200);
     border-radius: var(--radius-lg);
     overflow: hidden;
     transition: all 0.2s ease;
     position: relative;
+    display: flex;
+    align-items: stretch;
+    gap: 0;
   }
 
-  .attachment-card:hover {
+  .attachment-row:hover {
     border-color: var(--primary-color);
-    transform: translateY(-2px);
-    box-shadow: var(--shadow-lg);
+    box-shadow: var(--shadow-md);
   }
 
   .attachment-preview {
-    width: 100%;
-    height: 150px;
+    flex: 0 0 10rem;
+    width: 10rem;
+    height: auto;
+    min-height: 10rem;
     position: relative;
     overflow: hidden;
     background: var(--gray-50);
+    border-right: 1px solid var(--gray-200);
   }
 
   .attachment-image,
@@ -1429,9 +1551,19 @@
     color: #dc2626;
   }
 
-  .attachment-info {
+  .attachment-body {
+    flex: 1 1 auto;
+    min-width: 0;
+    display: flex;
+    flex-direction: column;
     padding: 1rem;
-    border-top: 1px solid var(--gray-200);
+    gap: 0.75rem;
+  }
+
+  .attachment-info {
+    padding: 0;
+    border-top: none;
+    padding-right: 2.5rem;
   }
 
   .attachment-name {
@@ -1448,6 +1580,50 @@
     margin: 0;
     font-size: 0.75rem;
     color: var(--gray-500);
+  }
+
+  .attachment-metadata {
+    padding: 0;
+    display: flex;
+    flex-direction: column;
+    gap: 0.625rem;
+  }
+
+  .metadata-field {
+    display: flex;
+    flex-direction: column;
+    gap: 0.25rem;
+  }
+
+  .metadata-label {
+    font-size: 0.75rem;
+    font-weight: 500;
+    color: var(--gray-600);
+  }
+
+  .metadata-input {
+    width: 100%;
+    padding: 0.5rem 0.625rem;
+    border: 1px solid var(--gray-200);
+    border-radius: var(--radius-md, 0.5rem);
+    font-size: 0.8125rem;
+    color: var(--gray-800);
+    background: var(--white);
+    transition: border-color 0.15s ease, box-shadow 0.15s ease;
+    resize: vertical;
+    font-family: inherit;
+  }
+
+  .metadata-input:focus {
+    outline: none;
+    border-color: var(--primary-color);
+    box-shadow: 0 0 0 2px rgba(99, 102, 241, 0.15);
+  }
+
+  .metadata-lang-grid {
+    display: grid;
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+    gap: 0.5rem;
   }
 
   .remove-attachment {
@@ -1468,7 +1644,7 @@
     opacity: 0;
   }
 
-  .attachment-card:hover .remove-attachment {
+  .attachment-row:hover .remove-attachment {
     opacity: 1;
   }
 
@@ -1536,9 +1712,25 @@
       gap: 0.75rem;
     }
 
-    .attachments-grid {
-      grid-template-columns: repeat(auto-fill, minmax(150px, 1fr));
-      gap: 1rem;
+    .attachments-list {
+      gap: 0.75rem;
+    }
+
+    .attachment-row {
+      flex-direction: column;
+    }
+
+    .attachment-preview {
+      flex: 0 0 9rem;
+      width: 100%;
+      height: 9rem;
+      min-height: 0;
+      border-right: none;
+      border-bottom: 1px solid var(--gray-200);
+    }
+
+    .metadata-lang-grid {
+      grid-template-columns: 1fr;
     }
 
     .status-content {

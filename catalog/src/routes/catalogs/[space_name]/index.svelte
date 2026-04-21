@@ -28,6 +28,8 @@
   let spaceName = $state("");
   let searchQuery = $state("");
   let sortBy = $state("created");
+  let sortOrder = $state<"asc" | "desc">("desc");
+  let showFilters = $state(false);
   let selectedContentTags = $state<any[]>([]);
   let availableContentTags = $state<any[]>([]);
   let showAllTags = $state(false);
@@ -243,22 +245,25 @@
 
       const sortedResults = [...searchResults];
       sortedResults.sort((a: any, b: any) => {
+        let result: number;
         switch (sortBy) {
           case "name":
-            return a.title.localeCompare(b.title);
+            result = a.title.localeCompare(b.title);
+            break;
           case "updated":
-            return (
+            result =
               new Date(b.attributes?.updated_at || 0).getTime() -
-              new Date(a.attributes?.updated_at || 0).getTime()
-            );
+              new Date(a.attributes?.updated_at || 0).getTime();
+            break;
           case "reactions":
-            return (b.reactionCount || 0) - (a.reactionCount || 0);
+            result = (b.reactionCount || 0) - (a.reactionCount || 0);
+            break;
           default:
-            return (
+            result =
               new Date(b.attributes?.created_at || 0).getTime() -
-              new Date(a.attributes?.created_at || 0).getTime()
-            );
+              new Date(a.attributes?.created_at || 0).getTime();
         }
+        return sortOrder === "asc" ? -result : result;
       });
 
       displayedContents = sortedResults;
@@ -496,22 +501,25 @@
     }
 
     filtered.sort((a: any, b: any) => {
+      let result: number;
       switch (sortBy) {
         case "name":
-          return a.title.localeCompare(b.title);
+          result = a.title.localeCompare(b.title);
+          break;
         case "updated":
-          return (
+          result =
             new Date(b.attributes?.updated_at || 0).getTime() -
-            new Date(a.attributes?.updated_at || 0).getTime()
-          );
+            new Date(a.attributes?.updated_at || 0).getTime();
+          break;
         case "reactions":
-          return (b.reactionCount || 0) - (a.reactionCount || 0);
+          result = (b.reactionCount || 0) - (a.reactionCount || 0);
+          break;
         default:
-          return (
+          result =
             new Date(b.attributes?.created_at || 0).getTime() -
-            new Date(a.attributes?.created_at || 0).getTime()
-          );
+            new Date(a.attributes?.created_at || 0).getTime();
       }
+      return sortOrder === "asc" ? -result : result;
     });
 
     filteredContents = filtered;
@@ -530,9 +538,10 @@
     }
   }
 
-  function handleItemsPerLoadChange(newItemsPerLoad: any) {
+  function handleItemsPerLoadChange(newItemsPerLoad: number) {
     itemsPerLoad = newItemsPerLoad;
-    loadContents(true);
+    if (searchQuery.trim()) performSearch(searchQuery);
+    else loadContents(true, selectedContentTags);
   }
 
   function handleItemClick(item: any) {
@@ -612,11 +621,19 @@
     selectedContentTags = [];
     searchQuery = "";
     searchResults = [];
+    sortBy = "created";
+    sortOrder = "desc";
     isTagFiltered = false;
     tagFilteredContents = [];
     tagFilteredOffset = 0;
     tagFilteredHasMore = true;
     loadContents(true, []);
+  }
+
+  function toggleSortOrder() {
+    sortOrder = sortOrder === "asc" ? "desc" : "asc";
+    if (searchQuery.trim()) performSearch(searchQuery);
+    else applyFiltersAndSort();
   }
 
   function shareItem(item: any) {
@@ -867,87 +884,204 @@
         </div>
       {/if}
 
-      <!-- Search and Sort Bar -->
-      <div class="search-sort-bar">
-        <div class="search-input-wrapper">
-          <svg
-            class="search-icon w-5 h-5"
-            fill="none"
-            stroke="currentColor"
-            viewBox="0 0 24 24"
-          >
-            <path
-              stroke-linecap="round"
-              stroke-linejoin="round"
-              stroke-width="2"
-              d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z"
+      <!-- Search and Sort Bar (compact) -->
+      <div class="search-filter-section">
+        <div class="search-compact-row">
+          <div class="search-input-wrapper">
+            <svg
+              class="search-icon"
+              fill="none"
+              stroke="currentColor"
+              viewBox="0 0 24 24"
+            >
+              <path
+                stroke-linecap="round"
+                stroke-linejoin="round"
+                stroke-width="2"
+                d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z"
+              />
+            </svg>
+            <label for="space-search-input" class="sr-only"
+              >{$_("catalog_contents.search.label")}</label
+            >
+            <input
+              id="space-search-input"
+              type="text"
+              bind:value={searchQuery}
+              placeholder={$_("space.search_posts_placeholder")}
+              oninput={handleSearchInput}
+              class="search-input"
+              aria-label={$_("catalog_contents.search.label")}
             />
-          </svg>
-          <input
-            type="text"
-            bind:value={searchQuery}
-            placeholder={$_("space.search_posts_placeholder")}
-            oninput={handleSearchInput}
-            class="space-search-input"
-          />
-          {#if isSearching}
-            <div class="search-loading">
-              <div class="spinner spinner-sm"></div>
-            </div>
-          {/if}
-          {#if searchQuery}
-            <button
-              onclick={() => {
-                searchQuery = "";
-                searchResults = [];
-                applyFiltersAndSort();
+            {#if isSearching}
+              <div class="search-loading">
+                <div class="spinner spinner-sm"></div>
+              </div>
+            {:else if searchQuery}
+              <button
+                onclick={() => {
+                  searchQuery = "";
+                  searchResults = [];
+                  applyFiltersAndSort();
+                }}
+                class="clear-search-button"
+                title={$_("catalog_contents.search.clear")}
+                aria-label={$_("catalog_contents.search.clear")}
+              >
+                <svg
+                  class="w-4 h-4"
+                  fill="none"
+                  stroke="currentColor"
+                  viewBox="0 0 24 24"
+                >
+                  <path
+                    stroke-linecap="round"
+                    stroke-linejoin="round"
+                    stroke-width="2"
+                    d="M6 18L18 6M6 6l12 12"
+                  />
+                </svg>
+              </button>
+            {/if}
+          </div>
+
+          <div class="sort-inline">
+            <select
+              id="space-sort-by-select"
+              bind:value={sortBy}
+              onchange={() => {
+                if (searchQuery.trim()) performSearch(searchQuery);
+                else applyFiltersAndSort();
               }}
-              class="clear-search-btn"
-              aria-label="Clear search"
+              class="filter-select sort-select"
+              title={$_("catalog_contents.filters.sort_by")}
+              aria-label={$_("catalog_contents.filters.sort_by")}
+            >
+              {#each sortOptions as option}
+                <option value={option.value}>{option.label}</option>
+              {/each}
+            </select>
+            <button
+              onclick={toggleSortOrder}
+              class="sort-order-button"
+              title={$_("catalog_contents.filters.toggle_sort")}
+              aria-label={$_("catalog_contents.filters.toggle_sort")}
             >
               <svg
                 class="w-4 h-4"
                 fill="none"
                 stroke="currentColor"
                 viewBox="0 0 24 24"
-                ><path
+              >
+                {#if sortOrder === "asc"}
+                  <path
+                    stroke-linecap="round"
+                    stroke-linejoin="round"
+                    stroke-width="2"
+                    d="M3 4h13M3 8h9m-9 4h6m4 0l4-4m0 0l4 4m-4-4v12"
+                  />
+                {:else}
+                  <path
+                    stroke-linecap="round"
+                    stroke-linejoin="round"
+                    stroke-width="2"
+                    d="M3 4h13M3 8h9m-9 4h9m5-4v12m0 0l-4-4m4 4l-4-4"
+                  />
+                {/if}
+              </svg>
+            </button>
+          </div>
+
+          <button
+            onclick={() => (showFilters = !showFilters)}
+            class="expand-filters-button"
+            class:filters-active={showFilters}
+            title={showFilters
+              ? $_("catalog_contents.filters.collapse_filters")
+              : $_("catalog_contents.filters.expand_filters")}
+            aria-label={showFilters
+              ? $_("catalog_contents.filters.collapse_filters")
+              : $_("catalog_contents.filters.expand_filters")}
+          >
+            <svg
+              class="w-4 h-4"
+              fill="none"
+              stroke="currentColor"
+              viewBox="0 0 24 24"
+            >
+              <path
+                stroke-linecap="round"
+                stroke-linejoin="round"
+                stroke-width="2"
+                d="M3 4a1 1 0 011-1h16a1 1 0 011 1v2.586a1 1 0 01-.293.707l-6.414 6.414a1 1 0 00-.293.707V17l-4 4v-6.586a1 1 0 00-.293-.707L3.293 7.293A1 1 0 013 6.586V4z"
+              />
+            </svg>
+            <svg
+              class="expand-chevron"
+              class:expand-chevron-open={showFilters}
+              fill="none"
+              stroke="currentColor"
+              viewBox="0 0 24 24"
+            >
+              <path
+                stroke-linecap="round"
+                stroke-linejoin="round"
+                stroke-width="2"
+                d="M19 9l-7 7-7-7"
+              />
+            </svg>
+          </button>
+
+          {#if searchQuery || selectedContentTags.length > 0 || sortBy !== "created" || sortOrder !== "desc"}
+            <button
+              onclick={clearAllFilters}
+              class="clear-all-inline-button"
+              title={$_("catalog_contents.filters.clear_all")}
+              aria-label={$_("catalog_contents.filters.clear_all")}
+            >
+              <svg
+                class="w-4 h-4"
+                fill="none"
+                stroke="currentColor"
+                viewBox="0 0 24 24"
+              >
+                <path
                   stroke-linecap="round"
                   stroke-linejoin="round"
                   stroke-width="2"
                   d="M6 18L18 6M6 6l12 12"
-                /></svg
-              >
+                />
+              </svg>
             </button>
           {/if}
         </div>
 
-        <div class="sort-dropdown">
-          <svg
-            class="w-4 h-4 text-gray-500 mr-2"
-            fill="none"
-            stroke="currentColor"
-            viewBox="0 0 24 24"
-          >
-            <path
-              stroke-linecap="round"
-              stroke-linejoin="round"
-              stroke-width="2"
-              d="M3 4h13M3 8h9m-9 4h6m4 0l4-4m0 0l4 4m-4-4v12"
-            />
-          </svg>
-          <select
-            bind:value={sortBy}
-            onchange={() => {
-              if (searchQuery.trim()) performSearch(searchQuery);
-              else applyFiltersAndSort();
-            }}
-            class="sort-select"
-          >
-            {#each sortOptions as option}
-              <option value={option.value}>{option.label}</option>
-            {/each}
-          </select>
-        </div>
+        {#if showFilters}
+          <div class="collapsible-filters">
+            <div class="filter-group">
+              <label class="filter-label" for="items-per-load-select"
+                >{$_("catalog_contents.infinite_scroll.items_per_load")}</label
+              >
+              <select
+                id="items-per-load-select"
+                bind:value={itemsPerLoad}
+                onchange={(e) =>
+                  handleItemsPerLoadChange(
+                    parseInt((e.target as HTMLSelectElement).value),
+                  )}
+                class="filter-select"
+                title={$_("catalog_contents.infinite_scroll.items_per_load")}
+                aria-label={$_(
+                  "catalog_contents.infinite_scroll.items_per_load",
+                )}
+              >
+                {#each itemsPerLoadOptions as option}
+                  <option value={option}>{option}</option>
+                {/each}
+              </select>
+            </div>
+          </div>
+        {/if}
       </div>
 
       <!-- Showing Count and Live Indicator -->
@@ -1510,88 +1644,211 @@
     color: #60a5fa;
   }
 
-  /* --- Search and Sort Bar --- */
-  .search-sort-bar {
-    display: flex;
-    gap: 1rem;
+  /* --- Search and Sort Bar (compact) --- */
+  .search-filter-section {
+    background: rgba(255, 255, 255, 0.9);
+    backdrop-filter: blur(8px);
+    border-radius: var(--radius-lg);
+    border: 1px solid rgba(148, 163, 184, 0.2);
+    padding: 1rem 1.5rem;
     margin-bottom: 1.5rem;
+    box-shadow: var(--shadow-sm);
+  }
+
+  .search-compact-row {
+    display: flex;
+    align-items: center;
+    gap: 0.75rem;
   }
 
   .search-input-wrapper {
     position: relative;
     flex: 1;
+    min-width: 0;
+    display: flex;
+    align-items: center;
   }
 
   .search-icon {
     position: absolute;
-    left: 1rem;
-    top: 50%;
-    transform: translateY(-50%);
+    width: 1.25rem;
+    height: 1.25rem;
     color: var(--color-gray-400);
+    z-index: 1;
+    left: 0.75rem;
   }
 
-  .space-search-input {
+  .search-input {
     width: 100%;
-    padding: 0.875rem 1.5rem 0.875rem 2.75rem;
-    background: var(--surface-card);
-    border: 1px solid var(--color-gray-200);
-    border-radius: var(--radius-lg);
-    font-size: 0.95rem;
+    padding: 0.75rem 1rem 0.75rem 2.75rem;
+    border: 1px solid rgba(209, 213, 219, 0.8);
+    border-radius: var(--radius-md);
+    background: rgba(255, 255, 255, 0.95);
+    font-size: 0.875rem;
     transition:
       border-color 0.2s,
       box-shadow 0.2s;
   }
 
-  .space-search-input:focus {
+  .search-input:focus {
     outline: none;
     border-color: var(--color-info);
     box-shadow: 0 0 0 3px rgba(63, 131, 248, 0.1);
   }
 
-  .clear-search-btn {
+  .clear-search-button {
     position: absolute;
-    right: 3rem;
-    top: 50%;
-    transform: translateY(-50%);
+    right: 0.75rem;
     color: var(--color-gray-400);
     background: none;
     border: none;
     cursor: pointer;
     padding: 0.25rem;
+    border-radius: 0.25rem;
+    transition: color 0.2s;
   }
 
-  .clear-search-btn:hover {
+  .clear-search-button:hover {
     color: var(--color-gray-600);
+    background-color: rgba(107, 114, 128, 0.1);
   }
 
   .search-loading {
     position: absolute;
-    right: 1rem;
-    top: 50%;
-    transform: translateY(-50%);
+    right: 0.75rem;
   }
 
-  .sort-dropdown {
-    position: relative;
+  .sort-inline {
     display: flex;
-    align-items: center;
-    background: var(--surface-card);
-    border: 1px solid var(--color-gray-200);
-    border-radius: var(--radius-lg);
-    padding: 0 1rem;
-    cursor: pointer;
+    gap: 0.375rem;
+    flex-shrink: 0;
+  }
+
+  .filter-select {
+    padding: 0.75rem 1rem;
+    border: 1px solid rgba(209, 213, 219, 0.8);
+    border-radius: var(--radius-md);
+    background: rgba(255, 255, 255, 0.95);
+    font-size: 0.875rem;
+    transition: all 0.2s;
+  }
+
+  .filter-select:focus {
+    outline: none;
+    border-color: var(--color-info);
+    box-shadow: 0 0 0 3px rgba(63, 131, 248, 0.1);
   }
 
   .sort-select {
-    appearance: none;
-    background: transparent;
-    border: none;
-    font-size: 0.95rem;
+    flex: 1;
+  }
+
+  .sort-order-button {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    padding: 0.625rem;
+    border: 1px solid rgba(209, 213, 219, 0.8);
+    border-radius: var(--radius-md);
+    background: rgba(255, 255, 255, 0.95);
+    color: var(--color-gray-500);
+    cursor: pointer;
+    transition: all 0.2s;
+  }
+
+  .sort-order-button:hover {
+    background: rgba(249, 250, 251, 0.95);
+    color: var(--color-gray-700);
+  }
+
+  .expand-filters-button {
+    display: flex;
+    align-items: center;
+    gap: 0.25rem;
+    padding: 0.625rem;
+    border: 1px solid rgba(209, 213, 219, 0.8);
+    border-radius: var(--radius-md);
+    background: rgba(255, 255, 255, 0.95);
+    color: var(--color-gray-500);
+    cursor: pointer;
+    transition: all 0.2s;
+    flex-shrink: 0;
+  }
+
+  .expand-filters-button:hover {
+    background: rgba(249, 250, 251, 0.95);
+    color: var(--color-gray-700);
+    border-color: var(--color-gray-400);
+  }
+
+  .expand-filters-button.filters-active {
+    color: var(--color-info);
+    border-color: #93c5fd;
+    background: rgba(219, 234, 254, 0.6);
+  }
+
+  .expand-chevron {
+    width: 0.875rem;
+    height: 0.875rem;
+    transition: transform 0.2s;
+  }
+
+  .expand-chevron-open {
+    transform: rotate(180deg);
+  }
+
+  .clear-all-inline-button {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    padding: 0.625rem;
+    border: 1px solid rgba(239, 68, 68, 0.3);
+    border-radius: var(--radius-md);
+    background: rgba(254, 242, 242, 0.8);
+    color: var(--color-error);
+    cursor: pointer;
+    transition: all 0.2s;
+    flex-shrink: 0;
+  }
+
+  .clear-all-inline-button:hover {
+    background: #fee2e2;
+    border-color: var(--color-error);
+  }
+
+  .collapsible-filters {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 1rem;
+    align-items: end;
+    padding-top: 0.75rem;
+    margin-top: 0.75rem;
+    border-top: 1px solid rgba(148, 163, 184, 0.15);
+  }
+
+  .filter-group {
+    display: flex;
+    flex-direction: column;
+    gap: 0.5rem;
+    min-width: 140px;
+  }
+
+  .filter-label {
+    font-size: 0.875rem;
     font-weight: 500;
     color: var(--color-gray-700);
-    cursor: pointer;
-    outline: none;
-    padding-right: 1.5rem; /* space for custom dropdown arrow if needed */
+  }
+
+  .sr-only {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    padding: 0;
+    margin: -1px;
+    overflow: hidden;
+    clip: rect(0, 0, 0, 0);
+    white-space: nowrap;
+    border: 0;
   }
 
   /* --- Showing Status --- */
@@ -1909,12 +2166,12 @@
       display: none;
     }
 
-    .search-sort-bar {
-      flex-direction: column;
+    .search-compact-row {
+      flex-wrap: wrap;
     }
 
-    .sort-dropdown {
-      padding: 0.75rem 1rem;
+    .sort-inline {
+      flex: 1;
     }
 
     .post-body,

@@ -58,6 +58,9 @@
   $effect(() => {
     isOwner = $user?.shortname === itemShortname;
   });
+
+  let loadToken = 0;
+
   function initializeContent() {
     spaceName = $params.space_name;
     subpath = $params.subpath;
@@ -75,9 +78,9 @@
   }
 
   async function loadPostData() {
+    const token = ++loadToken;
     isLoading = true;
     error = null;
-    postData = null;
 
     try {
       const response = await getEntity(
@@ -89,40 +92,45 @@
         true,
       );
 
+      if (token !== loadToken) return;
+
       if (response && response.uuid) {
         postData = response;
-        await checkUserReaction();
-        await loadRelatedContent();
+        await Promise.all([
+          checkUserReaction(token),
+          loadRelatedContent(token, response),
+        ]);
       } else {
         console.error("Invalid response structure:", response);
         error = $_("post_detail.error.invalid_response");
+        postData = null;
       }
     } catch (err) {
+      if (token !== loadToken) return;
       console.error("Error fetching post data:", err);
       error = (err as any).message || $_("post_detail.error.failed_load");
+      postData = null;
     } finally {
-      isLoading = false;
+      if (token === loadToken) isLoading = false;
     }
   }
 
-  async function loadRelatedContent() {
-    if (!postData) return;
+  async function loadRelatedContent(token?: number, sourcePost?: any) {
+    const source = sourcePost ?? postData;
+    if (!source) return;
 
     isLoadingRelated = true;
     try {
-      // const editorRelationship = postData.relationships?.find(
-      //   (rel: any) => rel.attributes?.role === "editor",
-      // );
-      // const editorShortname = editorRelationship?.related_to?.shortname;
-
       const response = await getRelatedContents(
         spaceName,
         actualSubpath,
         getCurrentScope(),
-        postData.tags || [],
-        postData.owner_shortname,
+        source.tags || [],
+        source.owner_shortname,
         6,
       );
+
+      if (token !== undefined && token !== loadToken) return;
 
       if (response?.records) {
         //TODO fix
@@ -134,7 +142,7 @@
     } catch (err) {
       console.error("Error loading related content:", err);
     } finally {
-      isLoadingRelated = false;
+      if (token === undefined || token === loadToken) isLoadingRelated = false;
     }
   }
 
@@ -145,7 +153,10 @@
   // }
 
   function goBack() {
-    window.history.back();
+    $goto("/catalogs/[space_name]/[subpath]", {
+      space_name: spaceName,
+      subpath,
+    });
   }
 
   async function handleAddComment(parentCommentId?: string) {
@@ -218,7 +229,6 @@
         if (success) {
           successToastMessage($_("post_detail.reactions.added_successfully"));
           await loadPostData();
-          await checkUserReaction();
         } else {
           errorToastMessage($_("post_detail.reactions.add_failed"));
         }
@@ -231,7 +241,7 @@
     }
   }
 
-  async function checkUserReaction() {
+  async function checkUserReaction(token?: number) {
     if (!$user || !$user.shortname) return;
 
     try {
@@ -241,6 +251,7 @@
         spaceName,
         actualSubpath,
       );
+      if (token !== undefined && token !== loadToken) return;
       userReactionId = reactionId;
     } catch (error) {
       console.error("Error checking user reaction:", error);
@@ -279,19 +290,18 @@
     });
   }
 
-  let prevParams = { shortname: "", subpath: "", space_name: "" };
+  let prevParamsKey = "";
 
   $effect(() => {
-    const { shortname, subpath, space_name } = $params;
+    const { shortname, subpath, space_name, resource_type } = $params;
 
-    if (
-      prevParams.shortname !== shortname ||
-      prevParams.subpath !== subpath ||
-      prevParams.space_name !== space_name
-    ) {
-      prevParams = { shortname, subpath, space_name };
-      initializeContent();
-    }
+    if (!shortname || !subpath || !space_name) return;
+
+    const key = `${space_name}|${subpath}|${shortname}|${resource_type ?? ""}`;
+    if (key === prevParamsKey) return;
+    prevParamsKey = key;
+
+    initializeContent();
   });
 </script>
 

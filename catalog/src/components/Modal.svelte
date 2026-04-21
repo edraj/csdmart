@@ -38,14 +38,14 @@
     (val: any) => val === "ar" || val === "ku",
   );
 
-  const SIZE_CLASS: Record<ModalSize, string> = {
-    sm: "max-w-sm",
-    md: "max-w-md",
-    lg: "max-w-lg",
-    xl: "max-w-xl",
-    "2xl": "max-w-2xl",
-    "3xl": "max-w-3xl",
-    "4xl": "max-w-4xl",
+  const SIZE_MAX_WIDTH: Record<ModalSize, string> = {
+    sm: "24rem",
+    md: "28rem",
+    lg: "32rem",
+    xl: "36rem",
+    "2xl": "42rem",
+    "3xl": "48rem",
+    "4xl": "56rem",
   };
 
   function requestClose() {
@@ -90,7 +90,8 @@
   tabindex="-1"
 >
   <div
-    class="bg-white rounded-[24px] shadow-2xl w-full {SIZE_CLASS[size]} overflow-hidden border border-gray-100 flex flex-col max-h-[90vh] app-modal-container"
+    class="bg-white rounded-[24px] shadow-2xl w-full overflow-hidden border border-gray-100 flex flex-col max-h-[90vh] app-modal-container"
+    style="max-width: {SIZE_MAX_WIDTH[size]}"
     role="document"
   >
     {#if hasHeader}

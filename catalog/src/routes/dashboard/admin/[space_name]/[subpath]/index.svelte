@@ -1672,6 +1672,8 @@
                 oninput={handleSearchInput}
                 placeholder={$_("admin_content.search.placeholder")}
                 class="block w-full pl-11 pr-10 py-2.5 bg-gray-50 border-none rounded-xl text-sm focus:ring-2 focus:ring-indigo-500 focus:bg-white transition-colors"
+                title={$_("admin_content.search.placeholder")}
+                aria-label={$_("admin_content.search.placeholder")}
               />
               {#if searchQuery}
                 <button
@@ -1710,6 +1712,8 @@
                   loadContents(true);
                 }}
                 class="bg-gray-50 border-none text-sm font-medium text-gray-700 rounded-xl px-4 py-2.5 focus:ring-2 focus:ring-indigo-500 cursor-pointer"
+                title={$_("catalog_contents.filters.type")}
+                aria-label={$_("catalog_contents.filters.type")}
               >
                 {#each typeOptions as option}
                   <option value={option.value}>{option.label}</option>
@@ -1726,6 +1730,8 @@
                   loadContents(true);
                 }}
                 class="bg-gray-50 border-none text-sm font-medium text-gray-700 rounded-xl px-4 py-2.5 focus:ring-2 focus:ring-indigo-500 cursor-pointer"
+                title={$_("catalog_contents.filters.status")}
+                aria-label={$_("catalog_contents.filters.status")}
               >
                 {#each statusOptions as option}
                   <option value={option.value}>{option.label}</option>
@@ -1742,6 +1748,8 @@
                   loadContents(true);
                 }}
                 class="bg-gray-50 border-none text-sm font-medium text-gray-700 rounded-xl px-4 py-2.5 focus:ring-2 focus:ring-indigo-500 cursor-pointer"
+                title={$_("catalog_contents.filters.sort_by")}
+                aria-label={$_("catalog_contents.filters.sort_by")}
               >
                 {#each sortOptions as option}
                   <option value={option.value}>{option.label}</option>
@@ -1752,6 +1760,7 @@
                 onclick={toggleSortOrder}
                 class="p-2.5 bg-gray-50 text-gray-500 hover:text-gray-900 hover:bg-gray-100 rounded-xl transition-colors"
                 title={$_("admin_content.filters.toggle_sort")}
+                aria-label={$_("admin_content.filters.toggle_sort")}
               >
                 <svg
                   class="w-5 h-5 {sortOrder === 'desc'
@@ -1774,6 +1783,7 @@
                 onclick={handleOpenColumnSettings}
                 class="p-2.5 bg-gray-50 text-gray-500 hover:text-indigo-600 hover:bg-indigo-50 rounded-xl transition-all border border-transparent hover:border-indigo-100"
                 title="Column Settings"
+                aria-label="Column Settings"
               >
                 <svg
                   class="w-5 h-5"
@@ -1802,6 +1812,7 @@
                   onclick={() => isCSVUploadModalOpen = true}
                   class="p-2.5 bg-gray-50 text-gray-500 hover:text-emerald-600 hover:bg-emerald-50 rounded-xl transition-all border border-transparent hover:border-emerald-100"
                   title="Upload CSV"
+                  aria-label="Upload CSV"
                 >
                   <UploadOutline class="w-5 h-5" />
                 </button>
@@ -1813,6 +1824,7 @@
                   onclick={() => isCSVDownloadModalOpen = true}
                   class="p-2.5 bg-gray-50 text-gray-500 hover:text-blue-600 hover:bg-blue-50 rounded-xl transition-all border border-transparent hover:border-blue-100"
                   title="Download CSV"
+                  aria-label="Download CSV"
                 >
                   <DownloadOutline class="w-5 h-5" />
                 </button>

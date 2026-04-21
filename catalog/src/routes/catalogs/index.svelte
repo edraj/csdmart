@@ -509,7 +509,13 @@
         </div>
 
         <div class="sort-inline">
-          <select bind:value={sortBy} class="filter-select sort-select" onchange={() => applyFilters()}>
+          <select
+            bind:value={sortBy}
+            class="filter-select sort-select"
+            onchange={() => applyFilters()}
+            title={$_("catalog_contents.filters.sort_by")}
+            aria-label={$_("catalog_contents.filters.sort_by")}
+          >
             <option value="name">{$_("catalogs.filter.name")}</option>
             <option value="created">{$_("catalogs.filter.newest")}</option>
             <option value="updated">{$_("catalogs.filter.popular")}</option>
@@ -534,6 +540,7 @@
           onclick={() => (showFilters = !showFilters)}
           class="expand-filters-button"
           class:filters-active={showFilters || filterCategory !== "all" || filterTags !== "all" || filterActive !== "all"}
+          title={showFilters ? $_("catalog_contents.filters.collapse_filters") : $_("catalog_contents.filters.expand_filters")}
           aria-label={showFilters ? $_("catalog_contents.filters.collapse_filters") : $_("catalog_contents.filters.expand_filters")}
         >
           <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
@@ -550,19 +557,37 @@
         <div class="collapsible-filters">
           <div class="filter-group">
             <span class="filter-label">{$_("catalogs.filter.category")}</span>
-            <select bind:value={filterCategory} class="filter-select" onchange={() => applyFilters()}>
+            <select
+              bind:value={filterCategory}
+              class="filter-select"
+              onchange={() => applyFilters()}
+              title={$_("catalogs.filter.category")}
+              aria-label={$_("catalogs.filter.category")}
+            >
               <option value="all">{$_("catalogs.filter.all")}</option>
             </select>
           </div>
           <div class="filter-group">
             <span class="filter-label">{$_("catalogs.filter.tags")}</span>
-            <select bind:value={filterTags} class="filter-select" onchange={() => applyFilters()}>
+            <select
+              bind:value={filterTags}
+              class="filter-select"
+              onchange={() => applyFilters()}
+              title={$_("catalogs.filter.tags")}
+              aria-label={$_("catalogs.filter.tags")}
+            >
               <option value="all">{$_("catalogs.filter.all_tags")}</option>
             </select>
           </div>
           <div class="filter-group">
             <span class="filter-label">{$_("catalog_contents.filters.status")}</span>
-            <select bind:value={filterActive} class="filter-select" onchange={() => applyFilters()}>
+            <select
+              bind:value={filterActive}
+              class="filter-select"
+              onchange={() => applyFilters()}
+              title={$_("catalog_contents.filters.status")}
+              aria-label={$_("catalog_contents.filters.status")}
+            >
               <option value="all">{$_("catalog_contents.filters.all_statuses")}</option>
               <option value="active">{$_("catalog_contents.filters.active")}</option>
               <option value="inactive">{$_("catalog_contents.filters.inactive")}</option>

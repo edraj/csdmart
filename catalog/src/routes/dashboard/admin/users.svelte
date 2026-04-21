@@ -700,6 +700,8 @@
             placeholder={$_("search_users")}
             bind:value={searchTerm}
             oninput={handleSearchInput}
+            title={$_("search_users")}
+            aria-label={$_("search_users")}
           />
         </div>
         <div class="role-filter-container">
@@ -707,6 +709,8 @@
             class="role-filter-select"
             bind:value={selectedRoleFilter}
             onchange={handleRoleFilterChange}
+            title={$_("all_roles")}
+            aria-label={$_("all_roles")}
           >
             <option value="">{$_("all_roles")}</option>
             {#each availableRoles as role}

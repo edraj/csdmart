@@ -819,150 +819,55 @@
         </p>
       </div>
     {:else}
-      <!-- Search and Filter Section -->
+      <!-- Search and Filter Section (compact) -->
       <div
-        class="bg-white rounded-[20px] shadow-[0_2px_8px_rgba(0,0,0,0.04)] border border-gray-100 p-6 mb-8 mt-4"
+        class="bg-white rounded-[20px] shadow-[0_2px_8px_rgba(0,0,0,0.04)] border border-gray-100 p-4 mb-8 mt-4"
       >
-        <div class="space-y-4">
-          <!-- Search spaces -->
-          <div>
-            <label
-              for="search-input"
-              class="block text-[13px] font-medium text-gray-500 mb-1.5"
-              >Search Spaces</label
+        <div
+          class="flex flex-col md:flex-row md:items-center justify-between gap-3"
+        >
+          <!-- Search input -->
+          <div class="relative flex-1 min-w-0">
+            <div
+              class="absolute inset-y-0 left-0 pl-4 flex items-center pointer-events-none"
             >
-            <div class="relative">
-              <div
-                class="absolute inset-y-0 left-0 pl-3 flex items-center pointer-events-none"
+              <svg
+                class="h-5 w-5 text-gray-400"
+                fill="none"
+                stroke="currentColor"
+                viewBox="0 0 24 24"
               >
-                <svg
-                  class="h-4 w-4 text-gray-300"
-                  fill="none"
-                  stroke="currentColor"
-                  viewBox="0 0 24 24"
-                >
-                  <path
-                    stroke-linecap="round"
-                    stroke-linejoin="round"
-                    stroke-width="2"
-                    d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z"
-                  ></path>
-                </svg>
-              </div>
-              <input
-                id="search-input"
-                type="text"
-                bind:value={searchQuery}
-                oninput={handleSearchInput}
-                placeholder={$_("route_labels.placeholder_search_by_name_desc")}
-                class="block w-full pl-9 pr-10 py-2.5 text-sm border-none bg-gray-50 rounded-xl text-gray-900 placeholder-gray-400 focus:ring-2 focus:ring-indigo-500"
-              />
-              {#if searchQuery}
-                <button
-                  onclick={() => {
-                    searchQuery = "";
-                    loadContents();
-                  }}
-                  aria-label="Clear search"
-                  class="absolute inset-y-0 right-0 pr-3 flex items-center justify-center hover:text-gray-600 transition-colors"
-                >
-                  <svg
-                    class="h-4 w-4 text-gray-400"
-                    fill="none"
-                    stroke="currentColor"
-                    viewBox="0 0 24 24"
-                  >
-                    <path
-                      stroke-linecap="round"
-                      stroke-linejoin="round"
-                      stroke-width="2"
-                      d="M6 18L18 6M6 6l12 12"
-                    ></path>
-                  </svg>
-                </button>
-              {/if}
+                <path
+                  stroke-linecap="round"
+                  stroke-linejoin="round"
+                  stroke-width="2"
+                  d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z"
+                ></path>
+              </svg>
             </div>
-          </div>
-
-          <div class="flex gap-4">
-            <!-- Type Filter -->
-            <div class="flex-1">
-              <label
-                for="type-filter"
-                class="block text-[13px] font-medium text-indigo-500 mb-1.5 ml-1"
-                >Type</label
-              >
-              <select
-                id="type-filter"
-                bind:value={selectedType}
-                onchange={applyFilters}
-                class="block w-full px-3 py-2 text-sm border-none bg-gray-50 rounded-xl text-gray-700 focus:ring-2 focus:ring-indigo-500"
-              >
-                {#each typeOptions as option}
-                  <option value={option.value}
-                    >{option.label === "All"
-                      ? option.label
-                      : option.label}</option
-                  >
-                {/each}
-              </select>
-            </div>
-
-            <!-- Status Filter -->
-            <div class="flex-1">
-              <label
-                for="status-filter"
-                class="block text-[13px] font-medium text-indigo-500 mb-1.5 ml-1"
-                >Status</label
-              >
-              <select
-                id="status-filter"
-                bind:value={selectedStatus}
-                onchange={applyFilters}
-                class="block w-full px-3 py-2 text-sm border-none bg-gray-50 rounded-xl text-gray-700 focus:ring-2 focus:ring-indigo-500"
-              >
-                {#each statusOptions as option}
-                  <option value={option.value}
-                    >{option.label === "All"
-                      ? option.label
-                      : option.label}</option
-                  >
-                {/each}
-              </select>
-            </div>
-          </div>
-
-          <div>
-            <label
-              for="sort-by"
-              class="block text-[13px] font-medium text-indigo-500 mb-1.5 ml-1"
-              >Sort By</label
-            >
-            <div class="flex gap-2 items-center">
-              <select
-                id="sort-by"
-                bind:value={sortBy}
-                onchange={applyFilters}
-                class="block w-auto min-w-50 px-3 py-2 text-sm border-none bg-gray-50 rounded-xl text-gray-700 focus:ring-2 focus:ring-indigo-500"
-              >
-                {#each sortOptions as option}
-                  <option value={option.value}
-                    >{option.label === "Name"
-                      ? option.label
-                      : option.label}</option
-                  >
-                {/each}
-              </select>
+            <label for="search-input" class="sr-only">Search Spaces</label>
+            <input
+              id="search-input"
+              type="text"
+              bind:value={searchQuery}
+              oninput={handleSearchInput}
+              placeholder={$_("route_labels.placeholder_search_by_name_desc")}
+              class="block w-full pl-11 pr-10 py-2.5 bg-gray-50 border-none rounded-xl text-sm focus:ring-2 focus:ring-indigo-500 focus:bg-white transition-colors"
+              title={$_("route_labels.placeholder_search_by_name_desc")}
+              aria-label="Search Spaces"
+            />
+            {#if searchQuery}
               <button
-                onclick={toggleSortOrder}
-                class="h-9 w-9 flex items-center justify-center bg-gray-50 rounded-xl text-gray-500 hover:bg-gray-100 transition-colors focus:ring-2 focus:ring-indigo-500"
-                title={$_("search_filters.toggle_sort")}
-                aria-label={$_("search_filters.toggle_sort")}
+                onclick={() => {
+                  searchQuery = "";
+                  loadContents();
+                }}
+                aria-label="Clear search"
+                title="Clear search"
+                class="absolute inset-y-0 right-0 pr-3 flex items-center"
               >
                 <svg
-                  class="w-4 h-4 {sortOrder === 'desc'
-                    ? 'rotate-180'
-                    : ''} transition-transform duration-200"
+                  class="h-5 w-5 text-gray-400 hover:text-gray-600 transition-colors"
                   fill="none"
                   stroke="currentColor"
                   viewBox="0 0 24 24"
@@ -971,11 +876,76 @@
                     stroke-linecap="round"
                     stroke-linejoin="round"
                     stroke-width="2"
-                    d="M7 16V4m0 0L3 8m4-4l4 4m6 0v12m0 0l4-4m-4 4l-4-4"
+                    d="M6 18L18 6M6 6l12 12"
                   ></path>
                 </svg>
               </button>
-            </div>
+            {/if}
+          </div>
+
+          <!-- Inline filters + sort + toggle -->
+          <div class="flex flex-wrap items-center gap-3">
+            <select
+              id="type-filter"
+              bind:value={selectedType}
+              onchange={applyFilters}
+              class="bg-gray-50 border-none text-sm font-medium text-gray-700 rounded-xl px-4 py-2.5 focus:ring-2 focus:ring-indigo-500 cursor-pointer"
+              title="Type"
+              aria-label="Type"
+            >
+              {#each typeOptions as option}
+                <option value={option.value}>{option.label}</option>
+              {/each}
+            </select>
+
+            <select
+              id="status-filter"
+              bind:value={selectedStatus}
+              onchange={applyFilters}
+              class="bg-gray-50 border-none text-sm font-medium text-gray-700 rounded-xl px-4 py-2.5 focus:ring-2 focus:ring-indigo-500 cursor-pointer"
+              title={$_("catalog_contents.filters.status")}
+              aria-label={$_("catalog_contents.filters.status")}
+            >
+              {#each statusOptions as option}
+                <option value={option.value}>{option.label}</option>
+              {/each}
+            </select>
+
+            <select
+              id="sort-by"
+              bind:value={sortBy}
+              onchange={applyFilters}
+              class="bg-gray-50 border-none text-sm font-medium text-gray-700 rounded-xl px-4 py-2.5 focus:ring-2 focus:ring-indigo-500 cursor-pointer"
+              title={$_("catalog_contents.filters.sort_by")}
+              aria-label={$_("catalog_contents.filters.sort_by")}
+            >
+              {#each sortOptions as option}
+                <option value={option.value}>{option.label}</option>
+              {/each}
+            </select>
+
+            <button
+              onclick={toggleSortOrder}
+              class="p-2.5 bg-gray-50 text-gray-500 hover:text-gray-900 hover:bg-gray-100 rounded-xl transition-colors"
+              title={$_("search_filters.toggle_sort")}
+              aria-label={$_("search_filters.toggle_sort")}
+            >
+              <svg
+                class="w-5 h-5 {sortOrder === 'desc'
+                  ? 'rotate-180'
+                  : ''} transition-transform duration-200"
+                fill="none"
+                stroke="currentColor"
+                viewBox="0 0 24 24"
+              >
+                <path
+                  stroke-linecap="round"
+                  stroke-linejoin="round"
+                  stroke-width="2"
+                  d="M7 16V4m0 0L3 8m4-4l4 4m6 0v12m0 0l4-4m-4 4l-4-4"
+                ></path>
+              </svg>
+            </button>
           </div>
         </div>
       </div>

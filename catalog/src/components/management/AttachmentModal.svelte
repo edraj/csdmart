@@ -29,6 +29,7 @@
     status: "pending" | "uploading" | "success" | "error";
     progress: number;
     errorMessage?: string;
+    shortname: string;
     displayname: Translation;
     description: Translation;
     tagsInput: string; // comma-separated
@@ -98,6 +99,7 @@
           id: generateId(),
           status: "pending",
           progress: 0,
+          shortname: "",
           displayname: emptyTranslation(stripExt(file.name)),
           description: emptyTranslation(""),
           tagsInput: "",
@@ -109,6 +111,12 @@
     if (fileInput) {
       fileInput.value = "";
     }
+  }
+
+  function updateFileShortname(id: string, value: string) {
+    selectedFiles = selectedFiles.map((f) =>
+      f.id === id ? { ...f, shortname: value } : f,
+    );
   }
 
   function updateFileTagsInput(id: string, value: string) {
@@ -219,10 +227,11 @@
           ...(descriptionPayload ? { description: descriptionPayload } : {}),
           ...(tags.length > 0 ? { tags } : {}),
         };
-        const { shortname: attachmentShortname } = resolveAutoShortname(
-          AUTO_UUID_RULE,
-          attributes,
-        );
+        const trimmedShortname = fileItem.shortname?.trim();
+        const attachmentShortname =
+          trimmedShortname && trimmedShortname.length > 0
+            ? trimmedShortname
+            : resolveAutoShortname(AUTO_UUID_RULE, attributes).shortname;
         const response = await Dmart.uploadWithPayload({
           space_name: space_name,
           subpath: targetSubpath,
@@ -339,7 +348,7 @@
   onClose={() => (isOpen = false)}
   title={$_("attachment_modal.title")}
   ariaLabel={$_("attachment_modal.title")}
-  size="2xl"
+  size="4xl"
   dismissable={!isUploading}
 >
   {#snippet icon()}
@@ -431,93 +440,71 @@
           >
             {#each selectedFiles as fileItem (fileItem.id)}
               <div
-                class="relative rounded-xl border-2 overflow-hidden transition-all {getStatusColor(
+                class="relative rounded-xl border-2 overflow-hidden transition-all flex items-stretch shrink-0 {getStatusColor(
                   fileItem.status,
                 )}"
               >
-                <div class="flex items-start gap-3 p-3">
-                  <!-- Thumbnail -->
-                  <div
-                    class="relative shrink-0 w-20 h-20 rounded-lg overflow-hidden bg-gray-100"
-                  >
-                    {#if isImageFile(fileItem.file.name)}
-                      <img
-                        src={getFileThumbnailUrl(fileItem.file)}
-                        alt={fileItem.file.name}
-                        class="w-full h-full object-cover"
-                      />
-                    {:else}
-                      <div
-                        class="w-full h-full flex flex-col items-center justify-center p-2"
+                <!-- Preview (left) -->
+                <div
+                  class="relative shrink-0 w-40 min-h-[10rem] bg-gray-100 border-r border-gray-200 flex items-center justify-center"
+                >
+                  {#if isImageFile(fileItem.file.name)}
+                    <img
+                      src={getFileThumbnailUrl(fileItem.file)}
+                      alt={fileItem.file.name}
+                      class="w-full h-full object-cover"
+                    />
+                  {:else}
+                    <div
+                      class="w-full h-full flex flex-col items-center justify-center p-2"
+                    >
+                      <span class="text-4xl">{getFileIcon(fileItem.file)}</span>
+                      <span
+                        class="text-[10px] font-medium text-gray-500 uppercase mt-1"
                       >
-                        <span class="text-2xl">{getFileIcon(fileItem.file)}</span>
-                        <span
-                          class="text-[10px] font-medium text-gray-500 uppercase"
-                        >
-                          {getFileExtension(fileItem.file.name)}
-                        </span>
-                      </div>
-                    {/if}
-                    {#if fileItem.status === "uploading"}
-                      <div
-                        class="absolute inset-0 bg-black/30 flex items-center justify-center"
-                      >
-                        <div
-                          class="w-6 h-6 border-2 border-white border-t-transparent rounded-full animate-spin"
-                        ></div>
-                      </div>
-                    {:else if fileItem.status === "success"}
-                      <div class="absolute top-1 right-1">
-                        <CheckCircleSolid
-                          class="w-5 h-5 text-green-600 bg-white rounded-full"
-                        />
-                      </div>
-                    {:else if fileItem.status === "error"}
-                      <div class="absolute top-1 right-1">
-                        <CloseCircleSolid
-                          class="w-5 h-5 text-red-600 bg-white rounded-full"
-                        />
-                      </div>
-                    {/if}
-                  </div>
-
-                  <!-- File name + size + remove -->
-                  <div class="flex-1 min-w-0">
-                    <div class="flex items-start justify-between gap-2">
-                      <div class="min-w-0 flex-1">
-                        <p
-                          class="text-xs font-medium text-black truncate"
-                          title={fileItem.file.name}
-                        >
-                          {fileItem.file.name}
-                        </p>
-                        <p class="text-[11px] text-gray-500">
-                          {(fileItem.file.size / 1024).toFixed(1)} KB
-                        </p>
-                      </div>
-                      {#if fileItem.status !== "uploading" && fileItem.status !== "success"}
-                        <button
-                          onclick={() => removeFile(fileItem.id)}
-                          class="shrink-0 w-6 h-6 rounded-full flex items-center justify-center text-gray-400 hover:text-red-600 hover:bg-red-50"
-                          title={$_("attachment_modal.remove_file")}
-                          aria-label={$_("attachment_modal.remove_file")}
-                        >
-                          <svg
-                            class="w-4 h-4"
-                            fill="none"
-                            stroke="currentColor"
-                            viewBox="0 0 24 24"
-                          >
-                            <path
-                              stroke-linecap="round"
-                              stroke-linejoin="round"
-                              stroke-width="2"
-                              d="M6 18L18 6M6 6l12 12"
-                            />
-                          </svg>
-                        </button>
-                      {/if}
+                        {getFileExtension(fileItem.file.name)}
+                      </span>
                     </div>
+                  {/if}
+                  {#if fileItem.status === "uploading"}
+                    <div
+                      class="absolute inset-0 bg-black/40 flex items-center justify-center"
+                    >
+                      <div
+                        class="w-8 h-8 border-[3px] border-white border-t-transparent rounded-full animate-spin"
+                      ></div>
+                    </div>
+                  {:else if fileItem.status === "success"}
+                    <div
+                      class="absolute inset-0 bg-emerald-500/25 flex items-center justify-center"
+                    >
+                      <CheckCircleSolid
+                        class="w-10 h-10 text-emerald-700 drop-shadow"
+                      />
+                    </div>
+                  {:else if fileItem.status === "error"}
+                    <div
+                      class="absolute inset-0 bg-red-500/25 flex items-center justify-center"
+                    >
+                      <CloseCircleSolid
+                        class="w-10 h-10 text-red-700 drop-shadow"
+                      />
+                    </div>
+                  {/if}
+                </div>
+
+                <!-- Body (right) -->
+                <div class="flex-1 min-w-0 flex flex-col gap-3 p-4 pr-10">
+                  <div class="min-w-0">
+                    <p
+                      class="text-sm font-semibold text-black truncate"
+                      title={fileItem.file.name}
+                    >
+                      {fileItem.file.name}
+                    </p>
+                    <p class="text-[11px] text-gray-500">
+                      {(fileItem.file.size / 1024).toFixed(1)} KB
+                    </p>
                     {#if fileItem.status === "error" && fileItem.errorMessage}
                       <p
                         class="text-[11px] text-red-600 mt-1 truncate"
@@ -527,13 +514,40 @@
                       </p>
                     {/if}
                   </div>
-                </div>
 
-                <!-- Meta inputs -->
-                <div class="px-3 pb-3 space-y-3">
                   <div>
-                    <div class="block text-[10px] font-semibold text-gray-500 uppercase tracking-wide mb-1">
-                      Display name
+                    <label
+                      for="attach-shortname-{fileItem.id}"
+                      class="block text-[11px] font-semibold text-gray-600 mb-1"
+                    >
+                      {$_("create_entry.attachments.shortname_label", {
+                        default: "Shortname",
+                      })}
+                    </label>
+                    <input
+                      id="attach-shortname-{fileItem.id}"
+                      type="text"
+                      value={fileItem.shortname}
+                      oninput={(e) =>
+                        updateFileShortname(
+                          fileItem.id,
+                          (e.target as HTMLInputElement).value,
+                        )}
+                      disabled={fileItem.status === "uploading" ||
+                        fileItem.status === "success"}
+                      placeholder={$_(
+                        "create_entry.attachments.shortname_placeholder",
+                        { default: "Leave empty to auto-generate" },
+                      )}
+                      class="w-full rounded-md border border-gray-200 bg-white px-2.5 py-1.5 text-xs focus:ring-2 focus:ring-indigo-500 disabled:bg-gray-50 disabled:text-gray-500"
+                    />
+                  </div>
+
+                  <div>
+                    <div class="block text-[11px] font-semibold text-gray-600 mb-1">
+                      {$_("create_entry.attachments.displayname_label", {
+                        default: "Display Name",
+                      })}
                     </div>
                     <div class="grid grid-cols-1 sm:grid-cols-3 gap-2">
                       <input
@@ -553,7 +567,8 @@
                       />
                       <input
                         type="text"
-                        placeholder="Arabic"
+                        placeholder="العربية"
+                        dir="rtl"
                         value={fileItem.displayname.ar}
                         oninput={(e) =>
                           updateFileTranslation(
@@ -568,7 +583,8 @@
                       />
                       <input
                         type="text"
-                        placeholder="Kurdish"
+                        placeholder="کوردی"
+                        dir="rtl"
                         value={fileItem.displayname.ku}
                         oninput={(e) =>
                           updateFileTranslation(
@@ -583,9 +599,12 @@
                       />
                     </div>
                   </div>
+
                   <div>
-                    <div class="block text-[10px] font-semibold text-gray-500 uppercase tracking-wide mb-1">
-                      Description
+                    <div class="block text-[11px] font-semibold text-gray-600 mb-1">
+                      {$_("create_entry.attachments.description_label", {
+                        default: "Description",
+                      })}
                     </div>
                     <div class="grid grid-cols-1 sm:grid-cols-3 gap-2">
                       <textarea
@@ -605,7 +624,8 @@
                       ></textarea>
                       <textarea
                         rows="2"
-                        placeholder="Arabic"
+                        placeholder="العربية"
+                        dir="rtl"
                         value={fileItem.description.ar}
                         oninput={(e) =>
                           updateFileTranslation(
@@ -620,7 +640,8 @@
                       ></textarea>
                       <textarea
                         rows="2"
-                        placeholder="Kurdish"
+                        placeholder="کوردی"
+                        dir="rtl"
                         value={fileItem.description.ku}
                         oninput={(e) =>
                           updateFileTranslation(
@@ -635,10 +656,11 @@
                       ></textarea>
                     </div>
                   </div>
+
                   <div>
                     <label
                       for="attach-tags-{fileItem.id}"
-                      class="block text-[10px] font-semibold text-gray-500 uppercase tracking-wide mb-1"
+                      class="block text-[11px] font-semibold text-gray-600 mb-1"
                     >
                       Tags
                       <span class="normal-case font-normal text-gray-400">
@@ -661,6 +683,30 @@
                     />
                   </div>
                 </div>
+
+                <!-- Remove button (absolute top-right of row) -->
+                {#if fileItem.status !== "uploading" && fileItem.status !== "success"}
+                  <button
+                    onclick={() => removeFile(fileItem.id)}
+                    class="absolute top-2 right-2 shrink-0 w-7 h-7 rounded-full flex items-center justify-center text-gray-400 bg-white/90 hover:text-red-600 hover:bg-red-50 shadow-sm"
+                    title={$_("attachment_modal.remove_file")}
+                    aria-label={$_("attachment_modal.remove_file")}
+                  >
+                    <svg
+                      class="w-4 h-4"
+                      fill="none"
+                      stroke="currentColor"
+                      viewBox="0 0 24 24"
+                    >
+                      <path
+                        stroke-linecap="round"
+                        stroke-linejoin="round"
+                        stroke-width="2"
+                        d="M6 18L18 6M6 6l12 12"
+                      />
+                    </svg>
+                  </button>
+                {/if}
               </div>
             {/each}
           </div>

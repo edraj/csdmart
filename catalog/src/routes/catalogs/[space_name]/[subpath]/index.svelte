@@ -1,16 +1,17 @@
 <script lang="ts">
-    import {onMount} from "svelte";
+    import {onDestroy} from "svelte";
     import {goto, params} from "@roxi/routify";
     import {getAvatar, getSpaceContents, getEntity, getSpaceHideFolders, buildHideFoldersSearch, mergeSearch} from "@/lib/dmart_services";
     import {_, locale} from "@/i18n";
     import Avatar from "@/components/Avatar.svelte";
-    import {derived as derivedStore} from "svelte/store";
+    import {derived as derivedStore, get} from "svelte/store";
     import {ResourceType} from "@edraj/tsdmart";
-    import {getCurrentScope} from "@/stores/user";
+    import {getCurrentScope, user} from "@/stores/user";
     import {UploadOutline, DownloadOutline} from "flowbite-svelte-icons";
     import ModalCSVUpload from "@/components/management/Modals/ModalCSVUpload.svelte";
     import ModalCSVDownload from "@/components/management/Modals/ModalCSVDownload.svelte";
     import {withBasePrefix} from "@/lib/basePath";
+    import {getWebSocketService} from "@/lib/services/websocket";
 
     $goto;
 
@@ -47,6 +48,58 @@
   // Computed permissions
   let canUploadCSV = $derived(folderMetadata?.payload?.body?.allow_upload_csv === true);
   let canDownloadCSV = $derived(folderMetadata?.payload?.body?.allow_csv === true);
+  let streamEnabled = $derived(folderMetadata?.payload?.body?.stream === true);
+
+  // WebSocket stream subscription (gated by folder's `stream` flag)
+  let removeStreamListener: (() => void) | null = null;
+  let streamSubscribedKey: string | null = null;
+
+  function buildStreamKey(space: string, path: string) {
+    return `${space}::${path}`;
+  }
+
+  async function teardownStream() {
+    const ws = getWebSocketService();
+    if (!ws) {
+      removeStreamListener = null;
+      streamSubscribedKey = null;
+      return;
+    }
+    if (removeStreamListener) {
+      try { removeStreamListener(); } catch { /* ignore */ }
+      removeStreamListener = null;
+    }
+    if (streamSubscribedKey) {
+      const [space, path] = streamSubscribedKey.split("::");
+      ws.unsubscribe(space, path);
+      // Restore the user's personal subscription so global notifications keep working.
+      const shortname = get(user)?.shortname;
+      if (shortname) {
+        await ws.subscribe("personal", `/people/${shortname}`);
+      }
+      streamSubscribedKey = null;
+    }
+  }
+
+  async function setupStream(space: string, path: string) {
+    const ws = getWebSocketService();
+    if (!ws) return;
+    const key = buildStreamKey(space, path);
+    if (streamSubscribedKey === key) return;
+    await teardownStream();
+    const subscribed = await ws.subscribe(space, path);
+    if (!subscribed) return;
+    streamSubscribedKey = key;
+    removeStreamListener = ws.addMessageListener((data) => {
+      if (
+        data.type === "notification_subscription" &&
+        data.message?.action_type &&
+        ["create", "update", "delete"].includes(data.message.action_type)
+      ) {
+        loadContents(true);
+      }
+    });
+  }
 
   const isRTL = derivedStore(
     locale,
@@ -143,13 +196,30 @@
     }
   }
 
-  onMount(async () => {
-    await initializeContent();
+  onDestroy(() => {
+    teardownStream();
+  });
+
+  let _prevParamsKey = "";
+
+  $effect(() => {
+    const space = $params.space_name;
+    const sp = $params.subpath;
+    if (!space || !sp) return;
+
+    const key = `${space}|${sp}`;
+    if (key === _prevParamsKey) return;
+    _prevParamsKey = key;
+
+    initializeContent();
   });
 
   $effect(() => {
-    if ($params.space_name && $params.subpath) {
-      initializeContent();
+    const path = `/${actualSubpath}`;
+    if (streamEnabled && spaceName && actualSubpath) {
+      setupStream(spaceName, path);
+    } else if (streamSubscribedKey) {
+      teardownStream();
     }
   });
 
@@ -773,6 +843,7 @@
                 id="sort-by-select"
                 bind:value={sortBy}
                 class="filter-select sort-select"
+                title={$_("catalog_contents.filters.sort_by")}
                 aria-label={$_("catalog_contents.filters.sort_by")}
               >
                 {#each sortOptions as option}
@@ -814,6 +885,7 @@
               onclick={() => (showFilters = !showFilters)}
               class="expand-filters-button"
               class:filters-active={showFilters || filterType !== "all" || filterStatus !== "all"}
+              title={showFilters ? $_("catalog_contents.filters.collapse_filters") : $_("catalog_contents.filters.expand_filters")}
               aria-label={showFilters ? $_("catalog_contents.filters.collapse_filters") : $_("catalog_contents.filters.expand_filters")}
             >
               <svg
@@ -847,6 +919,7 @@
 
             {#if searchQuery || selectedTags.length > 0 || filterType !== "all" || filterStatus !== "all"}
               <button
+                title={$_("catalog_contents.filters.clear_all")}
                 aria-label={$_("catalog_contents.filters.clear_all")}
                 onclick={clearFilters}
                 class="clear-all-inline-button"
@@ -867,6 +940,8 @@
                   id="type-filter-select"
                   bind:value={filterType}
                   class="filter-select"
+                  title={$_("catalog_contents.filters.type")}
+                  aria-label={$_("catalog_contents.filters.type")}
                 >
                   <option value="all">{$_("catalog_contents.filters.all_types")}</option>
                   {#each getResourceTypes() as type}
@@ -881,6 +956,8 @@
                   id="status-filter-select"
                   bind:value={filterStatus}
                   class="filter-select"
+                  title={$_("catalog_contents.filters.status")}
+                  aria-label={$_("catalog_contents.filters.status")}
                 >
                   <option value="all">{$_("catalog_contents.filters.all_statuses")}</option>
                   <option value="active">{$_("catalog_contents.filters.active")}</option>
@@ -895,6 +972,8 @@
                   bind:value={itemsPerLoad}
                   onchange={(e) => handleItemsPerLoadChange(parseInt((e.target as HTMLSelectElement).value))}
                   class="filter-select"
+                  title={$_("catalog_contents.infinite_scroll.items_per_load")}
+                  aria-label={$_("catalog_contents.infinite_scroll.items_per_load")}
                 >
                   {#each itemsPerLoadOptions as option}
                     <option value={option}>{option}</option>

@@ -954,6 +954,8 @@
                     "route_labels.placeholder_search_by_name_desc",
                   )}
                   class="block w-full pl-9 pr-8 py-2 text-sm border-none bg-gray-50 rounded-lg text-gray-900 placeholder-gray-400 focus:ring-2 focus:ring-indigo-500"
+                  title={$_("route_labels.placeholder_search_by_name_desc")}
+                  aria-label="Search Spaces"
                 />
                 {#if isSearching}
                   <div class="absolute inset-y-0 right-2 flex items-center">
@@ -999,6 +1001,8 @@
                 bind:value={selectedStatus}
                 onchange={applyFilters}
                 class="block w-full px-3 py-2 text-sm border-none bg-gray-50 rounded-lg text-gray-700 focus:ring-2 focus:ring-indigo-500"
+                title={$_("catalog_contents.filters.status")}
+                aria-label={$_("catalog_contents.filters.status")}
               >
                 {#each statusOptions as option}
                   <option value={option.value}
@@ -1023,6 +1027,8 @@
                 bind:value={sortBy}
                 onchange={() => applyFilters()}
                 class="block w-full px-3 py-2 text-sm border-none bg-gray-50 rounded-lg text-gray-700 focus:ring-2 focus:ring-indigo-500"
+                title={$_("catalog_contents.filters.sort_by")}
+                aria-label={$_("catalog_contents.filters.sort_by")}
               >
                 {#each sortOptions as option}
                   <option value={option.value}

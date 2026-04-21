@@ -642,7 +642,7 @@
       if (response) {
         successToastMessage(msg);
         setTimeout(() => {
-          window.history.back();
+          goBack();
         }, 500);
       } else {
         errorToastMessage(
@@ -832,7 +832,7 @@
         }
       }
       setTimeout(() => {
-        window.history.back();
+        goBack();
       }, 500);
     } else {
       errorToastMessage(
@@ -979,15 +979,25 @@
     params?: Record<string, string>;
   };
 
+  let cameFromAdmin = $state(false);
+
+  onMount(() => {
+    if (typeof document !== "undefined" && document.referrer) {
+      cameFromAdmin = document.referrer.includes("/dashboard/admin");
+    }
+  });
+
+  const useAdminPaths = $derived(cameFromAdmin || isAdmin);
+
   const breadcrumbs = $derived.by<Crumb[]>(() => {
-    const rootLabel = isAdmin
+    const rootLabel = useAdminPaths
       ? $_("admin_content.breadcrumb.admin")
       : $_("post_detail.breadcrumb.catalogs");
-    const rootRoute = isAdmin ? "/dashboard/admin" : "/catalogs";
-    const spaceRoute = isAdmin
+    const rootRoute = useAdminPaths ? "/dashboard/admin" : "/catalogs";
+    const spaceRoute = useAdminPaths
       ? "/dashboard/admin/[space_name]"
       : "/catalogs/[space_name]";
-    const subpathRoute = isAdmin
+    const subpathRoute = useAdminPaths
       ? "/dashboard/admin/[space_name]/[subpath]"
       : "/catalogs/[space_name]/[subpath]";
 
