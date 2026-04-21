@@ -568,9 +568,17 @@ public sealed class UserService(
             if (!string.IsNullOrEmpty(newPw) && !Auth.PasswordRules.IsValid(newPw))
                 return Result<User>.Fail(
                     InternalErrorCode.INVALID_PASSWORD_RULES, "Invalid username or password", ErrorTypes.JwtAuth);
-            if (!user.ForcePasswordChange)
+            // Python parity (api/user/router.py:665-682). old_password is
+            // only required when ALL THREE hold:
+            //   * client is setting a new password (guaranteed by the outer if)
+            //   * the user already has a password in the DB (user.Password
+            //     non-empty) — a user who never set one can freely set their
+            //     first without prior-secret knowledge
+            //   * force_password_change is NOT set — an admin-reset user
+            //     mid-flow bypasses the old-password check so they can pick
+            //     a fresh password using only the invitation/reset token
+            if (!string.IsNullOrEmpty(user.Password) && !user.ForcePasswordChange)
             {
-                // Python parity (api/user/router.py:665-682, set_user_profile):
                 //   * missing old_password   → 403 PASSWORD_RESET_ERROR, type=auth,
                 //     message "Wrong password have been provided!"
                 //   * old_password mismatch  → 401 UNMATCHED_DATA, type=request,
@@ -579,7 +587,7 @@ public sealed class UserService(
                     return Result<User>.Fail(
                         InternalErrorCode.PASSWORD_RESET_ERROR,
                         "Wrong password have been provided!", ErrorTypes.Auth);
-                if (string.IsNullOrEmpty(user.Password) || !hasher.Verify(oldPwObj.ToString()!, user.Password))
+                if (!hasher.Verify(oldPwObj.ToString()!, user.Password))
                     return Result<User>.Fail(
                         InternalErrorCode.UNMATCHED_DATA,
                         "mismatch with the information provided", ErrorTypes.Request);
