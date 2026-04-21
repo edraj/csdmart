@@ -16,9 +16,15 @@ public abstract class EnumMemberConverterBase<TEnum> : JsonConverter<TEnum> wher
 
     private static (TEnum, string)[] BuildMap()
     {
-        // netstandard2.1 predates Enum.GetValues<TEnum>(); the non-generic
-        // overload returns a weakly-typed Array. Cast to TEnum[] uniformly.
+#if NET5_0_OR_GREATER
+        // Generic overload is AOT-friendly (no dynamic code required). .NET 10
+        // AOT publish warns on the non-generic version with IL3050.
+        var values = Enum.GetValues<TEnum>();
+#else
+        // netstandard2.1 predates Enum.GetValues<TEnum>(); fall back to the
+        // non-generic overload and cast the weakly-typed Array to TEnum[].
         var values = (TEnum[])Enum.GetValues(typeof(TEnum));
+#endif
         var result = new (TEnum, string)[values.Length];
         for (var i = 0; i < values.Length; i++)
         {

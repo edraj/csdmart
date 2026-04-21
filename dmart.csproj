@@ -56,7 +56,16 @@
   </ItemGroup>
 
   <ItemGroup>
-    <ProjectReference Include="Dmart.Models/Dmart.Models.csproj" />
+    <!-- UndefineProperties strips PublishAot/StripSymbols from the
+         global property set inherited by the referenced project when the
+         server is published with `-p:PublishAot=true`. Without this, the
+         multi-target Dmart.Models tries to AOT-compile every TFM it
+         declares, and netstandard2.1 doesn't support AOT (NETSDK1207).
+         The server's own AOT publish still applies to the net10.0 copy
+         of Dmart.Models that gets linked into the binary. -->
+    <ProjectReference Include="Dmart.Models/Dmart.Models.csproj">
+      <UndefineProperties>PublishAot;StripSymbols</UndefineProperties>
+    </ProjectReference>
   </ItemGroup>
 
   <ItemGroup>
