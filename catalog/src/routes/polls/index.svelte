@@ -20,6 +20,7 @@
   import { user } from "@/stores/user";
   // Create Poll imports
   import CreatePollModal from "./CreatePollModal.svelte";
+  import Modal from "@/components/Modal.svelte";
 
   let polls = $state<any[]>([]);
   let loading = $state(true);
@@ -441,94 +442,91 @@
 
 <!-- Vote/Results Modal -->
 {#if showVoteModal && selectedPoll}
-  <div class="fixed inset-0 bg-gray-900/60 flex items-center justify-center z-50 p-4 backdrop-blur-sm" onclick={closeModal} onkeydown={(e) => e.key === "Escape" && closeModal()} class:rtl={$isRTL} role="dialog" aria-modal="true" tabindex="0">
-    <!-- svelte-ignore a11y_no_noninteractive_element_interactions -->
-    <div class="bg-white rounded-2xl w-full max-w-lg max-h-[90vh] flex flex-col shadow-2xl overflow-hidden" onclick={(e) => e.stopPropagation()} onkeydown={(e) => e.stopPropagation()} role="document">
-      <div class="flex items-center justify-between p-6 border-b border-gray-100">
-        <h2 class="text-xl font-bold text-gray-900 tracking-tight">{selectedPoll.title}</h2>
-        <button class="p-2 rounded-full text-gray-400 hover:text-gray-600 hover:bg-gray-100 transition-colors" onclick={closeModal} aria-label={$_("polls.close")}>
-          <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"></path></svg>
-        </button>
-      </div>
+  <Modal
+    onClose={closeModal}
+    title={selectedPoll.title}
+    ariaLabel={selectedPoll.title}
+    size="lg"
+  >
+    {#snippet icon()}
+      <ChartOutline class="w-6 h-6" />
+    {/snippet}
 
-      <div class="p-8 overflow-y-auto">
-        {#if showResults}
-          <div class="space-y-6">
-            {#each selectedPoll.candidates as candidate}
-              <div>
-                <div class="flex justify-between items-end mb-2">
-                  <span class="text-[13px] text-gray-800 font-semibold">{candidate.name}</span>
-                  <span class="text-xs font-bold text-indigo-600">{candidate.percentage}%</span>
-                </div>
-                <div class="w-full h-2 bg-gray-100 rounded-full overflow-hidden mb-1">
-                  <div class="h-full bg-indigo-500 rounded-full" style="width: {candidate.percentage}%"></div>
-                </div>
-                <div class="text-[11px] text-gray-400 font-medium">{$_("polls.votes_short", { values: { count: candidate.votes } })}</div>
-              </div>
-            {/each}
+    {#if showResults}
+      <div class="space-y-6">
+        {#each selectedPoll.candidates as candidate}
+          <div>
+            <div class="flex justify-between items-end mb-2">
+              <span class="text-[13px] text-gray-800 font-semibold">{candidate.name}</span>
+              <span class="text-xs font-bold text-indigo-600">{candidate.percentage}%</span>
+            </div>
+            <div class="w-full h-2 bg-gray-100 rounded-full overflow-hidden mb-1">
+              <div class="h-full bg-indigo-500 rounded-full" style="width: {candidate.percentage}%"></div>
+            </div>
+            <div class="text-[11px] text-gray-400 font-medium">{$_("polls.votes_short", { values: { count: candidate.votes } })}</div>
           </div>
-        {:else if selectedPoll.isActive && !selectedPoll.hasVoted}
-          <div class="space-y-3">
-            {#each selectedPoll.candidates as candidate}
-              <button class="w-full flex items-center gap-4 p-5 rounded-2xl border-2 transition-all text-left {selectedCandidate === candidate.key ? 'border-indigo-600 bg-indigo-50/30' : 'border-gray-100 hover:border-indigo-200'}" onclick={() => selectCandidate(candidate.key)}>
-                <div class="shrink-0">
-                  {#if selectedCandidate === candidate.key}
-                    <div class="w-5 h-5 rounded-full bg-indigo-600 flex items-center justify-center">
-                       <svg class="w-3 h-3 text-white" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="3" d="M5 13l4 4L19 7"></path></svg>
-                    </div>
-                  {:else}
-                    <div class="w-5 h-5 rounded-full border-2 border-gray-300"></div>
-                  {/if}
-                </div>
-                <span class="text-sm font-semibold text-gray-800">{candidate.name}</span>
-              </button>
-            {/each}
-          </div>
-        {:else}
-          <div class="text-center pb-6 border-b border-gray-100 mb-6">
-            {#if selectedPoll.hasVoted}
-               <div class="inline-flex items-center justify-center gap-2 bg-green-50 text-green-700 px-5 py-2.5 rounded-full font-semibold text-sm">
-                 <CheckCircleOutline class="w-4 h-4" /> {$_("polls.voted_for")}: <span class="text-green-800">{selectedPoll.userVote}</span>
-               </div>
-            {:else}
-               <div class="inline-flex items-center justify-center gap-2 bg-gray-100 text-gray-600 px-5 py-2.5 rounded-full font-semibold text-sm">
-                 <ClockOutline class="w-4 h-4" /> {$_("polls.poll_ended")}
-               </div>
-            {/if}
-          </div>
-          
-          <div class="space-y-6">
-            {#each selectedPoll.candidates as candidate}
-              <div>
-                <div class="flex justify-between items-end mb-2">
-                  <span class="text-[13px] text-gray-800 font-semibold">{candidate.name}</span>
-                  <span class="text-xs font-bold text-indigo-600">{candidate.percentage}%</span>
-                </div>
-                <div class="w-full h-2 bg-gray-100 rounded-full overflow-hidden mb-1">
-                  <div class="h-full bg-indigo-500 rounded-full" style="width: {candidate.percentage}%"></div>
-                </div>
-                <div class="text-[11px] text-gray-400 font-medium">{$_("polls.votes_short", { values: { count: candidate.votes } })}</div>
-              </div>
-            {/each}
-          </div>
-        {/if}
+        {/each}
       </div>
-
-      <div class="flex justify-end gap-3 p-6 border-t border-gray-100 bg-gray-50/80">
-        <button class="px-6 py-2.5 rounded-full text-sm font-semibold text-gray-600 hover:bg-gray-200 transition-colors" onclick={closeModal}>
-          {$_("polls.cancel")}
-        </button>
-        {#if !showResults && selectedPoll.isActive && !selectedPoll.hasVoted}
-          <button class="px-8 py-2.5 rounded-full text-sm font-semibold text-white bg-indigo-600 hover:bg-indigo-700 transition-colors disabled:opacity-50 disabled:cursor-not-allowed flex items-center gap-2 shadow-sm shadow-indigo-200" onclick={submitVote} disabled={!selectedCandidate || votingInProgress}>
-            {#if votingInProgress}
-               <div class="w-4 h-4 border-2 border-white/30 border-t-white rounded-full animate-spin"></div>
-            {/if}
-            {$_("polls.vote_button")}
+    {:else if selectedPoll.isActive && !selectedPoll.hasVoted}
+      <div class="space-y-3">
+        {#each selectedPoll.candidates as candidate}
+          <button class="w-full flex items-center gap-4 p-5 rounded-2xl border-2 transition-all text-left {selectedCandidate === candidate.key ? 'border-indigo-600 bg-indigo-50/30' : 'border-gray-100 hover:border-indigo-200'}" onclick={() => selectCandidate(candidate.key)}>
+            <div class="shrink-0">
+              {#if selectedCandidate === candidate.key}
+                <div class="w-5 h-5 rounded-full bg-indigo-600 flex items-center justify-center">
+                   <svg class="w-3 h-3 text-white" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="3" d="M5 13l4 4L19 7"></path></svg>
+                </div>
+              {:else}
+                <div class="w-5 h-5 rounded-full border-2 border-gray-300"></div>
+              {/if}
+            </div>
+            <span class="text-sm font-semibold text-gray-800">{candidate.name}</span>
           </button>
+        {/each}
+      </div>
+    {:else}
+      <div class="text-center pb-6 border-b border-gray-100 mb-6">
+        {#if selectedPoll.hasVoted}
+           <div class="inline-flex items-center justify-center gap-2 bg-green-50 text-green-700 px-5 py-2.5 rounded-full font-semibold text-sm">
+             <CheckCircleOutline class="w-4 h-4" /> {$_("polls.voted_for")}: <span class="text-green-800">{selectedPoll.userVote}</span>
+           </div>
+        {:else}
+           <div class="inline-flex items-center justify-center gap-2 bg-gray-100 text-gray-600 px-5 py-2.5 rounded-full font-semibold text-sm">
+             <ClockOutline class="w-4 h-4" /> {$_("polls.poll_ended")}
+           </div>
         {/if}
       </div>
-    </div>
-  </div>
+
+      <div class="space-y-6">
+        {#each selectedPoll.candidates as candidate}
+          <div>
+            <div class="flex justify-between items-end mb-2">
+              <span class="text-[13px] text-gray-800 font-semibold">{candidate.name}</span>
+              <span class="text-xs font-bold text-indigo-600">{candidate.percentage}%</span>
+            </div>
+            <div class="w-full h-2 bg-gray-100 rounded-full overflow-hidden mb-1">
+              <div class="h-full bg-indigo-500 rounded-full" style="width: {candidate.percentage}%"></div>
+            </div>
+            <div class="text-[11px] text-gray-400 font-medium">{$_("polls.votes_short", { values: { count: candidate.votes } })}</div>
+          </div>
+        {/each}
+      </div>
+    {/if}
+
+    {#snippet footer()}
+      <button class="px-6 py-2.5 rounded-xl text-sm font-semibold text-gray-600 hover:bg-gray-200 transition-colors" onclick={closeModal}>
+        {$_("polls.cancel")}
+      </button>
+      {#if !showResults && selectedPoll.isActive && !selectedPoll.hasVoted}
+        <button class="px-8 py-2.5 rounded-xl text-sm font-semibold text-white bg-indigo-600 hover:bg-indigo-700 transition-colors disabled:opacity-50 disabled:cursor-not-allowed flex items-center gap-2 shadow-sm shadow-indigo-200" onclick={submitVote} disabled={!selectedCandidate || votingInProgress}>
+          {#if votingInProgress}
+             <div class="w-4 h-4 border-2 border-white/30 border-t-white rounded-full animate-spin"></div>
+          {/if}
+          {$_("polls.vote_button")}
+        </button>
+      {/if}
+    {/snippet}
+  </Modal>
 {/if}
 
 {#if showCreateModal}

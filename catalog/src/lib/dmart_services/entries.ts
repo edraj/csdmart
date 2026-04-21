@@ -113,7 +113,12 @@ export async function attachAttachmentsToEntity(
     shortname: string,
     spaceName: string,
     subpath: string,
-    attachment: File
+    attachment: File,
+    metadata?: {
+        shortname?: string;
+        displayname?: Record<string, string>;
+        description?: Record<string, string>;
+    }
 ) {
     ensureUploadSize(attachment);
     const fileType = getFileType(attachment);
@@ -123,12 +128,25 @@ export async function attachAttachmentsToEntity(
     if (cleanSubpath === "__root__") cleanSubpath = "";
     const targetSubpath = cleanSubpath ? `${cleanSubpath}/${shortname}` : shortname;
 
+    const trimmedShortname = metadata?.shortname?.trim();
+    const displaynamePayload = metadata?.displayname && Object.keys(metadata.displayname).length > 0
+        ? metadata.displayname
+        : undefined;
+    const descriptionPayload = metadata?.description && Object.keys(metadata.description).length > 0
+        ? metadata.description
+        : undefined;
+
+    const attributes: Record<string, any> = { is_active: true };
+    if (displaynamePayload) attributes.displayname = displaynamePayload;
+    if (descriptionPayload) attributes.description = descriptionPayload;
+
     const response = await Dmart.uploadWithPayload({
         space_name: spaceName,
         subpath: targetSubpath,
-        shortname: "auto",
+        shortname: trimmedShortname || "auto",
         resource_type: resourceType,
-        payload_file: attachment
+        payload_file: attachment,
+        attributes: Object.keys(attributes).length > 1 ? attributes : undefined,
     });
     return response.status === "success" && response.records.length > 0;
 }

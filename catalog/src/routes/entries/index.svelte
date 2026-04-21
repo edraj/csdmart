@@ -187,7 +187,9 @@
     try {
       const response = await getMyEntities();
 
-      const rawEntities = (response as any)?.records || response || [];
+      const rawEntities = (
+        (response as any)?.records || response || []
+      ).filter((entity: any) => entity?.resource_type !== "poll");
 
       entities = rawEntities.map((entity: any) => ({
         resource_type: entity?.resource_type || "",

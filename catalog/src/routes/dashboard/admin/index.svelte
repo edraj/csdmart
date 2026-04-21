@@ -15,7 +15,9 @@
   import { _, locale } from "@/i18n";
   import { user } from "@/stores/user";
   import MetaForm from "@/components/forms/MetaForm.svelte";
+  import AppModal from "@/components/Modal.svelte";
   import { Modal } from "flowbite-svelte";
+  import { PlusOutline } from "flowbite-svelte-icons";
   import { derived as derivedStore } from "svelte/store";
   import { formatNumberInText } from "@/lib/helpers";
   import { DmartScope } from "@edraj/tsdmart";
@@ -1342,53 +1344,57 @@
 </div>
 
 <!-- Create Space Modal -->
-<Modal
-  title={$_("admin_dashboard.modal.create.title")}
-  bind:open={showCreateModal}
-  size="lg"
-  class="bg-white"
-  headerClass="text-gray-900"
-  placement="center"
-  autoclose={false}
->
-  <p class="text-sm text-gray-600 mb-4">
-    {$_("admin_dashboard.modal.create.description")}
-  </p>
-  <MetaForm
-    bind:formData={metaContent}
-    bind:validateFn={validateMetaForm}
-    isCreate={true}
-    fullWidth={true}
-  />
+{#if showCreateModal}
+  <AppModal
+    onClose={closeCreateModal}
+    title={$_("admin_dashboard.modal.create.title")}
+    ariaLabel={$_("admin_dashboard.modal.create.title")}
+    size="lg"
+    dismissable={!isCreating}
+  >
+    {#snippet icon()}
+      <PlusOutline class="w-6 h-6" />
+    {/snippet}
 
-  {#if createError}
-    <div class="error-message mt-4">
-      <p class="error-text">{createError}</p>
-    </div>
-  {/if}
+    <p class="text-sm text-gray-600 mb-4">
+      {$_("admin_dashboard.modal.create.description")}
+    </p>
+    <MetaForm
+      bind:formData={metaContent}
+      bind:validateFn={validateMetaForm}
+      isCreate={true}
+      fullWidth={true}
+    />
 
-  {#snippet footer()}
-    <button
-      onclick={closeCreateModal}
-      class="btn btn-secondary"
-      disabled={isCreating}
-    >
-      {$_("admin_dashboard.modal.cancel")}
-    </button>
-    <button
-      onclick={handleCreateSpace}
-      disabled={isCreating || !metaContent.shortname}
-      class="btn btn-primary"
-    >
-      {#if isCreating}
-        <div class="spinner"></div>
-        {$_("admin_dashboard.modal.creating")}
-      {:else}
-        {$_("admin_dashboard.modal.create.button")}
-      {/if}
-    </button>
-  {/snippet}
-</Modal>
+    {#if createError}
+      <div class="error-message mt-4">
+        <p class="error-text">{createError}</p>
+      </div>
+    {/if}
+
+    {#snippet footer()}
+      <button
+        onclick={closeCreateModal}
+        class="btn btn-secondary"
+        disabled={isCreating}
+      >
+        {$_("admin_dashboard.modal.cancel")}
+      </button>
+      <button
+        onclick={handleCreateSpace}
+        disabled={isCreating || !metaContent.shortname}
+        class="btn btn-primary"
+      >
+        {#if isCreating}
+          <div class="spinner"></div>
+          {$_("admin_dashboard.modal.creating")}
+        {:else}
+          {$_("admin_dashboard.modal.create.button")}
+        {/if}
+      </button>
+    {/snippet}
+  </AppModal>
+{/if}
 
 <!-- Edit Space Modal -->
 <Modal

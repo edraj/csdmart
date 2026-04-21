@@ -1,6 +1,6 @@
 <script lang="ts">
   import { _ } from "@/i18n";
-  import { Button, Modal } from "flowbite-svelte";
+  import { Button } from "flowbite-svelte";
   import { marked } from "marked";
   import { mangle } from "marked-mangle";
   import { gfmHeadingId } from "marked-gfm-heading-id";

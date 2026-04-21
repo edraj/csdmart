@@ -19,7 +19,6 @@
     successToastMessage,
   } from "@/lib/toasts_messages";
   import {
-    ArrowLeftOutline,
     CloseCircleOutline,
     CloudArrowUpOutline,
     FileCheckSolid,
@@ -105,7 +104,7 @@
   let loadingSubpaths = $state(false);
 
   const canCreateEntry = $derived(
-          shortname.trim().length > 0 && !shortnameError
+    shortname.trim().length > 0 && !shortnameError
   );
   let workflow_shortname = "";
   let schema_shortname = "";
@@ -116,8 +115,8 @@
   let entity: any;
 
   const isRTL = derivedStore(
-          locale,
-          ($locale: any) => $locale === "ar" || $locale === "ku",
+    locale,
+    ($locale: any) => $locale === "ar" || $locale === "ku",
   );
 
   let rolesValue: any;
@@ -148,7 +147,7 @@
       const response = await getSpaceSchema("management", DmartScope.managed);
       if (response?.status === "success" && response?.records) {
         const pollSchemaRecord = response.records.find(
-                (record: any) => record.shortname === "poll",
+          (record: any) => record.shortname === "poll",
         );
 
         if (pollSchemaRecord) {
@@ -213,11 +212,11 @@
     const schemaShortname = event.target.value;
     schema_shortname = schemaShortname; // Assign to module-level variable
     const schemaRecord = availableSchemas.find(
-            (s: any) => s.shortname === schemaShortname,
+      (s: any) => s.shortname === schemaShortname,
     );
     selectedSchema = schemaRecord;
     jsonFormData = {};
-
+    
     // Check if schema has a template attachment
     // For structured entries, specifically check for markdown template attachments
     if (schemaRecord && schemaRecord.raw) {
@@ -282,21 +281,21 @@
     loadingSubpaths = true;
     try {
       const response = await getSpaceFolders(
-              spaceName,
-              parentPath || "/",
-              DmartScope.managed,
+        spaceName,
+        parentPath || "/",
+        DmartScope.managed,
       );
 
       const folders = response.records.filter(
-              (item: any) => item.resource_type === "folder",
+        (item: any) => item.resource_type === "folder",
       );
       const hasNonFolderContent = response.records.some(
-              (item: any) => item.resource_type !== "folder",
+        (item: any) => item.resource_type !== "folder",
       );
       if (parentPath === "") {
         itemResourceType =
-                response?.records[0]?.attributes?.payload?.body
-                        .content_resource_types[0];
+          response?.records[0]?.attributes?.payload?.body
+            .content_resource_types[0];
       }
 
       const levelData = {
@@ -306,20 +305,20 @@
           value: folder.shortname,
           name: folder.attributes?.displayname?.en || folder.shortname,
           fullPath: parentPath
-                  ? `${parentPath}/${folder.shortname}`
-                  : folder.shortname,
+            ? `${parentPath}/${folder.shortname}`
+            : folder.shortname,
         })),
         resource_type: itemResourceType,
         workflow_shortname:
-                response.records[0]?.attributes?.payload?.body
-                        ?.workflow_shortnames[0] || "",
+          response.records[0]?.attributes?.payload?.body
+            ?.workflow_shortnames[0] || "",
         schema_shortname:
-                response.records[0]?.attributes?.payload?.schema_shortname ||
-                response.records[0]?.attributes?.payload?.body
-                        ?.content_schema_shortnames[0] ||
-                "",
+          response.records[0]?.attributes?.payload?.schema_shortname ||
+          response.records[0]?.attributes?.payload?.body
+            ?.content_schema_shortnames[0] ||
+          "",
         canCreateEntry:
-                level > 0 || hasNonFolderContent || folders.length === 0,
+          level > 0 || hasNonFolderContent || folders.length === 0,
         selectedFolder: "",
       };
 
@@ -351,7 +350,7 @@
 
     if (folderValue) {
       const selectedFolder = levelData.folders.find(
-              (f: any) => f.value === folderValue,
+        (f: any) => f.value === folderValue,
       );
       if (selectedFolder) {
         const newPath = selectedFolder.fullPath;
@@ -385,12 +384,43 @@
     tags = tags.filter((_: any, i: any) => i !== index);
   }
 
-  let attachments = $state<any[]>([]);
+  type AttachmentTranslation = { en: string; ar: string; ku: string };
+
+  type AttachmentEntry = {
+    file: File;
+    shortname: string;
+    displayname: AttachmentTranslation;
+    description: AttachmentTranslation;
+  };
+
+  function emptyAttachmentTranslation(): AttachmentTranslation {
+    return { en: "", ar: "", ku: "" };
+  }
+
+  function toAttachmentTranslationPayload(
+    t: AttachmentTranslation,
+  ): Record<string, string> {
+    const out: Record<string, string> = {};
+    if (t.en?.trim()) out.en = t.en.trim();
+    if (t.ar?.trim()) out.ar = t.ar.trim();
+    if (t.ku?.trim()) out.ku = t.ku.trim();
+    return out;
+  }
+
+  let attachments = $state<AttachmentEntry[]>([]);
 
   function handleFileChange(event: any) {
     const input = event.target;
     if (input.files) {
-      attachments = [...attachments, ...Array.from(input.files)];
+      const newEntries: AttachmentEntry[] = Array.from(input.files as FileList).map(
+        (file) => ({
+          file,
+          shortname: "",
+          displayname: emptyAttachmentTranslation(),
+          description: emptyAttachmentTranslation(),
+        }),
+      );
+      attachments = [...attachments, ...newEntries];
     }
   }
 
@@ -400,9 +430,9 @@
 
   function getPreviewUrl(file: any) {
     if (
-            file.type.startsWith("image/") ||
-            file.type.startsWith("video/") ||
-            file.type === "application/pdf"
+      file.type.startsWith("image/") ||
+      file.type.startsWith("video/") ||
+      file.type === "application/pdf"
     ) {
       return URL.createObjectURL(file);
     }
@@ -421,22 +451,22 @@
         // typewriter-editor's empty doc often looks like `<p><br></p>`,
         // `<p></p>`, or nested whitespace-only paragraphs. Treat those as empty.
         const trivialWrapper =
-                /^(<p>(\s|&nbsp;|<br\s*\/?>)*<\/p>\s*)+$/i;
+          /^(<p>(\s|&nbsp;|<br\s*\/?>)*<\/p>\s*)+$/i;
         if (trivialWrapper.test(trimmedRaw)) return true;
         // Media embeds and block elements with no inline text still count as
         // real content — an image-only post is valid.
         if (
-                /<(img|video|audio|iframe|table|figure|svg|source|embed|object|picture|canvas)\b/i.test(
-                        trimmedRaw,
-                )
+          /<(img|video|audio|iframe|table|figure|svg|source|embed|object|picture|canvas)\b/i.test(
+            trimmedRaw,
+          )
         ) {
           return false;
         }
         const textContent = trimmedRaw
-                .replace(/<[^>]*>/g, "")
-                .replace(/&nbsp;/g, " ")
-                .replace(/\s+/g, " ")
-                .trim();
+          .replace(/<[^>]*>/g, "")
+          .replace(/&nbsp;/g, " ")
+          .replace(/\s+/g, " ")
+          .trim();
         return textContent === "";
       } else {
         return content.trim() === "";
@@ -483,7 +513,7 @@
     }
 
     const requiredFields = schema.required.filter(
-            (field: any) => field && field.trim() !== "",
+      (field: any) => field && field.trim() !== "",
     );
 
     if (requiredFields.length === 0) {
@@ -526,26 +556,26 @@
       }
 
       const validationResult = validateRequiredFields(
-              pollFormData,
-              pollSchema.schema,
+        pollFormData,
+        pollSchema.schema,
       );
 
       if (!validationResult.isValid) {
         const fieldNames = validationResult.missingFields
-                .map((field: any) => pollSchema.schema.properties[field]?.title || field)
-                .join(", ");
+          .map((field: any) => pollSchema.schema.properties[field]?.title || field)
+          .join(", ");
 
         errorToastMessage(
-                $_("create_entry.error.required_fields_missing", {
-                  values: { fields: fieldNames },
-                }),
+          $_("create_entry.error.required_fields_missing", {
+            values: { fields: fieldNames },
+          }),
         );
         return;
       }
 
       if (isJsonFormDataEmpty(pollFormData)) {
         const hasRequiredFields = pollSchema?.schema?.required?.some(
-                (field: any) => field && field.trim() !== "",
+          (field: any) => field && field.trim() !== "",
         );
         if (hasRequiredFields) {
           errorToastMessage($_("create_entry.error.content_required"));
@@ -578,16 +608,16 @@
       };
 
       const response = await createEntity(
-              "poll",
-              "polls",
-              ResourceType.content,
-              attributes,
-              entity.shortname || "auto",
+        "poll",
+        "polls",
+        ResourceType.content,
+        attributes,
+        entity.shortname || "auto",
       );
 
       const msg = isPublish
-              ? $_("create_entry.success.published")
-              : $_("create_entry.success.saved");
+        ? $_("create_entry.success.published")
+        : $_("create_entry.success.saved");
 
       if (response) {
         successToastMessage(msg);
@@ -596,9 +626,9 @@
         }, 500);
       } else {
         errorToastMessage(
-                isPublish
-                        ? $_("create_entry.error.publish_failed")
-                        : $_("create_entry.error.save_failed"),
+          isPublish
+            ? $_("create_entry.error.publish_failed")
+            : $_("create_entry.error.save_failed"),
         );
         isLoading = false;
       }
@@ -618,22 +648,22 @@
     if (entryType === "structured") {
       if (selectedSchema && selectedSchema.schema) {
         validationResult = validateRequiredFields(
-                jsonFormData,
-                selectedSchema.schema,
+          jsonFormData,
+          selectedSchema.schema,
         );
 
         if (!validationResult.isValid) {
           const fieldNames = validationResult.missingFields
-                  .map(
-                          (field: any) =>
-                                  selectedSchema.schema.properties[field]?.title || field,
-                  )
-                  .join(", ");
+            .map(
+              (field: any) =>
+                selectedSchema.schema.properties[field]?.title || field,
+            )
+            .join(", ");
 
           errorToastMessage(
-                  $_("create_entry.error.required_fields_missing", {
-                    values: { fields: fieldNames },
-                  }),
+            $_("create_entry.error.required_fields_missing", {
+              values: { fields: fieldNames },
+            }),
           );
           return;
         }
@@ -654,9 +684,9 @@
 
         if (missingFields.length > 0) {
           errorToastMessage(
-                  $_("create_entry.error.required_fields_missing", {
-                    values: { fields: missingFields.map((f) => f.label).join(", ") },
-                  }),
+            $_("create_entry.error.required_fields_missing", {
+              values: { fields: missingFields.map((f) => f.label).join(", ") },
+            }),
           );
           return;
         }
@@ -667,9 +697,9 @@
       // an extra whole-object "is empty" heuristic produced false-negatives on
       // valid submissions.
       bodyContent =
-              jsonFormData && Object.keys(jsonFormData).length > 0
-                      ? jsonFormData
-                      : {};
+        jsonFormData && Object.keys(jsonFormData).length > 0
+          ? jsonFormData
+          : {};
 
       // If schema has a template attachment, wrap body content with template data
       if (schemaBasedTemplate && schemaBasedTemplate.schema && !isEmpty) {
@@ -706,8 +736,8 @@
     // page is accessed via /entries/create (no [subpath] route segment).
     // Falls back to currentPath which was set via loadPrefilledData().
     const resolvedSubpath = (($params.subpath ?? currentPath) || "/").replace(
-            /^\//,
-            "",
+      /^\//,
+      "",
     );
 
     entity = {
@@ -734,31 +764,36 @@
       attributes.payload.schema_shortname = schema_shortname;
 
     const response = await createEntity(
-            selectedSpace,
-            resolvedSubpath,
-            resource_type || ResourceType.content,
-            attributes,
-            entity.shortname || "auto",
+      selectedSpace,
+      resolvedSubpath,
+      resource_type || ResourceType.content,
+      attributes,
+      entity.shortname || "auto",
     );
 
     const msg = isPublish
-            ? $_("create_entry.success.published")
-            : $_("create_entry.success.saved");
+      ? $_("create_entry.success.published")
+      : $_("create_entry.success.saved");
 
     if (response) {
       successToastMessage(msg);
       for (const attachment of attachments) {
         const r = await attachAttachmentsToEntity(
-                response,
-                selectedSpace,
-                resolvedSubpath,
-                attachment,
+          response,
+          selectedSpace,
+          resolvedSubpath,
+          attachment.file,
+          {
+            shortname: attachment.shortname,
+            displayname: toAttachmentTranslationPayload(attachment.displayname),
+            description: toAttachmentTranslationPayload(attachment.description),
+          },
         );
         if (r === false) {
           errorToastMessage(
-                  $_("create_entry.error.attachment_failed", {
-                    values: { name: attachment.name },
-                  }),
+            $_("create_entry.error.attachment_failed", {
+              values: { name: attachment.file.name },
+            }),
           );
         }
       }
@@ -767,9 +802,9 @@
       }, 500);
     } else {
       errorToastMessage(
-              isPublish
-                      ? $_("create_entry.error.publish_failed")
-                      : $_("create_entry.error.save_failed"),
+        isPublish
+          ? $_("create_entry.error.publish_failed")
+          : $_("create_entry.error.save_failed"),
       );
       isLoading = false;
     }
@@ -795,16 +830,16 @@
     // Replace placeholders with values or empty string
     Object.keys(templateFormData).forEach((key) => {
       const placeholderPattern = new RegExp(
-              `\\{\\{${key}(?::[^}]+)?\\}\\}`,
-              "g",
+        `\\{\\{${key}(?::[^}]+)?\\}\\}`,
+        "g",
       );
       let value = templateFormData[key];
-
+      
       // Handle list/array type - join non-empty items
       if (Array.isArray(value)) {
         value = value.filter((item: any) => item && item.trim()).join(", ");
       }
-
+      
       content = content.replace(placeholderPattern, value || "");
     });
 
@@ -884,15 +919,15 @@
           case "string":
           default:
             inputType =
-                    fieldType.toLowerCase() === "textarea" ? "textarea" : "text";
+              fieldType.toLowerCase() === "textarea" ? "textarea" : "text";
             break;
         }
 
         fields.push({
           name: fieldName,
           label: fieldName
-                  .replace(/_/g, " ")
-                  .replace(/\b\w/g, (l) => l.toUpperCase()),
+            .replace(/_/g, " ")
+            .replace(/\b\w/g, (l) => l.toUpperCase()),
           type: inputType,
           originalType: fieldType,
           placeholder,
@@ -904,6 +939,79 @@
     return fields;
   }
 
+  type Crumb = {
+    name: string;
+    route: string | null;
+    params?: Record<string, string>;
+  };
+
+  const breadcrumbs = $derived.by<Crumb[]>(() => {
+    const rootLabel = isAdmin
+      ? $_("admin_content.breadcrumb.admin")
+      : $_("post_detail.breadcrumb.catalogs");
+    const rootRoute = isAdmin ? "/dashboard/admin" : "/catalogs";
+    const spaceRoute = isAdmin
+      ? "/dashboard/admin/[space_name]"
+      : "/catalogs/[space_name]";
+    const subpathRoute = isAdmin
+      ? "/dashboard/admin/[space_name]/[subpath]"
+      : "/catalogs/[space_name]/[subpath]";
+
+    const crumbs: Crumb[] = [{ name: rootLabel, route: rootRoute }];
+
+    if (!selectedSpace) {
+      crumbs.push({ name: $_("my_entries.create_new"), route: null });
+      return crumbs;
+    }
+
+    crumbs.push({
+      name: selectedSpace,
+      route: spaceRoute,
+      params: { space_name: selectedSpace },
+    });
+
+    const rawSubpath: string = ($params.subpath ?? currentPath) || "";
+    const parts: string[] = rawSubpath
+      .replace(/^\//, "")
+      .replace(/-/g, "/")
+      .split("/")
+      .filter((p: string) => p.length > 0);
+
+    let currentUrlPath = "";
+    parts.forEach((part: string, index: number) => {
+      currentUrlPath += (index === 0 ? "" : "-") + part;
+      crumbs.push({
+        name: part,
+        route: subpathRoute,
+        params: { space_name: selectedSpace, subpath: currentUrlPath },
+      });
+    });
+
+    crumbs.push({ name: $_("my_entries.create_new"), route: null });
+    return crumbs;
+  });
+
+  const parentCrumb = $derived(
+    breadcrumbs.length >= 2 ? breadcrumbs[breadcrumbs.length - 2] : null,
+  );
+
+  function navigateToBreadcrumb(crumb: Crumb) {
+    if (!crumb.route) return;
+    if (crumb.params) {
+      $goto(crumb.route, crumb.params);
+    } else {
+      $goto(crumb.route);
+    }
+  }
+
+  function goBack() {
+    if (parentCrumb) {
+      navigateToBreadcrumb(parentCrumb);
+    } else {
+      $goto("/entries");
+    }
+  }
+
   async function loadPrefilledData() {
     const prefilledSpace = $params.space_name || $params.spaceName;
     const prefilledSubpath = $params.subpath;
@@ -912,15 +1020,15 @@
       selectedSpace = prefilledSpace;
       // Normalise: strip leading slash if present (e.g. "/schema" → "schema")
       const normalizedSubpath = prefilledSubpath
-              ? prefilledSubpath.replace(/^\//, "")
-              : "";
+        ? prefilledSubpath.replace(/^\//, "")
+        : "";
       currentPath = normalizedSubpath;
 
       try {
         await loadSubpathLevel(
-                prefilledSpace,
-                normalizedSubpath ? `/${normalizedSubpath}` : "/",
-                0,
+          prefilledSpace,
+          normalizedSubpath ? `/${normalizedSubpath}` : "/",
+          0,
         );
         // updateCanCreateEntry sets metadata (resource_type, schema, workflow)
         // but also overwrites selectedSubpath — restore the correct value after
@@ -940,37 +1048,71 @@
 
 <div class="page-container" class:rtl={$isRTL}>
   <div class="content-wrapper">
-    <div class="header">
-      <button
-              aria-label={$_("entry_detail.navigation.back_to_folder") ||
-          "Back to folder"}
-              class="back-button"
-              onclick={() => {
-          if (selectedSpace) {
-            const resolvedSubpath = (
-              ($params.subpath ?? currentPath) ||
-              "/"
-            ).replace(/^\//, "");
-
-            if (isAdmin) {
-              $goto("/dashboard/admin/[space_name]/[subpath]", {
-                space_name: selectedSpace,
-                subpath: resolvedSubpath,
-              });
-            } else {
-              $goto("/catalogs/[space_name]/[subpath]", {
-                space_name: selectedSpace,
-                subpath: resolvedSubpath,
-              });
-            }
-          } else {
-            $goto("/entries");
-          }
-        }}
-      >
-        <ArrowLeftOutline class="icon back-icon" />
-        <span>{$_("entry_detail.back_to_folder") || "Back to folder"}</span>
-      </button>
+    <div class="create-header">
+      <div class="create-header-inner">
+        <button
+          onclick={goBack}
+          class="w-10 h-10 bg-indigo-50 hover:bg-indigo-100 text-indigo-600 rounded-xl flex items-center justify-center transition-colors shadow-sm"
+          aria-label={$_("entry_detail.navigation.back_to_folder") || "Go back"}
+          type="button"
+        >
+          <svg
+            class="w-5 h-5"
+            fill="none"
+            stroke="currentColor"
+            viewBox="0 0 24 24"
+          >
+            <path
+              stroke-linecap="round"
+              stroke-linejoin="round"
+              stroke-width="2"
+              d="M15 19l-7-7 7-7"
+            />
+          </svg>
+        </button>
+        <div>
+          <h1 class="create-page-title">
+            {$_("my_entries.create_new")}
+          </h1>
+          <nav
+            class="flex text-sm text-gray-500 font-medium mb-1"
+            aria-label="Breadcrumb"
+          >
+            <ol class="inline-flex items-center space-x-2">
+              {#each breadcrumbs as crumb, index}
+                <li class="inline-flex items-center">
+                  {#if index > 0}
+                    <svg
+                      class="w-4 h-4 mx-1 text-gray-400"
+                      fill="none"
+                      stroke="currentColor"
+                      viewBox="0 0 24 24"
+                    >
+                      <path
+                        stroke-linecap="round"
+                        stroke-linejoin="round"
+                        stroke-width="2"
+                        d="M9 5l7 7-7 7"
+                      />
+                    </svg>
+                  {/if}
+                  {#if crumb.route}
+                    <button
+                      onclick={() => navigateToBreadcrumb(crumb)}
+                      class="create-breadcrumb-link"
+                      type="button"
+                    >
+                      {crumb.name}
+                    </button>
+                  {:else}
+                    <span class="create-breadcrumb-current">{crumb.name}</span>
+                  {/if}
+                </li>
+              {/each}
+            </ol>
+          </nav>
+        </div>
+      </div>
     </div>
 
     <div class="action-section">
@@ -986,35 +1128,35 @@
         </div>
         <div class="action-buttons">
           <button
-                  aria-label={$_("create_entry.buttons.save_draft")}
-                  class="draft-button"
-                  onclick={(event) => {
+            aria-label={$_("create_entry.buttons.save_draft")}
+            class="draft-button"
+            onclick={(event) => {
               event.preventDefault();
               handlePublish(false);
             }}
-                  disabled={isLoading || !canCreateEntry}
+            disabled={isLoading || !canCreateEntry}
           >
             <FloppyDiskSolid class="icon button-icon" />
             <span
-            >{isLoading
-                    ? $_("create_entry.buttons.saving")
-                    : $_("create_entry.buttons.save_draft")}</span
+              >{isLoading
+                ? $_("create_entry.buttons.saving")
+                : $_("create_entry.buttons.save_draft")}</span
             >
           </button>
           <button
-                  aria-label={$_("create_entry.buttons.publish_now")}
-                  class="publish-button"
-                  onclick={(event) => {
+            aria-label={$_("create_entry.buttons.publish_now")}
+            class="publish-button"
+            onclick={(event) => {
               event.preventDefault();
               handlePublish(true);
             }}
-                  disabled={isLoading || !canCreateEntry}
+            disabled={isLoading || !canCreateEntry}
           >
             <PaperPlaneSolid class="icon button-icon" />
             <span
-            >{isLoading
-                    ? $_("create_entry.buttons.publishing")
-                    : $_("create_entry.buttons.publish_now")}</span
+              >{isLoading
+                ? $_("create_entry.buttons.publishing")
+                : $_("create_entry.buttons.publish_now")}</span
             >
           </button>
         </div>
@@ -1030,10 +1172,10 @@
         <div class="entry-type-selector">
           <label class="entry-type-option">
             <input
-                    type="radio"
-                    bind:group={entryType}
-                    value="content"
-                    onchange={handleEntryTypeChange}
+              type="radio"
+              bind:group={entryType}
+              value="content"
+              onchange={handleEntryTypeChange}
             />
             <span class="entry-type-label">
               <strong>{$_("create_entry.entry_type.content_title")}</strong>
@@ -1042,22 +1184,10 @@
           </label>
           <label class="entry-type-option">
             <input
-                    type="radio"
-                    bind:group={entryType}
-                    value="poll"
-                    onchange={handleEntryTypeChange}
-            />
-            <span class="entry-type-label">
-              <strong>{$_("create_entry.entry_type.poll_title")}</strong>
-              <small>{$_("create_entry.entry_type.poll_description")}</small>
-            </span>
-          </label>
-          <label class="entry-type-option">
-            <input
-                    type="radio"
-                    bind:group={entryType}
-                    value="structured"
-                    onchange={handleEntryTypeChange}
+              type="radio"
+              bind:group={entryType}
+              value="structured"
+              onchange={handleEntryTypeChange}
             />
             <span class="entry-type-label">
               <strong>Structured Entry</strong>
@@ -1076,30 +1206,30 @@
       <div class="section-content">
         {#if isEditing}
           <input
-                  type="text"
-                  bind:value={title}
-                  onblur={handleInputBlur}
-                  class="title-input"
-                  placeholder={$_("create_entry.title.placeholder")}
-                  id="title-input"
-                  aria-label={$_("create_entry.title.placeholder")}
+            type="text"
+            bind:value={title}
+            onblur={handleInputBlur}
+            class="title-input"
+            placeholder={$_("create_entry.title.placeholder")}
+            id="title-input"
+            aria-label={$_("create_entry.title.placeholder")}
           />
         {:else}
           <div
-                  class="title-display"
-                  tabindex="0"
-                  onkeydown={(e) => {
+            class="title-display"
+            tabindex="0"
+            onkeydown={(e) => {
               if (e.key === "Enter") handleLabelClick();
             }}
-                  role="button"
-                  aria-label={$_("create_entry.title.edit_aria")}
-                  onclick={handleLabelClick}
+            role="button"
+            aria-label={$_("create_entry.title.edit_aria")}
+            onclick={handleLabelClick}
           >
             {#if title}
               {title}
             {:else}
               <span class="title-placeholder"
-              >{$_("create_entry.title.click_to_add")}</span
+                >{$_("create_entry.title.click_to_add")}</span
               >
             {/if}
           </div>
@@ -1115,21 +1245,21 @@
       <div class="section-content">
         <div class="shortname-input-group" class:input-error={shortnameError}>
           <input
-                  type="text"
-                  bind:value={shortname}
-                  class="shortname-input shortname-input-field"
-                  class:input-error={shortnameError}
-                  pattern={shortnamePattern}
-                  placeholder={$_("create_entry.shortname.placeholder")}
-                  id="shortname-input"
-                  aria-label={$_("create_entry.shortname.placeholder")}
-                  oninput={handleShortnameInput}
+            type="text"
+            bind:value={shortname}
+            class="shortname-input shortname-input-field"
+            class:input-error={shortnameError}
+            pattern={shortnamePattern}
+            placeholder={$_("create_entry.shortname.placeholder")}
+            id="shortname-input"
+            aria-label={$_("create_entry.shortname.placeholder")}
+            oninput={handleShortnameInput}
           />
           <button
-                  type="button"
-                  class="shortname-auto-btn"
-                  onclick={() => (shortname = "auto")}
-                  title="Use auto-generated shortname"
+            type="button"
+            class="shortname-auto-btn"
+            onclick={() => (shortname = "auto")}
+            title="Use auto-generated shortname"
           >
             Auto
           </button>
@@ -1157,20 +1287,20 @@
       <div class="section-content">
         <div class="tag-input-container">
           <input
-                  type="text"
-                  id="tag-input"
-                  bind:value={newTag}
-                  placeholder={$_("create_entry.tags.placeholder")}
-                  class="tag-input"
-                  onkeydown={(e) => {
+            type="text"
+            id="tag-input"
+            bind:value={newTag}
+            placeholder={$_("create_entry.tags.placeholder")}
+            class="tag-input"
+            onkeydown={(e) => {
               if (e.key === "Enter") addTag();
             }}
           />
           <button
-                  aria-label={$_("create_entry.tags.add_button")}
-                  class="add-tag-button"
-                  onclick={addTag}
-                  disabled={!newTag.trim()}
+            aria-label={$_("create_entry.tags.add_button")}
+            class="add-tag-button"
+            onclick={addTag}
+            disabled={!newTag.trim()}
           >
             <PlusOutline class="icon button-icon" />
             <span>{$_("create_entry.tags.add_button")}</span>
@@ -1184,9 +1314,9 @@
                 <TagOutline class="tag-icon" />
                 <span class="tag-text">{tag}</span>
                 <button
-                        class="tag-remove"
-                        onclick={() => removeTag(index)}
-                        aria-label={$_("create_entry.tags.remove_aria")}
+                  class="tag-remove"
+                  onclick={() => removeTag(index)}
+                  aria-label={$_("create_entry.tags.remove_aria")}
                 >
                   <CloseCircleOutline class="icon" />
                 </button>
@@ -1213,17 +1343,17 @@
             </div>
             <div class="editor-toggle">
               <button
-                      class="editor-toggle-btn"
-                      class:active={selectedEditorType === "html"}
-                      onclick={() => (selectedEditorType = "html")}
+                class="editor-toggle-btn"
+                class:active={selectedEditorType === "html"}
+                onclick={() => (selectedEditorType = "html")}
               >
                 <span class="editor-icon">🎨</span>
                 <span>{$_("create_entry.content.html_editor")}</span>
               </button>
               <button
-                      class="editor-toggle-btn"
-                      class:active={selectedEditorType === "markdown"}
-                      onclick={() => (selectedEditorType = "markdown")}
+                class="editor-toggle-btn"
+                class:active={selectedEditorType === "markdown"}
+                onclick={() => (selectedEditorType = "markdown")}
               >
                 <span class="editor-icon">📝</span>
                 <span>{$_("create_entry.content.markdown_editor")}</span>
@@ -1235,19 +1365,19 @@
           <div class="editor-container">
             {#if selectedEditorType === "html"}
               <HtmlEditor
-                      bind:this={htmlEditorRef}
-                      bind:content={htmlEditor}
-                      uid="main-editor"
-                      {attachments}
-                      {resource_type}
-                      subpath={$params.subpath}
-                      space_name={selectedSpace}
-                      parent_shortname={shortname}
+                bind:this={htmlEditorRef}
+                bind:content={htmlEditor}
+                uid="main-editor"
+                {attachments}
+                {resource_type}
+                subpath={$params.subpath}
+                space_name={selectedSpace}
+                parent_shortname={shortname}
               />
             {:else}
               <MarkdownEditor
-                      bind:content={markdownContent}
-                      bind:this={markdownEditorRef}
+                bind:content={markdownContent}
+                bind:this={markdownEditorRef}
               />
             {/if}
           </div>
@@ -1268,15 +1398,15 @@
           {:else if availableSchemas.length > 0}
             <div class="schema-selector">
               <label for="schema-select" class="selector-label"
-              >{$_("create_entry.schema.select_label")}</label
+                >{$_("create_entry.schema.select_label")}</label
               >
               <select
-                      id="schema-select"
-                      onchange={handleSchemaChange}
-                      class="destination-select"
+                id="schema-select"
+                onchange={handleSchemaChange}
+                class="destination-select"
               >
                 <option value=""
-                >{$_("create_entry.schema.choose_option")}</option
+                  >{$_("create_entry.schema.choose_option")}</option
                 >
                 {#each availableSchemas as schema}
                   <option value={schema.shortname}>{schema.title}</option>
@@ -1310,8 +1440,8 @@
           </div>
           <div class="section-content">
             <DynamicSchemaBasedForms
-                    bind:content={jsonFormData}
-                    schema={selectedSchema.schema}
+              bind:content={jsonFormData}
+              schema={selectedSchema.schema}
             />
           </div>
         </div>
@@ -1330,7 +1460,7 @@
                 {$_("create_entry.template.schema_template_description") || "This schema includes a template. Fill in the template data below."}
               </p>
             </div>
-
+            
             <!-- Template Data Form Card -->
             <div class="template-data-card">
               <div class="template-data-card-header">
@@ -1358,27 +1488,27 @@
                           {#each templateFormData[field.name] as item, index (index)}
                             <div class="list-input-row">
                               <input
-                                      type="text"
-                                      bind:value={templateFormData[field.name][index]}
-                                      class="field-input list-input"
-                                      placeholder={`Item ${index + 1}`}
+                                type="text"
+                                bind:value={templateFormData[field.name][index]}
+                                class="field-input list-input"
+                                placeholder={`Item ${index + 1}`}
                               />
                               <button
-                                      type="button"
-                                      class="list-btn list-btn-remove"
-                                      onclick={() => {
+                                type="button"
+                                class="list-btn list-btn-remove"
+                                onclick={() => {
                                   templateFormData[field.name] = templateFormData[field.name].filter((_: any, i: any) => i !== index);
                                 }}
-                                      title="Remove item"
+                                title="Remove item"
                               >
                                 ✕
                               </button>
                             </div>
                           {/each}
                           <button
-                                  type="button"
-                                  class="list-btn list-btn-add"
-                                  onclick={() => {
+                            type="button"
+                            class="list-btn list-btn-add"
+                            onclick={() => {
                               templateFormData[field.name] = [...templateFormData[field.name], ''];
                             }}
                           >
@@ -1387,42 +1517,42 @@
                         </div>
                       {:else if field.type === "textarea"}
                         <textarea
-                                id="schema-template-{field.name}"
-                                bind:value={templateFormData[field.name]}
-                                class="field-input field-textarea"
-                                placeholder={field.placeholder}
-                                required={field.required}
-                                rows={field.originalType === "object" || field.originalType === "list_object"
+                          id="schema-template-{field.name}"
+                          bind:value={templateFormData[field.name]}
+                          class="field-input field-textarea"
+                          placeholder={field.placeholder}
+                          required={field.required}
+                          rows={field.originalType === "object" || field.originalType === "list_object"
                             ? 5
                             : 3}
                         ></textarea>
                         {#if field.originalType === "object"}
                           <small class="field-hint"
-                          >Enter valid JSON object</small
+                            >Enter valid JSON object</small
                           >
                         {:else if field.originalType === "list_object"}
                           <small class="field-hint"
-                          >Enter valid JSON array of objects</small
+                            >Enter valid JSON array of objects</small
                           >
                         {/if}
                       {:else if field.type === "checkbox"}
                         <div class="checkbox-wrapper">
                           <input
-                                  id="schema-template-{field.name}"
-                                  type="checkbox"
-                                  bind:checked={templateFormData[field.name]}
-                                  class="field-checkbox"
+                            id="schema-template-{field.name}"
+                            type="checkbox"
+                            bind:checked={templateFormData[field.name]}
+                            class="field-checkbox"
                           />
                           <span class="checkbox-label">Yes</span>
                         </div>
                       {:else}
                         <input
-                                id="schema-template-{field.name}"
-                                type={field.type}
-                                bind:value={templateFormData[field.name]}
-                                class="field-input field-text"
-                                placeholder={field.placeholder}
-                                required={field.required}
+                          id="schema-template-{field.name}"
+                          type={field.type}
+                          bind:value={templateFormData[field.name]}
+                          class="field-input field-text"
+                          placeholder={field.placeholder}
+                          required={field.required}
                         />
                       {/if}
                     </div>
@@ -1458,15 +1588,15 @@
           {:else if availableSchemas.length > 0}
             <div class="schema-selector">
               <label for="schema-select" class="selector-label"
-              >{$_("create_entry.schema.select_label")}</label
+                >{$_("create_entry.schema.select_label")}</label
               >
               <select
-                      id="schema-select"
-                      onchange={handleSchemaChange}
-                      class="destination-select"
+                id="schema-select"
+                onchange={handleSchemaChange}
+                class="destination-select"
               >
                 <option value=""
-                >{$_("create_entry.schema.choose_option")}</option
+                  >{$_("create_entry.schema.choose_option")}</option
                 >
                 {#each availableSchemas as schema}
                   <option value={schema.shortname}>{schema.title}</option>
@@ -1504,8 +1634,8 @@
                 </div>
                 <div class="section-content">
                   <DynamicSchemaBasedForms
-                          bind:content={jsonFormData}
-                          schema={selectedSchema.schema}
+                    bind:content={jsonFormData}
+                    schema={selectedSchema.schema}
                   />
                 </div>
               </div>
@@ -1521,7 +1651,7 @@
                       Fill in the template data below. This will be merged with the form data to create the final structured entry.
                     </p>
                   </div>
-
+                  
                   <div class="template-data-card">
                     <div class="template-data-card-header">
                       <h3 class="template-data-title">
@@ -1547,27 +1677,27 @@
                                 {#each templateFormData[field.name] as item, index (index)}
                                   <div class="list-input-row">
                                     <input
-                                            type="text"
-                                            bind:value={templateFormData[field.name][index]}
-                                            class="field-input list-input"
-                                            placeholder={`Item ${index + 1}`}
+                                      type="text"
+                                      bind:value={templateFormData[field.name][index]}
+                                      class="field-input list-input"
+                                      placeholder={`Item ${index + 1}`}
                                     />
                                     <button
-                                            type="button"
-                                            class="list-btn list-btn-remove"
-                                            onclick={() => {
+                                      type="button"
+                                      class="list-btn list-btn-remove"
+                                      onclick={() => {
                                         templateFormData[field.name] = templateFormData[field.name].filter((_: any, i: any) => i !== index);
                                       }}
-                                            title="Remove item"
+                                      title="Remove item"
                                     >
                                       ✕
                                     </button>
                                   </div>
                                 {/each}
                                 <button
-                                        type="button"
-                                        class="list-btn list-btn-add"
-                                        onclick={() => {
+                                  type="button"
+                                  class="list-btn list-btn-add"
+                                  onclick={() => {
                                     templateFormData[field.name] = [...templateFormData[field.name], ''];
                                   }}
                                 >
@@ -1576,12 +1706,12 @@
                               </div>
                             {:else if field.type === "textarea"}
                               <textarea
-                                      id="structured-template-{field.name}"
-                                      bind:value={templateFormData[field.name]}
-                                      class="field-input field-textarea"
-                                      placeholder={field.placeholder}
-                                      required={field.required}
-                                      rows={field.originalType === "object" || field.originalType === "list_object" ? 5 : 3}
+                                id="structured-template-{field.name}"
+                                bind:value={templateFormData[field.name]}
+                                class="field-input field-textarea"
+                                placeholder={field.placeholder}
+                                required={field.required}
+                                rows={field.originalType === "object" || field.originalType === "list_object" ? 5 : 3}
                               ></textarea>
                               {#if field.originalType === "object"}
                                 <small class="field-hint">Enter valid JSON object</small>
@@ -1591,21 +1721,21 @@
                             {:else if field.type === "checkbox"}
                               <div class="checkbox-wrapper">
                                 <input
-                                        id="structured-template-{field.name}"
-                                        type="checkbox"
-                                        bind:checked={templateFormData[field.name]}
-                                        class="field-checkbox"
+                                  id="structured-template-{field.name}"
+                                  type="checkbox"
+                                  bind:checked={templateFormData[field.name]}
+                                  class="field-checkbox"
                                 />
                                 <span class="checkbox-label">Yes</span>
                               </div>
                             {:else}
                               <input
-                                      id="structured-template-{field.name}"
-                                      type={field.type}
-                                      bind:value={templateFormData[field.name]}
-                                      class="field-input field-text"
-                                      placeholder={field.placeholder}
-                                      required={field.required}
+                                id="structured-template-{field.name}"
+                                type={field.type}
+                                bind:value={templateFormData[field.name]}
+                                class="field-input field-text"
+                                placeholder={field.placeholder}
+                                required={field.required}
                               />
                             {/if}
                           </div>
@@ -1640,8 +1770,8 @@
             </div>
             <div class="section-content">
               <DynamicSchemaBasedForms
-                      bind:content={jsonFormData}
-                      schema={selectedSchema.schema}
+                bind:content={jsonFormData}
+                schema={selectedSchema.schema}
               />
             </div>
           </div>
@@ -1661,8 +1791,8 @@
             </div>
           {:else if pollSchema && pollSchema.schema}
             <DynamicSchemaBasedForms
-                    bind:content={pollFormData}
-                    schema={pollSchema.schema}
+              bind:content={pollFormData}
+              schema={pollSchema.schema}
             />
           {:else}
             <div class="empty-state">
@@ -1686,16 +1816,16 @@
             })}
           </h2>
           <input
-                  type="file"
-                  id="fileInput"
-                  multiple
-                  onchange={handleFileChange}
-                  style="display: none;"
+            type="file"
+            id="fileInput"
+            multiple
+            onchange={handleFileChange}
+            style="display: none;"
           />
           <button
-                  aria-label={$_("create_entry.attachments.add_files")}
-                  class="add-files-button"
-                  onclick={() => document.getElementById("fileInput")?.click()}
+            aria-label={$_("create_entry.attachments.add_files")}
+            class="add-files-button"
+            onclick={() => document.getElementById("fileInput")?.click()}
           >
             <UploadOutline class="icon button-icon" />
             <span>{$_("create_entry.attachments.add_files")}</span>
@@ -1703,33 +1833,33 @@
         </div>
         <div class="section-content">
           {#if attachments.length > 0}
-            <div class="attachments-grid">
+            <div class="attachments-list">
               {#each attachments as attachment, index}
-                <div class="attachment-card">
+                <div class="attachment-row">
                   <div class="attachment-preview">
-                    {#if getPreviewUrl(attachment)}
-                      {#if attachment.type.startsWith("image/")}
+                    {#if getPreviewUrl(attachment.file)}
+                      {#if attachment.file.type.startsWith("image/")}
                         <img
-                                src={getPreviewUrl(attachment) || "/placeholder.svg"}
-                                alt={attachment.name || "no-image"}
-                                class="attachment-image"
+                          src={getPreviewUrl(attachment.file) || "/placeholder.svg"}
+                          alt={attachment.file.name || "no-image"}
+                          class="attachment-image"
                         />
-                      {:else if attachment.type.startsWith("video/")}
+                      {:else if attachment.file.type.startsWith("video/")}
                         <video
-                                src={getPreviewUrl(attachment)}
-                                class="attachment-video"
+                          src={getPreviewUrl(attachment.file)}
+                          class="attachment-video"
                         >
                           <track
-                                  kind="captions"
-                                  src=""
-                                  srclang="en"
-                                  label="English"
+                            kind="captions"
+                            src=""
+                            srclang="en"
+                            label="English"
                           />
                         </video>
                         <div class="video-overlay">
                           <PlayOutline class="play-icon" />
                         </div>
-                      {:else if attachment.type === "application/pdf"}
+                      {:else if attachment.file.type === "application/pdf"}
                         <div class="file-preview">
                           <FilePdfOutline class="file-icon pdf" />
                         </div>
@@ -1740,18 +1870,81 @@
                       </div>
                     {/if}
                   </div>
-                  <div class="attachment-info">
-                    <p class="attachment-name">{attachment.name}</p>
-                    <p class="attachment-size">
-                      {(attachment.size / 1024).toFixed(1)} KB
-                    </p>
+                  <div class="attachment-body">
+                    <div class="attachment-info">
+                      <p class="attachment-name">{attachment.file.name}</p>
+                      <p class="attachment-size">
+                        {(attachment.file.size / 1024).toFixed(1)} KB
+                      </p>
+                    </div>
+                    <div class="attachment-metadata">
+                      <label class="metadata-field">
+                        <span class="metadata-label">{$_("create_entry.attachments.shortname_label")}</span>
+                        <input
+                          type="text"
+                          class="metadata-input"
+                          bind:value={attachments[index].shortname}
+                          placeholder={$_("create_entry.attachments.shortname_placeholder")}
+                        />
+                      </label>
+                      <div class="metadata-field">
+                        <span class="metadata-label">{$_("create_entry.attachments.displayname_label")}</span>
+                        <div class="metadata-lang-grid">
+                          <input
+                            type="text"
+                            class="metadata-input"
+                            bind:value={attachments[index].displayname.en}
+                            placeholder="English"
+                          />
+                          <input
+                            type="text"
+                            class="metadata-input"
+                            bind:value={attachments[index].displayname.ar}
+                            placeholder="العربية"
+                            dir="rtl"
+                          />
+                          <input
+                            type="text"
+                            class="metadata-input"
+                            bind:value={attachments[index].displayname.ku}
+                            placeholder="کوردی"
+                            dir="rtl"
+                          />
+                        </div>
+                      </div>
+                      <div class="metadata-field">
+                        <span class="metadata-label">{$_("create_entry.attachments.description_label")}</span>
+                        <div class="metadata-lang-grid">
+                          <textarea
+                            class="metadata-input"
+                            rows="2"
+                            bind:value={attachments[index].description.en}
+                            placeholder="English"
+                          ></textarea>
+                          <textarea
+                            class="metadata-input"
+                            rows="2"
+                            bind:value={attachments[index].description.ar}
+                            placeholder="العربية"
+                            dir="rtl"
+                          ></textarea>
+                          <textarea
+                            class="metadata-input"
+                            rows="2"
+                            bind:value={attachments[index].description.ku}
+                            placeholder="کوردی"
+                            dir="rtl"
+                          ></textarea>
+                        </div>
+                      </div>
+                    </div>
                   </div>
                   <button
-                          aria-label={$_("create_entry.attachments.remove_file", {
-                      values: { name: attachment.name },
+                    aria-label={$_("create_entry.attachments.remove_file", {
+                      values: { name: attachment.file.name },
                     })}
-                          class="remove-attachment"
-                          onclick={() => removeAttachment(index)}
+                    class="remove-attachment"
+                    onclick={() => removeAttachment(index)}
                   >
                     <TrashBinSolid class="icon" />
                   </button>
@@ -1772,6 +1965,45 @@
 </div>
 
 <style>
+  .create-header {
+    margin-bottom: 2rem;
+  }
+
+  .create-header-inner {
+    display: flex;
+    align-items: center;
+    gap: 1rem;
+  }
+
+  .create-page-title {
+    font-family: var(--font-display);
+    font-weight: 700;
+    font-size: clamp(1.5rem, 3vw, 1.75rem);
+    line-height: 1.2;
+    letter-spacing: -0.02em;
+    color: var(--color-gray-900);
+  }
+
+  .create-breadcrumb-link {
+    font-size: 0.875rem;
+    color: var(--color-gray-400);
+    cursor: pointer;
+    transition: color var(--duration-fast) var(--ease-out);
+    background: none;
+    border: none;
+    padding: 0;
+  }
+
+  .create-breadcrumb-link:hover {
+    color: var(--color-primary-600);
+  }
+
+  .create-breadcrumb-current {
+    font-size: 0.875rem;
+    font-weight: 500;
+    color: var(--color-gray-900);
+  }
+
   .rtl {
     direction: rtl;
   }
@@ -1820,11 +2052,11 @@
     --white: #ffffff;
     --shadow-sm: 0 1px 2px 0 rgba(0, 0, 0, 0.05);
     --shadow-md: 0 4px 6px -1px rgba(0, 0, 0, 0.1),
-    0 2px 4px -1px rgba(0, 0, 0, 0.06);
+      0 2px 4px -1px rgba(0, 0, 0, 0.06);
     --shadow-lg: 0 10px 15px -3px rgba(0, 0, 0, 0.1),
-    0 4px 6px -2px rgba(0, 0, 0, 0.05);
+      0 4px 6px -2px rgba(0, 0, 0, 0.05);
     --shadow-xl: 0 20px 25px -5px rgba(0, 0, 0, 0.1),
-    0 10px 10px -5px rgba(0, 0, 0, 0.04);
+      0 10px 10px -5px rgba(0, 0, 0, 0.04);
     --radius-sm: 0.375rem;
     --radius-md: 0.5rem;
     --radius-lg: 0.75rem;
@@ -1838,19 +2070,19 @@
   .page-container {
     min-height: 100vh;
     background: linear-gradient(
-            135deg,
-            var(--gray-50) 0%,
-            var(--gray-100) 100%
+      135deg,
+      var(--gray-50) 0%,
+      var(--gray-100) 100%
     );
     font-family:
-            "uthmantn",
-            -apple-system,
-            BlinkMacSystemFont,
-            "Segoe UI",
-            Roboto,
-            "Helvetica Neue",
-            Arial,
-            sans-serif;
+      "uthmantn",
+      -apple-system,
+      BlinkMacSystemFont,
+      "Segoe UI",
+      Roboto,
+      "Helvetica Neue",
+      Arial,
+      sans-serif;
     color: var(--gray-800);
     line-height: 1.6;
   }
@@ -1859,35 +2091,6 @@
     max-width: 1200px;
     margin: 0 auto;
     padding: 2rem;
-  }
-
-  .header {
-    display: flex;
-    justify-content: space-between;
-    align-items: center;
-    margin-bottom: 2rem;
-  }
-
-  .back-button {
-    display: flex;
-    align-items: center;
-    gap: 0.5rem;
-    padding: 0.75rem 1.5rem;
-    background: var(--white);
-    border: 1px solid var(--gray-200);
-    border-radius: var(--radius-lg);
-    color: var(--gray-600);
-    font-weight: 500;
-    transition: all 0.2s ease;
-    cursor: pointer;
-  }
-
-  .back-button:hover {
-    background: var(--gray-50);
-    border-color: var(--gray-300);
-    color: var(--gray-800);
-    transform: translateY(-1px);
-    box-shadow: var(--shadow-md);
   }
 
   .action-section {
@@ -2039,8 +2242,8 @@
     border-radius: var(--radius-lg);
     overflow: hidden;
     transition:
-            border-color 0.2s ease,
-            box-shadow 0.2s ease;
+      border-color 0.2s ease,
+      box-shadow 0.2s ease;
   }
 
   .shortname-input-group:focus-within {
@@ -2074,8 +2277,8 @@
     letter-spacing: 0.03em;
     cursor: pointer;
     transition:
-            background 0.15s ease,
-            color 0.15s ease;
+      background 0.15s ease,
+      color 0.15s ease;
     white-space: nowrap;
   }
 
@@ -2285,33 +2488,38 @@
     box-shadow: var(--shadow-md);
   }
 
-  .attachments-grid {
-    display: grid;
-    grid-template-columns: repeat(auto-fill, minmax(200px, 1fr));
-    gap: 1.5rem;
+  .attachments-list {
+    display: flex;
+    flex-direction: column;
+    gap: 1rem;
   }
 
-  .attachment-card {
+  .attachment-row {
     background: var(--white);
     border: 1px solid var(--gray-200);
     border-radius: var(--radius-lg);
     overflow: hidden;
     transition: all 0.2s ease;
     position: relative;
+    display: flex;
+    align-items: stretch;
+    gap: 0;
   }
 
-  .attachment-card:hover {
+  .attachment-row:hover {
     border-color: var(--primary-color);
-    transform: translateY(-2px);
-    box-shadow: var(--shadow-lg);
+    box-shadow: var(--shadow-md);
   }
 
   .attachment-preview {
-    width: 100%;
-    height: 150px;
+    flex: 0 0 10rem;
+    width: 10rem;
+    height: auto;
+    min-height: 10rem;
     position: relative;
     overflow: hidden;
     background: var(--gray-50);
+    border-right: 1px solid var(--gray-200);
   }
 
   .attachment-image,
@@ -2344,9 +2552,19 @@
     background: var(--gray-50);
   }
 
+  .attachment-body {
+    flex: 1 1 auto;
+    min-width: 0;
+    display: flex;
+    flex-direction: column;
+    padding: 1rem 1rem 1rem 1rem;
+    gap: 0.75rem;
+  }
+
   .attachment-info {
-    padding: 1rem;
-    border-top: 1px solid var(--gray-200);
+    padding: 0;
+    border-top: none;
+    padding-right: 2.5rem;
   }
 
   .attachment-name {
@@ -2363,6 +2581,50 @@
     margin: 0;
     font-size: 0.75rem;
     color: var(--gray-500);
+  }
+
+  .attachment-metadata {
+    padding: 0;
+    display: flex;
+    flex-direction: column;
+    gap: 0.625rem;
+  }
+
+  .metadata-lang-grid {
+    display: grid;
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+    gap: 0.5rem;
+  }
+
+  .metadata-field {
+    display: flex;
+    flex-direction: column;
+    gap: 0.25rem;
+  }
+
+  .metadata-label {
+    font-size: 0.75rem;
+    font-weight: 500;
+    color: var(--gray-600);
+  }
+
+  .metadata-input {
+    width: 100%;
+    padding: 0.5rem 0.625rem;
+    border: 1px solid var(--gray-200);
+    border-radius: var(--radius-md, 0.5rem);
+    font-size: 0.8125rem;
+    color: var(--gray-800);
+    background: var(--white);
+    transition: border-color 0.15s ease, box-shadow 0.15s ease;
+    resize: vertical;
+    font-family: inherit;
+  }
+
+  .metadata-input:focus {
+    outline: none;
+    border-color: var(--primary-color);
+    box-shadow: 0 0 0 2px rgba(99, 102, 241, 0.15);
   }
 
   .remove-attachment {
@@ -2383,7 +2645,7 @@
     opacity: 0;
   }
 
-  .attachment-card:hover .remove-attachment {
+  .attachment-row:hover .remove-attachment {
     opacity: 1;
   }
 
@@ -2421,12 +2683,6 @@
       padding: 1rem;
     }
 
-    .header {
-      flex-direction: column;
-      gap: 1rem;
-      align-items: stretch;
-    }
-
     .action-content {
       flex-direction: column;
       gap: 1.5rem;
@@ -2445,9 +2701,25 @@
       gap: 0.75rem;
     }
 
-    .attachments-grid {
-      grid-template-columns: repeat(auto-fill, minmax(150px, 1fr));
-      gap: 1rem;
+    .attachments-list {
+      gap: 0.75rem;
+    }
+
+    .attachment-row {
+      flex-direction: column;
+    }
+
+    .attachment-preview {
+      flex: 0 0 9rem;
+      width: 100%;
+      height: 9rem;
+      min-height: 0;
+      border-right: none;
+      border-bottom: 1px solid var(--gray-200);
+    }
+
+    .metadata-lang-grid {
+      grid-template-columns: 1fr;
     }
   }
 
@@ -2810,14 +3082,14 @@
     border-radius: 0.5rem;
     padding: 1rem;
     font-family:
-            "uthmantn",
-            -apple-system,
-            BlinkMacSystemFont,
-            "Segoe UI",
-            Roboto,
-            "Helvetica Neue",
-            Arial,
-            sans-serif;
+      "uthmantn",
+      -apple-system,
+      BlinkMacSystemFont,
+      "Segoe UI",
+      Roboto,
+      "Helvetica Neue",
+      Arial,
+      sans-serif;
     line-height: 1.6;
     color: #374151;
   }

@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { Modal } from "flowbite-svelte";
+  import Modal from "@/components/Modal.svelte";
   import { _, locale } from "@/i18n";
   import { onMount } from "svelte";
   import {
@@ -226,19 +226,16 @@
   }
 </script>
 
+{#if open}
 <Modal
   {title}
-  bind:open
+  onClose={onClose}
+  ariaLabel={title}
   size="lg"
-  class="bg-white dark:bg-white max-h-[90vh]"
-  headerClass="text-gray-900 dark:text-gray-900"
-  bodyClass="bg-white dark:bg-white text-gray-700 p-4 md:p-5 space-y-4 overflow-y-auto overscroll-contain max-h-[70vh]"
-  footerClass="bg-white dark:bg-white flex items-center p-4 md:p-5 space-x-3 rtl:space-x-reverse rounded-b-lg shrink-0"
-  placement="center"
-  autoclose={false}
   dismissable={!isSubmitting}
 >
-  <p class="text-sm text-gray-500 -mt-2">
+  <div class="space-y-4">
+  <p class="text-sm text-gray-500">
     {#if isMove}
       The {records.length === 1 ? "item" : "items"} will be relocated to the
       destination. The source entries will no longer appear in this folder.
@@ -303,11 +300,12 @@
       {/each}
     </ul>
   </div>
+  </div>
 
   {#snippet footer()}
     <button
       onclick={onClose}
-      class="rounded-lg border border-gray-200 bg-white px-4 py-2 text-sm font-medium text-gray-700 hover:bg-gray-50 disabled:opacity-60"
+      class="rounded-xl border border-gray-200 bg-white px-5 py-2.5 text-sm font-medium text-gray-700 hover:bg-gray-50 disabled:opacity-60"
       disabled={isSubmitting}
     >
       Cancel
@@ -315,9 +313,9 @@
     <button
       onclick={handleSubmit}
       disabled={isSubmitting || !selectedSpace || records.length === 0}
-      class="inline-flex items-center gap-2 rounded-lg {isMove
+      class="inline-flex items-center gap-2 rounded-xl {isMove
         ? 'bg-amber-600 hover:bg-amber-700'
-        : 'bg-indigo-600 hover:bg-indigo-700'} px-4 py-2 text-sm font-semibold text-white disabled:opacity-60"
+        : 'bg-indigo-600 hover:bg-indigo-700'} px-6 py-2.5 text-sm font-semibold text-white shadow-md disabled:opacity-60"
     >
       {#if isSubmitting}
         <span class="h-4 w-4 animate-spin rounded-full border-2 border-white/40 border-t-white"></span>
@@ -328,3 +326,4 @@
     </button>
   {/snippet}
 </Modal>
+{/if}

@@ -1,6 +1,7 @@
 <script lang="ts">
   import { _ } from "@/i18n";
-  import { Button, Modal } from "flowbite-svelte";
+  import { Button } from "flowbite-svelte";
+  import Modal from "@/components/Modal.svelte";
   import { ResourceType } from "@edraj/tsdmart";
   import {
     successToastMessage,
@@ -333,15 +334,17 @@
   });
 </script>
 
+{#if isOpen}
 <Modal
-  bind:open={isOpen}
+  onClose={() => (isOpen = false)}
   title={$_("attachment_modal.title")}
-  size="xl"
-  class="attachment-modal"
-  bodyClass="p-6"
-  headerClass="flex items-center justify-between p-6 border-b border-gray-200"
-  footerClass="flex justify-end gap-3 p-6 border-t border-gray-200"
+  ariaLabel={$_("attachment_modal.title")}
+  size="2xl"
+  dismissable={!isUploading}
 >
+  {#snippet icon()}
+    <UploadOutline class="w-6 h-6" />
+  {/snippet}
   <div class="space-y-6">
     <!-- File Upload Area -->
     <div class="p-6 bg-gray-50 rounded-xl">
@@ -722,6 +725,7 @@
     </Button>
   {/snippet}
 </Modal>
+{/if}
 
 <style>
   :global(.attachment-modal) {

@@ -12,6 +12,8 @@
   } from "@/lib/dmart_services";
   import { formatDate, formatNumberInText } from "@/lib/helpers";
   import Attachments from "@/components/Attachments.svelte";
+  import BreadcrumbNavigation from "@/components/navigation/BreadcrumbNavigation.svelte";
+  import { generateBreadcrumbs } from "@/lib/utils/postUtils";
   import { ResourceType, DmartScope } from "@edraj/tsdmart";
   import { user } from "@/stores/user";
   import {
@@ -20,7 +22,6 @@
   } from "@/lib/toasts_messages";
   import Avatar from "@/components/Avatar.svelte";
   import {
-    ArrowLeftOutline,
     CheckCircleSolid,
     ClockOutline,
     CloseCircleSolid,
@@ -413,40 +414,37 @@
 {:else if entity}
   <div class="page-container" class:rtl={$isRTL}>
     <div class="content-wrapper">
-      <!-- Header -->
-      <div class="header">
-        <button
-          aria-label={$_("entry_detail.navigation.back_to_folder") ||
-            "Back to folder"}
-          class="back-button"
-          onclick={() =>
-            $goto(`/catalogs/${$params.space_name}/${$params.subpath}`)}
-        >
-          <ArrowLeftOutline class="w-5 h-5" />
-          {$_("entry_detail.back_to_folder") || "Back to folder"}
-        </button>
+      <BreadcrumbNavigation
+        breadcrumbs={generateBreadcrumbs(
+          $params.space_name,
+          ($params.subpath || "").replace(/-/g, "/"),
+          $params.shortname,
+          $_("post_detail.breadcrumb.catalogs"),
+        )}
+        onGoBack={() =>
+          $goto(`/catalogs/${$params.space_name}/${$params.subpath}`)}
+      />
 
-        {#if isOwner}
-          <div class="flex mx-4">
-            <button
-              aria-label={$_("entry_detail.navigation.edit_entry")}
-              class="edit-button mx-2"
-              onclick={() => handleEdit(entity)}
-            >
-              <EditOutline class="w-4 h-4" />
-              {$_("entry_detail.edit_entry")}
-            </button>
-            <button
-              aria-label={$_("entry_detail.navigation.edit_entry")}
-              class="delete-button mx-2"
-              onclick={() => handleDeleteItem(entity)}
-            >
-              <TrashBinOutline class="w-4 h-4" />
-              {$_("entry_detail.delete_entry")}
-            </button>
-          </div>
-        {/if}
-      </div>
+      {#if isOwner}
+        <div class="entry-actions">
+          <button
+            aria-label={$_("entry_detail.navigation.edit_entry")}
+            class="edit-button mx-2"
+            onclick={() => handleEdit(entity)}
+          >
+            <EditOutline class="w-4 h-4" />
+            {$_("entry_detail.edit_entry")}
+          </button>
+          <button
+            aria-label={$_("entry_detail.navigation.edit_entry")}
+            class="delete-button mx-2"
+            onclick={() => handleDeleteItem(entity)}
+          >
+            <TrashBinOutline class="w-4 h-4" />
+            {$_("entry_detail.delete_entry")}
+          </button>
+        </div>
+      {/if}
 
       <!-- Status Banner -->
       <div class="status-banner">
@@ -788,6 +786,12 @@
     color: #64748b;
     margin-top: 1rem;
     font-size: 1.125rem;
+  }
+
+  .entry-actions {
+    display: flex;
+    justify-content: flex-end;
+    margin-bottom: 2rem;
   }
 
   .header {

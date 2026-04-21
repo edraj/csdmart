@@ -1,5 +1,7 @@
 <script lang="ts">
   import MarkdownEditor from "@/components/editors/MarkdownEditor.svelte";
+  import Modal from "@/components/Modal.svelte";
+  import { FileLinesSolid } from "flowbite-svelte-icons";
   import { createTemplate, getSpaceSchema } from "@/lib/dmart_services";
   import { _ } from "@/i18n";
   import { writable } from "svelte/store";
@@ -177,32 +179,18 @@
   }
 </script>
 
-<!-- Create Template Modal -->
-<div
-  class="modal-overlay"
-  role="button"
-  tabindex="0"
-  onclick={closeModal}
-  onkeydown={(e) => {
-    if (e.key === "Escape") closeModal();
-  }}
+<Modal
+  onClose={closeModal}
+  dismissable={!$isSaving}
+  title={$_("templates.create_modal.title")}
+  ariaLabel={$_("templates.create_modal.title")}
+  size="3xl"
 >
-  <div
-    class="modal"
-    role="dialog"
-    aria-modal="true"
-    tabindex="-1"
-    onclick={(event) => event.stopPropagation()}
-    onkeydown={(event) => event.stopPropagation()}
-  >
-    <div class="modal-header">
-      <h2>{$_("templates.create_modal.title")}</h2>
-      <button class="close-btn" type="button" onclick={closeModal}>
-        &times;
-      </button>
-    </div>
+  {#snippet icon()}
+    <FileLinesSolid class="w-6 h-6" />
+  {/snippet}
 
-    <div class="modal-body">
+  <div class="template-body">
       <div class="form-group">
         <label for="create-template-name">
           {$_("templates.form.name_label")}
@@ -380,105 +368,35 @@
           {/if}
         </div>
       </div>
-    </div>
-
-    <div class="modal-footer">
-      <button
-        class="btn btn-primary"
-        onclick={handleSave}
-        disabled={$isSaving || !$templateName.trim() || (isSpaceLocked && !$schemaShortname.trim())}
-      >
-        {#if $isSaving}
-          <span class="spinner-sm"></span>
-          {$_("common.saving")}
-        {:else}
-          {$_("templates.form.save_button")}
-        {/if}
-      </button>
-      <button
-        class="btn btn-secondary"
-        onclick={closeModal}
-        disabled={$isSaving}
-      >
-        {$_("common.cancel")}
-      </button>
-    </div>
   </div>
-</div>
+
+  {#snippet footer()}
+    <button
+      class="btn btn-secondary"
+      onclick={closeModal}
+      disabled={$isSaving}
+    >
+      {$_("common.cancel")}
+    </button>
+    <button
+      class="btn btn-primary"
+      onclick={handleSave}
+      disabled={$isSaving || !$templateName.trim() || (isSpaceLocked && !$schemaShortname.trim())}
+    >
+      {#if $isSaving}
+        <span class="spinner-sm"></span>
+        {$_("common.saving")}
+      {:else}
+        {$_("templates.form.save_button")}
+      {/if}
+    </button>
+  {/snippet}
+</Modal>
 
 <style>
-  /* Modal Styles */
-  .modal-overlay {
-    position: fixed;
-    top: 0;
-    left: 0;
-    right: 0;
-    bottom: 0;
-    background-color: rgba(0, 0, 0, 0.5);
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    z-index: 1000;
-    padding: 1rem;
-  }
-
-  .modal {
-    background: white;
-    border-radius: 0.5rem;
-    box-shadow: 0 20px 25px -5px rgba(0, 0, 0, 0.1);
-    width: 100%;
-    max-width: 800px;
-    max-height: 90vh;
-    overflow: hidden;
+  .template-body {
     display: flex;
     flex-direction: column;
-  }
-
-  .modal-header {
-    display: flex;
-    align-items: center;
-    justify-content: space-between;
-    padding: 1.5rem;
-    border-bottom: 1px solid #e5e7eb;
-  }
-
-  .modal-header h2 {
-    font-size: 1.25rem;
-    font-weight: 600;
-    color: #111827;
-    margin: 0;
-  }
-
-  .close-btn {
-    background: none;
-    border: none;
-    font-size: 1.5rem;
-    color: #6b7280;
-    cursor: pointer;
-    padding: 0;
-    width: 2rem;
-    height: 2rem;
-    display: flex;
-    align-items: center;
-    justify-content: center;
-  }
-
-  .close-btn:hover {
-    color: #374151;
-  }
-
-  .modal-body {
-    padding: 1.5rem;
-    overflow-y: auto;
-    flex: 1;
-  }
-
-  .modal-footer {
-    display: flex;
-    justify-content: flex-end;
-    gap: 0.75rem;
-    padding: 1.5rem;
-    border-top: 1px solid #e5e7eb;
   }
 
   /* Form Styles */
@@ -596,10 +514,10 @@
 
   /* Button Styles */
   .btn {
-    padding: 0.5rem 1rem;
-    border-radius: 0.375rem;
+    padding: 0.625rem 1.5rem;
+    border-radius: 0.75rem;
     font-size: 0.875rem;
-    font-weight: 500;
+    font-weight: 600;
     cursor: pointer;
     transition: all 0.2s ease;
     border: none;
@@ -609,8 +527,9 @@
   }
 
   .btn-primary {
-    background-color: #5850ec;
+    background-color: #4f46e5;
     color: white;
+    box-shadow: 0 2px 8px rgba(79, 70, 229, 0.2);
   }
 
   .btn-primary:hover:not(:disabled) {
@@ -620,15 +539,17 @@
   .btn-primary:disabled {
     background-color: #9ca3af;
     cursor: not-allowed;
+    box-shadow: none;
   }
 
   .btn-secondary {
-    background-color: #f3f4f6;
-    color: #374151;
+    background-color: transparent;
+    color: #4b5563;
   }
 
   .btn-secondary:hover:not(:disabled) {
-    background-color: #e5e7eb;
+    background-color: #f3f4f6;
+    color: #111827;
   }
 
   .btn-secondary:disabled {
@@ -773,17 +694,10 @@
   }
 
   @media (max-width: 640px) {
-    .modal {
-      margin: 0;
-      height: 100vh;
-      max-height: 100vh;
-      border-radius: 0;
-    }
-
     .info-grid {
       grid-template-columns: 1fr;
     }
-    
+
     .form-row {
       flex-direction: column;
     }

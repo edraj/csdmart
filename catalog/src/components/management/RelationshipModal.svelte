@@ -1,6 +1,6 @@
 <script lang="ts">
   import { _ } from "@/i18n";
-  import { Modal } from "flowbite-svelte";
+  import Modal from "@/components/Modal.svelte";
   import { Dmart, RequestType, ResourceType } from "@edraj/tsdmart";
   import { successToastMessage, errorToastMessage } from "@/lib/toasts_messages";
   import { getChildren, getChildrenAndSubChildren } from "@/lib/dmart_services";
@@ -234,14 +234,12 @@
   }
 </script>
 
-<Modal 
-  bind:open={isOpen} 
-  title={$_("relationship_modal.title")} 
-  size="xl"
-  class="relationship-modal"
-  bodyClass="p-6"
-  headerClass="flex items-center justify-between p-6 border-b border-gray-200"
-  footerClass="flex justify-end p-6 border-t border-gray-200"
+{#if isOpen}
+<Modal
+  onClose={() => (isOpen = false)}
+  title={$_("relationship_modal.title")}
+  ariaLabel={$_("relationship_modal.title")}
+  size="2xl"
 >
   <div class="space-y-6 w-full">
     <!-- Existing relationships list -->
@@ -458,12 +456,13 @@
       onclick={() => {
         isOpen = false;
       }}
-      class="px-4 py-2 text-sm font-medium text-black bg-white border border-gray-300 rounded-lg hover:bg-gray-50"
+      class="px-5 py-2.5 text-sm font-medium text-gray-700 bg-white border border-gray-200 rounded-xl hover:bg-gray-50"
     >
       {$_("common.close")}
     </button>
   {/snippet}
 </Modal>
+{/if}
 
 <style>
   :global(.relationship-modal) {

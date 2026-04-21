@@ -1,13 +1,14 @@
 <script lang="ts">
   import { createEventDispatcher } from "svelte";
-  import { _, locale } from "@/i18n";
+  import { _ } from "@/i18n";
   import { createReport } from "@/lib/dmart_services";
   import {
     successToastMessage,
     errorToastMessage,
   } from "@/lib/toasts_messages";
-  import { params } from "@roxi/routify";
   import ReportThankYouModal from "./ReportThankYouModal.svelte";
+  import Modal from "./Modal.svelte";
+  import { FlagSolid } from "flowbite-svelte-icons";
 
   const dispatch = createEventDispatcher();
 
@@ -97,163 +98,121 @@
       isSubmitting = false;
     }
   }
-
-  function handleBackdropClick(event: any) {
-    if (event.target === event.currentTarget) {
-      closeModal();
-    }
-  }
-
-  function handleKeydown(event: any) {
-    if (event.key === "Escape") {
-      closeModal();
-    }
-  }
 </script>
 
 {#if isVisible}
-  <!-- svelte-ignore a11y-click-events-have-key-events -->
-  <!-- svelte-ignore a11y-no-static-element-interactions -->
-  <div
-    class="modal-backdrop"
-    on:click={handleBackdropClick}
-    on:keydown={handleKeydown}
+  <Modal
+    onClose={closeModal}
+    title={$_("reports.modal.title")}
+    ariaLabel={$_("reports.modal.title")}
+    size="lg"
   >
-    <div class="modal-container">
-      <div class="modal-header">
-        <h2 class="modal-title">{$_("reports.modal.title")}</h2>
-        <button
-          type="button"
-          class="close-button"
-          on:click={closeModal}
-          aria-label={$_("common.close")}
+    {#snippet icon()}
+      <FlagSolid class="w-6 h-6" />
+    {/snippet}
+
+    <div class="reporting-info">
+      <h3 class="info-title">{$_("reports.modal.reporting_entry")}</h3>
+      <p class="entry-info">
+        <span class="entry-title">{entryTitle}</span>
+        <span class="entry-id">({entryShortname})</span>
+      </p>
+    </div>
+
+    <form on:submit|preventDefault={submitReport} class="report-form">
+      <div class="form-group">
+        <label for="reportType" class="form-label">
+          {$_("reports.modal.report_type")}
+        </label>
+        <select
+          id="reportType"
+          bind:value={selectedReportType}
+          class="form-select"
+          required
         >
-          <svg
-            class="close-icon"
-            fill="none"
-            stroke="currentColor"
-            viewBox="0 0 24 24"
-          >
+          {#each reportTypes as type}
+            <option value={type.value}>{type.label}</option>
+          {/each}
+        </select>
+      </div>
+
+      <div class="form-group">
+        <label for="reportTitle" class="form-label">
+          {$_("reports.modal.report_title")}
+          <span class="required">*</span>
+        </label>
+        <input
+          id="reportTitle"
+          type="text"
+          bind:value={reportTitle}
+          class="form-input"
+          placeholder={$_("reports.modal.title_placeholder")}
+          required
+          maxlength="200"
+        />
+      </div>
+
+      <div class="form-group">
+        <label for="reportDescription" class="form-label">
+          {$_("reports.modal.description")}
+          <span class="required">*</span>
+        </label>
+        <textarea
+          id="reportDescription"
+          bind:value={reportDescription}
+          class="form-textarea"
+          placeholder={$_("reports.modal.description_placeholder")}
+          required
+          rows="4"
+          maxlength="1000"
+        ></textarea>
+        <div class="character-count">
+          {reportDescription.length}/1000
+        </div>
+      </div>
+    </form>
+
+    {#snippet footer()}
+      <button
+        type="button"
+        class="cancel-button"
+        on:click={closeModal}
+        disabled={isSubmitting}
+      >
+        {$_("common.cancel")}
+      </button>
+      <button
+        type="button"
+        class="submit-button"
+        on:click={submitReport}
+        disabled={isSubmitting ||
+          !reportTitle.trim() ||
+          !reportDescription.trim()}
+      >
+        {#if isSubmitting}
+          <svg class="spinner" viewBox="0 0 24 24">
+            <circle
+              cx="12"
+              cy="12"
+              r="10"
+              stroke="currentColor"
+              stroke-width="4"
+              fill="none"
+              opacity="0.25"
+            />
             <path
-              stroke-linecap="round"
-              stroke-linejoin="round"
-              stroke-width="2"
-              d="M6 18L18 6M6 6l12 12"
+              fill="currentColor"
+              d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"
+              opacity="0.75"
             />
           </svg>
-        </button>
-      </div>
-
-      <div class="modal-body">
-        <!-- Reporting entry info -->
-        <div class="reporting-info">
-          <h3 class="info-title">{$_("reports.modal.reporting_entry")}</h3>
-          <p class="entry-info">
-            <span class="entry-title">{entryTitle}</span>
-            <span class="entry-id">({entryShortname})</span>
-          </p>
-        </div>
-
-        <!-- Report form -->
-        <form on:submit|preventDefault={submitReport} class="report-form">
-          <!-- Report Type -->
-          <div class="form-group">
-            <label for="reportType" class="form-label">
-              {$_("reports.modal.report_type")}
-            </label>
-            <select
-              id="reportType"
-              bind:value={selectedReportType}
-              class="form-select"
-              required
-            >
-              {#each reportTypes as type}
-                <option value={type.value}>{type.label}</option>
-              {/each}
-            </select>
-          </div>
-
-          <!-- Report Title -->
-          <div class="form-group">
-            <label for="reportTitle" class="form-label">
-              {$_("reports.modal.report_title")}
-              <span class="required">*</span>
-            </label>
-            <input
-              id="reportTitle"
-              type="text"
-              bind:value={reportTitle}
-              class="form-input"
-              placeholder={$_("reports.modal.title_placeholder")}
-              required
-              maxlength="200"
-            />
-          </div>
-
-          <!-- Report Description -->
-          <div class="form-group">
-            <label for="reportDescription" class="form-label">
-              {$_("reports.modal.description")}
-              <span class="required">*</span>
-            </label>
-            <textarea
-              id="reportDescription"
-              bind:value={reportDescription}
-              class="form-textarea"
-              placeholder={$_("reports.modal.description_placeholder")}
-              required
-              rows="4"
-              maxlength="1000"
-            ></textarea>
-            <div class="character-count">
-              {reportDescription.length}/1000
-            </div>
-          </div>
-
-          <!-- Actions -->
-          <div class="modal-actions">
-            <button
-              type="button"
-              class="cancel-button"
-              on:click={closeModal}
-              disabled={isSubmitting}
-            >
-              {$_("common.cancel")}
-            </button>
-            <button
-              type="submit"
-              class="submit-button"
-              disabled={isSubmitting ||
-                !reportTitle.trim() ||
-                !reportDescription.trim()}
-            >
-              {#if isSubmitting}
-                <svg class="spinner" viewBox="0 0 24 24">
-                  <circle
-                    cx="12"
-                    cy="12"
-                    r="10"
-                    stroke="currentColor"
-                    stroke-width="4"
-                    fill="none"
-                    opacity="0.25"
-                  />
-                  <path
-                    fill="currentColor"
-                    d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"
-                    opacity="0.75"
-                  />
-                </svg>
-                {$_("reports.modal.submitting")}
-              {:else}
-                {$_("reports.modal.submit_report")}
-              {/if}
-            </button>
-          </div>
-        </form>
-      </div>
-    </div>
-  </div>
+          {$_("reports.modal.submitting")}
+        {:else}
+          {$_("reports.modal.submit_report")}
+        {/if}
+      </button>
+    {/snippet}
+  </Modal>
 {/if}
 
 <ReportThankYouModal
@@ -262,69 +221,6 @@
 />
 
 <style>
-  .modal-backdrop {
-    position: fixed;
-    inset: 0;
-    background-color: rgba(0, 0, 0, 0.4);
-    backdrop-filter: blur(4px);
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    z-index: 1000;
-    padding: 1rem;
-    animation: fadeIn var(--duration-fast) var(--ease-out);
-  }
-
-  .modal-container {
-    background: var(--surface-card);
-    border-radius: var(--radius-xl);
-    box-shadow: var(--shadow-xl);
-    max-width: 32rem;
-    width: 100%;
-    max-height: 90vh;
-    overflow-y: auto;
-    animation: scaleIn var(--duration-normal) var(--ease-out);
-  }
-
-  .modal-header {
-    display: flex;
-    align-items: center;
-    justify-content: space-between;
-    padding: 1.5rem 1.5rem 1rem 1.5rem;
-    border-bottom: 1px solid var(--color-gray-200);
-  }
-
-  .modal-title {
-    font-size: 1.25rem;
-    font-weight: 600;
-    color: var(--color-gray-900);
-    margin: 0;
-  }
-
-  .close-button {
-    background: none;
-    border: none;
-    color: var(--color-gray-500);
-    cursor: pointer;
-    padding: 0.25rem;
-    border-radius: var(--radius-sm);
-    transition: background var(--duration-fast) ease, color var(--duration-fast) ease;
-  }
-
-  .close-button:hover {
-    color: var(--color-gray-700);
-    background-color: var(--color-gray-100);
-  }
-
-  .close-icon {
-    width: 1.5rem;
-    height: 1.5rem;
-  }
-
-  .modal-body {
-    padding: 1.5rem;
-  }
-
   .reporting-info {
     background-color: var(--color-gray-50);
     border: 1px solid var(--color-gray-200);
@@ -384,6 +280,7 @@
     border-radius: var(--radius-md);
     padding: 0.75rem;
     font-size: 0.875rem;
+    background: white;
     transition:
       border-color var(--duration-fast) ease,
       box-shadow var(--duration-fast) ease;
@@ -409,19 +306,12 @@
     margin-top: 0.25rem;
   }
 
-  .modal-actions {
-    display: flex;
-    gap: 0.75rem;
-    justify-content: flex-end;
-    margin-top: 1.5rem;
-  }
-
   .cancel-button,
   .submit-button {
-    padding: 0.75rem 1.5rem;
-    border-radius: var(--radius-lg);
+    padding: 0.625rem 1.5rem;
+    border-radius: 0.75rem;
     font-size: 0.875rem;
-    font-weight: 500;
+    font-weight: 600;
     cursor: pointer;
     transition: all var(--duration-normal) var(--ease-out);
     display: flex;
@@ -430,13 +320,14 @@
   }
 
   .cancel-button {
-    background-color: var(--surface-card);
-    color: var(--color-gray-700);
-    border: 1px solid var(--color-gray-300);
+    background-color: transparent;
+    color: var(--color-gray-600);
+    border: 1px solid transparent;
   }
 
   .cancel-button:hover:not(:disabled) {
-    background-color: var(--color-gray-50);
+    background-color: var(--color-gray-100);
+    color: var(--color-gray-900);
   }
 
   .submit-button {
@@ -448,7 +339,6 @@
   .submit-button:hover:not(:disabled) {
     background-color: #b91c1c;
     border-color: #b91c1c;
-    transform: translateY(-1px);
   }
 
   .submit-button:disabled,
@@ -463,25 +353,9 @@
     animation: spin 1s linear infinite;
   }
 
-  @media (max-width: 640px) {
-    .modal-container {
-      margin: 0.5rem;
-      max-height: calc(100vh - 1rem);
-    }
-
-    .modal-header,
-    .modal-body {
-      padding: 1rem;
-    }
-
-    .modal-actions {
-      flex-direction: column;
-    }
-
-    .cancel-button,
-    .submit-button {
-      width: 100%;
-      justify-content: center;
+  @keyframes spin {
+    to {
+      transform: rotate(360deg);
     }
   }
 </style>

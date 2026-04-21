@@ -1,6 +1,8 @@
 <script lang="ts">
   import { _ } from "@/i18n";
   import type { UserData } from "@/lib/utils/messagingUtils";
+  import Modal from "@/components/Modal.svelte";
+  import { UsersSolid } from "flowbite-svelte-icons";
 
   interface Props {
     mode: "create" | "edit";
@@ -55,20 +57,17 @@
 </script>
 
 {#if show}
-  <div class="modal-overlay" role="dialog" aria-modal="true" tabindex="-1">
-    <div class="modal-content" role="document">
-      <div class="modal-header">
-        <h3>{modalTitle}</h3>
-        <button
-          class="close-btn"
-          onclick={onClose}
-          aria-label={$_("messaging.close")}
-        >
-          ✕
-        </button>
-      </div>
+  <Modal
+    onClose={onClose}
+    title={modalTitle}
+    ariaLabel={modalTitle}
+    size="lg"
+  >
+    {#snippet icon()}
+      <UsersSolid class="w-6 h-6" />
+    {/snippet}
 
-      <div class="modal-body">
+    <div class="modal-body-inner">
         <div class="form-group">
           <label for="group-name">{$_("messaging.group_name")}</label>
           <input
@@ -183,76 +182,23 @@
             </div>
           </div>
         {/if}
-      </div>
-
-      <div class="modal-footer">
-        <button class="cancel-btn" onclick={onClose}>
-          {$_("common.cancel")}
-        </button>
-        <button class="save-btn" onclick={onSave} disabled={!canSave}>
-          {saveButtonText}
-        </button>
-      </div>
     </div>
-  </div>
+
+    {#snippet footer()}
+      <button class="cancel-btn" onclick={onClose}>
+        {$_("common.cancel")}
+      </button>
+      <button class="save-btn" onclick={onSave} disabled={!canSave}>
+        {saveButtonText}
+      </button>
+    {/snippet}
+  </Modal>
 {/if}
 
 <style>
-  .modal-overlay {
-    position: fixed;
-    top: 0;
-    left: 0;
-    right: 0;
-    bottom: 0;
-    background: rgba(0, 0, 0, 0.5);
+  .modal-body-inner {
     display: flex;
-    align-items: center;
-    justify-content: center;
-    z-index: 1000;
-  }
-
-  .modal-content {
-    background: white;
-    border-radius: 0.75rem;
-    width: 90%;
-    max-width: 500px;
-    max-height: 80vh;
-    overflow: hidden;
-    box-shadow: 0 25px 50px -12px rgba(0, 0, 0, 0.25);
-  }
-
-  .modal-header {
-    display: flex;
-    justify-content: space-between;
-    align-items: center;
-    padding: 1.5rem;
-    border-bottom: 1px solid #e2e8f0;
-  }
-
-  .modal-header h3 {
-    margin: 0;
-    font-size: 1.25rem;
-    font-weight: 600;
-    color: #1f2937;
-  }
-
-  .close-btn {
-    background: none;
-    border: none;
-    font-size: 1.5rem;
-    cursor: pointer;
-    color: #6b7280;
-    padding: 0.25rem;
-  }
-
-  .close-btn:hover {
-    color: #374151;
-  }
-
-  .modal-body {
-    padding: 1.5rem;
-    max-height: 60vh;
-    overflow-y: auto;
+    flex-direction: column;
   }
 
   .form-group {
@@ -401,46 +347,41 @@
     padding: 1rem;
   }
 
-  .modal-footer {
-    display: flex;
-    justify-content: flex-end;
-    gap: 1rem;
-    padding: 1.5rem;
-    border-top: 1px solid #e2e8f0;
-    background: #f8fafc;
-  }
-
   .cancel-btn,
   .save-btn {
-    padding: 0.75rem 1.5rem;
-    border-radius: 0.5rem;
-    font-weight: 500;
+    padding: 0.625rem 1.5rem;
+    border-radius: 0.75rem;
+    font-weight: 600;
+    font-size: 0.875rem;
     cursor: pointer;
     transition: background-color 0.2s;
   }
 
   .cancel-btn {
-    background: white;
-    border: 1px solid #d1d5db;
-    color: #374151;
+    background: transparent;
+    border: 1px solid transparent;
+    color: #4b5563;
   }
 
   .cancel-btn:hover {
-    background: #f8fafc;
+    background: #f3f4f6;
+    color: #111827;
   }
 
   .save-btn {
-    background: #3b82f6;
+    background: #4f46e5;
     color: white;
     border: none;
+    box-shadow: 0 2px 8px rgba(79, 70, 229, 0.2);
   }
 
   .save-btn:hover:not(:disabled) {
-    background: #2563eb;
+    background: #4338ca;
   }
 
   .save-btn:disabled {
     background: #9ca3af;
+    box-shadow: none;
     cursor: not-allowed;
   }
 </style>

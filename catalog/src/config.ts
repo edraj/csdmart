@@ -23,7 +23,7 @@ const defaultConfig: WebsiteConfig = {
   description: "dmart unified data platform",
   default_language: "ar",
   languages: { ar: "العربية", en: "English" },
-  backend: "http://localhost:8282",
+  backend: "https://api-uat.oodi.iq/dmart",
   backend_timeout: 30000,
   delay_total_count: false,
 };

@@ -743,10 +743,16 @@
     },
     "attachments": {
       "add_files": "إضافة ملفات",
+      "description_label": "الوصف",
+      "description_placeholder": "صف هذا المرفق",
+      "displayname_label": "الاسم المعروض",
+      "displayname_placeholder": "كيف يظهر هذا المرفق",
       "empty_description": "اسحب وأفلت الملفات هنا أو انقر على \"إضافة ملفات\" للرفع",
       "empty_title": "لا توجد مرفقات بعد",
       "remove_file": "إزالة الملف {name}",
-      "section_title": "المرفقات ({count})"
+      "section_title": "المرفقات ({count})",
+      "shortname_label": "الاسم المختصر",
+      "shortname_placeholder": "اتركه فارغاً للتوليد التلقائي"
     },
     "buttons": {
       "publish_now": "نشر الآن",

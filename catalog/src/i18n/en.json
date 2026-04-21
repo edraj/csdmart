@@ -811,10 +811,16 @@
     },
     "attachments": {
       "add_files": "Add Files",
+      "description_label": "Description",
+      "description_placeholder": "Describe this attachment",
+      "displayname_label": "Display Name",
+      "displayname_placeholder": "How this attachment is shown",
       "empty_description": "Drag and drop files here or click \"Add Files\" to upload",
       "empty_title": "No attachments yet",
       "remove_file": "Remove file {name}",
-      "section_title": "Attachments ({count})"
+      "section_title": "Attachments ({count})",
+      "shortname_label": "Shortname",
+      "shortname_placeholder": "Leave empty to auto-generate"
     },
     "buttons": {
       "publish_now": "Publish Now",

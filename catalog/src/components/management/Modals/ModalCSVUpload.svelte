@@ -1,6 +1,7 @@
 <script lang="ts">
     import {Dmart, QueryType, ResourceType} from "@edraj/tsdmart";
     import {warningToastMessage, successToastMessage} from "@/lib/toasts_messages";
+    import Modal from "@/components/Modal.svelte";
 
     interface Props {
         space_name: string;
@@ -136,26 +137,19 @@
 </script>
 
 {#if isOpen}
-  <div class="fixed inset-0 z-[60] flex items-center justify-center p-4 bg-black/50 backdrop-blur-sm">
-    <div class="bg-white rounded-[24px] shadow-2xl w-full max-w-xl overflow-hidden border border-gray-100 modal-container">
-      <div class="p-6 border-b border-gray-100 flex items-center justify-between bg-white modal-header">
-        <div class="flex items-center gap-3">
-          <div class="w-10 h-10 bg-indigo-50 rounded-xl flex items-center justify-center text-indigo-600">
-            <svg class="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg">
-              <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-8l-4-4m0 0L8 8m4-4v12"></path>
-            </svg>
-          </div>
-          <h2 class="text-xl font-bold text-gray-900">Upload CSV</h2>
-        </div>
-        <button onclick={() => (isOpen = false)} aria-label="Close modal" class="p-2 text-gray-400 hover:text-gray-600 hover:bg-gray-50 rounded-lg transition-colors modal-close-btn">
-          <svg class="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"></path>
-          </svg>
-        </button>
-      </div>
+  <Modal
+    onClose={() => (isOpen = false)}
+    title="Upload CSV"
+    ariaLabel="Upload CSV"
+    size="xl"
+  >
+    {#snippet icon()}
+      <svg class="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg">
+        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-8l-4-4m0 0L8 8m4-4v12"></path>
+      </svg>
+    {/snippet}
 
-      <div class="p-6 max-h-[60vh] overflow-y-auto bg-gray-50/30 modal-content">
-        <div class="space-y-4">
+    <div class="space-y-4">
             {#if availableSpaces.length > 0}
                 <div class="space-y-1.5">
                     <label for="space" class="block text-[10px] uppercase font-bold text-gray-400 tracking-wider px-1">Space</label>
@@ -254,29 +248,27 @@
                     <pre class="text-xs bg-white p-2 rounded overflow-auto max-h-40 border border-gray-200"><code>{JSON.stringify(responseError, null, 2)}</code></pre>
                 </div>
             {/if}
-        </div>
-      </div>
-
-      <div class="p-6 border-t border-gray-100 flex items-center justify-end gap-3 bg-white modal-footer">
-        <button
-          onclick={() => (isOpen = false)}
-          class="px-6 py-2.5 text-sm font-medium text-gray-600 hover:text-gray-900 hover:bg-gray-50 rounded-xl transition-colors border border-transparent"
-        >
-          Cancel
-        </button>
-        <button
-          onclick={handleCSVUpload}
-          disabled={isUploading}
-          class="px-8 py-2.5 bg-indigo-600 text-white rounded-xl text-sm font-semibold hover:bg-indigo-700 shadow-md shadow-indigo-200 disabled:opacity-50 disabled:cursor-not-allowed transition-all flex items-center gap-2"
-        >
-          {#if isUploading}
-            <div class="w-4 h-4 border-2 border-white/30 border-t-white rounded-full animate-spin"></div>
-            Uploading...
-          {:else}
-            Upload
-          {/if}
-        </button>
-      </div>
     </div>
-  </div>
+
+    {#snippet footer()}
+      <button
+        onclick={() => (isOpen = false)}
+        class="px-6 py-2.5 text-sm font-medium text-gray-600 hover:text-gray-900 hover:bg-gray-50 rounded-xl transition-colors border border-transparent"
+      >
+        Cancel
+      </button>
+      <button
+        onclick={handleCSVUpload}
+        disabled={isUploading}
+        class="px-8 py-2.5 bg-indigo-600 text-white rounded-xl text-sm font-semibold hover:bg-indigo-700 shadow-md shadow-indigo-200 disabled:opacity-50 disabled:cursor-not-allowed transition-all flex items-center gap-2"
+      >
+        {#if isUploading}
+          <div class="w-4 h-4 border-2 border-white/30 border-t-white rounded-full animate-spin"></div>
+          Uploading...
+        {:else}
+          Upload
+        {/if}
+      </button>
+    {/snippet}
+  </Modal>
 {/if}
