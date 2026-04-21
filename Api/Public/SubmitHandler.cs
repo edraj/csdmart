@@ -57,9 +57,11 @@ public static class SubmitHandler
         // Read the body as a raw JsonElement so we can carry it into Payload.Body losslessly.
         using var doc = await JsonDocument.ParseAsync(req.Body, cancellationToken: ct);
         var body = doc.RootElement.Clone();
-        string shortname = body.ValueKind == JsonValueKind.Object && body.TryGetProperty("shortname", out var sn) && sn.ValueKind == JsonValueKind.String
-            ? sn.GetString() ?? ""
-            : Guid.NewGuid().ToString("n")[..8];
+        // Anonymous callers never pick their own shortname — even a "shortname"
+        // field in the body is ignored for identity (it stays in Payload.Body
+        // as data). Always mint a fresh UUID-derived shortname server-side so
+        // one caller can't squat on a name or overwrite another's submission.
+        var shortname = Guid.NewGuid().ToString("n")[..8];
 
         var entry = new Entry
         {
