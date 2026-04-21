@@ -257,4 +257,56 @@ public class RecentParityTests : IClassFixture<DmartFactory>
         var spaResp = await client.GetAsync("/cxb/some/deep/route");
         spaResp.StatusCode.ShouldBe(HttpStatusCode.OK);
     }
+
+    // ==================== Catalog embedded ====================
+
+    [Fact]
+    public async Task Catalog_Index_Served_With_Rewritten_BaseHref()
+    {
+        var client = _factory.CreateClient();
+        var resp = await client.GetAsync("/cat/index.html");
+        // Catalog may not be built (CI runners without node/yarn) — skip gracefully.
+        if (resp.StatusCode == HttpStatusCode.NotFound) return;
+        resp.StatusCode.ShouldBe(HttpStatusCode.OK);
+        resp.Content.Headers.ContentType!.MediaType.ShouldBe("text/html");
+
+        // CatUrl defaults to "/cat" so the rewritten base href is "/cat/".
+        var html = await resp.Content.ReadAsStringAsync();
+        html.ShouldContain("<base href=\"/cat/\"");
+    }
+
+    [Fact]
+    public async Task Catalog_SPA_Fallback_Returns_Index()
+    {
+        var client = _factory.CreateClient();
+        var resp = await client.GetAsync("/cat/index.html");
+        if (resp.StatusCode == HttpStatusCode.NotFound) return;
+        var spaResp = await client.GetAsync("/cat/some/deep/route");
+        spaResp.StatusCode.ShouldBe(HttpStatusCode.OK);
+        spaResp.Content.Headers.ContentType!.MediaType.ShouldBe("text/html");
+    }
+
+    [Fact]
+    public async Task Catalog_ConfigJson_Injects_Backend()
+    {
+        var client = _factory.CreateClient();
+        // Skip if the catalog bundle isn't built (config.json ships with it).
+        var probe = await client.GetAsync("/cat/index.html");
+        if (probe.StatusCode == HttpStatusCode.NotFound) return;
+
+        var resp = await client.GetAsync("/cat/config.json");
+        resp.StatusCode.ShouldBe(HttpStatusCode.OK);
+        resp.Content.Headers.ContentType!.MediaType.ShouldBe("application/json");
+
+        var json = await resp.Content.ReadAsStringAsync();
+        // backend must be present; CatalogMiddleware auto-fills it from the
+        // request origin when the source file has no value (shipped default).
+        using var doc = JsonDocument.Parse(json);
+        doc.RootElement.TryGetProperty("backend", out var backend).ShouldBeTrue();
+        backend.ValueKind.ShouldBe(JsonValueKind.String);
+        backend.GetString().ShouldNotBeNullOrEmpty();
+
+        // Legacy `websocket` field must be dropped (SPA derives ws URL from backend).
+        doc.RootElement.TryGetProperty("websocket", out _).ShouldBeFalse();
+    }
 }
