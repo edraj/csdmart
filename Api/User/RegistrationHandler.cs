@@ -1,4 +1,5 @@
 using System.Text.Json;
+using Dmart.Api.Managed;
 using Dmart.Config;
 using Dmart.Models.Api;
 using Dmart.Models.Json;
@@ -36,6 +37,12 @@ public static class RegistrationHandler
                 return Results.Json(
                     Response.Fail(InternalErrorCode.INVALID_DATA, "missing body", ErrorTypes.Request),
                     DmartJsonContext.Default.Response, statusCode: 400);
+
+            // Python: Meta.from_record in models/core.py resolves shortname=="auto"
+            // centrally for every resource type before persistence. Mirror it here
+            // so /user/create produces a UUID-derived shortname instead of the
+            // literal "auto" (same helper is used by managed CRUD + multipart).
+            record = RequestHandler.ResolveAutoShortname(record);
 
             // Python strips authorization/cookie from request_headers before
             // persisting last_login. Matches process_user_login behaviour.
