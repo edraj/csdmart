@@ -106,12 +106,23 @@ if [[ "$TARGET" == "el9" || "$TARGET" == "rhel9" ]]; then
             # host network config can have a broken /etc/resolv.conf that
             # survives restarts. If DNS is dead we recreate rather than hand
             # the user a cryptic NuGet restore failure downstream.
-            if $ENGINE exec "$CONTAINER_NAME" getent hosts api.nuget.org >/dev/null 2>&1; then
-                echo "Reusing existing $CONTAINER_NAME container..."
-                NEED_CREATE=false
-            else
+            if ! $ENGINE exec "$CONTAINER_NAME" getent hosts api.nuget.org >/dev/null 2>&1; then
                 echo "Container $CONTAINER_NAME has broken DNS, recreating..."
                 $ENGINE rm -f "$CONTAINER_NAME" 2>/dev/null || true
+            # Verify the container can read every top-level source dir that
+            # the publish step needs. Old :Z-labeled bind mounts don't
+            # relabel files added to the host after container creation, so
+            # a container born before catalog/ existed can't see it today
+            # and the EmbeddedResource glob silently matches zero files.
+            # Detect that mismatch once per run and recreate so the new
+            # container uses :z (shared label) on a clean slate.
+            elif ([ -d cxb ]     && ! $ENGINE exec "$CONTAINER_NAME" test -r /src/cxb/package.json     2>/dev/null) ||
+                 ([ -d catalog ] && ! $ENGINE exec "$CONTAINER_NAME" test -r /src/catalog/package.json 2>/dev/null); then
+                echo "Container $CONTAINER_NAME can't read all source dirs (likely :Z label drift), recreating..."
+                $ENGINE rm -f "$CONTAINER_NAME" 2>/dev/null || true
+            else
+                echo "Reusing existing $CONTAINER_NAME container..."
+                NEED_CREATE=false
             fi
         else
             echo "Container $CONTAINER_NAME is dead, recreating..."
@@ -133,12 +144,20 @@ if [[ "$TARGET" == "el9" || "$TARGET" == "rhel9" ]]; then
         # time — otherwise a long-lived builder container keeps a stale
         # resolver list and NuGet restore starts failing with "Name or
         # service not known" after the host's DNS changes.
+        # Use :z (shared SELinux label, lowercase) rather than :Z (private,
+        # uppercase). `:Z` relabels files only at creation time — new files
+        # added to the host afterwards stay at the host's default context and
+        # the container can't read them, which silently drops them from
+        # EmbeddedResource globs (hit this when catalog/ was added to a repo
+        # whose builder container predated it). `:z` tags the mount with the
+        # shared `container_file_t` type so any file visible on the host is
+        # visible in the container forever.
         $ENGINE run -d \
             --name "$CONTAINER_NAME" \
             --userns=keep-id \
             --network=host \
-            -v "${SRCDIR}:/src:Z" \
-            -v "${HOST_NUGET_CACHE}:/nuget-packages:Z" \
+            -v "${SRCDIR}:/src:z" \
+            -v "${HOST_NUGET_CACHE}:/nuget-packages:z" \
             -v /etc/resolv.conf:/etc/resolv.conf:ro \
             -w /src \
             almalinux:9 \
