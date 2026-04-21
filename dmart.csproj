@@ -50,14 +50,13 @@
          then dotnet publish embeds the dist outputs via
          ManifestEmbeddedFileProvider. Both source trees are excluded from
          Compile/Content to avoid interference with the Web SDK's default globs.
-         CXB emits dist/client/ (SvelteKit convention); catalog emits dist/
-         (vite default). Each SPA is served by its own middleware. -->
+         Both emit dist/client/. Each SPA is served by its own middleware. -->
     <Compile Remove="cxb/**" />
     <Content Remove="cxb/**" />
     <EmbeddedResource Include="cxb/dist/client/**" LinkBase="cxb-dist" />
     <Compile Remove="catalog/**" />
     <Content Remove="catalog/**" />
-    <EmbeddedResource Include="catalog/dist/**" LinkBase="catalog-dist" />
+    <EmbeddedResource Include="catalog/dist/client/**" LinkBase="catalog-dist" />
   </ItemGroup>
 
   <ItemGroup>

@@ -45,6 +45,6 @@ build_one() {
 }
 
 build_one "CXB" "cxb" "dist/client"
-build_one "catalog" "catalog" "dist"
+build_one "catalog" "catalog" "dist/client"
 
 echo "Run './build.sh' to embed the UI outputs into the binary."

@@ -33,7 +33,7 @@ public static class CatalogMiddleware
         try
         {
             var assembly = Assembly.GetExecutingAssembly();
-            var embedded = new ManifestEmbeddedFileProvider(assembly, "catalog/dist");
+            var embedded = new ManifestEmbeddedFileProvider(assembly, "catalog/dist/client");
             if (embedded.GetFileInfo("index.html").Exists)
                 fileProvider = embedded;
         }

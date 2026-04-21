@@ -12,7 +12,7 @@ echo "Version: $INFORMATIONAL_VERSION"
 # Build UI frontends (cxb + catalog, both embedded into the dmart binary).
 # Skip the build when *both* dist outputs already exist; build-ui.sh itself
 # skips a missing source dir gracefully.
-if [ -f cxb/dist/client/index.html ] && [ -f catalog/dist/index.html ]; then
+if [ -f cxb/dist/client/index.html ] && [ -f catalog/dist/client/index.html ]; then
     echo "UI frontends already built, skipping"
 elif [ -f cxb/package.json ] || [ -f catalog/package.json ]; then
     echo "=== Building UI frontends ==="

@@ -89,7 +89,7 @@ if [[ "$TARGET" == "el9" || "$TARGET" == "rhel9" ]]; then
     # stale assets. build-ui.sh covers both cxb/ and catalog/.
     _need_ui_build=false
     { [ -f cxb/package.json ]     && [ ! -f cxb/dist/client/index.html ]; } && _need_ui_build=true
-    { [ -f catalog/package.json ] && [ ! -f catalog/dist/index.html ]; }    && _need_ui_build=true
+    { [ -f catalog/package.json ] && [ ! -f catalog/dist/client/index.html ]; }    && _need_ui_build=true
     if [ "$_need_ui_build" = "true" ]; then
         echo "Building UI frontends locally..."
         ./build-ui.sh || { echo "UI build failed" >&2; exit 1; }
