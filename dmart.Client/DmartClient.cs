@@ -20,7 +20,7 @@ namespace Dmart.Client;
 // (the default constructor). If an HttpClient is supplied, the consumer
 // owns it and must dispose it (the IHttpClientFactory pattern). Dispose
 // is idempotent.
-public sealed class DmartClient : IDisposable
+public sealed partial class DmartClient : IDisposable
 {
     private readonly HttpClient _http;
     private readonly bool _ownsHttp;
