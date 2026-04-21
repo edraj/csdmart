@@ -8,7 +8,7 @@ publish/
 # sources would only pull ~100 MB of test NuGets through `dotnet restore`.
 dmart.Tests/
 
-# CXB is built separately by the workflow (build-cxb.sh) and lives under
+# CXB is built separately by the workflow (build-ui.sh) and lives under
 # cxb/dist/client/. Don't ship source, node_modules, or svelte-kit cache.
 cxb/node_modules/
 cxb/.svelte-kit/
@@ -17,6 +17,17 @@ cxb/dist/
 cxb/src/
 cxb/static/
 cxb/tests/
+
+# Same pattern for catalog — only catalog/dist/client/ makes it into the
+# build context, and the dmart.csproj EmbeddedResource glob picks it up.
+catalog/node_modules/
+catalog/.svelte-kit/
+catalog/dist/
+!catalog/dist/client/
+catalog/src/
+catalog/static/
+catalog/public/
+catalog/spaces/
 
 # Git history is irrelevant at build time; build.sh bakes git-describe into
 # the binary via -p:InformationalVersion long before docker.
