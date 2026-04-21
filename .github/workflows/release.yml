@@ -50,6 +50,63 @@ jobs:
           name: ui-tarballs
           path: dist/out/*.tar.gz
 
+  publish-nuget:
+    name: Publish Dmart.Models + Dmart.Client to NuGet
+    runs-on: self-hosted
+    # Bubble the secret up to job-level env so the step-level `if:`
+    # expression can read it (env.X is resolved at the step evaluator,
+    # secrets.X is not).
+    env:
+      NUGET_API_KEY: ${{ secrets.NUGET_API_KEY }}
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+
+      - name: Set version
+        id: version
+        run: |
+          VERSION="${GITHUB_REF_NAME#v}"
+          echo "version=${VERSION:-0.1.0}" >> "$GITHUB_OUTPUT"
+
+      # Pack both packages. MSBuild resolves the ProjectReference so
+      # Dmart.Client.nupkg correctly declares a PackageReference on
+      # Dmart.Models of the same version.
+      - name: Pack Dmart.Models + Dmart.Client
+        run: |
+          V="${{ steps.version.outputs.version }}"
+          dotnet pack Dmart.Models/Dmart.Models.csproj \
+            -c Release -p:Version="$V" --nologo -o dist/out/nuget
+          dotnet pack dmart.Client/dmart.Client.csproj \
+            -c Release -p:Version="$V" --nologo -o dist/out/nuget
+          ls -lh dist/out/nuget/
+
+      - name: Upload .nupkg files to release
+        if: github.event_name == 'release'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh release upload "$GITHUB_REF_NAME" \
+            dist/out/nuget/*.nupkg dist/out/nuget/*.snupkg --clobber
+
+      # Requires NUGET_API_KEY secret on the repo. `--skip-duplicate`
+      # makes the push idempotent — re-running a release doesn't fail
+      # if a package version was already published. If the secret isn't
+      # configured the step no-ops cleanly so the rest of the workflow
+      # (RPMs, container, tarballs) still succeeds.
+      - name: Push to nuget.org
+        if: github.event_name == 'release' && env.NUGET_API_KEY != ''
+        run: |
+          dotnet nuget push "dist/out/nuget/*.nupkg" \
+            --api-key "$NUGET_API_KEY" \
+            --source https://api.nuget.org/v3/index.json \
+            --skip-duplicate
+
+      - uses: actions/upload-artifact@v7
+        with:
+          name: nuget-packages
+          path: dist/out/nuget/*
+
   build-srpm:
     name: Build Source RPM
     runs-on: self-hosted

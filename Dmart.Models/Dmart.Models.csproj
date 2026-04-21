@@ -8,11 +8,29 @@
     <AssemblyName>Dmart.Models</AssemblyName>
     <LangVersion>latest</LangVersion>
 
-    <!-- NuGet metadata (Phase 4 adds authors/license/etc.) -->
+    <!-- NuGet metadata -->
     <IsPackable>true</IsPackable>
     <PackageId>Dmart.Models</PackageId>
-    <Description>Wire-format data types (Record, Query, Response, enums) for the dmart structured CMS. Shared between the dmart server and client SDKs.</Description>
+    <Description>Wire-format data types (Record, Query, Response, enums) for the dmart structured CMS/IMS. Shared between the dmart server and any C# client SDK (Dmart.Client).</Description>
+    <Authors>Kefah T. Issa; edraj contributors</Authors>
+    <Company>edraj</Company>
+    <Copyright>Copyright (c) edraj contributors</Copyright>
+    <PackageLicenseExpression>MIT</PackageLicenseExpression>
+    <PackageProjectUrl>https://github.com/edraj/csdmart</PackageProjectUrl>
+    <RepositoryUrl>https://github.com/edraj/csdmart.git</RepositoryUrl>
+    <RepositoryType>git</RepositoryType>
+    <PackageTags>dmart;cms;ims;edraj;data-model;wire-types</PackageTags>
+    <PackageReadmeFile>README.md</PackageReadmeFile>
+    <IncludeSymbols>true</IncludeSymbols>
+    <SymbolPackageFormat>snupkg</SymbolPackageFormat>
+    <!-- Embed minimal source-link metadata; CI jobs supply -p:Version=... -->
+    <PublishRepositoryUrl>true</PublishRepositoryUrl>
+    <EmbedUntrackedSources>true</EmbedUntrackedSources>
   </PropertyGroup>
+
+  <ItemGroup>
+    <None Include="README.md" Pack="true" PackagePath="\" />
+  </ItemGroup>
 
   <!-- netstandard2.1 doesn't ship System.Text.Json in the BCL; pull it in. -->
   <ItemGroup Condition="'$(TargetFramework)' == 'netstandard2.1'">

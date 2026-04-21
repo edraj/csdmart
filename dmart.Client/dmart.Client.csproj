@@ -8,11 +8,28 @@
     <AssemblyName>Dmart.Client</AssemblyName>
     <LangVersion>latest</LangVersion>
 
-    <!-- NuGet metadata (Phase 4 adds authors/license/etc.) -->
+    <!-- NuGet metadata -->
     <IsPackable>true</IsPackable>
     <PackageId>Dmart.Client</PackageId>
-    <Description>Async C# client for the dmart structured CMS/IMS HTTP API. Mirrors pydmart.</Description>
+    <Description>Async C# client for the dmart structured CMS/IMS HTTP API. Mirrors pydmart. Requires Dmart.Models (pulled in automatically).</Description>
+    <Authors>Kefah T. Issa; edraj contributors</Authors>
+    <Company>edraj</Company>
+    <Copyright>Copyright (c) edraj contributors</Copyright>
+    <PackageLicenseExpression>MIT</PackageLicenseExpression>
+    <PackageProjectUrl>https://github.com/edraj/csdmart</PackageProjectUrl>
+    <RepositoryUrl>https://github.com/edraj/csdmart.git</RepositoryUrl>
+    <RepositoryType>git</RepositoryType>
+    <PackageTags>dmart;cms;ims;edraj;client;sdk;http</PackageTags>
+    <PackageReadmeFile>README.md</PackageReadmeFile>
+    <IncludeSymbols>true</IncludeSymbols>
+    <SymbolPackageFormat>snupkg</SymbolPackageFormat>
+    <PublishRepositoryUrl>true</PublishRepositoryUrl>
+    <EmbedUntrackedSources>true</EmbedUntrackedSources>
   </PropertyGroup>
+
+  <ItemGroup>
+    <None Include="README.md" Pack="true" PackagePath="\" />
+  </ItemGroup>
 
   <ItemGroup>
     <ProjectReference Include="..\Dmart.Models\Dmart.Models.csproj" />
