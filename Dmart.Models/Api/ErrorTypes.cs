@@ -34,6 +34,11 @@ public static class ErrorTypes
     // Unhandled server-side exception made it to the boundary.
     public const string Exception = "exception";
 
+    // Caller tried to write a protected field (payload.body keys enumerated
+    // in settings.UserProfilePayloadProtectedFields). Python emits this
+    // under HTTP 401 with type="restriction" — we preserve the string.
+    public const string Restriction = "restriction";
+
     // Internal-consistency violation (dmart bug, not client fault).
     public const string Internal = "internal";
 

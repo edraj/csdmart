@@ -536,17 +536,25 @@ public sealed class UserService(
             return Result<User>.Fail(
                 InternalErrorCode.SHORTNAME_DOES_NOT_EXIST, "user missing", ErrorTypes.Db);
 
-        // Reject patches targeting protected payload fields.
+        // Reject patches targeting protected payload-body fields. Python
+        // (api/user/router.py:623-633) walks `attributes.payload.body.<field>`
+        // against settings.user_profile_payload_protected_fields — it is
+        // payload content that's restricted, not top-level Record attributes.
         var protectedCsv = settings.Value.UserProfilePayloadProtectedFields;
-        if (!string.IsNullOrWhiteSpace(protectedCsv))
+        if (!string.IsNullOrWhiteSpace(protectedCsv)
+            && patch.TryGetValue("payload", out var payloadProtRaw)
+            && payloadProtRaw is JsonElement payloadProtEl
+            && payloadProtEl.ValueKind == JsonValueKind.Object
+            && payloadProtEl.TryGetProperty("body", out var bodyProtEl)
+            && bodyProtEl.ValueKind == JsonValueKind.Object)
         {
             var protectedFields = protectedCsv.Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
-            foreach (var key in patch.Keys)
+            foreach (var prop in bodyProtEl.EnumerateObject())
             {
-                if (protectedFields.Contains(key, StringComparer.OrdinalIgnoreCase))
+                if (protectedFields.Contains(prop.Name, StringComparer.OrdinalIgnoreCase))
                     return Result<User>.Fail(
                         InternalErrorCode.PROTECTED_FIELD,
-                        $"field '{key}' is protected and cannot be updated", ErrorTypes.Request);
+                        "Attempt to update a protected field", ErrorTypes.Restriction);
             }
         }
 
@@ -611,6 +619,61 @@ public sealed class UserService(
             resolvedForcePasswordChange = user.ForcePasswordChange;
         }
 
+        // Email change: Python parity (router.py:688-739).
+        //   * patched email != stored email  → email_otp REQUIRED
+        //   * email_otp must match users:otp:otps/<email> (peek, not consume —
+        //     matches Python's verify_user which calls db.get_otp)
+        //   * new email must not collide with another user (validate_uniqueness)
+        //   * on success: lowercase, replace, flip is_email_verified=true
+        // When the posted email is the same as the stored value, we silently
+        // no-op (matches Python: the `!=` guard short-circuits the OTP check).
+        string? resolvedEmail = user.Email;
+        bool resolvedIsEmailVerified = user.IsEmailVerified;
+        var rawEmail = Str(patch, "email", null);
+        if (!string.IsNullOrEmpty(rawEmail))
+        {
+            var newEmail = rawEmail.ToLowerInvariant();
+            if (!string.Equals(newEmail, user.Email, StringComparison.Ordinal))
+            {
+                var emailOtp = Str(patch, "email_otp", null);
+                if (string.IsNullOrEmpty(emailOtp))
+                    return Result<User>.Fail(InternalErrorCode.SESSION,
+                        "Email OTP is required to update your email", ErrorTypes.Create);
+                var storedOtp = await otp.GetCodeAsync(newEmail, ct);
+                if (storedOtp is null || storedOtp != emailOtp)
+                    return Result<User>.Fail(InternalErrorCode.SESSION,
+                        "Invalid Email OTP", ErrorTypes.Create);
+                var collision = await users.GetByEmailAsync(newEmail, ct);
+                if (collision is not null && !string.Equals(collision.Shortname, user.Shortname, StringComparison.Ordinal))
+                    return Result<User>.Fail(InternalErrorCode.DATA_SHOULD_BE_UNIQUE,
+                        $"Entry properties should be unique: @email:{newEmail} ", ErrorTypes.Request);
+                resolvedEmail = newEmail;
+                resolvedIsEmailVerified = true;
+            }
+        }
+
+        // Msisdn change: Python parity (router.py:699-754). Same gating as email.
+        string? resolvedMsisdn = user.Msisdn;
+        bool resolvedIsMsisdnVerified = user.IsMsisdnVerified;
+        var newMsisdn = Str(patch, "msisdn", null);
+        if (!string.IsNullOrEmpty(newMsisdn) && !string.Equals(newMsisdn, user.Msisdn, StringComparison.Ordinal))
+        {
+            var msisdnOtp = Str(patch, "msisdn_otp", null);
+            if (string.IsNullOrEmpty(msisdnOtp))
+                return Result<User>.Fail(InternalErrorCode.SESSION,
+                    "MSISDN OTP is required to update your msisdn", ErrorTypes.Create);
+            var storedOtp = await otp.GetCodeAsync(newMsisdn, ct);
+            if (storedOtp is null || storedOtp != msisdnOtp)
+                return Result<User>.Fail(InternalErrorCode.SESSION,
+                    "Invalid MSISDN OTP", ErrorTypes.Create);
+            var collision = await users.GetByMsisdnAsync(newMsisdn, ct);
+            if (collision is not null && !string.Equals(collision.Shortname, user.Shortname, StringComparison.Ordinal))
+                return Result<User>.Fail(InternalErrorCode.DATA_SHOULD_BE_UNIQUE,
+                    $"Entry properties should be unique: @msisdn:{newMsisdn} ", ErrorTypes.Request);
+            resolvedMsisdn = newMsisdn;
+            resolvedIsMsisdnVerified = true;
+        }
+
         // Python parity: update_user_payload (api/user/service.py) deep-merges
         // patch.payload.body into user.payload.body, creating an empty Payload
         // if the user had none. Schema validation is intentionally omitted here
@@ -636,8 +699,10 @@ public sealed class UserService(
 
         var updated = user with
         {
-            Email = Str(patch, "email", user.Email),
-            Msisdn = Str(patch, "msisdn", user.Msisdn),
+            Email = resolvedEmail,
+            Msisdn = resolvedMsisdn,
+            IsEmailVerified = resolvedIsEmailVerified,
+            IsMsisdnVerified = resolvedIsMsisdnVerified,
             Language = patch.TryGetValue("language", out var l) && l is not null
                 ? ParseLanguage(l.ToString())
                 : user.Language,
@@ -650,6 +715,10 @@ public sealed class UserService(
             DeviceId = Str(patch, "device_id", user.DeviceId),
             ForcePasswordChange = resolvedForcePasswordChange,
             Password = newPasswordHash ?? user.Password,
+            // Python's set_user_profile calls db.clear_failed_password_attempts
+            // after hashing a new password — a user who just reset their own
+            // password shouldn't be one mistyped login away from being locked.
+            AttemptCount = newPasswordHash is not null ? 0 : user.AttemptCount,
             Payload = resolvedPayload,
             UpdatedAt = DateTime.UtcNow,
         };
