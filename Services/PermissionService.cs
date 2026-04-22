@@ -43,6 +43,13 @@ public sealed class PermissionService(UserRepository users, AccessRepository acc
     // Python: data_adapters/helpers.py::trans_magic_words.
     public const string CurrentUserMw = "__current_user__";
 
+    // __current_user__owner__ resolves to the caller's user.owner_shortname —
+    // the shortname of the user that created the current user. Used by
+    // sample permissions for "my creator can access" patterns. Python's
+    // trans_magic_words substitutes this FIRST so the shorter __current_user__
+    // replacement below doesn't corrupt the longer magic word.
+    public const string CurrentUserOwnerMw = "__current_user__owner__";
+
     // Compact bag of the resource being checked. We accept it as a record so callers
     // can synthesize one from an Entry, User, Role, etc. without coupling
     // PermissionService to those concrete types. Pass null when the resource hasn't
@@ -338,6 +345,18 @@ public sealed class PermissionService(UserRepository users, AccessRepository acc
                     // isn't consistent about the leading slash across
                     // deployments.
                     var permSubpath = rawSub.TrimStart('/');
+
+                    // Python parity: trans_magic_words — substitute
+                    // __current_user__owner__ (order-critical: longest
+                    // magic-word first to avoid prefix-substring
+                    // overlap with __current_user__) then __current_user__.
+                    // Runs BEFORE inclusion matching so permissions like
+                    // "people/__current_user__/private" correctly match
+                    // a query for "people/<shortname>/private/addresses".
+                    var ownerShortname = user?.OwnerShortname;
+                    if (!string.IsNullOrEmpty(ownerShortname))
+                        permSubpath = permSubpath.Replace(CurrentUserOwnerMw, ownerShortname);
+                    permSubpath = permSubpath.Replace(CurrentUserMw, actorShortname);
 
                     var include =
                         permSpace == AllSpacesMw
