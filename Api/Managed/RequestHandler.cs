@@ -200,6 +200,18 @@ public static class RequestHandler
         return rec with { Shortname = uuid.ToString("N")[..8], Uuid = uuid.ToString() };
     }
 
+    private static Record WithCreatedMetaAttributes(
+        Record rec, string uuid, DateTime createdAt, DateTime updatedAt, string ownerShortname)
+    {
+        var attrs = rec.Attributes is null
+            ? new Dictionary<string, object>()
+            : new Dictionary<string, object>(rec.Attributes);
+        attrs["created_at"] = createdAt;
+        attrs["updated_at"] = updatedAt;
+        attrs["owner_shortname"] = ownerShortname;
+        return rec with { Uuid = uuid, Attributes = attrs };
+    }
+
     private static async Task<(Response Response, Record UpdatedRecord)> DispatchCreateAsync(
         Record rec, string space, string actor,
         EntryService entries, UserRepository users, AccessRepository access,
@@ -242,9 +254,11 @@ public static class RequestHandler
         // the gate side makes restricted_fields:["is_active"]/["tags"] deny
         // creates the Python port allows for the same request body.
         var result = await entries.CreateAsync(entry, actor, rec.Attributes, ct);
-        return result.IsOk
-            ? (Response.Ok(), rec with { Uuid = result.Value!.Uuid })
-            : (Response.Fail(result.ErrorCode!, result.ErrorMessage!, ErrorTypes.Request), rec);
+        if (!result.IsOk)
+            return (Response.Fail(result.ErrorCode!, result.ErrorMessage!, ErrorTypes.Request), rec);
+        var saved = result.Value!;
+        return (Response.Ok(),
+            WithCreatedMetaAttributes(rec, saved.Uuid, saved.CreatedAt, saved.UpdatedAt, saved.OwnerShortname));
     }
 
     private static async Task<(Response Response, Record UpdatedRecord)> CreateUserAsync(
@@ -289,7 +303,8 @@ public static class RequestHandler
             UpdatedAt = DateTime.UtcNow,
         };
         await users.UpsertAsync(user, ct);
-        return (Response.Ok(), rec with { Uuid = user.Uuid });
+        return (Response.Ok(),
+            WithCreatedMetaAttributes(rec, user.Uuid, user.CreatedAt, user.UpdatedAt, user.OwnerShortname));
     }
 
     private static async Task<(Response Response, Record UpdatedRecord)> CreateRoleAsync(
@@ -309,7 +324,8 @@ public static class RequestHandler
             UpdatedAt = DateTime.UtcNow,
         };
         await access.UpsertRoleAsync(role, ct);
-        return (Response.Ok(), rec with { Uuid = role.Uuid });
+        return (Response.Ok(),
+            WithCreatedMetaAttributes(rec, role.Uuid, role.CreatedAt, role.UpdatedAt, role.OwnerShortname));
     }
 
     private static async Task<(Response Response, Record UpdatedRecord)> CreatePermissionAsync(
@@ -333,7 +349,8 @@ public static class RequestHandler
             UpdatedAt = DateTime.UtcNow,
         };
         await access.UpsertPermissionAsync(perm, ct);
-        return (Response.Ok(), rec with { Uuid = perm.Uuid });
+        return (Response.Ok(),
+            WithCreatedMetaAttributes(rec, perm.Uuid, perm.CreatedAt, perm.UpdatedAt, perm.OwnerShortname));
     }
 
     private static async Task<(Response Response, Record UpdatedRecord)> CreateSpaceAsync(
@@ -367,7 +384,8 @@ public static class RequestHandler
             UpdatedAt = DateTime.UtcNow,
         };
         await spaces.UpsertAsync(space, ct);
-        return (Response.Ok(), rec with { Uuid = space.Uuid });
+        return (Response.Ok(),
+            WithCreatedMetaAttributes(rec, space.Uuid, space.CreatedAt, space.UpdatedAt, space.OwnerShortname));
     }
 
     private static async Task<(Response Response, Record UpdatedRecord)> CreateAttachmentAsync(
@@ -388,7 +406,11 @@ public static class RequestHandler
             CreatedAt = DateTime.UtcNow,
         };
         await attachments.UpsertAsync(attachment, ct);
-        return (Response.Ok(), rec with { Uuid = attachment.Uuid });
+        // Attachments only track CreatedAt (no UpdatedAt column); reuse it
+        // for both to match the Python to_record() shape that clients expect.
+        return (Response.Ok(),
+            WithCreatedMetaAttributes(rec, attachment.Uuid,
+                attachment.CreatedAt, attachment.CreatedAt, attachment.OwnerShortname));
     }
 
     // ============================================================================
