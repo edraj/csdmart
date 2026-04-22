@@ -9,7 +9,8 @@ FROM alpine:edge
 
 RUN apk add --no-cache \
       postgresql18 postgresql18-contrib \
-      bash curl tzdata icu-libs krb5-libs
+      bash curl tzdata icu-libs krb5-libs \
+      jq
 
 COPY --chmod=755 admin_scripts/docker/dmart-binary /usr/bin/dmart
 COPY plugins/ /usr/lib/dmart/plugins/

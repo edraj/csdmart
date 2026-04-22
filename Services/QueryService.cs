@@ -5,11 +5,21 @@ using Dmart.Models.Api;
 using Dmart.Models.Core;
 using Dmart.Models.Enums;
 using Dmart.Models.Json;
+using Dmart.Utils;
 using Microsoft.Extensions.Options;
 using Npgsql;
 using NpgsqlTypes;
 
 namespace Dmart.Services;
+
+// Thrown by ApplyClientJoinsAsync when a join sub-query's jq_filter fails
+// (timeout / syntax / missing binary). Caught by ExecuteAsync and converted
+// into a Response.Fail with the appropriate JQ_* code — mirrors Python's
+// HTTP 400 raise path.
+internal sealed class JqJoinFailure(int code, string message) : Exception(message)
+{
+    public int Code { get; } = code;
+}
 
 // /managed/query service. Mirrors Python's adapter.query() dispatch logic:
 //
@@ -98,10 +108,18 @@ public sealed class QueryService(
                 var joined = await ApplyClientJoinsAsync(records, joins, actor, ct);
                 response = response with { Records = joined };
             }
+            catch (JqJoinFailure jq)
+            {
+                // Python propagates jq failures up as HTTP 400. Match that —
+                // the client asked for a filter and we couldn't honor it, so
+                // returning un-filtered data would be misleading.
+                return Response.Fail(jq.Code, jq.Message, ErrorTypes.Request);
+            }
             catch (Exception ex)
             {
-                // Python swallows join errors with a print; match that: return
-                // the un-joined base results rather than failing the whole query.
+                // Python swallows other join errors with a print; match that:
+                // return the un-joined base results rather than failing the
+                // whole query.
                 Console.Error.WriteLine($"[client_join] {ex.Message}");
             }
         }
@@ -579,7 +597,10 @@ public sealed class QueryService(
 
             // For each base record, collect candidates, dedup, apply
             // additional parsed-join intersections, apply the sub-query's
-            // user-supplied limit.
+            // user-supplied limit. Stash in matchedByBase so the jq_filter
+            // (if set) can batch-process the whole join in one subprocess —
+            // matches Python's per-join vectorized invocation.
+            var matchedByBase = new List<List<Record>>(baseRecords.Count);
             for (var i = 0; i < baseRecords.Count; i++)
             {
                 var br = baseRecords[i];
@@ -620,13 +641,86 @@ public sealed class QueryService(
                 if (userLimit is int ul && matched.Count > ul)
                     matched = matched.GetRange(0, ul);
 
-                var attrs = br.Attributes!;
+                matchedByBase.Add(matched);
+            }
+
+            // Python parity (adapter.py:1803-1872): when sub_query carries a
+            // jq_filter, pipe the batched matched-lists through jq wrapped in
+            // `map( [ <filter> ] )`. On success each base record's entry in the
+            // "join" dict becomes the jq-transformed JSON (arbitrary shape).
+            // On failure we surface JQ_TIMEOUT / JQ_ERROR as a query failure
+            // rather than silently dropping the filter.
+            object?[] joinPayloads = new object?[baseRecords.Count];
+            if (!string.IsNullOrWhiteSpace(subQuery.JqFilter))
+            {
+                if (!JqRunner.ValidateFilter(subQuery.JqFilter, out var rejectReason))
+                    throw new JqJoinFailure(InternalErrorCode.JQ_ERROR, rejectReason!);
+
+                var inputBytes = SerializeMatchedForJq(matchedByBase);
+                var jqResult = await JqRunner.RunAsync(
+                    subQuery.JqFilter, inputBytes, settings.Value.JqTimeout, ct);
+
+                switch (jqResult.Failure)
+                {
+                    case JqRunner.FailureKind.Timeout:
+                        throw new JqJoinFailure(InternalErrorCode.JQ_TIMEOUT,
+                            "jq filter took too long to execute");
+                    case JqRunner.FailureKind.JqMissing:
+                    case JqRunner.FailureKind.JqError:
+                    case JqRunner.FailureKind.Invalid:
+                        throw new JqJoinFailure(InternalErrorCode.JQ_ERROR,
+                            "jq filter failed to be executed");
+                }
+
+                // Python wraps with `map( [ <expr> ] )` so the output is an
+                // outer array aligned 1-to-1 with matchedByBase. Split it and
+                // hand each base record its own slice.
+                if (jqResult.Output is JsonElement outEl && outEl.ValueKind == JsonValueKind.Array)
+                {
+                    var idx = 0;
+                    foreach (var slice in outEl.EnumerateArray())
+                    {
+                        if (idx >= joinPayloads.Length) break;
+                        joinPayloads[idx++] = slice.Clone();
+                    }
+                }
+            }
+
+            // Assign per-base either the raw matched list (no filter) or the
+            // jq output slice (filter applied).
+            for (var i = 0; i < baseRecords.Count; i++)
+            {
+                var attrs = baseRecords[i].Attributes!;
                 var joinDict = (Dictionary<string, object>)attrs["join"];
-                joinDict[joinItem.Alias] = matched;
+                joinDict[joinItem.Alias] = joinPayloads[i] ?? (object)matchedByBase[i];
             }
         }
 
         return baseRecords;
+    }
+
+    // Serialize matchedByBase as an array-of-arrays of Record dicts, ready
+    // to feed to `jq -c`. Mirrors Python's jq_dict_parser + json.dumps path
+    // in adapter.py:1807-1816. We use the source-generated Record serializer
+    // so the JSON shape matches dmart's wire format exactly.
+    private static byte[] SerializeMatchedForJq(List<List<Record>> matchedByBase)
+    {
+        using var ms = new MemoryStream();
+        using (var writer = new Utf8JsonWriter(ms))
+        {
+            writer.WriteStartArray();
+            foreach (var inner in matchedByBase)
+            {
+                writer.WriteStartArray();
+                foreach (var rec in inner)
+                {
+                    JsonSerializer.Serialize(writer, rec, DmartJsonContext.Default.Record);
+                }
+                writer.WriteEndArray();
+            }
+            writer.WriteEndArray();
+        }
+        return ms.ToArray();
     }
 
     // Parses a "l1:r1, l2:r2" expression into tuples. "[]" suffix on either

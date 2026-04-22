@@ -36,7 +36,8 @@ FROM alpine:edge
 # Install packages + copy all files in one layer
 RUN apk add --no-cache \
       postgresql18 postgresql18-contrib \
-      bash curl tzdata icu-libs krb5-libs
+      bash curl tzdata icu-libs krb5-libs \
+      jq
 
 COPY --from=build --chmod=755 /out/dmart /usr/bin/dmart
 COPY --from=build /out/plugins/ /usr/lib/dmart/plugins/

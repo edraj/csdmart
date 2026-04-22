@@ -175,6 +175,10 @@ public sealed class DmartSettings
     public bool LogoutOnPwdChange { get; set; } = true;
     public int RequestTimeout { get; set; } = 35;
 
+    // Timeout (seconds) for the `jq` subprocess invoked when a join sub-query
+    // carries a jq_filter expression. Python default (backend/utils/settings.py).
+    public int JqTimeout { get; set; } = 2;
+
     // Logging format: "text" (default console) or "json" (structured JSON lines).
     // Python uses pythonjsonlogger → .ljson.log files. Set to "json" for
     // production deployments where logs are consumed by ELK/Loki/CloudWatch.

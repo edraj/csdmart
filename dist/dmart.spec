@@ -17,6 +17,10 @@ BuildRequires:  clang
 BuildRequires:  zlib-devel
 
 Requires:       postgresql-server
+# jq is invoked as a subprocess when /managed/query carries a jq_filter on
+# a join sub-query (mirrors Python dmart's subprocess shell-out). Absent jq,
+# such requests return JQ_ERROR; every other endpoint works without it.
+Requires:       jq
 Requires(pre):  shadow-utils
 
 %description
