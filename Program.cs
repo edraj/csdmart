@@ -312,7 +312,12 @@ switch (subcommand)
             new SchemaValidator(entryRepo, nlog.CreateLogger<SchemaValidator>()),
             new WorkflowEngine(entryRepo, nlog.CreateLogger<WorkflowEngine>()),
             nlog.CreateLogger<EntryService>());
-        var exportService = new ImportExportService(entryRepo, entryService, nlog.CreateLogger<ImportExportService>());
+        var exportService = new ImportExportService(entryRepo,
+            new AttachmentRepository(dbInst),
+            entryService,
+            new PermissionService(new UserRepository(dbInst, refresher),
+                new AccessRepository(dbInst, refresher), refresher),
+            nlog.CreateLogger<ImportExportService>());
 
         var spaceRepo = new SpaceRepository(dbInst);
         var spaces = string.IsNullOrEmpty(spaceName)
@@ -371,7 +376,12 @@ switch (subcommand)
             new SchemaValidator(entryRepo, nlog.CreateLogger<SchemaValidator>()),
             new WorkflowEngine(entryRepo, nlog.CreateLogger<WorkflowEngine>()),
             nlog.CreateLogger<EntryService>());
-        var importService = new ImportExportService(entryRepo, entryService, nlog.CreateLogger<ImportExportService>());
+        var importService = new ImportExportService(entryRepo,
+            new AttachmentRepository(dbInst),
+            entryService,
+            new PermissionService(new UserRepository(dbInst, refresher),
+                new AccessRepository(dbInst, refresher), refresher),
+            nlog.CreateLogger<ImportExportService>());
 
         await using var zipStream = File.OpenRead(zipPath);
         // Actor for imported entries — "dmart" is the hardcoded admin shortname
