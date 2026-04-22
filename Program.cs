@@ -21,9 +21,9 @@ using Microsoft.Extensions.Options;
 // dmart CLI — mirrors Python's dmart.py multi-subcommand entry point.
 //
 // Usage:
-//   dmart serve       Start the HTTP server (default if no subcommand)
+//   dmart help        Print available subcommands (default if no subcommand)
+//   dmart serve       Start the HTTP server
 //   dmart version     Print version info
-//   dmart help        Print available subcommands
 // ============================================================================
 
 
@@ -41,10 +41,10 @@ if (args.Length == 0 || !args[0].StartsWith('-'))
     };
 }
 
-// Parse subcommand from args. Default to "serve".
+// Parse subcommand from args. Default to "help".
 // Flag-like args (--contentRoot etc.) are left for the web builder;
 // only our known flags (-v, -h) are treated as subcommands.
-var subcommand = "serve";
+var subcommand = "help";
 var serverArgs = args;
 if (args.Length > 0)
 {
