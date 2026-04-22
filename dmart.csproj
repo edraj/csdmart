@@ -83,8 +83,14 @@
     <Compile Remove="catalog/**" />
     <Content Remove="catalog/**" />
     <EmbeddedResource Include="catalog/dist/client/**" LinkBase="catalog-dist" />
-    <EmbeddedResource Remove="catalog\**" />
-    <EmbeddedResource Remove="cxb\**" />
+    <!-- DO NOT re-add the <EmbeddedResource Remove="cxb\**"/> nor
+         <EmbeddedResource Remove="catalog\**"/> directives here: MSBuild
+         processes items within an ItemGroup sequentially, and those Remove
+         globs cancelled the Include lines above — stripping every SPA asset
+         out of the binary and breaking /cxb and /cat at runtime (silent 404s
+         both from the AOT binary and the JIT build). Tests passed anyway
+         because RecentParityTests + curl.sh treat a missing SPA bundle as
+         "skip / not built" rather than a failure. -->
   </ItemGroup>
 
   <ItemGroup>
