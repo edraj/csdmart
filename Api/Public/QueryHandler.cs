@@ -18,37 +18,27 @@ public static class QueryHandler
             HttpRequest req, QueryService svc, HttpContext http,
             IOptions<DmartSettings> settings, CancellationToken ct) =>
         {
-            Query? q;
+            Query? q = null;
+            Response resp;
             try
             {
                 q = await JsonSerializer.DeserializeAsync(req.Body, DmartJsonContext.Default.Query, ct);
+                // Python parity: /public/query resolves permissions under the
+                // "anonymous" user row (+ optional "world" permission), so
+                // anonymous queries see rows an admin configured as publicly
+                // visible. We pass the identity explicitly so QueryService
+                // builds row-level query_policies for anonymous — null would
+                // skip the ACL filter entirely (internal-unrestricted path).
+                resp = q is null
+                    ? Response.Fail(InternalErrorCode.INVALID_DATA, "empty body", ErrorTypes.Request)
+                    : await svc.ExecuteAsync(q, actor: "anonymous", ct);
             }
             catch (JsonException ex)
             {
-                await WriteResponseAsync(http.Response,
-                    Response.Fail(InternalErrorCode.INVALID_DATA,
-                        $"invalid Query JSON: {ex.Message}", ErrorTypes.Request), ct);
-                return;
+                resp = Response.Fail(InternalErrorCode.INVALID_DATA,
+                    $"invalid Query JSON: {ex.Message}", ErrorTypes.Request);
             }
-            if (q is null)
-            {
-                await WriteResponseAsync(http.Response,
-                    Response.Fail(InternalErrorCode.INVALID_DATA, "empty body", ErrorTypes.Request), ct);
-                return;
-            }
-            // Python parity: /public/query resolves permissions under the
-            // "anonymous" user row (+ optional "world" permission), so
-            // anonymous queries see rows an admin configured as publicly
-            // visible. We pass the identity explicitly so QueryService
-            // builds row-level query_policies for anonymous — null would
-            // skip the ACL filter entirely (internal-unrestricted path).
-            var resp = await svc.ExecuteAsync(q, actor: "anonymous", ct);
-            if (string.IsNullOrWhiteSpace(q.JqFilter))
-            {
-                await WriteResponseAsync(http.Response, resp, ct);
-                return;
-            }
-            await JqEnvelope.WriteAsync(http.Response, resp, q.JqFilter, settings.Value.JqTimeout, ct);
+            await JqEnvelope.WriteAsync(http.Response, resp, q?.JqFilter, settings.Value.JqTimeout, ct);
         });
 
         // Python: GET /public/query-via-url — query via URL parameters (for embedding).
@@ -72,11 +62,5 @@ public static class QueryHandler
             };
             return await svc.ExecuteAsync(q, actor: null, ct);
         });
-    }
-
-    private static Task WriteResponseAsync(HttpResponse http, Response resp, CancellationToken ct)
-    {
-        http.ContentType = "application/json; charset=utf-8";
-        return JsonSerializer.SerializeAsync(http.Body, resp, DmartJsonContext.Default.Response, ct);
     }
 }

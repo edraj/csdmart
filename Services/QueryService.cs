@@ -12,15 +12,6 @@ using NpgsqlTypes;
 
 namespace Dmart.Services;
 
-// Thrown by ApplyClientJoinsAsync when a join sub-query's jq_filter fails
-// (timeout / syntax / missing binary). Caught by ExecuteAsync and converted
-// into a Response.Fail with the appropriate JQ_* code — mirrors Python's
-// HTTP 400 raise path.
-internal sealed class JqJoinFailure(int code, string message) : Exception(message)
-{
-    public int Code { get; } = code;
-}
-
 // /managed/query service. Mirrors Python's adapter.query() dispatch logic:
 //
 //   QueryType.Spaces        → spaces table (management/ only)
@@ -105,21 +96,20 @@ public sealed class QueryService(
         {
             try
             {
-                var joined = await ApplyClientJoinsAsync(records, joins, actor, ct);
+                var (joined, jqFail) = await ApplyClientJoinsAsync(records, joins, actor, ct);
+                if (jqFail is not null)
+                    // Python propagates jq failures up as HTTP 400. Match that —
+                    // the client asked for a filter and we couldn't honor it, so
+                    // returning un-filtered data would be misleading.
+                    return jqFail;
                 response = response with { Records = joined };
-            }
-            catch (JqJoinFailure jq)
-            {
-                // Python propagates jq failures up as HTTP 400. Match that —
-                // the client asked for a filter and we couldn't honor it, so
-                // returning un-filtered data would be misleading.
-                return Response.Fail(jq.Code, jq.Message, ErrorTypes.Request);
             }
             catch (Exception ex)
             {
-                // Python swallows other join errors with a print; match that:
+                // Python swallows non-jq join errors with a print; match that:
                 // return the un-joined base results rather than failing the
-                // whole query.
+                // whole query. jq failures are already handled above via the
+                // tuple return — this catch is for join-algorithm bugs only.
                 Console.Error.WriteLine($"[client_join] {ex.Message}");
             }
         }
@@ -525,7 +515,7 @@ public sealed class QueryService(
     // attributes["join"][<alias>] list.
     // ====================================================================
 
-    private async Task<List<Record>> ApplyClientJoinsAsync(
+    private async Task<(List<Record> Records, Response? Failure)> ApplyClientJoinsAsync(
         List<Record> baseRecords, List<JoinQuery> joins, string? actor, CancellationToken ct)
     {
         // Ensure every base record has a mutable Attributes dict with a "join"
@@ -686,48 +676,21 @@ public sealed class QueryService(
             object?[] joinPayloads = new object?[baseRecords.Count];
             if (!string.IsNullOrWhiteSpace(subQuery.JqFilter))
             {
-                // Match the top-level path: do not leak the blocklist.
-                if (!JqRunner.ValidateFilter(subQuery.JqFilter, out _))
-                    throw new JqJoinFailure(InternalErrorCode.JQ_ERROR,
-                        "jq_filter validation failed");
-
-                // Python parity (adapter.py:1817): vectorize the user filter
-                // with `map( [ <expr> ] )` so a single jq invocation handles
-                // the whole list-of-lists input in one pass. Without the wrap,
-                // the user's `.[] | {...}` would iterate the OUTER list and
-                // try to index an inner list with a string key — exact error:
-                // "Cannot index array with string". The outer `map` walks
-                // base-record slices; the inner `[ ... ]` aggregates per-slice
-                // output back into an array so the top-level result is aligned
-                // 1:1 with matchedByBase.
+                // Python parity (adapter.py:1817): vectorize with
+                // `map( [ <expr> ] )` so one jq invocation handles the whole
+                // list-of-lists input in one pass. The extra inner `[ ]` is
+                // join-specific: it aggregates per-slice output back into an
+                // array so the top-level result stays aligned 1:1 with
+                // matchedByBase. Without it, `.[] | {...}` would iterate the
+                // OUTER list and try to index an inner list with a string key
+                // ("Cannot index array with string").
                 var wrappedFilter = $"map( [ {subQuery.JqFilter} ] )";
                 var inputBytes = SerializeMatchedForJq(matchedByBase);
                 var jqResult = await JqRunner.RunAsync(
                     wrappedFilter, inputBytes, settings.Value.JqTimeout, ct);
 
-                switch (jqResult.Failure)
-                {
-                    case JqRunner.FailureKind.Timeout:
-                        throw new JqJoinFailure(InternalErrorCode.JQ_TIMEOUT,
-                            "jq filter took too long to execute");
-                    case JqRunner.FailureKind.JqMissing:
-                        throw new JqJoinFailure(InternalErrorCode.JQ_ERROR,
-                            "jq binary not available on this dmart deployment");
-                    case JqRunner.FailureKind.Invalid:
-                        throw new JqJoinFailure(InternalErrorCode.JQ_ERROR,
-                            "jq_filter validation failed");
-                    case JqRunner.FailureKind.JqError:
-                        // Runtime jq error — the filter's own expression ran
-                        // against real data and jq emitted a non-zero exit.
-                        // Surface jq's stderr so the filter author can see
-                        // which record / which expression failed. jq stderr
-                        // lines look like "jq: error (at <stdin>:N): ...".
-                        // Not a security concern (it's the CALLER's filter,
-                        // not dmart internals), and it's what the caller
-                        // needs to debug their own expression.
-                        throw new JqJoinFailure(InternalErrorCode.JQ_ERROR,
-                            $"jq filter failed: {(jqResult.Stderr ?? "unknown error").Trim()}");
-                }
+                if (jqResult.Failure != JqRunner.FailureKind.None)
+                    return (baseRecords, JqRunner.ToFailureResponse(jqResult.Failure, jqResult.Stderr));
 
                 // Python wraps with `map( [ <expr> ] )` so the output is an
                 // outer array aligned 1-to-1 with matchedByBase. Split it and
@@ -753,7 +716,7 @@ public sealed class QueryService(
             }
         }
 
-        return baseRecords;
+        return (baseRecords, null);
     }
 
     // Serialize matchedByBase as an array-of-arrays of Record dicts, ready

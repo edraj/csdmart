@@ -4,70 +4,51 @@ using Dmart.Models.Json;
 
 namespace Dmart.Utils;
 
-// Applies a top-level jq_filter to a query Response and writes the result to
-// the HTTP stream.
+// Write a query Response to the HTTP stream, optionally reshaping the
+// records[] array through a user-supplied jq filter.
 //
-// Semantics: filter is written per-record (e.g., `{shortname, subpath}`), the
-// server wraps it as `map(<filter>)`, pipes just the records array through
-// `jq -c`, and slots jq's stdout back into the `records` field of the
-// envelope. `status`, `attributes`, `error` are preserved. On validation /
-// runtime failures, returns a normal Response.Fail envelope — only successful
-// output rides in records[].
+// Top-level jq semantics: filter is written per-record (e.g.
+// `{shortname, subpath}`). The server wraps as `map(<filter>)`, pipes just
+// the records array through `jq -c`, and slots jq's stdout back into
+// `records` in the envelope. `status`, `attributes`, `error` are preserved.
 //
-// Why records-only (not the whole Response envelope): user-authored filters
-// are written against a single Record's shape, which is the natural mental
-// model. This also matches the join-sub-query jq path in QueryService, which
-// has always mapped per-record via `map( [ <filter> ] )`.
+// Short-circuits (no jq subprocess):
+// - `jqFilter` null or whitespace → plain source-gen serialize.
+// - response.Status != Success or response.Records is null → plain
+//   source-gen serialize. jq only runs against successful result sets.
+//
+// On jq failure (validation / timeout / runtime) the wire contract is
+// preserved: a normal Response.Fail envelope with the appropriate JQ_*
+// code. Only successful jq output rides in records[].
+//
+// Why records-only (not the whole Response envelope): user-authored
+// filters are written against a single Record's shape, which is the
+// natural mental model. This aligns with the join-sub-query jq path in
+// QueryService, which also maps per-record (via `map( [ <filter> ] )` —
+// the extra `[ ]` is join-specific for per-base alignment).
 public static class JqEnvelope
 {
     public static async Task WriteAsync(
-        HttpResponse http, Response response, string filter, int timeoutSec, CancellationToken ct)
+        HttpResponse http, Response response, string? jqFilter, int timeoutSec, CancellationToken ct)
     {
         http.ContentType = "application/json; charset=utf-8";
 
-        // Short-circuit: failed response or no records → serialize as-is.
-        // (Also covers Response.Fail(...) envelopes from callers.)
-        if (response.Status != Status.Success || response.Records is null)
+        if (string.IsNullOrWhiteSpace(jqFilter)
+            || response.Status != Status.Success
+            || response.Records is null)
         {
             await JsonSerializer.SerializeAsync(http.Body, response, DmartJsonContext.Default.Response, ct);
             return;
         }
 
-        if (!JqRunner.ValidateFilter(filter, out _))
-        {
-            await WriteFailAsync(http, InternalErrorCode.JQ_ERROR,
-                "jq_filter validation failed", ct);
-            return;
-        }
-
         var inputBytes = SerializeRecordsAsArray(response.Records);
-        // `map(<filter>)` applies the user's filter to each Record and collects
-        // into an array. User writes the filter as if it sees one Record; jq
-        // iterates and collects.
-        var wrapped = $"map({filter})";
-        var jq = await JqRunner.RunRawAsync(wrapped, inputBytes, timeoutSec, ct);
+        var jq = await JqRunner.RunRawAsync($"map({jqFilter})", inputBytes, timeoutSec, ct);
 
-        switch (jq.Failure)
+        if (jq.Failure != JqRunner.FailureKind.None)
         {
-            case JqRunner.FailureKind.Timeout:
-                await WriteFailAsync(http, InternalErrorCode.JQ_TIMEOUT,
-                    "jq filter took too long to execute", ct);
-                return;
-            case JqRunner.FailureKind.JqMissing:
-                await WriteFailAsync(http, InternalErrorCode.JQ_ERROR,
-                    "jq binary not available on this dmart deployment", ct);
-                return;
-            case JqRunner.FailureKind.Invalid:
-                await WriteFailAsync(http, InternalErrorCode.JQ_ERROR,
-                    "jq_filter validation failed", ct);
-                return;
-            case JqRunner.FailureKind.JqError:
-                // Surface jq's stderr so the filter author can debug their
-                // own expression. Not a security concern — it's the caller's
-                // filter, not dmart internals.
-                await WriteFailAsync(http, InternalErrorCode.JQ_ERROR,
-                    $"jq filter failed: {(jq.Stderr ?? "unknown error").Trim()}", ct);
-                return;
+            var fail = JqRunner.ToFailureResponse(jq.Failure, jq.Stderr);
+            await JsonSerializer.SerializeAsync(http.Body, fail, DmartJsonContext.Default.Response, ct);
+            return;
         }
 
         await WriteEnvelopeAsync(http, response, jq.StdoutBytes ?? Array.Empty<byte>(), ct);
@@ -75,27 +56,25 @@ public static class JqEnvelope
 
     // Build the full Response envelope with raw jq output as the `records`
     // field value. `status`, `attributes`, `error` go through the source-gen
-    // serializers; `records` is written via WriteRawValue.
+    // serializers; `records` is written via WriteRawValue to avoid a
+    // parse+reserialize round-trip.
     private static async Task WriteEnvelopeAsync(
         HttpResponse http, Response response, byte[] jqStdout, CancellationToken ct)
     {
         await using var writer = new Utf8JsonWriter(http.Body);
         writer.WriteStartObject();
 
-        // status
         writer.WritePropertyName("status");
         JsonSerializer.Serialize(writer, response.Status, DmartJsonContext.Default.Status);
 
-        // error (only when non-null; matches DefaultIgnoreCondition.WhenWritingNull)
         if (response.Error is not null)
         {
             writer.WritePropertyName("error");
             JsonSerializer.Serialize(writer, response.Error, DmartJsonContext.Default.Error);
         }
 
-        // records: raw jq output. jq emits either a single JSON array (from
-        // `map(...)`) or JSONL. `map()` on success yields a single array, but
-        // trim trailing newline defensively before writing it raw.
+        // jq -c `map(...)` emits a single JSON array on one line with a
+        // trailing newline. Trim whitespace and write the array bytes raw.
         writer.WritePropertyName("records");
         var trimmed = TrimTrailingWhitespace(jqStdout);
         if (trimmed.Length == 0)
@@ -103,7 +82,6 @@ public static class JqEnvelope
         else
             writer.WriteRawValue(trimmed, skipInputValidation: false);
 
-        // attributes
         if (response.Attributes is not null)
         {
             writer.WritePropertyName("attributes");
@@ -113,12 +91,6 @@ public static class JqEnvelope
 
         writer.WriteEndObject();
         await writer.FlushAsync(ct);
-    }
-
-    private static async Task WriteFailAsync(HttpResponse http, int code, string message, CancellationToken ct)
-    {
-        var resp = Response.Fail(code, message, ErrorTypes.Request);
-        await JsonSerializer.SerializeAsync(http.Body, resp, DmartJsonContext.Default.Response, ct);
     }
 
     // Serialize records as a JSON array using the source-gen Record serializer,
