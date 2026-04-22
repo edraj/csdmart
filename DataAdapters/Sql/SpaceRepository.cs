@@ -42,6 +42,9 @@ public sealed class SpaceRepository(Db db)
 
     public async Task UpsertAsync(Space space, CancellationToken ct = default)
     {
+        // Populate query_policies on every write (see EntryRepository.UpsertAsync).
+        space = space with { QueryPolicies = Utils.QueryPolicies.Generate(space) };
+
         await using var conn = await db.OpenAsync(ct);
         await using var cmd = new NpgsqlCommand("""
             INSERT INTO spaces (uuid, shortname, space_name, subpath, is_active, slug,

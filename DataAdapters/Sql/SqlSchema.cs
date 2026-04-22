@@ -469,36 +469,47 @@ public static class SqlSchema
         END IF;
     END $$;
 
-    -- entries.query_policies must be non-empty. A row with an empty array
-    -- is invisible to AppendAclFilter (the row-level ACL intersects the
-    -- caller's policy list against the row's array via LIKE; empty never
-    -- matches). EntryRepository.UpsertAsync already regenerates policies
-    -- on every write (commit e9bc921), so new writes satisfy the
-    -- constraint automatically. The CHECK prevents any future write path
-    -- that forgets to call QueryPolicies.Generate from silently producing
-    -- invisible rows — turns a silent data bug into a loud DB error.
+    -- <table>.query_policies must be non-empty for every ACL-filterable
+    -- table. A row with an empty array is invisible to AppendAclFilter
+    -- (the row-level ACL intersects the caller's policy list against the
+    -- row array via LIKE; empty never matches). Each repository's
+    -- UpsertAsync regenerates policies on every write via
+    -- QueryPolicies.Generate, so new writes satisfy the constraint
+    -- automatically. The CHECK turns a silent data bug (invisible rows)
+    -- into a loud DB error for any future write path that forgets to
+    -- populate query_policies.
     --
     -- Skipped when orphan rows exist so the migration is safe on DBs that
-    -- haven't been backfilled. Run `dmart fix_query_policies` first, then
-    -- re-run migrate (or restart dmart) to pick up the constraint.
+    -- haven't been backfilled. Run `dmart fix_query_policies` first to
+    -- heal orphans (the command covers all five tables), then re-run
+    -- migrate (or restart dmart) to pick up the constraints.
     DO $$
-    DECLARE orphan_count INTEGER;
+    DECLARE
+        t_name   TEXT;
+        c_name   TEXT;
+        orphans  INTEGER;
     BEGIN
-        IF EXISTS (
-            SELECT 1 FROM pg_constraint
-            WHERE conname = 'entries_query_policies_nonempty'
-        ) THEN
-            RETURN;
-        END IF;
-        SELECT COUNT(*) INTO orphan_count
-        FROM entries
-        WHERE COALESCE(array_length(query_policies, 1), 0) = 0;
-        IF orphan_count > 0 THEN
-            RAISE NOTICE 'Skipping CHECK entries_query_policies_nonempty: % orphan row(s) present. Run `dmart fix_query_policies` first.', orphan_count;
-            RETURN;
-        END IF;
-        ALTER TABLE entries ADD CONSTRAINT entries_query_policies_nonempty
-            CHECK (COALESCE(array_length(query_policies, 1), 0) > 0);
+        FOR t_name IN SELECT unnest(ARRAY['entries','users','roles','permissions','spaces'])
+        LOOP
+            c_name := t_name || '_query_policies_nonempty';
+            CONTINUE WHEN EXISTS (SELECT 1 FROM pg_constraint WHERE conname = c_name);
+
+            EXECUTE format(
+                'SELECT COUNT(*) FROM %I WHERE COALESCE(array_length(query_policies, 1), 0) = 0',
+                t_name
+            ) INTO orphans;
+
+            IF orphans > 0 THEN
+                RAISE NOTICE 'Skipping CHECK %: % orphan row(s) in %. Run `dmart fix_query_policies` first.',
+                    c_name, orphans, t_name;
+                CONTINUE;
+            END IF;
+
+            EXECUTE format(
+                'ALTER TABLE %I ADD CONSTRAINT %I CHECK (COALESCE(array_length(query_policies, 1), 0) > 0)',
+                t_name, c_name
+            );
+        END LOOP;
     END $$;
 
     -- pgvector integration for semantic search. We deliberately DON'T run

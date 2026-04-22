@@ -581,21 +581,22 @@ switch (subcommand)
     case "fix_query_policies":
     case "fix-query-policies":
     {
-        // Backfill entries.query_policies for rows that were written by a
-        // code path that predated write-time population (EntryRepository
-        // pre-commit e9bc921). Such rows store an empty TEXT[] and are
-        // invisible to the row-level ACL filter (AppendAclFilter matches
-        // per-caller policies against the row array; empty never matches).
+        // Backfill query_policies for rows written by code paths that
+        // predated write-time population. Covers all five tables with
+        // ACL-filterable rows: entries, users, roles, permissions, spaces.
+        // Rows with an empty TEXT[] are invisible to AppendAclFilter (the
+        // row-level ACL intersects the caller's policy list against the
+        // row array via LIKE; empty never matches).
         //
         // Usage:
-        //   dmart fix_query_policies              → backfill all orphan rows
+        //   dmart fix_query_policies              → backfill orphans in every table
         //   dmart fix_query_policies <space>      → restrict to one space
-        //   dmart fix_query_policies --dry-run    → count only, don't UPDATE
+        //   dmart fix_query_policies --dry-run    → count + sample only, don't UPDATE
         //   dmart fix_query_policies <space> --dry-run
         //
-        // Idempotent: rows with a non-empty query_policies array are
-        // skipped. Safe to run on a live DB; each UPDATE touches only
-        // the query_policies column, no JSONB serialization.
+        // Idempotent: rows with a non-empty query_policies array are skipped
+        // at the SQL level. Safe to run on a live DB; each UPDATE touches
+        // only the query_policies column.
         string? spaceFilter = null;
         var dryRun = false;
         foreach (var a in serverArgs)
@@ -618,76 +619,92 @@ switch (subcommand)
             return;
         }
 
-        Console.WriteLine($"{(dryRun ? "[dry-run] " : "")}Scanning {s.DatabaseName}@{s.DatabaseHost}:{s.DatabasePort} for entries with empty query_policies"
+        Console.WriteLine($"{(dryRun ? "[dry-run] " : "")}Scanning {s.DatabaseName}@{s.DatabaseHost}:{s.DatabasePort} for rows with empty query_policies"
             + (spaceFilter is null ? " across all spaces..." : $" in space '{spaceFilter}'..."));
 
         await using var conn = await dbInst.OpenAsync();
-        // Read orphans — only the columns QueryPolicies.Generate needs, plus
-        // the row's primary key triple so we can UPDATE precisely.
-        var selectSql = """
-            SELECT shortname, space_name, subpath, resource_type, is_active,
-                   owner_shortname, owner_group_shortname
-            FROM entries
-            WHERE COALESCE(array_length(query_policies, 1), 0) = 0
-            """ + (spaceFilter is null ? "" : "\n  AND space_name = $1") + """
 
-            ORDER BY space_name, subpath, shortname
-            """;
-        await using var sel = new Npgsql.NpgsqlCommand(selectSql, conn);
-        if (spaceFilter is not null)
-            sel.Parameters.Add(new() { Value = spaceFilter });
+        // Each table has the same shape for the columns we read: shortname,
+        // space_name, subpath, resource_type, is_active, owner_shortname,
+        // owner_group_shortname. Only the `entries` table is special-cased
+        // on resource_type = 'folder' to set entryShortname (the rest of
+        // the tables' rows are never folders).
+        var tables = new[] { "entries", "users", "roles", "permissions", "spaces" };
+        var grandTotal = 0;
 
-        // Buffer rows before UPDATEing so we're not mixing a read cursor
-        // with writes on the same connection.
-        var orphans = new List<(string shortname, string spaceName, string subpath,
-            string resourceType, bool isActive, string owner, string? ownerGroup)>();
-        await using (var r = await sel.ExecuteReaderAsync())
+        foreach (var tableName in tables)
         {
-            while (await r.ReadAsync())
+            var selectSql = $"""
+                SELECT shortname, space_name, subpath, resource_type, is_active,
+                       owner_shortname, owner_group_shortname
+                FROM {tableName}
+                WHERE COALESCE(array_length(query_policies, 1), 0) = 0
+                """ + (spaceFilter is null ? "" : "\n  AND space_name = $1") + """
+
+                ORDER BY space_name, subpath, shortname
+                """;
+            await using var sel = new Npgsql.NpgsqlCommand(selectSql, conn);
+            if (spaceFilter is not null)
+                sel.Parameters.Add(new() { Value = spaceFilter });
+
+            var orphans = new List<(string shortname, string spaceName, string subpath,
+                string resourceType, bool isActive, string owner, string? ownerGroup)>();
+            await using (var r = await sel.ExecuteReaderAsync())
             {
-                orphans.Add((
-                    r.GetString(0), r.GetString(1), r.GetString(2),
-                    r.GetString(3), r.GetBoolean(4),
-                    r.GetString(5), r.IsDBNull(6) ? null : r.GetString(6)));
+                while (await r.ReadAsync())
+                {
+                    orphans.Add((
+                        r.GetString(0), r.GetString(1), r.GetString(2),
+                        r.GetString(3), r.GetBoolean(4),
+                        r.GetString(5), r.IsDBNull(6) ? null : r.GetString(6)));
+                }
             }
-        }
 
-        Console.WriteLine($"Found {orphans.Count} orphan row(s).");
-        if (orphans.Count == 0 || dryRun)
-        {
-            if (dryRun && orphans.Count > 0)
+            if (orphans.Count == 0)
             {
-                // Print a sample so the operator can sanity-check.
-                foreach (var (sn, sp, subp, rt, _, _, _) in orphans.Take(10))
-                    Console.WriteLine($"  {sp}:{subp}/{sn} ({rt})");
-                if (orphans.Count > 10) Console.WriteLine($"  ... +{orphans.Count - 10} more");
+                Console.WriteLine($"  {tableName}: 0 orphans.");
+                continue;
             }
-            return;
+
+            Console.WriteLine($"  {tableName}: {orphans.Count} orphan(s).");
+
+            if (dryRun)
+            {
+                foreach (var (sn, sp, subp, rt, _, _, _) in orphans.Take(5))
+                    Console.WriteLine($"    {sp}:{subp}/{sn} ({rt})");
+                if (orphans.Count > 5) Console.WriteLine($"    ... +{orphans.Count - 5} more");
+                continue;
+            }
+
+            var updateSql = $"""
+                UPDATE {tableName} SET query_policies = $1
+                WHERE shortname = $2 AND space_name = $3 AND subpath = $4
+                """;
+            var fixedCount = 0;
+            foreach (var (sn, sp, subp, rt, act, own, og) in orphans)
+            {
+                // Only entries.resource_type == 'folder' wants entryShortname
+                // populated (mirrors Python's generate_query_policies special
+                // case). Users/roles/permissions/spaces never set it.
+                var entryShortname = (tableName == "entries" && rt == "folder") ? sn : null;
+                var policies = Dmart.Utils.QueryPolicies.Generate(
+                    spaceName: sp, subpath: subp, resourceType: rt,
+                    isActive: act, ownerShortname: own,
+                    ownerGroupShortname: og, entryShortname: entryShortname);
+
+                await using var upd = new Npgsql.NpgsqlCommand(updateSql, conn);
+                upd.Parameters.Add(new() { Value = policies.ToArray() });
+                upd.Parameters.Add(new() { Value = sn });
+                upd.Parameters.Add(new() { Value = sp });
+                upd.Parameters.Add(new() { Value = subp });
+                fixedCount += await upd.ExecuteNonQueryAsync();
+            }
+            Console.WriteLine($"  {tableName}: updated {fixedCount} row(s).");
+            grandTotal += fixedCount;
         }
 
-        var updateSql = """
-            UPDATE entries SET query_policies = $1
-            WHERE shortname = $2 AND space_name = $3 AND subpath = $4
-            """;
-        var fixedCount = 0;
-        foreach (var (sn, sp, subp, rt, act, own, og) in orphans)
-        {
-            var entryShortname = rt == "folder" ? sn : null;
-            var policies = Dmart.Utils.QueryPolicies.Generate(
-                spaceName: sp, subpath: subp, resourceType: rt,
-                isActive: act, ownerShortname: own,
-                ownerGroupShortname: og, entryShortname: entryShortname);
-
-            await using var upd = new Npgsql.NpgsqlCommand(updateSql, conn);
-            upd.Parameters.Add(new() { Value = policies.ToArray() });
-            upd.Parameters.Add(new() { Value = sn });
-            upd.Parameters.Add(new() { Value = sp });
-            upd.Parameters.Add(new() { Value = subp });
-            var rows = await upd.ExecuteNonQueryAsync();
-            fixedCount += rows;
-        }
-
-        Console.WriteLine($"Updated {fixedCount} row(s) with freshly-generated query_policies.");
+        if (!dryRun)
+            Console.WriteLine($"Total rows fixed: {grandTotal}.");
         return;
     }
 
