@@ -299,6 +299,8 @@ public static class RequestHandler
             // instead of create + update.
             DeviceId = attrs.TryGetValue("device_id", out var did) ? ConvertToString(did) : null,
             LockedToDevice = attrs.TryGetValue("locked_to_device", out var ltd) && IsTruthy(ltd),
+            // Python parity: Meta.from_record writes `acl` onto the user meta.
+            Acl = ParseAcl(attrs),
             CreatedAt = DateTime.UtcNow,
             UpdatedAt = DateTime.UtcNow,
         };
@@ -403,6 +405,8 @@ public static class RequestHandler
             IsActive = !attrs.TryGetValue("is_active", out var ia) || !IsExplicitlyFalse(ia),
             Body = attrs.TryGetValue("body", out var b) ? ConvertToString(b) : null,
             State = attrs.TryGetValue("state", out var s) ? ConvertToString(s) : null,
+            // Python parity: Meta.from_record writes `acl` onto attachment meta.
+            Acl = ParseAcl(attrs),
             CreatedAt = DateTime.UtcNow,
         };
         await attachments.UpsertAsync(attachment, ct);
@@ -731,6 +735,11 @@ public static class RequestHandler
             Description = attrs.TryGetValue("description", out var de) ? ParseTranslation(de) : null,
             Tags = ExtractStringList(attrs, "tags") ?? new(),
             IsActive = !attrs.TryGetValue("is_active", out var ia) || !IsExplicitlyFalse(ia),
+            // Python parity: Meta.from_record writes every attribute (including
+            // `acl`) onto the meta object. Previously MaterializeEntry ignored
+            // acl, so tickets persisted with Acl=null and the fetch response
+            // omitted it (Entry.Acl serializer skips nulls).
+            Acl = ParseAcl(attrs),
             // Ticket-specific fields — Python reads these from record.attributes
             // via Meta.from_record → Ticket.__init__. C# was dropping them.
             State = attrs.TryGetValue("state", out var st) ? ConvertToString(st) : null,
@@ -740,6 +749,41 @@ public static class RequestHandler
             Reporter = ParseReporter(attrs),
             Payload = payload,
         };
+    }
+
+    // Pulls a list of ACL entries from record.attributes["acl"]. Each entry
+    // must carry `user_shortname` + `allowed_actions`; `denied` is a C#
+    // extension that's read through when present. Returns null when the
+    // attribute is missing or malformed so the entry persists with no ACL
+    // (matches the Python default of `acl: None`).
+    internal static List<AclEntry>? ParseAcl(Dictionary<string, object> attrs)
+    {
+        if (!attrs.TryGetValue("acl", out var raw) || raw is null) return null;
+        if (raw is not JsonElement arr || arr.ValueKind != JsonValueKind.Array) return null;
+        var list = new List<AclEntry>();
+        foreach (var item in arr.EnumerateArray())
+        {
+            if (item.ValueKind != JsonValueKind.Object) continue;
+            var user = item.TryGetProperty("user_shortname", out var us) && us.ValueKind == JsonValueKind.String
+                ? us.GetString() : null;
+            if (string.IsNullOrEmpty(user)) continue;
+            List<string>? allowed = null;
+            if (item.TryGetProperty("allowed_actions", out var aa) && aa.ValueKind == JsonValueKind.Array)
+            {
+                allowed = new List<string>();
+                foreach (var a in aa.EnumerateArray())
+                    if (a.ValueKind == JsonValueKind.String) allowed.Add(a.GetString()!);
+            }
+            List<string>? denied = null;
+            if (item.TryGetProperty("denied", out var de) && de.ValueKind == JsonValueKind.Array)
+            {
+                denied = new List<string>();
+                foreach (var d in de.EnumerateArray())
+                    if (d.ValueKind == JsonValueKind.String) denied.Add(d.GetString()!);
+            }
+            list.Add(new AclEntry { UserShortname = user, AllowedActions = allowed, Denied = denied });
+        }
+        return list.Count > 0 ? list : null;
     }
 
     private static Dictionary<string, string>? ExtractStringDict(Dictionary<string, object> attrs, string key)

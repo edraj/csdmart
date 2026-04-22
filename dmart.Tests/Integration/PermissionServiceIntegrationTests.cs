@@ -257,14 +257,14 @@ public class PermissionServiceIntegrationTests : IClassFixture<DmartFactory>
                 OwnerGroupShortname: null,
                 Acl: new()
                 {
-                    new AclEntry { UserShortname = userName, Allowed = new() { "view" } },
+                    new AclEntry { UserShortname = userName, AllowedActions = new() { "view" } },
                 });
             (await perms.CanReadAsync(userName, locator, ctx)).ShouldBeTrue();
 
             // ACL with a different user → still denied.
             var ctxWrongUser = ctx with
             {
-                Acl = new() { new AclEntry { UserShortname = "other_user", Allowed = new() { "view" } } },
+                Acl = new() { new AclEntry { UserShortname = "other_user", AllowedActions = new() { "view" } } },
             };
             (await perms.CanReadAsync(userName, locator, ctxWrongUser)).ShouldBeFalse();
         }
