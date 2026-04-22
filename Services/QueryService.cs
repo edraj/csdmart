@@ -124,6 +124,50 @@ public sealed class QueryService(
             }
         }
 
+        // Top-level jq_filter. Python dmart only applies jq on join
+        // sub-queries; we extend to the top-level records array as a
+        // strict superset so clients can reshape query results directly
+        // without synthesizing a join. User's filter runs on the whole
+        // array (no map() wrapping) so they can use `.[] | <expr>`,
+        // `map(<expr>)`, aggregates, etc. The transformed output
+        // replaces `records` and surfaces at `attributes.jq_result` —
+        // clients get exactly what jq produced, not a synthetic Record
+        // envelope wrapping arbitrary JSON shapes.
+        if (!string.IsNullOrWhiteSpace(q.JqFilter)
+            && response.Status == Status.Success
+            && response.Records is not null)
+        {
+            if (!JqRunner.ValidateFilter(q.JqFilter, out var reason))
+                return Response.Fail(InternalErrorCode.JQ_ERROR, reason!, ErrorTypes.Request);
+
+            var inputBytes = SerializeRecordsForJq(response.Records);
+            var jqResult = await JqRunner.RunAsync(
+                q.JqFilter, inputBytes, settings.Value.JqTimeout, ct);
+
+            switch (jqResult.Failure)
+            {
+                case JqRunner.FailureKind.Timeout:
+                    return Response.Fail(InternalErrorCode.JQ_TIMEOUT,
+                        "jq filter took too long to execute", ErrorTypes.Request);
+                case JqRunner.FailureKind.JqMissing:
+                case JqRunner.FailureKind.JqError:
+                case JqRunner.FailureKind.Invalid:
+                    return Response.Fail(InternalErrorCode.JQ_ERROR,
+                        "jq filter failed to be executed", ErrorTypes.Request);
+            }
+
+            var attrs = response.Attributes is null
+                ? new Dictionary<string, object>()
+                : new Dictionary<string, object>(response.Attributes);
+            if (jqResult.Output is JsonElement out1)
+                attrs["jq_result"] = out1;
+            response = response with
+            {
+                Records = null,
+                Attributes = attrs,
+            };
+        }
+
         return response;
     }
 
@@ -697,6 +741,23 @@ public sealed class QueryService(
         }
 
         return baseRecords;
+    }
+
+    // Serialize a flat records list as a JSON array, ready to feed to
+    // `jq -c`. Used by the top-level jq_filter path (our extension over
+    // Python). Uses the source-generated Record serializer so the shape
+    // fed into jq matches dmart's wire format byte-for-byte.
+    private static byte[] SerializeRecordsForJq(List<Record> records)
+    {
+        using var ms = new MemoryStream();
+        using (var writer = new Utf8JsonWriter(ms))
+        {
+            writer.WriteStartArray();
+            foreach (var rec in records)
+                JsonSerializer.Serialize(writer, rec, DmartJsonContext.Default.Record);
+            writer.WriteEndArray();
+        }
+        return ms.ToArray();
     }
 
     // Serialize matchedByBase as an array-of-arrays of Record dicts, ready
