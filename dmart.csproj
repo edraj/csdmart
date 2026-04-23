@@ -9,6 +9,16 @@
     <PublishSelfContained>true</PublishSelfContained>
     <!-- Required for ManifestEmbeddedFileProvider to enumerate embedded CXB assets -->
     <GenerateEmbeddedFilesManifest>true</GenerateEmbeddedFilesManifest>
+    <!-- Strip ICU/culture data from the published binary. All culture-sensitive
+         parses use CultureInfo.InvariantCulture explicitly; string compares are
+         all Ordinal*. Saves ~25-35 MB per linux-x64 publish. -->
+    <InvariantGlobalization>true</InvariantGlobalization>
+    <!-- Run trim/AOT analyzers during regular `dotnet build`, not just publish,
+         so new reflection-heavy code surfaces at dev time. Combined with
+         TreatWarningsAsErrors below, this fails the build on any regression. -->
+    <EnableTrimAnalyzer>true</EnableTrimAnalyzer>
+    <EnableAotAnalyzer>true</EnableAotAnalyzer>
+    <TreatWarningsAsErrors>true</TreatWarningsAsErrors>
   </PropertyGroup>
 
   <!-- Bake git version into the assembly so dmart -v and /info/manifest always show it.

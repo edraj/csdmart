@@ -1,3 +1,4 @@
+using System.Globalization;
 using System.Text.RegularExpressions;
 using Dmart.Models.Api;
 using Dmart.Models.Enums;
@@ -556,7 +557,7 @@ public static class QueryHelper
             if (isNum && compOp is not null)
             {
                 var sqlOp = compOp switch { "!" => "!=", ">" => ">", ">=" => ">=", "<" => "<", "<=" => "<=", _ => "=" };
-                args.Add(new() { Value = double.Parse(value) });
+                args.Add(new() { Value = double.Parse(value, CultureInfo.InvariantCulture) });
                 var pNum = args.Count;
                 var castCol = hasSubPath ? $"({elementJsonb})::float" : "e::float";
                 predicate = $"{castCol} {sqlOp} CAST(${pNum} AS float)";
@@ -568,7 +569,7 @@ public static class QueryHelper
             }
             else if (isNum)
             {
-                args.Add(new() { Value = double.Parse(value) });
+                args.Add(new() { Value = double.Parse(value, CultureInfo.InvariantCulture) });
                 var pNum = args.Count;
                 var castCol = hasSubPath ? $"({elementJsonb})::float" : "e::float";
                 predicate = $"{castCol} = CAST(${pNum} AS float)";
@@ -621,7 +622,7 @@ public static class QueryHelper
             if (isNum && compOp is not null)
             {
                 var sqlOp = compOp switch { "!" => "!=", ">" => ">", ">=" => ">=", "<" => "<", "<=" => "<=", _ => "=" };
-                args.Add(new() { Value = double.Parse(value) });
+                args.Add(new() { Value = double.Parse(value, CultureInfo.InvariantCulture) });
                 var pNum = args.Count;
                 conditions.Add(
                     $"(jsonb_typeof(payload::jsonb->{arrowPath}) = 'number' AND ({textExtract})::float {sqlOp} CAST(${pNum} AS float))");
@@ -633,7 +634,7 @@ public static class QueryHelper
                 var stringCond = $"(jsonb_typeof(payload::jsonb->{arrowPath}) = 'string' AND {textExtract} != ${pVal})";
                 if (isNum)
                 {
-                    args.Add(new() { Value = double.Parse(value) });
+                    args.Add(new() { Value = double.Parse(value, CultureInfo.InvariantCulture) });
                     var pNum = args.Count;
                     var numCond = $"(jsonb_typeof(payload::jsonb->{arrowPath}) = 'number' AND ({textExtract})::float != CAST(${pNum} AS float))";
                     conditions.Add($"({arrayCond} OR {stringCond} OR {numCond})");
@@ -654,7 +655,7 @@ public static class QueryHelper
 
                 if (isNum)
                 {
-                    args.Add(new() { Value = double.Parse(value) });
+                    args.Add(new() { Value = double.Parse(value, CultureInfo.InvariantCulture) });
                     var pNum = args.Count;
                     var numCond = $"(jsonb_typeof(payload::jsonb->{arrowPath}) = 'number' AND ({textExtract})::float = CAST(${pNum} AS float))";
                     conditions.Add($"({arrayCond} OR {stringCond} OR {directCond} OR {numCond})");
