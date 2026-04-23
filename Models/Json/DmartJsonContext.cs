@@ -73,9 +73,15 @@ namespace Dmart.Models.Json;
 // Scalar types that appear inside Dictionary<string, object> attribute bags.
 // Without explicit registration, the source-gen serializer throws at runtime
 // for any ValueType it hasn't been told about — seen on semantic_search's
-// similarity score (double).
+// similarity score (double), the access log's Environment.ProcessId (int),
+// and JSON payload-body fields that parse as Int64/bool under
+// Dictionary<string, object> (the access log serializes the request body
+// through the same source-gen path).
 [JsonSerializable(typeof(double))]
 [JsonSerializable(typeof(float))]
+[JsonSerializable(typeof(long))]
+[JsonSerializable(typeof(int))]
+[JsonSerializable(typeof(bool))]
 [JsonSerializable(typeof(string))]
 [JsonSerializable(typeof(Dictionary<string, List<string>>))]
 [JsonSerializable(typeof(Dictionary<string, List<Record>>))]
