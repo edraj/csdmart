@@ -1,7 +1,10 @@
 using System.Text.Json;
+using Dmart.Config;
 using Dmart.Models.Api;
 using Dmart.Models.Json;
 using Dmart.Services;
+using Dmart.Utils;
+using Microsoft.Extensions.Options;
 
 namespace Dmart.Api.Public;
 
@@ -11,27 +14,31 @@ public static class QueryHandler
     {
         // Read body as raw stream and deserialize ourselves so we can surface the
         // real JSON error (Minimal APIs swallow body-binding errors as 400 no-body).
-        g.MapPost("/query", async Task<Response> (HttpRequest req, QueryService svc, CancellationToken ct) =>
+        g.MapPost("/query", async Task (
+            HttpRequest req, QueryService svc, HttpContext http,
+            IOptions<DmartSettings> settings, CancellationToken ct) =>
         {
-            Query? q;
+            Query? q = null;
+            Response resp;
             try
             {
                 q = await JsonSerializer.DeserializeAsync(req.Body, DmartJsonContext.Default.Query, ct);
+                // Python parity: /public/query resolves permissions under the
+                // "anonymous" user row (+ optional "world" permission), so
+                // anonymous queries see rows an admin configured as publicly
+                // visible. We pass the identity explicitly so QueryService
+                // builds row-level query_policies for anonymous — null would
+                // skip the ACL filter entirely (internal-unrestricted path).
+                resp = q is null
+                    ? Response.Fail(InternalErrorCode.INVALID_DATA, "empty body", ErrorTypes.Request)
+                    : await svc.ExecuteAsync(q, actor: "anonymous", ct);
             }
             catch (JsonException ex)
             {
-                return Response.Fail(InternalErrorCode.INVALID_DATA,
+                resp = Response.Fail(InternalErrorCode.INVALID_DATA,
                     $"invalid Query JSON: {ex.Message}", ErrorTypes.Request);
             }
-            if (q is null)
-                return Response.Fail(InternalErrorCode.INVALID_DATA, "empty body", ErrorTypes.Request);
-            // Python parity: /public/query resolves permissions under the
-            // "anonymous" user row (+ optional "world" permission), so
-            // anonymous queries see rows an admin configured as publicly
-            // visible. We pass the identity explicitly so QueryService
-            // builds row-level query_policies for anonymous — null would
-            // skip the ACL filter entirely (internal-unrestricted path).
-            return await svc.ExecuteAsync(q, actor: "anonymous", ct);
+            await JqEnvelope.WriteAsync(http.Response, resp, q?.JqFilter, settings.Value.JqTimeout, ct);
         });
 
         // Python: GET /public/query-via-url — query via URL parameters (for embedding).

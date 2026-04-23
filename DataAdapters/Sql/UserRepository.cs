@@ -65,6 +65,12 @@ public sealed class UserRepository(Db db, AuthzCacheRefresher refresher)
 
     public async Task UpsertAsync(User u, CancellationToken ct = default)
     {
+        // Populate query_policies deterministically on every write so the
+        // row-level ACL filter (QueryHelper.AppendAclFilter) can match
+        // patterns against it. See EntryRepository.UpsertAsync for the
+        // full rationale — same pattern, same invariant.
+        u = u with { QueryPolicies = Utils.QueryPolicies.Generate(u) };
+
         await using var conn = await db.OpenAsync(ct);
         await using var cmd = new NpgsqlCommand("""
             INSERT INTO users (uuid, shortname, space_name, subpath, is_active, slug,

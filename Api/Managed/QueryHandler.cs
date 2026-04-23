@@ -1,26 +1,33 @@
 using System.Text.Json;
+using Dmart.Config;
 using Dmart.Models.Api;
 using Dmart.Models.Json;
 using Dmart.Services;
+using Dmart.Utils;
+using Microsoft.Extensions.Options;
 
 namespace Dmart.Api.Managed;
 
 public static class QueryHandler
 {
     public static void Map(RouteGroupBuilder g) =>
-        g.MapPost("/query", async Task<Response> (HttpRequest req, QueryService svc, HttpContext http, CancellationToken ct) =>
+        g.MapPost("/query", async Task (
+            HttpRequest req, QueryService svc, HttpContext http,
+            IOptions<DmartSettings> settings, CancellationToken ct) =>
         {
-            Query? q;
+            Query? q = null;
+            Response resp;
             try
             {
                 q = await JsonSerializer.DeserializeAsync(req.Body, DmartJsonContext.Default.Query, ct);
+                resp = q is null
+                    ? Response.Fail(InternalErrorCode.INVALID_DATA, "empty body", ErrorTypes.Request)
+                    : await svc.ExecuteAsync(q, http.Actor(), ct);
             }
             catch (JsonException)
             {
-                return Response.Fail(InternalErrorCode.INVALID_DATA, "invalid request body", ErrorTypes.Request);
+                resp = Response.Fail(InternalErrorCode.INVALID_DATA, "invalid request body", ErrorTypes.Request);
             }
-            if (q is null)
-                return Response.Fail(InternalErrorCode.INVALID_DATA, "empty body", ErrorTypes.Request);
-            return await svc.ExecuteAsync(q, http.Actor(), ct);
+            await JqEnvelope.WriteAsync(http.Response, resp, q?.JqFilter, settings.Value.JqTimeout, ct);
         });
 }

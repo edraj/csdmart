@@ -48,6 +48,42 @@ public static class QueryPolicies
         ownerGroupShortname: a.OwnerGroupShortname,
         entryShortname: null);
 
+    public static List<string> Generate(User u) => Generate(
+        spaceName: u.SpaceName,
+        subpath: u.Subpath,
+        resourceType: "user",
+        isActive: u.IsActive,
+        ownerShortname: u.OwnerShortname,
+        ownerGroupShortname: u.OwnerGroupShortname,
+        entryShortname: null);
+
+    public static List<string> Generate(Role r) => Generate(
+        spaceName: r.SpaceName,
+        subpath: r.Subpath,
+        resourceType: "role",
+        isActive: r.IsActive,
+        ownerShortname: r.OwnerShortname,
+        ownerGroupShortname: r.OwnerGroupShortname,
+        entryShortname: null);
+
+    public static List<string> Generate(Permission p) => Generate(
+        spaceName: p.SpaceName,
+        subpath: p.Subpath,
+        resourceType: "permission",
+        isActive: p.IsActive,
+        ownerShortname: p.OwnerShortname,
+        ownerGroupShortname: p.OwnerGroupShortname,
+        entryShortname: null);
+
+    public static List<string> Generate(Space s) => Generate(
+        spaceName: s.SpaceName,
+        subpath: s.Subpath,
+        resourceType: "space",
+        isActive: s.IsActive,
+        ownerShortname: s.OwnerShortname,
+        ownerGroupShortname: s.OwnerGroupShortname,
+        entryShortname: null);
+
     public static List<string> Generate(
         string spaceName,
         string subpath,

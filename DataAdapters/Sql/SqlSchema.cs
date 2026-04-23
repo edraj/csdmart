@@ -469,6 +469,49 @@ public static class SqlSchema
         END IF;
     END $$;
 
+    -- <table>.query_policies must be non-empty for every ACL-filterable
+    -- table. A row with an empty array is invisible to AppendAclFilter
+    -- (the row-level ACL intersects the caller's policy list against the
+    -- row array via LIKE; empty never matches). Each repository's
+    -- UpsertAsync regenerates policies on every write via
+    -- QueryPolicies.Generate, so new writes satisfy the constraint
+    -- automatically. The CHECK turns a silent data bug (invisible rows)
+    -- into a loud DB error for any future write path that forgets to
+    -- populate query_policies.
+    --
+    -- Skipped when orphan rows exist so the migration is safe on DBs that
+    -- haven't been backfilled. Run `dmart fix_query_policies` first to
+    -- heal orphans (the command covers all five tables), then re-run
+    -- migrate (or restart dmart) to pick up the constraints.
+    DO $$
+    DECLARE
+        t_name   TEXT;
+        c_name   TEXT;
+        orphans  INTEGER;
+    BEGIN
+        FOR t_name IN SELECT unnest(ARRAY['entries','users','roles','permissions','spaces'])
+        LOOP
+            c_name := t_name || '_query_policies_nonempty';
+            CONTINUE WHEN EXISTS (SELECT 1 FROM pg_constraint WHERE conname = c_name);
+
+            EXECUTE format(
+                'SELECT COUNT(*) FROM %I WHERE COALESCE(array_length(query_policies, 1), 0) = 0',
+                t_name
+            ) INTO orphans;
+
+            IF orphans > 0 THEN
+                RAISE NOTICE 'Skipping CHECK %: % orphan row(s) in %. Run `dmart fix_query_policies` first.',
+                    c_name, orphans, t_name;
+                CONTINUE;
+            END IF;
+
+            EXECUTE format(
+                'ALTER TABLE %I ADD CONSTRAINT %I CHECK (COALESCE(array_length(query_policies, 1), 0) > 0)',
+                t_name, c_name
+            );
+        END LOOP;
+    END $$;
+
     -- pgvector integration for semantic search. We deliberately DON'T run
     -- `CREATE EXTENSION vector` here — that requires superuser, which dmart's
     -- DB user usually isn't. A DBA installs the extension once via

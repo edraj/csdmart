@@ -51,6 +51,10 @@ public sealed class AccessRepository(Db db, AuthzCacheRefresher refresher)
 
     public async Task UpsertRoleAsync(Role role, CancellationToken ct = default)
     {
+        // Populate query_policies on every write (see EntryRepository.UpsertAsync
+        // for rationale). Without this, the row is only reachable to its owner.
+        role = role with { QueryPolicies = Utils.QueryPolicies.Generate(role) };
+
         await using var conn = await db.OpenAsync(ct);
         await using var cmd = new NpgsqlCommand("""
             INSERT INTO roles (uuid, shortname, space_name, subpath, is_active, slug,
@@ -128,6 +132,9 @@ public sealed class AccessRepository(Db db, AuthzCacheRefresher refresher)
 
     public async Task UpsertPermissionAsync(Permission p, CancellationToken ct = default)
     {
+        // Populate query_policies on every write (see EntryRepository.UpsertAsync).
+        p = p with { QueryPolicies = Utils.QueryPolicies.Generate(p) };
+
         await using var conn = await db.OpenAsync(ct);
         await using var cmd = new NpgsqlCommand("""
             INSERT INTO permissions (uuid, shortname, space_name, subpath, is_active, slug,
