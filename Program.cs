@@ -41,10 +41,13 @@ if (args.Length == 0 || !args[0].StartsWith('-'))
     };
 }
 
-// Parse subcommand from args. Default to "help".
-// Flag-like args (--contentRoot etc.) are left for the web builder;
-// only our known flags (-v, -h) are treated as subcommands.
-var subcommand = "help";
+// Parse subcommand from args.
+// - No args at all → "help" (terminal user intent: show subcommands).
+// - Flag-like args (--contentRoot etc., as injected by WebApplicationFactory)
+//   → "serve" so the test host actually starts.
+// - Bare subcommand (`dmart serve`, `dmart migrate`, ...) → that subcommand.
+// - `-v`/`-h`/`--version`/`--help` are also treated as subcommands.
+var subcommand = args.Length == 0 ? "help" : "serve";
 var serverArgs = args;
 if (args.Length > 0)
 {
@@ -1009,6 +1012,12 @@ app.Use(async (ctx, next) =>
 
 // GZip
 app.UseResponseCompression();
+
+// Strip empty object properties ("", [], {}) from JSON responses globally.
+// Registered AFTER UseResponseCompression so the strip happens on uncompressed
+// JSON; the compressed bytes that go on the wire reflect the trimmed body.
+// Intentional divergence from Python dmart — see middleware comment.
+app.UseJsonStripEmpties();
 
 // Correlation ID
 app.Use(async (ctx, next) =>
