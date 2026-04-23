@@ -314,9 +314,13 @@ switch (subcommand)
             nlog.CreateLogger<EntryService>());
         var exportService = new ImportExportService(entryRepo,
             new AttachmentRepository(dbInst),
-            entryService,
+            new UserRepository(dbInst, refresher),
+            new AccessRepository(dbInst, refresher),
+            new SpaceRepository(dbInst),
+            new HistoryRepository(dbInst),
             new PermissionService(new UserRepository(dbInst, refresher),
                 new AccessRepository(dbInst, refresher), refresher),
+            Microsoft.Extensions.Options.Options.Create(s),
             nlog.CreateLogger<ImportExportService>());
 
         var spaceRepo = new SpaceRepository(dbInst);
@@ -378,9 +382,13 @@ switch (subcommand)
             nlog.CreateLogger<EntryService>());
         var importService = new ImportExportService(entryRepo,
             new AttachmentRepository(dbInst),
-            entryService,
+            new UserRepository(dbInst, refresher),
+            new AccessRepository(dbInst, refresher),
+            new SpaceRepository(dbInst),
+            new HistoryRepository(dbInst),
             new PermissionService(new UserRepository(dbInst, refresher),
                 new AccessRepository(dbInst, refresher), refresher),
+            Microsoft.Extensions.Options.Options.Create(s),
             nlog.CreateLogger<ImportExportService>());
 
         await using var zipStream = File.OpenRead(zipPath);
