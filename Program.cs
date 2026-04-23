@@ -1064,9 +1064,14 @@ app.UseDmartResponseHeaders();
     app.Use(async (ctx, next) =>
     {
         await next();
+        // GetEndpoint() is non-null iff a route matched and its handler ran.
+        // Without this guard, buffering middleware (JsonStripEmpties) keeps
+        // HasStarted=false after a handler returns 404, so the legacy
+        // HasStarted/ContentLength check would clobber handler-emitted 404s
+        // (e.g. /managed/entry for a missing resource) with INVALID_ROUTE.
         if (ctx.Response.StatusCode == 404
+            && ctx.GetEndpoint() is null
             && !ctx.Response.HasStarted
-            && (ctx.Response.ContentLength is null or 0)
             && !ctx.Request.Path.StartsWithSegments(cxbPath)
             && !ctx.Request.Path.StartsWithSegments(catPath))
         {
