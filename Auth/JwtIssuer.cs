@@ -23,13 +23,19 @@ public sealed class JwtIssuer(IOptions<DmartSettings> settings)
         UserType userType = UserType.Web)
         => Sign(subject, roles, userType, TimeSpan.FromSeconds(_s.JwtAccessExpires));
 
-    public string IssueRefresh(string subject, UserType userType = UserType.Web)
-        => Sign(subject, null, userType, TimeSpan.FromDays(_s.JwtRefreshDays));
+    public string IssueRefresh(string subject, UserType userType = UserType.Web,
+        long? originalIatUnix = null)
+        => Sign(subject, null, userType, TimeSpan.FromDays(_s.JwtRefreshDays), originalIatUnix);
 
     private string Sign(string subject, IEnumerable<string>? roles,
-        UserType userType, TimeSpan lifetime)
+        UserType userType, TimeSpan lifetime, long? originalIatUnix = null)
     {
         var now = DateTimeOffset.UtcNow;
+        // If the caller preserved an original iat from a prior refresh, anchor
+        // this new token to it. That bounds the rotation chain — see
+        // SessionMaxLifetimeSeconds for the cap enforcement in the refresh
+        // handler.
+        var iat = originalIatUnix ?? now.ToUnixTimeSeconds();
         var expiresUnix = now.Add(lifetime).ToUnixTimeSeconds();
         var typeStr = JsonbHelpers.EnumMember(userType);
 
@@ -41,7 +47,7 @@ public sealed class JwtIssuer(IOptions<DmartSettings> settings)
             writer.WriteString("sub", subject);
             writer.WriteString("iss", _s.JwtIssuer);
             writer.WriteString("aud", _s.JwtAudience);
-            writer.WriteNumber("iat", now.ToUnixTimeSeconds());
+            writer.WriteNumber("iat", iat);
             writer.WriteNumber("exp", expiresUnix);
             writer.WriteString("jti", Guid.NewGuid().ToString("n"));
             if (roles is not null)

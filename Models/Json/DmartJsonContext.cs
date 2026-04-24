@@ -10,9 +10,15 @@ namespace Dmart.Models.Json;
 // AOT-friendly source-generated JSON. Every type that crosses the wire (or jsonb)
 // MUST be listed here. JsonStringEnumConverter combined with [EnumMember(Value=...)]
 // on the enum members produces the exact strings dmart's Python uses.
+// MaxDepth caps JSON nesting at 32 levels — protects against "JSON bomb" DoS
+// (deeply nested payloads that exhaust the stack). 32 is well above anything
+// dmart legitimately sends/receives: the deepest legitimate shape is a
+// Request envelope carrying Records with a Payload.Body that nests maybe
+// 4-5 levels.
 [JsonSourceGenerationOptions(
     PropertyNamingPolicy = JsonKnownNamingPolicy.SnakeCaseLower,
-    DefaultIgnoreCondition = JsonIgnoreCondition.WhenWritingNull)]
+    DefaultIgnoreCondition = JsonIgnoreCondition.WhenWritingNull,
+    MaxDepth = 32)]
 // Enums use per-type [JsonConverter] attributes that read [EnumMember] — see
 // EnumMemberConverter.cs. We deliberately don't set UseStringEnumConverter here
 // because that emits source-gen converters that ignore [EnumMember].

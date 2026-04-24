@@ -293,11 +293,48 @@ public static class OAuthEndpoints
         var user = await users.GetByShortnameAsync(shortname, ct);
         if (user is null)
             return OAuthError(400, "invalid_grant", "user no longer exists");
+        // Re-check IsActive on every refresh. Without this, deactivating a
+        // compromised account doesn't cut off its refresh tokens — they keep
+        // minting fresh access tokens until the refresh JWT's own expiry.
+        if (!user.IsActive)
+            return OAuthError(400, "invalid_grant", "user is no longer active");
+
+        // Enforce absolute session lifetime. The incoming refresh carries the
+        // original login's iat (preserved across rotations below), so once
+        // SessionMaxLifetimeSeconds elapses we reject — the user must log in
+        // again. This caps a stolen refresh's usefulness regardless of how
+        // aggressively the attacker rotates it.
+        var originalIat = ExtractIatUnix(refreshToken);
+        if (settings.SessionMaxLifetimeSeconds > 0 && originalIat is long iatUnix)
+        {
+            var ageSeconds = DateTimeOffset.UtcNow.ToUnixTimeSeconds() - iatUnix;
+            if (ageSeconds > settings.SessionMaxLifetimeSeconds)
+                return OAuthError(400, "invalid_grant", "session exceeded maximum lifetime");
+        }
 
         var access = jwt.IssueAccess(user.Shortname, user.Roles, user.Type);
-        var newRefresh = jwt.IssueRefresh(user.Shortname, user.Type);
+        var newRefresh = jwt.IssueRefresh(user.Shortname, user.Type, originalIat);
 
         return TokenResponse(access, newRefresh, settings, scope: "mcp");
+    }
+
+    // Parse the `iat` claim out of a signed JWT. Returns null when the token
+    // is malformed or missing the claim — the caller already verified the
+    // signature via jwt.Validate, so this is purely about reading a known-good
+    // payload.
+    private static long? ExtractIatUnix(string jwtToken)
+    {
+        var parts = jwtToken.Split('.');
+        if (parts.Length != 3) return null;
+        try
+        {
+            var padded = parts[1].Replace('-', '+').Replace('_', '/');
+            padded += (padded.Length % 4) switch { 2 => "==", 3 => "=", _ => "" };
+            var payload = Convert.FromBase64String(padded);
+            using var doc = System.Text.Json.JsonDocument.Parse(payload);
+            return doc.RootElement.TryGetProperty("iat", out var iat) ? iat.GetInt64() : null;
+        }
+        catch { return null; }
     }
 
     private static IResult TokenResponse(string access, string refresh,

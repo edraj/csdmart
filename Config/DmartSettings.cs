@@ -97,6 +97,13 @@ public sealed class DmartSettings
     // disables the check. Mirrors Python's `session_inactivity_ttl`.
     public int SessionInactivityTtl { get; set; }
 
+    // If > 0, the refresh-token chain is capped at this many seconds from the
+    // original login. Rotation preserves the original `iat` on each new
+    // refresh, so an attacker who stole a refresh can't keep it alive forever
+    // by just repeatedly exchanging it. 0 disables the cap (match prior
+    // behavior).
+    public int SessionMaxLifetimeSeconds { get; set; }
+
     // How long (seconds) a PUT /managed/lock stays held before any user can
     // take it. Prevents orphaned locks when a client crashes without calling
     // DELETE /managed/lock. Mirrors Python's `lock_period`.

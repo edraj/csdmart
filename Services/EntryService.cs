@@ -32,11 +32,27 @@ public sealed class EntryService(
         return entry;
     }
 
-    public Task<Entry?> GetByUuidAsync(Guid uuid, CancellationToken ct = default)
-        => entries.GetByUuidAsync(uuid, ct);
+    // IDOR guard: the entry is fetched by UUID/slug (no space/subpath in the URL),
+    // so we must look up its Locator and run the same CanReadAsync gate GetAsync
+    // uses. Without this, any authenticated caller who knows a UUID could read
+    // entries they have no ACL path to.
+    public async Task<Entry?> GetByUuidAsync(Guid uuid, string? actor, CancellationToken ct = default)
+    {
+        var entry = await entries.GetByUuidAsync(uuid, ct);
+        if (entry is null) return null;
+        var l = new Locator(entry.ResourceType, entry.SpaceName, entry.Subpath, entry.Shortname);
+        if (!await perms.CanReadAsync(actor, l, PermissionService.FromEntry(entry), ct)) return null;
+        return entry;
+    }
 
-    public Task<Entry?> GetBySlugAsync(string slug, CancellationToken ct = default)
-        => entries.GetBySlugAsync(slug, ct);
+    public async Task<Entry?> GetBySlugAsync(string slug, string? actor, CancellationToken ct = default)
+    {
+        var entry = await entries.GetBySlugAsync(slug, ct);
+        if (entry is null) return null;
+        var l = new Locator(entry.ResourceType, entry.SpaceName, entry.Subpath, entry.Shortname);
+        if (!await perms.CanReadAsync(actor, l, PermissionService.FromEntry(entry), ct)) return null;
+        return entry;
+    }
 
     public async Task<Result<Entry>> CreateAsync(Entry entry, string? actor, CancellationToken ct = default)
         => await CreateAsync(entry, actor, rawAttrs: null, ct);

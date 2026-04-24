@@ -30,7 +30,7 @@ public static class RequestHandler
             async Task<Response> (HttpRequest httpReq, EntryService entries, UserRepository users,
                                   AccessRepository access, SpaceRepository spaces,
                                   AttachmentRepository attachments, PasswordHasher hasher,
-                                  Plugins.PluginManager plugins,
+                                  Plugins.PluginManager plugins, PermissionService perms,
                                   IOptions<DmartSettings> dmartSettings,
                                   HttpContext http, CancellationToken ct) =>
             {
@@ -118,13 +118,13 @@ public static class RequestHandler
                     {
                         RequestType.Create =>
                             await DispatchCreateAsync(rec, req.SpaceName, actor,
-                                entries, users, access, spaces, attachments, hasher, ct),
+                                entries, users, access, spaces, attachments, hasher, perms, ct),
                         RequestType.Update or RequestType.Patch =>
                             await DispatchUpdateAsync(rec, req.SpaceName, actor,
-                                entries, users, access, spaces, attachments, hasher, ct),
+                                entries, users, access, spaces, attachments, hasher, perms, ct),
                         RequestType.Delete =>
                             await DispatchDeleteAsync(rec, req.SpaceName, actor, managementSpace,
-                                entries, users, access, spaces, attachments, ct),
+                                entries, users, access, spaces, attachments, perms, ct),
                         RequestType.Move =>
                             await DispatchMoveAsync(rec, req.SpaceName, actor, entries, ct),
                         // Python: Assign sets collaborators on an entry.
@@ -241,9 +241,42 @@ public static class RequestHandler
         Record rec, string space, string actor,
         EntryService entries, UserRepository users, AccessRepository access,
         SpaceRepository spaces, AttachmentRepository attachments, PasswordHasher hasher,
-        CancellationToken ct)
+        PermissionService perms, CancellationToken ct)
     {
         rec = ResolveAutoShortname(rec);
+        // Gate non-entry branches here. The entry path runs through EntryService
+        // which has its own CanCreateAsync call. The attachment path inherits
+        // the parent entry's permissions by convention; we gate with a locator
+        // at the attachment's own subpath so a caller without "create" rights
+        // on that subpath can't attach arbitrary resources.
+        switch (rec.ResourceType)
+        {
+            case ResourceType.User:
+            case ResourceType.Role:
+            case ResourceType.Permission:
+            case ResourceType.Space:
+            case ResourceType.Comment:
+            case ResourceType.Reply:
+            case ResourceType.Reaction:
+            case ResourceType.Media:
+            case ResourceType.Json:
+            case ResourceType.Share:
+            case ResourceType.Relationship:
+            case ResourceType.Alteration:
+            case ResourceType.Lock:
+            case ResourceType.DataAsset:
+            {
+                // Space resource targets its own self-referential space_name.
+                var effectiveSpace = rec.ResourceType == ResourceType.Space ? rec.Shortname : space;
+                var effectiveSubpath = rec.ResourceType == ResourceType.Space ? "/"
+                    : "/" + rec.Subpath.TrimStart('/');
+                var gateLocator = new Locator(rec.ResourceType, effectiveSpace, effectiveSubpath, rec.Shortname);
+                if (!await perms.CanCreateAsync(actor, gateLocator, rec.Attributes, ct))
+                    return (Response.Fail(InternalErrorCode.NOT_ALLOWED,
+                        $"not allowed to create {rec.ResourceType}", ErrorTypes.Request), rec);
+                break;
+            }
+        }
         switch (rec.ResourceType)
         {
             case ResourceType.User:
@@ -450,7 +483,7 @@ public static class RequestHandler
         Record rec, string space, string actor,
         EntryService entries, UserRepository users, AccessRepository access,
         SpaceRepository spaces, AttachmentRepository attachments, PasswordHasher hasher,
-        CancellationToken ct)
+        PermissionService perms, CancellationToken ct)
     {
         var locator = new Locator(rec.ResourceType, space, rec.Subpath, rec.Shortname);
 
@@ -462,6 +495,9 @@ public static class RequestHandler
                 if (existing is null)
                     return (Response.Fail(InternalErrorCode.SHORTNAME_DOES_NOT_EXIST, "user not found", ErrorTypes.Request), rec);
                 var attrs = rec.Attributes ?? new();
+                var userLocator = new Locator(ResourceType.User, existing.SpaceName, existing.Subpath, existing.Shortname);
+                if (!await perms.CanUpdateAsync(actor, userLocator, PermissionService.FromUser(existing), attrs, ct))
+                    return (Response.Fail(InternalErrorCode.NOT_ALLOWED, "not allowed to update user", ErrorTypes.Request), rec);
                 var passwordRaw = attrs.TryGetValue("password", out var p) ? ConvertToString(p) : null;
                 var newIsActive = attrs.TryGetValue("is_active", out var ia) ? !IsExplicitlyFalse(ia) : existing.IsActive;
                 var reactivating = !existing.IsActive && newIsActive;
@@ -496,6 +532,9 @@ public static class RequestHandler
                 if (existing is null)
                     return (Response.Fail(InternalErrorCode.SHORTNAME_DOES_NOT_EXIST, "space not found", ErrorTypes.Request), rec);
                 var attrs = rec.Attributes ?? new();
+                var spaceLocator = new Locator(ResourceType.Space, existing.SpaceName, existing.Subpath, existing.Shortname);
+                if (!await perms.CanUpdateAsync(actor, spaceLocator, PermissionService.FromSpace(existing), attrs, ct))
+                    return (Response.Fail(InternalErrorCode.NOT_ALLOWED, "not allowed to update space", ErrorTypes.Request), rec);
 
                 // Python parity: every Space-specific attribute on the wire is
                 // written through. Previously only hide_space + is_active were
@@ -543,6 +582,9 @@ public static class RequestHandler
                 if (existing is null)
                     return (Response.Fail(InternalErrorCode.SHORTNAME_DOES_NOT_EXIST, "role not found", ErrorTypes.Request), rec);
                 var attrs = rec.Attributes ?? new();
+                var roleLocator = new Locator(ResourceType.Role, existing.SpaceName, existing.Subpath, existing.Shortname);
+                if (!await perms.CanUpdateAsync(actor, roleLocator, PermissionService.FromRole(existing), attrs, ct))
+                    return (Response.Fail(InternalErrorCode.NOT_ALLOWED, "not allowed to update role", ErrorTypes.Request), rec);
                 var updated = existing with
                 {
                     Permissions = ExtractStringList(attrs, "permissions") ?? existing.Permissions,
@@ -562,6 +604,9 @@ public static class RequestHandler
                 if (existing is null)
                     return (Response.Fail(InternalErrorCode.SHORTNAME_DOES_NOT_EXIST, "permission not found", ErrorTypes.Request), rec);
                 var attrs = rec.Attributes ?? new();
+                var permLocator = new Locator(ResourceType.Permission, existing.SpaceName, existing.Subpath, existing.Shortname);
+                if (!await perms.CanUpdateAsync(actor, permLocator, PermissionService.FromPermission(existing), attrs, ct))
+                    return (Response.Fail(InternalErrorCode.NOT_ALLOWED, "not allowed to update permission", ErrorTypes.Request), rec);
                 var updated = existing with
                 {
                     // Subpaths has no "missing" form: ExtractSubpathsDict returns
@@ -601,27 +646,51 @@ public static class RequestHandler
     private static async Task<(Response Response, Record UpdatedRecord)> DispatchDeleteAsync(
         Record rec, string space, string actor, string managementSpace,
         EntryService entries, UserRepository users, AccessRepository access,
-        SpaceRepository spaces, AttachmentRepository attachments, CancellationToken ct)
+        SpaceRepository spaces, AttachmentRepository attachments,
+        PermissionService perms, CancellationToken ct)
     {
         var locator = new Locator(rec.ResourceType, space, rec.Subpath, rec.Shortname);
 
         switch (rec.ResourceType)
         {
             case ResourceType.User:
+            {
+                var existing = await users.GetByShortnameAsync(rec.Shortname, ct);
+                if (existing is null)
+                    return (Response.Ok(), rec); // idempotent: already gone
+                var userLocator = new Locator(ResourceType.User, existing.SpaceName, existing.Subpath, existing.Shortname);
+                if (!await perms.CanDeleteAsync(actor, userLocator, PermissionService.FromUser(existing), ct))
+                    return (Response.Fail(InternalErrorCode.NOT_ALLOWED, "not allowed to delete user", ErrorTypes.Request), rec);
                 await users.DeleteAsync(rec.Shortname, ct);
                 return (Response.Ok(), rec);
+            }
             case ResourceType.Space:
+            {
                 // Python parity: serve_space_delete refuses to drop the
                 // management space — it's where users/roles/permissions live.
                 if (string.Equals(rec.Shortname, managementSpace, StringComparison.Ordinal))
                     return (Response.Fail(InternalErrorCode.CANNT_DELETE,
                         $"cannot delete the management space '{managementSpace}'", ErrorTypes.Request), rec);
+                var existing = await spaces.GetAsync(rec.Shortname, ct);
+                if (existing is null)
+                    return (Response.Ok(), rec);
+                var spaceLocator = new Locator(ResourceType.Space, existing.SpaceName, existing.Subpath, existing.Shortname);
+                if (!await perms.CanDeleteAsync(actor, spaceLocator, PermissionService.FromSpace(existing), ct))
+                    return (Response.Fail(InternalErrorCode.NOT_ALLOWED, "not allowed to delete space", ErrorTypes.Request), rec);
                 await spaces.DeleteAsync(rec.Shortname, ct);
                 return (Response.Ok(), rec);
+            }
             // Role/Permission live in their own tables, not `entries` — falling
             // through to EntryService.DeleteAsync would silently no-op.
             case ResourceType.Role:
             {
+                var existing = await access.GetRoleAsync(rec.Shortname, ct);
+                if (existing is null)
+                    return (Response.Fail(InternalErrorCode.OBJECT_NOT_FOUND,
+                        $"role '{rec.Shortname}' not found", ErrorTypes.Request), rec);
+                var roleLocator = new Locator(ResourceType.Role, existing.SpaceName, existing.Subpath, existing.Shortname);
+                if (!await perms.CanDeleteAsync(actor, roleLocator, PermissionService.FromRole(existing), ct))
+                    return (Response.Fail(InternalErrorCode.NOT_ALLOWED, "not allowed to delete role", ErrorTypes.Request), rec);
                 var deleted = await access.DeleteRoleAsync(rec.Shortname, ct);
                 return deleted
                     ? (Response.Ok(), rec)
@@ -630,6 +699,13 @@ public static class RequestHandler
             }
             case ResourceType.Permission:
             {
+                var existing = await access.GetPermissionAsync(rec.Shortname, ct);
+                if (existing is null)
+                    return (Response.Fail(InternalErrorCode.OBJECT_NOT_FOUND,
+                        $"permission '{rec.Shortname}' not found", ErrorTypes.Request), rec);
+                var permLocator = new Locator(ResourceType.Permission, existing.SpaceName, existing.Subpath, existing.Shortname);
+                if (!await perms.CanDeleteAsync(actor, permLocator, PermissionService.FromPermission(existing), ct))
+                    return (Response.Fail(InternalErrorCode.NOT_ALLOWED, "not allowed to delete permission", ErrorTypes.Request), rec);
                 var deleted = await access.DeletePermissionAsync(rec.Shortname, ct);
                 return deleted
                     ? (Response.Ok(), rec)
@@ -649,6 +725,9 @@ public static class RequestHandler
                 // Look up by (space, subpath, shortname) and delete by uuid
                 var existing = await attachments.GetAsync(space, "/" + rec.Subpath.TrimStart('/'), rec.Shortname, ct);
                 if (existing is null) return (Response.Ok(), rec); // already gone
+                var attLocator = new Locator(rec.ResourceType, space, existing.Subpath, existing.Shortname);
+                if (!await perms.CanDeleteAsync(actor, attLocator, ct))
+                    return (Response.Fail(InternalErrorCode.NOT_ALLOWED, "not allowed to delete attachment", ErrorTypes.Request), rec);
                 if (Guid.TryParse(existing.Uuid, out var u))
                     await attachments.DeleteAsync(u, ct);
                 return (Response.Ok(), rec);

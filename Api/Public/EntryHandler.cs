@@ -50,13 +50,13 @@ public static class EntryHandler
         g.MapGet("/byuuid/{uuid}", async (string uuid, EntryService svc, CancellationToken ct) =>
         {
             if (!Guid.TryParse(uuid, out var u)) return Results.BadRequest();
-            var entry = await svc.GetByUuidAsync(u, ct);
+            var entry = await svc.GetByUuidAsync(u, actor: null, ct);
             return entry is null ? Results.NotFound() : Results.Json(entry, DmartJsonContext.Default.Entry);
         });
 
         g.MapGet("/byslug/{slug}", async (string slug, EntryService svc, CancellationToken ct) =>
         {
-            var entry = await svc.GetBySlugAsync(slug, ct);
+            var entry = await svc.GetBySlugAsync(slug, actor: null, ct);
             return entry is null ? Results.NotFound() : Results.Json(entry, DmartJsonContext.Default.Entry);
         });
     }
