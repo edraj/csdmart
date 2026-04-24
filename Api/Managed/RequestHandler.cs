@@ -452,6 +452,15 @@ public static class RequestHandler
         Record rec, string space, string actor, AttachmentRepository attachments, CancellationToken ct)
     {
         var attrs = rec.Attributes ?? new();
+
+        // Python parity: Meta.from_record passes **record.attributes to the
+        // Attachment constructor, which assigns the `payload` dict straight
+        // onto the row. Defensive: attrs["payload"] arrives as a JsonElement
+        // from the HTTP path (source-gen deserialize into Dictionary<string,
+        // object>) but may come in as JsonNode or nested dict from
+        // internal callers.
+        var payload = ParsePayloadFromAttrs(attrs);
+
         var attachment = new Attachment
         {
             Uuid = string.IsNullOrEmpty(rec.Uuid) ? Guid.NewGuid().ToString() : rec.Uuid,
@@ -461,11 +470,19 @@ public static class RequestHandler
             ResourceType = rec.ResourceType,
             OwnerShortname = actor,
             IsActive = !attrs.TryGetValue("is_active", out var ia) || !IsExplicitlyFalse(ia),
+            Slug = attrs.TryGetValue("slug", out var sl) ? ConvertToString(sl) : null,
+            Displayname = attrs.TryGetValue("displayname", out var dn) ? ParseTranslation(dn) : null,
+            Description = attrs.TryGetValue("description", out var desc) ? ParseTranslation(desc) : null,
+            Tags = ExtractStringList(attrs, "tags") ?? new(),
+            Payload = payload,
+            // Top-level body/state remain addressable for the few attachment
+            // types that store them flat (e.g. legacy Comment rows).
             Body = attrs.TryGetValue("body", out var b) ? ConvertToString(b) : null,
             State = attrs.TryGetValue("state", out var s) ? ConvertToString(s) : null,
             // Python parity: Meta.from_record writes `acl` onto attachment meta.
             Acl = ParseAcl(attrs),
             CreatedAt = DateTime.UtcNow,
+            UpdatedAt = DateTime.UtcNow,
         };
         await attachments.UpsertAsync(attachment, ct);
         // Attachments only track CreatedAt (no UpdatedAt column); reuse it
@@ -942,6 +959,61 @@ public static class RequestHandler
                 "html" => ContentType.Html,
                 _ => ContentType.Json,
             };
+
+    // Normalize attrs["payload"] to a Payload record regardless of the input
+    // shape the source-gen deserializer produced. In-process callers may hand
+    // us a Dictionary<string, object> or a JsonNode; HTTP callers land a
+    // JsonElement. All three end up at the same JsonElement.Object which we
+    // then read content_type / schema_shortname / body from.
+    internal static Payload? ParsePayloadFromAttrs(Dictionary<string, object> attrs)
+    {
+        if (!attrs.TryGetValue("payload", out var pRaw) || pRaw is null)
+        {
+            // Allow the legacy shortcut: a bare `schema_shortname` at attrs
+            // root, with no payload block, produces a schema-only Payload.
+            if (attrs.TryGetValue("schema_shortname", out var sc))
+                return new Payload { SchemaShortname = ConvertToString(sc) };
+            return null;
+        }
+
+        JsonElement p;
+        if (pRaw is JsonElement je && je.ValueKind == JsonValueKind.Object)
+        {
+            p = je;
+        }
+        else
+        {
+            // Re-serialize whatever object shape we got (JsonNode, Dict, etc.)
+            // and parse back into a JsonElement so the property reads below
+            // work uniformly. If any step fails, fall back to null payload.
+            try
+            {
+                var json = pRaw switch
+                {
+                    System.Text.Json.Nodes.JsonNode jn => jn.ToJsonString(),
+                    IDictionary<string, object> d =>
+                        JsonSerializer.Serialize(d, Models.Json.DmartJsonContext.Default.DictionaryStringObject),
+                    _ => pRaw.ToString(),
+                };
+                if (string.IsNullOrEmpty(json)) return null;
+                using var doc = JsonDocument.Parse(json);
+                if (doc.RootElement.ValueKind != JsonValueKind.Object) return null;
+                p = doc.RootElement.Clone();
+            }
+            catch { return null; }
+        }
+
+        return new Payload
+        {
+            ContentType = ParseContentType(
+                p.TryGetProperty("content_type", out var pct) && pct.ValueKind == JsonValueKind.String
+                    ? pct.GetString() : null),
+            SchemaShortname = p.TryGetProperty("schema_shortname", out var ss)
+                && ss.ValueKind == JsonValueKind.String
+                    ? ss.GetString() : null,
+            Body = p.TryGetProperty("body", out var pb) ? pb.Clone() : null,
+        };
+    }
 
     private static UserType ParseUserType(string? code) => code?.ToLowerInvariant() switch
     {
