@@ -4,20 +4,23 @@ using Dmart.Models.Enums;
 
 namespace Dmart.Auth.OAuth;
 
-// "Find or create" a dmart User from an OAuth provider's user info. Matches
-// Python's find_or_create_social_user() in backend/api/user/service.py.
+// "Find or create" a dmart User from an OAuth provider's user info.
 //
 // Lookup chain:
 //   1. By synthetic shortname `{provider}_{providerId}` — if the user has
 //      logged in with this provider before, this is the fastest path and
 //      also handles the case where they don't have an email.
-//   2. Fallback: by email (only if the provider supplied one). Avoids
-//      creating a duplicate account when someone who already has an
-//      email/password account tries social login for the first time. The
-//      resolver promotes that existing user with the provider ID so the
-//      shortname lookup succeeds next time.
-//   3. Create new. Shortname is `{provider}_{providerId}`; is_email_verified
+//   2. Create new. Shortname is `{provider}_{providerId}`; is_email_verified
 //      is set to true since the provider already verified it.
+//
+// Account takeover note: we deliberately do NOT fall back to "if an existing
+// local account has the same email, attach the provider id to it." That path
+// used to exist but was a pre-auth account takeover primitive — anyone able
+// to register an OAuth provider account with a target's email address (which
+// is the default, no reverse-verification) could take over the target's
+// local dmart account on first OAuth login. Users who already have a local
+// account get a second, separate account for OAuth logins; linking the two
+// has to be a deliberate server-side ceremony, not a silent merge.
 public sealed class OAuthUserResolver(UserRepository users, ILogger<OAuthUserResolver> log)
 {
     public async Task<User> ResolveAsync(OAuthUserInfo info, CancellationToken ct = default)
@@ -29,15 +32,7 @@ public sealed class OAuthUserResolver(UserRepository users, ILogger<OAuthUserRes
         if (existing is not null)
             return await MaybeRefreshAsync(existing, info, ct);
 
-        // 2. Email match — promote existing user with the provider id.
-        if (!string.IsNullOrWhiteSpace(info.Email))
-        {
-            existing = await users.GetByEmailAsync(info.Email, ct);
-            if (existing is not null)
-                return await PromoteExistingAsync(existing, info, ct);
-        }
-
-        // 3. Create fresh.
+        // 2. Create fresh.
         var now = DateTime.UtcNow;
         var displayName = BuildDisplayName(info.FirstName, info.LastName);
         var created = new User
@@ -90,26 +85,6 @@ public sealed class OAuthUserResolver(UserRepository users, ILogger<OAuthUserRes
         if (!dirty) return user;
         updated = updated with { UpdatedAt = DateTime.UtcNow };
         await users.UpsertAsync(updated, ct);
-        return updated;
-    }
-
-    // Attach the provider id to an existing email-matched user. Keeps the
-    // original shortname — we don't rename people. Sets the {provider}_id
-    // column so the next shortname lookup would still fail (that's fine; we
-    // take the email-match path on subsequent logins too).
-    private async Task<User> PromoteExistingAsync(User user, OAuthUserInfo info, CancellationToken ct)
-    {
-        var updated = user with
-        {
-            GoogleId   = info.Provider == "google"   ? info.ProviderId : user.GoogleId,
-            FacebookId = info.Provider == "facebook" ? info.ProviderId : user.FacebookId,
-            SocialAvatarUrl = info.PictureUrl ?? user.SocialAvatarUrl,
-            IsEmailVerified = true,
-            UpdatedAt = DateTime.UtcNow,
-        };
-        await users.UpsertAsync(updated, ct);
-        log.LogInformation("oauth: promoted existing user {Shortname} with {Provider} id",
-            user.Shortname, info.Provider);
         return updated;
     }
 

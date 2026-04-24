@@ -9,6 +9,25 @@
     <PublishSelfContained>true</PublishSelfContained>
     <!-- Required for ManifestEmbeddedFileProvider to enumerate embedded CXB assets -->
     <GenerateEmbeddedFilesManifest>true</GenerateEmbeddedFilesManifest>
+    <!-- Strip ICU/culture data from the published binary. All culture-sensitive
+         parses use CultureInfo.InvariantCulture explicitly; string compares are
+         all Ordinal*. Saves ~25-35 MB per linux-x64 publish. -->
+    <InvariantGlobalization>true</InvariantGlobalization>
+    <!-- Run trim/AOT analyzers during regular `dotnet build`, not just publish,
+         so new reflection-heavy code surfaces at dev time. Combined with
+         TreatWarningsAsErrors below, this fails the build on any regression.
+         The narrower TreatTrim/AotWarningsAsErrors make the AOT intent self-
+         documenting and survive someone flipping TreatWarningsAsErrors off. -->
+    <EnableTrimAnalyzer>true</EnableTrimAnalyzer>
+    <EnableAotAnalyzer>true</EnableAotAnalyzer>
+    <TreatTrimWarningsAsErrors>true</TreatTrimWarningsAsErrors>
+    <TreatAotWarningsAsErrors>true</TreatAotWarningsAsErrors>
+    <TreatWarningsAsErrors>true</TreatWarningsAsErrors>
+    <!-- Refuse System.Text.Json's reflection-based fallback at runtime so a
+         regression (JsonSerializer.Serialize(x) without a JsonTypeInfo<T>)
+         throws NotSupportedException in Debug/JIT too — not only at AOT
+         publish time. Catches "forgot to register a type" during local dev. -->
+    <JsonSerializerIsReflectionEnabledByDefault>false</JsonSerializerIsReflectionEnabledByDefault>
   </PropertyGroup>
 
   <!-- Bake git version into the assembly so dmart -v and /info/manifest always show it.

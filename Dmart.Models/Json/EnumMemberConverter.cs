@@ -1,3 +1,4 @@
+using System.Diagnostics.CodeAnalysis;
 using System.Reflection;
 using System.Runtime.Serialization;
 using System.Text.Json;
@@ -9,8 +10,11 @@ namespace Dmart.Models.Json;
 // Source-gen JSON in .NET 10 doesn't honor [EnumMember] or apply PropertyNamingPolicy
 // to enum values, so we provide explicit per-enum converters that read [EnumMember]
 // at first use and then look up via cached arrays. AOT-safe: each typed converter
-// is concrete, no open generics emitted to attributes.
-public abstract class EnumMemberConverterBase<TEnum> : JsonConverter<TEnum> where TEnum : struct, Enum
+// is concrete, no open generics emitted to attributes. The [DynamicallyAccessedMembers]
+// annotation on TEnum keeps the enum's public fields alive under trim so
+// `typeof(TEnum).GetField(...)` at line 32 resolves.
+public abstract class EnumMemberConverterBase<[DynamicallyAccessedMembers(DynamicallyAccessedMemberTypes.PublicFields)] TEnum>
+    : JsonConverter<TEnum> where TEnum : struct, Enum
 {
     private static readonly (TEnum Value, string Name)[] Map = BuildMap();
 

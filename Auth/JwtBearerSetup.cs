@@ -23,11 +23,9 @@ public static class JwtBearerSetup
             .Configure<IOptions<DmartSettings>>((bearer, dmartOpts) =>
             {
                 var s = dmartOpts.Value;
-                if (s.JwtSecret.Length < 32)
-                {
-                    var logger = Microsoft.Extensions.Logging.LoggerFactory.Create(b => b.AddConsole()).CreateLogger("JwtBearerSetup");
-                    logger.LogWarning("JWT secret is shorter than 32 bytes — this is insecure for HS256");
-                }
+                // DmartSettingsValidator rejects JwtSecret shorter than 32 bytes at
+                // startup via ValidateOnStart, so by the time this lazy binding runs
+                // we're guaranteed a sufficiently-long secret.
                 var signingKey = new SymmetricSecurityKey(Encoding.UTF8.GetBytes(s.JwtSecret));
 
                 // Only require HTTPS in production; dev/test use HTTP.

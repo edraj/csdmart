@@ -66,6 +66,15 @@ public sealed class PermissionService(UserRepository users, AccessRepository acc
     public static ResourceContext FromUser(User u) =>
         new(u.IsActive, u.OwnerShortname, u.OwnerGroupShortname, u.Acl);
 
+    public static ResourceContext FromRole(Role r) =>
+        new(r.IsActive, r.OwnerShortname, r.OwnerGroupShortname, r.Acl);
+
+    public static ResourceContext FromPermission(Permission p) =>
+        new(p.IsActive, p.OwnerShortname, p.OwnerGroupShortname, p.Acl);
+
+    public static ResourceContext FromSpace(Space s) =>
+        new(s.IsActive, s.OwnerShortname, s.OwnerGroupShortname, s.Acl);
+
     // Every authenticated user implicitly gains this role. Python: SQL adapter's
     // get_user_roles injects the 'logged_in' role for every non-anonymous user,
     // which is what grants access_personal/access_protected/etc. to ordinary

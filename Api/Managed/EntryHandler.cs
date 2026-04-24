@@ -115,16 +115,16 @@ public static class EntryHandler
                 return Results.Content(node.ToJsonString(DmartJsonContext.Default.Options), "application/json");
             });
 
-        g.MapGet("/byuuid/{uuid}", async (string uuid, EntryService svc, CancellationToken ct) =>
+        g.MapGet("/byuuid/{uuid}", async (string uuid, EntryService svc, HttpContext http, CancellationToken ct) =>
         {
             if (!Guid.TryParse(uuid, out var u)) return Results.BadRequest();
-            var entry = await svc.GetByUuidAsync(u, ct);
+            var entry = await svc.GetByUuidAsync(u, http.ActorOrAnonymous(), ct);
             return entry is null ? Results.NotFound() : Results.Json(entry, DmartJsonContext.Default.Entry);
         });
 
-        g.MapGet("/byslug/{slug}", async (string slug, EntryService svc, CancellationToken ct) =>
+        g.MapGet("/byslug/{slug}", async (string slug, EntryService svc, HttpContext http, CancellationToken ct) =>
         {
-            var entry = await svc.GetBySlugAsync(slug, ct);
+            var entry = await svc.GetBySlugAsync(slug, http.ActorOrAnonymous(), ct);
             return entry is null ? Results.NotFound() : Results.Json(entry, DmartJsonContext.Default.Entry);
         });
     }

@@ -28,6 +28,21 @@ public sealed class OAuthClientStore
         if (uris.Count == 0)
             throw new ArgumentException("at least one redirect_uri required");
 
+        // Reject non-http(s) schemes at registration time. RFC 8252 and the
+        // OAuth 2.1 draft require redirect URIs to be http(s) URLs (or custom
+        // schemes for native apps — not supported here). Without this, a
+        // client could register `javascript:alert(1)` or `data:text/html,...`
+        // and the authorize flow would redirect the victim into that URL.
+        foreach (var u in uris)
+        {
+            if (!Uri.TryCreate(u, UriKind.Absolute, out var parsed))
+                throw new ArgumentException($"redirect_uri is not an absolute URI: {u}");
+            if (parsed.Scheme != Uri.UriSchemeHttp && parsed.Scheme != Uri.UriSchemeHttps)
+                throw new ArgumentException($"redirect_uri must use http or https: {u}");
+            if (!string.IsNullOrEmpty(parsed.Fragment))
+                throw new ArgumentException($"redirect_uri must not carry a fragment: {u}");
+        }
+
         var clientId = GenerateClientId();
         var client = new Client(clientId, uris, clientName, DateTime.UtcNow);
         _clients[clientId] = client;

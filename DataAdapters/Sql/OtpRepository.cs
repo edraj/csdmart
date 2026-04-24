@@ -67,7 +67,12 @@ public sealed class OtpRepository(Db db)
                 cmd.Parameters.Add(new() { Value = key });
                 var raw = await cmd.ExecuteScalarAsync(ct);
                 if (raw is not IDictionary<string, string?> dict) return false;
-                if (!dict.TryGetValue("code", out var stored) || stored != code) return false;
+                if (!dict.TryGetValue("code", out var stored) || stored is null) return false;
+                // Timing-safe compare — prevents per-digit OTP brute force via side channel.
+                var storedBytes = System.Text.Encoding.UTF8.GetBytes(stored);
+                var inputBytes = System.Text.Encoding.UTF8.GetBytes(code);
+                if (storedBytes.Length != inputBytes.Length) return false;
+                if (!System.Security.Cryptography.CryptographicOperations.FixedTimeEquals(storedBytes, inputBytes)) return false;
                 if (dict.TryGetValue("expires_at", out var expRaw)
                     && DateTime.TryParse(expRaw, out var exp) && exp < DateTime.UtcNow) return false;
             }

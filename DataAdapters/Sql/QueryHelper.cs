@@ -1,3 +1,4 @@
+using System.Globalization;
 using System.Text.RegularExpressions;
 using Dmart.Models.Api;
 using Dmart.Models.Enums;
@@ -125,6 +126,24 @@ public static class QueryHelper
 
     private static readonly HashSet<string> BooleanColumns = new(StringComparer.Ordinal)
         { "is_active", "is_open" };
+
+    // Strict SQL-identifier validator. Any `field` that ends up interpolated into
+    // the SQL WHERE clause (as a column name or cast target) MUST match. Without
+    // this gate, a crafted `@field:value` token like `@(1=1)--:*` would inject
+    // `WHERE (1=1)--::text IS NOT NULL` and comment out the query-policy ACL
+    // filter that follows. A valid Postgres column identifier is lowercase,
+    // starts with a letter, and only uses letters/digits/underscores — which is
+    // exactly what's allowed here. The 64-char cap matches Postgres' NAMEDATALEN.
+    private static readonly Regex SafeColumnIdent = new(
+        @"^[a-z][a-z0-9_]{0,63}$", RegexOptions.Compiled);
+
+    // Escape a string for use inside a single-quoted SQL literal. Doubles any
+    // apostrophes per PostgreSQL's standard escape rule so a user-controlled
+    // JSONB-path segment like `foo'; DROP TABLE users--` becomes the harmless
+    // key `'foo''; DROP TABLE users--'`. Parameterization isn't an option for
+    // JSONB-path segments because they're part of the operator expression,
+    // not data.
+    private static string EscapeSqlLiteral(string s) => s.Replace("'", "''");
 
     // ── Parsed search data structures ──────────────────────────────────
 
@@ -351,9 +370,10 @@ public static class QueryHelper
             if (field.StartsWith("payload.", StringComparison.Ordinal))
             {
                 var parts = field["payload.".Length..].Split('.');
-                var arrowPath = string.Join("->", parts.Select(p => $"'{p}'"));
+                var arrowPath = string.Join("->", parts.Select(p => $"'{EscapeSqlLiteral(p)}'"));
                 return $"payload::jsonb->{arrowPath} {nullCheck}";
             }
+            if (!SafeColumnIdent.IsMatch(field)) return null;
             return $"{field} {nullCheck}";
         }
 
@@ -372,6 +392,9 @@ public static class QueryHelper
             var col = field[..dot];
             var sub = field[(dot + 1)..];
 
+            // The column prefix goes straight into the SQL — gate it strictly.
+            if (!SafeColumnIdent.IsMatch(col)) return null;
+
             if (sub == "*")
                 return BuildWildcardTextSql(col, data, args);
 
@@ -383,7 +406,11 @@ public static class QueryHelper
         if (BooleanColumns.Contains(field))
             return BuildBooleanColumnSql(field, data, args);
 
-        // Default: direct column as text
+        // Default: direct column as text. Reject anything that isn't a Postgres
+        // identifier — previously a crafted `@(1=1)--:*` would render as
+        // `WHERE (1=1)--::text ILIKE $1` and comment out the query-policy ACL
+        // filter downstream, bypassing row-level authorization.
+        if (!SafeColumnIdent.IsMatch(field)) return null;
         return BuildScalarSql($"{field}::text", data, args);
     }
 
@@ -415,7 +442,7 @@ public static class QueryHelper
             else
             {
                 var sb = new System.Text.StringBuilder("payload::jsonb");
-                for (int i = 0; i < wildcardIdx; i++) sb.Append($"->'{parts[i]}'");
+                for (int i = 0; i < wildcardIdx; i++) sb.Append($"->'{EscapeSqlLiteral(parts[i])}'");
                 baseExpr = sb.ToString();
             }
             return BuildWildcardTextSql($"({baseExpr})", data, args);
@@ -423,16 +450,16 @@ public static class QueryHelper
 
         // Build extraction path:  payload::jsonb->'body'->'k'  (arrow form for typeof)
         //                          payload::jsonb->'body'->>'k' (text extraction)
-        var arrowPath = string.Join("->", parts.Select(p => $"'{p}'"));
+        var arrowPath = string.Join("->", parts.Select(p => $"'{EscapeSqlLiteral(p)}'"));
         string textExtract;
         if (parts.Length > 1)
         {
-            var nested = string.Join("->", parts[..^1].Select(p => $"'{p}'"));
-            textExtract = $"payload::jsonb->{nested}->>'{parts[^1]}'";
+            var nested = string.Join("->", parts[..^1].Select(p => $"'{EscapeSqlLiteral(p)}'"));
+            textExtract = $"payload::jsonb->{nested}->>'{EscapeSqlLiteral(parts[^1])}'";
         }
         else
         {
-            textExtract = $"payload::jsonb->>'{parts[0]}'";
+            textExtract = $"payload::jsonb->>'{EscapeSqlLiteral(parts[0])}'";
         }
 
         // Range query: BETWEEN
@@ -478,7 +505,7 @@ public static class QueryHelper
         var prefixParts = new List<string>(arrayIdx + 1);
         for (int i = 0; i < arrayIdx; i++) prefixParts.Add(parts[i]);
         prefixParts.Add(parts[arrayIdx][..^2]); // drop "[]"
-        var arrayPathArrow = string.Join("->", prefixParts.Select(p => $"'{p}'"));
+        var arrayPathArrow = string.Join("->", prefixParts.Select(p => $"'{EscapeSqlLiteral(p)}'"));
         var arrayExpr = $"payload::jsonb->{arrayPathArrow}";
 
         var remaining = parts.Skip(arrayIdx + 1).ToArray();
@@ -492,14 +519,14 @@ public static class QueryHelper
         {
             if (remaining.Length == 1)
             {
-                elementText = $"x->>'{remaining[0]}'";
-                elementJsonb = $"x->'{remaining[0]}'";
+                elementText = $"x->>'{EscapeSqlLiteral(remaining[0])}'";
+                elementJsonb = $"x->'{EscapeSqlLiteral(remaining[0])}'";
             }
             else
             {
-                var nested = string.Join("->", remaining[..^1].Select(p => $"'{p}'"));
-                elementText = $"x->{nested}->>'{remaining[^1]}'";
-                elementJsonb = $"x->{nested}->'{remaining[^1]}'";
+                var nested = string.Join("->", remaining[..^1].Select(p => $"'{EscapeSqlLiteral(p)}'"));
+                elementText = $"x->{nested}->>'{EscapeSqlLiteral(remaining[^1])}'";
+                elementJsonb = $"x->{nested}->'{EscapeSqlLiteral(remaining[^1])}'";
             }
             iterator = $"jsonb_array_elements({arrayExpr}) AS x";
         }
@@ -556,7 +583,7 @@ public static class QueryHelper
             if (isNum && compOp is not null)
             {
                 var sqlOp = compOp switch { "!" => "!=", ">" => ">", ">=" => ">=", "<" => "<", "<=" => "<=", _ => "=" };
-                args.Add(new() { Value = double.Parse(value) });
+                args.Add(new() { Value = double.Parse(value, CultureInfo.InvariantCulture) });
                 var pNum = args.Count;
                 var castCol = hasSubPath ? $"({elementJsonb})::float" : "e::float";
                 predicate = $"{castCol} {sqlOp} CAST(${pNum} AS float)";
@@ -568,7 +595,7 @@ public static class QueryHelper
             }
             else if (isNum)
             {
-                args.Add(new() { Value = double.Parse(value) });
+                args.Add(new() { Value = double.Parse(value, CultureInfo.InvariantCulture) });
                 var pNum = args.Count;
                 var castCol = hasSubPath ? $"({elementJsonb})::float" : "e::float";
                 predicate = $"{castCol} = CAST(${pNum} AS float)";
@@ -621,7 +648,7 @@ public static class QueryHelper
             if (isNum && compOp is not null)
             {
                 var sqlOp = compOp switch { "!" => "!=", ">" => ">", ">=" => ">=", "<" => "<", "<=" => "<=", _ => "=" };
-                args.Add(new() { Value = double.Parse(value) });
+                args.Add(new() { Value = double.Parse(value, CultureInfo.InvariantCulture) });
                 var pNum = args.Count;
                 conditions.Add(
                     $"(jsonb_typeof(payload::jsonb->{arrowPath}) = 'number' AND ({textExtract})::float {sqlOp} CAST(${pNum} AS float))");
@@ -633,7 +660,7 @@ public static class QueryHelper
                 var stringCond = $"(jsonb_typeof(payload::jsonb->{arrowPath}) = 'string' AND {textExtract} != ${pVal})";
                 if (isNum)
                 {
-                    args.Add(new() { Value = double.Parse(value) });
+                    args.Add(new() { Value = double.Parse(value, CultureInfo.InvariantCulture) });
                     var pNum = args.Count;
                     var numCond = $"(jsonb_typeof(payload::jsonb->{arrowPath}) = 'number' AND ({textExtract})::float != CAST(${pNum} AS float))";
                     conditions.Add($"({arrayCond} OR {stringCond} OR {numCond})");
@@ -654,7 +681,7 @@ public static class QueryHelper
 
                 if (isNum)
                 {
-                    args.Add(new() { Value = double.Parse(value) });
+                    args.Add(new() { Value = double.Parse(value, CultureInfo.InvariantCulture) });
                     var pNum = args.Count;
                     var numCond = $"(jsonb_typeof(payload::jsonb->{arrowPath}) = 'number' AND ({textExtract})::float = CAST(${pNum} AS float))";
                     conditions.Add($"({arrayCond} OR {stringCond} OR {directCond} OR {numCond})");
@@ -820,12 +847,12 @@ public static class QueryHelper
     {
         var segments = dotPath.Split('.');
         if (segments.Length == 0) return $"{column}::text";
-        if (segments.Length == 1) return $"{column}::jsonb->>'{segments[0]}'";
+        if (segments.Length == 1) return $"{column}::jsonb->>'{EscapeSqlLiteral(segments[0])}'";
 
         var sb = new System.Text.StringBuilder($"{column}::jsonb");
         for (var i = 0; i < segments.Length - 1; i++)
-            sb.Append($"->'{segments[i]}'");
-        sb.Append($"->>'{segments[^1]}'");
+            sb.Append($"->'{EscapeSqlLiteral(segments[i])}'");
+        sb.Append($"->>'{EscapeSqlLiteral(segments[^1])}'");
         return sb.ToString();
     }
 
