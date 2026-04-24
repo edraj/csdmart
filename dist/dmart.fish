@@ -2,7 +2,7 @@
 # Install: cp dmart.fish ~/.config/fish/completions/
 #      or: cp dmart.fish /usr/share/fish/vendor_completions.d/
 
-set -l subcommands serve version settings set_password check health-check export import init cli help
+set -l subcommands serve version settings set_password check health-check export import init cli migrate fix_query_policies help
 set -l cli_modes c cmd s script
 set -l cli_commands ls cd pwd switch mkdir create rm move cat print attach upload request progress import export help exit
 
@@ -30,6 +30,12 @@ complete -c dmart -rF -n "__fish_seen_subcommand_from import"
 # check/health-check — no auto-complete (would need DB)
 complete -c dmart -f -n "__fish_seen_subcommand_from check health-check"
 
+# migrate — flags only
+complete -c dmart -f -n "__fish_seen_subcommand_from migrate" -a "-q --quiet" -d "Suppress per-statement output"
+
+# fix_query_policies — optional <space> positional plus --dry-run flag
+complete -c dmart -f -n "__fish_seen_subcommand_from fix_query_policies" -a "--dry-run" -d "Count + sample only, don't UPDATE"
+
 # Descriptions
 complete -c dmart -f -n "not __fish_seen_subcommand_from $subcommands" -a serve -d "Start the HTTP server"
 complete -c dmart -f -n "not __fish_seen_subcommand_from $subcommands" -a version -d "Print version and build info"
@@ -40,4 +46,6 @@ complete -c dmart -f -n "not __fish_seen_subcommand_from $subcommands" -a export
 complete -c dmart -f -n "not __fish_seen_subcommand_from $subcommands" -a import -d "Import from zip"
 complete -c dmart -f -n "not __fish_seen_subcommand_from $subcommands" -a init -d "Initialize ~/.dmart"
 complete -c dmart -f -n "not __fish_seen_subcommand_from $subcommands" -a cli -d "Interactive CLI client"
+complete -c dmart -f -n "not __fish_seen_subcommand_from $subcommands" -a migrate -d "Run idempotent schema migration"
+complete -c dmart -f -n "not __fish_seen_subcommand_from $subcommands" -a fix_query_policies -d "Backfill query_policies for legacy rows"
 complete -c dmart -f -n "not __fish_seen_subcommand_from $subcommands" -a help -d "Print help"
