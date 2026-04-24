@@ -183,7 +183,7 @@ export async function checkCurrentUserReactedIdea(
         retrieve_json_payload: true,
     };
     const response = await Dmart.query(data);
-    if (!response || response.records.length === 0) {
+    if (!response || !Array.isArray(response.records) || response.records.length === 0) {
         return null;
     }
     return response.records[0].shortname;
