@@ -56,6 +56,12 @@ via `CXB_URL`). Same embedding mechanism as Catalog. See
 `Middleware/CxbMiddleware.cs`, the `cxb/` source tree, and `cxb/README.md`
 for the title expansion.
 
+## CATalog
+
+User-oriented Svelte SPA,
+embedded in the dmart binary and served at `/cat/` by default (configurable
+via `CAT_URL`). Same embedding mechanism as Catalog. See the `catalog/` source tree.
+
 ## DMART
 
 The project this code implements — a headless information-management
@@ -231,8 +237,3 @@ terminal state requires. Stored as a regular `content` Entry whose payload
 conforms to the `workflow_definition` schema. Evaluated by
 `Services/WorkflowEngine.cs`.
 
-## ZainMart
-
-A commercial deployment of DMART (Zain telecom's marketplace). Appears in
-`curl.sh` examples, issue reports, and some test fixtures — not a DMART
-feature. *(Context: an external user/instance.)*
