@@ -5,7 +5,7 @@ _dmart() {
     local cur prev words cword
     _init_completion || return
 
-    local subcommands="serve version settings set_password check health-check export import init cli help"
+    local subcommands="serve version settings set_password check health-check export import init cli migrate fix_query_policies help"
     local cli_modes="c cmd s script"
     local cli_commands="ls cd pwd switch mkdir create rm move cat print attach upload request progress import export help exit"
 
@@ -22,6 +22,15 @@ _dmart() {
                     ;;
                 check|health-check|export)
                     # space name — can't auto-complete without DB access
+                    return
+                    ;;
+                migrate)
+                    COMPREPLY=($(compgen -W "-q --quiet" -- "$cur"))
+                    return
+                    ;;
+                fix_query_policies|fix-query-policies)
+                    # optional <space> positional (free-form) or --dry-run
+                    COMPREPLY=($(compgen -W "--dry-run" -- "$cur"))
                     return
                     ;;
             esac
