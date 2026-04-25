@@ -8,8 +8,14 @@ publish/
 # sources would only pull ~100 MB of test NuGets through `dotnet restore`.
 dmart.Tests/
 
-# CXB is built separately by the workflow (build-ui.sh) and lives under
-# cxb/dist/client/. Don't ship source, node_modules, or svelte-kit cache.
+# Hoisted node_modules from the yarn workspace at repo root — the host
+# build (build-ui.sh) populates this; the production Dockerfile only
+# consumes the dist/client outputs and never needs the install tree.
+/node_modules/
+
+# CXB is built by build-ui.sh on the host; the production Dockerfile only
+# consumes cxb/dist/client/. Don't ship source, node_modules, or svelte-kit
+# cache into the Docker build context.
 cxb/node_modules/
 cxb/.svelte-kit/
 cxb/dist/

@@ -33,10 +33,16 @@ publish/
 
 # Secrets
 
-# CXB frontend build artifacts (source is committed, dist is rebuilt)
+# Frontend build artifacts (source is committed, dist is rebuilt). The
+# yarn workspace at repo root hoists most deps into /node_modules; the
+# per-package node_modules directories still exist as symlink stubs.
+/node_modules/
 cxb/node_modules/
 cxb/dist/
 cxb/.svelte-kit/
+catalog/node_modules/
+catalog/dist/
+catalog/.svelte-kit/
 config.env
 dmart
 dmart (2)/

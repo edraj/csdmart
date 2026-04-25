@@ -1,33 +1,35 @@
 #!/bin/bash
 # Build the in-tree UI frontends:
 #   * cxb/     — Svelte SPA, dist/client/ output (SvelteKit convention)
-#   * catalog/ — Svelte + Vite SPA, dist/ output
+#   * catalog/ — Svelte + Vite SPA, dist/client/ output
 #
 # Both are embedded into the single dmart binary via EmbeddedResource
 # entries in dmart.csproj. Missing sources are skipped gracefully so a
 # repo clone without one of them still builds.
 #
+# cxb and catalog are wired together as yarn workspaces in the repo-root
+# package.json, so a single install at the root populates one hoisted
+# node_modules tree shared by both. That's why this script does just one
+# yarn install instead of one per project.
+#
 # Usage: ./build-ui.sh
-# Prerequisites: yarn (or npm) available
+# Prerequisites: yarn (classic) available
 
 set -eu
 
-install_one() {
-    local name="$1"
-    local dir="$2"
+cd "$(dirname "$0")"
 
-    [ -f "$dir/package.json" ] || return 0
-
-    echo "Installing deps for $name..."
-    (
-        cd "$dir"
-        if command -v yarn > /dev/null 2>&1; then
-            yarn install
-        else
-            npm install
-        fi
-    )
-}
+# Single hoisted install at the workspace root — replaces the previous
+# per-project loop and the "sequential because of yarn 1 cache races"
+# workaround it needed.
+if [ -f "package.json" ]; then
+    echo "Installing deps (workspace root)..."
+    if command -v yarn > /dev/null 2>&1; then
+        yarn install
+    else
+        npm install
+    fi
+fi
 
 build_one() {
     local name="$1"
@@ -59,17 +61,10 @@ build_one() {
     fi
 }
 
-# Install sequentially — yarn 1's shared ~/.cache/yarn isn't safe for fully
-# concurrent extraction under a cold cache (we hit EEXIST/ENOENT races on
-# shared transitive deps). The second install benefits from the first's
-# cache anyway, so the time cost is small and total wall-clock is dominated
-# by the parallelizable build phase below.
-install_one "CXB"     "cxb"
-install_one "catalog" "catalog"
-
-# Build in parallel — `yarn build` only writes to its own project's dist,
-# never to the shared yarn cache, so true parallelism is safe and shaves
-# roughly the build duration of one project off the wall clock.
+# Build in parallel — each `yarn build` only writes to its own project's
+# dist, never to the shared yarn cache or hoisted node_modules, so true
+# parallelism is safe and shaves roughly the build duration of one project
+# off the wall clock.
 build_one "CXB"     "cxb"     "dist/client" &
 pid_cxb=$!
 build_one "catalog" "catalog" "dist/client" &

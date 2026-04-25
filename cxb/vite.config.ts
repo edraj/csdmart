@@ -81,6 +81,14 @@ export default defineConfig({
     chunkSizeWarningLimit: 512,
     cssMinify: 'lightningcss',
     rollupOptions: {
+      // commonJsVariableInEsm: noisy `module.exports` warning from
+      //   @typewriter/delta — UMD-shaped ESM file we don't control.
+      // pluginTimings: rolldown's per-build profile printout; useful when
+      //   diagnosing slow builds, otherwise just chatter.
+      checks: {
+        commonJsVariableInEsm: false,
+        pluginTimings: false,
+      },
       output: {
         manualChunks(id) {
           if (id.includes('node_modules')) {

@@ -1,9 +1,8 @@
 import tailwindcss from "@tailwindcss/vite";
 import { defineConfig } from "vite";
 import { mdsvex } from "mdsvex";
-import preprocess from "svelte-preprocess";
 import routify from "@roxi/routify/vite-plugin";
-import { svelte } from "@sveltejs/vite-plugin-svelte";
+import { svelte, vitePreprocess } from "@sveltejs/vite-plugin-svelte";
 import * as path from "path";
 import svelteMd from "vite-plugin-svelte-md";
 
@@ -37,7 +36,7 @@ export default defineConfig({
       compilerOptions: { dev: !production },
       extensions: [".md", ".svelte"],
       preprocess: [
-        preprocess(),
+        vitePreprocess(),
         mdsvex({
           extension: "md",
           remarkPlugins: [
@@ -62,6 +61,14 @@ export default defineConfig({
     minify: "esbuild", // Use esbuild instead of terser (faster and built-in)
     target: "esnext",
     rollupOptions: {
+      // commonJsVariableInEsm: noisy `module.exports` warning from
+      //   @typewriter/delta — UMD-shaped ESM file we don't control.
+      // pluginTimings: rolldown's per-build profile printout; useful when
+      //   diagnosing slow builds, otherwise just chatter.
+      checks: {
+        commonJsVariableInEsm: false,
+        pluginTimings: false,
+      },
       output: {
         assetFileNames: (assetInfo) => {
           const name = assetInfo.name || "asset";

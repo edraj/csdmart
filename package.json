@@ -1,0 +1,8 @@
+{
+  "name": "dmart-ui",
+  "private": true,
+  "workspaces": [
+    "cxb",
+    "catalog"
+  ]
+}

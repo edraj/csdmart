@@ -14,7 +14,8 @@ RUN apk add --no-cache \
 
 COPY --chmod=755 admin_scripts/docker/dmart-binary /usr/bin/dmart
 COPY plugins/ /usr/lib/dmart/plugins/
-COPY cxb/dist/client/ /usr/lib/dmart/cxb/
+COPY cxb/dist/client/     /usr/lib/dmart/cxb/
+COPY catalog/dist/client/ /usr/lib/dmart/catalog/
 COPY --chmod=755 admin_scripts/docker/entrypoint.sh /entrypoint.sh
 
 ENV DOTNET_SYSTEM_NET_SECURITY_DISABLEGSSAPIPAL=true
