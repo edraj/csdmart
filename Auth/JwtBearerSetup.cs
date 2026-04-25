@@ -80,10 +80,24 @@ public static class JwtBearerSetup
                         // .NET 9's JsonWebTokenHandler exposes the raw token string
                         // on JsonWebToken.EncodedToken; older code paths use
                         // JwtSecurityToken.RawData. Try both.
-                        var raw = ctx.SecurityToken is Microsoft.IdentityModel.JsonWebTokens.JsonWebToken jwt
-                            ? jwt.EncodedToken
-                            : (ctx.SecurityToken as System.IdentityModel.Tokens.Jwt.JwtSecurityToken)?.RawData;
+                        var jwt = ctx.SecurityToken as Microsoft.IdentityModel.JsonWebTokens.JsonWebToken;
+                        var raw = jwt?.EncodedToken
+                            ?? (ctx.SecurityToken as System.IdentityModel.Tokens.Jwt.JwtSecurityToken)?.RawData;
                         if (string.IsNullOrEmpty(raw)) return;
+                        // Python parity: bot users skip the entire session-inactivity
+                        // machinery (utils/jwt.py:78). No row was created for them at
+                        // login, and no row is checked here. Without this, the C#
+                        // port silently kicks bot tokens out whenever another login
+                        // for the same shortname happens — see EvictExcessSessionsAsync.
+                        if (jwt is not null
+                            && jwt.TryGetPayloadValue<JsonElement>("data", out var dataElem)
+                            && dataElem.ValueKind == JsonValueKind.Object
+                            && dataElem.TryGetProperty("type", out var typeProp)
+                            && typeProp.ValueKind == JsonValueKind.String
+                            && typeProp.GetString() == "bot")
+                        {
+                            return;
+                        }
                         var users = ctx.HttpContext.RequestServices
                             .GetRequiredService<DataAdapters.Sql.UserRepository>();
                         var touched = await users.TouchSessionAsync(

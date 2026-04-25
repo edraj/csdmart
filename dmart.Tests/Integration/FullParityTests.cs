@@ -497,4 +497,78 @@ public class FullParityTests : IClassFixture<DmartFactory>
         var users = factory.Services.GetRequiredService<UserRepository>();
         await users.DeleteAsync(shortname);
     }
+
+    // ==================== bot session-inactivity exemption ====================
+
+    [FactIfPg]
+    public async Task Bot_Token_Survives_Session_Inactivity_Ttl()
+    {
+        // Python parity: utils/jwt.py:78,114 — bot users skip the entire
+        // session-inactivity machinery. No row is ever created for them at
+        // login (so MAX_SESSIONS_PER_USER eviction can't kick them out) and
+        // no row is checked at JWT validation (so SESSION_INACTIVITY_TTL
+        // can't time them out). This regression test covers both halves.
+        //
+        // Without the fix, a bot's token would be rejected after the TTL
+        // window the same way a web user's is in
+        // Session_Expires_After_Inactivity_Ttl above.
+        var factory = _factory.WithWebHostBuilder(b => b.ConfigureServices(svcs =>
+        {
+            svcs.Configure<Dmart.Config.DmartSettings>(s => s.SessionInactivityTtl = 1);
+        }));
+
+        var users = factory.Services.GetRequiredService<UserRepository>();
+        var hasher = factory.Services.GetRequiredService<Dmart.Auth.PasswordHasher>();
+        var shortname = "bot_" + Guid.NewGuid().ToString("N")[..8];
+        var pwd = "BotTestPwd1234";
+        var bot = new Dmart.Models.Core.User
+        {
+            Shortname = shortname,
+            SpaceName = "management",
+            Subpath = "users",
+            Uuid = Guid.NewGuid().ToString("n"),
+            OwnerShortname = "dmart",
+            CreatedAt = DateTime.UtcNow,
+            UpdatedAt = DateTime.UtcNow,
+            IsActive = true,
+            Type = UserType.Bot,
+            Password = hasher.Hash(pwd),
+        };
+        await users.UpsertAsync(bot);
+
+        try
+        {
+            var client = factory.CreateClient();
+            var login = new UserLoginRequest(shortname, null, null, pwd, null);
+            var resp = await client.PostAsJsonAsync("/user/login", login, DmartJsonContext.Default.UserLoginRequest);
+            resp.StatusCode.ShouldBe(HttpStatusCode.OK);
+            var raw = await resp.Content.ReadAsStringAsync();
+            var body = JsonSerializer.Deserialize(raw, DmartJsonContext.Default.Response);
+            var token = body?.Records?.FirstOrDefault()?.Attributes?["access_token"]?.ToString()
+                ?? throw new InvalidOperationException("bot login failed");
+            client.DefaultRequestHeaders.Authorization =
+                new System.Net.Http.Headers.AuthenticationHeaderValue("Bearer", token);
+
+            // No session row should exist for the bot — the login bypasses
+            // CreateSessionAsync entirely (Python's set_user_session short-circuit).
+            var rows = await users.CountSessionsAsync(shortname);
+            rows.ShouldBe(0);
+
+            // Token works immediately.
+            var ok = await client.GetAsync("/info/manifest");
+            ok.StatusCode.ShouldBe(HttpStatusCode.OK);
+
+            // Wait past the 1-second inactivity TTL. A web token would be
+            // rejected from this point on (see Session_Expires_After_Inactivity_Ttl).
+            await Task.Delay(2000);
+
+            // Bot is exempt — token still works.
+            var stillOk = await client.GetAsync("/info/manifest");
+            stillOk.StatusCode.ShouldBe(HttpStatusCode.OK);
+        }
+        finally
+        {
+            await users.DeleteAsync(shortname);
+        }
+    }
 }

@@ -332,6 +332,17 @@ public sealed class UserRepository(Db db, AuthzCacheRefresher refresher)
         await cmd.ExecuteNonQueryAsync(ct);
     }
 
+    // Count active session rows for a user. Useful in tests that verify
+    // bot login bypasses session-row creation (Python parity).
+    public async Task<int> CountSessionsAsync(string shortname, CancellationToken ct = default)
+    {
+        await using var conn = await db.OpenAsync(ct);
+        await using var cmd = new NpgsqlCommand("SELECT COUNT(*) FROM sessions WHERE shortname = $1", conn);
+        cmd.Parameters.Add(new() { Value = shortname });
+        var result = await cmd.ExecuteScalarAsync(ct);
+        return Convert.ToInt32(result);
+    }
+
     // Keep only the `keep` newest sessions for a user, evicting the rest.
     // Used to enforce max_sessions_per_user before creating a new session.
     public async Task EvictExcessSessionsAsync(string shortname, int keep, CancellationToken ct = default)

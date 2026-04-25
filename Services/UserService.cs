@@ -474,12 +474,21 @@ public sealed class UserService(
     {
         await users.ResetAttemptsAsync(user.Shortname, ct);
 
+        // Python parity: bot users are completely outside the session-inactivity
+        // machinery (utils/jwt.py:78,114 short-circuit set_user_session and
+        // get_user_session for them). They neither populate nor consume entries
+        // in MaxSessionsPerUser. Without this guard, a CI/MCP bot logging in
+        // would churn the eviction queue and silently kick out human sessions
+        // — and the matching read-side bypass in JwtBearerSetup.OnTokenValidated
+        // would still reject the bot's token on its next request.
+        var isBot = user.Type == Dmart.Models.Enums.UserType.Bot;
+
         // Python: max_sessions_per_user enforcement — check session count before
         // creating a new one. If at capacity, the oldest session should be evicted
         // or the login should fail. Python's get_user_session checks the count;
         // we limit by deleting oldest sessions when over the limit.
         var maxSessions = settings.Value.MaxSessionsPerUser;
-        if (maxSessions > 0)
+        if (!isBot && maxSessions > 0)
         {
             // Evict excess sessions (keep newest maxSessions-1 to make room for the new one)
             await users.EvictExcessSessionsAsync(user.Shortname, maxSessions - 1, ct);
@@ -523,7 +532,10 @@ public sealed class UserService(
         // supplied a firebase_token on the login body, persist it on the
         // session row so a future push plugin can discover it via
         // UserRepository.GetSessionFirebaseTokensAsync. Python parity.
-        await users.CreateSessionAsync(updatedUser.Shortname, access, req.FirebaseToken, ct);
+        // Skip for bots — utils/jwt.py:114 in Python doesn't create a row
+        // for them at all (matching the bypass on the read side).
+        if (!isBot)
+            await users.CreateSessionAsync(updatedUser.Shortname, access, req.FirebaseToken, ct);
 
         return Result<(string, string, User)>.Ok((access, refresh, updatedUser));
     }
