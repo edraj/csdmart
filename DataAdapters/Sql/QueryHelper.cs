@@ -667,11 +667,6 @@ public static class QueryHelper
         {
             bool isNum = NumericRegex.IsMatch(value);
 
-            args.Add(new() { Value = value });
-            var pVal = args.Count;
-            args.Add(new() { Value = ToJsonArray(value) });
-            var pJsonArr = args.Count;
-
             // Numeric comparison operator
             if (isNum && compOp is not null)
             {
@@ -684,6 +679,10 @@ public static class QueryHelper
             else if (data.Negative || compOp == "!")
             {
                 // Negation: NOT in array AND != as string
+                args.Add(new() { Value = value });
+                var pVal = args.Count;
+                args.Add(new() { Value = ToJsonArray(value) });
+                var pJsonArr = args.Count;
                 var arrayCond = $"(jsonb_typeof(payload::jsonb->{arrowPath}) = 'array' AND NOT (payload::jsonb->{arrowPath} @> CAST(${pJsonArr} AS jsonb)))";
                 var stringCond = $"(jsonb_typeof(payload::jsonb->{arrowPath}) = 'string' AND {textExtract} != ${pVal})";
                 if (isNum)
@@ -700,23 +699,25 @@ public static class QueryHelper
             }
             else
             {
-                // Positive match: in array OR == string OR direct jsonb match.
-                var arrayCond = $"(jsonb_typeof(payload::jsonb->{arrowPath}) = 'array' AND payload::jsonb->{arrowPath} @> CAST(${pJsonArr} AS jsonb))";
-                var stringCond = $"(jsonb_typeof(payload::jsonb->{arrowPath}) = 'string' AND {textExtract} = ${pVal})";
-                args.Add(new() { Value = ToJsonString(value) });
-                var pJsonDirect = args.Count;
-                var directCond = $"(payload::jsonb->{arrowPath} = CAST(${pJsonDirect} AS jsonb))";
-
-                // Index-eligible fallback: emit a `payload @> '{<path>:<value>}'`
-                // predicate that the idx_entries_payload_gin (jsonb_path_ops)
-                // GIN can serve. Without this, `@payload.body.brand_shortname:v`
-                // expands only to `payload->'body'->>'brand_shortname' = v` and
-                // `payload->arrow = "v"::jsonb`, neither of which uses the GIN —
-                // a 100-OR'd filter (a typical client-side join) becomes a full
-                // seq scan on the subpath. The two branches below cover the
-                // string-form and array-form cases respectively, matching the
-                // existing stringCond / arrayCond branches but in a shape the
-                // planner can route through the index.
+                // Positive match. We emit two `payload @> '{<path>:<value>}'`
+                // predicates — one for string-form, one for array-form — that
+                // the idx_entries_payload_gin (jsonb_path_ops) can serve via
+                // BitmapOr. These two together are SEMANTICALLY EQUIVALENT to
+                // the previous (typeof='array' AND arrow @> [v]) /
+                // (typeof='string' AND ->>k = v) / (arrow = "v"::jsonb) trio
+                // we used to emit, so dropping the legacy three-branch shape
+                // is a pure win: fewer OR predicates per row for the planner
+                // to evaluate, and the remaining ones can use the index.
+                //
+                // Why this matters: a client-side join widens the sub-query
+                // search to `@<path>:<v1>|<v2>|...|<v100>`. Each value
+                // previously expanded to 5 OR branches (4 of them not
+                // index-eligible) → 500 predicates per row × tens of
+                // thousands of rows = tens of millions of jsonb extractions.
+                // Even when the planner picked space+rt+subpath BitmapAnd,
+                // the in-memory Filter step dominated. Reducing to 2 per
+                // value (or 3 when the value is numeric) lets the planner
+                // pick GIN BitmapOr cleanly.
                 args.Add(new() { Value = BuildPayloadContainmentJson(parts, ToJsonString(value)), NpgsqlDbType = NpgsqlTypes.NpgsqlDbType.Jsonb });
                 var pContainStr = args.Count;
                 var containStringCond = $"(payload::jsonb @> ${pContainStr})";
@@ -726,14 +727,16 @@ public static class QueryHelper
 
                 if (isNum)
                 {
+                    // Numbers stored as numbers don't match string/array
+                    // containment; keep a dedicated numCond for them.
                     args.Add(new() { Value = double.Parse(value, CultureInfo.InvariantCulture) });
                     var pNum = args.Count;
                     var numCond = $"(jsonb_typeof(payload::jsonb->{arrowPath}) = 'number' AND ({textExtract})::float = CAST(${pNum} AS float))";
-                    conditions.Add($"({containStringCond} OR {containArrayCond} OR {arrayCond} OR {stringCond} OR {directCond} OR {numCond})");
+                    conditions.Add($"({containStringCond} OR {containArrayCond} OR {numCond})");
                 }
                 else
                 {
-                    conditions.Add($"({containStringCond} OR {containArrayCond} OR {arrayCond} OR {stringCond} OR {directCond})");
+                    conditions.Add($"({containStringCond} OR {containArrayCond})");
                 }
             }
         }

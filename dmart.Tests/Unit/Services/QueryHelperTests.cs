@@ -35,10 +35,12 @@ public class QueryHelperTests
     [Fact]
     public void Search_FieldValue_Generates_Jsonb_Path()
     {
+        // Positive payload-path matches now emit
+        // `payload::jsonb @> $N` containment predicates that the GIN
+        // (jsonb_path_ops) index can serve. The path + value are encoded
+        // inside the parameter — they aren't substrings of the SQL.
         var where = BuildSearch("@payload.body.email:test@example.com");
-        where.ShouldContain("payload::jsonb");
-        where.ShouldContain("'body'");
-        where.ShouldContain("'email'");
+        where.ShouldContain("payload::jsonb @>");
     }
 
     // ==================== Negation ====================
@@ -219,17 +221,20 @@ public class QueryHelperTests
     [Fact]
     public void Search_Payload_Exact_String_Match()
     {
+        // String-form payload match → `payload::jsonb @>` with the
+        // value encoded as a JSON string in the parameter.
         var where = BuildSearch("@payload.body.name:john");
-        where.ShouldContain("jsonb_typeof");
-        where.ShouldContain("'string'");
+        where.ShouldContain("payload::jsonb @>");
     }
 
     [Fact]
     public void Search_Payload_Array_Containment()
     {
+        // Array-form match also goes through the same containment
+        // predicate — the parameter wraps the value in a JSON array
+        // (`{...:["alpha"]}`) so jsonb @> matches array elements.
         var where = BuildSearch("@payload.body.tags:alpha");
-        where.ShouldContain("@>");
-        where.ShouldContain("'array'");
+        where.ShouldContain("payload::jsonb @>");
     }
 
     [Fact]
@@ -365,9 +370,11 @@ public class QueryHelperTests
     [Fact]
     public void Spec_Payload_Body_KeyValue()
     {
+        // Positive @payload.path:value lookups now produce a single
+        // containment shape (parameterized JSON literal); the path is
+        // not a substring of the SQL, only the predicate marker is.
         var where = BuildSearch("@payload.body.hostname:web01");
-        where.ShouldContain("payload::jsonb->'body'->>'hostname'");
-        where.ShouldContain("jsonb_typeof");
+        where.ShouldContain("payload::jsonb @>");
     }
 
     // @payload.body.*:v  — wildcard searches all body keys
@@ -432,10 +439,11 @@ public class QueryHelperTests
     [Fact]
     public void Spec_Two_Fields_And()
     {
+        // Two distinct fields → two ANDed `payload::jsonb @>` predicates.
+        // The path keys ('host', 'dc') live inside parameters now.
         var where = BuildSearch("@payload.body.host:web01 @payload.body.dc:us-east");
-        // Two separate field conditions joined by AND
-        where.ShouldContain("'host'");
-        where.ShouldContain("'dc'");
+        var atGtCount = System.Text.RegularExpressions.Regex.Matches(where, @"payload::jsonb @>").Count;
+        atGtCount.ShouldBeGreaterThanOrEqualTo(2);
         where.ShouldContain(" AND ");
     }
 
@@ -444,8 +452,7 @@ public class QueryHelperTests
     public void Spec_OrField_And_ExactField()
     {
         var where = BuildSearch("@payload.body.env:staging|prod @payload.body.region:us");
-        where.ShouldContain("'env'");
-        where.ShouldContain("'region'");
+        where.ShouldContain("payload::jsonb @>");
         where.ShouldContain(" OR ");
         where.ShouldContain(" AND ");
     }
@@ -454,9 +461,10 @@ public class QueryHelperTests
     [Fact]
     public void Spec_SameField_And_Accumulation()
     {
+        // Same-field accumulation still produces the same containment
+        // shape twice, ANDed.
         var where = BuildSearch("@payload.body.tags:alpha and @payload.body.tags:beta");
-        // Same field "tags" should accumulate both values
-        where.ShouldContain("'tags'");
+        where.ShouldContain("payload::jsonb @>");
         where.ShouldContain(" AND ");
     }
 
@@ -537,10 +545,10 @@ public class QueryHelperTests
     [Fact]
     public void Search_NestedPath_Three_Levels()
     {
+        // Deep paths still resolve to a single containment predicate;
+        // the nesting is encoded in the parameter's JSON literal.
         var where = BuildSearch("@payload.body.config.db.host:localhost");
-        where.ShouldContain("'config'");
-        where.ShouldContain("'db'");
-        where.ShouldContain("'host'");
+        where.ShouldContain("payload::jsonb @>");
     }
 
     [Fact]
@@ -556,12 +564,10 @@ public class QueryHelperTests
     public void Search_Multiple_Fields_Are_Single_Group()
     {
         var where = BuildSearch("@payload.body.a:x @payload.body.b:y @payload.body.c:z");
-        // All in same group → top-level conditions joined by AND.
-        // The type-aware payload SQL has OR inside each value match but
-        // the field-level conditions are joined by AND.
-        where.ShouldContain("'a'");
-        where.ShouldContain("'b'");
-        where.ShouldContain("'c'");
+        // Three distinct fields → three ANDed containment predicates.
+        // Path keys live in parameters, not the SQL text.
+        var atGtCount = System.Text.RegularExpressions.Regex.Matches(where, @"payload::jsonb @>").Count;
+        atGtCount.ShouldBeGreaterThanOrEqualTo(3);
         where.ShouldContain(" AND ");
     }
 
@@ -593,9 +599,10 @@ public class QueryHelperTests
     public void Search_Mixed_PlainText_And_Field()
     {
         var where = BuildSearch("web01 @payload.body.dc:us-east");
-        // Plain text search AND field search
+        // Plain text branch (ILIKE on common columns) AND a payload
+        // containment predicate for the @-field.
         where.ShouldContain("shortname ILIKE");
-        where.ShouldContain("'dc'");
+        where.ShouldContain("payload::jsonb @>");
         where.ShouldContain(" AND ");
     }
 
