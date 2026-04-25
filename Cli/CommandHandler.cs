@@ -28,13 +28,15 @@ public sealed class CommandHandler(DmartClient dmart, CliSettings settings)
         ["find"]     = ("find <pattern> [--type <rt>]",    "Search current space for pattern."),
         ["whoami"]   = ("whoami",                          "Show user, server, current space:subpath."),
         ["version"]  = ("version",                         "Show CLI build + server manifest."),
-        ["attach"]   = ("attach <sn> <entry> <type> <file>", "Upload attachment."),
+        ["attach"]   = ("attach <sn> <entry> <type> <file> [--name-en T] [--desc-en T] | attach --batch <entry> <type> <glob>",
+                                                            "Upload attachment(s); --batch globs many files; per-locale name/desc."),
         ["upload"]   = ("upload schema <name> <file> | upload csv <type> <sub> <schema> <file>",
                                                             "Upload schema or CSV."),
         ["request"]  = ("request <json_file>",             "POST raw managed/request JSON."),
         ["progress"] = ("progress <sub> <sn> <action>",    "Progress a ticket."),
         ["import"]   = ("import <zip_file>",               "Import a ZIP archive."),
-        ["export"]   = ("export <query_json>",             "Export to ZIP."),
+        ["export"]   = ("export [csv] (<query.json> | --space S [--subpath /] [--type T] [--limit N] [--from D] [--to D] [--all] [--out P])",
+                                                            "Export to ZIP (or CSV) — query from file or from shortcut flags."),
         ["help"]     = ("help [command]",                  "Show this help, or details for one command."),
         ["exit"]     = ("exit | q | quit | Ctrl+D",        "Exit the CLI."),
     };
@@ -42,7 +44,7 @@ public sealed class CommandHandler(DmartClient dmart, CliSettings settings)
     public async Task ExecuteAsync(string input)
     {
         LastCommandFailed = false;
-        var parts = input.Split(' ', StringSplitOptions.RemoveEmptyEntries);
+        var parts = SplitArgs(input);
         if (parts.Length == 0) return;
 
         var oldSpace = dmart.CurrentSpace;
@@ -113,8 +115,8 @@ public sealed class CommandHandler(DmartClient dmart, CliSettings settings)
                 await HandleCatAsync(parts);
                 break;
 
-            case "attach" when parts.Length >= 5:
-                PrintJson(await dmart.AttachAsync(parts[1], parts[2], parts[3], parts[4]));
+            case "attach" when parts.Length >= 2:
+                await HandleAttachAsync(parts);
                 break;
 
             case "upload" when parts.Length >= 2:
@@ -137,7 +139,7 @@ public sealed class CommandHandler(DmartClient dmart, CliSettings settings)
                 break;
 
             case "export" when parts.Length >= 2:
-                CliTheme.Plain(await dmart.ExportAsync(parts[1]));
+                await HandleExportAsync(parts);
                 break;
 
             default:
@@ -555,6 +557,241 @@ public sealed class CommandHandler(DmartClient dmart, CliSettings settings)
         }
     }
 
+    // ---- attach (single + batch + multilingual) ----
+
+    private async Task HandleAttachAsync(string[] parts)
+    {
+        var batch = false;
+        var displayname = new Dictionary<string, string>();
+        var description = new Dictionary<string, string>();
+        var positional = new List<string>();
+        for (var i = 1; i < parts.Length; i++)
+        {
+            var a = parts[i];
+            switch (a)
+            {
+                case "--batch": batch = true; break;
+                case "--name-en" when i + 1 < parts.Length: displayname["en"] = parts[++i]; break;
+                case "--name-ar" when i + 1 < parts.Length: displayname["ar"] = parts[++i]; break;
+                case "--name-ku" when i + 1 < parts.Length: displayname["ku"] = parts[++i]; break;
+                case "--desc-en" when i + 1 < parts.Length: description["en"] = parts[++i]; break;
+                case "--desc-ar" when i + 1 < parts.Length: description["ar"] = parts[++i]; break;
+                case "--desc-ku" when i + 1 < parts.Length: description["ku"] = parts[++i]; break;
+                default: positional.Add(a); break;
+            }
+        }
+
+        if (batch)
+        {
+            // attach --batch <entry> <type> <glob>
+            if (positional.Count < 3)
+            {
+                LastCommandFailed = true;
+                CliTheme.Line($"{CliTheme.Wrap(CliTheme.Error, "Usage:")} attach --batch <entry> <type> <glob>");
+                return;
+            }
+            var (entry, payloadType, glob) = (positional[0], positional[1], positional[2]);
+            var files = ResolveGlob(glob);
+            if (files.Count == 0)
+            {
+                LastCommandFailed = true;
+                CliTheme.Line($"{CliTheme.Wrap(CliTheme.Warning, "No files matched glob:")} {CliTheme.Escape(glob)}");
+                return;
+            }
+            CliTheme.Line($"{CliTheme.Wrap(CliTheme.Heading, $"Uploading {files.Count} files…")}");
+            // Per-locale name overrides apply to every file by default;
+            // when no --name-en is given, the filename becomes the en label
+            // so the catalog UI has something to render.
+            await RunAttachBatch(files, entry, payloadType, displayname, description);
+            return;
+        }
+
+        if (positional.Count < 4)
+        {
+            LastCommandFailed = true;
+            CliTheme.Line($"{CliTheme.Wrap(CliTheme.Error, "Usage:")} attach <sn> <entry> <type> <file> [--name-en T] [--name-ar T] [--name-ku T] [--desc-en T] [--desc-ar T] [--desc-ku T]");
+            return;
+        }
+        PrintJson(await Spinner($"Uploading {Path.GetFileName(positional[3])}…",
+            () => dmart.AttachAsync(positional[0], positional[1], positional[2], positional[3],
+                displayname.Count > 0 ? displayname : null,
+                description.Count > 0 ? description : null)));
+    }
+
+    private async Task RunAttachBatch(List<string> files, string entry, string payloadType,
+        Dictionary<string, string> displayname, Dictionary<string, string> description)
+    {
+        // Show a real Progress bar — every iteration ticks one task. Falls back
+        // to silent iteration when output is redirected (Spectre's Progress
+        // refuses to render to a non-tty and would otherwise dump escape soup).
+        if (CliTheme.JsonOnly || Console.IsOutputRedirected)
+        {
+            foreach (var file in files) await UploadOne(file);
+            return;
+        }
+        await AnsiConsole.Progress()
+            .Columns(new TaskDescriptionColumn(), new ProgressBarColumn(),
+                     new PercentageColumn(), new RemainingTimeColumn())
+            .StartAsync(async ctx =>
+            {
+                var task = ctx.AddTask("[grey]attach[/]", maxValue: files.Count);
+                foreach (var file in files)
+                {
+                    task.Description = $"[grey]attach[/] [{CliTheme.Path}]{Markup.Escape(Path.GetFileName(file))}[/]";
+                    await UploadOne(file);
+                    task.Increment(1);
+                }
+            });
+
+        async Task UploadOne(string file)
+        {
+            var sn = SanitizeShortname(Path.GetFileNameWithoutExtension(file));
+            var dn = new Dictionary<string, string>(displayname);
+            if (!dn.ContainsKey("en")) dn["en"] = Path.GetFileNameWithoutExtension(file);
+            try
+            {
+                var resp = await dmart.AttachAsync(sn, entry, payloadType, file, dn,
+                    description.Count > 0 ? description : null);
+                if (CliTheme.JsonOnly) PrintJson(resp);
+                if (resp.TryGetProperty("status", out var st) && st.GetString() != "success")
+                    LastCommandFailed = true;
+            }
+            catch (Exception ex)
+            {
+                LastCommandFailed = true;
+                CliTheme.Line($"{CliTheme.Wrap(CliTheme.Error, "  upload failed:")} {CliTheme.Escape(file)}: {CliTheme.Escape(ex.Message)}");
+            }
+        }
+    }
+
+    // Resolve a path that may contain * or ? wildcards. Handles relative
+    // and absolute paths; returns the input verbatim when no wildcards.
+    private static List<string> ResolveGlob(string glob)
+    {
+        if (!glob.Contains('*') && !glob.Contains('?'))
+            return File.Exists(glob) ? new List<string> { glob } : new List<string>();
+        var dir = Path.GetDirectoryName(glob);
+        if (string.IsNullOrEmpty(dir)) dir = ".";
+        var pattern = Path.GetFileName(glob);
+        if (string.IsNullOrEmpty(pattern)) pattern = "*";
+        if (!Directory.Exists(dir)) return new List<string>();
+        return Directory.GetFiles(dir, pattern).OrderBy(f => f, StringComparer.Ordinal).ToList();
+    }
+
+    // dmart shortnames must match ^[a-z0-9_]+$ — lower-case, swap spaces /
+    // dashes / dots for underscores, drop everything else.
+    private static string SanitizeShortname(string raw)
+    {
+        var sb = new System.Text.StringBuilder(raw.Length);
+        foreach (var c in raw.ToLowerInvariant())
+        {
+            if ((c >= 'a' && c <= 'z') || (c >= '0' && c <= '9') || c == '_') sb.Append(c);
+            else if (c is ' ' or '-' or '.') sb.Append('_');
+        }
+        if (sb.Length == 0) sb.Append("file");
+        return sb.ToString();
+    }
+
+    // ---- export (zip + csv, file or flag-built query) ----
+
+    private async Task HandleExportAsync(string[] parts)
+    {
+        var isCsv = parts.Length >= 2 && parts[1].Equals("csv", StringComparison.OrdinalIgnoreCase);
+        var argStart = isCsv ? 2 : 1;
+        var rest = parts.Skip(argStart).ToArray();
+        if (rest.Length == 0)
+        {
+            LastCommandFailed = true;
+            CliTheme.Line($"{CliTheme.Wrap(CliTheme.Error, "Usage:")} export [csv] <query.json> | export [csv] --space S [--subpath /sub] [--type T] [--limit N] [--from DATE] [--to DATE] [--all] [--out PATH]");
+            return;
+        }
+
+        string queryJson;
+        string? outPath = null;
+        if (rest[0].StartsWith("--"))
+        {
+            var (json, op) = BuildExportQueryJson(rest);
+            if (json is null) { LastCommandFailed = true; return; }
+            queryJson = json;
+            outPath = op;
+        }
+        else
+        {
+            // Positional path argument — read from disk.
+            if (!File.Exists(rest[0]))
+            {
+                LastCommandFailed = true;
+                CliTheme.Line($"{CliTheme.Wrap(CliTheme.Error, "Query file not found:")} {CliTheme.Escape(rest[0])}");
+                return;
+            }
+            queryJson = await File.ReadAllTextAsync(rest[0]);
+            // A trailing --out can still pin the output path even with a file query.
+            for (var i = 1; i < rest.Length - 1; i++)
+                if (rest[i] == "--out") { outPath = rest[i + 1]; break; }
+        }
+
+        var label = isCsv ? "Exporting CSV…" : "Exporting…";
+        var msg = isCsv
+            ? await Spinner(label, () => dmart.ExportCsvAsync(queryJson, outPath))
+            : await Spinner(label, () => dmart.ExportAsync(queryJson, outPath));
+        CliTheme.Plain(msg);
+    }
+
+    // Synthesize the JSON body for /managed/export and /managed/csv from
+    // CLI flags. Defaults match the common case: search across the current
+    // space at /, recursive, 10k records.
+    private (string? Json, string? OutPath) BuildExportQueryJson(string[] args)
+    {
+        var space = dmart.CurrentSpace;
+        var subpath = "/";
+        string? type = null;
+        var limit = 10_000;
+        string? from = null, to = null;
+        var all = false;
+        string? outPath = null;
+        string? search = null;
+
+        for (var i = 0; i < args.Length; i++)
+        {
+            switch (args[i])
+            {
+                case "--space"   when i + 1 < args.Length: space = args[++i]; break;
+                case "--subpath" when i + 1 < args.Length: subpath = args[++i]; break;
+                case "--type"    when i + 1 < args.Length: type = args[++i]; break;
+                case "--limit"   when i + 1 < args.Length:
+                    if (int.TryParse(args[++i], out var l)) limit = l;
+                    break;
+                case "--from"    when i + 1 < args.Length: from = args[++i]; break;
+                case "--to"      when i + 1 < args.Length: to = args[++i]; break;
+                case "--search"  when i + 1 < args.Length: search = args[++i]; break;
+                case "--out"     when i + 1 < args.Length: outPath = args[++i]; break;
+                case "--all":
+                    all = true;
+                    limit = 1_000_000;  // Mirrors catalog's downloadAll behavior.
+                    break;
+                default:
+                    CliTheme.Line($"{CliTheme.Wrap(CliTheme.Error, "Unknown export flag:")} {CliTheme.Escape(args[i])}");
+                    return (null, null);
+            }
+        }
+
+        var sb = new System.Text.StringBuilder();
+        sb.Append("{\"type\":\"search\"");
+        sb.Append($",\"space_name\":\"{JsonStr(space)}\"");
+        sb.Append($",\"subpath\":\"{JsonStr(subpath)}\"");
+        sb.Append($",\"limit\":{limit}");
+        sb.Append(",\"retrieve_json_payload\":true");
+        if (type is not null)
+            sb.Append($",\"filter_types\":[\"{JsonStr(type)}\"]");
+        if (search is not null)
+            sb.Append($",\"search\":\"{JsonStr(search)}\"");
+        // --all clears date filters, matching the catalog modal's behavior.
+        if (!all && from is not null) sb.Append($",\"from_date\":\"{JsonStr(from)}\"");
+        if (!all && to is not null)   sb.Append($",\"to_date\":\"{JsonStr(to)}\"");
+        sb.Append('}');
+        return (sb.ToString(), outPath);
+    }
+
     // ---- whoami / version ----
 
     private void PrintWhoami()
@@ -607,6 +844,45 @@ public sealed class CommandHandler(DmartClient dmart, CliSettings settings)
 
     private static string JsonStr(string s)
         => s.Replace("\\", "\\\\").Replace("\"", "\\\"").Replace("\n", "\\n").Replace("\r", "\\r");
+
+    // Tokenize a command line, honoring double-quoted segments so that
+    // `--name-en "Alpha File"` arrives as one token instead of two. Single
+    // quotes are treated the same way; backslash inside a quote escapes the
+    // next character. Whitespace runs outside quotes are separators.
+    internal static string[] SplitArgs(string input)
+    {
+        var args = new List<string>();
+        var sb = new System.Text.StringBuilder();
+        var quote = '\0';
+        var inToken = false;
+        for (var i = 0; i < input.Length; i++)
+        {
+            var c = input[i];
+            if (quote != '\0')
+            {
+                if (c == '\\' && i + 1 < input.Length) { sb.Append(input[++i]); continue; }
+                if (c == quote) { quote = '\0'; continue; }
+                sb.Append(c);
+                inToken = true;
+            }
+            else if (c == '"' || c == '\'')
+            {
+                quote = c;
+                inToken = true;
+            }
+            else if (char.IsWhiteSpace(c))
+            {
+                if (inToken) { args.Add(sb.ToString()); sb.Clear(); inToken = false; }
+            }
+            else
+            {
+                sb.Append(c);
+                inToken = true;
+            }
+        }
+        if (inToken) args.Add(sb.ToString());
+        return args.ToArray();
+    }
 
     // ---- helpers ----
 

@@ -119,6 +119,58 @@ Delete user 'alice' (may contain children)? [y/N] y
 - The whole CRUD set is also reachable via `cli c <space> <cmd…>` for shell
   scripts: `dmart cli c management mkdir kefah`.
 
+### Attachments — single, multilingual, batch
+
+```
+# Single attach with multilingual displayname/description
+attach myfile alice media profile.png \
+  --name-en "Profile picture" --name-ar "صورة الملف الشخصي" \
+  --desc-en "Headshot taken at on-boarding"
+
+# Batch — glob expands inside the CLI; one shortname is auto-derived per file
+attach --batch alice media './pics/*.png'
+```
+
+- `--name-en / --name-ar / --name-ku` populate `displayname`; `--desc-en /
+  --desc-ar / --desc-ku` populate `description`. Server stores them in the
+  attachment's `displayname` / `description` JSONB columns (visible in the
+  catalog UI).
+- Quoted strings (single or double) survive the parser, so values with spaces
+  and Unicode work fine.
+- `--batch <entry> <type> <glob>` shows a real Spectre progress bar with
+  per-file ETA when interactive; falls through to silent iteration when
+  output is redirected. Per-file shortname is derived from the filename
+  (lower-cased, non-`[a-z0-9_]` swapped for underscores). Per-locale flags
+  apply to every file in the batch; when no `--name-en` is given, the
+  filename becomes the en label so the catalog UI has something to render.
+
+## Export & import
+
+```
+# ZIP export from a saved query file (the original form)
+export query.json
+
+# ZIP export from CLI shortcut flags — no file needed
+export --space management --subpath /users --type folder --limit 100 --out ./users.zip
+
+# CSV export — same flag surface
+export csv --space zainmart --subpath /products --type content --limit 1000000 --out ./products.csv
+export csv --all --space zainmart --out ./everything.csv
+
+# ZIP import (a previous export, or any zip following dmart's layout)
+import ./users.zip
+```
+
+- Both `export` and `export csv` accept either a `<query.json>` path **or**
+  the synthesized form via `--space / --subpath / --type / --limit / --from
+  / --to / --search / --all / --out`. `--all` mirrors the catalog modal's
+  "download everything" toggle: limit becomes 1M and date filters are
+  cleared.
+- Default output path when `--out` is omitted: `~/Downloads/<space>.zip` (or
+  `.csv`).
+- `import` posts the zip to `/managed/import` — same endpoint cxb's import
+  modal uses; identical server-side semantics.
+
 ## Output modes
 
 Three orthogonal flags shape output:

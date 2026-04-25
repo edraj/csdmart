@@ -191,11 +191,31 @@ public sealed class DmartClient : IDisposable
         return await ParseAsync(resp);
     }
 
-    public Task<JsonElement> AttachAsync(string shortname, string entryShortname, string payloadType, string filePath)
+    // displayname/description maps are en/ar/ku → text. Server's
+    // RequestHandler.ParseTranslation accepts the {en,ar,ku} shape.
+    public Task<JsonElement> AttachAsync(string shortname, string entryShortname, string payloadType, string filePath,
+        Dictionary<string, string>? displayname = null, Dictionary<string, string>? description = null)
     {
         var sub = $"{CurrentSubpath}/{entryShortname}".Replace("//", "/");
-        var recordJson = $"{{\"shortname\":\"{Esc(shortname)}\",\"resource_type\":\"{Esc(payloadType)}\",\"subpath\":\"{Esc(sub)}\",\"attributes\":{{\"is_active\":true}}}}";
+        var attrs = new StringBuilder("\"is_active\":true");
+        if (displayname is { Count: > 0 }) attrs.Append(",\"displayname\":").Append(BuildTranslationJson(displayname));
+        if (description is { Count: > 0 }) attrs.Append(",\"description\":").Append(BuildTranslationJson(description));
+        var recordJson = $"{{\"shortname\":\"{Esc(shortname)}\",\"resource_type\":\"{Esc(payloadType)}\",\"subpath\":\"{Esc(sub)}\",\"attributes\":{{{attrs}}}}}";
         return UploadWithPayloadAsync(recordJson, filePath);
+    }
+
+    private static string BuildTranslationJson(Dictionary<string, string> map)
+    {
+        var sb = new StringBuilder("{");
+        var first = true;
+        foreach (var (k, v) in map)
+        {
+            if (!first) sb.Append(',');
+            sb.Append($"\"{Esc(k)}\":\"{Esc(v)}\"");
+            first = false;
+        }
+        sb.Append('}');
+        return sb.ToString();
     }
 
     // ---- Import / Export ----
@@ -209,18 +229,36 @@ public sealed class DmartClient : IDisposable
         return await ParseAsync(resp);
     }
 
-    public async Task<string> ExportAsync(string queryJsonPath)
+    // queryJson is the literal JSON body posted to /managed/export. Callers
+    // either read it from a file (`export <query.json>`) or synthesize it
+    // from CLI shortcut flags (`export --space S …`).
+    public async Task<string> ExportAsync(string queryJson, string? outPath = null)
+        => await DownloadAsync("/managed/export", queryJson, outPath, defaultName: $"{CurrentSpace}.zip");
+
+    // CSV download — mirrors catalog's ModalCSVDownload; same Query body
+    // shape as /managed/export, different MIME on the response.
+    public async Task<string> ExportCsvAsync(string queryJson, string? outPath = null)
+        => await DownloadAsync("/managed/csv", queryJson, outPath, defaultName: $"{CurrentSpace}.csv");
+
+    private async Task<string> DownloadAsync(string endpoint, string queryJson, string? outPath, string defaultName)
     {
-        var queryJson = await File.ReadAllTextAsync(queryJsonPath);
-        var resp = await SendWithRefreshAsync(() => _http.PostAsync("/managed/export", Json(queryJson)));
+        var resp = await SendWithRefreshAsync(() => _http.PostAsync(endpoint, Json(queryJson)));
         if (!resp.IsSuccessStatusCode)
         {
             var err = await ParseAsync(resp);
             return err.ToString();
         }
-        var downloads = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.UserProfile), "Downloads");
-        Directory.CreateDirectory(downloads);
-        var outPath = Path.Combine(downloads, "export.zip");
+        if (outPath is null)
+        {
+            var downloads = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.UserProfile), "Downloads");
+            Directory.CreateDirectory(downloads);
+            outPath = Path.Combine(downloads, defaultName);
+        }
+        else
+        {
+            var dir = Path.GetDirectoryName(outPath);
+            if (!string.IsNullOrEmpty(dir)) Directory.CreateDirectory(dir);
+        }
         await using var outFile = File.Create(outPath);
         await resp.Content.CopyToAsync(outFile);
         return $"Exported to {outPath}";
