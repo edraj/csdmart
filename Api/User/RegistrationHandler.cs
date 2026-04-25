@@ -2,7 +2,10 @@ using System.Text.Json;
 using Dmart.Api.Managed;
 using Dmart.Config;
 using Dmart.Models.Api;
+using Dmart.Models.Core;
+using Dmart.Models.Enums;
 using Dmart.Models.Json;
+using Dmart.Plugins;
 using Dmart.Services;
 using Microsoft.Extensions.Options;
 
@@ -19,7 +22,7 @@ public static class RegistrationHandler
         // and returns a Record with session attributes (access_token, type,
         // displayname?) after auto-logging the user in.
         g.MapPost("/create", async Task<IResult> (HttpContext http, UserService svc,
-            IOptions<DmartSettings> settings, CancellationToken ct) =>
+            PluginManager plugins, IOptions<DmartSettings> settings, CancellationToken ct) =>
         {
             Record? record;
             try
@@ -62,6 +65,24 @@ public static class RegistrationHandler
                     statusCode: FailedResponseFilter.MapErrorToHttpStatus(result.ErrorCode));
 
             var (user, access, _) = result.Value;
+
+            var mgmtSpace = settings.Value.ManagementSpace;
+            _ = Task.Run(async () =>
+            {
+                try
+                {
+                    await plugins.AfterActionAsync(new Event
+                    {
+                        SpaceName = mgmtSpace,
+                        Subpath = "/users",
+                        Shortname = user.Shortname,
+                        ActionType = ActionType.Create,
+                        ResourceType = ResourceType.User,
+                        UserShortname = user.Shortname,
+                    });
+                }
+                catch (Exception ex) { Console.Error.WriteLine($"WARN: after-action plugin error: {ex.Message}"); }
+            }, CancellationToken.None);
 
             // Set auth_token cookie — mirrors the login flow so browser
             // clients are authenticated immediately after create.

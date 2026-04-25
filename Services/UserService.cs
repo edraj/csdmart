@@ -135,7 +135,7 @@ public sealed class UserService(
             Uuid = string.IsNullOrEmpty(rec.Uuid) ? Guid.NewGuid().ToString() : rec.Uuid,
             Shortname = rec.Shortname,
             SpaceName = MgmtSpace,
-            Subpath = "users",
+            Subpath = "/users",
             OwnerShortname = "dmart",
             Email = email,
             Msisdn = msisdn,
