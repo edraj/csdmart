@@ -7,6 +7,23 @@ import plantuml from "@akebifiky/remark-simple-plantuml";
 import svelteMd from "vite-plugin-svelte-md";
 import tailwindcss from "@tailwindcss/vite"
 import {execSync} from "node:child_process";
+import type {Plugin} from "vite";
+
+// `prismjs/components/prism-*.js` files reference a bare global `Prism`
+// without importing it. Under rolldown they get bundled as side-effect
+// modules whose top-level code runs before any importer body — so the
+// global is undefined and the load throws. Prepending an explicit
+// `import Prism from "prismjs"` turns the bare reference into a tracked
+// ESM binding, which rolldown then orders correctly behind the core.
+const prismAddonImportPlugin = (): Plugin => ({
+  name: "cxb:prismjs-addon-import",
+  enforce: "pre",
+  transform(code, id) {
+    if (/\/prismjs\/components\/prism-[^./]+\.js(?:[?#]|$)/.test(id) && !code.includes("import Prism")) {
+      return {code: `import Prism from "prismjs";\n${code}`, map: null};
+    }
+  },
+});
 
 const production = process.env.NODE_ENV === "production";
 const gitHash = (() => {
@@ -30,6 +47,7 @@ export default defineConfig({
     },
   },
   plugins: [
+    prismAddonImportPlugin(),
     tailwindcss(),
     svelteMd(),
     viteStaticCopy({

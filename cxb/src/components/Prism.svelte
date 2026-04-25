@@ -1,5 +1,5 @@
 <script lang="ts">
-    import pkg from "prismjs";
+    import pkg from "@/lib/prism-init";
     import "prismjs/components/prism-json";
     import "prismjs/components/prism-bash";
 
