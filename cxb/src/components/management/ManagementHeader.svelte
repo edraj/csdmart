@@ -51,7 +51,7 @@
         }
     });
 
-    let drawerHidden = $state(true);
+    let drawerOpen = $state(false);
 
     function setLanguage(lang: string) {
         switchLocale(lang);
@@ -70,7 +70,7 @@
     }
 
     function navigate(href: string) {
-        drawerHidden = true;
+        drawerOpen = false;
         $goto(href);
     }
 
@@ -114,7 +114,7 @@
         type="button"
         class="md:hidden p-2 text-[color:var(--color-text)] me-auto"
         aria-label="Open navigation menu"
-        onclick={() => (drawerHidden = false)}
+        onclick={() => (drawerOpen = true)}
     >
         <BarsOutline size="md" />
     </button>
@@ -188,13 +188,13 @@
 <!-- Mobile navigation drawer -->
 <Drawer
     placement="left"
-    bind:hidden={drawerHidden}
+    bind:open={drawerOpen}
     id="management-nav-drawer"
     class="bg-[color:var(--color-bg)]"
 >
     <div class="flex items-center justify-between mb-4">
         <h5 class="text-base font-semibold text-[color:var(--color-text)]">Menu</h5>
-        <CloseButton onclick={() => (drawerHidden = true)} />
+        <CloseButton onclick={() => (drawerOpen = false)} />
     </div>
     <nav aria-label="Primary mobile">
         <ul class="flex flex-col gap-1">

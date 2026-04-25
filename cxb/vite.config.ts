@@ -25,6 +25,28 @@ const prismAddonImportPlugin = (): Plugin => ({
   },
 });
 
+// @roxi/routify ships `console.debug(...) // ROUTIFY-DEV-ONLY` lines that
+// produce the "processing scroll queue" / "scroll to top" noise in the
+// browser console on every navigation. Routify's own vite-plugin has a
+// stripLogs() transform meant to remove these in production, but under
+// vite 8 + rolldown the hook order doesn't fire it for the scroller
+// chunks. We do the same strip ourselves with a `pre` transform so it
+// runs regardless of plugin order.
+const routifyStripDevLogsPlugin = (): Plugin => ({
+  name: "cxb:routify-strip-dev-logs",
+  enforce: "pre",
+  transform(code, id) {
+    if (!/\/@roxi\/routify\/lib\//.test(id)) return;
+    if (!/routify-dev-only/i.test(code)) return;
+    return {
+      code: code
+        .replace(/\/\/ *routify-dev-only-start[\s\S]+?\/\/ *routify-dev-only-end/gim, "")
+        .replace(/.+\/\/ *routify-dev-only.*$/gim, ""),
+      map: null,
+    };
+  },
+});
+
 const production = process.env.NODE_ENV === "production";
 const gitHash = (() => {
   try {
@@ -48,6 +70,7 @@ export default defineConfig({
   },
   plugins: [
     prismAddonImportPlugin(),
+    routifyStripDevLogsPlugin(),
     tailwindcss(),
     svelteMd(),
     viteStaticCopy({
@@ -60,6 +83,12 @@ export default defineConfig({
     }),
     routify({
       "render.ssr": {enable: false},
+      // Misleadingly named: forceLogging defaults to TRUE which means
+      // "do not strip console.debug calls". Setting it false lets the
+      // routify vite-plugin's stripLogs() transform remove the
+      // "processing scroll queue" / "scroll to top" noise from the
+      // production bundle.
+      forceLogging: false,
     }),
     svelte({
       compilerOptions: {

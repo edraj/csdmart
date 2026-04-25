@@ -4,7 +4,7 @@
     import { BarsOutline } from "flowbite-svelte-icons";
     import { sineIn } from "svelte/easing";
 
-    let hidden1 = $state(true);
+    let drawerOpen = $state(false);
     let transitionParams = {
         x: -320,
         duration: 200,
@@ -23,7 +23,7 @@
     <!-- Mobile Drawer -->
     <Drawer
         {transitionParams}
-        bind:hidden={hidden1}
+        bind:open={drawerOpen}
         dismissable={false}
         id="sidebar-drawer"
         class="w-64 !max-w-none !h-[100dvh] !max-h-none !m-0 !rounded-none !p-0 md:hidden z-[100] bg-gray-50 dark:bg-gray-800 [&>div]:!p-0"
@@ -38,7 +38,7 @@
                     Navigation
                 </h5>
                 <CloseButton
-                    onclick={() => (hidden1 = true)}
+                    onclick={() => (drawerOpen = false)}
                     class="dark:text-white"
                 />
             </div>
@@ -55,7 +55,7 @@
             class="md:hidden flex items-center p-4 border-b border-gray-200 bg-white z-10 sticky top-0"
         >
             <Button
-                onclick={() => (hidden1 = false)}
+                onclick={() => (drawerOpen = true)}
                 class="mr-4 p-2"
                 outline
                 color="alternative"
