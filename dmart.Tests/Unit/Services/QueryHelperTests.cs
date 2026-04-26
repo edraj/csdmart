@@ -344,6 +344,38 @@ public class QueryHelperTests
         where.ShouldContain("created_at <=");
     }
 
+    // @created_at:[<ms> <ms>] previously fell through to the default
+    // `CAST(created_at::text AS FLOAT) BETWEEN ...` path and crashed at
+    // runtime ("invalid input syntax for type double precision: \"2026-...\"").
+    // Pin the timestamp-aware shape: the column is compared directly against
+    // to_timestamp(ms/1000.0) so the timestamptz btree on created_at can serve
+    // the query.
+    [Fact]
+    public void Search_Timestamp_Range_Numeric_Treated_As_UnixMilliseconds()
+    {
+        var where = BuildSearch("@created_at:[1776902400000 1777161599999]");
+        where.ShouldContain("created_at BETWEEN");
+        where.ShouldContain("to_timestamp(");
+        where.ShouldContain("/ 1000.0");
+        where.ShouldNotContain("CAST(created_at::text AS FLOAT)");
+    }
+
+    [Fact]
+    public void Search_Timestamp_Range_String_Cast_To_Timestamptz()
+    {
+        var where = BuildSearch("@updated_at:[2026-01-01,2026-12-31]");
+        where.ShouldContain("updated_at BETWEEN");
+        where.ShouldContain("::timestamptz");
+    }
+
+    [Fact]
+    public void Search_Timestamp_Comparison_Numeric_Uses_To_Timestamp()
+    {
+        var where = BuildSearch("@created_at:>1776902400000");
+        where.ShouldContain("created_at >");
+        where.ShouldContain("to_timestamp(");
+    }
+
     [Fact]
     public void Random_OrderBy_Uses_RANDOM()
     {

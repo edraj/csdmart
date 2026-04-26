@@ -135,6 +135,15 @@ public static class QueryHelper
     private static readonly HashSet<string> BooleanColumns = new(StringComparer.Ordinal)
         { "is_active", "is_open" };
 
+    // TIMESTAMPTZ columns shared across dmart tables. The default scalar path
+    // would wrap these in `CAST(col::text AS FLOAT)` for a numeric range like
+    // `@created_at:[<ms> <ms>]`, which fails at runtime on the timestamp's
+    // textual form. Route them through BuildTimestampColumnSql instead so a
+    // numeric value is treated as Unix milliseconds and a string value as an
+    // ISO timestamp.
+    private static readonly HashSet<string> TimestampColumns = new(StringComparer.Ordinal)
+        { "created_at", "updated_at", "timestamp" };
+
     // Strict SQL-identifier validator. Any `field` that ends up interpolated into
     // the SQL WHERE clause (as a column name or cast target) MUST match. Without
     // this gate, a crafted `@field:value` token like `@(1=1)--:*` would inject
@@ -413,6 +422,10 @@ public static class QueryHelper
         // Boolean columns
         if (BooleanColumns.Contains(field))
             return BuildBooleanColumnSql(field, data, args);
+
+        // Timestamp columns (created_at, updated_at, timestamp).
+        if (TimestampColumns.Contains(field))
+            return BuildTimestampColumnSql(field, data, args);
 
         // Default: direct column as text. Reject anything that isn't a Postgres
         // identifier — previously a crafted `@(1=1)--:*` would render as
@@ -798,6 +811,66 @@ public static class QueryHelper
             args.Add(new() { Value = bv, NpgsqlDbType = NpgsqlDbType.Boolean });
             var eq = (data.Negative || data.ComparisonOperator == "!") ? "!=" : "=";
             conditions.Add($"(CAST({column} AS BOOLEAN) {eq} ${args.Count})");
+        }
+        return JoinConditions(conditions, data.Operation, data.Negative);
+    }
+
+    // — Timestamp column ——————————————————————————————————————————————
+
+    // Build a SQL clause for a TIMESTAMPTZ column. Numeric values are
+    // interpreted as Unix milliseconds (the catalog UI posts epoch-ms ranges
+    // like `@created_at:[1776902400000 1777161599999]`); other values are
+    // parsed as ISO timestamps via Postgres' timestamptz cast.
+    private static string? BuildTimestampColumnSql(string column, SearchField data, List<NpgsqlParameter> args)
+    {
+        string ParamExpr(string v)
+        {
+            args.Add(new() { Value = v });
+            var p = args.Count;
+            return NumericRegex.IsMatch(v)
+                ? $"to_timestamp(${p}::float8 / 1000.0)"
+                : $"${p}::timestamptz";
+        }
+
+        if (data.IsRange && data.Values.Count == 2)
+        {
+            var v1 = data.Values[0];
+            var v2 = data.Values[1];
+            if (data.ValueType == "numeric"
+                && double.TryParse(v1, NumberStyles.Float, CultureInfo.InvariantCulture, out var d1)
+                && double.TryParse(v2, NumberStyles.Float, CultureInfo.InvariantCulture, out var d2)
+                && d1 > d2)
+            {
+                (v1, v2) = (v2, v1);
+            }
+            else if (data.ValueType != "numeric" && string.Compare(v1, v2, StringComparison.Ordinal) > 0)
+            {
+                (v1, v2) = (v2, v1);
+            }
+            var p1 = ParamExpr(v1);
+            var p2 = ParamExpr(v2);
+            return $"({column} {(data.Negative ? "NOT " : "")}BETWEEN {p1} AND {p2})";
+        }
+
+        var conditions = new List<string>();
+        var compOp = data.ComparisonOperator;
+        foreach (var value in data.Values)
+        {
+            var pExpr = ParamExpr(value);
+            if (compOp is not null && compOp != "!")
+            {
+                conditions.Add(data.Negative
+                    ? $"NOT ({column} {compOp} {pExpr})"
+                    : $"{column} {compOp} {pExpr}");
+            }
+            else if (data.Negative || compOp == "!")
+            {
+                conditions.Add($"{column} != {pExpr}");
+            }
+            else
+            {
+                conditions.Add($"{column} = {pExpr}");
+            }
         }
         return JoinConditions(conditions, data.Operation, data.Negative);
     }
