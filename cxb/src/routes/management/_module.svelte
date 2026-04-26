@@ -47,7 +47,11 @@
         Dmart.setToken(storedToken);
     }
 
-    getSpaces();
+    // Boot fires before we know whether the user is signed in; the server
+    // 401s if not. Swallow rejections here so they don't surface as
+    // unhandled-promise console errors — the result is read post-login
+    // anyway and the await block below handles getProfile()'s rejection.
+    getSpaces().catch(() => {});
 
     const profilePromise = Dmart.getProfile();
 </script>
