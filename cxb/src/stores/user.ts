@@ -82,14 +82,17 @@ export async function signout() {
   try {
     const stored = JSON.parse(localStorage.getItem(KEY) || "null");
     if (stored?.signedin) {
-      localStorage.removeItem("rowPerPage");
-      user.set(signedout);
-      localStorage.removeItem(KEY);
-      await Dmart.logout();
+      try {
+        await Dmart.logout();
+      } catch {
+        // Local signout should still clear browser state when the server is unreachable.
+      }
     }
-  } catch {
+  } finally {
     localStorage.removeItem(KEY);
     localStorage.removeItem("rowPerPage");
+    localStorage.removeItem("authToken");
+    authToken.set("");
     user.set(signedout);
   }
 }

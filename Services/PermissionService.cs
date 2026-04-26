@@ -379,7 +379,10 @@ public sealed class PermissionService(UserRepository users, AccessRepository acc
                     var effectiveSpace = permSpace == AllSpacesMw ? spaceName : permSpace;
                     var effectiveSubpath = permSubpath == AllSubpathsMw ? querySubpath : permSubpath;
 
-                    foreach (var rt in p.ResourceTypes)
+                    var resourceTypes = p.ResourceTypes.Count > 0
+                        ? p.ResourceTypes
+                        : new List<string> { "*" };
+                    foreach (var rt in resourceTypes)
                     {
                         var permKey = $"{effectiveSpace}:{effectiveSubpath}:{rt}";
                         var hasIsActive = p.Conditions.Contains("is_active", StringComparer.Ordinal);

@@ -87,6 +87,13 @@ public static class AuthHandler
         {
             // Python: db.remove_user_session() — delete the session row.
             var token = http.Request.Cookies["auth_token"];
+            if (string.IsNullOrEmpty(token))
+            {
+                var auth = http.Request.Headers.Authorization.ToString();
+                const string bearerPrefix = "Bearer ";
+                if (auth.StartsWith(bearerPrefix, StringComparison.OrdinalIgnoreCase))
+                    token = auth[bearerPrefix.Length..].Trim();
+            }
             await svc.LogoutAsync(token, ct);
 
             // Clear the cookie by setting an empty value with max_age=0.

@@ -30,6 +30,7 @@ public static class EntryHandler
                    SpaceRepository spaces,
                    UserRepository users,
                    AccessRepository access,
+                   PermissionService perms,
                    HttpContext http, CancellationToken ct) =>
             {
                 // Python parity: every failure path returns the structured
@@ -63,22 +64,38 @@ public static class EntryHandler
                     case ResourceType.Space:
                     {
                         var s = await spaces.GetAsync(shortname, ct);
-                        return s is null ? NotFoundMedia() : Results.Json(s, DmartJsonContext.Default.Space);
+                        if (s is null) return NotFoundMedia();
+                        var locator = new Locator(ResourceType.Space, s.SpaceName, s.Subpath, s.Shortname);
+                        if (!await perms.CanReadAsync(actor, locator, PermissionService.FromSpace(s), ct))
+                            return NotFoundMedia();
+                        return Results.Json(s, DmartJsonContext.Default.Space);
                     }
                     case ResourceType.User:
                     {
                         var u = await users.GetByShortnameAsync(shortname, ct);
-                        return u is null ? NotFoundMedia() : Results.Json(u, DmartJsonContext.Default.User);
+                        if (u is null) return NotFoundMedia();
+                        var locator = new Locator(ResourceType.User, u.SpaceName, u.Subpath, u.Shortname);
+                        if (!await perms.CanReadAsync(actor, locator, PermissionService.FromUser(u), ct))
+                            return NotFoundMedia();
+                        return Results.Json(u, DmartJsonContext.Default.User);
                     }
                     case ResourceType.Role:
                     {
                         var r = await access.GetRoleAsync(shortname, ct);
-                        return r is null ? NotFoundMedia() : Results.Json(r, DmartJsonContext.Default.Role);
+                        if (r is null) return NotFoundMedia();
+                        var locator = new Locator(ResourceType.Role, r.SpaceName, r.Subpath, r.Shortname);
+                        if (!await perms.CanReadAsync(actor, locator, PermissionService.FromRole(r), ct))
+                            return NotFoundMedia();
+                        return Results.Json(r, DmartJsonContext.Default.Role);
                     }
                     case ResourceType.Permission:
                     {
                         var p = await access.GetPermissionAsync(shortname, ct);
-                        return p is null ? NotFoundMedia() : Results.Json(p, DmartJsonContext.Default.Permission);
+                        if (p is null) return NotFoundMedia();
+                        var locator = new Locator(ResourceType.Permission, p.SpaceName, p.Subpath, p.Shortname);
+                        if (!await perms.CanReadAsync(actor, locator, PermissionService.FromPermission(p), ct))
+                            return NotFoundMedia();
+                        return Results.Json(p, DmartJsonContext.Default.Permission);
                     }
                 }
 

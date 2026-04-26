@@ -2,6 +2,7 @@ using System.Text;
 using System.Text.Json;
 using Dmart.Config;
 using Dmart.Models.Api;
+using Dmart.Models.Enums;
 using Dmart.Models.Json;
 using Microsoft.AspNetCore.Authentication.JwtBearer;
 using Microsoft.Extensions.Options;
@@ -69,41 +70,53 @@ public static class JwtBearerSetup
                         return Task.CompletedTask;
                     },
                     // After a token's signature + lifetime have passed, also
-                    // enforce session inactivity if configured. If the session
-                    // is older than settings.SessionInactivityTtl, the row is
-                    // evicted and authentication fails.
+                    // enforce DB-backed session state. Logout/password changes/
+                    // account deactivation delete session rows, so every
+                    // non-bot request must still have a live row even when
+                    // inactivity expiry is disabled.
                     OnTokenValidated = async ctx =>
                     {
                         var settings = ctx.HttpContext.RequestServices
                             .GetRequiredService<IOptions<DmartSettings>>().Value;
-                        if (settings.SessionInactivityTtl <= 0) return;
                         // .NET 9's JsonWebTokenHandler exposes the raw token string
                         // on JsonWebToken.EncodedToken; older code paths use
                         // JwtSecurityToken.RawData. Try both.
                         var jwt = ctx.SecurityToken as Microsoft.IdentityModel.JsonWebTokens.JsonWebToken;
                         var raw = jwt?.EncodedToken
                             ?? (ctx.SecurityToken as System.IdentityModel.Tokens.Jwt.JwtSecurityToken)?.RawData;
-                        if (string.IsNullOrEmpty(raw)) return;
-                        // Python parity: bot users skip the entire session-inactivity
-                        // machinery (utils/jwt.py:78). No row was created for them at
-                        // login, and no row is checked here. Without this, the C#
-                        // port silently kicks bot tokens out whenever another login
-                        // for the same shortname happens — see EvictExcessSessionsAsync.
-                        if (jwt is not null
-                            && jwt.TryGetPayloadValue<JsonElement>("data", out var dataElem)
-                            && dataElem.ValueKind == JsonValueKind.Object
-                            && dataElem.TryGetProperty("type", out var typeProp)
-                            && typeProp.ValueKind == JsonValueKind.String
-                            && typeProp.GetString() == "bot")
+                        if (string.IsNullOrEmpty(raw))
                         {
+                            ctx.Fail(new SecurityTokenException("missing raw token"));
                             return;
                         }
+
                         var users = ctx.HttpContext.RequestServices
                             .GetRequiredService<DataAdapters.Sql.UserRepository>();
-                        var touched = await users.TouchSessionAsync(
-                            raw, settings.SessionInactivityTtl, ctx.HttpContext.RequestAborted);
-                        if (!touched)
-                            ctx.Fail(new SecurityTokenException("session expired due to inactivity"));
+                        var actor = ctx.Principal?.Identity?.Name;
+                        if (string.IsNullOrEmpty(actor))
+                        {
+                            ctx.Fail(new SecurityTokenException("missing subject"));
+                            return;
+                        }
+
+                        var user = await users.GetByShortnameAsync(actor, ctx.HttpContext.RequestAborted);
+                        if (user is null || !user.IsActive)
+                        {
+                            ctx.Fail(new SecurityTokenException("user is inactive"));
+                            return;
+                        }
+
+                        // Python parity: bot users skip session-row creation and
+                        // session-inactivity checks, but the user row must still
+                        // exist and be active.
+                        if (user.Type == UserType.Bot) return;
+
+                        var liveSession = settings.SessionInactivityTtl > 0
+                            ? await users.TouchSessionAsync(
+                                raw, settings.SessionInactivityTtl, ctx.HttpContext.RequestAborted)
+                            : await users.IsSessionValidAsync(raw, ctx.HttpContext.RequestAborted);
+                        if (!liveSession)
+                            ctx.Fail(new SecurityTokenException("session expired or revoked"));
                     },
                     // Return a JSON error body matching Python's api.Response shape:
                     // {"status":"failed","error":{"type":"jwtauth","code":N,"message":"..."}}

@@ -59,6 +59,12 @@ public sealed class QueryService(
     private static Response EmptyQueryResponse() =>
         Response.Ok(Array.Empty<Record>(), new() { ["total"] = 0, ["returned"] = 0 });
 
+    private async Task<List<string>?> GetActorQueryPoliciesAsync(Query q, string? actor, CancellationToken ct)
+    {
+        if (actor is null) return null;
+        return await perms.BuildUserQueryPoliciesAsync(actor, q.SpaceName, q.Subpath ?? "/", ct);
+    }
+
     public async Task<Response> ExecuteAsync(Query q, string? actor, CancellationToken ct = default)
     {
         // Clamp limit: default to 100, cap at MaxQueryLimit.
@@ -176,10 +182,17 @@ public sealed class QueryService(
         if (!await CanQueryAsync(actor, ResourceType.User, q.SpaceName, q.Subpath ?? "/", ct))
             return EmptyQueryResponse();
 
-        var pageTask = users.QueryAsync(q, ct);
+        var policies = await GetActorQueryPoliciesAsync(q, actor, ct);
+        if (actor is not null && policies!.Count == 0) return EmptyQueryResponse();
+
+        var pageTask = actor is not null
+            ? users.QueryAsync(q, actor, policies, ct)
+            : users.QueryAsync(q, ct);
         var totalTask = q.RetrieveTotal == false
             ? Task.FromResult(-1)
-            : users.CountQueryAsync(q, ct);
+            : (actor is not null
+                ? users.CountQueryAsync(q, actor, policies, ct)
+                : users.CountQueryAsync(q, ct));
         await Task.WhenAll(pageTask, totalTask);
 
         var records = (await pageTask).Select(UserMapper.ToRecord).ToList();
@@ -195,10 +208,17 @@ public sealed class QueryService(
         if (!await CanQueryAsync(actor, ResourceType.Role, q.SpaceName, q.Subpath ?? "/", ct))
             return EmptyQueryResponse();
 
-        var pageTask = access.QueryRolesAsync(q, ct);
+        var policies = await GetActorQueryPoliciesAsync(q, actor, ct);
+        if (actor is not null && policies!.Count == 0) return EmptyQueryResponse();
+
+        var pageTask = actor is not null
+            ? access.QueryRolesAsync(q, actor, policies, ct)
+            : access.QueryRolesAsync(q, ct);
         var totalTask = q.RetrieveTotal == false
             ? Task.FromResult(-1)
-            : access.CountRolesQueryAsync(q, ct);
+            : (actor is not null
+                ? access.CountRolesQueryAsync(q, actor, policies, ct)
+                : access.CountRolesQueryAsync(q, ct));
         await Task.WhenAll(pageTask, totalTask);
 
         var records = (await pageTask).Select(RoleMapper.ToRecord).ToList();
@@ -214,10 +234,17 @@ public sealed class QueryService(
         if (!await CanQueryAsync(actor, ResourceType.Permission, q.SpaceName, q.Subpath ?? "/", ct))
             return EmptyQueryResponse();
 
-        var pageTask = access.QueryPermissionsAsync(q, ct);
+        var policies = await GetActorQueryPoliciesAsync(q, actor, ct);
+        if (actor is not null && policies!.Count == 0) return EmptyQueryResponse();
+
+        var pageTask = actor is not null
+            ? access.QueryPermissionsAsync(q, actor, policies, ct)
+            : access.QueryPermissionsAsync(q, ct);
         var totalTask = q.RetrieveTotal == false
             ? Task.FromResult(-1)
-            : access.CountPermissionsQueryAsync(q, ct);
+            : (actor is not null
+                ? access.CountPermissionsQueryAsync(q, actor, policies, ct)
+                : access.CountPermissionsQueryAsync(q, ct));
         await Task.WhenAll(pageTask, totalTask);
 
         var records = (await pageTask).Select(PermissionMapper.ToRecord).ToList();
@@ -278,6 +305,9 @@ public sealed class QueryService(
         if (!await CanQueryAsync(actor, ResourceType.Content, q.SpaceName, q.Subpath ?? "/", ct))
             return EmptyQueryResponse();
 
+        var policies = await GetActorQueryPoliciesAsync(q, actor, ct);
+        if (actor is not null && policies!.Count == 0) return EmptyQueryResponse();
+
         // SQL: unnest tags jsonb array, group by tag, count.
         var args = new List<NpgsqlParameter>();
         var where = QueryHelper.BuildWhereClause(q, args);
@@ -285,8 +315,10 @@ public sealed class QueryService(
             SELECT tag, COUNT(*) AS cnt
             FROM entries, jsonb_array_elements_text(tags) AS tag
             WHERE {where}
-            GROUP BY tag ORDER BY cnt DESC
             """);
+        if (actor is not null)
+            QueryHelper.AppendAclFilter(sql, args, actor, "entries", policies);
+        sql.Append("GROUP BY tag ORDER BY cnt DESC");
         // Apply limit/offset on the aggregated result.
         args.Add(new() { Value = Math.Max(1, q.Limit) });
         sql.Append($" LIMIT ${args.Count}");
@@ -406,7 +438,12 @@ public sealed class QueryService(
             return Response.Fail(InternalErrorCode.MISSING_DATA,
                 "aggregation_data required for aggregation queries", ErrorTypes.Request);
 
-        var rows = await QueryHelper.RunAggregationAsync(db, tableName, q, ct);
+        var policies = await GetActorQueryPoliciesAsync(q, actor, ct);
+        if (actor is not null && policies!.Count == 0) return EmptyQueryResponse();
+
+        var rows = actor is not null
+            ? await QueryHelper.RunAggregationAsync(db, tableName, q, ct, actor, policies)
+            : await QueryHelper.RunAggregationAsync(db, tableName, q, ct);
 
         // Convert each aggregation row to a Record with the grouped values + reducer results
         // in attributes. Python returns a single Record per group.
@@ -462,25 +499,41 @@ public sealed class QueryService(
             {
                 if (!await CanQueryAsync(actor, ResourceType.User, q.SpaceName, q.Subpath ?? "/", ct))
                     return EmptyQueryResponse();
-                total = await users.CountQueryAsync(q, ct);
+                var policies = await GetActorQueryPoliciesAsync(q, actor, ct);
+                if (actor is not null && policies!.Count == 0) return EmptyQueryResponse();
+                total = actor is not null
+                    ? await users.CountQueryAsync(q, actor, policies, ct)
+                    : await users.CountQueryAsync(q, ct);
             }
             else if (sub == "roles" || sub.StartsWith("roles/", StringComparison.Ordinal))
             {
                 if (!await CanQueryAsync(actor, ResourceType.Role, q.SpaceName, q.Subpath ?? "/", ct))
                     return EmptyQueryResponse();
-                total = await access.CountRolesQueryAsync(q, ct);
+                var policies = await GetActorQueryPoliciesAsync(q, actor, ct);
+                if (actor is not null && policies!.Count == 0) return EmptyQueryResponse();
+                total = actor is not null
+                    ? await access.CountRolesQueryAsync(q, actor, policies, ct)
+                    : await access.CountRolesQueryAsync(q, ct);
             }
             else if (sub == "permissions" || sub.StartsWith("permissions/", StringComparison.Ordinal))
             {
                 if (!await CanQueryAsync(actor, ResourceType.Permission, q.SpaceName, q.Subpath ?? "/", ct))
                     return EmptyQueryResponse();
-                total = await access.CountPermissionsQueryAsync(q, ct);
+                var policies = await GetActorQueryPoliciesAsync(q, actor, ct);
+                if (actor is not null && policies!.Count == 0) return EmptyQueryResponse();
+                total = actor is not null
+                    ? await access.CountPermissionsQueryAsync(q, actor, policies, ct)
+                    : await access.CountPermissionsQueryAsync(q, ct);
             }
             else
             {
                 if (!await CanQueryAsync(actor, ResourceType.Content, q.SpaceName, q.Subpath ?? "/", ct))
                     return EmptyQueryResponse();
-                total = await entries.CountQueryAsync(q, ct);
+                var policies = await GetActorQueryPoliciesAsync(q, actor, ct);
+                if (actor is not null && policies!.Count == 0) return EmptyQueryResponse();
+                total = actor is not null
+                    ? await entries.CountQueryAsync(q, actor, policies, ct)
+                    : await entries.CountQueryAsync(q, ct);
             }
         }
         else

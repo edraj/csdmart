@@ -76,10 +76,60 @@ public class FullParityTests : IClassFixture<DmartFactory>
     [FactIfPg]
     public async Task Logout_Clears_Session()
     {
-        var (client, _) = await LoginAsync();
-        // Logout
-        await client.PostAsync("/user/logout", null);
-        // The specific session should be gone (though others may remain)
+        var users = _factory.Services.GetRequiredService<UserRepository>();
+        var hasher = _factory.Services.GetRequiredService<Dmart.Auth.PasswordHasher>();
+        var shortname = $"logout_{Guid.NewGuid():N}"[..20];
+        const string password = "LogoutPassword1";
+        await users.UpsertAsync(new Dmart.Models.Core.User
+        {
+            Uuid = Guid.NewGuid().ToString(),
+            Shortname = shortname,
+            SpaceName = "management",
+            Subpath = "/users",
+            OwnerShortname = shortname,
+            IsActive = true,
+            Password = hasher.Hash(password),
+            Type = UserType.Web,
+            Language = Language.En,
+            Roles = new(),
+            Groups = new(),
+            CreatedAt = DateTime.UtcNow,
+            UpdatedAt = DateTime.UtcNow,
+        });
+
+        try
+        {
+            var loginClient = _factory.CreateClient(new Microsoft.AspNetCore.Mvc.Testing.WebApplicationFactoryClientOptions
+            {
+                HandleCookies = false,
+            });
+            var login = new UserLoginRequest(shortname, null, null, password, null);
+            var loginResp = await loginClient.PostAsJsonAsync("/user/login", login, DmartJsonContext.Default.UserLoginRequest);
+            var raw = await loginResp.Content.ReadAsStringAsync();
+            var body = JsonSerializer.Deserialize(raw, DmartJsonContext.Default.Response);
+            var token = body?.Records?.FirstOrDefault()?.Attributes?["access_token"]?.ToString()
+                ?? throw new InvalidOperationException($"Login failed for '{shortname}': {loginResp.StatusCode} {raw}");
+
+            var client = _factory.CreateClient(new Microsoft.AspNetCore.Mvc.Testing.WebApplicationFactoryClientOptions
+            {
+                HandleCookies = false,
+            });
+            client.DefaultRequestHeaders.Authorization =
+                new System.Net.Http.Headers.AuthenticationHeaderValue("Bearer", token);
+
+            var logout = await client.PostAsync("/user/logout", null);
+            logout.StatusCode.ShouldBe(HttpStatusCode.OK);
+
+            (await users.IsSessionValidAsync(token)).ShouldBeFalse();
+
+            var afterLogout = await client.GetAsync("/info/manifest");
+            afterLogout.StatusCode.ShouldBe(HttpStatusCode.Unauthorized);
+        }
+        finally
+        {
+            try { await users.DeleteAllSessionsAsync(shortname); } catch { }
+            try { await users.DeleteAsync(shortname); } catch { }
+        }
     }
 
     // ==================== Account lockout ====================

@@ -23,7 +23,6 @@
   } from "@/lib/helpers";
   import { goto } from "@roxi/routify";
   import { _, locale } from "@/i18n";
-  import { loginBy } from "@/stores/user";
   import { writable } from "svelte/store";
   import DynamicSchemaBasedForms from "@/components/forms/DynamicSchemaBasedForms.svelte";
 
@@ -125,11 +124,10 @@
     isChangingPassword.set(true);
 
     try {
-      await loginBy($user.attributes.email, $oldPassword);
-
       const response = await updatePassword({
         shortname: $user.shortname,
         password: $newPassword,
+        oldPassword: $oldPassword,
       });
 
       if (response) {

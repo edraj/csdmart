@@ -118,13 +118,14 @@ export async function updateProfile(data: { shortname: string; displayname?: Rec
  * @param data - Object containing user shortname and new password
  * @returns True if password was successfully updated, false otherwise
  */
-export async function updatePassword(data: { shortname: string; password: string }) {
+export async function updatePassword(data: { shortname: string; password: string; oldPassword?: string }) {
     const request = {
         resource_type: ResourceType.user,
         shortname: data.shortname,
         subpath: "users",
         attributes: {
             password: data.password,
+            old_password: data.oldPassword,
         },
     };
     const response = await Dmart.updateUser(request);

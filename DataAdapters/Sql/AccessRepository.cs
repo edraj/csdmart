@@ -235,14 +235,32 @@ public sealed class AccessRepository(Db db, AuthzCacheRefresher refresher, UserR
     public Task<List<Role>> QueryRolesAsync(Models.Api.Query q, CancellationToken ct = default)
         => QueryHelper.RunQueryAsync(db, SelectRoleColumns, q, HydrateRole, ct, tableName: "roles");
 
+    public Task<List<Role>> QueryRolesAsync(
+        Models.Api.Query q, string actor, List<string>? queryPolicies, CancellationToken ct = default)
+        => QueryHelper.RunQueryAsync(db, SelectRoleColumns, q, HydrateRole, ct,
+            userShortname: actor, tableName: "roles", queryPolicies: queryPolicies);
+
     public Task<int> CountRolesQueryAsync(Models.Api.Query q, CancellationToken ct = default)
         => QueryHelper.RunCountAsync(db, "roles", q, ct);
+
+    public Task<int> CountRolesQueryAsync(
+        Models.Api.Query q, string actor, List<string>? queryPolicies, CancellationToken ct = default)
+        => QueryHelper.RunCountAsync(db, "roles", q, ct, actor, queryPolicies);
 
     public Task<List<Permission>> QueryPermissionsAsync(Models.Api.Query q, CancellationToken ct = default)
         => QueryHelper.RunQueryAsync(db, SelectPermissionColumns, q, HydratePermission, ct, tableName: "permissions");
 
+    public Task<List<Permission>> QueryPermissionsAsync(
+        Models.Api.Query q, string actor, List<string>? queryPolicies, CancellationToken ct = default)
+        => QueryHelper.RunQueryAsync(db, SelectPermissionColumns, q, HydratePermission, ct,
+            userShortname: actor, tableName: "permissions", queryPolicies: queryPolicies);
+
     public Task<int> CountPermissionsQueryAsync(Models.Api.Query q, CancellationToken ct = default)
         => QueryHelper.RunCountAsync(db, "permissions", q, ct);
+
+    public Task<int> CountPermissionsQueryAsync(
+        Models.Api.Query q, string actor, List<string>? queryPolicies, CancellationToken ct = default)
+        => QueryHelper.RunCountAsync(db, "permissions", q, ct, actor, queryPolicies);
 
     // Reads the cached permissions dict from userpermissionscache.
     // Returns null if not cached — caller should generate + cache.

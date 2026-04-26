@@ -130,7 +130,11 @@ public static class QueryHelper
 
     // Known JSONB array columns across dmart tables.
     private static readonly HashSet<string> JsonbArrayColumns = new(StringComparer.Ordinal)
-        { "tags", "roles", "groups", "query_policies" };
+        { "tags", "roles", "groups" };
+
+    // SQL schema note: query_policies is TEXT[], unlike tags/roles/groups.
+    private static readonly HashSet<string> TextArrayColumns = new(StringComparer.Ordinal)
+        { "query_policies" };
 
     private static readonly HashSet<string> BooleanColumns = new(StringComparer.Ordinal)
         { "is_active", "is_open" };
@@ -391,6 +395,11 @@ public static class QueryHelper
                 return $"payload::jsonb->{arrowPath} {nullCheck}";
             }
             if (!SafeColumnIdent.IsMatch(field)) return null;
+            if (TextArrayColumns.Contains(field))
+            {
+                var lengthExpr = $"COALESCE(array_length({field}, 1), 0)";
+                return data.Negative ? $"{lengthExpr} = 0" : $"{lengthExpr} > 0";
+            }
             return $"{field} {nullCheck}";
         }
 
@@ -398,9 +407,13 @@ public static class QueryHelper
         if (field.StartsWith("payload.", StringComparison.Ordinal))
             return BuildPayloadSql(field["payload.".Length..], data, args);
 
-        // JSONB array columns (tags, roles, groups, query_policies)
+        // JSONB array columns (tags, roles, groups)
         if (JsonbArrayColumns.Contains(field))
             return BuildJsonbArraySql(field, data, args);
+
+        // PostgreSQL text[] columns (query_policies)
+        if (TextArrayColumns.Contains(field))
+            return BuildTextArraySql(field, data, args);
 
         // Dotted path into a JSONB column (e.g. collaborators.user1)
         if (field.Contains('.'))
@@ -783,6 +796,32 @@ public static class QueryHelper
             }
         }
         return JoinConditions(conditions, data.Operation, data.Negative);
+    }
+
+    // — PostgreSQL text[] columns (query_policies) —————————————————————
+
+    private static string? BuildTextArraySql(string column, SearchField data, List<NpgsqlParameter> args)
+    {
+        var negative = data.Negative || data.ComparisonOperator == "!";
+        var conditions = new List<string>();
+        foreach (var value in data.Values)
+        {
+            string predicate;
+            if (value.Contains('*'))
+            {
+                args.Add(new() { Value = value.Replace('*', '%') });
+                predicate = $"elem ILIKE ${args.Count}";
+            }
+            else
+            {
+                args.Add(new() { Value = value });
+                predicate = $"elem = ${args.Count}";
+            }
+
+            var exists = $"EXISTS (SELECT 1 FROM unnest({column}) AS elem WHERE {predicate})";
+            conditions.Add(negative ? $"NOT {exists}" : exists);
+        }
+        return JoinConditions(conditions, data.Operation, negative);
     }
 
     // — Wildcard text search on a JSONB subtree ———————————————————————
@@ -1231,7 +1270,8 @@ public static class QueryHelper
     //   SELECT group_by_cols, FUNC(args) AS alias FROM table WHERE ... GROUP BY ...
 
     public static async Task<List<Dictionary<string, object>>> RunAggregationAsync(
-        Db db, string tableName, Query q, CancellationToken ct)
+        Db db, string tableName, Query q, CancellationToken ct,
+        string? userShortname = null, List<string>? queryPolicies = null)
     {
         if (q.AggregationData is null)
             return new();
@@ -1282,14 +1322,19 @@ public static class QueryHelper
         var sql = new System.Text.StringBuilder(
             $"SELECT {string.Join(", ", selectParts)} FROM {tableName} WHERE {where} ");
 
+        if (userShortname is not null)
+            AppendAclFilter(sql, args, userShortname, tableName, queryPolicies);
+
         // GROUP BY
         if (q.AggregationData.GroupBy.Count > 0)
         {
             var gbExprs = q.AggregationData.GroupBy
                 .Select(gb => gb.StartsWith('@') ? gb[1..] : gb)
                 .Select(ResolveFieldExpr)
-                .Where(e => e is not null);
-            sql.Append($"GROUP BY {string.Join(", ", gbExprs)} ");
+                .Where(e => e is not null)
+                .ToList();
+            if (gbExprs.Count > 0)
+                sql.Append($"GROUP BY {string.Join(", ", gbExprs)} ");
         }
 
         // ORDER + LIMIT

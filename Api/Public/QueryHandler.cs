@@ -72,7 +72,7 @@ public static class QueryHandler
                 // parallel COUNT by default; URL params can't request it.
                 RetrieveTotal = false,
             };
-            return await svc.ExecuteAsync(q, actor: null, ct);
+            return await svc.ExecuteAsync(q, actor: "anonymous", ct);
         });
     }
 }

@@ -130,6 +130,22 @@ public class QueryHelperTests
         where.ShouldContain("@>");
     }
 
+    [Fact]
+    public void Search_QueryPolicies_Uses_TextArray_Unnest()
+    {
+        var where = BuildSearch("@query_policies:test:*:content:true:*");
+        where.ShouldContain("unnest(query_policies)");
+        where.ShouldNotContain("jsonb_typeof(query_policies)");
+    }
+
+    [Fact]
+    public void Search_QueryPolicies_Existence_Checks_Array_Length()
+    {
+        var where = BuildSearch("@query_policies:*");
+        where.ShouldContain("array_length(query_policies, 1)");
+        where.ShouldContain("> 0");
+    }
+
     // ==================== Wildcard paths ====================
 
     [Fact]

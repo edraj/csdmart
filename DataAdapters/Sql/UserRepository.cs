@@ -322,8 +322,17 @@ public sealed class UserRepository(Db db, AuthzCacheRefresher refresher)
     public Task<List<User>> QueryAsync(Models.Api.Query q, CancellationToken ct = default)
         => QueryHelper.RunQueryAsync(db, SelectAllColumns, q, Hydrate, ct, tableName: "users");
 
+    public Task<List<User>> QueryAsync(
+        Models.Api.Query q, string actor, List<string>? queryPolicies, CancellationToken ct = default)
+        => QueryHelper.RunQueryAsync(db, SelectAllColumns, q, Hydrate, ct,
+            userShortname: actor, tableName: "users", queryPolicies: queryPolicies);
+
     public Task<int> CountQueryAsync(Models.Api.Query q, CancellationToken ct = default)
         => QueryHelper.RunCountAsync(db, "users", q, ct);
+
+    public Task<int> CountQueryAsync(
+        Models.Api.Query q, string actor, List<string>? queryPolicies, CancellationToken ct = default)
+        => QueryHelper.RunCountAsync(db, "users", q, ct, actor, queryPolicies);
 
     public async Task DeleteAllSessionsAsync(string shortname, CancellationToken ct = default)
     {
