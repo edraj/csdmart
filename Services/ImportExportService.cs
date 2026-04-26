@@ -394,6 +394,11 @@ public sealed class ImportExportService(
 
     public async Task<Response> ImportZipAsync(Stream zip, string? actor, CancellationToken ct = default)
     {
+        // `actor` is accepted for API stability but no longer threaded through —
+        // every imported record's owner comes from its meta's owner_shortname,
+        // and EnsureOwner backstops malformed exports with a literal "dmart"
+        // (which is guaranteed to exist via AdminBootstrap).
+        _ = actor;
         using var archive = new ZipArchive(zip, ZipArchiveMode.Read);
 
         // Layout validation — hard-fail on the legacy flat C# layout. Every
@@ -419,12 +424,15 @@ public sealed class ImportExportService(
             .Where(z => !string.IsNullOrEmpty(z.FullName) && !z.FullName.EndsWith("/"))
             .ToList();
 
-        // ---- Pass 1: Spaces (so FKs are ready) ----
+        // ---- Pass 1: Users (the only FK target — every other table's
+        //              owner_shortname references users.shortname). Anything
+        //              with a non-admin owner in its meta needs the user row
+        //              to exist before its own insert. ----
+        foreach (var ze in zes.Where(IsUserMeta))        await TryImportUserAsync(ze, results, ct);
+
+        // ---- Pass 2: Spaces, Roles, Permissions ----
         foreach (var ze in zes.Where(z => z.FullName.EndsWith("/.dm/meta.space.json", StringComparison.Ordinal)))
             await TryImportSpaceAsync(ze, results, ct);
-
-        // ---- Pass 2: Users, Roles, Permissions (management/*) ----
-        foreach (var ze in zes.Where(IsUserMeta))        await TryImportUserAsync(ze, results, ct);
         foreach (var ze in zes.Where(IsRoleMeta))        await TryImportRoleAsync(ze, results, ct);
         foreach (var ze in zes.Where(IsPermissionMeta))  await TryImportPermissionAsync(ze, results, ct);
 
@@ -494,6 +502,17 @@ public sealed class ImportExportService(
 
     // ---- importers ----
 
+    // Set owner_shortname to "dmart" when the imported meta omits it (or
+    // carries an empty string). "dmart" is guaranteed to exist because
+    // AdminBootstrap creates it on every server start. Well-formed exports
+    // always populate the field; this is the safety net for malformed ones.
+    private static void EnsureOwner(JsonObject node)
+    {
+        var current = node["owner_shortname"]?.GetValue<string>();
+        if (string.IsNullOrEmpty(current))
+            node["owner_shortname"] = "dmart";
+    }
+
     private async Task TryImportSpaceAsync(ZipArchiveEntry ze, ImportStats st, CancellationToken ct)
     {
         try
@@ -503,6 +522,7 @@ public sealed class ImportExportService(
             node["space_name"] = spaceName;
             node["shortname"] ??= spaceName;
             node["subpath"] = "/";
+            EnsureOwner(node);
             var space = node.Deserialize(DmartJsonContext.Default.Space);
             if (space is null) { st.Failed.Add(new() { ["path"] = ze.FullName, ["error"] = "empty space meta" }); return; }
             await spaces.UpsertAsync(space, ct);
@@ -523,6 +543,7 @@ public sealed class ImportExportService(
             var node = await ReadJsonObjectAsync(ze, ct);
             node["space_name"] = spaceName;
             node["subpath"] = "/users";
+            EnsureOwner(node);
             await InlinePayloadBodyAsync(ze, node, $"{spaceName}/users", ct);
             var user = node.Deserialize(DmartJsonContext.Default.User);
             if (user is null) { st.Failed.Add(new() { ["path"] = ze.FullName, ["error"] = "empty user meta" }); return; }
@@ -544,6 +565,7 @@ public sealed class ImportExportService(
             var node = await ReadJsonObjectAsync(ze, ct);
             node["space_name"] = spaceName;
             node["subpath"] = "/roles";
+            EnsureOwner(node);
             var role = node.Deserialize(DmartJsonContext.Default.Role);
             if (role is null) { st.Failed.Add(new() { ["path"] = ze.FullName, ["error"] = "empty role meta" }); return; }
             await access.UpsertRoleAsync(role, ct);
@@ -564,6 +586,7 @@ public sealed class ImportExportService(
             var node = await ReadJsonObjectAsync(ze, ct);
             node["space_name"] = spaceName;
             node["subpath"] = "/permissions";
+            EnsureOwner(node);
             var perm = node.Deserialize(DmartJsonContext.Default.Permission);
             if (perm is null) { st.Failed.Add(new() { ["path"] = ze.FullName, ["error"] = "empty permission meta" }); return; }
             await access.UpsertPermissionAsync(perm, ct);
@@ -638,6 +661,7 @@ public sealed class ImportExportService(
                 baseDir = $"{spaceName}/{subpath.TrimStart('/')}".TrimEnd('/');
             }
             InlinePayloadBody(node, baseDir, bodyLookup);
+            EnsureOwner(node);
 
             var entry = node.Deserialize(DmartJsonContext.Default.Entry);
             if (entry is null) { st.Failed.Add(new() { ["path"] = ze.FullName, ["error"] = "empty entry meta" }); return; }
@@ -713,6 +737,7 @@ public sealed class ImportExportService(
                 }
             }
 
+            EnsureOwner(node);
             var att = node.Deserialize(DmartJsonContext.Default.Attachment);
             if (att is null) { st.Failed.Add(new() { ["path"] = ze.FullName, ["error"] = "empty attachment meta" }); return; }
             await attachments.UpsertAsync(att, ct);
@@ -760,6 +785,7 @@ public sealed class ImportExportService(
                 {
                     var hNode = JsonNode.Parse(line) as JsonObject ?? throw new InvalidDataException("not a JSON object");
                     var owner = hNode["owner_shortname"]?.GetValue<string>();
+                    if (string.IsNullOrEmpty(owner)) owner = "dmart";
                     // History Append takes Dictionary<string, object>. Deserialize
                     // via the source-gen context so AOT trimming is happy.
                     Dictionary<string, object>? diff = null;
