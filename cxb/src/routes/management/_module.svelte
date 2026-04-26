@@ -72,9 +72,19 @@
     <div class="flex w-svw h-svh justify-center items-center">
         <Spinner color="blue" size="16" />
     </div>
+    <!-- Routify expects the parent of an active child route to put a
+         <slot /> in the DOM within 5s of navigation. While we're still
+         resolving auth (or showing Login), the slot would otherwise be
+         absent and Routify logs "Failed to render index within 5s".
+         Render it hidden so the timer is satisfied; the child mounts
+         silently and gets revealed once the user signs in. Boot 401s
+         from this early mount are already silenced upstream
+         (info/me probe + per-callsite log gating). -->
+    <div style="display:none"><slot /></div>
 {:then _}
     {#if !$user || !$user.signedin}
         <Login />
+        <div style="display:none"><slot /></div>
     {:else}
         <div class="flex flex-col h-screen">
             <ManagementHeader />
@@ -85,4 +95,5 @@
     {/if}
 {:catch error}
     <Login />
+    <div style="display:none"><slot /></div>
 {/await}
