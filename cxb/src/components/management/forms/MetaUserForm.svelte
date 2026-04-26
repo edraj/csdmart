@@ -262,7 +262,7 @@
                     id="msisdn"
                     placeholder="+964723456789 / 0712345678"
                     bind:value={formData.msisdn}
-                    pattern="^\[1-9]\d$" />
+                    pattern="^\+?\d{'{'}7,15{'}'}$" />
         </div>
 
         <div class="grid grid-cols-1 md:grid-cols-3 gap-4 mb-4">
