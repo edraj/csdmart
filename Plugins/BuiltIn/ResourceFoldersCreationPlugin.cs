@@ -1,6 +1,7 @@
 using Dmart.DataAdapters.Sql;
 using Dmart.Models.Core;
 using Dmart.Models.Enums;
+using Dmart.Utils;
 
 namespace Dmart.Plugins.BuiltIn;
 
@@ -54,8 +55,8 @@ public sealed class ResourceFoldersCreationPlugin(
                 ResourceType = ResourceType.Folder,
                 IsActive = true,
                 OwnerShortname = e.UserShortname,
-                CreatedAt = DateTime.UtcNow,
-                UpdatedAt = DateTime.UtcNow,
+                CreatedAt = TimeUtils.Now(),
+                UpdatedAt = TimeUtils.Now(),
             };
             try
             {

@@ -1,5 +1,6 @@
 using System.Collections.Concurrent;
 using System.Threading.Channels;
+using Dmart.Utils;
 
 namespace Dmart.Api.Mcp;
 
@@ -60,7 +61,7 @@ public sealed class McpSessionStore
             ClientName = clientName,
             ClientVersion = clientVersion,
             ProtocolVersion = protocolVersion,
-            CreatedAt = DateTime.UtcNow,
+            CreatedAt = TimeUtils.Now(),
         };
         _sessions[id] = state;
         return state;

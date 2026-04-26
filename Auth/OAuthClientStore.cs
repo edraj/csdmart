@@ -1,5 +1,6 @@
 using System.Collections.Concurrent;
 using System.Security.Cryptography;
+using Dmart.Utils;
 
 namespace Dmart.Auth;
 
@@ -44,7 +45,7 @@ public sealed class OAuthClientStore
         }
 
         var clientId = GenerateClientId();
-        var client = new Client(clientId, uris, clientName, DateTime.UtcNow);
+        var client = new Client(clientId, uris, clientName, TimeUtils.Now());
         _clients[clientId] = client;
         return client;
     }
@@ -65,7 +66,7 @@ public sealed class OAuthClientStore
     // abandoned MCP registrations. Real clients re-register on startup.
     public void RemoveOlderThan(TimeSpan maxAge)
     {
-        var cutoff = DateTime.UtcNow - maxAge;
+        var cutoff = TimeUtils.Now() - maxAge;
         foreach (var (key, client) in _clients)
         {
             if (client.CreatedAt < cutoff)

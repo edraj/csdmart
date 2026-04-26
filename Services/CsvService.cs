@@ -123,8 +123,8 @@ public sealed class CsvService(QueryService queries, EntryService entries)
                     SchemaShortname = schemaShortname,
                     Body = bodyEl,
                 },
-                CreatedAt = DateTime.UtcNow,
-                UpdatedAt = DateTime.UtcNow,
+                CreatedAt = TimeUtils.Now(),
+                UpdatedAt = TimeUtils.Now(),
             };
 
             var result = await entries.CreateAsync(entry, actor, ct);

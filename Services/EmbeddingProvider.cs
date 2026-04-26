@@ -6,6 +6,7 @@ using Dmart.DataAdapters.Sql;
 using Dmart.Models.Json;
 using Microsoft.Extensions.Options;
 using Npgsql;
+using Dmart.Utils;
 
 namespace Dmart.Services;
 
@@ -58,11 +59,11 @@ public sealed class EmbeddingProvider(
 
     public async Task<bool> IsPgVectorAvailableAsync(CancellationToken ct = default)
     {
-        if (_pgVectorAvailable is bool cached && DateTime.UtcNow < _probeExpiry) return cached;
+        if (_pgVectorAvailable is bool cached && TimeUtils.Now() < _probeExpiry) return cached;
         await _probeLock.WaitAsync(ct);
         try
         {
-            if (_pgVectorAvailable is bool cachedInner && DateTime.UtcNow < _probeExpiry) return cachedInner;
+            if (_pgVectorAvailable is bool cachedInner && TimeUtils.Now() < _probeExpiry) return cachedInner;
             if (!db.IsConfigured) { _pgVectorAvailable = false; return false; }
 
             bool available;
@@ -84,7 +85,7 @@ public sealed class EmbeddingProvider(
                 available = false;
             }
             _pgVectorAvailable = available;
-            _probeExpiry = DateTime.UtcNow.Add(ProbeTtl);
+            _probeExpiry = TimeUtils.Now().Add(ProbeTtl);
             if (!available)
                 log.LogInformation(
                     "pgvector not installed or entries.embedding column missing — semantic search disabled");

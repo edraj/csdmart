@@ -3,6 +3,7 @@ using Dmart.Config;
 using Dmart.DataAdapters.Sql;
 using Dmart.Models.Api;
 using Microsoft.Extensions.Options;
+using Dmart.Utils;
 
 namespace Dmart.Api.User;
 
@@ -67,7 +68,7 @@ public static class OtpHandler
                         $"Resend OTP is allowed after {s.AllowOtpResendAfter - elapsed} seconds", ErrorTypes.Request);
 
                 var code = otp.Generate();
-                var expiresAt = DateTime.UtcNow.AddSeconds(s.OtpTokenTtl);
+                var expiresAt = TimeUtils.Now().AddSeconds(s.OtpTokenTtl);
                 await repo.StoreAsync(dest, code, expiresAt, ct);
                 await otp.SendAsync(dest, code, ct);
             }
@@ -120,7 +121,7 @@ public static class OtpHandler
 
             var s = settings.Value;
             var code = otp.Generate();
-            var expiresAt = DateTime.UtcNow.AddSeconds(s.OtpTokenTtl);
+            var expiresAt = TimeUtils.Now().AddSeconds(s.OtpTokenTtl);
             await repo.StoreAsync(dest, code, expiresAt, ct);
             await otp.SendAsync(dest, code, ct);
             return Response.Ok();
@@ -131,7 +132,7 @@ public static class OtpHandler
         {
             var dest = req.Email ?? req.Msisdn ?? req.Shortname ?? "";
             var code = otp.Generate();
-            var expiresAt = DateTime.UtcNow.AddSeconds(settings.Value.OtpTokenTtl);
+            var expiresAt = TimeUtils.Now().AddSeconds(settings.Value.OtpTokenTtl);
             await repo.StoreAsync($"reset:{dest}", code, expiresAt, ct);
             return Response.Ok();
         }).RequireRateLimiting("auth-by-ip");
@@ -158,7 +159,7 @@ public static class OtpHandler
                     {
                         IsEmailVerified = !string.IsNullOrEmpty(req.Email) || user.IsEmailVerified,
                         IsMsisdnVerified = !string.IsNullOrEmpty(req.Msisdn) || user.IsMsisdnVerified,
-                        UpdatedAt = DateTime.UtcNow,
+                        UpdatedAt = TimeUtils.Now(),
                     };
                     await users.UpsertAsync(updated, ct);
                 }

@@ -154,8 +154,8 @@ public sealed class UserService(
             IsActive = true,
             IsEmailVerified = emailVerified,
             IsMsisdnVerified = msisdnVerified,
-            CreatedAt = DateTime.UtcNow,
-            UpdatedAt = DateTime.UtcNow,
+            CreatedAt = TimeUtils.Now(),
+            UpdatedAt = TimeUtils.Now(),
         };
         await users.UpsertAsync(user, ct);
 
@@ -171,7 +171,7 @@ public sealed class UserService(
                 ["timestamp"] = (int)DateTimeOffset.UtcNow.ToUnixTimeSeconds(),
                 ["headers"] = requestHeaders,
             };
-            var updated = user with { LastLogin = loginInfo, UpdatedAt = DateTime.UtcNow };
+            var updated = user with { LastLogin = loginInfo, UpdatedAt = TimeUtils.Now() };
             await users.UpsertAsync(updated, ct);
             user = updated;
         }
@@ -416,7 +416,7 @@ public sealed class UserService(
             ForcePasswordChange = true,
             IsEmailVerified = channel == InvitationChannel.Email ? true : user.IsEmailVerified,
             IsMsisdnVerified = channel == InvitationChannel.Sms   ? true : user.IsMsisdnVerified,
-            UpdatedAt = DateTime.UtcNow,
+            UpdatedAt = TimeUtils.Now(),
         };
         await users.UpsertAsync(updated, ct);
 
@@ -458,7 +458,7 @@ public sealed class UserService(
         if (refreshed.AttemptCount is not int count || count < maxAttempts) return false;
         if (!refreshed.IsActive) return true; // already locked by a prior attempt
 
-        var locked = refreshed with { IsActive = false, UpdatedAt = DateTime.UtcNow };
+        var locked = refreshed with { IsActive = false, UpdatedAt = TimeUtils.Now() };
         await users.UpsertAsync(locked, ct);
         // Python: db.remove_user_session(shortname) — every active session is
         // invalidated so an already-logged-in tab can't keep making requests
@@ -525,7 +525,7 @@ public sealed class UserService(
 
         if (needsUpdate)
         {
-            updatedUser = updatedUser with { UpdatedAt = DateTime.UtcNow };
+            updatedUser = updatedUser with { UpdatedAt = TimeUtils.Now() };
             await users.UpsertAsync(updatedUser, ct);
         }
 
@@ -753,7 +753,7 @@ public sealed class UserService(
             // password shouldn't be one mistyped login away from being locked.
             AttemptCount = newPasswordHash is not null ? 0 : user.AttemptCount,
             Payload = resolvedPayload,
-            UpdatedAt = DateTime.UtcNow,
+            UpdatedAt = TimeUtils.Now(),
         };
         await users.UpsertAsync(updated, ct);
 

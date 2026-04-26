@@ -1,6 +1,7 @@
 using System.Collections.Concurrent;
 using System.Security.Cryptography;
 using System.Text;
+using Dmart.Utils;
 
 namespace Dmart.Auth;
 
@@ -38,7 +39,7 @@ public sealed class OAuthCodeStore
             userShortname, clientId, redirectUri,
             codeChallenge,
             string.IsNullOrEmpty(codeChallengeMethod) ? "S256" : codeChallengeMethod!,
-            scope, DateTime.UtcNow.Add(Ttl));
+            scope, TimeUtils.Now().Add(Ttl));
         return code;
     }
 
@@ -49,7 +50,7 @@ public sealed class OAuthCodeStore
         string clientId, string? codeVerifier)
     {
         if (!_codes.TryRemove(code, out var entry)) return null;
-        if (entry.ExpiresAt < DateTime.UtcNow) return null;
+        if (entry.ExpiresAt < TimeUtils.Now()) return null;
         if (entry.ClientId != clientId) return null;
         if (entry.RedirectUri != redirectUri) return null;
 
@@ -73,7 +74,7 @@ public sealed class OAuthCodeStore
     // OAuthStoreSweeper on a timer so the dictionary doesn't grow unbounded.
     public void RemoveExpired()
     {
-        var now = DateTime.UtcNow;
+        var now = TimeUtils.Now();
         foreach (var (key, entry) in _codes)
         {
             if (entry.ExpiresAt < now)

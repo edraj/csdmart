@@ -1,5 +1,6 @@
 using Npgsql;
 using NpgsqlTypes;
+using Dmart.Utils;
 
 namespace Dmart.DataAdapters.Sql;
 
@@ -52,7 +53,7 @@ public sealed class OtpRepository(Db db)
         if (raw is not IDictionary<string, string?> dict) return null;
         if (!dict.TryGetValue("code", out var code)) return null;
         if (dict.TryGetValue("expires_at", out var expRaw)
-            && DateTime.TryParse(expRaw, out var exp) && exp < DateTime.UtcNow) return null;
+            && DateTime.TryParse(expRaw, out var exp) && exp < TimeUtils.Now()) return null;
         return code;
     }
 
@@ -74,7 +75,7 @@ public sealed class OtpRepository(Db db)
                 if (storedBytes.Length != inputBytes.Length) return false;
                 if (!System.Security.Cryptography.CryptographicOperations.FixedTimeEquals(storedBytes, inputBytes)) return false;
                 if (dict.TryGetValue("expires_at", out var expRaw)
-                    && DateTime.TryParse(expRaw, out var exp) && exp < DateTime.UtcNow) return false;
+                    && DateTime.TryParse(expRaw, out var exp) && exp < TimeUtils.Now()) return false;
             }
             await using var del = new NpgsqlCommand("DELETE FROM otp WHERE key = $1", conn, tx);
             del.Parameters.Add(new() { Value = key });

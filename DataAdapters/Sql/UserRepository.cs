@@ -2,6 +2,7 @@ using Dmart.Models.Core;
 using Dmart.Models.Enums;
 using Npgsql;
 using NpgsqlTypes;
+using Dmart.Utils;
 
 namespace Dmart.DataAdapters.Sql;
 
@@ -128,8 +129,8 @@ public sealed class UserRepository(Db db, AuthzCacheRefresher refresher)
         AddJsonb(cmd, JsonbHelpers.ToJsonb(u.Displayname));
         AddJsonb(cmd, JsonbHelpers.ToJsonb(u.Description));
         AddJsonbNotNull(cmd, JsonbHelpers.ToJsonbList(u.Tags));   // tags is NOT NULL
-        cmd.Parameters.Add(new() { Value = u.CreatedAt == default ? DateTime.UtcNow : u.CreatedAt });
-        cmd.Parameters.Add(new() { Value = DateTime.UtcNow });
+        cmd.Parameters.Add(new() { Value = u.CreatedAt == default ? TimeUtils.Now() : u.CreatedAt });
+        cmd.Parameters.Add(new() { Value = TimeUtils.Now() });
         cmd.Parameters.Add(new() { Value = u.OwnerShortname });
         cmd.Parameters.Add(new() { Value = (object?)u.OwnerGroupShortname ?? DBNull.Value });
         AddJsonb(cmd, JsonbHelpers.ToJsonb(u.Payload));

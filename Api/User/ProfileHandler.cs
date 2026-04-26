@@ -3,6 +3,7 @@ using Dmart.DataAdapters.Sql;
 using Dmart.Models.Api;
 using Dmart.Models.Json;
 using Dmart.Services;
+using Dmart.Utils;
 
 namespace Dmart.Api.User;
 
@@ -152,7 +153,7 @@ public static class ProfileHandler
             await users.UpsertAsync(existing with
             {
                 ForcePasswordChange = true,
-                UpdatedAt = DateTime.UtcNow,
+                UpdatedAt = TimeUtils.Now(),
             }, ct);
 
             var minted = new Dictionary<string, string>();

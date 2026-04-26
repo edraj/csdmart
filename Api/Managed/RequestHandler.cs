@@ -7,6 +7,7 @@ using Dmart.Models.Core;
 using Dmart.Models.Enums;
 using Dmart.Services;
 using Microsoft.Extensions.Options;
+using Dmart.Utils;
 
 namespace Dmart.Api.Managed;
 
@@ -360,8 +361,8 @@ public static class RequestHandler
             LockedToDevice = attrs.TryGetValue("locked_to_device", out var ltd) && IsTruthy(ltd),
             // Python parity: Meta.from_record writes `acl` onto the user meta.
             Acl = ParseAcl(attrs),
-            CreatedAt = DateTime.UtcNow,
-            UpdatedAt = DateTime.UtcNow,
+            CreatedAt = TimeUtils.Now(),
+            UpdatedAt = TimeUtils.Now(),
         };
         await users.UpsertAsync(user, ct);
         return (Response.Ok(),
@@ -381,8 +382,8 @@ public static class RequestHandler
             OwnerShortname = actor,
             Permissions = ExtractStringList(attrs, "permissions") ?? new(),
             IsActive = !attrs.TryGetValue("is_active", out var ia) || !IsExplicitlyFalse(ia),
-            CreatedAt = DateTime.UtcNow,
-            UpdatedAt = DateTime.UtcNow,
+            CreatedAt = TimeUtils.Now(),
+            UpdatedAt = TimeUtils.Now(),
         };
         await access.UpsertRoleAsync(role, ct);
         return (Response.Ok(),
@@ -406,8 +407,8 @@ public static class RequestHandler
             Conditions = ExtractStringList(attrs, "conditions") ?? new(),
             RestrictedFields = ExtractStringList(attrs, "restricted_fields"),
             IsActive = !attrs.TryGetValue("is_active", out var ia) || !IsExplicitlyFalse(ia),
-            CreatedAt = DateTime.UtcNow,
-            UpdatedAt = DateTime.UtcNow,
+            CreatedAt = TimeUtils.Now(),
+            UpdatedAt = TimeUtils.Now(),
         };
         await access.UpsertPermissionAsync(perm, ct);
         return (Response.Ok(),
@@ -441,8 +442,8 @@ public static class RequestHandler
             IndexingEnabled = attrs.TryGetValue("indexing_enabled", out var ie) && IsTruthy(ie),
             Languages = new() { Language.En },
             ActivePlugins = activePlugins,
-            CreatedAt = DateTime.UtcNow,
-            UpdatedAt = DateTime.UtcNow,
+            CreatedAt = TimeUtils.Now(),
+            UpdatedAt = TimeUtils.Now(),
         };
         await spaces.UpsertAsync(space, ct);
         return (Response.Ok(),
@@ -482,8 +483,8 @@ public static class RequestHandler
             State = attrs.TryGetValue("state", out var s) ? ConvertToString(s) : null,
             // Python parity: Meta.from_record writes `acl` onto attachment meta.
             Acl = ParseAcl(attrs),
-            CreatedAt = DateTime.UtcNow,
-            UpdatedAt = DateTime.UtcNow,
+            CreatedAt = TimeUtils.Now(),
+            UpdatedAt = TimeUtils.Now(),
         };
         await attachments.UpsertAsync(attachment, ct);
         // Attachments only track CreatedAt (no UpdatedAt column); reuse it
@@ -539,7 +540,7 @@ public static class RequestHandler
                     // stays in sync with the mobile client.
                     DeviceId = attrs.TryGetValue("device_id", out var did) ? ConvertToString(did) : existing.DeviceId,
                     LockedToDevice = attrs.TryGetValue("locked_to_device", out var ltd) ? IsTruthy(ltd) : existing.LockedToDevice,
-                    UpdatedAt = DateTime.UtcNow,
+                    UpdatedAt = TimeUtils.Now(),
                 };
                 await users.UpsertAsync(updated, ct);
                 return (Response.Ok(),
@@ -588,7 +589,7 @@ public static class RequestHandler
                     ActivePlugins = attrs.ContainsKey("active_plugins") ? ExtractStringList(attrs, "active_plugins") : existing.ActivePlugins,
                     Ordinal = attrs.TryGetValue("ordinal", out var ord) ? ParseInt(ord) ?? existing.Ordinal : existing.Ordinal,
 
-                    UpdatedAt = DateTime.UtcNow,
+                    UpdatedAt = TimeUtils.Now(),
                 };
                 await spaces.UpsertAsync(updated, ct);
                 return (Response.Ok(),
@@ -613,7 +614,7 @@ public static class RequestHandler
                     Displayname = attrs.TryGetValue("displayname", out var dn) ? ParseTranslation(dn) : existing.Displayname,
                     Description = attrs.TryGetValue("description", out var desc) ? ParseTranslation(desc) : existing.Description,
                     IsActive = attrs.TryGetValue("is_active", out var ia) ? !IsExplicitlyFalse(ia) : existing.IsActive,
-                    UpdatedAt = DateTime.UtcNow,
+                    UpdatedAt = TimeUtils.Now(),
                 };
                 await access.UpsertRoleAsync(updated, ct);
                 return (Response.Ok(),
@@ -645,7 +646,7 @@ public static class RequestHandler
                     Displayname = attrs.TryGetValue("displayname", out var dn) ? ParseTranslation(dn) : existing.Displayname,
                     Description = attrs.TryGetValue("description", out var desc) ? ParseTranslation(desc) : existing.Description,
                     IsActive = attrs.TryGetValue("is_active", out var ia) ? !IsExplicitlyFalse(ia) : existing.IsActive,
-                    UpdatedAt = DateTime.UtcNow,
+                    UpdatedAt = TimeUtils.Now(),
                 };
                 await access.UpsertPermissionAsync(updated, ct);
                 return (Response.Ok(),

@@ -1,6 +1,7 @@
 using Dmart.Models.Core;
 using Npgsql;
 using NpgsqlTypes;
+using Dmart.Utils;
 
 namespace Dmart.DataAdapters.Sql;
 
@@ -140,10 +141,10 @@ public sealed class AttachmentRepository(Db db)
         AddJsonb(cmd, JsonbHelpers.ToJsonb(a.Displayname));
         AddJsonb(cmd, JsonbHelpers.ToJsonb(a.Description));
         AddJsonbNotNull(cmd, JsonbHelpers.ToJsonbList(a.Tags));   // tags is NOT NULL
-        cmd.Parameters.Add(new() { Value = a.CreatedAt == default ? DateTime.UtcNow : a.CreatedAt });
+        cmd.Parameters.Add(new() { Value = a.CreatedAt == default ? TimeUtils.Now() : a.CreatedAt });
         // Honor the caller's UpdatedAt — see EntryRepository.UpsertAsync for
         // the full reasoning; same pattern keeps round-trip verbatim.
-        cmd.Parameters.Add(new() { Value = a.UpdatedAt == default ? DateTime.UtcNow : a.UpdatedAt });
+        cmd.Parameters.Add(new() { Value = a.UpdatedAt == default ? TimeUtils.Now() : a.UpdatedAt });
         cmd.Parameters.Add(new() { Value = a.OwnerShortname });
         cmd.Parameters.Add(new() { Value = (object?)a.OwnerGroupShortname ?? DBNull.Value });
         AddJsonb(cmd, JsonbHelpers.ToJsonb(a.Acl));

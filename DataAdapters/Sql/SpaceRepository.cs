@@ -2,6 +2,7 @@ using Dmart.Models.Core;
 using Dmart.Models.Enums;
 using Npgsql;
 using NpgsqlTypes;
+using Dmart.Utils;
 
 namespace Dmart.DataAdapters.Sql;
 
@@ -93,8 +94,8 @@ public sealed class SpaceRepository(Db db)
         AddJsonb(cmd, JsonbHelpers.ToJsonb(space.Displayname));
         AddJsonb(cmd, JsonbHelpers.ToJsonb(space.Description));
         AddJsonbNotNull(cmd, JsonbHelpers.ToJsonbList(space.Tags));
-        cmd.Parameters.Add(new() { Value = space.CreatedAt == default ? DateTime.UtcNow : space.CreatedAt });
-        cmd.Parameters.Add(new() { Value = DateTime.UtcNow });
+        cmd.Parameters.Add(new() { Value = space.CreatedAt == default ? TimeUtils.Now() : space.CreatedAt });
+        cmd.Parameters.Add(new() { Value = TimeUtils.Now() });
         cmd.Parameters.Add(new() { Value = space.OwnerShortname });
         cmd.Parameters.Add(new() { Value = (object?)space.OwnerGroupShortname ?? DBNull.Value });
         AddJsonb(cmd, JsonbHelpers.ToJsonb(space.Acl));

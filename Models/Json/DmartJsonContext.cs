@@ -18,7 +18,11 @@ namespace Dmart.Models.Json;
 [JsonSourceGenerationOptions(
     PropertyNamingPolicy = JsonKnownNamingPolicy.SnakeCaseLower,
     DefaultIgnoreCondition = JsonIgnoreCondition.WhenWritingNull,
-    MaxDepth = 32)]
+    MaxDepth = 32,
+    // Local-naive DateTime wire format mirrors Python pydantic naive
+    // datetimes (no offset, server-local wall clock). DateTimeOffset is
+    // unaffected — it serializes with its own carried offset.
+    Converters = new[] { typeof(LocalNaiveDateTimeConverter) })]
 // Enums use per-type [JsonConverter] attributes that read [EnumMember] — see
 // EnumMemberConverter.cs. We deliberately don't set UseStringEnumConverter here
 // because that emits source-gen converters that ignore [EnumMember].

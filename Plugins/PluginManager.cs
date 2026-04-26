@@ -3,6 +3,7 @@ using Dmart.DataAdapters.Sql;
 using Dmart.Models.Core;
 using Dmart.Models.Enums;
 using Dmart.Models.Json;
+using Dmart.Utils;
 
 namespace Dmart.Plugins;
 
@@ -352,7 +353,7 @@ public sealed class PluginManager(
 
     private async Task<Space?> GetSpaceCachedAsync(string spaceName, CancellationToken ct)
     {
-        var now = DateTime.UtcNow;
+        var now = TimeUtils.Now();
         lock (_spaceCache)
         {
             if (_spaceCache.TryGetValue(spaceName, out var cached) && (now - cached.At) < SpaceCacheTtl)
@@ -366,7 +367,7 @@ public sealed class PluginManager(
         {
             lock (_spaceCache)
             {
-                _spaceCache[spaceName] = (DateTime.UtcNow, space);
+                _spaceCache[spaceName] = (TimeUtils.Now(), space);
             }
         }
         return space;

@@ -6,6 +6,7 @@ using Dmart.Models.Core;
 using Dmart.Models.Enums;
 using Dmart.Models.Json;
 using Dmart.Services;
+using Dmart.Utils;
 
 namespace Dmart.Api.Managed;
 
@@ -166,8 +167,8 @@ public static class ResourceWithPayloadHandler
                 SchemaShortname = schemaShortname,
                 Body = StringJsonElement(bodyRef),
             },
-            CreatedAt = DateTime.UtcNow,
-            UpdatedAt = DateTime.UtcNow,
+            CreatedAt = TimeUtils.Now(),
+            UpdatedAt = TimeUtils.Now(),
         };
 
         try
@@ -224,8 +225,8 @@ public static class ResourceWithPayloadHandler
                     ? "meta_schema" : schemaShortname,
                 Body = body,
             },
-            CreatedAt = DateTime.UtcNow,
-            UpdatedAt = DateTime.UtcNow,
+            CreatedAt = TimeUtils.Now(),
+            UpdatedAt = TimeUtils.Now(),
         };
 
         // Python parity: pass record.attributes (as submitted) to the gate so

@@ -1,6 +1,7 @@
 using System.Diagnostics;
 using System.Text;
 using System.Text.Json;
+using Dmart.Utils;
 
 namespace Dmart.Middleware;
 
@@ -146,7 +147,7 @@ public static class RequestLoggingMiddleware
         {
             ["hostname"] = Environment.MachineName,
             ["correlation_id"] = correlationId,
-            ["time"] = DateTime.UtcNow.ToString("yyyy-MM-dd HH:mm:ss,fff"),
+            ["time"] = TimeUtils.Now().ToString("yyyy-MM-dd HH:mm:ss,fff"),
             ["level"] = LogSink.PythonLevel(level),
             ["message"] = "Served request",
             ["props"] = new Dictionary<string, object?>

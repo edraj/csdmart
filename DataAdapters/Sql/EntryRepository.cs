@@ -3,6 +3,7 @@ using Dmart.Models.Core;
 using Dmart.Models.Enums;
 using Npgsql;
 using NpgsqlTypes;
+using Dmart.Utils;
 
 namespace Dmart.DataAdapters.Sql;
 
@@ -132,12 +133,12 @@ public sealed class EntryRepository(Db db)
         AddJsonb(cmd, JsonbHelpers.ToJsonb(e.Displayname));
         AddJsonb(cmd, JsonbHelpers.ToJsonb(e.Description));
         AddJsonbNotNull(cmd, JsonbHelpers.ToJsonbList(e.Tags));   // tags is NOT NULL
-        cmd.Parameters.Add(new() { Value = e.CreatedAt == default ? DateTime.UtcNow : e.CreatedAt });
+        cmd.Parameters.Add(new() { Value = e.CreatedAt == default ? TimeUtils.Now() : e.CreatedAt });
         // Honor the caller's UpdatedAt — normal create/update flows set it to
-        // DateTime.UtcNow themselves, so behavior there is unchanged. The
+        // TimeUtils.Now() themselves, so behavior there is unchanged. The
         // import path needs to preserve the imported value so a round-trip
         // (export → delete → import) reproduces the row verbatim.
-        cmd.Parameters.Add(new() { Value = e.UpdatedAt == default ? DateTime.UtcNow : e.UpdatedAt });
+        cmd.Parameters.Add(new() { Value = e.UpdatedAt == default ? TimeUtils.Now() : e.UpdatedAt });
         cmd.Parameters.Add(new() { Value = e.OwnerShortname });
         cmd.Parameters.Add(new() { Value = (object?)e.OwnerGroupShortname ?? DBNull.Value });
         AddJsonb(cmd, JsonbHelpers.ToJsonb(e.Acl));

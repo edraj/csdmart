@@ -1,6 +1,7 @@
 using Dmart.DataAdapters.Sql;
 using Dmart.Models.Core;
 using Dmart.Models.Enums;
+using Dmart.Utils;
 
 namespace Dmart.Auth.OAuth;
 
@@ -33,7 +34,7 @@ public sealed class OAuthUserResolver(UserRepository users, ILogger<OAuthUserRes
             return await MaybeRefreshAsync(existing, info, ct);
 
         // 2. Create fresh.
-        var now = DateTime.UtcNow;
+        var now = TimeUtils.Now();
         var displayName = BuildDisplayName(info.FirstName, info.LastName);
         var created = new User
         {
@@ -87,7 +88,7 @@ public sealed class OAuthUserResolver(UserRepository users, ILogger<OAuthUserRes
         }
 
         if (!dirty) return user;
-        updated = updated with { UpdatedAt = DateTime.UtcNow };
+        updated = updated with { UpdatedAt = TimeUtils.Now() };
         await users.UpsertAsync(updated, ct);
         return updated;
     }

@@ -6,6 +6,7 @@ using Dmart.Models.Enums;
 using Dmart.Models.Json;
 using Dmart.Services;
 using Microsoft.Extensions.DependencyInjection;
+using Dmart.Utils;
 
 namespace Dmart.Api.Mcp;
 
@@ -218,7 +219,7 @@ public static class McpTools
         var resourceType = TryParseEnum<ResourceType>(GetString(args, "resource_type"))
             ?? throw new ArgumentException("resource_type required and must be a valid enum value");
 
-        var now = DateTime.UtcNow;
+        var now = TimeUtils.Now();
         Payload? payload = null;
         if (args.TryGetProperty("payload", out var payloadEl) &&
             payloadEl.ValueKind == JsonValueKind.Object)

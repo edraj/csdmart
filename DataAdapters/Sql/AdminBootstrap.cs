@@ -5,6 +5,7 @@ using Dmart.Models.Enums;
 using Dmart.Services;
 using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Options;
+using Dmart.Utils;
 
 namespace Dmart.DataAdapters.Sql;
 
@@ -84,8 +85,8 @@ public sealed class AdminBootstrap(
                     Type = UserType.Web,
                     IsActive = true,
                     IsEmailVerified = true,
-                    CreatedAt = DateTime.UtcNow,
-                    UpdatedAt = DateTime.UtcNow,
+                    CreatedAt = TimeUtils.Now(),
+                    UpdatedAt = TimeUtils.Now(),
                 };
                 await users.UpsertAsync(admin, ct);
                 log.LogInformation("admin bootstrap: created admin user {Shortname}", AdminShortname);
@@ -107,8 +108,8 @@ public sealed class AdminBootstrap(
                     Description = new Translation(En: "Management space"),
                     Languages = new() { Language.En },
                     ActivePlugins = new() { "resource_folders_creation", "audit" },
-                    CreatedAt = DateTime.UtcNow,
-                    UpdatedAt = DateTime.UtcNow,
+                    CreatedAt = TimeUtils.Now(),
+                    UpdatedAt = TimeUtils.Now(),
                 };
                 await spaces.UpsertAsync(mgmtSpace, ct);
                 log.LogInformation("admin bootstrap: created management space");
@@ -128,8 +129,8 @@ public sealed class AdminBootstrap(
                     ResourceType = ResourceType.Folder,
                     IsActive = true,
                     OwnerShortname = AdminShortname,
-                    CreatedAt = DateTime.UtcNow,
-                    UpdatedAt = DateTime.UtcNow,
+                    CreatedAt = TimeUtils.Now(),
+                    UpdatedAt = TimeUtils.Now(),
                 }, ct);
             }
 
@@ -160,8 +161,8 @@ public sealed class AdminBootstrap(
                         .ToList(),
                     Actions = new() { "view", "create", "update", "delete", "query", "attach" },
                     Conditions = new(),
-                    CreatedAt = DateTime.UtcNow,
-                    UpdatedAt = DateTime.UtcNow,
+                    CreatedAt = TimeUtils.Now(),
+                    UpdatedAt = TimeUtils.Now(),
                 };
                 await access.UpsertPermissionAsync(superManager, ct);
                 log.LogInformation("admin bootstrap: created super_manager permission");
@@ -183,8 +184,8 @@ public sealed class AdminBootstrap(
                     IsActive = true,
                     Displayname = new Translation(En: "Super Admin"),
                     Description = new Translation(En: "Holds super_manager — grants everything"),
-                    CreatedAt = role?.CreatedAt ?? DateTime.UtcNow,
-                    UpdatedAt = DateTime.UtcNow,
+                    CreatedAt = role?.CreatedAt ?? TimeUtils.Now(),
+                    UpdatedAt = TimeUtils.Now(),
                 };
                 await access.UpsertRoleAsync(role, ct);
                 log.LogInformation("admin bootstrap: upserted super_admin role with super_manager permission");

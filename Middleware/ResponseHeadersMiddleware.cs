@@ -1,5 +1,6 @@
 using Dmart.Config;
 using Microsoft.Extensions.Options;
+using Dmart.Utils;
 
 namespace Dmart.Middleware;
 
@@ -99,7 +100,7 @@ public static class ResponseHeadersMiddleware
                 headers["Cache-Control"] = CacheControlNoCache;
                 headers["Pragma"] = "no-cache";
                 headers["Expires"] = "0";
-                headers["x-server-time"] = DateTime.UtcNow.ToString("o");
+                headers["x-server-time"] = TimeUtils.Now().ToString("o");
 
                 // --- Security headers ---
                 headers["X-Content-Type-Options"] = "nosniff";

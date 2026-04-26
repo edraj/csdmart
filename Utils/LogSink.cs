@@ -3,6 +3,7 @@ using System.Text.Encodings.Web;
 using System.Text.Json;
 using Dmart.Config;
 using Microsoft.Extensions.Options;
+using Dmart.Utils;
 
 namespace Dmart;
 
@@ -59,7 +60,7 @@ public sealed class LogSink : IDisposable
         var record = new Dictionary<string, object?>
         {
             ["hostname"] = Environment.MachineName,
-            ["time"] = DateTime.UtcNow.ToString("yyyy-MM-dd HH:mm:ss,fff"),
+            ["time"] = TimeUtils.Now().ToString("yyyy-MM-dd HH:mm:ss,fff"),
             ["level"] = PythonLevel(level),
             ["category"] = category,
             ["message"] = message,

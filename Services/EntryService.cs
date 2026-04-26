@@ -104,8 +104,8 @@ public sealed class EntryService(
             OwnerShortname = string.IsNullOrEmpty(entry.OwnerShortname) ? (actor ?? "anonymous") : entry.OwnerShortname,
             State = ticketState,
             IsOpen = ticketIsOpen ?? (entry.ResourceType == ResourceType.Ticket ? true : null),
-            CreatedAt = DateTime.UtcNow,
-            UpdatedAt = DateTime.UtcNow,
+            CreatedAt = TimeUtils.Now(),
+            UpdatedAt = TimeUtils.Now(),
         };
 
         // Fire the BEFORE hook before the DB write. A plugin throwing here should
@@ -573,7 +573,7 @@ public sealed class EntryService(
                 ? ParsePatchAcl(patch)
                 : existing.Acl,
             Payload = payload,
-            UpdatedAt = DateTime.UtcNow,
+            UpdatedAt = TimeUtils.Now(),
         };
     }
 

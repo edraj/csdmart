@@ -2,6 +2,7 @@ using Dmart.Models.Core;
 using Dmart.Models.Enums;
 using Npgsql;
 using NpgsqlTypes;
+using Dmart.Utils;
 
 namespace Dmart.DataAdapters.Sql;
 
@@ -87,8 +88,8 @@ public sealed class AccessRepository(Db db, AuthzCacheRefresher refresher, UserR
         AddJsonb(cmd, JsonbHelpers.ToJsonb(role.Displayname));
         AddJsonb(cmd, JsonbHelpers.ToJsonb(role.Description));
         AddJsonbNotNull(cmd, JsonbHelpers.ToJsonbList(role.Tags));   // tags is NOT NULL
-        cmd.Parameters.Add(new() { Value = role.CreatedAt == default ? DateTime.UtcNow : role.CreatedAt });
-        cmd.Parameters.Add(new() { Value = DateTime.UtcNow });
+        cmd.Parameters.Add(new() { Value = role.CreatedAt == default ? TimeUtils.Now() : role.CreatedAt });
+        cmd.Parameters.Add(new() { Value = TimeUtils.Now() });
         cmd.Parameters.Add(new() { Value = role.OwnerShortname });
         cmd.Parameters.Add(new() { Value = (object?)role.OwnerGroupShortname ?? DBNull.Value });
         AddJsonb(cmd, JsonbHelpers.ToJsonb(role.Acl));
@@ -175,8 +176,8 @@ public sealed class AccessRepository(Db db, AuthzCacheRefresher refresher, UserR
         AddJsonb(cmd, JsonbHelpers.ToJsonb(p.Displayname));
         AddJsonb(cmd, JsonbHelpers.ToJsonb(p.Description));
         AddJsonbNotNull(cmd, JsonbHelpers.ToJsonbList(p.Tags));   // tags is NOT NULL
-        cmd.Parameters.Add(new() { Value = p.CreatedAt == default ? DateTime.UtcNow : p.CreatedAt });
-        cmd.Parameters.Add(new() { Value = DateTime.UtcNow });
+        cmd.Parameters.Add(new() { Value = p.CreatedAt == default ? TimeUtils.Now() : p.CreatedAt });
+        cmd.Parameters.Add(new() { Value = TimeUtils.Now() });
         cmd.Parameters.Add(new() { Value = p.OwnerShortname });
         cmd.Parameters.Add(new() { Value = (object?)p.OwnerGroupShortname ?? DBNull.Value });
         AddJsonb(cmd, JsonbHelpers.ToJsonb(p.Acl));
