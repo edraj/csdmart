@@ -520,6 +520,14 @@ public static class RequestHandler
                 var passwordRaw = attrs.TryGetValue("password", out var p) ? ConvertToString(p) : null;
                 var newIsActive = attrs.TryGetValue("is_active", out var ia) ? !IsExplicitlyFalse(ia) : existing.IsActive;
                 var reactivating = !existing.IsActive && newIsActive;
+                // Python parity: payload + body, type, language, and
+                // force_password_change all flow through user update via
+                // Meta.update_from_record. Previously the C# branch dropped
+                // them on the floor, so a curl that POSTed `attributes.payload`
+                // saw the request 200 OK but the field never persisted.
+                var newPayload = attrs.ContainsKey("payload")
+                    ? ParsePayloadFromAttrs(attrs)
+                    : existing.Payload;
                 var updated = existing with
                 {
                     Email = attrs.TryGetValue("email", out var e) ? ConvertToString(e) : existing.Email,
@@ -535,11 +543,15 @@ public static class RequestHandler
                     AttemptCount = reactivating ? 0 : existing.AttemptCount,
                     IsEmailVerified = attrs.TryGetValue("is_email_verified", out var iev) ? IsTruthy(iev) : existing.IsEmailVerified,
                     IsMsisdnVerified = attrs.TryGetValue("is_msisdn_verified", out var imv) ? IsTruthy(imv) : existing.IsMsisdnVerified,
+                    ForcePasswordChange = attrs.TryGetValue("force_password_change", out var fpc) ? IsTruthy(fpc) : existing.ForcePasswordChange,
+                    Type = attrs.TryGetValue("type", out var ut) ? ParseUserType(ConvertToString(ut)) : existing.Type,
+                    Language = attrs.TryGetValue("language", out var ln) ? ParseLanguage(ConvertToString(ln)) : existing.Language,
                     // Python writes device_id through on user update when present
                     // in the attributes block — match that so the persisted value
                     // stays in sync with the mobile client.
                     DeviceId = attrs.TryGetValue("device_id", out var did) ? ConvertToString(did) : existing.DeviceId,
                     LockedToDevice = attrs.TryGetValue("locked_to_device", out var ltd) ? IsTruthy(ltd) : existing.LockedToDevice,
+                    Payload = newPayload,
                     UpdatedAt = TimeUtils.Now(),
                 };
                 await users.UpsertAsync(updated, ct);

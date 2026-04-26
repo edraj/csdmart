@@ -105,6 +105,99 @@ public class ManagedCrudDbTests : IClassFixture<DmartFactory>
     // Meta.restricted_fields and silently ignores it. The C# port previously
     // dropped acl on both paths because EntryService.ApplyPatch never read
     // the "acl" key. This test pins both halves of the parity.
+    // Python parity: User update (`request_type=update` for `resource_type=user`)
+    // must persist the `payload` block from `attributes`. The C# port previously
+    // dropped it because the User branch of DispatchUpdateAsync didn't read
+    // attrs["payload"] at all — clients posting `attributes.payload` got 200 OK
+    // but the field never landed in the users.payload jsonb column.
+    [FactIfPg]
+    public async Task User_Update_Persists_Payload_Block()
+    {
+        var client = _factory.CreateClient();
+        var token = await GetTokenAsync(client);
+        client.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Bearer", token);
+
+        var shortname = $"u{Guid.NewGuid():N}".Substring(0, 12);
+        var managementSpace = "management";
+
+        // Create a user with no payload.
+        var createReq = new Request
+        {
+            RequestType = RequestType.Create,
+            SpaceName = managementSpace,
+            Records = new()
+            {
+                new Record
+                {
+                    ResourceType = ResourceType.User,
+                    Subpath = "users",
+                    Shortname = shortname,
+                    Attributes = new()
+                    {
+                        ["password"] = "Pa55word!",
+                        ["roles"] = JsonSerializer.SerializeToElement(Array.Empty<string>()),
+                        ["msisdn"] = "9645" + Random.Shared.Next(1_000_000, 9_999_999).ToString(),
+                    },
+                },
+            },
+        };
+        (await client.PostAsJsonAsync("/managed/request", createReq, DmartJsonContext.Default.Request))
+            .StatusCode.ShouldBe(HttpStatusCode.OK);
+
+        try
+        {
+            // Update with a payload block — exact shape the user reported.
+            var updateReq = new Request
+            {
+                RequestType = RequestType.Update,
+                SpaceName = managementSpace,
+                Records = new()
+                {
+                    new Record
+                    {
+                        ResourceType = ResourceType.User,
+                        Subpath = "users",
+                        Shortname = shortname,
+                        Attributes = new()
+                        {
+                            ["payload"] = JsonSerializer.SerializeToElement(new
+                            {
+                                content_type = "json",
+                                body = new
+                                {
+                                    legacy = new
+                                    {
+                                        created_at = "2018-10-07T10:42:57",
+                                    },
+                                },
+                            }),
+                        },
+                    },
+                },
+            };
+            (await client.PostAsJsonAsync("/managed/request", updateReq, DmartJsonContext.Default.Request))
+                .StatusCode.ShouldBe(HttpStatusCode.OK);
+
+            // Fetch and confirm the payload landed.
+            var getResp = await client.GetAsync($"/managed/entry/user/{managementSpace}/users/{shortname}?retrieve_json_payload=true");
+            getResp.StatusCode.ShouldBe(HttpStatusCode.OK);
+            var body = await getResp.Content.ReadAsStringAsync();
+            body.ShouldContain("\"payload\":");
+            body.ShouldContain("\"legacy\"");
+            body.ShouldContain("2018-10-07T10:42:57");
+        }
+        finally
+        {
+            var cleanup = new Request
+            {
+                RequestType = RequestType.Delete,
+                SpaceName = managementSpace,
+                Records = new() { new Record { ResourceType = ResourceType.User, Subpath = "users", Shortname = shortname } },
+            };
+            await client.PostAsJsonAsync("/managed/request", cleanup, DmartJsonContext.Default.Request);
+        }
+    }
+
     [FactIfPg]
     public async Task UpdateAcl_Writes_Acl_RegularUpdate_Ignores_It()
     {
