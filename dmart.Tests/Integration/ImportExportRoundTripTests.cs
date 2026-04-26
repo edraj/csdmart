@@ -240,6 +240,49 @@ public class ImportExportRoundTripTests : IClassFixture<DmartFactory>
         }
     }
 
+    [FactIfPg]
+    public async Task Import_Falls_Back_To_Dmart_Owner_When_Meta_Has_No_Owner_Shortname()
+    {
+        var sp = _factory.Services;
+        _factory.CreateClient();
+        var io = sp.GetRequiredService<ImportExportService>();
+        var spaceRepo = sp.GetRequiredService<SpaceRepository>();
+        var entryRepo = sp.GetRequiredService<EntryRepository>();
+
+        var spaceName = "iex_" + Guid.NewGuid().ToString("N")[..6];
+        var spaceUuid = Guid.NewGuid().ToString();
+        var entryUuid = Guid.NewGuid().ToString();
+
+        // Hand-craft a zip whose space + entry meta JSON omits owner_shortname.
+        // Without the EnsureOwner fallback the FK insert (or the required-field
+        // deserialization) fails; with it, both rows land owned by "dmart".
+        using var ms = new MemoryStream();
+        using (var zip = new ZipArchive(ms, ZipArchiveMode.Create, leaveOpen: true))
+        {
+            var spaceMeta = zip.CreateEntry($"{spaceName}/.dm/meta.space.json");
+            using (var s = spaceMeta.Open())
+            using (var w = new StreamWriter(s))
+                await w.WriteAsync($"{{\"uuid\":\"{spaceUuid}\",\"shortname\":\"{spaceName}\",\"is_active\":true,\"languages\":[\"en\"],\"resource_type\":\"space\"}}");
+
+            var entryMeta = zip.CreateEntry($"{spaceName}/.dm/orphan/meta.content.json");
+            using (var s = entryMeta.Open())
+            using (var w = new StreamWriter(s))
+                await w.WriteAsync($"{{\"uuid\":\"{entryUuid}\",\"shortname\":\"orphan\",\"is_active\":true,\"resource_type\":\"content\"}}");
+        }
+
+        ms.Position = 0;
+        var resp = await io.ImportZipAsync(ms, actor: null);
+        resp.Status.ShouldBe(Status.Success);
+
+        var imported = await entryRepo.GetAsync(spaceName, "/", "orphan", ResourceType.Content);
+        imported.ShouldNotBeNull();
+        imported!.OwnerShortname.ShouldBe("dmart");
+
+        // Cleanup
+        try { await entryRepo.DeleteAsync(spaceName, "/", "orphan", ResourceType.Content); } catch { }
+        try { await spaceRepo.DeleteAsync(spaceName); } catch { }
+    }
+
     private static Entry MakeContent(string space, string subpath, string shortname, object body)
     {
         var bodyJson = JsonSerializer.Serialize(body);

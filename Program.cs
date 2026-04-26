@@ -371,8 +371,9 @@ switch (subcommand)
             nlog.CreateLogger<ImportExportService>());
 
         await using var zipStream = File.OpenRead(zipPath);
-        // Actor for imported entries — "dmart" is the hardcoded admin shortname
-        // (same as AdminBootstrap uses); matches the export subcommand above.
+        // The actor argument is accepted for API stability but unused — every
+        // imported record's owner comes from its meta's owner_shortname, with
+        // a literal "dmart" backstop when missing (set inside the service).
         var resp = await importService.ImportZipAsync(zipStream, "dmart");
         var inserted = resp.Attributes?.GetValueOrDefault("inserted") ?? 0;
         var failedCount = resp.Attributes?.GetValueOrDefault("failed_count") ?? 0;
