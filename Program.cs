@@ -9,6 +9,8 @@ using Dmart.Config;
 using Dmart.DataAdapters.Sql;
 using Dmart.Middleware;
 using Dmart.Models.Api;
+using Dmart.Models.Core;
+using Dmart.Models.Enums;
 using Dmart.Models.Json;
 using Dmart.Plugins;
 using Dmart.Plugins.BuiltIn;
@@ -140,7 +142,7 @@ switch (subcommand)
               migrate        Create/update the PG schema (idempotent; no server)
               version        Print version and build info
               settings       Print effective settings as JSON
-              set_password   Set password for a user interactively
+              passwd         Set password for a user interactively
               check          Run health checks on a space
               export         Export a space to a zip in the dmart on-disk layout
                              Usage: dmart export <space_name> [--output <path|dir|.>]
@@ -163,6 +165,10 @@ switch (subcommand)
                              the write path). Mirrors Python's
                              update_query_policies.py.
                              Args: [--batch-size <N>] (default 1000)
+              create-users-folders
+                             Backfill personal/people/<shortname>/{notifications,
+                             private,protected,public,inbox} for every user.
+                             Idempotent — existing folders are left untouched.
               cli            Interactive CLI client (REPL/command/script)
               help           Print this help
 
@@ -211,7 +217,7 @@ switch (subcommand)
         return;
     }
 
-    case "set_password":
+    case "passwd":
     {
         // Interactive password reset — mirrors Python's set_admin_passwd.py
         Console.Write("Username: ");
@@ -496,7 +502,7 @@ switch (subcommand)
                     "DATABASE_PASSWORD=\"somepassword\"\n" +
                     "DATABASE_NAME=\"dmart\"\n" +
                     $"JWT_SECRET=\"{jwtSecret}\"\n" +
-                    "# Admin user 'dmart' is created passwordless. Set password via: dmart set_password\n");
+                    "# Admin user 'dmart' is created passwordless. Set password via: dmart passwd\n");
             Console.WriteLine($"  Created {configEnvPath}");
         }
         else
@@ -750,6 +756,96 @@ switch (subcommand)
 
         if (!dryRun)
             Console.WriteLine($"Total rows fixed: {grandTotal}.");
+        return;
+    }
+
+    case "create-users-folders":
+    case "create_users_folders":
+    {
+        // Backfill: walk the users table and materialize each user's
+        // personal/people/<shortname> tree (notifications, private, protected,
+        // public, inbox) plus the parent folder under personal/people.
+        //
+        // Mirror of dmart/backend/data_adapters/sql/create_users_folders.py.
+        // The runtime path normally covers this: ResourceFoldersCreationPlugin
+        // fires on User-create and writes the same tree. But import (whether
+        // dmart import or a Python json_to_db dump) goes through the entry
+        // repository directly and bypasses the plugin manager — those users
+        // arrive without their folders, and the only way to materialize them
+        // after the fact is this command.
+        //
+        // Idempotent: each folder is checked first via EntryRepository.GetAsync
+        // and skipped when present. owner_shortname is the user themselves,
+        // matching the plugin and Python.
+        var (_, dbInst) = CliBootstrap.BuildOrExit(dotenvPath, dotenvValues,
+            "Error: Database not configured. Set DATABASE_* in config.env.");
+        var entryRepo = new EntryRepository(dbInst);
+
+        await using var conn = await dbInst.OpenAsync();
+        await using var sel = new Npgsql.NpgsqlCommand(
+            "SELECT shortname FROM users ORDER BY shortname", conn);
+        var shortnames = new List<string>();
+        await using (var r = await sel.ExecuteReaderAsync())
+        {
+            while (await r.ReadAsync())
+                shortnames.Add(r.GetString(0));
+        }
+        Console.WriteLine($"Found {shortnames.Count} users");
+
+        var created = 0;
+        var skipped = 0;
+        var failed = 0;
+        foreach (var sn in shortnames)
+        {
+            // Folder list mirrors ResourceFoldersCreationPlugin's User branch.
+            // Kept inline so the backfill stays decoupled from plugin DI; if
+            // the canonical list ever changes, both sites must update.
+            var folders = new[]
+            {
+                (Space: "personal", Subpath: "/people",       Name: sn),
+                (Space: "personal", Subpath: $"/people/{sn}", Name: "notifications"),
+                (Space: "personal", Subpath: $"/people/{sn}", Name: "private"),
+                (Space: "personal", Subpath: $"/people/{sn}", Name: "protected"),
+                (Space: "personal", Subpath: $"/people/{sn}", Name: "public"),
+                (Space: "personal", Subpath: $"/people/{sn}", Name: "inbox"),
+            };
+            foreach (var (spaceName, subpath, name) in folders)
+            {
+                try
+                {
+                    var existing = await entryRepo.GetAsync(spaceName, subpath, name, ResourceType.Folder);
+                    if (existing is not null) { skipped++; continue; }
+
+                    await entryRepo.UpsertAsync(new Entry
+                    {
+                        Uuid = Guid.NewGuid().ToString(),
+                        Shortname = name,
+                        SpaceName = spaceName,
+                        Subpath = subpath,
+                        ResourceType = ResourceType.Folder,
+                        IsActive = true,
+                        OwnerShortname = sn,
+                        CreatedAt = Dmart.Utils.TimeUtils.Now(),
+                        UpdatedAt = Dmart.Utils.TimeUtils.Now(),
+                    });
+                    created++;
+                    Console.WriteLine($"Created folder ({spaceName}, {subpath}, {name}) for user {sn}");
+                }
+                catch (Exception ex)
+                {
+                    // Most common cause is a missing parent space ("personal"
+                    // not yet bootstrapped). Log + keep going so one missing
+                    // space doesn't take down the whole backfill.
+                    failed++;
+                    Console.Error.WriteLine($"Error creating folder ({spaceName}, {subpath}, {name}) for user {sn}: {ex.Message}");
+                }
+            }
+        }
+
+        Console.WriteLine();
+        Console.WriteLine("===== DONE ======");
+        Console.WriteLine($"Scanned {shortnames.Count} users, created {created} missing folders ({skipped} skipped, {failed} failed)");
+        Environment.ExitCode = failed > 0 ? 2 : 0;
         return;
     }
 
@@ -1466,7 +1562,7 @@ public partial class Program
         if (!values.ContainsKey("url"))
             values["url"] = $"http://{s.ListeningHost}:{s.ListeningPort}";
 
-        var lines = new List<string> { "# dmart-cli configuration (updated by dmart set_password)" };
+        var lines = new List<string> { "# dmart-cli configuration (updated by dmart passwd)" };
         foreach (var (k, v) in values)
             lines.Add($"{k}={v}");
         File.WriteAllLines(cliIniPath, lines);

@@ -5,7 +5,7 @@ using Microsoft.Extensions.Options;
 
 namespace Dmart.Cli;
 
-// Shared bootstrap for CLI subcommands that need a configured Db (set_password,
+// Shared bootstrap for CLI subcommands that need a configured Db (passwd,
 // check, export, import, migrate, fix_query_policies). Each of those used to
 // repeat the same 8-line block:
 //   - build IConfiguration from dotenv values + env vars

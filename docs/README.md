@@ -21,7 +21,7 @@ install/run/CLI — this folder goes into the **how** and **why**.
 
 ## One-line summary of each component
 
-- **`Program.cs`** — CLI dispatcher + web host wiring. Subcommands (`serve`, `version`, `settings`, `set_password`, `export`, `import`, `init`, `cli`) live here; the server boot path configures DI, middleware, route groups, plugins, and the port check.
+- **`Program.cs`** — CLI dispatcher + web host wiring. Subcommands (`serve`, `version`, `settings`, `passwd`, `export`, `import`, `init`, `cli`) live here; the server boot path configures DI, middleware, route groups, plugins, and the port check.
 - **`Api/`** — ASP.NET Core minimal-API handlers grouped by surface (`Managed/`, `Public/`, `User/`, `Info/`, `Qr/`, `Mcp/`, `Oauth/`). Each handler parses the request, delegates to a service, and maps the result to a `Response`.
 - **`Services/`** — Domain layer. One service per concern (`UserService`, `QueryService`, `PermissionService`, `EntryService`, `WorkflowService`, `ImportExportService`, etc.). No HTTP, no SQL — just orchestration.
 - **`DataAdapters/Sql/`** — Npgsql repositories, one per table. `QueryHelper.cs` is shared search/sort/ACL/aggregation SQL generation.
