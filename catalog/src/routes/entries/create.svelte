@@ -1348,6 +1348,37 @@
           </div>
         </div>
 
+        {#if entryType === "structured"}
+          <div class="form-row">
+            <label for="schema-select" class="form-row-label">
+              {$_("create_entry.schema.select_label")}
+            </label>
+            <div class="form-row-control">
+              {#if loadingSchemas}
+                <small>{$_("create_entry.schema.loading")}</small>
+              {:else if filteredSchemas.length > 0}
+                <select
+                  id="schema-select"
+                  onchange={handleSchemaChange}
+                  class="form-row-input"
+                >
+                  <option value=""
+                    >{$_("create_entry.schema.choose_option")}</option
+                  >
+                  {#each filteredSchemas as schema}
+                    <option value={schema.shortname}>{schema.title}</option>
+                  {/each}
+                </select>
+                {#if selectedSchema?.description}
+                  <small>{selectedSchema.description}</small>
+                {/if}
+              {:else}
+                <small>{$_("create_entry.schema.no_schemas")}</small>
+              {/if}
+            </div>
+          </div>
+        {/if}
+
         <div class="form-row">
           <label for="title-input" class="form-row-label">
             {$_("create_entry.title.section_title")}
@@ -1421,47 +1452,49 @@
           />
         </div>
 
-        <div class="form-block">
+        <div class="form-row">
           <span class="form-row-label">{$_("create_entry.tags.section_title")}</span>
-          <div class="tag-input-container">
-            <input
-              type="text"
-              id="tag-input"
-              bind:value={newTag}
-              placeholder={$_("create_entry.tags.placeholder")}
-              class="tag-input"
-              onkeydown={(e) => {
-                if (e.key === "Enter") addTag();
-              }}
-            />
-            <button
-              aria-label={$_("create_entry.tags.add_button")}
-              class="add-tag-button"
-              onclick={addTag}
-              disabled={!newTag.trim()}
-            >
-              <PlusOutline class="icon button-icon" />
-              <span>{$_("create_entry.tags.add_button")}</span>
-            </button>
-          </div>
-
-          {#if tags.length > 0}
-            <div class="tags-container">
-              {#each tags as tag, index}
-                <div class="tag-item">
-                  <TagOutline class="tag-icon" />
-                  <span class="tag-text">{tag}</span>
-                  <button
-                    class="tag-remove"
-                    onclick={() => removeTag(index)}
-                    aria-label={$_("create_entry.tags.remove_aria")}
-                  >
-                    <CloseCircleOutline class="icon" />
-                  </button>
-                </div>
-              {/each}
+          <div class="form-row-control">
+            <div class="tag-input-container">
+              <input
+                type="text"
+                id="tag-input"
+                bind:value={newTag}
+                placeholder={$_("create_entry.tags.placeholder")}
+                class="tag-input"
+                onkeydown={(e) => {
+                  if (e.key === "Enter") addTag();
+                }}
+              />
+              <button
+                aria-label={$_("create_entry.tags.add_button")}
+                class="add-tag-button"
+                onclick={addTag}
+                disabled={!newTag.trim()}
+              >
+                <PlusOutline class="icon button-icon" />
+                <span>{$_("create_entry.tags.add_button")}</span>
+              </button>
             </div>
-          {/if}
+
+            {#if tags.length > 0}
+              <div class="tags-container">
+                {#each tags as tag, index}
+                  <div class="tag-item">
+                    <TagOutline class="tag-icon" />
+                    <span class="tag-text">{tag}</span>
+                    <button
+                      class="tag-remove"
+                      onclick={() => removeTag(index)}
+                      aria-label={$_("create_entry.tags.remove_aria")}
+                    >
+                      <CloseCircleOutline class="icon" />
+                    </button>
+                  </div>
+                {/each}
+              </div>
+            {/if}
+          </div>
         </div>
       </div>
     </div>
@@ -1708,54 +1741,6 @@
         </div>
       {/if}
     {:else if entryType === "structured"}
-      <!-- Structured Entry: Schema Selection Section -->
-      <div class="section">
-        <div class="section-header">
-          <FileCheckSolid class="section-icon" />
-          <h2>{$_("create_entry.schema.selection_title")}</h2>
-        </div>
-        <div class="section-content">
-          {#if loadingSchemas}
-            <div class="loading-state">
-              <p>{$_("create_entry.schema.loading")}</p>
-            </div>
-          {:else if filteredSchemas.length > 0}
-            <div class="schema-selector">
-              <label for="schema-select" class="selector-label"
-                >{$_("create_entry.schema.select_label")}</label
-              >
-              <select
-                id="schema-select"
-                onchange={handleSchemaChange}
-                class="destination-select"
-              >
-                <option value=""
-                  >{$_("create_entry.schema.choose_option")}</option
-                >
-                {#each filteredSchemas as schema}
-                  <option value={schema.shortname}>{schema.title}</option>
-                {/each}
-              </select>
-              {#if selectedSchema}
-                <div class="schema-info">
-                  <h4>{selectedSchema.title}</h4>
-                  {#if selectedSchema.description}
-                    <p class="schema-description">
-                      {selectedSchema.description}
-                    </p>
-                  {/if}
-                </div>
-              {/if}
-            </div>
-          {:else}
-            <div class="empty-state">
-              <FileCheckSolid class="empty-icon" />
-              <p>{$_("create_entry.schema.no_schemas")}</p>
-            </div>
-          {/if}
-        </div>
-      </div>
-
       {#if selectedSchema && selectedSchema.schema}
         {#if schemaBasedTemplate && schemaBasedTemplate.schema}
           <!-- Structured Entry with Markdown Template: Side-by-side layout -->
@@ -2410,12 +2395,6 @@
   .form-row-input:focus {
     border-color: var(--primary-color);
     box-shadow: 0 0 0 3px rgba(37, 99, 235, 0.1);
-  }
-
-  .form-block {
-    display: flex;
-    flex-direction: column;
-    gap: 0.5rem;
   }
 
   @media (max-width: 640px) {
