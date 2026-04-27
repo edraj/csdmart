@@ -1,3 +1,4 @@
+using System.IO;
 using Dmart.Services;
 using Shouldly;
 using Xunit;
@@ -33,4 +34,22 @@ public sealed class ImportExportPathTests
         subpath.ShouldBe(expectedSubpath);
         shortname.ShouldBe(expectedShortname);
     }
+
+    [Theory]
+    [InlineData("meta.simple.json",          "simple")]
+    [InlineData("meta.with-dashes.json",     "with-dashes")]
+    [InlineData("meta.with.inner.dots.json", "with.inner.dots")]
+    public void DecodeAttachmentShortname_Strips_Meta_Prefix_And_Json_Suffix(
+        string fname, string expected) =>
+        ImportExportService.DecodeAttachmentShortname(fname).ShouldBe(expected);
+
+    [Theory]
+    // Wrong prefix — not "meta.".
+    [InlineData("simple.json")]
+    [InlineData("attachment.simple.json")]
+    // Wrong suffix — not ".json".
+    [InlineData("meta.simple.txt")]
+    [InlineData("meta.simple")]
+    public void DecodeAttachmentShortname_Throws_On_Malformed(string fname) =>
+        Should.Throw<InvalidDataException>(() => ImportExportService.DecodeAttachmentShortname(fname));
 }

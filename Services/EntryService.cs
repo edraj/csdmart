@@ -577,12 +577,22 @@ public sealed class EntryService(
             Displayname = PatchTranslation("displayname", existing.Displayname),
             Description = PatchTranslation("description", existing.Description),
             Slug = Str("slug", existing.Slug),
-            OwnerShortname = Str("owner_shortname", existing.OwnerShortname) ?? existing.OwnerShortname,
+            // Python parity: `owner_shortname` is in Meta.restricted_fields,
+            // so a regular UPDATE never reassigns ownership — it stays at
+            // creation-time. Without this, the new `owner_shortname =
+            // EXCLUDED.owner_shortname` clause in EntryRepository.UpsertAsync
+            // would let any authenticated /managed/request caller transfer
+            // ownership by including the field in their patch body.
+            // OwnerShortname stays = existing.OwnerShortname (preserved by
+            // `existing with { ... }`).
             State = Str("state", existing.State),
             IsOpen = PatchBool("is_open", existing.IsOpen),
             WorkflowShortname = Str("workflow_shortname", existing.WorkflowShortname),
             ResolutionReason = Str("resolution_reason", existing.ResolutionReason),
             Tags = PatchTags(existing.Tags),
+            // PatchBool returns bool? (since the IsOpen caller above needs a
+            // nullable result); Entry.IsActive is non-nullable, so the ??
+            // unwraps the always-non-null result back to bool.
             IsActive = PatchBool("is_active", existing.IsActive) ?? existing.IsActive,
             // Python parity: `acl` lives in Meta.restricted_fields and is only
             // writable through the dedicated update_acl path. Regular update

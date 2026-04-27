@@ -418,7 +418,13 @@ switch (subcommand)
         // CLI default: preserveExisting=true (skip rows that already exist).
         // With -r/--replace the caller opts back into upsert-everything,
         // matching the HTTP /managed/import handler.
-        var resp = await importService.ImportZipAsync(zipStream, "dmart", preserveExisting: !replace);
+        // actor: null mirrors the export call site above. ImportZipAsync's
+        // actor parameter is documented as accepted-for-API-stability-but-
+        // unused (each imported record's owner comes from its meta), so
+        // the value doesn't matter functionally — but keeping both CLI sites
+        // on `null` makes the intent ("CLI runs unfiltered, server-side")
+        // visually consistent.
+        var resp = await importService.ImportZipAsync(zipStream, actor: null, preserveExisting: !replace);
 
         if (resp.Status != Status.Success)
         {
