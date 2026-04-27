@@ -80,6 +80,7 @@
   let selectedUser: any = $state(null);
   let isUsersLoading = $state(true);
   let showAllUsers = $state(true);
+  let userSearchQuery = $state("");
 
   let groups = $state<any[]>([]);
   let selectedGroup: any = $state(null);
@@ -197,7 +198,7 @@
     }
   }
 
-  async function loadUsers() {
+  async function loadUsers(search: string = "") {
     try {
       isUsersLoading = true;
 
@@ -206,13 +207,18 @@
         return;
       }
 
+      // Server-side prefix search on shortname. Strip anything outside the
+      // shortname charset so a stray ':' or '*' can't break the query syntax.
+      const cleaned = search.trim().replace(/[^a-zA-Z0-9_-]/g, "");
+      const searchClause = cleaned ? `@shortname:${cleaned}*` : "";
+
       // Fetch online users in parallel with user list
       const onlineUsersPromise = fetchOnlineUsers();
 
       let loadedUsers: any[] = [];
 
       if (showAllUsers) {
-        const response = await getAllUsers();
+        const response = await getAllUsers(100, 0, searchClause);
         if (response.status === "success" && response.records) {
           loadedUsers = response.records
             .map(transformUserRecord)
@@ -225,12 +231,20 @@
           currentUser.shortname
         );
 
-        if (conversationPartners.length === 0) {
+        // Match the server-side prefix semantics for the conversations view
+        // by filtering partner shortnames before fetching their records.
+        const filteredPartners = cleaned
+          ? conversationPartners.filter((p) =>
+              p.toLowerCase().startsWith(cleaned.toLowerCase())
+            )
+          : conversationPartners;
+
+        if (filteredPartners.length === 0) {
           users = [];
           return;
         }
 
-        const response = await getUsersByShortnames(conversationPartners);
+        const response = await getUsersByShortnames(filteredPartners);
 
         if (response.status === "success" && response.records) {
           loadedUsers = response.records
@@ -1296,7 +1310,7 @@
 
   function toggleUserView() {
     showAllUsers = !showAllUsers;
-    loadUsers();
+    loadUsers(userSearchQuery);
   }
 
   function handleFileSelect(event: any) {
@@ -1457,7 +1471,11 @@
           {showAllUsers}
           onUserSelect={selectUser}
           onToggleView={toggleUserView}
-          onRefresh={loadUsers}
+          onRefresh={() => loadUsers(userSearchQuery)}
+          onSearch={(q) => {
+            userSearchQuery = q;
+            loadUsers(q);
+          }}
         />
       {:else}
         <GroupsList

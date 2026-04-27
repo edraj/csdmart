@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { onDestroy } from "svelte";
   import { _ } from "@/i18n";
   import type { UserData } from "@/lib/utils/messagingUtils";
 
@@ -10,6 +11,7 @@
     onUserSelect: (user: UserData) => void;
     onToggleView: () => void;
     onRefresh: () => void;
+    onSearch?: (query: string) => void;
   }
 
   let {
@@ -20,29 +22,33 @@
     onUserSelect,
     onToggleView,
     onRefresh,
+    onSearch,
   }: Props = $props();
 
   let searchQuery = $state("");
+  let debounceTimer: ReturnType<typeof setTimeout> | null = null;
 
-  let filteredUsers = $derived(
-    searchQuery.trim()
-      ? users.filter((u) => {
-          const q = searchQuery.toLowerCase();
-          return (
-            u.name.toLowerCase().includes(q) ||
-            u.shortname.toLowerCase().includes(q) ||
-            (u.email && u.email.toLowerCase().includes(q))
-          );
-        })
-      : users,
-  );
+  function handleSearchInput() {
+    if (debounceTimer) clearTimeout(debounceTimer);
+    debounceTimer = setTimeout(() => onSearch?.(searchQuery), 300);
+  }
+
+  function clearSearch() {
+    searchQuery = "";
+    if (debounceTimer) clearTimeout(debounceTimer);
+    onSearch?.("");
+  }
+
+  onDestroy(() => {
+    if (debounceTimer) clearTimeout(debounceTimer);
+  });
 </script>
 
 <div class="users-section">
   <div class="users-header">
     <h3>
       {showAllUsers ? $_("messaging.all_users") : $_("messaging.conversations")}
-      ({filteredUsers.length})
+      ({users.length})
     </h3>
     <div class="users-header-actions">
       <button
@@ -80,12 +86,13 @@
       type="text"
       placeholder="Search users..."
       bind:value={searchQuery}
+      oninput={handleSearchInput}
       class="search-input"
     />
     {#if searchQuery}
       <button
         class="search-clear"
-        onclick={() => (searchQuery = "")}
+        onclick={clearSearch}
         aria-label="Clear search"
       >
         ✕
@@ -96,9 +103,9 @@
   <div class="users-list">
     {#if isLoading}
       <div class="loading">{$_("messaging.loading_users")}</div>
-    {:else if filteredUsers.length === 0}
+    {:else if users.length === 0}
       <div class="no-users">
-        {#if searchQuery}
+        {#if searchQuery.trim()}
           <div class="no-users-message">
             <p>No users match your search</p>
           </div>
@@ -116,7 +123,7 @@
         {/if}
       </div>
     {:else}
-      {#each filteredUsers as user (user.id)}
+      {#each users as user (user.id)}
         <div
           class="user-item"
           class:selected={selectedUserId === user.id}
