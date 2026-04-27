@@ -75,7 +75,7 @@
                 limit: 100,
             });
             if (rolesResponse) {
-                availableRoles = rolesResponse.records;
+                availableRoles = rolesResponse.records ?? [];
                 updateFilteredRoles();
             }
         } catch (error) {
@@ -95,7 +95,7 @@
                 limit: 100,
             });
             if (groupsResponse) {
-                availableGroups = groupsResponse.records;
+                availableGroups = groupsResponse.records ?? [];
                 updateFilteredGroups();
             }
         } catch (error) {
