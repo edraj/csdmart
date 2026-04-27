@@ -673,6 +673,20 @@ public sealed class ImportExportService(
         return (subp, afterDm[..slashBeforeMeta]);
     }
 
+    // Filename → shortname for attachment metas. Extracted and made `internal`
+    // so unit tests can pin the slicing without spinning up an import. Mirrors
+    // DecodeEntryPath's policy: the on-disk filename is the source of truth
+    // for the attachment's shortname; the meta JSON's stored shortname is
+    // overwritten on import to match.
+    internal static string DecodeAttachmentShortname(string fname)
+    {
+        const string metaPrefix = "meta.";
+        const string metaSuffix = ".json";
+        if (!fname.StartsWith(metaPrefix, StringComparison.Ordinal) || !fname.EndsWith(metaSuffix, StringComparison.Ordinal))
+            throw new InvalidDataException("attachment meta filename malformed: expected 'meta.{shortname}.json'");
+        return fname[metaPrefix.Length..^metaSuffix.Length];
+    }
+
     private async Task TryImportEntryAsync(
         ZipArchiveEntry ze, Dictionary<string, ZipArchiveEntry> bodyLookup,
         ImportStats st, bool preserveExisting, CancellationToken ct)
@@ -761,12 +775,7 @@ public sealed class ImportExportService(
             // Path-derived to match the entry-import behaviour: the on-disk
             // filename is authoritative if the meta JSON's shortname has
             // drifted (rename, overlay, manual edit).
-            const string metaPrefix = "meta.";
-            const string metaSuffix = ".json";
-            var fname = ze.Name;
-            if (!fname.StartsWith(metaPrefix, StringComparison.Ordinal) || !fname.EndsWith(metaSuffix, StringComparison.Ordinal))
-                throw new InvalidDataException("attachment meta filename malformed: expected 'meta.{shortname}.json'");
-            var attShortname = fname[metaPrefix.Length..^metaSuffix.Length];
+            var attShortname = DecodeAttachmentShortname(ze.Name);
 
             var node = await ReadJsonObjectAsync(ze, ct);
             node["space_name"] = spaceName;
