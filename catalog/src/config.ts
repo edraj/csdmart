@@ -9,6 +9,7 @@ export interface WebsiteConfig {
   backend: string;
   backend_timeout?: number;
   delay_total_count?: boolean;
+  enable_websocket?: boolean;
   theme?: {
     type: "solid" | "gradient";
     value: string;
@@ -26,6 +27,7 @@ const defaultConfig: WebsiteConfig = {
   backend: "https://api-uat.oodi.iq/dmart",
   backend_timeout: 30000,
   delay_total_count: false,
+  enable_websocket: true,
 };
 
 const loadConfig = async (): Promise<WebsiteConfig> => {

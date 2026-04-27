@@ -80,10 +80,13 @@
         return;
       }
 
-      // Connect global WebSocket for real-time notifications and chat
+      // Connect global WebSocket for real-time notifications and chat.
+      // Skipped when enable_websocket is explicitly false in config.json,
+      // which keeps getWebSocketService() returning null so all WS-using
+      // call sites (messaging page, sendChatMessage, etc.) become no-ops.
       const token = localStorage.getItem("authToken");
       const shortname = get(user).shortname;
-      if (token) {
+      if (token && website.enable_websocket !== false) {
         initGlobalWebSocket(token, shortname);
       }
 
