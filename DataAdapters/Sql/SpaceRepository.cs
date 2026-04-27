@@ -65,6 +65,7 @@ public sealed class SpaceRepository(Db db)
                 description = EXCLUDED.description,
                 tags = EXCLUDED.tags,
                 updated_at = NOW(),
+                owner_shortname = EXCLUDED.owner_shortname,
                 owner_group_shortname = EXCLUDED.owner_group_shortname,
                 acl = EXCLUDED.acl,
                 payload = EXCLUDED.payload,

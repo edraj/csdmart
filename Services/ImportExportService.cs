@@ -635,6 +635,44 @@ public sealed class ImportExportService(
         }
     }
 
+    // Path → (subpath, shortname) decoder for entry/folder metas. Extracted
+    // and made `internal` so unit tests can pin the nesting math without a
+    // live DB. The on-disk path is the source of truth for both fields —
+    // any drift in the meta JSON (renames, manual edits) is corrected to
+    // the path on import.
+    internal static (string Subpath, string Shortname) DecodeEntryPath(string fullPath)
+    {
+        var (_, rest) = SplitSpaceAndRest(fullPath);
+        var name = fullPath[(fullPath.LastIndexOf('/') + 1)..];
+        if (name == "meta.folder.json")
+        {
+            var dmIdx = rest.LastIndexOf("/.dm/meta.folder.json", StringComparison.Ordinal);
+            if (dmIdx < 0) throw new InvalidDataException("folder meta path malformed");
+            var withFolder = rest[..dmIdx];
+            var lastSlash = withFolder.LastIndexOf('/');
+            var subpath = lastSlash < 0 ? "/" : "/" + withFolder[..lastSlash];
+            var shortname = lastSlash < 0 ? withFolder : withFolder[(lastSlash + 1)..];
+            return (subpath, shortname);
+        }
+        string subp;
+        string afterDm;
+        if (rest.StartsWith(".dm/", StringComparison.Ordinal))
+        {
+            subp = "/";
+            afterDm = rest[".dm/".Length..];
+        }
+        else
+        {
+            var idx = rest.IndexOf("/.dm/", StringComparison.Ordinal);
+            if (idx < 0) throw new InvalidDataException("entry meta path missing /.dm/");
+            subp = "/" + rest[..idx];
+            afterDm = rest[(idx + "/.dm/".Length)..];
+        }
+        var slashBeforeMeta = afterDm.IndexOf("/meta.", StringComparison.Ordinal);
+        if (slashBeforeMeta < 0) throw new InvalidDataException("entry meta path malformed");
+        return (subp, afterDm[..slashBeforeMeta]);
+    }
+
     private async Task TryImportEntryAsync(
         ZipArchiveEntry ze, Dictionary<string, ZipArchiveEntry> bodyLookup,
         ImportStats st, bool preserveExisting, CancellationToken ct)
@@ -643,39 +681,17 @@ public sealed class ImportExportService(
         {
             var (spaceName, rest) = SplitSpaceAndRest(ze.FullName);
             var isFolder = ze.Name == "meta.folder.json";
-            string subpath;
-            if (isFolder)
-            {
-                // Folder meta path: "{space}/{subpath}/{folder_sn}/.dm/meta.folder.json".
-                // `rest` drops the `{space}/` prefix → "{subpath}/{folder_sn}/.dm/meta.folder.json".
-                var dmIdx = rest.LastIndexOf("/.dm/meta.folder.json", StringComparison.Ordinal);
-                if (dmIdx < 0) throw new InvalidDataException("folder meta path malformed");
-                var withFolder = rest[..dmIdx];               // {subpath}/{folder_sn}
-                var lastSlash = withFolder.LastIndexOf('/');
-                subpath = lastSlash < 0 ? "/" : "/" + withFolder[..lastSlash];
-                // The folder's shortname comes from the directory name, so we don't
-                // override the meta's shortname here — the export wrote it in.
-            }
-            else
-            {
-                // Non-folder path: "{space}/{subpath}/.dm/{sn}/meta.{rt}.json".
-                // When subpath is "/" the leading slash is absent from rest,
-                // so rest starts with ".dm/". Treat that specially.
-                if (rest.StartsWith(".dm/", StringComparison.Ordinal))
-                {
-                    subpath = "/";
-                }
-                else
-                {
-                    var idx = rest.IndexOf("/.dm/", StringComparison.Ordinal);
-                    if (idx < 0) throw new InvalidDataException("entry meta path missing /.dm/");
-                    subpath = "/" + rest[..idx];
-                }
-            }
+            // The on-disk path is the source of truth for both subpath AND
+            // shortname — if the meta JSON's shortname disagrees (manual
+            // edits, partial overlay, a stale meta from a previous shortname),
+            // the path wins. This matches what dmart-on-disk has always
+            // meant: the directory IS the entry.
+            var (subpath, shortname) = DecodeEntryPath(ze.FullName);
 
             var node = await ReadJsonObjectAsync(ze, ct);
             node["space_name"] = spaceName;
             node["subpath"] = subpath;
+            node["shortname"] = shortname;
             node["resource_type"] ??= InferResourceTypeFromFilename(ze.Name);
 
             // Re-inline payload.body from the external file when it's a string
@@ -741,9 +757,21 @@ public sealed class ImportExportService(
             // Attachment's own subpath = parent_subpath/parent_sn (matches Python).
             var attSubpath = parentSubpath.TrimEnd('/') + "/" + parentSn;
 
+            // Attachment shortname comes from the meta filename: "meta.{att_sn}.json".
+            // Path-derived to match the entry-import behaviour: the on-disk
+            // filename is authoritative if the meta JSON's shortname has
+            // drifted (rename, overlay, manual edit).
+            const string metaPrefix = "meta.";
+            const string metaSuffix = ".json";
+            var fname = ze.Name;
+            if (!fname.StartsWith(metaPrefix, StringComparison.Ordinal) || !fname.EndsWith(metaSuffix, StringComparison.Ordinal))
+                throw new InvalidDataException("attachment meta filename malformed: expected 'meta.{shortname}.json'");
+            var attShortname = fname[metaPrefix.Length..^metaSuffix.Length];
+
             var node = await ReadJsonObjectAsync(ze, ct);
             node["space_name"] = spaceName;
             node["subpath"] = attSubpath;
+            node["shortname"] = attShortname;
             // resource_type is encoded in the attachments.{rt} dir name.
             var rtDir = rest[attachmentsIdx..].Split('/')[1]; // "attachments.{rt}"
             node["resource_type"] ??= rtDir.Substring("attachments.".Length);

@@ -94,6 +94,7 @@ public sealed class UserRepository(Db db, AuthzCacheRefresher refresher)
                 description = EXCLUDED.description,
                 tags = EXCLUDED.tags,
                 updated_at = NOW(),
+                owner_shortname = EXCLUDED.owner_shortname,
                 owner_group_shortname = EXCLUDED.owner_group_shortname,
                 payload = EXCLUDED.payload,
                 last_checksum_history = EXCLUDED.last_checksum_history,

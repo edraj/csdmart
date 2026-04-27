@@ -532,6 +532,26 @@ public sealed class EntryService(
             return fallback;
         }
 
+        // System.Text.Json source-gen lands JSON arrays in Dictionary<string, object>
+        // as JsonElement, not List<object> — so the prior `is IEnumerable<object>`
+        // pattern silently dropped tag patches from HTTP callers.
+        List<string> PatchTags(List<string> fallback)
+        {
+            if (!patch.TryGetValue("tags", out var raw) || raw is null) return fallback;
+            if (raw is JsonElement el && el.ValueKind == JsonValueKind.Array)
+            {
+                var list = new List<string>();
+                foreach (var item in el.EnumerateArray())
+                    if (item.ValueKind == JsonValueKind.String && item.GetString() is { } s)
+                        list.Add(s);
+                return list;
+            }
+            if (raw is List<string> sl) return sl;
+            if (raw is IEnumerable<object> objs)
+                return objs.Select(t => t?.ToString() ?? "").ToList();
+            return fallback;
+        }
+
         // Payload body merge: mirrors Python's deep_update(old_body, patch_body)
         // followed by remove_none_dict(). Sending a property as null removes it.
         var payload = existing.Payload;
@@ -562,9 +582,8 @@ public sealed class EntryService(
             IsOpen = PatchBool("is_open", existing.IsOpen),
             WorkflowShortname = Str("workflow_shortname", existing.WorkflowShortname),
             ResolutionReason = Str("resolution_reason", existing.ResolutionReason),
-            Tags = patch.TryGetValue("tags", out var tagsRaw) && tagsRaw is IEnumerable<object> tags
-                ? tags.Select(t => t?.ToString() ?? "").ToList() : existing.Tags,
-            IsActive = patch.TryGetValue("is_active", out var ia) && ia is bool b ? b : existing.IsActive,
+            Tags = PatchTags(existing.Tags),
+            IsActive = PatchBool("is_active", existing.IsActive) ?? existing.IsActive,
             // Python parity: `acl` lives in Meta.restricted_fields and is only
             // writable through the dedicated update_acl path. Regular update
             // ignores it; DispatchUpdateAclAsync opts in via

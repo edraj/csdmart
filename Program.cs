@@ -342,10 +342,16 @@ switch (subcommand)
             Microsoft.Extensions.Options.Options.Create(s),
             nlog.CreateLogger<ImportExportService>());
 
-        // Same call path as the HTTP /managed/export handler: run the Query
-        // overload (via the (space, subpath, actor) shortcut) and stream
-        // the resulting zip to disk byte-for-byte. No re-archiving.
-        await using var exportStream = await exportService.ExportAsync(spaceName, "/", "dmart");
+        // Same call path as the HTTP /managed/export handler — but with
+        // actor: null so the row-level ACL filter is skipped. The API gate
+        // exists to scope an HTTP caller to the rows their JWT can see; a
+        // CLI run on the server has full DB access already, so filtering by
+        // the dmart user's policies would silently drop rows the operator
+        // expects in the archive (this was the "shortnames not honored"
+        // symptom — the ACL gate excluded entries whose stored
+        // query_policies didn't intersect with the dmart user's, so those
+        // shortnames never landed in the zip).
+        await using var exportStream = await exportService.ExportAsync(spaceName, "/", actor: null);
         await using var fileStream = File.Create(outputPath);
         await exportStream.CopyToAsync(fileStream);
         Console.WriteLine($"Exported space '{spaceName}' to {outputPath}");

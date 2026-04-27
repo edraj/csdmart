@@ -109,6 +109,7 @@ public sealed class EntryRepository(Db db)
                 description = EXCLUDED.description,
                 tags = EXCLUDED.tags,
                 updated_at = EXCLUDED.updated_at,
+                owner_shortname = EXCLUDED.owner_shortname,
                 owner_group_shortname = EXCLUDED.owner_group_shortname,
                 acl = EXCLUDED.acl,
                 payload = EXCLUDED.payload,
