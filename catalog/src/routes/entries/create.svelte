@@ -133,6 +133,17 @@
     }
   });
 
+  // When the parent folder declares content_schema_shortnames, free-form
+  // content can't satisfy the constraint — force Structured Entry and load
+  // the allowed schemas. The "content" radio is hidden in markup so the
+  // user can't switch back manually.
+  $effect(() => {
+    if (allowedSchemaShortnames.length > 0 && entryType !== "structured") {
+      entryType = "structured";
+      if (selectedSpace) loadSchemasForSpace();
+    }
+  });
+
   let workflow_shortname = "";
   let schema_shortname = "";
   let markdownEditorRef: any = $state(null);
@@ -1306,20 +1317,22 @@
         <div class="form-row">
           <span class="form-row-label">Type</span>
           <div class="entry-type-selector compact">
-            <label class="entry-type-option">
-              <input
-                type="radio"
-                bind:group={entryType}
-                value="content"
-                onchange={handleEntryTypeChange}
-              />
-              <span class="entry-type-label">
-                <strong>{$_("create_entry.entry_type.content_title")}</strong>
-                <small
-                  >{$_("create_entry.entry_type.content_description")}</small
-                >
-              </span>
-            </label>
+            {#if !allowedSchemaShortnames.length}
+              <label class="entry-type-option">
+                <input
+                  type="radio"
+                  bind:group={entryType}
+                  value="content"
+                  onchange={handleEntryTypeChange}
+                />
+                <span class="entry-type-label">
+                  <strong>{$_("create_entry.entry_type.content_title")}</strong>
+                  <small
+                    >{$_("create_entry.entry_type.content_description")}</small
+                  >
+                </span>
+              </label>
+            {/if}
             <label class="entry-type-option">
               <input
                 type="radio"
