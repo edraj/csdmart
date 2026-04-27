@@ -73,7 +73,7 @@
     onMount(async () => {
         try {
             const spacesResponse = await getSpaces();
-            spaces = spacesResponse.records.map(space => ({ name: space.shortname, value: space.shortname }));
+            spaces = (spacesResponse.records ?? []).map(space => ({ name: space.shortname, value: space.shortname }));
             spaces.unshift({
                 name: '__all_spaces__',
                 value: '__all_spaces__'

@@ -31,7 +31,7 @@
                 limit: 100,
             });
             if (response) {
-                availablePermissions = response.records;
+                availablePermissions = response.records ?? [];
                 updateFilteredPermissions();
             }
         } catch (error) {

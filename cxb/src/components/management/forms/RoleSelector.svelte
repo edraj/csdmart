@@ -23,7 +23,7 @@
                 limit: 100,
             });
             if (response) {
-                availableRoles = response.records;
+                availableRoles = response.records ?? [];
                 updateFilteredRoles();
             }
         } catch (error) {
