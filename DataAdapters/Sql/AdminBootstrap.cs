@@ -63,7 +63,7 @@ public sealed class AdminBootstrap(
             // 4. Permission (FK → users via owner_shortname)
             // 5. Role (FK → users via owner_shortname)
 
-            // 1. Create the admin user (passwordless — set via `dmart set_password`)
+            // 1. Create the admin user (passwordless — set via `dmart passwd`)
             var existing = await users.GetByShortnameAsync(AdminShortname, ct);
             if (existing is null)
             {

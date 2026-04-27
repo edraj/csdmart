@@ -46,10 +46,10 @@ public sealed class DmartSettings
     // ADMIN_PASSWORD and ADMIN_EMAIL are read ONLY on first startup, by
     // AdminBootstrap, when the hardcoded `dmart` admin user doesn't already
     // exist. Subsequent restarts ignore these values — use `dmart
-    // set_password` / the /user/profile endpoint to change them afterwards.
+    // passwd` / the /user/profile endpoint to change them afterwards.
     // Main intended use: provisioning a known admin in CI / fresh installs.
     // Leaving AdminPassword unset creates a passwordless admin account
-    // (common for interactive setup where `dmart set_password` follows).
+    // (common for interactive setup where `dmart passwd` follows).
     public string? AdminPassword { get; set; }
     public string? AdminEmail { get; set; }
 
@@ -125,10 +125,19 @@ public sealed class DmartSettings
     // endpoints below. Mirrors Python's `smpp_auth_key` — gateway-specific.
     public string SmppAuthKey { get; set; } = "";
 
+    // Optional from-name / sender ID surfaced to the recipient on outbound SMS.
+    // Mirrors Python's `sms_sender`: when non-empty, both /OTP and /general-SMS
+    // gateway calls inject `"sender": <SmsSender>` into the request body
+    // alongside `msisdn` and `text`. Empty omits the field entirely so gateways
+    // that reject unknown keys (or that bill differently per branded sender)
+    // continue working as before.
+    public string SmsSender { get; set; } = "";
+
     // POST endpoint the OTP flow calls to deliver numeric OTP codes over SMS.
-    // Python: `send_sms_otp_api`. Body is JSON {"msisdn":"...","text":"..."}.
-    // Empty disables OTP SMS delivery — the code is then only retrievable
-    // from server logs (dev) or via MOCK_OTP_CODE (when MOCK_SMPP_API=true).
+    // Python: `send_sms_otp_api`. Body is JSON {"msisdn":"...","text":"..."}
+    // with an optional "sender" key when SmsSender is configured. Empty
+    // disables OTP SMS delivery — the code is then only retrievable from
+    // server logs (dev) or via MOCK_OTP_CODE (when MOCK_SMPP_API=true).
     public string SendSmsOtpApi { get; set; } = "";
 
     // POST endpoint the general SMS flow calls (e.g. to deliver invitation

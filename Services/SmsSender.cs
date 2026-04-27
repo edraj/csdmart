@@ -11,7 +11,8 @@ namespace Dmart.Services;
 //   POST {endpoint}
 //   Headers: Content-Type: application/json, auth-key: {smpp_auth_key}
 //            [skel-accept-language: <lang>]         (OTP flow only)
-//   Body:    {"msisdn": "<phone>", "text": "<message>"}
+//   Body:    {"msisdn": "<phone>", "text": "<message>"
+//            [, "sender": "<SmsSender>"]}            (when configured)
 //
 // When the relevant endpoint URL or the auth key are empty the call is a
 // no-op + warning log (Python does the same — features degrade gracefully
@@ -47,6 +48,11 @@ public sealed class SmsSender(
             ["msisdn"] = msisdn,
             ["text"] = text,
         };
+        // Python parity: `sms_sender` is optional. When set, the gateway sees
+        // it as the from-name / shortcode shown to the recipient. Omit when
+        // empty so gateways that reject unknown keys keep working.
+        if (!string.IsNullOrWhiteSpace(s.SmsSender))
+            body["sender"] = s.SmsSender;
         var json = JsonSerializer.Serialize(body, DmartJsonContext.Default.DictionaryStringObject);
 
         using var client = httpFactory.CreateClient();

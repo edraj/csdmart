@@ -246,7 +246,7 @@ create a new user with the OAuth provider's profile info
 First-boot seeding. `DataAdapters/Sql/AdminBootstrap.cs` creates:
 
 1. `users.dmart` — admin, passwordless, with `super_admin` role. Password
-   is set via `dmart set_password` subcommand or env `Dmart__AdminPassword`
+   is set via `dmart passwd` subcommand or env `Dmart__AdminPassword`
    on **first creation only**.
 2. `roles.super_admin` with permissions `["super_manager"]`.
 3. `permissions.super_manager` — keyed `__all_spaces__: [__all_subpaths__]`,

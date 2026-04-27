@@ -63,7 +63,7 @@ choices.
 
 ```
 podman run --name dmart -p 8000:8000 -d -it ghcr.io/edraj/csdmart:latest
-podman exec -it dmart dmart set_password
+podman exec -it dmart dmart passwd
 # Open http://localhost:8000/cxb/ or http://localhost:8000/cat/
 ```
 
@@ -72,7 +72,7 @@ podman exec -it dmart dmart set_password
 ```
 sudo dnf install ./dmart-*.rpm
 sudo vi /etc/dmart/config.env          # set DATABASE_PASSWORD, JWT_SECRET
-dmart set_password                     # set admin password
+dmart passwd                           # set admin password
 sudo systemctl enable --now dmart
 ```
 
@@ -87,7 +87,7 @@ cp config.env.sample config.env
 vi config.env                          # set database credentials
 dotnet run -- serve
 # In another terminal:
-dmart set_password
+dmart passwd
 ```
 
 ## CLI
@@ -97,7 +97,7 @@ dmart                      Show help
 dmart serve                Start HTTP server
 dmart version              Version and build info
 dmart settings             Show effective configuration
-dmart set_password         Set user password interactively
+dmart passwd               Set user password interactively
 dmart init                 Initialize ~/.dmart/ with config files
 dmart migrate              Create/update Postgres schema (idempotent)
 dmart check <space>        Run health checks
@@ -140,7 +140,7 @@ LOG_FORMAT="json"
 ```
 
 The admin user `dmart` is created passwordless on first startup. Set a
-password with `dmart set_password` before exposing the server.
+password with `dmart passwd` before exposing the server.
 
 ## API Endpoints
 

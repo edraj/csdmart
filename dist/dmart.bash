@@ -5,7 +5,7 @@ _dmart() {
     local cur prev words cword
     _init_completion || return
 
-    local subcommands="serve version settings set_password check health-check export import init cli migrate fix_query_policies help"
+    local subcommands="serve version settings passwd check health-check export import init cli migrate fix_query_policies help"
     local cli_modes="c cmd s script"
     local cli_commands="ls cd pwd switch mkdir create rm move cat print attach upload request progress import export help exit"
 
