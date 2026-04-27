@@ -89,6 +89,7 @@ public sealed class LogFileTests
             // set, a config.env ADMIN_PASSWORD, or neither.
             var adminPassword = ResolveAdminPassword();
             using var factory = new LogFileFactory(path, adminPassword);
+            await DmartFactory.ResetBootstrapAdminStateAsync(factory.Services);
             using var client = factory.CreateClient();
 
             // Successful login — body has password that MUST be redacted.
@@ -183,7 +184,7 @@ public sealed class LogFileTests
             if (raw.TryGetValue("ADMIN_PASSWORD", out var pw) && !string.IsNullOrEmpty(pw))
                 return pw;
         }
-        return "testpassword12345";
+        return "Test1234";
     }
 
     // Dedicated factory that mirrors DmartFactory's config overrides and

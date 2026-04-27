@@ -22,7 +22,11 @@ public sealed class CsvService(QueryService queries, EntryService entries)
     {
         var response = await queries.ExecuteAsync(q, actor, ct);
         var records = response.Records ?? new List<Record>();
+        return ExportRecords(records);
+    }
 
+    public Stream ExportRecords(IEnumerable<Record> records)
+    {
         // Step 1: flatten each row.
         var flattened = records.Select(r =>
         {

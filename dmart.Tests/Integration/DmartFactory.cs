@@ -12,6 +12,7 @@ using Microsoft.AspNetCore.Mvc.Testing;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging;
+using Xunit;
 
 namespace Dmart.Tests.Integration;
 
@@ -24,7 +25,7 @@ namespace Dmart.Tests.Integration;
 //
 // Admin credentials:
 //   DMART_TEST_ADMIN / DMART_TEST_PWD env vars, or defaults from config.env.
-public sealed class DmartFactory : WebApplicationFactory<Program>
+public sealed class DmartFactory : WebApplicationFactory<Program>, IAsyncLifetime
 {
     // Resolve connection string: env var → config.env → null.
     private static string? ResolvePgConn()
@@ -60,7 +61,7 @@ public sealed class DmartFactory : WebApplicationFactory<Program>
     public string AdminPassword { get; } =
         Environment.GetEnvironmentVariable("DMART_TEST_PWD")
         ?? _configEnvCache.GetValueOrDefault("ADMIN_PASSWORD")
-        ?? "testpassword12345";
+        ?? "Test1234";
 
     private static Dictionary<string, string> LoadConfigEnv()
     {
@@ -119,6 +120,30 @@ public sealed class DmartFactory : WebApplicationFactory<Program>
 
             cfg.AddInMemoryCollection(overrides);
         });
+    }
+
+    async Task IAsyncLifetime.InitializeAsync()
+    {
+        if (!HasPg) return;
+        await ResetBootstrapAdminStateAsync(Services, AdminShortname);
+    }
+
+    Task IAsyncLifetime.DisposeAsync()
+    {
+        Dispose();
+        return Task.CompletedTask;
+    }
+
+    public static async Task ResetBootstrapAdminStateAsync(
+        IServiceProvider services,
+        string adminShortname = "dmart")
+    {
+        var db = services.GetRequiredService<Db>();
+        await using var conn = await db.OpenAsync();
+        await using var cmd = new Npgsql.NpgsqlCommand(
+            "UPDATE users SET is_active = true, attempt_count = 0 WHERE shortname = $1", conn);
+        cmd.Parameters.Add(new() { Value = adminShortname });
+        await cmd.ExecuteNonQueryAsync();
     }
 
     // Per-test user with a fresh JWT + matching `sessions` row. Use this from

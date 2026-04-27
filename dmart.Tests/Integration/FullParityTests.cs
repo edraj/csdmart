@@ -25,10 +25,10 @@ public class FullParityTests : IClassFixture<DmartFactory>
 
     // Per-test user (super_admin role) so concurrent tests don't race each
     // other via MaxSessionsPerUser eviction — see DmartFactory.CreateLoggedInUserAsync.
-    private async Task<(HttpClient Client, string Token)> LoginAsync()
+    private async Task<(HttpClient Client, string Token, string Shortname)> LoginAsync()
     {
         var u = await _factory.CreateLoggedInUserAsync();
-        return (u.Client, u.Token);
+        return (u.Client, u.Token, u.Shortname);
     }
 
     // ==================== Login response shape ====================
@@ -58,12 +58,12 @@ public class FullParityTests : IClassFixture<DmartFactory>
     [FactIfPg]
     public async Task Login_Creates_Session_Row_In_DB()
     {
-        var (client, _) = await LoginAsync();
+        var (_, _, shortname) = await LoginAsync();
         var db = _factory.Services.GetRequiredService<Db>();
         await using var conn = await db.OpenAsync();
         await using var cmd = new Npgsql.NpgsqlCommand(
             $"SELECT COUNT(*) FROM sessions WHERE shortname = $1", conn);
-        cmd.Parameters.Add(new() { Value = _factory.AdminShortname });
+        cmd.Parameters.Add(new() { Value = shortname });
         var count = (long)(await cmd.ExecuteScalarAsync())!;
         count.ShouldBeGreaterThan(0);
     }
@@ -371,7 +371,7 @@ public class FullParityTests : IClassFixture<DmartFactory>
     [FactIfPg]
     public async Task Profile_GET_Returns_All_Python_Parity_Fields()
     {
-        var (client, _) = await LoginAsync();
+        var (client, _, _) = await LoginAsync();
         var resp = await client.GetAsync("/user/profile");
         var body = await resp.Content.ReadFromJsonAsync(DmartJsonContext.Default.Response);
         body!.Status.ShouldBe(Status.Success);
@@ -415,7 +415,7 @@ public class FullParityTests : IClassFixture<DmartFactory>
     [FactIfPg]
     public async Task ValidatePassword_Correct_Returns_True()
     {
-        var (client, _) = await LoginAsync();
+        var (client, _, _) = await LoginAsync();
         var resp = await client.PostAsync("/user/validate_password",
             new StringContent($"{{\"password\":\"{_factory.AdminPassword}\"}}", Encoding.UTF8, "application/json"));
         var body = await resp.Content.ReadFromJsonAsync(DmartJsonContext.Default.Response);
@@ -426,7 +426,7 @@ public class FullParityTests : IClassFixture<DmartFactory>
     [FactIfPg]
     public async Task ValidatePassword_Wrong_Returns_False()
     {
-        var (client, _) = await LoginAsync();
+        var (client, _, _) = await LoginAsync();
         var resp = await client.PostAsync("/user/validate_password",
             new StringContent("{\"password\":\"wrong-password\"}", Encoding.UTF8, "application/json"));
         var body = await resp.Content.ReadFromJsonAsync(DmartJsonContext.Default.Response);

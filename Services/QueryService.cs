@@ -69,7 +69,7 @@ public sealed class QueryService(
     {
         // Clamp limit: default to 100, cap at MaxQueryLimit.
         var maxLimit = settings.Value.MaxQueryLimit;
-        var limit = q.Limit <= 0 ? 100 : q.Limit;
+        var limit = q.Limit == -1 ? (maxLimit > 0 ? maxLimit : 100) : (q.Limit <= 0 ? 100 : q.Limit);
         if (maxLimit > 0 && limit > maxLimit) limit = maxLimit;
         q = q with { Limit = limit };
 

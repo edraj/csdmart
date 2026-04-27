@@ -30,24 +30,52 @@ public static class CsvHandler
         });
 
         // Saved query → CSV. The {space_name} param is a query named "saved-queries"
-        // subpath in dmart convention; the body specifies which one. dmart's actual
-        // implementation looks up a Task entry; we mirror that here by reading the
-        // body as a Query and passing through.
+        // subpath in dmart convention; Python receives a Record pointing at the
+        // saved query/report entry and then executes it.
         g.MapPost("/csv/{space_name}",
-            async (string space_name, HttpRequest req, CsvService csv, HttpContext http, CancellationToken ct) =>
+            async (string space_name, HttpRequest req, CsvService csv,
+                   EntryService entries, QueryService queries, HttpContext http,
+                   CancellationToken ct) =>
             {
-                Query? q;
+                JsonDocument doc;
                 try
                 {
-                    q = await JsonSerializer.DeserializeAsync(req.Body, DmartJsonContext.Default.Query, ct);
+                    doc = await JsonDocument.ParseAsync(req.Body, cancellationToken: ct);
                 }
                 catch (JsonException ex)
                 {
                     return Results.BadRequest(Response.Fail(InternalErrorCode.INVALID_DATA, ex.Message, ErrorTypes.Request));
                 }
-                if (q is null) q = new Query { Type = QueryType.Search, SpaceName = space_name, Subpath = "/" };
-                var stream = await csv.ExportAsync(q, http.Actor(), ct);
-                return Results.Stream(stream, "text/csv", $"{space_name}.csv");
+                using (doc)
+                {
+                    if (doc.RootElement.ValueKind == JsonValueKind.Object &&
+                        doc.RootElement.TryGetProperty("resource_type", out _))
+                    {
+                        var record = doc.RootElement.Deserialize(DmartJsonContext.Default.Record);
+                        if (record is null)
+                            return Results.BadRequest(Response.Fail(InternalErrorCode.INVALID_DATA,
+                                "record body is empty", ErrorTypes.Request));
+                        var response = await ExecuteTaskHandler.ExecuteSavedQueryRecordAsync(
+                            space_name, record, http.Actor(), entries, queries, ct);
+                        if (response.Status != Status.Success)
+                            return Results.BadRequest(response);
+                        var recordStream = csv.ExportRecords(response.Records ?? Enumerable.Empty<Record>());
+                        return Results.Stream(recordStream, "text/csv", $"{space_name}_{record.Subpath}.csv");
+                    }
+
+                    Query? q;
+                    try
+                    {
+                        q = doc.RootElement.Deserialize(DmartJsonContext.Default.Query);
+                    }
+                    catch (JsonException ex)
+                    {
+                        return Results.BadRequest(Response.Fail(InternalErrorCode.INVALID_DATA, ex.Message, ErrorTypes.Request));
+                    }
+                    if (q is null) q = new Query { Type = QueryType.Search, SpaceName = space_name, Subpath = "/" };
+                    var queryStream = await csv.ExportAsync(q, http.Actor(), ct);
+                    return Results.Stream(queryStream, "text/csv", $"{space_name}.csv");
+                }
             });
     }
 }

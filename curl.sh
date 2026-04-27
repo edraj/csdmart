@@ -461,6 +461,39 @@ else
     nope "expected at least 2 lines, got $CSV_LINES"
 fi
 
+# Python-compatible saved-query execution route (misspelled /excute) and
+# saved-query CSV export. The saved entry payload carries a Query; the request
+# body is a core.Record whose attributes substitute $target in the search.
+SAVED_QUERY="curl_saved_query_$(date +%s)"
+SAVED_QUERY_TARGET="buyer_123"
+RESP=$(curl -s -H "$AUTH_HEADER" -H "$CT" \
+    -d "{\"space_name\":\"$SPACE\",\"request_type\":\"create\",\"records\":[{\"resource_type\":\"content\",\"subpath\":\"reports\",\"shortname\":\"$SAVED_QUERY\",\"attributes\":{\"is_active\":true,\"payload\":{\"content_type\":\"json\",\"body\":{\"type\":\"search\",\"space_name\":\"$SPACE\",\"subpath\":\"myfolder\",\"filter_schema_names\":[],\"filter_types\":[\"content\"],\"search\":\"@shortname:\$target\",\"retrieve_json_payload\":true,\"limit\":10}}}}]}" \
+    "$API_URL/managed/request")
+expect_success "Create saved query:" "$RESP"
+
+printf '%-45s' "Managed /excute saved query:" >&2
+EXEC_RESP=$(curl -s -H "$AUTH_HEADER" -H "$CT" \
+    -d "{\"resource_type\":\"content\",\"subpath\":\"reports\",\"shortname\":\"$SAVED_QUERY\",\"attributes\":{\"target\":\"$SAVED_QUERY_TARGET\"}}" \
+    "$API_URL/managed/excute/query/$SPACE")
+if echo "$EXEC_RESP" | jq -e ".status == \"success\" and (.records | map(.shortname) | contains([\"$SAVED_QUERY_TARGET\"]))" > /dev/null 2>&1; then
+    ok
+else
+    nope "$EXEC_RESP"
+fi
+
+printf '%-45s' "Managed CSV saved query:" >&2
+SAVED_CSV_LINES=$(curl -s -H "$AUTH_HEADER" -H "$CT" \
+    -d "{\"resource_type\":\"content\",\"subpath\":\"reports\",\"shortname\":\"$SAVED_QUERY\",\"attributes\":{\"target\":\"$SAVED_QUERY_TARGET\"}}" \
+    "$API_URL/managed/csv/$SPACE" | wc -l)
+if [[ "$SAVED_CSV_LINES" -ge 2 ]]; then
+    ok
+else
+    nope "expected saved-query CSV lines, got $SAVED_CSV_LINES"
+fi
+curl -s -H "$AUTH_HEADER" -H "$CT" \
+    -d "{\"space_name\":\"$SPACE\",\"request_type\":\"delete\",\"records\":[{\"resource_type\":\"content\",\"subpath\":\"reports\",\"shortname\":\"$SAVED_QUERY\",\"attributes\":{}}]}" \
+    "$API_URL/managed/request" > /dev/null 2>&1
+
 # ============================================================================
 # 16. Update content via raw request body file
 # ============================================================================
@@ -1358,14 +1391,18 @@ curl -s -H "$CT" -H "$AUTH_HEADER" "$API_URL/managed/request" -d "{
 WPERM="curltest_world_$(date +%s)"
 WROLE="curltest_anon_role_$(date +%s)"
 WSUBPATH="/public_items"
+WNESTED="/public_items/nested/deep"
 WSHORT="curltest_anon_item_$(date +%s)"
+WNESTSHORT="curltest_anon_nested_$(date +%s)"
 
 # 71. Seed: create a folder + content entry in $SPACE/public_items.
 curl -s -H "$CT" -H "$AUTH_HEADER" "$API_URL/managed/request" -d "{
   \"space_name\":\"$SPACE\",\"request_type\":\"create\",\"records\":[
     {\"resource_type\":\"folder\",\"subpath\":\"/\",\"shortname\":\"public_items\",\"attributes\":{\"is_active\":true}},
     {\"resource_type\":\"content\",\"subpath\":\"$WSUBPATH\",\"shortname\":\"$WSHORT\",
-     \"attributes\":{\"is_active\":true,\"payload\":{\"content_type\":\"json\",\"body\":{\"rank\":7}}}}
+     \"attributes\":{\"is_active\":true,\"payload\":{\"content_type\":\"json\",\"body\":{\"rank\":7}}}},
+    {\"resource_type\":\"content\",\"subpath\":\"$WNESTED\",\"shortname\":\"$WNESTSHORT\",
+     \"attributes\":{\"is_active\":true,\"payload\":{\"content_type\":\"json\",\"body\":{\"rank\":8}}}}
   ]
 }" > /dev/null 2>&1
 
@@ -1375,7 +1412,7 @@ curl -s -H "$CT" -H "$AUTH_HEADER" "$API_URL/managed/request" -d "{
   \"space_name\":\"management\",\"request_type\":\"create\",\"records\":[
     {\"resource_type\":\"permission\",\"subpath\":\"/permissions\",\"shortname\":\"$WPERM\",
      \"attributes\":{\"is_active\":true,
-                    \"subpaths\":{\"$SPACE\":[\"$WSUBPATH\"]},
+                    \"subpaths\":{\"$SPACE\":[\"$WSUBPATH\",\"$WNESTED\"]},
                     \"resource_types\":[\"content\"],
                     \"actions\":[\"view\",\"query\"],
                     \"conditions\":[\"is_active\"]}},
@@ -1408,6 +1445,14 @@ else
     nope "$PUB_GET_RESP"
 fi
 
+printf '%-45s' "Anonymous /public/query GET nested path:" >&2
+PUB_GET_NESTED=$(curl -s "$API_URL/public/query/search/$SPACE/public_items/nested/deep?limit=10")
+if echo "$PUB_GET_NESTED" | jq -e ".status == \"success\" and (.records | map(.shortname) | contains([\"$WNESTSHORT\"]))" > /dev/null 2>&1; then
+    ok
+else
+    nope "$PUB_GET_NESTED"
+fi
+
 # 74. Unlisted subpath stays denied — the fix must not be a blanket grant.
 printf '%-45s' "Anonymous /public/query denied elsewhere:" >&2
 DENIED_RESP=$(curl -s -H "$CT" \
@@ -1430,6 +1475,7 @@ curl -s -H "$CT" -H "$AUTH_HEADER" "$API_URL/managed/request" -d "{
 curl -s -H "$CT" -H "$AUTH_HEADER" "$API_URL/managed/request" -d "{
   \"space_name\":\"$SPACE\",\"request_type\":\"delete\",\"records\":[
     {\"resource_type\":\"content\",\"subpath\":\"$WSUBPATH\",\"shortname\":\"$WSHORT\"},
+    {\"resource_type\":\"content\",\"subpath\":\"$WNESTED\",\"shortname\":\"$WNESTSHORT\"},
     {\"resource_type\":\"folder\",\"subpath\":\"/\",\"shortname\":\"public_items\"}
   ]
 }" > /dev/null 2>&1

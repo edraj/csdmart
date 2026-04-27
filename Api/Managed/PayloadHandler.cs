@@ -2,6 +2,7 @@ using System.Text;
 using System.Text.Json;
 using Dmart.Api;
 using Dmart.DataAdapters.Sql;
+using Dmart.Models.Api;
 using Dmart.Models.Core;
 using Dmart.Models.Enums;
 using Dmart.Models.Json;
@@ -24,7 +25,8 @@ public static class PayloadHandler
         // and `/payload/{resource_type}/{space}/{subpath:path}/{shortname}.{schema}.{ext}`.
         g.MapGet("/payload/{resource_type}/{space}/{**rest}",
             async (string resource_type, string space, string rest,
-                   AttachmentRepository attachments, EntryService entries, CancellationToken ct) =>
+                   AttachmentRepository attachments, EntryService entries,
+                   PermissionService perms, HttpContext http, CancellationToken ct) =>
             {
                 if (!Enum.TryParse<ResourceType>(resource_type, true, out var rt))
                     return Results.BadRequest($"unknown resource_type '{resource_type}'");
@@ -32,13 +34,15 @@ public static class PayloadHandler
                 if (parts is null)
                     return Results.BadRequest($"invalid payload path '{rest}' — expected {{subpath}}/{{shortname}}.{{ext}}");
                 var (subpath, shortname, _schema, ext) = parts.Value;
-                return await ServePayloadAsync(rt, space, subpath, shortname, ext, attachments, entries, ct);
+                return await ServePayloadAsync(rt, space, subpath, shortname, ext,
+                    attachments, entries, perms, http.Actor(), ct);
             });
     }
 
     public static async Task<IResult> ServePayloadAsync(
         ResourceType rt, string space, string subpath, string shortname, string ext,
-        AttachmentRepository attachments, EntryService entries, CancellationToken ct)
+        AttachmentRepository attachments, EntryService entries, PermissionService perms,
+        string? actor, CancellationToken ct)
     {
         var normalizedSubpath = Locator.NormalizeSubpath(subpath);
 
@@ -46,13 +50,22 @@ public static class PayloadHandler
         {
             var att = await attachments.GetAsync(space, normalizedSubpath, shortname, ct);
             if (att?.Media is null) return Results.NotFound();
+            var attachmentLocator = new Locator(rt, space, normalizedSubpath, shortname);
+            if (!await perms.CanReadAsync(actor, attachmentLocator, PermissionService.FromAttachment(att), ct))
+            {
+                return Results.Json(
+                    Response.Fail(InternalErrorCode.NOT_ALLOWED,
+                        "You don't have permission to this action", ErrorTypes.Request),
+                    DmartJsonContext.Default.Response,
+                    statusCode: StatusCodes.Status401Unauthorized);
+            }
             var mime = MimeFor(att.Payload?.ContentType, ext);
             return Results.File(att.Media, mime, $"{shortname}.{ext}");
         }
 
         // Entry-flavor: serialize the inline JSON payload from entries.payload.body
         var locator = new Locator(rt, space, normalizedSubpath, shortname);
-        var entry = await entries.GetAsync(locator, actor: null, ct);
+        var entry = await entries.GetAsync(locator, actor, ct);
         if (entry?.Payload?.Body is null) return Results.NotFound();
         var bodyJson = JsonSerializer.Serialize(entry.Payload.Body!.Value, DmartJsonContext.Default.JsonElement);
         return Results.Bytes(Encoding.UTF8.GetBytes(bodyJson), "application/json", $"{shortname}.json");

@@ -39,17 +39,23 @@ public static class ResourceWithPayloadHandler
         g.MapPost("/resource_with_payload",
             async Task<Response> (HttpRequest req, EntryService entries,
                                   AttachmentRepository attachments,
+                                  PermissionService perms,
                                   ILogger<ResourceWithPayloadMarker> log, HttpContext http,
                                   CancellationToken ct) =>
-                await HandleAsync(req, entries, attachments, http.ActorOrAnonymous(), log, ct))
+                await HandleAsync(req, entries, attachments, perms, http.ActorOrAnonymous(), log, ct))
           .DisableAntiforgery();
 
-        g.MapPost("/resources_from_csv/{resource_type}/{space}/{subpath}/{schema}",
-            async Task<Response> (string resource_type, string space, string subpath, string schema,
+        g.MapPost("/resources_from_csv/{resource_type}/{space}/{**rest}",
+            async Task<Response> (string resource_type, string space, string rest,
                                   HttpRequest req, CsvService csv, HttpContext http, CancellationToken ct) =>
             {
                 if (!Enum.TryParse<ResourceType>(resource_type, true, out var rt))
                     return Response.Fail(InternalErrorCode.NOT_SUPPORTED_TYPE, "unknown resource type", ErrorTypes.Request);
+                var split = RouteParts.SplitSubpathAndShortname(rest);
+                var subpath = split.Subpath;
+                var schema = split.Shortname;
+                if (string.IsNullOrEmpty(schema))
+                    return Response.Fail(InternalErrorCode.MISSING_DATA, "schema_shortname required", ErrorTypes.Request);
                 if (!req.HasFormContentType)
                     return Response.Fail(InternalErrorCode.INVALID_DATA, "expected multipart/form-data", ErrorTypes.Request);
 
@@ -68,7 +74,7 @@ public static class ResourceWithPayloadHandler
 
     public static async Task<Response> HandleAsync(
         HttpRequest req, EntryService entries, AttachmentRepository attachments,
-        string actor, ILogger log, CancellationToken ct)
+        PermissionService perms, string actor, ILogger log, CancellationToken ct)
     {
         if (!req.HasFormContentType)
             return Response.Fail(InternalErrorCode.INVALID_DATA, "expected multipart/form-data", ErrorTypes.Request);
@@ -126,17 +132,22 @@ public static class ResourceWithPayloadHandler
 
         if (IsAttachmentResourceType(record.ResourceType))
             return await StoreAttachmentAsync(record, spaceName, actor, fileBytes, ext,
-                resourceContentType, checksum, sha, schemaShortname, attachments, log, ct);
+                resourceContentType, checksum, sha, schemaShortname, attachments, perms, log, ct);
 
         return await StoreEntryAsync(record, spaceName, actor, fileBytes, ext,
             resourceContentType, checksum, sha, schemaShortname, entries, ct);
     }
 
-    private static async Task<Response> StoreAttachmentAsync(
+    public static async Task<Response> StoreAttachmentAsync(
         Record record, string spaceName, string actor, byte[] fileBytes, string ext,
         ContentType contentType, string checksum, string? clientChecksum, string? schemaShortname,
-        AttachmentRepository attachments, ILogger log, CancellationToken ct)
+        AttachmentRepository attachments, PermissionService perms, ILogger log, CancellationToken ct)
     {
+        var gateLocator = new Locator(record.ResourceType, spaceName, "/" + record.Subpath.TrimStart('/'), record.Shortname);
+        if (!await perms.CanCreateAsync(actor, gateLocator, record.Attributes, ct))
+            return Response.Fail(InternalErrorCode.NOT_ALLOWED,
+                $"not allowed to create {record.ResourceType}", ErrorTypes.Request);
+
         var bodyRef = $"{record.Shortname}.{ext}";
         // Pull meta-level fields out of attributes — same shape entries get via
         // RequestHandler.MaterializeEntry. Without this displayname / description
@@ -281,7 +292,7 @@ public static class ResourceWithPayloadHandler
 
     // Pulls schema_shortname out of attributes.payload.schema_shortname (the dmart
     // wire convention). Tolerant of either a JsonElement or a Dictionary value.
-    private static string? ExtractSchemaShortname(Dictionary<string, object>? attrs)
+    public static string? ExtractSchemaShortname(Dictionary<string, object>? attrs)
     {
         if (attrs is null || !attrs.TryGetValue("payload", out var payloadObj)) return null;
         if (payloadObj is JsonElement el && el.ValueKind == JsonValueKind.Object

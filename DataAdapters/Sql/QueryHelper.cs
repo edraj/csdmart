@@ -1297,28 +1297,10 @@ public static class QueryHelper
         // Aggregate functions (reducers)
         foreach (var reducer in reducers)
         {
-            var funcName = MapReducerToSql(reducer.ReducerName);
-            if (funcName is null) continue;
-
-            string fieldExpr;
-            var reducerArgs = reducer.Args ?? new();
-            if (reducerArgs.Count == 0)
-                fieldExpr = "*";
-            else
-            {
-                var arg0 = reducerArgs[0];
-                if (arg0.StartsWith('@')) arg0 = arg0[1..];
-                var resolved = ResolveFieldExpr(arg0);
-                if (resolved is null) continue;
-                fieldExpr = resolved;
-
-                // Type casting for numeric aggregates
-                if (funcName is "SUM" or "AVG")
-                    fieldExpr = $"({fieldExpr})::numeric";
-            }
-
             var alias = !string.IsNullOrEmpty(reducer.Alias) ? SanitizeAlias(reducer.Alias) : SanitizeAlias(reducer.ReducerName);
-            selectParts.Add($"{funcName}({fieldExpr}) AS {alias}");
+            var expr = BuildReducerExpression(reducer);
+            if (expr is null) continue;
+            selectParts.Add($"{expr} AS {alias}");
         }
 
         if (selectParts.Count == 0) return new();
@@ -1366,18 +1348,55 @@ public static class QueryHelper
         return results;
     }
 
-    // Maps Redis reducer names to PostgreSQL aggregate function names.
-    private static string? MapReducerToSql(string reducerName) => reducerName.ToLowerInvariant() switch
+    private static string? BuildReducerExpression(RedisReducer reducer)
     {
-        "count" or "count_distinct" or "count_distinctish" or "r_count" => "COUNT",
-        "sum" or "total" => "SUM",
-        "avg" => "AVG",
-        "min" => "MIN",
-        "max" => "MAX",
-        "stddev" => "STDDEV",
-        "group_concat" or "tolist" => "STRING_AGG",
-        _ => null,
-    };
+        var reducerArgs = reducer.Args ?? new();
+        var name = reducer.ReducerName.ToLowerInvariant();
+
+        string? ResolveArg(int index)
+        {
+            if (reducerArgs.Count <= index) return null;
+            var arg = reducerArgs[index];
+            if (arg.StartsWith('@')) arg = arg[1..];
+            return ResolveFieldExpr(arg);
+        }
+
+        var fieldExpr = ResolveArg(0);
+        return name switch
+        {
+            "count" or "r_count" => fieldExpr is null ? "COUNT(*)" : $"COUNT({fieldExpr})",
+            "count_distinct" or "count_distinctish" =>
+                fieldExpr is null ? "COUNT(*)" : $"COUNT(DISTINCT {fieldExpr})",
+            "sum" or "total" =>
+                fieldExpr is null ? null : $"SUM(({fieldExpr})::numeric)",
+            "avg" =>
+                fieldExpr is null ? null : $"AVG(({fieldExpr})::numeric)",
+            "min" =>
+                fieldExpr is null ? null : $"MIN({fieldExpr})",
+            "max" =>
+                fieldExpr is null ? null : $"MAX({fieldExpr})",
+            "stddev" =>
+                fieldExpr is null ? null : $"STDDEV(({fieldExpr})::numeric)",
+            "group_concat" or "tolist" =>
+                fieldExpr is null ? null : $"STRING_AGG(({fieldExpr})::text, ',')",
+            "quantile" =>
+                fieldExpr is null ? null : $"percentile_cont({ParseQuantile(reducerArgs)}) WITHIN GROUP (ORDER BY ({fieldExpr})::numeric)",
+            "first_value" =>
+                fieldExpr is null ? null : $"(ARRAY_AGG({fieldExpr} ORDER BY updated_at DESC))[1]",
+            "random_sample" =>
+                fieldExpr is null ? null : $"(ARRAY_AGG({fieldExpr} ORDER BY RANDOM()))[1]",
+            _ => null,
+        };
+    }
+
+    private static string ParseQuantile(List<string> args)
+    {
+        if (args.Count < 2) return "0.5";
+        return decimal.TryParse(args[1], System.Globalization.NumberStyles.Float,
+            System.Globalization.CultureInfo.InvariantCulture, out var q)
+            ? Math.Clamp(q, 0m, 1m).ToString(System.Globalization.CultureInfo.InvariantCulture)
+            : "0.5";
+    }
 
     // Resolves a field name (possibly dotted JSONB path) to a SQL expression.
     private static string? ResolveFieldExpr(string field)

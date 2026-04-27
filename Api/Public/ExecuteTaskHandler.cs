@@ -1,5 +1,4 @@
 using Dmart.Models.Api;
-using Dmart.Models.Enums;
 using Dmart.Services;
 
 namespace Dmart.Api.Public;
@@ -11,12 +10,8 @@ public static class ExecuteTaskHandler
     public static void Map(RouteGroupBuilder g) =>
         g.MapPost("/excute/{task_type}/{space_name}", async (
             string task_type, string space_name,
-            Query q, QueryService queryService, CancellationToken ct) =>
-        {
-            if (task_type != "query")
-                return Response.Fail(InternalErrorCode.NOT_SUPPORTED_TYPE,
-                    $"public task type '{task_type}' not supported", ErrorTypes.Request);
-            var adjusted = q with { SpaceName = space_name };
-            return await queryService.ExecuteAsync(adjusted, null, ct);
-        });
+            HttpRequest req, EntryService entries, QueryService queryService,
+            CancellationToken ct) =>
+            await Dmart.Api.Managed.ExecuteTaskHandler.ExecuteFromBodyAsync(
+                task_type, space_name, req, entries, queryService, "anonymous", ct));
 }

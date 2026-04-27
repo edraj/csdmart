@@ -63,6 +63,9 @@ public sealed class PermissionService(UserRepository users, AccessRepository acc
     public static ResourceContext FromEntry(Entry e) =>
         new(e.IsActive, e.OwnerShortname, e.OwnerGroupShortname, e.Acl);
 
+    public static ResourceContext FromAttachment(Attachment a) =>
+        new(a.IsActive, a.OwnerShortname, a.OwnerGroupShortname, a.Acl);
+
     public static ResourceContext FromUser(User u) =>
         new(u.IsActive, u.OwnerShortname, u.OwnerGroupShortname, u.Acl);
 

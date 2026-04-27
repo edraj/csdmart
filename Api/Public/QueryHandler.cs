@@ -50,9 +50,8 @@ public static class QueryHandler
             await JqEnvelope.WriteAsync(http.Response, resp, q?.JqFilter, settings.Value.JqTimeout, ct);
         });
 
-        // Python: GET /public/query-via-url — query via URL parameters (for embedding).
-        // Also: GET /public/query/{type}/{space_name}/{subpath}
-        g.MapGet("/query/{type}/{space_name}/{subpath}", async (
+        // Python: GET /public/query/{type}/{space_name}/{subpath:path}
+        g.MapGet("/query/{type}/{space_name}/{**subpath}", async (
             string type, string space_name, string subpath,
             int? limit, int? offset, string? search,
             QueryService svc, CancellationToken ct) =>

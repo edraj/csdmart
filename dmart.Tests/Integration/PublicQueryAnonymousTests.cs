@@ -229,6 +229,26 @@ public sealed class PublicQueryAnonymousTests : IClassFixture<DmartFactory>
         response.Records!.Select(r => r.Shortname).ShouldContain("getprobe");
     }
 
+    [FactIfPg]
+    public async Task PublicQuery_Get_Accepts_Nested_Subpath()
+    {
+        await using var h = await WorldScopeHarness.CreateAsync(_factory,
+            subpathsForSpace: new() { "/items/nested/deep" },
+            actions: new() { "view", "query" },
+            resourceTypes: new() { "content" },
+            conditions: new() { "is_active" },
+            subpath: "/items/nested/deep",
+            seeds: new[] { ("nestedprobe", 1) });
+
+        var subpath = h.Subpath.Trim('/');
+        var resp = await h.Client.GetAsync($"/public/query/search/{h.Space}/{subpath}?limit=10");
+        resp.StatusCode.ShouldBe(HttpStatusCode.OK);
+
+        var response = await resp.Content.ReadFromJsonAsync(DmartJsonContext.Default.Response);
+        response!.Status.ShouldBe(Status.Success);
+        response.Records!.Select(r => r.Shortname).ShouldContain("nestedprobe");
+    }
+
     // ==================== World permission boundary coverage ====================
     //
     // Over-access: the permission walk MUST honor the magic words that widen

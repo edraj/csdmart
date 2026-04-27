@@ -22,15 +22,14 @@ public class PublicSubmitTests : IClassFixture<DmartFactory>
     public PublicSubmitTests(DmartFactory factory) => _factory = factory;
 
     [FactIfPg]
-    public async Task Submit_Rejects_Unknown_ResourceType()
+    public async Task Submit_Rejects_NotAllowlisted_Location()
     {
         var client = _factory.CreateClient();
         var body = new StringContent("{\"foo\":\"bar\"}", Encoding.UTF8, "application/json");
         var resp = await client.PostAsync("/public/submit/test/not_a_real_type/schema1/sub1", body);
-        // FailedResponseFilter maps bad_request-class errors to 400.
         resp.StatusCode.ShouldBe(HttpStatusCode.BadRequest);
         var json = await resp.Content.ReadAsStringAsync();
-        json.ShouldContain("unknown resource type");
+        json.ShouldContain("Selected location is not allowed");
     }
 
     [FactIfPg]
@@ -48,27 +47,22 @@ public class PublicSubmitTests : IClassFixture<DmartFactory>
         // Submission against a space.schema NOT in the allowlist must fail.
         var body = new StringContent("{\"note\":\"hi\"}", Encoding.UTF8, "application/json");
         var resp = await client.PostAsync("/public/submit/test/content/some_other_schema/sub1", body);
-        // Whitelist rejection emits NOT_ALLOWED (401) via the FailedResponseFilter,
-        // matching Python's auth-type response for restricted resources.
-        resp.StatusCode.ShouldBe(HttpStatusCode.Unauthorized);
+        // Python rejects non-allowlisted public submit locations as request
+        // errors before any authz/resource write path runs.
+        resp.StatusCode.ShouldBe(HttpStatusCode.BadRequest);
         var respText = await resp.Content.ReadAsStringAsync();
-        respText.ShouldContain("not allowed");
+        respText.ShouldContain("Selected location is not allowed");
     }
 
     [FactIfPg]
-    public async Task Submit_AllowedSubmitModels_Empty_Means_Allow_Any()
+    public async Task Submit_AllowedSubmitModels_Empty_Denies_Public_Submit()
     {
-        // With no allowlist set (the default), every space.schema pair is
-        // accepted as long as resource_type parses. The request itself may
-        // still fail downstream (e.g. schema validation), but not on the
-        // allowlist gate.
         var client = _factory.CreateClient();
         var body = new StringContent("{\"foo\":\"bar\"}", Encoding.UTF8, "application/json");
         var resp = await client.PostAsync("/public/submit/test/anything/sub1", body);
-        // A 400 with "not allowed" means the gate fired; any OTHER outcome
-        // (success, validation failure, etc.) means the gate passed.
+        resp.StatusCode.ShouldBe(HttpStatusCode.BadRequest);
         var respText = await resp.Content.ReadAsStringAsync();
-        respText.ShouldNotContain("submit not allowed");
+        respText.ShouldContain("Selected location is not allowed");
     }
 
     [FactIfPg]
