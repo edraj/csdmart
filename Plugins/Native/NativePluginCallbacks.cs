@@ -59,7 +59,18 @@ public static unsafe class NativePluginCallbacks
         // Returns the raw bytes via outBufLen (caller frees with DmartFree).
         // null when the attachment has no media or doesn't exist. APPENDED.
         public delegate* unmanaged[Cdecl]<byte*, byte*, byte*, int*, byte*> GetMediaAttachment;
+
+        // Capability-level marker; plugins read this to detect host
+        // version at runtime. Bumped whenever fields are appended.
+        //   1 — initial release (LoadEntry…DmartFree)
+        //   2 — Query, GetMediaAttachment appended; Query was ACL-free
+        //   3 — Query honors caller's actor by default; "as_actor" override
+        public int Version;
     }
+
+    // Single source of truth for the version number written into every
+    // DmartCallbacks struct. Matches the comment in the field above.
+    public const int CurrentVersion = 3;
 
     // Allocated once, stays alive for the process lifetime. Plugins keep
     // the pointer we hand them in their `init()` and dereference it as
@@ -89,6 +100,7 @@ public static unsafe class NativePluginCallbacks
             DmartFree = &DmartFreeCb,
             Query = &QueryCb,
             GetMediaAttachment = &GetMediaAttachmentCb,
+            Version = CurrentVersion,
         };
         // Copy into unmanaged memory so the pointer doesn't move under the
         // GC. The struct is small and ABI-stable; the pointer lives until
@@ -261,51 +273,54 @@ public static unsafe class NativePluginCallbacks
                 return AllocUtf8(BuildQueryFailJson(InternalErrorCode.SOMETHING_WRONG,
                     "empty query or services not initialized", ErrorTypes.Internal));
 
-            // Resolve the effective actor: explicit override from the JSON if
-            // the plugin set one, otherwise the caller carried via the
-            // ambient PluginInvocationContext. The Query model ignores this
-            // field on deserialize.
-            string? actor;
-            try
-            {
-                using var doc = JsonDocument.Parse(json);
-                if (doc.RootElement.ValueKind == JsonValueKind.Object
-                    && doc.RootElement.TryGetProperty("as_actor", out var asActor))
-                {
-                    actor = asActor.ValueKind == JsonValueKind.Null
-                        ? null
-                        : asActor.GetString();
-                }
-                else
-                {
-                    actor = PluginInvocationContext.CurrentActor;
-                }
-            }
+            // Single-parse: pull both the actor override (if any) and the
+            // typed Query out of the same JsonDocument. Deserializing twice
+            // doubled the parse cost on every plugin query.
+            JsonDocument doc;
+            try { doc = JsonDocument.Parse(json); }
             catch (JsonException jex)
             {
                 return AllocUtf8(BuildQueryFailJson(InternalErrorCode.INVALID_DATA,
                     $"invalid query json: {jex.Message}", ErrorTypes.Request));
             }
 
-            Query? query;
-            try { query = JsonSerializer.Deserialize(json, DmartJsonContext.Default.Query); }
-            catch (JsonException jex)
+            using (doc)
             {
-                return AllocUtf8(BuildQueryFailJson(InternalErrorCode.INVALID_DATA,
-                    $"invalid query json: {jex.Message}", ErrorTypes.Request));
+                var actor = ResolveActor(doc.RootElement, PluginInvocationContext.CurrentActor);
+                Query? query;
+                try { query = doc.RootElement.Deserialize(DmartJsonContext.Default.Query); }
+                catch (JsonException jex)
+                {
+                    return AllocUtf8(BuildQueryFailJson(InternalErrorCode.INVALID_DATA,
+                        $"invalid query json: {jex.Message}", ErrorTypes.Request));
+                }
+                if (query is null)
+                    return AllocUtf8(BuildQueryFailJson(InternalErrorCode.INVALID_DATA,
+                        "invalid query json", ErrorTypes.Request));
+                using var scope = Services.CreateScope();
+                var qsvc = scope.ServiceProvider.GetRequiredService<QueryService>();
+                var resp = qsvc.ExecuteAsync(query, actor).GetAwaiter().GetResult();
+                return AllocUtf8(JsonSerializer.Serialize(resp, DmartJsonContext.Default.Response));
             }
-            if (query is null)
-                return AllocUtf8(BuildQueryFailJson(InternalErrorCode.INVALID_DATA,
-                    "invalid query json", ErrorTypes.Request));
-            using var scope = Services.CreateScope();
-            var qsvc = scope.ServiceProvider.GetRequiredService<QueryService>();
-            var resp = qsvc.ExecuteAsync(query, actor).GetAwaiter().GetResult();
-            return AllocUtf8(JsonSerializer.Serialize(resp, DmartJsonContext.Default.Response));
         }
         catch (Exception ex)
         {
             return AllocUtf8(BuildQueryFailJson(InternalErrorCode.SOMETHING_WRONG, ex.Message, ErrorTypes.Exception));
         }
+    }
+
+    // Three-tier actor resolution for plugin queries:
+    //   "as_actor" present, string  → impersonate that user
+    //   "as_actor" present, JSON null → run as system (no ACL filter)
+    //   "as_actor" absent             → fall back to ambient (the user
+    //                                   that triggered the hook / API
+    //                                   request, set by the dispatcher).
+    // internal for testing via dmart.Tests.
+    internal static string? ResolveActor(JsonElement root, string? ambient)
+    {
+        if (root.ValueKind != JsonValueKind.Object) return ambient;
+        if (!root.TryGetProperty("as_actor", out var asActor)) return ambient;
+        return asActor.ValueKind == JsonValueKind.Null ? null : asActor.GetString();
     }
 
     // internal for testing via dmart.Tests.

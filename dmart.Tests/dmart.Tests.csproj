@@ -9,7 +9,19 @@
     <!-- Test project must NOT inherit AOT settings from the main project. -->
     <PublishAot>false</PublishAot>
     <PublishSelfContained>false</PublishSelfContained>
+    <!-- Needed because we compile in the SDK file below for testing. -->
+    <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
   </PropertyGroup>
+
+  <!--
+    Compile the SDK helper into the test assembly so we can unit-test
+    BuildQueryJsonWithActor directly. The SDK is normally shipped as
+    drop-in source for plugin authors; this Include is the only place
+    in the test build that pulls it in.
+  -->
+  <ItemGroup>
+    <Compile Include="..\custom_plugins_sdk\shared\DmartCallbacks.cs" Link="Sdk\DmartCallbacks.cs" />
+  </ItemGroup>
 
   <ItemGroup>
     <PackageReference Include="coverlet.collector" Version="8.0.1">

@@ -73,7 +73,21 @@ internal sealed class NativeApiPlugin : IApiPlugin
         };
 
         var requestJson = JsonSerializer.Serialize(envelope, DmartJsonContext.Default.NativeApiRequest);
-        var resultJson = handle.CallHandleRequest(requestJson);
+
+        // Expose the calling actor to host callbacks (QueryCb) so plugin
+        // queries default to the user's permissions. Same set/restore
+        // discipline as NativeHookPlugin.HookAsync.
+        var previousActor = PluginInvocationContext.CurrentActor;
+        PluginInvocationContext.CurrentActor = ctx.Actor();
+        string resultJson;
+        try
+        {
+            resultJson = handle.CallHandleRequest(requestJson);
+        }
+        finally
+        {
+            PluginInvocationContext.CurrentActor = previousActor;
+        }
 
         // Binary-response opt-in: a plugin that needs to return non-JSON
         // (e.g. a generated PDF) wraps its bytes in
