@@ -3,7 +3,7 @@ using System.Runtime.InteropServices;
 using System.Text;
 
 namespace Dmart.Sdk;
-
+// V2
 // C# view of the DmartCallbacks struct dmart hands each native plugin via
 // `init(const DmartCallbacks*)`. Layout MUST match the host definition in
 // Plugins/Native/NativePluginCallbacks.cs — append fields only, never
@@ -40,6 +40,12 @@ public unsafe struct DmartCallbacks
     public delegate* unmanaged[Cdecl]<byte*, byte*, byte*, int> SendEmail;
     public delegate* unmanaged[Cdecl]<byte*, byte*, int> WsBroadcast;
     public delegate* unmanaged[Cdecl]<byte*, void> DmartFree;
+    // Generic Query — same shape as POST /managed/query body, no ACL.
+    public delegate* unmanaged[Cdecl]<byte*, byte*> Query;
+    // Media-attachment bytes, by (space, subpath, shortname). The 4th arg
+    // is an int* the host writes the byte count to. Returned pointer must
+    // be released via DmartFree. null when missing or no media column.
+    public delegate* unmanaged[Cdecl]<byte*, byte*, byte*, int*, byte*> GetMediaAttachment;
 }
 
 // Ergonomic wrappers that handle UTF-8 marshaling, null pointers, and
@@ -122,6 +128,47 @@ public static unsafe class DmartSdk
         {
             Marshal.FreeHGlobal((IntPtr)chBuf);
             Marshal.FreeHGlobal((IntPtr)msgBuf);
+        }
+    }
+
+    // Run a /managed/query-shaped JSON body through the host and get the
+    // Response JSON back. Plugins are trusted, so no ACL filter is applied.
+    public static string? Query(in DmartCallbacks cb, string queryJson)
+    {
+        if (cb.Query == null) return null;
+        var buf = StringToUtf8(queryJson);
+        try { return TakeAndFree(cb, cb.Query(buf)); }
+        finally { Marshal.FreeHGlobal((IntPtr)buf); }
+    }
+
+    // Read the raw `media` BYTEA for an attachment by (space, subpath,
+    // shortname). null when the attachment is missing or has no media.
+    // The returned byte[] is a managed copy — the unmanaged buffer the
+    // host returned is released via DmartFree before this method returns.
+    public static byte[]? GetMediaAttachment(in DmartCallbacks cb, string space, string subpath, string shortname)
+    {
+        if (cb.GetMediaAttachment == null) return null;
+        var spBuf = StringToUtf8(space);
+        var subBuf = StringToUtf8(subpath);
+        var snBuf = StringToUtf8(shortname);
+        try
+        {
+            int len = 0;
+            var ptr = cb.GetMediaAttachment(spBuf, subBuf, snBuf, &len);
+            if (ptr == null || len <= 0) return null;
+            try
+            {
+                var bytes = new byte[len];
+                Marshal.Copy((IntPtr)ptr, bytes, 0, len);
+                return bytes;
+            }
+            finally { if (cb.DmartFree != null) cb.DmartFree(ptr); }
+        }
+        finally
+        {
+            Marshal.FreeHGlobal((IntPtr)spBuf);
+            Marshal.FreeHGlobal((IntPtr)subBuf);
+            Marshal.FreeHGlobal((IntPtr)snBuf);
         }
     }
 
