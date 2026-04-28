@@ -50,7 +50,7 @@
         exact_subpath = $bindable(true),
         scope = $bindable(DmartScope.managed),
         stream = $bindable(false),
-        onStreamUpdate = $bindable(undefined),
+        onStreamUpdate = undefined,
     }: {
         space_name?: string;
         subpath?: string;
@@ -210,6 +210,8 @@
             return;
         }
 
+        // subpath arrives in cxb route-encoded form (slashes replaced with dashes by the
+        // router); reverse the encoding before sending to the backend.
         const slashSubpath = (subpath ?? "").replaceAll("-", "/");
         const normalizedSubpath = slashSubpath.startsWith("/") ? slashSubpath : `/${slashSubpath}`;
         const url = buildStreamUrl(token);
@@ -228,6 +230,10 @@
             }));
         };
         socket.onmessage = (event) => {
+            // Drop frames from a socket the effect has already rotated past — otherwise a
+            // stale connection still firing while a reconnect is in flight could trigger
+            // onStreamUpdate against the wrong subscription.
+            if (streamSocket !== socket) return;
             try {
                 const data = JSON.parse(event.data);
                 if (data?.type === "notification_subscription" && data?.message?.action_type) {

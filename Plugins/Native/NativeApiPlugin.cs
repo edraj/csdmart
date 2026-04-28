@@ -94,11 +94,13 @@ internal sealed class NativeApiPlugin : IApiPlugin
         await ctx.Response.WriteAsync(resultJson);
     }
 
-    private static bool TryDecodeBinary(string json, out string contentType, out byte[] body, out string? filename)
+    // internal for testing via dmart.Tests.
+    internal static bool TryDecodeBinary(string json, out string contentType, out byte[] body, out string? filename)
     {
         contentType = "application/octet-stream";
         body = Array.Empty<byte>();
         filename = null;
+        if (!LooksLikeBinaryEnvelope(json)) return false;
         try
         {
             using var doc = JsonDocument.Parse(json);
@@ -114,6 +116,19 @@ internal sealed class NativeApiPlugin : IApiPlugin
             return body.Length > 0;
         }
         catch { return false; }
+    }
+
+    // Cheap pre-filter so ordinary JSON responses skip the JsonDocument.Parse round trip.
+    // A binary envelope is a JSON object whose first non-whitespace char is `{` and which
+    // contains the literal `"binary"` key. Substring matches inside string values are
+    // benign — the structural parse still rejects them.
+    private static bool LooksLikeBinaryEnvelope(string json)
+    {
+        if (string.IsNullOrEmpty(json)) return false;
+        var i = 0;
+        while (i < json.Length && char.IsWhiteSpace(json[i])) i++;
+        if (i >= json.Length || json[i] != '{') return false;
+        return json.IndexOf("\"binary\"", i, StringComparison.Ordinal) >= 0;
     }
 
     internal sealed record NativeRoute(string Method, string Path);

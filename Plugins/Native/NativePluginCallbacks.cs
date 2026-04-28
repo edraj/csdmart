@@ -3,6 +3,7 @@ using System.Runtime.InteropServices;
 using System.Text;
 using System.Text.Json;
 using Dmart.DataAdapters.Sql;
+using Dmart.Models.Api;
 using Dmart.Models.Core;
 using Dmart.Models.Enums;
 using Dmart.Models.Json;
@@ -250,10 +251,18 @@ public static unsafe class NativePluginCallbacks
         {
             var json = PtrToString(queryJson);
             if (string.IsNullOrEmpty(json) || Services is null)
-                return AllocUtf8("""{"status":"failed","error":{"type":"plugin","code":1,"message":"empty query or services not initialized"}}""");
-            var query = JsonSerializer.Deserialize(json, DmartJsonContext.Default.Query);
+                return AllocUtf8(BuildQueryFailJson(InternalErrorCode.SOMETHING_WRONG,
+                    "empty query or services not initialized", ErrorTypes.Internal));
+            Query? query;
+            try { query = JsonSerializer.Deserialize(json, DmartJsonContext.Default.Query); }
+            catch (JsonException jex)
+            {
+                return AllocUtf8(BuildQueryFailJson(InternalErrorCode.INVALID_DATA,
+                    $"invalid query json: {jex.Message}", ErrorTypes.Request));
+            }
             if (query is null)
-                return AllocUtf8("""{"status":"failed","error":{"type":"plugin","code":2,"message":"invalid query json"}}""");
+                return AllocUtf8(BuildQueryFailJson(InternalErrorCode.INVALID_DATA,
+                    "invalid query json", ErrorTypes.Request));
             using var scope = Services.CreateScope();
             var qsvc = scope.ServiceProvider.GetRequiredService<QueryService>();
             var resp = qsvc.ExecuteAsync(query, actor: null).GetAwaiter().GetResult();
@@ -261,9 +270,13 @@ public static unsafe class NativePluginCallbacks
         }
         catch (Exception ex)
         {
-            return AllocUtf8("{\"status\":\"failed\",\"error\":{\"type\":\"plugin\",\"code\":3,\"message\":" + JsonEncode(ex.Message) + "}}");
+            return AllocUtf8(BuildQueryFailJson(InternalErrorCode.SOMETHING_WRONG, ex.Message, ErrorTypes.Exception));
         }
     }
+
+    // internal for testing via dmart.Tests.
+    internal static string BuildQueryFailJson(int code, string message, string type)
+        => JsonSerializer.Serialize(Response.Fail(code, message, type), DmartJsonContext.Default.Response);
 
     // Plugin → host: fetch the raw `media` BYTEA for an attachment by
     // (space, subpath, shortname). Returns the bytes via outBufLen and a
