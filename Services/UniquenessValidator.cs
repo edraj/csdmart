@@ -26,12 +26,16 @@ namespace Dmart.Services;
 //   - "payload.body.<dot.path>" → look up under entry.Payload.Body
 //   - anything else             → look up under the entry's flat attributes
 //
-// List values: when the value at the path is a JSON array (e.g. a list of
-// ids), we issue one search per element using the `payload.body.X[]:elem`
-// element-match syntax that QueryHelper already supports. Python's
-// validator doesn't handle list values cleanly; treating each element as a
-// separate uniqueness probe is the natural extension and is what the user
-// asked for.
+// List values: paths support `[]` segments to iterate through arrays.
+//   - `payload.body.ids`            — primitive array; each element becomes a
+//                                     uniqueness probe (auto-emits `ids[]:`).
+//   - `payload.body.ids[]`          — same as above, explicit form.
+//   - `payload.body.variants[].sku` — array of objects; pulls .sku from each
+//                                     element. Writes search tokens with the
+//                                     `[].sku:` literal so QueryHelper's
+//                                     EXISTS-style JSONB predicate matches.
+// QueryHelper already understands the `field[].sub:value` SQL translation
+// (DataAdapters/Sql/QueryHelper.cs:458+).
 //
 // Implementation note: we hit EntryRepository.QueryAsync directly (not
 // QueryService.ExecuteAsync). Uniqueness is a global constraint — if it
@@ -182,9 +186,8 @@ public sealed class UniquenessValidator(
         {
             if (entry.Payload?.Body is not JsonElement bodyEl || bodyEl.ValueKind != JsonValueKind.Object)
                 return true; // path applies but no body — empty list
-            var inner = path["payload.body.".Length..];
-            if (!TryNavigate(bodyEl, inner, out var node)) return true;
-            return ExpandScalarOrArray(node, values);
+            WalkPath(bodyEl, path["payload.body.".Length..], values);
+            return true;
         }
 
         // Fall back to a small set of flat entry attributes. Anything else
@@ -192,34 +195,75 @@ public sealed class UniquenessValidator(
         return TryReadFlatAttribute(entry, path, values);
     }
 
-    private static bool TryNavigate(JsonElement root, string dottedPath, out JsonElement node)
+    // Recursive path walker that supports object navigation (`.seg`) AND
+    // array iteration (`seg[]`). When the path is fully consumed, the
+    // current node is treated as a scalar or primitive array and emitted.
+    //
+    // Examples (path → behavior):
+    //   "email"                   → node["email"], emit scalar
+    //   "ids"                     → node["ids"], emit each element if array
+    //   "ids[]"                   → node["ids"], iterate, emit each element
+    //   "variants[].sku"          → node["variants"], iterate, emit .sku of each
+    //   "outer[].inner[].leaf"    → nested iteration
+    private static void WalkPath(JsonElement node, string path, List<string> values)
     {
-        node = root;
-        foreach (var seg in dottedPath.Split('.'))
+        if (path.Length == 0)
         {
-            if (node.ValueKind != JsonValueKind.Object) { node = default; return false; }
-            if (!node.TryGetProperty(seg, out var next)) { node = default; return false; }
-            node = next;
+            EmitScalarOrPrimitiveArray(node, values);
+            return;
         }
-        return true;
+
+        var bracketIdx = path.IndexOf("[]", StringComparison.Ordinal);
+        var dotIdx = path.IndexOf('.');
+        var bracketIsNext = bracketIdx >= 0 && (dotIdx < 0 || bracketIdx < dotIdx);
+
+        if (bracketIsNext)
+        {
+            var segName = path[..bracketIdx];
+            var rest = path[(bracketIdx + 2)..];
+            if (rest.StartsWith('.')) rest = rest[1..];
+
+            JsonElement arr;
+            if (segName.Length == 0)
+            {
+                arr = node;
+            }
+            else
+            {
+                if (node.ValueKind != JsonValueKind.Object || !node.TryGetProperty(segName, out arr))
+                    return;
+            }
+            if (arr.ValueKind != JsonValueKind.Array) return;
+
+            foreach (var item in arr.EnumerateArray())
+                WalkPath(item, rest, values);
+            return;
+        }
+
+        string segNorm, remNorm;
+        if (dotIdx < 0) { segNorm = path; remNorm = ""; }
+        else { segNorm = path[..dotIdx]; remNorm = path[(dotIdx + 1)..]; }
+
+        if (node.ValueKind != JsonValueKind.Object || !node.TryGetProperty(segNorm, out var next)) return;
+        WalkPath(next, remNorm, values);
     }
 
-    private static bool ExpandScalarOrArray(JsonElement el, List<string> values)
+    private static void EmitScalarOrPrimitiveArray(JsonElement el, List<string> values)
     {
         switch (el.ValueKind)
         {
             case JsonValueKind.Null:
             case JsonValueKind.Undefined:
-                return true;
+                return;
             case JsonValueKind.String:
                 var s = el.GetString();
                 if (!string.IsNullOrEmpty(s)) values.Add(s);
-                return true;
+                return;
             case JsonValueKind.Number:
                 values.Add(el.GetRawText());
-                return true;
-            case JsonValueKind.True: values.Add("true"); return true;
-            case JsonValueKind.False: values.Add("false"); return true;
+                return;
+            case JsonValueKind.True:  values.Add("true"); return;
+            case JsonValueKind.False: values.Add("false"); return;
             case JsonValueKind.Array:
                 foreach (var item in el.EnumerateArray())
                 {
@@ -229,18 +273,15 @@ public sealed class UniquenessValidator(
                             var ss = item.GetString();
                             if (!string.IsNullOrEmpty(ss)) values.Add(ss);
                             break;
-                        case JsonValueKind.Number:
-                            values.Add(item.GetRawText());
-                            break;
-                        case JsonValueKind.True: values.Add("true"); break;
-                        case JsonValueKind.False: values.Add("false"); break;
+                        case JsonValueKind.Number: values.Add(item.GetRawText()); break;
+                        case JsonValueKind.True:   values.Add("true"); break;
+                        case JsonValueKind.False:  values.Add("false"); break;
                         // Nested objects/arrays — skip; uniqueness on those
-                        // shapes is undefined.
+                        // shapes is undefined here. Use `[].sub` paths to
+                        // pick out fields from object arrays.
                     }
                 }
-                return true;
-            default:
-                return true;
+                return;
         }
     }
 
@@ -264,16 +305,20 @@ public sealed class UniquenessValidator(
 
     private static List<string> BuildSearchTokens(string path, List<string> values)
     {
-        // For payload.body paths we use the JSONB extraction syntax that
-        // QueryHelper already handles. List values use `[]:` which matches
-        // any element of the array (Python parity for `variants[]:Y`).
+        // Field token in the search literal:
+        //   - if the user wrote `[]` anywhere in the path, preserve it verbatim
+        //     (`payload.body.variants[].sku` → token `@payload.body.variants[].sku:`).
+        //   - else if it's a body path that yielded multiple values (i.e. the
+        //     value at the path is a primitive array), append `[]` so
+        //     QueryHelper translates to the EXISTS-style JSON predicate.
+        //   - else use the path as-is.
         var isBody = path.StartsWith("payload.body.", StringComparison.Ordinal);
-        var tokenField = isBody && values.Count > 1
-            ? path + "[]"
-            : path;
-        // Multi-valued scalar paths are unusual; for arrays we always emit
-        // one token per element so the Cartesian below pairs them with the
-        // other paths' tokens.
+        var hasBracket = path.Contains("[]", StringComparison.Ordinal);
+        string tokenField;
+        if (hasBracket) tokenField = path;
+        else if (isBody && values.Count > 1) tokenField = path + "[]";
+        else tokenField = path;
+
         return values.Select(v => $"@{tokenField}:{EscapeSearchValue(v)}").ToList();
     }
 

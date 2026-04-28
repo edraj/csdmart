@@ -189,6 +189,58 @@ public class UniqueFieldsTests : IClassFixture<DmartFactory>
     }
 
     [FactIfPg]
+    public async Task ObjectArray_Field_Indexed_With_Bracket_Sub_Rejects_Element_Collision()
+    {
+        // Paths can iterate object arrays via `[].sub`. Here `variants` is
+        // an array of {sku, price} objects; we want every sku across the
+        // folder to be unique.
+        var (spaces, entries, entryService) = Resolve();
+        var space = await SeedSpaceWithFolderAsync(spaces, entries, """[["payload.body.variants[].sku"]]""");
+        try
+        {
+            var first = await entryService.CreateAsync(
+                MakeContent(space, "/people", "p1", new
+                {
+                    variants = new object[]
+                    {
+                        new { sku = "SKU-A", price = 10 },
+                        new { sku = "SKU-B", price = 20 },
+                    },
+                }), "dmart");
+            first.IsOk.ShouldBeTrue($"first create failed: {first.ErrorMessage}");
+
+            // Overlap on SKU-B → second create must be rejected.
+            var overlap = await entryService.CreateAsync(
+                MakeContent(space, "/people", "p2", new
+                {
+                    variants = new object[]
+                    {
+                        new { sku = "SKU-B", price = 30 },
+                        new { sku = "SKU-C", price = 40 },
+                    },
+                }), "dmart");
+            overlap.IsOk.ShouldBeFalse("overlap on .sku should be rejected");
+            overlap.ErrorCode.ShouldBe(InternalErrorCode.DATA_SHOULD_BE_UNIQUE);
+
+            // Disjoint skus → must succeed.
+            var disjoint = await entryService.CreateAsync(
+                MakeContent(space, "/people", "p3", new
+                {
+                    variants = new object[]
+                    {
+                        new { sku = "SKU-D", price = 50 },
+                        new { sku = "SKU-E", price = 60 },
+                    },
+                }), "dmart");
+            disjoint.IsOk.ShouldBeTrue($"disjoint skus should pass: {disjoint.ErrorMessage}");
+        }
+        finally
+        {
+            await spaces.DeleteAsync(space);
+        }
+    }
+
+    [FactIfPg]
     public async Task No_UniqueFields_On_Folder_Allows_Any_Duplicate()
     {
         var (spaces, entries, entryService) = Resolve();
