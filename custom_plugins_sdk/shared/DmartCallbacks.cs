@@ -3,11 +3,19 @@ using System.Runtime.InteropServices;
 using System.Text;
 
 namespace Dmart.Sdk;
-// V3
+
 // C# view of the DmartCallbacks struct dmart hands each native plugin via
 // `init(const DmartCallbacks*)`. Layout MUST match the host definition in
 // Plugins/Native/NativePluginCallbacks.cs — append fields only, never
 // reorder.
+//
+// The trailing `Version` field is the canonical way to detect host
+// capability level at runtime: a plugin built against this header reads
+// _cb.Version and branches on it. Old plugins that don't know about a
+// field simply ignore it; new plugins that read a field absent on an
+// older host see whatever uninitialized memory the smaller host struct
+// didn't write — so always check Version before using fields appended
+// in versions newer than your build target.
 //
 // Usage in a plugin:
 //
@@ -49,6 +57,12 @@ public unsafe struct DmartCallbacks
     // is an int* the host writes the byte count to. Returned pointer must
     // be released via DmartFree. null when missing or no media column.
     public delegate* unmanaged[Cdecl]<byte*, byte*, byte*, int*, byte*> GetMediaAttachment;
+
+    // Capability-level marker. Bumped whenever fields are appended.
+    //   1 — initial release (LoadEntry…DmartFree)
+    //   2 — Query, GetMediaAttachment appended; Query was ACL-free
+    //   3 — Query honors caller's actor by default; "as_actor" override
+    public int Version;
 }
 
 // Ergonomic wrappers that handle UTF-8 marshaling, null pointers, and
@@ -152,9 +166,25 @@ public static unsafe class DmartSdk
     //   - asActor = null       → run with no actor (system / no ACL)
     // Injects/overrides the "as_actor" field in the JSON body, then
     // delegates to Query.
+    //
+    // NOTE: this allocates a JsonDocument, MemoryStream, Utf8JsonWriter,
+    // and a final string per call to rewrite the JSON. Cheap enough for
+    // an action triggered by a hook, but don't loop on it.
     public static string? QueryAs(in DmartCallbacks cb, string queryJson, string? asActor)
     {
         if (cb.Query == null) return null;
+        var rewritten = BuildQueryJsonWithActor(queryJson, asActor);
+        if (rewritten is null) return null;
+        return Query(in cb, rewritten);
+    }
+
+    // Pure JSON-rewrite helper — no unsafe, no callbacks. Drops any
+    // existing "as_actor" key and writes the requested value (a string
+    // to impersonate, JSON null to bypass ACLs). Returns null if the
+    // input isn't a JSON object. Public so plugin authors can stage
+    // request bodies before calling Query directly.
+    public static string? BuildQueryJsonWithActor(string queryJson, string? asActor)
+    {
         using var doc = System.Text.Json.JsonDocument.Parse(queryJson);
         if (doc.RootElement.ValueKind != System.Text.Json.JsonValueKind.Object)
             return null;
@@ -172,7 +202,7 @@ public static unsafe class DmartSdk
             else writer.WriteString("as_actor", asActor);
             writer.WriteEndObject();
         }
-        return Query(in cb, Encoding.UTF8.GetString(ms.ToArray()));
+        return Encoding.UTF8.GetString(ms.ToArray());
     }
 
     // Read the raw `media` BYTEA for an attachment by (space, subpath,
