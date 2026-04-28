@@ -1,0 +1,323 @@
+using System.Text.Json;
+using Dmart.DataAdapters.Sql;
+using Dmart.Models.Api;
+using Dmart.Models.Core;
+using Dmart.Models.Enums;
+
+namespace Dmart.Services;
+
+// Port of Python's `validate_uniqueness` (dmart/backend/data_adapters/sql/
+// adapter.py:2624). The folder that contains the entry being created/updated
+// can declare a `unique_fields` list in its payload body — a list of compound
+// keys, where each compound is a list of attribute paths. For each compound,
+// we extract the values from the incoming entry and search the folder for any
+// other entry that matches on every path of the compound. Any hit means the
+// uniqueness constraint is violated.
+//
+// Example folder payload body:
+//   {
+//     "unique_fields": [
+//       ["payload.body.email"],
+//       ["payload.body.firstname", "payload.body.lastname"]
+//     ]
+//   }
+//
+// Path forms:
+//   - "payload.body.<dot.path>" → look up under entry.Payload.Body
+//   - anything else             → look up under the entry's flat attributes
+//
+// List values: when the value at the path is a JSON array (e.g. a list of
+// ids), we issue one search per element using the `payload.body.X[]:elem`
+// element-match syntax that QueryHelper already supports. Python's
+// validator doesn't handle list values cleanly; treating each element as a
+// separate uniqueness probe is the natural extension and is what the user
+// asked for.
+//
+// Implementation note: we hit EntryRepository.QueryAsync directly (not
+// QueryService.ExecuteAsync). Uniqueness is a global constraint — if it
+// went through QueryService with actor:null, the anonymous-permission gate
+// would short-circuit to an empty result on any space that doesn't grant
+// world-level view, hiding real conflicts. Going via the repo skips the
+// ACL layer cleanly while reusing the same SQL search builder.
+public sealed class UniquenessValidator(
+    EntryRepository entries,
+    ILogger<UniquenessValidator> log)
+{
+    public async Task<Result<bool>> ValidateAsync(
+        Entry entry, ActionType action, Entry? existing, CancellationToken ct = default)
+    {
+        // Locate the folder that owns this entry's subpath.
+        var (parentSubpath, folderShortname) = SplitSubpath(entry.Subpath);
+        if (folderShortname.Length == 0) return Result<bool>.Ok(true);
+
+        Entry? folder;
+        try
+        {
+            folder = await entries.GetAsync(entry.SpaceName, parentSubpath, folderShortname, ResourceType.Folder, ct);
+        }
+        catch (Exception ex)
+        {
+            log.LogDebug(ex, "uniqueness: parent folder load failed for {Space}/{Subpath}", entry.SpaceName, entry.Subpath);
+            folder = null;
+        }
+        if (folder?.Payload?.Body is not JsonElement body
+            || body.ValueKind != JsonValueKind.Object
+            || !body.TryGetProperty("unique_fields", out var uniqueFields)
+            || uniqueFields.ValueKind != JsonValueKind.Array)
+            return Result<bool>.Ok(true);
+
+        foreach (var compound in uniqueFields.EnumerateArray())
+        {
+            if (compound.ValueKind != JsonValueKind.Array) continue;
+
+            // Build the per-element queries that satisfy the whole compound.
+            // Each path in the compound contributes one or more search tokens;
+            // a list-valued path expands into N tokens (one per element) so we
+            // detect a conflict if ANY element collides — matching the user's
+            // intent for `payload.body.ids`.
+            var perPathTokens = new List<List<string>>();
+            var skipCompound = false;
+            foreach (var pathEl in compound.EnumerateArray())
+            {
+                if (pathEl.ValueKind != JsonValueKind.String) { skipCompound = true; break; }
+                var path = pathEl.GetString();
+                if (string.IsNullOrEmpty(path)) { skipCompound = true; break; }
+
+                if (!TryReadValue(entry, path, out var newValues)) { skipCompound = true; break; }
+                if (newValues.Count == 0) { skipCompound = true; break; }
+
+                // Update parity with Python: if every value at this path is
+                // identical to the existing entry's, this compound can't
+                // collide with anything new — Python continues past the path.
+                if (action == ActionType.Update && existing is not null
+                    && TryReadValue(existing, path, out var oldValues)
+                    && SequenceEquals(newValues, oldValues))
+                {
+                    skipCompound = true;
+                    break;
+                }
+
+                perPathTokens.Add(BuildSearchTokens(path, newValues));
+            }
+            if (skipCompound || perPathTokens.Count == 0) continue;
+
+            // For each combination of one token per path (Cartesian over the
+            // expanded list values), run the search; ANY hit is a violation.
+            foreach (var tokenSet in CartesianProduct(perPathTokens))
+            {
+                var search = string.Join(' ', tokenSet);
+                var q = new Query
+                {
+                    Type = QueryType.Subpath,
+                    SpaceName = entry.SpaceName,
+                    Subpath = entry.Subpath,
+                    ExactSubpath = true,
+                    Search = search,
+                    Limit = 2,
+                    RetrieveTotal = true,
+                    // Default FilterSchemaNames is ["meta"] which would
+                    // exclude every content entry that has no schema_shortname
+                    // — exactly the rows we want to scan for collisions.
+                    // Empty list = no schema filter.
+                    FilterSchemaNames = new(),
+                };
+
+                // Hit the repo directly: ACL must NOT apply to a uniqueness
+                // probe (a hidden conflict is still a conflict).
+                List<Entry> hits;
+                try { hits = await entries.QueryAsync(q, ct); }
+                catch (Exception ex)
+                {
+                    log.LogWarning(ex, "uniqueness probe failed for {Space}{Subpath} search={Search}",
+                        entry.SpaceName, entry.Subpath, search);
+                    continue;
+                }
+
+                if (action == ActionType.Update && existing is not null)
+                {
+                    hits = hits
+                        .Where(e => !(string.Equals(e.Shortname, existing.Shortname, StringComparison.Ordinal)
+                                      && string.Equals(e.Subpath, existing.Subpath, StringComparison.Ordinal)))
+                        .ToList();
+                }
+                if (hits.Count == 0) continue;
+
+                return Result<bool>.Fail(
+                    InternalErrorCode.DATA_SHOULD_BE_UNIQUE,
+                    $"Entry properties should be unique: {search}",
+                    ErrorTypes.Request);
+            }
+        }
+
+        return Result<bool>.Ok(true);
+    }
+
+    // Locator-normalized split: the DB stores subpath with a leading slash
+    // ("/" or "/users/managed"), so the parent must too.
+    //   "/users/managed" → ("/users", "managed")
+    //   "/people"        → ("/",      "people")
+    //   "/" or ""        → ("/",      "")  — no folder, caller skips
+    private static (string parentSubpath, string folderShortname) SplitSubpath(string subpath)
+    {
+        var s = (subpath ?? "").Trim();
+        while (s.StartsWith('/')) s = s[1..];
+        if (s.Length == 0) return ("/", "");
+        var ix = s.LastIndexOf('/');
+        if (ix < 0) return ("/", s);
+        return ("/" + s[..ix], s[(ix + 1)..]);
+    }
+
+    // Reads the value(s) at `path` from `entry`. Always returns a list:
+    //   - missing or null              → empty list (caller treats as "skip path")
+    //   - scalar (string/number/bool)  → single-element list with the canonical
+    //                                    string form
+    //   - JSON array of scalars        → one element per array item
+    // Other shapes (objects, nested arrays) return empty so we don't
+    // generate undefined search syntax.
+    private static bool TryReadValue(Entry entry, string path, out List<string> values)
+    {
+        values = new List<string>();
+
+        if (path.StartsWith("payload.body.", StringComparison.Ordinal))
+        {
+            if (entry.Payload?.Body is not JsonElement bodyEl || bodyEl.ValueKind != JsonValueKind.Object)
+                return true; // path applies but no body — empty list
+            var inner = path["payload.body.".Length..];
+            if (!TryNavigate(bodyEl, inner, out var node)) return true;
+            return ExpandScalarOrArray(node, values);
+        }
+
+        // Fall back to a small set of flat entry attributes. Anything else
+        // is unsupported (matches what dmart exposes in attributes_dict).
+        return TryReadFlatAttribute(entry, path, values);
+    }
+
+    private static bool TryNavigate(JsonElement root, string dottedPath, out JsonElement node)
+    {
+        node = root;
+        foreach (var seg in dottedPath.Split('.'))
+        {
+            if (node.ValueKind != JsonValueKind.Object) { node = default; return false; }
+            if (!node.TryGetProperty(seg, out var next)) { node = default; return false; }
+            node = next;
+        }
+        return true;
+    }
+
+    private static bool ExpandScalarOrArray(JsonElement el, List<string> values)
+    {
+        switch (el.ValueKind)
+        {
+            case JsonValueKind.Null:
+            case JsonValueKind.Undefined:
+                return true;
+            case JsonValueKind.String:
+                var s = el.GetString();
+                if (!string.IsNullOrEmpty(s)) values.Add(s);
+                return true;
+            case JsonValueKind.Number:
+                values.Add(el.GetRawText());
+                return true;
+            case JsonValueKind.True: values.Add("true"); return true;
+            case JsonValueKind.False: values.Add("false"); return true;
+            case JsonValueKind.Array:
+                foreach (var item in el.EnumerateArray())
+                {
+                    switch (item.ValueKind)
+                    {
+                        case JsonValueKind.String:
+                            var ss = item.GetString();
+                            if (!string.IsNullOrEmpty(ss)) values.Add(ss);
+                            break;
+                        case JsonValueKind.Number:
+                            values.Add(item.GetRawText());
+                            break;
+                        case JsonValueKind.True: values.Add("true"); break;
+                        case JsonValueKind.False: values.Add("false"); break;
+                        // Nested objects/arrays — skip; uniqueness on those
+                        // shapes is undefined.
+                    }
+                }
+                return true;
+            default:
+                return true;
+        }
+    }
+
+    private static bool TryReadFlatAttribute(Entry entry, string path, List<string> values)
+    {
+        switch (path)
+        {
+            case "shortname":            if (!string.IsNullOrEmpty(entry.Shortname)) values.Add(entry.Shortname); return true;
+            case "slug":                 if (!string.IsNullOrEmpty(entry.Slug)) values.Add(entry.Slug); return true;
+            case "owner_shortname":      if (!string.IsNullOrEmpty(entry.OwnerShortname)) values.Add(entry.OwnerShortname); return true;
+            case "displayname.en":       if (!string.IsNullOrEmpty(entry.Displayname?.En)) values.Add(entry.Displayname!.En!); return true;
+            case "displayname.ar":       if (!string.IsNullOrEmpty(entry.Displayname?.Ar)) values.Add(entry.Displayname!.Ar!); return true;
+            case "displayname.ku":       if (!string.IsNullOrEmpty(entry.Displayname?.Ku)) values.Add(entry.Displayname!.Ku!); return true;
+            case "description.en":       if (!string.IsNullOrEmpty(entry.Description?.En)) values.Add(entry.Description!.En!); return true;
+            case "description.ar":       if (!string.IsNullOrEmpty(entry.Description?.Ar)) values.Add(entry.Description!.Ar!); return true;
+            case "description.ku":       if (!string.IsNullOrEmpty(entry.Description?.Ku)) values.Add(entry.Description!.Ku!); return true;
+            case "tags":                 if (entry.Tags is { Count: > 0 }) values.AddRange(entry.Tags); return true;
+            default:                     return false;
+        }
+    }
+
+    private static List<string> BuildSearchTokens(string path, List<string> values)
+    {
+        // For payload.body paths we use the JSONB extraction syntax that
+        // QueryHelper already handles. List values use `[]:` which matches
+        // any element of the array (Python parity for `variants[]:Y`).
+        var isBody = path.StartsWith("payload.body.", StringComparison.Ordinal);
+        var tokenField = isBody && values.Count > 1
+            ? path + "[]"
+            : path;
+        // Multi-valued scalar paths are unusual; for arrays we always emit
+        // one token per element so the Cartesian below pairs them with the
+        // other paths' tokens.
+        return values.Select(v => $"@{tokenField}:{EscapeSearchValue(v)}").ToList();
+    }
+
+    private static string EscapeSearchValue(string v)
+    {
+        // QueryHelper's tokenizer treats spaces as token separators. Wrap
+        // anything that contains whitespace or parser metacharacters in
+        // double quotes (the parser supports that form). Internal quotes
+        // are stripped — uniqueness keys with embedded quotes are rare and
+        // we'd rather under-match than emit malformed search strings.
+        if (v.Length == 0) return "\"\"";
+        var safe = v.Replace("\"", "");
+        if (safe.IndexOfAny(new[] { ' ', '\t', '(', ')', '|', '@' }) >= 0)
+            return "\"" + safe + "\"";
+        return safe;
+    }
+
+    private static bool SequenceEquals(List<string> a, List<string> b)
+    {
+        if (a.Count != b.Count) return false;
+        for (var i = 0; i < a.Count; i++)
+            if (!string.Equals(a[i], b[i], StringComparison.Ordinal)) return false;
+        return true;
+    }
+
+    // For each path's list of tokens, yield every combination of one token
+    // per path. Used to expand list-valued paths into independent searches.
+    private static IEnumerable<List<string>> CartesianProduct(List<List<string>> sets)
+    {
+        if (sets.Count == 0) yield break;
+        var idx = new int[sets.Count];
+        while (true)
+        {
+            var combo = new List<string>(sets.Count);
+            for (var i = 0; i < sets.Count; i++) combo.Add(sets[i][idx[i]]);
+            yield return combo;
+
+            var k = sets.Count - 1;
+            while (k >= 0)
+            {
+                if (++idx[k] < sets[k].Count) break;
+                idx[k--] = 0;
+            }
+            if (k < 0) yield break;
+        }
+    }
+}

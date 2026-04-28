@@ -17,7 +17,8 @@ public sealed class EntryService(
     PluginManager plugins,
     SchemaValidator schemas,
     WorkflowEngine workflows,
-    ILogger<EntryService> log)
+    ILogger<EntryService> log,
+    UniquenessValidator? uniqueness = null)
 {
     public async Task<Entry?> GetAsync(Locator l, string? actor, CancellationToken ct = default)
     {
@@ -83,6 +84,16 @@ public sealed class EntryService(
         var validationError = await ValidatePayloadAsync(entry, ct);
         if (validationError is not null)
             return Result<Entry>.Fail(InternalErrorCode.INVALID_DATA, validationError, ErrorTypes.Request);
+
+        // Folder-level compound-key uniqueness (Python parity:
+        // adapter.py::validate_uniqueness). Runs before plugins so a
+        // before-create hook can rely on the constraint having been checked.
+        if (uniqueness is not null)
+        {
+            var uniqRes = await uniqueness.ValidateAsync(entry, ActionType.Create, existing: null, ct);
+            if (!uniqRes.IsOk)
+                return Result<Entry>.Fail(uniqRes.ErrorCode, uniqRes.ErrorMessage!, uniqRes.ErrorType!);
+        }
 
         // Ticket initialization: resolve initial_state from the workflow definition
         // and set is_open = true. Mirrors Python's set_init_state_from_record().
@@ -167,6 +178,16 @@ public sealed class EntryService(
         var validationError = await ValidatePayloadAsync(merged, ct);
         if (validationError is not null)
             return Result<Entry>.Fail(InternalErrorCode.INVALID_DATA, validationError, ErrorTypes.Request);
+
+        // Folder-level compound-key uniqueness — same as Create, but the
+        // existing entry is excluded from the conflict set (matching
+        // Python's adapter.py::validate_uniqueness behavior on update).
+        if (uniqueness is not null)
+        {
+            var uniqRes = await uniqueness.ValidateAsync(merged, ActionType.Update, existing, ct);
+            if (!uniqRes.IsOk)
+                return Result<Entry>.Fail(uniqRes.ErrorCode, uniqRes.ErrorMessage!, uniqRes.ErrorType!);
+        }
 
         var beforeEvent = BuildEvent(merged, ActionType.Update, actor);
         try { await plugins.BeforeActionAsync(beforeEvent, ct); }

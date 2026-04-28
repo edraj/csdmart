@@ -1154,6 +1154,7 @@ builder.Services.AddRateLimiter(opts =>
 // Domain services
 builder.Services.AddSingleton<PermissionService>();
 builder.Services.AddSingleton<SchemaValidator>();
+builder.Services.AddSingleton<UniquenessValidator>();
 builder.Services.AddSingleton<EntryService>();
 builder.Services.AddSingleton<QueryService>();
 builder.Services.AddSingleton<UserService>();
