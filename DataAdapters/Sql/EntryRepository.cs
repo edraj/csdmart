@@ -176,29 +176,106 @@ public sealed class EntryRepository(Db db)
         return await cmd.ExecuteNonQueryAsync(ct) > 0;
     }
 
-    // Cascading delete for a folder's descendants. `folderPath` is the
-    // folder's full identity ("{parent_subpath}/{folder_shortname}", with
-    // leading slash, e.g. "/products/widgets"). Removes:
-    //   * the folder row itself (subpath == parent, shortname == folder_sn)
-    //   * direct children at subpath == folderPath
-    //   * deeper descendants at subpath LIKE folderPath || '/%'
-    // Mirrors Python adapter.py:2749-2768. Returns the row count.
-    public async Task<int> DeleteFolderTreeAsync(string spaceName, string parentSubpath, string folderShortname, CancellationToken ct = default)
+    // Atomic, cascading folder delete. Removes (in one transaction):
+    //   * histories rows for the folder + every descendant entry
+    //   * locks rows for the folder + every descendant entry
+    //   * attachments under the folder subtree
+    //   * the folder row itself (at parent_subpath / folder_shortname)
+    //   * every descendant entry (subpath = folderPath or LIKE folderPath/%)
+    //
+    // `folderPath` is the folder's full identity:
+    //   parent_subpath == "/"  → "/{folder_shortname}"
+    //   otherwise              → "{parent_subpath}/{folder_shortname}"
+    //
+    // Mirrors dmart Python adapter.py:2677-2696. Modeled after
+    // SpaceRepository.DeleteOnceAsync — same template (one connection, one
+    // transaction, dependent-table-first DELETE order, retry on deadlock).
+    // Returns the number of `entries` rows deleted (folder + descendants).
+    //
+    // The `histories` and `locks` filters include an explicit clause for the
+    // folder's own row (`subpath = parent_subpath AND shortname = folder`)
+    // because those tables key on the entry's own subpath/shortname pair.
+    // The `attachments` filter doesn't need that clause: attachment subpath
+    // is always `{owner_subpath}/{owner_shortname}`, so `subpath = folderPath`
+    // already catches attachments owned directly by the folder, and
+    // `subpath LIKE folderPath || '/%'` catches everything deeper.
+    public Task<int> DeleteFolderTreeWithDependentsAsync(
+        string spaceName, string parentSubpath, string folderShortname,
+        CancellationToken ct = default)
+        => db.ExecuteWithRetryOnDeadlockAsync(
+            c => DeleteFolderTreeWithDependentsOnceAsync(spaceName, parentSubpath, folderShortname, c),
+            ct);
+
+    private async Task<int> DeleteFolderTreeWithDependentsOnceAsync(
+        string spaceName, string parentSubpath, string folderShortname, CancellationToken ct)
     {
-        var folderPath = parentSubpath == "/" ? "/" + folderShortname : parentSubpath + "/" + folderShortname;
+        var folderPath = parentSubpath == "/"
+            ? "/" + folderShortname
+            : parentSubpath + "/" + folderShortname;
+
         await using var conn = await db.OpenAsync(ct);
-        await using var cmd = new NpgsqlCommand("""
+        await using var tx = await conn.BeginTransactionAsync(ct);
+
+        // histories / locks: subpath/shortname identify the entry the row is
+        // about. Three predicates: (folder's own row) ∪ (direct children at
+        // subpath=folderPath) ∪ (deeper descendants at subpath LIKE folderPath/%).
+        const string subtreeWithFolderRow = """
+            space_name = $1
+              AND ((subpath = $2 AND shortname = $3)
+                OR  subpath = $4
+                OR  subpath LIKE $4 || '/%')
+            """;
+
+        foreach (var sql in new[]
+        {
+            $"DELETE FROM histories WHERE {subtreeWithFolderRow}",
+            $"DELETE FROM locks     WHERE {subtreeWithFolderRow}",
+        })
+        {
+            await using var cmd = new NpgsqlCommand(sql, conn, tx);
+            cmd.Parameters.Add(new() { Value = spaceName });
+            cmd.Parameters.Add(new() { Value = parentSubpath });
+            cmd.Parameters.Add(new() { Value = folderShortname });
+            cmd.Parameters.Add(new() { Value = folderPath });
+            await cmd.ExecuteNonQueryAsync(ct);
+        }
+
+        // attachments: subpath includes the owner's shortname, so the folder's
+        // own attachments live at subpath = folderPath. No extra clause needed.
+        await using (var cmd = new NpgsqlCommand("""
+            DELETE FROM attachments
+            WHERE space_name = $1
+              AND (subpath = $2 OR subpath LIKE $2 || '/%')
+            """, conn, tx))
+        {
+            cmd.Parameters.Add(new() { Value = spaceName });
+            cmd.Parameters.Add(new() { Value = folderPath });
+            await cmd.ExecuteNonQueryAsync(ct);
+        }
+
+        // entries: explicit `resource_type = 'folder'` guard on the folder
+        // row protects against an unlikely-but-defensive case where a
+        // non-folder entry happens to share (subpath, shortname) with the
+        // folder we're deleting (e.g. a content entry called "widgets" in
+        // the same parent as the folder "widgets").
+        int entryRows;
+        await using (var cmd = new NpgsqlCommand("""
             DELETE FROM entries
             WHERE space_name = $1
               AND ((subpath = $2 AND shortname = $3 AND resource_type = 'folder')
                 OR  subpath = $4
                 OR  subpath LIKE $4 || '/%')
-            """, conn);
-        cmd.Parameters.Add(new() { Value = spaceName });
-        cmd.Parameters.Add(new() { Value = parentSubpath });
-        cmd.Parameters.Add(new() { Value = folderShortname });
-        cmd.Parameters.Add(new() { Value = folderPath });
-        return await cmd.ExecuteNonQueryAsync(ct);
+            """, conn, tx))
+        {
+            cmd.Parameters.Add(new() { Value = spaceName });
+            cmd.Parameters.Add(new() { Value = parentSubpath });
+            cmd.Parameters.Add(new() { Value = folderShortname });
+            cmd.Parameters.Add(new() { Value = folderPath });
+            entryRows = await cmd.ExecuteNonQueryAsync(ct);
+        }
+
+        await tx.CommitAsync(ct);
+        return entryRows;
     }
 
     public async Task MoveAsync(Locator from, Locator to, CancellationToken ct = default)

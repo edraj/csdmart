@@ -5,6 +5,7 @@ using System.Text.Json;
 using Dmart.Models.Api;
 using Dmart.Models.Enums;
 using Dmart.Models.Json;
+using Microsoft.Extensions.DependencyInjection;
 using Shouldly;
 using Xunit;
 
@@ -300,11 +301,11 @@ public class ManagedCrudDbTests : IClassFixture<DmartFactory>
     }
 
     // Python parity: deleting a folder removes the folder, every direct
-    // child entry, every nested subfolder, and every attachment whose subpath
-    // sits inside the tree. The C# port previously deleted only the folder
-    // row, leaving descendants orphaned (and invisible — their parent was
-    // gone but the rows kept living in `entries`/`attachments`). Mirrors
-    // adapter.py:2749-2768.
+    // child entry, every nested subfolder, every attachment under the tree,
+    // and every history/lock row attached to anything in the subtree. The
+    // C# port previously deleted only the folder row, leaving descendants
+    // orphaned (and invisible — their parent was gone but the rows kept
+    // living in `entries`/`attachments`). Mirrors adapter.py:2677-2696.
     [FactIfPg]
     public async Task Delete_Folder_Cascades_To_Subfolders_And_Children()
     {
@@ -329,6 +330,19 @@ public class ManagedCrudDbTests : IClassFixture<DmartFactory>
                     Records = new() { new Record { ResourceType = rt, Subpath = subpath, Shortname = shortname } },
                 }, DmartJsonContext.Default.Request);
 
+        var db = _factory.Services.GetRequiredService<Dmart.DataAdapters.Sql.Db>();
+
+        async Task<long> CountWhereSubtreeAsync(string table, string subtreePath)
+        {
+            await using var conn = await db.OpenAsync();
+            await using var cmd = new Npgsql.NpgsqlCommand(
+                $"SELECT COUNT(*) FROM {table} WHERE space_name = $1 AND (subpath = $2 OR subpath LIKE $2 || '/%')",
+                conn);
+            cmd.Parameters.Add(new() { Value = space });
+            cmd.Parameters.Add(new() { Value = subtreePath });
+            return (long)(await cmd.ExecuteScalarAsync())!;
+        }
+
         try
         {
             (await CreateAsync(ResourceType.Folder,  "/",                                rootFolder)).StatusCode.ShouldBe(HttpStatusCode.OK);
@@ -338,6 +352,35 @@ public class ManagedCrudDbTests : IClassFixture<DmartFactory>
             (await CreateAsync(ResourceType.Folder,  $"/{rootFolder}/sub",               "deeper")).StatusCode.ShouldBe(HttpStatusCode.OK);
             (await CreateAsync(ResourceType.Content, $"/{rootFolder}/sub/deeper",        "c3")).StatusCode.ShouldBe(HttpStatusCode.OK);
 
+            // Plant a synthetic attachment + history row so we can assert
+            // the cascade reaches the dependent tables, not just `entries`.
+            // Going direct via SQL keeps the test focused on the cascade
+            // contract rather than on any specific upload/history-write API.
+            await using (var conn = await db.OpenAsync())
+            {
+                await using var attCmd = new Npgsql.NpgsqlCommand("""
+                    INSERT INTO attachments
+                        (uuid, shortname, space_name, subpath, is_active, tags, created_at,
+                         updated_at, owner_shortname, resource_type)
+                    VALUES (gen_random_uuid(), 'a1', $1, $2, true, '[]'::jsonb,
+                            NOW(), NOW(), 'dmart', 'json')
+                    """, conn);
+                attCmd.Parameters.Add(new() { Value = space });
+                attCmd.Parameters.Add(new() { Value = $"/{rootFolder}/sub/c2" });
+                await attCmd.ExecuteNonQueryAsync();
+
+                await using var histCmd = new Npgsql.NpgsqlCommand("""
+                    INSERT INTO histories
+                        (uuid, request_headers, diff, timestamp, owner_shortname,
+                         space_name, subpath, shortname)
+                    VALUES (gen_random_uuid(), '{}'::jsonb, '{}'::jsonb, NOW(),
+                            'dmart', $1, $2, 'c3')
+                    """, conn);
+                histCmd.Parameters.Add(new() { Value = space });
+                histCmd.Parameters.Add(new() { Value = $"/{rootFolder}/sub/deeper" });
+                await histCmd.ExecuteNonQueryAsync();
+            }
+
             // Sanity: every node is fetchable before the delete.
             (await client.GetAsync($"/managed/entry/folder/{space}/{rootFolder}")).StatusCode.ShouldBe(HttpStatusCode.OK);
             (await client.GetAsync($"/managed/entry/content/{space}/{rootFolder}/c1")).StatusCode.ShouldBe(HttpStatusCode.OK);
@@ -345,6 +388,10 @@ public class ManagedCrudDbTests : IClassFixture<DmartFactory>
             (await client.GetAsync($"/managed/entry/content/{space}/{rootFolder}/sub/c2")).StatusCode.ShouldBe(HttpStatusCode.OK);
             (await client.GetAsync($"/managed/entry/folder/{space}/{rootFolder}/sub/deeper")).StatusCode.ShouldBe(HttpStatusCode.OK);
             (await client.GetAsync($"/managed/entry/content/{space}/{rootFolder}/sub/deeper/c3")).StatusCode.ShouldBe(HttpStatusCode.OK);
+
+            // Sanity: the planted attachment + history row are visible at the DB layer.
+            (await CountWhereSubtreeAsync("attachments", $"/{rootFolder}")).ShouldBeGreaterThan(0);
+            (await CountWhereSubtreeAsync("histories",   $"/{rootFolder}")).ShouldBeGreaterThan(0);
 
             // Delete the root folder.
             var del = await client.PostAsJsonAsync("/managed/request",
@@ -363,6 +410,11 @@ public class ManagedCrudDbTests : IClassFixture<DmartFactory>
             (await client.GetAsync($"/managed/entry/content/{space}/{rootFolder}/sub/c2")).StatusCode.ShouldBe(HttpStatusCode.NotFound);
             (await client.GetAsync($"/managed/entry/folder/{space}/{rootFolder}/sub/deeper")).StatusCode.ShouldBe(HttpStatusCode.NotFound);
             (await client.GetAsync($"/managed/entry/content/{space}/{rootFolder}/sub/deeper/c3")).StatusCode.ShouldBe(HttpStatusCode.NotFound);
+
+            // The cascade reached attachments and histories too — nothing
+            // referencing the deleted subtree should remain.
+            (await CountWhereSubtreeAsync("attachments", $"/{rootFolder}")).ShouldBe(0);
+            (await CountWhereSubtreeAsync("histories",   $"/{rootFolder}")).ShouldBe(0);
         }
         finally
         {

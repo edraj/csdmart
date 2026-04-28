@@ -24,6 +24,12 @@ public sealed class SchemaInitializer(Db db, ILogger<SchemaInitializer> log) : I
                 try
                 {
                     await using var cmd = new NpgsqlCommand(SqlSchema.CreateAll, conn);
+                    // No client-side timeout for schema init. The TIMESTAMPTZ→TIMESTAMP
+                    // migration rewrites every row in large tables (entries, histories),
+                    // which exceeds Npgsql's default 30s. A timeout here aborts the
+                    // rewrite mid-flight; SchemaInitializer's catch-all then logs and
+                    // continues without surfacing the failure to the operator.
+                    cmd.CommandTimeout = 0;
                     await cmd.ExecuteNonQueryAsync(ct);
                     log.LogInformation("dmart schema ready");
                     // If the `hstore` extension was just created by CreateAll,

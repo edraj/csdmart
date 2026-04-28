@@ -17,6 +17,15 @@ namespace Dmart.DataAdapters.Sql;
 public static class SqlSchema
 {
     public const string CreateAll = """
+    -- Disable session-level statement / lock timeouts for the duration of
+    -- this script. The TIMESTAMPTZ → TIMESTAMP migration below rewrites
+    -- every row in tables like `entries` / `histories`, which can take
+    -- minutes on production-sized databases. Without this, a per-user
+    -- `statement_timeout` configured by an operator would abort the rewrite
+    -- mid-flight and leave columns half-converted.
+    SET statement_timeout = 0;
+    SET lock_timeout = 0;
+
     CREATE EXTENSION IF NOT EXISTS hstore;
     CREATE EXTENSION IF NOT EXISTS pgcrypto;
 

@@ -612,6 +612,10 @@ switch (subcommand)
             try
             {
                 await using var cmd = new Npgsql.NpgsqlCommand(SqlSchema.CreateAll, conn);
+                // No client-side timeout. Some statements in CreateAll (notably the
+                // TIMESTAMPTZ→TIMESTAMP migration) rewrite every row in large tables
+                // and exceed Npgsql's default 30s on production-sized DBs.
+                cmd.CommandTimeout = 0;
                 await cmd.ExecuteNonQueryAsync();
                 await conn.ReloadTypesAsync();
 

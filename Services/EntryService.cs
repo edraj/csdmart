@@ -391,22 +391,16 @@ public sealed class EntryService(
             return Result<bool>.Fail(InternalErrorCode.INVALID_DATA, "plugin rejected delete", ErrorTypes.Request);
         }
 
-        // Python parity: deleting a folder cascades — every descendant entry
-        // (direct child OR deeper subfolder/file) and every attachment whose
-        // subpath sits inside the folder gets removed in the same call.
-        // Mirrors adapter.py:2749-2768.
+        // Python parity: deleting a folder cascades — the folder row plus
+        // every descendant entry, attachment, history and lock row inside the
+        // subtree disappears atomically. Mirrors adapter.py:2677-2696.
+        // EntryRepository.DeleteFolderTreeWithDependentsAsync runs all five
+        // DELETEs in one transaction so a partial failure rolls back instead
+        // of leaving the DB half-deleted.
         bool ok;
         if (locator.Type == ResourceType.Folder)
         {
-            var folderPath = locator.Subpath == "/"
-                ? "/" + locator.Shortname
-                : locator.Subpath + "/" + locator.Shortname;
-            // Wipe attachments first so a partial failure doesn't leave
-            // attachment rows pointing at a deleted entry tree (the entries
-            // table is the FK target via owner_shortname, but cascade drops
-            // are surgical so we order them defensively).
-            await attachments.DeleteUnderSubpathAsync(locator.SpaceName, folderPath, ct);
-            var deletedRows = await entries.DeleteFolderTreeAsync(
+            var deletedRows = await entries.DeleteFolderTreeWithDependentsAsync(
                 locator.SpaceName, locator.Subpath, locator.Shortname, ct);
             ok = deletedRows > 0;
         }
