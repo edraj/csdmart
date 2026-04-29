@@ -308,7 +308,7 @@ public sealed class QueryService(
         var policies = await perms.BuildUserQueryPoliciesAsync(actor, q.SpaceName, q.Subpath ?? "/", ct);
         if (policies.Count == 0) return EmptyQueryResponse();
 
-        var effectiveActor = actor ?? "anonymous";
+        var effectiveActor = actor ?? PermissionService.AnonymousUser;
 
         // SQL: unnest tags jsonb array, group by tag, count.
         var args = new List<NpgsqlParameter>();
@@ -373,7 +373,7 @@ public sealed class QueryService(
         var policies = await perms.BuildUserQueryPoliciesAsync(actor, q.SpaceName, q.Subpath ?? "/", ct);
         if (policies.Count == 0) return EmptyQueryResponse();
 
-        var effectiveActor = actor ?? "anonymous";
+        var effectiveActor = actor ?? PermissionService.AnonymousUser;
         var pageTask = entries.QueryAsync(q, effectiveActor, policies, ct);
         var totalTask = q.RetrieveTotal == false
             ? Task.FromResult(-1)
@@ -434,7 +434,7 @@ public sealed class QueryService(
         var policies = await perms.BuildUserQueryPoliciesAsync(actor, q.SpaceName, q.Subpath ?? "/", ct);
         if (policies.Count == 0) return EmptyQueryResponse();
 
-        var effectiveActor = actor ?? "anonymous";
+        var effectiveActor = actor ?? PermissionService.AnonymousUser;
         var rows = await QueryHelper.RunAggregationAsync(db, tableName, q, ct, effectiveActor, policies);
 
         // Convert each aggregation row to a Record with the grouped values + reducer results
@@ -522,14 +522,14 @@ public sealed class QueryService(
                 // Python parity: policy list is the only gate (no rt-specific preflight).
                 var policies = await perms.BuildUserQueryPoliciesAsync(actor, q.SpaceName, q.Subpath ?? "/", ct);
                 if (policies.Count == 0) return EmptyQueryResponse();
-                total = await entries.CountQueryAsync(q, actor ?? "anonymous", policies, ct);
+                total = await entries.CountQueryAsync(q, actor ?? PermissionService.AnonymousUser, policies, ct);
             }
         }
         else
         {
             var policies = await perms.BuildUserQueryPoliciesAsync(actor, q.SpaceName, q.Subpath ?? "/", ct);
             if (policies.Count == 0) return EmptyQueryResponse();
-            total = await entries.CountQueryAsync(q, actor ?? "anonymous", policies, ct);
+            total = await entries.CountQueryAsync(q, actor ?? PermissionService.AnonymousUser, policies, ct);
         }
 
         var returned = Math.Min(Math.Max(total - Math.Max(0, q.Offset), 0), Math.Max(1, q.Limit));
