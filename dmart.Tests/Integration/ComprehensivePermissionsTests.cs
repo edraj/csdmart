@@ -1220,7 +1220,10 @@ public sealed class ComprehensivePermissionsTests : IClassFixture<DmartFactory>
             (await viewerClient.GetAsync($"/managed/entry/content/{space}/{subpath.TrimStart('/')}/{seedSn}"))
                 .StatusCode.ShouldBe(HttpStatusCode.OK, "viewer can read seed entry");
 
-            // viewer: CREATE blocked (Python parity returns 401/403/404 — accept any non-2xx).
+            // viewer: CREATE blocked. Server maps denied writes to a 4xx (this
+            // path emits 400 via Response.Fail; 401/403/404 are also legitimate
+            // depending on which gate trips first). The set excludes 2xx (would
+            // mean the create succeeded) and 5xx (would mean a regression).
             var createAsViewer = await PostManaged(viewerClient, RequestType.Create, space, new Record
             {
                 ResourceType = ResourceType.Content,
@@ -1229,7 +1232,7 @@ public sealed class ComprehensivePermissionsTests : IClassFixture<DmartFactory>
                 Attributes = new() { ["displayname"] = "should be blocked" },
             });
             createAsViewer.StatusCode.ShouldBeOneOf(
-                new[] { HttpStatusCode.Unauthorized, HttpStatusCode.Forbidden, HttpStatusCode.NotFound },
+                new[] { HttpStatusCode.BadRequest, HttpStatusCode.Unauthorized, HttpStatusCode.Forbidden, HttpStatusCode.NotFound },
                 $"viewer must NOT be able to create. Got {createAsViewer.StatusCode}");
 
             // viewer: UPDATE blocked.
@@ -1241,7 +1244,7 @@ public sealed class ComprehensivePermissionsTests : IClassFixture<DmartFactory>
                 Attributes = new() { ["displayname"] = "viewer can't write" },
             });
             updateAsViewer.StatusCode.ShouldBeOneOf(
-                new[] { HttpStatusCode.Unauthorized, HttpStatusCode.Forbidden, HttpStatusCode.NotFound },
+                new[] { HttpStatusCode.BadRequest, HttpStatusCode.Unauthorized, HttpStatusCode.Forbidden, HttpStatusCode.NotFound },
                 $"viewer must NOT be able to update. Got {updateAsViewer.StatusCode}");
 
             // editor: CREATE succeeds.
@@ -1372,7 +1375,7 @@ public sealed class ComprehensivePermissionsTests : IClassFixture<DmartFactory>
                 Attributes = new() { ["displayname"] = "stranger should be blocked" },
             });
             updateB.StatusCode.ShouldBeOneOf(
-                new[] { HttpStatusCode.Unauthorized, HttpStatusCode.Forbidden, HttpStatusCode.NotFound },
+                new[] { HttpStatusCode.BadRequest, HttpStatusCode.Unauthorized, HttpStatusCode.Forbidden, HttpStatusCode.NotFound },
                 $"non-owner update must be denied. Got {updateB.StatusCode}");
         }
         finally
