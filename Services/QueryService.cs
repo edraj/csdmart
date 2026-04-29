@@ -302,11 +302,13 @@ public sealed class QueryService(
 
     private async Task<Response> QueryTagsAsync(Query q, string? actor, CancellationToken ct)
     {
-        if (!await CanQueryAsync(actor, ResourceType.Content, q.SpaceName, q.Subpath ?? "/", ct))
-            return EmptyQueryResponse();
+        // Python parity (adapter.py:1510-1520): no resource-type-specific
+        // preflight. Resolve the policy list (anonymous → "anonymous") and
+        // bail when it's empty. The ACL filter then runs on every path.
+        var policies = await perms.BuildUserQueryPoliciesAsync(actor, q.SpaceName, q.Subpath ?? "/", ct);
+        if (policies.Count == 0) return EmptyQueryResponse();
 
-        var policies = await GetActorQueryPoliciesAsync(q, actor, ct);
-        if (actor is not null && policies!.Count == 0) return EmptyQueryResponse();
+        var effectiveActor = actor ?? "anonymous";
 
         // SQL: unnest tags jsonb array, group by tag, count.
         var args = new List<NpgsqlParameter>();
@@ -316,8 +318,7 @@ public sealed class QueryService(
             FROM entries, jsonb_array_elements_text(tags) AS tag
             WHERE {where}
             """);
-        if (actor is not null)
-            QueryHelper.AppendAclFilter(sql, args, actor, "entries", policies);
+        QueryHelper.AppendAclFilter(sql, args, effectiveActor, "entries", policies);
         sql.Append("GROUP BY tag ORDER BY cnt DESC");
         // Apply limit/offset on the aggregated result.
         args.Add(new() { Value = Math.Max(1, q.Limit) });
@@ -361,28 +362,22 @@ public sealed class QueryService(
 
     private async Task<Response> QueryEntriesAsync(Query q, string? actor, CancellationToken ct)
     {
-        if (!await CanQueryAsync(actor, ResourceType.Content, q.SpaceName, q.Subpath ?? "/", ct))
-            return EmptyQueryResponse();
+        // Python parity (adapter.py:1500-1520, query_policies_helper.py:63-112):
+        // skip the resource_type-specific preflight — it locked out every
+        // caller whose permission resource_types didn't list "content" even
+        // when the entries table holds the type they were authorized for
+        // (Ticket, Folder, Schema, …). Compute the resource-type-agnostic
+        // policy list and bail only when it's empty. Anonymous resolves to
+        // user "anonymous" inside BuildUserQueryPoliciesAsync, matching
+        // Python's `user_shortname = user_shortname if user_shortname else "anonymous"`.
+        var policies = await perms.BuildUserQueryPoliciesAsync(actor, q.SpaceName, q.Subpath ?? "/", ct);
+        if (policies.Count == 0) return EmptyQueryResponse();
 
-        // Row-level ACL: mirrors Python's get_user_query_policies + apply.
-        // Empty policies for an authenticated actor → the gate passed on
-        // some wildcard but no grant reaches this subpath. Python returns
-        // (0, []); match that so the caller can't infer row counts.
-        List<string>? policies = null;
-        if (actor is not null)
-        {
-            policies = await perms.BuildUserQueryPoliciesAsync(actor, q.SpaceName, q.Subpath ?? "/", ct);
-            if (policies.Count == 0) return EmptyQueryResponse();
-        }
-
-        var pageTask = actor is not null
-            ? entries.QueryAsync(q, actor, policies, ct)
-            : entries.QueryAsync(q, ct);
+        var effectiveActor = actor ?? "anonymous";
+        var pageTask = entries.QueryAsync(q, effectiveActor, policies, ct);
         var totalTask = q.RetrieveTotal == false
             ? Task.FromResult(-1)
-            : (actor is not null
-                ? entries.CountQueryAsync(q, actor, policies, ct)
-                : entries.CountQueryAsync(q, ct));
+            : entries.CountQueryAsync(q, effectiveActor, policies, ct);
         await Task.WhenAll(pageTask, totalTask);
 
         var records = (await pageTask)
@@ -431,19 +426,16 @@ public sealed class QueryService(
 
     private async Task<Response> QueryAggregationAsync(Query q, string? actor, string tableName, CancellationToken ct)
     {
-        if (!await CanQueryAsync(actor, ResourceType.Content, q.SpaceName, q.Subpath ?? "/", ct))
-            return EmptyQueryResponse();
-
         if (q.AggregationData is null)
             return Response.Fail(InternalErrorCode.MISSING_DATA,
                 "aggregation_data required for aggregation queries", ErrorTypes.Request);
 
-        var policies = await GetActorQueryPoliciesAsync(q, actor, ct);
-        if (actor is not null && policies!.Count == 0) return EmptyQueryResponse();
+        // Python parity (adapter.py:1510-1520): policy list is the only gate.
+        var policies = await perms.BuildUserQueryPoliciesAsync(actor, q.SpaceName, q.Subpath ?? "/", ct);
+        if (policies.Count == 0) return EmptyQueryResponse();
 
-        var rows = actor is not null
-            ? await QueryHelper.RunAggregationAsync(db, tableName, q, ct, actor, policies)
-            : await QueryHelper.RunAggregationAsync(db, tableName, q, ct);
+        var effectiveActor = actor ?? "anonymous";
+        var rows = await QueryHelper.RunAggregationAsync(db, tableName, q, ct, effectiveActor, policies);
 
         // Convert each aggregation row to a Record with the grouped values + reducer results
         // in attributes. Python returns a single Record per group.
@@ -527,29 +519,17 @@ public sealed class QueryService(
             }
             else
             {
-                if (!await CanQueryAsync(actor, ResourceType.Content, q.SpaceName, q.Subpath ?? "/", ct))
-                    return EmptyQueryResponse();
-                var policies = await GetActorQueryPoliciesAsync(q, actor, ct);
-                if (actor is not null && policies!.Count == 0) return EmptyQueryResponse();
-                total = actor is not null
-                    ? await entries.CountQueryAsync(q, actor, policies, ct)
-                    : await entries.CountQueryAsync(q, ct);
+                // Python parity: policy list is the only gate (no rt-specific preflight).
+                var policies = await perms.BuildUserQueryPoliciesAsync(actor, q.SpaceName, q.Subpath ?? "/", ct);
+                if (policies.Count == 0) return EmptyQueryResponse();
+                total = await entries.CountQueryAsync(q, actor ?? "anonymous", policies, ct);
             }
         }
         else
         {
-            if (!await CanQueryAsync(actor, ResourceType.Content, q.SpaceName, q.Subpath ?? "/", ct))
-                return EmptyQueryResponse();
-            if (actor is not null)
-            {
-                var policies = await perms.BuildUserQueryPoliciesAsync(actor, q.SpaceName, q.Subpath ?? "/", ct);
-                if (policies.Count == 0) return EmptyQueryResponse();
-                total = await entries.CountQueryAsync(q, actor, policies, ct);
-            }
-            else
-            {
-                total = await entries.CountQueryAsync(q, ct);
-            }
+            var policies = await perms.BuildUserQueryPoliciesAsync(actor, q.SpaceName, q.Subpath ?? "/", ct);
+            if (policies.Count == 0) return EmptyQueryResponse();
+            total = await entries.CountQueryAsync(q, actor ?? "anonymous", policies, ct);
         }
 
         var returned = Math.Min(Math.Max(total - Math.Max(0, q.Offset), 0), Math.Max(1, q.Limit));

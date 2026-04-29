@@ -241,6 +241,127 @@ public sealed class AuthzRegressionTests : IClassFixture<DmartFactory>
         }
     }
 
+    // Regression: a permission scoped to non-Content resource_types (e.g.
+    // ["ticket"]) used to return an empty result for entries-table queries
+    // because the preflight `CanQueryAsync(actor, ResourceType.Content, ...)`
+    // probed for a Content-listed permission specifically. Python parity
+    // (adapter.py:1510-1520, query_policies_helper.py) is resource-type-
+    // agnostic — only the policy-empty check gates. With the preflight
+    // dropped, a user whose only permission lists ["ticket"] now sees their
+    // tickets.
+    [FactIfPg]
+    public async Task QueryEntries_Honors_NonContent_ResourceType_Permission()
+    {
+        _factory.CreateClient();
+        var users = _factory.Services.GetRequiredService<UserRepository>();
+        var access = _factory.Services.GetRequiredService<AccessRepository>();
+        var entries = _factory.Services.GetRequiredService<EntryRepository>();
+        var spaces = _factory.Services.GetRequiredService<SpaceRepository>();
+        var hasher = _factory.Services.GetRequiredService<PasswordHasher>();
+
+        var user = Unique("ticketonly_user");
+        var role = Unique("ticketonly_role");
+        var perm = Unique("ticketonly_perm");
+        var space = Unique("ticketonly_space");
+        var subpath = $"/sp_{Guid.NewGuid():N}"[..14];
+        var ticketSn = Unique("tk");
+        var now = DateTime.UtcNow;
+
+        await spaces.UpsertAsync(new Space
+        {
+            Uuid = Guid.NewGuid().ToString(),
+            Shortname = space,
+            SpaceName = "management",
+            Subpath = "/",
+            OwnerShortname = "dmart",
+            IsActive = true,
+            Languages = new() { Language.En },
+            CreatedAt = now,
+            UpdatedAt = now,
+        });
+        // Permission lists `ticket` ONLY. No `content`. Pre-fix this user's
+        // /managed/query returns total=0 even when filter_types=["ticket"].
+        await access.UpsertPermissionAsync(new Permission
+        {
+            Uuid = Guid.NewGuid().ToString(),
+            Shortname = perm,
+            SpaceName = "management",
+            Subpath = "/permissions",
+            OwnerShortname = "dmart",
+            IsActive = true,
+            Subpaths = new() { [space] = new() { subpath } },
+            ResourceTypes = new() { "ticket" },
+            Actions = new() { "view", "query" },
+            Conditions = new() { "is_active" },
+            CreatedAt = now,
+            UpdatedAt = now,
+        });
+        await access.UpsertRoleAsync(new Role
+        {
+            Uuid = Guid.NewGuid().ToString(),
+            Shortname = role,
+            SpaceName = "management",
+            Subpath = "/roles",
+            OwnerShortname = "dmart",
+            IsActive = true,
+            Permissions = new() { perm },
+            CreatedAt = now,
+            UpdatedAt = now,
+        });
+        await CreateUserAsync(users, hasher, user, new() { role });
+        // Seed a ticket the user should be able to see.
+        await entries.UpsertAsync(new Entry
+        {
+            Uuid = Guid.NewGuid().ToString(),
+            Shortname = ticketSn,
+            SpaceName = space,
+            Subpath = subpath,
+            OwnerShortname = user,
+            ResourceType = ResourceType.Ticket,
+            IsActive = true,
+            State = "new",
+            IsOpen = true,
+            CreatedAt = now,
+            UpdatedAt = now,
+        });
+        await access.InvalidateAllCachesAsync();
+
+        try
+        {
+            var (client, _) = await LoginAsAsync(user);
+
+            var resp = await client.PostAsJsonAsync("/managed/query", new Query
+            {
+                Type = QueryType.Search,
+                SpaceName = space,
+                Subpath = subpath,
+                FilterTypes = new() { ResourceType.Ticket },
+                FilterSchemaNames = new(),
+                Limit = 10,
+            }, DmartJsonContext.Default.Query);
+            var raw = await resp.Content.ReadAsStringAsync();
+            resp.StatusCode.ShouldBe(HttpStatusCode.OK, raw);
+            using var doc = JsonDocument.Parse(raw);
+            doc.RootElement.GetProperty("status").GetString().ShouldBe("success");
+            // Pre-fix this would be 0 because the Content-specific preflight bailed.
+            doc.RootElement.GetProperty("attributes").GetProperty("total").GetInt32().ShouldBeGreaterThanOrEqualTo(1);
+            var shortnames = doc.RootElement.GetProperty("records").EnumerateArray()
+                .Select(r => r.GetProperty("shortname").GetString())
+                .ToArray();
+            shortnames.ShouldContain(ticketSn);
+        }
+        finally
+        {
+            try { await entries.DeleteAsync(space, subpath, ticketSn, ResourceType.Ticket); } catch { }
+            try { await users.DeleteAllSessionsAsync(user); } catch { }
+            try { await users.DeleteAsync(user); } catch { }
+            try { await access.DeleteRoleAsync(role); } catch { }
+            try { await access.DeletePermissionAsync(perm); } catch { }
+            try { await spaces.DeleteAsync(space); } catch { }
+            await access.InvalidateAllCachesAsync();
+        }
+    }
+
     private static string Unique(string prefix) => $"{prefix}_{Guid.NewGuid():N}"[..24];
 
     private static async Task CreateUserAsync(
