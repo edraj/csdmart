@@ -1228,7 +1228,8 @@ public sealed class ComprehensivePermissionsTests : IClassFixture<DmartFactory>
                 Shortname = Unique("v_blocked"),
                 Attributes = new() { ["displayname"] = "should be blocked" },
             });
-            createAsViewer.IsSuccessStatusCode.ShouldBeFalse(
+            createAsViewer.StatusCode.ShouldBeOneOf(
+                new[] { HttpStatusCode.Unauthorized, HttpStatusCode.Forbidden, HttpStatusCode.NotFound },
                 $"viewer must NOT be able to create. Got {createAsViewer.StatusCode}");
 
             // viewer: UPDATE blocked.
@@ -1239,7 +1240,9 @@ public sealed class ComprehensivePermissionsTests : IClassFixture<DmartFactory>
                 Shortname = seedSn,
                 Attributes = new() { ["displayname"] = "viewer can't write" },
             });
-            updateAsViewer.IsSuccessStatusCode.ShouldBeFalse("viewer must NOT be able to update");
+            updateAsViewer.StatusCode.ShouldBeOneOf(
+                new[] { HttpStatusCode.Unauthorized, HttpStatusCode.Forbidden, HttpStatusCode.NotFound },
+                $"viewer must NOT be able to update. Got {updateAsViewer.StatusCode}");
 
             // editor: CREATE succeeds.
             var newSn = Unique("editor_new");
@@ -1368,7 +1371,8 @@ public sealed class ComprehensivePermissionsTests : IClassFixture<DmartFactory>
                 Shortname = seedSn,
                 Attributes = new() { ["displayname"] = "stranger should be blocked" },
             });
-            updateB.IsSuccessStatusCode.ShouldBeFalse(
+            updateB.StatusCode.ShouldBeOneOf(
+                new[] { HttpStatusCode.Unauthorized, HttpStatusCode.Forbidden, HttpStatusCode.NotFound },
                 $"non-owner update must be denied. Got {updateB.StatusCode}");
         }
         finally
@@ -1603,7 +1607,7 @@ public sealed class ComprehensivePermissionsTests : IClassFixture<DmartFactory>
             sp.GetRequiredService<SpaceRepository>());
     }
 
-    private static string Unique(string prefix) => $"{prefix}_{Guid.NewGuid():N}"[..24];
+    private static string Unique(string prefix) => $"{prefix}_{Guid.NewGuid():N}"[..32];
 
     private static Permission BuildPermission(
         string shortname,
