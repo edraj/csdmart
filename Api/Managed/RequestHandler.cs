@@ -902,9 +902,10 @@ public static class RequestHandler
                 $"target user '{newOwner}' not found", ErrorTypes.Request), rec);
 
         // (3,4) Build the patch — owner_shortname plus any collaborators
-        // (collaborators is a C# extension preserved for back-compat). Restricted
-        // fields gate is opened via allowRestrictedFields; the action override
-        // makes the permission check require `assign`, not `update`.
+        // (collaborators is a C# extension preserved for back-compat). The
+        // AssignRestrictedFields set names exactly which restricted field
+        // this dispatcher mutates; the action override makes the permission
+        // check require `assign`, not `update`.
         var patch = new Dictionary<string, object>(StringComparer.Ordinal)
         {
             ["owner_shortname"] = newOwner!,
@@ -915,7 +916,7 @@ public static class RequestHandler
         var locator = new Locator(rec.ResourceType, space, rec.Subpath, rec.Shortname);
         var result = await entries.UpdateAsync(
             locator, patch, actor, ct,
-            allowRestrictedFields: true,
+            allowedRestrictedFields: EntryService.AssignRestrictedFields,
             actionOverride: "assign");
         return result.IsOk
             ? (Response.Ok(), rec with { Uuid = result.Value!.Uuid })
@@ -933,10 +934,12 @@ public static class RequestHandler
         var patch = new Dictionary<string, object>(StringComparer.Ordinal);
         if (attrs.TryGetValue("acl", out var aclRaw)) patch["acl"] = aclRaw;
         var locator = new Locator(rec.ResourceType, space, rec.Subpath, rec.Shortname);
-        // allowRestrictedFields opts this caller into ApplyPatch's `acl`
+        // UpdateAclRestrictedFields opts this caller into ApplyPatch's `acl`
         // branch — the gate matches Python's Meta.restricted_fields, which
         // only the dedicated update_acl handler bypasses.
-        var result = await entries.UpdateAsync(locator, patch, actor, ct, allowRestrictedFields: true);
+        var result = await entries.UpdateAsync(
+            locator, patch, actor, ct,
+            allowedRestrictedFields: EntryService.UpdateAclRestrictedFields);
         return result.IsOk
             ? (Response.Ok(), rec with { Uuid = result.Value!.Uuid })
             : (Response.Fail(result.ErrorCode!, result.ErrorMessage!, ErrorTypes.Request), rec);

@@ -157,16 +157,30 @@ public sealed class EntryService(
         return "payload failed schema validation: " + string.Join("; ", errors);
     }
 
+    // Static field-sets for the two dispatchers that need to bypass
+    // ApplyPatch's restricted-field gate. Naming a set per dispatcher is
+    // clearer than a global bool — each call site declares exactly which
+    // restricted fields it intends to mutate, and accidental copy-paste
+    // can't open more than that.
+    public static readonly IReadOnlySet<string> AssignRestrictedFields =
+        new HashSet<string>(StringComparer.Ordinal) { "owner_shortname" };
+    public static readonly IReadOnlySet<string> UpdateAclRestrictedFields =
+        new HashSet<string>(StringComparer.Ordinal) { "acl" };
+
     public async Task<Result<Entry>> UpdateAsync(
         Locator locator,
         Dictionary<string, object> patch,
         string? actor,
         CancellationToken ct = default,
-        bool allowRestrictedFields = false,
-        // Python parity: serve_request_assign checks the explicit `assign`
-        // action (not `update`). Same code path otherwise — load resource,
-        // check action, apply patch, persist. When non-null, this overrides
-        // the default "update" action used by the permission walk.
+        // The set of restricted fields this caller is allowed to mutate.
+        // null/empty preserves all restricted fields (regular update path).
+        // ApplyPatch only consults this for fields in Meta.restricted_fields
+        // (currently `owner_shortname`, `acl`); regular fields ignore it.
+        IReadOnlySet<string>? allowedRestrictedFields = null,
+        // When non-null, the permission walk gates on this action instead
+        // of "update". Used by RequestType.assign (Python parity:
+        // serve_request_assign requires the `assign` action) and reusable
+        // for any future dispatcher that needs a non-update action gate.
         string? actionOverride = null)
     {
         // Load existing first so the permission check has the resource context for
@@ -178,7 +192,7 @@ public sealed class EntryService(
         if (!await perms.CanAsync(actor, action, locator, PermissionService.FromEntry(existing), patch, ct))
             return Result<Entry>.Fail(InternalErrorCode.NOT_ALLOWED, $"no {action} access", ErrorTypes.Auth);
 
-        var merged = ApplyPatch(existing, patch, allowRestrictedFields);
+        var merged = ApplyPatch(existing, patch, allowedRestrictedFields);
 
         // Validate the MERGED entry (not the old one) so patches can't bypass schema rules.
         var validationError = await ValidatePayloadAsync(merged, ct);
@@ -548,8 +562,11 @@ public sealed class EntryService(
         return d;
     }
 
-    private static Entry ApplyPatch(Entry existing, Dictionary<string, object> patch, bool allowRestrictedFields)
+    private static Entry ApplyPatch(Entry existing, Dictionary<string, object> patch, IReadOnlySet<string>? allowedRestrictedFields)
     {
+        bool RestrictedAllowed(string field) =>
+            allowedRestrictedFields is not null && allowedRestrictedFields.Contains(field);
+
         string? Str(string key, string? fallback)
             => patch.TryGetValue(key, out var v) && v is not null ? v.ToString() : fallback;
 
@@ -636,9 +653,9 @@ public sealed class EntryService(
             // EXCLUDED.owner_shortname` clause in EntryRepository.UpsertAsync
             // would let any authenticated /managed/request caller transfer
             // ownership by including the field in their patch body.
-            // The `assign` request type opts in via allowRestrictedFields=true
-            // — same gating shape Python's serve_request_assign uses.
-            OwnerShortname = (allowRestrictedFields && patch.ContainsKey("owner_shortname")
+            // RequestType.assign opts in via AssignRestrictedFields —
+            // matches Python's serve_request_assign gating shape.
+            OwnerShortname = (RestrictedAllowed("owner_shortname") && patch.ContainsKey("owner_shortname")
                 ? Str("owner_shortname", existing.OwnerShortname)
                 : existing.OwnerShortname) ?? existing.OwnerShortname,
             State = Str("state", existing.State),
@@ -653,8 +670,8 @@ public sealed class EntryService(
             // Python parity: `acl` lives in Meta.restricted_fields and is only
             // writable through the dedicated update_acl path. Regular update
             // ignores it; DispatchUpdateAclAsync opts in via
-            // allowRestrictedFields=true.
-            Acl = allowRestrictedFields && patch.ContainsKey("acl")
+            // UpdateAclRestrictedFields.
+            Acl = RestrictedAllowed("acl") && patch.ContainsKey("acl")
                 ? ParsePatchAcl(patch)
                 : existing.Acl,
             Payload = payload,
