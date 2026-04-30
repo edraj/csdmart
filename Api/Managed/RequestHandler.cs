@@ -153,7 +153,7 @@ public static class RequestHandler
                             await DispatchMoveAsync(rec, req.SpaceName, actor, entries, ct),
                         // Python: Assign sets collaborators on an entry.
                         RequestType.Assign =>
-                            await DispatchAssignAsync(rec, req.SpaceName, actor, entries, ct),
+                            await DispatchAssignAsync(rec, req.SpaceName, actor, entries, users, ct),
                         // Python: UpdateAcl sets the per-entry ACL.
                         RequestType.UpdateAcl =>
                             await DispatchUpdateAclAsync(rec, req.SpaceName, actor, entries, ct),
@@ -871,18 +871,52 @@ public static class RequestHandler
     }
 
     // ============================================================================
-    // ASSIGN (sets collaborators on an entry — Python: RequestType.assign)
+    // ASSIGN (transfers owner_shortname on an entry — Python: RequestType.assign,
+    // serve_request_assign in api/managed/utils.py:739).
+    //
+    // Python contract:
+    //   1. owner_shortname MUST be present in record.attributes; absent → MISSING_DATA.
+    //   2. The target user must exist (db.load against management/users) — absent
+    //      → OBJECT_NOT_FOUND.
+    //   3. Permission check uses the `assign` action (NOT `update`) so an admin can
+    //      grant "edit but not transfer ownership" via separate role permissions.
+    //   4. Only owner_shortname (and optionally collaborators) is mutated; all other
+    //      restricted fields stay untouched.
     // ============================================================================
 
     private static async Task<(Response Response, Record UpdatedRecord)> DispatchAssignAsync(
-        Record rec, string space, string actor, EntryService entries, CancellationToken ct)
+        Record rec, string space, string actor,
+        EntryService entries, UserRepository users, CancellationToken ct)
     {
         var attrs = rec.Attributes ?? new();
+
+        // (1) owner_shortname is required.
+        if (!TryGetString(attrs, "owner_shortname", out var newOwner) || string.IsNullOrEmpty(newOwner))
+            return (Response.Fail(InternalErrorCode.MISSING_DATA,
+                "The owner_shortname is required", ErrorTypes.Request), rec);
+
+        // (2) Target user must exist.
+        var target = await users.GetByShortnameAsync(newOwner, ct);
+        if (target is null)
+            return (Response.Fail(InternalErrorCode.OBJECT_NOT_FOUND,
+                $"target user '{newOwner}' not found", ErrorTypes.Request), rec);
+
+        // (3,4) Build the patch — owner_shortname plus any collaborators
+        // (collaborators is a C# extension preserved for back-compat). Restricted
+        // fields gate is opened via allowRestrictedFields; the action override
+        // makes the permission check require `assign`, not `update`.
+        var patch = new Dictionary<string, object>(StringComparer.Ordinal)
+        {
+            ["owner_shortname"] = newOwner!,
+        };
         var collaborators = ExtractStringDict(attrs, "collaborators");
-        var patch = new Dictionary<string, object>(StringComparer.Ordinal);
         if (collaborators is not null) patch["collaborators"] = collaborators;
+
         var locator = new Locator(rec.ResourceType, space, rec.Subpath, rec.Shortname);
-        var result = await entries.UpdateAsync(locator, patch, actor, ct);
+        var result = await entries.UpdateAsync(
+            locator, patch, actor, ct,
+            allowRestrictedFields: true,
+            actionOverride: "assign");
         return result.IsOk
             ? (Response.Ok(), rec with { Uuid = result.Value!.Uuid })
             : (Response.Fail(result.ErrorCode!, result.ErrorMessage!, ErrorTypes.Request), rec);

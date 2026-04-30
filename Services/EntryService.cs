@@ -162,15 +162,21 @@ public sealed class EntryService(
         Dictionary<string, object> patch,
         string? actor,
         CancellationToken ct = default,
-        bool allowRestrictedFields = false)
+        bool allowRestrictedFields = false,
+        // Python parity: serve_request_assign checks the explicit `assign`
+        // action (not `update`). Same code path otherwise — load resource,
+        // check action, apply patch, persist. When non-null, this overrides
+        // the default "update" action used by the permission walk.
+        string? actionOverride = null)
     {
         // Load existing first so the permission check has the resource context for
         // "own"/"is_active" conditions and the patch dict for field-restriction gating.
         var existing = await entries.GetAsync(locator.SpaceName, locator.Subpath, locator.Shortname, locator.Type, ct);
         if (existing is null)
             return Result<Entry>.Fail(InternalErrorCode.OBJECT_NOT_FOUND, "entry missing", ErrorTypes.Db);
-        if (!await perms.CanUpdateAsync(actor, locator, PermissionService.FromEntry(existing), patch, ct))
-            return Result<Entry>.Fail(InternalErrorCode.NOT_ALLOWED, "no update access", ErrorTypes.Auth);
+        var action = actionOverride ?? "update";
+        if (!await perms.CanAsync(actor, action, locator, PermissionService.FromEntry(existing), patch, ct))
+            return Result<Entry>.Fail(InternalErrorCode.NOT_ALLOWED, $"no {action} access", ErrorTypes.Auth);
 
         var merged = ApplyPatch(existing, patch, allowRestrictedFields);
 
@@ -630,8 +636,11 @@ public sealed class EntryService(
             // EXCLUDED.owner_shortname` clause in EntryRepository.UpsertAsync
             // would let any authenticated /managed/request caller transfer
             // ownership by including the field in their patch body.
-            // OwnerShortname stays = existing.OwnerShortname (preserved by
-            // `existing with { ... }`).
+            // The `assign` request type opts in via allowRestrictedFields=true
+            // — same gating shape Python's serve_request_assign uses.
+            OwnerShortname = (allowRestrictedFields && patch.ContainsKey("owner_shortname")
+                ? Str("owner_shortname", existing.OwnerShortname)
+                : existing.OwnerShortname) ?? existing.OwnerShortname,
             State = Str("state", existing.State),
             IsOpen = PatchBool("is_open", existing.IsOpen),
             WorkflowShortname = Str("workflow_shortname", existing.WorkflowShortname),
