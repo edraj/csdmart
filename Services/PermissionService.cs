@@ -177,13 +177,10 @@ public sealed class PermissionService(UserRepository users, AccessRepository acc
             foreach (var entry in acls)
             {
                 if (entry.UserShortname != actorShortname) continue;
-                if (entry.AllowedActions is { Count: > 0 } allowed && allowed.Contains(action, StringComparer.Ordinal))
-                    return true;
-                // Explicit deny short-circuits — a denied action cannot fall through
-                // to a role-based grant. (Python doesn't model deny; this is a C#
-                // extension that the AclEntry.Denied field exposes.)
                 if (entry.Denied is { Count: > 0 } denied && denied.Contains(action, StringComparer.Ordinal))
                     return false;
+                if (entry.AllowedActions is { Count: > 0 } allowed && allowed.Contains(action, StringComparer.Ordinal))
+                    return true;
             }
         }
 
