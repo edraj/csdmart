@@ -91,6 +91,40 @@ public sealed class AdminBootstrap(
                 await users.UpsertAsync(admin, ct);
                 log.LogInformation("admin bootstrap: created admin user {Shortname}", AdminShortname);
             }
+            else
+            {
+                // Repair invariants that, if drifted, become security issues:
+                //   * Type=Bot would skip session-row binding entirely
+                //     (OnTokenValidated short-circuits for bot users), so a
+                //     leaked JWT secret could mint dmart tokens forever.
+                //   * IsActive=false would lock out admin recovery.
+                //   * super_admin role missing would silently strip privileges.
+                // Fix all three idempotently every startup so corrupted state
+                // never persists across restarts.
+                var repairs = new List<string>();
+                var repaired = existing;
+                if (existing.Type != UserType.Web)
+                {
+                    repaired = repaired with { Type = UserType.Web };
+                    repairs.Add($"type {existing.Type}→Web");
+                }
+                if (!existing.IsActive)
+                {
+                    repaired = repaired with { IsActive = true };
+                    repairs.Add("is_active false→true");
+                }
+                if (!existing.Roles.Contains("super_admin", StringComparer.Ordinal))
+                {
+                    repaired = repaired with { Roles = new(existing.Roles) { "super_admin" } };
+                    repairs.Add("super_admin role re-attached");
+                }
+                if (repairs.Count > 0)
+                {
+                    await users.UpsertAsync(repaired with { UpdatedAt = TimeUtils.Now() }, ct);
+                    log.LogWarning("admin bootstrap: repaired drifted admin invariants: {Repairs}",
+                        string.Join("; ", repairs));
+                }
+            }
 
             // 2. Ensure the management space exists
             var mgmtSpace = await spaces.GetAsync(MgmtSpace, ct);
