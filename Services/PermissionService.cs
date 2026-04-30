@@ -89,7 +89,7 @@ public sealed class PermissionService(UserRepository users, AccessRepository acc
     // that __all_spaces__ / __all_subpaths__ magic words in the anonymous user's
     // roles (or the special "world" permission) resolve the same way they would
     // for any other user.
-    private const string AnonymousUser = "anonymous";
+    internal const string AnonymousUser = "anonymous";
     private const string WorldPermission = "world";
 
     // Resolves the user + flattened permission list, using the in-memory cache.
