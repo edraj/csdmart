@@ -26,7 +26,7 @@ public sealed class TimestampWallClockTests : IClassFixture<DmartFactory>
     public async Task Created_At_Matches_DB_Wall_Clock()
     {
         var (client, _, _, cleanup) = await _factory.CreateLoggedInUserAsync();
-        var shortname = $"tswc-{Guid.NewGuid():N}".Substring(0, 16);
+        var shortname = $"tswc_{Guid.NewGuid():N}".Substring(0, 16);
         var space = "test";
         var subpath = "/itest";
 
@@ -78,7 +78,7 @@ public sealed class TimestampWallClockTests : IClassFixture<DmartFactory>
     public async Task Created_At_Within_Seconds_Of_Now()
     {
         var (client, _, _, cleanup) = await _factory.CreateLoggedInUserAsync();
-        var shortname = $"tsnow-{Guid.NewGuid():N}".Substring(0, 16);
+        var shortname = $"tsnow_{Guid.NewGuid():N}".Substring(0, 16);
         var space = "test";
         var subpath = "/itest";
 

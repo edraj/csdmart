@@ -24,7 +24,7 @@ public class LockDbTests : IClassFixture<DmartFactory>
 
         var space = "test";
         var subpath = "lock-test";
-        var shortname = $"lock-{Guid.NewGuid():N}".Substring(0, 12);
+        var shortname = $"lock_{Guid.NewGuid():N}".Substring(0, 12);
 
         var lockResp = await client.PutAsync($"/managed/lock/content/{space}/{subpath}/{shortname}", null);
         lockResp.StatusCode.ShouldBe(HttpStatusCode.OK);
@@ -52,7 +52,7 @@ public class LockDbTests : IClassFixture<DmartFactory>
 
         var space = "test";
         var subpath = "lock-period-test";
-        var shortname = $"lockp-{Guid.NewGuid():N}".Substring(0, 14);
+        var shortname = $"lockp_{Guid.NewGuid():N}".Substring(0, 14);
 
         try
         {
@@ -87,7 +87,7 @@ public class LockDbTests : IClassFixture<DmartFactory>
 
         var space = "test";
         var subpath = "lock-expiry-test";
-        var shortname = $"locke-{Guid.NewGuid():N}".Substring(0, 14);
+        var shortname = $"locke_{Guid.NewGuid():N}".Substring(0, 14);
 
         var first = await client.PutAsync($"/managed/lock/content/{space}/{subpath}/{shortname}", null);
         first.StatusCode.ShouldBe(HttpStatusCode.OK);

@@ -35,7 +35,7 @@ public class PatchRestrictedFieldsTests : IClassFixture<DmartFactory>
     public async Task Patch_Tags_Array_RoundTrips()
     {
         var (client, _, _, cleanup) = await _factory.CreateLoggedInUserAsync();
-        var shortname = $"tagstest-{Guid.NewGuid():N}".Substring(0, 16);
+        var shortname = $"tagstest_{Guid.NewGuid():N}".Substring(0, 16);
         var space = "test";
         var subpath = "/itest";
 
@@ -73,7 +73,7 @@ public class PatchRestrictedFieldsTests : IClassFixture<DmartFactory>
     public async Task Patch_IsActive_Bool_RoundTrips()
     {
         var (client, _, _, cleanup) = await _factory.CreateLoggedInUserAsync();
-        var shortname = $"activetst-{Guid.NewGuid():N}".Substring(0, 16);
+        var shortname = $"activetst_{Guid.NewGuid():N}".Substring(0, 16);
         var space = "test";
         var subpath = "/itest";
 
@@ -107,7 +107,7 @@ public class PatchRestrictedFieldsTests : IClassFixture<DmartFactory>
     public async Task Patch_OwnerShortname_Is_Silently_Ignored()
     {
         var (client, _, ownerShortname, cleanup) = await _factory.CreateLoggedInUserAsync();
-        var shortname = $"ownrtest-{Guid.NewGuid():N}".Substring(0, 16);
+        var shortname = $"ownrtest_{Guid.NewGuid():N}".Substring(0, 16);
         var space = "test";
         var subpath = "/itest";
 

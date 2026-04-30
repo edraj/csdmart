@@ -22,7 +22,7 @@ public class ManagedCrudDbTests : IClassFixture<DmartFactory>
     {
         var (client, _, _, _) = await _factory.CreateLoggedInUserAsync();
 
-        var shortname = $"itest-{Guid.NewGuid():N}".Substring(0, 16);
+        var shortname = $"itest_{Guid.NewGuid():N}".Substring(0, 16);
         var space = "test";
         var subpath = "/itest";
 
@@ -200,7 +200,7 @@ public class ManagedCrudDbTests : IClassFixture<DmartFactory>
     {
         var (client, _, _, _) = await _factory.CreateLoggedInUserAsync();
 
-        var shortname = $"acltest-{Guid.NewGuid():N}".Substring(0, 16);
+        var shortname = $"acltest_{Guid.NewGuid():N}".Substring(0, 16);
         var space = "test";
         var subpath = "/itest";
 
