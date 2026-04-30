@@ -173,11 +173,16 @@ public sealed class SecurityPenetrationTests : IClassFixture<SecurityPenetration
     {
         var (_, token, shortname, _) = await CreateLoggedInUser();
         var users = _factory.Services.GetRequiredService<UserRepository>();
+        var entries = _factory.Services.GetRequiredService<EntryRepository>();
 
         // Sanity: token works while user exists.
         var pre = AuthedClient(token);
         (await ProbeProtected(pre)).StatusCode.ShouldNotBe(HttpStatusCode.Unauthorized);
 
+        // ProbeProtected posts a Create at test/x/y owned by `shortname`. The
+        // entries_owner_shortname_fkey blocks the user delete unless we drop
+        // that entry first.
+        try { await entries.DeleteAsync("test", "/x", "y", ResourceType.Content); } catch { }
         await users.DeleteAllSessionsAsync(shortname);
         await users.DeleteAsync(shortname);
 
