@@ -125,7 +125,10 @@ public sealed class PermissionService(UserRepository users, AccessRepository acc
         }
 
         var roles = roleNames.Count == 0 ? new() : await access.GetRolesAsync(roleNames, ct);
-        var permNames = roles.SelectMany(r => r.Permissions).Distinct().ToList();
+        // Skip inactive roles when collecting permissions — deactivating a role
+        // must revoke the access it carried. Mirrors the per-permission
+        // `if (!p.IsActive) continue;` check inside the per-permission walk.
+        var permNames = roles.Where(r => r.IsActive).SelectMany(r => r.Permissions).Distinct().ToList();
         var perms = permNames.Count == 0 ? new() : await access.GetPermissionsAsync(permNames, ct);
 
         // Python parity: `generate_user_permissions` appends the "world" record
