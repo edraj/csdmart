@@ -60,6 +60,29 @@ public static class RequestHandler
                     return Response.Fail(InternalErrorCode.INVALID_DATA,
                         "invalid request body: 'records' is required", ErrorTypes.Request);
 
+                // Python parity: every Record/Request goes through Pydantic
+                // Field(pattern=regex.X) validation at deserialization. The
+                // C# port deserializes via System.Text.Json which has no
+                // pattern support — so we replay the regex gate here, before
+                // any record reaches the dispatcher.
+                if (!Utils.RequestRegex.IsValidSpaceName(req.SpaceName))
+                    return Response.Fail(InternalErrorCode.INVALID_DATA,
+                        $"invalid space_name: '{req.SpaceName}' fails {Utils.RequestRegex.SpaceNamePattern}",
+                        ErrorTypes.Request);
+
+                for (int i = 0; i < req.Records.Count; i++)
+                {
+                    var rec = req.Records[i];
+                    if (!Utils.RequestRegex.IsValidShortname(rec.Shortname))
+                        return Response.Fail(InternalErrorCode.INVALID_DATA,
+                            $"invalid shortname at records[{i}]: '{rec.Shortname}' fails {Utils.RequestRegex.ShortnamePattern}",
+                            ErrorTypes.Request);
+                    if (!Utils.RequestRegex.IsValidSubpath(rec.Subpath))
+                        return Response.Fail(InternalErrorCode.INVALID_DATA,
+                            $"invalid subpath at records[{i}]: '{rec.Subpath}' fails {Utils.RequestRegex.SubpathPattern}",
+                            ErrorTypes.Request);
+                }
+
                 var actor = http.ActorOrAnonymous();
                 var managementSpace = dmartSettings.Value.ManagementSpace;
                 var responses = new List<Record>();
