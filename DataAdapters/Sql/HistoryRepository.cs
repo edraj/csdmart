@@ -1,3 +1,4 @@
+using Dmart.Utils;
 using Npgsql;
 using NpgsqlTypes;
 
@@ -15,7 +16,7 @@ public sealed class HistoryRepository(Db db)
             INSERT INTO histories (uuid, request_headers, diff, timestamp,
                                    owner_shortname, last_checksum_history,
                                    space_name, subpath, shortname)
-            VALUES (gen_random_uuid(), $1, $2, NOW(), $3, NULL, $4, $5, $6)
+            VALUES (gen_random_uuid(), $1, $2, $3, $4, NULL, $5, $6, $7)
             """, conn);
         // request_headers and diff are NOT NULL in dmart's schema — default to {}.
         cmd.Parameters.Add(new()
@@ -28,6 +29,13 @@ public sealed class HistoryRepository(Db db)
             Value = JsonbHelpers.ToJsonb(diff) ?? "{}",
             NpgsqlDbType = NpgsqlDbType.Jsonb,
         });
+        // Mirror entries/users/spaces: stamp timestamps from the C# side using
+        // TimeUtils.Now() (DateTime.Now, local wall-clock) instead of Postgres's
+        // NOW(). Without this, history rows landed in DB UTC while every other
+        // table got the server's local time, so a "history of an entry" query
+        // showed the audit row with a different timezone offset than the
+        // entry's own created_at/updated_at.
+        cmd.Parameters.Add(new() { Value = TimeUtils.Now() });
         cmd.Parameters.Add(new() { Value = (object?)actor ?? DBNull.Value });
         cmd.Parameters.Add(new() { Value = spaceName });
         cmd.Parameters.Add(new() { Value = subpath });
