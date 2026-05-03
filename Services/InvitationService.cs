@@ -32,6 +32,13 @@ public sealed class InvitationService(
     ILogger<InvitationService> log)
 {
     public async Task<string?> MintAsync(User user, InvitationChannel channel, CancellationToken ct = default)
+        => await MintAsync(user, channel, isReset: false, ct);
+
+    // isReset=true selects the password-reset SMS template (Python parity:
+    // languages[user.language]["reset_message"], used by /user/reset). The
+    // email body is unchanged — Python uses the same activation template for
+    // both invitation and reset flows.
+    public async Task<string?> MintAsync(User user, InvitationChannel channel, bool isReset, CancellationToken ct = default)
     {
         string? identifier = channel == InvitationChannel.Email ? user.Email : user.Msisdn;
         if (string.IsNullOrWhiteSpace(identifier))
@@ -67,7 +74,9 @@ public sealed class InvitationService(
                 // substituted. Look up by user.Language; fall back to English when
                 // the language has no entry (Python would KeyError; defaulting is
                 // the safer behaviour).
-                var template = InvitationMessageFor(user.Language);
+                var template = isReset
+                    ? ResetMessageFor(user.Language)
+                    : InvitationMessageFor(user.Language);
                 var text = template.Replace("{link}", deliverableLink);
                 var ok = await sms.SendAsync(identifier, text, ct);
                 if (!ok)
@@ -145,6 +154,16 @@ public sealed class InvitationService(
         Language.Ar => "تهانينا، لقد تم الآن إنشاء حساب الخاص بك، يرجى اتباع هذا الرابط للتأكيد وتسجيل الدخول: {link} يمكن استخدام هذا الرابط مرة واحدة وخلال الـ 48 ساعة القادمة.",
         Language.Ku => "لە ڕێگەی ئەم بەستەرەوە ئەکاونتەکەت پشتڕاست بکەرەوە: {link} ئەم بەستەرە دەتوانرێت جارێک و لە ماوەی ٤٨ کاتژمێری داهاتوودا بەکاربهێنرێت.",
         _           => "Congratulations, your account is now created, please follow this link to confirm and login: {link} This link can be used once and within the next 48 hours.",
+    };
+
+    // Python parity: backend/languages/{english,arabic,kurdish}.json
+    // ["reset_message"] — used by POST /user/reset SMS delivery
+    // (router.py:1135). Falls back to English for unmapped languages.
+    internal static string ResetMessageFor(Language lang) => lang switch
+    {
+        Language.Ar => "تم إرسال رابط إعادة تعيين كلمة المرور إلى بريدك الإلكتروني. {link} يمكن استخدام هذا الرابط مرة واحدة وخلال الـ 48 ساعة القادمة.",
+        Language.Ku => "بەستەری گۆڕانکاری وشەی نهێنی بۆ ئیمەیلەکەت نێردرا. {link} ئەم بەستەرە دەتوانرێت جارێک و لە ماوەی ٤٨ کاتژمێری داهاتوودا بەکاربهێنرێت.",
+        _           => "A password reset link has been sent to your email. {link} This link can be used once and within the next 48 hours.",
     };
 
     // Python parity: utils/generate_email.generate_subject("activation").

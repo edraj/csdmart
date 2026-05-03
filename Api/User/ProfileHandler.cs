@@ -164,7 +164,7 @@ public static class ProfileHandler
             }
             if (!string.IsNullOrWhiteSpace(existing.Msisdn))
             {
-                var t = await invitationService.MintAsync(existing, Dmart.Models.Enums.InvitationChannel.Sms, ct);
+                var t = await invitationService.MintAsync(existing, Dmart.Models.Enums.InvitationChannel.Sms, isReset: true, ct);
                 if (t is not null) minted["msisdn"] = t;
             }
 
