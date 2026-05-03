@@ -239,15 +239,17 @@
       const parentPath = "/" + pathParts.join("/");
       const offset = (currentPage - 1) * itemsPerPage;
 
-      // Run all independent backend calls in parallel
-      const [folderMeta, parent, response, tagsResponse] = await Promise.all([
-        // 1. Folder metadata
-        folderShortname
-          ? getEntity(folderShortname, spaceName, parentPath, ResourceType.folder, DmartScope.managed)
-          : Promise.resolve(null),
-        // 2. Parent contents (template check)
+      const folderMeta = folderShortname
+        ? await getEntity(folderShortname, spaceName, parentPath, ResourceType.folder, DmartScope.managed)
+        : null;
+      const expandChildren =
+        folderMeta?.payload?.body?.expand_children === true;
+
+      // Run remaining independent backend calls in parallel
+      const [parent, response, tagsResponse] = await Promise.all([
+        // 1. Parent contents (template check)
         getSpaceContents(spaceName, "/", DmartScope.managed, 100, 0, false),
-        // 3. Paginated items — hide filter applied server-side via `-@shortname:x|y`
+        // 2. Paginated items — hide filter applied server-side via `-@shortname:x|y`
         Dmart.query(
           {
             type: QueryType.search,
@@ -263,11 +265,11 @@
             offset: offset,
             retrieve_json_payload: true,
             retrieve_attachments: true,
-            exact_subpath: true,
+            exact_subpath: !expandChildren,
           },
           DmartScope.managed,
         ),
-        // 4. Space tags
+        // 3. Space tags
         getSpaceTags(spaceName).catch(() => null),
       ]);
 

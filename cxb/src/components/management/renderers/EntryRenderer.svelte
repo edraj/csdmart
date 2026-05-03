@@ -57,7 +57,6 @@
     import PermissionsExplorer from "@/components/management/renderers/PermissionsExplorer.svelte";
     import {
         deleteEntry,
-        getExactSubpathValue,
         moveEntryToTrash,
         saveEntry,
     } from "@/utils/entryManagement";
@@ -820,7 +819,7 @@
                         stream={entry?.payload?.body?.stream === true}
                         onStreamUpdate={() => (hasStreamChanges = true)}
                         {canDelete}
-                        exact_subpath={getExactSubpathValue(space_name, subpath)}
+                        exact_subpath={entry?.payload?.body?.expand_children !== true}
                 />
             {:else}
                 <Table2Cols

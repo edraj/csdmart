@@ -28,7 +28,7 @@
     import ListViewActionBar from "@/components/management/ListViewActionBar.svelte";
     import {currentListView} from "@/stores/global";
     import {untrack, onDestroy} from "svelte";
-    import {getRowsPerPageSetting, getValueByPath} from "@/utils/listViewUtils";
+    import {getAttributeValue, getRowsPerPageSetting} from "@/utils/listViewUtils";
     import {website} from "@/config";
     import {authToken} from "@/stores/auth";
 
@@ -510,13 +510,23 @@
     }
 
     function cellText(row: any, col: string): string {
-        const raw = getValueByPath(
-            columns?.[col]?.path?.split(".") ?? [],
-            row,
-            columns?.[col]?.type ?? "string",
-        );
-        if (raw === null || raw === undefined) return "";
-        return typeof raw === "string" ? raw : String(raw);
+        const path = columns?.[col]?.path;
+        const type = columns?.[col]?.type ?? "string";
+        const key = path ?? col;
+        if (type === "json") {
+            const segments = key.split(".");
+            let current: any = row;
+            for (const seg of segments) {
+                if (current == null || typeof current !== "object") {
+                    current = undefined;
+                    break;
+                }
+                current = current[seg];
+            }
+            if (current === undefined || current === null) return "";
+            return JSON.stringify(current, undefined, 1);
+        }
+        return getAttributeValue(row, key);
     }
 
     fetchPageRecords(true, {});

@@ -1,28 +1,82 @@
-import {_} from "@/i18n";
+import {_, locale} from "@/i18n";
 import {Dmart, QueryType, SortyType} from "@edraj/tsdmart";
 import {getSpaces} from "@/lib/dmart_services";
 import {get} from "svelte/store";
+import {formatDate} from "@/lib/helpers";
 
 
 /**
  * Utility functions for ListView components
  */
 
-/**
- * Extracts value from nested data object using path array
- */
-export function getValueByPath(path: string[], data: any, type: string): string {
-    if (data === null) {
-        return get(_)("not_applicable");
+function findValue(obj: any, k: string): any {
+    if (!obj || typeof obj !== "object") return undefined;
+    if (obj[k] !== undefined) return obj[k];
+    const tk = k.toLowerCase();
+    const foundKey = Object.keys(obj).find((ok) => ok.toLowerCase() === tk);
+    return foundKey ? obj[foundKey] : undefined;
+}
+
+function localizedDisplayName(item: any): string {
+    const dn = item?.attributes?.displayname ?? item?.displayname;
+    if (dn && typeof dn === "object") {
+        const loc = get(locale);
+        return (
+            (loc ? dn[loc] : undefined) ||
+            dn.en ||
+            dn.ar ||
+            dn.ku ||
+            item?.shortname ||
+            ""
+        );
     }
-    if (path.length === 1 && path[0].length > 0 && typeof(data) === "object" && path[0] in data) {
-        if (type === "json") return JSON.stringify(data[path[0]], undefined, 1);
-        else return data[path[0]];
+    return item?.attributes?.payload?.body?.title || item?.shortname || "";
+}
+
+export function getAttributeValue(item: any, key: string): string {
+    if (!item || !key) return "";
+    if (key === "displayname") return localizedDisplayName(item);
+    if (key === "status") {
+        return item.attributes?.is_active === false
+            ? get(_)("inactive")
+            : get(_)("active");
     }
-    if (path.length > 1 && path[0].length > 0 && path[0] in data) {
-        return getValueByPath(path.slice(1), data[path[0]], type);
+    if (key === "author") {
+        return item.attributes?.owner_shortname || get(_)("unknown");
     }
-    return get(_)("not_applicable");
+    if (key === "updated_at" || key === "created_at") {
+        const ts = item.attributes?.[key];
+        return ts ? formatDate(ts) : get(_)("not_applicable");
+    }
+
+    let value: any;
+    if (key.includes(".")) {
+        const parts = key.split(".");
+        let current: any = item;
+        for (const part of parts) {
+            current = findValue(current, part);
+            if (current === undefined || current === null) break;
+        }
+        value = current;
+    } else {
+        value =
+            findValue(item.attributes?.payload?.body, key) ??
+            findValue(item.attributes?.payload, key) ??
+            findValue(item.attributes, key) ??
+            findValue(item, key);
+    }
+
+    if (value === null || value === undefined) return get(_)("not_applicable");
+
+    if (typeof value === "object" && !Array.isArray(value)) {
+        const loc = get(locale);
+        const localized =
+            (loc ? value[loc] : undefined) || value.en || value.ar || value.ku;
+        if (localized !== undefined) return String(localized);
+        return JSON.stringify(value);
+    }
+
+    return String(value);
 }
 
 /**

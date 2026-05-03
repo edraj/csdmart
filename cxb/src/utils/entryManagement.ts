@@ -175,20 +175,6 @@ export async function moveEntryToTrash(
 }
 
 /**
- * Checks if the current location allows exact subpath values
- */
-export function getExactSubpathValue(space_name: string, subpath: string): boolean {
-    if (
-        space_name === 'personal'
-        && subpath.startsWith('people/')
-        && subpath.endsWith('/trash')
-    ) {
-        return false;
-    }
-    return true;
-}
-
-/**
  * Gets payload schema for a given schema shortname
  */
 export async function getPayloadSchema(schemaShortname: string, space_name: string): Promise<any> {
