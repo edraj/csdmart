@@ -413,19 +413,14 @@ public static class RequestHandler
 
         // Python parity: api/managed/utils.py::send_sms_email_invitation runs
         // after db.save when the resource is a User. Mint an invitation per
-        // unverified channel that has an identifier set; delivery is
-        // best-effort — a downed SMS/SMTP gateway must not roll back the
-        // already-persisted user row.
+        // unverified channel that has an identifier set. MintAsync swallows
+        // and logs gateway/db failures internally so a downed SMS/SMTP
+        // gateway never rolls back the already-persisted user row;
+        // OperationCanceledException still propagates so request abort works.
         if (!user.IsMsisdnVerified && !string.IsNullOrEmpty(user.Msisdn))
-        {
-            try { await invitations.MintAsync(user, InvitationChannel.Sms, ct); }
-            catch { /* logged inside MintAsync; swallow to keep create successful */ }
-        }
+            await invitations.MintAsync(user, InvitationChannel.Sms, ct);
         if (!user.IsEmailVerified && !string.IsNullOrEmpty(user.Email))
-        {
-            try { await invitations.MintAsync(user, InvitationChannel.Email, ct); }
-            catch { /* logged inside MintAsync; swallow to keep create successful */ }
-        }
+            await invitations.MintAsync(user, InvitationChannel.Email, ct);
 
         return (Response.Ok(),
             WithCreatedMetaAttributes(rec, user.Uuid, user.CreatedAt, user.UpdatedAt, user.OwnerShortname));

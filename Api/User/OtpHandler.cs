@@ -128,9 +128,25 @@ public static class OtpHandler
         }).RequireRateLimiting("auth-by-ip");
 
         g.MapPost("/password-reset-request", async (PasswordResetRequest req, OtpProvider otp, OtpRepository repo,
-            IOptions<DmartSettings> settings, CancellationToken ct) =>
+            UserRepository users, IOptions<DmartSettings> settings, CancellationToken ct) =>
         {
-            var dest = req.Email ?? req.Msisdn ?? req.Shortname ?? "";
+            // Resolve the OTP destination to an email/msisdn-shaped string so
+            // OtpProvider.Generate's per-channel mock branching kicks in. When
+            // only `shortname` is supplied we look the user up and prefer
+            // msisdn → email; without that lookup `dest` stays shortname-shaped
+            // and Generate falls through to RandomNumberGenerator, defeating
+            // MockOtpCode in mock mode.
+            string? dest = req.Email ?? req.Msisdn;
+            if (dest is null && !string.IsNullOrEmpty(req.Shortname))
+            {
+                var user = await users.GetByShortnameAsync(req.Shortname, ct);
+                dest = user?.Msisdn ?? user?.Email;
+            }
+            // Anti-enumeration: silent success when nothing maps to a deliverable
+            // channel (mirrors otp-request-login's behaviour).
+            if (string.IsNullOrEmpty(dest))
+                return Response.Ok();
+
             var code = otp.Generate(dest);
             var expiresAt = TimeUtils.Now().AddSeconds(settings.Value.OtpTokenTtl);
             await repo.StoreAsync($"reset:{dest}", code, expiresAt, ct);
