@@ -11,13 +11,21 @@ public sealed class OtpProvider(
     SmtpSender smtp,
     ILogger<OtpProvider> log)
 {
-    public string Generate()
+    public string Generate(string destination)
     {
-        // In mock mode, return the configured mock code (for dev/testing).
+        // Per-channel mock: only short-circuit when the channel that will
+        // actually deliver this code is mocked. A half-mocked setup (e.g.
+        // MockSmtpApi=true with a real SMS gateway) must still mint real
+        // random codes for the live channel.
         var s = settings.Value;
-        if (s.MockSmtpApi || s.MockSmppApi)
+        if (IsMsisdn(destination) && s.MockSmppApi)
         {
-            log.LogWarning("OTP mock mode active — returning configured MockOtpCode");
+            log.LogWarning("OTP SMS mock active — returning configured MockOtpCode");
+            return s.MockOtpCode;
+        }
+        if (IsEmail(destination) && s.MockSmtpApi)
+        {
+            log.LogWarning("OTP SMTP mock active — returning configured MockOtpCode");
             return s.MockOtpCode;
         }
         return RandomNumberGenerator.GetInt32(0, 1_000_000).ToString("D6");
