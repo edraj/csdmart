@@ -32,6 +32,7 @@ public static class RequestHandler
                                   AccessRepository access, SpaceRepository spaces,
                                   AttachmentRepository attachments, PasswordHasher hasher,
                                   Plugins.PluginManager plugins, PermissionService perms,
+                                  InvitationService invitations,
                                   IOptions<DmartSettings> dmartSettings,
                                   HttpContext http, CancellationToken ct) =>
             {
@@ -142,7 +143,7 @@ public static class RequestHandler
                     {
                         RequestType.Create =>
                             await DispatchCreateAsync(rec, req.SpaceName, actor,
-                                entries, users, access, spaces, attachments, hasher, perms, ct),
+                                entries, users, access, spaces, attachments, hasher, perms, invitations, ct),
                         RequestType.Update or RequestType.Patch =>
                             await DispatchUpdateAsync(rec, req.SpaceName, actor,
                                 entries, users, access, spaces, attachments, hasher, perms, ct),
@@ -277,7 +278,7 @@ public static class RequestHandler
         Record rec, string space, string actor,
         EntryService entries, UserRepository users, AccessRepository access,
         SpaceRepository spaces, AttachmentRepository attachments, PasswordHasher hasher,
-        PermissionService perms, CancellationToken ct)
+        PermissionService perms, InvitationService invitations, CancellationToken ct)
     {
         rec = ResolveAutoShortname(rec);
         // Gate non-entry branches here. The entry path runs through EntryService
@@ -316,7 +317,7 @@ public static class RequestHandler
         switch (rec.ResourceType)
         {
             case ResourceType.User:
-                return await CreateUserAsync(rec, space, actor, users, hasher, ct);
+                return await CreateUserAsync(rec, space, actor, users, hasher, invitations, ct);
             case ResourceType.Role:
                 return await CreateRoleAsync(rec, space, actor, access, ct);
             case ResourceType.Permission:
@@ -356,7 +357,8 @@ public static class RequestHandler
     }
 
     private static async Task<(Response Response, Record UpdatedRecord)> CreateUserAsync(
-        Record rec, string space, string actor, UserRepository users, PasswordHasher hasher, CancellationToken ct)
+        Record rec, string space, string actor, UserRepository users, PasswordHasher hasher,
+        InvitationService invitations, CancellationToken ct)
     {
         var attrs = rec.Attributes ?? new();
         var existing = await users.GetByShortnameAsync(rec.Shortname, ct);
@@ -408,6 +410,23 @@ public static class RequestHandler
             UpdatedAt = TimeUtils.Now(),
         };
         await users.UpsertAsync(user, ct);
+
+        // Python parity: api/managed/utils.py::send_sms_email_invitation runs
+        // after db.save when the resource is a User. Mint an invitation per
+        // unverified channel that has an identifier set; delivery is
+        // best-effort — a downed SMS/SMTP gateway must not roll back the
+        // already-persisted user row.
+        if (!user.IsMsisdnVerified && !string.IsNullOrEmpty(user.Msisdn))
+        {
+            try { await invitations.MintAsync(user, InvitationChannel.Sms, ct); }
+            catch { /* logged inside MintAsync; swallow to keep create successful */ }
+        }
+        if (!user.IsEmailVerified && !string.IsNullOrEmpty(user.Email))
+        {
+            try { await invitations.MintAsync(user, InvitationChannel.Email, ct); }
+            catch { /* logged inside MintAsync; swallow to keep create successful */ }
+        }
+
         return (Response.Ok(),
             WithCreatedMetaAttributes(rec, user.Uuid, user.CreatedAt, user.UpdatedAt, user.OwnerShortname));
     }
