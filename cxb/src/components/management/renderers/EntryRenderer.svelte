@@ -820,7 +820,8 @@
                         stream={entry?.payload?.body?.stream === true}
                         onStreamUpdate={() => (hasStreamChanges = true)}
                         {canDelete}
-                        exact_subpath={getExactSubpathValue(space_name, subpath)}
+                        exact_subpath={typeof entry?.payload?.body?.expand_children === "boolean"
+                            ? !entry.payload.body.expand_children : false}
                 />
             {:else}
                 <Table2Cols
