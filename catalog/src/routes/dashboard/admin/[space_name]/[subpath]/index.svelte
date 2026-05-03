@@ -243,7 +243,7 @@
         ? await getEntity(folderShortname, spaceName, parentPath, ResourceType.folder, DmartScope.managed)
         : null;
       const expandChildren =
-        (folderMeta as any)?.payload?.body?.expand_children === true;
+        folderMeta?.payload?.body?.expand_children === true;
 
       // Run remaining independent backend calls in parallel
       const [parent, response, tagsResponse] = await Promise.all([

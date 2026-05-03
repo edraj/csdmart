@@ -514,7 +514,7 @@
         const type = columns?.[col]?.type ?? "string";
         const key = path ?? col;
         if (type === "json") {
-            const segments = (path ?? col).split(".");
+            const segments = key.split(".");
             let current: any = row;
             for (const seg of segments) {
                 if (current == null || typeof current !== "object") {

@@ -9,23 +9,6 @@ import {formatDate} from "@/lib/helpers";
  * Utility functions for ListView components
  */
 
-/**
- * Extracts value from nested data object using path array
- */
-export function getValueByPath(path: string[], data: any, type: string): string {
-    if (data === null) {
-        return get(_)("not_applicable");
-    }
-    if (path.length === 1 && path[0].length > 0 && typeof(data) === "object" && path[0] in data) {
-        if (type === "json") return JSON.stringify(data[path[0]], undefined, 1);
-        else return data[path[0]];
-    }
-    if (path.length > 1 && path[0].length > 0 && path[0] in data) {
-        return getValueByPath(path.slice(1), data[path[0]], type);
-    }
-    return get(_)("not_applicable");
-}
-
 function findValue(obj: any, k: string): any {
     if (!obj || typeof obj !== "object") return undefined;
     if (obj[k] !== undefined) return obj[k];
@@ -51,15 +34,19 @@ function localizedDisplayName(item: any): string {
 }
 
 export function getAttributeValue(item: any, key: string): string {
-    if (!item) return "";
-    if (!key) return "";
+    if (!item || !key) return "";
     if (key === "displayname") return localizedDisplayName(item);
     if (key === "status") {
-        return item.attributes?.is_active ? get(_)("active") : get(_)("inactive");
+        return item.attributes?.is_active === false
+            ? get(_)("inactive")
+            : get(_)("active");
     }
-    if (key === "author") return item.attributes?.owner_shortname || "Unknown";
+    if (key === "author") {
+        return item.attributes?.owner_shortname || get(_)("unknown");
+    }
     if (key === "updated_at" || key === "created_at") {
-        return formatDate(item.attributes?.[key]);
+        const ts = item.attributes?.[key];
+        return ts ? formatDate(ts) : get(_)("not_applicable");
     }
 
     let value: any;
@@ -79,7 +66,7 @@ export function getAttributeValue(item: any, key: string): string {
             findValue(item, key);
     }
 
-    if (value === null || value === undefined) return "";
+    if (value === null || value === undefined) return get(_)("not_applicable");
 
     if (typeof value === "object" && !Array.isArray(value)) {
         const loc = get(locale);
