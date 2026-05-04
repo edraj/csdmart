@@ -10,11 +10,15 @@ public static class ShortLinkHandler
     public static void Map(RouteGroupBuilder g)
     {
         // Resolver: GET /managed/s/{token} → 302 redirect.
+        // Python parity: api/managed/router.py::shoting_url has no JWTBearer
+        // dependency — invitation/reset SMS recipients follow this link before
+        // they have a session, so the /managed group's RequireAuthorization()
+        // must be opted out of here.
         g.MapGet("/s/{token}", async (string token, ShortLinkService svc, CancellationToken ct) =>
         {
             var url = await svc.ResolveAsync(token, ct);
             return url is null ? Results.NotFound() : Results.Redirect(url);
-        });
+        }).AllowAnonymous();
 
         // Creator: GET /managed/shortening/{space}/{**rest} → creates a short URL.
         // Python: GET /managed/shortening/{space}/{subpath}/{shortname}
