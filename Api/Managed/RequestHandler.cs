@@ -33,6 +33,7 @@ public static class RequestHandler
                                   AttachmentRepository attachments, PasswordHasher hasher,
                                   Plugins.PluginManager plugins, PermissionService perms,
                                   InvitationService invitations,
+                                  UniquenessValidator uniqueness,
                                   IOptions<DmartSettings> dmartSettings,
                                   HttpContext http, CancellationToken ct) =>
             {
@@ -143,10 +144,10 @@ public static class RequestHandler
                     {
                         RequestType.Create =>
                             await DispatchCreateAsync(rec, req.SpaceName, actor,
-                                entries, users, access, spaces, attachments, hasher, perms, invitations, ct),
+                                entries, users, access, spaces, attachments, hasher, perms, invitations, uniqueness, ct),
                         RequestType.Update or RequestType.Patch =>
                             await DispatchUpdateAsync(rec, req.SpaceName, actor,
-                                entries, users, access, spaces, attachments, hasher, perms, ct),
+                                entries, users, access, spaces, attachments, hasher, perms, uniqueness, ct),
                         RequestType.Delete =>
                             await DispatchDeleteAsync(rec, req.SpaceName, actor, managementSpace,
                                 entries, users, access, spaces, attachments, perms, ct),
@@ -278,7 +279,8 @@ public static class RequestHandler
         Record rec, string space, string actor,
         EntryService entries, UserRepository users, AccessRepository access,
         SpaceRepository spaces, AttachmentRepository attachments, PasswordHasher hasher,
-        PermissionService perms, InvitationService invitations, CancellationToken ct)
+        PermissionService perms, InvitationService invitations,
+        UniquenessValidator uniqueness, CancellationToken ct)
     {
         rec = ResolveAutoShortname(rec);
         // Gate non-entry branches here. The entry path runs through EntryService
@@ -317,11 +319,11 @@ public static class RequestHandler
         switch (rec.ResourceType)
         {
             case ResourceType.User:
-                return await CreateUserAsync(rec, space, actor, users, hasher, invitations, ct);
+                return await CreateUserAsync(rec, space, actor, users, hasher, invitations, uniqueness, ct);
             case ResourceType.Role:
-                return await CreateRoleAsync(rec, space, actor, access, ct);
+                return await CreateRoleAsync(rec, space, actor, access, uniqueness, ct);
             case ResourceType.Permission:
-                return await CreatePermissionAsync(rec, space, actor, access, ct);
+                return await CreatePermissionAsync(rec, space, actor, access, uniqueness, ct);
             case ResourceType.Space:
                 return await CreateSpaceAsync(rec, actor, spaces, ct);
             case ResourceType.Comment:
@@ -334,7 +336,7 @@ public static class RequestHandler
             case ResourceType.Alteration:
             case ResourceType.Lock:
             case ResourceType.DataAsset:
-                return await CreateAttachmentAsync(rec, space, actor, attachments, ct);
+                return await CreateAttachmentAsync(rec, space, actor, attachments, uniqueness, ct);
             default:
                 return await CreateEntryAsync(rec, space, actor, entries, ct);
         }
@@ -358,13 +360,23 @@ public static class RequestHandler
 
     private static async Task<(Response Response, Record UpdatedRecord)> CreateUserAsync(
         Record rec, string space, string actor, UserRepository users, PasswordHasher hasher,
-        InvitationService invitations, CancellationToken ct)
+        InvitationService invitations, UniquenessValidator uniqueness, CancellationToken ct)
     {
         var attrs = rec.Attributes ?? new();
         var existing = await users.GetByShortnameAsync(rec.Shortname, ct);
         if (existing is not null)
             return (Response.Fail(InternalErrorCode.SHORTNAME_ALREADY_EXIST,
                 $"user {rec.Shortname} already exists", ErrorTypes.Request), rec);
+
+        // Python parity: api/managed/utils.py::serve_request_create runs
+        // validate_uniqueness for every resource type. The C# port previously
+        // only ran it via EntryService; Users/Roles/Permissions/Spaces/
+        // attachments bypassed it, silently allowing duplicates on folders
+        // configured with `unique_fields` (e.g. ["msisdn"], ["email"]).
+        var uniqRes = await uniqueness.ValidateRawAsync(
+            space, rec.Subpath, rec.Shortname, ResourceType.User, attrs, ActionType.Create, ct);
+        if (!uniqRes.IsOk)
+            return (Response.Fail(uniqRes.ErrorCode!, uniqRes.ErrorMessage!, uniqRes.ErrorType ?? ErrorTypes.Request), rec);
 
         var rolesList = ExtractStringList(attrs, "roles");
         var groupsList = ExtractStringList(attrs, "groups");
@@ -427,9 +439,14 @@ public static class RequestHandler
     }
 
     private static async Task<(Response Response, Record UpdatedRecord)> CreateRoleAsync(
-        Record rec, string space, string actor, AccessRepository access, CancellationToken ct)
+        Record rec, string space, string actor, AccessRepository access,
+        UniquenessValidator uniqueness, CancellationToken ct)
     {
         var attrs = rec.Attributes ?? new();
+        var uniqRes = await uniqueness.ValidateRawAsync(
+            space, rec.Subpath, rec.Shortname, ResourceType.Role, attrs, ActionType.Create, ct);
+        if (!uniqRes.IsOk)
+            return (Response.Fail(uniqRes.ErrorCode!, uniqRes.ErrorMessage!, uniqRes.ErrorType ?? ErrorTypes.Request), rec);
         var role = new Role
         {
             Uuid = string.IsNullOrEmpty(rec.Uuid) ? Guid.NewGuid().ToString() : rec.Uuid,
@@ -454,9 +471,14 @@ public static class RequestHandler
     }
 
     private static async Task<(Response Response, Record UpdatedRecord)> CreatePermissionAsync(
-        Record rec, string space, string actor, AccessRepository access, CancellationToken ct)
+        Record rec, string space, string actor, AccessRepository access,
+        UniquenessValidator uniqueness, CancellationToken ct)
     {
         var attrs = rec.Attributes ?? new();
+        var uniqRes = await uniqueness.ValidateRawAsync(
+            space, rec.Subpath, rec.Shortname, ResourceType.Permission, attrs, ActionType.Create, ct);
+        if (!uniqRes.IsOk)
+            return (Response.Fail(uniqRes.ErrorCode!, uniqRes.ErrorMessage!, uniqRes.ErrorType ?? ErrorTypes.Request), rec);
         var perm = new Permission
         {
             Uuid = string.IsNullOrEmpty(rec.Uuid) ? Guid.NewGuid().ToString() : rec.Uuid,
@@ -493,6 +515,11 @@ public static class RequestHandler
             return (Response.Fail(InternalErrorCode.ALREADY_EXIST_SPACE_NAME,
                 $"space {rec.Shortname} already exists", ErrorTypes.Request), rec);
 
+        // Note: uniqueness validation does not apply to Space creates. Spaces
+        // are root-level by construction — they have no parent folder, so
+        // there's no `unique_fields` carrier in the model. Shortname uniqueness
+        // is enforced by the spaces.UpsertAsync conflict target above.
+
         // Python's Meta.from_record passes ALL attributes to the Space constructor,
         // including active_plugins. Without active_plugins, no hooks fire for this
         // space — the resource_folders_creation plugin won't create the /schema folder.
@@ -526,9 +553,14 @@ public static class RequestHandler
     }
 
     private static async Task<(Response Response, Record UpdatedRecord)> CreateAttachmentAsync(
-        Record rec, string space, string actor, AttachmentRepository attachments, CancellationToken ct)
+        Record rec, string space, string actor, AttachmentRepository attachments,
+        UniquenessValidator uniqueness, CancellationToken ct)
     {
         var attrs = rec.Attributes ?? new();
+        var uniqRes = await uniqueness.ValidateRawAsync(
+            space, rec.Subpath, rec.Shortname, rec.ResourceType, attrs, ActionType.Create, ct);
+        if (!uniqRes.IsOk)
+            return (Response.Fail(uniqRes.ErrorCode!, uniqRes.ErrorMessage!, uniqRes.ErrorType ?? ErrorTypes.Request), rec);
 
         // Python parity: Meta.from_record passes **record.attributes to the
         // Attachment constructor, which assigns the `payload` dict straight
@@ -577,7 +609,7 @@ public static class RequestHandler
         Record rec, string space, string actor,
         EntryService entries, UserRepository users, AccessRepository access,
         SpaceRepository spaces, AttachmentRepository attachments, PasswordHasher hasher,
-        PermissionService perms, CancellationToken ct)
+        PermissionService perms, UniquenessValidator uniqueness, CancellationToken ct)
     {
         var locator = new Locator(rec.ResourceType, space, rec.Subpath, rec.Shortname);
 
@@ -592,6 +624,11 @@ public static class RequestHandler
                 var userLocator = new Locator(ResourceType.User, existing.SpaceName, existing.Subpath, existing.Shortname);
                 if (!await perms.CanUpdateAsync(actor, userLocator, PermissionService.FromUser(existing), attrs, ct))
                     return (Response.Fail(InternalErrorCode.NOT_ALLOWED, "not allowed to update user", ErrorTypes.Request), rec);
+                var userUniq = await uniqueness.ValidateRawAsync(
+                    existing.SpaceName, existing.Subpath, existing.Shortname,
+                    ResourceType.User, attrs, ActionType.Update, ct);
+                if (!userUniq.IsOk)
+                    return (Response.Fail(userUniq.ErrorCode!, userUniq.ErrorMessage!, userUniq.ErrorType ?? ErrorTypes.Request), rec);
                 var passwordRaw = attrs.TryGetValue("password", out var p) ? ConvertToString(p) : null;
                 var newIsActive = attrs.TryGetValue("is_active", out var ia) ? !IsExplicitlyFalse(ia) : existing.IsActive;
                 var reactivating = !existing.IsActive && newIsActive;
@@ -642,6 +679,7 @@ public static class RequestHandler
                 var spaceLocator = new Locator(ResourceType.Space, existing.SpaceName, existing.Subpath, existing.Shortname);
                 if (!await perms.CanUpdateAsync(actor, spaceLocator, PermissionService.FromSpace(existing), attrs, ct))
                     return (Response.Fail(InternalErrorCode.NOT_ALLOWED, "not allowed to update space", ErrorTypes.Request), rec);
+                // Uniqueness validation doesn't apply to Spaces — see CreateSpaceAsync above.
 
                 // Python parity: every Space-specific attribute on the wire is
                 // written through. Previously only hide_space + is_active were
@@ -693,6 +731,11 @@ public static class RequestHandler
                 var roleLocator = new Locator(ResourceType.Role, existing.SpaceName, existing.Subpath, existing.Shortname);
                 if (!await perms.CanUpdateAsync(actor, roleLocator, PermissionService.FromRole(existing), attrs, ct))
                     return (Response.Fail(InternalErrorCode.NOT_ALLOWED, "not allowed to update role", ErrorTypes.Request), rec);
+                var roleUniq = await uniqueness.ValidateRawAsync(
+                    existing.SpaceName, existing.Subpath, existing.Shortname,
+                    ResourceType.Role, attrs, ActionType.Update, ct);
+                if (!roleUniq.IsOk)
+                    return (Response.Fail(roleUniq.ErrorCode!, roleUniq.ErrorMessage!, roleUniq.ErrorType ?? ErrorTypes.Request), rec);
                 var updated = existing with
                 {
                     Permissions = ExtractStringList(attrs, "permissions") ?? existing.Permissions,
@@ -716,6 +759,11 @@ public static class RequestHandler
                 var permLocator = new Locator(ResourceType.Permission, existing.SpaceName, existing.Subpath, existing.Shortname);
                 if (!await perms.CanUpdateAsync(actor, permLocator, PermissionService.FromPermission(existing), attrs, ct))
                     return (Response.Fail(InternalErrorCode.NOT_ALLOWED, "not allowed to update permission", ErrorTypes.Request), rec);
+                var permUniq = await uniqueness.ValidateRawAsync(
+                    existing.SpaceName, existing.Subpath, existing.Shortname,
+                    ResourceType.Permission, attrs, ActionType.Update, ct);
+                if (!permUniq.IsOk)
+                    return (Response.Fail(permUniq.ErrorCode!, permUniq.ErrorMessage!, permUniq.ErrorType ?? ErrorTypes.Request), rec);
                 var updated = existing with
                 {
                     // Subpaths has no "missing" form: ExtractSubpathsDict returns
