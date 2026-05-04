@@ -196,6 +196,16 @@ public sealed class UserRepository(Db db, AuthzCacheRefresher refresher)
         await cmd.ExecuteNonQueryAsync(ct);
     }
 
+    public async Task<int> GetAttemptCountAsync(string shortname, CancellationToken ct = default)
+    {
+        await using var conn = await db.OpenAsync(ct);
+        await using var cmd = new NpgsqlCommand(
+            "SELECT attempt_count FROM users WHERE shortname = $1", conn);
+        cmd.Parameters.Add(new() { Value = shortname });
+        var raw = await cmd.ExecuteScalarAsync(ct);
+        return raw is null or DBNull ? 0 : Convert.ToInt32(raw);
+    }
+
     // ----- sessions -----
     // `firebaseToken` is optional — Python persists it on the session row at
     // login time so downstream push-notification code can fan out to every

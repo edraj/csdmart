@@ -13,17 +13,25 @@ using Xunit;
 
 namespace Dmart.Tests.Integration;
 
-// Lockout coverage for the three failure paths that should count toward
+// Lockout coverage for the failure paths that should count toward
 // MAX_FAILED_LOGIN_ATTEMPTS:
-//   * wrong password           — covered by FullParityTests.Account_Lockout_After_Max_Failed_Attempts
-//   * wrong OTP                — exercised here via /user/login (OTP path)
-//   * wrong old_password       — exercised here via /user/profile (password change)
+//   * wrong password                  — covered by FullParityTests.Account_Lockout_After_Max_Failed_Attempts
+//   * wrong OTP                       — exercised here via /user/login (OTP path)
+//   * wrong password alongside OTP    — exercised here via /user/login (OTP path + password)
+//   * wrong old_password              — exercised here via /user/profile (password change)
 //
 // Each test provisions its own user so xUnit parallelism can't taint the
 // shared admin row, and the lockout-threshold tests pre-seed attempt_count
 // directly via SQL to avoid a flaky N-iteration login loop.
 public sealed class FailedAttemptLockoutTests : IClassFixture<DmartFactory>
 {
+    // Exact string emitted by RejectIfAttemptLocked / HandleFailedLoginAttempt.
+    // Pinned so a regression that swaps in RejectIfNotActive's shorter
+    // "Account has been locked." message would fail the assertion rather than
+    // pass via a substring match.
+    private const string LockoutMessage =
+        "Account has been locked due to too many failed login attempts.";
+
     private readonly DmartFactory _factory;
     public FailedAttemptLockoutTests(DmartFactory factory) => _factory = factory;
 
@@ -65,7 +73,7 @@ public sealed class FailedAttemptLockoutTests : IClassFixture<DmartFactory>
                 new UserLoginRequest(shortname, null, null, null, null, Otp: "000000"));
             type.ShouldBe("auth");
             code.ShouldBe(InternalErrorCode.USER_ACCOUNT_LOCKED);
-            msg.ShouldContain("locked");
+            msg.ShouldBe(LockoutMessage);
 
             var refreshed = await GetUserAsync(shortname);
             refreshed!.IsActive.ShouldBeFalse("threshold-trip must flip is_active=false");
@@ -89,7 +97,41 @@ public sealed class FailedAttemptLockoutTests : IClassFixture<DmartFactory>
                 new UserLoginRequest(shortname, null, null, null, null, Otp: "000000"));
             type.ShouldBe("auth");
             code.ShouldBe(InternalErrorCode.USER_ACCOUNT_LOCKED);
-            msg.ShouldContain("locked");
+            msg.ShouldBe(LockoutMessage);
+        }
+        finally { await DeleteUserAsync(shortname); }
+    }
+
+    [FactIfPg]
+    public async Task OtpLogin_ValidOtp_WrongPassword_Locks_When_Threshold_Reached()
+    {
+        // The OTP login path optionally accepts a password too. A valid OTP
+        // with a wrong password used to short-circuit on PASSWORD_NOT_VALIDATED
+        // without bumping attempt_count — meaning anyone in possession of an
+        // OTP could iterate password guesses indefinitely. With the fix, this
+        // path goes through HandleFailedLoginAttemptAsync just like LoginAsync.
+        var max = MaxAttempts();
+        var msisdn = $"+9647{Random.Shared.Next(10_000_000, 99_999_999)}";
+        var (shortname, _) = await CreateUserAsync(password: "CorrectPassword1", msisdn: msisdn);
+        try
+        {
+            // Seed a valid OTP under the msisdn key (shortname-identifier path
+            // resolves dest = user.Msisdn). VerifyAndConsumeAsync will accept
+            // and delete it, then the password check fails.
+            var otpRepo = _factory.Services.GetRequiredService<OtpRepository>();
+            const string otp = "123456";
+            await otpRepo.StoreAsync(msisdn, otp, DateTime.UtcNow.AddMinutes(5));
+
+            await SetAttemptCountAsync(shortname, max - 1);
+
+            var (type, code, msg) = await ExpectLoginFailureAsync(
+                new UserLoginRequest(shortname, null, null, "WrongPassword1", null, Otp: otp));
+            type.ShouldBe("auth");
+            code.ShouldBe(InternalErrorCode.USER_ACCOUNT_LOCKED);
+            msg.ShouldBe(LockoutMessage);
+
+            var refreshed = await GetUserAsync(shortname);
+            refreshed!.IsActive.ShouldBeFalse("threshold-trip must flip is_active=false");
         }
         finally { await DeleteUserAsync(shortname); }
     }
@@ -137,7 +179,7 @@ public sealed class FailedAttemptLockoutTests : IClassFixture<DmartFactory>
             var body = await resp.Content.ReadFromJsonAsync(DmartJsonContext.Default.Response);
             body!.Status.ShouldBe(Status.Failed);
             body.Error!.Code.ShouldBe(InternalErrorCode.USER_ACCOUNT_LOCKED);
-            body.Error.Message.ShouldContain("locked");
+            body.Error.Message.ShouldBe(LockoutMessage);
 
             var refreshed = await GetUserAsync(creds.Shortname);
             refreshed!.IsActive.ShouldBeFalse("threshold-trip must flip is_active=false");
@@ -181,7 +223,8 @@ public sealed class FailedAttemptLockoutTests : IClassFixture<DmartFactory>
         HttpClient client, string oldPassword, string newPassword) =>
         client.PostAsync("/user/profile", ProfilePatch(oldPassword, newPassword));
 
-    private async Task<(string Shortname, string Password)> CreateUserAsync(string? password)
+    private async Task<(string Shortname, string Password)> CreateUserAsync(
+        string? password, string? msisdn = null)
     {
         var suffix = Guid.NewGuid().ToString("N")[..12];
         var shortname = $"lockout_{suffix}";
@@ -196,6 +239,8 @@ public sealed class FailedAttemptLockoutTests : IClassFixture<DmartFactory>
             OwnerShortname = shortname,
             IsActive = true,
             Password = password is null ? null : hasher.Hash(password),
+            Msisdn = msisdn,
+            IsMsisdnVerified = msisdn is not null,
             Type = UserType.Web,
             Language = Language.En,
             Roles = new(),
@@ -223,17 +268,8 @@ public sealed class FailedAttemptLockoutTests : IClassFixture<DmartFactory>
         return await users.GetByShortnameAsync(shortname);
     }
 
-    private async Task<int> ReadAttemptCountAsync(string shortname)
-    {
-        var db = _factory.Services.GetRequiredService<Db>();
-        await using var conn = await db.OpenAsync();
-        await using var cmd = new Npgsql.NpgsqlCommand(
-            "SELECT attempt_count FROM users WHERE shortname = $1", conn);
-        cmd.Parameters.Add(new() { Value = shortname });
-        var raw = await cmd.ExecuteScalarAsync();
-        if (raw is null || raw is DBNull) return 0;
-        return Convert.ToInt32(raw);
-    }
+    private Task<int> ReadAttemptCountAsync(string shortname) =>
+        _factory.Services.GetRequiredService<UserRepository>().GetAttemptCountAsync(shortname);
 
     private async Task SetAttemptCountAsync(string shortname, int count)
     {
