@@ -3,6 +3,7 @@ using Dmart.DataAdapters.Sql;
 using Dmart.Models.Api;
 using Dmart.Models.Core;
 using Dmart.Models.Enums;
+using Dmart.Models.Json;
 
 namespace Dmart.Services;
 
@@ -51,8 +52,168 @@ namespace Dmart.Services;
 // ACL layer cleanly while reusing the same SQL search builder.
 public sealed class UniquenessValidator(
     EntryRepository entries,
+    UserRepository users,
+    AccessRepository access,
     ILogger<UniquenessValidator> log)
 {
+    // Raw-attrs entry point used by RequestHandler for resource types that
+    // bypass EntryService (User/Role/Permission/Space/attachments). Mirrors
+    // Python's adapter.py::validate_uniqueness which is invoked from
+    // api/managed/utils.py for every create/update regardless of resource
+    // type — the C# port previously only ran the validator for Entry writes,
+    // so a folder with `unique_fields` configured for users/roles silently
+    // allowed duplicates.
+    //
+    // We dispatch the conflict probe to the right backing table based on
+    // resourceType (Python parity: adapter_helpers.set_table_for_query).
+    public async Task<Result<bool>> ValidateRawAsync(
+        string spaceName,
+        string subpath,
+        string shortname,
+        ResourceType resourceType,
+        Dictionary<string, object>? rawAttrs,
+        ActionType action,
+        CancellationToken ct = default)
+    {
+        var (parentSubpath, folderShortname) = SplitSubpath(subpath);
+        if (folderShortname.Length == 0) return Result<bool>.Ok(true);
+
+        Entry? folder;
+        try
+        {
+            folder = await entries.GetAsync(spaceName, parentSubpath, folderShortname, ResourceType.Folder, ct);
+        }
+        catch (Exception ex)
+        {
+            log.LogDebug(ex, "uniqueness: parent folder load failed for {Space}/{Subpath}", spaceName, subpath);
+            folder = null;
+        }
+        if (folder?.Payload?.Body is not JsonElement body
+            || body.ValueKind != JsonValueKind.Object
+            || !body.TryGetProperty("unique_fields", out var uniqueFields)
+            || uniqueFields.ValueKind != JsonValueKind.Array)
+            return Result<bool>.Ok(true);
+
+        // Materialize rawAttrs into a JsonElement so the existing WalkPath
+        // helpers can drive both `payload.body.*` and flat (`email`/`msisdn`/
+        // `displayname.en`/...) paths uniformly. Source-gen serializer is
+        // happy because each value already round-trips as JsonElement.
+        JsonElement? rootOpt = null;
+        if (rawAttrs is not null)
+        {
+            try { rootOpt = JsonSerializer.SerializeToElement(rawAttrs, DmartJsonContext.Default.DictionaryStringObject); }
+            catch (Exception ex)
+            {
+                log.LogDebug(ex, "uniqueness: failed to materialize rawAttrs for {Space}{Subpath}", spaceName, subpath);
+                return Result<bool>.Ok(true);
+            }
+        }
+        if (rootOpt is null || rootOpt.Value.ValueKind != JsonValueKind.Object)
+            return Result<bool>.Ok(true);
+        var root = rootOpt.Value;
+
+        foreach (var compound in uniqueFields.EnumerateArray())
+        {
+            if (compound.ValueKind != JsonValueKind.Array) continue;
+
+            var perPathTokens = new List<List<string>>();
+            foreach (var pathEl in compound.EnumerateArray())
+            {
+                if (pathEl.ValueKind != JsonValueKind.String) continue;
+                var path = pathEl.GetString();
+                if (string.IsNullOrEmpty(path)) continue;
+
+                var newValues = ReadPathFromAttrs(root, path);
+                if (newValues.Count == 0) continue;
+
+                perPathTokens.Add(BuildSearchTokens(path, newValues));
+            }
+            if (perPathTokens.Count == 0) continue;
+
+            foreach (var tokenSet in CartesianProduct(perPathTokens))
+            {
+                var search = string.Join(' ', tokenSet);
+                var q = new Query
+                {
+                    Type = QueryType.Subpath,
+                    SpaceName = spaceName,
+                    Subpath = subpath,
+                    ExactSubpath = true,
+                    Search = search,
+                    Limit = 2,
+                    FilterSchemaNames = new(),
+                };
+
+                List<(string Shortname, string Subpath)> hits;
+                try { hits = await ProbeAsync(resourceType, q, ct); }
+                catch (Exception ex)
+                {
+                    log.LogWarning(ex, "uniqueness probe failed for {Space}{Subpath} search={Search}",
+                        spaceName, subpath, search);
+                    continue;
+                }
+
+                if (action == ActionType.Update)
+                {
+                    var normalizedSubpath = "/" + subpath.TrimStart('/');
+                    hits = hits
+                        .Where(h => !(string.Equals(h.Shortname, shortname, StringComparison.Ordinal)
+                                      && string.Equals(h.Subpath, normalizedSubpath, StringComparison.Ordinal)))
+                        .ToList();
+                }
+                if (hits.Count == 0) continue;
+
+                return Result<bool>.Fail(
+                    InternalErrorCode.DATA_SHOULD_BE_UNIQUE,
+                    $"Entry properties should be unique: {search}",
+                    ErrorTypes.Request);
+            }
+        }
+        return Result<bool>.Ok(true);
+    }
+
+    private List<string> ReadPathFromAttrs(JsonElement root, string path)
+    {
+        var values = new List<string>();
+        if (path.StartsWith("payload.body.", StringComparison.Ordinal))
+        {
+            if (!root.TryGetProperty("payload", out var payload)
+                || payload.ValueKind != JsonValueKind.Object
+                || !payload.TryGetProperty("body", out var bodyEl)
+                || bodyEl.ValueKind != JsonValueKind.Object)
+                return values;
+            WalkPath(bodyEl, path["payload.body.".Length..], values, originalPath: path);
+            return values;
+        }
+        // Flat / nested non-payload path — walk straight from the attrs root.
+        // Supports `email`, `msisdn`, `displayname.en`, `tags[]`, etc.
+        WalkPath(root, path, values, originalPath: path);
+        return values;
+    }
+
+    // Dispatches the conflict probe to the table that backs `resourceType`,
+    // mirroring Python's set_table_for_query. Returns (shortname, subpath)
+    // tuples so the self-filter on update can run uniformly across tables.
+    private async Task<List<(string Shortname, string Subpath)>> ProbeAsync(
+        ResourceType rt, Query q, CancellationToken ct)
+    {
+        switch (rt)
+        {
+            case ResourceType.User:
+                var us = await users.QueryAsync(q, ct);
+                return us.Select(u => (u.Shortname, u.Subpath)).ToList();
+            case ResourceType.Role:
+                var rs = await access.QueryRolesAsync(q, ct);
+                return rs.Select(r => (r.Shortname, r.Subpath)).ToList();
+            case ResourceType.Permission:
+                var ps = await access.QueryPermissionsAsync(q, ct);
+                return ps.Select(p => (p.Shortname, p.Subpath)).ToList();
+            default:
+                var es = await entries.QueryAsync(q, ct);
+                return es.Select(e => (e.Shortname, e.Subpath)).ToList();
+        }
+    }
+
     public async Task<Result<bool>> ValidateAsync(
         Entry entry, ActionType action, Entry? existing, CancellationToken ct = default)
     {
