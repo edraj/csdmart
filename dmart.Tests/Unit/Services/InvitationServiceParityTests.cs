@@ -1,44 +1,56 @@
 using Dmart.Models.Core;
 using Dmart.Models.Enums;
 using Dmart.Services;
+using Microsoft.Extensions.Logging.Abstractions;
 using Shouldly;
 using Xunit;
 
 namespace Dmart.Tests.Unit.Services;
 
 // Pure-function parity tests for InvitationService — the localized SMS template
-// and the activation email body. These are the strings recipients actually see,
-// so silent drift here is high-cost.
+// (now sourced from LanguageLoader, the single source of truth) and the
+// activation email body. These are the strings recipients actually see, so
+// silent drift here is high-cost.
 //
 // Cross-references:
-//   * dmart/languages/{english,arabic,kurdish}.json -> "invitation_message"
+//   * dmart/languages/{english,arabic,kurdish}.json -> "invitation_message" / "reset_message"
 //   * dmart/utils/templates/activation.html.j2
 //   * dmart/utils/generate_email.py::generate_subject("activation")
 public class InvitationServiceParityTests
 {
-    [Fact]
-    public void InvitationMessageFor_English_HasLinkToken_AndContainsExpectedText()
+    // The loader reads the JSON files embedded into Dmart's main assembly via
+    // `<EmbeddedResource Include="languages/*.json" .../>` — same content the
+    // running server consumes, so these tests exercise the production path.
+    private static readonly LanguageLoader Languages = MakeLoader();
+
+    private static LanguageLoader MakeLoader()
     {
-        var msg = InvitationService.InvitationMessageFor(Language.En);
+        var l = new LanguageLoader(NullLogger<LanguageLoader>.Instance);
+        l.Load();
+        return l;
+    }
+
+    [Fact]
+    public void InvitationMessage_English_HasLinkToken_AndContainsExpectedText()
+    {
+        var msg = Languages.Get(Language.En, "invitation_message").ShouldNotBeNull();
         msg.ShouldContain("{link}");
         msg.ShouldContain("48 hours");
     }
 
     [Fact]
-    public void InvitationMessageFor_Arabic_IsArabicScript_AndHasLinkToken()
+    public void InvitationMessage_Arabic_IsArabicScript_AndHasLinkToken()
     {
-        var msg = InvitationService.InvitationMessageFor(Language.Ar);
+        var msg = Languages.Get(Language.Ar, "invitation_message").ShouldNotBeNull();
         msg.ShouldContain("{link}");
-        // Arabic letters fall in U+0600..U+06FF.
         msg.ShouldContain("تهانينا");
     }
 
     [Fact]
-    public void InvitationMessageFor_Kurdish_IsKurdishScript_AndHasLinkToken()
+    public void InvitationMessage_Kurdish_IsKurdishScript_AndHasLinkToken()
     {
-        var msg = InvitationService.InvitationMessageFor(Language.Ku);
+        var msg = Languages.Get(Language.Ku, "invitation_message").ShouldNotBeNull();
         msg.ShouldContain("{link}");
-        // Sample word from the Python kurdish.json["invitation_message"].
         msg.ShouldContain("بەستەرەوە");
     }
 
@@ -48,10 +60,49 @@ public class InvitationServiceParityTests
     [Theory]
     [InlineData(Language.Fr)]
     [InlineData(Language.Tr)]
-    public void InvitationMessageFor_UnmappedLanguages_FallBack_To_English(Language lang)
+    public void InvitationMessage_UnmappedLanguages_FallBack_To_English(Language lang)
     {
-        InvitationService.InvitationMessageFor(lang)
-            .ShouldBe(InvitationService.InvitationMessageFor(Language.En));
+        Languages.Get(lang, "invitation_message")
+            .ShouldBe(Languages.Get(Language.En, "invitation_message"));
+    }
+
+    [Fact]
+    public void ResetMessage_English_HasLinkToken_AndMentionsResetWording()
+    {
+        var msg = Languages.Get(Language.En, "reset_message").ShouldNotBeNull();
+        msg.ShouldContain("{link}");
+        msg.ShouldContain("password reset");
+    }
+
+    [Fact]
+    public void ResetMessage_Arabic_IsArabicScript_AndHasLinkToken()
+    {
+        var msg = Languages.Get(Language.Ar, "reset_message").ShouldNotBeNull();
+        msg.ShouldContain("{link}");
+        msg.ShouldContain("كلمة المرور");
+    }
+
+    [Fact]
+    public void ResetMessage_Kurdish_IsKurdishScript_AndHasLinkToken()
+    {
+        var msg = Languages.Get(Language.Ku, "reset_message").ShouldNotBeNull();
+        msg.ShouldContain("{link}");
+        msg.ShouldContain("وشەی نهێنی");
+    }
+
+    [Theory]
+    [InlineData(Language.Fr)]
+    [InlineData(Language.Tr)]
+    public void ResetMessage_UnmappedLanguages_FallBack_To_English(Language lang)
+    {
+        Languages.Get(lang, "reset_message")
+            .ShouldBe(Languages.Get(Language.En, "reset_message"));
+    }
+
+    [Fact]
+    public void Get_UnknownKey_ReturnsNull()
+    {
+        Languages.Get(Language.En, "this_key_does_not_exist").ShouldBeNull();
     }
 
     [Fact]

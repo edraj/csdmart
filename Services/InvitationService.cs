@@ -28,10 +28,18 @@ public sealed class InvitationService(
     SmsSender sms,
     SmtpSender smtp,
     ShortLinkService shortLinks,
+    LanguageLoader languages,
     IOptions<DmartSettings> settings,
     ILogger<InvitationService> log)
 {
     public async Task<string?> MintAsync(User user, InvitationChannel channel, CancellationToken ct = default)
+        => await MintAsync(user, channel, isReset: false, ct);
+
+    // isReset=true selects the password-reset SMS template (Python parity:
+    // languages[user.language]["reset_message"], used by /user/reset). The
+    // email body is unchanged — Python uses the same activation template for
+    // both invitation and reset flows.
+    public async Task<string?> MintAsync(User user, InvitationChannel channel, bool isReset, CancellationToken ct = default)
     {
         string? identifier = channel == InvitationChannel.Email ? user.Email : user.Msisdn;
         if (string.IsNullOrWhiteSpace(identifier))
@@ -64,11 +72,22 @@ public sealed class InvitationService(
             {
                 // Python parity: api/managed/utils.py::send_sms_email_invitation
                 // sends the localized invitation_message string with {link}
-                // substituted. Look up by user.Language; fall back to English when
-                // the language has no entry (Python would KeyError; defaulting is
-                // the safer behaviour).
-                var template = InvitationMessageFor(user.Language);
-                var text = template.Replace("{link}", deliverableLink);
+                // substituted. LanguageLoader is the single source of truth —
+                // it handles per-language lookup and the English fallback that
+                // Python's `languages[user.language]` would otherwise KeyError on.
+                var key = isReset ? "reset_message" : "invitation_message";
+                var template = languages.Get(user.Language, key);
+                string text;
+                if (template is not null)
+                {
+                    text = template.Replace("{link}", deliverableLink);
+                }
+                else
+                {
+                    log.LogError("translation missing: languages[{Lang}][{Key}] — sending raw link",
+                        user.Language, key);
+                    text = deliverableLink;
+                }
                 var ok = await sms.SendAsync(identifier, text, ct);
                 if (!ok)
                     log.LogWarning("invitation SMS for {Shortname} to {Msisdn} not delivered — returning token in response body",
@@ -135,17 +154,6 @@ public sealed class InvitationService(
         var type = JsonbHelpers.EnumMember(user.Type);
         return $"{baseUrl.TrimEnd('/')}/auth/invitation?invitation={Uri.EscapeDataString(token)}&lang={lang}&user-type={type}";
     }
-
-    // Python parity: backend/languages/{english,arabic,kurdish}.json
-    // ["invitation_message"]. French/Turkish are not localized in Python
-    // either — they fall through to the default English string here rather
-    // than raise (Python's `languages[user.language]` would KeyError).
-    internal static string InvitationMessageFor(Language lang) => lang switch
-    {
-        Language.Ar => "تهانينا، لقد تم الآن إنشاء حساب الخاص بك، يرجى اتباع هذا الرابط للتأكيد وتسجيل الدخول: {link} يمكن استخدام هذا الرابط مرة واحدة وخلال الـ 48 ساعة القادمة.",
-        Language.Ku => "لە ڕێگەی ئەم بەستەرەوە ئەکاونتەکەت پشتڕاست بکەرەوە: {link} ئەم بەستەرە دەتوانرێت جارێک و لە ماوەی ٤٨ کاتژمێری داهاتوودا بەکاربهێنرێت.",
-        _           => "Congratulations, your account is now created, please follow this link to confirm and login: {link} This link can be used once and within the next 48 hours.",
-    };
 
     // Python parity: utils/generate_email.generate_subject("activation").
     internal const string ActivationEmailSubject = "Welcome to our Platform!";
