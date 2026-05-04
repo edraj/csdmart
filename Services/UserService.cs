@@ -325,6 +325,17 @@ public sealed class UserService(
         if (user is null)
             return Result<(string, string, User)>.Fail(
                 InternalErrorCode.INVALID_USERNAME_AND_PASS, "Invalid username or password", ErrorTypes.Auth);
+
+        // Same pre-check as LoginAsync: a previously locked account must
+        // surface USER_ACCOUNT_LOCKED before we touch the OTP/password — both
+        // because correct credentials shouldn't bypass the lock, and so we
+        // don't burn the user's one-shot OTP on a guaranteed-fail attempt.
+        var maxAttemptsPre = settings.Value.MaxFailedLoginAttempts;
+        if (maxAttemptsPre > 0 && user.AttemptCount is int preCount && preCount >= maxAttemptsPre)
+            return Result<(string, string, User)>.Fail(
+                InternalErrorCode.USER_ACCOUNT_LOCKED,
+                "Account has been locked due to too many failed login attempts.", ErrorTypes.Auth);
+
         if (RejectIfNotActive(user) is { } inactiveReject) return inactiveReject;
 
         // Validate OTP code.
@@ -337,16 +348,32 @@ public sealed class UserService(
             : (req.Msisdn ?? req.Email?.ToLowerInvariant());
         if (string.IsNullOrEmpty(dest) || string.IsNullOrEmpty(req.Otp)
             || !await otp.VerifyAndConsumeAsync(dest, req.Otp, ct))
-            return Result<(string, string, User)>.Fail(
-                InternalErrorCode.OTP_INVALID, "Wrong OTP", ErrorTypes.Auth);
+        {
+            // Wrong OTP counts as a failed login attempt. Keeps the lock-out
+            // promise intact — without this, an attacker who guessed a valid
+            // identifier could brute-force the 6-digit code without ever
+            // tripping the threshold.
+            var locked = await HandleFailedLoginAttemptAsync(user, ct);
+            return locked
+                ? Result<(string, string, User)>.Fail(
+                    InternalErrorCode.USER_ACCOUNT_LOCKED,
+                    "Account has been locked due to too many failed login attempts.", ErrorTypes.Auth)
+                : Result<(string, string, User)>.Fail(
+                    InternalErrorCode.OTP_INVALID, "Wrong OTP", ErrorTypes.Auth);
+        }
 
         // Python also optionally verifies password if provided alongside OTP.
         if (!string.IsNullOrEmpty(req.Password)
             && !string.IsNullOrEmpty(user.Password)
             && !hasher.Verify(req.Password, user.Password))
         {
-            return Result<(string, string, User)>.Fail(
-                InternalErrorCode.PASSWORD_NOT_VALIDATED, "Invalid username or password", ErrorTypes.Auth);
+            var locked = await HandleFailedLoginAttemptAsync(user, ct);
+            return locked
+                ? Result<(string, string, User)>.Fail(
+                    InternalErrorCode.USER_ACCOUNT_LOCKED,
+                    "Account has been locked due to too many failed login attempts.", ErrorTypes.Auth)
+                : Result<(string, string, User)>.Fail(
+                    InternalErrorCode.PASSWORD_NOT_VALIDATED, "Invalid username or password", ErrorTypes.Auth);
         }
 
         return await ProcessLoginAsync(user, req, requestHeaders, ct);
@@ -613,9 +640,20 @@ public sealed class UserService(
                         InternalErrorCode.PASSWORD_RESET_ERROR,
                         "Wrong password have been provided!", ErrorTypes.Auth);
                 if (!hasher.Verify(oldPwObj.ToString()!, user.Password))
+                {
+                    // Wrong old_password counts toward the lockout threshold.
+                    // Without this, an attacker who hijacks a session can brute
+                    // the original password indefinitely on the change-password
+                    // path while never tripping the login-side counter.
+                    var locked = await HandleFailedLoginAttemptAsync(user, ct);
+                    if (locked)
+                        return Result<User>.Fail(
+                            InternalErrorCode.USER_ACCOUNT_LOCKED,
+                            "Account has been locked due to too many failed login attempts.", ErrorTypes.Auth);
                     return Result<User>.Fail(
                         InternalErrorCode.UNMATCHED_DATA,
                         "mismatch with the information provided", ErrorTypes.Request);
+                }
             }
             newPasswordHash = string.IsNullOrEmpty(newPw) ? null : hasher.Hash(newPw!);
         }
