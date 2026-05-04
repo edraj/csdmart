@@ -123,6 +123,17 @@
   </ItemGroup>
 
   <ItemGroup>
+    <!-- Embed languages/*.json as the single source of truth for invitation /
+         reset SMS bodies and state-label translations. LanguageLoader reads
+         these via ManifestEmbeddedFileProvider at startup. Keeping them
+         embedded (not Content) means the AOT single-binary release ships
+         them inside dmart itself — no separate languages/ dir to deploy. -->
+    <EmbeddedResource Include="languages/*.json" LinkBase="languages" />
+    <Content Remove="languages/*.json" />
+    <None Remove="languages/*.json" />
+  </ItemGroup>
+
+  <ItemGroup>
     <PackageReference Include="JsonSchema.Net" Version="9.1.4" />
     <PackageReference Include="Konscious.Security.Cryptography.Argon2" Version="1.3.1" />
     <PackageReference Include="Microsoft.AspNetCore.Authentication.JwtBearer" Version="10.0.5" />

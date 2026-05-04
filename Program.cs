@@ -1161,6 +1161,7 @@ builder.Services.AddSingleton<UserService>();
 builder.Services.AddSingleton<WorkflowEngine>();
 builder.Services.AddSingleton<WorkflowService>();
 builder.Services.AddSingleton<PluginManager>();
+builder.Services.AddSingleton<LanguageLoader>();
 builder.Services.AddSingleton<LockService>();
 builder.Services.AddSingleton<ShortLinkService>();
 builder.Services.AddSingleton<CsvService>();
@@ -1404,6 +1405,10 @@ Dmart.Api.Mcp.McpEndpoint.MapMcp(app);
 // WebSocket server — port of dmart/websocket.py.
 // /ws?token=<jwt>, /send-message/{user}, /broadcast-to-channels, /ws-info
 app.MapWebSocket();
+
+// Load embedded translation files once at startup (LanguageLoader is the
+// single source of truth for invitation/reset SMS bodies).
+app.Services.GetRequiredService<LanguageLoader>().Load();
 
 // Load plugins + mount API plugin routes
 {

@@ -1,3 +1,4 @@
+using System.Reflection;
 using System.Text.Json;
 using Dmart.DataAdapters.Sql;
 using Dmart.Models.Enums;
@@ -7,52 +8,98 @@ namespace Dmart.Services;
 
 // Port of dmart Python's backend/languages/loader.py.
 //
-// Scans `{BaseDir}/languages/*.json` (and `{Cwd}/languages/*.json` for
-// `dotnet run` from the source tree) and exposes a flat key lookup keyed by
-// the file stem — same shape as Python's `languages: dict[str, dict[str, str]]`.
-// The shipped files (english.json / arabic.json / kurdish.json) are copied to
-// the output directory by dmart.csproj so the runtime layout matches Python.
+// Single source of truth for translated strings (invitation_message,
+// reset_message, state labels, ...). Loads from two sources, in order:
+//   1. Embedded resources whose name matches "*.languages.*.json" inside
+//      this assembly — always present in the AOT release binary because
+//      dmart.csproj does <EmbeddedResource Include="languages/*.json" />.
+//   2. Filesystem fallback at {BaseDir}/languages and {Cwd}/languages —
+//      lets tests / dotnet-run from source override without rebuilding.
+// Shape mirrors Python's `languages: dict[str, dict[str, str]]`, keyed by
+// the file stem ("english", "arabic", "kurdish").
 public sealed class LanguageLoader(ILogger<LanguageLoader> log)
 {
     private Dictionary<string, Dictionary<string, string>> _languages = new(StringComparer.OrdinalIgnoreCase);
 
     public void Load()
     {
+        var loaded = new Dictionary<string, Dictionary<string, string>>(StringComparer.OrdinalIgnoreCase);
+        var sources = new List<string>();
+
+        // Strategy 1: embedded resources. Resource names follow MSBuild's
+        // dotted convention: "{RootNamespace}.languages.{stem}.json" (e.g.
+        // "dmart.languages.english.json"). We match on the ".languages."
+        // segment so the loader is independent of the root namespace.
+        try
+        {
+            var assembly = typeof(LanguageLoader).Assembly;
+            const string marker = ".languages.";
+            foreach (var name in assembly.GetManifestResourceNames())
+            {
+                if (!name.EndsWith(".json", StringComparison.OrdinalIgnoreCase)) continue;
+                var idx = name.IndexOf(marker, StringComparison.OrdinalIgnoreCase);
+                if (idx < 0) continue;
+                var leaf = name[(idx + marker.Length)..]; // "english.json"
+                if (leaf.Contains('.', StringComparison.Ordinal)
+                    && !leaf.EndsWith(".json", StringComparison.OrdinalIgnoreCase)) continue;
+                var stem = leaf[..^".json".Length];
+                if (loaded.ContainsKey(stem)) continue;
+                try
+                {
+                    using var stream = assembly.GetManifestResourceStream(name);
+                    if (stream is null) continue;
+                    var dict = JsonSerializer.Deserialize(stream, DmartJsonContext.Default.DictionaryStringString);
+                    if (dict is not null) loaded[stem] = dict;
+                }
+                catch (Exception ex)
+                {
+                    log.LogError(ex, "language load failed: embedded {Name}", name);
+                }
+            }
+            if (loaded.Count > 0) sources.Add("embedded");
+        }
+        catch (Exception ex)
+        {
+            log.LogWarning(ex, "language load: embedded resource scan failed, falling back to filesystem");
+        }
+
+        // Strategy 2: filesystem fallback — only fills gaps left by the
+        // embedded pass, so a partial override (e.g. a single locale) works.
         var candidates = new[]
         {
             Path.Combine(AppContext.BaseDirectory, "languages"),
             Path.Combine(Directory.GetCurrentDirectory(), "languages"),
         };
-
-        var loaded = new Dictionary<string, Dictionary<string, string>>(StringComparer.OrdinalIgnoreCase);
-        var scanned = false;
         foreach (var root in candidates)
         {
             if (!Directory.Exists(root)) continue;
-            scanned = true;
             foreach (var file in Directory.EnumerateFiles(root, "*.json"))
             {
                 var stem = Path.GetFileNameWithoutExtension(file);
-                if (loaded.ContainsKey(stem)) continue; // first occurrence wins
+                if (loaded.ContainsKey(stem)) continue;
                 try
                 {
                     var bytes = File.ReadAllBytes(file);
                     var dict = JsonSerializer.Deserialize(bytes, DmartJsonContext.Default.DictionaryStringString);
-                    if (dict is not null) loaded[stem] = dict;
+                    if (dict is not null)
+                    {
+                        loaded[stem] = dict;
+                        if (!sources.Contains("filesystem")) sources.Add("filesystem");
+                    }
                 }
                 catch (Exception ex)
                 {
                     log.LogError(ex, "language load failed: {File}", file);
                 }
             }
-            if (loaded.Count > 0) break;
         }
 
         _languages = loaded;
-        if (!scanned)
-            log.LogInformation("languages dir not found — translations unavailable, callers fall back");
+        if (loaded.Count == 0)
+            log.LogWarning("languages not loaded — translations unavailable, callers fall back to keys");
         else
-            log.LogInformation("languages loaded: {Count} ({Names})", _languages.Count, string.Join(", ", _languages.Keys));
+            log.LogInformation("languages loaded: {Count} ({Names}) from {Sources}",
+                loaded.Count, string.Join(", ", loaded.Keys), string.Join("+", sources));
     }
 
     // Python parity: `languages[user.language][key]`. Returns the localized
