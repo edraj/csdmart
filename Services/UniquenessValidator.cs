@@ -54,10 +54,11 @@ public sealed class UniquenessValidator(
     EntryRepository entries,
     UserRepository users,
     AccessRepository access,
+    AttachmentRepository attachments,
     ILogger<UniquenessValidator> log)
 {
     // Raw-attrs entry point used by RequestHandler for resource types that
-    // bypass EntryService (User/Role/Permission/Space/attachments). Mirrors
+    // bypass EntryService (User/Role/Permission/attachments). Mirrors
     // Python's adapter.py::validate_uniqueness which is invoked from
     // api/managed/utils.py for every create/update regardless of resource
     // type — the C# port previously only ran the validator for Entry writes,
@@ -66,6 +67,18 @@ public sealed class UniquenessValidator(
     //
     // We dispatch the conflict probe to the right backing table based on
     // resourceType (Python parity: adapter_helpers.set_table_for_query).
+    //
+    // Path-convention quirk (load-bearing): for User/Role/Permission, the
+    // request payload (`rec.Attributes`) is FLAT at top level — `email`,
+    // `msisdn`, `displayname.en` — because those resource types have
+    // promoted columns and don't carry a generic `payload.body`. A folder
+    // gating users on email must therefore declare `[["email"]]`, NOT
+    // `[["payload.body.email"]]`. The latter form silently no-ops because
+    // the attrs dict has no `payload` key. We surface this as a LogDebug
+    // when a compound resolves to zero token sets — see the per-compound
+    // log line below — so misconfiguration is at least visible in logs.
+    // Attachment resource types DO carry payload.body and behave like
+    // entries; either path form works for them.
     public async Task<Result<bool>> ValidateRawAsync(
         string spaceName,
         string subpath,
@@ -98,14 +111,20 @@ public sealed class UniquenessValidator(
         // helpers can drive both `payload.body.*` and flat (`email`/`msisdn`/
         // `displayname.en`/...) paths uniformly. Source-gen serializer is
         // happy because each value already round-trips as JsonElement.
+        // A serialization failure means we can't run the gate at all on a
+        // payload that may very well violate it — fail closed rather than
+        // silently waving the request through.
         JsonElement? rootOpt = null;
         if (rawAttrs is not null)
         {
             try { rootOpt = JsonSerializer.SerializeToElement(rawAttrs, DmartJsonContext.Default.DictionaryStringObject); }
             catch (Exception ex)
             {
-                log.LogDebug(ex, "uniqueness: failed to materialize rawAttrs for {Space}{Subpath}", spaceName, subpath);
-                return Result<bool>.Ok(true);
+                log.LogWarning(ex, "uniqueness: failed to materialize rawAttrs for {Space}{Subpath}", spaceName, subpath);
+                return Result<bool>.Fail(
+                    InternalErrorCode.MISSING_DATA,
+                    "uniqueness probe could not materialize attributes",
+                    ErrorTypes.Request);
             }
         }
         if (rootOpt is null || rootOpt.Value.ValueKind != JsonValueKind.Object)
@@ -117,18 +136,36 @@ public sealed class UniquenessValidator(
             if (compound.ValueKind != JsonValueKind.Array) continue;
 
             var perPathTokens = new List<List<string>>();
+            var declaredPaths = 0;
             foreach (var pathEl in compound.EnumerateArray())
             {
                 if (pathEl.ValueKind != JsonValueKind.String) continue;
                 var path = pathEl.GetString();
                 if (string.IsNullOrEmpty(path)) continue;
+                declaredPaths++;
 
                 var newValues = ReadPathFromAttrs(root, path);
                 if (newValues.Count == 0) continue;
 
                 perPathTokens.Add(BuildSearchTokens(path, newValues));
             }
-            if (perPathTokens.Count == 0) continue;
+            if (perPathTokens.Count == 0)
+            {
+                // A compound with declared paths that all resolve empty is
+                // either intentional (the request didn't touch any of those
+                // fields — fine on update) or a misconfiguration. The most
+                // common misconfig is using `["payload.body.X"]` for User/
+                // Role/Permission folders where the convention is flat
+                // `["X"]`. Surface the path list at debug level so operators
+                // can spot it in logs without breaking the request.
+                if (declaredPaths > 0 && action == ActionType.Create)
+                {
+                    log.LogDebug(
+                        "uniqueness: compound key on {Space}{Subpath} resolved to no token sets for {Resource} create — likely path-convention mismatch (flat vs payload.body). Compound: {Compound}",
+                        spaceName, subpath, resourceType, compound);
+                }
+                continue;
+            }
 
             foreach (var tokenSet in CartesianProduct(perPathTokens))
             {
@@ -194,6 +231,12 @@ public sealed class UniquenessValidator(
     // Dispatches the conflict probe to the table that backs `resourceType`,
     // mirroring Python's set_table_for_query. Returns (shortname, subpath)
     // tuples so the self-filter on update can run uniformly across tables.
+    //
+    // Attachment resource types must route to AttachmentRepository — they
+    // live in the `attachments` table, NOT `entries`. A previous version
+    // routed everything not-User/Role/Permission to `entries.QueryAsync`,
+    // which silently returned no hits for attachment types and let
+    // duplicates through.
     private async Task<List<(string Shortname, string Subpath)>> ProbeAsync(
         ResourceType rt, Query q, CancellationToken ct)
     {
@@ -208,6 +251,31 @@ public sealed class UniquenessValidator(
             case ResourceType.Permission:
                 var ps = await access.QueryPermissionsAsync(q, ct);
                 return ps.Select(p => (p.Shortname, p.Subpath)).ToList();
+            case ResourceType.Comment:
+            case ResourceType.Reply:
+            case ResourceType.Reaction:
+            case ResourceType.Media:
+            case ResourceType.Json:
+            case ResourceType.Share:
+            case ResourceType.Relationship:
+            case ResourceType.Alteration:
+            case ResourceType.Lock:
+            case ResourceType.DataAsset:
+                // Mirrors RequestHandler.CreateAttachmentAsync's switch list at
+                // Api/Managed/RequestHandler.cs:329-339 — these are the types
+                // that live in the `attachments` table. Csv/Jsonl/Sqlite/
+                // Parquet fall through to the default branch because they're
+                // routed through CreateEntryAsync (the `entries` table).
+                var ats = await attachments.QueryAsync(q, ct);
+                return ats.Select(a => (a.Shortname, a.Subpath)).ToList();
+            case ResourceType.Space:
+                // Spaces are root-level — no parent folder, so the validator's
+                // SplitSubpath returns empty folder shortname and we never
+                // reach this dispatch in practice. Fail loudly if a future
+                // call site bypasses that guard, rather than silently
+                // misrouting to the wrong table.
+                throw new NotSupportedException(
+                    "uniqueness probe is not supported for ResourceType.Space");
             default:
                 var es = await entries.QueryAsync(q, ct);
                 return es.Select(e => (e.Shortname, e.Subpath)).ToList();

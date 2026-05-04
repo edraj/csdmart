@@ -13,12 +13,15 @@ public static class ShortLinkHandler
         // Python parity: api/managed/router.py::shoting_url has no JWTBearer
         // dependency — invitation/reset SMS recipients follow this link before
         // they have a session, so the /managed group's RequireAuthorization()
-        // must be opted out of here.
+        // must be opted out of here. The auth-by-ip limiter (Program.cs:1126)
+        // is reused: this endpoint sits on the same anti-abuse surface as the
+        // auth endpoints (anonymous, used by invitation/reset flows), so a
+        // separate budget would just duplicate the policy.
         g.MapGet("/s/{token}", async (string token, ShortLinkService svc, CancellationToken ct) =>
         {
             var url = await svc.ResolveAsync(token, ct);
             return url is null ? Results.NotFound() : Results.Redirect(url);
-        }).AllowAnonymous();
+        }).AllowAnonymous().RequireRateLimiting("auth-by-ip");
 
         // Creator: GET /managed/shortening/{space}/{**rest} → creates a short URL.
         // Python: GET /managed/shortening/{space}/{subpath}/{shortname}

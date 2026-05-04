@@ -325,7 +325,7 @@ public static class RequestHandler
             case ResourceType.Permission:
                 return await CreatePermissionAsync(rec, space, actor, access, uniqueness, ct);
             case ResourceType.Space:
-                return await CreateSpaceAsync(rec, actor, spaces, uniqueness, ct);
+                return await CreateSpaceAsync(rec, actor, spaces, ct);
             case ResourceType.Comment:
             case ResourceType.Reply:
             case ResourceType.Reaction:
@@ -507,8 +507,7 @@ public static class RequestHandler
     }
 
     private static async Task<(Response Response, Record UpdatedRecord)> CreateSpaceAsync(
-        Record rec, string actor, SpaceRepository spaces,
-        UniquenessValidator uniqueness, CancellationToken ct)
+        Record rec, string actor, SpaceRepository spaces, CancellationToken ct)
     {
         var attrs = rec.Attributes ?? new();
         var existing = await spaces.GetAsync(rec.Shortname, ct);
@@ -516,14 +515,10 @@ public static class RequestHandler
             return (Response.Fail(InternalErrorCode.ALREADY_EXIST_SPACE_NAME,
                 $"space {rec.Shortname} already exists", ErrorTypes.Request), rec);
 
-        // Spaces are root-level (subpath="/"), so the parent-folder lookup in
-        // ValidateRawAsync will resolve to the empty folder and return Ok.
-        // We still wire this for parity — if a future config places spaces
-        // under a folder with `unique_fields`, the gate fires automatically.
-        var uniqRes = await uniqueness.ValidateRawAsync(
-            rec.Shortname, "/", rec.Shortname, ResourceType.Space, attrs, ActionType.Create, ct);
-        if (!uniqRes.IsOk)
-            return (Response.Fail(uniqRes.ErrorCode!, uniqRes.ErrorMessage!, uniqRes.ErrorType ?? ErrorTypes.Request), rec);
+        // Note: uniqueness validation does not apply to Space creates. Spaces
+        // are root-level by construction — they have no parent folder, so
+        // there's no `unique_fields` carrier in the model. Shortname uniqueness
+        // is enforced by the spaces.UpsertAsync conflict target above.
 
         // Python's Meta.from_record passes ALL attributes to the Space constructor,
         // including active_plugins. Without active_plugins, no hooks fire for this
@@ -684,11 +679,7 @@ public static class RequestHandler
                 var spaceLocator = new Locator(ResourceType.Space, existing.SpaceName, existing.Subpath, existing.Shortname);
                 if (!await perms.CanUpdateAsync(actor, spaceLocator, PermissionService.FromSpace(existing), attrs, ct))
                     return (Response.Fail(InternalErrorCode.NOT_ALLOWED, "not allowed to update space", ErrorTypes.Request), rec);
-                var spaceUniq = await uniqueness.ValidateRawAsync(
-                    existing.SpaceName, existing.Subpath, existing.Shortname,
-                    ResourceType.Space, attrs, ActionType.Update, ct);
-                if (!spaceUniq.IsOk)
-                    return (Response.Fail(spaceUniq.ErrorCode!, spaceUniq.ErrorMessage!, spaceUniq.ErrorType ?? ErrorTypes.Request), rec);
+                // Uniqueness validation doesn't apply to Spaces — see CreateSpaceAsync above.
 
                 // Python parity: every Space-specific attribute on the wire is
                 // written through. Previously only hide_space + is_active were
