@@ -2,6 +2,7 @@ using Dmart.Auth;
 using Dmart.Config;
 using Dmart.DataAdapters.Sql;
 using Dmart.Models.Api;
+using Dmart.Services;
 using Microsoft.Extensions.Options;
 using Dmart.Utils;
 
@@ -128,12 +129,9 @@ public static class OtpHandler
         }).RequireRateLimiting("auth-by-ip");
 
         g.MapPost("/password-reset-request", async (PasswordResetRequest req,
-            UserRepository users, Dmart.Services.InvitationService invitations,
+            UserRepository users, InvitationService invitations,
             CancellationToken ct) =>
         {
-            var msisdnOrShortnamePath = !string.IsNullOrEmpty(req.Msisdn) || !string.IsNullOrEmpty(req.Shortname);
-            var emailPath = !msisdnOrShortnamePath && !string.IsNullOrEmpty(req.Email);
-
             Models.Core.User? user = null;
             if (!string.IsNullOrEmpty(req.Shortname))
                 user = await users.GetByShortnameAsync(req.Shortname, ct);
@@ -142,21 +140,52 @@ public static class OtpHandler
             else if (!string.IsNullOrEmpty(req.Email))
                 user = await users.GetByEmailAsync(req.Email, ct);
 
+            // Anti-enumeration: response is identical whether the user exists
+            // or not. All silent-no-op branches below also fall through to Ok().
             if (user is null) return Response.Ok();
 
-            if (msisdnOrShortnamePath
-                && !string.IsNullOrEmpty(user.Msisdn)
+            // Email-direct path: only mint when the supplied email actually
+            // matches the user's (case-insensitive — UserRepository already
+            // does LOWER(email)=LOWER($1) on the lookup, the equality check
+            // here guards against future lookup changes and against a
+            // mismatched email leaking through the `else` branch).
+            var emailDirect = string.IsNullOrEmpty(req.Shortname)
+                && string.IsNullOrEmpty(req.Msisdn)
+                && !string.IsNullOrEmpty(req.Email);
+            if (emailDirect)
+            {
+                if (!string.IsNullOrEmpty(user.Email)
+                    && string.Equals(user.Email, req.Email, StringComparison.OrdinalIgnoreCase))
+                {
+                    await invitations.MintAsync(user, Models.Enums.InvitationChannel.Email, isReset: true, ct);
+                }
+                return Response.Ok();
+            }
+
+            // Msisdn / shortname path: prefer SMS. The msisdn equality check
+            // is tautological when the lookup was by msisdn (req.Msisdn was
+            // the key) but load-bearing when the caller supplied BOTH
+            // shortname and msisdn — it blocks an attacker probing whether
+            // a known shortname belongs to a specific msisdn.
+            //
+            // isReset=true selects the localized reset_message template (same
+            // one /user/reset uses) instead of the new-account invitation
+            // message — see InvitationService.MintAsync.
+            if (!string.IsNullOrEmpty(user.Msisdn)
                 && (string.IsNullOrEmpty(req.Msisdn)
                     || string.Equals(user.Msisdn, req.Msisdn, StringComparison.Ordinal)))
             {
-                // isReset=true selects the localized reset_message SMS body
-                // (same template /user/reset uses) instead of the new-account
-                // invitation_message text — see InvitationService.MintAsync.
                 await invitations.MintAsync(user, Models.Enums.InvitationChannel.Sms, isReset: true, ct);
             }
-            else if (emailPath
-                && !string.IsNullOrEmpty(user.Email)
-                && string.Equals(user.Email, req.Email, StringComparison.OrdinalIgnoreCase))
+            // Csdmart-only fallback (intentional divergence from upstream
+            // Python's reset_password, which silently no-ops here): when the
+            // caller supplied only a shortname and the user has no msisdn,
+            // fall back to email so the reset still reaches them via the
+            // available channel. NOT triggered when req.Msisdn is set —
+            // direct-msisdn requests honor the channel the caller picked.
+            else if (!string.IsNullOrEmpty(req.Shortname)
+                     && string.IsNullOrEmpty(req.Msisdn)
+                     && !string.IsNullOrEmpty(user.Email))
             {
                 await invitations.MintAsync(user, Models.Enums.InvitationChannel.Email, isReset: true, ct);
             }
