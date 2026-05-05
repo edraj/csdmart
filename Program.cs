@@ -704,7 +704,9 @@ switch (subcommand)
 
                 ORDER BY space_name, subpath, shortname
                 """;
+#pragma warning disable CA2100 // Audited: selectSql is composed of constants + the loop variable `tableName` which iterates the hardcoded `tables` array; spaceFilter binds via $1.
             await using var sel = new Npgsql.NpgsqlCommand(selectSql, conn);
+#pragma warning restore CA2100
             if (spaceFilter is not null)
                 sel.Parameters.Add(new() { Value = spaceFilter });
 
@@ -753,7 +755,9 @@ switch (subcommand)
                     isActive: act, ownerShortname: own,
                     ownerGroupShortname: og, entryShortname: entryShortname);
 
+#pragma warning disable CA2100 // Audited: updateSql is `UPDATE {tableName} SET query_policies=$1 WHERE shortname=$2 AND space_name=$3 AND subpath=$4` with tableName from the hardcoded `tables` array; all values via $N.
                 await using var upd = new Npgsql.NpgsqlCommand(updateSql, conn);
+#pragma warning restore CA2100
                 upd.Parameters.Add(new() { Value = policies.ToArray() });
                 upd.Parameters.Add(new() { Value = sn });
                 upd.Parameters.Add(new() { Value = sp });
@@ -1291,10 +1295,9 @@ app.UseJsonStripEmpties();
 // Correlation ID
 app.Use(async (ctx, next) =>
 {
-    if (!ctx.Request.Headers.ContainsKey("X-Correlation-ID"))
-        ctx.Response.Headers["X-Correlation-ID"] = Guid.NewGuid().ToString("N");
-    else
-        ctx.Response.Headers["X-Correlation-ID"] = ctx.Request.Headers["X-Correlation-ID"].ToString();
+    ctx.Response.Headers["X-Correlation-ID"] = ctx.Request.Headers.TryGetValue("X-Correlation-ID", out var corr)
+        ? corr.ToString()
+        : Guid.NewGuid().ToString("N");
     await next();
 });
 
@@ -1502,6 +1505,8 @@ public partial class Program
     // ALTER TABLE ADD COLUMN for any missing entries. Returns the count of
     // ALTERs actually issued. Skips tables that don't exist (they'll be
     // created by SqlSchema.CreateAll in the same pass).
+    [System.Diagnostics.CodeAnalysis.SuppressMessage("Security", "CA2100",
+        Justification = "Audited: `table` is iterated from a hardcoded `cols` schema map; `column`/`ddl` likewise. No external input enters the SQL string.")]
     static async Task<int> ApplyExpectedColumnPatches(Npgsql.NpgsqlConnection conn, bool quiet)
     {
         var applied = 0;

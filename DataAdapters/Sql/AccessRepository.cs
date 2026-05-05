@@ -2,7 +2,6 @@ using Dmart.Models.Core;
 using Dmart.Models.Enums;
 using Npgsql;
 using NpgsqlTypes;
-using Dmart.Utils;
 
 namespace Dmart.DataAdapters.Sql;
 

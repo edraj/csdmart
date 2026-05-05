@@ -1,3 +1,4 @@
+using System.Diagnostics.CodeAnalysis;
 using System.Text.Json;
 using Dmart.Config;
 using Dmart.DataAdapters.Sql;
@@ -5,7 +6,6 @@ using Dmart.Models.Api;
 using Dmart.Models.Core;
 using Dmart.Models.Enums;
 using Dmart.Models.Json;
-using Dmart.Utils;
 using Microsoft.Extensions.Options;
 using Npgsql;
 using NpgsqlTypes;
@@ -300,6 +300,8 @@ public sealed class QueryService(
     // TAGS (SQL aggregation)
     // ====================================================================
 
+    [SuppressMessage("Security", "CA2100",
+        Justification = "Audited: SQL is a constant-string template; AppendAclFilter binds the trusted internal `effectiveActor` via $N parameters and the LIMIT/OFFSET integers are bound the same way.")]
     private async Task<Response> QueryTagsAsync(Query q, string? actor, CancellationToken ct)
     {
         // Python parity (adapter.py:1510-1520): no resource-type-specific

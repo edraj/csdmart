@@ -1,3 +1,4 @@
+using System.Diagnostics.CodeAnalysis;
 using Npgsql;
 
 namespace Dmart.DataAdapters.Sql;
@@ -69,6 +70,8 @@ public sealed class HealthCheckRepository(Db db)
         return results;
     }
 
+    [SuppressMessage("Security", "CA2100",
+        Justification = "Audited: `sql` is a compile-time constant from in-class call sites (the five HealthCheck SQL literals); `spaceName` flows through $1.")]
     private static async Task<IssueCheck> RunCheck(
         NpgsqlConnection conn, string name, string sql, string spaceName,
         int sampleLimit, CancellationToken ct)

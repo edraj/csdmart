@@ -1,4 +1,4 @@
-using Dmart.Utils;
+using System.Diagnostics.CodeAnalysis;
 using Npgsql;
 using NpgsqlTypes;
 
@@ -70,6 +70,8 @@ public sealed class HistoryRepository(Db db)
         FROM histories
         """;
 
+    [SuppressMessage("Security", "CA2100",
+        Justification = "Audited: SQL is a StringBuilder of compile-time fragments and $N positional placeholders; user-supplied filter values flow through NpgsqlParameters (args).")]
     public async Task<List<HistoryRecord>> QueryHistoryAsync(Models.Api.Query q, CancellationToken ct = default)
     {
         var args = new List<NpgsqlParameter>();
@@ -125,6 +127,8 @@ public sealed class HistoryRepository(Db db)
         return results;
     }
 
+    [SuppressMessage("Security", "CA2100",
+        Justification = "Audited: identical pattern to QueryHistoryAsync — StringBuilder of constants + $N placeholders; user values via NpgsqlParameters.")]
     public async Task<int> CountHistoryQueryAsync(Models.Api.Query q, CancellationToken ct = default)
     {
         var args = new List<NpgsqlParameter>();

@@ -6,7 +6,6 @@ using Dmart.DataAdapters.Sql;
 using Dmart.Models.Api;
 using Dmart.Models.Core;
 using Dmart.Models.Enums;
-using Dmart.Utils;
 using Microsoft.Extensions.Options;
 
 namespace Dmart.Services;

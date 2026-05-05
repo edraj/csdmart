@@ -23,6 +23,17 @@
     <TreatTrimWarningsAsErrors>true</TreatTrimWarningsAsErrors>
     <TreatAotWarningsAsErrors>true</TreatAotWarningsAsErrors>
     <TreatWarningsAsErrors>true</TreatWarningsAsErrors>
+    <!-- Run the full Roslyn analyzer set (CA1xxx + CA2xxx security/perf rules)
+         on every build. Combined with TreatWarningsAsErrors=true and the
+         category silences in .editorconfig, only audited-genuine signals
+         (CA2100 SQL review, CA1849 sync-in-async on a hot path) can fail
+         the build. Existing CA2100 sites carry [SuppressMessage] attributes
+         with audit justifications.
+         CA2000 (dispose) and CA1508 (dead code) need per-site review of 18
+         and 6 sites respectively — kept as warnings (not errors) until that
+         follow-up pass; see .editorconfig. -->
+    <AnalysisLevel>latest-all</AnalysisLevel>
+    <WarningsNotAsErrors>CA2000;CA1508</WarningsNotAsErrors>
     <!-- Refuse System.Text.Json's reflection-based fallback at runtime so a
          regression (JsonSerializer.Serialize(x) without a JsonTypeInfo<T>)
          throws NotSupportedException in Debug/JIT too — not only at AOT

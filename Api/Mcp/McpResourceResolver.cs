@@ -3,7 +3,6 @@ using Dmart.Models.Api;
 using Dmart.Models.Enums;
 using Dmart.Models.Json;
 using Dmart.Services;
-using Microsoft.Extensions.DependencyInjection;
 
 namespace Dmart.Api.Mcp;
 

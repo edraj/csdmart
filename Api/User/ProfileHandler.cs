@@ -3,7 +3,6 @@ using Dmart.DataAdapters.Sql;
 using Dmart.Models.Api;
 using Dmart.Models.Json;
 using Dmart.Services;
-using Dmart.Utils;
 
 namespace Dmart.Api.User;
 

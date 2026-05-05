@@ -1,4 +1,3 @@
-using Microsoft.Extensions.Hosting;
 using Npgsql;
 
 namespace Dmart.DataAdapters.Sql;
@@ -6,8 +5,9 @@ namespace Dmart.DataAdapters.Sql;
 // Runs once on startup; creates tables if they don't exist. Idempotent.
 public sealed class SchemaInitializer(Db db, ILogger<SchemaInitializer> log) : IHostedService
 {
-    public async Task StartAsync(CancellationToken ct)
+    public async Task StartAsync(CancellationToken cancellationToken)
     {
+        var ct = cancellationToken;
         if (!db.IsConfigured) return;
 
         // Use a PostgreSQL advisory lock so parallel test hosts (xUnit creates
@@ -62,5 +62,5 @@ public sealed class SchemaInitializer(Db db, ILogger<SchemaInitializer> log) : I
         }
     }
 
-    public Task StopAsync(CancellationToken ct) => Task.CompletedTask;
+    public Task StopAsync(CancellationToken cancellationToken) => Task.CompletedTask;
 }

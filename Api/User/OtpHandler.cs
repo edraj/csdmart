@@ -3,7 +3,6 @@ using Dmart.Config;
 using Dmart.DataAdapters.Sql;
 using Dmart.Models.Api;
 using Microsoft.Extensions.Options;
-using Dmart.Utils;
 
 namespace Dmart.Api.User;
 

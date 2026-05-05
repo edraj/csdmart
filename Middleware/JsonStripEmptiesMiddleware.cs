@@ -48,7 +48,7 @@ public static class JsonStripEmptiesMiddleware
                 if (buffer.Length > 0 && isJson)
                 {
                     JsonNode? node = null;
-                    try { node = JsonNode.Parse(buffer); }
+                    try { node = await JsonNode.ParseAsync(buffer, cancellationToken: ctx.RequestAborted); }
                     catch (JsonException) { /* fall through to passthrough */ }
 
                     if (node is not null)

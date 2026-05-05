@@ -1,3 +1,4 @@
+using System.Buffers;
 using System.Text.Json;
 using Dmart.DataAdapters.Sql;
 using Dmart.Models.Api;
@@ -57,6 +58,12 @@ public sealed class UniquenessValidator(
     AttachmentRepository attachments,
     ILogger<UniquenessValidator> log)
 {
+    // Characters that QueryHelper's tokenizer treats specially; values that
+    // contain any of these need to be wrapped in double quotes to round-trip.
+    private static readonly SearchValues<char> SearchTokenizerSpecials =
+        SearchValues.Create(" \t()|@");
+
+
     // Raw-attrs entry point used by RequestHandler for resource types that
     // bypass EntryService (User/Role/Permission/attachments). Mirrors
     // Python's adapter.py::validate_uniqueness which is invoked from
@@ -594,7 +601,7 @@ public sealed class UniquenessValidator(
         // we'd rather under-match than emit malformed search strings.
         if (v.Length == 0) return "\"\"";
         var safe = v.Replace("\"", "");
-        if (safe.IndexOfAny(new[] { ' ', '\t', '(', ')', '|', '@' }) >= 0)
+        if (safe.AsSpan().IndexOfAny(SearchTokenizerSpecials) >= 0)
             return "\"" + safe + "\"";
         return safe;
     }

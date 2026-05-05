@@ -1,9 +1,9 @@
+using System.Diagnostics.CodeAnalysis;
 using Dmart.Models.Api;
 using Dmart.Models.Core;
 using Dmart.Models.Enums;
 using Npgsql;
 using NpgsqlTypes;
-using Dmart.Utils;
 
 namespace Dmart.DataAdapters.Sql;
 
@@ -206,6 +206,8 @@ public sealed class EntryRepository(Db db)
             c => DeleteFolderTreeWithDependentsOnceAsync(spaceName, parentSubpath, folderShortname, c),
             ct);
 
+    [SuppressMessage("Security", "CA2100",
+        Justification = "Audited: SQL is `\"DELETE FROM <const-table> WHERE \" + const-where`; only positional $1-$4 placeholders bind caller-supplied values.")]
     private async Task<int> DeleteFolderTreeWithDependentsOnceAsync(
         string spaceName, string parentSubpath, string folderShortname, CancellationToken ct)
     {

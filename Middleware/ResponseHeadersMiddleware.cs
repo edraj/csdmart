@@ -1,6 +1,5 @@
 using Dmart.Config;
 using Microsoft.Extensions.Options;
-using Dmart.Utils;
 
 namespace Dmart.Middleware;
 

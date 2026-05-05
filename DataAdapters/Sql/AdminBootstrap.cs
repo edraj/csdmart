@@ -3,9 +3,7 @@ using Dmart.Config;
 using Dmart.Models.Core;
 using Dmart.Models.Enums;
 using Dmart.Services;
-using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Options;
-using Dmart.Utils;
 
 namespace Dmart.DataAdapters.Sql;
 
