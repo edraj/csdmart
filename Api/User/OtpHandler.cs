@@ -127,29 +127,40 @@ public static class OtpHandler
             return Response.Ok();
         }).RequireRateLimiting("auth-by-ip");
 
-        g.MapPost("/password-reset-request", async (PasswordResetRequest req, OtpProvider otp, OtpRepository repo,
-            UserRepository users, IOptions<DmartSettings> settings, CancellationToken ct) =>
+        g.MapPost("/password-reset-request", async (PasswordResetRequest req,
+            UserRepository users, Dmart.Services.InvitationService invitations,
+            CancellationToken ct) =>
         {
-            // Resolve the OTP destination to an email/msisdn-shaped string so
-            // OtpProvider.Generate's per-channel mock branching kicks in. When
-            // only `shortname` is supplied we look the user up and prefer
-            // msisdn → email; without that lookup `dest` stays shortname-shaped
-            // and Generate falls through to RandomNumberGenerator, defeating
-            // MockOtpCode in mock mode.
-            string? dest = req.Email ?? req.Msisdn;
-            if (dest is null && !string.IsNullOrEmpty(req.Shortname))
-            {
-                var user = await users.GetByShortnameAsync(req.Shortname, ct);
-                dest = user?.Msisdn ?? user?.Email;
-            }
-            // Anti-enumeration: silent success when nothing maps to a deliverable
-            // channel (mirrors otp-request-login's behaviour).
-            if (string.IsNullOrEmpty(dest))
-                return Response.Ok();
+            var msisdnOrShortnamePath = !string.IsNullOrEmpty(req.Msisdn) || !string.IsNullOrEmpty(req.Shortname);
+            var emailPath = !msisdnOrShortnamePath && !string.IsNullOrEmpty(req.Email);
 
-            var code = otp.Generate(dest);
-            var expiresAt = TimeUtils.Now().AddSeconds(settings.Value.OtpTokenTtl);
-            await repo.StoreAsync($"reset:{dest}", code, expiresAt, ct);
+            Models.Core.User? user = null;
+            if (!string.IsNullOrEmpty(req.Shortname))
+                user = await users.GetByShortnameAsync(req.Shortname, ct);
+            else if (!string.IsNullOrEmpty(req.Msisdn))
+                user = await users.GetByMsisdnAsync(req.Msisdn, ct);
+            else if (!string.IsNullOrEmpty(req.Email))
+                user = await users.GetByEmailAsync(req.Email, ct);
+
+            if (user is null) return Response.Ok();
+
+            if (msisdnOrShortnamePath
+                && !string.IsNullOrEmpty(user.Msisdn)
+                && (string.IsNullOrEmpty(req.Msisdn)
+                    || string.Equals(user.Msisdn, req.Msisdn, StringComparison.Ordinal)))
+            {
+                // isReset=true selects the localized reset_message SMS body
+                // (same template /user/reset uses) instead of the new-account
+                // invitation_message text — see InvitationService.MintAsync.
+                await invitations.MintAsync(user, Models.Enums.InvitationChannel.Sms, isReset: true, ct);
+            }
+            else if (emailPath
+                && !string.IsNullOrEmpty(user.Email)
+                && string.Equals(user.Email, req.Email, StringComparison.OrdinalIgnoreCase))
+            {
+                await invitations.MintAsync(user, Models.Enums.InvitationChannel.Email, isReset: true, ct);
+            }
+
             return Response.Ok();
         }).RequireRateLimiting("auth-by-ip");
 
