@@ -1,8 +1,8 @@
+using System.Diagnostics.CodeAnalysis;
 using Dmart.Models.Core;
 using Dmart.Models.Enums;
 using Npgsql;
 using NpgsqlTypes;
-using Dmart.Utils;
 
 namespace Dmart.DataAdapters.Sql;
 
@@ -113,9 +113,11 @@ public sealed class SpaceRepository(Db db)
         cmd.Parameters.Add(new() { Value = space.Icon });
         AddJsonb(cmd, JsonbHelpers.ToJsonb(space.Mirrors));
         AddJsonb(cmd, JsonbHelpers.ToJsonb(space.HideFolders));
+#pragma warning disable CA1508 // Analyzer limitation: bool?/int? boxed via (object?) cast IS null when source is null; the ?? is load-bearing.
         cmd.Parameters.Add(new() { Value = (object?)space.HideSpace ?? DBNull.Value });
         AddJsonb(cmd, JsonbHelpers.ToJsonb(space.ActivePlugins));
         cmd.Parameters.Add(new() { Value = (object?)space.Ordinal ?? DBNull.Value });
+#pragma warning restore CA1508
         cmd.Parameters.Add(new()
         {
             Value = space.QueryPolicies.ToArray(),
@@ -138,6 +140,8 @@ public sealed class SpaceRepository(Db db)
     public Task<bool> DeleteAsync(string shortname, CancellationToken ct = default)
         => db.ExecuteWithRetryOnDeadlockAsync(c => DeleteOnceAsync(shortname, c), ct);
 
+    [SuppressMessage("Security", "CA2100",
+        Justification = "Audited: each `sql` value is a literal element of a compile-time string[] (DELETE FROM <table>); shortname flows through $1.")]
     private async Task<bool> DeleteOnceAsync(string shortname, CancellationToken ct)
     {
         await using var conn = await db.OpenAsync(ct);

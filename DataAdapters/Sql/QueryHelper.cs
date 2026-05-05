@@ -1,8 +1,8 @@
+using System.Diagnostics.CodeAnalysis;
 using System.Globalization;
 using System.Text.RegularExpressions;
 using Dmart.Models.Api;
 using Dmart.Models.Enums;
-using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Logging.Abstractions;
 using Npgsql;
 using NpgsqlTypes;
@@ -1213,6 +1213,8 @@ public static class QueryHelper
     // GENERIC RUN HELPERS
     // ====================================================================
 
+    [SuppressMessage("Security", "CA2100",
+        Justification = "Audited: `selectAllColumns` and `tableName` are internal-only identifiers from typed repository callers; user values flow through $N parameters built by BuildWhereClause/AppendAclFilter.")]
     public static async Task<List<T>> RunQueryAsync<T>(
         Db db, string selectAllColumns, Query q,
         Func<NpgsqlDataReader, T> hydrate,
@@ -1243,6 +1245,8 @@ public static class QueryHelper
         return results;
     }
 
+    [SuppressMessage("Security", "CA2100",
+        Justification = "Audited: `tableName` is an internal-only identifier; user values flow through $N parameters.")]
     public static async Task<int> RunCountAsync(
         Db db, string tableName, Query q,
         CancellationToken ct,
@@ -1269,6 +1273,8 @@ public static class QueryHelper
     // Mirrors Python's query_aggregation(). Builds:
     //   SELECT group_by_cols, FUNC(args) AS alias FROM table WHERE ... GROUP BY ...
 
+    [SuppressMessage("Security", "CA2100",
+        Justification = "Audited: `tableName` is internal; group-by/reducer expressions are built from a whitelisted ResolveFieldExpr/SanitizeAlias pipeline; user values flow through $N parameters.")]
     public static async Task<List<Dictionary<string, object>>> RunAggregationAsync(
         Db db, string tableName, Query q, CancellationToken ct,
         string? userShortname = null, List<string>? queryPolicies = null)

@@ -6,7 +6,6 @@ using Dmart.DataAdapters.Sql;
 using Dmart.Models.Json;
 using Microsoft.Extensions.Options;
 using Npgsql;
-using Dmart.Utils;
 
 namespace Dmart.Services;
 

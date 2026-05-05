@@ -1,3 +1,4 @@
+using System.Diagnostics.CodeAnalysis;
 using System.Text.Json;
 using Dmart.DataAdapters.Sql;
 using Dmart.Models.Api;
@@ -90,6 +91,8 @@ public sealed class SemanticSearchService(
         });
     }
 
+    [SuppressMessage("Security", "CA2100",
+        Justification = "Audited: SQL is built from constant fragments + $N placeholders generated from positional indices; resourceTypes pass through `JsonbHelpers.EnumMember` (whitelisted) and bind via $N parameters.")]
     private async Task<List<Hit>> QueryPgVectorAsync(
         float[] vec, string? spaceName, string? subpath,
         IReadOnlyList<ResourceType>? resourceTypes, int limit,

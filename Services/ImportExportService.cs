@@ -144,7 +144,7 @@ public sealed class ImportExportService(
 
     // ---- export writers ----
 
-    private async Task WriteSpaceMetaAsync(ZipArchive zip, Space space, CancellationToken ct)
+    private static async Task WriteSpaceMetaAsync(ZipArchive zip, Space space, CancellationToken ct)
     {
         var node = ToJsonObject(space, DmartJsonContext.Default.Space);
         StripMetaFields(node);
@@ -257,7 +257,7 @@ public sealed class ImportExportService(
     //     bytes from the wire representation reliably). If the body is a
     //     base64 string, decode it and write with the sub-type extension.
     //   - empty body → nothing to externalize, keep meta.payload.body as-is.
-    private async Task MaybeExternalizePayloadBodyAsync(
+    private static async Task MaybeExternalizePayloadBodyAsync(
         ZipArchive zip, JsonObject metaNode, string baseDir, string shortname, CancellationToken ct)
     {
         if (metaNode["payload"] is not JsonObject payload) return;
@@ -974,7 +974,7 @@ public sealed class ImportExportService(
         }
     }
 
-    private async Task InlinePayloadBodyAsync(
+    private static async Task InlinePayloadBodyAsync(
         ZipArchiveEntry metaZe, JsonObject metaNode, string baseDir, CancellationToken ct)
     {
         if (metaNode["payload"] is not JsonObject payload) return;

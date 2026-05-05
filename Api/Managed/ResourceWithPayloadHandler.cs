@@ -6,7 +6,6 @@ using Dmart.Models.Core;
 using Dmart.Models.Enums;
 using Dmart.Models.Json;
 using Dmart.Services;
-using Dmart.Utils;
 
 namespace Dmart.Api.Managed;
 

@@ -337,7 +337,8 @@ public sealed class DmartClient : IDisposable
         form.Add(new StringContent(recordJson, Encoding.UTF8, "application/json"), "request_record", "record.json");
         form.Add(new StringContent(CurrentSpace), "space_name");
         await using var fs = File.OpenRead(filePath);
-        form.Add(new StreamContent(fs), "payload_file", Path.GetFileName(filePath));
+        using var streamContent = new StreamContent(fs);
+        form.Add(streamContent, "payload_file", Path.GetFileName(filePath));
         var resp = await SendWithRefreshAsync(() => _http.PostAsync("/managed/resource_with_payload", form));
         return await ParseAsync(resp);
     }

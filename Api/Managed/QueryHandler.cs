@@ -3,7 +3,6 @@ using Dmart.Config;
 using Dmart.Models.Api;
 using Dmart.Models.Json;
 using Dmart.Services;
-using Dmart.Utils;
 using Microsoft.Extensions.Options;
 
 namespace Dmart.Api.Managed;

@@ -8,7 +8,6 @@ using Dmart.Models.Core;
 using Dmart.Models.Enums;
 using Dmart.Models.Json;
 using Dmart.Services;
-using Microsoft.Extensions.DependencyInjection;
 
 namespace Dmart.Plugins.Native;
 

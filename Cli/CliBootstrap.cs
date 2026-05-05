@@ -1,6 +1,5 @@
 using Dmart.Config;
 using Dmart.DataAdapters.Sql;
-using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.Options;
 
 namespace Dmart.Cli;

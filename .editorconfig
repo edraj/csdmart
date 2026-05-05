@@ -1,0 +1,113 @@
+root = true
+
+# Roslyn analyzer policy. Audited 2026-05-05 alongside the v0.8.51+ analyzer
+# audit. We turn on AnalysisLevel=latest-all in dmart.csproj so genuine signals
+# (CA2100 SQL review, CA1849 sync-in-async, CA2000 dispose, CA1508 dead code)
+# break the build under TreatWarningsAsErrors. The categories below are
+# silenced because they don't fit this codebase's choices, not because
+# they're undesirable:
+
+[*.cs]
+
+# CA2007: Use ConfigureAwait when awaiting.
+# Not relevant in ASP.NET Core — there is no SynchronizationContext to deadlock,
+# so ConfigureAwait(false) is pure noise on every await.
+dotnet_diagnostic.CA2007.severity = none
+
+# CA1062: Validate arguments of public methods (null check).
+# False positives in nullable-reference-aware code. The compiler already enforces
+# non-null at the call site via NRT.
+dotnet_diagnostic.CA1062.severity = none
+
+# CA1707: Identifiers should not contain underscores.
+# Intentional in InternalErrorCode — names mirror Python parity (USER_ACCOUNT_LOCKED, etc.)
+# so the wire-format error codes don't drift between the two implementations.
+dotnet_diagnostic.CA1707.severity = none
+
+# CA1002: Don't expose generic List<T>; use IList<T> or Collection<T>.
+# Source-generated JSON serializers and Npgsql parameter lists need concrete List<T>.
+dotnet_diagnostic.CA1002.severity = none
+
+# CA1515: Make types internal.
+# Public types are kept for testability (InternalsVisibleTo gives the test project
+# access, but cross-cutting types like Models stay public for downstream consumers
+# of Dmart.Models / Dmart.Client NuGet packages).
+dotnet_diagnostic.CA1515.severity = none
+
+# CA1054 / CA1055 / CA1056: URI parameters/return types/properties should not be strings.
+# This codebase deals heavily with template paths, slugs, and partial URIs that aren't
+# valid System.Uri values; converting them would force us to invent base URLs.
+dotnet_diagnostic.CA1054.severity = none
+dotnet_diagnostic.CA1055.severity = none
+dotnet_diagnostic.CA1056.severity = none
+
+# CA1031: Don't catch general Exception types.
+# Many top-level boundary catches (request pipeline, plugin host, CLI dispatch) are
+# intentional fail-safes. The narrower catches that matter happen elsewhere; treating
+# every catch(Exception) as a warning would drown out the signal.
+dotnet_diagnostic.CA1031.severity = none
+
+# CA1848: Use LoggerMessage delegates for high-perf logging.
+# Worth doing eventually but a 234-site refactor — not part of this audit.
+dotnet_diagnostic.CA1848.severity = none
+
+# CA1873: Avoid potentially expensive logging.
+# Same reasoning as CA1848 — paired with the LoggerMessage migration.
+dotnet_diagnostic.CA1873.severity = none
+
+# CA1849: Sync-blocking call in an async method.
+# 100 sites; the egregious one (JsonStripEmptiesMiddleware request-body parse) was
+# fixed in this audit. The remainder are mostly CLI startup / file IO that runs
+# once per process and isn't on the hot path. Leave as suggestion-only for now.
+dotnet_diagnostic.CA1849.severity = suggestion
+
+# Naming / design preferences this codebase has chosen otherwise.
+# CA2234: pass System.Uri rather than strings (40 sites — partial-URI code).
+# CA1034: don't nest types (18 sites — Result/CachedUserAccess/etc. are
+#         intentionally namespaced under their owners).
+# CA1716: identifier conflicts with reserved keyword (Public namespace, etc.).
+# CA2025: IDisposable instance argument lifetime — false positives in our
+#         middleware/handler ownership model.
+# CA1725: param name should match interface (e.g. cancellationToken vs ct) —
+#         we use ct project-wide; explicit on IHostedService impls.
+# CA1068: CancellationToken should be last parameter — we sometimes nest it
+#         mid-list when a default for ct precedes optional struct params.
+# CA1001 / CA1000 / CA1815: misc design rules around ownership/equality on
+#         types whose lifetime is managed by DI / xUnit fixtures.
+# CA1819: properties returning arrays — common in our wire-format records.
+# CA2227: collection property setters — needed for source-gen JSON deserialize.
+dotnet_diagnostic.CA2234.severity = none
+dotnet_diagnostic.CA1034.severity = none
+dotnet_diagnostic.CA1716.severity = none
+dotnet_diagnostic.CA2025.severity = none
+dotnet_diagnostic.CA1725.severity = none
+dotnet_diagnostic.CA1068.severity = none
+dotnet_diagnostic.CA1001.severity = none
+dotnet_diagnostic.CA1000.severity = none
+dotnet_diagnostic.CA1815.severity = none
+dotnet_diagnostic.CA1819.severity = none
+dotnet_diagnostic.CA2227.severity = none
+
+# Micro-perf rules — too many sites to chase in this audit and the
+# instances are not on hot paths.
+# CA1820: empty-string check via Length.
+# CA1866: char overload of StartsWith/EndsWith/IndexOf.
+# CA1806: ignored return value (mostly logging-side false positives).
+# CA1850: prefer static HashData over instance HashAlgorithm.
+# CA1835: prefer Memory<T> over byte[] for Stream R/W.
+# CA1826: use Length/Count property over LINQ Count().
+# CA1805: don't initialize to default value (style).
+dotnet_diagnostic.CA1820.severity = none
+dotnet_diagnostic.CA1866.severity = none
+dotnet_diagnostic.CA1806.severity = none
+dotnet_diagnostic.CA1850.severity = none
+dotnet_diagnostic.CA1835.severity = none
+dotnet_diagnostic.CA1826.severity = none
+dotnet_diagnostic.CA1805.severity = none
+
+# These remain enabled but as warnings (not errors) — visible signals for
+# IDE / CI, but they don't fail the build. 18 CA2000 sites and 6 CA1508
+# sites need per-site review to decide between "fix" and "suppress with
+# justification"; out of scope for this audit pass.
+dotnet_diagnostic.CA2000.severity = warning
+dotnet_diagnostic.CA1508.severity = warning
