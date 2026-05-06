@@ -795,16 +795,6 @@ public sealed class UserService(
         };
         await users.UpsertAsync(updated, ct);
 
-        // Python parity: store_entry_diff — record what changed so
-        // /managed/query?type=history surfaces the audit trail for self-service
-        // profile updates the same way it does for entry updates. The diff
-        // intentionally omits secrets and bookkeeping (password hash, attempt
-        // counter, updated_at noise); password changes still appear via the
-        // boolean force_password_change flip when relevant.
-        var historyDiff = ComputeUserHistoryDiff(user, updated);
-        await history.AppendAsync(MgmtSpace, "/users", shortname, shortname, null,
-            historyDiff.Count > 0 ? historyDiff : null, ct);
-
         // Python: if password changed and logout_on_pwd_change, delete all sessions.
         if (newPasswordHash is not null && settings.Value.LogoutOnPwdChange)
             await users.DeleteAllSessionsAsync(shortname, ct);
@@ -812,6 +802,21 @@ public sealed class UserService(
         // Python: if is_active set to false, delete all sessions.
         if (patch.TryGetValue("is_active", out var ia) && ia is false)
             await users.DeleteAllSessionsAsync(shortname, ct);
+
+        // Python parity: store_entry_diff — record what changed so
+        // /managed/query?type=history surfaces the audit trail for self-service
+        // profile updates the same way it does for entry updates. Runs AFTER
+        // the session-cleanup branches above so a transient history-write
+        // failure can't leave logout_on_pwd_change un-applied. The diff
+        // intentionally omits secrets and bookkeeping (password hash, attempt
+        // counter, updated_at noise); password changes still appear via the
+        // boolean force_password_change flip when relevant. Actor == target
+        // shortname is sound for the self-service /user/profile path; an admin
+        // path that updates someone else's profile must thread its own actor.
+        var historyDiff = ComputeUserHistoryDiff(user, updated);
+        if (historyDiff.Count > 0)
+            await history.AppendAsync(MgmtSpace, "/users", shortname, shortname, null,
+                historyDiff, ct);
 
         // Python parity: `firebase_token` on the patch body writes onto the
         // caller's CURRENT session row (matched by shortname+token), not onto
@@ -860,7 +865,11 @@ public sealed class UserService(
         {
             ["email"] = u.Email,
             ["msisdn"] = u.Msisdn,
-            ["language"] = u.Language.ToString().ToLowerInvariant(),
+            // dmart's wire format for Language is the EnumMember string
+            // ("english"/"arabic"/...), not the lowered C# enum name
+            // ("en"/"ar"/...). Python's history diff carries the wire form,
+            // so use JsonbHelpers.EnumMember to match.
+            ["language"] = JsonbHelpers.EnumMember(u.Language),
             ["is_email_verified"] = u.IsEmailVerified,
             ["is_msisdn_verified"] = u.IsMsisdnVerified,
             ["force_password_change"] = u.ForcePasswordChange,

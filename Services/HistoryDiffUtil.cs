@@ -15,11 +15,15 @@ internal static class HistoryDiffUtil
                     FlattenJson(prop.Value, $"{prefix}.{prop.Name}", outDict);
                 break;
             case JsonValueKind.Array:
-                // Store the cloned JsonElement so ValuesEqual walks it
-                // structurally — GetRawText() compared two semantically-equal
-                // arrays as unequal whenever JSONB's canonical form differed
-                // from the client's re-serialized form (whitespace, key order,
-                // numeric repr), making unchanged arrays show up in every diff.
+                // Python flatten_dict leaves arrays as whole list values at
+                // their key and then compares them with `!=` (semantic
+                // equality). Store the cloned JsonElement so ValuesEqual can
+                // walk it structurally — using GetRawText() here compared two
+                // semantically-equal arrays as unequal whenever JSONB's
+                // canonical form differed from the client's re-serialized form
+                // (whitespace, key order inside inner objects, numeric
+                // representation). That made unchanged arrays appear in the
+                // history_diff on every update.
                 outDict[prefix] = el.Clone();
                 break;
             case JsonValueKind.String:
