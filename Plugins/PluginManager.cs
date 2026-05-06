@@ -3,6 +3,7 @@ using Dmart.DataAdapters.Sql;
 using Dmart.Models.Core;
 using Dmart.Models.Enums;
 using Dmart.Models.Json;
+using Dmart.Services;
 
 namespace Dmart.Plugins;
 
@@ -32,6 +33,7 @@ public sealed class PluginManager(
     IEnumerable<IHookPlugin> hookPluginInstances,
     IEnumerable<IApiPlugin> apiPluginInstances,
     SpaceRepository spaces,
+    SpaceEventLogger eventLogger,
     ILogger<PluginManager> log)
 {
     // shortname -> instance lookup for both kinds
@@ -228,6 +230,12 @@ public sealed class PluginManager(
 
     public async Task AfterActionAsync(Event e, CancellationToken ct = default)
     {
+        // Audit-log every after-action event before plugin dispatch — this is
+        // the parity hook for Python's spaces_folder/<space>/.dm/events.jsonl.log.
+        // Logging first means the trail captures actions even if a plugin later
+        // throws (it's an after-the-fact record of what already happened in PG).
+        await eventLogger.LogAsync(e, ct);
+
         if (!_after.TryGetValue(e.ActionType, out var plugins)) return;
         var spaceActive = await GetSpaceActivePluginsAsync(e.SpaceName, ct);
         if (spaceActive is null) return;
