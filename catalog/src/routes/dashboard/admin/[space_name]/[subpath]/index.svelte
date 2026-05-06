@@ -1178,7 +1178,7 @@
         ar: meta?.description?.ar ?? null,
         ku: meta?.description?.ku ?? null,
       },
-      is_active: meta?.is_active ?? true,
+      is_active: meta?.is_active === false ? false : true,
     };
     showColumnSettingsModal = true;
   }
@@ -1196,6 +1196,18 @@
   async function handleUpdateColumns() {
     isSavingColumns = true;
     try {
+      // Drop empty locales so saving English-only edits doesn't wipe out
+      // pre-existing Arabic/Kurdish translations on the server.
+      const cleanLocaleMap = (m: Record<string, string | null>) => {
+        const out: Record<string, string> = {};
+        for (const [k, v] of Object.entries(m)) {
+          if (typeof v === "string" && v.trim()) out[k] = v;
+        }
+        return out;
+      };
+      const cleanedDisplayname = cleanLocaleMap(editingMeta.displayname);
+      const cleanedDescription = cleanLocaleMap(editingMeta.description);
+
       const response = await Dmart.request({
         space_name: spaceName,
         request_type: RequestType.update,
@@ -1206,8 +1218,12 @@
             subpath: getParentPath(subpath),
             attributes: {
               is_active: editingMeta.is_active,
-              displayname: editingMeta.displayname,
-              description: editingMeta.description,
+              ...(Object.keys(cleanedDisplayname).length
+                ? { displayname: cleanedDisplayname }
+                : {}),
+              ...(Object.keys(cleanedDescription).length
+                ? { description: cleanedDescription }
+                : {}),
               payload: {
                 ...folderMetadata?.payload,
                 body: {
@@ -1429,7 +1445,10 @@
               {$_("admin_content.title", {
                 values: {
                   name:
+                    (folderMetadata as any)?.displayname?.[$locale ?? ""] ||
                     (folderMetadata as any)?.displayname?.en ||
+                    (folderMetadata as any)?.displayname?.ar ||
+                    (folderMetadata as any)?.displayname?.ku ||
                     breadcrumbs[breadcrumbs.length - 1]?.name ||
                     $actualSubpath.split("/").pop(),
                 },
@@ -1811,8 +1830,8 @@
               <button
                 onclick={handleOpenColumnSettings}
                 class="p-2.5 bg-gray-50 text-gray-500 hover:text-indigo-600 hover:bg-indigo-50 rounded-xl transition-all border border-transparent hover:border-indigo-100"
-                title="Settings"
-                aria-label="Settings"
+                title={$_("admin_content.settings_modal.title")}
+                aria-label={$_("admin_content.settings_modal.title")}
               >
                 <svg
                   class="w-5 h-5"
@@ -3041,7 +3060,7 @@
               ></path>
             </svg>
           </div>
-          <h2 class="text-xl font-bold text-gray-900">Settings</h2>
+          <h2 class="text-xl font-bold text-gray-900">{$_("admin_content.settings_modal.title")}</h2>
         </div>
         <button
           onclick={() => (showColumnSettingsModal = false)}
@@ -3068,9 +3087,9 @@
         <!-- Meta Info -->
         <div class="mb-6">
           <h3
-            class="text-[11px] uppercase font-bold text-gray-500 tracking-wider mb-3 px-1"
+            class="text-sm font-semibold text-gray-700 mb-3 px-1"
           >
-            Meta Info
+            {$_("admin_content.settings_modal.meta_info")}
           </h3>
           <div
             class="p-4 bg-white rounded-2xl border border-gray-100 shadow-sm space-y-4"
@@ -3194,9 +3213,9 @@
 
         <!-- Column Settings -->
         <h3
-          class="text-[11px] uppercase font-bold text-gray-500 tracking-wider mb-3 px-1"
+          class="text-sm font-semibold text-gray-700 mb-3 px-1"
         >
-          Column Settings
+          {$_("admin_content.settings_modal.column_settings")}
         </h3>
         <div class="space-y-4">
           {#each editingIndexAttributes as attr, i}

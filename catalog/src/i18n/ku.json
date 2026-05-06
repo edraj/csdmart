@@ -1365,6 +1365,11 @@
       "create_schema": "دروستکردنی شێوازی نوێ",
       "create_workflow": "دروستکردنی ڕێکاری"
     },
+    "settings_modal": {
+      "title": "ڕێکخستنەکان",
+      "meta_info": "زانیاری مێتا",
+      "column_settings": "ڕێکخستنی ستوون"
+    },
     "bulk_actions": {
       "select_all": "هەموو بەرگە دیاری بکە",
       "select_item": "دیاری کردنی {name}",

@@ -191,6 +191,11 @@
       "create_schema": "Create Schema",
       "create_workflow": "Create Workflow"
     },
+    "settings_modal": {
+      "title": "Settings",
+      "meta_info": "Meta Info",
+      "column_settings": "Column Settings"
+    },
     "bulk_actions": {
       "select_all": "Select all items",
       "select_item": "Select {name}",
