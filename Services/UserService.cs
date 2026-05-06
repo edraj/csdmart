@@ -17,6 +17,7 @@ public sealed class UserService(
     JwtIssuer jwt,
     InvitationJwt invitationJwt,
     InvitationRepository invitations,
+    HistoryRepository history,
     IOptions<DmartSettings> settings)
 {
     // Management space name — comes from DmartSettings.ManagementSpace so the
@@ -794,6 +795,16 @@ public sealed class UserService(
         };
         await users.UpsertAsync(updated, ct);
 
+        // Python parity: store_entry_diff — record what changed so
+        // /managed/query?type=history surfaces the audit trail for self-service
+        // profile updates the same way it does for entry updates. The diff
+        // intentionally omits secrets and bookkeeping (password hash, attempt
+        // counter, updated_at noise); password changes still appear via the
+        // boolean force_password_change flip when relevant.
+        var historyDiff = ComputeUserHistoryDiff(user, updated);
+        await history.AppendAsync(MgmtSpace, "/users", shortname, shortname, null,
+            historyDiff.Count > 0 ? historyDiff : null, ct);
+
         // Python: if password changed and logout_on_pwd_change, delete all sessions.
         if (newPasswordHash is not null && settings.Value.LogoutOnPwdChange)
             await users.DeleteAllSessionsAsync(shortname, ct);
@@ -816,6 +827,60 @@ public sealed class UserService(
         }
 
         return Result<User>.Ok(updated);
+    }
+
+    // {field_path: {old, new}} — same shape as EntryService.ComputeHistoryDiff,
+    // restricted to user-facing fields. Password hash, AttemptCount, UpdatedAt
+    // are deliberately excluded to avoid leaking secrets and noisy entries.
+    private static Dictionary<string, object> ComputeUserHistoryDiff(User oldU, User newU)
+    {
+        var oldFlat = FlattenUser(oldU);
+        var newFlat = FlattenUser(newU);
+        var keys = new HashSet<string>(oldFlat.Keys, StringComparer.Ordinal);
+        keys.UnionWith(newFlat.Keys);
+
+        var diff = new Dictionary<string, object>(StringComparer.Ordinal);
+        foreach (var k in keys)
+        {
+            oldFlat.TryGetValue(k, out var o);
+            newFlat.TryGetValue(k, out var n);
+            if (HistoryDiffUtil.ValuesEqual(o, n)) continue;
+            diff[k] = new Dictionary<string, object?>(StringComparer.Ordinal)
+            {
+                ["old"] = o,
+                ["new"] = n,
+            };
+        }
+        return diff;
+    }
+
+    private static Dictionary<string, object?> FlattenUser(User u)
+    {
+        var d = new Dictionary<string, object?>(StringComparer.Ordinal)
+        {
+            ["email"] = u.Email,
+            ["msisdn"] = u.Msisdn,
+            ["language"] = u.Language.ToString().ToLowerInvariant(),
+            ["is_email_verified"] = u.IsEmailVerified,
+            ["is_msisdn_verified"] = u.IsMsisdnVerified,
+            ["force_password_change"] = u.ForcePasswordChange,
+            ["device_id"] = u.DeviceId,
+        };
+        if (u.Displayname is not null)
+        {
+            d["displayname.en"] = u.Displayname.En;
+            d["displayname.ar"] = u.Displayname.Ar;
+            d["displayname.ku"] = u.Displayname.Ku;
+        }
+        if (u.Description is not null)
+        {
+            d["description.en"] = u.Description.En;
+            d["description.ar"] = u.Description.Ar;
+            d["description.ku"] = u.Description.Ku;
+        }
+        if (u.Payload?.Body is JsonElement body)
+            HistoryDiffUtil.FlattenJson(body, "payload.body", d);
+        return d;
     }
 
     public async Task DeleteAsync(string shortname, CancellationToken ct = default)
