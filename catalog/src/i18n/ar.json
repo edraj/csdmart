@@ -191,6 +191,11 @@
       "create_schema": "إنشاء مخطط",
       "create_workflow": "إنشاء سير عمل"
     },
+    "settings_modal": {
+      "title": "الإعدادات",
+      "meta_info": "معلومات وصفية",
+      "column_settings": "إعدادات الأعمدة"
+    },
     "bulk_actions": {
       "select_all": "تحديد جميع العناصر",
       "select_item": "تحديد {name}",

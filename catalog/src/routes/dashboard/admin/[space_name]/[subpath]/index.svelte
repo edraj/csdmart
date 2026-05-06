@@ -1138,6 +1138,15 @@
   let showColumnSettingsModal = $state(false);
   let editingIndexAttributes = $state<any[]>([]);
   let isSavingColumns = $state(false);
+  let editingMeta = $state<{
+    displayname: { en: string | null; ar: string | null; ku: string | null };
+    description: { en: string | null; ar: string | null; ku: string | null };
+    is_active: boolean;
+  }>({
+    displayname: { en: null, ar: null, ku: null },
+    description: { en: null, ar: null, ku: null },
+    is_active: true,
+  });
 
   // CSV Import/Export
   let isCSVUploadModalOpen = $state(false);
@@ -1157,6 +1166,20 @@
         { key: "updated_at", name: "Last Modified" },
       ];
     }
+    const meta: any = folderMetadata ?? {};
+    editingMeta = {
+      displayname: {
+        en: meta?.displayname?.en ?? null,
+        ar: meta?.displayname?.ar ?? null,
+        ku: meta?.displayname?.ku ?? null,
+      },
+      description: {
+        en: meta?.description?.en ?? null,
+        ar: meta?.description?.ar ?? null,
+        ku: meta?.description?.ku ?? null,
+      },
+      is_active: meta?.is_active === false ? false : true,
+    };
     showColumnSettingsModal = true;
   }
 
@@ -1173,6 +1196,18 @@
   async function handleUpdateColumns() {
     isSavingColumns = true;
     try {
+      // Drop empty locales so saving English-only edits doesn't wipe out
+      // pre-existing Arabic/Kurdish translations on the server.
+      const cleanLocaleMap = (m: Record<string, string | null>) => {
+        const out: Record<string, string> = {};
+        for (const [k, v] of Object.entries(m)) {
+          if (typeof v === "string" && v.trim()) out[k] = v;
+        }
+        return out;
+      };
+      const cleanedDisplayname = cleanLocaleMap(editingMeta.displayname);
+      const cleanedDescription = cleanLocaleMap(editingMeta.description);
+
       const response = await Dmart.request({
         space_name: spaceName,
         request_type: RequestType.update,
@@ -1182,6 +1217,13 @@
             shortname: folderMetadata.shortname,
             subpath: getParentPath(subpath),
             attributes: {
+              is_active: editingMeta.is_active,
+              ...(Object.keys(cleanedDisplayname).length
+                ? { displayname: cleanedDisplayname }
+                : {}),
+              ...(Object.keys(cleanedDescription).length
+                ? { description: cleanedDescription }
+                : {}),
               payload: {
                 ...folderMetadata?.payload,
                 body: {
@@ -1403,6 +1445,10 @@
               {$_("admin_content.title", {
                 values: {
                   name:
+                    (folderMetadata as any)?.displayname?.[$locale ?? ""] ||
+                    (folderMetadata as any)?.displayname?.en ||
+                    (folderMetadata as any)?.displayname?.ar ||
+                    (folderMetadata as any)?.displayname?.ku ||
                     breadcrumbs[breadcrumbs.length - 1]?.name ||
                     $actualSubpath.split("/").pop(),
                 },
@@ -1784,8 +1830,8 @@
               <button
                 onclick={handleOpenColumnSettings}
                 class="p-2.5 bg-gray-50 text-gray-500 hover:text-indigo-600 hover:bg-indigo-50 rounded-xl transition-all border border-transparent hover:border-indigo-100"
-                title="Column Settings"
-                aria-label="Column Settings"
+                title={$_("admin_content.settings_modal.title")}
+                aria-label={$_("admin_content.settings_modal.title")}
               >
                 <svg
                   class="w-5 h-5"
@@ -3014,7 +3060,7 @@
               ></path>
             </svg>
           </div>
-          <h2 class="text-xl font-bold text-gray-900">Column Settings</h2>
+          <h2 class="text-xl font-bold text-gray-900">{$_("admin_content.settings_modal.title")}</h2>
         </div>
         <button
           onclick={() => (showColumnSettingsModal = false)}
@@ -3038,6 +3084,139 @@
       </div>
 
       <div class="p-6 max-h-[60vh] overflow-y-auto bg-gray-50/30 modal-content">
+        <!-- Meta Info -->
+        <div class="mb-6">
+          <h3
+            class="text-sm font-semibold text-gray-700 mb-3 px-1"
+          >
+            {$_("admin_content.settings_modal.meta_info")}
+          </h3>
+          <div
+            class="p-4 bg-white rounded-2xl border border-gray-100 shadow-sm space-y-4"
+          >
+            <div class="space-y-2">
+              <!-- svelte-ignore a11y_label_has_associated_control -->
+              <label
+                class="text-[10px] uppercase font-bold text-gray-400 tracking-wider px-1"
+                >{$_("fields.displayname")}</label
+              >
+              <div class="grid grid-cols-3 gap-2">
+                <div class="space-y-1">
+                  <label
+                    for="settings-displayname-en"
+                    class="text-[10px] font-medium text-gray-500 px-1"
+                    >{$_("languages.english")}</label
+                  >
+                  <input
+                    id="settings-displayname-en"
+                    type="text"
+                    bind:value={editingMeta.displayname.en}
+                    class="w-full px-4 py-2 bg-gray-50 border-none rounded-xl text-sm focus:ring-2 focus:ring-indigo-500"
+                  />
+                </div>
+                <div class="space-y-1">
+                  <label
+                    for="settings-displayname-ar"
+                    class="text-[10px] font-medium text-gray-500 px-1"
+                    >{$_("languages.arabic")}</label
+                  >
+                  <input
+                    id="settings-displayname-ar"
+                    type="text"
+                    bind:value={editingMeta.displayname.ar}
+                    dir="rtl"
+                    class="w-full px-4 py-2 bg-gray-50 border-none rounded-xl text-sm focus:ring-2 focus:ring-indigo-500"
+                  />
+                </div>
+                <div class="space-y-1">
+                  <label
+                    for="settings-displayname-ku"
+                    class="text-[10px] font-medium text-gray-500 px-1"
+                    >{$_("languages.kurdish")}</label
+                  >
+                  <input
+                    id="settings-displayname-ku"
+                    type="text"
+                    bind:value={editingMeta.displayname.ku}
+                    dir="rtl"
+                    class="w-full px-4 py-2 bg-gray-50 border-none rounded-xl text-sm focus:ring-2 focus:ring-indigo-500"
+                  />
+                </div>
+              </div>
+            </div>
+            <div class="space-y-2">
+              <!-- svelte-ignore a11y_label_has_associated_control -->
+              <label
+                class="text-[10px] uppercase font-bold text-gray-400 tracking-wider px-1"
+                >{$_("fields.description")}</label
+              >
+              <div class="grid grid-cols-3 gap-2">
+                <div class="space-y-1">
+                  <label
+                    for="settings-description-en"
+                    class="text-[10px] font-medium text-gray-500 px-1"
+                    >{$_("languages.english")}</label
+                  >
+                  <textarea
+                    id="settings-description-en"
+                    bind:value={editingMeta.description.en}
+                    rows="3"
+                    class="w-full px-4 py-2 bg-gray-50 border-none rounded-xl text-sm focus:ring-2 focus:ring-indigo-500 resize-none"
+                  ></textarea>
+                </div>
+                <div class="space-y-1">
+                  <label
+                    for="settings-description-ar"
+                    class="text-[10px] font-medium text-gray-500 px-1"
+                    >{$_("languages.arabic")}</label
+                  >
+                  <textarea
+                    id="settings-description-ar"
+                    bind:value={editingMeta.description.ar}
+                    rows="3"
+                    dir="rtl"
+                    class="w-full px-4 py-2 bg-gray-50 border-none rounded-xl text-sm focus:ring-2 focus:ring-indigo-500 resize-none"
+                  ></textarea>
+                </div>
+                <div class="space-y-1">
+                  <label
+                    for="settings-description-ku"
+                    class="text-[10px] font-medium text-gray-500 px-1"
+                    >{$_("languages.kurdish")}</label
+                  >
+                  <textarea
+                    id="settings-description-ku"
+                    bind:value={editingMeta.description.ku}
+                    rows="3"
+                    dir="rtl"
+                    class="w-full px-4 py-2 bg-gray-50 border-none rounded-xl text-sm focus:ring-2 focus:ring-indigo-500 resize-none"
+                  ></textarea>
+                </div>
+              </div>
+            </div>
+            <label
+              for="settings-is-active"
+              class="flex items-center gap-3 cursor-pointer select-none px-1"
+            >
+              <input
+                id="settings-is-active"
+                type="checkbox"
+                bind:checked={editingMeta.is_active}
+                class="w-4 h-4 rounded border-gray-300 text-indigo-600 focus:ring-indigo-500"
+              />
+              <span class="text-sm font-medium text-gray-700"
+                >{$_("fields.active")}</span
+              >
+            </label>
+          </div>
+        </div>
+
+        <!-- Column Settings -->
+        <h3
+          class="text-sm font-semibold text-gray-700 mb-3 px-1"
+        >
+          {$_("admin_content.settings_modal.column_settings")}
+        </h3>
         <div class="space-y-4">
           {#each editingIndexAttributes as attr, i}
             <div
