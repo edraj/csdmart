@@ -112,7 +112,7 @@
   }
 
   function handleSpaceClick(space: any) {
-    $goto("/catalogs/[space_name]", {
+    $goto("/dashboard/admin/[space_name]", {
       space_name: space.shortname,
     });
   }

@@ -329,7 +329,7 @@
                 body: {
                   ...(folderMetadata as any)?.attributes?.payload?.body,
                   index_attributes: editingIndexAttributes.filter(
-                    (a) => a.key.trim() && a.name.trim(),
+                    (a) => a?.key?.trim() && a?.name?.trim(),
                   ),
                 },
               },
