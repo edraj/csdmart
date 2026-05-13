@@ -395,12 +395,12 @@ public sealed class EntryRepository(Db db)
     //      subpath, resource_type, is_active, owner, owner_group); when
     //      subpath/space changes, the old patterns no longer match the
     //      caller's permission patterns, so without regen the moved entry
-    //      becomes invisible at its new location (see UpsertAsync:96 for
+    //      becomes invisible at its new location (see UpsertAsync for
     //      the same regen-on-write pattern).
     //
     //   2. Attachments anchored to the entry follow it. Attachment rows
     //      anchor to their parent via subpath = parent_subpath/parent_shortname
-    //      (AttachmentRepository.ListForParentAsync:21-34) — when the parent
+    //      (AttachmentRepository.ListForParentAsync) — when the parent
     //      moves, the anchor breaks unless we re-anchor the children.
     //
     //   3. For folders, descendant entries (and their attachments) cascade.
