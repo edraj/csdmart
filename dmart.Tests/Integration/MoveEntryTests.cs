@@ -1,4 +1,5 @@
 using Dmart.DataAdapters.Sql;
+using Dmart.Models.Api;
 using Dmart.Models.Core;
 using Dmart.Models.Enums;
 using Dmart.Services;
@@ -130,6 +131,16 @@ public sealed class MoveEntryTests : IClassFixture<DmartFactory>
 
             var atSrc = await attachments.ListForParentAsync(srcSpace, subpath, shortname);
             atSrc.ShouldBeEmpty();
+
+            // query_policies encode space in every pattern. A regression where
+            // cross-space moves regen against the source space would silently
+            // make the moved entry invisible to callers scoped to destSpace.
+            var policies = await GetQueryPoliciesAsync(destSpace, subpath, shortname);
+            policies.ShouldNotBeEmpty();
+            policies.Any(p => p.StartsWith($"{destSpace}:", StringComparison.Ordinal))
+                .ShouldBeTrue($"cross-space policies must anchor to destSpace: [{string.Join(", ", policies)}]");
+            policies.Any(p => p.StartsWith($"{srcSpace}:", StringComparison.Ordinal))
+                .ShouldBeFalse($"old-space pattern must be evicted after cross-space move: [{string.Join(", ", policies)}]");
         }
         finally
         {
@@ -398,17 +409,18 @@ public sealed class MoveEntryTests : IClassFixture<DmartFactory>
         try
         {
             // The current implementation uses a positional-prefix UPDATE that
-            // does NOT skip conflicting rows — Postgres surfaces 23505. We
-            // catch and assert the rollback. If a future implementation
-            // chooses a different conflict policy (e.g. ON CONFLICT DO
-            // NOTHING), update this test together with the SQL change.
-            await Should.ThrowAsync<PostgresException>(async () =>
-            {
-                await svc.MoveAsync(
-                    new Locator(ResourceType.Content, space, oldSubpath, shortname),
-                    new Locator(ResourceType.Content, space, newSubpath, shortname),
-                    owner);
-            });
+            // does NOT skip conflicting rows. The repository surfaces the
+            // 23505 from Postgres; the service layer maps it to
+            // SHORTNAME_ALREADY_EXIST so the HTTP layer can return a real
+            // 409-shaped error instead of a 500. The DB transaction still
+            // rolls back fully — partial moves never ship to prod.
+            var result = await svc.MoveAsync(
+                new Locator(ResourceType.Content, space, oldSubpath, shortname),
+                new Locator(ResourceType.Content, space, newSubpath, shortname),
+                owner);
+            result.IsOk.ShouldBeFalse("destination conflict must fail the move");
+            result.ErrorCode.ShouldBe(InternalErrorCode.SHORTNAME_ALREADY_EXIST,
+                $"expected SHORTNAME_ALREADY_EXIST, got code={result.ErrorCode}, message={result.ErrorMessage}");
 
             // Source entry still at the old location.
             (await entries.GetAsync(space, oldSubpath, shortname, ResourceType.Content))
@@ -445,7 +457,10 @@ public sealed class MoveEntryTests : IClassFixture<DmartFactory>
             sp.GetRequiredService<Db>());
     }
 
-    private static string Unique(string prefix) => $"{prefix}_{Guid.NewGuid():N}"[..14];
+    // Cap at 24 chars to keep the test-row shortnames readable while keeping
+    // enough GUID-hex tail (≥10 chars after the longest prefix used in this
+    // file) that parallel xunit collisions are vanishingly unlikely.
+    private static string Unique(string prefix) => $"{prefix}_{Guid.NewGuid():N}"[..24];
 
     // The move service does CanUpdateAsync(actor, src) + CanCreateAsync(actor, dst)
     // before mutating. Run the suite as admin-level so those gates never fail —
