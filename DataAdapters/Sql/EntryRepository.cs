@@ -414,7 +414,7 @@ public sealed class EntryRepository(Db db)
         => db.ExecuteWithRetryOnDeadlockAsync(c => MoveOnceAsync(source, to, c), ct);
 
     [SuppressMessage("Security", "CA2100",
-        Justification = "Audited: SQL strings are `SelectAllColumns` (a const) plus const WHERE clauses with positional placeholders. No caller input is concatenated.")]
+        Justification = "Audited: SQL strings are `SelectAllColumns` (a const) plus const WHERE clauses with positional placeholders. No caller input is concatenated. BulkUpdateDescendantsAsync builds a dynamic VALUES list but embeds only integer placeholder indices; all values flow through NpgsqlCommand.Parameters.")]
     private async Task<int> MoveOnceAsync(Entry source, Locator to, CancellationToken ct)
     {
         // oldPrefix is what attachments + descendants anchor against today —
@@ -430,26 +430,47 @@ public sealed class EntryRepository(Db db)
         await using var tx = await conn.BeginTransactionAsync(ct);
 
         // 1. Update the source entry itself with regenerated query_policies.
+        //    Single row, single statement — already optimal.
         var movedRoot = source with
         {
             SpaceName = to.SpaceName,
             Subpath = to.Subpath,
             Shortname = to.Shortname,
         };
-        var rootPolicies = Utils.QueryPolicies.Generate(movedRoot);
-        var totalMoved = await UpdateEntryLocationAsync(conn, tx, source.Uuid, movedRoot, rootPolicies, ct);
+        var rootPolicies = Utils.QueryPolicies.Generate(movedRoot).ToArray();
+        int totalMoved;
+        await using (var rootCmd = new NpgsqlCommand("""
+            UPDATE entries
+               SET space_name = $2, subpath = $3, shortname = $4,
+                   query_policies = $5,
+                   updated_at = NOW()
+             WHERE uuid = $1
+            """, conn, tx))
+        {
+            rootCmd.Parameters.Add(new() { Value = Guid.Parse(source.Uuid) });
+            rootCmd.Parameters.Add(new() { Value = to.SpaceName });
+            rootCmd.Parameters.Add(new() { Value = to.Subpath });
+            rootCmd.Parameters.Add(new() { Value = to.Shortname });
+            rootCmd.Parameters.Add(new()
+            {
+                Value = rootPolicies,
+                NpgsqlDbType = NpgsqlDbType.Array | NpgsqlDbType.Text,
+            });
+            totalMoved = await rootCmd.ExecuteNonQueryAsync(ct);
+        }
 
         // 2. For folder moves, translate every descendant entry — both direct
         //    children (subpath = oldPrefix) and deeper descendants
         //    (subpath LIKE oldPrefix/%). Each row's query_policies is
-        //    regenerated from its own owner/is_active/resource_type, so we
-        //    pull the rows, transform in C#, and write back per-row rather
-        //    than running a bulk subpath UPDATE followed by a separate
-        //    policy refresh. Per-row writes also make atomicity obvious —
-        //    everything happens under the same transaction.
+        //    regenerated in C# from its own owner/is_active/resource_type,
+        //    then the whole batch is shipped to Postgres in chunks via a
+        //    single `UPDATE ... FROM (VALUES …)` statement per chunk. That
+        //    collapses N per-row network round-trips to ⌈N/CHUNK_SIZE⌉ —
+        //    the big-O win this method exists for.
         if (source.ResourceType == ResourceType.Folder)
         {
             var descendants = await SelectDescendantsForMoveAsync(conn, tx, source.SpaceName, oldPrefix, ct);
+            var updates = new List<(Guid Uuid, string NewSubpath, string[] NewPolicies)>(descendants.Count);
             foreach (var descendant in descendants)
             {
                 // The substring trick: descendant.Subpath either equals
@@ -463,8 +484,21 @@ public sealed class EntryRepository(Db db)
                     SpaceName = to.SpaceName,
                     Subpath = newSubpath,
                 };
-                var policies = Utils.QueryPolicies.Generate(movedDescendant);
-                totalMoved += await UpdateEntryLocationAsync(conn, tx, descendant.Uuid, movedDescendant, policies, ct);
+                updates.Add((
+                    Guid.Parse(descendant.Uuid),
+                    newSubpath,
+                    Utils.QueryPolicies.Generate(movedDescendant).ToArray()));
+            }
+
+            // CHUNK_SIZE caps each statement's parameter count well under
+            // Postgres's 65535-parameter ceiling (4 params per row → 4000
+            // params per chunk). Also keeps per-statement SQL text bounded.
+            const int CHUNK_SIZE = 1000;
+            for (var i = 0; i < updates.Count; i += CHUNK_SIZE)
+            {
+                var len = Math.Min(CHUNK_SIZE, updates.Count - i);
+                totalMoved += await BulkUpdateDescendantsAsync(
+                    conn, tx, to.SpaceName, updates, i, len, ct);
             }
         }
 
@@ -494,27 +528,66 @@ public sealed class EntryRepository(Db db)
         return totalMoved;
     }
 
-    private static async Task<int> UpdateEntryLocationAsync(
+    // Bulk-update one chunk of descendants: a single UPDATE statement that
+    // joins entries against a literal VALUES table carrying (uuid, subpath,
+    // policies) for every row in the chunk. One network round-trip regardless
+    // of chunk size.
+    //
+    // The VALUES list is built dynamically because Postgres has no way to
+    // bind a variable-length tuple list to a single parameter. Only integer
+    // placeholder indices are concatenated into the SQL; every value flows
+    // through NpgsqlCommand.Parameters — no caller-supplied string ends up
+    // in the SQL text. Pattern matches ExistMaskAsync above.
+    //
+    // Caller is responsible for chunking so 1 + 3*len stays well below
+    // Postgres's 65535-parameter limit.
+    [SuppressMessage("Security", "CA2100",
+        Justification = "Audited: the dynamic VALUES list embeds only constant string fragments and integer placeholder indices. Every caller-supplied value flows through NpgsqlCommand.Parameters; no caller-supplied string is concatenated into the SQL.")]
+    private static async Task<int> BulkUpdateDescendantsAsync(
         NpgsqlConnection conn, NpgsqlTransaction tx,
-        string uuid, Entry newState, List<string> queryPolicies,
+        string newSpaceName,
+        List<(Guid Uuid, string NewSubpath, string[] NewPolicies)> updates,
+        int offset, int len,
         CancellationToken ct)
     {
-        await using var cmd = new NpgsqlCommand("""
-            UPDATE entries
-               SET space_name = $2, subpath = $3, shortname = $4,
-                   query_policies = $5,
+        if (len == 0) return 0;
+
+        // ~80 chars per row in the VALUES clause + a fixed header.
+        var sb = new System.Text.StringBuilder(120 + 80 * len);
+        sb.Append("""
+            UPDATE entries AS e
+               SET space_name = $1,
+                   subpath = v.subpath,
+                   query_policies = v.policies,
                    updated_at = NOW()
-             WHERE uuid = $1
-            """, conn, tx);
-        cmd.Parameters.Add(new() { Value = Guid.Parse(uuid) });
-        cmd.Parameters.Add(new() { Value = newState.SpaceName });
-        cmd.Parameters.Add(new() { Value = newState.Subpath });
-        cmd.Parameters.Add(new() { Value = newState.Shortname });
-        cmd.Parameters.Add(new()
+              FROM (VALUES
+            """);
+        for (var i = 0; i < len; i++)
         {
-            Value = queryPolicies.ToArray(),
-            NpgsqlDbType = NpgsqlDbType.Array | NpgsqlDbType.Text,
-        });
+            if (i > 0) sb.Append(',');
+            // Param indexing: $1 = newSpaceName; then 3 params per row
+            // starting at $2. Cast the first row explicitly so Postgres can
+            // infer the VALUES column types; later rows inherit.
+            var p = 2 + i * 3;
+            sb.Append('(').Append('$').Append(p).Append("::uuid,$")
+                          .Append(p + 1).Append("::text,$")
+                          .Append(p + 2).Append("::text[])");
+        }
+        sb.Append(") AS v(uuid, subpath, policies) WHERE e.uuid = v.uuid");
+
+        await using var cmd = new NpgsqlCommand(sb.ToString(), conn, tx);
+        cmd.Parameters.Add(new() { Value = newSpaceName });
+        for (var i = 0; i < len; i++)
+        {
+            var row = updates[offset + i];
+            cmd.Parameters.Add(new() { Value = row.Uuid });
+            cmd.Parameters.Add(new() { Value = row.NewSubpath });
+            cmd.Parameters.Add(new()
+            {
+                Value = row.NewPolicies,
+                NpgsqlDbType = NpgsqlDbType.Array | NpgsqlDbType.Text,
+            });
+        }
         return await cmd.ExecuteNonQueryAsync(ct);
     }
 
