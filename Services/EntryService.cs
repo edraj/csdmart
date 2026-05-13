@@ -600,11 +600,21 @@ public sealed class EntryService(
             return Result<Entry>.Fail(InternalErrorCode.INVALID_DATA, "plugin rejected move", ErrorTypes.Request);
         }
 
-        await entries.MoveAsync(from, to, ct);
-        // Python parity: no history row on move. Destination gets a fresh
-        // entry; the source's history stays with the old row (which is now
-        // gone). Keeping the /managed/query?type=history response shape
-        // uniformly `{field: {old, new}}` means no action-envelope rows.
+        await entries.MoveAsync(srcEntry, to, ct);
+        // We diverge from Python's no-history-on-move parity: the move now
+        // touches enough state — entry row, regenerated query_policies,
+        // attachment relocation, folder-subtree cascade — that operators
+        // benefit from an audit trail of who relocated what when. The diff
+        // keeps the standard `{field: {old, new}}` shape so the
+        // /managed/query?type=history response stays uniform.
+        var moveDiff = new Dictionary<string, object>
+        {
+            ["space_name"] = new Dictionary<string, string> { ["old"] = from.SpaceName, ["new"] = to.SpaceName },
+            ["subpath"]    = new Dictionary<string, string> { ["old"] = from.Subpath,   ["new"] = to.Subpath },
+            ["shortname"]  = new Dictionary<string, string> { ["old"] = from.Shortname, ["new"] = to.Shortname },
+        };
+        await history.AppendAsync(to.SpaceName, to.Subpath, to.Shortname, actor,
+                                   requestHeaders: null, diff: moveDiff, ct);
         await plugins.AfterActionAsync(moveEvent, ct);
         var moved = await entries.GetAsync(to.SpaceName, to.Subpath, to.Shortname, to.Type, ct);
         return moved is null

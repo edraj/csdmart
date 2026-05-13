@@ -381,22 +381,157 @@ public sealed class EntryRepository(Db db)
         return entryRows;
     }
 
-    public async Task MoveAsync(Locator from, Locator to, CancellationToken ct = default)
+    // Move an entry (and, for folders, its entire subtree of entries +
+    // attachments). All mutations are wrapped in a single transaction so a
+    // failure leaves the source intact rather than half-moved. Returns the
+    // number of entries that ended up at a new location (1 for non-folder
+    // moves; 1 + descendants for folder moves).
+    //
+    // Three things happen for every moved entry that the prior single-UPDATE
+    // implementation skipped:
+    //
+    //   1. query_policies is regenerated. The TEXT[] column on entries
+    //      encodes the row's ACL fingerprint as a function of (space,
+    //      subpath, resource_type, is_active, owner, owner_group); when
+    //      subpath/space changes, the old patterns no longer match the
+    //      caller's permission patterns, so without regen the moved entry
+    //      becomes invisible at its new location (see UpsertAsync:96 for
+    //      the same regen-on-write pattern).
+    //
+    //   2. Attachments anchored to the entry follow it. Attachment rows
+    //      anchor to their parent via subpath = parent_subpath/parent_shortname
+    //      (AttachmentRepository.ListForParentAsync:21-34) — when the parent
+    //      moves, the anchor breaks unless we re-anchor the children.
+    //
+    //   3. For folders, descendant entries (and their attachments) cascade.
+    //      Without this, moving a folder leaves an orphaned subtree at the
+    //      old path. Mirrors the cascade semantics of
+    //      DeleteFolderTreeWithDependentsOnceAsync:312-382.
+    //
+    // The caller (EntryService.MoveAsync) hands us the loaded source Entry
+    // so we don't need a re-fetch to compute the regenerated policies.
+    public Task<int> MoveAsync(Entry source, Locator to, CancellationToken ct = default)
+        => db.ExecuteWithRetryOnDeadlockAsync(c => MoveOnceAsync(source, to, c), ct);
+
+    [SuppressMessage("Security", "CA2100",
+        Justification = "Audited: SQL strings are `SelectAllColumns` (a const) plus const WHERE clauses with positional placeholders. No caller input is concatenated.")]
+    private async Task<int> MoveOnceAsync(Entry source, Locator to, CancellationToken ct)
     {
+        // oldPrefix is what attachments + descendants anchor against today —
+        // it's `source.Subpath/source.Shortname` (handling the root case where
+        // source.Subpath == "/"). newPrefix is the same construction at the
+        // destination. For a non-folder move there will be no descendant
+        // entries (only attachments anchor at `oldPrefix`), so the same
+        // expression works for both cases.
+        var oldPrefix = source.Subpath == "/" ? "/" + source.Shortname : source.Subpath + "/" + source.Shortname;
+        var newPrefix = to.Subpath == "/" ? "/" + to.Shortname : to.Subpath + "/" + to.Shortname;
+
         await using var conn = await db.OpenAsync(ct);
+        await using var tx = await conn.BeginTransactionAsync(ct);
+
+        // 1. Update the source entry itself with regenerated query_policies.
+        var movedRoot = source with
+        {
+            SpaceName = to.SpaceName,
+            Subpath = to.Subpath,
+            Shortname = to.Shortname,
+        };
+        var rootPolicies = Utils.QueryPolicies.Generate(movedRoot);
+        var totalMoved = await UpdateEntryLocationAsync(conn, tx, source.Uuid, movedRoot, rootPolicies, ct);
+
+        // 2. For folder moves, translate every descendant entry — both direct
+        //    children (subpath = oldPrefix) and deeper descendants
+        //    (subpath LIKE oldPrefix/%). Each row's query_policies is
+        //    regenerated from its own owner/is_active/resource_type, so we
+        //    pull the rows, transform in C#, and write back per-row rather
+        //    than running a bulk subpath UPDATE followed by a separate
+        //    policy refresh. Per-row writes also make atomicity obvious —
+        //    everything happens under the same transaction.
+        if (source.ResourceType == ResourceType.Folder)
+        {
+            var descendants = await SelectDescendantsForMoveAsync(conn, tx, source.SpaceName, oldPrefix, ct);
+            foreach (var descendant in descendants)
+            {
+                // The substring trick: descendant.Subpath either equals
+                // oldPrefix (direct child) or starts with oldPrefix + "/"
+                // (deeper). Stripping the oldPrefix prefix leaves "" or
+                // "/rest", which concatenated with newPrefix produces the
+                // correct translated subpath in both cases.
+                var newSubpath = newPrefix + descendant.Subpath[oldPrefix.Length..];
+                var movedDescendant = descendant with
+                {
+                    SpaceName = to.SpaceName,
+                    Subpath = newSubpath,
+                };
+                var policies = Utils.QueryPolicies.Generate(movedDescendant);
+                totalMoved += await UpdateEntryLocationAsync(conn, tx, descendant.Uuid, movedDescendant, policies, ct);
+            }
+        }
+
+        // 3. Translate attachments rooted at oldPrefix. The (subpath = $2 OR
+        //    LIKE $2/%) predicate is symmetric with DeleteUnderSubpathAsync —
+        //    catches the parent's direct attachments (subpath = oldPrefix)
+        //    plus, on a folder move, attachments owned by descendants
+        //    (subpath LIKE oldPrefix/%). Attachments have no query_policies
+        //    column (SqlSchema.cs:187-212), so nothing else to refresh here.
+        await using (var cmd = new NpgsqlCommand("""
+            UPDATE attachments
+               SET space_name = $3,
+                   subpath = $4 || substring(subpath FROM length($2) + 1),
+                   updated_at = NOW()
+             WHERE space_name = $1
+               AND (subpath = $2 OR subpath LIKE $2 || '/%')
+            """, conn, tx))
+        {
+            cmd.Parameters.Add(new() { Value = source.SpaceName });
+            cmd.Parameters.Add(new() { Value = oldPrefix });
+            cmd.Parameters.Add(new() { Value = to.SpaceName });
+            cmd.Parameters.Add(new() { Value = newPrefix });
+            await cmd.ExecuteNonQueryAsync(ct);
+        }
+
+        await tx.CommitAsync(ct);
+        return totalMoved;
+    }
+
+    private static async Task<int> UpdateEntryLocationAsync(
+        NpgsqlConnection conn, NpgsqlTransaction tx,
+        string uuid, Entry newState, List<string> queryPolicies,
+        CancellationToken ct)
+    {
         await using var cmd = new NpgsqlCommand("""
             UPDATE entries
-               SET space_name = $5, subpath = $6, shortname = $7, updated_at = NOW()
-             WHERE space_name = $1 AND subpath = $2 AND shortname = $3 AND resource_type = $4
-            """, conn);
-        cmd.Parameters.Add(new() { Value = from.SpaceName });
-        cmd.Parameters.Add(new() { Value = from.Subpath });
-        cmd.Parameters.Add(new() { Value = from.Shortname });
-        cmd.Parameters.Add(new() { Value = JsonbHelpers.EnumMember(from.Type) });
-        cmd.Parameters.Add(new() { Value = to.SpaceName });
-        cmd.Parameters.Add(new() { Value = to.Subpath });
-        cmd.Parameters.Add(new() { Value = to.Shortname });
-        await cmd.ExecuteNonQueryAsync(ct);
+               SET space_name = $2, subpath = $3, shortname = $4,
+                   query_policies = $5,
+                   updated_at = NOW()
+             WHERE uuid = $1
+            """, conn, tx);
+        cmd.Parameters.Add(new() { Value = Guid.Parse(uuid) });
+        cmd.Parameters.Add(new() { Value = newState.SpaceName });
+        cmd.Parameters.Add(new() { Value = newState.Subpath });
+        cmd.Parameters.Add(new() { Value = newState.Shortname });
+        cmd.Parameters.Add(new()
+        {
+            Value = queryPolicies.ToArray(),
+            NpgsqlDbType = NpgsqlDbType.Array | NpgsqlDbType.Text,
+        });
+        return await cmd.ExecuteNonQueryAsync(ct);
+    }
+
+    private static async Task<List<Entry>> SelectDescendantsForMoveAsync(
+        NpgsqlConnection conn, NpgsqlTransaction tx,
+        string spaceName, string folderPath,
+        CancellationToken ct)
+    {
+        await using var cmd = new NpgsqlCommand(
+            $"{SelectAllColumns} WHERE space_name = $1 AND (subpath = $2 OR subpath LIKE $2 || '/%')",
+            conn, tx);
+        cmd.Parameters.Add(new() { Value = spaceName });
+        cmd.Parameters.Add(new() { Value = folderPath });
+        await using var r = await cmd.ExecuteReaderAsync(ct);
+        var results = new List<Entry>();
+        while (await r.ReadAsync(ct)) results.Add(Hydrate(r));
+        return results;
     }
 
     public Task<List<Entry>> QueryAsync(Query q, CancellationToken ct = default)
