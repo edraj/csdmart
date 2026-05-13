@@ -395,26 +395,28 @@ public sealed class EntryRepository(Db db)
     //      subpath, resource_type, is_active, owner, owner_group); when
     //      subpath/space changes, the old patterns no longer match the
     //      caller's permission patterns, so without regen the moved entry
-    //      becomes invisible at its new location (see UpsertAsync:96 for
+    //      becomes invisible at its new location (see UpsertAsync for
     //      the same regen-on-write pattern).
     //
     //   2. Attachments anchored to the entry follow it. Attachment rows
     //      anchor to their parent via subpath = parent_subpath/parent_shortname
-    //      (AttachmentRepository.ListForParentAsync:21-34) — when the parent
+    //      (AttachmentRepository.ListForParentAsync) — when the parent
     //      moves, the anchor breaks unless we re-anchor the children.
     //
     //   3. For folders, descendant entries (and their attachments) cascade.
     //      Without this, moving a folder leaves an orphaned subtree at the
     //      old path. Mirrors the cascade semantics of
-    //      DeleteFolderTreeWithDependentsOnceAsync:312-382.
+    //      DeleteFolderTreeWithDependentsOnceAsync.
+    //
+    // Folder descendants are processed in uuid-keyset-paginated pages so
+    // memory stays bounded regardless of subtree size — at most CHUNK_SIZE
+    // entries are hydrated at any moment, rather than the whole subtree.
     //
     // The caller (EntryService.MoveAsync) hands us the loaded source Entry
     // so we don't need a re-fetch to compute the regenerated policies.
     public Task<int> MoveAsync(Entry source, Locator to, CancellationToken ct = default)
         => db.ExecuteWithRetryOnDeadlockAsync(c => MoveOnceAsync(source, to, c), ct);
 
-    [SuppressMessage("Security", "CA2100",
-        Justification = "Audited: SQL strings are `SelectAllColumns` (a const) plus const WHERE clauses with positional placeholders. No caller input is concatenated. BulkUpdateDescendantsAsync builds a dynamic VALUES list but embeds only integer placeholder indices; all values flow through NpgsqlCommand.Parameters.")]
     private async Task<int> MoveOnceAsync(Entry source, Locator to, CancellationToken ct)
     {
         // oldPrefix is what attachments + descendants anchor against today —
@@ -463,42 +465,53 @@ public sealed class EntryRepository(Db db)
         //    children (subpath = oldPrefix) and deeper descendants
         //    (subpath LIKE oldPrefix/%). Each row's query_policies is
         //    regenerated in C# from its own owner/is_active/resource_type,
-        //    then the whole batch is shipped to Postgres in chunks via a
-        //    single `UPDATE ... FROM (VALUES …)` statement per chunk. That
-        //    collapses N per-row network round-trips to ⌈N/CHUNK_SIZE⌉ —
-        //    the big-O win this method exists for.
+        //    then each page is shipped to Postgres via a single
+        //    `UPDATE ... FROM (VALUES …)` statement. That collapses N
+        //    per-row network round-trips to ⌈N/CHUNK_SIZE⌉ — the big-O win.
+        //
+        //    Reads are uuid-keyset-paginated rather than buffered. We hydrate
+        //    at most CHUNK_SIZE entries at a time, so a folder with N
+        //    descendants takes O(N) work but O(CHUNK_SIZE) memory regardless
+        //    of N. The cursor (last uuid in the previous page) advances
+        //    monotonically; combined with the predicate, already-translated
+        //    rows fall out of subsequent SELECTs naturally.
+        //
+        //    CHUNK_SIZE caps each bulk-update's parameter count well under
+        //    Postgres's 65535-parameter ceiling (4 params per row → 4000
+        //    params per chunk) and bounds per-statement SQL text.
         if (source.ResourceType == ResourceType.Folder)
         {
-            var descendants = await SelectDescendantsForMoveAsync(conn, tx, source.SpaceName, oldPrefix, ct);
-            var updates = new List<(Guid Uuid, string NewSubpath, string[] NewPolicies)>(descendants.Count);
-            foreach (var descendant in descendants)
-            {
-                // The substring trick: descendant.Subpath either equals
-                // oldPrefix (direct child) or starts with oldPrefix + "/"
-                // (deeper). Stripping the oldPrefix prefix leaves "" or
-                // "/rest", which concatenated with newPrefix produces the
-                // correct translated subpath in both cases.
-                var newSubpath = newPrefix + descendant.Subpath[oldPrefix.Length..];
-                var movedDescendant = descendant with
-                {
-                    SpaceName = to.SpaceName,
-                    Subpath = newSubpath,
-                };
-                updates.Add((
-                    Guid.Parse(descendant.Uuid),
-                    newSubpath,
-                    Utils.QueryPolicies.Generate(movedDescendant).ToArray()));
-            }
-
-            // CHUNK_SIZE caps each statement's parameter count well under
-            // Postgres's 65535-parameter ceiling (4 params per row → 4000
-            // params per chunk). Also keeps per-statement SQL text bounded.
             const int CHUNK_SIZE = 1000;
-            for (var i = 0; i < updates.Count; i += CHUNK_SIZE)
+            var cursor = Guid.Empty;
+            while (true)
             {
-                var len = Math.Min(CHUNK_SIZE, updates.Count - i);
+                var page = await ReadDescendantPageForMoveAsync(
+                    conn, tx, source.SpaceName, oldPrefix, cursor, CHUNK_SIZE, ct);
+                if (page.Count == 0) break;
+
+                var updates = new List<(Guid Uuid, string NewSubpath, string[] NewPolicies)>(page.Count);
+                foreach (var descendant in page)
+                {
+                    // The substring trick: descendant.Subpath either equals
+                    // oldPrefix (direct child) or starts with oldPrefix + "/"
+                    // (deeper). Stripping the oldPrefix prefix leaves "" or
+                    // "/rest", which concatenated with newPrefix produces the
+                    // correct translated subpath in both cases.
+                    var newSubpath = newPrefix + descendant.Subpath[oldPrefix.Length..];
+                    var movedDescendant = descendant with
+                    {
+                        SpaceName = to.SpaceName,
+                        Subpath = newSubpath,
+                    };
+                    updates.Add((
+                        Guid.Parse(descendant.Uuid),
+                        newSubpath,
+                        Utils.QueryPolicies.Generate(movedDescendant).ToArray()));
+                }
+
                 totalMoved += await BulkUpdateDescendantsAsync(
-                    conn, tx, to.SpaceName, updates, i, len, ct);
+                    conn, tx, to.SpaceName, updates, 0, updates.Count, ct);
+                cursor = Guid.Parse(page[^1].Uuid);
             }
         }
 
@@ -507,7 +520,7 @@ public sealed class EntryRepository(Db db)
         //    catches the parent's direct attachments (subpath = oldPrefix)
         //    plus, on a folder move, attachments owned by descendants
         //    (subpath LIKE oldPrefix/%). Attachments have no query_policies
-        //    column (SqlSchema.cs:187-212), so nothing else to refresh here.
+        //    column, so nothing else to refresh here.
         await using (var cmd = new NpgsqlCommand("""
             UPDATE attachments
                SET space_name = $3,
@@ -591,20 +604,29 @@ public sealed class EntryRepository(Db db)
         return await cmd.ExecuteNonQueryAsync(ct);
     }
 
-    private static async Task<List<Entry>> SelectDescendantsForMoveAsync(
+    // Page-fetch descendants for a folder move, keyset-paginated by uuid.
+    // Caller passes the last uuid from the previous page (Guid.Empty for the
+    // first page); we return the next pageSize rows in ascending uuid order
+    // whose subpath still matches the source folder (either = folderPath or
+    // LIKE folderPath/%). The keyset is monotone, so already-translated rows
+    // — whose subpath no longer matches the predicate after their UPDATE —
+    // are skipped naturally on the next pass.
+    private static async Task<List<Entry>> ReadDescendantPageForMoveAsync(
         NpgsqlConnection conn, NpgsqlTransaction tx,
-        string spaceName, string folderPath,
+        string spaceName, string folderPath, Guid cursor, int pageSize,
         CancellationToken ct)
     {
         await using var cmd = new NpgsqlCommand(
-            $"{SelectAllColumns} WHERE space_name = $1 AND (subpath = $2 OR subpath LIKE $2 || '/%')",
+            $"{SelectAllColumns} WHERE space_name = $1 AND (subpath = $2 OR subpath LIKE $2 || '/%') AND uuid > $3 ORDER BY uuid LIMIT $4",
             conn, tx);
         cmd.Parameters.Add(new() { Value = spaceName });
         cmd.Parameters.Add(new() { Value = folderPath });
+        cmd.Parameters.Add(new() { Value = cursor });
+        cmd.Parameters.Add(new() { Value = pageSize });
         await using var r = await cmd.ExecuteReaderAsync(ct);
-        var results = new List<Entry>();
-        while (await r.ReadAsync(ct)) results.Add(Hydrate(r));
-        return results;
+        var page = new List<Entry>(pageSize);
+        while (await r.ReadAsync(ct)) page.Add(Hydrate(r));
+        return page;
     }
 
     public Task<List<Entry>> QueryAsync(Query q, CancellationToken ct = default)

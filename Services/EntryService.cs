@@ -3,8 +3,8 @@ using Dmart.DataAdapters.Sql;
 using Dmart.Models.Api;
 using Dmart.Models.Core;
 using Dmart.Models.Enums;
-using Dmart.Models.Json;
 using Dmart.Plugins;
+using Npgsql;
 
 namespace Dmart.Services;
 
@@ -600,7 +600,27 @@ public sealed class EntryService(
             return Result<Entry>.Fail(InternalErrorCode.INVALID_DATA, "plugin rejected move", ErrorTypes.Request);
         }
 
-        await entries.MoveAsync(srcEntry, to, ct);
+        int totalMoved;
+        try
+        {
+            totalMoved = await entries.MoveAsync(srcEntry, to, ct);
+        }
+        catch (PostgresException ex) when (ex.SqlState == "23505")
+        {
+            // UNIQUE-violation at the destination: an entry or attachment with
+            // the same (shortname, space_name, subpath) already exists there.
+            // The repository's transaction rolled back, so the source is intact.
+            return Result<Entry>.Fail(InternalErrorCode.SHORTNAME_ALREADY_EXIST,
+                "destination already occupied", ErrorTypes.Db);
+        }
+        if (totalMoved == 0)
+        {
+            // Concurrent delete between load and write: the source row no
+            // longer matches by uuid. Nothing was relocated; surface NOT_FOUND
+            // explicitly rather than falling through to the post-move re-fetch.
+            return Result<Entry>.Fail(InternalErrorCode.OBJECT_NOT_FOUND,
+                "source entry no longer exists", ErrorTypes.Db);
+        }
         // We diverge from Python's no-history-on-move parity: the move now
         // touches enough state — entry row, regenerated query_policies,
         // attachment relocation, folder-subtree cascade — that operators
