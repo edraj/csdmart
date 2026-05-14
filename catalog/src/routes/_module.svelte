@@ -10,6 +10,8 @@
   import { isPublicRoute } from "@/lib/constants";
   import { withBasePrefix } from "@/lib/basePath";
 
+  let { children } = $props();
+
   function redirectTo(path: string) {
     const target = withBasePrefix(path);
     if (window.location.pathname !== target) {
@@ -132,7 +134,7 @@
   <DashboardHeader />
   <main class="app-main">
     {#if authReady}
-      <slot />
+      {@render children?.()}
     {:else}
       <div class="auth-gate" aria-busy="true" aria-live="polite">
         <div class="auth-gate-spinner" role="status" aria-label="Loading"></div>
