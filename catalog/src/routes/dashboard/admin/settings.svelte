@@ -1,7 +1,6 @@
 <script lang="ts">
   import { onMount } from "svelte";
-  import { _, locale } from "@/i18n";
-  import { derived as derivedStore } from "svelte/store";
+  import { _ } from "@/i18n";
   import { DmartScope } from "@edraj/tsdmart";
   import {
     checkApplicationsFolders,
@@ -12,11 +11,6 @@
   import { goto } from "@roxi/routify";
 
   $goto;
-
-  const isRTL = derivedStore(
-    locale,
-    ($locale: any) => $locale === "ar" || $locale === "ku",
-  );
 
   let missingFolders = $state<string[]>([]);
   let missingWorkflow = $state(false);
@@ -105,7 +99,7 @@
   onMount(runCheck);
 </script>
 
-<div class="min-h-screen bg-gray-50" class:rtl={$isRTL}>
+<div class="min-h-screen bg-gray-50">
   <div class="bg-gray-50">
     <div class="container mx-auto px-4 py-8 max-w-375">
       <div class="flex items-center justify-between gap-4">
@@ -270,9 +264,3 @@
     </div>
   </div>
 </div>
-
-<style>
-  .rtl {
-    direction: rtl;
-  }
-</style>

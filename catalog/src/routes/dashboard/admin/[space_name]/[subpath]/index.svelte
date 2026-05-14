@@ -29,6 +29,8 @@
   import MetaForm from "@/components/forms/MetaForm.svelte";
   import FolderForm from "@/components/forms/FolderForm.svelte";
   import { formatNumber, getParentPath } from "@/lib/helpers";
+  import { parseBreadcrumbPath } from "@/lib/breadcrumb";
+  import { stripServerManagedFields } from "@/lib/duplicate";
   import SchemaForm from "@/components/forms/SchemaForm.svelte";
   import CreateTemplateModal from "@/components/CreateTemplateModal.svelte";
   import WorkflowForm from "@/components/forms/WorkflowForm.svelte";
@@ -132,7 +134,7 @@
     if (!item || duplicatingShortname) return;
     duplicatingShortname = item.shortname;
     try {
-      const { uuid: _uuid, ...cleanAttributes } = item.attributes ?? {};
+      const cleanAttributes = stripServerManagedFields(item.attributes);
       const response = await Dmart.request({
         space_name: spaceName,
         request_type: RequestType.create,
@@ -627,21 +629,18 @@
   // }
 
   function navigateToBreadcrumb(path: any) {
-    if (!path) return;
-
-    const segments = String(path).split("/").filter(Boolean);
-    // Expected shapes:
-    //   ["dashboard", "admin"]                       → admin root
-    //   ["dashboard", "admin", <space>]              → space root
-    //   ["dashboard", "admin", <space>, <subpath>]   → subpath (subpath uses "-" separator)
-    if (segments.length <= 2) {
+    const target = parseBreadcrumbPath(path);
+    if (!target) return;
+    if (target.kind === "admin-root") {
       $goto("/dashboard/admin");
-    } else if (segments.length === 3) {
-      $goto("/dashboard/admin/[space_name]", { space_name: segments[2] });
+    } else if (target.kind === "space-root") {
+      $goto("/dashboard/admin/[space_name]", {
+        space_name: target.spaceName,
+      });
     } else {
       $goto("/dashboard/admin/[space_name]/[subpath]", {
-        space_name: segments[2],
-        subpath: segments.slice(3).join("/"),
+        space_name: target.spaceName,
+        subpath: target.subpath,
       });
     }
   }
