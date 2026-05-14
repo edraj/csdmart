@@ -19,14 +19,24 @@ namespace Dmart.SqlAdapter.Permissions;
 
 public static class PermissionFilter
 {
-    // Appends the ACL clause to an existing WHERE-builder. New parameters are
-    // appended to `parameters` using named placeholders (@perm_actor, @perm_qp0…)
-    // so the fragment can coexist with QueryAsync's named params. Mixing named
-    // and positional in the same NpgsqlCommand is forbidden by Npgsql — and
-    // QueryAsync already uses @space / @subpath / @search… everywhere else.
-    //
-    // `tableName` matches the Python skip list — attachments and histories
-    // bypass the filter entirely, mirroring the server.
+    /// <summary>
+    /// Appends the ACL visibility clause for a paged QUERY (list) operation.
+    /// The emitted EXISTS-over-acl probes the ACL for <c>'query'</c>
+    /// specifically, so this filter is ONLY valid for query/list code paths
+    /// (<c>QueryAsync</c>, <c>GetChildrenAsync</c>). View / create / update /
+    /// delete MUST go through <see cref="PermissionEngine.CanAsync"/> /
+    /// <see cref="PermissionEngine.RequireAsync"/> — calling Append from those
+    /// paths would silently use the wrong action.
+    /// </summary>
+    /// <remarks>
+    /// New parameters are appended to <paramref name="parameters"/> using
+    /// named placeholders (<c>@perm_actor</c>, <c>@perm_qp0…</c>) so the
+    /// fragment can coexist with QueryAsync's named params. Mixing named and
+    /// positional in the same NpgsqlCommand is forbidden by Npgsql.
+    /// <paramref name="tableName"/> matches the Python skip list —
+    /// <c>attachments</c> and <c>histories</c> bypass the filter entirely,
+    /// mirroring the server.
+    /// </remarks>
     public static void Append(
         StringBuilder sql,
         List<NpgsqlParameter> parameters,

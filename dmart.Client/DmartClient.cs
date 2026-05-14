@@ -207,13 +207,12 @@ public sealed partial class DmartClient : IDisposable
         var envelope = await SendEnvelopeAsync(req, ct).ConfigureAwait(false);
 
         // Python parity: login returns records[0].attributes.access_token.
-        var token = envelope.Records?.FirstOrDefault()?.Attributes?.TryGetValue("access_token", out var t) == true
-            ? (t is JsonElement el ? el.GetString() : t?.ToString())
-            : null;
-        if (string.IsNullOrEmpty(token))
+        // Token capture is centralized in TryExtractAndStoreToken; a missing
+        // token on a successful response is a server contract bug and we
+        // surface it loudly.
+        if (!TryExtractAndStoreToken(envelope))
             throw new DmartException(500, new Error(
                 ErrorTypes.Request, 500, "login response missing access_token", null));
-        _authToken = token;
         return envelope;
     }
 
@@ -232,13 +231,9 @@ public sealed partial class DmartClient : IDisposable
         body["password"] = password;
         using var req = BuildRequest(HttpMethod.Post, "/user/login", Json(body));
         var envelope = await SendEnvelopeAsync(req, ct).ConfigureAwait(false);
-        var token = envelope.Records?.FirstOrDefault()?.Attributes?.TryGetValue("access_token", out var t) == true
-            ? (t is JsonElement el ? el.GetString() : t?.ToString())
-            : null;
-        if (string.IsNullOrEmpty(token))
+        if (!TryExtractAndStoreToken(envelope))
             throw new DmartException(500, new Error(
                 ErrorTypes.Request, 500, "login response missing access_token", null));
-        _authToken = token;
         return envelope;
     }
 

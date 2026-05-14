@@ -38,6 +38,22 @@ public static class SearchExpressionParser
 
     // ── Entry point ───────────────────────────────────────────────────────
 
+    /// <summary>
+    /// Parses a RediSearch-style expression and returns SQL clause fragments
+    /// plus the bound parameters they reference.
+    /// </summary>
+    /// <param name="expression">The search expression — see class docs for grammar.</param>
+    /// <param name="startingParamIndex">
+    /// Numeric suffix the parser appends to its placeholder names. Emitted
+    /// parameters are named <c>@s_&lt;n&gt;</c> where <c>n</c> starts at this
+    /// value and increments per bind. The CALLER is responsible for ensuring
+    /// no name collision with their own parameters; today's caller
+    /// (<c>DmartSqlAdapter.QueryAsync</c>) uses
+    /// <c>@space</c> / <c>@subpath</c> / <c>@subpath_prefix</c> /
+    /// <c>@rt&lt;i&gt;</c> / <c>@sn&lt;i&gt;</c> / <c>@schema&lt;i&gt;</c> /
+    /// <c>@tags</c> / <c>@from</c> / <c>@to</c> / <c>@limit</c> /
+    /// <c>@offset</c> — all collision-free with the <c>@s_*</c> namespace.
+    /// </param>
     public static Parsed Parse(string expression, int startingParamIndex)
     {
         var clauses = new List<string>();

@@ -269,6 +269,11 @@ public sealed class PermissionEngine
         return (user, perms);
     }
 
+    // Returns null for either "no row" OR "row exists but is_active=false".
+    // Centralizing the active check here means callers don't have to remember
+    // to re-check IsActive on every code path — an inactive user is
+    // indistinguishable from a missing user as far as authorization is
+    // concerned.
     private async Task<LoadedUser?> LoadUserForAuthzAsync(string shortname, CancellationToken ct)
     {
         await using var conn = await _db.OpenAsync(ct).ConfigureAwait(false);
@@ -278,10 +283,12 @@ public sealed class PermissionEngine
         cmd.Parameters.Add(new() { Value = shortname });
         await using var r = await cmd.ExecuteReaderAsync(ct).ConfigureAwait(false);
         if (!await r.ReadAsync(ct).ConfigureAwait(false)) return null;
+        var isActive = r.GetBoolean(1);
+        if (!isActive) return null;
         return new LoadedUser
         {
             Shortname = r.GetString(0),
-            IsActive = r.GetBoolean(1),
+            IsActive = isActive,
             Roles = r.ReadJsonb<List<string>>(2, _json) ?? new(),
             Groups = r.ReadJsonb<List<string>>(3, _json) ?? new(),
             OwnerShortname = r.IsDBNull(4) ? null : r.GetString(4),

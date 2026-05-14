@@ -326,8 +326,10 @@ public sealed partial class DmartClient
         var resp = await SendEnvelopeAsync(req, ct).ConfigureAwait(false);
         // Capture the bearer token from the response, same way LoginAsync
         // does it, so subsequent calls on this DmartClient instance are
-        // authenticated.
-        ExtractAndStoreToken(resp);
+        // authenticated. Mobile-login intentionally tolerates a missing
+        // token (the server may issue a different envelope shape on first
+        // sign-up) so we ignore the bool.
+        TryExtractAndStoreToken(resp);
         return resp;
     }
 
@@ -335,21 +337,27 @@ public sealed partial class DmartClient
     // Shared helpers (token capture + enum wire form)
     // -------------------------------------------------------------------
 
-    // Mirrors the inline token extraction in LoginAsync — keeps mobile-login
-    // (and any future auth-adjacent wrapper) in step with that contract.
-    private void ExtractAndStoreToken(Response resp)
+    // Single source of truth for "did the response carry a usable bearer
+    // token, and if so, stash it on the client". Returns true when a token
+    // was extracted and stored; callers that REQUIRE a token (LoginAsync,
+    // LoginByAsync) translate a false result into a thrown DmartException;
+    // callers that tolerate a missing token (MobileLoginAsync) ignore the
+    // bool.
+    internal bool TryExtractAndStoreToken(Response resp)
     {
-        if (resp.Status != Status.Success || resp.Records is null || resp.Records.Count == 0) return;
+        if (resp.Status != Status.Success || resp.Records is null || resp.Records.Count == 0) return false;
         var attrs = resp.Records[0].Attributes;
-        if (attrs is null) return;
-        if (!attrs.TryGetValue("access_token", out var raw)) return;
+        if (attrs is null) return false;
+        if (!attrs.TryGetValue("access_token", out var raw)) return false;
         var token = raw switch
         {
             string s => s,
             JsonElement el when el.ValueKind == JsonValueKind.String => el.GetString(),
             _ => null,
         };
-        if (!string.IsNullOrEmpty(token)) _authToken = token;
+        if (string.IsNullOrEmpty(token)) return false;
+        _authToken = token;
+        return true;
     }
 
     private static string QueryTypeWire(QueryType type)

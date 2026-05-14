@@ -34,8 +34,9 @@ if [[ ! -d "$DEST_DIR" ]]; then
 fi
 
 # Hand-list the source subdirectories + files so this stays predictable as
-# the SDK grows. Update the lists when a new top-level folder is added.
-SUBDIRS=(Models Helpers Permissions Repositories Services Auth Plugins Resources Validation Workflows)
+# the SDK grows. UPDATE THIS LIST when adding a new top-level folder under
+# Dmart.SqlAdapter/.
+SUBDIRS=(Helpers Permissions)
 TOP_FILES=("$SRC_DIR"/*.cs "$SRC_DIR"/*.csproj "$SRC_DIR/README.md")
 
 echo "syncing $SRC_DIR -> $DEST_DIR"

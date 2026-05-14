@@ -146,17 +146,29 @@ public sealed partial class DmartSqlAdapter
     // -------------------------------------------------------------------
     // Locks
     //
-    // Mirrors LockRepository on the server. Locks auto-expire after
-    // `lockPeriodSeconds` (the caller's choice — Python-side default is
-    // dmart's settings.LockPeriod, typically 300s). Expired rows are
-    // purged inline as part of the TryLock INSERT.
+    // Mirrors LockRepository on the server. Locks auto-expire after the
+    // adapter-wide DmartSqlAdapterOptions.LockPeriodSeconds (default 300s,
+    // matches dmart's settings.LockPeriod). Expired rows are purged inline
+    // as part of the TryLock INSERT.
+    //
+    // The per-call `lockPeriodSeconds` parameter is kept for signature
+    // parity with dmart.Client's LockEntry/UnlockEntry shape but is NOT
+    // honored: a caller-controlled period would let one caller's short TTL
+    // purge another caller's still-valid long lock. Set the period via
+    // DmartSqlAdapterOptions.LockPeriodSeconds at construction time.
     // -------------------------------------------------------------------
 
-    // Acquire an exclusive lock. Returns true if the caller now holds it.
+    /// <summary>
+    /// Acquire an exclusive lock. Returns true if the caller now holds it.
+    /// The <paramref name="lockPeriodSeconds"/> argument is ignored — the
+    /// adapter-wide period from <see cref="DmartSqlAdapterOptions.LockPeriodSeconds"/>
+    /// is used so concurrent callers agree on the staleness threshold.
+    /// </summary>
     public async Task<bool> TryLockAsync(
         Locator locator, string ownerShortname, int lockPeriodSeconds = 300,
         CancellationToken ct = default)
     {
+        _ = lockPeriodSeconds;  // Parity-only; see method docs.
         var subpath = Locator.NormalizeSubpath(locator.Subpath);
 
         // Permission: lock is a state-change on the entry — require `update`.
@@ -168,6 +180,7 @@ public sealed partial class DmartSqlAdapter
                 ResourceContext.FromEntry(existing), null, ct).ConfigureAwait(false);
         }
 
+        var period = _options.LockPeriodSeconds;
         await using var conn = await _db.OpenAsync(ct).ConfigureAwait(false);
         // Two-step: purge stale, then insert. Same pattern as server's
         // LockRepository.TryLockAsync — keeps the row count bounded and
@@ -181,7 +194,7 @@ public sealed partial class DmartSqlAdapter
             purge.Parameters.Add(new() { Value = locator.Shortname });
             purge.Parameters.Add(new() { Value = locator.SpaceName });
             purge.Parameters.Add(new() { Value = subpath });
-            purge.Parameters.Add(new() { Value = lockPeriodSeconds.ToString(CultureInfo.InvariantCulture) });
+            purge.Parameters.Add(new() { Value = period.ToString(CultureInfo.InvariantCulture) });
             await purge.ExecuteNonQueryAsync(ct).ConfigureAwait(false);
         }
 
@@ -216,13 +229,18 @@ public sealed partial class DmartSqlAdapter
         return await cmd.ExecuteNonQueryAsync(ct).ConfigureAwait(false) > 0;
     }
 
-    // Current lock holder for the locator, or null when there's no live
-    // lock. Rows past `lockPeriodSeconds` are treated as not-locked even
-    // if the row physically remains (it'll be purged on the next TryLock).
+    /// <summary>
+    /// Returns the current lock holder, or null when no live lock exists.
+    /// The <paramref name="lockPeriodSeconds"/> argument is ignored — the
+    /// adapter-wide period from <see cref="DmartSqlAdapterOptions.LockPeriodSeconds"/>
+    /// is used so all callers agree on staleness.
+    /// </summary>
     public async Task<string?> GetLockerAsync(Locator locator,
         int lockPeriodSeconds = 300, CancellationToken ct = default)
     {
+        _ = lockPeriodSeconds;  // Parity-only; see method docs.
         var subpath = Locator.NormalizeSubpath(locator.Subpath);
+        var period = _options.LockPeriodSeconds;
         await using var conn = await _db.OpenAsync(ct).ConfigureAwait(false);
         await using var cmd = new NpgsqlCommand("""
             SELECT owner_shortname FROM locks
@@ -232,7 +250,7 @@ public sealed partial class DmartSqlAdapter
         cmd.Parameters.Add(new() { Value = locator.Shortname });
         cmd.Parameters.Add(new() { Value = locator.SpaceName });
         cmd.Parameters.Add(new() { Value = subpath });
-        cmd.Parameters.Add(new() { Value = lockPeriodSeconds.ToString(CultureInfo.InvariantCulture) });
+        cmd.Parameters.Add(new() { Value = period.ToString(CultureInfo.InvariantCulture) });
         return (string?)await cmd.ExecuteScalarAsync(ct).ConfigureAwait(false);
     }
 

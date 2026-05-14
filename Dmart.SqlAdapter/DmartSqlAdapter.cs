@@ -46,17 +46,18 @@ public sealed partial class DmartSqlAdapter
     private readonly DmartDb _db;
     private readonly JsonSerializerOptions _json;
     private readonly PermissionEngine? _engine;
+    private readonly DmartSqlAdapterOptions _options;
+    private readonly System.Collections.Concurrent.ConcurrentDictionary<string, (DateTime Expiry, Dictionary<string, object?>? Perms)> _userPermissionsCache
+        = new(StringComparer.Ordinal);
+    private static readonly TimeSpan UserPermissionsCacheTtl = TimeSpan.FromMinutes(5);
 
     public DmartSqlAdapter(DmartDb db, JsonSerializerOptions? jsonOptions = null,
-        PermissionEngine? engine = null)
+        PermissionEngine? engine = null, DmartSqlAdapterOptions? options = null)
     {
         ArgumentNullException.ThrowIfNull(db);
         _db = db;
-        _json = jsonOptions ?? new JsonSerializerOptions
-        {
-            PropertyNamingPolicy = JsonNamingPolicy.SnakeCaseLower,
-            DefaultIgnoreCondition = System.Text.Json.Serialization.JsonIgnoreCondition.WhenWritingNull,
-        };
+        _options = options ?? new DmartSqlAdapterOptions();
+        _json = jsonOptions ?? _options.JsonOptions ?? DefaultJsonOptions();
         _engine = engine;
     }
 
@@ -65,20 +66,25 @@ public sealed partial class DmartSqlAdapter
 
     // Convenience constructor: builds the engine off the same Db so callers
     // don't have to wire it themselves. RBAC is ON.
-    public static DmartSqlAdapter WithRbac(DmartDb db, JsonSerializerOptions? jsonOptions = null)
+    public static DmartSqlAdapter WithRbac(DmartDb db, JsonSerializerOptions? jsonOptions = null,
+        DmartSqlAdapterOptions? options = null)
     {
-        var json = jsonOptions ?? new JsonSerializerOptions
-        {
-            PropertyNamingPolicy = JsonNamingPolicy.SnakeCaseLower,
-            DefaultIgnoreCondition = System.Text.Json.Serialization.JsonIgnoreCondition.WhenWritingNull,
-        };
+        var opts = options ?? new DmartSqlAdapterOptions();
+        var json = jsonOptions ?? opts.JsonOptions ?? DefaultJsonOptions();
         var engine = new PermissionEngine(db, json);
-        return new DmartSqlAdapter(db, json, engine);
+        return new DmartSqlAdapter(db, json, engine, opts);
     }
+
+    private static JsonSerializerOptions DefaultJsonOptions() => new()
+    {
+        PropertyNamingPolicy = JsonNamingPolicy.SnakeCaseLower,
+        DefaultIgnoreCondition = System.Text.Json.Serialization.JsonIgnoreCondition.WhenWritingNull,
+    };
 
     public DmartDb Db => _db;
     public PermissionEngine? Engine => _engine;
     public bool RbacEnabled => _engine is not null;
+    public DmartSqlAdapterOptions Options => _options;
 
     // ---------------------------------------------------------------------
     // Entry: load / save / update / create / delete / move
@@ -173,25 +179,27 @@ public sealed partial class DmartSqlAdapter
 
     public async Task SaveAsync(Entry entry, string? actor = null, CancellationToken ct = default)
     {
+        // Single round-trip: load the (possibly missing) row once, then RBAC-gate
+        // as "update" when present or "create" when absent. Avoids the EXISTS+LOAD
+        // double-select the early version did.
+        var existing = await LoadRawAsync(entry.SpaceName, entry.Subpath, entry.Shortname, ct).ConfigureAwait(false);
         if (_engine is not null)
         {
-            // Save is upsert — gate as "update" when the row exists, else "create".
-            var exists = await IsEntryExistRawAsync(entry.SpaceName, entry.Subpath, entry.Shortname, ct).ConfigureAwait(false);
-            var action = exists ? "update" : "create";
-            ResourceContext? ctx = null;
-            if (exists)
-            {
-                var existing = await LoadRawAsync(entry.SpaceName, entry.Subpath, entry.Shortname, ct).ConfigureAwait(false);
-                if (existing is not null) ctx = ResourceContext.FromEntry(existing);
-            }
+            var action = existing is not null ? "update" : "create";
+            var ctx = existing is not null ? ResourceContext.FromEntry(existing) : null;
             await _engine.RequireAsync(actor, action, LocatorFor(entry), ctx, null, ct).ConfigureAwait(false);
         }
         await UpsertEntryInternalAsync(entry, ct).ConfigureAwait(false);
+        InvalidateRbacCacheFor(entry.ResourceType, entry.Shortname);
     }
 
     public async Task CreateAsync(Entry entry, string? actor = null, CancellationToken ct = default)
     {
-        if (await IsEntryExistRawAsync(entry.SpaceName, entry.Subpath, entry.Shortname, ct).ConfigureAwait(false))
+        // One LoadRaw covers both the conflict check and the RBAC `create`
+        // gate (which doesn't need a context but does need to see the row
+        // is absent before issuing the upsert).
+        var existing = await LoadRawAsync(entry.SpaceName, entry.Subpath, entry.Shortname, ct).ConfigureAwait(false);
+        if (existing is not null)
         {
             throw new InvalidOperationException(
                 $"Entry already exists: {entry.SpaceName}{entry.Subpath}/{entry.Shortname}");
@@ -199,6 +207,7 @@ public sealed partial class DmartSqlAdapter
         if (_engine is not null)
             await _engine.RequireAsync(actor, "create", LocatorFor(entry), null, null, ct).ConfigureAwait(false);
         await UpsertEntryInternalAsync(entry, ct).ConfigureAwait(false);
+        InvalidateRbacCacheFor(entry.ResourceType, entry.Shortname);
     }
 
     public async Task UpdateAsync(Entry entry, string? actor = null, CancellationToken ct = default)
@@ -213,14 +222,18 @@ public sealed partial class DmartSqlAdapter
             await _engine.RequireAsync(actor, "update", LocatorFor(entry),
                 ResourceContext.FromEntry(existing), null, ct).ConfigureAwait(false);
         await UpsertEntryInternalAsync(entry, ct).ConfigureAwait(false);
+        InvalidateRbacCacheFor(entry.ResourceType, entry.Shortname);
     }
 
     public async Task<bool> DeleteAsync(Locator locator, string? actor = null, CancellationToken ct = default)
     {
+        // Always load — we need the row both for the RBAC context (when
+        // RBAC is on) and to know the resource_type for cache invalidation
+        // after a successful delete.
+        var existing = await LoadRawAsync(locator.SpaceName, locator.Subpath, locator.Shortname, ct).ConfigureAwait(false);
+        if (existing is null) return false;
         if (_engine is not null)
         {
-            var existing = await LoadRawAsync(locator.SpaceName, locator.Subpath, locator.Shortname, ct).ConfigureAwait(false);
-            if (existing is null) return false;  // Nothing to delete — short-circuit, no permission check needed.
             await _engine.RequireAsync(actor, "delete", locator,
                 ResourceContext.FromEntry(existing), null, ct).ConfigureAwait(false);
         }
@@ -235,18 +248,21 @@ public sealed partial class DmartSqlAdapter
         cmd.Parameters.Add(new() { Value = locator.Shortname });
         cmd.Parameters.Add(new() { Value = EnumWire(locator.Type) });
         var rows = await cmd.ExecuteNonQueryAsync(ct).ConfigureAwait(false);
+        if (rows > 0) InvalidateRbacCacheFor(existing.ResourceType, existing.Shortname);
         return rows > 0;
     }
 
     public async Task<bool> MoveAsync(Locator source, Locator target,
         string? actor = null, CancellationToken ct = default)
     {
+        // One load covers both RBAC source-context and the post-move
+        // cache-invalidation key (when moving a User/Role/Permission row).
+        var existing = await LoadRawAsync(source.SpaceName, source.Subpath, source.Shortname, ct).ConfigureAwait(false);
+        if (existing is null) return false;
         if (_engine is not null)
         {
             // Move = delete-at-source + create-at-target, matching the dmart
             // API's permission requirement for /managed/request type=move.
-            var existing = await LoadRawAsync(source.SpaceName, source.Subpath, source.Shortname, ct).ConfigureAwait(false);
-            if (existing is null) return false;
             var srcCtx = ResourceContext.FromEntry(existing);
             await _engine.RequireAsync(actor, "delete", source, srcCtx, null, ct).ConfigureAwait(false);
             await _engine.RequireAsync(actor, "create", target, null, null, ct).ConfigureAwait(false);
@@ -266,20 +282,36 @@ public sealed partial class DmartSqlAdapter
         cmd.Parameters.Add(new() { Value = target.SpaceName });
         cmd.Parameters.Add(new() { Value = tgtSubpath });
         cmd.Parameters.Add(new() { Value = target.Shortname });
-        var rows = await cmd.ExecuteNonQueryAsync(ct).ConfigureAwait(false);
+        int rows;
+        try
+        {
+            rows = await cmd.ExecuteNonQueryAsync(ct).ConfigureAwait(false);
+        }
+        catch (PostgresException ex) when (ex.SqlState == "23505")
+        {
+            // unique_violation on (shortname, space_name, subpath) — target
+            // already occupied. Translate to a typed exception that mirrors
+            // CreateAsync's "already exists" failure shape.
+            throw new InvalidOperationException(
+                $"Move target already exists: {target.SpaceName}{target.Subpath}/{target.Shortname}", ex);
+        }
+        if (rows > 0)
+        {
+            // Invalidate the source key (the row's old shortname). The target
+            // shortname starts with no cache entry — nothing to invalidate.
+            InvalidateRbacCacheFor(existing.ResourceType, existing.Shortname);
+        }
         return rows > 0;
     }
 
     public async Task<bool> IsEntryExistAsync(Locator locator, string? actor = null, CancellationToken ct = default)
     {
         // Existence is treated as a "view" — if the actor can't see the row,
-        // they shouldn't be able to probe its existence either.
-        var exists = await IsEntryExistRawAsync(locator.SpaceName, locator.Subpath, locator.Shortname, ct).ConfigureAwait(false);
-        if (!exists) return false;
-        if (_engine is null) return true;
-
+        // they shouldn't be able to probe its existence either. One LoadRaw
+        // serves both the existence check and the RBAC view-context check.
         var existing = await LoadRawAsync(locator.SpaceName, locator.Subpath, locator.Shortname, ct).ConfigureAwait(false);
         if (existing is null) return false;
+        if (_engine is null) return true;
         return await _engine.CanAsync(actor, "view", locator,
             ResourceContext.FromEntry(existing), null, ct).ConfigureAwait(false);
     }
@@ -324,16 +356,37 @@ public sealed partial class DmartSqlAdapter
 
     // ----- Raw helpers (bypass RBAC; for internal pre/post checks only) -----
 
-    private async Task<bool> IsEntryExistRawAsync(string spaceName, string subpath, string shortname, CancellationToken ct)
+    // Invalidate cached permissions when a write touches a User/Role/Permission
+    // row. Per-user invalidation when a User row changes; full flush when a
+    // Role or Permission row changes (graph-wide downstream impact).
+    private void InvalidateRbacCacheFor(ResourceType type, string shortname)
     {
-        subpath = Locator.NormalizeSubpath(subpath);
-        await using var conn = await _db.OpenAsync(ct).ConfigureAwait(false);
-        await using var cmd = new NpgsqlCommand(
-            "SELECT 1 FROM entries WHERE space_name=$1 AND subpath=$2 AND shortname=$3 LIMIT 1", conn);
-        cmd.Parameters.Add(new() { Value = spaceName });
-        cmd.Parameters.Add(new() { Value = subpath });
-        cmd.Parameters.Add(new() { Value = shortname });
-        return await cmd.ExecuteScalarAsync(ct).ConfigureAwait(false) is not null;
+        if (_engine is null) return;
+        switch (type)
+        {
+            case ResourceType.User:
+                _engine.Invalidate(shortname);
+                _userPermissionsCache.TryRemove(shortname, out _);
+                break;
+            case ResourceType.Role:
+            case ResourceType.Permission:
+                _engine.InvalidateAll();
+                _userPermissionsCache.Clear();
+                break;
+            default:
+                break;
+        }
+    }
+
+    /// <summary>
+    /// Drop the cached merged-permissions view for a user, or all users when
+    /// <paramref name="shortname"/> is null. Call this if you've edited
+    /// permission rows outside this adapter (raw SQL, server-side admin).
+    /// </summary>
+    public void InvalidateUserPermissionsCache(string? shortname = null)
+    {
+        if (shortname is null) _userPermissionsCache.Clear();
+        else _userPermissionsCache.TryRemove(shortname, out _);
     }
 
     private async Task<Entry?> LoadRawAsync(string spaceName, string subpath, string shortname, CancellationToken ct)
@@ -598,14 +651,35 @@ public sealed partial class DmartSqlAdapter
     // bearer token; the DB adapter has no token, so the actor IS the
     // shortname. Throws on `actor is null` because there's no profile to
     // return for an anonymous caller (HTTP returns 401 in that case).
+    //
+    // GetProfileAsync uses the auth-shaped loader so the caller can read
+    // their own password hash for credential-flow scenarios (rotate, verify).
     public Task<User?> GetProfileAsync(string actor, CancellationToken ct = default)
     {
         if (string.IsNullOrEmpty(actor))
             throw new ArgumentException("actor (current user shortname) is required", nameof(actor));
-        return LoadUserMetaAsync(actor, actor, ct);
+        return LoadUserMetaForAuthAsync(actor, actor, ct);
     }
 
+    /// <summary>
+    /// Load a user record with the password hash REDACTED. The returned
+    /// <see cref="User.Password"/> is always null. Use this for read-side
+    /// flows that surface user records to the application layer.
+    /// </summary>
     public async Task<User?> LoadUserMetaAsync(string shortname, string? actor = null, CancellationToken ct = default)
+    {
+        var user = await LoadUserMetaForAuthAsync(shortname, actor, ct).ConfigureAwait(false);
+        if (user is null) return null;
+        return user with { Password = null };
+    }
+
+    /// <summary>
+    /// Load a user record INCLUDING the password hash. Reserved for
+    /// credential-flow callers (login, password rotation) where the hash
+    /// is required. Most read paths should use <see cref="LoadUserMetaAsync"/>
+    /// instead so a forgotten check can't accidentally leak hashes.
+    /// </summary>
+    public async Task<User?> LoadUserMetaForAuthAsync(string shortname, string? actor = null, CancellationToken ct = default)
     {
         await using var conn = await _db.OpenAsync(ct).ConfigureAwait(false);
         await using var cmd = new NpgsqlCommand(
@@ -637,6 +711,11 @@ public sealed partial class DmartSqlAdapter
     //
     // RBAC: an actor can read THEIR own permission set freely; reading
     // someone else's requires a `view` grant on that user row.
+    //
+    // The result is cached in-process for UserPermissionsCacheTtl (5 min)
+    // keyed by user shortname. The cache is invalidated whenever this
+    // adapter writes a User/Role/Permission row; out-of-band edits should
+    // call InvalidateUserPermissionsCache.
     public async Task<Dictionary<string, object?>?> GetUserPermissionsAsync(string shortname,
         string? actor = null, CancellationToken ct = default)
     {
@@ -647,19 +726,37 @@ public sealed partial class DmartSqlAdapter
             _ = await LoadUserMetaAsync(shortname, actor, ct).ConfigureAwait(false);
         }
 
+        if (_userPermissionsCache.TryGetValue(shortname, out var cached) && cached.Expiry > DateTime.UtcNow)
+            return cached.Perms;
+
         await using var conn = await _db.OpenAsync(ct).ConfigureAwait(false);
         await using var cmd = new NpgsqlCommand(
             "SELECT permissions FROM user_permissions_cache WHERE user_shortname=$1",
             conn);
         cmd.Parameters.Add(new() { Value = shortname });
         await using var reader = await cmd.ExecuteReaderAsync(ct).ConfigureAwait(false);
-        if (!await reader.ReadAsync(ct).ConfigureAwait(false)) return null;
-        if (reader.IsDBNull(0)) return null;
-        var raw = reader.GetString(0);
-        return JsonSerializer.Deserialize<Dictionary<string, object?>>(raw, _json);
+        Dictionary<string, object?>? perms = null;
+        if (await reader.ReadAsync(ct).ConfigureAwait(false) && !reader.IsDBNull(0))
+        {
+            var raw = reader.GetString(0);
+            perms = JsonSerializer.Deserialize<Dictionary<string, object?>>(raw, _json);
+        }
+        _userPermissionsCache[shortname] = (DateTime.UtcNow + UserPermissionsCacheTtl, perms);
+        return perms;
     }
 
-    public async Task InitializeSpacesAsync(string? actor = null, CancellationToken ct = default)
+    /// <summary>
+    /// Idempotent bootstrap of the `management` space row. The full schema
+    /// (tables, indexes, enums) is owned by the dmart server's
+    /// SchemaInitializer — this SDK does not recreate it.
+    /// </summary>
+    /// <param name="ownerShortname">
+    /// Shortname stamped into the inserted row. Defaults to "dmart" to
+    /// match dmart Python's bootstrap default; pass a different value when
+    /// calling from a non-default-admin context.
+    /// </param>
+    public async Task InitializeSpacesAsync(string ownerShortname = "dmart",
+        string? actor = null, CancellationToken ct = default)
     {
         if (_engine is not null)
         {
@@ -670,17 +767,13 @@ public sealed partial class DmartSqlAdapter
                 new Locator(ResourceType.Space, "management", "/", "management"),
                 null, null, ct).ConfigureAwait(false);
         }
-        // Idempotent: make sure the spaces table has at least the dmart admin
-        // space row. Mirrors Python's initialize_spaces which creates the
-        // bootstrap spaces folder. The full schema (tables, indexes, enums)
-        // is owned by the dmart server's SchemaInitializer — this SDK
-        // doesn't recreate it.
         await using var conn = await _db.OpenAsync(ct).ConfigureAwait(false);
         await using var cmd = new NpgsqlCommand("""
             INSERT INTO spaces (uuid, shortname, is_active, created_at, updated_at, owner_shortname, resource_type)
-            VALUES (gen_random_uuid(), 'management', TRUE, NOW(), NOW(), 'dmart', 'space')
+            VALUES (gen_random_uuid(), 'management', TRUE, NOW(), NOW(), $1, 'space')
             ON CONFLICT (shortname) DO NOTHING
             """, conn);
+        cmd.Parameters.Add(new() { Value = ownerShortname });
         await cmd.ExecuteNonQueryAsync(ct).ConfigureAwait(false);
     }
 
