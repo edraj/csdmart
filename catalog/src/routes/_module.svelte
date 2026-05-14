@@ -10,8 +10,6 @@
   import { isPublicRoute } from "@/lib/constants";
   import { withBasePrefix } from "@/lib/basePath";
 
-  let { children } = $props();
-
   function redirectTo(path: string) {
     const target = withBasePrefix(path);
     if (window.location.pathname !== target) {
@@ -134,7 +132,12 @@
   <DashboardHeader />
   <main class="app-main">
     {#if authReady}
-      {@render children?.()}
+      <!-- svelte-ignore slot_element_deprecated -->
+      <!-- Routify drives this layout via the legacy slot mechanism;
+           migrating to {@render children?.()} leaves children undefined
+           and the page renders blank. Revisit when Routify supports
+           Svelte 5 snippets. -->
+      <slot />
     {:else}
       <div class="auth-gate" aria-busy="true" aria-live="polite">
         <div class="auth-gate-spinner" role="status" aria-label="Loading"></div>
