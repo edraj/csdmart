@@ -110,6 +110,44 @@ public sealed class HistoryDiffUtilTests
         diff.ShouldNotContainKey("payload.body.score");
     }
 
+    [Fact]
+    public void ComputeUserDiff_Payload_Body_Flattens_Nested_Json()
+    {
+        // Mirrors the entry-payload test for users: only fields that actually
+        // changed in the JSON payload should appear in the diff, with their
+        // path joined under `payload.body`. Pins the flatten branch in
+        // HistoryDiffUtil.FlattenUser that the existing tests miss.
+        var u1 = BaseUser() with
+        {
+            Payload = new Payload
+            {
+                ContentType = ContentType.Json,
+                Body = JsonSerializer.SerializeToElement(new
+                {
+                    avatar_url = "https://old.example/a.png",
+                    bio = "unchanged",
+                }),
+            },
+        };
+        var u2 = BaseUser() with
+        {
+            Payload = new Payload
+            {
+                ContentType = ContentType.Json,
+                Body = JsonSerializer.SerializeToElement(new
+                {
+                    avatar_url = "https://new.example/a.png",
+                    bio = "unchanged",
+                }),
+            },
+        };
+        var diff = HistoryDiffUtil.ComputeUserDiff(u1, u2);
+        diff.ShouldContainKey("payload.body.avatar_url");
+        diff.ShouldNotContainKey("payload.body.bio");
+        var pair = (Dictionary<string, object?>)diff["payload.body.avatar_url"];
+        pair["old"].ShouldNotBe(pair["new"]);
+    }
+
     private static Entry BaseEntry() => new()
     {
         Uuid = "00000000-0000-0000-0000-000000000001",
