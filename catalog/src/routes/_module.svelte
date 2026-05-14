@@ -60,25 +60,31 @@
   Dmart.setAxiosInstance(dmartAxios as any);
 
   // Gate the slot so unauthenticated users never see protected content.
-  // Public routes render immediately; protected routes require either a
-  // cached signed-in state (optimistic render, verified async) or a fresh
-  // /info/me success before rendering. If neither holds we redirect first
-  // and keep `authReady` false so the slot is never mounted.
+  // Public routes render immediately; protected routes show the spinner
+  // until either the cached signed-in hint lets us render optimistically
+  // or the /info/me probe in onMount confirms a session. All redirects
+  // happen from onMount so the component is mounted before we navigate.
   const initialPath =
     typeof window !== "undefined" ? window.location.pathname : "/";
   const initiallyPublic = isPublicRoute(initialPath);
+  // Read once at module-script run; cross-tab login/logout changes won't
+  // reflect until the next page load. Treated only as an optimistic hint —
+  // the /info/me probe below is the authoritative session check.
   const cachedSignedIn = get(user).signedin === true;
 
   let authReady = $state(initiallyPublic || cachedSignedIn);
-
-  if (!initiallyPublic && !cachedSignedIn) {
-    redirectTo("/login");
-  }
 
   onMount(async () => {
     const currentPath = window.location.pathname;
 
     if (isPublicRoute(currentPath)) {
+      return;
+    }
+
+    // No cached session on a protected route — skip the /info/me probe
+    // (it would just confirm unauthenticated) and redirect to login.
+    if (!cachedSignedIn) {
+      redirectTo("/login");
       return;
     }
 

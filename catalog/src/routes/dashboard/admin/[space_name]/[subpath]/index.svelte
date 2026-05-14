@@ -132,7 +132,18 @@
     if (!item || duplicatingShortname) return;
     duplicatingShortname = item.shortname;
     try {
-      const { uuid: _uuid, ...cleanAttributes } = item.attributes ?? {};
+      // Strip server-managed fields so the duplicate gets a fresh identity
+      // and timestamps. relationships are not carried over — a duplicated
+      // entry starts with no links and the user can re-attach as needed.
+      const {
+        uuid: _uuid,
+        created_at: _created_at,
+        updated_at: _updated_at,
+        slug: _slug,
+        owner_shortname: _owner_shortname,
+        relationships: _relationships,
+        ...cleanAttributes
+      } = item.attributes ?? {};
       const response = await Dmart.request({
         space_name: spaceName,
         request_type: RequestType.create,
@@ -634,6 +645,9 @@
     //   ["dashboard", "admin"]                       → admin root
     //   ["dashboard", "admin", <space>]              → space root
     //   ["dashboard", "admin", <space>, <subpath>]   → subpath (subpath uses "-" separator)
+    // Reject any path that doesn't start with /dashboard/admin so a
+    // malformed breadcrumb entry can't navigate to a nonsensical admin URL.
+    if (segments[0] !== "dashboard" || segments[1] !== "admin") return;
     if (segments.length <= 2) {
       $goto("/dashboard/admin");
     } else if (segments.length === 3) {

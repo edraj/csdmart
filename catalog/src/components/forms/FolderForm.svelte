@@ -54,8 +54,6 @@
     disable_filter: content.disable_filter ?? false,
   };
 
-  if (!content.query) content.query = {};
-
   let errors: Record<string, any> = $state({});
 
   function validateForm() {
