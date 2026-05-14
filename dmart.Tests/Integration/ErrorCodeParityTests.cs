@@ -129,6 +129,54 @@ public sealed class ErrorCodeParityTests : IClassFixture<DmartFactory>
         body.Error.Type.ShouldBe("request");
     }
 
+    // POST to a GET-only public-query path used to bubble out as an empty
+    // 405 (Kestrel's routing default) — same wire failure mode as 404 from
+    // the client's perspective but with no body to read. The middleware now
+    // folds both 404 and 405 under INVALID_ROUTE so clients get a uniform
+    // error envelope.
+    [FactIfPg]
+    public async Task MethodMismatch_Returns_INVALID_ROUTE_230()
+    {
+        var client = _factory.CreateClient();
+        // GET /public/query/{type}/{space}/{subpath} is the routed pattern;
+        // POST against the same URL hits the framework's method gate.
+        var resp = await client.PostAsync(
+            "/public/query/search/zainmart/settings/configurations",
+            new StringContent("{}", Encoding.UTF8, "application/json"));
+        ((int)resp.StatusCode).ShouldBe(422);
+        var body = await resp.Content.ReadFromJsonAsync(DmartJsonContext.Default.Response);
+        body!.Status.ShouldBe(Status.Failed);
+        body.Error!.Code.ShouldBe(InternalErrorCode.INVALID_ROUTE);
+        body.Error.Type.ShouldBe("request");
+        // The message must identify the method that was rejected so the
+        // client developer can self-diagnose without reading the Allow
+        // header from a 422 response (where the header is no longer
+        // semantically meaningful).
+        body.Error.Message.ShouldContain("Method not allowed");
+        body.Error.Message.ShouldContain("POST");
+    }
+
+    // The /public/payload handler returns Results.BadRequest() with no body
+    // when resource_type isn't a known ResourceType — pre-fix that surfaced
+    // as an empty 400 to the client, which has no parseable shape. The
+    // middleware now wraps any framework-style empty 4xx (400, 404, 405, 415)
+    // in the canonical envelope.
+    [FactIfPg]
+    public async Task EmptyBadRequest_From_Handler_Is_Wrapped_In_Envelope()
+    {
+        var client = _factory.CreateClient();
+        // "notatype" doesn't parse as a ResourceType — handler hits the
+        // `if (!Enum.TryParse<ResourceType>(...)) return Results.BadRequest();`
+        // path and historically left the body empty.
+        var resp = await client.GetAsync("/public/payload/notatype/somespace/anysub/anyfile.json");
+        ((int)resp.StatusCode).ShouldBe(422);
+        var body = await resp.Content.ReadFromJsonAsync(DmartJsonContext.Default.Response);
+        body!.Status.ShouldBe(Status.Failed);
+        body.Error!.Code.ShouldBe(InternalErrorCode.INVALID_DATA);
+        body.Error.Type.ShouldBe("request");
+        body.Error.Message.ShouldContain("Bad request");
+    }
+
     // ---------- CANNT_DELETE ----------
 
     [FactIfPg]
