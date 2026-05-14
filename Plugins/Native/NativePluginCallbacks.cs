@@ -24,10 +24,17 @@ namespace Dmart.Plugins.Native;
 // non-zero = error.
 //
 // Thread model: callbacks are sync (the plugin's hook() is sync from the C
-// side — see NativePluginHandle.CallHook). Async dmart services are bridged
-// with GetAwaiter().GetResult(). This is safe because:
+// side — see NativePluginHandle.CallHook). The [UnmanagedCallersOnly] ABI
+// imposes this: a managed `await` cannot suspend back through a native frame,
+// so every callback must return synchronously or the runtime tears down.
+// Async dmart services are bridged with GetAwaiter().GetResult(). This is
+// safe because:
 //   - each callback invocation runs on a thread-pool thread that dmart
-//     already allocated for the hook dispatch;
+//     already allocated for the hook dispatch — no captured
+//     SynchronizationContext to deadlock against;
+//   - downstream repositories (`EntryRepository`, `UserRepository`,
+//     `HistoryRepository`) use library-style `await` with no
+//     `.ConfigureAwait(true)`, so their continuations run on the pool;
 //   - we never call back into managed code from inside the sync wait, so
 //     no deadlock risk.
 //
@@ -103,6 +110,14 @@ public static unsafe class NativePluginCallbacks
     // reference. Reference reads are atomic on all .NET-supported CPUs,
     // so a Volatile.Read isn't strictly necessary.
     private static ILoggerFactory? _loggerFactoryCache;
+
+    // DmartSettings is bound via `services.AddOptions<DmartSettings>().Bind(...)`
+    // in Program.cs and has no IOptionsMonitor registration, so its value is
+    // effectively immutable for the process lifetime. Cache the management
+    // space name to skip a CreateScope + IOptions resolve on every
+    // update_user call. Cleared by SetServicesForTesting so test swaps see
+    // the new settings rather than the prior fixture's.
+    private static string? _mgmtSpaceCache;
 
     // Fills the struct with function pointers and returns a stable pointer
     // that can be handed to every plugin's init() export.
@@ -238,10 +253,16 @@ public static unsafe class NativePluginCallbacks
         }
     }
 
-    // internal for testing via dmart.Tests. Performs the upsert, computes a
-    // {field: {old, new}} diff against the prior row (if any), and appends a
-    // history record for non-empty diffs. Returns the same 0/2/3 codes the
-    // raw cb does so the contract stays unchanged.
+    // internal for testing via dmart.Tests. Performs an atomic
+    // prior-fetch + upsert via UpsertWithPriorAsync (SELECT FOR UPDATE +
+    // INSERT ON CONFLICT in one transaction), computes a {field: {old, new}}
+    // diff against the prior row, and appends a history record for non-empty
+    // diffs on the update path. Returns the same 0/1/3 codes the raw cb
+    // surfaces so the C ABI contract is unchanged.
+    //
+    // Create path (`inserted == true`) writes no history row — Python parity
+    // with EntryService.UpdateAsync, which only logs on update.
+    // See the file-header thread-model block for the sync-over-async rationale.
     internal static int EmitSaveEntry(Entry entry, ILogger? logger)
     {
         if (Services is null)
@@ -255,38 +276,27 @@ public static unsafe class NativePluginCallbacks
             var repo = scope.ServiceProvider.GetRequiredService<EntryRepository>();
             var history = scope.ServiceProvider.GetRequiredService<HistoryRepository>();
 
-            // Load prior so we can produce a {field: {old, new}} history diff
-            // on update. Create path (prior == null) writes no history — Python
-            // parity with EntryService.UpdateAsync. UpsertAsync won't tell us
-            // whether it inserted or updated, so this probe is the simplest
-            // reliable signal.
-            var prior = repo.GetAsync(entry.SpaceName, entry.Subpath, entry.Shortname, entry.ResourceType)
-                .GetAwaiter().GetResult();
-            repo.UpsertAsync(entry).GetAwaiter().GetResult();
+            var (prior, inserted) = repo.UpsertWithPriorAsync(entry).GetAwaiter().GetResult();
 
             Dictionary<string, object>? diff = null;
-            if (prior is not null)
+            if (!inserted && prior is not null)
             {
                 diff = HistoryDiffUtil.ComputeEntryDiff(prior, entry);
                 if (diff.Count > 0)
                 {
-                    var headers = new Dictionary<string, object>
-                    {
-                        ["x-source"] = "plugin",
-                        ["x-plugin"] = PluginInvocationContext.CurrentShortname ?? "unknown",
-                    };
                     history.AppendAsync(entry.SpaceName, entry.Subpath, entry.Shortname,
                                         PluginInvocationContext.CurrentActor,
-                                        headers, diff).GetAwaiter().GetResult();
+                                        BuildPluginMarkerHeaders(logger, "save_entry"),
+                                        diff).GetAwaiter().GetResult();
                 }
             }
 
             logger?.LogInformation(
-                "save_entry ok {Space}/{Subpath}/{Shortname} byPlugin={Plugin} actor={Actor} created={Created} diffKeys={DiffKeys}",
+                "save_entry ok {Space}/{Subpath}/{Shortname} byPlugin={Plugin} actor={Actor} inserted={Inserted} diffKeys={DiffKeys}",
                 entry.SpaceName, entry.Subpath, entry.Shortname,
                 PluginInvocationContext.CurrentShortname,
                 PluginInvocationContext.CurrentActor,
-                prior is null, diff?.Count ?? 0);
+                inserted, diff?.Count ?? 0);
             return 0;
         }
         catch (Exception ex)
@@ -325,8 +335,10 @@ public static unsafe class NativePluginCallbacks
     }
 
     // internal for testing via dmart.Tests. Same shape as EmitSaveEntry —
-    // upsert + diff + conditional history-append, addressing the user under
-    // the management space configured in DmartSettings.
+    // atomic upsert (single-tx SELECT FOR UPDATE + INSERT ON CONFLICT)
+    // followed by a conditional history-append addressing the user under the
+    // configured management space. See EmitSaveEntry for the file-header
+    // sync-over-async rationale.
     internal static int EmitUpdateUser(User user, ILogger? logger)
     {
         if (Services is null)
@@ -339,38 +351,28 @@ public static unsafe class NativePluginCallbacks
             using var scope = Services.CreateScope();
             var repo = scope.ServiceProvider.GetRequiredService<UserRepository>();
             var history = scope.ServiceProvider.GetRequiredService<HistoryRepository>();
-            // Resolve the management-space name from the same options
-            // UserService uses, so an operator-renamed management space stays
-            // consistent across REST and plugin write paths.
-            var mgmtSpace = scope.ServiceProvider.GetRequiredService<IOptions<DmartSettings>>()
-                .Value.ManagementSpace;
 
-            var prior = repo.GetByShortnameAsync(user.Shortname).GetAwaiter().GetResult();
-            repo.UpsertAsync(user).GetAwaiter().GetResult();
+            var (prior, inserted) = repo.UpsertWithPriorAsync(user).GetAwaiter().GetResult();
 
             Dictionary<string, object>? diff = null;
-            if (prior is not null)
+            if (!inserted && prior is not null)
             {
                 diff = HistoryDiffUtil.ComputeUserDiff(prior, user);
                 if (diff.Count > 0)
                 {
-                    var headers = new Dictionary<string, object>
-                    {
-                        ["x-source"] = "plugin",
-                        ["x-plugin"] = PluginInvocationContext.CurrentShortname ?? "unknown",
-                    };
-                    history.AppendAsync(mgmtSpace, "/users", user.Shortname,
+                    history.AppendAsync(ResolveManagementSpace(scope), "/users", user.Shortname,
                                         PluginInvocationContext.CurrentActor,
-                                        headers, diff).GetAwaiter().GetResult();
+                                        BuildPluginMarkerHeaders(logger, "update_user"),
+                                        diff).GetAwaiter().GetResult();
                 }
             }
 
             logger?.LogInformation(
-                "update_user ok {User} byPlugin={Plugin} actor={Actor} created={Created} diffKeys={DiffKeys}",
+                "update_user ok {User} byPlugin={Plugin} actor={Actor} inserted={Inserted} diffKeys={DiffKeys}",
                 user.Shortname,
                 PluginInvocationContext.CurrentShortname,
                 PluginInvocationContext.CurrentActor,
-                prior is null, diff?.Count ?? 0);
+                inserted, diff?.Count ?? 0);
             return 0;
         }
         catch (Exception ex)
@@ -378,6 +380,41 @@ public static unsafe class NativePluginCallbacks
             logger?.LogError(ex, "update_user failed for {User}", user.Shortname);
             return 3;
         }
+    }
+
+    // Resolves the management-space name from DmartSettings, caching across
+    // calls. The first call goes through DI; later calls return the cached
+    // value (settings are immutable for the process lifetime — see
+    // _mgmtSpaceCache for the rationale).
+    private static string ResolveManagementSpace(IServiceScope scope)
+    {
+        var cached = Volatile.Read(ref _mgmtSpaceCache);
+        if (cached is not null) return cached;
+        var resolved = scope.ServiceProvider.GetRequiredService<IOptions<DmartSettings>>()
+            .Value.ManagementSpace;
+        Interlocked.CompareExchange(ref _mgmtSpaceCache, resolved, null);
+        return Volatile.Read(ref _mgmtSpaceCache) ?? resolved;
+    }
+
+    // Builds the {x-source: "plugin", x-plugin: <shortname>} marker so audit
+    // consumers can tell plugin-written rows apart from REST writes. When the
+    // dispatcher hasn't seeded PluginInvocationContext.CurrentShortname — a
+    // bug, not a normal path — log a warning and return null so the history
+    // row carries no marker rather than the misleading literal "unknown".
+    private static Dictionary<string, object>? BuildPluginMarkerHeaders(ILogger? logger, string opName)
+    {
+        if (PluginInvocationContext.CurrentShortname is { } shortname)
+        {
+            return new Dictionary<string, object>
+            {
+                ["x-source"] = "plugin",
+                ["x-plugin"] = shortname,
+            };
+        }
+        logger?.LogWarning(
+            "{Op}: PluginInvocationContext.CurrentShortname is null — history row will lack plugin marker",
+            opName);
+        return null;
     }
 
     [UnmanagedCallersOnly(CallConvs = new[] { typeof(System.Runtime.CompilerServices.CallConvCdecl) })]
@@ -638,6 +675,7 @@ public static unsafe class NativePluginCallbacks
     {
         Services = services;
         _loggerFactoryCache = null;
+        _mgmtSpaceCache = null;
     }
 
     // Host-side logger for callback operations. Uses `plugin.<shortname>.callbacks`

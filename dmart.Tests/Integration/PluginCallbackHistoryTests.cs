@@ -22,6 +22,11 @@ namespace Dmart.Tests.Integration;
 // Calls into EmitSaveEntry / EmitUpdateUser directly so we exercise the
 // typed-input path without needing to synthesise UTF-8 byte buffers (mirrors
 // the LogCb → EmitPluginLog test split used in PluginLogToJsonlTests).
+//
+// [Collection] join: PluginInvocationContext.CurrentShortname/CurrentActor are
+// ThreadStatic. Any other class that mutates them must join the same
+// collection so xUnit runs them sequentially (see PluginInvocationContextCollection).
+[Collection(PluginInvocationContextCollection.Name)]
 public sealed class PluginCallbackHistoryTests : IClassFixture<DmartFactory>
 {
     private readonly DmartFactory _factory;
@@ -287,6 +292,102 @@ public sealed class PluginCallbackHistoryTests : IClassFixture<DmartFactory>
 
             var headers = await ReadHeadersAsync(sp, "management", "/users", sn);
             headers.GetProperty("x-plugin").GetString().ShouldBe("test_plugin");
+        }
+        finally
+        {
+            PluginInvocationContext.CurrentShortname = null;
+            PluginInvocationContext.CurrentActor = null;
+            try { await users.DeleteAsync(sn); } catch { }
+        }
+    }
+
+    [FactIfPg]
+    public async Task UpdateUser_Idempotent_Resave_Does_Not_Write_History()
+    {
+        var sp = _factory.Services;
+        _factory.CreateClient();
+        var users = sp.GetRequiredService<UserRepository>();
+        var qsvc = sp.GetRequiredService<QueryService>();
+
+        var sn = "cbu_" + Guid.NewGuid().ToString("N")[..10];
+        var original = new User
+        {
+            Uuid = Guid.NewGuid().ToString(),
+            Shortname = sn,
+            SpaceName = "management", Subpath = "/users",
+            OwnerShortname = sn, IsActive = true,
+            Email = $"{sn}@test.local", IsEmailVerified = true,
+            Roles = new(), Groups = new(),
+            Type = UserType.Web, Language = Language.En,
+            CreatedAt = DateTime.UtcNow, UpdatedAt = DateTime.UtcNow,
+        };
+        await users.UpsertAsync(original);
+
+        PluginInvocationContext.CurrentShortname = "test_plugin";
+        PluginInvocationContext.CurrentActor = _factory.AdminShortname;
+        try
+        {
+            // Re-save the same user — diff is empty, no history row expected.
+            NativePluginCallbacks.EmitUpdateUser(original, logger: null).ShouldBe(0);
+
+            var resp = await qsvc.ExecuteAsync(new Query
+            {
+                Type = QueryType.History,
+                SpaceName = "management",
+                Subpath = "/users",
+                FilterShortnames = new() { sn },
+                Limit = 100,
+            }, _factory.AdminShortname);
+            resp.Records!.Count.ShouldBe(0);
+        }
+        finally
+        {
+            PluginInvocationContext.CurrentShortname = null;
+            PluginInvocationContext.CurrentActor = null;
+            try { await users.DeleteAsync(sn); } catch { }
+        }
+    }
+
+    [FactIfPg]
+    public async Task UpdateUser_Create_Path_Does_Not_Write_History()
+    {
+        var sp = _factory.Services;
+        _factory.CreateClient();
+        var users = sp.GetRequiredService<UserRepository>();
+        var qsvc = sp.GetRequiredService<QueryService>();
+
+        // Brand-new shortname that doesn't exist yet — EmitUpdateUser should
+        // insert (inserted == true → skip history). Confirms the create-side
+        // of the inserted-vs-update predicate for users, parallel to
+        // SaveEntry_Create_Path_Does_Not_Write_History.
+        var sn = "cbu_" + Guid.NewGuid().ToString("N")[..10];
+        var fresh = new User
+        {
+            Uuid = Guid.NewGuid().ToString(),
+            Shortname = sn,
+            SpaceName = "management", Subpath = "/users",
+            OwnerShortname = sn, IsActive = true,
+            Email = $"{sn}@test.local", IsEmailVerified = true,
+            Roles = new(), Groups = new(),
+            Type = UserType.Web, Language = Language.En,
+            CreatedAt = DateTime.UtcNow, UpdatedAt = DateTime.UtcNow,
+        };
+
+        PluginInvocationContext.CurrentShortname = "test_plugin";
+        PluginInvocationContext.CurrentActor = _factory.AdminShortname;
+        try
+        {
+            NativePluginCallbacks.EmitUpdateUser(fresh, logger: null).ShouldBe(0);
+
+            var resp = await qsvc.ExecuteAsync(new Query
+            {
+                Type = QueryType.History,
+                SpaceName = "management",
+                Subpath = "/users",
+                FilterShortnames = new() { sn },
+                Limit = 100,
+            }, _factory.AdminShortname);
+            resp.Records!.Count.ShouldBe(0);
         }
         finally
         {
