@@ -1456,40 +1456,55 @@ app.UseChannelAuth();
 
     app.Use(async (ctx, next) =>
     {
-        await next();
+        // Wrap Response.Body in a byte counter so we can distinguish
+        // "handler wrote something" from "handler wrote nothing" regardless
+        // of TestServer / Kestrel buffering semantics. HasStarted alone is
+        // unreliable: TestServer may buffer writes without flipping the
+        // flag, and ContentLength may not be set on small WriteAsync calls.
+        var originalBody = ctx.Response.Body;
+        var counter = new BodyByteCounterStream(originalBody);
+        ctx.Response.Body = counter;
+        try
+        {
+            await next();
+        }
+        finally
+        {
+            ctx.Response.Body = originalBody;
+        }
 
         if (ctx.Response.HasStarted) return;
+        if (counter.BytesWritten > 0) return;
         if (ctx.Request.Path.StartsWithSegments(cxbPath)) return;
         if (ctx.Request.Path.StartsWithSegments(catPath)) return;
 
         // Wrap empty-body request-side errors in the canonical envelope so
-        // every dmart response shape is uniform. Conditions:
-        //   1. Status is a request-side error we handle (400, 404, 405, 415).
-        //   2. No handler-supplied body — Content-Type unset AND
-        //      Content-Length is null or zero.
-        // Auth (401/403), rate-limit (429), and 5xx are intentionally NOT
-        // wrapped here: JwtBearer, AuthorizationMiddleware, and the
-        // exception handler each emit their own typed bodies, and wrapping
-        // them risks clobbering shapes that existing clients rely on.
+        // every dmart response shape is uniform. Auth (401/403), rate-limit
+        // (429), and 5xx are intentionally NOT wrapped here: JwtBearer,
+        // AuthorizationMiddleware, and the exception handler each emit
+        // their own typed bodies via paths we don't want to clobber.
         var status = ctx.Response.StatusCode;
         if (status is not (400 or 404 or 405 or 415)) return;
-        if (!string.IsNullOrEmpty(ctx.Response.ContentType)) return;
-        if (ctx.Response.ContentLength is > 0) return;
 
         var method = ctx.Request.Method;
         var path = ctx.Request.Path.ToString();
         int code;
         string message;
+        // Preserve the wire status code so the HTTP semantic the handler
+        // (or routing) chose survives. The one exception is the existing
+        // "unmapped route" case, which the Python parity convention maps
+        // to 422 — keep that mapping so the established INVALID_ROUTE
+        // contract doesn't shift.
+        int wireStatus = status;
 
         switch (status)
         {
             // GetEndpoint() is non-null iff a route matched and its handler
-            // ran. Null endpoint = unmapped URL. Non-null endpoint = the
-            // handler ran and explicitly returned NotFound() — different
-            // semantics, different error code.
+            // ran. Null endpoint = unmapped URL.
             case 404 when ctx.GetEndpoint() is null:
                 code = Dmart.Models.Api.InternalErrorCode.INVALID_ROUTE;
                 message = $"Route not found: {method} {path}";
+                wireStatus = 422;
                 break;
             case 404:
                 code = Dmart.Models.Api.InternalErrorCode.OBJECT_NOT_FOUND;
@@ -1518,11 +1533,11 @@ app.UseChannelAuth();
         }
 
         var body = Dmart.Models.Api.Response.Fail(code, message, ErrorTypes.Request);
-        // Clear the Content-Length the framework set on its empty error
-        // response, otherwise Kestrel refuses to overwrite it with the
-        // JSON body length.
+        // Clear any Content-Length the framework set on its empty error
+        // response, otherwise Kestrel refuses to overwrite with the body
+        // length we're about to write.
         ctx.Response.ContentLength = null;
-        ctx.Response.StatusCode = 422;
+        ctx.Response.StatusCode = wireStatus;
         await ctx.Response.WriteAsJsonAsync(body, Dmart.Models.Json.DmartJsonContext.Default.Response);
     });
 }
