@@ -1,8 +1,10 @@
+using System.Reflection;
 using System.Text.Json;
 using Dmart.DataAdapters.Sql;
 using Dmart.Models.Core;
 using Dmart.Models.Enums;
 using Dmart.Models.Json;
+using Dmart.Plugins.Native;
 using Dmart.Services;
 
 namespace Dmart.Plugins;
@@ -54,6 +56,10 @@ public sealed class PluginManager(
     // Flat list of active shortnames, exposed to /info/manifest.
     private readonly List<string> _activePlugins = new();
 
+    // Parallel registry carrying the resolved version + type per active plugin.
+    // Populated alongside _activePlugins in Register(); exposed to /info/plugins.
+    private readonly List<PluginInfo> _activePluginInfos = new();
+
     // Short-lived cache for space lookups, matching Python's 2-second cache so
     // a before+after pair for the same request doesn't double-fetch the space
     // row. Keyed by space name.
@@ -63,6 +69,11 @@ public sealed class PluginManager(
     public IReadOnlyList<string> ActivePlugins => _activePlugins;
 
     public IReadOnlyList<IApiPlugin> ActiveApiPlugins => _activeApiPlugins;
+
+    // Per-plugin (shortname, version, type) view, populated during Register().
+    // Exposed to the new GET /info/plugins endpoint. Order matches _activePlugins
+    // (insertion order, which mirrors the wrapper sort by ordinal).
+    public IReadOnlyList<PluginInfo> ActivePluginInfos => _activePluginInfos;
 
     // ========================================================================
     // LOAD
@@ -133,6 +144,7 @@ public sealed class PluginManager(
         _after.Clear();
         _activePlugins.Clear();
         _activeApiPlugins.Clear();
+        _activePluginInfos.Clear();
 
         // Python loads in directory order then sorts by ordinal within action_type
         // buckets. We match that so "ordinal" ordering works across hook plugins.
@@ -151,7 +163,12 @@ public sealed class PluginManager(
                     {
                         _activeApiPlugins.Add(apiInstance);
                         _activePlugins.Add(w.Shortname);
-                        log.LogInformation("PLUGIN_LOADED: {Shortname} (api)", w.Shortname);
+                        var apiVersion = ResolveVersion(apiInstance);
+                        _activePluginInfos.Add(new PluginInfo(w.Shortname, apiVersion, "api"));
+                        // Version is rendered verbatim (no leading "v") so a
+                        // git-describe-style "v0.8.68-…" doesn't double up to
+                        // "vv0.8.68-…", and a plain "1.2.3" stays unadorned.
+                        log.LogInformation("PLUGIN_LOADED: {Shortname} {Version} (api)", w.Shortname, apiVersion);
                     }
                     else
                     {
@@ -183,7 +200,9 @@ public sealed class PluginManager(
                         list.Add(loaded);
                     }
                     _activePlugins.Add(w.Shortname);
-                    log.LogInformation("PLUGIN_LOADED: {Shortname} (hook, {Listen})", w.Shortname, w.ListenTime);
+                    var hookVersion = ResolveVersion(hookInstance);
+                    _activePluginInfos.Add(new PluginInfo(w.Shortname, hookVersion, "hook"));
+                    log.LogInformation("PLUGIN_LOADED: {Shortname} {Version} (hook, {Listen})", w.Shortname, hookVersion, w.ListenTime);
                     break;
 
                 default:
@@ -395,8 +414,56 @@ public sealed class PluginManager(
     }
 
     // ========================================================================
+    // VERSION RESOLUTION
+    // ========================================================================
+
+    // Resolve a plugin's version following the same "baked into the binary"
+    // model dmart uses for itself (see Api/Info/ManifestHandler.cs):
+    //   1. Wrapper-supplied version (IPluginVersionSource): for native .so and
+    //      subprocess plugins, the source of truth is the external artifact —
+    //      the loader extracted it via dlsym(dmart_plugin_version) or from the
+    //      info-response JSON, then handed it to the wrapper at construction.
+    //   2. AssemblyInformationalVersion on the plugin's runtime-type assembly:
+    //      for in-process .NET plugins (the BuiltIn classes plus any
+    //      externally-loaded .dll), this reads the same attribute that
+    //      Api/Info/ManifestHandler.cs reads on dmart's own assembly. Built-in
+    //      plugins ship inside the dmart assembly so they inherit dmart's
+    //      version automatically — no per-plugin override needed.
+    //   3. AssemblyVersion fallback for assemblies that don't stamp the
+    //      informational variant.
+    //   4. "0.0.0" sentinel meaning "no version declared anywhere".
+    internal static string ResolveVersion(object pluginInstance)
+    {
+        if (pluginInstance is IPluginVersionSource src && !string.IsNullOrEmpty(src.PluginVersion))
+            return src.PluginVersion;
+
+        var asm = pluginInstance.GetType().Assembly;
+        var info = asm.GetCustomAttribute<AssemblyInformationalVersionAttribute>()?.InformationalVersion;
+        if (!string.IsNullOrEmpty(info))
+        {
+            // Mirrors ManifestHandler.ResolveVersion: dmart's build pipeline
+            // stamps "v0.8.70 branch=master date=2026-05-14" into the
+            // informational version and we want just the leading version token.
+            if (info.Contains("branch=", StringComparison.Ordinal))
+                return info.Split(' ', StringSplitOptions.RemoveEmptyEntries)[0];
+            return info;
+        }
+
+        var simple = asm.GetName().Version?.ToString();
+        if (!string.IsNullOrEmpty(simple)) return simple;
+
+        return "0.0.0";
+    }
+
+    // ========================================================================
     // INTERNAL STATE
     // ========================================================================
 
     private sealed record LoadedHook(PluginWrapper Wrapper, IHookPlugin Plugin);
 }
+
+// Public surface for the new GET /info/plugins endpoint. Fields:
+//   - Shortname: the plugin's stable identifier (matches config.json + dispatch)
+//   - Version: the resolved version string (see PluginManager.ResolveVersion)
+//   - Type: "hook" or "api" — the plugin's wire type
+public sealed record PluginInfo(string Shortname, string Version, string Type);
