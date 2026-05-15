@@ -95,7 +95,7 @@ mkdir -p ~/.dmart/plugins/my_hook
 cp my_hook.py ~/.dmart/plugins/my_hook/my_hook
 chmod +x ~/.dmart/plugins/my_hook/my_hook
 
-# Add config
+# Add config — see "Filter shape" below for the full vocabulary.
 cat > ~/.dmart/plugins/my_hook/config.json << 'EOF'
 {
   "shortname": "my_hook",
@@ -103,9 +103,9 @@ cat > ~/.dmart/plugins/my_hook/config.json << 'EOF'
   "type": "hook",
   "listen_time": "after",
   "filters": {
-    "subpaths": ["__ALL__"],
+    "subpaths": { "__all_spaces__": ["__all_subpaths__"] },
     "resource_types": ["content"],
-    "schema_shortnames": ["__ALL__"],
+    "schema_shortnames": [],
     "actions": ["create", "update", "delete"]
   }
 }
@@ -390,9 +390,9 @@ Build: `gcc -shared -fPIC -DPLUGIN_VERSION=\"1.0.0\" -o c_hook.so plugin.c`
   "ordinal": 100,
   "concurrent": true,
   "filters": {
-    "subpaths": ["__ALL__"],
+    "subpaths": { "__all_spaces__": ["__all_subpaths__"] },
     "resource_types": ["content"],
-    "schema_shortnames": ["__ALL__"],
+    "schema_shortnames": [],
     "actions": ["create", "update", "delete"]
   }
 }
@@ -406,10 +406,66 @@ Build: `gcc -shared -fPIC -DPLUGIN_VERSION=\"1.0.0\" -o c_hook.so plugin.c`
 | `listen_time` | `"before"` or `"after"` | Hook only. `before` can abort actions |
 | `ordinal` | int | Execution order (lower = first, default 9999) |
 | `concurrent` | bool | After-hooks: `true` = fire-and-forget (default) |
-| `filters.subpaths` | string[] | `"__ALL__"` or specific paths |
-| `filters.resource_types` | string[] | `"__ALL__"` or: content, folder, schema, user, etc. |
-| `filters.schema_shortnames` | string[] | `"__ALL__"` or specific schemas |
-| `filters.actions` | string[] | create, update, delete, move, lock, unlock, etc. |
+| `filters.subpaths` | object | Per-space subpath dict — see "Filter shape" below |
+| `filters.resource_types` | string[] | Empty = all, or list specific resource types |
+| `filters.schema_shortnames` | string[] | Empty = all, or list specific content schemas |
+| `filters.actions` | string[] | Empty = all, or: create, update, delete, move, lock, unlock, etc. |
+
+## Filter shape (permission-style)
+
+`filters.subpaths` is a **dictionary** keyed by space name. The same
+vocabulary the permission engine uses:
+
+| Sentinel | Meaning |
+|----------|---------|
+| `"__all_spaces__"` (as a key) | Match any space |
+| `"__all_subpaths__"` (in the value list) | Match any subpath under that space |
+| `"__current_user__"` (inside a pattern) | Replaced by the event's `user_shortname` |
+
+```json
+"filters": {
+  "subpaths": {
+    "myspace":          ["tickets", "issues"],
+    "shared":           ["__all_subpaths__"],
+    "__all_spaces__":   ["public"]
+  },
+  "resource_types":   ["content"],
+  "schema_shortnames": ["bug_report"],
+  "actions":          ["create", "update"]
+}
+```
+
+A subpath pattern is a hierarchical prefix: `"tickets"` matches event
+subpaths `"tickets"`, `"tickets/open"`, `"tickets/open/p1"` — but NOT
+`"ticketsearch"`. An **empty** `subpaths` dict means the plugin doesn't
+fire on any event; explicitly opt in to "everything" with
+`{ "__all_spaces__": ["__all_subpaths__"] }`.
+
+Empty `resource_types` / `schema_shortnames` / `actions` lists each
+mean "match every value of that dimension" — same convention as
+permissions. `schema_shortnames` is only consulted when the event's
+`resource_type` is `content`.
+
+### Migrating from the legacy flat-array shape
+
+Configs that still use `"subpaths": ["__ALL__"]` or `"__ALL__"` in
+`resource_types` / `schema_shortnames` will be **rejected at load** with
+a clear migration error. Convert:
+
+```diff
+-"subpaths": ["__ALL__"]
++"subpaths": { "__all_spaces__": ["__all_subpaths__"] }
+
+-"resource_types": ["__ALL__"]
++"resource_types": []
+
+-"schema_shortnames": ["__ALL__"]
++"schema_shortnames": []
+```
+
+The `always_active` flag (used to bypass the old per-space
+`active_plugins` opt-in) is gone — every plugin now self-declares
+its scope.
 
 ## Hook Lifecycle
 
@@ -429,19 +485,12 @@ After hooks (listen_time: "after")
   │ concurrent=false → awaited (failures logged, don't fail action)
 ```
 
-Hook plugins only fire for spaces that list them in `active_plugins`:
+The per-space `active_plugins` opt-in list **no longer exists** — a
+plugin fires for every event matched by its own `filters` block. The
+field on the `spaces` table is left in place for back-compat with older
+servers but is no longer read or written.
 
-```bash
-curl -X POST http://localhost:5099/managed/request \
-  -H "Authorization: Bearer $TOKEN" \
-  -H "Content-Type: application/json" \
-  -d '{"space_name":"myspace","request_type":"update","records":[{
-    "resource_type":"space","subpath":"/","shortname":"myspace",
-    "attributes":{"active_plugins":["my_hook","resource_folders_creation"]}
-  }]}'
-```
-
-API plugins do NOT need per-space activation — routes are always mounted if `is_active: true`.
+API plugins ignore `filters` entirely — routes are mounted if `is_active: true`.
 
 ## Directory Layout
 
