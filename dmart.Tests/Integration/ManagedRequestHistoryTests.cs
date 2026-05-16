@@ -181,21 +181,65 @@ public sealed class ManagedRequestHistoryTests : IClassFixture<DmartFactory>
     }
 
     [FactIfPg]
-    public async Task User_Delete_Does_Not_Add_New_History_Row()
+    public async Task User_Delete_Does_Not_Append_History_Row()
     {
-        // Two distinct claims live in this test:
-        //   1. Delete itself does NOT append a new history row.
-        //   2. Pre-existing history rows survive the delete (no FK cascade
-        //      from users → histories).
-        // The seed-update step makes both claims non-vacuous: without a real
-        // row in place beforehand, asserting Count after delete proves nothing
-        // about delete's behavior since the table was already empty.
+        // Delete itself MUST NOT add a row to histories: deletes don't have
+        // a meaningful {old, new} (the row is going away), and a delete-side
+        // audit row pointing at a resource that no longer exists clutters
+        // /managed/query?type=history with dangling entries.
         var caller = await AuthedCaller();
         var client = caller.Client;
         var users = _factory.Services.GetRequiredService<UserRepository>();
         var qsvc = _factory.Services.GetRequiredService<QueryService>();
 
-        var sn = $"udel_{Guid.NewGuid():N}"[..14];
+        var sn = $"udelap_{Guid.NewGuid():N}"[..14];
+        try
+        {
+            await CreateRecord(client, ResourceType.User, "/users", sn, new()
+            {
+                ["email"] = $"{sn}@test.local",
+                ["is_active"] = true,
+                ["language"] = "en",
+                ["is_email_verified"] = true,
+            });
+            // Pre-condition: history table is empty (creates don't audit).
+            (await QueryHistory(qsvc, "management", "/users", sn))
+                .Records!.Count.ShouldBe(0);
+
+            var deleteReq = new Request
+            {
+                RequestType = RequestType.Delete,
+                SpaceName = "management",
+                Records = new() { new() { ResourceType = ResourceType.User, Subpath = "/users", Shortname = sn } },
+            };
+            var deleteResp = await client.PostAsJsonAsync("/managed/request", deleteReq, DmartJsonContext.Default.Request);
+            deleteResp.StatusCode.ShouldBe(HttpStatusCode.OK);
+
+            // Still empty: delete contributed nothing.
+            (await QueryHistory(qsvc, "management", "/users", sn))
+                .Records!.Count.ShouldBe(0);
+        }
+        finally
+        {
+            try { await users.DeleteAsync(sn); } catch { }
+        }
+    }
+
+    [FactIfPg]
+    public async Task User_Delete_Preserves_Prior_History_Rows()
+    {
+        // The histories row's lifetime is decoupled from the user row's.
+        // No FK cascade from users → histories: a deleted user's audit
+        // trail survives so post-mortem queries on /managed/query?type=history
+        // for shortname=X still surface the row's history. Seed-update
+        // makes the claim non-vacuous — without it, asserting Count after
+        // delete proves nothing.
+        var caller = await AuthedCaller();
+        var client = caller.Client;
+        var users = _factory.Services.GetRequiredService<UserRepository>();
+        var qsvc = _factory.Services.GetRequiredService<QueryService>();
+
+        var sn = $"udelpr_{Guid.NewGuid():N}"[..14];
         try
         {
             await CreateRecord(client, ResourceType.User, "/users", sn, new()
@@ -227,7 +271,7 @@ public sealed class ManagedRequestHistoryTests : IClassFixture<DmartFactory>
             var deleteResp = await client.PostAsJsonAsync("/managed/request", deleteReq, DmartJsonContext.Default.Request);
             deleteResp.StatusCode.ShouldBe(HttpStatusCode.OK);
 
-            // Count unchanged: delete added nothing, prior row survived.
+            // Pre-existing row survives.
             (await QueryHistory(qsvc, "management", "/users", sn))
                 .Records!.Count.ShouldBe(1);
         }

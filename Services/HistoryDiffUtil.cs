@@ -296,11 +296,19 @@ internal static class HistoryDiffUtil
         return d;
     }
 
+    // For list-valued flatten entries (Role.Permissions,
+    // Permission.{ResourceTypes,Actions,Conditions,RestrictedFields},
+    // Space.{Mirrors,HideFolders,Languages}) the emitted diff surfaces the
+    // *entire* list before/after on any change, not the specific item(s)
+    // added or removed. Consumers compute the actual delta if they need it.
+    // Item-level deltas would require a different storage shape (multi-key
+    // or array-index path) and aren't what the current /managed/query?type=history
+    // contract promises — Python parity, intentional.
     private static Dictionary<string, object?> FlattenRole(Role r)
     {
         var d = FlattenMetasBase(r.IsActive, r.Slug, r.Displayname, r.Description, r.Tags, r.Payload,
             r.OwnerShortname, r.OwnerGroupShortname);
-        d["permissions"] = r.Permissions ?? new();
+        d["permissions"] = r.Permissions;
         return d;
     }
 
@@ -313,10 +321,19 @@ internal static class HistoryDiffUtil
         // rather than dumping the entire nested map under one key.
         foreach (var (k, v) in p.Subpaths)
             d[$"subpaths.{k}"] = v ?? new();
-        d["resource_types"] = p.ResourceTypes ?? new();
-        d["actions"] = p.Actions ?? new();
-        d["conditions"] = p.Conditions ?? new();
+        d["resource_types"] = p.ResourceTypes;
+        d["actions"] = p.Actions;
+        d["conditions"] = p.Conditions;
         d["restricted_fields"] = p.RestrictedFields ?? new();
+        // AllowedFieldsValues is Dict<string, object>; flatten one level
+        // mirroring Subpaths so a constraint change on a single field
+        // (e.g. allowed_fields_values.state changing its allow-list) shows
+        // up as one key in the diff rather than the whole map. This is
+        // security-meaningful — these constraints are what `allowed_fields_values`
+        // permissions use to gate writes, and audit needs to surface their
+        // mutation.
+        foreach (var (k, v) in p.AllowedFieldsValues ?? new())
+            d[$"allowed_fields_values.{k}"] = v;
         return d;
     }
 

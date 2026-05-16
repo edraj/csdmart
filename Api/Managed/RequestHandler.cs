@@ -702,6 +702,16 @@ public static class RequestHandler
                 // path already audits its own writes. The diff omits the
                 // password hash and the AttemptCount bookkeeping — see
                 // HistoryDiffUtil.ComputeUserDiff for the field list.
+                //
+                // The UpsertAsync → AppendAsync pair is intentionally NOT
+                // transactional, matching UserService.UpdateProfileAsync.
+                // Wrapping both in a single transaction would expand the
+                // lock scope across `users` + `histories` on every update
+                // and serialize unrelated writers. The tradeoff: if
+                // AppendAsync throws after UpsertAsync commits (PG hiccup,
+                // FK conflict, ct cancellation in between), the user row
+                // is updated but the audit row is missing. Acceptable for
+                // an audit trail that isn't itself a source of truth.
                 var userDiff = HistoryDiffUtil.ComputeUserDiff(existing, updated);
                 if (userDiff.Count > 0)
                     await history.AppendAsync(updated.SpaceName, updated.Subpath, updated.Shortname, actor, null, userDiff, ct);
