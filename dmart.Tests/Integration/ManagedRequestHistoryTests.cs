@@ -143,6 +143,20 @@ public sealed class ManagedRequestHistoryTests : IClassFixture<DmartFactory>
                 ["is_email_verified"] = true,
             });
 
+            // Update first so there's a real history row in play; without
+            // this, asserting Count == 0 after delete is vacuous (Create
+            // wrote no row to begin with).
+            var updateResp = await PostRequest(client, RequestType.Update, "management", new Record
+            {
+                ResourceType = ResourceType.User,
+                Subpath = "/users",
+                Shortname = sn,
+                Attributes = new() { ["email"] = $"upd_{sn}@test.local" },
+            });
+            updateResp.StatusCode.ShouldBe(HttpStatusCode.OK);
+            (await QueryHistory(qsvc, "management", "/users", sn))
+                .Records!.Count.ShouldBe(1);
+
             var deleteReq = new Request
             {
                 RequestType = RequestType.Delete,
@@ -152,9 +166,11 @@ public sealed class ManagedRequestHistoryTests : IClassFixture<DmartFactory>
             var deleteResp = await client.PostAsJsonAsync("/managed/request", deleteReq, DmartJsonContext.Default.Request);
             deleteResp.StatusCode.ShouldBe(HttpStatusCode.OK);
 
-            // Neither create nor delete touched history.
+            // Delete is a no-op for history: the update row persists (no
+            // FK cascade from users → histories) and no new row is added
+            // for the delete itself.
             (await QueryHistory(qsvc, "management", "/users", sn))
-                .Records!.Count.ShouldBe(0);
+                .Records!.Count.ShouldBe(1);
         }
         finally
         {

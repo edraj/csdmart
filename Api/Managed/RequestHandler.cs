@@ -148,7 +148,7 @@ public static class RequestHandler
                         RequestType.Update or RequestType.Patch =>
                             await DispatchUpdateAsync(rec, req.SpaceName, actor,
                                 entries, users, access, spaces, attachments, hasher, perms, uniqueness,
-                                history, managementSpace, ct),
+                                history, ct),
                         RequestType.Delete =>
                             await DispatchDeleteAsync(rec, req.SpaceName, actor, managementSpace,
                                 entries, users, access, spaces, attachments, perms, ct),
@@ -607,7 +607,7 @@ public static class RequestHandler
         EntryService entries, UserRepository users, AccessRepository access,
         SpaceRepository spaces, AttachmentRepository attachments, PasswordHasher hasher,
         PermissionService perms, UniquenessValidator uniqueness,
-        HistoryRepository history, string managementSpace, CancellationToken ct)
+        HistoryRepository history, CancellationToken ct)
     {
         var locator = new Locator(rec.ResourceType, space, rec.Subpath, rec.Shortname);
 
@@ -675,7 +675,7 @@ public static class RequestHandler
                 // HistoryDiffUtil.ComputeUserDiff for the field list.
                 var userDiff = HistoryDiffUtil.ComputeUserDiff(existing, updated);
                 if (userDiff.Count > 0)
-                    await history.AppendAsync(managementSpace, "/users", updated.Shortname, actor, null, userDiff, ct);
+                    await history.AppendAsync(updated.SpaceName, updated.Subpath, updated.Shortname, actor, null, userDiff, ct);
 
                 return (Response.Ok(),
                     WithCreatedMetaAttributes(rec, updated.Uuid, updated.CreatedAt, updated.UpdatedAt, updated.OwnerShortname));
