@@ -268,13 +268,16 @@ internal static class HistoryDiffUtil
 
     private static Dictionary<string, object?> FlattenMetasBase(
         bool isActive, string? slug, Translation? displayname, Translation? description,
-        List<string>? tags, Payload? payload)
+        List<string>? tags, Payload? payload,
+        string ownerShortname, string? ownerGroupShortname)
     {
         var d = new Dictionary<string, object?>(StringComparer.Ordinal)
         {
             ["is_active"] = isActive,
             ["slug"] = slug,
             ["tags"] = tags ?? new(),
+            ["owner_shortname"] = ownerShortname,
+            ["owner_group_shortname"] = ownerGroupShortname,
         };
         if (displayname is not null)
         {
@@ -295,22 +298,21 @@ internal static class HistoryDiffUtil
 
     private static Dictionary<string, object?> FlattenRole(Role r)
     {
-        var d = FlattenMetasBase(r.IsActive, r.Slug, r.Displayname, r.Description, r.Tags, r.Payload);
+        var d = FlattenMetasBase(r.IsActive, r.Slug, r.Displayname, r.Description, r.Tags, r.Payload,
+            r.OwnerShortname, r.OwnerGroupShortname);
         d["permissions"] = r.Permissions ?? new();
         return d;
     }
 
     private static Dictionary<string, object?> FlattenPermission(Permission p)
     {
-        var d = FlattenMetasBase(p.IsActive, p.Slug, p.Displayname, p.Description, p.Tags, p.Payload);
+        var d = FlattenMetasBase(p.IsActive, p.Slug, p.Displayname, p.Description, p.Tags, p.Payload,
+            p.OwnerShortname, p.OwnerGroupShortname);
         // Subpaths is Dict<string, List<string>>; flatten one level so a
         // changed entry surfaces as e.g. `subpaths./content: {old, new}`
         // rather than dumping the entire nested map under one key.
-        if (p.Subpaths is not null)
-        {
-            foreach (var (k, v) in p.Subpaths)
-                d[$"subpaths.{k}"] = v ?? new();
-        }
+        foreach (var (k, v) in p.Subpaths)
+            d[$"subpaths.{k}"] = v ?? new();
         d["resource_types"] = p.ResourceTypes ?? new();
         d["actions"] = p.Actions ?? new();
         d["conditions"] = p.Conditions ?? new();
@@ -320,7 +322,8 @@ internal static class HistoryDiffUtil
 
     private static Dictionary<string, object?> FlattenSpace(Space s)
     {
-        var d = FlattenMetasBase(s.IsActive, s.Slug, s.Displayname, s.Description, s.Tags, s.Payload);
+        var d = FlattenMetasBase(s.IsActive, s.Slug, s.Displayname, s.Description, s.Tags, s.Payload,
+            s.OwnerShortname, s.OwnerGroupShortname);
         d["root_registration_signature"] = s.RootRegistrationSignature;
         d["primary_website"] = s.PrimaryWebsite;
         d["indexing_enabled"] = s.IndexingEnabled;
@@ -334,5 +337,4 @@ internal static class HistoryDiffUtil
         d["ordinal"] = s.Ordinal;
         return d;
     }
-
 }
