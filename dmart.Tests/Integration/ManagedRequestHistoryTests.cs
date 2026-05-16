@@ -34,7 +34,8 @@ public sealed class ManagedRequestHistoryTests : IClassFixture<DmartFactory>
     [FactIfPg]
     public async Task User_Update_Writes_OldNew_Diff_History_Row()
     {
-        var client = await AuthedClient();
+        var caller = await AuthedCaller();
+        var client = caller.Client;
         var users = _factory.Services.GetRequiredService<UserRepository>();
         var qsvc = _factory.Services.GetRequiredService<QueryService>();
 
@@ -76,6 +77,59 @@ public sealed class ManagedRequestHistoryTests : IClassFixture<DmartFactory>
             updateDiff.TryGetProperty("language", out var langUpd).ShouldBeTrue();
             langUpd.GetProperty("old").GetString().ShouldBe("english");
             langUpd.GetProperty("new").GetString().ShouldBe("arabic");
+            // Audit attribution: the admin caller, not the target user — an
+            // admin path that recorded the target's shortname would leak no
+            // information about who actually performed the write.
+            afterUpdate.Records[0].Attributes!["owner_shortname"]!.ToString()
+                .ShouldBe(caller.Shortname);
+        }
+        finally
+        {
+            try { await users.DeleteAsync(sn); } catch { }
+        }
+    }
+
+    [FactIfPg]
+    public async Task User_Patch_Writes_History_Row()
+    {
+        // The dispatcher matches `RequestType.Update or RequestType.Patch` in
+        // a single arm (RequestHandler.DispatchUpdateAsync), so Update is the
+        // de facto Patch test too — but a regression that broke only one of
+        // the two arms (e.g. an enum reshuffle or a new arm split) would slip
+        // past tests that only exercise Update. This pins Patch independently.
+        var caller = await AuthedCaller();
+        var client = caller.Client;
+        var users = _factory.Services.GetRequiredService<UserRepository>();
+        var qsvc = _factory.Services.GetRequiredService<QueryService>();
+
+        var sn = $"upatch_{Guid.NewGuid():N}"[..14];
+        try
+        {
+            await CreateRecord(client, ResourceType.User, "/users", sn, new()
+            {
+                ["email"] = $"{sn}@test.local",
+                ["is_active"] = true,
+                ["language"] = "en",
+                ["is_email_verified"] = true,
+            });
+
+            var patchResp = await PostRequest(client, RequestType.Patch, "management", new Record
+            {
+                ResourceType = ResourceType.User,
+                Subpath = "/users",
+                Shortname = sn,
+                Attributes = new() { ["email"] = $"patched_{sn}@test.local" },
+            });
+            patchResp.StatusCode.ShouldBe(HttpStatusCode.OK);
+
+            var hist = await QueryHistory(qsvc, "management", "/users", sn);
+            hist.Records!.Count.ShouldBe(1);
+            var diff = (JsonElement)hist.Records[0].Attributes!["diff"]!;
+            diff.TryGetProperty("email", out var emailDiff).ShouldBeTrue();
+            emailDiff.GetProperty("old").GetString().ShouldBe($"{sn}@test.local");
+            emailDiff.GetProperty("new").GetString().ShouldBe($"patched_{sn}@test.local");
+            hist.Records[0].Attributes!["owner_shortname"]!.ToString()
+                .ShouldBe(caller.Shortname);
         }
         finally
         {
@@ -89,7 +143,8 @@ public sealed class ManagedRequestHistoryTests : IClassFixture<DmartFactory>
         // Regression: an update that resolves to zero diff (re-posting the
         // current state) must not pollute the audit log with empty rows.
         // Create writes no history either, so the table stays empty.
-        var client = await AuthedClient();
+        var caller = await AuthedCaller();
+        var client = caller.Client;
         var users = _factory.Services.GetRequiredService<UserRepository>();
         var qsvc = _factory.Services.GetRequiredService<QueryService>();
 
@@ -126,9 +181,17 @@ public sealed class ManagedRequestHistoryTests : IClassFixture<DmartFactory>
     }
 
     [FactIfPg]
-    public async Task User_Delete_Does_Not_Write_History()
+    public async Task User_Delete_Does_Not_Add_New_History_Row()
     {
-        var client = await AuthedClient();
+        // Two distinct claims live in this test:
+        //   1. Delete itself does NOT append a new history row.
+        //   2. Pre-existing history rows survive the delete (no FK cascade
+        //      from users → histories).
+        // The seed-update step makes both claims non-vacuous: without a real
+        // row in place beforehand, asserting Count after delete proves nothing
+        // about delete's behavior since the table was already empty.
+        var caller = await AuthedCaller();
+        var client = caller.Client;
         var users = _factory.Services.GetRequiredService<UserRepository>();
         var qsvc = _factory.Services.GetRequiredService<QueryService>();
 
@@ -143,9 +206,7 @@ public sealed class ManagedRequestHistoryTests : IClassFixture<DmartFactory>
                 ["is_email_verified"] = true,
             });
 
-            // Update first so there's a real history row in play; without
-            // this, asserting Count == 0 after delete is vacuous (Create
-            // wrote no row to begin with).
+            // Seed: one update emits one history row.
             var updateResp = await PostRequest(client, RequestType.Update, "management", new Record
             {
                 ResourceType = ResourceType.User,
@@ -166,9 +227,7 @@ public sealed class ManagedRequestHistoryTests : IClassFixture<DmartFactory>
             var deleteResp = await client.PostAsJsonAsync("/managed/request", deleteReq, DmartJsonContext.Default.Request);
             deleteResp.StatusCode.ShouldBe(HttpStatusCode.OK);
 
-            // Delete is a no-op for history: the update row persists (no
-            // FK cascade from users → histories) and no new row is added
-            // for the delete itself.
+            // Count unchanged: delete added nothing, prior row survived.
             (await QueryHistory(qsvc, "management", "/users", sn))
                 .Records!.Count.ShouldBe(1);
         }
@@ -183,7 +242,8 @@ public sealed class ManagedRequestHistoryTests : IClassFixture<DmartFactory>
     [FactIfPg]
     public async Task Role_Update_Writes_History_Under_MgmtRoles()
     {
-        var client = await AuthedClient();
+        var caller = await AuthedCaller();
+        var client = caller.Client;
         var access = _factory.Services.GetRequiredService<AccessRepository>();
         var qsvc = _factory.Services.GetRequiredService<QueryService>();
 
@@ -228,6 +288,8 @@ public sealed class ManagedRequestHistoryTests : IClassFixture<DmartFactory>
             iaDiff.GetProperty("old").GetBoolean().ShouldBeTrue();
             iaDiff.GetProperty("new").GetBoolean().ShouldBeFalse();
             updateDiff.TryGetProperty("tags", out _).ShouldBeTrue();
+            afterUpdate.Records[0].Attributes!["owner_shortname"]!.ToString()
+                .ShouldBe(caller.Shortname);
         }
         finally
         {
@@ -241,7 +303,8 @@ public sealed class ManagedRequestHistoryTests : IClassFixture<DmartFactory>
     [FactIfPg]
     public async Task Permission_Update_Writes_History_With_FieldLevel_Diff()
     {
-        var client = await AuthedClient();
+        var caller = await AuthedCaller();
+        var client = caller.Client;
         var access = _factory.Services.GetRequiredService<AccessRepository>();
         var qsvc = _factory.Services.GetRequiredService<QueryService>();
 
@@ -275,6 +338,8 @@ public sealed class ManagedRequestHistoryTests : IClassFixture<DmartFactory>
             var diff = (JsonElement)afterUpdate.Records[0].Attributes!["diff"]!;
             diff.TryGetProperty("actions", out var actDiff).ShouldBeTrue();
             actDiff.GetProperty("new").GetArrayLength().ShouldBe(2);
+            afterUpdate.Records[0].Attributes!["owner_shortname"]!.ToString()
+                .ShouldBe(caller.Shortname);
         }
         finally
         {
@@ -292,7 +357,8 @@ public sealed class ManagedRequestHistoryTests : IClassFixture<DmartFactory>
         // UPDATE path which is the original bug surface for spaces. The
         // seed-then-update flow still confirms the dispatch path writes
         // history that's queryable via /managed/query?type=history.
-        var client = await AuthedClient();
+        var caller = await AuthedCaller();
+        var client = caller.Client;
         var spaces = _factory.Services.GetRequiredService<SpaceRepository>();
         var qsvc = _factory.Services.GetRequiredService<QueryService>();
 
@@ -331,6 +397,8 @@ public sealed class ManagedRequestHistoryTests : IClassFixture<DmartFactory>
             pwDiff.GetProperty("new").GetString().ShouldBe("https://example.test");
             diff.TryGetProperty("icon", out var iconDiff).ShouldBeTrue();
             iconDiff.GetProperty("new").GetString().ShouldBe("settings");
+            hist.Records[0].Attributes!["owner_shortname"]!.ToString()
+                .ShouldBe(caller.Shortname);
         }
         finally
         {
@@ -340,11 +408,13 @@ public sealed class ManagedRequestHistoryTests : IClassFixture<DmartFactory>
 
     // ==================== helpers ====================
 
-    private async Task<HttpClient> AuthedClient()
-    {
-        var u = await _factory.CreateLoggedInUserAsync();
-        return u.Client;
-    }
+    // Returns the full TestUser (Client + Shortname) so tests can pin the
+    // `owner_shortname` column on emitted history rows against the calling
+    // user. Audit attribution is the load-bearing security claim for these
+    // tests — asserting only on `diff` would pass even if the dispatcher
+    // recorded the target shortname instead of the admin caller.
+    private Task<DmartFactory.TestUser> AuthedCaller() =>
+        _factory.CreateLoggedInUserAsync();
 
     private static async Task CreateRecord(HttpClient client, ResourceType rt, string subpath, string shortname,
                                             Dictionary<string, object> attrs)
