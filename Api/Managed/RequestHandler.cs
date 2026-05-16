@@ -33,6 +33,7 @@ public static class RequestHandler
                                   Plugins.PluginManager plugins, PermissionService perms,
                                   InvitationService invitations,
                                   UniquenessValidator uniqueness,
+                                  HistoryRepository history,
                                   IOptions<DmartSettings> dmartSettings,
                                   HttpContext http, CancellationToken ct) =>
             {
@@ -146,7 +147,8 @@ public static class RequestHandler
                                 entries, users, access, spaces, attachments, hasher, perms, invitations, uniqueness, ct),
                         RequestType.Update or RequestType.Patch =>
                             await DispatchUpdateAsync(rec, req.SpaceName, actor,
-                                entries, users, access, spaces, attachments, hasher, perms, uniqueness, ct),
+                                entries, users, access, spaces, attachments, hasher, perms, uniqueness,
+                                history, managementSpace, ct),
                         RequestType.Delete =>
                             await DispatchDeleteAsync(rec, req.SpaceName, actor, managementSpace,
                                 entries, users, access, spaces, attachments, perms, ct),
@@ -604,7 +606,8 @@ public static class RequestHandler
         Record rec, string space, string actor,
         EntryService entries, UserRepository users, AccessRepository access,
         SpaceRepository spaces, AttachmentRepository attachments, PasswordHasher hasher,
-        PermissionService perms, UniquenessValidator uniqueness, CancellationToken ct)
+        PermissionService perms, UniquenessValidator uniqueness,
+        HistoryRepository history, string managementSpace, CancellationToken ct)
     {
         var locator = new Locator(rec.ResourceType, space, rec.Subpath, rec.Shortname);
 
@@ -662,6 +665,18 @@ public static class RequestHandler
                     UpdatedAt = TimeUtils.Now(),
                 };
                 await users.UpsertAsync(updated, ct);
+
+                // Append a history row mirroring the self-service profile
+                // update path (UserService.UpdateProfileAsync). Without this
+                // /managed/query?type=history is silent for users edited via
+                // the admin /managed/request endpoint even though the entry
+                // path already audits its own writes. The diff omits the
+                // password hash and the AttemptCount bookkeeping — see
+                // HistoryDiffUtil.ComputeUserDiff for the field list.
+                var userDiff = HistoryDiffUtil.ComputeUserDiff(existing, updated);
+                if (userDiff.Count > 0)
+                    await history.AppendAsync(managementSpace, "/users", updated.Shortname, actor, null, userDiff, ct);
+
                 return (Response.Ok(),
                     WithCreatedMetaAttributes(rec, updated.Uuid, updated.CreatedAt, updated.UpdatedAt, updated.OwnerShortname));
             }
@@ -713,6 +728,11 @@ public static class RequestHandler
                     UpdatedAt = TimeUtils.Now(),
                 };
                 await spaces.UpsertAsync(updated, ct);
+
+                var spaceDiff = HistoryDiffUtil.ComputeSpaceDiff(existing, updated);
+                if (spaceDiff.Count > 0)
+                    await history.AppendAsync(updated.SpaceName, updated.Subpath, updated.Shortname, actor, null, spaceDiff, ct);
+
                 return (Response.Ok(),
                     WithCreatedMetaAttributes(rec, updated.Uuid, updated.CreatedAt, updated.UpdatedAt, updated.OwnerShortname));
             }
@@ -743,6 +763,11 @@ public static class RequestHandler
                     UpdatedAt = TimeUtils.Now(),
                 };
                 await access.UpsertRoleAsync(updated, ct);
+
+                var roleDiff = HistoryDiffUtil.ComputeRoleDiff(existing, updated);
+                if (roleDiff.Count > 0)
+                    await history.AppendAsync(updated.SpaceName, updated.Subpath, updated.Shortname, actor, null, roleDiff, ct);
+
                 return (Response.Ok(),
                     WithCreatedMetaAttributes(rec, updated.Uuid, updated.CreatedAt, updated.UpdatedAt, updated.OwnerShortname));
             }
@@ -780,6 +805,11 @@ public static class RequestHandler
                     UpdatedAt = TimeUtils.Now(),
                 };
                 await access.UpsertPermissionAsync(updated, ct);
+
+                var permDiff = HistoryDiffUtil.ComputePermissionDiff(existing, updated);
+                if (permDiff.Count > 0)
+                    await history.AppendAsync(updated.SpaceName, updated.Subpath, updated.Shortname, actor, null, permDiff, ct);
+
                 return (Response.Ok(),
                     WithCreatedMetaAttributes(rec, updated.Uuid, updated.CreatedAt, updated.UpdatedAt, updated.OwnerShortname));
             }

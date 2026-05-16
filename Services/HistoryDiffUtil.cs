@@ -226,4 +226,113 @@ internal static class HistoryDiffUtil
             FlattenJson(body, "payload.body", d);
         return d;
     }
+
+    // ----- Role / Permission / Space diffs -----
+    //
+    // The User/Role/Permission/Space CRUD path on /managed/request did not
+    // emit history rows before; entries went through EntryService which
+    // already wrote diffs, but the dedicated repository branches in
+    // RequestHandler.DispatchUpdateAsync called UpsertAsync straight without
+    // computing a diff. These helpers + DiffFromMaps below let the dispatcher
+    // build the same `{field: {old, new}}` shape clients already consume from
+    // /managed/query?type=history for entries and self-service profile edits.
+
+    public static Dictionary<string, object> ComputeRoleDiff(Role oldR, Role newR)
+        => DiffFromMaps(FlattenRole(oldR), FlattenRole(newR));
+
+    public static Dictionary<string, object> ComputePermissionDiff(Permission oldP, Permission newP)
+        => DiffFromMaps(FlattenPermission(oldP), FlattenPermission(newP));
+
+    public static Dictionary<string, object> ComputeSpaceDiff(Space oldS, Space newS)
+        => DiffFromMaps(FlattenSpace(oldS), FlattenSpace(newS));
+
+    private static Dictionary<string, object> DiffFromMaps(
+        Dictionary<string, object?> oldFlat, Dictionary<string, object?> newFlat)
+    {
+        var keys = new HashSet<string>(oldFlat.Keys, StringComparer.Ordinal);
+        keys.UnionWith(newFlat.Keys);
+        var diff = new Dictionary<string, object>(StringComparer.Ordinal);
+        foreach (var k in keys)
+        {
+            oldFlat.TryGetValue(k, out var o);
+            newFlat.TryGetValue(k, out var n);
+            if (ValuesEqual(o, n)) continue;
+            diff[k] = new Dictionary<string, object?>(StringComparer.Ordinal)
+            {
+                ["old"] = o,
+                ["new"] = n,
+            };
+        }
+        return diff;
+    }
+
+    private static Dictionary<string, object?> FlattenMetasBase(
+        bool isActive, string? slug, Translation? displayname, Translation? description,
+        List<string>? tags, Payload? payload)
+    {
+        var d = new Dictionary<string, object?>(StringComparer.Ordinal)
+        {
+            ["is_active"] = isActive,
+            ["slug"] = slug,
+            ["tags"] = tags ?? new(),
+        };
+        if (displayname is not null)
+        {
+            d["displayname.en"] = displayname.En;
+            d["displayname.ar"] = displayname.Ar;
+            d["displayname.ku"] = displayname.Ku;
+        }
+        if (description is not null)
+        {
+            d["description.en"] = description.En;
+            d["description.ar"] = description.Ar;
+            d["description.ku"] = description.Ku;
+        }
+        if (payload?.Body is JsonElement body)
+            FlattenJson(body, "payload.body", d);
+        return d;
+    }
+
+    private static Dictionary<string, object?> FlattenRole(Role r)
+    {
+        var d = FlattenMetasBase(r.IsActive, r.Slug, r.Displayname, r.Description, r.Tags, r.Payload);
+        d["permissions"] = r.Permissions ?? new();
+        return d;
+    }
+
+    private static Dictionary<string, object?> FlattenPermission(Permission p)
+    {
+        var d = FlattenMetasBase(p.IsActive, p.Slug, p.Displayname, p.Description, p.Tags, p.Payload);
+        // Subpaths is Dict<string, List<string>>; flatten one level so a
+        // changed entry surfaces as e.g. `subpaths./content: {old, new}`
+        // rather than dumping the entire nested map under one key.
+        if (p.Subpaths is not null)
+        {
+            foreach (var (k, v) in p.Subpaths)
+                d[$"subpaths.{k}"] = v ?? new();
+        }
+        d["resource_types"] = p.ResourceTypes ?? new();
+        d["actions"] = p.Actions ?? new();
+        d["conditions"] = p.Conditions ?? new();
+        d["restricted_fields"] = p.RestrictedFields ?? new();
+        return d;
+    }
+
+    private static Dictionary<string, object?> FlattenSpace(Space s)
+    {
+        var d = FlattenMetasBase(s.IsActive, s.Slug, s.Displayname, s.Description, s.Tags, s.Payload);
+        d["root_registration_signature"] = s.RootRegistrationSignature;
+        d["primary_website"] = s.PrimaryWebsite;
+        d["indexing_enabled"] = s.IndexingEnabled;
+        d["capture_misses"] = s.CaptureMisses;
+        d["check_health"] = s.CheckHealth;
+        d["languages"] = (s.Languages ?? new()).Select(JsonbHelpers.EnumMember).ToList();
+        d["icon"] = s.Icon;
+        d["mirrors"] = s.Mirrors ?? new();
+        d["hide_folders"] = s.HideFolders ?? new();
+        d["hide_space"] = s.HideSpace;
+        d["ordinal"] = s.Ordinal;
+        return d;
+    }
+
 }
