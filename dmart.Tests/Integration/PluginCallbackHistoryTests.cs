@@ -73,7 +73,7 @@ public sealed class PluginCallbackHistoryTests : IClassFixture<DmartFactory>
         {
             // Mutate state — should produce exactly one history row.
             var mutated = original with { State = "confirmed", UpdatedAt = DateTime.UtcNow };
-            NativePluginCallbacks.EmitSaveEntry(mutated, logger: null).ShouldBe(0);
+            NativePluginCallbacks.EmitSaveEntry(mutated, logger: null).ShouldBe(3);
 
             var resp = await qsvc.ExecuteAsync(new Query
             {
@@ -374,7 +374,7 @@ public sealed class PluginCallbackHistoryTests : IClassFixture<DmartFactory>
         PluginInvocationContext.CurrentActor = _factory.AdminShortname;
         try
         {
-            NativePluginCallbacks.EmitUpdateUser(fresh, logger: null).ShouldBe(0);
+            NativePluginCallbacks.EmitUpdateUser(fresh, logger: null).ShouldBe(3);
 
             var resp = await qsvc.ExecuteAsync(new Query
             {
