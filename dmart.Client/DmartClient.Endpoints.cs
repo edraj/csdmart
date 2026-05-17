@@ -189,11 +189,13 @@ public sealed partial class DmartClient
 
     // POST /managed/resources_from_csv/{resource_type}/{space}/{subpath} —
     // bulk-create entries from a CSV file. Multipart upload, same content
-    // structure as UploadWithPayloadAsync.
+    // structure as UploadWithPayloadAsync. Pass isUpdate=true to deep-merge
+    // each row's columns into the existing entry's payload.body instead of
+    // creating new entries.
     public async Task<Response> ResourcesFromCsvAsync(
         ResourceType resourceType, string spaceName, string subpath,
         byte[] csvBytes, string csvFileName = "import.csv",
-        string schemaShortname = "", CancellationToken ct = default)
+        string schemaShortname = "", bool isUpdate = false, CancellationToken ct = default)
     {
         var rt = ResourceTypeWire(resourceType);
         subpath = NormalizeSubpath(subpath).TrimStart('/');
@@ -201,6 +203,7 @@ public sealed partial class DmartClient
             ? $"/managed/resources_from_csv/{rt}/{spaceName}"
             : $"/managed/resources_from_csv/{rt}/{spaceName}/{subpath}";
         if (!string.IsNullOrEmpty(schemaShortname)) path += $"/{schemaShortname}";
+        if (isUpdate) path += "?is_update=true";
 
         using var form = new MultipartFormDataContent();
         var fileContent = new ByteArrayContent(csvBytes);
