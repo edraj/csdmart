@@ -187,7 +187,8 @@ public sealed class DmartClient : IDisposable
         await using var fs = File.OpenRead(filePath);
         form.Add(new StreamContent(fs), "resources_file", Path.GetFileName(filePath));
         var path = $"/managed/resources_from_csv/{resourceType}/{CurrentSpace}/{subpath}/{schemaShortname}";
-        if (isUpdate) path += "?is_update=true";
+        // `?` if no existing query string, `&` if one already present.
+        if (isUpdate) path += (path.Contains('?') ? "&" : "?") + "is_update=true";
         var resp = await SendWithRefreshAsync(() => _http.PostAsync(path, form));
         return await ParseAsync(resp);
     }

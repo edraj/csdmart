@@ -137,6 +137,11 @@ public sealed class CsvService(QueryService queries, EntryService entries)
                 // gets touched. Missing shortnames surface as OBJECT_NOT_FOUND
                 // in the row-level failed list — symmetric with the create
                 // branch's SHORTNAME_ALREADY_EXIST.
+                //
+                // isBulkImport: true mirrors the CreateAsync call below so a
+                // 10k-row CSV update produces one HTTP-level audit log line
+                // instead of 10k per-row history rows. AuditPlugin reads
+                // Event.IsBulkImport to decide whether to skip.
                 var patchAttrs = new Dictionary<string, object>
                 {
                     ["payload"] = new Dictionary<string, object>
@@ -145,7 +150,8 @@ public sealed class CsvService(QueryService queries, EntryService entries)
                     },
                 };
                 var locator = new Locator(resourceType, spaceName, subpath, shortname);
-                var updateResult = await entries.UpdateAsync(locator, patchAttrs, actor, ct);
+                var updateResult = await entries.UpdateAsync(locator, patchAttrs, actor, ct,
+                    isBulkImport: true);
                 if (updateResult.IsOk) inserted++;
                 else failed.Add(new()
                 {
