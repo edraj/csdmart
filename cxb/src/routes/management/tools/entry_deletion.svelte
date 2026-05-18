@@ -91,6 +91,9 @@
     let isDeletingUser: boolean = $state(false);
 
     let lastFetchedShortname: string | null = $state(null);
+    let fetchedAll: boolean = $state(false);
+
+    const OWNED_PAGE_SIZE = 1000;
 
     const selectedUser = $derived(
         userMatches.find((u) => u.shortname === selectedUserShortname) ?? null,
@@ -173,40 +176,62 @@
 
     async function loadOwnedEntries(userShortname: string) {
         ownedSearched = false;
+        fetchedAll = false;
+        let allFetched = true;
         try {
             const spacesResp = await getSpaces();
             const spaceList = spacesResp?.records ?? [];
             const results = await Promise.all(
                 spaceList.map(async (space: any) => {
-                    try {
-                        const res = await Dmart.query({
-                            type: QueryType.search,
-                            space_name: space.shortname,
-                            subpath: "/",
-                            exact_subpath: false,
-                            search: `@owner_shortname:${userShortname}`,
-                            retrieve_json_payload: false,
-                            limit: 1000,
-                            offset: 0,
-                        });
-                        return (res?.records ?? []).map((r: any) => ({
-                            key: `${space.shortname}|${r.subpath ?? "/"}|${r.shortname}`,
-                            space_name: space.shortname,
-                            subpath: r.subpath ?? "/",
-                            shortname: r.shortname,
-                            resource_type: r.resource_type as ResourceType,
-                            raw: r,
-                        }));
-                    } catch (e) {
-                        return [];
+                    // Paginate per space — a user owning more than one page of
+                    // entries in a single space must not be silently truncated.
+                    // We stop when a page returns fewer than the page size, or
+                    // when one page throws (and mark allFetched=false so the
+                    // post-delete user-account prompt can't false-positive).
+                    const acc: OwnedEntry[] = [];
+                    let offset = 0;
+                    while (true) {
+                        try {
+                            const res = await Dmart.query({
+                                type: QueryType.search,
+                                space_name: space.shortname,
+                                subpath: "/",
+                                exact_subpath: false,
+                                search: `@owner_shortname:${userShortname}`,
+                                retrieve_json_payload: false,
+                                limit: OWNED_PAGE_SIZE,
+                                offset,
+                            });
+                            const records = res?.records ?? [];
+                            for (const r of records) {
+                                acc.push({
+                                    key: `${space.shortname}|${r.subpath ?? "/"}|${r.shortname}`,
+                                    space_name: space.shortname,
+                                    subpath: r.subpath ?? "/",
+                                    shortname: r.shortname,
+                                    resource_type: r.resource_type as ResourceType,
+                                    raw: r,
+                                });
+                            }
+                            if (records.length < OWNED_PAGE_SIZE) {
+                                break;
+                            }
+                            offset += OWNED_PAGE_SIZE;
+                        } catch (e) {
+                            allFetched = false;
+                            break;
+                        }
                     }
+                    return acc;
                 }),
             );
             ownedEntries = results.flat();
         } catch (e) {
             showToast(Level.warn, "Failed to load owned entries");
             ownedEntries = [];
+            allFetched = false;
         }
+        fetchedAll = allFetched;
         ownedSearched = true;
     }
 
@@ -384,9 +409,13 @@
     }
 
     function maybePromptDeleteUser() {
+        // `fetchedAll` is required so a paginated search that bailed out part-way
+        // (or hit an error mid-pages) can't trigger a false "all entries gone"
+        // signal. The in-memory ownedEntries list reflects only what we saw.
         if (
             userEntry &&
             selectedUser &&
+            fetchedAll &&
             ownedEntries.length === 0 &&
             failedDeletes.length === 0 &&
             lastRunFailed === 0 &&

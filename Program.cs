@@ -1442,62 +1442,62 @@ Dmart.DataAdapters.Sql.QueryHelper.SetLogger(app.Services.GetRequiredService<ILo
 // Secure flags derive from the proxy→backend leg (usually plain HTTP).
 app.UseForwardedHeaders();
 
-// Exception handler
+// Exception handler.
+// PG metadata (sqlstate, table, constraint, column, hint, MessageText)
+// is kept in the server log for ops triage but never leaked to the wire —
+// those fields expose schema internals and constraint names. The client
+// response stays a minimal {code, message, type, info:[{cid}]} envelope
+// matching the redacted style of the catch-all handler below.
+static async Task WriteDbFailureAsync(HttpContext ctx, int httpStatus, int code, string message)
+{
+    if (ctx.Response.HasStarted) return;
+    var cid = ctx.Response.Headers["X-Correlation-ID"].ToString();
+    ctx.Response.StatusCode = httpStatus;
+    ctx.Response.ContentType = "application/json";
+    var body = Dmart.Models.Api.Response.Fail(code, message, ErrorTypes.Db,
+        new List<Dictionary<string, object>> { new() { ["cid"] = cid } });
+    await ctx.Response.WriteAsJsonAsync(body, DmartJsonContext.Default.Response);
+}
+
 app.Use(async (ctx, next) =>
 {
     try { await next(); }
     catch (Npgsql.PostgresException ex)
     {
-        // PG server-side error (constraint violation, bad SQL, etc). Emit the
-        // canonical envelope with type="db" so clients branch the same way
-        // they do for explicit Result.Fail(..., ErrorTypes.Db) responses.
-        // PG's MessageText goes in `message`; structured detail (sqlstate,
-        // constraint, table, hint, cid) goes in `info` so callers can branch
-        // on the constraint without parsing the message.
         var cid = ctx.Response.Headers["X-Correlation-ID"].ToString();
         var logger = ctx.RequestServices.GetService<ILoggerFactory>()?.CreateLogger("ExceptionHandler");
-        logger?.LogError(ex, "Postgres error cid={Cid} sqlstate={SqlState}", cid, ex.SqlState);
-        if (!ctx.Response.HasStarted)
+        logger?.LogError(ex,
+            "Postgres error cid={Cid} sqlstate={SqlState} table={Table} constraint={Constraint}",
+            cid, ex.SqlState, ex.TableName, ex.ConstraintName);
+        if (ex.SqlState == "23505")
         {
-            var isConflict = ex.SqlState == "23505";
-            ctx.Response.StatusCode = isConflict
-                ? StatusCodes.Status409Conflict
-                : StatusCodes.Status500InternalServerError;
-            ctx.Response.ContentType = "application/json";
-            var detail = new Dictionary<string, object> { ["cid"] = cid };
-            if (!string.IsNullOrEmpty(ex.SqlState))       detail["sqlstate"]   = ex.SqlState;
-            if (!string.IsNullOrEmpty(ex.ConstraintName)) detail["constraint"] = ex.ConstraintName;
-            if (!string.IsNullOrEmpty(ex.TableName))      detail["table"]      = ex.TableName;
-            if (!string.IsNullOrEmpty(ex.ColumnName))     detail["column"]     = ex.ColumnName;
-            if (!string.IsNullOrEmpty(ex.Detail))         detail["detail"]     = ex.Detail;
-            if (!string.IsNullOrEmpty(ex.Hint))           detail["hint"]       = ex.Hint;
-            var body = Dmart.Models.Api.Response.Fail(
-                isConflict
-                    ? Dmart.Models.Api.InternalErrorCode.CONFLICT
-                    : Dmart.Models.Api.InternalErrorCode.SOMETHING_WRONG,
-                ex.MessageText, ErrorTypes.Db,
-                new List<Dictionary<string, object>> { detail });
-            await ctx.Response.WriteAsJsonAsync(body, DmartJsonContext.Default.Response);
+            // UNIQUE-violation. Use SHORTNAME_ALREADY_EXIST so the internal
+            // code matches the service-layer catches in Services/EntryService.cs
+            // and Dmart.SqlAdapter — clients branch on the same integer
+            // regardless of which layer caught the exception. HTTP 409 is
+            // the conventional status for a conflict.
+            await WriteDbFailureAsync(ctx, StatusCodes.Status409Conflict,
+                Dmart.Models.Api.InternalErrorCode.SHORTNAME_ALREADY_EXIST,
+                "resource already exists");
+        }
+        else
+        {
+            await WriteDbFailureAsync(ctx, StatusCodes.Status500InternalServerError,
+                Dmart.Models.Api.InternalErrorCode.SOMETHING_WRONG,
+                $"Database error. Reference: {cid}");
         }
     }
     catch (Npgsql.NpgsqlException ex)
     {
-        // Transport/connection-level Npgsql error (pool exhaustion, socket
-        // reset, auth handshake). Still a database failure from the caller's
-        // perspective — keep type="db" so the wire shape matches.
+        // Transport/connection-level Npgsql failure (pool exhaustion, socket
+        // reset, auth handshake). Surfaced with type="db" so existing client
+        // branching still works, but no Npgsql message is included.
         var cid = ctx.Response.Headers["X-Correlation-ID"].ToString();
         var logger = ctx.RequestServices.GetService<ILoggerFactory>()?.CreateLogger("ExceptionHandler");
         logger?.LogError(ex, "Npgsql error cid={Cid}", cid);
-        if (!ctx.Response.HasStarted)
-        {
-            ctx.Response.StatusCode = StatusCodes.Status500InternalServerError;
-            ctx.Response.ContentType = "application/json";
-            var body = Dmart.Models.Api.Response.Fail(
-                Dmart.Models.Api.InternalErrorCode.SOMETHING_WRONG,
-                ex.Message, ErrorTypes.Db,
-                new List<Dictionary<string, object>> { new() { ["cid"] = cid } });
-            await ctx.Response.WriteAsJsonAsync(body, DmartJsonContext.Default.Response);
-        }
+        await WriteDbFailureAsync(ctx, StatusCodes.Status500InternalServerError,
+            Dmart.Models.Api.InternalErrorCode.SOMETHING_WRONG,
+            $"Database error. Reference: {cid}");
     }
     catch (Exception ex)
     {

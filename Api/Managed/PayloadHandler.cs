@@ -67,7 +67,7 @@ public static class PayloadHandler
             // download in browsers. Everything else keeps the
             // filename-bearing attachment header used for media downloads.
             if (IsJsonResponse(mime, ext))
-                return Results.File(att.Media, MediaTypeNames.Application.Json);
+                return Results.File(att.Media, "application/json; charset=utf-8");
             return Results.File(att.Media, mime, $"{shortname}.{ext}");
         }
 
