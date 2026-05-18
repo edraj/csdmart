@@ -72,27 +72,42 @@ public sealed class ActivationTemplateLoaderOverlayTests : IDisposable
     }
 
     [Fact]
-    public void Override_With_Parse_Error_Falls_Back_To_Empty_String_Not_Crash()
+    public void Override_With_Unknown_Variable_Token_PassesThrough_Verbatim()
     {
-        // A malformed override shouldn't take the server down at startup.
-        // Load() logs and leaves no compiled template; RenderBody returns
-        // empty so the SMTP send completes with an empty body (visible to
-        // ops via the warn log) rather than throwing.
-        //
-        // `{% for %}` (no iteration variable, no `in`, no `endfor`) is a hard
-        // Scriban parse error — confirmed by Template.Parse setting
-        // HasErrors=true. Scriban is otherwise quite permissive and treats
-        // many "looks malformed" inputs as plain text, so picking a template
-        // we know triggers the parser is important here.
+        // The hand-rolled replacer has no concept of a "parse error" — any
+        // string is a valid template. Unknown {{var}} tokens are left as-is
+        // so operators immediately see what wasn't substituted, instead of
+        // getting an empty body or a silently-dropped variable.
         File.WriteAllText(
             Path.Combine(_tmpHome, ".dmart", "ActivationEmailContent.txt"),
-            "{{ for }}");
+            "Welcome {{name}} — debug={{unknown_var}}");
 
         var loader = new ActivationTemplateLoader(NullLogger<ActivationTemplateLoader>.Instance);
         loader.Load();
 
-        var user = NewUser("carol");
-        loader.RenderBody(user, "https://app/x").ShouldBe(string.Empty);
+        var user = NewUser("dave", displayname: new Translation(En: "Dave"));
+        loader.RenderBody(user, "https://app/x")
+            .ShouldBe("Welcome Dave — debug={{unknown_var}}");
+    }
+
+    [Fact]
+    public void Override_With_LegacyScribanFilterSyntax_NoLongerInterpreted()
+    {
+        // Legacy `{{ name | html.escape }}` tokens (from the prior Scriban
+        // engine) don't match the new regex — `|` isn't in [a-zA-Z0-9_].
+        // Pin the contract: those tokens pass through verbatim so an
+        // operator who hasn't updated their override sees the un-substituted
+        // text and knows to migrate.
+        File.WriteAllText(
+            Path.Combine(_tmpHome, ".dmart", "ActivationEmailContent.txt"),
+            "Hi {{ name | html.escape }} ({{name}})");
+
+        var loader = new ActivationTemplateLoader(NullLogger<ActivationTemplateLoader>.Instance);
+        loader.Load();
+
+        var user = NewUser("eve", displayname: new Translation(En: "Eve"));
+        loader.RenderBody(user, "https://app/x")
+            .ShouldBe("Hi {{ name | html.escape }} (Eve)");
     }
 
     private static User NewUser(string shortname, Translation? displayname = null) => new()

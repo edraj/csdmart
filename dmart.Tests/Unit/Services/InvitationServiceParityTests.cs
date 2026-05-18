@@ -153,11 +153,11 @@ public class InvitationServiceParityTests
         subject.ShouldContain("پلاتفۆرمەکەمان");
     }
 
-    // Subject also flows through Scriban so operators can use {{name}} etc.
-    // in localized subject strings. For the default English subject (no
-    // variables) the rendered result is unchanged.
+    // Subject also flows through the template engine so operators can use
+    // {{name}} etc. in localized subject strings. For the default English
+    // subject (no variables) the rendered result is unchanged.
     [Fact]
-    public void ActivationSubject_RenderedThroughScriban_PreservesPlainStrings()
+    public void ActivationSubject_Render_PreservesPlainStringsWithNoVars()
     {
         var user = NewUser(shortname: "alice");
         var src = Languages.Get(Language.En, "activation_subject").ShouldNotBeNull();
@@ -165,16 +165,31 @@ public class InvitationServiceParityTests
             .ShouldBe("Welcome to our Platform!");
     }
 
-    // When the operator localizes the subject with a Scriban variable the
+    // When the operator localizes the subject with a {{var}} token the
     // renderer substitutes it — proves the subject pipeline is actually
     // wired, not just a passthrough.
     [Fact]
-    public void ActivationSubject_Renders_ScribanVariables()
+    public void ActivationSubject_Substitutes_VariableTokens()
     {
         var user = NewUser(shortname: "alice",
             displayname: new Translation(En: "Alice Smith"));
-        ActivationTemplates.RenderSubject("Welcome, {{ name }}!", user, "https://app/x")
+        ActivationTemplates.RenderSubject("Welcome, {{name}}!", user, "https://app/x")
             .ShouldBe("Welcome, Alice Smith!");
+    }
+
+    // Subject is plain text (NOT HTML), so substituted values MUST NOT be
+    // HtmlEncode'd. Body renders escape `&` → `&amp;` because the body is
+    // HTML; doing the same to a subject line corrupts what the recipient
+    // sees in their inbox. This asymmetry is the load-bearing reason the
+    // renderer has separate Body/Subject methods rather than one shared
+    // substitute path.
+    [Fact]
+    public void ActivationSubject_DoesNotHtmlEscape_Ampersand()
+    {
+        var user = NewUser(shortname: "alice",
+            displayname: new Translation(En: "Alice & Bob"));
+        ActivationTemplates.RenderSubject("Welcome, {{name}}!", user, "https://app/x")
+            .ShouldBe("Welcome, Alice & Bob!");
     }
 
     // Unmapped locales fall back to English for the subject too — same
