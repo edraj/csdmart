@@ -1446,6 +1446,59 @@ app.UseForwardedHeaders();
 app.Use(async (ctx, next) =>
 {
     try { await next(); }
+    catch (Npgsql.PostgresException ex)
+    {
+        // PG server-side error (constraint violation, bad SQL, etc). Emit the
+        // canonical envelope with type="db" so clients branch the same way
+        // they do for explicit Result.Fail(..., ErrorTypes.Db) responses.
+        // PG's MessageText goes in `message`; structured detail (sqlstate,
+        // constraint, table, hint, cid) goes in `info` so callers can branch
+        // on the constraint without parsing the message.
+        var cid = ctx.Response.Headers["X-Correlation-ID"].ToString();
+        var logger = ctx.RequestServices.GetService<ILoggerFactory>()?.CreateLogger("ExceptionHandler");
+        logger?.LogError(ex, "Postgres error cid={Cid} sqlstate={SqlState}", cid, ex.SqlState);
+        if (!ctx.Response.HasStarted)
+        {
+            var isConflict = ex.SqlState == "23505";
+            ctx.Response.StatusCode = isConflict
+                ? StatusCodes.Status409Conflict
+                : StatusCodes.Status500InternalServerError;
+            ctx.Response.ContentType = "application/json";
+            var detail = new Dictionary<string, object> { ["cid"] = cid };
+            if (!string.IsNullOrEmpty(ex.SqlState))       detail["sqlstate"]   = ex.SqlState;
+            if (!string.IsNullOrEmpty(ex.ConstraintName)) detail["constraint"] = ex.ConstraintName;
+            if (!string.IsNullOrEmpty(ex.TableName))      detail["table"]      = ex.TableName;
+            if (!string.IsNullOrEmpty(ex.ColumnName))     detail["column"]     = ex.ColumnName;
+            if (!string.IsNullOrEmpty(ex.Detail))         detail["detail"]     = ex.Detail;
+            if (!string.IsNullOrEmpty(ex.Hint))           detail["hint"]       = ex.Hint;
+            var body = Dmart.Models.Api.Response.Fail(
+                isConflict
+                    ? Dmart.Models.Api.InternalErrorCode.CONFLICT
+                    : Dmart.Models.Api.InternalErrorCode.SOMETHING_WRONG,
+                ex.MessageText, ErrorTypes.Db,
+                new List<Dictionary<string, object>> { detail });
+            await ctx.Response.WriteAsJsonAsync(body, DmartJsonContext.Default.Response);
+        }
+    }
+    catch (Npgsql.NpgsqlException ex)
+    {
+        // Transport/connection-level Npgsql error (pool exhaustion, socket
+        // reset, auth handshake). Still a database failure from the caller's
+        // perspective — keep type="db" so the wire shape matches.
+        var cid = ctx.Response.Headers["X-Correlation-ID"].ToString();
+        var logger = ctx.RequestServices.GetService<ILoggerFactory>()?.CreateLogger("ExceptionHandler");
+        logger?.LogError(ex, "Npgsql error cid={Cid}", cid);
+        if (!ctx.Response.HasStarted)
+        {
+            ctx.Response.StatusCode = StatusCodes.Status500InternalServerError;
+            ctx.Response.ContentType = "application/json";
+            var body = Dmart.Models.Api.Response.Fail(
+                Dmart.Models.Api.InternalErrorCode.SOMETHING_WRONG,
+                ex.Message, ErrorTypes.Db,
+                new List<Dictionary<string, object>> { new() { ["cid"] = cid } });
+            await ctx.Response.WriteAsJsonAsync(body, DmartJsonContext.Default.Response);
+        }
+    }
     catch (Exception ex)
     {
         var cid = ctx.Response.Headers["X-Correlation-ID"].ToString();
