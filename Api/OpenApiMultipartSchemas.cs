@@ -38,7 +38,13 @@ internal static class OpenApiMultipartSchemas
                 new FormField("sha",            Binary: false, Required: false),
             }),
 
-        new EndpointForm("post", "/managed/resources_from_csv/{resource_type}/{space}/{**rest}",
+        // ASP.NET routing template uses `{**rest}` (catch-all greedy
+        // segment) but OpenAPI has no equivalent shape — the generator
+        // normalizes the path to `{rest}` in the emitted doc. Use the
+        // normalized form here or the path lookup in Apply() silently
+        // no-ops and the endpoint's Swagger entry shows no body schema.
+        // Pinned by OpenApiDocumentTests.OpenApi_MultipartEndpoints_*.
+        new EndpointForm("post", "/managed/resources_from_csv/{resource_type}/{space}/{rest}",
             "Bulk-create or bulk-update entries from a CSV file (one row per entry).",
             new[] { new FormField("resources_file", Binary: true, Required: true) }),
 

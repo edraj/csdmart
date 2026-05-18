@@ -11,6 +11,16 @@ namespace Dmart.Models.Api;
 // on the endpoint registration. Each new record MUST also be listed in
 // DmartJsonContext — the source-gen resolver is the default for HTTP JSON,
 // and the OpenAPI generator queries it for type metadata.
+//
+// DRIFT RISK — read before editing: these DTOs are *parallel* declarations
+// of the body shapes their endpoints accept. They do NOT drive parsing
+// (those endpoints read HttpRequest directly), so the C# compiler can't
+// catch a mismatch. If you add or remove a field a handler reads, you MUST
+// reflect it here or Swagger silently misleads users. The OpenApi smoke
+// tests (dmart.Tests/Integration/OpenApiDocumentTests.cs) catch some
+// shapes of drift (every $ref resolves, every multipart path exists),
+// but field-level handler↔DTO drift is not automatically detected —
+// spot-check against the handler when editing either side.
 
 // /user/reset — admin invokes against a target user; mints a fresh
 // invitation and resets failed-login counters.

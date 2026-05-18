@@ -1130,6 +1130,10 @@ builder.Services.AddOpenApi(options =>
         if (ctx.JsonTypeInfo.Type == typeof(Dmart.Models.Api.JoinQuery) && schema.Properties is not null)
             schema.Properties["query"] = new Microsoft.OpenApi.OpenApiSchema
             {
+                // Type=Object communicates "expect a JSON object" to Swagger
+                // UI (it'll render `{}` in Try-it-out) rather than the
+                // description-only stub which leaves the UI guessing.
+                Type = Microsoft.OpenApi.JsonSchemaType.Object,
                 Description = "Inner Query body for this join (any JSON object).",
             };
         return Task.CompletedTask;

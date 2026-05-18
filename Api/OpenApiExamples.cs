@@ -51,6 +51,14 @@ internal static class OpenApiExamples
 
         // POST /user/create — body is a Record envelope with the new
         // user's attributes nested inside.
+        //
+        // Caveat: this same example is reused for every other Record-bodied
+        // endpoint (/user/registration, /public/submit, etc.) — there's
+        // only one slot per CLR type in the registry. The user-create form
+        // is the most generic starting point; users on other endpoints
+        // edit `resource_type` + `attributes` to match. If a specific
+        // endpoint warrants its own shape, lift it onto a docs-only DTO
+        // (see DocsDtos.cs) so it gets a distinct registry entry.
         [typeof(Record)] = JsonNode.Parse("""
             {
               "resource_type": "user",
