@@ -20,6 +20,11 @@ namespace Dmart.Services;
 // render path stays AOT/trim safe. Templates should `| html.escape` any
 // variable that lands inside HTML — see the embedded default.
 //
+// Adding a new variable? Add it to the `data` dict in Render(...) below.
+// Keep the binding hand-built — switching to a reflection-based ScriptObject
+// (e.g. `ScriptObject.Import(obj)`) would defeat the AOT-safety claim and
+// the TrimmerRootAssembly justification in dmart.csproj.
+//
 // The activation subject is rendered through the same engine (see
 // RenderSubject) but its source comes from LanguageLoader (per-locale, with
 // English fallback). Subject parsing is per-call rather than cached because

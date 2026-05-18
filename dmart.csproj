@@ -219,8 +219,12 @@
          flows through as escaped *variables*, not as parsed template syntax,
          so SSTI is out of scope here. If we ever start accepting templates
          from end users (don't), revisit this suppression first. -->
+    <!-- IncludeAssets trimmed to compile;runtime only — contentfiles, build,
+         and analyzers aren't needed for what dmart actually invokes
+         (Template.Parse + Template.Render). Skips ~50KB of build-time
+         tooling assets the AOT publish would otherwise carry. -->
     <PackageReference Include="Scriban" Version="5.12.1"
-                      IncludeAssets="compile;runtime;contentfiles;build;analyzers"
+                      IncludeAssets="compile;runtime"
                       NoWarn="NU1902;NU1903;NU1904" />
     <!-- Keep Scriban's whole assembly intact through the trimmer. Our call
          site doesn't reach the reflective paths (no Render(object), only

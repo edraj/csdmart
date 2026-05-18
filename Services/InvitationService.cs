@@ -33,6 +33,14 @@ public sealed class InvitationService(
     IOptions<DmartSettings> settings,
     ILogger<InvitationService> log)
 {
+    // Defensive fallback only — used when both the user's locale AND the
+    // embedded English JSON are missing `activation_subject`. The shipped
+    // languages/english.json MUST carry the same string for this key;
+    // a CI-time check would be nice (no harness in place yet), but until
+    // then the constant + the JSON value need to be kept in sync manually.
+    // Python parity: utils/generate_email.py::generate_subject("activation").
+    private const string EnglishActivationSubjectFallback = "Welcome to our Platform!";
+
     public async Task<string?> MintAsync(User user, InvitationChannel channel, CancellationToken ct = default)
         => await MintAsync(user, channel, isReset: false, ct);
 
@@ -107,20 +115,13 @@ public sealed class InvitationService(
                 // shortname, link} scope so operators can reference any of
                 // those vars in either field.
                 // LanguageLoader already falls back to English when the user's
-                // locale lacks the key; this second fallback handles the
-                // pathological "even English doesn't have it" case (config bug,
-                // botched override). Keeps Python parity with
-                // generate_subject("activation"), which returned the same
-                // hardcoded string unconditionally — so an empty Subject
-                // header can never reach the MTA (some flag blank-subject mail
-                // as spam).
-                var subjectSource = languages.Get(user.Language, "activation_subject");
-                if (string.IsNullOrEmpty(subjectSource))
-                {
-                    log.LogError("translation missing: languages[{Lang}][activation_subject] and English fallback — using hardcoded default",
-                        user.Language);
-                    subjectSource = "Welcome to our Platform!";
-                }
+                // locale lacks the key. The hardcoded constant below covers
+                // the pathological "even English doesn't have it" case
+                // (config bug, botched override). An empty Subject header
+                // would otherwise reach the MTA and some servers flag
+                // blank-subject mail as spam.
+                var subjectSource = languages.Get(user.Language, "activation_subject")
+                                    ?? EnglishActivationSubjectFallback;
                 var subject = activationTemplates.RenderSubject(subjectSource, user, deliverableLink);
                 var body = activationTemplates.RenderBody(user, deliverableLink);
                 var ok = await smtp.SendEmailAsync(identifier, subject, body, ct);
