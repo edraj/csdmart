@@ -4,6 +4,7 @@ using System.Text;
 using System.Text.Json;
 using System.Text.Json.Nodes;
 using Dmart.DataAdapters.Sql;
+using Dmart.Models.Api;
 using Dmart.Models.Enums;
 using Dmart.Services;
 using Microsoft.Extensions.DependencyInjection;
@@ -121,6 +122,41 @@ public class SeedImportTests : IClassFixture<DmartFactory>
         afterForce.ShouldNotBeNull();
         afterForce.Description?.En.ShouldBe(updatedDesc,
             "preserveExisting:false must overwrite the existing description");
+    }
+
+    // Exercises the --fast bulk path (fastUnsafeNoFkCheck:true). Without
+    // this test the COPY-based code path is never executed by the suite,
+    // and the riskiest piece of the optimization (binary column-order +
+    // jsonb encoding + temp-table merge) ships untested. Asserts both
+    // the row counts and a sampled jsonb field round-trip correctly.
+    [FactIfPg]
+    public async Task Fast_Bulk_Import_RoundTrips_Entry_With_Jsonb_Fields()
+    {
+        var sp = _factory.Services;
+        _factory.CreateClient();
+        var io = sp.GetRequiredService<ImportExportService>();
+        var entryRepo = sp.GetRequiredService<EntryRepository>();
+
+        var spaceName = $"fast_bulk_{Guid.NewGuid():N}";
+        const string entryName = "thing";
+        const string description = "fast-bulk-test-description";
+
+        var resp = await io.ImportZipAsync(
+            BuildSingleEntryZip(spaceName, entryName, description),
+            actor: null, preserveExisting: false, fastUnsafeNoFkCheck: true);
+
+        resp.Status.ShouldBe(Status.Success);
+        // Per-record failures would also surface as a non-empty list — fail
+        // loud if the COPY path threw on any row.
+        if (resp.Attributes?.GetValueOrDefault("failed") is List<Dictionary<string, object>> fails)
+            fails.Count.ShouldBe(0, $"unexpected per-row failures: {string.Join(", ", fails.Select(f => f.GetValueOrDefault("error")))}");
+
+        // The space + the single content entry both round-trip through the
+        // import. Verify the entry came back and the jsonb description was
+        // preserved verbatim (proves the jsonb COPY path).
+        var entry = await entryRepo.GetAsync(spaceName, "/", entryName, ResourceType.Content);
+        entry.ShouldNotBeNull("fast-bulk import did not land the content row");
+        entry.Description?.En.ShouldBe(description, "jsonb description did not round-trip");
     }
 
     // Builds a self-contained zip with one space + one Content entry directly

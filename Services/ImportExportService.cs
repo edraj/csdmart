@@ -9,6 +9,8 @@ using Dmart.Models.Core;
 using Dmart.Models.Enums;
 using Dmart.Models.Json;
 using Microsoft.Extensions.Options;
+using Npgsql;
+using NpgsqlTypes;
 
 namespace Dmart.Services;
 
@@ -52,6 +54,7 @@ public sealed class ImportExportService(
     SpaceRepository spaces,
     HistoryRepository histories,
     PermissionService perms,
+    Db db,
     IOptions<DmartSettings> settingsOpt,
     ILogger<ImportExportService> log)
 {
@@ -393,7 +396,10 @@ public sealed class ImportExportService(
     // ========================================================================
 
     public Task<Response> ImportZipAsync(Stream zip, string? actor, CancellationToken ct = default)
-        => ImportZipAsync(zip, actor, preserveExisting: false, ct);
+        => ImportZipAsync(zip, actor, preserveExisting: false, fastUnsafeNoFkCheck: false, ct);
+
+    public Task<Response> ImportZipAsync(Stream zip, string? actor, bool preserveExisting, CancellationToken ct = default)
+        => ImportZipAsync(zip, actor, preserveExisting, fastUnsafeNoFkCheck: false, ct);
 
     /// <summary>
     /// Import a dmart zip into the database.
@@ -407,7 +413,16 @@ public sealed class ImportExportService(
     /// upserted: existing rows get their non-key columns replaced from the
     /// zip's meta.
     /// </param>
-    public async Task<Response> ImportZipAsync(Stream zip, string? actor, bool preserveExisting, CancellationToken ct = default)
+    /// <param name="fastUnsafeNoFkCheck">
+    /// When true, the entire import runs on a single Npgsql session with
+    /// <c>session_replication_role = 'replica'</c>, which bypasses ALL FK
+    /// constraints and user-defined triggers for the duration of the import.
+    /// Used by the standalone CLI <c>dmart import --fast</c> path where the
+    /// zip is operator-trusted. Hard-fails with a clear error if the DB role
+    /// can't grant that privilege — no silent fallback. The HTTP
+    /// <c>/managed/import</c> contract must never set this true.
+    /// </param>
+    public async Task<Response> ImportZipAsync(Stream zip, string? actor, bool preserveExisting, bool fastUnsafeNoFkCheck, CancellationToken ct = default)
     {
         // `actor` is accepted for API stability but no longer threaded through —
         // every imported record's owner comes from its meta's owner_shortname,
@@ -439,41 +454,86 @@ public sealed class ImportExportService(
             .Where(z => !string.IsNullOrEmpty(z.FullName) && !z.FullName.EndsWith("/"))
             .ToList();
 
-        // ---- Pass 1: Users (the only FK target — every other table's
-        //              owner_shortname references users.shortname). Anything
-        //              with a non-admin owner in its meta needs the user row
-        //              to exist before its own insert. ----
-        foreach (var ze in zes.Where(IsUserMeta))        await TryImportUserAsync(ze, results, preserveExisting, ct);
+        // Fast mode: open a single connection with session_replication_role =
+        // 'replica' set on it AND wrap the 5 passes in one transaction. The
+        // scope's DisposeAsync commits on MarkSuccess(), rolls back otherwise,
+        // restores the role, and closes the connection — guaranteed even on
+        // a mid-import throw thanks to the finally below.
+        NpgsqlConnection? sharedConn = null;
+        Db.FastImportScope? scope = null;
+        if (fastUnsafeNoFkCheck)
+        {
+            (sharedConn, scope) = await db.BeginFastImportSessionAsync(ct);
+        }
+        try
+        {
+            // ---- Pass 1: Users (the only FK target — every other table's
+            //              owner_shortname references users.shortname). Anything
+            //              with a non-admin owner in its meta needs the user row
+            //              to exist before its own insert. ----
+            foreach (var ze in zes.Where(IsUserMeta))        await TryImportUserAsync(ze, results, preserveExisting, sharedConn, ct);
 
-        // ---- Pass 2: Spaces, Roles, Permissions ----
-        foreach (var ze in zes.Where(z => z.FullName.EndsWith("/.dm/meta.space.json", StringComparison.Ordinal)))
-            await TryImportSpaceAsync(ze, results, preserveExisting, ct);
-        foreach (var ze in zes.Where(IsRoleMeta))        await TryImportRoleAsync(ze, results, preserveExisting, ct);
-        foreach (var ze in zes.Where(IsPermissionMeta))  await TryImportPermissionAsync(ze, results, preserveExisting, ct);
+            // ---- Pass 2: Spaces, Roles, Permissions ----
+            foreach (var ze in zes.Where(z => z.FullName.EndsWith("/.dm/meta.space.json", StringComparison.Ordinal)))
+                await TryImportSpaceAsync(ze, results, preserveExisting, sharedConn, ct);
+            foreach (var ze in zes.Where(IsRoleMeta))        await TryImportRoleAsync(ze, results, preserveExisting, sharedConn, ct);
+            foreach (var ze in zes.Where(IsPermissionMeta))  await TryImportPermissionAsync(ze, results, preserveExisting, sharedConn, ct);
 
-        // ---- Pass 3: Entries (including folders). Index bodies first so we
-        //              can re-inline them while reading the meta. ----
-        var bodyLookup = new Dictionary<string, ZipArchiveEntry>(StringComparer.Ordinal);
-        foreach (var ze in zes)
-            if (!ze.FullName.Contains("/.dm/", StringComparison.Ordinal))
-                bodyLookup[ze.FullName] = ze;
+            // ---- Pass 3: Entries (including folders). Index bodies first so we
+            //              can re-inline them while reading the meta. ----
+            var bodyLookup = new Dictionary<string, ZipArchiveEntry>(StringComparer.Ordinal);
+            foreach (var ze in zes)
+                if (!ze.FullName.Contains("/.dm/", StringComparison.Ordinal))
+                    bodyLookup[ze.FullName] = ze;
 
-        foreach (var ze in zes.Where(IsEntryMeta))
-            await TryImportEntryAsync(ze, bodyLookup, results, preserveExisting, ct);
+            // Fast mode: collect deserialized entries into a list and bulk-load
+            // them via COPY FROM STDIN at the end of the pass. Per-row UPSERTs
+            // are replaced by one binary COPY + one INSERT...SELECT...ON
+            // CONFLICT statement.
+            var bulkEntries = fastUnsafeNoFkCheck ? new List<Entry>() : null;
+            foreach (var ze in zes.Where(IsEntryMeta))
+                await TryImportEntryAsync(ze, bodyLookup, results, preserveExisting, sharedConn, bulkEntries, ct);
+            if (bulkEntries is { Count: > 0 })
+                await BulkInsertEntriesAsync(sharedConn!, bulkEntries, preserveExisting, results, ct);
 
-        // ---- Pass 4: Attachments. Lookup binary/json bodies from the same
-        //              attachments dir. ----
-        var attachmentBodies = new Dictionary<string, ZipArchiveEntry>(StringComparer.Ordinal);
-        foreach (var ze in zes)
-            if (ze.FullName.Contains("/attachments.", StringComparison.Ordinal) && !ze.Name.StartsWith("meta.", StringComparison.Ordinal))
-                attachmentBodies[ze.FullName] = ze;
+            // ---- Pass 4: Attachments. Lookup binary/json bodies from the same
+            //              attachments dir. ----
+            var attachmentBodies = new Dictionary<string, ZipArchiveEntry>(StringComparer.Ordinal);
+            foreach (var ze in zes)
+                if (ze.FullName.Contains("/attachments.", StringComparison.Ordinal) && !ze.Name.StartsWith("meta.", StringComparison.Ordinal))
+                    attachmentBodies[ze.FullName] = ze;
 
-        foreach (var ze in zes.Where(IsAttachmentMeta))
-            await TryImportAttachmentAsync(ze, attachmentBodies, results, preserveExisting, ct);
+            var bulkAttachments = fastUnsafeNoFkCheck ? new List<Attachment>() : null;
+            foreach (var ze in zes.Where(IsAttachmentMeta))
+                await TryImportAttachmentAsync(ze, attachmentBodies, results, preserveExisting, sharedConn, bulkAttachments, ct);
+            if (bulkAttachments is { Count: > 0 })
+                await BulkInsertAttachmentsAsync(sharedConn!, bulkAttachments, preserveExisting, results, ct);
 
-        // ---- Pass 5: Histories ----
-        foreach (var ze in zes.Where(z => z.Name == "history.jsonl"))
-            await TryImportHistoryAsync(ze, results, ct);
+            // ---- Pass 5: Histories ----
+            foreach (var ze in zes.Where(z => z.Name == "history.jsonl"))
+                await TryImportHistoryAsync(ze, results, sharedConn, ct);
+
+            // Fast mode deferred the per-role/per-permission cache invalidations
+            // so the import didn't hit `DELETE FROM userpermissionscache` once
+            // per row. Fire one final invalidate now if anything authz-relevant
+            // landed. Uses its own fresh connection so it stays out of the
+            // import transaction (no point keeping deletes pending the commit).
+            if (fastUnsafeNoFkCheck
+                && (results.RolesInserted > 0 || results.PermissionsInserted > 0))
+            {
+                await access.InvalidateAllCachesAsync(ct);
+            }
+
+            // All five passes ran to completion (per-row failures already
+            // landed in results.Failed and are surfaced in the Response).
+            // Tell the scope to commit. Without this flag, DisposeAsync
+            // rolls back instead.
+            scope?.MarkSuccess();
+        }
+        finally
+        {
+            if (scope is not null) await scope.DisposeAsync();
+        }
 
         return Response.Ok(attributes: new()
         {
@@ -529,7 +589,7 @@ public sealed class ImportExportService(
             node["owner_shortname"] = "dmart";
     }
 
-    private async Task TryImportSpaceAsync(ZipArchiveEntry ze, ImportStats st, bool preserveExisting, CancellationToken ct)
+    private async Task TryImportSpaceAsync(ZipArchiveEntry ze, ImportStats st, bool preserveExisting, NpgsqlConnection? conn, CancellationToken ct)
     {
         try
         {
@@ -541,12 +601,13 @@ public sealed class ImportExportService(
             EnsureOwner(node);
             var space = node.Deserialize(DmartJsonContext.Default.Space);
             if (space is null) { st.Failed.Add(new() { ["path"] = ze.FullName, ["error"] = "empty space meta" }); return; }
-            if (preserveExisting && await spaces.GetAsync(space.Shortname, ct) is not null)
+            if (preserveExisting && await (conn is null ? spaces.GetAsync(space.Shortname, ct) : spaces.GetAsync(space.Shortname, conn, ct)) is not null)
             {
                 st.Skipped++;
                 return;
             }
-            await spaces.UpsertAsync(space, ct);
+            if (conn is null) await spaces.UpsertAsync(space, ct);
+            else              await spaces.UpsertAsync(space, conn, ct);
             st.SpacesInserted++;
         }
         catch (Exception ex)
@@ -556,7 +617,7 @@ public sealed class ImportExportService(
         }
     }
 
-    private async Task TryImportUserAsync(ZipArchiveEntry ze, ImportStats st, bool preserveExisting, CancellationToken ct)
+    private async Task TryImportUserAsync(ZipArchiveEntry ze, ImportStats st, bool preserveExisting, NpgsqlConnection? conn, CancellationToken ct)
     {
         try
         {
@@ -568,12 +629,13 @@ public sealed class ImportExportService(
             await InlinePayloadBodyAsync(ze, node, $"{spaceName}/users", ct);
             var user = node.Deserialize(DmartJsonContext.Default.User);
             if (user is null) { st.Failed.Add(new() { ["path"] = ze.FullName, ["error"] = "empty user meta" }); return; }
-            if (preserveExisting && await users.GetByShortnameAsync(user.Shortname, ct) is not null)
+            if (preserveExisting && await (conn is null ? users.GetByShortnameAsync(user.Shortname, ct) : users.GetByShortnameAsync(user.Shortname, conn, ct)) is not null)
             {
                 st.Skipped++;
                 return;
             }
-            await users.UpsertAsync(user, ct);
+            if (conn is null) await users.UpsertAsync(user, ct);
+            else              await users.UpsertAsync(user, conn, ct);
             st.UsersInserted++;
         }
         catch (Exception ex)
@@ -583,7 +645,7 @@ public sealed class ImportExportService(
         }
     }
 
-    private async Task TryImportRoleAsync(ZipArchiveEntry ze, ImportStats st, bool preserveExisting, CancellationToken ct)
+    private async Task TryImportRoleAsync(ZipArchiveEntry ze, ImportStats st, bool preserveExisting, NpgsqlConnection? conn, CancellationToken ct)
     {
         try
         {
@@ -594,12 +656,13 @@ public sealed class ImportExportService(
             EnsureOwner(node);
             var role = node.Deserialize(DmartJsonContext.Default.Role);
             if (role is null) { st.Failed.Add(new() { ["path"] = ze.FullName, ["error"] = "empty role meta" }); return; }
-            if (preserveExisting && await access.GetRoleAsync(role.Shortname, ct) is not null)
+            if (preserveExisting && await (conn is null ? access.GetRoleAsync(role.Shortname, ct) : access.GetRoleAsync(role.Shortname, conn, ct)) is not null)
             {
                 st.Skipped++;
                 return;
             }
-            await access.UpsertRoleAsync(role, ct);
+            if (conn is null) await access.UpsertRoleAsync(role, ct);
+            else              await access.UpsertRoleAsync(role, conn, deferCacheRefresh: true, ct);
             st.RolesInserted++;
         }
         catch (Exception ex)
@@ -609,7 +672,7 @@ public sealed class ImportExportService(
         }
     }
 
-    private async Task TryImportPermissionAsync(ZipArchiveEntry ze, ImportStats st, bool preserveExisting, CancellationToken ct)
+    private async Task TryImportPermissionAsync(ZipArchiveEntry ze, ImportStats st, bool preserveExisting, NpgsqlConnection? conn, CancellationToken ct)
     {
         try
         {
@@ -620,12 +683,13 @@ public sealed class ImportExportService(
             EnsureOwner(node);
             var perm = node.Deserialize(DmartJsonContext.Default.Permission);
             if (perm is null) { st.Failed.Add(new() { ["path"] = ze.FullName, ["error"] = "empty permission meta" }); return; }
-            if (preserveExisting && await access.GetPermissionAsync(perm.Shortname, ct) is not null)
+            if (preserveExisting && await (conn is null ? access.GetPermissionAsync(perm.Shortname, ct) : access.GetPermissionAsync(perm.Shortname, conn, ct)) is not null)
             {
                 st.Skipped++;
                 return;
             }
-            await access.UpsertPermissionAsync(perm, ct);
+            if (conn is null) await access.UpsertPermissionAsync(perm, ct);
+            else              await access.UpsertPermissionAsync(perm, conn, deferCacheRefresh: true, ct);
             st.PermissionsInserted++;
         }
         catch (Exception ex)
@@ -689,7 +753,8 @@ public sealed class ImportExportService(
 
     private async Task TryImportEntryAsync(
         ZipArchiveEntry ze, Dictionary<string, ZipArchiveEntry> bodyLookup,
-        ImportStats st, bool preserveExisting, CancellationToken ct)
+        ImportStats st, bool preserveExisting, NpgsqlConnection? conn,
+        List<Entry>? bulkCollect, CancellationToken ct)
     {
         try
         {
@@ -735,12 +800,24 @@ public sealed class ImportExportService(
             // Import goes through the repo (not EntryService.CreateAsync) so
             // plugin hooks don't fire per-row and perm checks don't block a
             // bulk restore. This mirrors Python's bulk_insert_in_batches path.
-            if (preserveExisting && await entries.GetAsync(entry.SpaceName, entry.Subpath, entry.Shortname, entry.ResourceType, ct) is not null)
+            // Fast-mode bulk path: collect into the caller's list; the bulk
+            // helper handles preserveExisting via ON CONFLICT DO NOTHING and
+            // updates st.EntriesInserted / st.Skipped from row counts after
+            // the merge.
+            if (bulkCollect is not null)
+            {
+                bulkCollect.Add(entry);
+                return;
+            }
+            if (preserveExisting && await (conn is null
+                    ? entries.GetAsync(entry.SpaceName, entry.Subpath, entry.Shortname, entry.ResourceType, ct)
+                    : entries.GetAsync(entry.SpaceName, entry.Subpath, entry.Shortname, entry.ResourceType, conn, ct)) is not null)
             {
                 st.Skipped++;
                 return;
             }
-            await entries.UpsertAsync(entry, ct);
+            if (conn is null) await entries.UpsertAsync(entry, ct);
+            else              await entries.UpsertAsync(entry, conn, ct);
             st.EntriesInserted++;
         }
         catch (Exception ex)
@@ -752,7 +829,8 @@ public sealed class ImportExportService(
 
     private async Task TryImportAttachmentAsync(
         ZipArchiveEntry ze, Dictionary<string, ZipArchiveEntry> bodies,
-        ImportStats st, bool preserveExisting, CancellationToken ct)
+        ImportStats st, bool preserveExisting, NpgsqlConnection? conn,
+        List<Attachment>? bulkCollect, CancellationToken ct)
     {
         try
         {
@@ -818,12 +896,21 @@ public sealed class ImportExportService(
             EnsureOwner(node);
             var att = node.Deserialize(DmartJsonContext.Default.Attachment);
             if (att is null) { st.Failed.Add(new() { ["path"] = ze.FullName, ["error"] = "empty attachment meta" }); return; }
-            if (preserveExisting && await attachments.GetAsync(att.SpaceName, att.Subpath, att.Shortname, ct) is not null)
+            // Fast-mode bulk path — see TryImportEntryAsync for the same pattern.
+            if (bulkCollect is not null)
+            {
+                bulkCollect.Add(att);
+                return;
+            }
+            if (preserveExisting && await (conn is null
+                    ? attachments.GetAsync(att.SpaceName, att.Subpath, att.Shortname, ct)
+                    : attachments.GetAsync(att.SpaceName, att.Subpath, att.Shortname, conn, ct)) is not null)
             {
                 st.Skipped++;
                 return;
             }
-            await attachments.UpsertAsync(att, ct);
+            if (conn is null) await attachments.UpsertAsync(att, ct);
+            else              await attachments.UpsertAsync(att, conn, ct);
             st.AttachmentsInserted++;
         }
         catch (Exception ex)
@@ -833,7 +920,7 @@ public sealed class ImportExportService(
         }
     }
 
-    private async Task TryImportHistoryAsync(ZipArchiveEntry ze, ImportStats st, CancellationToken ct)
+    private async Task TryImportHistoryAsync(ZipArchiveEntry ze, ImportStats st, NpgsqlConnection? conn, CancellationToken ct)
     {
         try
         {
@@ -877,8 +964,10 @@ public sealed class ImportExportService(
                     Dictionary<string, object>? reqHeaders = null;
                     if (hNode["request_headers"] is JsonObject rh)
                         reqHeaders = rh.Deserialize(DmartJsonContext.Default.DictionaryStringObject);
-                    await histories.AppendAsync(spaceName, subpath, sn, owner,
-                        reqHeaders, diff, ct);
+                    if (conn is null)
+                        await histories.AppendAsync(spaceName, subpath, sn, owner, reqHeaders, diff, ct);
+                    else
+                        await histories.AppendAsync(spaceName, subpath, sn, owner, reqHeaders, diff, conn, ct);
                     st.HistoriesInserted++;
                 }
                 catch (Exception ex)
@@ -894,6 +983,222 @@ public sealed class ImportExportService(
             st.Failed.Add(new() { ["path"] = ze.FullName, ["kind"] = "history", ["error"] = ex.Message });
         }
     }
+
+    // ========================================================================
+    // Bulk inserters — used only by the `--fast` import path. Replace the
+    // per-row `INSERT ... ON CONFLICT` loop with a single binary COPY into a
+    // temp table followed by one `INSERT ... SELECT ... ON CONFLICT` merge.
+    // For the two high-cardinality tables (entries, attachments) this
+    // collapses N protocol round-trips into roughly two, which is where the
+    // order-of-magnitude speedup in `--fast` actually lives.
+    //
+    // SQL parity contract: the column list AND the per-row WriteAsync calls
+    // below MUST stay in lockstep with each other and with the per-row
+    // UpsertAsync in EntryRepository / AttachmentRepository — adding or
+    // reordering a column requires three coordinated edits. The merge clause
+    // (the SET list on ON CONFLICT DO UPDATE) likewise mirrors the per-row
+    // upsert's. The repos carry a comment pointing here as a reminder.
+    // ========================================================================
+
+    private const string EntryCopyColumns =
+        "uuid, shortname, space_name, subpath, is_active, slug, " +
+        "displayname, description, tags, created_at, updated_at, " +
+        "owner_shortname, owner_group_shortname, acl, payload, relationships, " +
+        "last_checksum_history, resource_type, state, is_open, reporter, " +
+        "workflow_shortname, collaborators, resolution_reason, query_policies";
+
+    private const string EntryConflictSet = """
+        is_active = EXCLUDED.is_active,
+        slug = EXCLUDED.slug,
+        displayname = EXCLUDED.displayname,
+        description = EXCLUDED.description,
+        tags = EXCLUDED.tags,
+        updated_at = EXCLUDED.updated_at,
+        owner_shortname = EXCLUDED.owner_shortname,
+        owner_group_shortname = EXCLUDED.owner_group_shortname,
+        acl = EXCLUDED.acl,
+        payload = EXCLUDED.payload,
+        relationships = EXCLUDED.relationships,
+        last_checksum_history = EXCLUDED.last_checksum_history,
+        resource_type = EXCLUDED.resource_type,
+        state = EXCLUDED.state,
+        is_open = EXCLUDED.is_open,
+        reporter = EXCLUDED.reporter,
+        workflow_shortname = EXCLUDED.workflow_shortname,
+        collaborators = EXCLUDED.collaborators,
+        resolution_reason = EXCLUDED.resolution_reason,
+        query_policies = EXCLUDED.query_policies
+        """;
+
+    private static async Task BulkInsertEntriesAsync(
+        NpgsqlConnection conn, List<Entry> rows, bool preserveExisting,
+        ImportStats st, CancellationToken ct)
+    {
+        // Compute query_policies up front — the per-row UpsertAsync does this
+        // inside its own scope; the bulk path must replicate it because the
+        // COPY writes the column verbatim from `e.QueryPolicies`.
+        var now = TimeUtils.Now();
+        for (var i = 0; i < rows.Count; i++)
+            rows[i] = rows[i] with { QueryPolicies = Utils.QueryPolicies.Generate(rows[i]) };
+
+        await using (var create = new NpgsqlCommand(
+            "CREATE TEMP TABLE _imp_entries (LIKE entries INCLUDING DEFAULTS) ON COMMIT DROP", conn))
+            await create.ExecuteNonQueryAsync(ct);
+
+        await using (var writer = await conn.BeginBinaryImportAsync(
+            $"COPY _imp_entries ({EntryCopyColumns}) FROM STDIN (FORMAT BINARY)", ct))
+        {
+            foreach (var e in rows)
+            {
+                await writer.StartRowAsync(ct);
+                await writer.WriteAsync(Guid.Parse(e.Uuid), NpgsqlDbType.Uuid, ct);
+                await writer.WriteAsync(e.Shortname, NpgsqlDbType.Text, ct);
+                await writer.WriteAsync(e.SpaceName, NpgsqlDbType.Text, ct);
+                await writer.WriteAsync(e.Subpath, NpgsqlDbType.Text, ct);
+                await writer.WriteAsync(e.IsActive, NpgsqlDbType.Boolean, ct);
+                await WriteNullableTextAsync(writer, e.Slug, ct);
+                await WriteNullableJsonbAsync(writer, JsonbHelpers.ToJsonb(e.Displayname), ct);
+                await WriteNullableJsonbAsync(writer, JsonbHelpers.ToJsonb(e.Description), ct);
+                await writer.WriteAsync(JsonbHelpers.ToJsonbList(e.Tags), NpgsqlDbType.Jsonb, ct);
+                await writer.WriteAsync(e.CreatedAt == default ? now : e.CreatedAt, NpgsqlDbType.TimestampTz, ct);
+                await writer.WriteAsync(e.UpdatedAt == default ? now : e.UpdatedAt, NpgsqlDbType.TimestampTz, ct);
+                await writer.WriteAsync(e.OwnerShortname, NpgsqlDbType.Text, ct);
+                await WriteNullableTextAsync(writer, e.OwnerGroupShortname, ct);
+                await WriteNullableJsonbAsync(writer, JsonbHelpers.ToJsonb(e.Acl), ct);
+                await WriteNullableJsonbAsync(writer, JsonbHelpers.ToJsonb(e.Payload), ct);
+                await WriteNullableJsonbAsync(writer, JsonbHelpers.ToJsonb(e.Relationships), ct);
+                await WriteNullableTextAsync(writer, e.LastChecksumHistory, ct);
+                // resource_type is the PG `resourcetype` enum. Write the literal
+                // string and tag it as `Unknown` so Npgsql ships it as raw text
+                // and PG's text→enum cast resolves it on the server side.
+                await writer.WriteAsync(JsonbHelpers.EnumMember(e.ResourceType), NpgsqlDbType.Unknown, ct);
+                await WriteNullableTextAsync(writer, e.State, ct);
+                if (e.IsOpen is null) await writer.WriteNullAsync(ct);
+                else                  await writer.WriteAsync(e.IsOpen.Value, NpgsqlDbType.Boolean, ct);
+                await WriteNullableJsonbAsync(writer, JsonbHelpers.ToJsonb(e.Reporter), ct);
+                await WriteNullableTextAsync(writer, e.WorkflowShortname, ct);
+                await WriteNullableJsonbAsync(writer, JsonbHelpers.ToJsonb(e.Collaborators), ct);
+                await WriteNullableTextAsync(writer, e.ResolutionReason, ct);
+                await writer.WriteAsync((e.QueryPolicies ?? new()).ToArray(),
+                    NpgsqlDbType.Array | NpgsqlDbType.Text, ct);
+            }
+            await writer.CompleteAsync(ct);
+        }
+
+        var mergeSql = preserveExisting
+            ? $"INSERT INTO entries ({EntryCopyColumns}) SELECT {EntryCopyColumns} FROM _imp_entries "
+                + "ON CONFLICT (shortname, space_name, subpath) DO NOTHING"
+            : $"INSERT INTO entries ({EntryCopyColumns}) SELECT {EntryCopyColumns} FROM _imp_entries "
+                + $"ON CONFLICT (shortname, space_name, subpath) DO UPDATE SET {EntryConflictSet}";
+
+        await using (var merge = new NpgsqlCommand(mergeSql, conn))
+        {
+            var affected = await merge.ExecuteNonQueryAsync(ct);
+            // affected = inserted + (updated when not preserveExisting).
+            // preserveExisting=true: DO NOTHING means skipped rows aren't in `affected`.
+            st.EntriesInserted += affected;
+            if (preserveExisting) st.Skipped += rows.Count - affected;
+        }
+
+        // The temp table is `ON COMMIT DROP` and we're inside the fast-import
+        // transaction — but the same import will reuse this connection for
+        // the next bulk pass (attachments) in the same transaction, so the
+        // table is still around. Drop explicitly to release the OID and to
+        // keep the helpers self-contained (caller-order independent).
+        await using (var drop = new NpgsqlCommand("DROP TABLE _imp_entries", conn))
+            await drop.ExecuteNonQueryAsync(ct);
+    }
+
+    private const string AttachmentCopyColumns =
+        "uuid, shortname, space_name, subpath, is_active, slug, " +
+        "displayname, description, tags, created_at, updated_at, " +
+        "owner_shortname, owner_group_shortname, acl, payload, relationships, " +
+        "last_checksum_history, resource_type, media, body, state";
+
+    private const string AttachmentConflictSet = """
+        is_active = EXCLUDED.is_active,
+        slug = EXCLUDED.slug,
+        displayname = EXCLUDED.displayname,
+        description = EXCLUDED.description,
+        tags = EXCLUDED.tags,
+        updated_at = EXCLUDED.updated_at,
+        owner_shortname = EXCLUDED.owner_shortname,
+        owner_group_shortname = EXCLUDED.owner_group_shortname,
+        acl = EXCLUDED.acl,
+        payload = EXCLUDED.payload,
+        relationships = EXCLUDED.relationships,
+        last_checksum_history = EXCLUDED.last_checksum_history,
+        resource_type = EXCLUDED.resource_type,
+        media = EXCLUDED.media,
+        body = EXCLUDED.body,
+        state = EXCLUDED.state
+        """;
+
+    private static async Task BulkInsertAttachmentsAsync(
+        NpgsqlConnection conn, List<Attachment> rows, bool preserveExisting,
+        ImportStats st, CancellationToken ct)
+    {
+        var now = TimeUtils.Now();
+
+        await using (var create = new NpgsqlCommand(
+            "CREATE TEMP TABLE _imp_attachments (LIKE attachments INCLUDING DEFAULTS) ON COMMIT DROP", conn))
+            await create.ExecuteNonQueryAsync(ct);
+
+        await using (var writer = await conn.BeginBinaryImportAsync(
+            $"COPY _imp_attachments ({AttachmentCopyColumns}) FROM STDIN (FORMAT BINARY)", ct))
+        {
+            foreach (var a in rows)
+            {
+                await writer.StartRowAsync(ct);
+                await writer.WriteAsync(Guid.Parse(a.Uuid), NpgsqlDbType.Uuid, ct);
+                await writer.WriteAsync(a.Shortname, NpgsqlDbType.Text, ct);
+                await writer.WriteAsync(a.SpaceName, NpgsqlDbType.Text, ct);
+                await writer.WriteAsync(a.Subpath, NpgsqlDbType.Text, ct);
+                await writer.WriteAsync(a.IsActive, NpgsqlDbType.Boolean, ct);
+                await WriteNullableTextAsync(writer, a.Slug, ct);
+                await WriteNullableJsonbAsync(writer, JsonbHelpers.ToJsonb(a.Displayname), ct);
+                await WriteNullableJsonbAsync(writer, JsonbHelpers.ToJsonb(a.Description), ct);
+                await writer.WriteAsync(JsonbHelpers.ToJsonbList(a.Tags), NpgsqlDbType.Jsonb, ct);
+                await writer.WriteAsync(a.CreatedAt == default ? now : a.CreatedAt, NpgsqlDbType.TimestampTz, ct);
+                await writer.WriteAsync(a.UpdatedAt == default ? now : a.UpdatedAt, NpgsqlDbType.TimestampTz, ct);
+                await writer.WriteAsync(a.OwnerShortname, NpgsqlDbType.Text, ct);
+                await WriteNullableTextAsync(writer, a.OwnerGroupShortname, ct);
+                await WriteNullableJsonbAsync(writer, JsonbHelpers.ToJsonb(a.Acl), ct);
+                await WriteNullableJsonbAsync(writer, JsonbHelpers.ToJsonb(a.Payload), ct);
+                await WriteNullableJsonbAsync(writer, JsonbHelpers.ToJsonb(a.Relationships), ct);
+                await WriteNullableTextAsync(writer, a.LastChecksumHistory, ct);
+                await writer.WriteAsync(JsonbHelpers.EnumMember(a.ResourceType), NpgsqlDbType.Unknown, ct);
+                if (a.Media is null) await writer.WriteNullAsync(ct);
+                else                 await writer.WriteAsync(a.Media, NpgsqlDbType.Bytea, ct);
+                await WriteNullableTextAsync(writer, a.Body, ct);
+                await WriteNullableTextAsync(writer, a.State, ct);
+            }
+            await writer.CompleteAsync(ct);
+        }
+
+        var mergeSql = preserveExisting
+            ? $"INSERT INTO attachments ({AttachmentCopyColumns}) SELECT {AttachmentCopyColumns} FROM _imp_attachments "
+                + "ON CONFLICT (shortname, space_name, subpath) DO NOTHING"
+            : $"INSERT INTO attachments ({AttachmentCopyColumns}) SELECT {AttachmentCopyColumns} FROM _imp_attachments "
+                + $"ON CONFLICT (shortname, space_name, subpath) DO UPDATE SET {AttachmentConflictSet}";
+
+        await using (var merge = new NpgsqlCommand(mergeSql, conn))
+        {
+            var affected = await merge.ExecuteNonQueryAsync(ct);
+            st.AttachmentsInserted += affected;
+            if (preserveExisting) st.Skipped += rows.Count - affected;
+        }
+
+        await using (var drop = new NpgsqlCommand("DROP TABLE _imp_attachments", conn))
+            await drop.ExecuteNonQueryAsync(ct);
+    }
+
+    // Small adapters so the per-column WriteAsync loop above stays compact.
+    private static Task WriteNullableTextAsync(NpgsqlBinaryImporter w, string? v, CancellationToken ct)
+        => v is null ? w.WriteNullAsync(ct) : w.WriteAsync(v, NpgsqlDbType.Text, ct);
+
+    private static Task WriteNullableJsonbAsync(NpgsqlBinaryImporter w, string? json, CancellationToken ct)
+        => json is null ? w.WriteNullAsync(ct) : w.WriteAsync(json, NpgsqlDbType.Jsonb, ct);
 
     // ========================================================================
     // Helpers — JSON transforms + zip IO + path splitting

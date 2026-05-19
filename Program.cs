@@ -416,9 +416,16 @@ switch (subcommand)
         // -r the import is idempotent — pre-existing rows are skipped and
         // the operator sees them counted as `skipped` in the summary.
         var replace = serverArgs.Any(a => a is "-r" or "--replace");
+        // --fast bypasses FK constraints AND user-defined triggers for the
+        // entire import by setting session_replication_role='replica' on a
+        // single shared session. Trades safety for speed; only safe when
+        // the zip is internally consistent (typical for operator-trusted
+        // CLI imports). Hard-fails if the DB role lacks the privilege.
+        var fast = serverArgs.Any(a => a is "--fast");
+        Console.WriteLine($"Importing from {zipPath} (replace={replace}, fast={fast})");
         if (string.IsNullOrEmpty(zipPath))
         {
-            Console.Error.WriteLine("Usage: dmart import [-r|--replace] <zip-file>");
+            Console.Error.WriteLine("Usage: dmart import [-r|--replace] [--fast] <zip-file>");
             Environment.ExitCode = 1;
             return;
         }
@@ -445,7 +452,7 @@ switch (subcommand)
         // the value doesn't matter functionally — but keeping both CLI sites
         // on `null` makes the intent ("CLI runs unfiltered, server-side")
         // visually consistent.
-        var resp = await importService.ImportZipAsync(zipStream, actor: null, preserveExisting: !replace);
+        var resp = await importService.ImportZipAsync(zipStream, actor: null, preserveExisting: !replace, fastUnsafeNoFkCheck: fast);
 
         if (resp.Status != Status.Success)
         {
