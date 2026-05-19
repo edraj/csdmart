@@ -156,6 +156,15 @@ public static class ExecuteTaskHandler
             // "report" wraps the Query under `query`; "api" wraps it under
             // `request_body` (alongside `end_point`/`verb` metadata that
             // describes which dmart endpoint the saved request targets).
+            //
+            // Schema mismatches (e.g. schema="api" but `request_body` missing
+            // or not an object) fall through to the default branch — the root
+            // is treated as the Query. Downstream deserialization will then
+            // fail with INVALID_DATA, which surfaces a `JsonException` message
+            // to the operator. This is intentional: keeping the unwrap lenient
+            // means a malformed entry produces the same caller-visible error
+            // shape as any other bad task body, rather than a new bespoke
+            // failure mode for the schema-dispatch path.
             if (string.Equals(schema, "report", StringComparison.OrdinalIgnoreCase) &&
                 obj["query"] is JsonObject reportQuery)
             {
