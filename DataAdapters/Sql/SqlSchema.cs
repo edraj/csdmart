@@ -74,6 +74,7 @@ public static class SqlSchema
         device_id               TEXT,
         google_id               TEXT,
         facebook_id             TEXT,
+        apple_id                TEXT,
         social_avatar_url       TEXT,
         attempt_count           INTEGER,
         last_login              JSONB,
@@ -391,6 +392,7 @@ public static class SqlSchema
     ALTER TABLE users       ADD COLUMN IF NOT EXISTS device_id             TEXT;
     ALTER TABLE users       ADD COLUMN IF NOT EXISTS google_id             TEXT;
     ALTER TABLE users       ADD COLUMN IF NOT EXISTS facebook_id           TEXT;
+    ALTER TABLE users       ADD COLUMN IF NOT EXISTS apple_id              TEXT;
     ALTER TABLE users       ADD COLUMN IF NOT EXISTS social_avatar_url     TEXT;
     ALTER TABLE users       ADD COLUMN IF NOT EXISTS attempt_count         INTEGER;
     ALTER TABLE users       ADD COLUMN IF NOT EXISTS last_login            JSONB;
@@ -423,6 +425,22 @@ public static class SqlSchema
                 UNIQUE (invitation_token);
         END IF;
     END $$;
+
+    -- Identifier uniqueness on users. NULLs are distinct under Postgres'
+    -- default, so multiple rows missing a given identifier coexist. `email`
+    -- is indexed on LOWER(email) so the uniqueness matches the case-insensitive
+    -- lookup in UserRepository.GetByEmailAsync — two rows differing only in
+    -- email casing would otherwise collide at login time but not at insert.
+    CREATE UNIQUE INDEX IF NOT EXISTS idx_users_email_lower_unique
+        ON users (LOWER(email)) WHERE email IS NOT NULL;
+    CREATE UNIQUE INDEX IF NOT EXISTS idx_users_msisdn_unique
+        ON users (msisdn) WHERE msisdn IS NOT NULL;
+    CREATE UNIQUE INDEX IF NOT EXISTS idx_users_google_id_unique
+        ON users (google_id) WHERE google_id IS NOT NULL;
+    CREATE UNIQUE INDEX IF NOT EXISTS idx_users_facebook_id_unique
+        ON users (facebook_id) WHERE facebook_id IS NOT NULL;
+    CREATE UNIQUE INDEX IF NOT EXISTS idx_users_apple_id_unique
+        ON users (apple_id) WHERE apple_id IS NOT NULL;
 
     -- <table>.query_policies must be non-empty for every ACL-filterable
     -- table. A row with an empty array is invisible to AppendAclFilter

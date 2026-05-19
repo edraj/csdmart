@@ -1536,9 +1536,29 @@ app.Use(async (ctx, next) =>
             // and Dmart.SqlAdapter — clients branch on the same integer
             // regardless of which layer caught the exception. HTTP 409 is
             // the conventional status for a conflict.
+            //
+            // PG's Detail names the offending (column, value) pair — surface
+            // it so callers know which field collided instead of guessing.
+            // Detail can be suppressed (terse `log_error_verbosity`, some
+            // managed-PG vendors strip it), so we fall back to deriving the
+            // column from the constraint name when Detail is unavailable.
+            var (detailKey, detailValue) = Dmart.Utils.PgErrorParsing.ExtractUniqueViolation(ex.Detail);
+            string message;
+            if (detailKey is not null)
+            {
+                message = $"resource with {detailKey} of {detailValue} already exists";
+            }
+            else
+            {
+                var constraintKey = Dmart.Utils.PgErrorParsing.ExtractUniqueViolationKey(
+                    ex.ConstraintName, ex.TableName);
+                message = constraintKey is not null
+                    ? $"resource with {constraintKey} already exists"
+                    : "resource already exists";
+            }
             await WriteDbFailureAsync(ctx, StatusCodes.Status409Conflict,
                 Dmart.Models.Api.InternalErrorCode.SHORTNAME_ALREADY_EXIST,
-                "resource already exists");
+                message);
         }
         else if (ex.SqlState == "42703")
         {
