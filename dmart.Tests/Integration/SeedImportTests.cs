@@ -159,6 +159,90 @@ public class SeedImportTests : IClassFixture<DmartFactory>
         entry.Description?.En.ShouldBe(description, "jsonb description did not round-trip");
     }
 
+    // Round 3 — exercises per-space parallelism with fastParallelism > 1.
+    // Builds a zip carrying THREE distinct spaces each with its own
+    // content entry; verifies each space's entry lands and the jsonb
+    // descriptions round-trip. The riskiest piece is correct grouping —
+    // entries leaking from one worker's space group into another's would
+    // either (a) miss the target space entirely, or (b) cause a worker
+    // to try to insert another space's entry under its own session
+    // (which would fail the entry's space_name = ... lookup at re-read time).
+    [FactIfPg]
+    public async Task Fast_Parallel_Imports_Multiple_Spaces()
+    {
+        var sp = _factory.Services;
+        _factory.CreateClient();
+        var io = sp.GetRequiredService<ImportExportService>();
+        var entryRepo = sp.GetRequiredService<EntryRepository>();
+
+        // Three independent spaces, each with one Content entry. The space
+        // names are GUID-suffixed so this test is run-safe against any prior
+        // test pollution.
+        var stamp = Guid.NewGuid().ToString("N");
+        var spaceA = $"fast_par_a_{stamp}";
+        var spaceB = $"fast_par_b_{stamp}";
+        var spaceC = $"fast_par_c_{stamp}";
+
+        var ms = new MemoryStream();
+        using (var ar = new ZipArchive(ms, ZipArchiveMode.Create, leaveOpen: true))
+        {
+            foreach (var (space, sn, desc) in new[] {
+                (spaceA, "entry_a", "alpha-desc"),
+                (spaceB, "entry_b", "beta-desc"),
+                (spaceC, "entry_c", "gamma-desc"),
+            })
+            {
+                var spaceMeta = new JsonObject
+                {
+                    ["uuid"] = Guid.NewGuid().ToString(),
+                    ["shortname"] = space,
+                    ["is_active"] = true,
+                    ["owner_shortname"] = "dmart",
+                    ["languages"] = new JsonArray("english"),
+                };
+                WriteEntry(ar, $"{space}/.dm/meta.space.json", spaceMeta.ToJsonString());
+
+                var contentMeta = new JsonObject
+                {
+                    ["uuid"] = Guid.NewGuid().ToString(),
+                    ["shortname"] = sn,
+                    ["is_active"] = true,
+                    ["owner_shortname"] = "dmart",
+                    ["description"] = new JsonObject { ["en"] = desc },
+                    ["payload"] = new JsonObject
+                    {
+                        ["content_type"] = "json",
+                        ["body"] = new JsonObject(),
+                    },
+                };
+                WriteEntry(ar, $"{space}/.dm/{sn}/meta.content.json", contentMeta.ToJsonString());
+            }
+        }
+        ms.Position = 0;
+
+        var resp = await io.ImportZipAsync(
+            ms, actor: null, preserveExisting: false,
+            fastUnsafeNoFkCheck: true, fastParallelism: 3);
+
+        resp.Status.ShouldBe(Status.Success);
+        if (resp.Attributes?.GetValueOrDefault("failed") is List<Dictionary<string, object>> fails)
+            fails.Count.ShouldBe(0, $"unexpected per-row failures: {string.Join(", ", fails.Select(f => f.GetValueOrDefault("error")))}");
+
+        // Verify every space's entry landed AND its description round-tripped.
+        // If grouping leaked, one of these would come back null.
+        var a = await entryRepo.GetAsync(spaceA, "/", "entry_a", ResourceType.Content);
+        a.ShouldNotBeNull("space A entry missing");
+        a.Description?.En.ShouldBe("alpha-desc");
+
+        var b = await entryRepo.GetAsync(spaceB, "/", "entry_b", ResourceType.Content);
+        b.ShouldNotBeNull("space B entry missing");
+        b.Description?.En.ShouldBe("beta-desc");
+
+        var c = await entryRepo.GetAsync(spaceC, "/", "entry_c", ResourceType.Content);
+        c.ShouldNotBeNull("space C entry missing");
+        c.Description?.En.ShouldBe("gamma-desc");
+    }
+
     // Builds a self-contained zip with one space + one Content entry directly
     // under root subpath. Description is the only mutable field we vary
     // across imports — it round-trips through the JSON columns without
