@@ -78,6 +78,20 @@ public sealed class ActivationTemplateLoader(ILogger<ActivationTemplateLoader> l
         var picked = TryLoadOverride(ext);
         if (picked is { } o && o.text.Length > 0)
         {
+            // Pre-multipart releases shipped the activation email as a single
+            // HTML body under ActivationEmailContent.txt — operators with that
+            // override see it loaded as the text/plain part now, which renders
+            // literal <p> tags in mail clients that don't display HTML.
+            // Detect the most obvious HTML smell (a `<…>` tag in a .txt
+            // override) and emit a one-shot warning that points the operator
+            // at the .html sibling, so the migration doesn't fail silently.
+            if (string.Equals(ext, "txt", StringComparison.OrdinalIgnoreCase) && LooksLikeHtml(o.text))
+            {
+                log.LogWarning(
+                    "activation email text override at {Source} appears to contain HTML — rename to ActivationEmailContent.html, "
+                    + "or remove markup if you want it as plain text. Mail clients will render the <…> tags literally.",
+                    o.origin);
+            }
             log.LogInformation("activation email {Ext} template loaded from {Source}", ext, o.origin);
             return (o.text, o.origin);
         }
@@ -207,6 +221,21 @@ public sealed class ActivationTemplateLoader(ILogger<ActivationTemplateLoader> l
             if (!vars.TryGetValue(key, out var v)) return m.Value;
             return htmlEscape ? WebUtility.HtmlEncode(v) : v;
         });
+
+    // Returns true when the content looks like HTML to the naked eye — used
+    // only as a migration-warning heuristic for operator .txt overrides that
+    // were written against the pre-multipart contract. False positives (a
+    // plain-text file that happens to contain `<` and `>`) are acceptable:
+    // the worst case is a one-line log warning the operator can ignore.
+    // Looks for a `<word>` or `<word ...>` shape, which catches every common
+    // HTML smell (<p>, <br>, <a href=…>) without matching arbitrary
+    // angle-bracket text.
+    private static readonly Regex HtmlTagSmell = new(
+        @"<\s*[a-zA-Z][a-zA-Z0-9]*(\s[^>]*)?>",
+        RegexOptions.Compiled);
+
+    internal static bool LooksLikeHtml(string s) =>
+        !string.IsNullOrEmpty(s) && HtmlTagSmell.IsMatch(s);
 }
 
 // Narrow HTML-to-plain-text converter used only as the deepest fallback for

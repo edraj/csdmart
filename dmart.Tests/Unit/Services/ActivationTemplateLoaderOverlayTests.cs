@@ -177,6 +177,21 @@ public sealed class ActivationTemplateLoaderOverlayTests : IDisposable
             .ShouldBe("Hi {{ name | html.escape }} (Gina)");
     }
 
+    [Theory]
+    // True: anything that looks like an HTML tag.
+    [InlineData("<p>Hello</p>", true)]
+    [InlineData("<br>", true)]
+    [InlineData("<a href=\"https://x\">link</a>", true)]
+    [InlineData("Hi {{name}},\n\n<p>welcome!</p>", true)]
+    // False: plain text, even with angle brackets in non-tag contexts.
+    [InlineData("Hi {{name}}, activate at {{link}}", false)]
+    [InlineData("x < 10 && y > 5", false)]   // arithmetic, no `<word>` shape
+    [InlineData("", false)]
+    public void LooksLikeHtml_DetectsHtmlSmell(string input, bool expected)
+    {
+        ActivationTemplateLoader.LooksLikeHtml(input).ShouldBe(expected);
+    }
+
     private void WriteOverride(string ext, string content) =>
         File.WriteAllText(Path.Combine(_tmpHome, ".dmart", $"ActivationEmailContent.{ext}"), content);
 
