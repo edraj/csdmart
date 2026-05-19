@@ -129,7 +129,12 @@ public class SeedImportTests : IClassFixture<DmartFactory>
     // and the riskiest piece of the optimization (binary column-order +
     // jsonb encoding + temp-table merge) ships untested. Asserts both
     // the row counts and a sampled jsonb field round-trip correctly.
-    [FactIfPg]
+    //
+    // [FactIfFastImport] auto-skips when the DB role can't SET
+    // session_replication_role (the documented hard-fail of --fast) so
+    // CI under a non-superuser role doesn't fail the suite — the hard
+    // failure is then the user's runtime concern, not the test suite's.
+    [FactIfFastImport]
     public async Task Fast_Bulk_Import_RoundTrips_Entry_With_Jsonb_Fields()
     {
         var sp = _factory.Services;
@@ -167,7 +172,9 @@ public class SeedImportTests : IClassFixture<DmartFactory>
     // either (a) miss the target space entirely, or (b) cause a worker
     // to try to insert another space's entry under its own session
     // (which would fail the entry's space_name = ... lookup at re-read time).
-    [FactIfPg]
+    // Skipped when the DB role lacks session_replication_role privilege
+    // — see Fast_Bulk_Import_RoundTrips_Entry_With_Jsonb_Fields above.
+    [FactIfFastImport]
     public async Task Fast_Parallel_Imports_Multiple_Spaces()
     {
         var sp = _factory.Services;
