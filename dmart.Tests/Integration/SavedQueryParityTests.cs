@@ -85,7 +85,7 @@ public sealed class SavedQueryParityTests : IClassFixture<DmartFactory>
     // `request_body`. The handler must unwrap that, otherwise deserialization
     // fails on missing required fields (`type`, `space_name`, `subpath`).
     [FactIfPg]
-    public async Task Managed_Excute_Unwraps_Api_Schema_RequestBody()
+    public async Task Managed_Execute_Unwraps_Api_Schema_RequestBody()
     {
         var user = await _factory.CreateLoggedInUserAsync();
         var entries = _factory.Services.GetRequiredService<EntryRepository>();
