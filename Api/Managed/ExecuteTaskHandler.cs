@@ -150,15 +150,26 @@ public static class ExecuteTaskHandler
 
         JsonNode? rootNode = JsonNode.Parse(body.GetRawText());
         JsonObject? queryNode = null;
-        if (rootNode is JsonObject obj &&
-            string.Equals(taskEntry.Payload.SchemaShortname, "report", StringComparison.OrdinalIgnoreCase) &&
-            obj["query"] is JsonObject reportQuery)
+        if (rootNode is JsonObject obj)
         {
-            queryNode = (JsonObject)reportQuery.DeepClone();
-        }
-        else if (rootNode is JsonObject direct)
-        {
-            queryNode = (JsonObject)direct.DeepClone();
+            var schema = taskEntry.Payload.SchemaShortname;
+            // "report" wraps the Query under `query`; "api" wraps it under
+            // `request_body` (alongside `end_point`/`verb` metadata that
+            // describes which dmart endpoint the saved request targets).
+            if (string.Equals(schema, "report", StringComparison.OrdinalIgnoreCase) &&
+                obj["query"] is JsonObject reportQuery)
+            {
+                queryNode = (JsonObject)reportQuery.DeepClone();
+            }
+            else if (string.Equals(schema, "api", StringComparison.OrdinalIgnoreCase) &&
+                     obj["request_body"] is JsonObject apiRequestBody)
+            {
+                queryNode = (JsonObject)apiRequestBody.DeepClone();
+            }
+            else
+            {
+                queryNode = (JsonObject)obj.DeepClone();
+            }
         }
         if (queryNode is null) return null;
 
