@@ -1538,24 +1538,23 @@ app.Use(async (ctx, next) =>
             // the conventional status for a conflict.
             //
             // PG's Detail names the offending (column, value) pair — surface
-            // it so callers know which field collided instead of guessing.
+            // ONLY the column to callers so they know which field collided
+            // instead of guessing. The value is deliberately redacted: most
+            // unique columns on `users` are identifiers (email, msisdn,
+            // google_id, facebook_id, apple_id, shortname) and echoing the
+            // value back on a duplicate-key failure on /user/create would
+            // let an attacker enumerate registered identifiers by probing.
+            // The value is still in the server log under cid for ops triage.
+            //
             // Detail can be suppressed (terse `log_error_verbosity`, some
             // managed-PG vendors strip it), so we fall back to deriving the
             // column from the constraint name when Detail is unavailable.
-            var (detailKey, detailValue) = Dmart.Utils.PgErrorParsing.ExtractUniqueViolation(ex.Detail);
-            string message;
-            if (detailKey is not null)
-            {
-                message = $"resource with {detailKey} of {detailValue} already exists";
-            }
-            else
-            {
-                var constraintKey = Dmart.Utils.PgErrorParsing.ExtractUniqueViolationKey(
-                    ex.ConstraintName, ex.TableName);
-                message = constraintKey is not null
-                    ? $"resource with {constraintKey} already exists"
-                    : "resource already exists";
-            }
+            var (detailKey, _) = Dmart.Utils.PgErrorParsing.ExtractUniqueViolation(ex.Detail);
+            var column = detailKey
+                         ?? Dmart.Utils.PgErrorParsing.ExtractUniqueViolationKey(ex.ConstraintName, ex.TableName);
+            var message = column is not null
+                ? $"resource with this {column} already exists"
+                : "resource already exists";
             await WriteDbFailureAsync(ctx, StatusCodes.Status409Conflict,
                 Dmart.Models.Api.InternalErrorCode.SHORTNAME_ALREADY_EXIST,
                 message);

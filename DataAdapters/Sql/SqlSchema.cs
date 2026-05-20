@@ -426,15 +426,26 @@ public static class SqlSchema
         END IF;
     END $$;
 
-    -- Identifier uniqueness on users. NULLs are distinct under Postgres'
-    -- default, so multiple rows missing a given identifier coexist. `email`
-    -- is indexed on LOWER(email) so the uniqueness matches the case-insensitive
-    -- lookup in UserRepository.GetByEmailAsync — two rows differing only in
-    -- email casing would otherwise collide at login time but not at insert.
-    CREATE UNIQUE INDEX IF NOT EXISTS idx_users_email_lower_unique
-        ON users (LOWER(email)) WHERE email IS NOT NULL;
-    CREATE UNIQUE INDEX IF NOT EXISTS idx_users_msisdn_unique
-        ON users (msisdn) WHERE msisdn IS NOT NULL;
+    -- Identifier uniqueness on users — provider-issued IDs only.
+    -- NULLs are distinct under Postgres' default, so multiple rows missing
+    -- a given identifier coexist.
+    --
+    -- Email and msisdn are DELIBERATELY NOT indexed here. Two accounts with
+    -- the same email must be able to coexist — e.g. a local password account
+    -- and a Google OAuth account that happen to share an email. See
+    -- OAuthEndpointsTests.Resolver_EmailMatch_CreatesSeparateAccount_NoSilentMerge,
+    -- which pins the security property that the OAuth resolver creates a
+    -- SEPARATE account rather than silently attaching its provider id to a
+    -- pre-existing email-matching account. Adding a unique-email constraint
+    -- would either break that test or force the resolver into a
+    -- pre-auth-takeover-shaped merge path. Same reasoning applies to msisdn.
+    -- Application-level uniqueness on /user/create still runs through
+    -- UniquenessValidator.
+    --
+    -- Provider IDs (google_id, facebook_id, apple_id) are 1:1 by construction
+    -- (one provider account → one provider-id-keyed dmart account, named
+    -- `<provider>_<id>`), so DB-level uniqueness here is defense-in-depth on
+    -- top of the shortname unique constraint.
     CREATE UNIQUE INDEX IF NOT EXISTS idx_users_google_id_unique
         ON users (google_id) WHERE google_id IS NOT NULL;
     CREATE UNIQUE INDEX IF NOT EXISTS idx_users_facebook_id_unique
