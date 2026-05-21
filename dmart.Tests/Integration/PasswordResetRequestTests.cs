@@ -23,6 +23,10 @@ public sealed class PasswordResetRequestTests : IClassFixture<DmartFactory>
     private readonly DmartFactory _factory;
     public PasswordResetRequestTests(DmartFactory factory) => _factory = factory;
 
+    // Mirrors OtpHandler.ResetOtpPrefix — handler constant is private, so the
+    // tests duplicate the literal. Any drift breaks the assertions loudly.
+    private const string ResetPrefix = "pwd-reset:";
+
     [FactIfPg]
     public async Task ShortnameOnly_Sends_Otp_To_Users_Msisdn()
     {
@@ -173,7 +177,7 @@ public sealed class PasswordResetRequestTests : IClassFixture<DmartFactory>
     private async Task<bool> OtpExistsAsync(string dest)
     {
         var repo = _factory.Services.GetRequiredService<OtpRepository>();
-        return await repo.GetCodeAsync("pwd-reset:" + dest) is not null;
+        return await repo.GetCodeAsync(ResetPrefix + dest) is not null;
     }
 
     private async Task<(string Shortname, string Email, string Msisdn)> CreateUserAsync(bool withMsisdn)
@@ -214,8 +218,8 @@ public sealed class PasswordResetRequestTests : IClassFixture<DmartFactory>
             // delete those rows so back-to-back test runs start clean. Reset
             // OTPs live under the "pwd-reset:" prefix.
             var keys = new List<string>();
-            if (!string.IsNullOrEmpty(email)) keys.Add("pwd-reset:" + email);
-            if (!string.IsNullOrEmpty(msisdn)) keys.Add("pwd-reset:" + msisdn);
+            if (!string.IsNullOrEmpty(email)) keys.Add(ResetPrefix + email);
+            if (!string.IsNullOrEmpty(msisdn)) keys.Add(ResetPrefix + msisdn);
             if (keys.Count == 0) return;
 
             var db = _factory.Services.GetRequiredService<Db>();

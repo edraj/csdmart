@@ -30,13 +30,16 @@ public sealed record PasswordResetRequest(
     string? Msisdn);
 
 // POST /user/password-reset-confirm — completes the flow started by
-// /user/password-reset-request. Identifier is a single field that the handler
-// routes (email-shaped → email; digit-shaped → msisdn; else → shortname),
-// matching the resolution the request side did. Otp is the code delivered to
-// the user; Password is the new password (plaintext on the wire, hashed
-// server-side via PasswordHasher.Hash).
+// /user/password-reset-request. Identifier is one of {Shortname, Email,
+// Msisdn} — same shape as PasswordResetRequest so the two halves resolve to
+// the same user (and the same `pwd-reset:{dest}` key) without heuristic
+// re-detection of identifier shape. Otp is the code delivered to the user;
+// Password is the new password (plaintext on the wire, hashed server-side
+// via PasswordHasher.Hash).
 public sealed record PasswordResetConfirm(
-    string Identifier,
+    string? Shortname,
+    string? Email,
+    string? Msisdn,
     string Otp,
     string Password);
 

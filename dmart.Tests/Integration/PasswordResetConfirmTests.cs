@@ -15,15 +15,25 @@ namespace Dmart.Tests.Integration;
 
 // /user/password-reset-confirm completes the reset flow: it verifies the OTP
 // minted by /user/password-reset-request (keyed under "pwd-reset:{dest}") and
-// writes a new password hash. The key prefix is the security guarantee: a
-// reset OTP must not be consumable via /user/login's OTP path, which reads
-// the bare {dest} key.
+// writes a new password hash. Two security guarantees pinned here:
+//   1. Key prefix isolation — a reset OTP must NOT be consumable via
+//      /user/login's OTP path, which reads the bare {dest} key.
+//   2. Brute-force lockout — wrong OTPs count against the failed-attempt
+//      counter, so a distributed attacker can't exhaust the 10^6 6-digit
+//      keyspace within the 300s TTL.
+// Identifier on the confirm side is the same typed-field shape as
+// /password-reset-request: exactly one of {Shortname, Email, Msisdn}.
 public sealed class PasswordResetConfirmTests : IClassFixture<DmartFactory>
 {
     private readonly DmartFactory _factory;
     public PasswordResetConfirmTests(DmartFactory factory) => _factory = factory;
 
     private const string ValidPassword = "NewPass1234";
+
+    // Mirrors OtpHandler.ResetOtpPrefix — duplicated here because the handler
+    // constant is private. Test cleanup needs the literal so any divergence
+    // shows up as a failing test rather than a silently orphaned row.
+    private const string ResetPrefix = "pwd-reset:";
 
     [FactIfPg]
     public async Task HappyPath_Request_Then_Confirm_Updates_Password()
@@ -45,7 +55,8 @@ public sealed class PasswordResetConfirmTests : IClassFixture<DmartFactory>
 
             // 2. Confirm with the correct OTP + a valid new password.
             var confirmResp = await client.PostAsJsonAsync("/user/password-reset-confirm",
-                new PasswordResetConfirm(shortname, code!, ValidPassword),
+                new PasswordResetConfirm(Shortname: shortname, Email: null, Msisdn: null,
+                    Otp: code!, Password: ValidPassword),
                 DmartJsonContext.Default.PasswordResetConfirm);
             confirmResp.StatusCode.ShouldBe(HttpStatusCode.OK);
 
@@ -97,8 +108,11 @@ public sealed class PasswordResetConfirmTests : IClassFixture<DmartFactory>
     }
 
     [FactIfPg]
-    public async Task SecondRequest_Within_Cooldown_Returns_OtpResendBlocked()
+    public async Task SecondRequest_Within_Cooldown_Is_SilentlyOk()
     {
+        // Anti-enumeration: the cooldown branch returns 200 Ok silently so a
+        // paired-request attacker can't distinguish "known user, just-issued
+        // OTP" (cooldown hit) from "unknown user" (early return).
         var (shortname, email, msisdn) = await CreateUserAsync(withMsisdn: true);
         try
         {
@@ -107,15 +121,19 @@ public sealed class PasswordResetConfirmTests : IClassFixture<DmartFactory>
                 new PasswordResetRequest(shortname, null, null),
                 DmartJsonContext.Default.PasswordResetRequest);
             first.StatusCode.ShouldBe(HttpStatusCode.OK);
+            var firstCode = await ReadOtpCodeAsync(msisdn);
+            firstCode.ShouldNotBeNullOrEmpty();
 
-            // Default cooldown is 60s; the second call is immediate, well
-            // inside the window. OTP_RESEND_BLOCKED maps to HTTP 403.
+            // Second call within the default 60s cooldown — must return 200
+            // Ok AND must NOT refresh the stored code (otherwise the cooldown
+            // is observable via the OTP value changing).
             var second = await client.PostAsJsonAsync("/user/password-reset-request",
                 new PasswordResetRequest(shortname, null, null),
                 DmartJsonContext.Default.PasswordResetRequest);
-            second.StatusCode.ShouldBe(HttpStatusCode.Forbidden);
-            var body = await second.Content.ReadAsStringAsync();
-            body.ShouldContain("Resend OTP is allowed after");
+            second.StatusCode.ShouldBe(HttpStatusCode.OK);
+
+            var secondCode = await ReadOtpCodeAsync(msisdn);
+            secondCode.ShouldBe(firstCode, "cooldown must be a true no-op — same OTP code persists");
         }
         finally { await CleanupAsync(shortname, email, msisdn); }
     }
@@ -133,7 +151,8 @@ public sealed class PasswordResetConfirmTests : IClassFixture<DmartFactory>
 
             // Submit a definitely-wrong 6-digit code.
             var resp = await client.PostAsJsonAsync("/user/password-reset-confirm",
-                new PasswordResetConfirm(shortname, "000000", ValidPassword),
+                new PasswordResetConfirm(Shortname: shortname, Email: null, Msisdn: null,
+                    Otp: "000000", Password: ValidPassword),
                 DmartJsonContext.Default.PasswordResetConfirm);
             // OTP_INVALID → HTTP 400 (FailedResponseFilter default for OTP codes).
             resp.StatusCode.ShouldBe(HttpStatusCode.BadRequest);
@@ -154,7 +173,8 @@ public sealed class PasswordResetConfirmTests : IClassFixture<DmartFactory>
         var unknown = $"ghost_user_{Guid.NewGuid():N}".Substring(0, 24);
 
         var resp = await client.PostAsJsonAsync("/user/password-reset-confirm",
-            new PasswordResetConfirm(unknown, "123456", ValidPassword),
+            new PasswordResetConfirm(Shortname: unknown, Email: null, Msisdn: null,
+                Otp: "123456", Password: ValidPassword),
             DmartJsonContext.Default.PasswordResetConfirm);
         // Uniform OTP_INVALID error → HTTP 400 — endpoint doesn't leak which leg failed.
         resp.StatusCode.ShouldBe(HttpStatusCode.BadRequest);
@@ -177,7 +197,8 @@ public sealed class PasswordResetConfirmTests : IClassFixture<DmartFactory>
 
             // 4 chars, no digit, no uppercase — fails the regex on multiple counts.
             var resp = await client.PostAsJsonAsync("/user/password-reset-confirm",
-                new PasswordResetConfirm(shortname, code!, "weak"),
+                new PasswordResetConfirm(Shortname: shortname, Email: null, Msisdn: null,
+                    Otp: code!, Password: "weak"),
                 DmartJsonContext.Default.PasswordResetConfirm);
             resp.StatusCode.ShouldBe(HttpStatusCode.BadRequest);
             var body = await resp.Content.ReadAsStringAsync();
@@ -190,12 +211,81 @@ public sealed class PasswordResetConfirmTests : IClassFixture<DmartFactory>
         finally { await CleanupAsync(shortname, email, msisdn); }
     }
 
+    [FactIfPg]
+    public async Task Confirm_With_No_Pending_Otp_Returns_OtpInvalid()
+    {
+        // Known user but /password-reset-request was never called for them —
+        // the reset key has no row, so confirm must fail uniformly. Pins the
+        // contract that confirm can never succeed without a paired request.
+        var (shortname, email, msisdn) = await CreateUserAsync(withMsisdn: true);
+        try
+        {
+            // Sanity: no OTP exists for this user.
+            (await ReadOtpCodeAsync(msisdn)).ShouldBeNull();
+
+            var client = _factory.CreateClient();
+            var resp = await client.PostAsJsonAsync("/user/password-reset-confirm",
+                new PasswordResetConfirm(Shortname: shortname, Email: null, Msisdn: null,
+                    Otp: "123456", Password: ValidPassword),
+                DmartJsonContext.Default.PasswordResetConfirm);
+            resp.StatusCode.ShouldBe(HttpStatusCode.BadRequest);
+            var body = await resp.Content.ReadAsStringAsync();
+            body.ShouldContain("code mismatch or expired");
+        }
+        finally { await CleanupAsync(shortname, email, msisdn); }
+    }
+
+    [FactIfPg]
+    public async Task BruteForce_Locks_Account_After_MaxFailedAttempts()
+    {
+        // Wrong OTPs count against the same failed-attempt counter /user/login
+        // uses (MaxFailedLoginAttempts, default 5). Without this guarantee a
+        // distributed attacker could exhaust the 10^6 6-digit keyspace inside
+        // the 300s TTL by hitting the endpoint from many IPs.
+        var (shortname, email, msisdn) = await CreateUserAsync(withMsisdn: true);
+        try
+        {
+            var client = _factory.CreateClient();
+            await client.PostAsJsonAsync("/user/password-reset-request",
+                new PasswordResetRequest(shortname, null, null),
+                DmartJsonContext.Default.PasswordResetRequest);
+
+            // Submit 4 wrong OTPs — each should return OTP_INVALID (HTTP 400)
+            // and the account stays active (counter < 5).
+            for (int i = 0; i < 4; i++)
+            {
+                var bad = await client.PostAsJsonAsync("/user/password-reset-confirm",
+                    new PasswordResetConfirm(Shortname: shortname, Email: null, Msisdn: null,
+                        Otp: "000000", Password: ValidPassword),
+                    DmartJsonContext.Default.PasswordResetConfirm);
+                bad.StatusCode.ShouldBe(HttpStatusCode.BadRequest, $"attempt {i + 1} should be OTP_INVALID");
+            }
+
+            // 5th wrong OTP trips the lockout — server returns USER_ACCOUNT_LOCKED
+            // (HTTP 401) on the same call that flipped IsActive=false.
+            var lockResp = await client.PostAsJsonAsync("/user/password-reset-confirm",
+                new PasswordResetConfirm(Shortname: shortname, Email: null, Msisdn: null,
+                    Otp: "000000", Password: ValidPassword),
+                DmartJsonContext.Default.PasswordResetConfirm);
+            lockResp.StatusCode.ShouldBe(HttpStatusCode.Unauthorized);
+            var lockBody = await lockResp.Content.ReadAsStringAsync();
+            lockBody.ShouldContain("Account has been locked");
+
+            // Confirm the lock landed in the DB.
+            var users = _factory.Services.GetRequiredService<UserRepository>();
+            var locked = await users.GetByShortnameAsync(shortname);
+            locked.ShouldNotBeNull();
+            locked!.IsActive.ShouldBeFalse();
+        }
+        finally { await CleanupAsync(shortname, email, msisdn); }
+    }
+
     // ---- helpers ----
 
     private async Task<string?> ReadOtpCodeAsync(string dest)
     {
         var repo = _factory.Services.GetRequiredService<OtpRepository>();
-        return await repo.GetCodeAsync("pwd-reset:" + dest);
+        return await repo.GetCodeAsync(ResetPrefix + dest);
     }
 
     private async Task<(string Shortname, string Email, string Msisdn)> CreateUserAsync(bool withMsisdn)
@@ -237,8 +327,8 @@ public sealed class PasswordResetConfirmTests : IClassFixture<DmartFactory>
             await users.DeleteAsync(shortname);
 
             var keys = new List<string>();
-            if (!string.IsNullOrEmpty(email)) keys.Add("pwd-reset:" + email);
-            if (!string.IsNullOrEmpty(msisdn)) keys.Add("pwd-reset:" + msisdn);
+            if (!string.IsNullOrEmpty(email)) keys.Add(ResetPrefix + email);
+            if (!string.IsNullOrEmpty(msisdn)) keys.Add(ResetPrefix + msisdn);
             if (keys.Count == 0) return;
 
             var db = _factory.Services.GetRequiredService<Db>();
