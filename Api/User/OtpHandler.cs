@@ -130,8 +130,8 @@ public static class OtpHandler
         }).RequireRateLimiting("auth-by-ip");
 
         g.MapPost("/password-reset-request", async (PasswordResetRequest req,
-            UserRepository users, InvitationService invitations,
-            CancellationToken ct) =>
+            UserRepository users, OtpProvider otp, OtpRepository repo,
+            IOptions<DmartSettings> settings, CancellationToken ct) =>
         {
             Models.Core.User? user = null;
             if (!string.IsNullOrEmpty(req.Shortname))
@@ -145,11 +145,17 @@ public static class OtpHandler
             // or not. All silent-no-op branches below also fall through to Ok().
             if (user is null) return Response.Ok();
 
-            // Email-direct path: only mint when the supplied email actually
-            // matches the user's (case-insensitive — UserRepository already
-            // does LOWER(email)=LOWER($1) on the lookup, the equality check
-            // here guards against future lookup changes and against a
-            // mismatched email leaking through the `else` branch).
+            // Pick the destination using the same routing rules the prior
+            // invitation flow applied:
+            //   - Email-direct path: only when the request was email-only AND
+            //     the supplied email matches the user record (case-insensitive
+            //     equality guards against a mismatched email leaking through).
+            //   - Msisdn / shortname path: prefer the user's msisdn; the msisdn
+            //     equality check blocks an attacker probing whether a known
+            //     shortname belongs to a specific msisdn.
+            //   - Csdmart-only fallback: shortname-only request + user has no
+            //     msisdn → fall back to email so the reset still reaches them.
+            string? dest = null;
             var emailDirect = string.IsNullOrEmpty(req.Shortname)
                 && string.IsNullOrEmpty(req.Msisdn)
                 && !string.IsNullOrEmpty(req.Email);
@@ -157,39 +163,31 @@ public static class OtpHandler
             {
                 if (!string.IsNullOrEmpty(user.Email)
                     && string.Equals(user.Email, req.Email, StringComparison.OrdinalIgnoreCase))
-                {
-                    await invitations.MintAsync(user, Models.Enums.InvitationChannel.Email, isReset: true, ct);
-                }
-                return Response.Ok();
+                    dest = user.Email;
             }
-
-            // Msisdn / shortname path: prefer SMS. The msisdn equality check
-            // is tautological when the lookup was by msisdn (req.Msisdn was
-            // the key) but load-bearing when the caller supplied BOTH
-            // shortname and msisdn — it blocks an attacker probing whether
-            // a known shortname belongs to a specific msisdn.
-            //
-            // isReset=true selects the localized reset_message template (same
-            // one /user/reset uses) instead of the new-account invitation
-            // message — see InvitationService.MintAsync.
-            if (!string.IsNullOrEmpty(user.Msisdn)
-                && (string.IsNullOrEmpty(req.Msisdn)
-                    || string.Equals(user.Msisdn, req.Msisdn, StringComparison.Ordinal)))
+            else if (!string.IsNullOrEmpty(user.Msisdn)
+                     && (string.IsNullOrEmpty(req.Msisdn)
+                         || string.Equals(user.Msisdn, req.Msisdn, StringComparison.Ordinal)))
             {
-                await invitations.MintAsync(user, Models.Enums.InvitationChannel.Sms, isReset: true, ct);
+                dest = user.Msisdn;
             }
-            // Csdmart-only fallback (intentional divergence from upstream
-            // Python's reset_password, which silently no-ops here): when the
-            // caller supplied only a shortname and the user has no msisdn,
-            // fall back to email so the reset still reaches them via the
-            // available channel. NOT triggered when req.Msisdn is set —
-            // direct-msisdn requests honor the channel the caller picked.
             else if (!string.IsNullOrEmpty(req.Shortname)
                      && string.IsNullOrEmpty(req.Msisdn)
                      && !string.IsNullOrEmpty(user.Email))
             {
-                await invitations.MintAsync(user, Models.Enums.InvitationChannel.Email, isReset: true, ct);
+                dest = user.Email;
             }
+
+            if (string.IsNullOrEmpty(dest)) return Response.Ok();
+
+            // OTP delivery: OtpProvider.SendAsync renders the body from the
+            // `otp_message` language template, so the reset message uses the
+            // same wording as /otp-request.
+            var s = settings.Value;
+            var code = otp.Generate(dest);
+            var expiresAt = TimeUtils.Now().AddSeconds(s.OtpTokenTtl);
+            await repo.StoreAsync(dest, code, expiresAt, ct);
+            await otp.SendAsync(dest, code, user.Language, ct);
 
             return Response.Ok();
         }).RequireRateLimiting("auth-by-ip");
