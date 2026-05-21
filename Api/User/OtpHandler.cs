@@ -180,15 +180,101 @@ public static class OtpHandler
 
             if (string.IsNullOrEmpty(dest)) return Response.Ok();
 
+            // Reset OTPs live under a dedicated key (pwd-reset:{dest}) so the
+            // login OTP path (which reads bare {dest}) can't consume them and
+            // turn a password-reset code into a login credential.
+            var s = settings.Value;
+            var key = ResetOtpKey(dest);
+
+            // Resend cooldown — scoped to the reset key, independent of the
+            // generic /otp-request cooldown. Mirrors the /otp-request error
+            // surface (HTTP 400, OTP_RESEND_BLOCKED). This is a deliberate,
+            // narrow break of anti-enumeration on the resend-too-soon path
+            // only; first-time requests for unknown users still return Ok.
+            var since = await repo.GetCreatedSinceAsync(key, ct);
+            if (since is int elapsed && elapsed < s.AllowPasswordResetResendAfter)
+                return Response.Fail(InternalErrorCode.OTP_RESEND_BLOCKED,
+                    $"Resend OTP is allowed after {s.AllowPasswordResetResendAfter - elapsed} seconds",
+                    ErrorTypes.Request);
+
             // OTP delivery: OtpProvider.SendAsync renders the body from the
             // `otp_message` language template, so the reset message uses the
             // same wording as /otp-request.
-            var s = settings.Value;
             var code = otp.Generate(dest);
             var expiresAt = TimeUtils.Now().AddSeconds(s.OtpTokenTtl);
-            await repo.StoreAsync(dest, code, expiresAt, ct);
+            await repo.StoreAsync(key, code, expiresAt, ct);
             await otp.SendAsync(dest, code, user.Language, ct);
 
+            return Response.Ok();
+        }).RequireRateLimiting("auth-by-ip");
+
+        // Completes the reset flow started by /password-reset-request:
+        // verifies the OTP at the reset-scoped key, then writes the new
+        // password hash on the user row. Single uniform OTP_INVALID response
+        // for {unknown identifier, no dest available, OTP mismatch, OTP
+        // expired} so the endpoint doesn't leak which leg failed (same
+        // posture as /otp-confirm).
+        g.MapPost("/password-reset-confirm", async (PasswordResetConfirm req,
+            UserRepository users, OtpRepository repo, PasswordHasher hasher,
+            CancellationToken ct) =>
+        {
+            if (string.IsNullOrWhiteSpace(req.Identifier)
+                || string.IsNullOrWhiteSpace(req.Otp)
+                || string.IsNullOrWhiteSpace(req.Password))
+                return Response.Fail(InternalErrorCode.MISSING_DATA,
+                    "identifier, otp and password are required", ErrorTypes.Request);
+
+            // Enforce password rules BEFORE the OTP probe so a malformed
+            // password can't burn the user's one-shot OTP attempt.
+            if (!PasswordRules.IsValid(req.Password))
+                return Response.Fail(InternalErrorCode.INVALID_PASSWORD_RULES,
+                    "password does not meet complexity rules", ErrorTypes.Request);
+
+            // Resolve user by identifier shape — same detection the OtpProvider
+            // dispatch uses (email contains '@', msisdn is +digits or pure
+            // digits ≥ 6).
+            Models.Core.User? user;
+            if (LooksLikeEmail(req.Identifier))
+                user = await users.GetByEmailAsync(req.Identifier.ToLowerInvariant(), ct);
+            else if (LooksLikeMsisdn(req.Identifier))
+                user = await users.GetByMsisdnAsync(req.Identifier, ct);
+            else
+                user = await users.GetByShortnameAsync(req.Identifier, ct);
+
+            if (user is null)
+                return Response.Fail(InternalErrorCode.OTP_INVALID,
+                    "code mismatch or expired", ErrorTypes.Auth);
+
+            // Determine the dest /password-reset-request used so we hit the
+            // same key:
+            //   identifier was email → user.Email (case-insensitive match)
+            //   else                  → user.Msisdn first, else user.Email
+            string? dest = null;
+            if (LooksLikeEmail(req.Identifier)
+                && !string.IsNullOrEmpty(user.Email)
+                && string.Equals(user.Email, req.Identifier, StringComparison.OrdinalIgnoreCase))
+                dest = user.Email;
+            else if (!LooksLikeEmail(req.Identifier) && !string.IsNullOrEmpty(user.Msisdn))
+                dest = user.Msisdn;
+            else if (!string.IsNullOrEmpty(user.Email))
+                dest = user.Email;
+
+            if (string.IsNullOrEmpty(dest))
+                return Response.Fail(InternalErrorCode.OTP_INVALID,
+                    "code mismatch or expired", ErrorTypes.Auth);
+
+            var ok = await repo.VerifyAndConsumeAsync(ResetOtpKey(dest), req.Otp, ct);
+            if (!ok)
+                return Response.Fail(InternalErrorCode.OTP_INVALID,
+                    "code mismatch or expired", ErrorTypes.Auth);
+
+            var updated = user with
+            {
+                Password = hasher.Hash(req.Password),
+                ForcePasswordChange = false,
+                UpdatedAt = TimeUtils.Now(),
+            };
+            await users.UpsertAsync(updated, ct);
             return Response.Ok();
         }).RequireRateLimiting("auth-by-ip");
 
@@ -221,5 +307,29 @@ public static class OtpHandler
             }
             return Response.Ok();
         }).RequireRateLimiting("auth-by-ip");
+    }
+
+    // Reset OTPs are stored under a dedicated key prefix so the login OTP
+    // path (which reads bare {dest}) can't consume them as a login credential.
+    private const string ResetOtpPrefix = "pwd-reset:";
+    internal static string ResetOtpKey(string dest) => ResetOtpPrefix + dest;
+
+    // Handler-local identifier-shape detection for /password-reset-confirm.
+    // Mirrors OtpProvider's dispatch heuristics (Auth/OtpProvider.cs) — kept
+    // separate so OtpProvider's surface stays minimal.
+    private static bool LooksLikeEmail(string s)
+    {
+        if (string.IsNullOrWhiteSpace(s)) return false;
+        var at = s.IndexOf('@');
+        return at > 0 && at < s.Length - 1 && s.IndexOf('.', at) > at;
+    }
+
+    private static bool LooksLikeMsisdn(string s)
+    {
+        if (string.IsNullOrWhiteSpace(s)) return false;
+        var t = s.StartsWith('+') ? s[1..] : s;
+        if (t.Length < 6) return false;
+        foreach (var c in t) if (!char.IsDigit(c)) return false;
+        return true;
     }
 }

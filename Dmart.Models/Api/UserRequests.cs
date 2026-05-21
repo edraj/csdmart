@@ -29,6 +29,17 @@ public sealed record PasswordResetRequest(
     string? Email,
     string? Msisdn);
 
+// POST /user/password-reset-confirm — completes the flow started by
+// /user/password-reset-request. Identifier is a single field that the handler
+// routes (email-shaped → email; digit-shaped → msisdn; else → shortname),
+// matching the resolution the request side did. Otp is the code delivered to
+// the user; Password is the new password (plaintext on the wire, hashed
+// server-side via PasswordHasher.Hash).
+public sealed record PasswordResetConfirm(
+    string Identifier,
+    string Otp,
+    string Password);
+
 // RFC 7591 dynamic client registration — MCP clients post this to /oauth/register
 // and we echo back a clients_id they use for the authorize+token flow.
 public sealed record RegisterRequest(

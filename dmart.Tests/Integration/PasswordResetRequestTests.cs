@@ -167,10 +167,13 @@ public sealed class PasswordResetRequestTests : IClassFixture<DmartFactory>
 
     // ---- helpers ----
 
-    private async Task<bool> OtpExistsAsync(string key)
+    // Reset OTPs are stored under the "pwd-reset:" prefix so they can't be
+    // consumed by /user/login's OTP path. Tests pass the bare destination;
+    // this helper prepends the prefix to match what the handler writes.
+    private async Task<bool> OtpExistsAsync(string dest)
     {
         var repo = _factory.Services.GetRequiredService<OtpRepository>();
-        return await repo.GetCodeAsync(key) is not null;
+        return await repo.GetCodeAsync("pwd-reset:" + dest) is not null;
     }
 
     private async Task<(string Shortname, string Email, string Msisdn)> CreateUserAsync(bool withMsisdn)
@@ -208,13 +211,11 @@ public sealed class PasswordResetRequestTests : IClassFixture<DmartFactory>
             await users.DeleteAsync(shortname);
 
             // Build the exact set of otp keys this test could have produced;
-            // delete those rows so back-to-back test runs start clean. The
-            // otp table is keyed by destination (msisdn or email), so exact
-            // equality means a future change to CreateUserAsync's naming
-            // can't accidentally cause one test to clobber another's rows.
+            // delete those rows so back-to-back test runs start clean. Reset
+            // OTPs live under the "pwd-reset:" prefix.
             var keys = new List<string>();
-            if (!string.IsNullOrEmpty(email)) keys.Add(email);
-            if (!string.IsNullOrEmpty(msisdn)) keys.Add(msisdn);
+            if (!string.IsNullOrEmpty(email)) keys.Add("pwd-reset:" + email);
+            if (!string.IsNullOrEmpty(msisdn)) keys.Add("pwd-reset:" + msisdn);
             if (keys.Count == 0) return;
 
             var db = _factory.Services.GetRequiredService<Db>();
