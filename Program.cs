@@ -210,6 +210,12 @@ switch (subcommand)
                              (filesystem only — sidecar checkpoint at
                              <source>/.dmart-import-checkpoint.json lets a crash
                              resume from the last committed pass / space).
+              archive        Pack dmart terminal folders into Apache Parquet
+                             for cold-storage archival. Each terminal folder
+                             becomes one .parquet file with full meta_json +
+                             columns for DuckDB-style ad-hoc query.
+              unarchive      Round-trip companion to archive — reads .parquet
+                             back to the dmart filesystem export layout.
               export         Export a space to a zip in the dmart on-disk layout
                              Usage: dmart export <space_name> [--output <path|dir|.>]
                              --output unset      → ./<space>.zip
@@ -362,6 +368,24 @@ switch (subcommand)
         // three scanners (UUID dedup / owner fixup / schema violation
         // flagging).
         Environment.ExitCode = await Dmart.Cli.PreflightCommand.Run(serverArgs);
+        return;
+    }
+
+    case "archive":
+    {
+        // Pack dmart terminal folders into Apache Parquet for cold-
+        // storage archival. Reduces inode pressure on large
+        // installs and makes the data DuckDB-queryable without
+        // a live dmart server. See Cli/ArchiveCommand.cs for the
+        // full description.
+        Environment.ExitCode = await Dmart.Cli.ArchiveCommand.Archive(serverArgs);
+        return;
+    }
+    case "unarchive":
+    {
+        // Round-trip companion to `dmart archive` — reads .parquet
+        // files back into the dmart filesystem export layout.
+        Environment.ExitCode = await Dmart.Cli.ArchiveCommand.Unarchive(serverArgs);
         return;
     }
 

@@ -97,6 +97,15 @@
     <Compile Remove="Dmart.SqlAdapter/**" />
     <Content Remove="Dmart.SqlAdapter/**" />
     <None Remove="Dmart.SqlAdapter/**" />
+    <!-- Dmart.ParquetAdapter — same posture as Dmart.SqlAdapter. The
+         Parquet.Net dependency uses reflection-based column/row
+         mapping; we keep it out of the AOT binary by excluding its
+         .cs files from this assembly. The dmart server reaches the
+         archiver via the ProjectReference below, which links the
+         non-AOT-published assembly. -->
+    <Compile Remove="Dmart.ParquetAdapter/**" />
+    <Content Remove="Dmart.ParquetAdapter/**" />
+    <None Remove="Dmart.ParquetAdapter/**" />
     <!-- Dmart.Models lives in its own sibling project (split out for NuGet
          sharing with dmart.Client and any third-party SDKs). The Web SDK's
          default Compile glob would otherwise pull its .cs files into this
@@ -136,6 +145,15 @@
          both TFMs when consumed; only the net10.0 leg links into the AOT
          server binary, while the net8.0 leg ships to SDK consumers. -->
     <ProjectReference Include="Dmart.QueryGrammar/Dmart.QueryGrammar.csproj">
+      <UndefineProperties>PublishAot;StripSymbols</UndefineProperties>
+    </ProjectReference>
+    <!-- Parquet archival adapter. Non-AOT (Parquet.Net uses reflection
+         for column/row mapping). UndefineProperties prevents its
+         dependency Parquet.Net from being dragged through the AOT
+         analyzer when the server is published with PublishAot=true.
+         The dmart server reaches ParquetArchiver via this reference;
+         the CLI archive/unarchive subcommands wrap the API. -->
+    <ProjectReference Include="Dmart.ParquetAdapter/Dmart.ParquetAdapter.csproj">
       <UndefineProperties>PublishAot;StripSymbols</UndefineProperties>
     </ProjectReference>
   </ItemGroup>

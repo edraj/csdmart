@@ -54,6 +54,10 @@
     <!-- SearchExpressionParser lives here now (extracted from the SDK).
          Existing parser tests reference it directly. -->
     <ProjectReference Include="..\Dmart.QueryGrammar\Dmart.QueryGrammar.csproj" />
+    <!-- Parquet archival adapter. Test project pulls it in for the
+         round-trip tests so we can exercise ParquetArchiver +
+         ParquetExtractor directly without going through the CLI. -->
+    <ProjectReference Include="..\Dmart.ParquetAdapter\Dmart.ParquetAdapter.csproj" />
   </ItemGroup>
 
 </Project>

@@ -1,0 +1,59 @@
+<!-- NuGet-published archival adapter: pack a terminal folder of dmart
+     entries into a single Apache Parquet file (and round-trip back).
+     Reduces inode pressure on archival of large dmart instances (24M
+     entries → tens of thousands of .parquet files) and makes cold
+     storage queryable via DuckDB / Arrow / pandas without a live dmart.
+
+     Like Dmart.SqlAdapter, this project lives in the dmart repo for
+     development but is excluded from the main dmart.csproj build
+     (see <Compile Remove="Dmart.ParquetAdapter/**" /> in dmart.csproj)
+     so the AOT server binary doesn't pull in Parquet.Net's reflection-
+     heavy code. The non-AOT assembly is project-referenced from
+     dmart.csproj so the CLI archive/unarchive subcommands can call
+     into it without static linking. TreatAsLocalProperty lets our
+     PublishAot=false win over any consumer's PublishAot=true. -->
+<Project Sdk="Microsoft.NET.Sdk" TreatAsLocalProperty="PublishAot;StripSymbols">
+
+  <PropertyGroup>
+    <!-- net10.0 only: Parquet.Net 6.x dropped net8 support, and our
+         primary consumer is the dmart server which runs on net10. -->
+    <TargetFramework>net10.0</TargetFramework>
+    <PublishAot>false</PublishAot>
+    <StripSymbols>false</StripSymbols>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <RootNamespace>Dmart.ParquetAdapter</RootNamespace>
+    <AssemblyName>Dmart.ParquetAdapter</AssemblyName>
+    <LangVersion>latest</LangVersion>
+
+    <!-- NuGet metadata. We deliberately do NOT advertise
+         IsAotCompatible / IsTrimmable — Parquet.Net relies on
+         reflection-based field access for typed columns and would
+         fail trim analysis. Consumers who need AOT in their own host
+         should wrap this in a separate non-AOT process or use the
+         dmart CLI which already handles the boundary. -->
+    <IsPackable>true</IsPackable>
+    <PackageId>Dmart.ParquetAdapter</PackageId>
+    <Description>Pack dmart filesystem exports into Apache Parquet for cold-storage archival. Round-trips back to the export layout via the matching extractor. Binary attachments stay on disk; their filenames are recorded in the parquet so dmart unarchive can re-link them.</Description>
+    <Authors>Kefah T. Issa; edraj contributors</Authors>
+    <Company>edraj</Company>
+    <Copyright>Copyright (c) edraj contributors</Copyright>
+    <PackageLicenseExpression>MIT</PackageLicenseExpression>
+    <PackageProjectUrl>https://github.com/edraj/csdmart</PackageProjectUrl>
+    <RepositoryUrl>https://github.com/edraj/csdmart.git</RepositoryUrl>
+    <RepositoryType>git</RepositoryType>
+    <PackageTags>dmart;cms;ims;edraj;parquet;archive;arrow;duckdb</PackageTags>
+    <IncludeSymbols>true</IncludeSymbols>
+    <SymbolPackageFormat>snupkg</SymbolPackageFormat>
+    <PublishRepositoryUrl>true</PublishRepositoryUrl>
+    <EmbedUntrackedSources>true</EmbedUntrackedSources>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <!-- Parquet.Net: pure-managed Apache Parquet reader/writer. MIT
+         licensed, ~600KB DLL, no native deps. The 5.x line targets
+         net6.0+ which covers both our TFMs. -->
+    <PackageReference Include="Parquet.Net" Version="6.0.3" />
+  </ItemGroup>
+
+</Project>

@@ -9,7 +9,7 @@ _dmart() {
     # subcommand dispatch. Both spellings (hyphen + underscore) are
     # included where Program.cs accepts both, so TAB suggests whichever
     # form the operator started typing.
-    local subcommands="serve version settings passwd selfcheck preflight check health-check export import init cli migrate seed fix-query-policies fix_query_policies update-query-policies update_query_policies create-users-folders create_users_folders help"
+    local subcommands="serve version settings passwd selfcheck preflight archive unarchive check health-check export import init cli migrate seed fix-query-policies fix_query_policies update-query-policies update_query_policies create-users-folders create_users_folders help"
     local cli_modes="c cmd s script"
     local cli_commands="ls cd pwd switch mkdir create rm move cat print attach upload request progress import export help exit"
     # Common per-subcommand flag sets reused below.
