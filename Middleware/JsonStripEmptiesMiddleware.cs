@@ -150,6 +150,12 @@ public static class JsonStripEmptiesMiddleware
 // is neither buffered nor flushed.
 internal sealed class SniffingBodyStream : Stream
 {
+    // The wrapped stream is the original Response.Body, owned by ASP.NET Core —
+    // its lifetime ends with the response, not with this wrapper. The middleware
+    // restores ctx.Response.Body in a finally and never disposes this wrapper, so
+    // disposing _inner here would be wrong (it could close the connection stream).
+    [System.Diagnostics.CodeAnalysis.SuppressMessage("Usage", "CA2213",
+        Justification = "Audited: _inner is the caller-owned Response.Body; this wrapper must not dispose it.")]
     private readonly Stream _inner;
     private readonly Microsoft.AspNetCore.Http.HttpResponse _response;
     private MemoryStream? _buffer;
