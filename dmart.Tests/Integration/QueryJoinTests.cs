@@ -594,6 +594,52 @@ public class QueryJoinTests : IClassFixture<DmartFactory>
         finally { try { await spaces.DeleteAsync(spaceName); } catch { } }
     }
 
+    // Flip EnableInnerJoinPushdown on the shared container's settings. Safe
+    // because xUnit runs methods in an IClassFixture class serially; callers
+    // restore the original value in a finally.
+    private Dmart.Config.DmartSettings PushdownSettings()
+    {
+        _factory.CreateClient();
+        return _factory.Services
+            .GetRequiredService<Microsoft.Extensions.Options.IOptions<Dmart.Config.DmartSettings>>().Value;
+    }
+
+    // Primary guardrail: the SQL fast path and the in-memory fallback must
+    // return identical records (and order) and an identical total.
+    [FactIfPg]
+    public async Task Inner_Join_FastPath_Equals_Fallback()
+    {
+        var spaceName = $"jeq_{Guid.NewGuid():N}".Substring(0, 12);
+        try
+        {
+            var (_, seedEntries, seedSpaces) = Resolve();
+            await SeedPaginationFixtureAsync(seedEntries, seedSpaces, spaceName);
+
+            var settings = PushdownSettings();
+            var original = settings.EnableInnerJoinPushdown;
+
+            async Task<(List<string> keys, int total)> Run(bool pushdown)
+            {
+                settings.EnableInnerJoinPushdown = pushdown;
+                var (query, _, _) = Resolve();
+                var resp = await ExecutePagedJoin(query, spaceName, JoinType.Inner, limit: 3, offset: 0);
+                resp.Status.ShouldBe(Status.Success, customMessage: resp.Error?.Message);
+                return (resp.Records!.Select(r => $"{r.Subpath}/{r.Shortname}").ToList(),
+                        (int)resp.Attributes!["total"]!);
+            }
+
+            try
+            {
+                var fast = await Run(true);
+                var slow = await Run(false);
+                fast.keys.ShouldBe(slow.keys);     // same records, same order
+                fast.total.ShouldBe(slow.total);   // same total
+            }
+            finally { settings.EnableInnerJoinPushdown = original; }
+        }
+        finally { var (_, _, spaces) = Resolve(); try { await spaces.DeleteAsync(spaceName); } catch { } }
+    }
+
     // Seeds 10 orders order_00..order_09 (even → customer_a, odd → a ghost
     // with no matching customer) plus the single customer_a they point at.
     private static async Task SeedPaginationFixtureAsync(
