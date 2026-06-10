@@ -446,7 +446,8 @@ public static class QueryHelper
         Func<NpgsqlDataReader, T> hydrate,
         CancellationToken ct,
         string? userShortname = null, string? tableName = null,
-        List<string>? queryPolicies = null)
+        List<string>? queryPolicies = null,
+        IReadOnlyList<InnerSemiJoinSpec>? semiJoins = null)
     {
         var args = new List<NpgsqlParameter>();
         var where = BuildWhereClause(q, args, tableName);
@@ -455,6 +456,11 @@ public static class QueryHelper
         // Apply ACL filtering if user info provided.
         if (userShortname is not null && tableName is not null)
             AppendAclFilter(sql, args, userShortname, tableName, queryPolicies);
+
+        // Inject INNER-join EXISTS semi-joins (filter base by existence of a
+        // matching right row) so LIMIT/OFFSET below page the post-filter set.
+        if (semiJoins is { Count: > 0 })
+            AppendInnerSemiJoins(sql, args, semiJoins);
 
         AppendOrderAndPaging(sql, q, args, tableName);
 
@@ -476,7 +482,8 @@ public static class QueryHelper
     public static async Task<int> RunCountAsync(
         Db db, string tableName, Query q,
         CancellationToken ct,
-        string? userShortname = null, List<string>? queryPolicies = null)
+        string? userShortname = null, List<string>? queryPolicies = null,
+        IReadOnlyList<InnerSemiJoinSpec>? semiJoins = null)
     {
         var args = new List<NpgsqlParameter>();
         var where = BuildWhereClause(q, args, tableName);
@@ -486,6 +493,9 @@ public static class QueryHelper
         // for attachments/histories inside AppendAclFilter (Python parity).
         if (userShortname is not null)
             AppendAclFilter(sqlBuilder, args, userShortname, tableName, queryPolicies);
+
+        if (semiJoins is { Count: > 0 })
+            AppendInnerSemiJoins(sqlBuilder, args, semiJoins);
 
         await using var conn = await db.OpenAsync(ct);
         await using var cmd = new NpgsqlCommand(sqlBuilder.ToString(), conn);
