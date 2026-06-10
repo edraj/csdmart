@@ -568,6 +568,32 @@ public class QueryJoinTests : IClassFixture<DmartFactory>
         }
     }
 
+    // INNER-join SQL pushdown: same fixture as the filter-before-paginate test,
+    // but exercised through the EnableInnerJoinPushdown fast path (EXISTS
+    // semi-join). Page is built post-filter in SQL; total is the exact count.
+    [FactIfPg]
+    public async Task Inner_Join_Pushdown_Filters_And_Paginates()
+    {
+        var (query, entries, spaces) = Resolve();
+        var spaceName = $"jpd_{Guid.NewGuid():N}".Substring(0, 12);
+        try
+        {
+            await SeedPaginationFixtureAsync(entries, spaces, spaceName);  // 5 of 10 orders match
+            var matched = new[] { "order_00", "order_02", "order_04", "order_06", "order_08" };
+
+            var page0 = await ExecutePagedJoin(query, spaceName, JoinType.Inner, limit: 3, offset: 0);
+            page0.Status.ShouldBe(Status.Success, customMessage: page0.Error?.Message);
+            page0.Records!.Count.ShouldBe(3, "page filled from the SQL-filtered set");
+            ((int)page0.Attributes!["total"]!).ShouldBe(5, "COUNT(*) over the EXISTS predicate is exact");
+            foreach (var r in page0.Records) matched.ShouldContain(r.Shortname);
+
+            var page1 = await ExecutePagedJoin(query, spaceName, JoinType.Inner, limit: 3, offset: 3);
+            page1.Records!.Count.ShouldBe(2);
+            ((int)page1.Attributes!["total"]!).ShouldBe(5);
+        }
+        finally { try { await spaces.DeleteAsync(spaceName); } catch { } }
+    }
+
     // Seeds 10 orders order_00..order_09 (even → customer_a, odd → a ghost
     // with no matching customer) plus the single customer_a they point at.
     private static async Task SeedPaginationFixtureAsync(

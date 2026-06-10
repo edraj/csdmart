@@ -78,6 +78,44 @@ public sealed class QueryService(
         if (string.IsNullOrEmpty(q.SpaceName))
             return Response.Fail(InternalErrorCode.INVALID_DATA, "space_name is required", ErrorTypes.Request);
 
+        // Fast path: push eligible INNER joins into SQL as EXISTS semi-joins so
+        // the base query paginates/counts in the DB instead of materializing the
+        // full base set. Falls back to the in-memory path below when ineligible.
+        // See docs/superpowers/specs/2026-06-10-sql-inner-join-pushdown-design.md.
+        if (settings.Value.EnableInnerJoinPushdown && q.Join is { Count: > 0 })
+        {
+            var plan = await TryPlanInnerJoinPushdownAsync(q, actor, ct);
+            if (plan is not null)
+            {
+                if (plan.AlwaysEmpty) return EmptyQueryResponse();
+
+                var fast = await QueryEntriesAsync(q, actor, ct, plan.SemiJoins);
+                if (fast.Status != Status.Success || fast.Records is not { Count: > 0 })
+                    return fast;  // empty page or failure — nothing to attach
+
+                // Attach matches for the page only. Pushed inner joins (and any
+                // left joins) attach as Left: SQL already decided membership, so
+                // the in-memory pass must never drop a row (its 1000-row narrowed
+                // pull could otherwise miss a match SQL legitimately kept).
+                var attachJoins = q.Join.Select(j => j with { Type = JoinType.Left }).ToList();
+                try
+                {
+                    var (joined, jqFail) = await ApplyClientJoinsAsync(fast.Records, attachJoins, actor, ct);
+                    if (jqFail is not null) return jqFail;
+                    var attrs = fast.Attributes is not null
+                        ? new Dictionary<string, object>(fast.Attributes, StringComparer.Ordinal)
+                        : new Dictionary<string, object>(StringComparer.Ordinal);
+                    attrs["returned"] = joined.Count;
+                    return fast with { Records = joined, Attributes = attrs };
+                }
+                catch (Exception ex)
+                {
+                    logger.LogWarning(ex, "client_join attach failed on pushdown fast-path");
+                    return fast;  // page is correct; join decoration absent
+                }
+            }
+        }
+
         // A cardinality-changing join (inner/right/outer) filters or appends
         // records AFTER the base query runs. If we let the base query apply
         // SQL LIMIT/OFFSET first, the join would then drop/append rows INSIDE
