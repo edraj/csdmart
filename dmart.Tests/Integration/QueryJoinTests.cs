@@ -725,6 +725,193 @@ public class QueryJoinTests : IClassFixture<DmartFactory>
         }
     }
 
+    // Array-keyed join → planner bails (array hint) → in-memory fallback;
+    // result still correct (only the order whose tag matches survives).
+    [FactIfPg]
+    public async Task Array_Key_Inner_Join_Falls_Back_And_Is_Correct()
+    {
+        var (query, entries, spaces) = Resolve();
+        var spaceName = $"jarr_{Guid.NewGuid():N}".Substring(0, 12);
+        try
+        {
+            await UpsertJoinSpaceAsync(spaces, spaceName);
+            await SeedEntryAsync(entries, spaceName, "/orders", "order_match", ResourceType.Content,
+                new() { ["tags"] = JsonDocument.Parse("[\"t1\",\"t9\"]").RootElement });
+            await SeedEntryAsync(entries, spaceName, "/orders", "order_miss", ResourceType.Content,
+                new() { ["tags"] = JsonDocument.Parse("[\"t8\"]").RootElement });
+            await SeedEntryAsync(entries, spaceName, "/tags", "t1", ResourceType.Content,
+                new() { ["label"] = JsonDocument.Parse("\"hot\"").RootElement });
+
+            var resp = await ExecuteInnerJoin(query, spaceName, "orders", spaceName, "tags",
+                "payload.body.tags[]:shortname", limit: 10);
+            resp.Status.ShouldBe(Status.Success, customMessage: resp.Error?.Message);
+            resp.Records!.Select(r => r.Shortname).ShouldBe(new[] { "order_match" });
+        }
+        finally { try { await spaces.DeleteAsync(spaceName); } catch { } }
+    }
+
+    // Cross-space inner join: base in space A, right sub-query in space B
+    // (same `entries` table, different space_name) → fast-path EXISTS.
+    [FactIfPg]
+    public async Task Inner_Join_Pushdown_Across_Spaces()
+    {
+        var (query, entries, spaces) = Resolve();
+        var spaceA = $"jxa_{Guid.NewGuid():N}".Substring(0, 12);
+        var spaceB = $"jxb_{Guid.NewGuid():N}".Substring(0, 12);
+        try
+        {
+            await UpsertJoinSpaceAsync(spaces, spaceA);
+            await UpsertJoinSpaceAsync(spaces, spaceB);
+            await SeedEntryAsync(entries, spaceA, "/orders", "order_hit", ResourceType.Content,
+                new() { ["customer"] = JsonDocument.Parse("\"cust_a\"").RootElement });
+            await SeedEntryAsync(entries, spaceA, "/orders", "order_miss", ResourceType.Content,
+                new() { ["customer"] = JsonDocument.Parse("\"cust_x\"").RootElement });
+            await SeedEntryAsync(entries, spaceB, "/customers", "cust_a", ResourceType.Content,
+                new() { ["email"] = JsonDocument.Parse("\"a@b.com\"").RootElement });
+
+            var resp = await ExecuteInnerJoin(query, spaceA, "orders", spaceB, "customers",
+                "payload.body.customer:shortname", limit: 10);
+            resp.Status.ShouldBe(Status.Success, customMessage: resp.Error?.Message);
+            resp.Records!.Select(r => r.Shortname).ShouldBe(new[] { "order_hit" });
+            ((int)resp.Attributes!["total"]!).ShouldBe(1);
+        }
+        finally
+        {
+            try { await spaces.DeleteAsync(spaceA); } catch { }
+            try { await spaces.DeleteAsync(spaceB); } catch { }
+        }
+    }
+
+    // Multi-pair inner join: ALL pairs must match (AND). order_bad shares the
+    // customer but not the region, so it is dropped.
+    [FactIfPg]
+    public async Task Inner_Join_Pushdown_MultiPair_AndsAllPairs()
+    {
+        var (query, entries, spaces) = Resolve();
+        var spaceName = $"jmp_{Guid.NewGuid():N}".Substring(0, 12);
+        try
+        {
+            await UpsertJoinSpaceAsync(spaces, spaceName);
+            await SeedEntryAsync(entries, spaceName, "/customers", "cust_a", ResourceType.Content,
+                new() { ["region"] = JsonDocument.Parse("\"north\"").RootElement });
+            await SeedEntryAsync(entries, spaceName, "/orders", "order_ok", ResourceType.Content,
+                new()
+                {
+                    ["customer"] = JsonDocument.Parse("\"cust_a\"").RootElement,
+                    ["region"] = JsonDocument.Parse("\"north\"").RootElement,
+                });
+            await SeedEntryAsync(entries, spaceName, "/orders", "order_bad", ResourceType.Content,
+                new()
+                {
+                    ["customer"] = JsonDocument.Parse("\"cust_a\"").RootElement,
+                    ["region"] = JsonDocument.Parse("\"south\"").RootElement,
+                });
+
+            var resp = await ExecuteInnerJoin(query, spaceName, "orders", spaceName, "customers",
+                "payload.body.customer:shortname, payload.body.region:payload.body.region", limit: 10);
+            resp.Status.ShouldBe(Status.Success, customMessage: resp.Error?.Message);
+            resp.Records!.Select(r => r.Shortname).ShouldBe(new[] { "order_ok" });
+            ((int)resp.Attributes!["total"]!).ShouldBe(1);
+        }
+        finally { try { await spaces.DeleteAsync(spaceName); } catch { } }
+    }
+
+    // jq_filter on an inner join: SQL EXISTS decides membership (jq cannot
+    // affect survival), and jq still runs to transform the attached match.
+    [FactIfPg]
+    public async Task Inner_Join_Pushdown_With_JqFilter_Keeps_Membership()
+    {
+        var (query, entries, spaces) = Resolve();
+        var spaceName = $"jjq_{Guid.NewGuid():N}".Substring(0, 12);
+        try
+        {
+            await UpsertJoinSpaceAsync(spaces, spaceName);
+            await SeedEntryAsync(entries, spaceName, "/orders", "order_00", ResourceType.Content,
+                new() { ["customer"] = JsonDocument.Parse("\"cust_a\"").RootElement });
+            await SeedEntryAsync(entries, spaceName, "/orders", "order_miss", ResourceType.Content,
+                new() { ["customer"] = JsonDocument.Parse("\"ghost\"").RootElement });
+            await SeedEntryAsync(entries, spaceName, "/customers", "cust_a", ResourceType.Content,
+                new() { ["email"] = JsonDocument.Parse("\"a@b.com\"").RootElement });
+
+            var subQueryJson = JsonSerializer.SerializeToElement(new Dictionary<string, object>
+            {
+                ["type"] = "subpath", ["space_name"] = spaceName, ["subpath"] = "customers",
+                ["limit"] = 100, ["retrieve_json_payload"] = true,
+                ["jq_filter"] = ".[] | {sn: .shortname}",
+            });
+            var resp = await query.ExecuteAsync(new Query
+            {
+                Type = QueryType.Subpath, SpaceName = spaceName, Subpath = "orders",
+                Limit = 10, Offset = 0, SortBy = "shortname", SortType = SortType.Ascending,
+                RetrieveJsonPayload = true,
+                Join = new()
+                {
+                    new JoinQuery
+                    {
+                        JoinOn = "payload.body.customer:shortname", Alias = "customer",
+                        Query = subQueryJson, Type = JoinType.Inner,
+                    },
+                },
+            }, "dmart");
+
+            resp.Status.ShouldBe(Status.Success, customMessage: resp.Error?.Message);
+            resp.Records!.Select(r => r.Shortname).ShouldBe(new[] { "order_00" });   // ghost dropped by SQL
+            ((int)resp.Attributes!["total"]!).ShouldBe(1);
+            var join0 = (Dictionary<string, object>)resp.Records![0].Attributes!["join"];
+            join0.ShouldContainKey("customer");   // jq-transformed match attached
+        }
+        finally { try { await spaces.DeleteAsync(spaceName); } catch { } }
+    }
+
+    // Shared helpers for the pushdown edge tests.
+    private static async Task UpsertJoinSpaceAsync(SpaceRepository spaces, string spaceName) =>
+        await spaces.UpsertAsync(new Space
+        {
+            Uuid = Guid.NewGuid().ToString(),
+            Shortname = spaceName,
+            SpaceName = spaceName,
+            Subpath = "/",
+            OwnerShortname = "dmart",
+            IsActive = true,
+            Languages = new() { Language.En },
+            CreatedAt = DateTime.UtcNow,
+            UpdatedAt = DateTime.UtcNow,
+        });
+
+    // Build + run an inner join from base subpath → right (space, subpath) with
+    // a given join_on, sorted by shortname for deterministic assertions.
+    private static async Task<Response> ExecuteInnerJoin(
+        QueryService query, string baseSpace, string baseSubpath,
+        string rightSpace, string rightSubpath, string joinOn, int limit)
+    {
+        var subQueryJson = JsonSerializer.SerializeToElement(new Dictionary<string, object>
+        {
+            ["type"] = "subpath",
+            ["space_name"] = rightSpace,
+            ["subpath"] = rightSubpath,
+            ["limit"] = 100,
+            ["retrieve_json_payload"] = true,
+        });
+        return await query.ExecuteAsync(new Query
+        {
+            Type = QueryType.Subpath,
+            SpaceName = baseSpace,
+            Subpath = baseSubpath,
+            Limit = limit,
+            Offset = 0,
+            SortBy = "shortname",
+            SortType = SortType.Ascending,
+            RetrieveJsonPayload = true,
+            Join = new()
+            {
+                new JoinQuery
+                {
+                    JoinOn = joinOn, Alias = "joined", Query = subQueryJson, Type = JoinType.Inner,
+                },
+            },
+        }, "dmart");
+    }
+
     // Seeds 10 orders order_00..order_09 (even → customer_a, odd → a ghost
     // with no matching customer) plus the single customer_a they point at.
     private static async Task SeedPaginationFixtureAsync(
