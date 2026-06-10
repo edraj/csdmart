@@ -27,8 +27,12 @@ public static class QueryHelper
 
     public static string BuildWhereClause(Query q, List<NpgsqlParameter> args, string? tableName = null)
     {
-        var sql = new System.Text.StringBuilder("space_name = $1 ");
+        // Add the param FIRST, then reference its 1-based index. For a base
+        // query (empty args) this is $1 — byte-identical to before. For a nested
+        // reuse (EXISTS semi-join, args already populated) it continues the
+        // positional sequence instead of colliding on $1.
         args.Add(new() { Value = q.SpaceName });
+        var sql = new System.Text.StringBuilder($"space_name = ${args.Count} ");
 
         // exact_subpath=true: only entries at this exact subpath (including "/").
         // exact_subpath=false + subpath="/": no filter (return all subpaths).
