@@ -640,6 +640,91 @@ public class QueryJoinTests : IClassFixture<DmartFactory>
         finally { var (_, _, spaces) = Resolve(); try { await spaces.DeleteAsync(spaceName); } catch { } }
     }
 
+    // Security: a base row must NOT survive on a right row the actor cannot
+    // query. A limited user "bob" can query /orders but not /customers, so the
+    // inner join yields nothing — the join cannot leak inaccessible data.
+    [FactIfPg]
+    public async Task Inner_Join_Pushdown_Enforces_Right_Side_Acl()
+    {
+        _factory.CreateClient();
+        var query = _factory.Services.GetRequiredService<QueryService>();
+        var entries = _factory.Services.GetRequiredService<EntryRepository>();
+        var spaces = _factory.Services.GetRequiredService<SpaceRepository>();
+        var users = _factory.Services.GetRequiredService<UserRepository>();
+        var access = _factory.Services.GetRequiredService<AccessRepository>();
+        var hasher = _factory.Services.GetRequiredService<Dmart.Auth.PasswordHasher>();
+
+        var space = $"jacl_{Guid.NewGuid():N}".Substring(0, 12);
+        var bob = $"bob_{Guid.NewGuid():N}"[..20];
+        var role = $"role_{Guid.NewGuid():N}"[..20];
+        var perm = $"perm_{Guid.NewGuid():N}"[..20];
+        var now = DateTime.UtcNow;
+        try
+        {
+            // Space registered under management (the limited-user-access pattern).
+            await spaces.UpsertAsync(new Space
+            {
+                Uuid = Guid.NewGuid().ToString(), Shortname = space, SpaceName = "management",
+                Subpath = "/", OwnerShortname = "dmart", IsActive = true,
+                Languages = new() { Language.En }, CreatedAt = now, UpdatedAt = now,
+            });
+            // Grant bob query on /orders ONLY — not /customers.
+            await access.UpsertPermissionAsync(new Permission
+            {
+                Uuid = Guid.NewGuid().ToString(), Shortname = perm, SpaceName = "management",
+                Subpath = "/permissions", OwnerShortname = "dmart", IsActive = true,
+                Subpaths = new() { [space] = new() { "/orders" } },
+                ResourceTypes = new() { "content" }, Actions = new() { "view", "query" },
+                Conditions = new() { "is_active" }, CreatedAt = now, UpdatedAt = now,
+            });
+            await access.UpsertRoleAsync(new Role
+            {
+                Uuid = Guid.NewGuid().ToString(), Shortname = role, SpaceName = "management",
+                Subpath = "/roles", OwnerShortname = "dmart", IsActive = true,
+                Permissions = new() { perm }, CreatedAt = now, UpdatedAt = now,
+            });
+            await users.UpsertAsync(new User
+            {
+                Uuid = Guid.NewGuid().ToString(), Shortname = bob, SpaceName = "management",
+                Subpath = "/users", OwnerShortname = bob, IsActive = true,
+                Password = hasher.Hash("Test1234"), Type = UserType.Web, Language = Language.En,
+                Roles = new() { role }, Groups = new(), CreatedAt = now, UpdatedAt = now,
+            });
+            await SeedEntryAsync(entries, space, "/orders", "order_00", ResourceType.Content,
+                new() { ["customer"] = JsonDocument.Parse("\"customer_a\"").RootElement });
+            await SeedEntryAsync(entries, space, "/customers", "customer_a", ResourceType.Content,
+                new() { ["email"] = JsonDocument.Parse("\"a@example.com\"").RootElement });
+            await access.InvalidateAllCachesAsync();
+
+            // Sanity: bob CAN see /orders without a join.
+            var plain = await query.ExecuteAsync(new Query
+            {
+                Type = QueryType.Subpath, SpaceName = space, Subpath = "orders",
+                Limit = 10, RetrieveJsonPayload = true,
+            }, bob);
+            plain.Status.ShouldBe(Status.Success, customMessage: plain.Error?.Message);
+            plain.Records!.Select(r => r.Shortname).ShouldContain("order_00");
+
+            // Inner join /orders→/customers as bob: bob can't query /customers,
+            // so no order survives — no leak via the join.
+            var joined = await ExecutePagedJoin(query, space, JoinType.Inner, limit: 10, offset: 0, actor: bob);
+            joined.Status.ShouldBe(Status.Success, customMessage: joined.Error?.Message);
+            (joined.Records?.Count ?? 0).ShouldBe(0, "right row invisible to bob must not keep the base order");
+            ((int)joined.Attributes!["total"]!).ShouldBe(0);
+        }
+        finally
+        {
+            try { await entries.DeleteAsync(space, "/orders", "order_00", ResourceType.Content); } catch { }
+            try { await entries.DeleteAsync(space, "/customers", "customer_a", ResourceType.Content); } catch { }
+            try { await users.DeleteAllSessionsAsync(bob); } catch { }
+            try { await users.DeleteAsync(bob); } catch { }
+            try { await access.DeleteRoleAsync(role); } catch { }
+            try { await access.DeletePermissionAsync(perm); } catch { }
+            try { await spaces.DeleteAsync(space); } catch { }
+            await access.InvalidateAllCachesAsync();
+        }
+    }
+
     // Seeds 10 orders order_00..order_09 (even → customer_a, odd → a ghost
     // with no matching customer) plus the single customer_a they point at.
     private static async Task SeedPaginationFixtureAsync(
@@ -671,7 +756,8 @@ public class QueryJoinTests : IClassFixture<DmartFactory>
     // Inner/left join over /orders→/customers with explicit paging + a stable
     // shortname sort so the page boundaries are deterministic.
     private static async Task<Response> ExecutePagedJoin(
-        QueryService query, string spaceName, JoinType joinType, int limit, int offset)
+        QueryService query, string spaceName, JoinType joinType, int limit, int offset,
+        string actor = "dmart")
     {
         var subQueryJson = JsonSerializer.SerializeToElement(new Dictionary<string, object>
         {
@@ -702,7 +788,7 @@ public class QueryJoinTests : IClassFixture<DmartFactory>
                     Type = joinType,
                 },
             },
-        }, "dmart");
+        }, actor);
     }
 
     // ── Complex case: paging across a RIGHT join's heterogeneous result ────
