@@ -477,7 +477,7 @@ public sealed class EntryRepository(Db db)
     // is always `{owner_subpath}/{owner_shortname}`, so `subpath = folderPath`
     // already catches attachments owned directly by the folder, and
     // `subpath LIKE folderPath || '/%'` catches everything deeper.
-    public Task<int> DeleteFolderTreeWithDependentsAsync(
+    public Task<List<DeletedRef>> DeleteFolderTreeWithDependentsAsync(
         string spaceName, string parentSubpath, string folderShortname,
         CancellationToken ct = default)
         => db.ExecuteWithRetryOnDeadlockAsync(
@@ -486,7 +486,7 @@ public sealed class EntryRepository(Db db)
 
     [SuppressMessage("Security", "CA2100",
         Justification = "Audited: SQL is `\"DELETE FROM <const-table> WHERE \" + const-where`; only positional $1-$4 placeholders bind caller-supplied values.")]
-    private async Task<int> DeleteFolderTreeWithDependentsOnceAsync(
+    private async Task<List<DeletedRef>> DeleteFolderTreeWithDependentsOnceAsync(
         string spaceName, string parentSubpath, string folderShortname, CancellationToken ct)
     {
         var folderPath = parentSubpath == "/"
@@ -538,24 +538,27 @@ public sealed class EntryRepository(Db db)
         // non-folder entry happens to share (subpath, shortname) with the
         // folder we're deleting (e.g. a content entry called "widgets" in
         // the same parent as the folder "widgets").
-        int entryRows;
+        var deleted = new List<DeletedRef>();
         await using (var cmd = new NpgsqlCommand("""
             DELETE FROM entries
             WHERE space_name = $1
               AND ((subpath = $2 AND shortname = $3 AND resource_type = 'folder')
                 OR  subpath = $4
                 OR  subpath LIKE $4 || '/%')
+            RETURNING space_name, subpath, shortname
             """, conn, tx))
         {
             cmd.Parameters.Add(new() { Value = spaceName });
             cmd.Parameters.Add(new() { Value = parentSubpath });
             cmd.Parameters.Add(new() { Value = folderShortname });
             cmd.Parameters.Add(new() { Value = folderPath });
-            entryRows = await cmd.ExecuteNonQueryAsync(ct);
+            await using var reader = await cmd.ExecuteReaderAsync(ct);
+            while (await reader.ReadAsync(ct))
+                deleted.Add(new DeletedRef(reader.GetString(0), reader.GetString(1), reader.GetString(2)));
         }
 
         await tx.CommitAsync(ct);
-        return entryRows;
+        return deleted;
     }
 
     // Move an entry (and, for folders, its entire subtree of entries +

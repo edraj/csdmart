@@ -339,7 +339,7 @@ public static class McpTools
 
         var locator = new Locator(resourceType, space, subpath, shortname);
         var result = await http.RequestServices.GetRequiredService<EntryService>()
-            .DeleteAsync(locator, actor, ct);
+            .DeleteAsync(locator, actor, force: false, ct);
         if (!result.IsOk)
             throw new InvalidOperationException(result.ErrorMessage ?? "delete failed");
 
@@ -347,7 +347,7 @@ public static class McpTools
         using (var w = new Utf8JsonWriter(ms))
         {
             w.WriteStartObject();
-            w.WriteString("status", result.Value ? "deleted" : "not-found");
+            w.WriteString("status", result.Value!.Count > 0 ? "deleted" : "not-found");
             w.WriteString("space_name", space);
             w.WriteString("subpath", subpath);
             w.WriteString("shortname", shortname);

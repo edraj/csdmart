@@ -1,3 +1,4 @@
+using System.Diagnostics.CodeAnalysis;
 using Dmart.Auth;
 using Dmart.Models.Core;
 using Dmart.Models.Enums;
@@ -374,6 +375,120 @@ public sealed class UserRepository(Db db, AuthzCacheRefresher refresher, Session
         cmd.Parameters.Add(new() { Value = shortname });
         await cmd.ExecuteNonQueryAsync(ct);
         await refresher.RefreshAsync(ct);
+    }
+
+    // True if the user owns any row that FK-references users(shortname): entries,
+    // attachments, spaces, roles, groups, or permissions. Used to give a friendly
+    // "has created records" refusal before force is required.
+    public async Task<bool> OwnsAnyRecordsAsync(string shortname, CancellationToken ct = default)
+    {
+        await using var conn = await db.OpenAsync(ct);
+        await using var cmd = new NpgsqlCommand("""
+            SELECT EXISTS (SELECT 1 FROM entries     WHERE owner_shortname = $1)
+                OR EXISTS (SELECT 1 FROM attachments WHERE owner_shortname = $1)
+                OR EXISTS (SELECT 1 FROM spaces      WHERE owner_shortname = $1)
+                OR EXISTS (SELECT 1 FROM roles       WHERE owner_shortname = $1)
+                OR EXISTS (SELECT 1 FROM groups      WHERE owner_shortname = $1)
+                OR EXISTS (SELECT 1 FROM permissions WHERE owner_shortname = $1)
+            """, conn);
+        cmd.Parameters.Add(new() { Value = shortname });
+        return (bool)(await cmd.ExecuteScalarAsync(ct) ?? false);
+    }
+
+    // True if the user owns the given space. Used to refuse a force-delete that
+    // would otherwise wipe the management space (mirrors the Space-delete guard).
+    public async Task<bool> OwnsSpaceAsync(string shortname, string spaceName, CancellationToken ct = default)
+    {
+        await using var conn = await db.OpenAsync(ct);
+        await using var cmd = new NpgsqlCommand(
+            "SELECT EXISTS (SELECT 1 FROM spaces WHERE owner_shortname = $1 AND shortname = $2)", conn);
+        cmd.Parameters.Add(new() { Value = shortname });
+        cmd.Parameters.Add(new() { Value = spaceName });
+        return (bool)(await cmd.ExecuteScalarAsync(ct) ?? false);
+    }
+
+    // Full cascade: delete everything the user owns, then the user, atomically.
+    // Spaces the user owns are wiped in full (all contained rows, regardless of
+    // who owns them). histories/locks for the user's entries in OTHER spaces are
+    // left (no users FK; not "records") — a known, harmless residue.
+    public async Task<List<DeletedRef>> ForceDeleteAsync(string shortname, CancellationToken ct = default)
+    {
+        var deleted = await db.ExecuteWithRetryOnDeadlockAsync(c => ForceDeleteOnceAsync(shortname, c), ct);
+        await refresher.RefreshAsync(ct);
+        return deleted;
+    }
+
+    [SuppressMessage("Security", "CA2100",
+        Justification = "Audited: every sql is a const literal; user-supplied values bind only through positional $1.")]
+    private async Task<List<DeletedRef>> ForceDeleteOnceAsync(string shortname, CancellationToken ct)
+    {
+        var deleted = new List<DeletedRef>();
+        await using var conn = await db.OpenAsync(ct);
+        await using var tx = await conn.BeginTransactionAsync(ct);
+
+        // spaces owned by the user → wiped in full.
+        var ownedSpaces = new List<string>();
+        await using (var cmd = new NpgsqlCommand("SELECT shortname FROM spaces WHERE owner_shortname = $1", conn, tx))
+        {
+            cmd.Parameters.Add(new() { Value = shortname });
+            await using var reader = await cmd.ExecuteReaderAsync(ct);
+            while (await reader.ReadAsync(ct)) ownedSpaces.Add(reader.GetString(0));
+        }
+
+        if (ownedSpaces.Count > 0)
+        {
+            var spacesArr = ownedSpaces.ToArray();
+            foreach (var sql in new[]
+            {
+                "DELETE FROM histories WHERE space_name = ANY($1)",
+                "DELETE FROM locks     WHERE space_name = ANY($1)",
+            })
+            {
+                await using var cmd = new NpgsqlCommand(sql, conn, tx);
+                cmd.Parameters.Add(new() { Value = spacesArr, NpgsqlDbType = NpgsqlDbType.Array | NpgsqlDbType.Text });
+                await cmd.ExecuteNonQueryAsync(ct);
+            }
+            await CollectAsync(conn, tx, deleted,
+                "DELETE FROM attachments WHERE space_name = ANY($1) RETURNING space_name, subpath, shortname", spacesArr, ct);
+            await CollectAsync(conn, tx, deleted,
+                "DELETE FROM entries     WHERE space_name = ANY($1) RETURNING space_name, subpath, shortname", spacesArr, ct);
+            await CollectAsync(conn, tx, deleted,
+                "DELETE FROM spaces      WHERE shortname  = ANY($1) RETURNING space_name, subpath, shortname", spacesArr, ct);
+        }
+
+        // remaining rows the user owns (other spaces / management tables).
+        foreach (var sql in new[]
+        {
+            "DELETE FROM attachments WHERE owner_shortname = $1 RETURNING space_name, subpath, shortname",
+            "DELETE FROM entries     WHERE owner_shortname = $1 RETURNING space_name, subpath, shortname",
+            "DELETE FROM roles       WHERE owner_shortname = $1 RETURNING space_name, subpath, shortname",
+            "DELETE FROM groups      WHERE owner_shortname = $1 RETURNING space_name, subpath, shortname",
+            "DELETE FROM permissions WHERE owner_shortname = $1 RETURNING space_name, subpath, shortname",
+        })
+            await CollectAsync(conn, tx, deleted, sql, shortname, ct);
+
+        await using (var del = new NpgsqlCommand("DELETE FROM users WHERE shortname = $1", conn, tx))
+        {
+            del.Parameters.Add(new() { Value = shortname });
+            await del.ExecuteNonQueryAsync(ct);
+        }
+
+        await tx.CommitAsync(ct);
+        return deleted;
+    }
+
+    private static async Task CollectAsync(
+        NpgsqlConnection conn, NpgsqlTransaction tx, List<DeletedRef> sink,
+        string sql, object param, CancellationToken ct)
+    {
+        await using var cmd = new NpgsqlCommand(sql, conn, tx);
+        if (param is string[] arr)
+            cmd.Parameters.Add(new() { Value = arr, NpgsqlDbType = NpgsqlDbType.Array | NpgsqlDbType.Text });
+        else
+            cmd.Parameters.Add(new() { Value = param });
+        await using var reader = await cmd.ExecuteReaderAsync(ct);
+        while (await reader.ReadAsync(ct))
+            sink.Add(new DeletedRef(reader.GetString(0), reader.GetString(1), reader.GetString(2)));
     }
 
     public async Task IncrementAttemptAsync(string shortname, DateTime failedAt, CancellationToken ct = default)

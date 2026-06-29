@@ -10,6 +10,9 @@ public sealed record Request
     public required string SpaceName { get; init; }
     public required List<Record> Records { get; init; }
     public Dictionary<string, object>? Attributes { get; init; }
+    // Delete-only: when true, folder deletes cascade and user deletes do a full
+    // owned-data cascade; the response returns the list of removed records.
+    public bool Force { get; init; } = false;
 }
 
 // Mirrors dmart's models/core.py::Record. dmart's __init__ strips leading/trailing

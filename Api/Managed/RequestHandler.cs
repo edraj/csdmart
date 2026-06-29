@@ -167,7 +167,7 @@ public static class RequestHandler
                                         entries, users, access, spaces, attachments, perms, uniqueness, folderContent, schemas, ct),
                                     r => r.Response.Error?.Code == InternalErrorCode.SHORTNAME_ALREADY_EXIST),
                             RequestType.Delete =>
-                                await DispatchDeleteAsync(rec, req.SpaceName, actor, managementSpace,
+                                await DispatchDeleteAsync(rec, req.SpaceName, actor, managementSpace, req.Force,
                                     entries, users, access, spaces, attachments, perms, ct),
                             RequestType.Move =>
                                 await DispatchMoveAsync(rec, req.SpaceName, actor, entries, ct),
@@ -195,6 +195,13 @@ public static class RequestHandler
                         continue;
                     }
                     responses.Add(result.UpdatedRecord);
+                    if (req.RequestType is RequestType.Delete
+                        && (responses[^1].Attributes is null || !responses[^1].Attributes!.ContainsKey("deleted")))
+                    {
+                        var p = new Dmart.Models.Core.DeletedRef(
+                            req.SpaceName, responses[^1].Subpath, responses[^1].Shortname).ToPath();
+                        responses[^1] = AttachDeleted(responses[^1], new[] { p });
+                    }
 
                     // Fire after-action plugin hooks for non-entry CRUD types.
                     // EntryService already fires hooks for entry creates/updates/deletes,
@@ -246,14 +253,15 @@ public static class RequestHandler
 
                 if (failedRecords.Count == 0)
                 {
-                    // Update/Patch/Delete don't return records at all — clients
-                    // only need success confirmation, and echoing the request
-                    // payload (or, on Delete, a row that no longer exists) is
-                    // noise. Create/Move/Assign/UpdateAcl still emit `records`
-                    // so callers can read back the freshly assigned uuid /
-                    // created_at / updated_at via WithCreatedMetaAttributes.
-                    var omitRecords = req.RequestType is RequestType.Update
-                        or RequestType.Patch or RequestType.Delete;
+                    // Update/Patch return no records — clients only need success
+                    // confirmation and echoing the request payload is noise.
+                    // Delete now returns records: each carries `attributes.deleted`,
+                    // the list of `"$space/$subpath/$shortname"` paths actually
+                    // removed (empty for an idempotent already-gone delete).
+                    // Create/Move/Assign/UpdateAcl emit `records` so callers can read
+                    // back the freshly assigned uuid / created_at / updated_at via
+                    // WithCreatedMetaAttributes.
+                    var omitRecords = req.RequestType is RequestType.Update or RequestType.Patch;
                     return Response.Ok(omitRecords ? null : responses);
                 }
 
@@ -1072,7 +1080,7 @@ public static class RequestHandler
     // ============================================================================
 
     private static async Task<(Response Response, Record UpdatedRecord)> DispatchDeleteAsync(
-        Record rec, string space, string actor, string managementSpace,
+        Record rec, string space, string actor, string managementSpace, bool force,
         EntryService entries, UserRepository users, AccessRepository access,
         SpaceRepository spaces, AttachmentRepository attachments,
         PermissionService perms, CancellationToken ct)
@@ -1085,12 +1093,32 @@ public static class RequestHandler
             {
                 var existing = await users.GetByShortnameAsync(rec.Shortname, ct);
                 if (existing is null)
-                    return (Response.Ok(), rec); // idempotent: already gone
+                    return (Response.Ok(), AttachDeleted(rec, Array.Empty<string>())); // idempotent: already gone
                 var userLocator = new Locator(ResourceType.User, existing.SpaceName, existing.Subpath, existing.Shortname);
                 if (!await perms.CanDeleteAsync(actor, userLocator, PermissionService.FromUser(existing), ct))
                     return (Response.Fail(InternalErrorCode.NOT_ALLOWED, "not allowed to delete user", ErrorTypes.Request), rec);
-                await users.DeleteAsync(rec.Shortname, ct);
-                return (Response.Ok(), rec);
+
+                if (!force)
+                {
+                    if (await users.OwnsAnyRecordsAsync(rec.Shortname, ct))
+                        return (Response.Fail(InternalErrorCode.CANNT_DELETE,
+                            $"user '{rec.Shortname}' has created records; pass force=true to delete the user and everything they own",
+                            ErrorTypes.Request), rec);
+                    await users.DeleteAsync(rec.Shortname, ct);
+                    return (Response.Ok(), rec);
+                }
+
+                // Never let a force-delete wipe the management space, even if this
+                // user owns it — it holds all users/roles/permissions. Mirrors the
+                // Space-delete guard above.
+                if (await users.OwnsSpaceAsync(rec.Shortname, managementSpace, ct))
+                    return (Response.Fail(InternalErrorCode.CANNT_DELETE,
+                        $"cannot force-delete user '{rec.Shortname}': they own the management space '{managementSpace}'",
+                        ErrorTypes.Request), rec);
+                var deleted = await users.ForceDeleteAsync(rec.Shortname, ct);
+                var userPaths = deleted.Select(r => r.ToPath()).ToList();
+                userPaths.Add(new Dmart.Models.Core.DeletedRef(existing.SpaceName, existing.Subpath, existing.Shortname).ToPath());
+                return (Response.Ok(), AttachDeleted(rec, userPaths));
             }
             case ResourceType.Space:
             {
@@ -1101,7 +1129,7 @@ public static class RequestHandler
                         $"cannot delete the management space '{managementSpace}'", ErrorTypes.Request), rec);
                 var existing = await spaces.GetAsync(rec.Shortname, ct);
                 if (existing is null)
-                    return (Response.Ok(), rec);
+                    return (Response.Ok(), AttachDeleted(rec, Array.Empty<string>()));
                 var spaceLocator = new Locator(ResourceType.Space, existing.SpaceName, existing.Subpath, existing.Shortname);
                 if (!await perms.CanDeleteAsync(actor, spaceLocator, PermissionService.FromSpace(existing), ct))
                     return (Response.Fail(InternalErrorCode.NOT_ALLOWED, "not allowed to delete space", ErrorTypes.Request), rec);
@@ -1164,7 +1192,7 @@ public static class RequestHandler
             {
                 // Look up by (space, subpath, shortname) and delete by uuid
                 var existing = await attachments.GetAsync(space, "/" + rec.Subpath.TrimStart('/'), rec.Shortname, ct);
-                if (existing is null) return (Response.Ok(), rec); // already gone
+                if (existing is null) return (Response.Ok(), AttachDeleted(rec, Array.Empty<string>())); // already gone
                 var attLocator = new Locator(rec.ResourceType, space, existing.Subpath, existing.Shortname);
                 if (!await perms.CanDeleteAsync(actor, attLocator, ct))
                     return (Response.Fail(InternalErrorCode.NOT_ALLOWED, "not allowed to delete attachment", ErrorTypes.Request), rec);
@@ -1174,10 +1202,10 @@ public static class RequestHandler
             }
             default:
             {
-                var result = await entries.DeleteAsync(locator, actor, ct);
-                return result.IsOk
-                    ? (Response.Ok(), rec)
-                    : (Response.Fail(result.ErrorCode!, result.ErrorMessage!, ErrorTypes.Request), rec);
+                var result = await entries.DeleteAsync(locator, actor, force, ct);
+                if (!result.IsOk)
+                    return (Response.Fail(result.ErrorCode, result.ErrorMessage!, ErrorTypes.Request), rec);
+                return (Response.Ok(), AttachDeleted(rec, result.Value!.Select(r => r.ToPath()).ToList()));
             }
         }
     }
@@ -1658,6 +1686,15 @@ public static class RequestHandler
         if (raw is JsonElement el && el.ValueKind == JsonValueKind.Object)
             return JsonbHelpers.FromDictStringObject(el.GetRawText());
         return null;
+    }
+
+    private static Record AttachDeleted(Record rec, IReadOnlyList<string> paths)
+    {
+        var attrs = rec.Attributes is null
+            ? new Dictionary<string, object>()
+            : new Dictionary<string, object>(rec.Attributes);
+        attrs["deleted"] = paths.ToList();
+        return rec with { Attributes = attrs };
     }
 
     private static string? ConvertToString(object? v) => v switch

@@ -435,7 +435,8 @@ public sealed class EntryService(
         return Result<Entry>.Ok(merged);
     }
 
-    public async Task<Result<bool>> DeleteAsync(Locator locator, string? actor, CancellationToken ct = default)
+    public async Task<Result<IReadOnlyList<DeletedRef>>> DeleteAsync(
+        Locator locator, string? actor, bool force = false, CancellationToken ct = default)
     {
         // Load first so the permission check sees owner/is_active/acl for conditions.
         // If the entry is missing we still report a forbidden-style result via OK(false)
@@ -445,7 +446,7 @@ public sealed class EntryService(
         var existing = await entries.GetAsync(locator.SpaceName, locator.Subpath, locator.Shortname, locator.Type, ct);
         var ctx = existing is not null ? PermissionService.FromEntry(existing) : null;
         if (!await perms.CanDeleteAsync(actor, locator, ctx, ct))
-            return Result<bool>.Fail(InternalErrorCode.NOT_ALLOWED, "no delete access", ErrorTypes.Auth);
+            return Result<IReadOnlyList<DeletedRef>>.Fail(InternalErrorCode.NOT_ALLOWED, "no delete access", ErrorTypes.Auth);
 
         // Reverse referential-integrity: deleting an entry that other entries
         // still point at would leave dangling refs behind. Block with a
@@ -463,7 +464,7 @@ public sealed class EntryService(
                 excludeSpace: locator.SpaceName, excludeSubpath: locator.Subpath,
                 excludeShortname: locator.Shortname, ct);
             if (referencer is { } r)
-                return Result<bool>.Fail(InternalErrorCode.CANNT_DELETE,
+                return Result<IReadOnlyList<DeletedRef>>.Fail(InternalErrorCode.CANNT_DELETE,
                     $"entry has incoming relationships from {r.SpaceName}{r.Subpath}/{r.Shortname}",
                     ErrorTypes.Request);
         }
@@ -487,7 +488,7 @@ public sealed class EntryService(
         {
             log.LogWarning(ex, "before-delete plugin hook rejected {Space}/{Subpath}/{Shortname}",
                 locator.SpaceName, locator.Subpath, locator.Shortname);
-            return Result<bool>.Fail(InternalErrorCode.INVALID_DATA, "plugin rejected delete", ErrorTypes.Request);
+            return Result<IReadOnlyList<DeletedRef>>.Fail(InternalErrorCode.INVALID_DATA, "plugin rejected delete", ErrorTypes.Request);
         }
 
         // Python parity: deleting a folder cascades — the folder row plus
@@ -496,38 +497,44 @@ public sealed class EntryService(
         // EntryRepository.DeleteFolderTreeWithDependentsAsync runs all five
         // DELETEs in one transaction so a partial failure rolls back instead
         // of leaving the DB half-deleted.
-        bool ok;
+        List<DeletedRef> deleted;
         if (locator.Type == ResourceType.Folder)
         {
-            var deletedRows = await entries.DeleteFolderTreeWithDependentsAsync(
+            if (!force)
+            {
+                var folderFullPath = locator.Subpath == "/"
+                    ? "/" + locator.Shortname
+                    : locator.Subpath + "/" + locator.Shortname;
+                var childCount = await entries.CountAsync(locator.SpaceName, folderFullPath, ct);
+                if (childCount > 0)
+                    return Result<IReadOnlyList<DeletedRef>>.Fail(InternalErrorCode.CANNT_DELETE,
+                        $"folder '{locator.Shortname}' is not empty ({childCount} entries); pass force=true to delete it and its contents",
+                        ErrorTypes.Request);
+            }
+            deleted = await entries.DeleteFolderTreeWithDependentsAsync(
                 locator.SpaceName, locator.Subpath, locator.Shortname, ct);
-            ok = deletedRows > 0;
         }
         else
         {
-            ok = await entries.DeleteAsync(locator.SpaceName, locator.Subpath, locator.Shortname, locator.Type, ct);
-            if (ok)
+            var removed = await entries.DeleteAsync(locator.SpaceName, locator.Subpath, locator.Shortname, locator.Type, ct);
+            deleted = new List<DeletedRef>();
+            if (removed)
             {
-                // A non-folder entry's attachments live at "{entry.subpath}/{entry.shortname}".
-                // Match Python adapter.py:2769-2775.
+                deleted.Add(new DeletedRef(locator.SpaceName, locator.Subpath, locator.Shortname));
                 var entryPath = locator.Subpath == "/"
                     ? "/" + locator.Shortname
                     : locator.Subpath + "/" + locator.Shortname;
                 await attachments.DeleteUnderSubpathAsync(locator.SpaceName, entryPath, ct);
             }
         }
+        var ok = deleted.Count > 0;
 
         if (ok)
         {
-            // Schema entry removed → drop any compiled instance from the in-memory cache.
             if (locator.Type == ResourceType.Schema) schemas.ClearCache();
-            // Python doesn't write a history row on delete — the entry (and
-            // its per-entry history) is gone by this point anyway. Keeping
-            // parity here avoids `/managed/query?type=history` returning
-            // rows whose diff isn't the standard `{field: {old, new}}` shape.
             await plugins.AfterActionAsync(deleteEvent, ct);
         }
-        return Result<bool>.Ok(ok);
+        return Result<IReadOnlyList<DeletedRef>>.Ok(deleted);
     }
 
     public async Task<Result<Entry>> MoveAsync(Locator from, Locator to, string? actor, CancellationToken ct = default)
