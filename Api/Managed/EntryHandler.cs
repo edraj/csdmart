@@ -25,12 +25,15 @@ public static class EntryHandler
             async (string resource_type, string space, string rest,
                    bool? retrieve_json_payload,
                    bool? retrieve_attachments,
+                   bool? retrieve_lock_status,
                    EntryService svc,
                    AttachmentRepository attachmentRepo,
                    SpaceRepository spaces,
                    UserRepository users,
                    AccessRepository access,
                    PermissionService perms,
+                   LockRepository locks,
+                   Microsoft.Extensions.Options.IOptions<Dmart.Config.DmartSettings> settings,
                    HttpContext http, CancellationToken ct) =>
             {
                 // Python parity: every failure path returns the structured
@@ -129,6 +132,18 @@ public static class EntryHandler
 
                 var node = EntryToJsonNode.Convert(entry, retrieve_json_payload == true);
                 node["attachments"] = attNode;
+
+                // retrieve_lock_status: surface the holder of any live lock as a
+                // `locked` object (Python's get_entry surfacing). Subpath is
+                // normalized to the leading-slash form the locks table stores.
+                if (retrieve_lock_status == true)
+                {
+                    var holder = await locks.GetLockerAsync(
+                        space, Locator.NormalizeSubpath(subpath), shortname, settings.Value.LockPeriod, ct);
+                    if (holder is not null)
+                        node["locked"] = new JsonObject { ["owner_shortname"] = holder };
+                }
+
                 return Results.Content(node.ToJsonString(DmartJsonContext.Default.Options), "application/json");
             });
 

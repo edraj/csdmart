@@ -1,9 +1,11 @@
 using System.Text.Json;
+using Dmart.Config;
 using Dmart.DataAdapters.Sql;
 using Dmart.Models.Api;
 using Dmart.Models.Core;
 using Dmart.Models.Enums;
 using Dmart.Plugins;
+using Microsoft.Extensions.Options;
 using Npgsql;
 
 namespace Dmart.Services;
@@ -16,10 +18,27 @@ public sealed class EntryService(
     PluginManager plugins,
     SchemaValidator schemas,
     WorkflowEngine workflows,
+    LockRepository locks,
+    IOptions<DmartSettings> settings,
     ILogger<EntryService> log,
     UniquenessValidator? uniqueness = null,
     FolderContentValidator? folderContent = null)
 {
+    // A live lock held by ANOTHER user blocks the mutation regardless of any
+    // request flag (Python's is_entry_locked check, applied unconditionally
+    // here). The holder is never blocked by their own lock, and an expired lock
+    // is ignored — GetLockerAsync only returns non-expired owners. Returns the
+    // LOCKED_ENTRY failure to raise, or null when the caller may proceed.
+    private async Task<(int ErrorCode, string Message)?> LockBlockAsync(
+        Locator l, string? actor, CancellationToken ct)
+    {
+        var holder = await locks.GetLockerAsync(l.SpaceName, l.Subpath, l.Shortname,
+            settings.Value.LockPeriod, ct);
+        if (holder is not null && !string.Equals(holder, actor, StringComparison.Ordinal))
+            return (InternalErrorCode.LOCKED_ENTRY, $"This entry is locked by {holder}");
+        return null;
+    }
+
     public async Task<Entry?> GetAsync(Locator l, string? actor, CancellationToken ct = default)
     {
         // Load FIRST so the permission gate has the entry's owner/is_active/acl context.
@@ -364,6 +383,12 @@ public sealed class EntryService(
         if (!await perms.CanAsync(actor, action, locator, PermissionService.FromEntry(existing), patch, ct))
             return Result<Entry>.Fail(InternalErrorCode.NOT_ALLOWED, $"no {action} access", ErrorTypes.Auth);
 
+        // A lock held by another user blocks the write. Checked after the
+        // permission gate so an unauthorized caller still gets NOT_ALLOWED
+        // (never a hint that the entry merely happens to be locked).
+        if (await LockBlockAsync(locator, actor, ct) is { } updLock)
+            return Result<Entry>.Fail(updLock.ErrorCode, updLock.Message, ErrorTypes.Db);
+
         var merged = ApplyPatch(existing, patch, allowedRestrictedFields);
 
         // Validate the MERGED entry (not the old one) so patches can't bypass schema rules.
@@ -446,6 +471,11 @@ public sealed class EntryService(
         var ctx = existing is not null ? PermissionService.FromEntry(existing) : null;
         if (!await perms.CanDeleteAsync(actor, locator, ctx, ct))
             return Result<bool>.Fail(InternalErrorCode.NOT_ALLOWED, "no delete access", ErrorTypes.Auth);
+
+        // Same lock gate as UpdateAsync — a lock held by another user blocks the
+        // delete. Checked after the permission gate (see LockBlockAsync).
+        if (await LockBlockAsync(locator, actor, ct) is { } delLock)
+            return Result<bool>.Fail(delLock.ErrorCode, delLock.Message, ErrorTypes.Db);
 
         // Reverse referential-integrity: deleting an entry that other entries
         // still point at would leave dangling refs behind. Block with a

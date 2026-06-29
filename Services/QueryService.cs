@@ -35,6 +35,7 @@ public sealed class QueryService(
     PermissionService perms,
     SpaceEventLogger eventLogger,
     Db db,
+    LockRepository locks,
     IOptions<DmartSettings> settings,
     ILogger<QueryService> logger)
 {
@@ -756,6 +757,32 @@ public sealed class QueryService(
                             g => g.Key,
                             g => g.Select(a => AttachmentMapper.ToEntryRecord(a)).ToList())
                 };
+            }
+        }
+
+        // retrieve_lock_status: attach the holder of any live lock to each
+        // record as attributes["locked"] (Python's repository.py:1593 surfacing,
+        // here driven by the same flag). One batched lookup for the page. The
+        // locks table keys subpath in leading-slash form, so normalize the
+        // record's stripped wire subpath before matching.
+        if (q.RetrieveLockStatus && records.Count > 0)
+        {
+            var items = new (string Subpath, string Shortname)[records.Count];
+            for (var i = 0; i < records.Count; i++)
+                items[i] = (Models.Core.Locator.NormalizeSubpath(records[i].Subpath), records[i].Shortname);
+
+            var owners = await locks.GetActiveLockOwnersAsync(q.SpaceName, items, settings.Value.LockPeriod, ct);
+            if (owners.Count > 0)
+            {
+                for (var i = 0; i < records.Count; i++)
+                {
+                    if (!owners.TryGetValue(items[i], out var owner)) continue;
+                    var attrs = records[i].Attributes is null
+                        ? new Dictionary<string, object>(StringComparer.Ordinal)
+                        : new Dictionary<string, object>(records[i].Attributes!, StringComparer.Ordinal);
+                    attrs["locked"] = new Dictionary<string, object> { ["owner_shortname"] = owner };
+                    records[i] = records[i] with { Attributes = attrs };
+                }
             }
         }
 
