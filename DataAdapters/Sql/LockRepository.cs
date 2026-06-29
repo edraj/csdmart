@@ -2,6 +2,16 @@ using Npgsql;
 
 namespace Dmart.DataAdapters.Sql;
 
+// Result of a TryLockAsync call. Lets the caller distinguish a fresh lock from
+// a same-owner refresh so it can record the matching history lock_type
+// (Python's lock vs extend) and deny when someone else holds it.
+public enum LockOutcome
+{
+    Denied,    // a live lock is held by another owner
+    Acquired,  // a new lock row was inserted
+    Extended,  // the caller's own still-valid lock was refreshed
+}
+
 // locks table — Unique base only (no Metas). Locks auto-expire after
 // settings.LockPeriod seconds via a timestamp comparison at read time — we
 // don't run a background sweeper, the expiry check is inline on every op.
@@ -9,8 +19,9 @@ public sealed class LockRepository(Db db)
 {
     // Tries to acquire an exclusive lock. If an existing row is older than
     // `lockPeriodSeconds`, it's evicted as part of the INSERT so the caller
-    // gets the lock. Returns true if the caller now holds the lock.
-    public async Task<bool> TryLockAsync(
+    // gets the lock. Reports whether the caller acquired a fresh lock, extended
+    // their own, or was denied because someone else holds it.
+    public async Task<LockOutcome> TryLockAsync(
         string spaceName, string subpath, string shortname, string ownerShortname,
         int lockPeriodSeconds, CancellationToken ct = default)
     {
@@ -35,18 +46,25 @@ public sealed class LockRepository(Db db)
         // LockAction.extend): it bumps the timestamp and reports success. A lock
         // held by anyone else fails the WHERE, degrades to DO NOTHING, and the
         // 0-row result tells the caller they don't hold the lock.
+        // RETURNING (xmax = 0) distinguishes the insert (xmax = 0) from the
+        // same-owner DO UPDATE refresh (xmax <> 0). When the lock is held by
+        // someone else the WHERE fails, the conflict degrades to DO NOTHING,
+        // no row is returned, and ExecuteScalar yields null → Denied.
         await using var cmd = new NpgsqlCommand("""
             INSERT INTO locks (uuid, shortname, space_name, subpath, owner_shortname, timestamp)
             VALUES (gen_random_uuid(), $1, $2, $3, $4, NOW())
             ON CONFLICT (shortname, space_name, subpath) DO UPDATE
                 SET timestamp = NOW()
                 WHERE locks.owner_shortname = $4
+            RETURNING (xmax = 0) AS inserted
             """, conn);
         cmd.Parameters.Add(new() { Value = shortname });
         cmd.Parameters.Add(new() { Value = spaceName });
         cmd.Parameters.Add(new() { Value = subpath });
         cmd.Parameters.Add(new() { Value = ownerShortname });
-        return await cmd.ExecuteNonQueryAsync(ct) > 0;
+        var inserted = await cmd.ExecuteScalarAsync(ct);
+        if (inserted is null) return LockOutcome.Denied;
+        return (bool)inserted ? LockOutcome.Acquired : LockOutcome.Extended;
     }
 
     // Batch variant of GetLockerAsync for the query path: returns the owner of
