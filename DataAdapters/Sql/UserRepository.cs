@@ -477,6 +477,8 @@ public sealed class UserRepository(Db db, AuthzCacheRefresher refresher, Session
         return deleted;
     }
 
+    [SuppressMessage("Security", "CA2100",
+        Justification = "Audited: every sql is a const literal; user-supplied values bind only through positional $1.")]
     private static async Task CollectAsync(
         NpgsqlConnection conn, NpgsqlTransaction tx, List<DeletedRef> sink,
         string sql, object param, CancellationToken ct)
