@@ -477,17 +477,21 @@ public sealed class EntryRepository(Db db)
     // is always `{owner_subpath}/{owner_shortname}`, so `subpath = folderPath`
     // already catches attachments owned directly by the folder, and
     // `subpath LIKE folderPath || '/%'` catches everything deeper.
-    public Task<List<DeletedRef>> DeleteFolderTreeWithDependentsAsync(
+    //
+    // When dryRun is true, every DELETE still runs (so the affected-row counts are
+    // exact), but the transaction ROLLS BACK instead of committing — nothing is
+    // actually removed and the returned DeleteReport is a pure projection.
+    public Task<DeleteReport> DeleteFolderTreeWithDependentsAsync(
         string spaceName, string parentSubpath, string folderShortname,
-        CancellationToken ct = default)
+        bool dryRun = false, CancellationToken ct = default)
         => db.ExecuteWithRetryOnDeadlockAsync(
-            c => DeleteFolderTreeWithDependentsOnceAsync(spaceName, parentSubpath, folderShortname, c),
+            c => DeleteFolderTreeWithDependentsOnceAsync(spaceName, parentSubpath, folderShortname, dryRun, c),
             ct);
 
     [SuppressMessage("Security", "CA2100",
         Justification = "Audited: SQL is `\"DELETE FROM <const-table> WHERE \" + const-where`; only positional $1-$4 placeholders bind caller-supplied values.")]
-    private async Task<List<DeletedRef>> DeleteFolderTreeWithDependentsOnceAsync(
-        string spaceName, string parentSubpath, string folderShortname, CancellationToken ct)
+    private async Task<DeleteReport> DeleteFolderTreeWithDependentsOnceAsync(
+        string spaceName, string parentSubpath, string folderShortname, bool dryRun, CancellationToken ct)
     {
         var folderPath = parentSubpath == "/"
             ? "/" + folderShortname
@@ -506,22 +510,22 @@ public sealed class EntryRepository(Db db)
                 OR  subpath LIKE $4 || '/%')
             """;
 
-        foreach (var sql in new[]
-        {
-            $"DELETE FROM histories WHERE {subtreeWithFolderRow}",
-            $"DELETE FROM locks     WHERE {subtreeWithFolderRow}",
-        })
+        async Task<long> RunSubtreeAsync(string sql)
         {
             await using var cmd = new NpgsqlCommand(sql, conn, tx);
             cmd.Parameters.Add(new() { Value = spaceName });
             cmd.Parameters.Add(new() { Value = parentSubpath });
             cmd.Parameters.Add(new() { Value = folderShortname });
             cmd.Parameters.Add(new() { Value = folderPath });
-            await cmd.ExecuteNonQueryAsync(ct);
+            return await cmd.ExecuteNonQueryAsync(ct);
         }
+
+        var histories = await RunSubtreeAsync($"DELETE FROM histories WHERE {subtreeWithFolderRow}");
+        var locks = await RunSubtreeAsync($"DELETE FROM locks     WHERE {subtreeWithFolderRow}");
 
         // attachments: subpath includes the owner's shortname, so the folder's
         // own attachments live at subpath = folderPath. No extra clause needed.
+        long attachments;
         await using (var cmd = new NpgsqlCommand("""
             DELETE FROM attachments
             WHERE space_name = $1
@@ -530,7 +534,7 @@ public sealed class EntryRepository(Db db)
         {
             cmd.Parameters.Add(new() { Value = spaceName });
             cmd.Parameters.Add(new() { Value = folderPath });
-            await cmd.ExecuteNonQueryAsync(ct);
+            attachments = await cmd.ExecuteNonQueryAsync(ct);
         }
 
         // entries: explicit `resource_type = 'folder'` guard on the folder
@@ -538,27 +542,25 @@ public sealed class EntryRepository(Db db)
         // non-folder entry happens to share (subpath, shortname) with the
         // folder we're deleting (e.g. a content entry called "widgets" in
         // the same parent as the folder "widgets").
-        var deleted = new List<DeletedRef>();
+        long entries;
         await using (var cmd = new NpgsqlCommand("""
             DELETE FROM entries
             WHERE space_name = $1
               AND ((subpath = $2 AND shortname = $3 AND resource_type = 'folder')
                 OR  subpath = $4
                 OR  subpath LIKE $4 || '/%')
-            RETURNING space_name, subpath, shortname
             """, conn, tx))
         {
             cmd.Parameters.Add(new() { Value = spaceName });
             cmd.Parameters.Add(new() { Value = parentSubpath });
             cmd.Parameters.Add(new() { Value = folderShortname });
             cmd.Parameters.Add(new() { Value = folderPath });
-            await using var reader = await cmd.ExecuteReaderAsync(ct);
-            while (await reader.ReadAsync(ct))
-                deleted.Add(new DeletedRef(reader.GetString(0), reader.GetString(1), reader.GetString(2)));
+            entries = await cmd.ExecuteNonQueryAsync(ct);
         }
 
-        await tx.CommitAsync(ct);
-        return deleted;
+        if (dryRun) await tx.RollbackAsync(ct);
+        else await tx.CommitAsync(ct);
+        return new DeleteReport(entries, attachments, histories, locks);
     }
 
     // Move an entry (and, for folders, its entire subtree of entries +

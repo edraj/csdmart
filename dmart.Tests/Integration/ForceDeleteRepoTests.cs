@@ -17,7 +17,7 @@ public sealed class ForceDeleteRepoTests : IClassFixture<DmartFactory>
     public ForceDeleteRepoTests(DmartFactory factory) => _factory = factory;
 
     [FactIfPg]
-    public async Task DeleteFolderTree_Returns_Refs_For_Folder_And_Children()
+    public async Task DeleteFolderTree_Reports_Entry_Count_For_Folder_And_Children()
     {
         var caller = await _factory.CreateLoggedInUserAsync();
         var client = caller.Client;
@@ -35,10 +35,9 @@ public sealed class ForceDeleteRepoTests : IClassFixture<DmartFactory>
         await Create(ResourceType.Folder, "/", folder);
         await Create(ResourceType.Content, $"/{folder}", "c1");
 
-        var refs = await repo.DeleteFolderTreeWithDependentsAsync(space, "/", folder);
+        var report = await repo.DeleteFolderTreeWithDependentsAsync(space, "/", folder);
 
-        refs.Select(r => r.ToPath()).ShouldContain($"{space}/{folder}");
-        refs.Select(r => r.ToPath()).ShouldContain($"{space}/{folder}/c1");
+        report.Entries.ShouldBe(2); // the folder row + its one child
         await caller.Cleanup();
     }
 
@@ -69,7 +68,7 @@ public sealed class ForceDeleteRepoTests : IClassFixture<DmartFactory>
         // force=true succeeds and reports refs
         var forced = await svc.DeleteAsync(locator, caller.Shortname, force: true);
         forced.IsOk.ShouldBeTrue();
-        forced.Value!.Select(r => r.ToPath()).ShouldContain($"{space}/{folder}/c1");
+        forced.Value!.Entries.ShouldBe(2); // folder + c1
         await caller.Cleanup();
     }
 
@@ -89,7 +88,7 @@ public sealed class ForceDeleteRepoTests : IClassFixture<DmartFactory>
 
         var res = await svc.DeleteAsync(new Locator(ResourceType.Folder, space, "/", folder), caller.Shortname, force: false);
         res.IsOk.ShouldBeTrue();
-        res.Value!.Select(r => r.ToPath()).ShouldContain($"{space}/{folder}");
+        res.Value!.Entries.ShouldBe(1); // just the (empty) folder row
         await caller.Cleanup();
     }
 
@@ -108,6 +107,35 @@ public sealed class ForceDeleteRepoTests : IClassFixture<DmartFactory>
         }, DmartJsonContext.Default.Request)).EnsureSuccessStatusCode();
 
         (await users.OwnsAnyRecordsAsync(owner.Shortname)).ShouldBeTrue();
+        await owner.Cleanup();
+    }
+
+    [FactIfPg]
+    public async Task OwnsAnyRecords_True_When_User_Owns_Another_User()
+    {
+        // A user who owns ONLY other users must still be steered onto the force
+        // path: the plain delete does no reassignment or query_policies regen, so
+        // an owned user would be left dangling on a reusable shortname.
+        var owner = await _factory.CreateLoggedInUserAsync();   // owns nothing yet
+        var users = _factory.Services.GetRequiredService<UserRepository>();
+        (await users.OwnsAnyRecordsAsync(owner.Shortname)).ShouldBeFalse();
+
+        var ownedSn = $"u{Guid.NewGuid():N}"[..12];
+        await users.UpsertAsync(new User
+        {
+            Uuid = Guid.NewGuid().ToString(),
+            Shortname = ownedSn, SpaceName = "management", Subpath = "/users",
+            OwnerShortname = owner.Shortname, IsActive = true,
+            Type = UserType.Web, Language = Language.En,
+            CreatedAt = DateTime.UtcNow, UpdatedAt = DateTime.UtcNow,
+        });
+        try
+        {
+            (await users.OwnsAnyRecordsAsync(owner.Shortname)).ShouldBeTrue();
+            // A self-owned user must NOT count, or no user could ever plain-delete.
+            (await users.OwnsAnyRecordsAsync(ownedSn)).ShouldBeFalse();
+        }
+        finally { try { await users.DeleteAsync(ownedSn); } catch { } }
         await owner.Cleanup();
     }
 
@@ -169,10 +197,10 @@ public sealed class ForceDeleteRepoTests : IClassFixture<DmartFactory>
             Records = new() { new Record { ResourceType = ResourceType.Content, Subpath = "/itest", Shortname = sn } },
         }, DmartJsonContext.Default.Request)).EnsureSuccessStatusCode();
 
-        var deleted = await users.ForceDeleteAsync(owner.Shortname);
+        var report = await users.ForceDeleteAsync(owner.Shortname);
 
         (await users.GetByShortnameAsync(owner.Shortname)).ShouldBeNull();
-        deleted.Select(r => r.ToPath()).ShouldContain($"test/itest/{sn}");
+        report.Entries.ShouldBe(1); // the one content entry the user owned
         // entry is gone — owner.Client returns 401 after user deletion (auth middleware
         // rejects requests for non-existent users, see FullParityTests), so verify via repo.
         (await entries.GetAsync("test", "/itest", sn, ResourceType.Content)).ShouldBeNull();
@@ -250,10 +278,11 @@ public sealed class ForceDeleteRepoTests : IClassFixture<DmartFactory>
     }
 
     // ---- ownership reassignment: structural objects are KEPT, owner reset to the
-    //      "anonymous" sentinel (bootstrap doesn't provision it — the cascade does) ----
+    //      "dmart" super_admin (bootstrap provisions it; the cascade upserts a
+    //      placeholder only if it's somehow absent) ----
 
     [FactIfPg]
-    public async Task ForceDelete_Reassigns_Owned_Space_To_Anonymous_And_Keeps_Foreign_Entries()
+    public async Task ForceDelete_Reassigns_Owned_Space_To_Dmart_And_Keeps_Foreign_Entries()
     {
         var owner = await _factory.CreateLoggedInUserAsync();
         var users = _factory.Services.GetRequiredService<UserRepository>();
@@ -283,15 +312,15 @@ public sealed class ForceDeleteRepoTests : IClassFixture<DmartFactory>
 
             var reassigned = await spaces.GetAsync(space);
             reassigned.ShouldNotBeNull();                       // space survived (not wiped)
-            reassigned!.OwnerShortname.ShouldBe("anonymous");   // owner reassigned
+            reassigned!.OwnerShortname.ShouldBe("dmart");   // owner reassigned
             // query_policies regenerated for the new owner — the deleted owner's
             // owner-scoped pattern must not linger (shortname-reuse safety).
-            reassigned.QueryPolicies.ShouldContain(p => p.EndsWith(":anonymous"));
+            reassigned.QueryPolicies.ShouldContain(p => p.EndsWith(":dmart"));
             reassigned.QueryPolicies.ShouldNotContain(p => p.Contains(owner.Shortname));
             (await entries.GetAsync(space, "/", foreignSn, ResourceType.Content))
                 .ShouldNotBeNull();                             // foreign contents kept
             (await users.GetByShortnameAsync(owner.Shortname)).ShouldBeNull();
-            (await users.GetByShortnameAsync("anonymous")).ShouldNotBeNull(); // sentinel materialised
+            (await users.GetByShortnameAsync("dmart")).ShouldNotBeNull(); // reassignment target exists
         }
         finally
         {
@@ -301,7 +330,7 @@ public sealed class ForceDeleteRepoTests : IClassFixture<DmartFactory>
     }
 
     [FactIfPg]
-    public async Task ForceDelete_Reassigns_Owned_Role_To_Anonymous()
+    public async Task ForceDelete_Reassigns_Owned_Role_To_Dmart()
     {
         var owner = await _factory.CreateLoggedInUserAsync();
         var users = _factory.Services.GetRequiredService<UserRepository>();
@@ -320,13 +349,13 @@ public sealed class ForceDeleteRepoTests : IClassFixture<DmartFactory>
 
             var role = await access.GetRoleAsync(name);
             role.ShouldNotBeNull();                       // role survived
-            role!.OwnerShortname.ShouldBe("anonymous");   // owner reassigned
+            role!.OwnerShortname.ShouldBe("dmart");   // owner reassigned
         }
         finally { try { await access.DeleteRoleAsync(name); } catch { } }
     }
 
     [FactIfPg]
-    public async Task ForceDelete_Reassigns_Owned_Permission_To_Anonymous()
+    public async Task ForceDelete_Reassigns_Owned_Permission_To_Dmart()
     {
         var owner = await _factory.CreateLoggedInUserAsync();
         var users = _factory.Services.GetRequiredService<UserRepository>();
@@ -347,13 +376,13 @@ public sealed class ForceDeleteRepoTests : IClassFixture<DmartFactory>
 
             var perm = await access.GetPermissionAsync(name);
             perm.ShouldNotBeNull();                       // permission survived
-            perm!.OwnerShortname.ShouldBe("anonymous");   // owner reassigned
+            perm!.OwnerShortname.ShouldBe("dmart");   // owner reassigned
         }
         finally { try { await access.DeletePermissionAsync(name); } catch { } }
     }
 
     [FactIfPg]
-    public async Task ForceDelete_Reassigns_Owned_Group_To_Anonymous()
+    public async Task ForceDelete_Reassigns_Owned_Group_To_Dmart()
     {
         var owner = await _factory.CreateLoggedInUserAsync();
         var users = _factory.Services.GetRequiredService<UserRepository>();
@@ -372,13 +401,13 @@ public sealed class ForceDeleteRepoTests : IClassFixture<DmartFactory>
 
             var group = await access.GetGroupAsync(name);
             group.ShouldNotBeNull();                       // group survived
-            group!.OwnerShortname.ShouldBe("anonymous");   // owner reassigned
+            group!.OwnerShortname.ShouldBe("dmart");   // owner reassigned
         }
         finally { try { await access.DeleteGroupAsync(name); } catch { } }
     }
 
     [FactIfPg]
-    public async Task ForceDelete_Reassigns_Other_Owned_Users_To_Anonymous()
+    public async Task ForceDelete_Reassigns_Other_Owned_Users_To_Dmart()
     {
         var owner = await _factory.CreateLoggedInUserAsync();
         var users = _factory.Services.GetRequiredService<UserRepository>();
@@ -398,9 +427,61 @@ public sealed class ForceDeleteRepoTests : IClassFixture<DmartFactory>
 
             var survivor = await users.GetByShortnameAsync(ownedSn);
             survivor.ShouldNotBeNull();                       // owned user survived
-            survivor!.OwnerShortname.ShouldBe("anonymous");   // owner reassigned
+            survivor!.OwnerShortname.ShouldBe("dmart");   // owner reassigned
             (await users.GetByShortnameAsync(owner.Shortname)).ShouldBeNull();
         }
         finally { try { await users.DeleteAsync(ownedSn); } catch { } }
+    }
+
+    // ---- dryrun: counts are exact, but nothing is actually removed ----
+
+    [FactIfPg]
+    public async Task DeleteFolderTree_DryRun_Projects_Count_Without_Removing()
+    {
+        var caller = await _factory.CreateLoggedInUserAsync();
+        var client = caller.Client;
+        var repo = _factory.Services.GetRequiredService<EntryRepository>();
+        var space = "test";
+        var folder = $"f{Guid.NewGuid():N}"[..12];
+
+        async Task Create(ResourceType rt, string subpath, string sn) =>
+            (await client.PostAsJsonAsync("/managed/request", new Request
+            {
+                RequestType = RequestType.Create, SpaceName = space,
+                Records = new() { new Record { ResourceType = rt, Subpath = subpath, Shortname = sn } },
+            }, DmartJsonContext.Default.Request)).EnsureSuccessStatusCode();
+
+        await Create(ResourceType.Folder, "/", folder);
+        await Create(ResourceType.Content, $"/{folder}", "c1");
+
+        var report = await repo.DeleteFolderTreeWithDependentsAsync(space, "/", folder, dryRun: true);
+
+        report.Entries.ShouldBe(2);                                       // would remove folder + child
+        (await repo.GetAsync(space, "/", folder, ResourceType.Folder)).ShouldNotBeNull();    // still there
+        (await repo.GetAsync(space, $"/{folder}", "c1", ResourceType.Content)).ShouldNotBeNull();
+
+        await repo.DeleteFolderTreeWithDependentsAsync(space, "/", folder); // real cleanup
+        await caller.Cleanup();
+    }
+
+    [FactIfPg]
+    public async Task ForceDelete_DryRun_Projects_Count_Without_Removing()
+    {
+        var owner = await _factory.CreateLoggedInUserAsync();
+        var users = _factory.Services.GetRequiredService<UserRepository>();
+        var entries = _factory.Services.GetRequiredService<EntryRepository>();
+        var sn = $"e{Guid.NewGuid():N}"[..12];
+        (await owner.Client.PostAsJsonAsync("/managed/request", new Request
+        {
+            RequestType = RequestType.Create, SpaceName = "test",
+            Records = new() { new Record { ResourceType = ResourceType.Content, Subpath = "/itest", Shortname = sn } },
+        }, DmartJsonContext.Default.Request)).EnsureSuccessStatusCode();
+
+        var report = await users.ForceDeleteAsync(owner.Shortname, dryRun: true);
+
+        report.Entries.ShouldBe(1);                                        // would remove the owned entry
+        (await users.GetByShortnameAsync(owner.Shortname)).ShouldNotBeNull();           // user untouched
+        (await entries.GetAsync("test", "/itest", sn, ResourceType.Content)).ShouldNotBeNull();
+        await owner.Cleanup();
     }
 }

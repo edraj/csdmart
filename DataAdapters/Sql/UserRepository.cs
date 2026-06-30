@@ -378,8 +378,13 @@ public sealed class UserRepository(Db db, AuthzCacheRefresher refresher, Session
     }
 
     // True if the user owns any row that FK-references users(shortname): entries,
-    // attachments, spaces, roles, groups, or permissions. Used to give a friendly
-    // "has created records" refusal before force is required.
+    // attachments, spaces, roles, groups, permissions, or other users. Used to give
+    // a friendly "has created records" refusal before force is required. The users
+    // clause excludes the user's own row (owner_shortname may be self) and must stay
+    // in sync with ForceDeleteOnceAsync's ownsStructural check — otherwise a user who
+    // owns only other users would take the plain-delete path, which does no ownership
+    // reassignment or query_policies regeneration and leaves the owned users dangling
+    // on a reusable shortname.
     public async Task<bool> OwnsAnyRecordsAsync(string shortname, CancellationToken ct = default)
     {
         await using var conn = await db.OpenAsync(ct);
@@ -390,6 +395,7 @@ public sealed class UserRepository(Db db, AuthzCacheRefresher refresher, Session
                 OR EXISTS (SELECT 1 FROM roles       WHERE owner_shortname = $1)
                 OR EXISTS (SELECT 1 FROM groups      WHERE owner_shortname = $1)
                 OR EXISTS (SELECT 1 FROM permissions WHERE owner_shortname = $1)
+                OR EXISTS (SELECT 1 FROM users       WHERE owner_shortname = $1 AND shortname <> $1)
             """, conn);
         cmd.Parameters.Add(new() { Value = shortname });
         return (bool)(await cmd.ExecuteScalarAsync(ct) ?? false);
@@ -407,16 +413,16 @@ public sealed class UserRepository(Db db, AuthzCacheRefresher refresher, Session
         return (bool)(await cmd.ExecuteScalarAsync(ct) ?? false);
     }
 
-    // The sentinel owner that inherits the user's STRUCTURAL objects (other users,
-    // roles, groups, permissions, spaces) on a force-delete instead of having them
-    // deleted. "anonymous" is the unauthenticated identity; bootstrap does NOT
-    // provision it, so the cascade upserts a minimal placeholder row before
-    // reassigning — owner_shortname on roles/groups/permissions/spaces is a
-    // deferrable FK → users(shortname), checked at COMMIT, so the target must exist
-    // by then. The placeholder has no password (login impossible) and no roles
-    // (grants nothing — world access still requires an operator-attached role, see
-    // PermissionService), so it is a pure ownership anchor that changes no behavior.
-    private const string FallbackOwner = "anonymous";
+    // The owner that inherits the user's STRUCTURAL objects (other users, roles,
+    // groups, permissions, spaces) on a force-delete instead of having them deleted —
+    // the "dmart" super_admin (AdminBootstrap.AdminShortname). owner_shortname on
+    // roles/groups/permissions/spaces is a deferrable FK → users(shortname), checked
+    // at COMMIT, so the target must exist by then. Bootstrap provisions "dmart" when
+    // admin config is supplied; the cascade still upserts a minimal placeholder row
+    // (ON CONFLICT DO NOTHING — never clobbers the real admin) so the FK resolves even
+    // on a deployment that hasn't bootstrapped an admin yet (a later admin bootstrap
+    // repairs the placeholder into the real super_admin).
+    private const string FallbackOwner = "dmart";
 
     // Force-delete: reassign the user's STRUCTURAL objects, delete their DATA, then
     // delete the user — all atomically.
@@ -428,18 +434,20 @@ public sealed class UserRepository(Db db, AuthzCacheRefresher refresher, Session
     //     permissions cache.
     // Returns the refs of the rows actually DELETED (entries + attachments);
     // reassigned objects survive and are not reported.
-    public async Task<List<DeletedRef>> ForceDeleteAsync(string shortname, CancellationToken ct = default)
+    // dryRun runs the full cascade (so the counts are exact) then ROLLS BACK: nothing
+    // is removed or reassigned and the returned DeleteReport is a pure projection of
+    // what a real force-delete would wipe.
+    public async Task<DeleteReport> ForceDeleteAsync(string shortname, bool dryRun = false, CancellationToken ct = default)
     {
-        var deleted = await db.ExecuteWithRetryOnDeadlockAsync(c => ForceDeleteOnceAsync(shortname, c), ct);
-        await refresher.RefreshAsync(ct);
-        return deleted;
+        var report = await db.ExecuteWithRetryOnDeadlockAsync(c => ForceDeleteOnceAsync(shortname, dryRun, c), ct);
+        if (!dryRun) await refresher.RefreshAsync(ct);
+        return report;
     }
 
     [SuppressMessage("Security", "CA2100",
         Justification = "Audited: every sql is a const literal; user-supplied values bind only through positional $1.")]
-    private async Task<List<DeletedRef>> ForceDeleteOnceAsync(string shortname, CancellationToken ct)
+    private async Task<DeleteReport> ForceDeleteOnceAsync(string shortname, bool dryRun, CancellationToken ct)
     {
-        var deleted = new List<DeletedRef>();
         await using var conn = await db.OpenAsync(ct);
         await using var tx = await conn.BeginTransactionAsync(ct);
 
@@ -491,38 +499,33 @@ public sealed class UserRepository(Db db, AuthzCacheRefresher refresher, Session
             await ReassignOwnerAsync(conn, tx, "users",       "user",       shortname, excludeSelf: true,  ct);
         }
 
+        async Task<long> DeleteCountAsync(string sql)
+        {
+            await using var cmd = new NpgsqlCommand(sql, conn, tx);
+            cmd.Parameters.Add(new() { Value = shortname });
+            return await cmd.ExecuteNonQueryAsync(ct);
+        }
+
         // 2. Clear the histories/locks for the user's own entries (about to be
         //    deleted) and every history/lock the user authored (owner_shortname).
         //    Runs BEFORE the entries delete below, while the matched entries still
         //    exist. histories/locks have no FK to users — nothing cascades them.
-        foreach (var sql in new[]
-        {
-            """
+        var histories = await DeleteCountAsync("""
             DELETE FROM histories
             WHERE owner_shortname = $1
                OR (space_name, subpath, shortname) IN
                   (SELECT space_name, subpath, shortname FROM entries WHERE owner_shortname = $1)
-            """,
-            """
+            """);
+        var locks = await DeleteCountAsync("""
             DELETE FROM locks
             WHERE owner_shortname = $1
                OR (space_name, subpath, shortname) IN
                   (SELECT space_name, subpath, shortname FROM entries WHERE owner_shortname = $1)
-            """,
-        })
-        {
-            await using var cmd = new NpgsqlCommand(sql, conn, tx);
-            cmd.Parameters.Add(new() { Value = shortname });
-            await cmd.ExecuteNonQueryAsync(ct);
-        }
+            """);
 
         // 3. DATA objects the user owns are DELETED: their attachments + entries.
-        foreach (var sql in new[]
-        {
-            "DELETE FROM attachments WHERE owner_shortname = $1 RETURNING space_name, subpath, shortname",
-            "DELETE FROM entries     WHERE owner_shortname = $1 RETURNING space_name, subpath, shortname",
-        })
-            await CollectAsync(conn, tx, deleted, sql, shortname, ct);
+        var attachments = await DeleteCountAsync("DELETE FROM attachments WHERE owner_shortname = $1");
+        var entries = await DeleteCountAsync("DELETE FROM entries     WHERE owner_shortname = $1");
 
         // 4. Sessions and the resolved-permissions cache are keyed by the user, not
         //    by owner_shortname, and have no FK — nothing cascades them. Clear both
@@ -544,8 +547,12 @@ public sealed class UserRepository(Db db, AuthzCacheRefresher refresher, Session
             await del.ExecuteNonQueryAsync(ct);
         }
 
-        await tx.CommitAsync(ct);
-        return deleted;
+        if (dryRun) await tx.RollbackAsync(ct);
+        else await tx.CommitAsync(ct);
+        // The report covers the user's cascaded DATA (entries + attachments) and the
+        // history/lock rows cleared with them; the user's own row, sessions and cache
+        // are bookkeeping, not entries, so they don't count toward `affected`.
+        return new DeleteReport(entries, attachments, histories, locks);
     }
 
     // Reassign every row in `table` owned by `fromOwner` to FallbackOwner, within the
@@ -582,19 +589,6 @@ public sealed class UserRepository(Db db, AuthzCacheRefresher refresher, Session
             upd.Parameters.Add(new() { Value = policies, NpgsqlDbType = NpgsqlDbType.Array | NpgsqlDbType.Text });
             await upd.ExecuteNonQueryAsync(ct);
         }
-    }
-
-    [SuppressMessage("Security", "CA2100",
-        Justification = "Audited: every sql is a const literal; user-supplied values bind only through positional $1.")]
-    private static async Task CollectAsync(
-        NpgsqlConnection conn, NpgsqlTransaction tx, List<DeletedRef> sink,
-        string sql, string param, CancellationToken ct)
-    {
-        await using var cmd = new NpgsqlCommand(sql, conn, tx);
-        cmd.Parameters.Add(new() { Value = param });
-        await using var reader = await cmd.ExecuteReaderAsync(ct);
-        while (await reader.ReadAsync(ct))
-            sink.Add(new DeletedRef(reader.GetString(0), reader.GetString(1), reader.GetString(2)));
     }
 
     public async Task IncrementAttemptAsync(string shortname, DateTime failedAt, CancellationToken ct = default)

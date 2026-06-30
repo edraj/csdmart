@@ -160,36 +160,38 @@ public sealed class SpaceRepository(Db db)
     // Api/Managed/RequestHandler.cs): a client deleting a just-created space
     // can race the plugin's folder-insertion transaction and PostgreSQL
     // aborts one with 40P01. Deadlocks are transient and retry-safe.
-    public Task<bool> DeleteAsync(string shortname, CancellationToken ct = default)
-        => db.ExecuteWithRetryOnDeadlockAsync(c => DeleteOnceAsync(shortname, c), ct);
+    // Returns the per-category blast radius of the cascade. When dryRun is true the
+    // DELETEs still run (so the counts are exact) but the transaction ROLLS BACK —
+    // nothing is removed and the DeleteReport is a pure projection.
+    public Task<DeleteReport> DeleteAsync(string shortname, bool dryRun = false, CancellationToken ct = default)
+        => db.ExecuteWithRetryOnDeadlockAsync(c => DeleteOnceAsync(shortname, dryRun, c), ct);
 
     [SuppressMessage("Security", "CA2100",
         Justification = "Audited: each `sql` value is a literal element of a compile-time string[] (DELETE FROM <table>); shortname flows through $1.")]
-    private async Task<bool> DeleteOnceAsync(string shortname, CancellationToken ct)
+    private async Task<DeleteReport> DeleteOnceAsync(string shortname, bool dryRun, CancellationToken ct)
     {
         await using var conn = await db.OpenAsync(ct);
         await using var tx = await conn.BeginTransactionAsync(ct);
 
-        var statements = new[]
-        {
-            "DELETE FROM histories   WHERE space_name = $1",
-            "DELETE FROM locks       WHERE space_name = $1",
-            "DELETE FROM attachments WHERE space_name = $1",
-            "DELETE FROM entries     WHERE space_name = $1",
-            "DELETE FROM spaces      WHERE shortname  = $1",
-        };
-
-        var rowsDeletedFromSpaces = 0;
-        foreach (var sql in statements)
+        // A space's contents carry space_name = the space's shortname, so the same
+        // bound value matches both the children (space_name) and the space's own row
+        // (shortname). The spaces-row delete isn't an "entry" and so isn't reported.
+        async Task<long> Del(string sql)
         {
             await using var cmd = new NpgsqlCommand(sql, conn, tx);
             cmd.Parameters.Add(new() { Value = shortname });
-            var n = await cmd.ExecuteNonQueryAsync(ct);
-            if (sql.Contains("FROM spaces", StringComparison.Ordinal)) rowsDeletedFromSpaces = n;
+            return await cmd.ExecuteNonQueryAsync(ct);
         }
 
-        await tx.CommitAsync(ct);
-        return rowsDeletedFromSpaces > 0;
+        var histories   = await Del("DELETE FROM histories   WHERE space_name = $1");
+        var locks       = await Del("DELETE FROM locks       WHERE space_name = $1");
+        var attachments = await Del("DELETE FROM attachments WHERE space_name = $1");
+        var entries     = await Del("DELETE FROM entries     WHERE space_name = $1");
+        await Del("DELETE FROM spaces      WHERE shortname  = $1");
+
+        if (dryRun) await tx.RollbackAsync(ct);
+        else await tx.CommitAsync(ct);
+        return new DeleteReport(entries, attachments, histories, locks);
     }
 
     private static void AddJsonb(NpgsqlCommand cmd, string? json)

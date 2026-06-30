@@ -112,6 +112,10 @@ public static class RequestHandler
                             _ => null,
                         }
                         : null;
+                    // A dryrun delete is a read-only projection — skip the before-hook
+                    // (it may have side effects or veto) just like the after-hook below.
+                    if (req.RequestType is RequestType.Delete && req.DryRun)
+                        beforeActionType = null;
                     if (beforeActionType is not null)
                     {
                         try
@@ -167,7 +171,7 @@ public static class RequestHandler
                                         entries, users, access, spaces, attachments, perms, uniqueness, folderContent, schemas, ct),
                                     r => r.Response.Error?.Code == InternalErrorCode.SHORTNAME_ALREADY_EXIST),
                             RequestType.Delete =>
-                                await DispatchDeleteAsync(rec, req.SpaceName, actor, managementSpace, req.Force,
+                                await DispatchDeleteAsync(rec, req.SpaceName, actor, managementSpace, req.Force, req.DryRun,
                                     entries, users, access, spaces, attachments, perms, ct),
                             RequestType.Move =>
                                 await DispatchMoveAsync(rec, req.SpaceName, actor, entries, ct),
@@ -195,13 +199,12 @@ public static class RequestHandler
                         continue;
                     }
                     responses.Add(result.UpdatedRecord);
-                    if (req.RequestType is RequestType.Delete
-                        && (responses[^1].Attributes is null || !responses[^1].Attributes!.ContainsKey("deleted")))
-                    {
-                        var p = new Dmart.Models.Core.DeletedRef(
-                            req.SpaceName, responses[^1].Subpath, responses[^1].Shortname).ToPath();
-                        responses[^1] = AttachDeleted(responses[^1], new[] { p });
-                    }
+                    // Delete reports (affected/report/dry_run) are attached by each
+                    // DispatchDeleteAsync branch, so no post-hoc fallback is needed here.
+
+                    // A dryrun delete changed nothing — don't fire after-action hooks.
+                    if (req.RequestType is RequestType.Delete && req.DryRun)
+                        continue;
 
                     // Fire after-action plugin hooks for non-entry CRUD types.
                     // EntryService already fires hooks for entry creates/updates/deletes,
@@ -1121,7 +1124,7 @@ public static class RequestHandler
     // ============================================================================
 
     private static async Task<(Response Response, Record UpdatedRecord)> DispatchDeleteAsync(
-        Record rec, string space, string actor, string managementSpace, bool force,
+        Record rec, string space, string actor, string managementSpace, bool force, bool dryRun,
         EntryService entries, UserRepository users, AccessRepository access,
         SpaceRepository spaces, AttachmentRepository attachments,
         PermissionService perms, CancellationToken ct)
@@ -1137,38 +1140,42 @@ public static class RequestHandler
                 $"not allowed to delete {label}", ErrorTypes.Request), rec);
         }
 
+        // Every successful branch reports a DeleteReport: `affected` (total rows) plus a
+        // per-category `report`, and `dry_run: true` when nothing was actually removed.
+        (Response, Record) Ok(DeleteReport report) => (Response.Ok(), AttachReport(rec, report, dryRun));
+
         switch (rec.ResourceType)
         {
             case ResourceType.User:
             {
                 var existing = await users.GetByShortnameAsync(rec.Shortname, ct);
                 if (existing is null)
-                    return (Response.Ok(), AttachDeleted(rec, Array.Empty<string>())); // idempotent: already gone
+                    return Ok(DeleteReport.Empty); // idempotent: already gone
                 var userLocator = new Locator(ResourceType.User, existing.SpaceName, existing.Subpath, existing.Shortname);
                 if (await DenyDeleteAsync(userLocator, PermissionService.FromUser(existing), "user") is { } denied)
                     return denied;
 
-                if (!force)
+                // A plain (non-force, non-dryrun) user delete only succeeds if the user
+                // owns nothing; it removes just the user row (not an entry → empty
+                // report). A dryrun ignores force and projects the full cascade instead.
+                if (!force && !dryRun)
                 {
                     if (await users.OwnsAnyRecordsAsync(rec.Shortname, ct))
                         return (Response.Fail(InternalErrorCode.CANNT_DELETE,
                             $"user '{rec.Shortname}' has created records; pass force=true to delete the user and everything they own",
                             ErrorTypes.Request), rec);
                     await users.DeleteAsync(rec.Shortname, ct);
-                    return (Response.Ok(), rec);
+                    return Ok(DeleteReport.Empty);
                 }
 
-                // Never let a force-delete wipe the management space, even if this
-                // user owns it — it holds all users/roles/permissions. Mirrors the
-                // management-space guard in the Space-delete case below.
+                // Never let a force-delete wipe the management space, even if this user
+                // owns it — it holds all users/roles/permissions. The guard also applies
+                // to a dryrun projection: an impossible delete shouldn't report a count.
                 if (await users.OwnsSpaceAsync(rec.Shortname, managementSpace, ct))
                     return (Response.Fail(InternalErrorCode.CANNT_DELETE,
                         $"cannot force-delete user '{rec.Shortname}': they own the management space '{managementSpace}'",
                         ErrorTypes.Request), rec);
-                var deleted = await users.ForceDeleteAsync(rec.Shortname, ct);
-                var userPaths = deleted.Select(r => r.ToPath()).ToList();
-                userPaths.Add(new DeletedRef(existing.SpaceName, existing.Subpath, existing.Shortname).ToPath());
-                return (Response.Ok(), AttachDeleted(rec, userPaths));
+                return Ok(await users.ForceDeleteAsync(rec.Shortname, dryRun, ct));
             }
             case ResourceType.Space:
             {
@@ -1179,12 +1186,11 @@ public static class RequestHandler
                         $"cannot delete the management space '{managementSpace}'", ErrorTypes.Request), rec);
                 var existing = await spaces.GetAsync(rec.Shortname, ct);
                 if (existing is null)
-                    return (Response.Ok(), AttachDeleted(rec, Array.Empty<string>()));
+                    return Ok(DeleteReport.Empty);
                 var spaceLocator = new Locator(ResourceType.Space, existing.SpaceName, existing.Subpath, existing.Shortname);
                 if (await DenyDeleteAsync(spaceLocator, PermissionService.FromSpace(existing), "space") is { } denied)
                     return denied;
-                await spaces.DeleteAsync(rec.Shortname, ct);
-                return (Response.Ok(), rec);
+                return Ok(await spaces.DeleteAsync(rec.Shortname, dryRun, ct));
             }
             case ResourceType.Group:
             {
@@ -1195,8 +1201,9 @@ public static class RequestHandler
                 var groupLocator = new Locator(ResourceType.Group, existing.SpaceName, existing.Subpath, existing.Shortname);
                 if (await DenyDeleteAsync(groupLocator, PermissionService.FromGroup(existing), "group") is { } denied)
                     return denied;
-                await access.DeleteGroupAsync(rec.Shortname, ct);
-                return (Response.Ok(), rec);
+                // Structural object, no cascade — empty report either way.
+                if (!dryRun) await access.DeleteGroupAsync(rec.Shortname, ct);
+                return Ok(DeleteReport.Empty);
             }
             // Role/Permission live in their own tables, not `entries` — falling
             // through to EntryService.DeleteAsync would silently no-op.
@@ -1209,8 +1216,9 @@ public static class RequestHandler
                 var roleLocator = new Locator(ResourceType.Role, existing.SpaceName, existing.Subpath, existing.Shortname);
                 if (await DenyDeleteAsync(roleLocator, PermissionService.FromRole(existing), "role") is { } denied)
                     return denied;
+                if (dryRun) return Ok(DeleteReport.Empty);
                 return await access.DeleteRoleAsync(rec.Shortname, ct)
-                    ? (Response.Ok(), rec)
+                    ? Ok(DeleteReport.Empty)
                     : (Response.Fail(InternalErrorCode.OBJECT_NOT_FOUND,
                         $"role '{rec.Shortname}' not found", ErrorTypes.Request), rec);
             }
@@ -1223,8 +1231,9 @@ public static class RequestHandler
                 var permLocator = new Locator(ResourceType.Permission, existing.SpaceName, existing.Subpath, existing.Shortname);
                 if (await DenyDeleteAsync(permLocator, PermissionService.FromPermission(existing), "permission") is { } denied)
                     return denied;
+                if (dryRun) return Ok(DeleteReport.Empty);
                 return await access.DeletePermissionAsync(rec.Shortname, ct)
-                    ? (Response.Ok(), rec)
+                    ? Ok(DeleteReport.Empty)
                     : (Response.Fail(InternalErrorCode.OBJECT_NOT_FOUND,
                         $"permission '{rec.Shortname}' not found", ErrorTypes.Request), rec);
             }
@@ -1240,21 +1249,21 @@ public static class RequestHandler
             {
                 // Look up by (space, subpath, shortname) and delete by uuid.
                 var existing = await attachments.GetAsync(space, "/" + rec.Subpath.TrimStart('/'), rec.Shortname, ct);
-                if (existing is null) return (Response.Ok(), AttachDeleted(rec, Array.Empty<string>())); // already gone
+                if (existing is null) return Ok(DeleteReport.Empty); // already gone
                 var attLocator = new Locator(rec.ResourceType, space, existing.Subpath, existing.Shortname);
                 if (await DenyDeleteAsync(attLocator, null, "attachment") is { } denied)
                     return denied;
-                if (Guid.TryParse(existing.Uuid, out var u))
+                if (!dryRun && Guid.TryParse(existing.Uuid, out var u))
                     await attachments.DeleteAsync(u, ct);
-                return (Response.Ok(), rec);
+                return Ok(new DeleteReport(0, 1, 0, 0)); // one attachment removed / would be removed
             }
             default:
             {
                 var locator = new Locator(rec.ResourceType, space, rec.Subpath, rec.Shortname);
-                var result = await entries.DeleteAsync(locator, actor, force, ct);
+                var result = await entries.DeleteAsync(locator, actor, force, dryRun, ct);
                 if (!result.IsOk)
                     return (Response.Fail(result.ErrorCode, result.ErrorMessage!, ErrorTypes.Request), rec);
-                return (Response.Ok(), AttachDeleted(rec, result.Value!.Select(r => r.ToPath()).ToList()));
+                return Ok(result.Value!);
             }
         }
     }
@@ -1737,12 +1746,17 @@ public static class RequestHandler
         return null;
     }
 
-    private static Record AttachDeleted(Record rec, IReadOnlyList<string> paths)
+    // A delete reports its blast radius as `affected` (total rows removed) plus a
+    // per-category `report`. On a dryrun nothing was removed, so `dry_run: true` is
+    // added and the numbers are a projection of what a real delete would remove.
+    private static Record AttachReport(Record rec, DeleteReport report, bool dryRun)
     {
         var attrs = rec.Attributes is null
             ? new Dictionary<string, object>()
             : new Dictionary<string, object>(rec.Attributes);
-        attrs["deleted"] = paths.ToList();
+        attrs["affected"] = report.Total;
+        attrs["report"] = report.ToObject();
+        if (dryRun) attrs["dry_run"] = true;
         return rec with { Attributes = attrs };
     }
 
