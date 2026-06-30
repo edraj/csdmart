@@ -177,4 +177,230 @@ public sealed class ForceDeleteRepoTests : IClassFixture<DmartFactory>
         // rejects requests for non-existent users, see FullParityTests), so verify via repo.
         (await entries.GetAsync("test", "/itest", sn, ResourceType.Content)).ShouldBeNull();
     }
+
+    [FactIfPg]
+    public async Task ForceDelete_Removes_User_Sessions()
+    {
+        // A logged-in user has at least one live session row.
+        var owner = await _factory.CreateLoggedInUserAsync();
+        var users = _factory.Services.GetRequiredService<UserRepository>();
+        (await users.CountSessionsAsync(owner.Shortname)).ShouldBeGreaterThan(0);
+
+        await users.ForceDeleteAsync(owner.Shortname);
+
+        (await users.CountSessionsAsync(owner.Shortname)).ShouldBe(0);
+        (await users.GetByShortnameAsync(owner.Shortname)).ShouldBeNull();
+    }
+
+    [FactIfPg]
+    public async Task ForceDelete_Removes_UserPermissionsCache()
+    {
+        var owner = await _factory.CreateLoggedInUserAsync();
+        var users = _factory.Services.GetRequiredService<UserRepository>();
+        var access = _factory.Services.GetRequiredService<AccessRepository>();
+        // Seed the resolved-permissions cache row for the user.
+        await access.CacheUserPermissionsAsync(owner.Shortname, new Dictionary<string, object>());
+        (await access.GetCachedUserPermissionsAsync(owner.Shortname)).ShouldNotBeNull();
+
+        await users.ForceDeleteAsync(owner.Shortname);
+
+        (await access.GetCachedUserPermissionsAsync(owner.Shortname)).ShouldBeNull();
+    }
+
+    [FactIfPg]
+    public async Task ForceDelete_Removes_Histories_For_Owned_Entries_In_Other_Spaces()
+    {
+        var owner = await _factory.CreateLoggedInUserAsync();
+        var users = _factory.Services.GetRequiredService<UserRepository>();
+        var history = _factory.Services.GetRequiredService<HistoryRepository>();
+        var sn = $"e{Guid.NewGuid():N}"[..12];
+        // The user owns an entry in "test", a space the user does NOT own — its
+        // history rows are exactly the residue ForceDelete must now clear.
+        (await owner.Client.PostAsJsonAsync("/managed/request", new Request
+        {
+            RequestType = RequestType.Create, SpaceName = "test",
+            Records = new() { new Record { ResourceType = ResourceType.Content, Subpath = "/itest", Shortname = sn } },
+        }, DmartJsonContext.Default.Request)).EnsureSuccessStatusCode();
+        await history.AppendAsync("test", "/itest", sn, owner.Shortname, null, null);
+        (await history.ListAsync("test", "/itest", sn)).Count.ShouldBeGreaterThan(0);
+
+        await users.ForceDeleteAsync(owner.Shortname);
+
+        (await history.ListAsync("test", "/itest", sn)).Count.ShouldBe(0);
+    }
+
+    [FactIfPg]
+    public async Task ForceDelete_Removes_Locks_For_Owned_Entries_In_Other_Spaces()
+    {
+        var owner = await _factory.CreateLoggedInUserAsync();
+        var users = _factory.Services.GetRequiredService<UserRepository>();
+        var locks = _factory.Services.GetRequiredService<LockRepository>();
+        var sn = $"e{Guid.NewGuid():N}"[..12];
+        (await owner.Client.PostAsJsonAsync("/managed/request", new Request
+        {
+            RequestType = RequestType.Create, SpaceName = "test",
+            Records = new() { new Record { ResourceType = ResourceType.Content, Subpath = "/itest", Shortname = sn } },
+        }, DmartJsonContext.Default.Request)).EnsureSuccessStatusCode();
+        (await locks.TryLockAsync("test", "/itest", sn, owner.Shortname, 300)).ShouldBeTrue();
+        (await locks.GetLockerAsync("test", "/itest", sn, 300)).ShouldBe(owner.Shortname);
+
+        await users.ForceDeleteAsync(owner.Shortname);
+
+        (await locks.GetLockerAsync("test", "/itest", sn, 300)).ShouldBeNull();
+    }
+
+    // ---- ownership reassignment: structural objects are KEPT, owner reset to the
+    //      "anonymous" sentinel (bootstrap doesn't provision it — the cascade does) ----
+
+    [FactIfPg]
+    public async Task ForceDelete_Reassigns_Owned_Space_To_Anonymous_And_Keeps_Foreign_Entries()
+    {
+        var owner = await _factory.CreateLoggedInUserAsync();
+        var users = _factory.Services.GetRequiredService<UserRepository>();
+        var spaces = _factory.Services.GetRequiredService<SpaceRepository>();
+        var entries = _factory.Services.GetRequiredService<EntryRepository>();
+        var space = $"itest_sp_{Guid.NewGuid():N}"[..18];
+        await spaces.UpsertAsync(new Space
+        {
+            Uuid = Guid.NewGuid().ToString(),
+            Shortname = space, SpaceName = space, Subpath = "/",
+            OwnerShortname = owner.Shortname, IsActive = true,
+            CreatedAt = DateTime.UtcNow, UpdatedAt = DateTime.UtcNow,
+        });
+        // A foreign-owned entry inside the user's space must survive the reassignment
+        // — proving the space is reassigned, not wiped with its contents.
+        var foreignSn = $"f{Guid.NewGuid():N}"[..12];
+        await entries.UpsertAsync(new Entry
+        {
+            Uuid = Guid.NewGuid().ToString(),
+            Shortname = foreignSn, SpaceName = space, Subpath = "/",
+            ResourceType = ResourceType.Content, OwnerShortname = "dmart", IsActive = true,
+            CreatedAt = DateTime.UtcNow, UpdatedAt = DateTime.UtcNow,
+        });
+        try
+        {
+            await users.ForceDeleteAsync(owner.Shortname);
+
+            var reassigned = await spaces.GetAsync(space);
+            reassigned.ShouldNotBeNull();                       // space survived (not wiped)
+            reassigned!.OwnerShortname.ShouldBe("anonymous");   // owner reassigned
+            // query_policies regenerated for the new owner — the deleted owner's
+            // owner-scoped pattern must not linger (shortname-reuse safety).
+            reassigned.QueryPolicies.ShouldContain(p => p.EndsWith(":anonymous"));
+            reassigned.QueryPolicies.ShouldNotContain(p => p.Contains(owner.Shortname));
+            (await entries.GetAsync(space, "/", foreignSn, ResourceType.Content))
+                .ShouldNotBeNull();                             // foreign contents kept
+            (await users.GetByShortnameAsync(owner.Shortname)).ShouldBeNull();
+            (await users.GetByShortnameAsync("anonymous")).ShouldNotBeNull(); // sentinel materialised
+        }
+        finally
+        {
+            try { await entries.DeleteAsync(space, "/", foreignSn, ResourceType.Content); } catch { }
+            try { await spaces.DeleteAsync(space); } catch { }
+        }
+    }
+
+    [FactIfPg]
+    public async Task ForceDelete_Reassigns_Owned_Role_To_Anonymous()
+    {
+        var owner = await _factory.CreateLoggedInUserAsync();
+        var users = _factory.Services.GetRequiredService<UserRepository>();
+        var access = _factory.Services.GetRequiredService<AccessRepository>();
+        var name = "rrm_" + Guid.NewGuid().ToString("N")[..8];
+        await access.UpsertRoleAsync(new Role
+        {
+            Uuid = Guid.NewGuid().ToString(),
+            Shortname = name, SpaceName = "management", Subpath = "/roles",
+            OwnerShortname = owner.Shortname, IsActive = true, Permissions = new(),
+            CreatedAt = DateTime.UtcNow, UpdatedAt = DateTime.UtcNow,
+        });
+        try
+        {
+            await users.ForceDeleteAsync(owner.Shortname);
+
+            var role = await access.GetRoleAsync(name);
+            role.ShouldNotBeNull();                       // role survived
+            role!.OwnerShortname.ShouldBe("anonymous");   // owner reassigned
+        }
+        finally { try { await access.DeleteRoleAsync(name); } catch { } }
+    }
+
+    [FactIfPg]
+    public async Task ForceDelete_Reassigns_Owned_Permission_To_Anonymous()
+    {
+        var owner = await _factory.CreateLoggedInUserAsync();
+        var users = _factory.Services.GetRequiredService<UserRepository>();
+        var access = _factory.Services.GetRequiredService<AccessRepository>();
+        var name = "prm_" + Guid.NewGuid().ToString("N")[..8];
+        await access.UpsertPermissionAsync(new Permission
+        {
+            Uuid = Guid.NewGuid().ToString(),
+            Shortname = name, SpaceName = "management", Subpath = "/permissions",
+            OwnerShortname = owner.Shortname, IsActive = true,
+            Subpaths = new() { ["management"] = new() { "/" } },
+            ResourceTypes = new() { "content" }, Actions = new() { "view" },
+            CreatedAt = DateTime.UtcNow, UpdatedAt = DateTime.UtcNow,
+        });
+        try
+        {
+            await users.ForceDeleteAsync(owner.Shortname);
+
+            var perm = await access.GetPermissionAsync(name);
+            perm.ShouldNotBeNull();                       // permission survived
+            perm!.OwnerShortname.ShouldBe("anonymous");   // owner reassigned
+        }
+        finally { try { await access.DeletePermissionAsync(name); } catch { } }
+    }
+
+    [FactIfPg]
+    public async Task ForceDelete_Reassigns_Owned_Group_To_Anonymous()
+    {
+        var owner = await _factory.CreateLoggedInUserAsync();
+        var users = _factory.Services.GetRequiredService<UserRepository>();
+        var access = _factory.Services.GetRequiredService<AccessRepository>();
+        var name = "grm_" + Guid.NewGuid().ToString("N")[..8];
+        await access.UpsertGroupAsync(new Group
+        {
+            Uuid = Guid.NewGuid().ToString(),
+            Shortname = name, SpaceName = "management", Subpath = "/groups",
+            OwnerShortname = owner.Shortname, IsActive = true,
+            CreatedAt = DateTime.UtcNow, UpdatedAt = DateTime.UtcNow,
+        });
+        try
+        {
+            await users.ForceDeleteAsync(owner.Shortname);
+
+            var group = await access.GetGroupAsync(name);
+            group.ShouldNotBeNull();                       // group survived
+            group!.OwnerShortname.ShouldBe("anonymous");   // owner reassigned
+        }
+        finally { try { await access.DeleteGroupAsync(name); } catch { } }
+    }
+
+    [FactIfPg]
+    public async Task ForceDelete_Reassigns_Other_Owned_Users_To_Anonymous()
+    {
+        var owner = await _factory.CreateLoggedInUserAsync();
+        var users = _factory.Services.GetRequiredService<UserRepository>();
+        // A second user OWNED BY the victim — its owner must be reset, not deleted.
+        var ownedSn = $"u{Guid.NewGuid():N}"[..12];
+        await users.UpsertAsync(new User
+        {
+            Uuid = Guid.NewGuid().ToString(),
+            Shortname = ownedSn, SpaceName = "management", Subpath = "/users",
+            OwnerShortname = owner.Shortname, IsActive = true,
+            Type = UserType.Web, Language = Language.En,
+            CreatedAt = DateTime.UtcNow, UpdatedAt = DateTime.UtcNow,
+        });
+        try
+        {
+            await users.ForceDeleteAsync(owner.Shortname);
+
+            var survivor = await users.GetByShortnameAsync(ownedSn);
+            survivor.ShouldNotBeNull();                       // owned user survived
+            survivor!.OwnerShortname.ShouldBe("anonymous");   // owner reassigned
+            (await users.GetByShortnameAsync(owner.Shortname)).ShouldBeNull();
+        }
+        finally { try { await users.DeleteAsync(ownedSn); } catch { } }
+    }
 }

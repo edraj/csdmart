@@ -1126,7 +1126,16 @@ public static class RequestHandler
         SpaceRepository spaces, AttachmentRepository attachments,
         PermissionService perms, CancellationToken ct)
     {
-        var locator = new Locator(rec.ResourceType, space, rec.Subpath, rec.Shortname);
+        // Shared NOT_ALLOWED guard: returns the denial tuple when `actor` may not
+        // delete `target`, else null so the caller proceeds. `ctx` is the resource
+        // in hand for ACL evaluation (null for attachments, which pass no context).
+        async Task<(Response Response, Record UpdatedRecord)?> DenyDeleteAsync(
+            Locator target, PermissionService.ResourceContext? ctx, string label)
+        {
+            if (await perms.CanDeleteAsync(actor, target, ctx, ct)) return null;
+            return (Response.Fail(InternalErrorCode.NOT_ALLOWED,
+                $"not allowed to delete {label}", ErrorTypes.Request), rec);
+        }
 
         switch (rec.ResourceType)
         {
@@ -1136,8 +1145,8 @@ public static class RequestHandler
                 if (existing is null)
                     return (Response.Ok(), AttachDeleted(rec, Array.Empty<string>())); // idempotent: already gone
                 var userLocator = new Locator(ResourceType.User, existing.SpaceName, existing.Subpath, existing.Shortname);
-                if (!await perms.CanDeleteAsync(actor, userLocator, PermissionService.FromUser(existing), ct))
-                    return (Response.Fail(InternalErrorCode.NOT_ALLOWED, "not allowed to delete user", ErrorTypes.Request), rec);
+                if (await DenyDeleteAsync(userLocator, PermissionService.FromUser(existing), "user") is { } denied)
+                    return denied;
 
                 if (!force)
                 {
@@ -1151,14 +1160,14 @@ public static class RequestHandler
 
                 // Never let a force-delete wipe the management space, even if this
                 // user owns it — it holds all users/roles/permissions. Mirrors the
-                // Space-delete guard above.
+                // management-space guard in the Space-delete case below.
                 if (await users.OwnsSpaceAsync(rec.Shortname, managementSpace, ct))
                     return (Response.Fail(InternalErrorCode.CANNT_DELETE,
                         $"cannot force-delete user '{rec.Shortname}': they own the management space '{managementSpace}'",
                         ErrorTypes.Request), rec);
                 var deleted = await users.ForceDeleteAsync(rec.Shortname, ct);
                 var userPaths = deleted.Select(r => r.ToPath()).ToList();
-                userPaths.Add(new Dmart.Models.Core.DeletedRef(existing.SpaceName, existing.Subpath, existing.Shortname).ToPath());
+                userPaths.Add(new DeletedRef(existing.SpaceName, existing.Subpath, existing.Shortname).ToPath());
                 return (Response.Ok(), AttachDeleted(rec, userPaths));
             }
             case ResourceType.Space:
@@ -1172,8 +1181,8 @@ public static class RequestHandler
                 if (existing is null)
                     return (Response.Ok(), AttachDeleted(rec, Array.Empty<string>()));
                 var spaceLocator = new Locator(ResourceType.Space, existing.SpaceName, existing.Subpath, existing.Shortname);
-                if (!await perms.CanDeleteAsync(actor, spaceLocator, PermissionService.FromSpace(existing), ct))
-                    return (Response.Fail(InternalErrorCode.NOT_ALLOWED, "not allowed to delete space", ErrorTypes.Request), rec);
+                if (await DenyDeleteAsync(spaceLocator, PermissionService.FromSpace(existing), "space") is { } denied)
+                    return denied;
                 await spaces.DeleteAsync(rec.Shortname, ct);
                 return (Response.Ok(), rec);
             }
@@ -1184,8 +1193,8 @@ public static class RequestHandler
                     return (Response.Fail(InternalErrorCode.OBJECT_NOT_FOUND,
                         $"group '{rec.Shortname}' not found", ErrorTypes.Request), rec);
                 var groupLocator = new Locator(ResourceType.Group, existing.SpaceName, existing.Subpath, existing.Shortname);
-                if (!await perms.CanDeleteAsync(actor, groupLocator, PermissionService.FromGroup(existing), ct))
-                    return (Response.Fail(InternalErrorCode.NOT_ALLOWED, "not allowed to delete group", ErrorTypes.Request), rec);
+                if (await DenyDeleteAsync(groupLocator, PermissionService.FromGroup(existing), "group") is { } denied)
+                    return denied;
                 await access.DeleteGroupAsync(rec.Shortname, ct);
                 return (Response.Ok(), rec);
             }
@@ -1198,10 +1207,9 @@ public static class RequestHandler
                     return (Response.Fail(InternalErrorCode.OBJECT_NOT_FOUND,
                         $"role '{rec.Shortname}' not found", ErrorTypes.Request), rec);
                 var roleLocator = new Locator(ResourceType.Role, existing.SpaceName, existing.Subpath, existing.Shortname);
-                if (!await perms.CanDeleteAsync(actor, roleLocator, PermissionService.FromRole(existing), ct))
-                    return (Response.Fail(InternalErrorCode.NOT_ALLOWED, "not allowed to delete role", ErrorTypes.Request), rec);
-                var deleted = await access.DeleteRoleAsync(rec.Shortname, ct);
-                return deleted
+                if (await DenyDeleteAsync(roleLocator, PermissionService.FromRole(existing), "role") is { } denied)
+                    return denied;
+                return await access.DeleteRoleAsync(rec.Shortname, ct)
                     ? (Response.Ok(), rec)
                     : (Response.Fail(InternalErrorCode.OBJECT_NOT_FOUND,
                         $"role '{rec.Shortname}' not found", ErrorTypes.Request), rec);
@@ -1213,10 +1221,9 @@ public static class RequestHandler
                     return (Response.Fail(InternalErrorCode.OBJECT_NOT_FOUND,
                         $"permission '{rec.Shortname}' not found", ErrorTypes.Request), rec);
                 var permLocator = new Locator(ResourceType.Permission, existing.SpaceName, existing.Subpath, existing.Shortname);
-                if (!await perms.CanDeleteAsync(actor, permLocator, PermissionService.FromPermission(existing), ct))
-                    return (Response.Fail(InternalErrorCode.NOT_ALLOWED, "not allowed to delete permission", ErrorTypes.Request), rec);
-                var deleted = await access.DeletePermissionAsync(rec.Shortname, ct);
-                return deleted
+                if (await DenyDeleteAsync(permLocator, PermissionService.FromPermission(existing), "permission") is { } denied)
+                    return denied;
+                return await access.DeletePermissionAsync(rec.Shortname, ct)
                     ? (Response.Ok(), rec)
                     : (Response.Fail(InternalErrorCode.OBJECT_NOT_FOUND,
                         $"permission '{rec.Shortname}' not found", ErrorTypes.Request), rec);
@@ -1231,18 +1238,19 @@ public static class RequestHandler
             case ResourceType.Alteration:
             case ResourceType.DataAsset:
             {
-                // Look up by (space, subpath, shortname) and delete by uuid
+                // Look up by (space, subpath, shortname) and delete by uuid.
                 var existing = await attachments.GetAsync(space, "/" + rec.Subpath.TrimStart('/'), rec.Shortname, ct);
                 if (existing is null) return (Response.Ok(), AttachDeleted(rec, Array.Empty<string>())); // already gone
                 var attLocator = new Locator(rec.ResourceType, space, existing.Subpath, existing.Shortname);
-                if (!await perms.CanDeleteAsync(actor, attLocator, ct))
-                    return (Response.Fail(InternalErrorCode.NOT_ALLOWED, "not allowed to delete attachment", ErrorTypes.Request), rec);
+                if (await DenyDeleteAsync(attLocator, null, "attachment") is { } denied)
+                    return denied;
                 if (Guid.TryParse(existing.Uuid, out var u))
                     await attachments.DeleteAsync(u, ct);
                 return (Response.Ok(), rec);
             }
             default:
             {
+                var locator = new Locator(rec.ResourceType, space, rec.Subpath, rec.Shortname);
                 var result = await entries.DeleteAsync(locator, actor, force, ct);
                 if (!result.IsOk)
                     return (Response.Fail(result.ErrorCode, result.ErrorMessage!, ErrorTypes.Request), rec);

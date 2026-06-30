@@ -407,10 +407,27 @@ public sealed class UserRepository(Db db, AuthzCacheRefresher refresher, Session
         return (bool)(await cmd.ExecuteScalarAsync(ct) ?? false);
     }
 
-    // Full cascade: delete everything the user owns, then the user, atomically.
-    // Spaces the user owns are wiped in full (all contained rows, regardless of
-    // who owns them). histories/locks for the user's entries in OTHER spaces are
-    // left (no users FK; not "records") — a known, harmless residue.
+    // The sentinel owner that inherits the user's STRUCTURAL objects (other users,
+    // roles, groups, permissions, spaces) on a force-delete instead of having them
+    // deleted. "anonymous" is the unauthenticated identity; bootstrap does NOT
+    // provision it, so the cascade upserts a minimal placeholder row before
+    // reassigning — owner_shortname on roles/groups/permissions/spaces is a
+    // deferrable FK → users(shortname), checked at COMMIT, so the target must exist
+    // by then. The placeholder has no password (login impossible) and no roles
+    // (grants nothing — world access still requires an operator-attached role, see
+    // PermissionService), so it is a pure ownership anchor that changes no behavior.
+    private const string FallbackOwner = "anonymous";
+
+    // Force-delete: reassign the user's STRUCTURAL objects, delete their DATA, then
+    // delete the user — all atomically.
+    //   * Reassigned to FallbackOwner (kept intact): other users, roles, groups,
+    //     permissions, and whole spaces they own (the space row's owner only — its
+    //     contents are untouched).
+    //   * Deleted: their entries + attachments, the histories/locks for those
+    //     entries (and any they authored), their sessions, and their resolved-
+    //     permissions cache.
+    // Returns the refs of the rows actually DELETED (entries + attachments);
+    // reassigned objects survive and are not reported.
     public async Task<List<DeletedRef>> ForceDeleteAsync(string shortname, CancellationToken ct = default)
     {
         var deleted = await db.ExecuteWithRetryOnDeadlockAsync(c => ForceDeleteOnceAsync(shortname, c), ct);
@@ -426,46 +443,100 @@ public sealed class UserRepository(Db db, AuthzCacheRefresher refresher, Session
         await using var conn = await db.OpenAsync(ct);
         await using var tx = await conn.BeginTransactionAsync(ct);
 
-        // spaces owned by the user → wiped in full.
-        var ownedSpaces = new List<string>();
-        await using (var cmd = new NpgsqlCommand("SELECT shortname FROM spaces WHERE owner_shortname = $1", conn, tx))
+        // 1. STRUCTURAL objects the user owns are REASSIGNED to FallbackOwner, not
+        //    deleted: other users, roles, groups, permissions, and whole spaces
+        //    (only the space row's owner changes — its contents stay put). Gated on
+        //    actually owning one, so force-deleting a user who owns nothing
+        //    structural never materialises the sentinel row.
+        var ownsStructural = false;
+        await using (var cmd = new NpgsqlCommand("""
+            SELECT EXISTS (SELECT 1 FROM spaces      WHERE owner_shortname = $1)
+                OR EXISTS (SELECT 1 FROM roles       WHERE owner_shortname = $1)
+                OR EXISTS (SELECT 1 FROM groups      WHERE owner_shortname = $1)
+                OR EXISTS (SELECT 1 FROM permissions WHERE owner_shortname = $1)
+                OR EXISTS (SELECT 1 FROM users       WHERE owner_shortname = $1 AND shortname <> $1)
+            """, conn, tx))
         {
             cmd.Parameters.Add(new() { Value = shortname });
-            await using var reader = await cmd.ExecuteReaderAsync(ct);
-            while (await reader.ReadAsync(ct)) ownedSpaces.Add(reader.GetString(0));
+            ownsStructural = (bool)(await cmd.ExecuteScalarAsync(ct) ?? false);
         }
 
-        if (ownedSpaces.Count > 0)
+        if (ownsStructural)
         {
-            var spacesArr = ownedSpaces.ToArray();
-            foreach (var sql in new[]
+            // Materialise the sentinel owner so the deferrable owner_shortname FK on
+            // roles/groups/permissions/spaces resolves at COMMIT. ON CONFLICT DO
+            // NOTHING never touches an existing (operator-configured) anonymous row.
+            // query_policies is NOT NULL and CHECK-constrained non-empty, so seed it
+            // with the freshly generated patterns for the sentinel's own row.
+            var anonPolicies = Utils.QueryPolicies.Generate(
+                "management", "/users", "user", isActive: true, FallbackOwner, null, null).ToArray();
+            await using (var cmd = new NpgsqlCommand("""
+                INSERT INTO users (uuid, shortname, space_name, subpath, owner_shortname, is_active, query_policies)
+                VALUES (gen_random_uuid(), $1, 'management', '/users', $1, true, $2)
+                ON CONFLICT (shortname) DO NOTHING
+                """, conn, tx))
             {
-                "DELETE FROM histories WHERE space_name = ANY($1)",
-                "DELETE FROM locks     WHERE space_name = ANY($1)",
-            })
-            {
-                await using var cmd = new NpgsqlCommand(sql, conn, tx);
-                cmd.Parameters.Add(new() { Value = spacesArr, NpgsqlDbType = NpgsqlDbType.Array | NpgsqlDbType.Text });
+                cmd.Parameters.Add(new() { Value = FallbackOwner });
+                cmd.Parameters.Add(new() { Value = anonPolicies, NpgsqlDbType = NpgsqlDbType.Array | NpgsqlDbType.Text });
                 await cmd.ExecuteNonQueryAsync(ct);
             }
-            await CollectAsync(conn, tx, deleted,
-                "DELETE FROM attachments WHERE space_name = ANY($1) RETURNING space_name, subpath, shortname", spacesArr, ct);
-            await CollectAsync(conn, tx, deleted,
-                "DELETE FROM entries     WHERE space_name = ANY($1) RETURNING space_name, subpath, shortname", spacesArr, ct);
-            await CollectAsync(conn, tx, deleted,
-                "DELETE FROM spaces      WHERE shortname  = ANY($1) RETURNING space_name, subpath, shortname", spacesArr, ct);
+
+            // Reassign every structural object the user owns to the sentinel. The
+            // users pass excludes the user being deleted (their own row is removed
+            // below). query_policies is regenerated for the new owner per row.
+            await ReassignOwnerAsync(conn, tx, "spaces",      "space",      shortname, excludeSelf: false, ct);
+            await ReassignOwnerAsync(conn, tx, "roles",       "role",       shortname, excludeSelf: false, ct);
+            await ReassignOwnerAsync(conn, tx, "groups",      "group",      shortname, excludeSelf: false, ct);
+            await ReassignOwnerAsync(conn, tx, "permissions", "permission", shortname, excludeSelf: false, ct);
+            await ReassignOwnerAsync(conn, tx, "users",       "user",       shortname, excludeSelf: true,  ct);
         }
 
-        // remaining rows the user owns (other spaces / management tables).
+        // 2. Clear the histories/locks for the user's own entries (about to be
+        //    deleted) and every history/lock the user authored (owner_shortname).
+        //    Runs BEFORE the entries delete below, while the matched entries still
+        //    exist. histories/locks have no FK to users — nothing cascades them.
+        foreach (var sql in new[]
+        {
+            """
+            DELETE FROM histories
+            WHERE owner_shortname = $1
+               OR (space_name, subpath, shortname) IN
+                  (SELECT space_name, subpath, shortname FROM entries WHERE owner_shortname = $1)
+            """,
+            """
+            DELETE FROM locks
+            WHERE owner_shortname = $1
+               OR (space_name, subpath, shortname) IN
+                  (SELECT space_name, subpath, shortname FROM entries WHERE owner_shortname = $1)
+            """,
+        })
+        {
+            await using var cmd = new NpgsqlCommand(sql, conn, tx);
+            cmd.Parameters.Add(new() { Value = shortname });
+            await cmd.ExecuteNonQueryAsync(ct);
+        }
+
+        // 3. DATA objects the user owns are DELETED: their attachments + entries.
         foreach (var sql in new[]
         {
             "DELETE FROM attachments WHERE owner_shortname = $1 RETURNING space_name, subpath, shortname",
             "DELETE FROM entries     WHERE owner_shortname = $1 RETURNING space_name, subpath, shortname",
-            "DELETE FROM roles       WHERE owner_shortname = $1 RETURNING space_name, subpath, shortname",
-            "DELETE FROM groups      WHERE owner_shortname = $1 RETURNING space_name, subpath, shortname",
-            "DELETE FROM permissions WHERE owner_shortname = $1 RETURNING space_name, subpath, shortname",
         })
             await CollectAsync(conn, tx, deleted, sql, shortname, ct);
+
+        // 4. Sessions and the resolved-permissions cache are keyed by the user, not
+        //    by owner_shortname, and have no FK — nothing cascades them. Clear both
+        //    so the deleted user leaves no live session or stale cached grant behind.
+        foreach (var sql in new[]
+        {
+            "DELETE FROM sessions             WHERE shortname = $1",
+            "DELETE FROM userpermissionscache WHERE user_shortname = $1",
+        })
+        {
+            await using var cmd = new NpgsqlCommand(sql, conn, tx);
+            cmd.Parameters.Add(new() { Value = shortname });
+            await cmd.ExecuteNonQueryAsync(ct);
+        }
 
         await using (var del = new NpgsqlCommand("DELETE FROM users WHERE shortname = $1", conn, tx))
         {
@@ -477,17 +548,50 @@ public sealed class UserRepository(Db db, AuthzCacheRefresher refresher, Session
         return deleted;
     }
 
+    // Reassign every row in `table` owned by `fromOwner` to FallbackOwner, within the
+    // caller's transaction. query_policies embeds the owner shortname, so it is
+    // regenerated for the new owner per row — otherwise a future user reusing
+    // `fromOwner`'s shortname would inherit ACL access to the reassigned rows.
+    [SuppressMessage("Security", "CA2100",
+        Justification = "Audited: `table` and `resourceType` are hardcoded constants supplied only by ForceDeleteOnceAsync (never user input); all user-supplied values bind through positional parameters.")]
+    private static async Task ReassignOwnerAsync(
+        NpgsqlConnection conn, NpgsqlTransaction tx, string table, string resourceType,
+        string fromOwner, bool excludeSelf, CancellationToken ct)
+    {
+        var rows = new List<(Guid Uuid, string Space, string Subpath, bool Active, string? OwnerGroup)>();
+        var selectSql =
+            $"SELECT uuid, space_name, subpath, is_active, owner_group_shortname FROM {table} WHERE owner_shortname = $1"
+            + (excludeSelf ? " AND shortname <> $1" : "");
+        await using (var sel = new NpgsqlCommand(selectSql, conn, tx))
+        {
+            sel.Parameters.Add(new() { Value = fromOwner });
+            await using var reader = await sel.ExecuteReaderAsync(ct);
+            while (await reader.ReadAsync(ct))
+                rows.Add((reader.GetGuid(0), reader.GetString(1), reader.GetString(2),
+                          reader.GetBoolean(3), reader.IsDBNull(4) ? null : reader.GetString(4)));
+        }
+
+        foreach (var row in rows)
+        {
+            var policies = Utils.QueryPolicies.Generate(
+                row.Space, row.Subpath, resourceType, row.Active, FallbackOwner, row.OwnerGroup, null).ToArray();
+            await using var upd = new NpgsqlCommand(
+                $"UPDATE {table} SET owner_shortname = $2, query_policies = $3 WHERE uuid = $1", conn, tx);
+            upd.Parameters.Add(new() { Value = row.Uuid });
+            upd.Parameters.Add(new() { Value = FallbackOwner });
+            upd.Parameters.Add(new() { Value = policies, NpgsqlDbType = NpgsqlDbType.Array | NpgsqlDbType.Text });
+            await upd.ExecuteNonQueryAsync(ct);
+        }
+    }
+
     [SuppressMessage("Security", "CA2100",
         Justification = "Audited: every sql is a const literal; user-supplied values bind only through positional $1.")]
     private static async Task CollectAsync(
         NpgsqlConnection conn, NpgsqlTransaction tx, List<DeletedRef> sink,
-        string sql, object param, CancellationToken ct)
+        string sql, string param, CancellationToken ct)
     {
         await using var cmd = new NpgsqlCommand(sql, conn, tx);
-        if (param is string[] arr)
-            cmd.Parameters.Add(new() { Value = arr, NpgsqlDbType = NpgsqlDbType.Array | NpgsqlDbType.Text });
-        else
-            cmd.Parameters.Add(new() { Value = param });
+        cmd.Parameters.Add(new() { Value = param });
         await using var reader = await cmd.ExecuteReaderAsync(ct);
         while (await reader.ReadAsync(ct))
             sink.Add(new DeletedRef(reader.GetString(0), reader.GetString(1), reader.GetString(2)));
