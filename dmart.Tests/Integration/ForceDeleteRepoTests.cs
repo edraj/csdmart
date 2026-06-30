@@ -484,4 +484,52 @@ public sealed class ForceDeleteRepoTests : IClassFixture<DmartFactory>
         (await entries.GetAsync("test", "/itest", sn, ResourceType.Content)).ShouldNotBeNull();
         await owner.Cleanup();
     }
+
+    // A dryrun must perform ZERO structural mutation: it must not reassign the user's
+    // owned objects to the "dmart" sentinel — the very operation that, on a real
+    // force-delete, materialises/touches that sentinel row. The real path is COUNT-only
+    // for a dryrun, so the sentinel branch never runs; this guards against a future
+    // change that lets a dryrun fall through to the mutating path. The role's owner
+    // staying the victim (NOT "dmart") is the observable proof the reassignment — and
+    // hence the sentinel materialisation — was skipped.
+    [FactIfPg]
+    public async Task ForceDelete_DryRun_Does_Not_Reassign_Structural_Owner_To_Sentinel()
+    {
+        var owner = await _factory.CreateLoggedInUserAsync();
+        var users = _factory.Services.GetRequiredService<UserRepository>();
+        var access = _factory.Services.GetRequiredService<AccessRepository>();
+        var roleName = "rdr_" + Guid.NewGuid().ToString("N")[..8];
+        // A structural object owned by the victim — a real force-delete would reassign
+        // its owner to "dmart"; a dryrun must leave it exactly as-is.
+        await access.UpsertRoleAsync(new Role
+        {
+            Uuid = Guid.NewGuid().ToString(),
+            Shortname = roleName, SpaceName = "management", Subpath = "/roles",
+            OwnerShortname = owner.Shortname, IsActive = true, Permissions = new(),
+            CreatedAt = DateTime.UtcNow, UpdatedAt = DateTime.UtcNow,
+        });
+        // An owned data entry so the projection still has something to count.
+        var sn = $"e{Guid.NewGuid():N}"[..12];
+        (await owner.Client.PostAsJsonAsync("/managed/request", new Request
+        {
+            RequestType = RequestType.Create, SpaceName = "test",
+            Records = new() { new Record { ResourceType = ResourceType.Content, Subpath = "/itest", Shortname = sn } },
+        }, DmartJsonContext.Default.Request)).EnsureSuccessStatusCode();
+        try
+        {
+            var report = await users.ForceDeleteAsync(owner.Shortname, dryRun: true);
+
+            report.Entries.ShouldBe(1);                                       // projection still works
+            (await users.GetByShortnameAsync(owner.Shortname)).ShouldNotBeNull(); // victim untouched
+
+            var role = await access.GetRoleAsync(roleName);
+            role.ShouldNotBeNull();                                           // role untouched
+            role!.OwnerShortname.ShouldBe(owner.Shortname);                   // NOT reassigned to "dmart"
+        }
+        finally
+        {
+            try { await access.DeleteRoleAsync(roleName); } catch { }
+            await owner.Cleanup();
+        }
+    }
 }
