@@ -478,9 +478,10 @@ public sealed class EntryRepository(Db db)
     // already catches attachments owned directly by the folder, and
     // `subpath LIKE folderPath || '/%'` catches everything deeper.
     //
-    // When dryRun is true, every DELETE still runs (so the affected-row counts are
-    // exact), but the transaction ROLLS BACK instead of committing — nothing is
-    // actually removed and the returned DeleteReport is a pure projection.
+    // When dryRun is true nothing is removed: each table's matching rows are COUNTed
+    // instead of deleted (count(*) over a predicate returns exactly what a DELETE over
+    // the same predicate would remove), so the DeleteReport is a pure, lock-free
+    // projection — no write locks, no transaction, nothing to roll back.
     public Task<DeleteReport> DeleteFolderTreeWithDependentsAsync(
         string spaceName, string parentSubpath, string folderShortname,
         bool dryRun = false, CancellationToken ct = default)
@@ -489,7 +490,7 @@ public sealed class EntryRepository(Db db)
             ct);
 
     [SuppressMessage("Security", "CA2100",
-        Justification = "Audited: SQL is `\"DELETE FROM <const-table> WHERE \" + const-where`; only positional $1-$4 placeholders bind caller-supplied values.")]
+        Justification = "Audited: SQL is `\"<verb> FROM <const-table> WHERE \" + const-where` where <verb> is a const literal (DELETE / SELECT count(*)); only positional $1-$4 placeholders bind caller-supplied values.")]
     private async Task<DeleteReport> DeleteFolderTreeWithDependentsOnceAsync(
         string spaceName, string parentSubpath, string folderShortname, bool dryRun, CancellationToken ct)
     {
@@ -498,7 +499,10 @@ public sealed class EntryRepository(Db db)
             : parentSubpath + "/" + folderShortname;
 
         await using var conn = await db.OpenAsync(ct);
-        await using var tx = await conn.BeginTransactionAsync(ct);
+        // A real delete runs every DELETE in one transaction so a partial failure rolls
+        // back instead of leaving the DB half-deleted. A dryRun only COUNTs, so it takes
+        // no write locks and needs no transaction.
+        await using var tx = dryRun ? null : await conn.BeginTransactionAsync(ct);
 
         // histories / locks: subpath/shortname identify the entry the row is
         // about. Three predicates: (folder's own row) ∪ (direct children at
@@ -509,57 +513,55 @@ public sealed class EntryRepository(Db db)
                 OR  subpath = $4
                 OR  subpath LIKE $4 || '/%')
             """;
-
-        async Task<long> RunSubtreeAsync(string sql)
-        {
-            await using var cmd = new NpgsqlCommand(sql, conn, tx);
-            cmd.Parameters.Add(new() { Value = spaceName });
-            cmd.Parameters.Add(new() { Value = parentSubpath });
-            cmd.Parameters.Add(new() { Value = folderShortname });
-            cmd.Parameters.Add(new() { Value = folderPath });
-            return await cmd.ExecuteNonQueryAsync(ct);
-        }
-
-        var histories = await RunSubtreeAsync($"DELETE FROM histories WHERE {subtreeWithFolderRow}");
-        var locks = await RunSubtreeAsync($"DELETE FROM locks     WHERE {subtreeWithFolderRow}");
-
-        // attachments: subpath includes the owner's shortname, so the folder's
-        // own attachments live at subpath = folderPath. No extra clause needed.
-        long attachments;
-        await using (var cmd = new NpgsqlCommand("""
-            DELETE FROM attachments
-            WHERE space_name = $1
-              AND (subpath = $2 OR subpath LIKE $2 || '/%')
-            """, conn, tx))
-        {
-            cmd.Parameters.Add(new() { Value = spaceName });
-            cmd.Parameters.Add(new() { Value = folderPath });
-            attachments = await cmd.ExecuteNonQueryAsync(ct);
-        }
-
-        // entries: explicit `resource_type = 'folder'` guard on the folder
-        // row protects against an unlikely-but-defensive case where a
-        // non-folder entry happens to share (subpath, shortname) with the
-        // folder we're deleting (e.g. a content entry called "widgets" in
-        // the same parent as the folder "widgets").
-        long entries;
-        await using (var cmd = new NpgsqlCommand("""
-            DELETE FROM entries
-            WHERE space_name = $1
+        // entries: explicit `resource_type = 'folder'` guard on the folder row
+        // protects against an unlikely-but-defensive case where a non-folder entry
+        // happens to share (subpath, shortname) with the folder we're deleting
+        // (e.g. a content entry called "widgets" beside the folder "widgets").
+        const string entriesPredicate = """
+            space_name = $1
               AND ((subpath = $2 AND shortname = $3 AND resource_type = 'folder')
                 OR  subpath = $4
                 OR  subpath LIKE $4 || '/%')
-            """, conn, tx))
+            """;
+        // attachments: subpath includes the owner's shortname, so the folder's own
+        // attachments live at subpath = folderPath. No extra clause needed.
+        const string attachmentsPredicate = """
+            space_name = $1
+              AND (subpath = $2 OR subpath LIKE $2 || '/%')
+            """;
+
+        // COUNT (dryRun) or DELETE the rows matching `where`, returning the affected /
+        // matching row count. `bind` supplies the positional parameters for `where`.
+        async Task<long> RunAsync(string table, string where, Action<NpgsqlCommand> bind)
+        {
+            var sql = dryRun
+                ? $"SELECT count(*) FROM {table} WHERE {where}"
+                : $"DELETE FROM {table} WHERE {where}";
+            await using var cmd = new NpgsqlCommand(sql, conn, tx);
+            bind(cmd);
+            return dryRun
+                ? (long)(await cmd.ExecuteScalarAsync(ct) ?? 0L)
+                : await cmd.ExecuteNonQueryAsync(ct);
+        }
+
+        void BindSubtree(NpgsqlCommand cmd)
         {
             cmd.Parameters.Add(new() { Value = spaceName });
             cmd.Parameters.Add(new() { Value = parentSubpath });
             cmd.Parameters.Add(new() { Value = folderShortname });
             cmd.Parameters.Add(new() { Value = folderPath });
-            entries = await cmd.ExecuteNonQueryAsync(ct);
         }
 
-        if (dryRun) await tx.RollbackAsync(ct);
-        else await tx.CommitAsync(ct);
+        var histories   = await RunAsync("histories",   subtreeWithFolderRow, BindSubtree);
+        var locks       = await RunAsync("locks",        subtreeWithFolderRow, BindSubtree);
+        var attachments = await RunAsync("attachments",  attachmentsPredicate, cmd =>
+        {
+            cmd.Parameters.Add(new() { Value = spaceName });
+            cmd.Parameters.Add(new() { Value = folderPath });
+        });
+        var entries     = await RunAsync("entries",      entriesPredicate, BindSubtree);
+
+        if (tx is not null) await tx.CommitAsync(ct);
         return new DeleteReport(entries, attachments, histories, locks);
     }
 

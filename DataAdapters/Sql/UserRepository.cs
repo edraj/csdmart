@@ -434,9 +434,9 @@ public sealed class UserRepository(Db db, AuthzCacheRefresher refresher, Session
     //     permissions cache.
     // Returns the refs of the rows actually DELETED (entries + attachments);
     // reassigned objects survive and are not reported.
-    // dryRun runs the full cascade (so the counts are exact) then ROLLS BACK: nothing
-    // is removed or reassigned and the returned DeleteReport is a pure projection of
-    // what a real force-delete would wipe.
+    // dryRun is a pure projection: it COUNTs the DATA rows a real force-delete would
+    // remove (count(*) over a predicate equals what a DELETE over it removes) without
+    // taking write locks, materialising the sentinel owner, or reassigning anything.
     public async Task<DeleteReport> ForceDeleteAsync(string shortname, bool dryRun = false, CancellationToken ct = default)
     {
         var report = await db.ExecuteWithRetryOnDeadlockAsync(c => ForceDeleteOnceAsync(shortname, dryRun, c), ct);
@@ -449,6 +449,39 @@ public sealed class UserRepository(Db db, AuthzCacheRefresher refresher, Session
     private async Task<DeleteReport> ForceDeleteOnceAsync(string shortname, bool dryRun, CancellationToken ct)
     {
         await using var conn = await db.OpenAsync(ct);
+
+        // A dryRun is a pure projection: COUNT the DATA rows a real force-delete would
+        // remove (entries + attachments the user owns, plus the histories/locks for
+        // those entries and any they authored) without taking write locks, opening a
+        // transaction, materialising the sentinel owner, or reassigning anything. The
+        // history/lock subquery still sees the entries because nothing is deleted, so
+        // the projected counts match the real cascade exactly.
+        if (dryRun)
+        {
+            async Task<long> CountAsync(string sql)
+            {
+                await using var cmd = new NpgsqlCommand(sql, conn);
+                cmd.Parameters.Add(new() { Value = shortname });
+                return (long)(await cmd.ExecuteScalarAsync(ct) ?? 0L);
+            }
+
+            var hProj = await CountAsync("""
+                SELECT count(*) FROM histories
+                WHERE owner_shortname = $1
+                   OR (space_name, subpath, shortname) IN
+                      (SELECT space_name, subpath, shortname FROM entries WHERE owner_shortname = $1)
+                """);
+            var lProj = await CountAsync("""
+                SELECT count(*) FROM locks
+                WHERE owner_shortname = $1
+                   OR (space_name, subpath, shortname) IN
+                      (SELECT space_name, subpath, shortname FROM entries WHERE owner_shortname = $1)
+                """);
+            var aProj = await CountAsync("SELECT count(*) FROM attachments WHERE owner_shortname = $1");
+            var eProj = await CountAsync("SELECT count(*) FROM entries     WHERE owner_shortname = $1");
+            return new DeleteReport(eProj, aProj, hProj, lProj);
+        }
+
         await using var tx = await conn.BeginTransactionAsync(ct);
 
         // 1. STRUCTURAL objects the user owns are REASSIGNED to FallbackOwner, not
@@ -547,8 +580,7 @@ public sealed class UserRepository(Db db, AuthzCacheRefresher refresher, Session
             await del.ExecuteNonQueryAsync(ct);
         }
 
-        if (dryRun) await tx.RollbackAsync(ct);
-        else await tx.CommitAsync(ct);
+        await tx.CommitAsync(ct);
         // The report covers the user's cascaded DATA (entries + attachments) and the
         // history/lock rows cleared with them; the user's own row, sessions and cache
         // are bookkeeping, not entries, so they don't count toward `affected`.
