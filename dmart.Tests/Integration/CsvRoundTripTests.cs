@@ -419,6 +419,53 @@ public class CsvRoundTripTests : IClassFixture<DmartFactory>
         }
     }
 
+    // A row that fails schema validation must not just echo the raw validation
+    // message — the failed entry also names the offending `key` (the field the
+    // schema flagged, as a JSON Pointer) and the `value` from that CSV cell, so an
+    // operator can pinpoint the bad column without parsing the pointer out of the
+    // message string.
+    [FactIfPg]
+    public async Task Csv_Import_SchemaValidationFailure_Reports_Key_And_Value_In_Failed_List()
+    {
+        const string space = "itest_csv_schema_kv";
+        var (client, _, _, _) = await _factory.CreateLoggedInUserAsync();
+
+        try
+        {
+            await CleanupAsync(client, space);
+            await SeedSpaceAsync(client, space);
+            // Restrictive schema: is_used is constrained to an enum.
+            await UploadSchemaAsync(client,
+                shortname: "strict",
+                schemaJson: """{"title":"strict","type":"object","additionalProperties":true,"properties":{"is_used":{"enum":["yes","no"]}}}""",
+                space: space);
+
+            // is_used="maybe" is outside the enum → the row lands in `failed`.
+            var csv = "shortname,is_used\r\n11DE4,maybe\r\n";
+            var importResp = await UploadCsvAsync(client,
+                resourceType: "content", space: space, subpath: "items", schema: "strict",
+                csvBytes: Encoding.UTF8.GetBytes(csv));
+
+            importResp.Status.ShouldBe(Status.Success);
+            ExtractInt(importResp.Attributes!["inserted"]).ShouldBe(0);
+            ExtractInt(importResp.Attributes!["failed_count"]).ShouldBe(1);
+
+            var failedEl = (JsonElement)importResp.Attributes!["failed"];
+            failedEl.GetArrayLength().ShouldBe(1);
+            var row0 = failedEl[0];
+            row0.GetProperty("shortname").GetString().ShouldBe("11DE4");
+            row0.GetProperty("error").GetString().ShouldContain("schema validation");
+            // The enum failure is on /is_used; key drops the pointer slash, value
+            // echoes the offending cell.
+            row0.GetProperty("key").GetString().ShouldBe("is_used");
+            row0.GetProperty("value").GetString().ShouldBe("maybe");
+        }
+        finally
+        {
+            await CleanupAsync(client, space);
+        }
+    }
+
     // ---------------- helpers ----------------
 
     // Sets up space + items folder + schema folder + a permissive `goods` schema
