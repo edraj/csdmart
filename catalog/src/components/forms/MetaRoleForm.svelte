@@ -7,9 +7,11 @@
   let {
     formData = $bindable(),
     validateFn = $bindable(),
+    fullWidth = false,
   }: {
     formData: any;
     validateFn: () => boolean;
+    fullWidth?: boolean;
   } = $props();
 
   let availablePermissions = writable<any[]>([]);
@@ -107,7 +109,7 @@
   });
 </script>
 
-<div class="card">
+<div class={fullWidth ? "card card-full" : "card"}>
   <h2 class="card-title">{$_("rolePermissions")}</h2>
 
   <div class="form-group">
@@ -121,7 +123,7 @@
         <div class="skeleton-line"></div>
       </div>
     {:else}
-      <div bind:this={dropdownWrapperRef}>
+      <div class="dropdown-wrapper" bind:this={dropdownWrapperRef}>
         <div class="search-container">
           <div class="search-input-wrapper">
             <div class="search-icon">
@@ -213,6 +215,18 @@
     margin-right: auto;
   }
 
+  /* Flattened variant for embedding inside a modal section (full width, no card chrome). */
+  .card-full {
+    max-width: 100%;
+    width: 100%;
+    margin: 0;
+    padding: 0;
+    border: none;
+    box-shadow: none;
+    background: transparent;
+    border-radius: 0;
+  }
+
   .card-title {
     font-size: 24px;
     font-weight: 700;
@@ -294,8 +308,15 @@
     box-shadow: 0 0 0 2px rgba(99, 102, 241, 0.2);
   }
 
+  /* Anchors the absolutely-positioned dropdown to the input width, not the viewport. */
+  .dropdown-wrapper {
+    position: relative;
+  }
+
   .dropdown {
     position: absolute;
+    left: 0;
+    right: 0;
     width: 100%;
     margin-top: 4px;
     background: white;

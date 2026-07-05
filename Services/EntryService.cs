@@ -103,9 +103,11 @@ public sealed class EntryService(
 
         // dmart's schema validation: if the payload references a schema_shortname,
         // load the schema entry from the same space and validate the body against it.
-        var validationError = await ValidatePayloadAsync(entry, ct);
-        if (validationError is not null)
-            return Result<Entry>.Fail(InternalErrorCode.INVALID_DATA, validationError, ErrorTypes.Request);
+        var schemaErrors = await ValidatePayloadAsync(entry, ct);
+        if (schemaErrors is not null)
+            return Result<Entry>.Fail(InternalErrorCode.INVALID_DATA,
+                SchemaValidator.FormatMessage(schemaErrors), ErrorTypes.Request,
+                SchemaValidator.ToInfo(schemaErrors));
 
         // Referential integrity: every relationship's related_to locator must
         // resolve to a live entry before we persist this row. Without this gate
@@ -191,8 +193,10 @@ public sealed class EntryService(
 
     // Delegates to the shared SchemaValidator gate so entry-type and non-entry
     // (User/Role/Group/Permission/Space) writes validate payloads identically.
-    private Task<string?> ValidatePayloadAsync(Entry entry, CancellationToken ct)
-        => schemas.ValidatePayloadAsync(entry.SpaceName, entry.ResourceType, entry.Payload, ct);
+    // Structured form: the gates format the wire message AND attach the
+    // per-field detail as Result.Info (see SchemaValidator.ToInfo).
+    private Task<List<SchemaError>?> ValidatePayloadAsync(Entry entry, CancellationToken ct)
+        => schemas.ValidatePayloadDetailedAsync(entry.SpaceName, entry.ResourceType, entry.Payload, ct);
 
     // Walks the relationships list and verifies each related_to locator
     // resolves to a row in `entries`. Returns null on success, a single-line
@@ -392,9 +396,11 @@ public sealed class EntryService(
         var merged = ApplyPatch(existing, patch, allowedRestrictedFields);
 
         // Validate the MERGED entry (not the old one) so patches can't bypass schema rules.
-        var validationError = await ValidatePayloadAsync(merged, ct);
-        if (validationError is not null)
-            return Result<Entry>.Fail(InternalErrorCode.INVALID_DATA, validationError, ErrorTypes.Request);
+        var schemaErrors = await ValidatePayloadAsync(merged, ct);
+        if (schemaErrors is not null)
+            return Result<Entry>.Fail(InternalErrorCode.INVALID_DATA,
+                SchemaValidator.FormatMessage(schemaErrors), ErrorTypes.Request,
+                SchemaValidator.ToInfo(schemaErrors));
 
         // Same RI gate as Create, but scoped to relationships the patch
         // ADDS — refs that already existed pre-patch get a pass even if
@@ -460,7 +466,12 @@ public sealed class EntryService(
         return Result<Entry>.Ok(merged);
     }
 
-    public async Task<Result<bool>> DeleteAsync(Locator locator, string? actor, CancellationToken ct = default)
+    // Returns the per-category blast radius (DeleteReport). When dryRun is true nothing
+    // is removed: the folder/single-entry paths project what WOULD be removed (ignoring
+    // `force`) and plugin hooks are skipped — only the permission and referential-
+    // integrity gates still apply.
+    public async Task<Result<DeleteReport>> DeleteAsync(
+        Locator locator, string? actor, bool force = false, bool dryRun = false, CancellationToken ct = default)
     {
         // Load first so the permission check sees owner/is_active/acl for conditions.
         // If the entry is missing we still report a forbidden-style result via OK(false)
@@ -470,7 +481,7 @@ public sealed class EntryService(
         var existing = await entries.GetAsync(locator.SpaceName, locator.Subpath, locator.Shortname, locator.Type, ct);
         var ctx = existing is not null ? PermissionService.FromEntry(existing) : null;
         if (!await perms.CanDeleteAsync(actor, locator, ctx, ct))
-            return Result<bool>.Fail(InternalErrorCode.NOT_ALLOWED, "no delete access", ErrorTypes.Auth);
+            return Result<DeleteReport>.Fail(InternalErrorCode.NOT_ALLOWED, "no delete access", ErrorTypes.Auth);
 
         // Same lock gate as UpdateAsync — a lock held by another user blocks the
         // delete. Checked after the permission gate (see LockBlockAsync).
@@ -493,7 +504,7 @@ public sealed class EntryService(
                 excludeSpace: locator.SpaceName, excludeSubpath: locator.Subpath,
                 excludeShortname: locator.Shortname, ct);
             if (referencer is { } r)
-                return Result<bool>.Fail(InternalErrorCode.CANNT_DELETE,
+                return Result<DeleteReport>.Fail(InternalErrorCode.CANNT_DELETE,
                     $"entry has incoming relationships from {r.SpaceName}{r.Subpath}/{r.Shortname}",
                     ErrorTypes.Request);
         }
@@ -512,12 +523,17 @@ public sealed class EntryService(
                 UserShortname = actor ?? "anonymous",
             };
 
-        try { await plugins.BeforeActionAsync(deleteEvent, ct); }
-        catch (Exception ex)
+        // A real delete fires the before-hook (a plugin may veto). A dryrun is a pure
+        // read-only projection, so plugin hooks are skipped entirely.
+        if (!dryRun)
         {
-            log.LogWarning(ex, "before-delete plugin hook rejected {Space}/{Subpath}/{Shortname}",
-                locator.SpaceName, locator.Subpath, locator.Shortname);
-            return Result<bool>.Fail(InternalErrorCode.INVALID_DATA, "plugin rejected delete", ErrorTypes.Request);
+            try { await plugins.BeforeActionAsync(deleteEvent, ct); }
+            catch (Exception ex)
+            {
+                log.LogWarning(ex, "before-delete plugin hook rejected {Space}/{Subpath}/{Shortname}",
+                    locator.SpaceName, locator.Subpath, locator.Shortname);
+                return Result<DeleteReport>.Fail(InternalErrorCode.INVALID_DATA, "plugin rejected delete", ErrorTypes.Request);
+            }
         }
 
         // Python parity: deleting a folder cascades — the folder row plus
@@ -526,38 +542,54 @@ public sealed class EntryService(
         // EntryRepository.DeleteFolderTreeWithDependentsAsync runs all five
         // DELETEs in one transaction so a partial failure rolls back instead
         // of leaving the DB half-deleted.
-        bool ok;
+        DeleteReport report;
         if (locator.Type == ResourceType.Folder)
         {
-            var deletedRows = await entries.DeleteFolderTreeWithDependentsAsync(
-                locator.SpaceName, locator.Subpath, locator.Shortname, ct);
-            ok = deletedRows > 0;
+            // A dryrun ignores `force` and projects the full subtree; a real delete
+            // still refuses a non-empty folder unless force was passed.
+            if (!force && !dryRun)
+            {
+                var folderFullPath = locator.Subpath == "/"
+                    ? "/" + locator.Shortname
+                    : locator.Subpath + "/" + locator.Shortname;
+                var childCount = await entries.CountAsync(locator.SpaceName, folderFullPath, ct);
+                if (childCount > 0)
+                    return Result<DeleteReport>.Fail(InternalErrorCode.CANNT_DELETE,
+                        $"folder '{locator.Shortname}' is not empty ({childCount} entries); pass force=true to delete it and its contents",
+                        ErrorTypes.Request);
+            }
+            report = await entries.DeleteFolderTreeWithDependentsAsync(
+                locator.SpaceName, locator.Subpath, locator.Shortname, dryRun, ct);
         }
         else
         {
-            ok = await entries.DeleteAsync(locator.SpaceName, locator.Subpath, locator.Shortname, locator.Type, ct);
-            if (ok)
+            var entryPath = locator.Subpath == "/"
+                ? "/" + locator.Shortname
+                : locator.Subpath + "/" + locator.Shortname;
+            if (dryRun)
             {
-                // A non-folder entry's attachments live at "{entry.subpath}/{entry.shortname}".
-                // Match Python adapter.py:2769-2775.
-                var entryPath = locator.Subpath == "/"
-                    ? "/" + locator.Shortname
-                    : locator.Subpath + "/" + locator.Shortname;
-                await attachments.DeleteUnderSubpathAsync(locator.SpaceName, entryPath, ct);
+                // Project without mutating: the entry counts as 1 if it exists, plus its
+                // attachments. A single-entry delete doesn't touch histories/locks.
+                var attCount = await attachments.CountUnderSubpathAsync(locator.SpaceName, entryPath, ct);
+                report = new DeleteReport(existing is not null ? 1 : 0, attCount, 0, 0);
+            }
+            else
+            {
+                var removed = await entries.DeleteAsync(locator.SpaceName, locator.Subpath, locator.Shortname, locator.Type, ct);
+                long attCount = removed
+                    ? await attachments.DeleteUnderSubpathAsync(locator.SpaceName, entryPath, ct)
+                    : 0;
+                report = new DeleteReport(removed ? 1 : 0, attCount, 0, 0);
             }
         }
+        var ok = report.Total > 0;
 
-        if (ok)
+        if (ok && !dryRun)
         {
-            // Schema entry removed → drop any compiled instance from the in-memory cache.
             if (locator.Type == ResourceType.Schema) schemas.ClearCache();
-            // Python doesn't write a history row on delete — the entry (and
-            // its per-entry history) is gone by this point anyway. Keeping
-            // parity here avoids `/managed/query?type=history` returning
-            // rows whose diff isn't the standard `{field: {old, new}}` shape.
             await plugins.AfterActionAsync(deleteEvent, ct);
         }
-        return Result<bool>.Ok(ok);
+        return Result<DeleteReport>.Ok(report);
     }
 
     public async Task<Result<Entry>> MoveAsync(Locator from, Locator to, string? actor, CancellationToken ct = default)

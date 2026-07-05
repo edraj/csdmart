@@ -9,7 +9,7 @@
     itemName?: string;
     itemType?: string;
     isDeleting?: boolean;
-    onConfirm?: () => void;
+    onConfirm?: (force: boolean) => void;
     onCancel?: () => void;
   }
 
@@ -23,8 +23,15 @@
     onCancel = () => {},
   }: Props = $props();
 
+  let forceDelete = $state(false);
+  const showForce = $derived(itemType === "folder" || itemType === "user");
+  // Reset the opt-in each time the dialog opens.
+  $effect(() => {
+    if (open) forceDelete = false;
+  });
+
   function handleConfirm() {
-    onConfirm();
+    onConfirm(showForce && forceDelete);
   }
 
   function handleCancel() {
@@ -98,6 +105,16 @@
           </span>
         {/if}
       </div>
+
+      {#if showForce}
+        <label class="flex items-start gap-2 rounded-xl border border-amber-200 bg-amber-50 px-4 py-3 text-sm cursor-pointer">
+          <input type="checkbox" bind:checked={forceDelete} disabled={isDeleting} class="mt-0.5" />
+          <span>
+            <span class="font-semibold text-amber-800">{$_("force_delete")}</span>
+            <span class="block text-amber-700">{$_("force_delete_help")}</span>
+          </span>
+        </label>
+      {/if}
     </div>
 
     {#snippet footer()}

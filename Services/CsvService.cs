@@ -153,13 +153,7 @@ public sealed class CsvService(QueryService queries, EntryService entries)
                 var updateResult = await entries.UpdateAsync(locator, patchAttrs, actor, ct,
                     isBulkImport: true);
                 if (updateResult.IsOk) inserted++;
-                else failed.Add(new()
-                {
-                    ["row"] = rowNumber,
-                    ["shortname"] = shortname,
-                    ["error"] = updateResult.ErrorMessage ?? "unknown",
-                    ["code"] = updateResult.ErrorCode,
-                });
+                else failed.Add(BuildFailure(rowNumber, shortname, updateResult.ErrorMessage, updateResult.ErrorCode, updateResult.Info));
                 continue;
             }
 
@@ -188,13 +182,7 @@ public sealed class CsvService(QueryService queries, EntryService entries)
             // still fire because they ignore the flag.
             var result = await entries.CreateAsync(entry, actor, rawAttrs: null, isBulkImport: true, ct);
             if (result.IsOk) inserted++;
-            else failed.Add(new()
-            {
-                ["row"] = rowNumber,
-                ["shortname"] = shortname,
-                ["error"] = result.ErrorMessage ?? "unknown",
-                ["code"] = result.ErrorCode,
-            });
+            else failed.Add(BuildFailure(rowNumber, shortname, result.ErrorMessage, result.ErrorCode, result.Info));
         }
 
         return Response.Ok(attributes: new()
@@ -206,6 +194,35 @@ public sealed class CsvService(QueryService queries, EntryService entries)
     }
 
     // ----- helpers -----
+
+    // Build the per-row entry for the import's `failed` list. Beyond the base
+    // (row, shortname, error, code) it enriches schema-validation failures —
+    // whose Result.Info carries one structured entry per failing constraint
+    // (see SchemaValidator.ToInfo) — with the first FIELD-level error's `key`
+    // (dot-joined path, matching export's FlattenInto column convention) and
+    // `value`. Root-level errors (e.g. `required`) carry no key and are passed
+    // over in favor of the first named field. The value comes from the document
+    // the validator actually rejected — for updates that's the MERGED body, so
+    // an operator sees the failing value even when it isn't in their CSV.
+    private static Dictionary<string, object> BuildFailure(
+        int row, string shortname, string? error, int code, List<Dictionary<string, object>>? info)
+    {
+        var failure = new Dictionary<string, object>
+        {
+            ["row"] = row,
+            ["shortname"] = shortname,
+            ["error"] = error ?? "unknown",
+            ["code"] = code,
+        };
+        var fieldError = info?.FirstOrDefault(e => e.ContainsKey("key"));
+        if (fieldError is not null)
+        {
+            failure["key"] = fieldError["key"];
+            if (fieldError.TryGetValue("value", out var value))
+                failure["value"] = value;
+        }
+        return failure;
+    }
 
     private static void FlattenInto(Dictionary<string, object> source, string prefix, Dictionary<string, string> dest)
     {

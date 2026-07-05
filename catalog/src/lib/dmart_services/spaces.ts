@@ -493,14 +493,10 @@ async function ensureEntryExists(
  */
 export async function checkApplicationsFolders(
     scope: DmartScope = DmartScope.managed
-): Promise<{ exists: boolean; missing: string[]; missingWorkflow?: boolean; missingReportSchema?: boolean; missingWorkflowSchema?: boolean; missingMetaSchema?: boolean; missingTemplatesSchema?: boolean; error?: string }> {
-    const requiredFolders = ["reports", "polls", "surveys", "workflows", "schema"];
+): Promise<{ exists: boolean; missing: string[]; missingWorkflowSchema?: boolean; error?: string }> {
+    const requiredFolders = ["workflows", "schema"];
     const missing: string[] = [];
-    let missingWorkflow = false;
-    let missingReportSchema = false;
     let missingWorkflowSchema = false;
-    let missingMetaSchema = false;
-    let missingTemplatesSchema = false;
 
     try {
         for (const folder of requiredFolders) {
@@ -517,77 +513,17 @@ export async function checkApplicationsFolders(
                     },
                     scope
                 );
-                // Folder exists
             } catch (error: any) {
-                // If we get a 403 or permission error, we ignore it
                 if (error?.status === 403 || error?.message?.includes("permission")) {
                     return { exists: true, missing: [], error: "permission_denied" };
                 }
-                // Only mark as missing if it's a "not found" error
                 if (isNotFoundError(error)) {
                     missing.push(folder);
                 }
             }
         }
 
-        // Check if report_workflow exists in workflows folder
-        if (!missing.includes("workflows")) {
-            try {
-                await Dmart.retrieveEntry(
-                    {
-                        validate_schema: false,
-                        resource_type: ResourceType.content,
-                        space_name: APPLICATIONS_SPACE,
-                        subpath: "/workflows",
-                        shortname: "report_workflow",
-                        retrieve_json_payload: false,
-                        retrieve_attachments: false,
-                    },
-                    scope
-                );
-                // Workflow exists
-            } catch (error: any) {
-                // If permission error, ignore
-                if (error?.status === 403 || error?.message?.includes("permission")) {
-                    missingWorkflow = false;
-                } else if (isNotFoundError(error)) {
-                    missingWorkflow = true;
-                }
-                // Other errors don't mark as missing (assume exists to avoid unnecessary creation)
-            }
-        } else {
-            // If workflows folder is missing, workflow is also missing
-            missingWorkflow = true;
-        }
-
-        // Check if schemas exist in schema folder
         if (!missing.includes("schema")) {
-            // Check report schema
-            try {
-                await Dmart.retrieveEntry(
-                    {
-                        validate_schema: false,
-                        resource_type: ResourceType.schema,
-                        space_name: APPLICATIONS_SPACE,
-                        subpath: "/schema",
-                        shortname: "report",
-                        retrieve_json_payload: false,
-                        retrieve_attachments: false,
-                    },
-                    scope
-                );
-                // Report schema exists
-            } catch (error: any) {
-                // If permission error, ignore
-                if (error?.status === 403 || error?.message?.includes("permission")) {
-                    missingReportSchema = false;
-                } else if (isNotFoundError(error)) {
-                    missingReportSchema = true;
-                }
-                // Other errors don't mark as missing
-            }
-
-            // Check workflow schema
             try {
                 await Dmart.retrieveEntry(
                     {
@@ -601,91 +537,29 @@ export async function checkApplicationsFolders(
                     },
                     scope
                 );
-                // Workflow schema exists
             } catch (error: any) {
-                // If permission error, ignore
                 if (error?.status === 403 || error?.message?.includes("permission")) {
                     missingWorkflowSchema = false;
                 } else if (isNotFoundError(error)) {
                     missingWorkflowSchema = true;
                 }
-                // Other errors don't mark as missing
-            }
-
-            // Check meta_schema (the schema used for template entries)
-            try {
-                await Dmart.retrieveEntry(
-                    {
-                        validate_schema: false,
-                        resource_type: ResourceType.schema,
-                        space_name: APPLICATIONS_SPACE,
-                        subpath: "/schema",
-                        shortname: "meta_schema",
-                        retrieve_json_payload: false,
-                        retrieve_attachments: false,
-                    },
-                    scope
-                );
-                // Meta schema exists
-            } catch (error: any) {
-                // If permission error, ignore
-                if (error?.status === 403 || error?.message?.includes("permission")) {
-                    missingMetaSchema = false;
-                } else if (isNotFoundError(error)) {
-                    missingMetaSchema = true;
-                }
-                // Other errors don't mark as missing
-            }
-
-            // Check templates schema (the schema used for template definitions)
-            try {
-                await Dmart.retrieveEntry(
-                    {
-                        validate_schema: false,
-                        resource_type: ResourceType.schema,
-                        space_name: APPLICATIONS_SPACE,
-                        subpath: "/schema",
-                        shortname: "templates",
-                        retrieve_json_payload: false,
-                        retrieve_attachments: false,
-                    },
-                    scope
-                );
-                // Templates schema exists
-            } catch (error: any) {
-                // If permission error, ignore
-                if (error?.status === 403 || error?.message?.includes("permission")) {
-                    missingTemplatesSchema = false;
-                } else if (isNotFoundError(error)) {
-                    missingTemplatesSchema = true;
-                }
-                // Other errors don't mark as missing
             }
         } else {
-            // If schema folder is missing, schemas are also missing
-            missingReportSchema = true;
             missingWorkflowSchema = true;
-            missingMetaSchema = true;
-            missingTemplatesSchema = true;
         }
 
         const result = { 
-            exists: missing.length === 0 && !missingWorkflow && !missingReportSchema && !missingWorkflowSchema && !missingMetaSchema && !missingTemplatesSchema, 
+            exists: missing.length === 0 && !missingWorkflowSchema, 
             missing, 
-            missingWorkflow, 
-            missingReportSchema,
-            missingWorkflowSchema,
-            missingMetaSchema,
-            missingTemplatesSchema
+            missingWorkflowSchema
         };
         log.debug("checkApplicationsFolders result:", result);
         return result;
     } catch (error: any) {
-        // If we get a 403 or permission error, we ignore it
         if (error?.status === 403 || error?.message?.includes("permission")) {
             return { exists: true, missing: [], error: "permission_denied" };
         }
-        return { exists: false, missing: requiredFolders, missingWorkflow: true, missingReportSchema: true, missingWorkflowSchema: true, missingMetaSchema: true, missingTemplatesSchema: true, error: error?.message };
+        return { exists: false, missing: requiredFolders, missingWorkflowSchema: true, error: error?.message };
     }
 }
 
@@ -755,34 +629,11 @@ export async function createApplicationsFolders(
 ): Promise<{ 
     success: boolean; 
     created: string[]; 
-    failed: string[]; 
-    workflowCreated?: boolean; 
-    workflowFailed?: boolean; 
-    reportSchemaCreated?: boolean; 
-    reportSchemaFailed?: boolean;
+    failed: string[];
     workflowSchemaCreated?: boolean;
     workflowSchemaFailed?: boolean;
-    metaSchemaCreated?: boolean;
-    metaSchemaFailed?: boolean;
-    templatesSchemaCreated?: boolean;
-    templatesSchemaFailed?: boolean;
 }> {
     const foldersToCreate = [
-        {
-            shortname: "reports",
-            displayname: { en: "Reports", ar: "التقارير", ku: "" },
-            description: { en: "User reports management", ar: "إدارة تقارير المستخدمين", ku: "" },
-        },
-        {
-            shortname: "polls",
-            displayname: { en: "Polls", ar: "استطلاعات الرأي", ku: "" },
-            description: { en: "Community polls", ar: "استطلاعات الرأي المجتمعية", ku: "" },
-        },
-        {
-            shortname: "surveys",
-            displayname: { en: "Surveys", ar: "الاستبيانات", ku: "" },
-            description: { en: "User surveys", ar: "استبيانات المستخدمين", ku: "" },
-        },
         {
             shortname: "workflows",
             displayname: { en: "Workflows", ar: "سير العمل", ku: "" },
@@ -813,51 +664,6 @@ export async function createApplicationsFolders(
         }
     }
 
-    // Create report_workflow if workflows folder was created or already exists
-    let workflowCreated = false;
-    let workflowFailed = false;
-    log.debug("Checking if workflows folder failed:", failed.includes("workflows"));
-    if (!failed.includes("workflows")) {
-        log.debug("Creating report_workflow...");
-        try {
-            const workflowSuccess = await createReportWorkflow(scope);
-            log.debug("report_workflow creation result:", workflowSuccess);
-            if (workflowSuccess) {
-                workflowCreated = true;
-            } else {
-                workflowFailed = true;
-            }
-        } catch (error) {
-            log.error("Error creating report_workflow:", error);
-            workflowFailed = true;
-        }
-    } else {
-        log.debug("Skipping report_workflow creation because workflows folder failed");
-    }
-
-    // Create report schema if schema folder was created or already exists
-    let reportSchemaCreated = false;
-    let reportSchemaFailed = false;
-    log.debug("Checking if schema folder failed:", failed.includes("schema"));
-    if (!failed.includes("schema")) {
-        log.debug("Creating report schema...");
-        try {
-            const schemaSuccess = await createReportSchema(scope);
-            log.debug("report schema creation result:", schemaSuccess);
-            if (schemaSuccess) {
-                reportSchemaCreated = true;
-            } else {
-                reportSchemaFailed = true;
-            }
-        } catch (error) {
-            log.error("Error creating report schema:", error);
-            reportSchemaFailed = true;
-        }
-    } else {
-        log.debug("Skipping report schema creation because schema folder failed");
-    }
-
-    // Create workflow schema if schema folder was created or already exists
     let workflowSchemaCreated = false;
     let workflowSchemaFailed = false;
     if (!failed.includes("schema")) {
@@ -878,220 +684,14 @@ export async function createApplicationsFolders(
         log.debug("Skipping workflow schema creation because schema folder failed");
     }
 
-    // Create meta_schema if schema folder was created or already exists
-    let metaSchemaCreated = false;
-    let metaSchemaFailed = false;
-    if (!failed.includes("schema")) {
-        log.debug("Creating meta_schema...");
-        try {
-            const metaSchemaSuccess = await createMetaSchema(scope);
-            log.debug("meta_schema creation result:", metaSchemaSuccess);
-            if (metaSchemaSuccess) {
-                metaSchemaCreated = true;
-            } else {
-                metaSchemaFailed = true;
-            }
-        } catch (error) {
-            log.error("Error creating meta_schema:", error);
-            metaSchemaFailed = true;
-        }
-    } else {
-        log.debug("Skipping meta_schema creation because schema folder failed");
-    }
-
-    // Create templates schema if schema folder was created or already exists
-    let templatesSchemaCreated = false;
-    let templatesSchemaFailed = false;
-    if (!failed.includes("schema")) {
-        log.debug("Creating templates schema...");
-        try {
-            const templatesSchemaSuccess = await createTemplatesSchema(scope);
-            log.debug("templates schema creation result:", templatesSchemaSuccess);
-            if (templatesSchemaSuccess) {
-                templatesSchemaCreated = true;
-            } else {
-                templatesSchemaFailed = true;
-            }
-        } catch (error) {
-            log.error("Error creating templates schema:", error);
-            templatesSchemaFailed = true;
-        }
-    } else {
-        log.debug("Skipping templates schema creation because schema folder failed");
-    }
-
     return { 
-        success: failed.length === 0 && !workflowFailed && !reportSchemaFailed && !workflowSchemaFailed && !metaSchemaFailed && !templatesSchemaFailed, 
+        success: failed.length === 0 && !workflowSchemaFailed, 
         created, 
-        failed, 
-        workflowCreated, 
-        workflowFailed, 
-        reportSchemaCreated, 
-        reportSchemaFailed,
+        failed,
         workflowSchemaCreated,
-        workflowSchemaFailed,
-        metaSchemaCreated,
-        metaSchemaFailed,
-        templatesSchemaCreated,
-        templatesSchemaFailed
+        workflowSchemaFailed
     };
 }
-
-/**
- * Create the report_workflow entry in the workflows folder
- */
-export async function createReportWorkflow(scope: DmartScope = DmartScope.managed): Promise<boolean> {
-    const workflowPayload = {
-        name: "",
-        states: [
-            {
-                name: "Pending",
-                next: [
-                    {
-                        roles: ["super_admin"],
-                        state: "accepted",
-                        action: "accept"
-                    },
-                    {
-                        roles: ["super_admin"],
-                        state: "investigation",
-                        action: "investigate"
-                    },
-                    {
-                        roles: ["super_admin"],
-                        state: "refused",
-                        action: "refuse"
-                    }
-                ],
-                state: "pending",
-                resolutions: []
-            },
-            {
-                name: "Investigation",
-                next: [
-                    {
-                        roles: ["super_admin"],
-                        state: "accepted",
-                        action: "accept"
-                    },
-                    {
-                        roles: ["super_admin"],
-                        state: "refused",
-                        action: "refuse"
-                    }
-                ],
-                state: "investigation",
-                resolutions: []
-            },
-            {
-                name: "Accepted",
-                next: [],
-                state: "accepted",
-                resolutions: [
-                    {
-                        ar: "التعامل معها",
-                        en: "Handled",
-                        key: "handled"
-                    }
-                ]
-            },
-            {
-                name: "Refused",
-                next: [],
-                state: "refused",
-                resolutions: [
-                    {
-                        ar: "البريد العشوائي",
-                        en: "Spamming",
-                        key: "spam"
-                    }
-                ]
-            }
-        ],
-        illustration: "",
-        initial_state: [
-            {
-                name: "pending",
-                roles: ["super_admin"]
-            }
-        ]
-    };
-
-    return ensureEntryExists(
-        { resourceType: ResourceType.content, spaceName: APPLICATIONS_SPACE, subpath: "/workflows", shortname: "report_workflow" },
-        {
-            resourceType: ResourceType.content, spaceName: APPLICATIONS_SPACE, subpath: "workflows", shortname: "report_workflow",
-            attributes: {
-                is_active: true,
-                displayname: { en: "Report Workflow", ar: "سير عمل التقارير", ku: "" },
-                description: { en: "Workflow for managing user reports", ar: "سير العمل لإدارة تقارير المستخدمين", ku: "" },
-                payload: { content_type: ContentType.json, body: workflowPayload },
-            },
-        },
-        "report_workflow",
-        scope
-    );
-}
-
-
-/**
- * Create the report schema in the schema folder
- */
-export async function createReportSchema(scope: DmartScope = DmartScope.managed): Promise<boolean> {
-    const schemaPayload = {
-        type: "object",
-        "$schema": "https://json-schema.org/draft/2020-12/schema",
-        required: [
-            "entry",
-            "space_name",
-            "subpath",
-            "report_type"
-        ],
-        properties: {
-            entry: {
-                type: "string",
-                title: "",
-                description: "Identifier for the entry"
-            },
-            subpath: {
-                type: "string",
-                title: "",
-                description: "Relative path within the space"
-            },
-            space_name: {
-                type: "string",
-                title: "",
-                description: "Logical space or namespace where the entry exists"
-            },
-            report_type: {
-                type: "string",
-                title: "",
-                description: "Type of report being submitted"
-            }
-        },
-        additionalProperties: false
-    };
-
-    return ensureEntryExists(
-        { resourceType: ResourceType.schema, spaceName: APPLICATIONS_SPACE, subpath: "/schema", shortname: "report" },
-        {
-            resourceType: ResourceType.schema, spaceName: APPLICATIONS_SPACE, subpath: "schema", shortname: "report",
-            attributes: {
-                is_active: true,
-                displayname: { en: "Report Schema", ar: "مخطط التقرير", ku: "" },
-                description: { en: "Schema for user reports", ar: "المخطط لتقارير المستخدمين", ku: "" },
-                schema_shortname: "meta_schema",
-                payload: {
-                    content_type: ContentType.json,
-                    body: schemaPayload,
-                },
-            },
-        },
-        "report schema",
-        scope
-    );
-}
-
 
 /**
  * Create the workflow schema in the schema folder
@@ -1216,49 +816,6 @@ export async function createWorkflowSchema(scope: DmartScope = DmartScope.manage
     );
 }
 
-/**
- * Create the meta_schema in the schema folder
- * This schema is used to validate template entry payloads
- */
-export async function createMetaSchema(scope: DmartScope = DmartScope.managed): Promise<boolean> {
-    const metaSchemaPayload = {
-        "type": "object",
-        "required": ["data", "template"],
-        "properties": {
-            "data": {
-                "type": "object",
-                "additionalProperties": true
-            },
-            "template": {
-                "type": "string"
-            }
-        },
-        "additionalProperties": false
-    };
-
-    return ensureEntryExists(
-        { resourceType: ResourceType.schema, spaceName: APPLICATIONS_SPACE, subpath: "/schema", shortname: "meta_schema" },
-        {
-            resourceType: ResourceType.schema, spaceName: APPLICATIONS_SPACE, subpath: "schema", shortname: "meta_schema",
-            attributes: {
-                is_active: true,
-                displayname: { en: "Meta Schema", ar: "المخطط التعريفي", ku: "" },
-                description: { en: "Schema for validating template entry payloads", ar: "المخطط للتحقق من بيانات إدخالات القوالب", ku: "" },
-                payload: {
-                    content_type: ContentType.json,
-                    body: metaSchemaPayload,
-                },
-            },
-        },
-        "meta_schema",
-        scope
-    );
-}
-
-/**
- * Create the templates schema in the schema folder
- * This schema is used to validate template definitions
- */
 export async function createTemplatesSchema(scope: DmartScope = DmartScope.managed): Promise<boolean> {
     const templatesSchemaPayload = {
         "type": "object",
@@ -1299,41 +856,4 @@ export async function createTemplatesSchema(scope: DmartScope = DmartScope.manag
     );
 }
 
-/**
- * Create the templates schema in a specific space's schema folder
- * This schema is used for template-based entries
- */
-export async function ensureTemplatesSchemaInSpace(
-    spaceName: string,
-    scope: DmartScope = DmartScope.managed
-): Promise<boolean> {
-    const templatesSchemaPayload = {
-        "type": "object",
-        "required": ["data", "template"],
-        "properties": {
-            "data": {
-                "type": "object",
-                "additionalProperties": true
-            },
-            "template": {
-                "type": "string"
-            }
-        },
-        "additionalProperties": false
-    };
 
-    return ensureEntryExists(
-        { resourceType: ResourceType.schema, spaceName, subpath: "/schema", shortname: "templates" },
-        {
-            resourceType: ResourceType.schema, spaceName, subpath: "schema", shortname: "templates",
-            attributes: {
-                is_active: true,
-                displayname: { en: "Templates Schema", ar: "مخطط القوالب", ku: "" },
-                description: { en: "Schema for validating template entries", ar: "المخطط للتحقق من إدخالات القوالب", ku: "" },
-                payload: { content_type: ContentType.json, body: templatesSchemaPayload },
-            },
-        },
-        `templates schema in ${spaceName}`,
-        scope
-    );
-}

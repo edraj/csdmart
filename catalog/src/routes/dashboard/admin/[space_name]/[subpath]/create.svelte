@@ -1,6 +1,7 @@
 <script lang="ts">
   import { onMount } from "svelte";
   import { marked } from "marked";
+  import { sanitizeHtml } from "@/lib/utils/sanitize";
   import {
     createEntity,
     getTemplates,
@@ -384,7 +385,7 @@
           <h4>Rendered Markdown</h4>
           {#if previewContent}
             <div class="markdown-preview">
-              {@html marked(previewContent)}
+              {@html sanitizeHtml(marked(previewContent))}
             </div>
           {:else}
             <div class="empty-state">

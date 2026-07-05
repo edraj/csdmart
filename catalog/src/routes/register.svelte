@@ -220,12 +220,12 @@
         ResourceType.content,
         getCurrentScope(),
         true,
-        false
+        false,
       );
 
       const role =
         (defaultRole as any).payload.body.items.find(
-          (item: any) => item.key === "default_user_role"
+          (item: any) => item.key === "default_user_role",
         )?.value || "catalog_user_role";
 
       const profileData = {
@@ -247,9 +247,9 @@
         formData.password,
         formData.confirmPassword,
         role,
-        profileData
+        profileData,
       );
-      $goto("/catalogs");
+      $goto("/dashboard");
     } catch (error: any) {
       console.error("OTP verification error:", error.message);
       errors.otp = error.message || $_("OtpVerificationFailed");
@@ -760,7 +760,7 @@
                                 onclick={() => {
                                   const newConfessors =
                                     formData.confessors.filter(
-                                      (_, i) => i !== index
+                                      (_, i) => i !== index,
                                     );
                                   formData.confessorsText =
                                     newConfessors.join(", ");
@@ -909,7 +909,11 @@
     right: -15%;
     width: 50%;
     height: 60%;
-    background: radial-gradient(circle, rgba(99, 102, 241, 0.06) 0%, transparent 70%);
+    background: radial-gradient(
+      circle,
+      rgba(99, 102, 241, 0.06) 0%,
+      transparent 70%
+    );
     pointer-events: none;
   }
 
@@ -1457,10 +1461,21 @@
   }
 
   @media (max-width: 640px) {
-    .register-container { padding: 1rem; }
-    .register-title { font-size: 1.5rem; }
-    .form-container { padding: 1.5rem; border-radius: var(--radius-xl); }
-    .additional-fields { padding: 1rem; }
-    .optional-fields-grid { grid-template-columns: 1fr; }
+    .register-container {
+      padding: 1rem;
+    }
+    .register-title {
+      font-size: 1.5rem;
+    }
+    .form-container {
+      padding: 1.5rem;
+      border-radius: var(--radius-xl);
+    }
+    .additional-fields {
+      padding: 1rem;
+    }
+    .optional-fields-grid {
+      grid-template-columns: 1fr;
+    }
   }
 </style>

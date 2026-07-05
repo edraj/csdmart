@@ -1,5 +1,6 @@
 <script lang="ts">
     import {onDestroy} from "svelte";
+    import { sanitizeHtml } from "@/lib/utils/sanitize";
     import {goto, params} from "@roxi/routify";
     import {getAvatar, getSpaceContents, getEntity, getSpaceHideFolders, buildHideFoldersSearch, mergeSearch} from "@/lib/dmart_services";
     import {_, locale} from "@/i18n";
@@ -1069,9 +1070,11 @@
                     <div class="card-preview">
                       {#if item.attributes?.payload?.content_type === "html"}
                         <div class="prose max-w-none preview-text">
-                          {@html isLongContent
-                            ? content.substring(0, 150) + "..."
-                            : content}
+                          {@html sanitizeHtml(
+                            isLongContent
+                              ? content.substring(0, 150) + "..."
+                              : content,
+                          )}
                         </div>
                       {:else if item.attributes?.payload?.content_type === "json"}
                         {@const jsonContent = JSON.stringify(

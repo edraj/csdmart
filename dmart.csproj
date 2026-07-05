@@ -13,23 +13,31 @@
          parses use CultureInfo.InvariantCulture explicitly; string compares are
          all Ordinal*. Saves ~25-35 MB per linux-x64 publish. -->
     <InvariantGlobalization>true</InvariantGlobalization>
-    <!-- Build-time analyzer suite is split into "fast local" and "comprehensive".
-         The full suite (trim + AOT analyzers + CA-rules at latest-all) walks
-         the entire IL graph and adds ~3 minutes to a clean build, which is
-         too slow for dev iteration. Gate it on $(CI)=='true' — GitHub Actions
-         sets CI=true automatically, so ci.yml and release.yml run the full
-         strict pass on every push/PR/tag, while local `dotnet build` runs
-         the lighter pass.
-
-         Local default (CI != 'true'):
-           - AnalysisLevel=latest-recommended (curated CA-subset, fast)
-           - Trim/AOT analyzers OFF (the heavy IL walk)
-
-         CI / release (CI == 'true'):
-           - AnalysisLevel=latest-all (every CA/CS rule)
-           - Trim + AOT analyzers ON, both as ERRORS
-           - TreatWarningsAsErrors stays on for both — zero-warning policy. -->
+    <!-- Analyzer policy:
+           - Trim / AOT / single-file analyzers run on EVERY build (local and
+             CI) and their diagnostics are ERRORS — an AOT regression must
+             fail the build instead of crashing the published binary at
+             runtime. The Roslyn analyzers are cheap; only AnalysisLevel
+             latest-all (the full CA-rule sweep) stays CI-gated for local
+             iteration speed.
+           - TrimmerSingleWarn=false: report every trim warning individually
+             instead of collapsing each assembly to a single IL2104 — the
+             collapsed form hides the actionable call site.
+           - IlcTreatWarningsAsErrors: ILC's publish-time warnings (the ones
+             emitted during native codegen, outside Roslyn/ILLink) fail the
+             publish too.
+           - The IL2xxx/IL3xxx codes are ALSO pinned in WarningsAsErrors as
+             belt-and-suspenders: they stay errors even if the global
+             TreatWarningsAsErrors is ever scoped down. -->
     <TreatWarningsAsErrors>true</TreatWarningsAsErrors>
+    <EnableTrimAnalyzer>true</EnableTrimAnalyzer>
+    <EnableAotAnalyzer>true</EnableAotAnalyzer>
+    <EnableSingleFileAnalyzer>true</EnableSingleFileAnalyzer>
+    <TreatTrimWarningsAsErrors>true</TreatTrimWarningsAsErrors>
+    <TreatAotWarningsAsErrors>true</TreatAotWarningsAsErrors>
+    <TrimmerSingleWarn>false</TrimmerSingleWarn>
+    <IlcTreatWarningsAsErrors>true</IlcTreatWarningsAsErrors>
+    <WarningsAsErrors>$(WarningsAsErrors);IL2026;IL2046;IL2050;IL2055;IL2057;IL2058;IL2059;IL2060;IL2062;IL2065;IL2066;IL2067;IL2070;IL2072;IL2075;IL2077;IL2080;IL2087;IL2090;IL2091;IL2092;IL2093;IL2094;IL2095;IL2096;IL2097;IL2098;IL2099;IL2103;IL2104;IL2106;IL2110;IL2111;IL2112;IL2113;IL2114;IL2115;IL2116;IL2117;IL2118;IL2119;IL2120;IL2121;IL2122;IL3000;IL3001;IL3002;IL3003;IL3050;IL3051;IL3052;IL3053;IL3054;IL3055;IL3056</WarningsAsErrors>
     <!-- CA2000 is silenced project-wide. Every site in dmart.csproj that
          tripped it is a framework-owned IDisposable: StringContent /
          StreamContent / ByteArrayContent passed to HttpClient (which owns
@@ -45,13 +53,10 @@
     <NoWarn>$(NoWarn);CA2000</NoWarn>
     <WarningsNotAsErrors>CA1508</WarningsNotAsErrors>
 
+    <!-- Full CA-rule sweep stays CI-gated (adds minutes to a clean build);
+         the curated latest-recommended subset runs locally. -->
     <AnalysisLevel Condition="'$(CI)' == 'true'">latest-all</AnalysisLevel>
     <AnalysisLevel Condition="'$(CI)' != 'true'">latest-recommended</AnalysisLevel>
-
-    <EnableTrimAnalyzer Condition="'$(CI)' == 'true'">true</EnableTrimAnalyzer>
-    <EnableAotAnalyzer Condition="'$(CI)' == 'true'">true</EnableAotAnalyzer>
-    <TreatTrimWarningsAsErrors Condition="'$(CI)' == 'true'">true</TreatTrimWarningsAsErrors>
-    <TreatAotWarningsAsErrors Condition="'$(CI)' == 'true'">true</TreatAotWarningsAsErrors>
     <!-- Refuse System.Text.Json's reflection-based fallback at runtime so a
          regression (JsonSerializer.Serialize(x) without a JsonTypeInfo<T>)
          throws NotSupportedException in Debug/JIT too — not only at AOT
@@ -207,6 +212,8 @@
     <PackageReference Include="Konscious.Security.Cryptography.Argon2" Version="1.3.1" />
     <PackageReference Include="Microsoft.AspNetCore.Authentication.JwtBearer" Version="10.0.5" />
     <PackageReference Include="Microsoft.AspNetCore.OpenApi" Version="10.0.5" />
+    <!-- Pin transitive Microsoft.OpenApi (2.0.0 via AspNetCore.OpenApi) to a patched version for CVE-2026-49451 (GHSA-v5pm-xwqc-g5wc) -->
+    <PackageReference Include="Microsoft.OpenApi" Version="2.7.5" />
     <!--PackageReference Include="Scalar.AspNetCore" Version="2.13.22" /-->
     <DirectPInvoke Include="libc" />
     <PackageReference Include="Npgsql" Version="10.0.2" />

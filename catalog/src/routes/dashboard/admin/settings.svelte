@@ -13,22 +13,16 @@
   $goto;
 
   let missingFolders = $state<string[]>([]);
-  let missingWorkflow = $state(false);
-  let missingReportSchema = $state(false);
   let missingWorkflowSchema = $state(false);
   let missingCriticalResources = $state<string[]>([]);
 
   let checking = $state(true);
   let fixing = $state(false);
   let fixed = $state(false);
-  let workflowCreated = $state(false);
-  let reportSchemaCreated = $state(false);
   let workflowSchemaCreated = $state(false);
 
   let hasIssues = $derived(
     missingFolders.length > 0 ||
-      missingWorkflow ||
-      missingReportSchema ||
       missingWorkflowSchema ||
       missingCriticalResources.length > 0,
   );
@@ -44,21 +38,15 @@
 
       if (!result.exists && result.error !== "permission_denied") {
         missingFolders = result.missing || [];
-        missingWorkflow = result.missingWorkflow || false;
-        missingReportSchema = result.missingReportSchema || false;
         missingWorkflowSchema = result.missingWorkflowSchema || false;
       } else {
         missingFolders = [];
-        missingWorkflow = false;
-        missingReportSchema = false;
         missingWorkflowSchema = false;
       }
       missingCriticalResources = criticalResult.missing || [];
     } catch (err) {
       console.error("Error checking resources:", err);
       missingFolders = [];
-      missingWorkflow = false;
-      missingReportSchema = false;
       missingWorkflowSchema = false;
       missingCriticalResources = [];
     } finally {
@@ -76,17 +64,11 @@
       if (result.success) {
         fixed = true;
         missingFolders = [];
-        missingWorkflow = false;
-        missingReportSchema = false;
         missingWorkflowSchema = false;
         missingCriticalResources = [];
-        workflowCreated = result.workflowCreated || false;
-        reportSchemaCreated = result.reportSchemaCreated || false;
         workflowSchemaCreated = result.workflowSchemaCreated || false;
       } else {
         missingFolders = result.failed || [];
-        missingWorkflow = result.workflowFailed || false;
-        missingReportSchema = result.reportSchemaFailed || false;
         missingWorkflowSchema = result.workflowSchemaFailed || false;
       }
     } catch (err) {
@@ -179,12 +161,6 @@
                     {$_("admin_settings.issues.missing_folders")}: <span class="font-medium">{missingFolders.join(", ")}</span>
                   </li>
                 {/if}
-                {#if missingWorkflow}
-                  <li>{$_("admin_settings.issues.missing_workflow")}</li>
-                {/if}
-                {#if missingReportSchema}
-                  <li>{$_("admin_settings.issues.missing_report_schema")}</li>
-                {/if}
                 {#if missingWorkflowSchema}
                   <li>{$_("admin_settings.issues.missing_workflow_schema")}</li>
                 {/if}
@@ -229,12 +205,6 @@
               </h3>
               <p class="text-sm text-emerald-700">
                 {$_("admin_settings.fixed.body")}
-                {#if workflowCreated}
-                  <br /><span class="font-medium">report_workflow</span> {$_("admin_settings.fixed.workflow_created")}
-                {/if}
-                {#if reportSchemaCreated}
-                  <br /><span class="font-medium">report</span> {$_("admin_settings.fixed.report_schema_created")}
-                {/if}
                 {#if workflowSchemaCreated}
                   <br /><span class="font-medium">workflow</span> {$_("admin_settings.fixed.workflow_schema_created")}
                 {/if}

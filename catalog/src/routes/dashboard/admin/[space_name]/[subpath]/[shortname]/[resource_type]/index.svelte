@@ -1,5 +1,6 @@
 <script lang="ts">
   import { onMount, onDestroy } from "svelte";
+  import { sanitizeHtml } from "@/lib/utils/sanitize";
   import { goto, params } from "@roxi/routify";
   import {
     deleteEntity,
@@ -7,15 +8,10 @@
     getMyEntities,
     replaceEntity,
     getAvatar,
-    checkCurrentUserReactedIdea,
   } from "@/lib/dmart_services";
-  import {
-    createComment,
-    createReaction,
-    deleteReactionComment,
-  } from "@/lib/dmart_services/comments_reactions";
   import Avatar from "@/components/Avatar.svelte";
   import { user } from "@/stores/user";
+  import { can } from "@/stores/permissions";
   import {
     errorToastMessage,
     successToastMessage,
@@ -29,17 +25,14 @@
   import MarkdownEditor from "@/components/editors/MarkdownEditor.svelte";
   import { formatNumberInText } from "@/lib/helpers";
   import { marked } from "marked";
-  import TemplateEditor from "@/components/editors/TemplateEditor.svelte";
   import JsonEditor from "@/components/editors/JsonEditor.svelte";
   import SchemaForm from "@/components/forms/SchemaForm.svelte";
   import DynamicSchemaBasedForms from "@/components/forms/DynamicSchemaBasedForms.svelte";
   import SchemaViewer from "@/components/forms/SchemaViewer.svelte";
   // import PostContent from "@/components/post/PostContent.svelte";
   import JsonViewer from "@/components/JsonViewer.svelte";
-  import { getTemplate } from "@/lib/dmart_services/templates";
   import RelationshipModal from "@/components/management/RelationshipModal.svelte";
   import AttachmentModal from "@/components/management/AttachmentModal.svelte";
-  import SchemaTemplateManager from "@/components/management/SchemaTemplateManager.svelte";
   import {
     PlusOutline,
     HeartSolid,
@@ -79,8 +72,6 @@
   let isDeleting = writable(false);
   let htmlEditor: string = $state("");
   let markdownContent: string = $state("");
-  let isTemplateBasedItem = $state(false);
-  let templateEditorContent = $state("");
   let jsonEditorContent: any = $state({});
   let isSchemaBasedItem = $state(false);
   let schemaEditorContent = $state("");
@@ -100,7 +91,7 @@
         ResourceType.content,
         DmartScope.managed,
         true,
-        true
+        true,
       );
       if (response) {
         selectedDynamicSchema = {
@@ -142,126 +133,7 @@
   let jsonEditFormValue: any = $state({});
   let relationshipsValue: any[] = $state([]);
 
-  // Template rendering state
-  let templateRenderedContent = $state("");
-  let isLoadingTemplate = $state(false);
-  let templateError = $state("");
-  let loadedTemplateKey: string = $state(""); // Track which template was loaded
-
-  // Check if this is a template-based entry
-  const isTemplateEntry = $derived(
-    itemDataValue?.payload?.schema_shortname === "templates" &&
-      !!itemDataValue?.payload?.body?.template &&
-      !!itemDataValue?.payload?.body?.data,
-  );
-
-  // Generate a unique key for the current template entry to prevent duplicate loads
-  const currentTemplateKey = $derived(
-    isTemplateEntry && $spaceName
-      ? `${$spaceName}-${itemDataValue?.payload?.body?.template}`
-      : ""
-  );
-
-  // Load template content when it's a template entry
-  $effect(() => {
-    if (isTemplateEntry && $spaceName && !isLoadingTemplate) {
-      const templateShortname = itemDataValue?.payload?.body?.template;
-      const templateData = itemDataValue?.payload?.body?.data;
-      // Use a content-based key that includes the actual data values
-      const contentKey = `${$spaceName}-${templateShortname}-${templateData ? Object.values(templateData).join(',') : ''}`;
-      if (contentKey !== loadedTemplateKey) {
-        loadTemplateContent(contentKey);
-      }
-    }
-  });
-
-  // Load and render template content
-  async function loadTemplateContent(contentKey?: string) {
-    if (!isTemplateEntry || !$spaceName || isLoadingTemplate) return;
-    
-    // Prevent duplicate loads of the same template
-    const keyToUse = contentKey || currentTemplateKey;
-    if (keyToUse === loadedTemplateKey) return;
-
-    isLoadingTemplate = true;
-    templateError = "";
-
-    try {
-      const templateShortname = itemDataValue.payload.body.template;
-      const templateData = itemDataValue.payload.body.data;
-
-      // Try to get template from current space first
-      let template = await getTemplate(
-        $spaceName,
-        templateShortname,
-        DmartScope.managed,
-      );
-
-      // If not found in current space, try applications space
-      if (!template) {
-        template = await getTemplate(
-          "applications",
-          templateShortname,
-          DmartScope.managed,
-        );
-      }
-
-      if (!template) {
-        templateError = `Template "${templateShortname}" not found`;
-        templateRenderedContent = "";
-        return;
-      }
-
-      // Get the template content
-      let content = template?.payload?.body?.content || "";
-
-      // Replace placeholders with data
-      const renderedContent = renderTemplateWithData(content, templateData);
-
-      // Parse markdown to HTML
-      templateRenderedContent = (await marked.parse(renderedContent)) as string;
-      
-      // Mark this template as loaded to prevent duplicate loads
-      loadedTemplateKey = keyToUse;
-    } catch (error) {
-      console.error("Error loading template:", error);
-      templateError = "Failed to load template content";
-    } finally {
-      isLoadingTemplate = false;
-    }
-  }
-
-  function renderTemplateWithData(
-    templateContent: string,
-    data: Record<string, any>,
-  ): string {
-    if (!templateContent || !data) return templateContent;
-
-    let result = templateContent;
-
-    // Replace {{fieldName:type}} patterns with actual data
-    const placeholderRegex = /\{\{(\w+)(?::(\w+))?\}\}/g;
-
-    result = result.replace(placeholderRegex, (match, fieldName, fieldType) => {
-      const value = data[fieldName];
-
-      if (value === undefined || value === null) {
-        return match; // Keep placeholder if data not found
-      }
-
-      return String(value);
-    });
-
-    return result;
-  }
-
-  // Comments and reactions state
-  let comment = $state("");
   let userReactionEntry: any = $state(null);
-  let counts = $state({
-    reaction: 0,
-    comment: 0,
-  });
 
   function getItemContent(item: any) {
     if (!item?.payload) return "";
@@ -287,10 +159,14 @@
       }
       if (isDynamicSchemaItem && selectedDynamicSchema) {
         const originalContent = getItemContent(itemDataValue);
-        if (originalContent && typeof originalContent === "object" && originalContent.schema_data) {
+        if (
+          originalContent &&
+          typeof originalContent === "object" &&
+          originalContent.schema_data
+        ) {
           return {
             ...originalContent,
-            schema_data: dynamicSchemaFormData
+            schema_data: dynamicSchemaFormData,
           };
         } else {
           return dynamicSchemaFormData;
@@ -413,22 +289,6 @@
           activeTab.set("overview");
         }
 
-        // Load comments and reactions counts
-        counts = {
-          reaction: response.attachments?.reaction?.length || 0,
-          comment: response.attachments?.comment?.length || 0,
-        };
-
-        // Check if current user has reacted
-        if ($user?.shortname) {
-          userReactionEntry = await checkCurrentUserReactedIdea(
-            $user.shortname,
-            itemShortnameValue,
-            spaceNameValue,
-            actualSubpathValue,
-          );
-        }
-
         const content = getItemContent(response);
 
         // Check if this is a schema-based item
@@ -436,10 +296,12 @@
           response.payload?.schema_shortname === "meta_schema";
 
         const schemaShortname = response.payload?.schema_shortname;
-        isDynamicSchemaItem = !!(response.payload?.content_type === "json" &&
+        isDynamicSchemaItem = !!(
+          response.payload?.content_type === "json" &&
           schemaShortname &&
           schemaShortname !== "templates" &&
-          schemaShortname !== "meta_schema");
+          schemaShortname !== "meta_schema"
+        );
 
         if (isDynamicSchemaItem) {
           const schemaLoaded = await loadDynamicSchema(schemaShortname!);
@@ -488,15 +350,6 @@
         };
         editForm.set(editFormValue);
 
-        isTemplateBasedItem =
-          response.payload?.schema_shortname === "templates";
-
-        if (isTemplateBasedItem) {
-          templateEditorContent = content || "";
-          // Load and render template content for display
-          await loadTemplateContent();
-        }
-
         const ct = response.payload?.content_type;
         htmlEditor = ct === ContentType.json ? "" : content || "";
         markdownContent = ct === ContentType.markdown ? content || "" : "";
@@ -506,17 +359,12 @@
       }
     } catch (err) {
       console.error("Error fetching admin item data:", err);
-      error.set((err as any).message || $_("admin_item_detail.error.failed_load_item"));
+      error.set(
+        (err as any).message || $_("admin_item_detail.error.failed_load_item"),
+      );
     } finally {
       isLoading.set(false);
     }
-  }
-
-  function handleTemplateContentChange(newContent: any) {
-    templateEditorContent = newContent;
-    htmlEditor = newContent;
-    editFormValue.content = newContent;
-    editForm.update((form) => ({ ...form, content: newContent }));
   }
 
   async function handleUpdateItem(event: any) {
@@ -538,8 +386,7 @@
         if (ct === "markdown" || ct === "md") {
           htmlContent = markdownContent || editFormValue.content || "";
         } else {
-          htmlContent =
-            htmlEditor || editFormValue.content || templateEditorContent;
+          htmlContent = htmlEditor || editFormValue.content;
         }
       }
 
@@ -575,7 +422,8 @@
     } catch (err) {
       console.error("Error updating item:", err);
       error.set(
-        (err as any).message || $_("admin_item_detail.error.failed_update_item"),
+        (err as any).message ||
+          $_("admin_item_detail.error.failed_update_item"),
       );
     }
   }
@@ -611,7 +459,7 @@
 
   function getDisplayName(item: any) {
     if (item?.displayname) {
-      const localeDisplay = item.displayname[$locale ?? '']?.trim();
+      const localeDisplay = item.displayname[$locale ?? ""]?.trim();
       const enDisplay = item.displayname.en?.trim();
       const arDisplay = item.displayname.ar?.trim();
 
@@ -623,7 +471,7 @@
   function getDescription(item: any) {
     if (item?.description) {
       return (
-        item.description[$locale ?? ''] ||
+        item.description[$locale ?? ""] ||
         item.description.en ||
         item.description.ar ||
         $_("admin_item_detail.no_description")
@@ -638,7 +486,9 @@
   }
 
   function navigateToBreadcrumb(path: any) {
-    const pathSegments = path.split("/").filter((segment: any) => segment !== "");
+    const pathSegments = path
+      .split("/")
+      .filter((segment: any) => segment !== "");
 
     if (
       pathSegments.length === 2 &&
@@ -706,75 +556,9 @@
   }
 
   function removeTag(index: number) {
-    editFormValue.tags = editFormValue.tags.filter((_: any, i: any) => i !== index);
-  }
-
-  // Comments and reactions handlers
-  async function handleAddComment() {
-    if (!comment.trim()) return;
-
-    const response = await createComment(
-      spaceNameValue,
-      actualSubpathValue,
-      itemShortnameValue,
-      comment,
+    editFormValue.tags = editFormValue.tags.filter(
+      (_: any, i: any) => i !== index,
     );
-
-    if (response) {
-      successToastMessage($_("entry_detail.comments.add_success"));
-      comment = "";
-      await loadItemData();
-    } else {
-      errorToastMessage($_("entry_detail.comments.add_error"));
-    }
-  }
-
-  async function handleDeleteComment(commentShortname: string) {
-    const response = await deleteReactionComment(
-      ResourceType.comment,
-      `${actualSubpathValue}/${itemShortnameValue}`,
-      commentShortname,
-      spaceNameValue,
-    );
-
-    if (response) {
-      successToastMessage($_("entry_detail.comments.delete_success"));
-      await loadItemData();
-    } else {
-      errorToastMessage($_("entry_detail.comments.delete_error"));
-    }
-  }
-
-  async function handleReaction() {
-    if (userReactionEntry) {
-      // Remove reaction
-      const response = await deleteReactionComment(
-        ResourceType.reaction,
-        `${actualSubpathValue}/${itemShortnameValue}`,
-        userReactionEntry,
-        spaceNameValue,
-      );
-      if (response) {
-        userReactionEntry = null;
-        successToastMessage($_("entry_detail.reactions.remove_success"));
-        await loadItemData();
-      } else {
-        errorToastMessage($_("entry_detail.reactions.remove_error"));
-      }
-    } else {
-      // Add reaction
-      const response = await createReaction(
-        itemShortnameValue,
-        spaceNameValue,
-        actualSubpathValue,
-      );
-      if (response) {
-        successToastMessage($_("entry_detail.reactions.add_success"));
-        await loadItemData();
-      } else {
-        errorToastMessage($_("entry_detail.reactions.add_error"));
-      }
-    }
   }
 </script>
 
@@ -853,44 +637,48 @@
         </div>
 
         <div class="flex items-center gap-3">
-          <button
-            onclick={() => showEditModal.set(true)}
-            class="bg-white hover:bg-gray-50 border border-gray-200 text-gray-700 px-3 py-1.5 rounded-xl font-medium transition-colors shadow-sm flex items-center gap-2"
-          >
-            <svg
-              class="w-4 h-4 text-gray-500"
-              fill="none"
-              stroke="currentColor"
-              viewBox="0 0 24 24"
+          {#if $can("update", $params.space_name, actualSubpathValue, $params.resource_type || ResourceType.content)}
+            <button
+              onclick={() => showEditModal.set(true)}
+              class="bg-white hover:bg-gray-50 border border-gray-200 text-gray-700 px-3 py-1.5 rounded-xl font-medium transition-colors shadow-sm flex items-center gap-2"
             >
-              <path
-                stroke-linecap="round"
-                stroke-linejoin="round"
-                stroke-width="2"
-                d="M11 5H6a2 2 0 00-2 2v11a2 2 0 002 2h11a2 2 0 002-2v-5m-1.414-9.414a2 2 0 112.828 2.828L11.828 15H9v-2.828l8.586-8.586z"
-              ></path>
-            </svg>
-            {$_("admin_item_detail.actions.edit_item")}
-          </button>
-          <button
-            onclick={handleDeleteItem}
-            class="bg-red-50 hover:bg-red-100 text-red-600 px-3 py-1.5 rounded-xl font-medium transition-colors shadow-sm flex items-center gap-2"
-          >
-            <svg
-              class="w-4 h-4"
-              fill="none"
-              stroke="currentColor"
-              viewBox="0 0 24 24"
+              <svg
+                class="w-4 h-4 text-gray-500"
+                fill="none"
+                stroke="currentColor"
+                viewBox="0 0 24 24"
+              >
+                <path
+                  stroke-linecap="round"
+                  stroke-linejoin="round"
+                  stroke-width="2"
+                  d="M11 5H6a2 2 0 00-2 2v11a2 2 0 002 2h11a2 2 0 002-2v-5m-1.414-9.414a2 2 0 112.828 2.828L11.828 15H9v-2.828l8.586-8.586z"
+                ></path>
+              </svg>
+              {$_("admin_item_detail.actions.edit_item")}
+            </button>
+          {/if}
+          {#if $can("delete", $params.space_name, actualSubpathValue, $params.resource_type || ResourceType.content)}
+            <button
+              onclick={handleDeleteItem}
+              class="bg-red-50 hover:bg-red-100 text-red-600 px-3 py-1.5 rounded-xl font-medium transition-colors shadow-sm flex items-center gap-2"
             >
-              <path
-                stroke-linecap="round"
-                stroke-linejoin="round"
-                stroke-width="2"
-                d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16"
-              ></path>
-            </svg>
-            {$_("admin_item_detail.actions.delete_item")}
-          </button>
+              <svg
+                class="w-4 h-4"
+                fill="none"
+                stroke="currentColor"
+                viewBox="0 0 24 24"
+              >
+                <path
+                  stroke-linecap="round"
+                  stroke-linejoin="round"
+                  stroke-width="2"
+                  d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16"
+                ></path>
+              </svg>
+              {$_("admin_item_detail.actions.delete_item")}
+            </button>
+          {/if}
         </div>
       </div>
     </div>
@@ -955,15 +743,6 @@
               {$_("admin_item_detail.tabs.overview")}
             </button>
             <button
-              onclick={() => setActiveTab("relationships")}
-              class="py-4 px-4 font-medium text-sm whitespace-nowrap border-b-2 transition-colors {$activeTab ===
-              'relationships'
-                ? 'border-indigo-500 text-indigo-600'
-                : 'border-transparent text-gray-500 hover:text-gray-900 hover:border-gray-300'}"
-            >
-              {$_("admin_item_detail.tabs.relationships")}
-            </button>
-            <button
               onclick={() => setActiveTab("attachments")}
               class="py-4 px-4 font-medium text-sm whitespace-nowrap border-b-2 transition-colors {$activeTab ===
               'attachments'
@@ -972,17 +751,6 @@
             >
               {$_("admin_item_detail.tabs.attachments")}
             </button>
-            {#if isSchemaBasedItem}
-              <button
-                onclick={() => setActiveTab("template")}
-                class="py-4 px-4 font-medium text-sm whitespace-nowrap border-b-2 transition-colors {$activeTab ===
-                'template'
-                  ? 'border-indigo-500 text-indigo-600'
-                  : 'border-transparent text-gray-500 hover:text-gray-900 hover:border-gray-300'}"
-              >
-                {$_("admin_item_detail.tabs.template")}
-              </button>
-            {/if}
             {#if actualSubpathValue === "authors"}
               <button
                 onclick={() => setActiveTab("author-entries")}
@@ -1019,39 +787,9 @@
                   </div>
 
                   <div class="p-6">
-                    {#if isTemplateEntry}
-                      <!-- Template-based entry rendering -->
-                      {#if isLoadingTemplate}
-                        <div class="template-loading">
-                          <div class="spinner"></div>
-                          <span>Loading template...</span>
-                        </div>
-                      {:else if templateError}
-                        <div class="template-error">
-                          <p class="error-message">{templateError}</p>
-                          <div class="fallback-data">
-                            <h4>Template: {body.template}</h4>
-                            <dl>
-                              {#each Object.entries(body.data || {}) as [key, value]}
-                                <dt>{key}:</dt>
-                                <dd>{value}</dd>
-                              {/each}
-                            </dl>
-                          </div>
-                          <pre class="fallback-content">{JSON.stringify(
-                              body,
-                              null,
-                              2,
-                            )}</pre>
-                        </div>
-                      {:else}
-                        <div class="markdown-preview" class:text-right={$isRTL}>
-                          {@html templateRenderedContent}
-                        </div>
-                      {/if}
-                    {:else if ct === "html"}
+                    {#if ct === "html"}
                       <div class="html-preview" class:text-right={$isRTL}>
-                        {@html body}
+                        {@html sanitizeHtml(body)}
                       </div>
                     {:else if ct === "json"}
                       {#if isSchemaBasedItem}
@@ -1062,14 +800,18 @@
                         <div class="p-6">
                           <JsonViewer
                             data={body}
-                            title={itemDataValue?.displayname?.en || "JSON Content"}
+                            title={itemDataValue?.displayname?.en ||
+                              "JSON Content"}
                             isAdmin={true}
                             editable={true}
-                            schemaShortname={itemDataValue?.payload?.schema_shortname}
+                            schemaShortname={itemDataValue?.payload
+                              ?.schema_shortname}
                             spaceName={$params.space_name}
                             subpath={actualSubpathValue}
                             shortname={$params.shortname}
-                            onSaved={(d) => { itemDataValue.payload.body = d; }}
+                            onSaved={(d) => {
+                              itemDataValue.payload.body = d;
+                            }}
                           />
                         </div>
                       {/if}
@@ -1077,7 +819,7 @@
                       <!-- Default parse string as Markdown (covers "markdown", "md", or missing type) -->
                       {#if typeof body === "string"}
                         <div class="markdown-preview" class:text-right={$isRTL}>
-                          {@html marked(body)}
+                          {@html sanitizeHtml(marked(body))}
                         </div>
                       {:else}
                         <!-- Fallback for unexpected non-string bodies without a known type -->
@@ -1111,167 +853,6 @@
                     {$_("admin_item_detail.content.no_content")}
                   </p>
                 </div>
-              {/if}
-
-              <!-- Comments and Reactions Section -->
-              {#if website.enable_reactions || website.enable_comments}
-              <div class="mt-10 pt-8 border-t border-gray-100">
-                <!-- Action Buttons -->
-                <div class="flex items-center gap-6 mb-6">
-                  {#if website.enable_reactions}
-                  <button
-                    onclick={handleReaction}
-                    class="flex items-center gap-2 px-3 py-1.5 rounded-xl font-medium transition-all duration-200 {userReactionEntry
-                      ? 'bg-red-50 text-red-600'
-                      : 'bg-gray-50 text-gray-600 hover:bg-gray-100'}"
-                  >
-                    <HeartSolid
-                      class="w-5 h-5 {userReactionEntry ? 'text-red-500' : ''}"
-                    />
-                    <span
-                      >{userReactionEntry
-                        ? $_("entry_detail.actions.unlike")
-                        : $_("entry_detail.actions.like")}</span
-                    >
-                    <span class="text-sm opacity-75"
-                      >({formatNumberInText(counts.reaction, $locale ?? "") ||
-                        0})</span
-                    >
-                  </button>
-                  {/if}
-
-                  {#if website.enable_comments}
-                  <div class="flex items-center gap-2 text-gray-600">
-                    <MessagesSolid class="w-5 h-5" />
-                    <span>{$_("entry_detail.comments.title")}</span>
-                    <span class="text-sm opacity-75"
-                      >({formatNumberInText(counts.comment, $locale ?? "") ||
-                        0})</span
-                    >
-                  </div>
-                  {/if}
-                </div>
-
-                {#if website.enable_comments}
-                <!-- Add Comment -->
-                <div class="bg-gray-50/50 rounded-2xl p-6 mb-6">
-                  <h4
-                    class="text-sm font-semibold text-gray-900 mb-4"
-                    class:text-right={$isRTL}
-                  >
-                    {$_("entry_detail.comments.title")}
-                  </h4>
-                  <div class="flex gap-3">
-                    <div class="flex-1">
-                      <input
-                        type="text"
-                        bind:value={comment}
-                        placeholder={$_("entry_detail.comments.placeholder")}
-                        class="w-full px-4 py-3 rounded-xl border border-gray-200 focus:border-indigo-500 focus:ring-2 focus:ring-indigo-200 transition-all"
-                        class:text-right={$isRTL}
-                        onkeydown={(e) => {
-                          if (e.key === "Enter" && !e.shiftKey) {
-                            e.preventDefault();
-                            handleAddComment();
-                          }
-                        }}
-                      />
-                    </div>
-                    <button
-                      onclick={handleAddComment}
-                      disabled={!comment.trim()}
-                      aria-label="Submit comment"
-                      class="px-6 py-3 bg-indigo-600 hover:bg-indigo-700 disabled:bg-gray-300 disabled:cursor-not-allowed text-white rounded-xl font-medium transition-colors flex items-center gap-2"
-                    >
-                      <svg
-                        class="w-4 h-4"
-                        fill="none"
-                        stroke="currentColor"
-                        viewBox="0 0 24 24"
-                      >
-                        <path
-                          stroke-linecap="round"
-                          stroke-linejoin="round"
-                          stroke-width="2"
-                          d="M12 19l9 2-9-18-9 18 9-2zm0 0v-8"
-                        />
-                      </svg>
-                    </button>
-                  </div>
-                </div>
-
-                <!-- Comments List -->
-                {#if itemDataValue?.attachments?.comment && itemDataValue.attachments.comment.length > 0}
-                  <div class="space-y-4">
-                    {#each itemDataValue.attachments.comment as reply}
-                      <div
-                        class="bg-white border border-gray-100 rounded-2xl p-5 hover:shadow-sm transition-shadow"
-                      >
-                        <div class="flex gap-4">
-                          <div class="shrink-0">
-                            {#await getAvatar(reply.attributes.owner_shortname ?? "") then avatar}
-                              <Avatar src={avatar ?? undefined} size="44" />
-                            {/await}
-                          </div>
-                          <div class="flex-1 min-w-0">
-                            <div
-                              class="flex items-center justify-between gap-2 mb-2"
-                            >
-                              <div
-                                class="flex items-center gap-2"
-                                class:flex-row-reverse={$isRTL}
-                              >
-                                <span class="font-semibold text-gray-900">
-                                  {reply.attributes?.displayname?.[$locale ?? ''] ||
-                                    reply.attributes?.displayname?.en ||
-                                    reply.attributes?.displayname?.ar ||
-                                    reply.attributes?.owner_shortname}
-                                </span>
-                                <span class="text-xs text-gray-400">
-                                  {formatDate(reply.attributes.created_at)}
-                                </span>
-                              </div>
-                              {#if reply.attributes.owner_shortname === $user?.shortname}
-                                <button
-                                  onclick={() =>
-                                    handleDeleteComment(reply.shortname)}
-                                  class="text-gray-400 hover:text-red-500 transition-colors p-1"
-                                  aria-label={$_(
-                                    "entry_detail.comments.delete_comment",
-                                  )}
-                                >
-                                  <TrashBinSolid class="w-4 h-4" />
-                                </button>
-                              {/if}
-                            </div>
-                            <p
-                              class="text-gray-700 text-sm leading-relaxed"
-                              class:text-right={$isRTL}
-                            >
-                              {reply.attributes.payload?.body?.embedded ||
-                                reply.attributes.payload?.body?.body ||
-                                $_("entry_detail.no_content")}
-                            </p>
-                          </div>
-                        </div>
-                      </div>
-                    {/each}
-                  </div>
-                {:else}
-                  <div class="text-center py-10 bg-gray-50/50 rounded-2xl">
-                    <MessagesSolid
-                      class="w-12 h-12 mx-auto text-gray-300 mb-3"
-                    />
-                    <p class="text-gray-500 font-medium">
-                      {$_("entry_detail.comments.no_comments")}
-                    </p>
-                    <p class="text-sm text-gray-400 mt-1">
-                      {$_("entry_detail.comments.be_first")}
-                    </p>
-                  </div>
-                {/if}
-                {/if}
-              </div>
               {/if}
             </div>
           {/if}
@@ -1422,7 +1003,8 @@
                         <td
                           class="px-3 py-1.5 whitespace-nowrap text-sm text-gray-500"
                           class:text-right={$isRTL}
-                          >{itemDataValue.payload?.content_type || $_("admin_item_detail.not_set")}</td
+                          >{itemDataValue.payload?.content_type ||
+                            $_("admin_item_detail.not_set")}</td
                         >
                       </tr>
                       <tr>
@@ -1434,7 +1016,8 @@
                         <td
                           class="px-3 py-1.5 whitespace-nowrap text-sm text-gray-500"
                           class:text-right={$isRTL}
-                          >{$params.resource_type || $_("admin_item_detail.not_set")}</td
+                          >{$params.resource_type ||
+                            $_("admin_item_detail.not_set")}</td
                         >
                       </tr>
                       <tr>
@@ -1446,7 +1029,8 @@
                         <td
                           class="px-3 py-1.5 whitespace-nowrap text-sm text-gray-500"
                           class:text-right={$isRTL}
-                          >{itemDataValue.payload?.schema_shortname || $_("admin_item_detail.not_set")}</td
+                          >{itemDataValue.payload?.schema_shortname ||
+                            $_("admin_item_detail.not_set")}</td
                         >
                       </tr>
                       <tr>
@@ -1522,153 +1106,6 @@
               </div>
             </div>
           {/if}
-
-          {#if $activeTab === "relationships"}
-            <div class="space-y-6">
-              <div
-                class="flex items-center justify-between"
-                class:flex-row-reverse={$isRTL}
-              >
-                <h3
-                  class="text-lg font-semibold text-gray-900"
-                  class:text-right={$isRTL}
-                >
-                  {$_("admin_item_detail.relationships.title")}
-                </h3>
-                <button
-                  onclick={() => showRelationshipModal.set(true)}
-                  class="bg-indigo-600 hover:bg-indigo-700 text-white px-3 py-1.5 rounded-xl font-medium transition-colors shadow-sm flex items-center gap-2"
-                >
-                  <PlusOutline class="w-4 h-4" />
-                  {$_("admin_item_detail.relationships.manage")}
-                </button>
-              </div>
-
-              {#if itemDataValue.relationships && itemDataValue.relationships.length > 0}
-                <div
-                  class="bg-white border border-gray-100 rounded-2xl overflow-hidden"
-                >
-                  <table
-                    class="min-w-full divide-y divide-gray-100"
-                    class:rtl={$isRTL}
-                  >
-                    <thead class="bg-gray-50/50">
-                      <tr>
-                        <th
-                          class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider"
-                          class:text-right={$isRTL}
-                          >{$_(
-                            "admin_item_detail.relationships.headers.role",
-                          )}</th
-                        >
-                        <th
-                          class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider"
-                          class:text-right={$isRTL}
-                          >{$_(
-                            "admin_item_detail.relationships.headers.related_to",
-                          )}</th
-                        >
-                        <th
-                          class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider"
-                          class:text-right={$isRTL}
-                          >{$_(
-                            "admin_item_detail.relationships.headers.type",
-                          )}</th
-                        >
-                        <th
-                          class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider"
-                          class:text-right={$isRTL}
-                          >{$_(
-                            "admin_item_detail.relationships.headers.space",
-                          )}</th
-                        >
-                        <th
-                          class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider"
-                          class:text-right={$isRTL}
-                          >{$_(
-                            "admin_item_detail.relationships.headers.uuid",
-                          )}</th
-                        >
-                      </tr>
-                    </thead>
-                    <tbody class="bg-white divide-y divide-gray-200">
-                      {#each itemDataValue.relationships as relationship}
-                        <tr>
-                          <td
-                            class="px-3 py-1.5 whitespace-nowrap text-sm font-medium text-gray-900"
-                            class:text-right={$isRTL}
-                          >
-                            <span
-                              class="inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium bg-green-100 text-green-800"
-                            >
-                              {relationship.attributes?.role ||
-                                $_("common.not_available")}
-                            </span>
-                          </td>
-                          <td
-                            class="px-3 py-1.5 whitespace-nowrap text-sm text-gray-500"
-                            class:text-right={$isRTL}
-                          >
-                            {relationship.related_to?.shortname ||
-                              $_("common.not_available")}
-                          </td>
-                          <td
-                            class="px-3 py-1.5 whitespace-nowrap text-sm text-gray-500"
-                            class:text-right={$isRTL}
-                          >
-                            <span
-                              class="inline-flex items-center px-2 py-1 rounded-md text-xs font-medium bg-blue-100 text-blue-800"
-                            >
-                              {relationship.related_to?.resource_type ||
-                                relationship.related_to?.type ||
-                                $_("common.not_available")}
-                            </span>
-                          </td>
-                          <td
-                            class="px-3 py-1.5 whitespace-nowrap text-sm text-gray-500"
-                            class:text-right={$isRTL}
-                          >
-                            {relationship.related_to?.space_name ||
-                              $_("common.not_available")}
-                          </td>
-                          <td
-                            class="px-3 py-1.5 whitespace-nowrap text-sm text-gray-500 font-mono"
-                            class:text-right={$isRTL}
-                          >
-                            {relationship.related_to?.uuid ||
-                              $_("common.not_available")}
-                          </td>
-                        </tr>
-                      {/each}
-                    </tbody>
-                  </table>
-                </div>
-              {:else}
-                <div
-                  class="text-center py-8 text-gray-500"
-                  class:text-right={$isRTL}
-                >
-                  <svg
-                    class="mx-auto h-12 w-12 text-gray-400"
-                    fill="none"
-                    viewBox="0 0 24 24"
-                    stroke="currentColor"
-                  >
-                    <path
-                      stroke-linecap="round"
-                      stroke-linejoin="round"
-                      stroke-width="2"
-                      d="M13.828 10.172a4 4 0 00-5.656 0l-4 4a4 4 0 105.656 5.656l1.102-1.101m-.758-4.899a4 4 0 005.656 0l4-4a4 4 0 00-5.656-5.656l-1.1 1.1"
-                    />
-                  </svg>
-                  <p class="mt-2">
-                    {$_("admin_item_detail.relationships.no_relationships")}
-                  </p>
-                </div>
-              {/if}
-            </div>
-          {/if}
-
           {#if $activeTab === "attachments"}
             <div class="space-y-6">
               <div
@@ -1710,35 +1147,7 @@
                           class:flex-row-reverse={$isRTL}
                           class:text-right={$isRTL}
                         >
-                          {#if type === "comment" || type === "reply"}
-                            <svg
-                              class="w-5 h-5 text-blue-600"
-                              fill="none"
-                              stroke="currentColor"
-                              viewBox="0 0 24 24"
-                            >
-                              <path
-                                stroke-linecap="round"
-                                stroke-linejoin="round"
-                                stroke-width="2"
-                                d="M8 12h.01M12 12h.01M16 12h.01M21 12c0 4.418-4.03 8-9 8a9.863 9.863 0 01-4.255-.949L3 20l1.395-3.72C3.512 15.042 3 13.574 3 12c0-4.418 4.03-8 9-8s9 3.582 9 8z"
-                              />
-                            </svg>
-                          {:else if type === "reaction"}
-                            <svg
-                              class="w-5 h-5 text-yellow-600"
-                              fill="none"
-                              stroke="currentColor"
-                              viewBox="0 0 24 24"
-                            >
-                              <path
-                                stroke-linecap="round"
-                                stroke-linejoin="round"
-                                stroke-width="2"
-                                d="M14.828 14.828a4 4 0 01-5.656 0M9 10h.01M15 10h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z"
-                              />
-                            </svg>
-                          {:else if type === "share"}
+                          {#if type === "share"}
                             <svg
                               class="w-5 h-5 text-purple-600"
                               fill="none"
@@ -1784,20 +1193,15 @@
 
                           <span
                             class="inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium"
-                            class:bg-blue-100={type === "comment"}
-                            class:text-blue-800={type === "comment"}
-                            class:bg-yellow-100={type === "reaction"}
-                            class:text-yellow-800={type === "reaction"}
                             class:bg-green-100={type === "media"}
                             class:text-green-800={type === "media"}
-                            class:bg-gray-100={type !== "comment" &&
-                              type !== "reaction" &&
-                              type !== "media"}
-                            class:text-gray-800={type !== "comment" &&
-                              type !== "reaction" &&
-                              type !== "media"}
+                            class:bg-gray-100={type !== "media"}
+                            class:text-gray-800={type !== "media"}
                           >
-                            {formatNumberInText(attachmentsArr.length, $locale ?? "")}
+                            {formatNumberInText(
+                              attachmentsArr.length,
+                              $locale ?? "",
+                            )}
                           </span>
                           {$_("admin_item_detail.attachments.type_count", {
                             values: {
@@ -1812,174 +1216,7 @@
                       </div>
 
                       <div class="p-6">
-                        {#if type === "comment" || type === "reply"}
-                          <div class="space-y-4">
-                            {#each attachmentsArr as comment}
-                              <div
-                                class="bg-gray-50 rounded-lg p-4 border border-gray-200"
-                              >
-                                <div
-                                  class="flex items-start justify-between mb-2"
-                                >
-                                  <div
-                                    class="flex items-center space-x-2"
-                                    class:space-x-reverse={$isRTL}
-                                  >
-                                    <div
-                                      class="w-8 h-8 bg-blue-500 rounded-full flex items-center justify-center"
-                                    >
-                                      <svg
-                                        class="w-4 h-4 text-white"
-                                        fill="currentColor"
-                                        viewBox="0 0 20 20"
-                                      >
-                                        <path
-                                          fill-rule="evenodd"
-                                          d="M10 9a3 3 0 100-6 3 3 0 000 6zm-7 9a7 7 0 1114 0H3z"
-                                          clip-rule="evenodd"
-                                        />
-                                      </svg>
-                                    </div>
-                                    <div>
-                                      <p
-                                        class="text-sm font-medium text-gray-900"
-                                      >
-                                        {comment.attributes.owner_shortname ||
-                                          "Unknown User"}
-                                      </p>
-                                      <p class="text-xs text-gray-500">
-                                        {new Date(
-                                          comment.attributes.created_at,
-                                        ).toLocaleDateString()} at {new Date(
-                                          comment.attributes.created_at,
-                                        ).toLocaleTimeString()}
-                                      </p>
-                                    </div>
-                                  </div>
-                                  <span
-                                    class="text-xs text-gray-400 bg-white px-2 py-1 rounded"
-                                  >
-                                    {comment.attributes.payload?.body?.state ||
-                                      "comment"}
-                                  </span>
-                                </div>
-
-                                <div class="mt-3">
-                                  <h5
-                                    class="text-sm font-medium text-gray-800 mb-2"
-                                  >
-                                    {comment?.attributes?.displayname?.ar ||
-                                      comment?.attributes?.displayname?.en ||
-                                      comment?.attributes?.payload?.body
-                                        ?.body ||
-                                      comment.shortname ||
-                                      ""}
-                                  </h5>
-
-                                  <div
-                                    class="flex items-center justify-between"
-                                  >
-                                    <div
-                                      class="flex items-center space-x-3 text-xs text-gray-500"
-                                    >
-                                      {#if comment.attributes.payload?.bytesize}
-                                        <span
-                                          >Size: {comment.attributes.payload
-                                            .bytesize} bytes</span
-                                        >
-                                      {/if}
-                                    </div>
-
-                                    <div class="flex items-center space-x-2">
-                                      <span
-                                        class="inline-flex items-center px-2 py-1 rounded-full text-xs font-medium bg-blue-100 text-blue-800"
-                                      >
-                                        {comment.resource_type}
-                                      </span>
-                                    </div>
-                                  </div>
-                                </div>
-                              </div>
-                            {/each}
-                          </div>
-                        {:else if type === "reaction"}
-                          <div class="space-y-3">
-                            {#each attachmentsArr as reaction}
-                              <div
-                                class="bg-yellow-50 rounded-lg p-4 border border-yellow-200"
-                              >
-                                <div class="flex items-center justify-between">
-                                  <div
-                                    class="flex items-center space-x-3"
-                                    class:space-x-reverse={$isRTL}
-                                  >
-                                    <div
-                                      class="w-10 h-10 bg-yellow-400 rounded-full flex items-center justify-center"
-                                    >
-                                      <svg
-                                        class="w-5 h-5 text-yellow-800"
-                                        fill="currentColor"
-                                        viewBox="0 0 20 20"
-                                      >
-                                        <path
-                                          fill-rule="evenodd"
-                                          d="M3.172 5.172a4 4 0 015.656 0L10 6.343l1.172-1.171a4 4 0 115.656 5.656L10 17.657l-6.828-6.829a4 4 0 010-5.656z"
-                                          clip-rule="evenodd"
-                                        />
-                                      </svg>
-                                    </div>
-
-                                    <div>
-                                      <div
-                                        class="flex items-center space-x-2 mb-1"
-                                      >
-                                        <span
-                                          class="text-sm font-medium text-gray-900"
-                                        >
-                                          {reaction.attributes
-                                            .owner_shortname || "Anonymous"}
-                                        </span>
-                                        <span class="text-xs text-gray-500">
-                                          reacted
-                                        </span>
-                                      </div>
-                                      <p class="text-xs text-gray-500">
-                                        {new Date(
-                                          reaction.attributes.created_at,
-                                        ).toLocaleDateString()} at {new Date(
-                                          reaction.attributes.created_at,
-                                        ).toLocaleTimeString()}
-                                      </p>
-                                    </div>
-                                  </div>
-
-                                  <div class="text-right">
-                                    <p class="text-xs text-gray-400 mb-1">
-                                      ID: {reaction.shortname}
-                                    </p>
-                                    <span
-                                      class="inline-flex items-center px-2 py-1 rounded-full text-xs font-medium bg-yellow-100 text-yellow-800"
-                                    >
-                                      {reaction.resource_type}
-                                    </span>
-                                  </div>
-                                </div>
-
-                                {#if reaction.attributes.updated_at !== reaction.attributes.created_at}
-                                  <div
-                                    class="mt-2 pt-2 border-t border-yellow-200"
-                                  >
-                                    <p class="text-xs text-gray-500">
-                                      Last updated: {new Date(
-                                        reaction.attributes.updated_at,
-                                      ).toLocaleDateString()}
-                                    </p>
-                                  </div>
-                                {/if}
-                              </div>
-                            {/each}
-                          </div>
-                        {:else if type === "share"}
+                        {#if type === "share"}
                           <div class="space-y-3">
                             {#each attachmentsArr as share}
                               <div
@@ -2104,43 +1341,6 @@
                   <p class="mt-2">
                     {$_("admin_item_detail.attachments.no_attachments")}
                   </p>
-                </div>
-              {/if}
-            </div>
-          {/if}
-
-          {#if $activeTab === "template"}
-            <div class="space-y-6">
-              {#if isSchemaBasedItem}
-                {@const templateAttachment = itemDataValue?.attachments?.media?.find(
-                  (att: any) => att.shortname === "template"
-                ) || null}
-                <SchemaTemplateManager
-                  space_name={spaceNameValue}
-                  subpath={actualSubpathValue}
-                  parent_shortname={itemShortnameValue}
-                  {templateAttachment}
-                  onTemplateUpdate={() => {
-                    // Refresh item data to show updated attachments
-                    loadItemData();
-                  }}
-                />
-              {:else}
-                <div class="text-center py-12 text-gray-500">
-                  <svg
-                    class="mx-auto h-12 w-12 text-gray-400 mb-4"
-                    fill="none"
-                    viewBox="0 0 24 24"
-                    stroke="currentColor"
-                  >
-                    <path
-                      stroke-linecap="round"
-                      stroke-linejoin="round"
-                      stroke-width="2"
-                      d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z"
-                    />
-                  </svg>
-                  <p>Template management is only available for schema items.</p>
                 </div>
               {/if}
             </div>
@@ -2627,14 +1827,7 @@
                   {$_("admin_item_detail.edit_modal.fields.content")}
                 </label>
                 <div class="editor-container">
-                  {#if isTemplateBasedItem}
-                    <TemplateEditor
-                      content={templateEditorContent}
-                      space_name={spaceNameValue}
-                      on:contentChange={(e) =>
-                        handleTemplateContentChange(e.detail)}
-                    />
-                  {:else if isSchemaBasedItem}
+                  {#if isSchemaBasedItem}
                     <SchemaForm bind:content={schemaEditorContent} />
                   {:else if isDynamicSchemaItem}
                     {#if loadingDynamicSchema}
@@ -2644,13 +1837,24 @@
                       </div>
                     {:else if selectedDynamicSchema}
                       <div class="schema-form-wrapper">
-                        <div class="schema-info-bar mb-4 pb-2 border-b border-gray-100">
-                          <span class="schema-label font-medium text-gray-500">Schema:</span>
-                          <span class="schema-name font-semibold text-gray-900 ml-2">{selectedDynamicSchema.title}</span>
+                        <div
+                          class="schema-info-bar mb-4 pb-2 border-b border-gray-100"
+                        >
+                          <span class="schema-label font-medium text-gray-500"
+                            >Schema:</span
+                          >
+                          <span
+                            class="schema-name font-semibold text-gray-900 ml-2"
+                            >{selectedDynamicSchema.title}</span
+                          >
                         </div>
                         <DynamicSchemaBasedForms
                           bind:content={dynamicSchemaFormData}
                           schema={selectedDynamicSchema.schema}
+                          space={$params.space_name}
+                          subpath={actualSubpathValue}
+                          resourceType={$params.resource_type ||
+                            ResourceType.content}
                         />
                       </div>
                     {/if}
@@ -2670,11 +1874,14 @@
                           title="JSON Preview"
                           type="json"
                           isAdmin={true}
-                          schemaShortname={itemDataValue?.payload?.schema_shortname}
+                          schemaShortname={itemDataValue?.payload
+                            ?.schema_shortname}
                           spaceName={$params.space_name}
                           subpath={actualSubpathValue}
                           shortname={$params.shortname}
-                          onSaved={(d) => { jsonEditFormValue = d; }}
+                          onSaved={(d) => {
+                            jsonEditFormValue = d;
+                          }}
                         />
                       </div>
                     </div>
@@ -2784,7 +1991,7 @@
       if (e.target === e.currentTarget) showDeleteModal.set(false);
     }}
     onkeydown={(e) => {
-      if (e.key === 'Escape') showDeleteModal.set(false);
+      if (e.key === "Escape") showDeleteModal.set(false);
     }}
     role="dialog"
     aria-modal="true"
@@ -2801,8 +2008,15 @@
       <!-- Modal Header -->
       <div class="bg-red-50 px-3 py-1.5 border-b border-red-100 rounded-t-2xl">
         <div class="flex items-center gap-3">
-          <div class="w-10 h-10 bg-red-100 rounded-full flex items-center justify-center">
-            <svg class="w-5 h-5 text-red-600" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+          <div
+            class="w-10 h-10 bg-red-100 rounded-full flex items-center justify-center"
+          >
+            <svg
+              class="w-5 h-5 text-red-600"
+              fill="none"
+              stroke="currentColor"
+              viewBox="0 0 24 24"
+            >
               <path
                 stroke-linecap="round"
                 stroke-linejoin="round"
@@ -2829,8 +2043,18 @@
         </p>
         <div class="mt-4 p-3 bg-amber-50 border border-amber-200 rounded-lg">
           <div class="flex items-start gap-2">
-            <svg class="w-5 h-5 text-amber-500 mt-0.5 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-              <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z" />
+            <svg
+              class="w-5 h-5 text-amber-500 mt-0.5 shrink-0"
+              fill="none"
+              stroke="currentColor"
+              viewBox="0 0 24 24"
+            >
+              <path
+                stroke-linecap="round"
+                stroke-linejoin="round"
+                stroke-width="2"
+                d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z"
+              />
             </svg>
             <p class="text-sm text-amber-700">
               {$_("admin_item_detail.delete_modal.warning")}
@@ -2854,14 +2078,40 @@
           class="px-3 py-1.5 bg-red-600 hover:bg-red-700 text-white rounded-xl font-medium transition-colors shadow-sm flex items-center gap-2 disabled:opacity-50"
         >
           {#if $isDeleting}
-            <svg class="animate-spin h-4 w-4 text-white" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
-              <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle>
-              <path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
+            <svg
+              class="animate-spin h-4 w-4 text-white"
+              xmlns="http://www.w3.org/2000/svg"
+              fill="none"
+              viewBox="0 0 24 24"
+            >
+              <circle
+                class="opacity-25"
+                cx="12"
+                cy="12"
+                r="10"
+                stroke="currentColor"
+                stroke-width="4"
+              ></circle>
+              <path
+                class="opacity-75"
+                fill="currentColor"
+                d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"
+              ></path>
             </svg>
             {$_("common.deleting")}
           {:else}
-            <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-              <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" />
+            <svg
+              class="w-4 h-4"
+              fill="none"
+              stroke="currentColor"
+              viewBox="0 0 24 24"
+            >
+              <path
+                stroke-linecap="round"
+                stroke-linejoin="round"
+                stroke-width="2"
+                d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16"
+              />
             </svg>
             {$_("common.delete")}
           {/if}
@@ -3260,6 +2510,7 @@
   }
 
   .editor-container {
+    padding: 12px;
     border: 2px solid #e5e7eb;
     border-radius: 0.75rem;
     background: white;
@@ -3629,78 +2880,5 @@
 
   .status-toggle-simple .status-value.inactive {
     color: #dc2626;
-  }
-
-  /* Template loading and error states */
-  .template-loading {
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    gap: 0.75rem;
-    padding: 2rem;
-    color: #6b7280;
-  }
-
-  .template-loading .spinner {
-    width: 1.5rem;
-    height: 1.5rem;
-    border: 2px solid #e5e7eb;
-    border-top-color: #3b82f6;
-    border-radius: 50%;
-    animation: spin 1s linear infinite;
-  }
-
-  @keyframes spin {
-    to {
-      transform: rotate(360deg);
-    }
-  }
-
-  .template-error {
-    padding: 1rem;
-  }
-
-  .template-error .error-message {
-    color: #dc2626;
-    font-weight: 500;
-    margin-bottom: 1rem;
-  }
-
-  .template-error .fallback-data {
-    background: #f9fafb;
-    border: 1px solid #e5e7eb;
-    padding: 1rem;
-    border-radius: 0.5rem;
-    margin-bottom: 1rem;
-  }
-
-  .template-error .fallback-data h4 {
-    margin: 0 0 0.75rem 0;
-    color: #374151;
-    font-size: 1rem;
-  }
-
-  .template-error .fallback-data dl {
-    margin: 0;
-  }
-
-  .template-error .fallback-data dt {
-    font-weight: 600;
-    color: #4b5563;
-    margin-top: 0.5rem;
-  }
-
-  .template-error .fallback-data dd {
-    margin-left: 0;
-    color: #6b7280;
-    margin-top: 0.25rem;
-  }
-
-  .template-error .fallback-content {
-    background: #f3f4f6;
-    padding: 1rem;
-    border-radius: 0.5rem;
-    font-size: 0.875rem;
-    color: #6b7280;
   }
 </style>

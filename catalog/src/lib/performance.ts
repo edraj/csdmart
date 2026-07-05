@@ -15,7 +15,8 @@ export function loadFontsLazily() {
       // collapses to location.href and a relative path resolves wrong.
       // Reading <base> while it's intact (or falling back to a hardcoded
       // prefix that matches dmart's deployed mount) keeps this stable.
-      const baseHref = document.querySelector("base")?.getAttribute("href") || "/cat/";
+      const baseHref =
+        document.querySelector("base")?.getAttribute("href") || "/cat/";
       link.href = `${baseHref.replace(/\/?$/, "/")}assets/uthman/uthman.css`;
       link.media = "print";
       document.head.appendChild(link);

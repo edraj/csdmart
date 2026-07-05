@@ -2,6 +2,9 @@
     import { onMount } from 'svelte';
     import { Dmart, QueryType } from '@edraj/tsdmart';
     import { _ } from 'svelte-i18n';
+    import FieldGate from '@/components/access/FieldGate.svelte';
+    import { permissions } from '@/stores/permissions';
+    import { constrainEnumOptions } from '@/lib/access-fields';
 
     let {
         formData = $bindable(),
@@ -32,6 +35,11 @@
     formData = {
         ...formData,
         email: formData.email || null,
+        // Passwords always start EMPTY — never seeded from loaded user
+        // attributes (which may carry the stored hash; resubmitting it would
+        // corrupt the credential). Empty values are stripped before submit.
+        password: "",
+        old_password: "",
         msisdn: formData.msisdn || null,
         is_email_verified: formData.is_email_verified || false,
         is_msisdn_verified: formData.is_msisdn_verified || false,
@@ -44,16 +52,21 @@
         google_id: formData.google_id || null,
         facebook_id: formData.facebook_id || null,
         apple_id: formData.apple_id || null,
-        social_avatar_url: formData.social_avatar_url || null,
-        // Admin UI never sets passwords (/managed/request rejects them); force
-        // these undefined so neither a loaded $argon2id hash nor a typed value is
-        // ever sent. Users set their own password via login OTP / password reset.
-        password: undefined,
-        old_password: undefined
+        social_avatar_url: formData.social_avatar_url || null
     }
 
-    const userTypeOptions = ["bot", "mobile", "web", "admin", "api"]
-        .map(type => ({ name: type.charAt(0).toUpperCase() + type.slice(1), value: type }));
+    // The same allowed_fields_values whitelist DynamicSchemaBasedForms applies
+    // via constrainEnumOptions must constrain this hand-written select too.
+    const userTypeOptions = $derived(
+        constrainEnumOptions(
+            ["bot", "mobile", "web", "admin", "api"],
+            $permissions,
+            "type",
+            "management",
+            "users",
+            "user",
+            formData.type,
+        ).map(type => ({ name: type.charAt(0).toUpperCase() + type.slice(1), value: type })));
 
     async function getRoles() {
         try {
@@ -206,6 +219,41 @@
         <h2 class="section-title">User Information</h2>
 
         <form bind:this={form} class="form-body">
+            <!-- Passwords are OPTIONAL: an admin must be able to edit any other
+                 attribute without knowing/replacing the user's password. When
+                 left blank they are stripped from the payload before submit;
+                 minlength only applies once a value is typed. -->
+            {#if !isCreate}
+                <div class="field-group">
+                    <label for="old_password" class="field-label">Old Password</label>
+                    <input
+                        id="old_password"
+                        type="password"
+                        class="input-field"
+                        placeholder="••••••••"
+                        bind:value={formData.old_password}
+                        minlength={8}
+                    />
+                    <p class="field-help">Only needed when changing the password</p>
+                </div>
+            {/if}
+
+            <div class="field-group">
+                <label for="password" class="field-label">
+                    {isCreate ? "Password" : "New Password"}
+                </label>
+                <input
+                    id="password"
+                    type="password"
+                    class="input-field"
+                    placeholder="••••••••"
+                    bind:value={formData.password}
+                    minlength={8}
+                />
+                <p class="field-help">Minimum 8 characters; leave blank to keep unchanged</p>
+            </div>
+
+            <FieldGate field="email" space="management" subpath="/users" resourceType="user">
             <div class="field-group">
                 <label for="email" class="field-label">Email</label>
                 <input
@@ -221,7 +269,9 @@
                     <p class="error-text">Please enter a valid email address</p>
                 {/if}
             </div>
+            </FieldGate>
 
+            <FieldGate field="msisdn" space="management" subpath="/users" resourceType="user">
             <div class="field-group">
                 <label for="msisdn" class="field-label">Mobile Number (MSISDN)</label>
                 <input
@@ -231,6 +281,7 @@
                     bind:value={formData.msisdn}
                 />
             </div>
+            </FieldGate>
 
             <div class="checkbox-row compact">
                 <div class="checkbox-group">
@@ -481,13 +532,7 @@
         align-items: center;
     }
 
-    .required {
-        color: #ef4444;
-        margin-right: 0.25rem;
-        font-weight: bold;
-    }
-
-    .input-field {
+.input-field {
         width: 100%;
         padding: 0.5rem 0.75rem;
         border: 1.5px solid #e5e7eb;

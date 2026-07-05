@@ -1,6 +1,7 @@
 <script lang="ts">
   import { marked } from "marked";
   import { mangle } from "marked-mangle";
+  import { sanitizeHtml } from "@/lib/utils/sanitize";
   import { gfmHeadingId } from "marked-gfm-heading-id";
 
   marked.use(mangle());
@@ -457,7 +458,7 @@
         data-panel="preview"
       >
         <div class="markdown-preview">
-          {@html marked(content)}
+          {@html sanitizeHtml(marked(content))}
         </div>
       </div>
     </div>

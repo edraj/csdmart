@@ -1,0 +1,30 @@
+# Gitea Actions — type-check the project (svelte-check) on every push and PR.
+# `yarn run check` runs the package.json "check" script. (Plain `yarn check`
+# collides with yarn-classic's deprecated built-in integrity command and would
+# NOT run svelte-check, so we use `yarn run check`.)
+name: check
+
+on: [push, pull_request]
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+
+      - name: Install Yarn (classic)
+        run: npm install -g yarn
+
+      - name: Install dependencies
+        # yarn-classic only warns (doesn't fail) on the vite 8 / @roxi/routify
+        # peer-dependency mismatch, so no extra flags are needed here.
+        run: yarn install
+
+      - name: Type-check (svelte-check)
+        run: yarn run check
