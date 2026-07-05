@@ -3,6 +3,8 @@
   import { Modal } from "flowbite-svelte";
 
   import MetaRoleForm from "@/components/forms/MetaRoleForm.svelte";
+  import { guardAccess } from "@/lib/guards";
+  import { can } from "@/stores/permissions";
   import {
     errorToastMessage,
     successToastMessage,
@@ -236,6 +238,7 @@
   }
 
   onMount(async () => {
+    if (!guardAccess("query", "management", "roles", ResourceType.role)) return;
     await loadSpaces();
     await loadRoleTypes();
   });
@@ -259,6 +262,7 @@
     <div class="card-header">
       <h2 class="card-title">{$_("select_role_type")}</h2>
       <div class="header-actions">
+        {#if $can("create", "management", "roles", ResourceType.role)}
         <button
           aria-label={`Add role`}
           class="btn btn-primary"
@@ -267,7 +271,8 @@
           <span>+</span>
           {$_("add_role")}
         </button>
-        {#if roleExists}
+        {/if}
+        {#if roleExists && $can("delete", "management", "roles", ResourceType.role)}
           <button
             aria-label={`Delete role ${selectedRoleType}`}
             class="btn btn-danger"
@@ -382,6 +387,7 @@
       <div class="action-bar-wrapper">
         <div class="action-bar">
           <div class="action-buttons">
+            {#if $can(roleExists ? "update" : "create", "management", "roles", ResourceType.role)}
             <button
               aria-label={`Save role`}
               class="btn btn-primary"
@@ -400,6 +406,7 @@
                 {roleExists ? $_("update") : $_("create")} {$_("role")}
               {/if}
             </button>
+            {/if}
           </div>
 
           <div class="meta-info">

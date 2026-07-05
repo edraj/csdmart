@@ -12,6 +12,7 @@
   import { derived as derivedStore } from "svelte/store";
   import { ResourceType } from "@edraj/tsdmart/dmart.model";
   import { getCurrentScope } from "@/stores/user";
+  import { website } from "@/config";
   import Attachments from "@/components/Attachments.svelte";
   import PostHeader from "@/components/post/PostHeader.svelte";
   import PostContent from "@/components/post/PostContent.svelte";
@@ -356,43 +357,47 @@
         {/if}
         <PostContent {postData} {spaceName} />
 
-        <PostInteractions
-          reactionsCount={reactions.length}
-          commentsCount={comments.length}
-          {userReactionId}
-          {isSubmittingReaction}
-          onToggleReaction={handleToggleReaction}
-        />
+        {#if website.enable_reaction_and_comment}
+          <PostInteractions
+            reactionsCount={reactions.length}
+            commentsCount={comments.length}
+            {userReactionId}
+            {isSubmittingReaction}
+            onToggleReaction={handleToggleReaction}
+          />
+        {/if}
       </article>
 
-      <section class="post-card comments-card mb-6">
-        <div class="comments-header-row mb-6">
-          <div class="comments-accent-bar"></div>
-          <h3 class="comments-title">
-            {$_("post_detail.sections.comments", { default: "Comments" })}
-          </h3>
-          <span class="comments-count-badge">{comments.length}</span>
-        </div>
-
-        <InteractiveForm
-          bind:newComment
-          {isSubmittingComment}
-          onAddComment={handleAddComment}
-        />
-
-        {#if comments.length > 0}
-          <div class="comments-list mt-6">
-            <NestedComments
-              {comments}
-              {spaceName}
-              subpath={actualSubpath}
-              {itemShortname}
-              entryOwnerShortname={postData.owner_shortname}
-              onCommentAdded={loadPostData}
-            />
+      {#if website.enable_reaction_and_comment}
+        <section class="post-card comments-card mb-6">
+          <div class="comments-header-row mb-6">
+            <div class="comments-accent-bar"></div>
+            <h3 class="comments-title">
+              {$_("post_detail.sections.comments", { default: "Comments" })}
+            </h3>
+            <span class="comments-count-badge">{comments.length}</span>
           </div>
-        {/if}
-      </section>
+
+          <InteractiveForm
+            bind:newComment
+            {isSubmittingComment}
+            onAddComment={handleAddComment}
+          />
+
+          {#if comments.length > 0}
+            <div class="comments-list mt-6">
+              <NestedComments
+                {comments}
+                {spaceName}
+                subpath={actualSubpath}
+                {itemShortname}
+                entryOwnerShortname={postData.owner_shortname}
+                onCommentAdded={loadPostData}
+              />
+            </div>
+          {/if}
+        </section>
+      {/if}
 
       {#if mediaFiles.length > 0}
         <section class="post-card media-section mb-6">

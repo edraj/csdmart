@@ -5,6 +5,7 @@ import {
     RequestType,
     ResourceType,
 } from "@edraj/tsdmart";
+import { checkAccess } from "@/stores/permissions";
 
 export async function createRole(
     data: any,
@@ -14,6 +15,9 @@ export async function createRole(
     workflow_shortname: string,
     schema_shortname: string
 ) {
+    if (!checkAccess("create", space_name, subpath, resourceType)) {
+        throw new Error("Permission denied: cannot create role");
+    }
     const attributes: any = {
         is_active: data.is_active ?? true,
         tags: data.tags || [],
@@ -56,6 +60,9 @@ export async function updateRole(
     workflow_shortname: string,
     schema_shortname: string
 ) {
+    if (!checkAccess("update", space_name, subpath, resourceType)) {
+        throw new Error("Permission denied: cannot update role");
+    }
     const attributes: any = {
         is_active: data.is_active ?? true,
         tags: data.tags || [],
@@ -98,6 +105,9 @@ export async function createPermission(
     workflow_shortname: string,
     schema_shortname: string
 ) {
+    if (!checkAccess("create", space_name, subpath, resourceType)) {
+        throw new Error("Permission denied: cannot create permission");
+    }
     const attributes: any = {
         is_active: data.is_active ?? true,
         tags: data.tags || [],
@@ -147,6 +157,9 @@ export async function updatePermission(
     workflow_shortname: string,
     schema_shortname: string
 ) {
+    if (!checkAccess("update", space_name, subpath, resourceType)) {
+        throw new Error("Permission denied: cannot update permission");
+    }
     const attributes: any = {
         is_active: data.is_active ?? true,
         tags: data.tags || [],

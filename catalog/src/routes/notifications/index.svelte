@@ -3,17 +3,16 @@
     deleteAllNotification,
     fetchMyNotifications,
     getAvatar,
-    getEntity,
     markNotification,
   } from "@/lib/dmart_services";
   import { user } from "@/stores/user";
   import { onMount, onDestroy } from "svelte";
-  import { formatDate, truncateString } from "@/lib/helpers";
+  import { formatDate } from "@/lib/helpers";
   import Avatar from "@/components/Avatar.svelte";
   import { SyncLoader } from "svelte-loading-spinners";
   import { newNotificationType } from "@/stores/newNotificationType";
   import { ResourceType } from "@edraj/tsdmart";
-  import { getCurrentScope } from "@/stores/user";
+
   import { _ } from "@/i18n";
   import { goto } from "@roxi/routify";
   import {
@@ -31,9 +30,8 @@
     $wsStatus.charAt(0).toUpperCase() + $wsStatus.slice(1),
   );
   let notificationError: any = $state(null);
-
+  let selectedReportNotification = $state<any>(null);
   let showReportModal = $state(false);
-  let selectedReportNotification: any = $state(null);
 
   let removeListener: (() => void) | null = null;
 
@@ -96,10 +94,7 @@
               switch (resource_type) {
                 case "ticket":
                   return "new updates";
-                case "reaction":
-                  return "reacted";
-                case "comment":
-                  return "New comment";
+
                 default:
                   return "notification";
               }
@@ -118,53 +113,6 @@
               title: "Notification",
               body: "",
             };
-
-            if (
-              [ResourceType.comment, ResourceType.reaction].includes(
-                resource_type
-              ) &&
-              n.attributes.relationships?.length > 0
-            ) {
-              const relationshipData = n.attributes.relationships[0].related_to;
-              _notification.parent_shortname = relationshipData.shortname;
-              _notification.parent_space_name = relationshipData.space_name;
-              _notification.parent_subpath = relationshipData.subpath;
-
-              try {
-                let entity = await getEntity(
-                  resource_type === ResourceType.ticket
-                    ? entry_shortname
-                    : _notification.parent_shortname,
-                  _notification.parent_space_name,
-                  _notification.parent_subpath,
-                  resource_type === ResourceType.ticket
-                    ? ResourceType.content
-                    : ResourceType.ticket,
-                  getCurrentScope()
-                );
-
-                if (entity) {
-                  _notification.title = entity.payload?.body?.title || "Post";
-
-                  if (_notification.resource_type === ResourceType.comment) {
-                    const attachments = entity.attachments as {
-                      comment?: any[];
-                    };
-                    const commentAttachment = (attachments.comment ?? []).find(
-                      (c) =>
-                        c.shortname ===
-                        n.attributes.payload.body.entry_shortname
-                    );
-                    if (commentAttachment) {
-                      _notification.body =
-                        commentAttachment.attributes.payload.body.body;
-                    }
-                  }
-                }
-              } catch (entityError) {
-                _notification.title = "Content";
-              }
-            }
 
             return _notification;
           } catch (notificationError) {
@@ -565,25 +513,11 @@
                     </h4>
 
                     <div class="text-gray-600 mb-3">
-                      {#if notification.resource_type === ResourceType.reaction}
-                        <p>
-                          Has <span class="font-medium text-red-600"
-                            >{notification.resourceTypeString}</span
-                          > to your post
-                        </p>
-                      {:else if notification.resource_type === ResourceType.ticket || notification.resource_type === "ticket"}
+                      {#if notification.resource_type === ResourceType.ticket || notification.resource_type === "ticket"}
                         <p>
                           Has <span class="font-medium text-blue-600"
                             >{notification.resourceTypeString}</span
                           > for your entity
-                        </p>
-                      {:else if notification.resource_type === ResourceType.comment}
-                        <p>
-                          <span class="font-medium text-green-600"
-                            >{notification.resourceTypeString}</span
-                          >: {notification.body
-                            ? truncateString(notification.body)
-                            : "New comment"}
                         </p>
                       {:else}
                         <p>
@@ -600,53 +534,23 @@
                   </div>
 
                   <div class="shrink-0">
-                    {#if notification.resource_type === ResourceType.reaction}
-                      <div
-                        class="w-8 h-8 bg-red-100 rounded-full flex items-center justify-center"
+                    <div
+                      class="w-8 h-8 bg-green-100 rounded-full flex items-center justify-center"
+                    >
+                      <svg
+                        class="w-4 h-4 text-green-600"
+                        fill="none"
+                        stroke="currentColor"
+                        viewBox="0 0 24 24"
                       >
-                        <svg
-                          class="w-4 h-4 text-red-600"
-                          fill="currentColor"
-                          viewBox="0 0 24 24"
-                        >
-                          <path
-                            d="M12 21.35l-1.45-1.32C5.4 15.36 2 12.28 2 8.5 2 5.42 4.42 3 7.5 3c1.74 0 3.41.81 4.5 2.09C13.09 3.81 14.76 3 16.5 3 19.58 3 22 5.42 22 8.5c0 3.78-3.4 6.86-8.55 11.54L12 21.35z"
-                          />
-                        </svg>
-                      </div>
-                    {:else if notification.resource_type === ResourceType.comment}
-                      <div
-                        class="w-8 h-8 bg-blue-100 rounded-full flex items-center justify-center"
-                      >
-                        <svg
-                          class="w-4 h-4 text-blue-600"
-                          fill="currentColor"
-                          viewBox="0 0 24 24"
-                        >
-                          <path
-                            d="M20 2H4c-1.1 0-2 .9-2 2v12c0 1.1.9 2 2 2h4l4 4 4-4h4c1.1 0 2-.9 2-2V4c0-1.1-.9-2-2-2z"
-                          />
-                        </svg>
-                      </div>
-                    {:else}
-                      <div
-                        class="w-8 h-8 bg-green-100 rounded-full flex items-center justify-center"
-                      >
-                        <svg
-                          class="w-4 h-4 text-green-600"
-                          fill="none"
-                          stroke="currentColor"
-                          viewBox="0 0 24 24"
-                        >
-                          <path
-                            stroke-linecap="round"
-                            stroke-linejoin="round"
-                            stroke-width="2"
-                            d="M9 12l2 2 4-4m6 2a9 9 0 11-18 0 9 9 0 0118 0z"
-                          ></path>
-                        </svg>
-                      </div>
-                    {/if}
+                        <path
+                          stroke-linecap="round"
+                          stroke-linejoin="round"
+                          stroke-width="2"
+                          d="M9 12l2 2 4-4m6 2a9 9 0 11-18 0 9 9 0 0118 0z"
+                        ></path>
+                      </svg>
+                    </div>
                   </div>
                 </div>
               </div>

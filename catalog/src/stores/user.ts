@@ -13,6 +13,10 @@ import { log } from "@/lib/logger";
 import { DEFAULT_ROW_PER_PAGE } from "@/lib/constants";
 import { teardownGlobalWebSocket } from "@/stores/websocket";
 import { resolveAutoShortname } from "@/lib/helpers";
+import {
+  permissions,
+  syncPermissionsFromStorage,
+} from "@/stores/permissions";
 
 enum Locale {
   ar = "ar",
@@ -82,10 +86,12 @@ async function handleLoginResponse(response: { status: string; records: any[] })
       log.error("Error refreshing profile after login:", error);
     }
     syncRolesFromStorage();
+    syncPermissionsFromStorage();
   } else {
     user.set(signedout);
     storage.setJson(KEY, signedout);
     roles.set([]);
+    permissions.set({});
   }
 }
 
@@ -242,6 +248,7 @@ export async function signout() {
   storage.remove("permissions");
   authToken.set("");
   roles.set([]);
+  permissions.set({});
   user.set(signedout);
   storage.remove(KEY);
 

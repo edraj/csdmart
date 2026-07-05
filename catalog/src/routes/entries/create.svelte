@@ -1,6 +1,7 @@
 <script lang="ts">
   import { goto, params } from "@roxi/routify";
   import HtmlEditor from "@/components/editors/HtmlEditor.svelte";
+  import { sanitizeHtml } from "@/lib/utils/sanitize";
   import {
     attachAttachmentsToEntity,
     createEntity,
@@ -41,6 +42,7 @@
   import { onMount } from "svelte";
   import { ResourceType, DmartScope } from "@edraj/tsdmart";
   import { roles } from "@/stores/user";
+  import { isSuperAdmin } from "@/lib/access";
   import MarkdownEditor from "@/components/editors/MarkdownEditor.svelte";
   import DynamicSchemaBasedForms from "@/components/forms/DynamicSchemaBasedForms.svelte";
   import { marked } from "marked";
@@ -160,7 +162,7 @@
   let rolesValue: any;
   roles.subscribe((value: any) => {
     rolesValue = value;
-    isAdmin = value.includes("super_admin");
+    isAdmin = isSuperAdmin(value);
   });
 
   async function handleEntryTypeChange() {
@@ -1611,6 +1613,9 @@
             <DynamicSchemaBasedForms
               bind:content={jsonFormData}
               schema={selectedSchema.schema}
+              space={selectedSpace}
+              subpath={$params.subpath ?? currentPath}
+              resourceType={resource_type}
             />
           </div>
         </div>
@@ -1736,7 +1741,7 @@
                 {$_("create_entry.template.preview_title")}
               </h3>
               <div class="template-preview markdown-preview">
-                {@html marked(generateContentFromSchemaTemplate())}
+                {@html sanitizeHtml(marked(generateContentFromSchemaTemplate()))}
               </div>
             </div>
           </div>
@@ -1757,6 +1762,9 @@
                   <DynamicSchemaBasedForms
                     bind:content={jsonFormData}
                     schema={selectedSchema.schema}
+                    space={selectedSpace}
+                    subpath={$params.subpath ?? currentPath}
+                    resourceType={resource_type}
                   />
                 </div>
               </div>
@@ -1876,7 +1884,7 @@
                 </div>
                 <div class="section-content">
                   <div class="template-preview markdown-preview">
-                    {@html marked(generateContentFromSchemaTemplate())}
+                    {@html sanitizeHtml(marked(generateContentFromSchemaTemplate()))}
                   </div>
                 </div>
               </div>
@@ -1893,6 +1901,9 @@
               <DynamicSchemaBasedForms
                 bind:content={jsonFormData}
                 schema={selectedSchema.schema}
+                space={selectedSpace}
+                subpath={$params.subpath ?? currentPath}
+                resourceType={resource_type}
               />
             </div>
           </div>
@@ -1914,6 +1925,9 @@
             <DynamicSchemaBasedForms
               bind:content={pollFormData}
               schema={pollSchema.schema}
+              space="poll"
+              subpath="polls"
+              resourceType={ResourceType.content}
             />
           {:else}
             <div class="empty-state">

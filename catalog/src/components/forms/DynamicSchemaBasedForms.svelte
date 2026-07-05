@@ -10,15 +10,23 @@
     setNestedProperty,
   } from "../../lib/formUtils";
   import type { Schema } from "../../lib/types";
+  import { permissions } from "@/stores/permissions";
+  import { constrainEnumOptions, isFieldRestricted } from "@/lib/access-fields";
 
   let {
     content = $bindable({}),
     schema,
     readOnly = false,
+    space = "",
+    subpath = "",
+    resourceType = "",
   }: {
     content: Record<string, any>;
     schema: Schema;
     readOnly?: boolean;
+    space?: string;
+    subpath?: string;
+    resourceType?: string;
   } = $props();
 
   $effect.pre(() => {
@@ -109,6 +117,7 @@
     <div class="form-content">
       {#each Object.keys(schema.properties) as propName}
         {@const property = schema.properties[propName]}
+        {#if !isFieldRestricted($permissions, propName, space, subpath, resourceType)}
         <div class="field-group">
           <label for={propName} class="field-label">
             {#if isRequired(propName)}
@@ -167,7 +176,7 @@
                 class="form-select"
               >
                 <option value="">{$_("SelectAnOption")}</option>
-                {#each property.enum as option}
+                {#each constrainEnumOptions(property.enum, $permissions, propName, space, subpath, resourceType, content[propName]) as option}
                   <option value={option}>{option}</option>
                 {/each}
               </select>
@@ -575,6 +584,7 @@
             </div>
           {/if}
         </div>
+        {/if}
       {/each}
     </div>
   {:else}

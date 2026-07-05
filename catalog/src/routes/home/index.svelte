@@ -1,19 +1,19 @@
 <script>
-    import {goto} from "@roxi/routify";
-    import {
-        BellSolid,
-        EditSolid,
-        EyeSolid,
-        HeartSolid,
-        MessageCaptionSolid,
-        MessagesOutline,
-        UserSolid,
-    } from "flowbite-svelte-icons";
-    import {_} from "@/i18n";
+  import { goto } from "@roxi/routify";
+  import {
+    BellSolid,
+    EditSolid,
+    EyeSolid,
+    HeartSolid,
+    MessageCaptionSolid,
+    MessagesOutline,
+    UserSolid,
+  } from "flowbite-svelte-icons";
+  import { _ } from "@/i18n";
 
-    $goto;
+  $goto;
 
-    const features = [
+  const features = [
     {
       icon: HeartSolid,
       title: $_("InteractiveEngagement"),
@@ -47,7 +47,7 @@
   ];
 
   function handleStartExploring() {
-    $goto("/catalogs");
+    $goto("/dashboard");
   }
 
   function handleSignIn() {
@@ -59,7 +59,7 @@
   }
 
   function handleExploreAsGuest() {
-    $goto("/catalogs");
+    $goto("/dashboard");
   }
 
   function handleContactUs() {
@@ -200,7 +200,11 @@
     right: -10%;
     width: 50%;
     height: 70%;
-    background: radial-gradient(circle, rgba(99, 102, 241, 0.08) 0%, transparent 65%);
+    background: radial-gradient(
+      circle,
+      rgba(99, 102, 241, 0.08) 0%,
+      transparent 65%
+    );
     pointer-events: none;
   }
 
@@ -211,7 +215,11 @@
     left: -5%;
     width: 40%;
     height: 50%;
-    background: radial-gradient(circle, rgba(139, 92, 246, 0.06) 0%, transparent 65%);
+    background: radial-gradient(
+      circle,
+      rgba(139, 92, 246, 0.06) 0%,
+      transparent 65%
+    );
     pointer-events: none;
   }
 
@@ -270,7 +278,9 @@
   }
 
   @media (min-width: 640px) {
-    .hero-buttons { flex-direction: row; }
+    .hero-buttons {
+      flex-direction: row;
+    }
   }
 
   .btn-primary {
@@ -360,14 +370,17 @@
     border-radius: var(--radius-xl);
     box-shadow: var(--shadow-sm);
     border: 1px solid var(--color-gray-100);
-    transition: transform var(--duration-slow) var(--ease-out),
-                box-shadow var(--duration-slow) var(--ease-out),
-                border-color var(--duration-slow) var(--ease-out);
+    transition:
+      transform var(--duration-slow) var(--ease-out),
+      box-shadow var(--duration-slow) var(--ease-out),
+      border-color var(--duration-slow) var(--ease-out);
   }
 
   .feature-card:hover {
     transform: translateY(-4px);
-    box-shadow: var(--shadow-lg), 0 0 0 1px var(--color-primary-100);
+    box-shadow:
+      var(--shadow-lg),
+      0 0 0 1px var(--color-primary-100);
     border-color: var(--color-primary-200);
   }
 
@@ -411,7 +424,11 @@
     right: -20%;
     width: 60%;
     height: 100%;
-    background: radial-gradient(circle, rgba(255, 255, 255, 0.08) 0%, transparent 60%);
+    background: radial-gradient(
+      circle,
+      rgba(255, 255, 255, 0.08) 0%,
+      transparent 60%
+    );
     pointer-events: none;
   }
 
@@ -451,7 +468,9 @@
   }
 
   @media (min-width: 640px) {
-    .cta-buttons { flex-direction: row; }
+    .cta-buttons {
+      flex-direction: row;
+    }
   }
 
   .btn-cta-secondary {
@@ -499,7 +518,9 @@
   }
 
   @media (max-width: 768px) {
-    .footer-brand { grid-column: span 1; }
+    .footer-brand {
+      grid-column: span 1;
+    }
   }
 
   .brand-name {
@@ -566,8 +587,15 @@
   }
 
   @media (max-width: 640px) {
-    .hero-section { padding: 3rem 0 4rem 0; }
-    .features-section, .cta-section { padding: 3rem 0; }
-    .features-grid { grid-template-columns: 1fr; }
+    .hero-section {
+      padding: 3rem 0 4rem 0;
+    }
+    .features-section,
+    .cta-section {
+      padding: 3rem 0;
+    }
+    .features-grid {
+      grid-template-columns: 1fr;
+    }
   }
 </style>

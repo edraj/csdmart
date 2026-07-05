@@ -45,7 +45,7 @@
       } else {
         await signin(trimmedIdentifier, password);
       }
-      $goto("/catalogs");
+      $goto("/dashboard");
     } catch (error) {
       isError = true;
       showError = true;
@@ -115,10 +115,17 @@
             class:rtl={isRTL}
             disabled={isSubmitting}
             aria-invalid={!!errors.identifier}
-            aria-describedby={errors.identifier ? "identifier-error" : undefined}
+            aria-describedby={errors.identifier
+              ? "identifier-error"
+              : undefined}
           />
           {#if errors.identifier}
-            <p id="identifier-error" class="error-text-small" class:rtl={isRTL} role="alert">
+            <p
+              id="identifier-error"
+              class="error-text-small"
+              class:rtl={isRTL}
+              role="alert"
+            >
               {errors.identifier}
             </p>
           {/if}
@@ -158,7 +165,14 @@
             </button>
           </div>
           {#if errors.password}
-            <p id="password-error" class="error-text-small" class:rtl={isRTL} role="alert">{errors.password}</p>
+            <p
+              id="password-error"
+              class="error-text-small"
+              class:rtl={isRTL}
+              role="alert"
+            >
+              {errors.password}
+            </p>
           {/if}
         </div>
 
@@ -217,7 +231,11 @@
     right: -20%;
     width: 60%;
     height: 80%;
-    background: radial-gradient(circle, rgba(99, 102, 241, 0.06) 0%, transparent 70%);
+    background: radial-gradient(
+      circle,
+      rgba(99, 102, 241, 0.06) 0%,
+      transparent 70%
+    );
     pointer-events: none;
   }
 
@@ -228,7 +246,11 @@
     left: -15%;
     width: 50%;
     height: 60%;
-    background: radial-gradient(circle, rgba(139, 92, 246, 0.05) 0%, transparent 70%);
+    background: radial-gradient(
+      circle,
+      rgba(139, 92, 246, 0.05) 0%,
+      transparent 70%
+    );
     pointer-events: none;
   }
 
@@ -258,7 +280,9 @@
     align-items: center;
     justify-content: center;
     margin: 0 auto 1.25rem auto;
-    box-shadow: var(--shadow-brand), 0 0 24px rgba(99, 102, 241, 0.15);
+    box-shadow:
+      var(--shadow-brand),
+      0 0 24px rgba(99, 102, 241, 0.15);
   }
 
   .login-title {
@@ -301,7 +325,9 @@
     background: white;
     border-radius: var(--radius-2xl);
     padding: 2rem;
-    box-shadow: var(--shadow-lg), 0 0 0 1px rgba(0, 0, 0, 0.03);
+    box-shadow:
+      var(--shadow-lg),
+      0 0 0 1px rgba(0, 0, 0, 0.03);
     border: 1px solid rgba(255, 255, 255, 0.8);
     animation: fadeInUp var(--duration-slow) var(--ease-out) 0.1s both;
   }

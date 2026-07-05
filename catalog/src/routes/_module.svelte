@@ -45,7 +45,6 @@
       const errorCode = error.response?.data?.error?.code;
       if (error.response?.status === 401 && [47, 48, 49].includes(errorCode)) {
         const currentPath = window.location.pathname;
-        console.log({D: !isPublicRoute(currentPath)}, currentPath)
         if (!isPublicRoute(currentPath)) {
           console.log(`401 Unauthorized (code ${errorCode}) - redirecting to login`);
           redirectTo("/login");
@@ -92,7 +91,10 @@
       }
 
       if (currentPath === "/" || currentPath === "/login") {
-        redirectTo("/dashboard/admin");
+        // Land on the generic /dashboard, which routes by role
+        // (admins -> /dashboard/admin, others -> /me). Avoids sending
+        // non-admins through the guarded admin subtree on every login.
+        redirectTo("/dashboard");
       }
     } catch (error: any) {
       // /info/me itself failed (network, server down). Treat as signed-out.

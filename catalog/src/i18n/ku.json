@@ -59,7 +59,6 @@
   "create_entry.error.publish_failed": "شکستی بڵاوکردنەوەی تۆمار.",
   "create_entry.error.required_fields_missing": "تکایە خانە پێویستەکان پڕ بکەوە: {fields}",
   "create_entry.error.save_failed": "شکستی پاشەکەوتکردنی تۆمار.",
-  "create_entry.error.select_template": "تکایە قاڵبێک هەڵبژێرە.",
   "create_entry.error.shortname_required": "ناوی کورت پێویستە! تکایە ناوێکی کورت بۆ تۆمارەکە دابنێ.",
   "common.optional": "اختیاری",
   "create_entry.success.published": "تۆمار بە سەرکەوتوویی بڵاوکرایەوە!",
@@ -69,8 +68,6 @@
   "create_entry.entry_type.content_description": "دروستکردنی تۆماری ناوەڕۆکی ئاسایی لەگەڵ دەستکاریکەری دەقی دەوڵەمەند",
   "create_entry.entry_type.json_title": "تۆماری فۆڕم",
   "create_entry.entry_type.json_description": "دروستکردنی تۆماری ڕێکخراو بە پڕکردنەوەی فۆڕمێک بەپێی سکیما",
-  "create_entry.entry_type.template_title": "تۆماری قاڵب",
-  "create_entry.entry_type.template_description": "دروستکردنی تۆماری ڕێکخراو بەپێی قاڵب",
   "create_entry.destination.root": "ڕەگ",
   "create_entry.destination.level": "ئاست {level}",
   "create_entry.schema.selection_title": "هەڵبژاردنی Schema",
@@ -79,16 +76,6 @@
   "create_entry.schema.choose_option": "schemaیەک هەڵبژێرە...",
   "create_entry.schema.no_schemas": "هیچ schemaیەک بەردەست نییە بۆ بۆشاییە هەڵبژێردراوەکە.",
   "create_entry.schema.entry_data_title": "زانیاریەکانی تۆمار",
-  "create_entry.template.selection_title": "هەڵبژاردنی قاڵب",
-  "create_entry.template.loading": "بارکردنی قاڵبەکان...",
-  "create_entry.template.select_label": "قاڵبێک هەڵبژێرە",
-  "create_entry.template.choose_option": "قاڵبێک هەڵبژێرە...",
-  "create_entry.template.no_templates": "هیچ قاڵبێک بەردەست نییە بۆ بۆشاییە هەڵبژێردراوەکە.",
-  "create_entry.template.preview_title": "پێشبینینی قاڵب",
-  "create_entry.template.fill_data_title": "پڕکردنەوەی زانیاریەکانی قاڵب",
-  "create_entry.template.generated_content_title": "پێشبینینی ناوەڕۆکی دروستکراو",
-  "create_entry.template.schema_template_title": "زانیاریەکانی قاڵب",
-  "create_entry.template.schema_template_description": "ئەم سکیمایە قاڵبێکی تێدایە. تکایە زانیاریەکانی قاڵب لە خوارەوە پڕبکەرەوە.",
   "Loading": "لە بارکردن...",
   "Welcome": "بەخێربێیت",
   "Back": "گەڕانەوە",
@@ -115,12 +102,7 @@
   "NoFurtherActionsCanBePerformed": "هیچ کردارێکی تر ناتوانرێت پێکبهێندرێت",
   "Active": "چالاک",
   "Inactive": "ناچالاک",
-  "Comments": "لێدوانەکان",
-  "Reactions": "وەڵامەکان",
-  "NoComments": "هێشتا لێدوانێک نەنووسراوە",
-  "NoComments2": "بە یەکەم کس ببه‌، لێدوانێک بنووسە!",
   "Send": "ناردن",
-  "AddComment": "لێدوانێک بنووسە...",
   "AddFiles": "پەڕگە زیاد بکە",
   "DragAndDropOrClick": "پەڕگەکان ڕابکێشە یان کرتە بکە بۆ زیادکردن",
   "NoTagsAdded": "هێشتا هیچ نیشانەیەک نەزیادکراوە",
@@ -538,12 +520,14 @@
   },
   "common": {
     "loading": "بارکردن...",
+    "no": "نەخێر",
     "not_available": "بەردەست نییە",
     "unknown": "نەزانراو",
     "save_changes": "پاشەکەوتی گۆڕانکارییەکان",
     "cancel": "پاشگەزبوونەوە",
     "delete": "سڕینەوە",
-    "deleting": "سڕینەوە..."
+    "deleting": "سڕینەوە...",
+    "yes": "بەڵێ"
   },
   "help": {
     "shortname": "ناوێکی کورت (بەکارهێنانی 'خۆکار' بۆ ناوی کورتی خۆکارانە دروستکراو)",
@@ -773,6 +757,18 @@
       "interactions": "هەنگاوەکان",
       "relationships": "پەیوەندیدارەکان"
     },
+    "login_prompt": {
+      "title": "چوونەژوورەوە پێویستە",
+      "message": "تکایە بچۆ ژوورەوە بۆ پەیوەندیدان بە ناوەڕۆکەکە. دەتوانیت دڵخۆشیت پێبکەیت، لێدوان بدەیت و بەشداربیت لە کۆمەڵگەکە.",
+      "login": "بچۆ بۆ ژوورەوە",
+      "cancel": "پاشگەزبوونەوە"
+    },
+    "login_required": {
+      "title": "چوونەژوورەوە پێویستە",
+      "message": "دەبێت بچیتە ژوورەوە بۆ جێهێشتنی لێدوان.",
+      "login_button": "چوونەژوورەوە",
+      "register_button": "خۆتۆمارکردن"
+    },
     "reactions": {
       "like": "دڵخۆشی",
       "unlike": "لابردنی دڵخۆشی",
@@ -813,18 +809,6 @@
       "delete_with_replies_warning": "ئەمە لێدوانەکە و {count} وەڵامی سەری دەسڕێتەوە",
       "delete_failed": "شکستی هێنا لە سڕینەوەی لێدوان. دووبارە تاقی بکەوە.",
       "delete_error": "هەڵەیەک ڕوویدا لە کاتی سڕینەوەی لێدوانەکە."
-    },
-    "login_prompt": {
-      "title": "چوونەژوورەوە پێویستە",
-      "message": "تکایە بچۆ ژوورەوە بۆ پەیوەندیدان بە ناوەڕۆکەکە. دەتوانیت دڵخۆشیت پێبکەیت، لێدوان بدەیت و بەشداربیت لە کۆمەڵگەکە.",
-      "login": "بچۆ بۆ ژوورەوە",
-      "cancel": "پاشگەزبوونەوە"
-    },
-    "login_required": {
-      "title": "چوونەژوورەوە پێویستە",
-      "message": "دەبێت بچیتە ژوورەوە بۆ جێهێشتنی لێدوان.",
-      "login_button": "چوونەژوورەوە",
-      "register_button": "خۆتۆمارکردن"
     }
   },
   "my_entries": {
@@ -847,10 +831,10 @@
       "last_updated": "دوایین نوێکردنەوە",
       "date_created": "بەرواری دروستکردن",
       "title": "ناونیشان",
-      "reactions": "کارلێکەکان",
-      "comments": "لێدوانەکان",
       "newest_first": "نوێترین یەکەم",
-      "oldest_first": "کۆنترین یەکەم"
+      "oldest_first": "کۆنترین یەکەم",
+      "reactions": "کارلێکەکان",
+      "comments": "لێدوانەکان"
     },
     "empty": {
       "no_entries": "هێشتا هیچ تۆمارێک نییە",
@@ -994,6 +978,10 @@
       "like": "حەز لێکردن",
       "unlike": "حەز لێنەکردن"
     },
+    "error": {
+      "not_found_title": "تۆمار نەدۆزرایەوە",
+      "not_found_message": "ئەو تۆمارەی بەدوایدا دەگەڕێیت بوونی نییە یان سڕاوەتەوە."
+    },
     "comments": {
       "title": "لێدوانەکان",
       "placeholder": "بیرۆکەکانت هاوبەش بکە...",
@@ -1010,10 +998,6 @@
       "add_error": "شکستی هێنا لە زیادکردنی کارلێک!",
       "remove_success": "کارلێک بە سەرکەوتوویی لابرا",
       "remove_error": "شکستی هێنا لە لابردنی کارلێک!"
-    },
-    "error": {
-      "not_found_title": "تۆمار نەدۆزرایەوە",
-      "not_found_message": "ئەو تۆمارەی بەدوایدا دەگەڕێیت بوونی نییە یان سڕاوەتەوە."
     }
   },
   "entry_edit": {
@@ -1171,6 +1155,8 @@
   "manage": "بەڕێوەبردن",
   "edit": "دەستکاری",
   "delete": "سڕینەوە",
+  "force_delete": "سڕینەوەی بەزۆر",
+  "force_delete_help": "ئەمە و هەرچی لەخۆیدەگرێت بە تەواوی بسڕەوە. ناگەڕێتەوە.",
   "create_new_space": "شوێنی نوێ دروست بکە",
   "edit_space": "شوێن دەستکاری بکە",
   "delete_space": "شوێن بسڕەوە",
@@ -1439,7 +1425,9 @@
       "title": "پاڵاوتن",
       "clear_all": "ههموو پاڵاوتهكان پاك بكه‌رهوه",
       "sort_by": "ڕێككه‌ره‌وه له‌سه‌ر",
-      "toggle_sort": "گۆڕینی ڕێكخستن"
+      "toggle_sort": "گۆڕینی ڕێكخستن",
+      "filter_by_column": "پاڵاوتنەکان",
+      "no_schema_filters": "هیچ پاڵاوتنێکی تر بۆ ئەم جۆرە ناوەرۆکە نییە."
     },
     "infinite_scroll": {
       "items_per_load": "شت بۆ ههر باركردن",
@@ -1518,19 +1506,19 @@
       "heading": "پێداویستی ون لە ئەپڵیكەیشن",
       "missing_folders": "بوخچەكانی ون لە ناوچەی ئەپڵیكەیشنەكان",
       "missing_workflow": "‎report_workflow‎ ون بووە لە بوخچەی سیر العمل.",
-      "missing_report_schema": "شیمای ‎report‎ ون بووە لە بوخچەی شێماكان.",
       "missing_workflow_schema": "شیمای ‎workflow‎ ون بووە لە بوخچەی شێماكان.",
       "missing_critical": "پێداویستی سەرەكی ون لە ناوچەی بەڕێوەبردن",
       "required_note": "ئەمانە پێویستن بۆ ئەوەی ڕاپۆرت و ڕاپرسییەكان بەدروستی كار بكەن.",
       "fix_button": "دروستكردنی پێداویستی ونبوو",
-      "fixing": "دروستكردن..."
+      "fixing": "دروستكردن...",
+      "missing_report_schema": "شیمای ‎report‎ ون بووە لە بوخچەی شێماكان."
     },
     "fixed": {
       "heading": "پێداویستی بەسەركەوتویی دروستكرا",
       "body": "هەموو بوخچە و سیر العمل و شێماكانی پێویست لە ناوچەی ئەپڵیكەیشنەكان دروستكران.",
       "workflow_created": "ڕێكخراوە بە دۆخی پێش بێرنامەكراو.",
-      "report_schema_created": "شیما دروستكرا.",
-      "workflow_schema_created": "شیما دروستكرا."
+      "workflow_schema_created": "شیما دروستكرا.",
+      "report_schema_created": "شیما دروستكرا."
     },
     "healthy": {
       "heading": "هەموو شتێك باشە",
@@ -1844,66 +1832,6 @@
   "remove": "لابردن",
   "noPermissionsAdded": "هیچ مۆڵەتێک زیاد نەکراوە",
   "or": "یان",
-  "templates": {
-    "_val": "قاڵبەکان",
-    "title": "داڕێژەکان",
-    "subtitle": "کۆمەڵەی داڕێژەی بەرنامەکەت بەڕێوەبەرێ.",
-    "create_button": "دروستکردنی داڕێژە",
-    "loading": "داڕێژەکان لە بارکردنە...",
-    "empty_title": "هیچ داڕێژەیەک نەدۆزرایەوە",
-    "empty_subtitle": "دەست پێبکە بە دروستکردنی یەکەم داڕێژەکەت.",
-    "empty_create_button": "یەکەم داڕێژەکەت دروست بکە",
-    "table": {
-      "template": "داڕێژە",
-      "uuid": "ناسنامەی یەکتا",
-      "owner": "خاوەن",
-      "created": "دروستکراو",
-      "updated": "نوێکرایەوە",
-      "actions": "کردارەکان",
-      "edit": "دەستکاری",
-      "delete": "سڕینەوە"
-    },
-    "create_modal": {
-      "title": "دروستکردنی داڕێژەی نوێ"
-    },
-    "edit_modal": {
-      "title": "دەستکاری داڕێژە"
-    },
-    "delete_modal": {
-      "title": "دڵنیایی لە سڕینەوە",
-      "confirm": "دڵنیایت کە دەتەوێت داڕێژەکە \"{name}\" بسڕیتەوە؟",
-      "warning": "ئەم کردارە ناتوانرێت پاشگەز بکرێت.",
-      "delete_button": "داڕێژە بسڕەوە"
-    },
-    "form": {
-      "name_label": "ناوی داڕێژە",
-      "name_placeholder": "ناوی داڕێژە بنووسە...",
-      "shortname_label": "ناوی کورت",
-      "shortname_placeholder": "ناوی کورتی تایبەت بنووسە...",
-      "save_button": "داڕێژە پاشەکەوت بکە",
-      "update_button": "داڕێژە نوێ بکە",
-      "optional_fields_toggle": "ڕێکخستنی ئارەزوومەندانە",
-      "target_space_label": "بۆشاییەی ئامانج",
-      "target_space_placeholder": "وەک: management، applications...",
-      "schema_label": "سکیما",
-      "schema_placeholder": "وەک: user_profile، article...",
-      "select_space": "-- بۆشاییەک هەڵبژێرە --",
-      "select_space_first": "-- سەرەتا بۆشاییەک هەڵبژێرە --",
-      "select_schema": "-- سکیما هەڵبژێرە --",
-      "schema_keys_title": "خانە بەردەستەکان",
-      "schema_keys_hint": "(بکە بە دەرهێنان و دانان لە دەستکاریکەر)"
-    },
-    "info": {
-      "title": "زانیاری داڕێژە",
-      "space": "بۆشایی:",
-      "subpath": "ڕێڕەوی زیاتر:",
-      "content_type": "جۆری ناوەڕۆک:",
-      "resource_type": "جۆری سەرچاوە:",
-      "uuid": "ناسنامەی یەکتا:",
-      "owner": "خاوەن:",
-      "target_space": "ئامانج"
-    }
-  },
   "schema_editor.title": "دەستکاری شێوە",
   "schema_editor.schema_title_label": "ناونیشانی شێوە",
   "schema_editor.schema_title_placeholder": "ناونیشانی شێوە",
@@ -1964,7 +1892,6 @@
   "messaging.status.not_logged_in": "بەکارهێنەر چوونەژوورەوە نەکردووە",
   "messaging.status.failed_initialize": "شکستی دەستپێکردنی چات",
   "messaging.error.no_user": "بەکارهێنەری ئێستا نەدۆزرایەوە - ڕەگەز نەکردووە",
-
   "messaging.users": "بەکارهێنەران",
   "messaging.all_users": "هەموو بەکارهێنەران",
   "messaging.conversations": "گفتوگۆکان",
@@ -1992,7 +1919,6 @@
   "messaging.toast_failed_initialize": "شکستی دەستپێکردنی چات",
   "messaging.toast_no_user_shortname": "ناوی کورتی بەکارهێنەری ئێستا بەردەست نییە",
   "messaging.toast_failed_load_users": "شکستی بارکردنی بەکارهێنەران",
-
   "messaging.toast_failed_fetch_by_shortname": "شکستی وەرگرتنی پەیام بە ناوی کورت",
   "messaging.toast_no_user_selected": "هیچ بەکارهێنەرێک هەڵبژێردراوە، ناتوانرێت گرنگی دیاری بکرێت",
   "messaging.toast_failed_load_history": "شکستی بارکردنی مێژووی چات",
@@ -2119,6 +2045,126 @@
   "Remove": "لابردن",
   "NoItemsAddedYet": "هێشتا هیچ بڕگەیەک زیاد نەکراوە.",
   "NoSchemaProvided": "هیچ سکیمایەک دابین نەکراوە یان سکیماکە تایبەتمەندی نییە.",
+  "common.close": "داخستن",
+  "got_it": "تێگەیشتم",
+  "route_labels": {
+    "admin_dashboard_title": "داشبۆردی بەڕێوەبەر",
+    "admin_dashboard_welcome": "بەخێربێیت بەڕێوەبەری Dmart. بەڕێوەبەری هەموو مەکانەکان و ناوەڕۆکیان لەگەڵ دەستڕاگەیشتنی تەواوی بەڕێوەبەری.",
+    "search_placeholder_short": "گەڕان لە مەکانەکان، پۆستەکان، کەسەکان...",
+    "aria_search": "گەڕان",
+    "aria_close": "داخستن",
+    "search_remove_tag": "لابردنی تاگ",
+    "search_no_filters_available": "هیچ پاڵاوتنێک بەردەست نییە لێرە",
+    "search_current_space": "مەکانی ئێستا: {value}",
+    "search_current_folder": "بوخچەی ئێستا: {value}",
+    "placeholder_tell_us_about_yourself": "دەربارەی خۆت بگێڕەوە",
+    "placeholder_search_by_name_desc": "بە ناو، پێناسە، ناوی کورت، یان خاوەن بگەڕێ...",
+    "placeholder_search_entries": "گەڕان لە تۆمارەکان...",
+    "placeholder_leave_empty_auto": "بە بەتاڵی جێیبهێڵە بۆ 'خۆکار'",
+    "placeholder_add_tag": "تاگ زیاد بکە...",
+    "placeholder_type_message_group": "نامەیەک بۆ گروپەکە بنووسە...",
+    "aria_retry": "دووبارە هەوڵبدە",
+    "aria_retry_loading_content": "دووبارە هەوڵبدەی بارکردنی ناوەڕۆک",
+    "aria_show_all_tags": "نیشاندانی هەموو تاگەکان",
+    "aria_clear_all_selected_tags": "سڕینەوەی هەموو تاگە دیاریکراوەکان",
+    "aria_clear_all_filters": "سڕینەوەی هەموو فلتەرەکان",
+    "aria_close_login_prompt": "داخستنی داواکردنی چوونەژوورەوە",
+    "aria_cancel_fixing_configuration": "هەڵوەشاندنەوەی چاکسازی ڕێکخستن",
+    "aria_create_configuration_entity": "دروستکردنی هەستەوەری ڕێکخستن",
+    "aria_save_default_role": "پاشەکەوتکردنی ڕۆڵی بنەڕەتی",
+    "aria_reset_current_default_role": "گەڕاندنەوە بۆ ڕۆڵی بنەڕەتی ئێستا",
+    "aria_refresh_contact_messages": "نوێکردنەوەی پەیامەکانی پەیوەندی",
+    "aria_previous_page": "لاپەڕەی پێشوو",
+    "aria_next_page": "لاپەڕەی داهاتوو",
+    "aria_send_reply": "ناردنی وەڵام",
+    "aria_cancel_replying": "هەڵوەشاندنەوەی وەڵامدانەوە",
+    "aria_toggle_faq": "گۆڕینی پرسیارە دووبارەکان",
+    "label_total": "کۆی گشتی",
+    "label_active": "چالاک",
+    "label_ended": "کۆتایی هاتوو",
+    "templates_title": "داڕێژەکان",
+    "surveys_title": "سەرژمێرییەکان",
+    "create_survey_title": "دروستکردنی سەرژمێری",
+    "placeholder_search_polls": "گەڕان لە ڕاپرسییەکان..."
+  },
+  "create_entry.error.select_template": "تکایە قاڵبێک هەڵبژێرە.",
+  "create_entry.entry_type.template_title": "تۆماری قاڵب",
+  "create_entry.entry_type.template_description": "دروستکردنی تۆماری ڕێکخراو بەپێی قاڵب",
+  "create_entry.template.selection_title": "هەڵبژاردنی قاڵب",
+  "create_entry.template.loading": "بارکردنی قاڵبەکان...",
+  "create_entry.template.select_label": "قاڵبێک هەڵبژێرە",
+  "create_entry.template.choose_option": "قاڵبێک هەڵبژێرە...",
+  "create_entry.template.no_templates": "هیچ قاڵبێک بەردەست نییە بۆ بۆشاییە هەڵبژێردراوەکە.",
+  "create_entry.template.preview_title": "پێشبینینی قاڵب",
+  "create_entry.template.fill_data_title": "پڕکردنەوەی زانیاریەکانی قاڵب",
+  "create_entry.template.generated_content_title": "پێشبینینی ناوەڕۆکی دروستکراو",
+  "create_entry.template.schema_template_title": "زانیاریەکانی قاڵب",
+  "create_entry.template.schema_template_description": "ئەم سکیمایە قاڵبێکی تێدایە. تکایە زانیاریەکانی قاڵب لە خوارەوە پڕبکەرەوە.",
+  "Comments": "لێدوانەکان",
+  "Reactions": "وەڵامەکان",
+  "NoComments": "هێشتا لێدوانێک نەنووسراوە",
+  "NoComments2": "بە یەکەم کس ببه‌، لێدوانێک بنووسە!",
+  "AddComment": "لێدوانێک بنووسە...",
+  "templates": {
+    "_val": "قاڵبەکان",
+    "title": "داڕێژەکان",
+    "subtitle": "کۆمەڵەی داڕێژەی بەرنامەکەت بەڕێوەبەرێ.",
+    "create_button": "دروستکردنی داڕێژە",
+    "loading": "داڕێژەکان لە بارکردنە...",
+    "empty_title": "هیچ داڕێژەیەک نەدۆزرایەوە",
+    "empty_subtitle": "دەست پێبکە بە دروستکردنی یەکەم داڕێژەکەت.",
+    "empty_create_button": "یەکەم داڕێژەکەت دروست بکە",
+    "table": {
+      "template": "داڕێژە",
+      "uuid": "ناسنامەی یەکتا",
+      "owner": "خاوەن",
+      "created": "دروستکراو",
+      "updated": "نوێکرایەوە",
+      "actions": "کردارەکان",
+      "edit": "دەستکاری",
+      "delete": "سڕینەوە"
+    },
+    "create_modal": {
+      "title": "دروستکردنی داڕێژەی نوێ"
+    },
+    "edit_modal": {
+      "title": "دەستکاری داڕێژە"
+    },
+    "delete_modal": {
+      "title": "دڵنیایی لە سڕینەوە",
+      "confirm": "دڵنیایت کە دەتەوێت داڕێژەکە \"{name}\" بسڕیتەوە؟",
+      "warning": "ئەم کردارە ناتوانرێت پاشگەز بکرێت.",
+      "delete_button": "داڕێژە بسڕەوە"
+    },
+    "form": {
+      "name_label": "ناوی داڕێژە",
+      "name_placeholder": "ناوی داڕێژە بنووسە...",
+      "shortname_label": "ناوی کورت",
+      "shortname_placeholder": "ناوی کورتی تایبەت بنووسە...",
+      "save_button": "داڕێژە پاشەکەوت بکە",
+      "update_button": "داڕێژە نوێ بکە",
+      "optional_fields_toggle": "ڕێکخستنی ئارەزوومەندانە",
+      "target_space_label": "بۆشاییەی ئامانج",
+      "target_space_placeholder": "وەک: management، applications...",
+      "schema_label": "سکیما",
+      "schema_placeholder": "وەک: user_profile، article...",
+      "select_space": "-- بۆشاییەک هەڵبژێرە --",
+      "select_space_first": "-- سەرەتا بۆشاییەک هەڵبژێرە --",
+      "select_schema": "-- سکیما هەڵبژێرە --",
+      "schema_keys_title": "خانە بەردەستەکان",
+      "schema_keys_hint": "(بکە بە دەرهێنان و دانان لە دەستکاریکەر)"
+    },
+    "info": {
+      "title": "زانیاری داڕێژە",
+      "space": "بۆشایی:",
+      "subpath": "ڕێڕەوی زیاتر:",
+      "content_type": "جۆری ناوەڕۆک:",
+      "resource_type": "جۆری سەرچاوە:",
+      "uuid": "ناسنامەی یەکتا:",
+      "owner": "خاوەن:",
+      "target_space": "ئامانج"
+    }
+  },
   "create_entry.entry_type.poll_title": "ڕاپرسی",
   "create_entry.entry_type.poll_description": "ڕاپرسییەکی کارلێکەر دروست بکە لەگەڵ پرسیارە فرە هەڵبژاردنەکان",
   "create_entry.poll.entry_data_title": "ڕێکخستنی ڕاپرسی",
@@ -2314,7 +2360,6 @@
   "create_survey.error_creating": "هەڵەیەک ڕوویدا لە دروستکردنی سەرژمێری.",
   "survey_manage.no_surveys_created": "تاکو ئێستا هیچ سەرژمێرێکت دروست نەکردووە.",
   "survey_manage.no_responses_yet": "تاکو ئێستا هیچ وەڵامێکت نەداوە.",
-  "common.close": "داخستن",
   "survey_form.survey_builder": "دروستکەری ڕاپرسی",
   "survey_form.survey_title": "ناونیشانی ڕاپرسی",
   "survey_form.survey_title_placeholder": "ناونیشانی ڕاپرسی بنووسە...",
@@ -2327,7 +2372,6 @@
   "thank_you_for_report": "سوپاس بۆ ڕاپۆرتەکەت",
   "report_submitted_successfully": "ڕاپۆرت بە سەرکەوتووی نێردرا",
   "thanks_for_report_message": "سوپاست بۆ یارمەتیمان دان لە پاراستنی کۆمەڵگایەکی پاک و سەلامەت! ڕاپۆرتەکەت نێردراوە و لەلایەن تیمەکەمانەوە پیداچوونەوەی بۆ دەکرێت. پێکەوە دەتوانین کۆمەڵگاکەمان بکەین بە شوێنێکی باش بۆ هەموو کەس.",
-  "got_it": "تێگەیشتم",
   "reports": {
     "_val": "ڕاپۆرتەکان",
     "modal": {
@@ -2450,45 +2494,5 @@
         "message": "سوپاس بۆ یارمەتیدانمان بۆ پاراستنی کۆمەڵگەیەکی پاک و سەلامەت! ڕاپۆرتەکەتمان پێداچوونەوە و کردەوەی گونجاومان کردووە. پێکەوە، دەتوانین کۆمەڵگەکەمان بە شوێنێکی ئەرێنی بۆ هەمووان بهێڵینەوە."
       }
     }
-  },
-  "route_labels": {
-    "admin_dashboard_title": "داشبۆردی بەڕێوەبەر",
-    "admin_dashboard_welcome": "بەخێربێیت بەڕێوەبەری Dmart. بەڕێوەبەری هەموو مەکانەکان و ناوەڕۆکیان لەگەڵ دەستڕاگەیشتنی تەواوی بەڕێوەبەری.",
-    "search_placeholder_short": "گەڕان لە مەکانەکان، پۆستەکان، کەسەکان...",
-    "aria_search": "گەڕان",
-    "aria_close": "داخستن",
-    "search_remove_tag": "لابردنی تاگ",
-    "search_no_filters_available": "هیچ پاڵاوتنێک بەردەست نییە لێرە",
-    "search_current_space": "مەکانی ئێستا: {value}",
-    "search_current_folder": "بوخچەی ئێستا: {value}",
-    "templates_title": "داڕێژەکان",
-    "surveys_title": "سەرژمێرییەکان",
-    "create_survey_title": "دروستکردنی سەرژمێری",
-    "placeholder_tell_us_about_yourself": "دەربارەی خۆت بگێڕەوە",
-    "placeholder_search_polls": "گەڕان لە ڕاپرسییەکان...",
-    "placeholder_search_by_name_desc": "بە ناو، پێناسە، ناوی کورت، یان خاوەن بگەڕێ...",
-    "placeholder_search_entries": "گەڕان لە تۆمارەکان...",
-    "placeholder_leave_empty_auto": "بە بەتاڵی جێیبهێڵە بۆ 'خۆکار'",
-    "placeholder_add_tag": "تاگ زیاد بکە...",
-    "placeholder_type_message_group": "نامەیەک بۆ گروپەکە بنووسە...",
-    "aria_retry": "دووبارە هەوڵبدە",
-    "aria_retry_loading_content": "دووبارە هەوڵبدەی بارکردنی ناوەڕۆک",
-    "aria_show_all_tags": "نیشاندانی هەموو تاگەکان",
-    "aria_clear_all_selected_tags": "سڕینەوەی هەموو تاگە دیاریکراوەکان",
-    "aria_clear_all_filters": "سڕینەوەی هەموو فلتەرەکان",
-    "aria_close_login_prompt": "داخستنی داواکردنی چوونەژوورەوە",
-    "aria_cancel_fixing_configuration": "هەڵوەشاندنەوەی چاکسازی ڕێکخستن",
-    "aria_create_configuration_entity": "دروستکردنی هەستەوەری ڕێکخستن",
-    "aria_save_default_role": "پاشەکەوتکردنی ڕۆڵی بنەڕەتی",
-    "aria_reset_current_default_role": "گەڕاندنەوە بۆ ڕۆڵی بنەڕەتی ئێستا",
-    "aria_refresh_contact_messages": "نوێکردنەوەی پەیامەکانی پەیوەندی",
-    "aria_previous_page": "لاپەڕەی پێشوو",
-    "aria_next_page": "لاپەڕەی داهاتوو",
-    "aria_send_reply": "ناردنی وەڵام",
-    "aria_cancel_replying": "هەڵوەشاندنەوەی وەڵامدانەوە",
-    "aria_toggle_faq": "گۆڕینی پرسیارە دووبارەکان",
-    "label_total": "کۆی گشتی",
-    "label_active": "چالاک",
-    "label_ended": "کۆتایی هاتوو"
   }
 }

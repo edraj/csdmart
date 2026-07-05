@@ -574,7 +574,7 @@
     isDeletingItem = false;
   }
 
-  async function handleConfirmDelete() {
+  async function handleConfirmDelete(force: boolean) {
     if (!itemToDelete) return;
 
     isDeletingItem = true;
@@ -584,6 +584,7 @@
         spaceName,
         actualSubpath,
         itemToDelete.resource_type,
+        force,
       );
       if (success) {
         successToastMessage($_("toast.item_deleted"));

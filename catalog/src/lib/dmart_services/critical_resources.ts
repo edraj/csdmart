@@ -35,22 +35,6 @@ const CRITICAL_RESOURCES: ActionRequest[] = [
             },
         ],
     },
-    {
-        space_name: APPLICATIONS_SPACE,
-        request_type: RequestType.create,
-        records: [
-            {
-                resource_type: ResourceType.folder,
-                subpath: "/",
-                shortname: "polls",
-                attributes: {
-                    is_active: true,
-                    displayname: { en: "Polls", ar: "استطلاعات الرأي", ku: "ڕاپرسییەکان" },
-                    description: {},
-                },
-            },
-        ],
-    },
 ];
 
 function isNotFoundError(error: any): boolean {

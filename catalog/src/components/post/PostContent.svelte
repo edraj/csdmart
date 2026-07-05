@@ -4,6 +4,7 @@
   import { mangle } from "marked-mangle";
   import { gfmHeadingId } from "marked-gfm-heading-id";
   import { getPostContent } from "@/lib/utils/postUtils";
+  import { sanitizeHtml } from "@/lib/utils/sanitize";
 
   import { getSpaceSchema } from "@/lib/dmart_services";
   import { getTemplate } from "@/lib/dmart_services/templates";
@@ -259,7 +260,7 @@
                   <pre class="fallback-content">{JSON.stringify(postData.payload.body, null, 2)}</pre>
                 </div>
               {:else}
-                {@html renderContent(postData)}
+                {@html sanitizeHtml(renderContent(postData))}
               {/if}
             {:else if postData?.payload?.content_type === "json"}
               <JsonViewer 
@@ -270,7 +271,7 @@
                 spaceName={postData?.space_name}
               />
             {:else}
-              {@html renderContent(postData)}
+              {@html sanitizeHtml(renderContent(postData))}
             {/if}
           </div>
         </div>
