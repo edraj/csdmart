@@ -632,6 +632,9 @@
                   <DynamicSchemaBasedForms
                     bind:content={schemaFormData}
                     schema={selectedSchema.schema}
+                    space={$params.space_name}
+                    subpath={$params.subpath}
+                    resourceType={$params.resource_type}
                   />
                 </div>
               {:else if isTemplateBasedItem}

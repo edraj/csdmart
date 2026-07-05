@@ -5,12 +5,12 @@
   import {
     deleteEntity,
     getEntity,
-    getSpaceContents,
     getSpaceHideFolders,
     buildHideFoldersSearch,
     mergeSearch,
     getSpaceTags,
   } from "@/lib/dmart_services";
+  import { buildFieldFilterClause } from "@/lib/searchFilters";
   import {
     parseValueByType,
     getFieldType,
@@ -276,12 +276,11 @@
       const selected = field.options.filter((opt) => selections[opt]);
       if (selected.length === 0 || selected.length === field.options.length)
         continue;
-      const fieldPath = `payload.body.${field.key}`;
-      parts.push(
-        field.type === "boolean"
-          ? `@${fieldPath}:${selected[0]}`
-          : `@${fieldPath}:(${selected.join("|")})`,
+      const clause = buildFieldFilterClause(
+        `payload.body.${field.key}`,
+        selected,
       );
+      if (clause) parts.push(clause);
     }
     return parts.join(" ");
   }
@@ -406,11 +405,9 @@
 
       const statusSearch = buildStatusFilterSearch();
       const schemaFieldsSearch = buildSchemaFieldFiltersSearch();
-      const tagsSearch =
-        selectedTags.length > 0 ? `@tags:(${selectedTags.join("|")})` : "";
+      const tagsSearch = buildFieldFilterClause("tags", selectedTags);
 
-      const [parent, response, tagsResponse] = await Promise.all([
-        getSpaceContents(spaceName, "/", DmartScope.managed, 100, 0, false),
+      const [response, tagsResponse] = await Promise.all([
         Dmart.query(
           {
             type: QueryType.search,
@@ -606,6 +603,12 @@
     }
     return ResourceType.content;
   }
+
+  // The "create" permission gate must use the SAME resource type the modal
+  // will submit — gating on content in management/users would hide the button
+  // from operators with user-create grants and show it to operators whose
+  // create request the backend then rejects.
+  const createResourceType = $derived(detectCreateResourceType());
 
   // Dynamic schema (payload) for the new item, driven by the folder's
   // `content_schema_shortnames`: 0 -> none, 1 -> auto, >1 -> user selects.
@@ -1702,8 +1705,7 @@
   // group only counts when it's neither "nothing checked" nor "everything
   // checked" (both mean "no constraint", matching the old "All" option UX).
   const activeFilterCount = $derived(
-    (statusFilter.active && !statusFilter.inactive ? 1 : 0) +
-      (statusFilter.inactive && !statusFilter.active ? 1 : 0) +
+    (statusFilter.active !== statusFilter.inactive ? 1 : 0) +
       schemaFilterFields.reduce((count, field) => {
         const selections = schemaFieldFilters[field.key];
         if (!selections) return count;
@@ -1878,7 +1880,7 @@
                 </button>
               {/if}
 
-              {#if $can("create", spaceName, $actualSubpath, ResourceType.content)}
+              {#if $can("create", spaceName, $actualSubpath, createResourceType)}
                 <button
                   onclick={handleCreateItem}
                   class="bg-indigo-500 hover:bg-indigo-600 text-white px-4 py-2 rounded-[14px] cursor-pointer font-medium transition-colors duration-200 flex items-center gap-2 shadow-sm"

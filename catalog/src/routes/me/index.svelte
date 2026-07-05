@@ -524,6 +524,9 @@
                   <DynamicSchemaBasedForms
                     bind:content={$profileData}
                     schema={$userSchema}
+                    space="management"
+                    subpath="users"
+                    resourceType="user"
                   />
                 {/if}
               </div>

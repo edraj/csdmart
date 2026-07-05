@@ -632,7 +632,17 @@
       const _metaContent = $state.snapshot(metaContent);
       const shortname = _metaContent.shortname;
       delete _metaContent.shortname;
-      
+
+      // Blank password fields mean "no credential change" — strip them so an
+      // attribute-only edit never sends password/old_password (and a stored
+      // hash loaded into the form can never be resubmitted as a password).
+      if (!_metaContent.password) {
+        delete _metaContent.password;
+        delete _metaContent.old_password;
+      } else if (!_metaContent.old_password) {
+        delete _metaContent.old_password;
+      }
+
       if (isEditingUserMode) {
         const response = await Dmart.request({
           space_name: "management",

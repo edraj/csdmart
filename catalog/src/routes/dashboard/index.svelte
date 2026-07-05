@@ -2,15 +2,17 @@
     import { onMount } from "svelte";
     import { goto } from "@roxi/routify";
     import { get } from "svelte/store";
-    import { roles } from "@/stores/user";
-    import { canAccessAdminArea } from "@/lib/access";
+    import { permissions } from "@/stores/permissions";
+    import { canAccessAdminSection } from "@/lib/access";
 
     $goto;
 
-    // Role-aware landing: admins go to the admin dashboard, everyone else to
-    // their profile. Without this, a non-admin bounced out of /dashboard/admin
-    // would be redirected straight back here and loop.
+    // Landing redirect: admins go to the admin dashboard, everyone else to
+    // their profile. Uses the SAME permission-based predicate as
+    // guardAdminArea — if the two disagreed (e.g. roles say admin but the
+    // permissions map doesn't), /dashboard and /dashboard/admin would bounce
+    // the user between each other in an endless full-reload loop.
     onMount(() => {
-        $goto(canAccessAdminArea(get(roles)) ? "/dashboard/admin" : "/me");
+        $goto(canAccessAdminSection(get(permissions)) ? "/dashboard/admin" : "/me");
     });
 </script>
