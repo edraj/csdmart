@@ -265,17 +265,20 @@ export async function updateEntity(
 }
 
 /**
- * Delete an entity
+ * Delete an entity. `force` (default false) is sent as a top-level field; the
+ * backend cascades folders / fully removes a user's owned data when true.
  */
 export async function deleteEntity(
     shortname: string,
     spaceName: string,
     subpath: string,
-    resourceType: ResourceType
+    resourceType: ResourceType,
+    force: boolean = false
 ) {
-    const actionRequest: ActionRequest = {
+    const actionRequest: ActionRequest & { force?: boolean } = {
         space_name: spaceName,
         request_type: RequestType.delete,
+        force,
         records: [
             {
                 resource_type: resourceType,

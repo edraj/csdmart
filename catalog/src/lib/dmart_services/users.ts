@@ -14,6 +14,7 @@ import {
 import { getEntity, createEntity, updateEntity } from "./core";
 import { log } from "@/lib/logger";
 import { getCurrentScope } from "@/stores/user";
+import { checkAccess } from "@/stores/permissions";
 import { MANAGEMENT_SPACE, APPLICATIONS_SPACE } from "@/lib/constants";
 import { website } from "@/config";
 
@@ -78,6 +79,9 @@ export async function updateUserRoles(
     userShortname: string,
     roles: string[]
 ): Promise<boolean> {
+    if (!checkAccess("update", MANAGEMENT_SPACE, "users", "user")) {
+        throw new Error("Permission denied: cannot update user roles");
+    }
     try {
         const actionRequest: ActionRequest = {
             space_name: MANAGEMENT_SPACE,
@@ -98,6 +102,33 @@ export async function updateUserRoles(
         return response.status === "success";
     } catch (error) {
         log.error("Error updating user roles:", error);
+        return false;
+    }
+}
+
+/**
+ * Add a single role to a user without removing their existing roles.
+ * Fetches current roles first, deduplicates, then calls updateUserRoles.
+ */
+export async function assignRoleToUser(
+    userShortname: string,
+    roleName: string,
+): Promise<boolean> {
+    try {
+        const userRecord = await getEntity(
+            userShortname,
+            MANAGEMENT_SPACE,
+            "users",
+            ResourceType.user,
+            DmartScope.managed,
+            true,
+            false,
+        );
+        const existing: string[] = (userRecord as any)?.attributes?.roles ?? [];
+        if (existing.includes(roleName)) return true;
+        return updateUserRoles(userShortname, [...existing, roleName]);
+    } catch (error) {
+        log.error("Error assigning role to user:", error);
         return false;
     }
 }

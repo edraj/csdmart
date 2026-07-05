@@ -1,6 +1,7 @@
 <script lang="ts">
   import { goto, params } from "@roxi/routify";
   import { onMount } from "svelte";
+  import { sanitizeHtml } from "@/lib/utils/sanitize";
   import {
     checkCurrentUserReactedIdea,
     createComment,
@@ -547,7 +548,7 @@
                 <pre class="fallback-content">{JSON.stringify(entity.payload.body, null, 2)}</pre>
               </div>
             {:else}
-              {@html renderContent(entity)}
+              {@html sanitizeHtml(renderContent(entity))}
             {/if}
           {:else if entity?.payload?.content_type === "json"}
             <JsonViewer 
@@ -557,7 +558,7 @@
               spaceName={$params.space_name}
             />
           {:else}
-            {@html renderContent(entity)}
+            {@html sanitizeHtml(renderContent(entity))}
           {/if}
         </div>
 

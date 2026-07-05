@@ -1,3 +1,12 @@
-<script></script>
+<script lang="ts">
+  import { onMount } from "svelte";
+  import { guardAdminArea } from "@/lib/guards";
+
+  // Guards the whole /dashboard/admin/* subtree (index, settings, configs,
+  // contact-messages, users, [space_name]/...). super_admin OR super_manager.
+  onMount(() => {
+    guardAdminArea();
+  });
+</script>
 
 <slot />

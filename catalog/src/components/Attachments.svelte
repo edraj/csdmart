@@ -22,10 +22,7 @@
   import type { Attachment } from "../lib/types";
   import { log } from "../lib/logger";
 
-  function pickTranslation(
-    value: any,
-    activeLocale: string,
-  ): string {
+  function pickTranslation(value: any, activeLocale: string): string {
     if (!value) return "";
     if (typeof value === "string") return value;
     if (typeof value !== "object") return String(value ?? "");
@@ -49,15 +46,14 @@
   }
 
   function getDescription(attachment: any, activeLocale: string): string {
-    return pickTranslation(
-      attachment?.attributes?.description,
-      activeLocale,
-    );
+    return pickTranslation(attachment?.attributes?.description, activeLocale);
   }
 
   function getTags(attachment: any): string[] {
     const raw = attachment?.attributes?.tags;
-    return Array.isArray(raw) ? raw.filter((t) => typeof t === "string" && t.length > 0) : [];
+    return Array.isArray(raw)
+      ? raw.filter((t) => typeof t === "string" && t.length > 0)
+      : [];
   }
 
   let {
@@ -81,7 +77,11 @@
   let previewLoading = $state(false);
 
   // Editable metadata state (bound to preview modal inputs)
-  interface EditTranslation { en: string; ar: string; ku: string }
+  interface EditTranslation {
+    en: string;
+    ar: string;
+    ku: string;
+  }
   let editDisplayname: EditTranslation = $state({ en: "", ar: "", ku: "" });
   let editDescription: EditTranslation = $state({ en: "", ar: "", ku: "" });
   let editTagsInput = $state("");
@@ -98,7 +98,9 @@
     };
   }
 
-  function translationPayload(t: EditTranslation): Record<string, string> | null {
+  function translationPayload(
+    t: EditTranslation,
+  ): Record<string, string> | null {
     const out: Record<string, string> = {};
     if (t.en?.trim()) out.en = t.en.trim();
     if (t.ar?.trim()) out.ar = t.ar.trim();
@@ -242,7 +244,8 @@
     const blobUrl = URL.createObjectURL(blob);
     const link = document.createElement("a");
     link.href = blobUrl;
-    link.download = attachment.attributes?.payload?.body || attachment.shortname;
+    link.download =
+      attachment.attributes?.payload?.body || attachment.shortname;
     document.body.appendChild(link);
     link.click();
     document.body.removeChild(link);
@@ -252,7 +255,7 @@
   async function handleDelete(attachment: any) {
     if (
       confirm(
-        `Are you sure want to delete ${attachment.shortname} attachment`
+        `Are you sure want to delete ${attachment.shortname} attachment`,
       ) === false
     ) {
       return;
@@ -273,7 +276,7 @@
     const response = await Dmart.request(request_dict as any);
     if (response.status === "success") {
       attachments = attachments.filter(
-        (e: { shortname: string }) => e.shortname !== attachment.shortname
+        (e: { shortname: string }) => e.shortname !== attachment.shortname,
       );
       successToastMessage(`Attachment deleted successfully.`);
     } else {
@@ -341,19 +344,21 @@
 
           <!-- Media Preview -->
           <div class="attachment-preview">
-            {#if attachment && [ResourceType.media, ResourceType.comment].includes(attachment.resource_type)}
+            {#if attachment && [ResourceType.media].includes(attachment.resource_type)}
               <div class="media-wrapper">
                 <Media
                   resource_type={attachment.resource_type}
                   attributes={attachment.attributes}
                   displayname={attachment.shortname}
                   url={Dmart.getAttachmentUrl({
-                    resource_type: attachment.resource_type as ResourceType,
+                    resource_type: attachment.resource_type,
                     space_name,
                     subpath,
                     parent_shortname,
                     shortname: removeFileExtension(attachment.shortname),
-                    ext: getFileExtension(attachment.attributes?.payload?.body) ?? "",
+                    ext:
+                      getFileExtension(attachment.attributes?.payload?.body) ??
+                      "",
                   })}
                 />
                 <div class="media-overlay">
@@ -517,7 +522,9 @@
 
       <div class="modal-body">
         {#if previewLoading}
-          <div class="modal-loading"><div class="spinner spinner-lg"></div></div>
+          <div class="modal-loading">
+            <div class="spinner spinner-lg"></div>
+          </div>
         {:else if previewBlobUrl}
           {#if currentPreview.type === "image"}
             <img
@@ -554,7 +561,12 @@
             </iframe>
           {/if}
         {:else}
-          <div class="modal-loading" style="color: var(--color-gray-400); font-size: 0.875rem;">Failed to load preview</div>
+          <div
+            class="modal-loading"
+            style="color: var(--color-gray-400); font-size: 0.875rem;"
+          >
+            Failed to load preview
+          </div>
         {/if}
       </div>
 
@@ -1083,7 +1095,9 @@
   }
 
   @keyframes spin {
-    to { transform: rotate(360deg); }
+    to {
+      transform: rotate(360deg);
+    }
   }
 
   .modal-edit {
@@ -1130,7 +1144,9 @@
     background: white;
     border: 1px solid var(--color-gray-200);
     border-radius: 0.5rem;
-    transition: border-color 0.15s ease, box-shadow 0.15s ease;
+    transition:
+      border-color 0.15s ease,
+      box-shadow 0.15s ease;
   }
 
   .edit-input:focus {

@@ -125,8 +125,7 @@ export function streamEntitiesAcrossSpaces(
 export async function getMyEntities(shortname: string = "") {
     const result = await getSpaces(false, DmartScope.managed, [
         MESSAGES_SPACE,
-        "poll",
-        "surveys",
+
     ]);
     const spaces = result.records.map((space) => space.shortname);
 

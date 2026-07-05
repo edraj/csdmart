@@ -1,7 +1,13 @@
 @import "tailwindcss";
 @plugin "flowbite/plugin";
+/* Deps are hoisted to the repo root in this yarn-workspaces monorepo, so
+   ../node_modules/* resolves to the empty catalog/node_modules and Tailwind v4
+   scans none of flowbite-svelte's utility classes. List both the hoisted (../../)
+   and local (../) locations so the scan works either way. */
 @source "../node_modules/flowbite-svelte/dist";
 @source "../node_modules/flowbite-svelte-icons/dist";
+@source "../../node_modules/flowbite-svelte/dist";
+@source "../../node_modules/flowbite-svelte-icons/dist";
 
 /* ─── Design Tokens ─── */
 /* Default theme is light. `[data-theme="light"]` is an explicit alias so

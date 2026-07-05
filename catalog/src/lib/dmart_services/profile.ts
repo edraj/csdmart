@@ -8,6 +8,7 @@ import {
 import { log } from "@/lib/logger";
 import { PERSONAL_SPACE } from "@/lib/constants";
 import { getCurrentScope, syncRolesFromStorage } from "@/stores/user";
+import { syncPermissionsFromStorage } from "@/stores/permissions";
 import { ensureUploadSize } from "./core";
 
 /**
@@ -22,6 +23,7 @@ export async function getProfile() {
         }
         if (profile.status === "success" && profile.records.length > 0) {
             syncRolesFromStorage();
+            syncPermissionsFromStorage();
             return profile.records[0];
         }
 

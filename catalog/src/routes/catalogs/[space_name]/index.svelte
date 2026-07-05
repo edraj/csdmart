@@ -1,5 +1,6 @@
 <script lang="ts">
   import { onMount } from "svelte";
+  import { sanitizeHtml } from "@/lib/utils/sanitize";
   import { goto, params } from "@roxi/routify";
   import {
     getAvatar,
@@ -1088,12 +1089,14 @@
       {#if !searchQuery.trim() && displayedContents.length > 0}
         <div class="showing-status">
           <span class="showing-text">
-            {@html $_("space.showing_posts", {
-              values: {
-                displayed: `<strong>${totalDisplayed}</strong>`,
-                total: totalFiltered,
-              },
-            })}
+            {@html sanitizeHtml(
+              $_("space.showing_posts", {
+                values: {
+                  displayed: `<strong>${totalDisplayed}</strong>`,
+                  total: totalFiltered,
+                },
+              }),
+            )}
           </span>
           <div class="live-indicator">
             <span class="live-dot"></span>
@@ -1103,9 +1106,11 @@
       {:else if searchQuery.trim()}
         <div class="showing-status">
           <span class="showing-text">
-            {@html $_("space.search_results_count", {
-              values: { count: searchResults.length, query: searchQuery },
-            })}
+            {@html sanitizeHtml(
+              $_("space.search_results_count", {
+                values: { count: searchResults.length, query: searchQuery },
+              }),
+            )}
           </span>
         </div>
       {/if}

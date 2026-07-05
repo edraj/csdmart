@@ -24,8 +24,8 @@
     "marked-gfm-heading-id": "^4.1.4",
     "marked-mangle": "^1.1.13",
     "mdsvex": "^0.12.7",
-    "svelte": "^5.55.5",
-    "svelte-check": "^4.4.6",
+    "svelte": "^5.56.4",
+    "svelte-check": "^4.7.1",
     "svelte-i18n": "^4.0.1",
     "svelte-loading-spinners": "^0.3.6",
     "tailwindcss": "^4.2.4",
@@ -40,9 +40,10 @@
     "svelte": "^5.55.5"
   },
   "dependencies": {
-    "@edraj/tsdmart": "^5.3.3",
+    "@edraj/tsdmart": "^5.4.0",
     "@zerodevx/svelte-toast": "^0.9.6",
-    "flowbite": "^4.0.1",
+    "dompurify": "^3.4.11",
+    "flowbite": "^4.0.2",
     "flowbite-svelte": "^1.33.1",
     "flowbite-svelte-icons": "^3.1.0",
     "spank": "^2.2.4",
@@ -52,8 +53,6 @@
   "spank": {
     "sitemap": [
       "/",
-      "/catalogs",
-      "/catalogs/index",
       "/community",
       "/contact",
       "/entries",

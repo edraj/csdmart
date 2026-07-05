@@ -12,5 +12,12 @@
   },
   "backend": "http://localhost:8282",
   "backend_timeout": 30000,
-  "delay_total_count": false
+  "delay_total_count": false,
+  "enable_websocket": true,
+  "enable_messaging": true,
+  "enable_surveys": true,
+  "enable_poll": true,
+  "enable_reaction_and_comment": true,
+  "enable_public_view": true,
+  "enable_notifications": true
 }

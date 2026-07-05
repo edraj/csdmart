@@ -1,5 +1,7 @@
 <script lang="ts">
   import { goto, params } from "@roxi/routify";
+  import { can, permissions } from "@/stores/permissions";
+  import { visibleColumns } from "@/lib/access-fields";
   import {
     deleteEntity,
     getEntity,
@@ -16,6 +18,7 @@
     setNestedValue,
   } from "@/lib/schemaTypes";
   import { createFolder } from "@/lib/dmart_services/entries";
+  import { collectSchemaPropertyBags, resolveSchemaDef } from "@/lib/jsonSchema";
   import { _, locale } from "@/i18n";
   import {
     Dmart,
@@ -24,6 +27,7 @@
     QueryType,
     DmartScope,
     SortType,
+    ContentType,
   } from "@edraj/tsdmart";
   import { derived as derivedStore, writable } from "svelte/store";
   import MetaForm from "@/components/forms/MetaForm.svelte";
@@ -32,7 +36,11 @@
   import { parseBreadcrumbPath } from "@/lib/breadcrumb";
   import { stripServerManagedFields } from "@/lib/duplicate";
   import SchemaForm from "@/components/forms/SchemaForm.svelte";
-  import CreateTemplateModal from "@/components/CreateTemplateModal.svelte";
+  import DynamicSchemaBasedForms from "@/components/forms/DynamicSchemaBasedForms.svelte";
+  import MetaUserForm from "@/components/management/forms/MetaUserForm.svelte";
+  import MetaRoleForm from "@/components/forms/MetaRoleForm.svelte";
+  import MetaPermissionForm from "@/components/forms/MetaPermissionForm.svelte";
+  import { MANAGEMENT_SPACE } from "@/lib/constants";
   import WorkflowForm from "@/components/forms/WorkflowForm.svelte";
   import {
     errorToastMessage,
@@ -61,8 +69,6 @@
   const ITEMS_PER_PAGE_KEY = "itemsPerPage";
   const SORT_BY_KEY = "admin_sortBy";
   const SORT_ORDER_KEY = "admin_sortOrder";
-  const SELECTED_TYPE_KEY = "admin_selectedType";
-  const SELECTED_STATUS_KEY = "admin_selectedStatus";
 
   let currentPage = $state(1);
   let itemsPerPage = $state(
@@ -80,20 +86,26 @@
       ? localStorage.getItem(SORT_ORDER_KEY) || "asc"
       : "asc",
   );
-  let selectedType = $state(
-    typeof localStorage !== "undefined"
-      ? localStorage.getItem(SELECTED_TYPE_KEY) || "all"
-      : "all",
-  );
-  let selectedStatus = $state(
-    typeof localStorage !== "undefined"
-      ? localStorage.getItem(SELECTED_STATUS_KEY) || "all"
-      : "all",
-  );
+  // Checkbox filter panel state. `is_active` is a universal meta field so it
+  // gets its own group; everything else is discovered from the folder's
+  // content schema(s) (boolean/enum properties only — see schemaFilterFields).
+  let showFilterPanel = $state(false);
+  let statusFilter = $state<{ active: boolean; inactive: boolean }>({
+    active: false,
+    inactive: false,
+  });
+  let schemaFilterFields = $state<
+    Array<{
+      key: string;
+      label: string;
+      type: "boolean" | "enum";
+      options: string[];
+    }>
+  >([]);
+  let schemaFieldFilters = $state<Record<string, Record<string, boolean>>>({});
   let totalItemsCount = $state(0);
   let totalPages = $state(1);
   let isInitialLoad = $state(true);
-  let containTemplates = $state(false);
   const itemsPerPageOptions = [10, 25, 50, 100];
 
   let paginatedContents = $state<any[]>([]);
@@ -188,22 +200,6 @@
     ($locale: any) => $locale === "ar" || $locale === "ku",
   );
 
-  const typeOptions = [
-    { value: "all", label: $_("admin_dashboard.filters.all") },
-    { value: "folder", label: $_("admin_dashboard.filters.folder") },
-    { value: "content", label: $_("admin_dashboard.filters.content") },
-    { value: "post", label: $_("admin_dashboard.filters.post") },
-    { value: "ticket", label: $_("admin_dashboard.filters.ticket") },
-    { value: "user", label: $_("admin_dashboard.filters.user") },
-    { value: "media", label: $_("admin_dashboard.filters.media") },
-  ];
-
-  const statusOptions = [
-    { value: "all", label: $_("admin_dashboard.filters.all") },
-    { value: "active", label: $_("admin_dashboard.filters.active") },
-    { value: "inactive", label: $_("admin_dashboard.filters.inactive") },
-  ];
-
   const sortOptions = [
     { value: "name", label: $_("admin_dashboard.sort.name") },
     { value: "created", label: $_("admin_dashboard.sort.created") },
@@ -246,6 +242,7 @@
 
   let _prevSubpath = "";
   let _prevSpaceName = "";
+  let _prevSchemaShortnamesKey = "";
 
   $effect(() => {
     const currentSubpath = $params.subpath;
@@ -261,6 +258,122 @@
       initializeContent();
     }
   });
+
+  // Checked-but-not-all-checked is a real filter; none-checked or
+  // all-checked both mean "no constraint" (same UX as the old "All" option).
+  function buildStatusFilterSearch(): string {
+    const { active, inactive } = statusFilter;
+    if (active && !inactive) return "@is_active:true";
+    if (inactive && !active) return "@is_active:false";
+    return "";
+  }
+
+  function buildSchemaFieldFiltersSearch(): string {
+    const parts: string[] = [];
+    for (const field of schemaFilterFields) {
+      const selections = schemaFieldFilters[field.key];
+      if (!selections) continue;
+      const selected = field.options.filter((opt) => selections[opt]);
+      if (selected.length === 0 || selected.length === field.options.length)
+        continue;
+      const fieldPath = `payload.body.${field.key}`;
+      parts.push(
+        field.type === "boolean"
+          ? `@${fieldPath}:${selected[0]}`
+          : `@${fieldPath}:(${selected.join("|")})`,
+      );
+    }
+    return parts.join(" ");
+  }
+
+  async function loadSchemaFilterFields(schemaShortnames: string[]) {
+    if (!schemaShortnames || schemaShortnames.length === 0) {
+      schemaFilterFields = [];
+      schemaFieldFilters = {};
+      return;
+    }
+
+    try {
+      const schemas = await Promise.all(
+        schemaShortnames.map((sn) =>
+          getEntity(
+            sn,
+            spaceName,
+            "/schema",
+            ResourceType.content,
+            DmartScope.managed,
+            true,
+            true,
+          ).catch(() => null),
+        ),
+      );
+
+      const fieldsByKey = new Map<
+        string,
+        {
+          key: string;
+          label: string;
+          type: "boolean" | "enum";
+          options: string[];
+        }
+      >();
+
+      for (const schema of schemas) {
+        const body = (schema as any)?.payload?.body;
+        // Discriminated-union schemas (e.g. "subaccount") have no top-level
+        // `properties` — each oneOf/anyOf branch defines its own. Collect
+        // every bag so filters cover fields from any branch.
+        const propertyBags = collectSchemaPropertyBags(body);
+
+        for (const properties of propertyBags) {
+          for (const [propKey, propDefRaw] of Object.entries(properties)) {
+            const propDef = resolveSchemaDef(body, propDefRaw);
+            if (!propDef || typeof propDef !== "object") continue;
+
+            if (propDef.type === "boolean") {
+              if (!fieldsByKey.has(propKey)) {
+                fieldsByKey.set(propKey, {
+                  key: propKey,
+                  label: propDef.title || propKey,
+                  type: "boolean",
+                  options: ["true", "false"],
+                });
+              }
+              continue;
+            }
+
+            const enumValues: any[] | undefined = Array.isArray(propDef.enum)
+              ? propDef.enum
+              : Array.isArray(propDef.items?.enum)
+                ? propDef.items.enum
+                : undefined;
+
+            if (enumValues && enumValues.length > 0) {
+              const existing = fieldsByKey.get(propKey);
+              const optionSet = new Set(existing?.options ?? []);
+              enumValues.forEach((v) => optionSet.add(String(v)));
+              fieldsByKey.set(propKey, {
+                key: propKey,
+                label: propDef.title || existing?.label || propKey,
+                type: "enum",
+                options: Array.from(optionSet),
+              });
+            }
+          }
+        }
+      }
+
+      schemaFilterFields = Array.from(fieldsByKey.values());
+      schemaFieldFilters = Object.fromEntries(
+        Object.entries(schemaFieldFilters).filter(([key]) =>
+          fieldsByKey.has(key),
+        ),
+      );
+    } catch (err) {
+      console.error("Error loading schema filter fields:", err);
+      schemaFilterFields = [];
+    }
+  }
 
   async function loadContents(reset = false) {
     if ($isLoading) return;
@@ -280,16 +393,24 @@
       const offset = (currentPage - 1) * itemsPerPage;
 
       const folderMeta = folderShortname
-        ? await getEntity(folderShortname, spaceName, parentPath, ResourceType.folder, DmartScope.managed)
+        ? await getEntity(
+            folderShortname,
+            spaceName,
+            parentPath,
+            ResourceType.folder,
+            DmartScope.managed,
+          )
         : null;
       const expandChildren =
         folderMeta?.payload?.body?.expand_children === true;
 
-      // Run remaining independent backend calls in parallel
+      const statusSearch = buildStatusFilterSearch();
+      const schemaFieldsSearch = buildSchemaFieldFiltersSearch();
+      const tagsSearch =
+        selectedTags.length > 0 ? `@tags:(${selectedTags.join("|")})` : "";
+
       const [parent, response, tagsResponse] = await Promise.all([
-        // 1. Parent contents (template check)
         getSpaceContents(spaceName, "/", DmartScope.managed, 100, 0, false),
-        // 2. Paginated items — hide filter applied server-side via `-@shortname:x|y`
         Dmart.query(
           {
             type: QueryType.search,
@@ -298,6 +419,9 @@
             search: mergeSearch(
               searchQuery,
               buildHideFoldersSearch(spaceHideFolders),
+              statusSearch,
+              schemaFieldsSearch,
+              tagsSearch,
             ),
             limit: itemsPerPage,
             sort_by: "shortname",
@@ -316,17 +440,12 @@
       // Process folder metadata
       folderMetadata = folderMeta;
 
-      // Process template check
-      containTemplates = false;
-      for (const item of parent?.records ?? []) {
-        if (
-          item?.attributes?.payload?.body?.content_schema_shortnames?.includes(
-            "templates",
-          ) &&
-          item?.shortname == `${$actualSubpath}`
-        ) {
-          containTemplates = true;
-        }
+      const schemaShortnames: string[] =
+        folderMeta?.payload?.body?.content_schema_shortnames || [];
+      const schemaShortnamesKey = schemaShortnames.slice().sort().join(",");
+      if (schemaShortnamesKey !== _prevSchemaShortnamesKey) {
+        _prevSchemaShortnamesKey = schemaShortnamesKey;
+        loadSchemaFilterFields(schemaShortnames);
       }
 
       // Process tags
@@ -370,26 +489,6 @@
 
   function applyFilters() {
     let filtered = [...$allContents];
-
-    if (selectedType !== "all") {
-      filtered = filtered.filter((item) => item.resource_type === selectedType);
-    }
-
-    if (selectedStatus !== "all") {
-      filtered = filtered.filter((item) => {
-        const isActive = item.attributes?.is_active;
-        return selectedStatus === "active" ? isActive : !isActive;
-      });
-    }
-
-    // Filter by selected tags
-    if (selectedTags.length > 0) {
-      filtered = filtered.filter((item) =>
-        selectedTags.some((tag) => item.attributes?.tags?.includes(tag)),
-      );
-    }
-
-    // `hide_folders` is applied server-side via `-@shortname:...` in loadContents.
 
     filtered.sort((a, b) => {
       let aValue, bValue;
@@ -486,24 +585,177 @@
     }
   }
 
-  let showCreateTemplateModal = $state(false);
+  let showCreateItemModal = $state(false);
+  let isCreatingItem = $state(false);
+  let createItemMeta: any = $state({});
+  let validateCreateItemForm: any = $state(null);
+  // Validation for the resource-type-specific form (user/role/permission).
+  let validateCreateRTForm: any = $state(null);
 
-  function handleCreateItem() {
-    if (subpath === "templates") {
-      // Open the template creation modal with locked space
-      showCreateTemplateModal = true;
-    } else {
-      $goto("/entries/create", {
-        space_name: spaceName,
-        subpath: $actualSubpath,
-        from: "admin",
-      });
+  // The resource type the modal creates, derived from the current location
+  // (cxb style): in the management space, /users -> user, /roles -> role,
+  // /permissions -> permission; everywhere else -> content.
+  let createItemResourceType = $state<ResourceType>(ResourceType.content);
+
+  function detectCreateResourceType(): ResourceType {
+    const sp = ($actualSubpath || "").replace(/^\/+|\/+$/g, "");
+    if (spaceName === MANAGEMENT_SPACE) {
+      if (sp === "users") return ResourceType.user;
+      if (sp === "roles") return ResourceType.role;
+      if (sp === "permissions") return ResourceType.permission;
+    }
+    return ResourceType.content;
+  }
+
+  // Dynamic schema (payload) for the new item, driven by the folder's
+  // `content_schema_shortnames`: 0 -> none, 1 -> auto, >1 -> user selects.
+  let createItemSchemaShortnames = $state<string[]>([]);
+  let selectedCreateSchemaShortname = $state("");
+  let createSchema: any = $state(null);
+  let createSchemaFormData: any = $state({});
+  let loadingCreateSchema = $state(false);
+
+  async function loadCreateItemSchema(shortname: string) {
+    if (!shortname) {
+      createSchema = null;
+      createSchemaFormData = {};
+      return;
+    }
+    loadingCreateSchema = true;
+    createSchema = null;
+    createSchemaFormData = {};
+    try {
+      const response: any = await getEntity(
+        shortname,
+        spaceName,
+        "/schema",
+        ResourceType.content,
+        DmartScope.managed,
+        true,
+        true,
+      );
+      if (response?.payload?.body) {
+        createSchema = response.payload.body;
+      }
+    } catch (err) {
+      console.error("Error loading schema for new item:", err);
+    } finally {
+      loadingCreateSchema = false;
     }
   }
 
-  function handleTemplateModalClose() {
-    showCreateTemplateModal = false;
-    loadContents(true);
+  function handleCreateSchemaChange(event: any) {
+    selectedCreateSchemaShortname = event.target.value;
+    loadCreateItemSchema(selectedCreateSchemaShortname);
+  }
+
+  function handleCreateItem() {
+    createItemResourceType = detectCreateResourceType();
+    createItemMeta = {
+      shortname: null,
+      is_active: true,
+      displayname: { en: null, ar: null, ku: null },
+      description: { en: null, ar: null, ku: null },
+    };
+    validateCreateRTForm = null;
+
+    // Reset dynamic-schema state.
+    createItemSchemaShortnames = [];
+    selectedCreateSchemaShortname = "";
+    createSchema = null;
+    createSchemaFormData = {};
+
+    // The dynamic schema form only applies to plain content entries. Roles,
+    // permissions and users carry their own meta props via their forms.
+    if (createItemResourceType === ResourceType.content) {
+      const schemaShortnames =
+        folderMetadata?.payload?.body?.content_schema_shortnames;
+      createItemSchemaShortnames = Array.isArray(schemaShortnames)
+        ? schemaShortnames
+        : [];
+      // 0 schemas -> nothing; 1 -> fetch & render; >1 -> wait for selection.
+      if (createItemSchemaShortnames.length === 1) {
+        selectedCreateSchemaShortname = createItemSchemaShortnames[0];
+        loadCreateItemSchema(selectedCreateSchemaShortname);
+      }
+    }
+
+    showCreateItemModal = true;
+  }
+
+  async function handleSaveItem(event: any) {
+    event.preventDefault();
+    if (validateCreateItemForm && !validateCreateItemForm()) return;
+    if (validateCreateRTForm && !validateCreateRTForm()) return;
+    isCreatingItem = true;
+
+    try {
+      // The meta form and the resource-type-specific form both bind to
+      // `createItemMeta`, so it already holds the merged attributes
+      // (shortname + base meta + user/role/permission props).
+      const attributes: any = $state.snapshot(createItemMeta) || {};
+      const shortname = attributes.shortname || "auto";
+      delete attributes.shortname;
+
+      // Persist the dynamic-schema form as the item's JSON payload (content only).
+      if (
+        createItemResourceType === ResourceType.content &&
+        createSchema &&
+        selectedCreateSchemaShortname
+      ) {
+        attributes.payload = {
+          content_type: ContentType.json,
+          schema_shortname: selectedCreateSchemaShortname,
+          body: createSchemaFormData || {},
+        };
+      }
+
+      const response: any = await Dmart.request({
+        space_name: spaceName,
+        request_type: RequestType.create,
+        records: [
+          {
+            resource_type: createItemResourceType,
+            shortname,
+            subpath: `/${$actualSubpath}`,
+            attributes,
+          },
+        ],
+      });
+
+      if (response?.status === "success") {
+        showCreateItemModal = false;
+        successToastMessage($_("toast.item_created"));
+        const createdShortname = response.records?.[0]?.shortname;
+        // Only plain content has a generic edit page in this browser; for
+        // user/role/permission just refresh the listing.
+        if (
+          createItemResourceType === ResourceType.content &&
+          createdShortname
+        ) {
+          $goto(
+            "/dashboard/admin/[space_name]/[subpath]/[shortname]/[resource_type]",
+            {
+              space_name: spaceName,
+              subpath: subpath,
+              shortname: createdShortname,
+              resource_type: ResourceType.content,
+            },
+          );
+        } else {
+          await loadContents(true);
+        }
+      } else {
+        errorToastMessage($_("toast.item_create_failed"));
+      }
+    } catch (err: any) {
+      console.error("Error creating item:", err);
+      errorToastMessage(
+        err?.response?.data?.error?.message || $_("toast.item_create_failed"),
+      );
+    } finally {
+      isCreatingItem = false;
+    }
   }
 
   // Delete confirmation dialog state
@@ -523,7 +775,7 @@
     isDeletingItem = false;
   }
 
-  async function handleConfirmDelete() {
+  async function handleConfirmDelete(force: boolean) {
     if (!itemToDelete) return;
 
     isDeletingItem = true;
@@ -533,6 +785,7 @@
         spaceName,
         `/${$actualSubpath}`,
         itemToDelete.resource_type,
+        force,
       );
       if (success) {
         successToastMessage($_("toast.item_deleted"));
@@ -543,7 +796,9 @@
       }
     } catch (err) {
       console.error("Error deleting item:", err);
-      errorToastMessage($_("toast.item_delete_failed") + ": " + (err as any).message);
+      errorToastMessage(
+        $_("toast.item_delete_failed") + ": " + (err as any).message,
+      );
     } finally {
       isDeletingItem = false;
     }
@@ -647,8 +902,8 @@
 
   function clearFilters() {
     searchQuery = "";
-    selectedType = "all";
-    selectedStatus = "all";
+    statusFilter = { active: false, inactive: false };
+    schemaFieldFilters = {};
     selectedTags = [];
     sortBy = "name";
     sortOrder = "asc";
@@ -656,12 +911,31 @@
 
     // Clear localStorage for filters
     if (typeof localStorage !== "undefined") {
-      localStorage.removeItem(SELECTED_TYPE_KEY);
-      localStorage.removeItem(SELECTED_STATUS_KEY);
       localStorage.removeItem(SORT_BY_KEY);
       localStorage.removeItem(SORT_ORDER_KEY);
     }
 
+    loadContents(true);
+  }
+
+  function toggleStatusFilter(key: "active" | "inactive") {
+    statusFilter = { ...statusFilter, [key]: !statusFilter[key] };
+    currentPage = 1;
+    loadContents(true);
+  }
+
+  function toggleSchemaFieldOption(fieldKey: string, optionValue: string) {
+    const current = { ...(schemaFieldFilters[fieldKey] || {}) };
+    current[optionValue] = !current[optionValue];
+    schemaFieldFilters = { ...schemaFieldFilters, [fieldKey]: current };
+    currentPage = 1;
+    loadContents(true);
+  }
+
+  function clearPanelFilters() {
+    statusFilter = { active: false, inactive: false };
+    schemaFieldFilters = {};
+    currentPage = 1;
     loadContents(true);
   }
 
@@ -760,7 +1034,9 @@
       }
       if (failCount > 0) {
         errorToastMessage(
-          $_("admin_content.bulk_actions.delete_failed", { count: failCount } as any),
+          $_("admin_content.bulk_actions.delete_failed", {
+            count: failCount,
+          } as any),
         );
       }
 
@@ -813,7 +1089,9 @@
       }
       if (failCount > 0) {
         errorToastMessage(
-          $_("admin_content.bulk_actions.trash_failed", { count: failCount } as any),
+          $_("admin_content.bulk_actions.trash_failed", {
+            count: failCount,
+          } as any),
         );
       }
 
@@ -1044,25 +1322,29 @@
       let successCount = 0;
       let failCount = 0;
 
-      if (response && response.status === 'success') {
+      if (response && response.status === "success") {
         successCount = records.length;
       } else {
         failCount = records.length;
       }
 
       if (successCount > 0) {
-        successToastMessage($_("admin_content.bulk_actions.edit_success", {
-        values: {
-          count: successCount
-        }
-      }));
+        successToastMessage(
+          $_("admin_content.bulk_actions.edit_success", {
+            values: {
+              count: successCount,
+            },
+          }),
+        );
       }
       if (failCount > 0) {
-        errorToastMessage($_("admin_content.bulk_actions.edit_failed", {
-          values: {
-          count: failCount
-        }
-      }));
+        errorToastMessage(
+          $_("admin_content.bulk_actions.edit_failed", {
+            values: {
+              count: failCount,
+            },
+          }),
+        );
       }
 
       closeBulkEditModal();
@@ -1171,7 +1453,9 @@
       }
     } catch (err) {
       console.error("Error creating folder:", err);
-      errorToastMessage($_("toast.folder_create_failed") + ": " + (err as any).message);
+      errorToastMessage(
+        $_("toast.folder_create_failed") + ": " + (err as any).message,
+      );
     } finally {
       isCreatingFolder = false;
     }
@@ -1203,8 +1487,12 @@
   let isCSVDownloadModalOpen = $state(false);
 
   // Computed permissions from folder metadata
-  let canUploadCSV = $derived((folderMetadata as any)?.payload?.body?.allow_upload_csv === true);
-  let canDownloadCSV = $derived((folderMetadata as any)?.payload?.body?.allow_csv === true);
+  let canUploadCSV = $derived(
+    (folderMetadata as any)?.payload?.body?.allow_upload_csv === true,
+  );
+  let canDownloadCSV = $derived(
+    (folderMetadata as any)?.payload?.body?.allow_csv === true,
+  );
 
   function handleOpenColumnSettings() {
     // Preserve the saved index_attributes exactly. Auto-filling defaults here
@@ -1293,7 +1581,9 @@
       }
     } catch (err) {
       console.error("Error updating columns:", err);
-      errorToastMessage($_("toast.folder_update_failed") + ": " + (err as any).message);
+      errorToastMessage(
+        $_("toast.folder_update_failed") + ": " + (err as any).message,
+      );
     } finally {
       isSavingColumns = false;
     }
@@ -1349,7 +1639,9 @@
       }
     } catch (err) {
       console.error("Error creating schema:", err);
-      errorToastMessage($_("toast.schema_create_failed") + ": " + (err as any).message);
+      errorToastMessage(
+        $_("toast.schema_create_failed") + ": " + (err as any).message,
+      );
     } finally {
       isCreatingSchema = false;
     }
@@ -1406,6 +1698,23 @@
     folderMetadata?.payload?.body?.index_attributes || [],
   );
 
+  // Count of distinct filter groups currently constraining results — a
+  // group only counts when it's neither "nothing checked" nor "everything
+  // checked" (both mean "no constraint", matching the old "All" option UX).
+  const activeFilterCount = $derived(
+    (statusFilter.active && !statusFilter.inactive ? 1 : 0) +
+      (statusFilter.inactive && !statusFilter.active ? 1 : 0) +
+      schemaFilterFields.reduce((count, field) => {
+        const selections = schemaFieldFilters[field.key];
+        if (!selections) return count;
+        const selectedCount = field.options.filter((o) => selections[o]).length;
+        return (
+          count +
+          (selectedCount > 0 && selectedCount < field.options.length ? 1 : 0)
+        );
+      }, 0),
+  );
+
   function getAttributeValue(item: any, key: any) {
     if (!item) return "";
     if (!key) return "";
@@ -1448,7 +1757,8 @@
     if (value === null || value === undefined) return "";
 
     if (typeof value === "object" && !Array.isArray(value)) {
-      const localized = value[$locale ?? ""] || value.en || value.ar || value.ku;
+      const localized =
+        value[$locale ?? ""] || value.en || value.ar || value.ku;
       if (localized !== undefined) return String(localized);
       return JSON.stringify(value);
     }
@@ -1485,9 +1795,7 @@
             </svg>
           </button>
           <div>
-            <h1
-              class="admin-page-title"
-            >
+            <h1 class="admin-page-title">
               {$_("admin_content.title", {
                 values: {
                   name:
@@ -1530,10 +1838,7 @@
                         {crumb.name}
                       </button>
                     {:else}
-                      <span
-                        class="admin-breadcrumb-current"
-                        >{crumb.name}</span
-                      >
+                      <span class="admin-breadcrumb-current">{crumb.name}</span>
                     {/if}
                   </li>
                 {/each}
@@ -1545,54 +1850,58 @@
         <div class="flex items-center gap-3">
           {#if $actualSubpath !== "/" && $actualSubpath !== ""}
             {#if $actualSubpath !== "schema"}
-              <button
-                onclick={handleCreateFolder}
-                class="bg-white hover:bg-gray-50 border border-gray-200 text-gray-700 px-4 py-2 rounded-[14px] cursor-pointer font-medium transition-colors duration-200 flex items-center gap-2 shadow-sm"
-              >
-                <svg
-                  class="w-4 h-4 text-gray-500"
-                  fill="none"
-                  stroke="currentColor"
-                  viewBox="0 0 24 24"
+              {#if $can("create", spaceName, $actualSubpath, ResourceType.folder)}
+                <button
+                  onclick={handleCreateFolder}
+                  class="bg-white hover:bg-gray-50 border border-gray-200 text-gray-700 px-4 py-2 rounded-[14px] cursor-pointer font-medium transition-colors duration-200 flex items-center gap-2 shadow-sm"
                 >
-                  <path
-                    stroke-linecap="round"
-                    stroke-linejoin="round"
-                    stroke-width="2"
-                    d="M3 7v10a2 2 0 002 2h14a2 2 0 002-2V9a2 2 0 00-2-2h-6l-2-2H5a2 2 0 00-2 2z"
-                  ></path>
-                  <path
-                    stroke-linecap="round"
-                    stroke-linejoin="round"
-                    stroke-width="2"
-                    d="M12 10v4m2-2h-4"
-                  ></path>
-                </svg>
-                {$_("admin_content.actions.create_folder")}
-              </button>
+                  <svg
+                    class="w-4 h-4 text-gray-500"
+                    fill="none"
+                    stroke="currentColor"
+                    viewBox="0 0 24 24"
+                  >
+                    <path
+                      stroke-linecap="round"
+                      stroke-linejoin="round"
+                      stroke-width="2"
+                      d="M3 7v10a2 2 0 002 2h14a2 2 0 002-2V9a2 2 0 00-2-2h-6l-2-2H5a2 2 0 00-2 2z"
+                    ></path>
+                    <path
+                      stroke-linecap="round"
+                      stroke-linejoin="round"
+                      stroke-width="2"
+                      d="M12 10v4m2-2h-4"
+                    ></path>
+                  </svg>
+                  {$_("admin_content.actions.create_folder")}
+                </button>
+              {/if}
 
-              <button
-                onclick={handleCreateItem}
-                class="bg-indigo-500 hover:bg-indigo-600 text-white px-4 py-2 rounded-[14px] cursor-pointer font-medium transition-colors duration-200 flex items-center gap-2 shadow-sm"
-              >
-                <svg
-                  class="w-4 h-4"
-                  fill="none"
-                  stroke="currentColor"
-                  viewBox="0 0 24 24"
+              {#if $can("create", spaceName, $actualSubpath, ResourceType.content)}
+                <button
+                  onclick={handleCreateItem}
+                  class="bg-indigo-500 hover:bg-indigo-600 text-white px-4 py-2 rounded-[14px] cursor-pointer font-medium transition-colors duration-200 flex items-center gap-2 shadow-sm"
                 >
-                  <path
-                    stroke-linecap="round"
-                    stroke-linejoin="round"
-                    stroke-width="2"
-                    d="M12 4v16m8-8H4m4-8h8v8H8z"
-                  ></path>
-                </svg>
-                {$_("admin_content.actions.create_new_item")}
-              </button>
+                  <svg
+                    class="w-4 h-4"
+                    fill="none"
+                    stroke="currentColor"
+                    viewBox="0 0 24 24"
+                  >
+                    <path
+                      stroke-linecap="round"
+                      stroke-linejoin="round"
+                      stroke-width="2"
+                      d="M12 4v16m8-8H4m4-8h8v8H8z"
+                    ></path>
+                  </svg>
+                  {$_("admin_content.actions.create_new_item")}
+                </button>
+              {/if}
             {/if}
 
-            {#if $actualSubpath === "schema"}
+            {#if $actualSubpath === "schema" && $can("create", spaceName, $actualSubpath, ResourceType.schema)}
               <button
                 onclick={handleCreateSchema}
                 class="bg-purple-600 hover:bg-purple-700 text-white px-4 py-2 rounded-xl font-medium transition-colors shadow-sm"
@@ -1600,7 +1909,7 @@
                 {$_("admin_content.actions.create_schema")}
               </button>
             {/if}
-            {#if $actualSubpath === "workflows"}
+            {#if $actualSubpath === "workflows" && $can("create", spaceName, $actualSubpath, ResourceType.content)}
               <button
                 onclick={handleCreateWorkflow}
                 class="bg-indigo-600 hover:bg-indigo-700 text-white px-4 py-2 rounded-xl font-semibold transition-colors shadow-sm"
@@ -1657,19 +1966,41 @@
         <div class="admin-stat-card">
           <div class="flex items-center justify-between gap-2">
             <div>
-              <svg class="w-4 h-4" fill="none" stroke="var(--color-primary-500)" viewBox="0 0 24 24">
-                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 11H5m14 0a2 2 0 012 2v6a2 2 0 01-2 2H5a2 2 0 01-2-2v-6a2 2 0 012-2m14 0V9a2 2 0 00-2-2M5 11V9a2 2 0 012-2m0 0V5a2 2 0 012-2h6a2 2 0 012 2v2M7 7h10"></path>
+              <svg
+                class="w-4 h-4"
+                fill="none"
+                stroke="var(--color-primary-500)"
+                viewBox="0 0 24 24"
+              >
+                <path
+                  stroke-linecap="round"
+                  stroke-linejoin="round"
+                  stroke-width="2"
+                  d="M19 11H5m14 0a2 2 0 012 2v6a2 2 0 01-2 2H5a2 2 0 01-2-2v-6a2 2 0 012-2m14 0V9a2 2 0 00-2-2M5 11V9a2 2 0 012-2m0 0V5a2 2 0 012-2h6a2 2 0 012 2v2M7 7h10"
+                ></path>
               </svg>
             </div>
             <p class="admin-stat-label">Total</p>
-            <h3 class="admin-stat-value">{formatNumber(totalItemsDerived, $locale ?? "")}</h3>
+            <h3 class="admin-stat-value">
+              {formatNumber(totalItemsDerived, $locale ?? "")}
+            </h3>
           </div>
         </div>
         <div class="admin-stat-card">
           <div class="flex items-center justify-between gap-2">
             <div>
-              <svg class="w-4 h-4" fill="none" stroke="var(--color-success)" viewBox="0 0 24 24">
-                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 12l2 2 4-4m6 2a9 9 0 11-18 0 9 9 0 0118 0z"></path>
+              <svg
+                class="w-4 h-4"
+                fill="none"
+                stroke="var(--color-success)"
+                viewBox="0 0 24 24"
+              >
+                <path
+                  stroke-linecap="round"
+                  stroke-linejoin="round"
+                  stroke-width="2"
+                  d="M9 12l2 2 4-4m6 2a9 9 0 11-18 0 9 9 0 0118 0z"
+                ></path>
               </svg>
             </div>
             <p class="admin-stat-label">Active</p>
@@ -1797,46 +2128,13 @@
 
             <div class="flex flex-wrap items-center gap-3">
               <select
-                bind:value={selectedType}
-                onchange={(e: any) => {
-                  if (typeof localStorage !== "undefined") {
-                    localStorage.setItem(SELECTED_TYPE_KEY, (e.target as HTMLSelectElement).value);
-                  }
-                  currentPage = 1;
-                  loadContents(true);
-                }}
-                class="bg-gray-50 border-none text-sm font-medium text-gray-700 rounded-xl px-4 py-2.5 focus:ring-2 focus:ring-indigo-500 cursor-pointer"
-                title={$_("catalog_contents.filters.type")}
-                aria-label={$_("catalog_contents.filters.type")}
-              >
-                {#each typeOptions as option}
-                  <option value={option.value}>{option.label}</option>
-                {/each}
-              </select>
-
-              <select
-                bind:value={selectedStatus}
-                onchange={(e: any) => {
-                  if (typeof localStorage !== "undefined") {
-                    localStorage.setItem(SELECTED_STATUS_KEY, (e.target as HTMLSelectElement).value);
-                  }
-                  currentPage = 1;
-                  loadContents(true);
-                }}
-                class="bg-gray-50 border-none text-sm font-medium text-gray-700 rounded-xl px-4 py-2.5 focus:ring-2 focus:ring-indigo-500 cursor-pointer"
-                title={$_("catalog_contents.filters.status")}
-                aria-label={$_("catalog_contents.filters.status")}
-              >
-                {#each statusOptions as option}
-                  <option value={option.value}>{option.label}</option>
-                {/each}
-              </select>
-
-              <select
                 bind:value={sortBy}
                 onchange={(e: any) => {
                   if (typeof localStorage !== "undefined") {
-                    localStorage.setItem(SORT_BY_KEY, (e.target as HTMLSelectElement).value);
+                    localStorage.setItem(
+                      SORT_BY_KEY,
+                      (e.target as HTMLSelectElement).value,
+                    );
                   }
                   currentPage = 1;
                   loadContents(true);
@@ -1873,6 +2171,134 @@
                 </svg>
               </button>
 
+              <div class="relative">
+                <button
+                  onclick={() => (showFilterPanel = !showFilterPanel)}
+                  class="p-2.5 bg-gray-50 text-gray-500 hover:text-indigo-600 hover:bg-indigo-50 rounded-xl transition-all border border-transparent hover:border-indigo-100 relative"
+                  title={$_("admin_content.filters.filter_by_column")}
+                  aria-label={$_("admin_content.filters.filter_by_column")}
+                >
+                  <svg
+                    class="w-5 h-5"
+                    fill="none"
+                    stroke="currentColor"
+                    viewBox="0 0 24 24"
+                  >
+                    <path
+                      stroke-linecap="round"
+                      stroke-linejoin="round"
+                      stroke-width="2"
+                      d="M3 4h18M6 8h12M9 12h6M11 16h2"
+                    ></path>
+                  </svg>
+                  {#if activeFilterCount > 0}
+                    <span
+                      class="absolute -top-1 -right-1 bg-indigo-600 text-white text-[10px] font-bold rounded-full w-4 h-4 flex items-center justify-center"
+                    >
+                      {activeFilterCount}
+                    </span>
+                  {/if}
+                </button>
+
+                {#if showFilterPanel}
+                  <button
+                    type="button"
+                    class="fixed inset-0 z-10 cursor-default"
+                    onclick={() => (showFilterPanel = false)}
+                    aria-label={$_("admin_content.modal.close")}
+                  ></button>
+                  <div
+                    class="absolute {$isRTL
+                      ? 'left-0'
+                      : 'right-0'} mt-2 w-72 bg-white border border-gray-200 rounded-xl shadow-lg z-20 p-4 max-h-96 overflow-y-auto"
+                  >
+                    <div class="flex items-center justify-between mb-3">
+                      <span class="text-sm font-semibold text-gray-700">
+                        {$_("admin_content.filters.filter_by_column")}
+                      </span>
+                      {#if activeFilterCount > 0}
+                        <button
+                          onclick={clearPanelFilters}
+                          class="text-xs text-indigo-600 hover:text-indigo-700 font-medium"
+                        >
+                          {$_("admin_content.filters.clear_all")}
+                        </button>
+                      {/if}
+                    </div>
+
+                    <div class="mb-4">
+                      <div
+                        class="text-xs font-semibold text-gray-400 uppercase tracking-wider mb-2"
+                      >
+                        {$_("catalog_contents.filters.status")}
+                      </div>
+                      <label
+                        class="flex items-center gap-2 mb-1.5 cursor-pointer"
+                      >
+                        <input
+                          type="checkbox"
+                          checked={statusFilter.active}
+                          onchange={() => toggleStatusFilter("active")}
+                          class="w-4 h-4 text-indigo-600 border-gray-300 rounded focus:ring-indigo-500 cursor-pointer"
+                        />
+                        <span class="text-sm text-gray-700"
+                          >{$_("admin_content.status.active")}</span
+                        >
+                      </label>
+                      <label class="flex items-center gap-2 cursor-pointer">
+                        <input
+                          type="checkbox"
+                          checked={statusFilter.inactive}
+                          onchange={() => toggleStatusFilter("inactive")}
+                          class="w-4 h-4 text-indigo-600 border-gray-300 rounded focus:ring-indigo-500 cursor-pointer"
+                        />
+                        <span class="text-sm text-gray-700"
+                          >{$_("admin_content.status.inactive")}</span
+                        >
+                      </label>
+                    </div>
+
+                    {#each schemaFilterFields as field (field.key)}
+                      <div class="mb-4">
+                        <div
+                          class="text-xs font-semibold text-gray-400 uppercase tracking-wider mb-2"
+                        >
+                          {field.label}
+                        </div>
+                        {#each field.options as option (option)}
+                          <label
+                            class="flex items-center gap-2 mb-1.5 cursor-pointer"
+                          >
+                            <input
+                              type="checkbox"
+                              checked={!!schemaFieldFilters[field.key]?.[
+                                option
+                              ]}
+                              onchange={() =>
+                                toggleSchemaFieldOption(field.key, option)}
+                              class="w-4 h-4 text-indigo-600 border-gray-300 rounded focus:ring-indigo-500 cursor-pointer"
+                            />
+                            <span class="text-sm text-gray-700">
+                              {field.type === "boolean"
+                                ? option === "true"
+                                  ? $_("common.yes")
+                                  : $_("common.no")
+                                : option}
+                            </span>
+                          </label>
+                        {/each}
+                      </div>
+                    {/each}
+
+                    {#if schemaFilterFields.length === 0}
+                      <p class="text-xs text-gray-400">
+                        {$_("admin_content.filters.no_schema_filters")}
+                      </p>
+                    {/if}
+                  </div>
+                {/if}
+              </div>
+
               <button
                 onclick={handleOpenColumnSettings}
                 class="p-2.5 bg-gray-50 text-gray-500 hover:text-indigo-600 hover:bg-indigo-50 rounded-xl transition-all border border-transparent hover:border-indigo-100"
@@ -1903,7 +2329,7 @@
               <!-- CSV Upload Button -->
               {#if canUploadCSV}
                 <button
-                  onclick={() => isCSVUploadModalOpen = true}
+                  onclick={() => (isCSVUploadModalOpen = true)}
                   class="p-2.5 bg-gray-50 text-gray-500 hover:text-emerald-600 hover:bg-emerald-50 rounded-xl transition-all border border-transparent hover:border-emerald-100"
                   title="Upload CSV"
                   aria-label="Upload CSV"
@@ -1915,7 +2341,7 @@
               <!-- CSV Download Button -->
               {#if canDownloadCSV}
                 <button
-                  onclick={() => isCSVDownloadModalOpen = true}
+                  onclick={() => (isCSVDownloadModalOpen = true)}
                   class="p-2.5 bg-gray-50 text-gray-500 hover:text-blue-600 hover:bg-blue-50 rounded-xl transition-all border border-transparent hover:border-blue-100"
                   title="Download CSV"
                   aria-label="Download CSV"
@@ -1927,7 +2353,7 @@
           </div>
         </div>
 
-{#if displayedContents.length === 0}
+        {#if displayedContents.length === 0}
           <div class="text-center py-16">
             <div
               class="w-16 h-16 bg-gray-50 rounded-2xl flex items-center justify-center mx-auto mb-4 text-gray-400"
@@ -1950,14 +2376,11 @@
               {$_("admin_content.empty.title")}
             </h3>
             <p class="text-gray-500 mb-6">
-              {searchQuery ||
-              selectedType !== "all" ||
-              selectedStatus !== "all" ||
-              selectedTags.length > 0
+              {searchQuery || activeFilterCount > 0 || selectedTags.length > 0
                 ? $_("admin_content.empty.no_matches")
                 : $_("admin_content.empty.description")}
             </p>
-            {#if searchQuery || selectedType !== "all" || selectedStatus !== "all" || selectedTags.length > 0}
+            {#if searchQuery || activeFilterCount > 0 || selectedTags.length > 0}
               <button
                 onclick={clearFilters}
                 class="text-indigo-600 hover:text-indigo-700 font-medium"
@@ -1969,12 +2392,20 @@
         {:else}
           <DataTable
             items={displayedContents}
-            indexAttributes={indexAttributes}
+            indexAttributes={visibleColumns(
+              indexAttributes,
+              $permissions,
+              spaceName,
+              $actualSubpath,
+              ResourceType.content,
+            )}
             selectable={true}
-            selectedItems={selectedItems}
+            {selectedItems}
             onSelectAll={(checked) => {
               if (checked) {
-                selectedItems = new Set(displayedContents.map((item) => item.shortname));
+                selectedItems = new Set(
+                  displayedContents.map((item) => item.shortname),
+                );
               } else {
                 selectedItems = new Set();
               }
@@ -1982,13 +2413,13 @@
             onSelectItem={(shortname) => toggleItemSelection(shortname)}
             onRowClick={(item) => handleItemClick(item)}
             loading={$isLoading || isInitialLoad}
-            currentPage={currentPage}
-            totalPages={totalPages}
+            {currentPage}
+            {totalPages}
             totalItems={totalItemsDerived}
-            itemsPerPage={itemsPerPage}
+            {itemsPerPage}
             onPageChange={(page) => goToPage(page)}
             onItemsPerPageChange={(count) => handleItemsPerPageChange(count)}
-            itemsPerPageOptions={itemsPerPageOptions}
+            {itemsPerPageOptions}
             rtl={$isRTL}
           >
             {#snippet cell({ item, attr })}
@@ -2019,8 +2450,7 @@
                     : 'bg-red-50 text-red-700'}"
                 >
                   <span
-                    class="w-1.5 h-1.5 rounded-full {item.attributes
-                      ?.is_active
+                    class="w-1.5 h-1.5 rounded-full {item.attributes?.is_active
                       ? 'bg-emerald-500'
                       : 'bg-red-500'} mr-1.5"
                   ></span>
@@ -2034,9 +2464,7 @@
                     <div
                       class="w-6 h-6 rounded-full bg-gray-200 flex items-center justify-center text-[10px] font-medium text-gray-600"
                     >
-                      {item.attributes?.owner_shortname
-                        .charAt(0)
-                        .toUpperCase()}
+                      {item.attributes?.owner_shortname.charAt(0).toUpperCase()}
                     </div>
                     <span class="text-sm font-medium text-gray-700"
                       >{item.attributes?.owner_shortname}</span
@@ -2106,22 +2534,48 @@
                       stroke-linejoin="round"
                       stroke-width="2"
                       d="M2.458 12C3.732 7.943 7.523 5 12 5c4.478 0 8.268 2.943 9.542 7-1.274 4.057-5.064 7-9.542 7-4.477 0-8.268-2.943-9.542-7z"
-                    ></path></svg>
+                    ></path></svg
+                  >
                 </button>
               {/if}
-              <button
-                title={$_("admin_content.actions.duplicate")}
-                aria-label={$_("admin_content.actions.duplicate")}
-                onclick={(e) => {
-                  e.stopPropagation();
-                  handleDuplicateItem(item);
-                }}
-                disabled={duplicatingShortname === item.shortname}
-                class="text-[12px] font-semibold text-purple-600 hover:text-purple-800 flex items-center disabled:opacity-50 disabled:cursor-not-allowed"
-              >
-                {#if duplicatingShortname === item.shortname}
-                  <div class="spinner spinner-sm"></div>
-                {:else}
+              {#if $can("update", spaceName, $actualSubpath, item.resource_type)}
+                <button
+                  title={$_("admin_content.actions.duplicate")}
+                  aria-label={$_("admin_content.actions.duplicate")}
+                  onclick={(e) => {
+                    e.stopPropagation();
+                    handleDuplicateItem(item);
+                  }}
+                  disabled={duplicatingShortname === item.shortname}
+                  class="text-[12px] font-semibold text-purple-600 hover:text-purple-800 flex items-center disabled:opacity-50 disabled:cursor-not-allowed"
+                >
+                  {#if duplicatingShortname === item.shortname}
+                    <div class="spinner spinner-sm"></div>
+                  {:else}
+                    <svg
+                      class="w-4 h-4"
+                      fill="none"
+                      stroke="currentColor"
+                      viewBox="0 0 24 24"
+                    >
+                      <path
+                        stroke-linecap="round"
+                        stroke-linejoin="round"
+                        stroke-width="2"
+                        d="M8 7v8a2 2 0 002 2h6M8 7V5a2 2 0 012-2h4.586a1 1 0 01.707.293l4.414 4.414a1 1 0 01.293.707V15a2 2 0 01-2 2h-2M8 7H6a2 2 0 00-2 2v10a2 2 0 002 2h8a2 2 0 002-2v-2"
+                      ></path>
+                    </svg>
+                  {/if}
+                </button>
+                <button
+                  title="Copy"
+                  aria-label="Copy"
+                  onclick={(e) => {
+                    e.stopPropagation();
+                    openCopyModal([item], "copy");
+                  }}
+                  class="text-[12px] font-semibold text-emerald-600 hover:text-emerald-800 flex items-center"
+                >
                   <svg
                     class="w-4 h-4"
                     fill="none"
@@ -2132,75 +2586,55 @@
                       stroke-linecap="round"
                       stroke-linejoin="round"
                       stroke-width="2"
-                      d="M8 7v8a2 2 0 002 2h6M8 7V5a2 2 0 012-2h4.586a1 1 0 01.707.293l4.414 4.414a1 1 0 01.293.707V15a2 2 0 01-2 2h-2M8 7H6a2 2 0 00-2 2v10a2 2 0 002 2h8a2 2 0 002-2v-2"
+                      d="M8 16H6a2 2 0 01-2-2V6a2 2 0 012-2h8a2 2 0 012 2v2m-6 12h8a2 2 0 002-2v-8a2 2 0 00-2-2h-8a2 2 0 00-2 2v8a2 2 0 002 2z"
                     ></path>
                   </svg>
-                {/if}
-              </button>
-              <button
-                title="Copy"
-                aria-label="Copy"
-                onclick={(e) => {
-                  e.stopPropagation();
-                  openCopyModal([item], "copy");
-                }}
-                class="text-[12px] font-semibold text-emerald-600 hover:text-emerald-800 flex items-center"
-              >
-                <svg
-                  class="w-4 h-4"
-                  fill="none"
-                  stroke="currentColor"
-                  viewBox="0 0 24 24"
+                </button>
+                <button
+                  title="Move"
+                  aria-label="Move"
+                  onclick={(e) => {
+                    e.stopPropagation();
+                    openCopyModal([item], "move");
+                  }}
+                  class="text-[12px] font-semibold text-amber-600 hover:text-amber-800 flex items-center"
                 >
-                  <path
-                    stroke-linecap="round"
-                    stroke-linejoin="round"
-                    stroke-width="2"
-                    d="M8 16H6a2 2 0 01-2-2V6a2 2 0 012-2h8a2 2 0 012 2v2m-6 12h8a2 2 0 002-2v-8a2 2 0 00-2-2h-8a2 2 0 00-2 2v8a2 2 0 002 2z"
-                  ></path>
-                </svg>
-              </button>
-              <button
-                title="Move"
-                aria-label="Move"
-                onclick={(e) => {
-                  e.stopPropagation();
-                  openCopyModal([item], "move");
-                }}
-                class="text-[12px] font-semibold text-amber-600 hover:text-amber-800 flex items-center"
-              >
-                <svg
-                  class="w-4 h-4"
-                  fill="none"
-                  stroke="currentColor"
-                  viewBox="0 0 24 24"
+                  <svg
+                    class="w-4 h-4"
+                    fill="none"
+                    stroke="currentColor"
+                    viewBox="0 0 24 24"
+                  >
+                    <path
+                      stroke-linecap="round"
+                      stroke-linejoin="round"
+                      stroke-width="2"
+                      d="M4 8l4-4m0 0l4 4m-4-4v12m8 0l-4 4m0 0l-4-4m4 4V8"
+                    ></path>
+                  </svg>
+                </button>
+              {/if}
+              {#if $can("delete", spaceName, $actualSubpath, item.resource_type)}
+                <button
+                  title="Delete"
+                  aria-label="Delete"
+                  onclick={(e) => openDeleteDialog(item, e)}
+                  class="text-[12px] font-semibold text-red-500 hover:text-red-700 flex items-center"
                 >
-                  <path
-                    stroke-linecap="round"
-                    stroke-linejoin="round"
-                    stroke-width="2"
-                    d="M4 8l4-4m0 0l4 4m-4-4v12m8 0l-4 4m0 0l-4-4m4 4V8"
-                  ></path>
-                </svg>
-              </button>
-              <button
-                title="Delete"
-                aria-label="Delete"
-                onclick={(e) => openDeleteDialog(item, e)}
-                class="text-[12px] font-semibold text-red-500 hover:text-red-700 flex items-center"
-              >
-                <svg
-                  class="w-4 h-4"
-                  fill="none"
-                  stroke="currentColor"
-                  viewBox="0 0 24 24"
-                  ><path
-                    stroke-linecap="round"
-                    stroke-linejoin="round"
-                    stroke-width="2"
-                    d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16"
-                  ></path></svg>
-              </button>
+                  <svg
+                    class="w-4 h-4"
+                    fill="none"
+                    stroke="currentColor"
+                    viewBox="0 0 24 24"
+                    ><path
+                      stroke-linecap="round"
+                      stroke-linejoin="round"
+                      stroke-width="2"
+                      d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16"
+                    ></path></svg
+                  >
+                </button>
+              {/if}
             {/snippet}
 
             {#snippet bulkActions({ selectedCount })}
@@ -2361,7 +2795,9 @@
             {$_("admin_content.bulk_actions.confirm_delete_title")}
           </h3>
           <p class="modal-subtitle">
-            {$_("admin_content.bulk_actions.confirm_delete_message", {values: {count: selectedItems.size,}})}
+            {$_("admin_content.bulk_actions.confirm_delete_message", {
+              values: { count: selectedItems.size },
+            })}
           </p>
         </div>
         <button
@@ -2423,7 +2859,9 @@
             {$_("admin_content.bulk_actions.confirm_trash_title")}
           </h3>
           <p class="modal-subtitle">
-            {$_("admin_content.bulk_actions.confirm_trash_message", {values: { count: selectedItems.size}})}
+            {$_("admin_content.bulk_actions.confirm_trash_message", {
+              values: { count: selectedItems.size },
+            })}
           </p>
         </div>
         <button
@@ -3099,6 +3537,159 @@
   </div>
 {/if}
 
+{#if showCreateItemModal}
+  <div class="modal-overlay">
+    <div class="modal-container" class:rtl={$isRTL}>
+      <div class="modal-header">
+        <div class="modal-header-content" class:text-right={$isRTL}>
+          <h3 class="modal-title">
+            {$_("admin_content.actions.create_new_item")}
+          </h3>
+          <p class="modal-subtitle">
+            {$_("admin_content.modal.create.subtitle")}
+          </p>
+        </div>
+        <button
+          onclick={() => (showCreateItemModal = false)}
+          class="modal-close-btn"
+          aria-label={$_("admin_content.modal.close")}
+        >
+          <svg
+            class="w-6 h-6"
+            fill="none"
+            stroke="currentColor"
+            viewBox="0 0 24 24"
+          >
+            <path
+              stroke-linecap="round"
+              stroke-linejoin="round"
+              stroke-width="2"
+              d="M6 18L18 6M6 6l12 12"
+            ></path>
+          </svg>
+        </button>
+      </div>
+
+      <form onsubmit={handleSaveItem}>
+        <div class="modal-content">
+          <div class="form-section">
+            <div class="section-header" class:text-right={$isRTL}>
+              <h4 class="section-title">
+                {$_("admin_content.modal.basic_info.title")}
+              </h4>
+              <p class="section-description">
+                {$_("admin_content.modal.basic_info.description")}
+              </p>
+            </div>
+            <MetaForm
+              bind:formData={createItemMeta}
+              bind:validateFn={validateCreateItemForm}
+              isCreate={true}
+              fullWidth={true}
+            />
+          </div>
+
+          {#if createItemResourceType === ResourceType.user}
+            <div class="form-section">
+              <MetaUserForm
+                bind:formData={createItemMeta}
+                bind:validateFn={validateCreateRTForm}
+                isCreate={true}
+                fullWidth={true}
+              />
+            </div>
+          {:else if createItemResourceType === ResourceType.role}
+            <div class="form-section">
+              <MetaRoleForm
+                bind:formData={createItemMeta}
+                bind:validateFn={validateCreateRTForm}
+                fullWidth={true}
+              />
+            </div>
+          {:else if createItemResourceType === ResourceType.permission}
+            <div class="form-section">
+              <MetaPermissionForm
+                bind:formData={createItemMeta}
+                bind:validateFn={validateCreateRTForm}
+              />
+            </div>
+          {:else if createItemSchemaShortnames.length > 0}
+            <div class="form-section">
+              <div class="section-header" class:text-right={$isRTL}>
+                <h4 class="section-title">
+                  {createItemSchemaShortnames.length > 1
+                    ? $_("create_entry.schema.selection_title")
+                    : $_("create_entry.schema.entry_data_title")}
+                </h4>
+              </div>
+
+              {#if createItemSchemaShortnames.length > 1}
+                <label
+                  for="create-item-schema-select"
+                  class="block text-sm font-semibold text-gray-700 mb-2"
+                  class:text-right={$isRTL}
+                >
+                  {$_("create_entry.schema.select_label")}
+                </label>
+                <select
+                  id="create-item-schema-select"
+                  class="w-full px-4 py-3 border-2 border-gray-200 rounded-lg text-sm bg-white text-gray-700 focus:outline-none focus:border-blue-500 mb-2"
+                  value={selectedCreateSchemaShortname}
+                  onchange={handleCreateSchemaChange}
+                >
+                  <option value=""
+                    >{$_("create_entry.schema.choose_option")}</option
+                  >
+                  {#each createItemSchemaShortnames as schemaShortname}
+                    <option value={schemaShortname}>{schemaShortname}</option>
+                  {/each}
+                </select>
+              {/if}
+
+              {#if loadingCreateSchema}
+                <p class="text-sm text-gray-500 py-2">
+                  {$_("create_entry.schema.loading")}
+                </p>
+              {:else if createSchema}
+                <DynamicSchemaBasedForms
+                  bind:content={createSchemaFormData}
+                  schema={createSchema}
+                  space={spaceName}
+                  subpath={$actualSubpath}
+                  resourceType={ResourceType.content}
+                />
+              {/if}
+            </div>
+          {/if}
+        </div>
+
+        <div class="modal-footer" class:flex-row-reverse={$isRTL}>
+          <button
+            type="button"
+            onclick={() => (showCreateItemModal = false)}
+            class="btn btn-secondary"
+            disabled={isCreatingItem}
+          >
+            {$_("admin_content.modal.cancel")}
+          </button>
+          <button
+            type="submit"
+            class="btn btn-primary"
+            disabled={isCreatingItem}
+          >
+            {#if isCreatingItem}
+              <div class="spinner"></div>
+              {$_("admin_content.modal.creating")}
+            {:else}
+              {$_("admin_content.actions.create_new_item")}
+            {/if}
+          </button>
+        </div>
+      </form>
+    </div>
+  </div>
+{/if}
+
 <!-- Column Settings Modal -->
 {#if showColumnSettingsModal}
   <div
@@ -3134,7 +3725,9 @@
               ></path>
             </svg>
           </div>
-          <h2 class="text-xl font-bold text-gray-900">{$_("admin_content.settings_modal.title")}</h2>
+          <h2 class="text-xl font-bold text-gray-900">
+            {$_("admin_content.settings_modal.title")}
+          </h2>
         </div>
         <button
           onclick={() => (showColumnSettingsModal = false)}
@@ -3160,9 +3753,7 @@
       <div class="p-6 max-h-[60vh] overflow-y-auto bg-gray-50/30 modal-content">
         <!-- Meta Info -->
         <div class="mb-6">
-          <h3
-            class="text-sm font-semibold text-gray-700 mb-3 px-1"
-          >
+          <h3 class="text-sm font-semibold text-gray-700 mb-3 px-1">
             {$_("admin_content.settings_modal.meta_info")}
           </h3>
           <div
@@ -3286,9 +3877,7 @@
         </div>
 
         <!-- Column Settings -->
-        <h3
-          class="text-sm font-semibold text-gray-700 mb-3 px-1"
-        >
+        <h3 class="text-sm font-semibold text-gray-700 mb-3 px-1">
           {$_("admin_content.settings_modal.column_settings")}
         </h3>
         <div class="space-y-4">
@@ -3396,16 +3985,6 @@
   </div>
 {/if}
 
-{#if showCreateTemplateModal}
-  <CreateTemplateModal
-    currentSpace={spaceName}
-    currentSubpath={$actualSubpath}
-    lockedSpace={spaceName}
-    onClose={handleTemplateModalClose}
-    onSuccess={handleTemplateModalClose}
-  />
-{/if}
-
 <DeleteConfirmationDialog
   bind:open={showDeleteDialog}
   title={$_("delete")}
@@ -3417,9 +3996,9 @@
 />
 
 <!-- CSV Import/Export Modals -->
-<ModalCSVUpload 
+<ModalCSVUpload
   space_name={spaceName}
-  subpath={$actualSubpath || "/"} 
+  subpath={$actualSubpath || "/"}
   bind:isOpen={isCSVUploadModalOpen}
   onUploadSuccess={() => loadContents(true)}
 />
@@ -3428,8 +4007,8 @@
   space_name={spaceName}
   subpath={$actualSubpath || "/"}
   bind:isOpen={isCSVDownloadModalOpen}
-  folderMetadata={folderMetadata}
-  indexAttributes={indexAttributes}
+  {folderMetadata}
+  {indexAttributes}
   onUpdateFolder={() => loadContents(true)}
 />
 
@@ -3540,7 +4119,11 @@
     justify-content: space-between;
     padding: 1.5rem 2rem;
     border-bottom: 1px solid var(--color-gray-100);
-    background: linear-gradient(135deg, var(--color-gray-50) 0%, var(--surface-card) 100%);
+    background: linear-gradient(
+      135deg,
+      var(--color-gray-50) 0%,
+      var(--surface-card) 100%
+    );
     border-radius: var(--radius-xl) var(--radius-xl) 0 0;
     flex-shrink: 0;
   }
@@ -3755,7 +4338,6 @@
       gap: 0.75rem;
     }
 
-
     .card-header {
       flex-direction: column;
       align-items: flex-start;
@@ -3958,7 +4540,6 @@
     transform: translateY(-1px);
     box-shadow: 0 4px 8px rgba(220, 38, 38, 0.3);
   }
-
 
   /* Button styles for modal */
   .btn-warning {

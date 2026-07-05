@@ -4,6 +4,7 @@
   import { marked } from "marked";
   import { mangle } from "marked-mangle";
   import { gfmHeadingId } from "marked-gfm-heading-id";
+  import { sanitizeHtml } from "@/lib/utils/sanitize";
   import {
     successToastMessage,
     errorToastMessage,
@@ -286,7 +287,7 @@
           <div class="preview-pane">
             <div class="preview-header">Preview</div>
             <div class="preview-content markdown-preview">
-              {@html marked(editedContent)}
+              {@html sanitizeHtml(marked(editedContent))}
             </div>
           </div>
         {/if}
@@ -349,7 +350,7 @@
 
       {#if showPreview}
         <div class="template-preview markdown-preview">
-          {@html marked(templateContent)}
+          {@html sanitizeHtml(marked(templateContent))}
         </div>
       {:else}
         <div class="template-content">

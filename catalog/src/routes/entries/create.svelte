@@ -1,6 +1,7 @@
 <script lang="ts">
   import { goto, params } from "@roxi/routify";
   import HtmlEditor from "@/components/editors/HtmlEditor.svelte";
+  import { sanitizeHtml } from "@/lib/utils/sanitize";
   import {
     attachAttachmentsToEntity,
     createEntity,
@@ -1736,7 +1737,7 @@
                 {$_("create_entry.template.preview_title")}
               </h3>
               <div class="template-preview markdown-preview">
-                {@html marked(generateContentFromSchemaTemplate())}
+                {@html sanitizeHtml(marked(generateContentFromSchemaTemplate()))}
               </div>
             </div>
           </div>
@@ -1876,7 +1877,7 @@
                 </div>
                 <div class="section-content">
                   <div class="template-preview markdown-preview">
-                    {@html marked(generateContentFromSchemaTemplate())}
+                    {@html sanitizeHtml(marked(generateContentFromSchemaTemplate()))}
                   </div>
                 </div>
               </div>

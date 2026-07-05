@@ -2,6 +2,8 @@
   import { run } from "svelte/legacy";
   import { Modal } from "flowbite-svelte";
   import MetaPermissionForm from "@/components/forms/MetaPermissionForm.svelte";
+  import { guardAccess } from "@/lib/guards";
+  import { can } from "@/stores/permissions";
   import {
     errorToastMessage,
     successToastMessage,
@@ -266,6 +268,7 @@
   }
 
   onMount(async () => {
+    if (!guardAccess("query", "management", "permissions", ResourceType.permission)) return;
     await loadSpaces();
     await loadPermissionTypes();
   });
@@ -293,6 +296,7 @@
         {$_("select_permission_type")}
       </h2>
       <div class="header-actions flex gap-3">
+        {#if $can("create", "management", "permissions", ResourceType.permission)}
         <button
           aria-label={`Add permission`}
           class="btn btn-primary"
@@ -301,7 +305,8 @@
           <span>+</span>
           {$_("add_permission")}
         </button>
-        {#if permissionExists}
+        {/if}
+        {#if permissionExists && $can("delete", "management", "permissions", ResourceType.permission)}
           <button
             aria-label={`Delete permission ${selectedPermissionType}`}
             class="btn btn-danger"
@@ -456,6 +461,7 @@
 
     <!-- Actions (Bottom) -->
     <div class="action-bar flex justify-between items-center mt-8">
+      {#if $can(permissionExists ? "update" : "create", "management", "permissions", ResourceType.permission)}
       <button
         aria-label={`Save permissions`}
         class="btn btn-primary bg-indigo-500 hover:bg-indigo-600 text-white rounded-xl px-6 py-3"
@@ -468,6 +474,7 @@
         {permissionExists ? $_("update") : $_("create")}
         {$_("permission")}
       </button>
+      {/if}
 
       <div class="meta-info text-sm text-gray-400 text-right">
         <div>

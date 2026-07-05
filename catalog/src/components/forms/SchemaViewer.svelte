@@ -1,4 +1,6 @@
 <script lang="ts">
+    import { resolveSchemaDef } from "@/lib/jsonSchema";
+
     // @ts-ignore - $props is a Svelte 5 rune
     let { content = {} }: { content?: any } = $props();
 
@@ -28,41 +30,74 @@
         return typeColors[type] ?? "bg-gray-100 text-gray-700";
     }
 
-    function getProperties(s: any): any[] {
+    function getProperties(s: any, root: any): any[] {
         if (!s?.properties) return [];
         const required: string[] = s.required ?? [];
-        return Object.entries(s.properties).map(
-            ([name, def]: [string, any]) => {
-                const constraints: string[] = [];
-                if (def.minLength != null)
-                    constraints.push(`minLength: ${def.minLength}`);
-                if (def.maxLength != null)
-                    constraints.push(`maxLength: ${def.maxLength}`);
-                if (def.minimum != null)
-                    constraints.push(`min: ${def.minimum}`);
-                if (def.maximum != null)
-                    constraints.push(`max: ${def.maximum}`);
-                if (def.pattern) constraints.push(`pattern: ${def.pattern}`);
-                if (def.format) constraints.push(`format: ${def.format}`);
-                if (def.minItems != null)
-                    constraints.push(`minItems: ${def.minItems}`);
-                if (def.maxItems != null)
-                    constraints.push(`maxItems: ${def.maxItems}`);
-                return {
-                    name,
-                    type: def.type ?? "any",
-                    title: def.title as string | undefined,
-                    description: def.description as string | undefined,
-                    required: required.includes(name),
-                    constraints,
-                    properties: def.properties,
-                    items: def.items,
-                };
-            },
-        );
+        return Object.entries(s.properties).map(([name, raw]: [string, any]) => {
+            const def = resolveSchemaDef(root, raw);
+            const constraints: string[] = [];
+            if (def.minLength != null)
+                constraints.push(`minLength: ${def.minLength}`);
+            if (def.maxLength != null)
+                constraints.push(`maxLength: ${def.maxLength}`);
+            if (def.minimum != null) constraints.push(`min: ${def.minimum}`);
+            if (def.maximum != null) constraints.push(`max: ${def.maximum}`);
+            if (def.pattern) constraints.push(`pattern: ${def.pattern}`);
+            if (def.format) constraints.push(`format: ${def.format}`);
+            if (def.minItems != null)
+                constraints.push(`minItems: ${def.minItems}`);
+            if (def.maxItems != null)
+                constraints.push(`maxItems: ${def.maxItems}`);
+            if (Array.isArray(def.enum))
+                constraints.push(`enum: ${def.enum.join(", ")}`);
+            return {
+                name,
+                type: def.type ?? "any",
+                title: def.title as string | undefined,
+                description: def.description as string | undefined,
+                required: required.includes(name),
+                constraints,
+                properties: def.properties,
+                items: def.items,
+            };
+        });
     }
 
-    let props: any = $derived(getProperties(schema));
+    // Some schemas (e.g. discriminated unions like "subaccount") have no
+    // top-level `properties` at all — instead each `oneOf`/`anyOf` branch is
+    // its own object schema with its own `properties`. Surface each branch
+    // as its own variant rather than showing an empty schema.
+    function getVariants(
+        s: any,
+        root: any,
+    ): Array<{ title: string; description?: string; properties: any[] }> {
+        if (s?.properties) {
+            return [
+                {
+                    title: s.title,
+                    description: s.description,
+                    properties: getProperties(s, root),
+                },
+            ];
+        }
+
+        const branches: any[] | undefined = Array.isArray(s?.oneOf)
+            ? s.oneOf
+            : Array.isArray(s?.anyOf)
+                ? s.anyOf
+                : undefined;
+
+        if (!branches || branches.length === 0) return [];
+
+        return branches.map((branch, i) => ({
+            title: branch?.title || branch?.description || `Option ${i + 1}`,
+            description: branch?.title ? branch?.description : undefined,
+            properties: getProperties(branch, root),
+        }));
+    }
+
+    let variants: Array<{ title: string; description?: string; properties: any[] }> =
+        $derived(getVariants(schema, schema));
 </script>
 
 <div class="schema-viewer">
@@ -80,7 +115,7 @@
     </div>
 
     <!-- Properties table -->
-    {#if props.length > 0}
+    {#snippet propsTable(props: any[])}
         <div class="props-container">
             <table class="props-table">
                 <thead>
@@ -157,7 +192,9 @@
                 </tbody>
             </table>
         </div>
-    {:else}
+    {/snippet}
+
+    {#snippet emptyState()}
         <div class="empty-state">
             <svg
                 class="empty-icon"
@@ -173,6 +210,42 @@
                 />
             </svg>
             <p>No properties defined in this schema.</p>
+        </div>
+    {/snippet}
+
+    {#if variants.length === 0}
+        {@render emptyState()}
+    {:else if variants.length === 1}
+        {#if variants[0].properties.length > 0}
+            {@render propsTable(variants[0].properties)}
+        {:else}
+            {@render emptyState()}
+        {/if}
+    {:else}
+        <div class="variants-container">
+            {#each variants as variant, i}
+                <details class="variant-block" open={i === 0}>
+                    <summary class="variant-summary">
+                        <span class="variant-title">{variant.title}</span>
+                        {#if variant.properties.length > 0}
+                            <span class="variant-count"
+                                >{variant.properties.length} field{variant
+                                    .properties.length === 1
+                                    ? ""
+                                    : "s"}</span
+                            >
+                        {/if}
+                    </summary>
+                    {#if variant.description}
+                        <p class="variant-description">{variant.description}</p>
+                    {/if}
+                    {#if variant.properties.length > 0}
+                        {@render propsTable(variant.properties)}
+                    {:else}
+                        <p class="variant-empty">No properties for this option.</p>
+                    {/if}
+                </details>
+            {/each}
         </div>
     {/if}
 </div>
@@ -396,5 +469,54 @@
     .empty-state p {
         margin: 0;
         font-size: 0.875rem;
+    }
+
+    .variants-container {
+        display: flex;
+        flex-direction: column;
+    }
+
+    .variant-block {
+        border-bottom: 1px solid #e5e7eb;
+    }
+
+    .variant-block:last-child {
+        border-bottom: none;
+    }
+
+    .variant-summary {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 0.75rem;
+        padding: 0.75rem 1.25rem;
+        cursor: pointer;
+        user-select: none;
+        background: #f9fafb;
+    }
+
+    .variant-title {
+        font-size: 0.875rem;
+        font-weight: 600;
+        color: #1f2937;
+    }
+
+    .variant-count {
+        font-size: 0.75rem;
+        color: #6b7280;
+    }
+
+    .variant-description {
+        margin: 0;
+        padding: 0 1.25rem 0.5rem;
+        font-size: 0.8125rem;
+        color: #6b7280;
+    }
+
+    .variant-empty {
+        margin: 0;
+        padding: 0.75rem 1.25rem 1rem;
+        font-size: 0.8125rem;
+        color: #9ca3af;
     }
 </style>

@@ -259,7 +259,9 @@
     },
     "filters": {
       "clear_all": "مسح جميع الفلاتر",
-      "toggle_sort": "تبديل اتجاه الترتيب"
+      "toggle_sort": "تبديل اتجاه الترتيب",
+      "filter_by_column": "الفلاتر",
+      "no_schema_filters": "لا توجد فلاتر إضافية لهذا النوع من المحتوى."
     },
     "infinite_scroll": {
       "end_of_results": "لقد وصلت إلى النهاية",
@@ -378,19 +380,19 @@
       "heading": "موارد ناقصة في التطبيق",
       "missing_folders": "مجلدات مفقودة في فضاء التطبيقات",
       "missing_workflow": "‎report_workflow‎ مفقود في مجلد سير العمل.",
-      "missing_report_schema": "مخطط ‎report‎ مفقود في مجلد المخططات.",
       "missing_workflow_schema": "مخطط ‎workflow‎ مفقود في مجلد المخططات.",
       "missing_critical": "موارد أساسية مفقودة في فضاء الإدارة",
       "required_note": "هذه الموارد ضرورية لعمل التقارير والاستطلاعات والاستبيانات.",
       "fix_button": "إنشاء الموارد الناقصة",
-      "fixing": "جاري الإنشاء…"
+      "fixing": "جاري الإنشاء…",
+      "missing_report_schema": "مخطط ‎report‎ مفقود في مجلد المخططات."
     },
     "fixed": {
       "heading": "تم إنشاء الموارد بنجاح",
       "body": "تم إنشاء كل المجلدات وسير العمل والمخططات المطلوبة في فضاء التطبيقات.",
       "workflow_created": "تم إعداده بالحالات الافتراضية.",
-      "report_schema_created": "تم إنشاء المخطط.",
-      "workflow_schema_created": "تم إنشاء المخطط."
+      "workflow_schema_created": "تم إنشاء المخطط.",
+      "report_schema_created": "تم إنشاء المخطط."
     },
     "healthy": {
       "heading": "كل شيء على ما يرام",
@@ -573,8 +575,8 @@
     "card": {
       "posted_by": "نشر بواسطة",
       "read_more": "قراءة المزيد",
-      "report": "تقرير",
-      "share": "مشاركة"
+      "share": "مشاركة",
+      "report": "تقرير"
     },
     "empty": {
       "folder_empty": "يبدو أن هذا المجلد فارغ.",
@@ -604,10 +606,6 @@
       "load_more": "تحميل المزيد",
       "loading": "جارٍ التحميل..."
     },
-    "report": {
-      "reason_prompt": "يرجى تقديم سبب للإبلاغ عن هذا المحتوى:",
-      "submitted": "تم إرسال البلاغ بنجاح. شكراً لمساعدتنا في الحفاظ على مجتمع آمن."
-    },
     "results": {
       "for_query": "لـ \"{query}\"",
       "with_tags": "مع الوسوم "
@@ -634,6 +632,10 @@
       "hours_ago": "ساعات مضت",
       "just_now": "الآن",
       "minutes_ago": "دقائق مضت"
+    },
+    "report": {
+      "reason_prompt": "يرجى تقديم سبب للإبلاغ عن هذا المحتوى:",
+      "submitted": "تم إرسال البلاغ بنجاح. شكراً لمساعدتنا في الحفاظ على مجتمع آمن."
     }
   },
   "catalog_user_permissions_info": "صلاحيات المستخدم في الكتالوج تنطبق على المستخدمين المسجلين الذين لديهم حق الوصول إلى الكتالوج. يمكن لهؤلاء المستخدمين التفاعل مع المحتوى.",
@@ -694,6 +696,7 @@
     "error": "خطأ!",
     "got_it": "حسناً",
     "loading": "جاري التحميل...",
+    "no": "لا",
     "not_available": "غير متاح",
     "optional": "اختياري",
     "retry": "إعادة المحاولة",
@@ -703,7 +706,8 @@
     "unknown": "غير معروف",
     "update": "تحديث",
     "updating": "جارٍ التحديث...",
-    "uploading": "جارٍ الرفع..."
+    "uploading": "جارٍ الرفع...",
+    "yes": "نعم"
   },
   "community": {
     "features": {
@@ -816,11 +820,11 @@
       "content_title": "إدخال محتوى",
       "json_description": "إنشاء إدخال منظم عن طريق ملء نموذج بناءً على مخطط",
       "json_title": "إدخال نموذج",
+      "title": "نوع الإدخال",
       "poll_description": "إنشاء استطلاع تفاعلي مع أسئلة متعددة الخيارات",
       "poll_title": "استطلاع رأي",
       "template_description": "إنشاء إدخال منظم بناءً على قالب",
-      "template_title": "إدخال قالب",
-      "title": "نوع الإدخال"
+      "template_title": "إدخال قالب"
     },
     "error": {
       "attachment_failed": "فشل في إرفاق {name} بالمقال!",
@@ -832,14 +836,11 @@
       "required_fields_missing": "يرجى ملء الحقول المطلوبة: {fields}",
       "save_failed": "فشل في حفظ المقال!",
       "select_space": "يرجى اختيار مساحة!",
-      "select_template": "يرجى اختيار قالب!",
-      "shortname_required": "الاسم المختصر مطلوب! يرجى إدخال اسم مختصر للإدخال."
+      "shortname_required": "الاسم المختصر مطلوب! يرجى إدخال اسم مختصر للإدخال.",
+      "select_template": "يرجى اختيار قالب!"
     },
     "navigation": {
       "back_to_entries": "العودة إلى مقالاتي"
-    },
-    "poll": {
-      "entry_data_title": "إعداد الاستطلاع"
     },
     "schema": {
       "choose_option": "اختر مخططًا...",
@@ -865,6 +866,15 @@
       "remove_aria": "إزالة العلامة",
       "section_title": "العلامات"
     },
+    "title": {
+      "click_to_add": "انقر لإضافة عنوان جذاب...",
+      "edit_aria": "تحرير العنوان",
+      "placeholder": "أدخل عنوان مقالك...",
+      "section_title": "عنوان المقال"
+    },
+    "poll": {
+      "entry_data_title": "إعداد الاستطلاع"
+    },
     "template": {
       "choose_option": "اختر قالبًا...",
       "fill_data_title": "ملء بيانات القالب",
@@ -876,35 +886,17 @@
       "schema_template_title": "بيانات القالب",
       "select_label": "اختر قالبًا",
       "selection_title": "اختيار القالب"
-    },
-    "title": {
-      "click_to_add": "انقر لإضافة عنوان جذاب...",
-      "edit_aria": "تحرير العنوان",
-      "placeholder": "أدخل عنوان مقالك...",
-      "section_title": "عنوان المقال"
     }
   },
   "create_permission": "إنشاء صلاحية",
   "create_role": "إنشاء دور",
-  "create_survey": {
-    "cancel": "إلغاء",
-    "create_button": "إنشاء استبيان",
-    "creating": "جارٍ إنشاء الاستبيان...",
-    "error": "فشل إنشاء الاستبيان. حاول مرة أخرى.",
-    "error_creating": "حدث خطأ أثناء إنشاء الاستبيان.",
-    "one_question_required": "مطلوب سؤال واحد على الأقل",
-    "option_complete_required": "السؤال {number}، الخيار {option} يتطلب قيمة وتسمية",
-    "question_options_required": "السؤال {number} يتطلب خياراً واحداً على الأقل",
-    "question_text_required_number": "السؤال {number} مطلوب",
-    "success": "تم إنشاء الاستبيان بنجاح!",
-    "survey_title_required": "عنوان الاستبيان مطلوب",
-    "title": "إنشاء استبيان جديد"
-  },
   "creating": "جاري الإنشاء...",
   "currentDefaultRole": "الدور الافتراضي الحالي",
   "dashboard": "لوحة التحكم",
   "defaultUserRoleUpdatedSuccessfully": "تم تحديث دور المستخدم الافتراضي بنجاح",
   "delete": "حذف",
+  "force_delete": "حذف قسري",
+  "force_delete_help": "حذف هذا العنصر وكل ما يحتويه أو يملكه نهائيًا. لا يمكن التراجع.",
   "delete_permission": "حذف الصلاحية",
   "delete_role": "حذف الدور",
   "deleting": "جاري الحذف...",
@@ -925,17 +917,6 @@
     "attachments": "المرفقات",
     "back_to_entries": "العودة إلى إدخالاتي",
     "back_to_folder": "العودة إلى المجلد",
-    "comments": {
-      "add_error": "فشل في إضافة التعليق!",
-      "add_success": "تم إضافة التعليق بنجاح",
-      "be_first": "كن أول من يشارك أفكاره!",
-      "delete_error": "فشل في حذف التعليق!",
-      "delete_success": "تم حذف التعليق بنجاح",
-      "no_comments": "لا توجد تعليقات بعد",
-      "placeholder": "شارك أفكارك...",
-      "submit": "إرسال التعليق",
-      "title": "التعليقات"
-    },
     "created": "تم الإنشاء",
     "delete_entry": "حذف الإدخال",
     "edit_entry": "تعديل الإدخال",
@@ -945,12 +926,6 @@
     },
     "loading": "جاري تحميل إدخالك...",
     "no_content": "لا يوجد محتوى متاح",
-    "reactions": {
-      "add_error": "فشل في إضافة التفاعل!",
-      "add_success": "تم إضافة التفاعل بنجاح",
-      "remove_error": "فشل في إزالة التفاعل!",
-      "remove_success": "تم إزالة التفاعل بنجاح"
-    },
     "status": {
       "active": "نشط",
       "active_description": "هذا الإدخال نشط",
@@ -964,7 +939,24 @@
       "rejected_description": "تم رفض هذا الإدخال ويحتاج إلى مراجعة"
     },
     "tags": "العلامات",
-    "untitled": "إدخال بدون عنوان"
+    "untitled": "إدخال بدون عنوان",
+    "comments": {
+      "add_error": "فشل في إضافة التعليق!",
+      "add_success": "تم إضافة التعليق بنجاح",
+      "be_first": "كن أول من يشارك أفكاره!",
+      "delete_error": "فشل في حذف التعليق!",
+      "delete_success": "تم حذف التعليق بنجاح",
+      "no_comments": "لا توجد تعليقات بعد",
+      "placeholder": "شارك أفكارك...",
+      "submit": "إرسال التعليق",
+      "title": "التعليقات"
+    },
+    "reactions": {
+      "add_error": "فشل في إضافة التفاعل!",
+      "add_success": "تم إضافة التفاعل بنجاح",
+      "remove_error": "فشل في إزالة التفاعل!",
+      "remove_success": "تم إزالة التفاعل بنجاح"
+    }
   },
   "entry_edit": {
     "add": "إضافة",
@@ -1298,92 +1290,9 @@
   },
   "pleaseEnterReplyMessage": "يرجى إدخال رسالة الرد",
   "pleaseSelectDefaultRole": "يرجى اختيار دور افتراضي",
-  "polls": {
-    "_val": "استطلاعات الرأي",
-    "already_voted": "لقد صوتت بالفعل في هذا الاستطلاع",
-    "cancel": "إلغاء",
-    "close": "إغلاق",
-    "confirm_vote": "تأكيد التصويت",
-    "create_error": "فشل في إنشاء الاستطلاع",
-    "create_poll": "إنشاء استطلاع",
-    "create_success": "تم إنشاء الاستطلاع بنجاح",
-    "created_by": "أنشأه {author}",
-    "default_tag": "الفريق والثقافة",
-    "description": "شارك في استطلاعات رأي المجتمع وشارك رأيك",
-    "ended_on": "انتهى في",
-    "ends_on": "ينتهي في",
-    "filter_active": "نشط",
-    "filter_all": "كل الاستطلاعات",
-    "filter_ended": "انتهى",
-    "form": {
-      "add_option": "إضافة خيار",
-      "choice_type_label": "نوع الاختيار",
-      "description_label": "الوصف",
-      "multiple_choice_button": "اختيار متعدد",
-      "options_label": "الخيارات",
-      "remove_option": "حذف الخيار",
-      "single_choice_button": "اختيار واحد",
-      "space_label": "الفضاء",
-      "title_label": "العنوان"
-    },
-    "invalid_candidate": "اختيار مرشح غير صالح",
-    "leading": "متصدر",
-    "load_error": "فشل في تحميل الاستطلاعات",
-    "loading": "تحميل الاستطلاعات...",
-    "min_options_error": "يجب أن يحتوي الاستطلاع على خيارين على الأقل",
-    "min_valid_options_error": "يرجى إدخال خيارين صالحين على الأقل",
-    "more_candidates": " مرشح إضافي",
-    "multiple_choice": "اختيار متعدد مسموح",
-    "no_polls": "لا توجد استطلاعات متاحة في الوقت الحالي",
-    "no_polls_description": "تحقق مرة أخرى لاحقاً للاستطلاعات الجديدة",
-    "options_count": "{count} خيارات",
-    "percentage": "{percent}%",
-    "poll_ended": "انتهى هذا الاستطلاع",
-    "results_title": "النتائج",
-    "search_placeholder": "البحث في الاستطلاعات...",
-    "select_option": "اختر خياراً للتصويت",
-    "single_choice": "اختيار واحد فقط",
-    "space_required": "الفضاء مطلوب",
-    "time_left": "الوقت المتبقي",
-    "title": "استطلاعات الرأي المجتمعية",
-    "title_required": "العنوان مطلوب",
-    "total_votes": "إجمالي الأصوات: {count}",
-    "untitled": "استطلاع بدون عنوان",
-    "view_results": "عرض النتائج",
-    "vote_button": "تصويت",
-    "vote_error": "فشل في تسجيل صوتك. يرجى المحاولة مرة أخرى.",
-    "vote_for": "التصويت لـ: {option}",
-    "vote_success": "تم تسجيل صوتك بنجاح!",
-    "voted": "لقد صوتت",
-    "voted_for": "لقد صوتت لـ",
-    "votes_count": "{count} صوت",
-    "votes_short": "{count} صوت"
-  },
   "post_detail": {
     "breadcrumb": {
       "catalogs": "الكتالوجات"
-    },
-    "comments": {
-      "add_error": "حدث خطأ أثناء إضافة تعليقك.",
-      "add_failed": "فشل في إضافة التعليق. حاول مرة أخرى.",
-      "cancel": "إلغاء",
-      "confirm_delete": "هل أنت متأكد من أنك تريد حذف هذا التعليق؟",
-      "confirm_delete_with_replies": "هل أنت متأكد من أنك تريد حذف هذا التعليق و {count} ردود عليه؟",
-      "delete": "حذف",
-      "delete_error": "حدث خطأ أثناء حذف التعليق.",
-      "delete_failed": "فشل في حذف التعليق. حاول مرة أخرى.",
-      "delete_not_allowed": "ليس لديك إذن لحذف هذا التعليق.",
-      "delete_with_replies_warning": "سيتم حذف التعليق و {count} ردود عليه",
-      "deleted_successfully": "تم حذف التعليق بنجاح!",
-      "deleted_with_replies_successfully": "تم حذف {count} تعليقات بنجاح!",
-      "empty_comment": "يرجى إدخال تعليق قبل الإرسال.",
-      "reply": "رد",
-      "reply_added_successfully": "تم إضافة الرد بنجاح!",
-      "reply_error": "حدث خطأ أثناء إضافة ردك.",
-      "reply_failed": "فشل في إضافة الرد. حاول مرة أخرى.",
-      "reply_placeholder": "اكتب ردك هنا...",
-      "submit": "نشر التعليق",
-      "submit_reply": "نشر الرد"
     },
     "content_type": {
       "content": "المحتوى"
@@ -1407,19 +1316,41 @@
       "message": "تعذر تحميل بيانات المنشور.",
       "title": "لا توجد بيانات"
     },
-    "reactions": {
-      "add_failed": "فشل في إضافة التفاعل. حاول مرة أخرى.",
-      "added_successfully": "تمت إضافة التفاعل بنجاح!",
-      "remove_failed": "فشل في إزالة التفاعل. حاول مرة أخرى.",
-      "removed_successfully": "تمت إزالة التفاعل بنجاح!",
-      "toggle_error": "حدث خطأ أثناء معالجة تفاعلك."
-    },
     "relationships": {
       "related": "ذو صلة"
     },
     "sections": {
       "description": "الوصف",
       "relationships": "العلاقات"
+    },
+    "comments": {
+      "add_error": "حدث خطأ أثناء إضافة تعليقك.",
+      "add_failed": "فشل في إضافة التعليق. حاول مرة أخرى.",
+      "cancel": "إلغاء",
+      "confirm_delete": "هل أنت متأكد من أنك تريد حذف هذا التعليق؟",
+      "confirm_delete_with_replies": "هل أنت متأكد من أنك تريد حذف هذا التعليق و {count} ردود عليه؟",
+      "delete": "حذف",
+      "delete_error": "حدث خطأ أثناء حذف التعليق.",
+      "delete_failed": "فشل في حذف التعليق. حاول مرة أخرى.",
+      "delete_not_allowed": "ليس لديك إذن لحذف هذا التعليق.",
+      "delete_with_replies_warning": "سيتم حذف التعليق و {count} ردود عليه",
+      "deleted_successfully": "تم حذف التعليق بنجاح!",
+      "deleted_with_replies_successfully": "تم حذف {count} تعليقات بنجاح!",
+      "empty_comment": "يرجى إدخال تعليق قبل الإرسال.",
+      "reply": "رد",
+      "reply_added_successfully": "تم إضافة الرد بنجاح!",
+      "reply_error": "حدث خطأ أثناء إضافة ردك.",
+      "reply_failed": "فشل في إضافة الرد. حاول مرة أخرى.",
+      "reply_placeholder": "اكتب ردك هنا...",
+      "submit": "نشر التعليق",
+      "submit_reply": "نشر الرد"
+    },
+    "reactions": {
+      "add_failed": "فشل في إضافة التفاعل. حاول مرة أخرى.",
+      "added_successfully": "تمت إضافة التفاعل بنجاح!",
+      "remove_failed": "فشل في إزالة التفاعل. حاول مرة أخرى.",
+      "removed_successfully": "تمت إزالة التفاعل بنجاح!",
+      "toggle_error": "حدث خطأ أثناء معالجة تفاعلك."
     }
   },
   "previous": "السابق",
@@ -1495,129 +1426,6 @@
   "replySentButSystemError": "تم إرسال الرد، ولكن حدث خطأ أثناء تحديث النظام.",
   "replyToMessage": "الرد على الرسالة",
   "replyToYourMessage": "الرد على رسالتك",
-  "reports": {
-    "_val": "تقارير",
-    "admin": {
-      "actions": {
-        "clear_filters": "مسح جميع الفلاتر",
-        "delete_entry": "حذف المنشور المبلغ عنه",
-        "mark_canceled": "تحديد كملغي",
-        "mark_resolved": "تحديد كمحلول",
-        "no_action": "لا يتطلب إجراء",
-        "reply": "رد",
-        "warn_user": "تحذير المستخدم"
-      },
-      "description": "مراجعة وإدارة البلاغات المقدمة من المستخدمين",
-      "empty": {
-        "no_reports": "لم يتم تقديم أي بلاغات بعد.",
-        "no_reports_filter": "لا توجد بلاغات وفقًا للمرشح المحدد.",
-        "title": "لا توجد بلاغات"
-      },
-      "error": {
-        "loading_details_failed": "فشل تحميل تفاصيل البلاغ",
-        "loading_failed": "فشل تحميل البلاغات",
-        "reply_failed": "فشل إرسال الرد",
-        "status_update_failed": "فشل تحديث الحالة"
-      },
-      "filter_by_status": "تصفية حسب الحالة",
-      "filters": {
-        "all": "جميع البلاغات",
-        "canceled": "تم الإلغاء",
-        "pending": "قيد الانتظار",
-        "resolved": "تم الحل"
-      },
-      "loading": "جارٍ تحميل البلاغات...",
-      "notes": "ملاحظات المسؤول",
-      "reply_modal": {
-        "action": "الإجراء المطلوب",
-        "notes_placeholder": "أدخل ملاحظاتك على هذا البلاغ...",
-        "send_reply": "إرسال الرد",
-        "sending": "جارٍ الإرسال...",
-        "title": "الرد على البلاغ",
-        "your_notes": "ملاحظاتك"
-      },
-      "reported_at": "تاريخ الإبلاغ",
-      "reported_by": "تم الإبلاغ بواسطة",
-      "reported_entry": "المنشور المبلغ عنه",
-      "status": {
-        "canceled": "تم إلغاء هذا البلاغ",
-        "resolved": "تم حل هذا البلاغ"
-      },
-      "success": {
-        "reply_sent": "تم إرسال الرد بنجاح",
-        "status_updated": "تم تحديث الحالة بنجاح"
-      },
-      "title": "إدارة البلاغات",
-      "validation": {
-        "reply_required": "يرجى إدخال الرد"
-      }
-    },
-    "error": {
-      "submission_failed": "فشل في إرسال البلاغ"
-    },
-    "modal": {
-      "description": "الوصف",
-      "description_placeholder": "يرجى تقديم معلومات تفصيلية حول سبب الإبلاغ عن هذا المحتوى...",
-      "report_title": "عنوان البلاغ",
-      "report_type": "نوع البلاغ",
-      "reporting_entry": "الإبلاغ عن المنشور",
-      "submit_report": "إرسال البلاغ",
-      "submitted_successfully": "تم إرسال البلاغ بنجاح",
-      "submitting": "جارٍ الإرسال...",
-      "thank_you": "شكراً لك",
-      "thanks_message": "شكراً لك لمساعدتنا في الحفاظ على مجتمع نظيف وآمن! تم إرسال بلاغك وسيقوم فريقنا بمراجعته.",
-      "title": "الإبلاغ عن المحتوى",
-      "title_placeholder": "ملخص قصير عن المشكلة"
-    },
-    "notification": {
-      "action": {
-        "delete": "تم حذف المحتوى",
-        "general": "إجراء إداري",
-        "warn": "تحذير بشأن المحتوى"
-      },
-      "admin": "المشرف",
-      "admin_response": "رد المشرف",
-      "close": "إغلاق",
-      "description": {
-        "delete": "تم حذف محتواك بسبب انتهاك السياسة.",
-        "general": "لقد اتخذ المشرف إجراءً بشأن المحتوى المُبلغ عنه.",
-        "warn": "تم وضع علامة على محتواك لانتهاك السياسة. يرجى مراجعة إرشادات المجتمع."
-      },
-      "details": {
-        "content": "المحتوى",
-        "date": "التاريخ",
-        "location": "الموقع",
-        "title": "معلومات المحتوى"
-      },
-      "guidelines": "عرض إرشادات المجتمع",
-      "reporter": {
-        "message": "شكراً لك لمساعدتنا في الحفاظ على مجتمع نظيف وآمن! لقد راجعنا بلاغك واتخذنا الإجراء المناسب. معاً، يمكننا الحفاظ على مجتمعنا مكاناً إيجابياً للجميع.",
-        "title": "شكراً لك على بلاغك"
-      },
-      "understood": "فهمت",
-      "unknown": "غير معروف"
-    },
-    "success": {
-      "submitted": "تم إرسال البلاغ بنجاح"
-    },
-    "thank_you": {
-      "description": "شكراً لك على مساعدتنا في الحفاظ على مجتمع نظيف وآمن! تم إرسال بلاغك وسيتم مراجعته من قبل فريقنا. معاً، يمكننا الحفاظ على مجتمعنا مكاناً إيجابياً للجميع.",
-      "got_it": "فهمت",
-      "success_message": "تم إرسال البلاغ بنجاح",
-      "title": "شكراً لك على البلاغ"
-    },
-    "types": {
-      "copyright_violation": "انتهاك حقوق النشر",
-      "harassment": "مضايقة",
-      "inappropriate_content": "محتوى غير لائق",
-      "misinformation": "معلومات مضللة",
-      "other": "أخرى",
-      "spam": "رسائل مزعجة"
-    },
-    "validation": {
-      "required_fields": "يرجى ملء جميع الحقول المطلوبة"
-    }
-  },
   "resetToCurrent": "إعادة تعيين إلى الحالي",
   "resource_type": {
     "user": "مستخدم"
@@ -1764,6 +1572,323 @@
   },
   "subject": "الموضوع",
   "submitted": "تم الإرسال",
+  "systemConfiguration": "تكوين النظام",
+  "systemConfigurationEntityMissingDescription": "كيان تكوين النظام مفقود. هذا مطلوب لإدارة أدوار المستخدمين الافتراضية.",
+  "systemConfigurationSubtitle": "تكوين الإعدادات الافتراضية للمستخدمين الجدد وسلوك النظام",
+  "to": "إلى",
+  "toggle": "تبديل",
+  "total_users": "إجمالي المستخدمين",
+  "typeReplyPlaceholder": "اكتب ردك هنا...",
+  "unknownFile": "ملف غير معروف",
+  "update": "تحديث",
+  "user": "المستخدم",
+  "userDefaultRole": "دور المستخدم الافتراضي",
+  "userDefaultRoleDescription": "اختر الدور الافتراضي الذي سيتم تعيينه للمستخدمين المسجلين حديثاً. يحدد هذا الدور الصلاحيات الأولية ومستوى الوصول للمستخدمين الجدد.",
+  "user_management": "إدارة المستخدمين",
+  "user_permissions_management": "إدارة صلاحيات المستخدمين",
+  "view_user": {
+    "title": "تفاصيل المستخدم",
+    "user_information": "معلومات المستخدم",
+    "shortname": "الاسم المختصر",
+    "display_name": "اسم العرض",
+    "email": "البريد الإلكتروني",
+    "mobile_number": "رقم الجوال",
+    "status": "الحالة",
+    "type": "النوع",
+    "email_verified": "البريد الإلكتروني موثّق",
+    "phone_verified": "الجوال موثّق",
+    "force_password_change": "إلزام تغيير كلمة المرور",
+    "language": "اللغة",
+    "created_at": "تاريخ الإنشاء",
+    "updated_at": "تاريخ آخر تعديل",
+    "yes": "نعم",
+    "no": "لا",
+    "groups": "المجموعات",
+    "roles_and_permissions": "الأدوار والصلاحيات",
+    "no_roles_assigned": "لا توجد أدوار مُعيّنة",
+    "no_permissions": "لا توجد صلاحيات",
+    "permission_singular": "صلاحية",
+    "permission_plural": "صلاحيات",
+    "edit": "تعديل",
+    "close": "إغلاق"
+  },
+  "users_overview": "نظرة عامة على المستخدمين",
+  "create_user": "إنشاء مستخدم",
+  "user_created_successfully": "تم إنشاء المستخدم بنجاح!",
+  "failed_to_create_user": "فشل إنشاء المستخدم.",
+  "users_without_roles": "المستخدمون بدون أدوار",
+  "validation": {
+    "index_attributes_required": "سمات الفهرس مطلوبة",
+    "json_syntax_error": "يرجى تصحيح بناء جملة JSON.\nتنسيق JSON غير صحيح في قيم الحقول المسموحة",
+    "shortname_format": "يمكن أن يحتوي الاسم المختصر على أحرف أبجدية رقمية وشرطات سفلية فقط.",
+    "shortname_invalid": "تنسيق الاسم المختصر غير صالح. يجب أن يكون من 1 إلى 64 حرفًا ويمكن أن يحتوي فقط على: الأحرف الإنجليزية (a-z, A-Z)، الأحرف العربية، الأرقام (0-9)، الأرقام العربية، علامات التشكيل العربية، والشرطات السفلية (_)."
+  },
+  "world_permissions_info": "صلاحيات العالم تنطبق على جميع الضيوف والمستخدمين غير المسجلين. هذه هي أكثر الصلاحيات تقييدًا.",
+  "yourReply": "ردك",
+  "delete_confirmation": {
+    "title": "حذف {type}",
+    "confirm": "هل أنت متأكد؟",
+    "irreversible": "لا يمكن التراجع عن هذا الإجراء.",
+    "item_label": "العنصر",
+    "warning": "سيتم حذف هذا العنصر نهائيًا ولا يمكن استرداده."
+  },
+  "toast": {
+    "folder_created": "تم إنشاء المجلد بنجاح",
+    "folder_create_failed": "فشل في إنشاء المجلد",
+    "folder_updated": "تم تحديث المجلد بنجاح",
+    "folder_update_failed": "فشل في تحديث المجلد",
+    "schema_created": "تم إنشاء المخطط بنجاح",
+    "schema_create_failed": "فشل في إنشاء المخطط",
+    "workflow_created": "تم إنشاء سير العمل بنجاح",
+    "workflow_create_failed": "فشل في إنشاء سير العمل",
+    "item_created": "تم إنشاء العنصر بنجاح",
+    "item_create_failed": "فشل في إنشاء العنصر",
+    "item_deleted": "تم حذف العنصر بنجاح",
+    "item_delete_failed": "فشل في حذف العنصر",
+    "reply_required": "الرجاء إدخال رسالة الرد",
+    "reply_sent": "تم إرسال الرد بنجاح",
+    "reply_sent_marked": "تم إرسال الرد وتحديد الرسالة كمردود عليها",
+    "reply_sent_failed": "تم إرسال الرد لكن فشل في التحديد",
+    "reply_sent_error": "تم إرسال الرد لكن حدث خطأ"
+  },
+  "route_labels": {
+    "admin_dashboard_title": "لوحة تحكم المشرف",
+    "admin_dashboard_welcome": "مرحباً بك مدير Dmart. أدر جميع المساحات ومحتوياتها بصلاحيات إدارية كاملة.",
+    "search_placeholder_short": "البحث في المساحات، المنشورات، الأشخاص...",
+    "aria_search": "بحث",
+    "aria_close": "إغلاق",
+    "search_remove_tag": "إزالة العلامة",
+    "search_no_filters_available": "لا توجد عوامل تصفية متاحة هنا",
+    "search_current_space": "المساحة الحالية: {value}",
+    "search_current_folder": "المجلد الحالي: {value}",
+    "placeholder_tell_us_about_yourself": "أخبرنا عن نفسك",
+    "placeholder_search_by_name_desc": "البحث بالاسم أو الوصف أو الاسم المختصر أو المالك...",
+    "placeholder_search_entries": "البحث في المقالات...",
+    "placeholder_leave_empty_auto": "اتركه فارغاً للحصول على 'تلقائي'",
+    "placeholder_add_tag": "إضافة علامة...",
+    "placeholder_type_message_group": "اكتب رسالة للمجموعة...",
+    "aria_retry": "إعادة المحاولة",
+    "aria_retry_loading_content": "إعادة محاولة تحميل المحتوى",
+    "aria_show_all_tags": "عرض جميع الوسوم",
+    "aria_clear_all_selected_tags": "مسح جميع الوسوم المحددة",
+    "aria_clear_all_filters": "مسح جميع الفلاتر",
+    "aria_close_login_prompt": "إغلاق نافذة تسجيل الدخول",
+    "aria_cancel_fixing_configuration": "إلغاء إصلاح التكوين",
+    "aria_create_configuration_entity": "إنشاء كيان التكوين",
+    "aria_save_default_role": "حفظ الدور الافتراضي",
+    "aria_reset_current_default_role": "إعادة تعيين إلى الدور الافتراضي الحالي",
+    "aria_refresh_contact_messages": "تحديث رسائل الاتصال",
+    "aria_previous_page": "الصفحة السابقة",
+    "aria_next_page": "الصفحة التالية",
+    "aria_send_reply": "إرسال الرد",
+    "aria_cancel_replying": "إلغاء الرد",
+    "aria_toggle_faq": "تبديل الأسئلة الشائعة",
+    "label_total": "الإجمالي",
+    "label_active": "نشط",
+    "label_ended": "منتهي",
+    "templates_title": "القوالب",
+    "surveys_title": "الاستبيانات",
+    "create_survey_title": "إنشاء استبيان",
+    "placeholder_search_polls": "البحث في الاستطلاعات..."
+  },
+  "create_survey": {
+    "cancel": "إلغاء",
+    "create_button": "إنشاء استبيان",
+    "creating": "جارٍ إنشاء الاستبيان...",
+    "error": "فشل إنشاء الاستبيان. حاول مرة أخرى.",
+    "error_creating": "حدث خطأ أثناء إنشاء الاستبيان.",
+    "one_question_required": "مطلوب سؤال واحد على الأقل",
+    "option_complete_required": "السؤال {number}، الخيار {option} يتطلب قيمة وتسمية",
+    "question_options_required": "السؤال {number} يتطلب خياراً واحداً على الأقل",
+    "question_text_required_number": "السؤال {number} مطلوب",
+    "success": "تم إنشاء الاستبيان بنجاح!",
+    "survey_title_required": "عنوان الاستبيان مطلوب",
+    "title": "إنشاء استبيان جديد"
+  },
+  "polls": {
+    "_val": "استطلاعات الرأي",
+    "already_voted": "لقد صوتت بالفعل في هذا الاستطلاع",
+    "cancel": "إلغاء",
+    "close": "إغلاق",
+    "confirm_vote": "تأكيد التصويت",
+    "create_error": "فشل في إنشاء الاستطلاع",
+    "create_poll": "إنشاء استطلاع",
+    "create_success": "تم إنشاء الاستطلاع بنجاح",
+    "created_by": "أنشأه {author}",
+    "default_tag": "الفريق والثقافة",
+    "description": "شارك في استطلاعات رأي المجتمع وشارك رأيك",
+    "ended_on": "انتهى في",
+    "ends_on": "ينتهي في",
+    "filter_active": "نشط",
+    "filter_all": "كل الاستطلاعات",
+    "filter_ended": "انتهى",
+    "form": {
+      "add_option": "إضافة خيار",
+      "choice_type_label": "نوع الاختيار",
+      "description_label": "الوصف",
+      "multiple_choice_button": "اختيار متعدد",
+      "options_label": "الخيارات",
+      "remove_option": "حذف الخيار",
+      "single_choice_button": "اختيار واحد",
+      "space_label": "الفضاء",
+      "title_label": "العنوان"
+    },
+    "invalid_candidate": "اختيار مرشح غير صالح",
+    "leading": "متصدر",
+    "load_error": "فشل في تحميل الاستطلاعات",
+    "loading": "تحميل الاستطلاعات...",
+    "min_options_error": "يجب أن يحتوي الاستطلاع على خيارين على الأقل",
+    "min_valid_options_error": "يرجى إدخال خيارين صالحين على الأقل",
+    "more_candidates": " مرشح إضافي",
+    "multiple_choice": "اختيار متعدد مسموح",
+    "no_polls": "لا توجد استطلاعات متاحة في الوقت الحالي",
+    "no_polls_description": "تحقق مرة أخرى لاحقاً للاستطلاعات الجديدة",
+    "options_count": "{count} خيارات",
+    "percentage": "{percent}%",
+    "poll_ended": "انتهى هذا الاستطلاع",
+    "results_title": "النتائج",
+    "search_placeholder": "البحث في الاستطلاعات...",
+    "select_option": "اختر خياراً للتصويت",
+    "single_choice": "اختيار واحد فقط",
+    "space_required": "الفضاء مطلوب",
+    "time_left": "الوقت المتبقي",
+    "title": "استطلاعات الرأي المجتمعية",
+    "title_required": "العنوان مطلوب",
+    "total_votes": "إجمالي الأصوات: {count}",
+    "untitled": "استطلاع بدون عنوان",
+    "view_results": "عرض النتائج",
+    "vote_button": "تصويت",
+    "vote_error": "فشل في تسجيل صوتك. يرجى المحاولة مرة أخرى.",
+    "vote_for": "التصويت لـ: {option}",
+    "vote_success": "تم تسجيل صوتك بنجاح!",
+    "voted": "لقد صوتت",
+    "voted_for": "لقد صوتت لـ",
+    "votes_count": "{count} صوت",
+    "votes_short": "{count} صوت"
+  },
+  "reports": {
+    "_val": "تقارير",
+    "admin": {
+      "actions": {
+        "clear_filters": "مسح جميع الفلاتر",
+        "delete_entry": "حذف المنشور المبلغ عنه",
+        "mark_canceled": "تحديد كملغي",
+        "mark_resolved": "تحديد كمحلول",
+        "no_action": "لا يتطلب إجراء",
+        "reply": "رد",
+        "warn_user": "تحذير المستخدم"
+      },
+      "description": "مراجعة وإدارة البلاغات المقدمة من المستخدمين",
+      "empty": {
+        "no_reports": "لم يتم تقديم أي بلاغات بعد.",
+        "no_reports_filter": "لا توجد بلاغات وفقًا للمرشح المحدد.",
+        "title": "لا توجد بلاغات"
+      },
+      "error": {
+        "loading_details_failed": "فشل تحميل تفاصيل البلاغ",
+        "loading_failed": "فشل تحميل البلاغات",
+        "reply_failed": "فشل إرسال الرد",
+        "status_update_failed": "فشل تحديث الحالة"
+      },
+      "filter_by_status": "تصفية حسب الحالة",
+      "filters": {
+        "all": "جميع البلاغات",
+        "canceled": "تم الإلغاء",
+        "pending": "قيد الانتظار",
+        "resolved": "تم الحل"
+      },
+      "loading": "جارٍ تحميل البلاغات...",
+      "notes": "ملاحظات المسؤول",
+      "reply_modal": {
+        "action": "الإجراء المطلوب",
+        "notes_placeholder": "أدخل ملاحظاتك على هذا البلاغ...",
+        "send_reply": "إرسال الرد",
+        "sending": "جارٍ الإرسال...",
+        "title": "الرد على البلاغ",
+        "your_notes": "ملاحظاتك"
+      },
+      "reported_at": "تاريخ الإبلاغ",
+      "reported_by": "تم الإبلاغ بواسطة",
+      "reported_entry": "المنشور المبلغ عنه",
+      "status": {
+        "canceled": "تم إلغاء هذا البلاغ",
+        "resolved": "تم حل هذا البلاغ"
+      },
+      "success": {
+        "reply_sent": "تم إرسال الرد بنجاح",
+        "status_updated": "تم تحديث الحالة بنجاح"
+      },
+      "title": "إدارة البلاغات",
+      "validation": {
+        "reply_required": "يرجى إدخال الرد"
+      }
+    },
+    "error": {
+      "submission_failed": "فشل في إرسال البلاغ"
+    },
+    "modal": {
+      "description": "الوصف",
+      "description_placeholder": "يرجى تقديم معلومات تفصيلية حول سبب الإبلاغ عن هذا المحتوى...",
+      "report_title": "عنوان البلاغ",
+      "report_type": "نوع البلاغ",
+      "reporting_entry": "الإبلاغ عن المنشور",
+      "submit_report": "إرسال البلاغ",
+      "submitted_successfully": "تم إرسال البلاغ بنجاح",
+      "submitting": "جارٍ الإرسال...",
+      "thank_you": "شكراً لك",
+      "thanks_message": "شكراً لك لمساعدتنا في الحفاظ على مجتمع نظيف وآمن! تم إرسال بلاغك وسيقوم فريقنا بمراجعته.",
+      "title": "الإبلاغ عن المحتوى",
+      "title_placeholder": "ملخص قصير عن المشكلة"
+    },
+    "notification": {
+      "action": {
+        "delete": "تم حذف المحتوى",
+        "general": "إجراء إداري",
+        "warn": "تحذير بشأن المحتوى"
+      },
+      "admin": "المشرف",
+      "admin_response": "رد المشرف",
+      "close": "إغلاق",
+      "description": {
+        "delete": "تم حذف محتواك بسبب انتهاك السياسة.",
+        "general": "لقد اتخذ المشرف إجراءً بشأن المحتوى المُبلغ عنه.",
+        "warn": "تم وضع علامة على محتواك لانتهاك السياسة. يرجى مراجعة إرشادات المجتمع."
+      },
+      "details": {
+        "content": "المحتوى",
+        "date": "التاريخ",
+        "location": "الموقع",
+        "title": "معلومات المحتوى"
+      },
+      "guidelines": "عرض إرشادات المجتمع",
+      "reporter": {
+        "message": "شكراً لك لمساعدتنا في الحفاظ على مجتمع نظيف وآمن! لقد راجعنا بلاغك واتخذنا الإجراء المناسب. معاً، يمكننا الحفاظ على مجتمعنا مكاناً إيجابياً للجميع.",
+        "title": "شكراً لك على بلاغك"
+      },
+      "understood": "فهمت",
+      "unknown": "غير معروف"
+    },
+    "success": {
+      "submitted": "تم إرسال البلاغ بنجاح"
+    },
+    "thank_you": {
+      "description": "شكراً لك على مساعدتنا في الحفاظ على مجتمع نظيف وآمن! تم إرسال بلاغك وسيتم مراجعته من قبل فريقنا. معاً، يمكننا الحفاظ على مجتمعنا مكاناً إيجابياً للجميع.",
+      "got_it": "فهمت",
+      "success_message": "تم إرسال البلاغ بنجاح",
+      "title": "شكراً لك على البلاغ"
+    },
+    "types": {
+      "copyright_violation": "انتهاك حقوق النشر",
+      "harassment": "مضايقة",
+      "inappropriate_content": "محتوى غير لائق",
+      "misinformation": "معلومات مضللة",
+      "other": "أخرى",
+      "spam": "رسائل مزعجة"
+    },
+    "validation": {
+      "required_fields": "يرجى ملء جميع الحقول المطلوبة"
+    }
+  },
   "survey_form": {
     "add_question_button": "إضافة سؤال",
     "answer_type_input": "حقل إدخال",
@@ -1841,9 +1966,6 @@
     "type_your_answer": "اكتب إجابتك...",
     "untitled_survey": "استبيان بدون عنوان"
   },
-  "systemConfiguration": "تكوين النظام",
-  "systemConfigurationEntityMissingDescription": "كيان تكوين النظام مفقود. هذا مطلوب لإدارة أدوار المستخدمين الافتراضية.",
-  "systemConfigurationSubtitle": "تكوين الإعدادات الافتراضية للمستخدمين الجدد وسلوك النظام",
   "templates": {
     "_val": "القوالب",
     "create_button": "إنشاء قالب",
@@ -1903,119 +2025,5 @@
       "uuid": "المعرف الفريد"
     },
     "title": "القوالب"
-  },
-  "to": "إلى",
-  "toggle": "تبديل",
-  "total_users": "إجمالي المستخدمين",
-  "typeReplyPlaceholder": "اكتب ردك هنا...",
-  "unknownFile": "ملف غير معروف",
-  "update": "تحديث",
-  "user": "المستخدم",
-  "userDefaultRole": "دور المستخدم الافتراضي",
-  "userDefaultRoleDescription": "اختر الدور الافتراضي الذي سيتم تعيينه للمستخدمين المسجلين حديثاً. يحدد هذا الدور الصلاحيات الأولية ومستوى الوصول للمستخدمين الجدد.",
-  "user_management": "إدارة المستخدمين",
-  "user_permissions_management": "إدارة صلاحيات المستخدمين",
-  "view_user": {
-    "title": "تفاصيل المستخدم",
-    "user_information": "معلومات المستخدم",
-    "shortname": "الاسم المختصر",
-    "display_name": "اسم العرض",
-    "email": "البريد الإلكتروني",
-    "mobile_number": "رقم الجوال",
-    "status": "الحالة",
-    "type": "النوع",
-    "email_verified": "البريد الإلكتروني موثّق",
-    "phone_verified": "الجوال موثّق",
-    "force_password_change": "إلزام تغيير كلمة المرور",
-    "language": "اللغة",
-    "created_at": "تاريخ الإنشاء",
-    "updated_at": "تاريخ آخر تعديل",
-    "yes": "نعم",
-    "no": "لا",
-    "groups": "المجموعات",
-    "roles_and_permissions": "الأدوار والصلاحيات",
-    "no_roles_assigned": "لا توجد أدوار مُعيّنة",
-    "no_permissions": "لا توجد صلاحيات",
-    "permission_singular": "صلاحية",
-    "permission_plural": "صلاحيات",
-    "edit": "تعديل",
-    "close": "إغلاق"
-  },
-  "users_overview": "نظرة عامة على المستخدمين",
-  "create_user": "إنشاء مستخدم",
-  "user_created_successfully": "تم إنشاء المستخدم بنجاح!",
-  "failed_to_create_user": "فشل إنشاء المستخدم.",
-  "users_without_roles": "المستخدمون بدون أدوار",
-  "validation": {
-    "index_attributes_required": "سمات الفهرس مطلوبة",
-    "json_syntax_error": "يرجى تصحيح بناء جملة JSON.\nتنسيق JSON غير صحيح في قيم الحقول المسموحة",
-    "shortname_format": "يمكن أن يحتوي الاسم المختصر على أحرف أبجدية رقمية وشرطات سفلية فقط.",
-    "shortname_invalid": "تنسيق الاسم المختصر غير صالح. يجب أن يكون من 1 إلى 64 حرفًا ويمكن أن يحتوي فقط على: الأحرف الإنجليزية (a-z, A-Z)، الأحرف العربية، الأرقام (0-9)، الأرقام العربية، علامات التشكيل العربية، والشرطات السفلية (_)."
-  },
-  "world_permissions_info": "صلاحيات العالم تنطبق على جميع الضيوف والمستخدمين غير المسجلين. هذه هي أكثر الصلاحيات تقييدًا.",
-  "yourReply": "ردك",
-  "delete_confirmation": {
-    "title": "حذف {type}",
-    "confirm": "هل أنت متأكد؟",
-    "irreversible": "لا يمكن التراجع عن هذا الإجراء.",
-    "item_label": "العنصر",
-    "warning": "سيتم حذف هذا العنصر نهائيًا ولا يمكن استرداده."
-  },
-  "toast": {
-    "folder_created": "تم إنشاء المجلد بنجاح",
-    "folder_create_failed": "فشل في إنشاء المجلد",
-    "folder_updated": "تم تحديث المجلد بنجاح",
-    "folder_update_failed": "فشل في تحديث المجلد",
-    "schema_created": "تم إنشاء المخطط بنجاح",
-    "schema_create_failed": "فشل في إنشاء المخطط",
-    "workflow_created": "تم إنشاء سير العمل بنجاح",
-    "workflow_create_failed": "فشل في إنشاء سير العمل",
-    "item_deleted": "تم حذف العنصر بنجاح",
-    "item_delete_failed": "فشل في حذف العنصر",
-    "reply_required": "الرجاء إدخال رسالة الرد",
-    "reply_sent": "تم إرسال الرد بنجاح",
-    "reply_sent_marked": "تم إرسال الرد وتحديد الرسالة كمردود عليها",
-    "reply_sent_failed": "تم إرسال الرد لكن فشل في التحديد",
-    "reply_sent_error": "تم إرسال الرد لكن حدث خطأ"
-  },
-  "route_labels": {
-    "admin_dashboard_title": "لوحة تحكم المشرف",
-    "admin_dashboard_welcome": "مرحباً بك مدير Dmart. أدر جميع المساحات ومحتوياتها بصلاحيات إدارية كاملة.",
-    "search_placeholder_short": "البحث في المساحات، المنشورات، الأشخاص...",
-    "aria_search": "بحث",
-    "aria_close": "إغلاق",
-    "search_remove_tag": "إزالة العلامة",
-    "search_no_filters_available": "لا توجد عوامل تصفية متاحة هنا",
-    "search_current_space": "المساحة الحالية: {value}",
-    "search_current_folder": "المجلد الحالي: {value}",
-    "templates_title": "القوالب",
-    "surveys_title": "الاستبيانات",
-    "create_survey_title": "إنشاء استبيان",
-    "placeholder_tell_us_about_yourself": "أخبرنا عن نفسك",
-    "placeholder_search_polls": "البحث في الاستطلاعات...",
-    "placeholder_search_by_name_desc": "البحث بالاسم أو الوصف أو الاسم المختصر أو المالك...",
-    "placeholder_search_entries": "البحث في المقالات...",
-    "placeholder_leave_empty_auto": "اتركه فارغاً للحصول على 'تلقائي'",
-    "placeholder_add_tag": "إضافة علامة...",
-    "placeholder_type_message_group": "اكتب رسالة للمجموعة...",
-    "aria_retry": "إعادة المحاولة",
-    "aria_retry_loading_content": "إعادة محاولة تحميل المحتوى",
-    "aria_show_all_tags": "عرض جميع الوسوم",
-    "aria_clear_all_selected_tags": "مسح جميع الوسوم المحددة",
-    "aria_clear_all_filters": "مسح جميع الفلاتر",
-    "aria_close_login_prompt": "إغلاق نافذة تسجيل الدخول",
-    "aria_cancel_fixing_configuration": "إلغاء إصلاح التكوين",
-    "aria_create_configuration_entity": "إنشاء كيان التكوين",
-    "aria_save_default_role": "حفظ الدور الافتراضي",
-    "aria_reset_current_default_role": "إعادة تعيين إلى الدور الافتراضي الحالي",
-    "aria_refresh_contact_messages": "تحديث رسائل الاتصال",
-    "aria_previous_page": "الصفحة السابقة",
-    "aria_next_page": "الصفحة التالية",
-    "aria_send_reply": "إرسال الرد",
-    "aria_cancel_replying": "إلغاء الرد",
-    "aria_toggle_faq": "تبديل الأسئلة الشائعة",
-    "label_total": "الإجمالي",
-    "label_active": "نشط",
-    "label_ended": "منتهي"
   }
 }

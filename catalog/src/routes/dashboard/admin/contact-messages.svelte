@@ -1,12 +1,18 @@
 <script lang="ts">
-    import {onMount} from "svelte";
-    import {_} from "../../../i18n";
-    import {locale} from "@/i18n";
+  import { onMount } from "svelte";
+  import { _ } from "../../../i18n";
+  import { locale } from "@/i18n";
 
-    import {fetchContactMessages, markMessageAsReplied,} from "@/lib/dmart_services";
-    import {errorToastMessage, successToastMessage} from "@/lib/toasts_messages";
+  import {
+    fetchContactMessages,
+    markMessageAsReplied,
+  } from "@/lib/dmart_services";
+  import {
+    errorToastMessage,
+    successToastMessage,
+  } from "@/lib/toasts_messages";
 
-    let messages: any[] = $state([]);
+  let messages: any[] = $state([]);
   let loading = $state(true);
   let error = $state("");
   let currentPage = $state(0);
@@ -31,13 +37,18 @@
     return true;
   }
 
+  // Replies are stored as `comment` attachments with
+  // payload.body = { state: "replied", body: <text> } (see markMessageAsReplied).
   function getReplyMessage(message: any): string {
-    if (!message.attachments || !message.attachments.comment) {
-      return "";
-    }
-    const comments = message.attachments.comment;
-    if (comments.length > 0) {
-      return comments[0].attributes.payload.body.body || "";
+    if (!message.attachments) return "";
+    for (const group of Object.values(message.attachments) as any[]) {
+      const list = Array.isArray(group) ? group : [group];
+      for (const attachment of list) {
+        const body = attachment?.attributes?.payload?.body;
+        if (body?.state === "replied") {
+          return typeof body.body === "string" ? body.body : "";
+        }
+      }
     }
     return "";
   }
@@ -65,7 +76,7 @@
 
   async function autoMarkAttachmentMessages() {
     const messagesToMark = messages.filter(
-      (message) => hasAttachment(message) && !isReplied(message)
+      (message) => hasAttachment(message) && !isReplied(message),
     );
 
     for (const message of messagesToMark) {
@@ -74,14 +85,14 @@
           "applications",
           "contacts",
           message.shortname,
-          "Auto-replied: Message contains attachment"
+          "Auto-replied: Message contains attachment",
         );
 
         message.attributes.payload.replied = true;
       } catch (error) {
         console.error(
           `Error auto-marking message ${message.shortname}:`,
-          error
+          error,
         );
       }
     }
@@ -123,14 +134,14 @@
         `${messageBody?.subject} - ${$_("reply")}` || $_("replyToYourMessage");
 
       window.open(
-        `mailto:${ownerEmail}?subject=${encodeURIComponent(subject)}&body=${encodeURIComponent(replyContent)}`
+        `mailto:${ownerEmail}?subject=${encodeURIComponent(subject)}&body=${encodeURIComponent(replyContent)}`,
       );
 
       const success = await markMessageAsReplied(
         "applications",
         "contacts",
         selectedMessage.shortname,
-        replyContent
+        replyContent,
       );
 
       if (success) {
@@ -278,7 +289,7 @@
                   </p>
                   <p class="text-xs text-gray-500 mt-1">
                     {$_("submitted")}: {formatDate(
-                      message.attributes.created_at
+                      message.attributes.created_at,
                     )}
                   </p>
                 </div>

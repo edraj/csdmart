@@ -1,9 +1,10 @@
 <script lang="ts">
-    import {ResourceType} from "@edraj/tsdmart";
-    import {marked} from "marked";
-    import {onMount, onDestroy} from "svelte";
+  import { ResourceType } from "@edraj/tsdmart";
+  import { marked } from "marked";
+  import { onMount, onDestroy } from "svelte";
+  import { sanitizeHtml } from "@/lib/utils/sanitize";
 
-    export let attributes: any = {};
+  export let attributes: any = {};
   export let resource_type: ResourceType;
   export let url: string;
   export let displayname: string | undefined = undefined;
@@ -15,7 +16,12 @@
   let error = false;
 
   onMount(async () => {
-    if (content_type.includes("image") || content_type.includes("video") || content_type.includes("audio") || content_type.includes("pdf")) {
+    if (
+      content_type.includes("image") ||
+      content_type.includes("video") ||
+      content_type.includes("audio") ||
+      content_type.includes("pdf")
+    ) {
       try {
         const token = localStorage.getItem("authToken");
         const headers: Record<string, string> = {};
@@ -46,13 +52,7 @@
   });
 </script>
 
-{#if resource_type === ResourceType.comment}
-  <div>
-    <p style="margin: 0px"><b>State:</b>{attributes.state}</p>
-    <br />
-    <p style="margin: 0px"><b>Body:</b>{attributes.body}</p>
-  </div>
-{:else if content_type.includes("image")}
+{#if content_type.includes("image")}
   {#if loading}
     <div class="media-loading"><div class="spinner spinner-md"></div></div>
   {:else if error}
@@ -99,7 +99,7 @@
   {/if}
 {:else if ["markdown", "html", "text"].includes(content_type)}
   <div>
-    {@html marked(body)}
+    {@html sanitizeHtml(marked(body))}
   </div>
 {:else}
   <a

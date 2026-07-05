@@ -57,8 +57,20 @@
 
   function getDisplayName(key: string): string {
     if (isArray) return key;
-    const title = schema?.properties?.[key]?.title;
-    return title?.trim() ? title : key;
+    const title = schema?.properties?.[key]?.title?.trim();
+    if (!title) return key;
+
+    // A title that equals the key with underscores replaced by spaces is the
+    // "natural" formatted form of the key — always safe to use.
+    if (title === key.replace(/_/g, " ")) return title;
+
+    // If the same non-natural title appears on another property it is almost
+    // certainly a schema authoring mistake (copy-paste, wrong field selected,
+    // etc.).  Fall back to the raw key so the field is at least identifiable.
+    const isDuplicate = entries.some(
+      (e) => e.key !== key && schema?.properties?.[e.key]?.title?.trim() === title
+    );
+    return isDuplicate ? key : title;
   }
 
   function getChildSchema(key: string): JsonSchema | undefined {
