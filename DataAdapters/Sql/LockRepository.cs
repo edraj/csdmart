@@ -119,6 +119,19 @@ public sealed class LockRepository(Db db)
         return await cmd.ExecuteNonQueryAsync(ct) > 0;
     }
 
+    public async Task<bool> ForceUnlockAsync(string spaceName, string subpath, string shortname, CancellationToken ct = default)
+    {
+        await using var conn = await db.OpenAsync(ct);
+        await using var cmd = new NpgsqlCommand("""
+            DELETE FROM locks
+            WHERE shortname = $1 AND space_name = $2 AND subpath = $3
+            """, conn);
+        cmd.Parameters.Add(new() { Value = shortname });
+        cmd.Parameters.Add(new() { Value = spaceName });
+        cmd.Parameters.Add(new() { Value = subpath });
+        return await cmd.ExecuteNonQueryAsync(ct) > 0;
+    }
+
     // Returns the owner if there's a non-expired lock; null if there's no
     // lock OR the existing row is past its lock_period.
     public async Task<string?> GetLockerAsync(

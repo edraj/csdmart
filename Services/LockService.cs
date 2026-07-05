@@ -14,6 +14,7 @@ public sealed class LockService(
     EntryService entryService,
     HistoryRepository history,
     PluginManager plugins,
+    PermissionService perms,
     IOptions<DmartSettings> settings)
 {
     // Event for the lock/unlock before/after pipeline. Mirrors EntryService's
@@ -34,7 +35,20 @@ public sealed class LockService(
         if (string.IsNullOrEmpty(actor))
             return Response.Fail(InternalErrorCode.NOT_AUTHENTICATED, "login required", ErrorTypes.Auth);
 
-        // before_action runs first so a hook plugin can veto the lock (Python's
+        // Load the target entry once — it supplies the permission context (owner
+        // / ACL / is_active) and, for tickets, the processed_by marker below.
+        // Null when the entry doesn't exist: the gate falls back to a
+        // role/subpath-level check (CanAsync tolerates a null resource).
+        var entry = await entries.GetAsync(l.SpaceName, l.Subpath, l.Shortname, l.Type, ct);
+
+        // Permission gate: `lock` must be granted (strict, like update/delete).
+        // Checked before before_action (EntryService convention) so an
+        // unauthorized caller never fires plugin hooks.
+        if (!await perms.CanAsync(actor, "lock", l,
+                entry is null ? null : PermissionService.FromEntry(entry), null, ct))
+            return Response.Fail(InternalErrorCode.NOT_ALLOWED, "no lock access", ErrorTypes.Auth);
+
+        // before_action lets a hook plugin veto the lock (Python's
         // plugin_manager.before_action at the top of lock_entry). A rejection
         // surfaces as a failed Response rather than a 500.
         if (await BeforeActionAsync(l, ActionType.Lock, actor, ct) is { } lockBefore)
@@ -45,7 +59,7 @@ public sealed class LockService(
         // collaborators.processed_by.
         if (l.Type == ResourceType.Ticket)
         {
-            var ticket = await entries.GetAsync(l.SpaceName, l.Subpath, l.Shortname, l.Type, ct);
+            var ticket = entry;
             if (ticket is not null)
             {
                 var collaborators = ticket.Collaborators is null
@@ -93,12 +107,34 @@ public sealed class LockService(
         if (string.IsNullOrEmpty(actor))
             return Response.Fail(InternalErrorCode.NOT_AUTHENTICATED, "login required", ErrorTypes.Auth);
 
+        var period = settings.Value.LockPeriod;
+        var holder = await locks.GetLockerAsync(l.SpaceName, l.Subpath, l.Shortname, period, ct);
+
+        // No live lock (never locked, or the lease expired) → nothing to
+        // release; unlock is an idempotent success.
+        if (holder is null)
+            return Response.Ok();
+
+        // The holder always releases their own lock. A lock held by someone
+        // else may only be force-released by a caller granted the `unlock`
+        // action. Locks are type-agnostic and the unlock route carries no
+        // resource type, so the force check is a role/subpath-level grant.
+        var isHolder = string.Equals(holder, actor, StringComparison.Ordinal);
+        if (!isHolder && !await perms.CanAsync(actor, "unlock", l, null, null, ct))
+            return Response.Fail(InternalErrorCode.NOT_ALLOWED, "no unlock access", ErrorTypes.Auth);
+
+        // before_action runs after authorization (EntryService convention); a
+        // hook plugin may still veto the unlock.
         if (await BeforeActionAsync(l, ActionType.Unlock, actor, ct) is { } unlockBefore)
             return unlockBefore;
 
-        var ok = await locks.UnlockAsync(l.SpaceName, l.Subpath, l.Shortname, actor, ct);
+        var ok = isHolder
+            ? await locks.UnlockAsync(l.SpaceName, l.Subpath, l.Shortname, actor, ct)
+            : await locks.ForceUnlockAsync(l.SpaceName, l.Subpath, l.Shortname, ct);
+        // Lost a race — the lock vanished between the lookup and the delete.
+        // Nothing remains locked, so report idempotent success.
         if (!ok)
-            return Response.Fail(InternalErrorCode.NOT_ALLOWED, "you don't hold this lock", ErrorTypes.Auth);
+            return Response.Ok();
 
         // Python records LockAction.cancel in the unlock history diff.
         await WriteHistoryAsync(l, actor, "cancel", ct);
