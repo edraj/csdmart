@@ -90,4 +90,27 @@ public sealed class JsonStripEmptiesMiddlewareTests
         sniff.Buffered.ShouldBeFalse("a response with no body must not be treated as buffered");
         inner.Chunks.ShouldBeEmpty();
     }
+
+    [Fact]
+    public void StripEmpties_Preserves_Failed_Diagnostics_Subtree()
+    {
+        // `failed` lists are per-row diagnostics (CSV import, bulk handlers):
+        // an empty string inside them — e.g. value:"" reporting the empty CSV
+        // cell that tripped a minLength — is the payload of the report, not
+        // noise. The subtree must survive untouched, while ordinary empties
+        // elsewhere (and an entirely empty `failed` list) are still stripped.
+        var node = System.Text.Json.Nodes.JsonNode.Parse(
+            """{"failed":[{"value":"","error":"e"}],"other":"","attributes":{"failed":[]}}""")!;
+
+        JsonStripEmptiesMiddleware.StripEmpties(node);
+
+        var obj = node.AsObject();
+        obj.ContainsKey("other").ShouldBeFalse("ordinary empty strings are still stripped");
+        var failed = obj["failed"]!.AsArray();
+        failed[0]!.AsObject().ContainsKey("value")
+            .ShouldBeTrue("empty-string diagnostics inside `failed` must survive");
+        // An EMPTY failed list is dropped like any other empty property, taking
+        // its now-empty parent with it.
+        obj.ContainsKey("attributes").ShouldBeFalse();
+    }
 }

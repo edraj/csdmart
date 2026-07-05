@@ -153,7 +153,7 @@ public sealed class CsvService(QueryService queries, EntryService entries)
                 var updateResult = await entries.UpdateAsync(locator, patchAttrs, actor, ct,
                     isBulkImport: true);
                 if (updateResult.IsOk) inserted++;
-                else failed.Add(BuildFailure(rowNumber, shortname, updateResult.ErrorMessage, updateResult.ErrorCode, bodyEl));
+                else failed.Add(BuildFailure(rowNumber, shortname, updateResult.ErrorMessage, updateResult.ErrorCode, updateResult.Info));
                 continue;
             }
 
@@ -182,7 +182,7 @@ public sealed class CsvService(QueryService queries, EntryService entries)
             // still fire because they ignore the flag.
             var result = await entries.CreateAsync(entry, actor, rawAttrs: null, isBulkImport: true, ct);
             if (result.IsOk) inserted++;
-            else failed.Add(BuildFailure(rowNumber, shortname, result.ErrorMessage, result.ErrorCode, bodyEl));
+            else failed.Add(BuildFailure(rowNumber, shortname, result.ErrorMessage, result.ErrorCode, result.Info));
         }
 
         return Response.Ok(attributes: new()
@@ -196,79 +196,33 @@ public sealed class CsvService(QueryService queries, EntryService entries)
     // ----- helpers -----
 
     // Build the per-row entry for the import's `failed` list. Beyond the base
-    // (row, shortname, error, code) it enriches schema-validation failures with
-    // the offending `key` and `value`: the error message embeds the failing field
-    // as a JSON Pointer (e.g. "payload failed schema validation: /is_used: enum:
-    // ..."), so an operator fixing a bad CSV can see which column and which cell
-    // value tripped the schema without hand-parsing pointer syntax.
+    // (row, shortname, error, code) it enriches schema-validation failures —
+    // whose Result.Info carries one structured entry per failing constraint
+    // (see SchemaValidator.ToInfo) — with the first FIELD-level error's `key`
+    // (dot-joined path, matching export's FlattenInto column convention) and
+    // `value`. Root-level errors (e.g. `required`) carry no key and are passed
+    // over in favor of the first named field. The value comes from the document
+    // the validator actually rejected — for updates that's the MERGED body, so
+    // an operator sees the failing value even when it isn't in their CSV.
     private static Dictionary<string, object> BuildFailure(
-        int row, string shortname, string? error, int code, JsonElement body)
+        int row, string shortname, string? error, int code, List<Dictionary<string, object>>? info)
     {
-        var message = error ?? "unknown";
         var failure = new Dictionary<string, object>
         {
             ["row"] = row,
             ["shortname"] = shortname,
-            ["error"] = message,
+            ["error"] = error ?? "unknown",
             ["code"] = code,
         };
-        AttachSchemaFieldError(failure, message, body);
+        var fieldError = info?.FirstOrDefault(e => e.ContainsKey("key"));
+        if (fieldError is not null)
+        {
+            failure["key"] = fieldError["key"];
+            if (fieldError.TryGetValue("value", out var value))
+                failure["value"] = value;
+        }
         return failure;
     }
-
-    // If `error` is a schema-validation message, pull the first failing field's
-    // JSON Pointer out of it, record it under `key`, and resolve it against the
-    // row body to record the actual `value`. No-op for any other error shape.
-    private static void AttachSchemaFieldError(
-        Dictionary<string, object> failure, string error, JsonElement body)
-    {
-        const string prefix = "payload failed schema validation: ";
-        if (!error.StartsWith(prefix, StringComparison.Ordinal)) return;
-
-        // errors are joined by "; "; each reads "<pointer>: <keyword>: <message>".
-        // The first entry's pointer is enough to name the offending field.
-        var firstError = error.Substring(prefix.Length).Split("; ", 2)[0];
-        var colon = firstError.IndexOf(": ", StringComparison.Ordinal);
-        if (colon <= 0) return;                      // "<root>: ..." — nothing to name
-        var pointer = firstError.Substring(0, colon);
-        if (pointer.Length == 0 || pointer[0] != '/') return;
-
-        var segments = pointer.Split('/', StringSplitOptions.RemoveEmptyEntries)
-            .Select(UnescapeJsonPointer).ToArray();
-        if (segments.Length == 0) return;
-
-        failure["key"] = string.Join("/", segments);
-        if (TryResolvePointer(body, segments, out var value))
-            failure["value"] = value.Clone();
-    }
-
-    // Walk a decoded JSON Pointer (segments) into `root`. Objects match by
-    // property name, arrays by integer index; anything else stops the walk.
-    private static bool TryResolvePointer(JsonElement root, string[] segments, out JsonElement value)
-    {
-        value = root;
-        foreach (var seg in segments)
-        {
-            switch (value.ValueKind)
-            {
-                case JsonValueKind.Object:
-                    if (!value.TryGetProperty(seg, out value)) return false;
-                    break;
-                case JsonValueKind.Array:
-                    if (!int.TryParse(seg, out var idx) || idx < 0 || idx >= value.GetArrayLength())
-                        return false;
-                    value = value[idx];
-                    break;
-                default:
-                    return false;
-            }
-        }
-        return true;
-    }
-
-    // RFC 6901 unescaping: "~1" -> "/", "~0" -> "~" (order matters).
-    private static string UnescapeJsonPointer(string segment)
-        => segment.Replace("~1", "/").Replace("~0", "~");
 
     private static void FlattenInto(Dictionary<string, object> source, string prefix, Dictionary<string, string> dest)
     {

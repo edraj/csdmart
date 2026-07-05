@@ -454,11 +454,178 @@ public class CsvRoundTripTests : IClassFixture<DmartFactory>
             failedEl.GetArrayLength().ShouldBe(1);
             var row0 = failedEl[0];
             row0.GetProperty("shortname").GetString().ShouldBe("11DE4");
-            row0.GetProperty("error").GetString().ShouldContain("schema validation");
+            row0.GetProperty("error").GetString()!.ShouldContain("schema validation");
             // The enum failure is on /is_used; key drops the pointer slash, value
             // echoes the offending cell.
             row0.GetProperty("key").GetString().ShouldBe("is_used");
             row0.GetProperty("value").GetString().ShouldBe("maybe");
+        }
+        finally
+        {
+            await CleanupAsync(client, space);
+        }
+    }
+
+    // When the FIRST schema error is a root-level one (e.g. `required`, whose
+    // instance location is the document root, so there is no field to name),
+    // the enrichment must not give up: the first error that DOES name a field
+    // (here /is_used) still supplies `key`/`value`.
+    [FactIfPg]
+    public async Task Csv_Import_RootLevelError_Still_Reports_First_Field_Level_Key_And_Value()
+    {
+        const string space = "itest_csv_rooterr";
+        var (client, _, _, _) = await _factory.CreateLoggedInUserAsync();
+
+        try
+        {
+            await CleanupAsync(client, space);
+            await SeedSpaceAsync(client, space);
+            await UploadSchemaAsync(client,
+                shortname: "strict",
+                schemaJson: """{"title":"strict","type":"object","additionalProperties":true,"required":["name"],"properties":{"is_used":{"enum":["yes","no"]}}}""",
+                space: space);
+
+            // No `name` column → root-level `required` error comes FIRST in the
+            // validator output; the enum failure on /is_used follows it.
+            var csv = "shortname,is_used\r\nR1,maybe\r\n";
+            var importResp = await UploadCsvAsync(client,
+                resourceType: "content", space: space, subpath: "items", schema: "strict",
+                csvBytes: Encoding.UTF8.GetBytes(csv));
+
+            importResp.Status.ShouldBe(Status.Success);
+            ExtractInt(importResp.Attributes!["failed_count"]).ShouldBe(1);
+
+            var row0 = ((JsonElement)importResp.Attributes!["failed"])[0];
+            row0.GetProperty("error").GetString()!.ShouldContain("required");
+            row0.GetProperty("key").GetString().ShouldBe("is_used");
+            row0.GetProperty("value").GetString().ShouldBe("maybe");
+        }
+        finally
+        {
+            await CleanupAsync(client, space);
+        }
+    }
+
+    // An empty CSV cell is the most common way to trip minLength/pattern — and
+    // `""` is exactly what JsonStripEmptiesMiddleware normally deletes from
+    // responses. The failed list is diagnostics: value:"" must survive to the
+    // client so the operator sees WHICH cell was empty.
+    [FactIfPg]
+    public async Task Csv_Import_EmptyCellSchemaFailure_Value_Survives_Response_Stripping()
+    {
+        const string space = "itest_csv_emptyval";
+        var (client, _, _, _) = await _factory.CreateLoggedInUserAsync();
+
+        try
+        {
+            await CleanupAsync(client, space);
+            await SeedSpaceAsync(client, space);
+            await UploadSchemaAsync(client,
+                shortname: "strict",
+                schemaJson: """{"title":"strict","type":"object","additionalProperties":true,"properties":{"sku":{"minLength":1}}}""",
+                space: space);
+
+            // Empty sku cell → "" fails minLength.
+            var csv = "shortname,sku\r\nE1,\r\n";
+            var importResp = await UploadCsvAsync(client,
+                resourceType: "content", space: space, subpath: "items", schema: "strict",
+                csvBytes: Encoding.UTF8.GetBytes(csv));
+
+            importResp.Status.ShouldBe(Status.Success);
+            ExtractInt(importResp.Attributes!["failed_count"]).ShouldBe(1);
+
+            var row0 = ((JsonElement)importResp.Attributes!["failed"])[0];
+            row0.GetProperty("key").GetString().ShouldBe("sku");
+            row0.TryGetProperty("value", out var val)
+                .ShouldBeTrue("empty-string value must not be stripped from the response");
+            val.GetString().ShouldBe("");
+        }
+        finally
+        {
+            await CleanupAsync(client, space);
+        }
+    }
+
+    // Update mode: EntryService validates the MERGED entry (stored body deep-
+    // merged with the CSV patch), so the offending field can live in the stored
+    // entry rather than the CSV row. The reported `value` must be the value the
+    // validator actually rejected — the merged one — not a (missing) CSV cell.
+    [FactIfPg]
+    public async Task Csv_Import_UpdateMode_SchemaFailure_Reports_Merged_Value_Not_Patch_Value()
+    {
+        const string space = "itest_csv_updval";
+        var (client, _, _, _) = await _factory.CreateLoggedInUserAsync();
+
+        try
+        {
+            await CleanupAsync(client, space);
+            await SeedSpaceAsync(client, space);
+
+            // Create the entry BEFORE its schema exists (missing schemas pass
+            // through — dmart's lenient first-write behavior) so we can store a
+            // value that the later, tighter schema rejects.
+            (await PostOk(client, "/managed/request",
+                "{\"space_name\":\"" + space + "\",\"request_type\":\"create\",\"records\":[" +
+                "{\"resource_type\":\"content\",\"subpath\":\"items\",\"shortname\":\"legacy\"," +
+                "\"attributes\":{\"payload\":{\"content_type\":\"json\",\"schema_shortname\":\"strict\"," +
+                "\"body\":{\"is_used\":\"maybe\",\"note\":\"orig\"}}}}]}"))
+                .ShouldBeTrue("legacy entry seed");
+            await UploadSchemaAsync(client,
+                shortname: "strict",
+                schemaJson: """{"title":"strict","type":"object","additionalProperties":true,"properties":{"is_used":{"enum":["yes","no"]}}}""",
+                space: space);
+
+            // The CSV patch touches only `note`; the merged body still carries the
+            // stored is_used="maybe", which now fails the enum.
+            var csv = "shortname,note\r\nlegacy,updated\r\n";
+            var importResp = await UploadCsvAsync(client,
+                resourceType: "content", space: space, subpath: "items", schema: "strict",
+                csvBytes: Encoding.UTF8.GetBytes(csv), isUpdate: true);
+
+            importResp.Status.ShouldBe(Status.Success);
+            ExtractInt(importResp.Attributes!["failed_count"]).ShouldBe(1);
+
+            var row0 = ((JsonElement)importResp.Attributes!["failed"])[0];
+            row0.GetProperty("key").GetString().ShouldBe("is_used");
+            row0.GetProperty("value").GetString().ShouldBe("maybe",
+                "value must come from the merged body the validator rejected, not the CSV patch");
+        }
+        finally
+        {
+            await CleanupAsync(client, space);
+        }
+    }
+
+    // CSV headers become body property names verbatim, and RFC 6901 pointers
+    // don't escape ": " — the reported `key` must carry the full property name
+    // instead of being truncated at the first ": " (which is what happens when
+    // the pointer is re-parsed out of the display message).
+    [FactIfPg]
+    public async Task Csv_Import_SchemaFailure_On_Column_Containing_ColonSpace_Reports_Full_Key()
+    {
+        const string space = "itest_csv_colonkey";
+        var (client, _, _, _) = await _factory.CreateLoggedInUserAsync();
+
+        try
+        {
+            await CleanupAsync(client, space);
+            await SeedSpaceAsync(client, space);
+            await UploadSchemaAsync(client,
+                shortname: "strict",
+                schemaJson: """{"title":"strict","type":"object","additionalProperties":true,"properties":{"price: usd":{"enum":["1","2"]}}}""",
+                space: space);
+
+            var csv = "shortname,price: usd\r\nC1,999\r\n";
+            var importResp = await UploadCsvAsync(client,
+                resourceType: "content", space: space, subpath: "items", schema: "strict",
+                csvBytes: Encoding.UTF8.GetBytes(csv));
+
+            importResp.Status.ShouldBe(Status.Success);
+            ExtractInt(importResp.Attributes!["failed_count"]).ShouldBe(1);
+
+            var row0 = ((JsonElement)importResp.Attributes!["failed"])[0];
+            row0.GetProperty("key").GetString().ShouldBe("price: usd");
+            row0.GetProperty("value").GetString().ShouldBe("999");
         }
         finally
         {
