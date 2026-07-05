@@ -486,7 +486,7 @@ public sealed class EntryService(
         // Same lock gate as UpdateAsync — a lock held by another user blocks the
         // delete. Checked after the permission gate (see LockBlockAsync).
         if (await LockBlockAsync(locator, actor, ct) is { } delLock)
-            return Result<bool>.Fail(delLock.ErrorCode, delLock.Message, ErrorTypes.Db);
+            return Result<DeleteReport>.Fail(delLock.ErrorCode, delLock.Message, ErrorTypes.Db);
 
         // Reverse referential-integrity: deleting an entry that other entries
         // still point at would leave dangling refs behind. Block with a
