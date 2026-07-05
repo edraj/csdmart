@@ -101,7 +101,13 @@ public static class JsonStripEmptiesMiddleware
                 List<string>? toRemove = null;
                 foreach (var kv in obj)
                 {
-                    if (kv.Value is not null) StripEmpties(kv.Value);
+                    // `failed` subtrees are per-row diagnostics (CSV import,
+                    // bulk request handlers): an empty string there — e.g.
+                    // value:"" reporting the empty CSV cell that tripped a
+                    // minLength — is the payload of the report, not noise.
+                    // Don't descend; an entirely empty `failed` value is still
+                    // dropped by the IsEmpty check below like any other key.
+                    if (kv.Key is not "failed" && kv.Value is not null) StripEmpties(kv.Value);
                     // Keys preserved even when empty:
                     //   * payload — Python emits {} for entries without bodies;
                     //     clients branch on schema_shortname inside it.

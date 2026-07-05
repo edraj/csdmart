@@ -84,9 +84,11 @@ public sealed class EntryService(
 
         // dmart's schema validation: if the payload references a schema_shortname,
         // load the schema entry from the same space and validate the body against it.
-        var validationError = await ValidatePayloadAsync(entry, ct);
-        if (validationError is not null)
-            return Result<Entry>.Fail(InternalErrorCode.INVALID_DATA, validationError, ErrorTypes.Request);
+        var schemaErrors = await ValidatePayloadAsync(entry, ct);
+        if (schemaErrors is not null)
+            return Result<Entry>.Fail(InternalErrorCode.INVALID_DATA,
+                SchemaValidator.FormatMessage(schemaErrors), ErrorTypes.Request,
+                SchemaValidator.ToInfo(schemaErrors));
 
         // Referential integrity: every relationship's related_to locator must
         // resolve to a live entry before we persist this row. Without this gate
@@ -172,8 +174,10 @@ public sealed class EntryService(
 
     // Delegates to the shared SchemaValidator gate so entry-type and non-entry
     // (User/Role/Group/Permission/Space) writes validate payloads identically.
-    private Task<string?> ValidatePayloadAsync(Entry entry, CancellationToken ct)
-        => schemas.ValidatePayloadAsync(entry.SpaceName, entry.ResourceType, entry.Payload, ct);
+    // Structured form: the gates format the wire message AND attach the
+    // per-field detail as Result.Info (see SchemaValidator.ToInfo).
+    private Task<List<SchemaError>?> ValidatePayloadAsync(Entry entry, CancellationToken ct)
+        => schemas.ValidatePayloadDetailedAsync(entry.SpaceName, entry.ResourceType, entry.Payload, ct);
 
     // Walks the relationships list and verifies each related_to locator
     // resolves to a row in `entries`. Returns null on success, a single-line
@@ -367,9 +371,11 @@ public sealed class EntryService(
         var merged = ApplyPatch(existing, patch, allowedRestrictedFields);
 
         // Validate the MERGED entry (not the old one) so patches can't bypass schema rules.
-        var validationError = await ValidatePayloadAsync(merged, ct);
-        if (validationError is not null)
-            return Result<Entry>.Fail(InternalErrorCode.INVALID_DATA, validationError, ErrorTypes.Request);
+        var schemaErrors = await ValidatePayloadAsync(merged, ct);
+        if (schemaErrors is not null)
+            return Result<Entry>.Fail(InternalErrorCode.INVALID_DATA,
+                SchemaValidator.FormatMessage(schemaErrors), ErrorTypes.Request,
+                SchemaValidator.ToInfo(schemaErrors));
 
         // Same RI gate as Create, but scoped to relationships the patch
         // ADDS — refs that already existed pre-patch get a pass even if

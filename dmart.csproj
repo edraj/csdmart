@@ -207,6 +207,8 @@
     <PackageReference Include="Konscious.Security.Cryptography.Argon2" Version="1.3.1" />
     <PackageReference Include="Microsoft.AspNetCore.Authentication.JwtBearer" Version="10.0.5" />
     <PackageReference Include="Microsoft.AspNetCore.OpenApi" Version="10.0.5" />
+    <!-- Pin transitive Microsoft.OpenApi (2.0.0 via AspNetCore.OpenApi) to a patched version for CVE-2026-49451 (GHSA-v5pm-xwqc-g5wc) -->
+    <PackageReference Include="Microsoft.OpenApi" Version="2.7.5" />
     <!--PackageReference Include="Scalar.AspNetCore" Version="2.13.22" /-->
     <DirectPInvoke Include="libc" />
     <PackageReference Include="Npgsql" Version="10.0.2" />
