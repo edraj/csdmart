@@ -84,11 +84,12 @@ jobs:
       # build-windows, build-container — all exercise `dotnet publish
       # -p:PublishAot=true` on their respective RIDs). Running it again on
       # every push cost ~3 min per CI run for the smallest of incremental
-      # signals: the trim/AOT analyzers (gated on `$(CI)=='true'` in
-      # dmart.csproj) already fire during the regular `dotnet build` step
-      # above and catch the analyzer-detectable subset. What's only caught
-      # at native-link time (deep trimmer + ILC errors) is acceptable to
-      # defer to release.yml as long as releases keep going out regularly.
+      # signals: the trim/AOT/single-file analyzers (unconditional errors in
+      # dmart.csproj — they run on every build, local and CI) already fire
+      # during the regular `dotnet build` step above and catch the
+      # analyzer-detectable subset. What's only caught at native-link time
+      # (deep trimmer + ILC errors, IlcTreatWarningsAsErrors) is acceptable
+      # to defer to release.yml as long as releases keep going out regularly.
 
       - name: E2E smoke tests (curl.sh)
         run: |

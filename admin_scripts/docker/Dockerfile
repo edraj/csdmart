@@ -48,10 +48,13 @@ RUN INFO_DATE="${GIT_DATE:-$(date -u +%Y-%m-%d)}" && \
 # Stage 2: Minimal runtime
 FROM alpine:edge
 
-# Install packages + copy all files in one layer
+# Install packages + copy all files in one layer.
+# No icu-libs: dmart is built with InvariantGlobalization=true, so the binary
+# has no ICU dependency (culture data is compiled out; all parses/compares are
+# invariant/ordinal). tzdata STAYS — TimeZoneInfo reads OS tzdata, not ICU.
 RUN apk add --no-cache \
       postgresql18 postgresql18-contrib \
-      bash curl tzdata icu-libs krb5-libs \
+      bash curl tzdata krb5-libs \
       jq
 
 COPY --from=build --chmod=755 /out/dmart /usr/bin/dmart

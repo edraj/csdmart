@@ -160,11 +160,11 @@ switch (subcommand)
         {
             var parts = asmVersion.Split(' ', StringSplitOptions.RemoveEmptyEntries);
             var version = parts[0];
-            var branch = parts.FirstOrDefault(p => p.StartsWith("branch="))?[7..] ?? "";
+            var branch = parts.FirstOrDefault(p => p.StartsWith("branch=", StringComparison.Ordinal))?[7..] ?? "";
             // VERSION_DATE from build.sh is "YYYY-MM-DD HH:MM:SS +ZONE" — the
             // space-split already isolates the date component as the first
             // date= token; later time/zone tokens are discarded on purpose.
-            var date = parts.FirstOrDefault(p => p.StartsWith("date="))?[5..] ?? "";
+            var date = parts.FirstOrDefault(p => p.StartsWith("date=", StringComparison.Ordinal))?[5..] ?? "";
             json = $"{{\"version\":\"{version}\",\"branch\":\"{branch}\",\"version_date\":\"{date}\",\"runtime\":\".NET {Environment.Version}\"}}";
         }
         else
@@ -1491,6 +1491,19 @@ for (var i = 0; i < serverArgs.Length - 1; i++)
         break;
     }
 }
+
+// Config is read ONCE at boot — no hot reload. The host's default
+// appsettings.json sources are added with reloadOnChange:true, which puts a
+// RECURSIVE inotify FileSystemWatcher on the whole content-root tree (even
+// though dmart ships no appsettings.json: the watcher waits for the optional
+// file to appear). In production every write under that tree — each log
+// line, each upload — fires the watcher's callback chain (lstat/read/filter
+// on one thread), burning a core, churning the GC, and starving the request
+// pool under load. Setting the documented host knob BEFORE the builder is
+// created means the watchers are never constructed at all (the sources are
+// still read at boot; only the watching is gone). Pinned by
+// ConfigReloadTests.No_File_Configuration_Source_Watches_For_Changes.
+Environment.SetEnvironmentVariable("DOTNET_hostBuilder__reloadConfigOnChange", "false");
 
 var builder = WebApplication.CreateSlimBuilder(serverArgs);
 builder.Services.AddOpenApi(options =>

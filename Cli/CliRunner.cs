@@ -216,10 +216,10 @@ public static class CliRunner
         foreach (var rawLine in await File.ReadAllLinesAsync(scriptPath))
         {
             var line = rawLine.Trim();
-            if (line.StartsWith("/*")) { inCommentBlock = true; continue; }
-            if (line.StartsWith("*/")) { inCommentBlock = false; continue; }
+            if (line.StartsWith("/*", StringComparison.Ordinal)) { inCommentBlock = true; continue; }
+            if (line.StartsWith("*/", StringComparison.Ordinal)) { inCommentBlock = false; continue; }
             if (inCommentBlock) continue;
-            if (line.Length == 0 || line.StartsWith('#') || line.StartsWith("//")) continue;
+            if (line.Length == 0 || line.StartsWith('#') || line.StartsWith("//", StringComparison.Ordinal)) continue;
 
             var parts = line.Split(' ', 3, StringSplitOptions.RemoveEmptyEntries);
             if (parts.Length >= 3 && parts[0] == "VAR")
