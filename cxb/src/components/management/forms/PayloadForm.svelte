@@ -213,17 +213,11 @@
     });
 
     function parseQuerySchemaResponse(schemas) {
-        tmpSchemas = schemas.records;
-        if (schemas === null) {
-            return [
-                {
-                    name: "None",
-                    value: null,
-                },
-            ];
-        }
+        const records = schemas?.records ?? [];
+        tmpSchemas = records;
+
         let result: string[] = [];
-        const _schemas = schemas.records.map((e) => e.shortname);
+        const _schemas = records.map((e) => e.shortname);
         if (selectedResourceType === ResourceType.folder) {
             result = ["folder_rendering", ..._schemas];
         } else {
