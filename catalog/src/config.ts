@@ -39,7 +39,11 @@ const defaultConfig: WebsiteConfig = {
   enable_surveys: false,
   enable_poll: false,
   enable_reaction_and_comment: false,
-  enable_public_view: false,
+  // Public routes (/, /home, /catalogs/*) were unconditionally public before
+  // this flag existed, so an absent key must keep them public — deployed
+  // config.json files predating the flag would otherwise login-wall the whole
+  // public catalog on upgrade.
+  enable_public_view: true,
   enable_notifications: false,
   use_admin_space_view: false,
 };
@@ -53,7 +57,10 @@ const loadConfig = async (): Promise<WebsiteConfig> => {
         `Failed to load config: ${response.status} ${response.statusText}`,
       );
     }
-    return await response.json();
+    // Merge over the defaults instead of replacing them wholesale: a served
+    // config.json written before a flag existed must inherit that flag's
+    // backward-compatible default rather than leave it undefined.
+    return { ...defaultConfig, ...(await response.json()) };
   } catch (error) {
     console.error("Error loading configuration:", error);
     if (import.meta.env.PROD) {

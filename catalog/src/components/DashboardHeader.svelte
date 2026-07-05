@@ -4,7 +4,8 @@
   import { newNotificationType } from "@/stores/newNotificationType";
   import { _, locale, switchLocale } from "@/i18n";
   import { signout, user } from "@/stores/user";
-  import { can } from "@/stores/permissions";
+  import { can, permissions } from "@/stores/permissions";
+  import { canAccessAdminSection } from "@/lib/access";
   import { ResourceType } from "@edraj/tsdmart";
   import { goto } from "@roxi/routify";
   import { getWebSocketService } from "@/lib/services/websocket";
@@ -36,9 +37,9 @@
   let canSeeConfigs = $derived(
     $can("query", "management", "configs", ResourceType.content),
   );
-  let hasAdminAccess = $derived(
-    canSeePermissions || canSeeRoles || canSeeUsers || canSeeConfigs,
-  );
+  // Shared predicate — must match guardAdminArea and the /dashboard landing
+  // redirect, or the menu shows admin links whose pages bounce the user.
+  let hasAdminAccess = $derived(canAccessAdminSection($permissions));
 
   let removeListener: (() => void) | null = null;
 
@@ -150,7 +151,7 @@
           : "flex items-center w-3/6"}
       >
         <a
-          href="/dashboard/admin"
+          href="/"
           class={`flex items-center justify-start group ${$user.signedin ? "space-x-2" : "space-x-3"}`}
         >
           <svg
@@ -399,7 +400,51 @@
                           <span>{$_("Users")}</span>
                         </button>
                       {/if}
+                      <button
+                        aria-label={`Contact Messages`}
+                        onclick={() =>
+                          handleMenuItemClick(
+                            "/dashboard/admin/contact-messages",
+                          )}
+                        class="menu-item"
+                      >
+                        <svg
+                          class="menu-icon"
+                          fill="none"
+                          stroke="currentColor"
+                          viewBox="0 0 24 24"
+                        >
+                          <path
+                            stroke-linecap="round"
+                            stroke-linejoin="round"
+                            stroke-width="2"
+                            d="M8 12h.01M12 12h.01M16 12h.01M21 12c0 4.418-4.03 8-9 8a9.863 9.863 0 01-4.255-.949L3 20l1.395-3.72C3.512 15.042 3 13.574 3 12c0-4.418 4.03-8 9-8s9 3.582 9 8z"
+                          />
+                        </svg>
+                        <span>{$_("contact_messages")}</span>
+                      </button>
                       {#if canSeeConfigs}
+                        <button
+                          aria-label={`Manage Configurations`}
+                          onclick={() =>
+                            handleMenuItemClick("/dashboard/admin/configs")}
+                          class="menu-item"
+                        >
+                          <svg
+                            class="menu-icon"
+                            fill="none"
+                            stroke="currentColor"
+                            viewBox="0 0 24 24"
+                          >
+                            <path
+                              stroke-linecap="round"
+                              stroke-linejoin="round"
+                              stroke-width="2"
+                              d="M11.983 13.983a2 2 0 100-4 2 2 0 000 4zM19.4 15a1.65 1.65 0 01.33 1.82l-.58 1a1.65 1.65 0 01-1.51.88h-1.12a6.66 6.66 0 01-1.3.76l-.17 1.12a1.65 1.65 0 01-.88 1.51l-1 .58a1.65 1.65 0 01-1.82-.33l-.8-.8a6.66 6.66 0 01-.76-1.3H7.4a1.65 1.65 0 01-1.51-.88l-.58-1a1.65 1.65 0 01.33-1.82l.8-.8a6.66 6.66 0 010-1.52l-.8-.8a1.65 1.65 0 01-.33-1.82l.58-1a1.65 1.65 0 011.51-.88h1.12c.23-.46.49-.89.76-1.3l-.17-1.12a1.65 1.65 0 01.88-1.51l1-.58a1.65 1.65 0 011.82.33l.8.8c.51-.13 1.03-.24 1.52-.24s1.01.11 1.52.24l.8-.8a1.65 1.65 0 011.82-.33l1 .58a1.65 1.65 0 01.88 1.51l-.17 1.12c.46.23.89.49 1.3.76h1.12a1.65 1.65 0 011.51.88l.58 1a1.65 1.65 0 01-.33 1.82l-.8.8c.13.51.24 1.03.24 1.52s-.11 1.01-.24 1.52l.8.8z"
+                            />
+                          </svg>
+                          <span>{$_("DefaultRole")}</span>
+                        </button>
                         <button
                           aria-label={`Templates`}
                           onclick={() =>

@@ -7,7 +7,7 @@
  */
 import { get } from "svelte/store";
 import { permissions } from "@/stores/permissions";
-import { checkAccess } from "@/lib/access";
+import { canAccessAdminSection, checkAccess } from "@/lib/access";
 import { withBasePrefix } from "@/lib/basePath";
 
 function redirectTo(path: string): void {
@@ -19,16 +19,13 @@ function redirectTo(path: string): void {
 
 /**
  * Guards the admin area. Returns `true` when the user has query access to at
- * least one management resource (users, roles, or permissions).
+ * least one management resource — the shared canAccessAdminSection predicate,
+ * which the /dashboard landing redirect and the header menu also use (they
+ * must agree or the two redirects loop).
  * Default redirect is `/dashboard` (NOT `/dashboard/admin`, which would loop).
  */
 export function guardAdminArea(redirect = "/dashboard"): boolean {
-  const perms = get(permissions);
-  const canAccess =
-    checkAccess(perms, "query", "management", "users", "user") ||
-    checkAccess(perms, "query", "management", "roles", "role") ||
-    checkAccess(perms, "query", "management", "permissions", "permission");
-  if (canAccess) return true;
+  if (canAccessAdminSection(get(permissions))) return true;
   redirectTo(redirect);
   return false;
 }

@@ -42,6 +42,7 @@
   import { onMount } from "svelte";
   import { ResourceType, DmartScope } from "@edraj/tsdmart";
   import { roles } from "@/stores/user";
+  import { isSuperAdmin } from "@/lib/access";
   import MarkdownEditor from "@/components/editors/MarkdownEditor.svelte";
   import DynamicSchemaBasedForms from "@/components/forms/DynamicSchemaBasedForms.svelte";
   import { marked } from "marked";
@@ -161,7 +162,7 @@
   let rolesValue: any;
   roles.subscribe((value: any) => {
     rolesValue = value;
-    isAdmin = value.includes("super_admin");
+    isAdmin = isSuperAdmin(value);
   });
 
   async function handleEntryTypeChange() {
@@ -1612,6 +1613,9 @@
             <DynamicSchemaBasedForms
               bind:content={jsonFormData}
               schema={selectedSchema.schema}
+              space={selectedSpace}
+              subpath={$params.subpath ?? currentPath}
+              resourceType={resource_type}
             />
           </div>
         </div>
@@ -1758,6 +1762,9 @@
                   <DynamicSchemaBasedForms
                     bind:content={jsonFormData}
                     schema={selectedSchema.schema}
+                    space={selectedSpace}
+                    subpath={$params.subpath ?? currentPath}
+                    resourceType={resource_type}
                   />
                 </div>
               </div>
@@ -1894,6 +1901,9 @@
               <DynamicSchemaBasedForms
                 bind:content={jsonFormData}
                 schema={selectedSchema.schema}
+                space={selectedSpace}
+                subpath={$params.subpath ?? currentPath}
+                resourceType={resource_type}
               />
             </div>
           </div>
@@ -1915,6 +1925,9 @@
             <DynamicSchemaBasedForms
               bind:content={pollFormData}
               schema={pollSchema.schema}
+              space="poll"
+              subpath="polls"
+              resourceType={ResourceType.content}
             />
           {:else}
             <div class="empty-state">

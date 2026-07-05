@@ -3,7 +3,8 @@
   import { guardAdminArea } from "@/lib/guards";
 
   // Guards the whole /dashboard/admin/* subtree (index, settings, configs,
-  // contact-messages, users, [space_name]/...). super_admin OR super_manager.
+  // contact-messages, users, [space_name]/...) via the shared permission-based
+  // canAccessAdminSection predicate.
   onMount(() => {
     guardAdminArea();
   });
