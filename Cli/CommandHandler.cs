@@ -717,7 +717,7 @@ public sealed class CommandHandler(DmartClient dmart, CliSettings settings)
         var includeSelf = false;
         var exportSpace = dmart.CurrentSpace;
         var exportSubpath = "/";
-        if (rest[0].StartsWith("--"))
+        if (rest[0].StartsWith("--", StringComparison.Ordinal))
         {
             var (json, op, flags) = BuildExportQueryJson(rest);
             if (json is null) { LastCommandFailed = true; return; }
@@ -810,7 +810,7 @@ public sealed class CommandHandler(DmartClient dmart, CliSettings settings)
                 System.IO.Compression.ZipArchiveMode.Read);
             foreach (var entry in inZip.Entries)
             {
-                if (string.IsNullOrEmpty(entry.FullName) || entry.FullName.EndsWith("/")) continue;
+                if (string.IsNullOrEmpty(entry.FullName) || entry.FullName.EndsWith('/')) continue;
                 if (!keep(entry.FullName)) continue;
                 var newEntry = outZip.CreateEntry(entry.FullName,
                     System.IO.Compression.CompressionLevel.Optimal);
@@ -854,7 +854,7 @@ public sealed class CommandHandler(DmartClient dmart, CliSettings settings)
                     System.IO.Compression.ZipArchiveMode.Read);
                 foreach (var entry in inZip.Entries)
                 {
-                    if (string.IsNullOrEmpty(entry.FullName) || entry.FullName.EndsWith("/")) continue;
+                    if (string.IsNullOrEmpty(entry.FullName) || entry.FullName.EndsWith('/')) continue;
                     if (!seen.Add(entry.FullName)) continue;
                     var newEntry = outZip.CreateEntry(entry.FullName,
                         System.IO.Compression.CompressionLevel.Optimal);

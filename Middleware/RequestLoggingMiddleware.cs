@@ -53,7 +53,7 @@ public static class RequestLoggingMiddleware
                 await next();
                 return;
             }
-            if (path.StartsWith("/cxb/") && path != "/cxb/config.json")
+            if (path.StartsWith("/cxb/", StringComparison.Ordinal) && path != "/cxb/config.json")
             {
                 await next();
                 return;

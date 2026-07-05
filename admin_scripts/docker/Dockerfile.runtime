@@ -7,9 +7,11 @@ ARG VERSION=unknown
 
 FROM alpine:edge
 
+# No icu-libs: dmart is built with InvariantGlobalization=true (no ICU
+# dependency). tzdata STAYS — TimeZoneInfo reads OS tzdata, not ICU.
 RUN apk add --no-cache \
       postgresql18 postgresql18-contrib \
-      bash curl tzdata icu-libs krb5-libs \
+      bash curl tzdata krb5-libs \
       jq
 
 COPY --chmod=755 admin_scripts/docker/dmart-binary /usr/bin/dmart

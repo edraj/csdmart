@@ -160,11 +160,11 @@ switch (subcommand)
         {
             var parts = asmVersion.Split(' ', StringSplitOptions.RemoveEmptyEntries);
             var version = parts[0];
-            var branch = parts.FirstOrDefault(p => p.StartsWith("branch="))?[7..] ?? "";
+            var branch = parts.FirstOrDefault(p => p.StartsWith("branch=", StringComparison.Ordinal))?[7..] ?? "";
             // VERSION_DATE from build.sh is "YYYY-MM-DD HH:MM:SS +ZONE" — the
             // space-split already isolates the date component as the first
             // date= token; later time/zone tokens are discarded on purpose.
-            var date = parts.FirstOrDefault(p => p.StartsWith("date="))?[5..] ?? "";
+            var date = parts.FirstOrDefault(p => p.StartsWith("date=", StringComparison.Ordinal))?[5..] ?? "";
             json = $"{{\"version\":\"{version}\",\"branch\":\"{branch}\",\"version_date\":\"{date}\",\"runtime\":\".NET {Environment.Version}\"}}";
         }
         else
