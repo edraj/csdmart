@@ -15,7 +15,8 @@ public sealed class LockService(
     HistoryRepository history,
     PluginManager plugins,
     PermissionService perms,
-    IOptions<DmartSettings> settings)
+    IOptions<DmartSettings> settings,
+    ILogger<LockService> log)
 {
     // Event for the lock/unlock before/after pipeline. Mirrors EntryService's
     // BuildEvent shape so the SpaceEventLogger audit line and any hook plugin
@@ -41,11 +42,16 @@ public sealed class LockService(
         // role/subpath-level check (CanAsync tolerates a null resource).
         var entry = await entries.GetAsync(l.SpaceName, l.Subpath, l.Shortname, l.Type, ct);
 
-        // Permission gate: `lock` must be granted (strict, like update/delete).
+        // Permission gate: the fine-grained `lock` action OR plain `update`
+        // access. `lock` is a new action no pre-existing permission carries,
+        // so update must keep implying it or every upgraded deployment loses
+        // locking (Python gates the lock route on authentication only; once
+        // locks block writes we want at least "may mutate the entry" here).
         // Checked before before_action (EntryService convention) so an
         // unauthorized caller never fires plugin hooks.
-        if (!await perms.CanAsync(actor, "lock", l,
-                entry is null ? null : PermissionService.FromEntry(entry), null, ct))
+        var resourceCtx = entry is null ? null : PermissionService.FromEntry(entry);
+        if (!await perms.CanAsync(actor, "lock", l, resourceCtx, null, ct) &&
+            !await perms.CanAsync(actor, "update", l, resourceCtx, null, ct))
             return Response.Fail(InternalErrorCode.NOT_ALLOWED, "no lock access", ErrorTypes.Auth);
 
         // before_action lets a hook plugin veto the lock (Python's
@@ -107,34 +113,57 @@ public sealed class LockService(
         if (string.IsNullOrEmpty(actor))
             return Response.Fail(InternalErrorCode.NOT_AUTHENTICATED, "login required", ErrorTypes.Auth);
 
+        // Fast path: the holder releases their own lock — a single
+        // owner-predicate DELETE, the pre-enforcement cost, and race-free (it
+        // can only ever remove the caller's own row). A self-release is
+        // authorized by definition and cannot be vetoed by a before-hook;
+        // after_action still observes it.
+        if (await locks.UnlockAsync(l.SpaceName, l.Subpath, l.Shortname, actor, ct))
+        {
+            await WriteHistoryAsync(l, actor, "cancel", ct);
+            await plugins.AfterActionAsync(BuildEvent(l, ActionType.Unlock, actor), ct);
+            return Response.Ok();
+        }
+
+        // 0 rows: no live lock (never locked, or the lease expired) → nothing
+        // to release; unlock is an idempotent success.
         var period = settings.Value.LockPeriod;
         var holder = await locks.GetLockerAsync(l.SpaceName, l.Subpath, l.Shortname, period, ct);
-
-        // No live lock (never locked, or the lease expired) → nothing to
-        // release; unlock is an idempotent success.
         if (holder is null)
             return Response.Ok();
 
-        // The holder always releases their own lock. A lock held by someone
-        // else may only be force-released by a caller granted the `unlock`
-        // action. Locks are type-agnostic and the unlock route carries no
-        // resource type, so the force check is a role/subpath-level grant.
-        var isHolder = string.Equals(holder, actor, StringComparison.Ordinal);
-        if (!isHolder && !await perms.CanAsync(actor, "unlock", l, null, null, ct))
+        // Force path: a lock held by someone else may only be released by a
+        // caller granted the `unlock` action. The unlock route carries no
+        // resource type (Python parity), so resolve the entry's actual type —
+        // otherwise the gate would always ask about the wire default and a
+        // grant scoped to any other resource type could never (or wrongly)
+        // authorize the force. Locks may outlive their entry; a missing entry
+        // keeps the wire default and the role/subpath-level check.
+        var entry = await entries.GetAsync(l.SpaceName, l.Subpath, l.Shortname, ct);
+        if (entry is not null)
+            l = l with { Type = entry.ResourceType };
+        if (!await perms.CanAsync(actor, "unlock", l,
+                entry is null ? null : PermissionService.FromEntry(entry), null, ct))
             return Response.Fail(InternalErrorCode.NOT_ALLOWED, "no unlock access", ErrorTypes.Auth);
 
         // before_action runs after authorization (EntryService convention); a
-        // hook plugin may still veto the unlock.
+        // hook plugin may still veto the force-unlock.
         if (await BeforeActionAsync(l, ActionType.Unlock, actor, ct) is { } unlockBefore)
             return unlockBefore;
 
-        var ok = isHolder
-            ? await locks.UnlockAsync(l.SpaceName, l.Subpath, l.Shortname, actor, ct)
-            : await locks.ForceUnlockAsync(l.SpaceName, l.Subpath, l.Shortname, ct);
-        // Lost a race — the lock vanished between the lookup and the delete.
-        // Nothing remains locked, so report idempotent success.
-        if (!ok)
-            return Response.Ok();
+        // Predicate the force delete on the holder we authorized against — a
+        // lock that changed hands (or was re-acquired) in the meantime is
+        // never deleted out from under its new owner.
+        if (!await locks.UnlockAsync(l.SpaceName, l.Subpath, l.Shortname, holder, ct))
+        {
+            var current = await locks.GetLockerAsync(l.SpaceName, l.Subpath, l.Shortname, period, ct);
+            // Lock vanished → nothing remains locked, idempotent success.
+            // Lock swapped to a new holder → surface the conflict, don't delete.
+            return current is null
+                ? Response.Ok()
+                : Response.Fail(InternalErrorCode.LOCKED_ENTRY,
+                    $"lock holder changed to {current}; retry", ErrorTypes.Db);
+        }
 
         // Python records LockAction.cancel in the unlock history diff.
         await WriteHistoryAsync(l, actor, "cancel", ct);
@@ -151,8 +180,10 @@ public sealed class LockService(
             await plugins.BeforeActionAsync(BuildEvent(l, action, actor), ct);
             return null;
         }
-        catch
+        catch (Exception ex)
         {
+            log.LogWarning(ex, "before-{Action} plugin hook rejected {Space}/{Subpath}/{Shortname}",
+                action, l.SpaceName, l.Subpath, l.Shortname);
             return Response.Fail(InternalErrorCode.INVALID_DATA,
                 $"plugin rejected {action.ToString().ToLowerInvariant()}", ErrorTypes.Request);
         }
@@ -161,9 +192,24 @@ public sealed class LockService(
     // Records the lock/unlock action in the history table, mirroring Python's
     // store_entry_diff(..., {"lock_type": ...}). Subpath is already the
     // leading-slash form (Locator-normalized), matching EntryService history rows.
-    private Task WriteHistoryAsync(Locator l, string actor, string lockType, CancellationToken ct)
-        => history.AppendAsync(l.SpaceName, l.Subpath, l.Shortname, actor, null,
-            new Dictionary<string, object> { ["lock_type"] = lockType }, ct);
+    // Guarded: by the time this runs the lock table mutation has committed, and
+    // a failed audit row must not convert the succeeded operation into a 500 —
+    // the caller would believe a lock failed while it silently blocks everyone
+    // else's writes for the whole LockPeriod (or believe an unlock failed that
+    // in fact released).
+    private async Task WriteHistoryAsync(Locator l, string actor, string lockType, CancellationToken ct)
+    {
+        try
+        {
+            await history.AppendAsync(l.SpaceName, l.Subpath, l.Shortname, actor, null,
+                new Dictionary<string, object> { ["lock_type"] = lockType }, ct);
+        }
+        catch (Exception ex)
+        {
+            log.LogWarning(ex, "lock history append failed for {Space}/{Subpath}/{Shortname} ({LockType})",
+                l.SpaceName, l.Subpath, l.Shortname, lockType);
+        }
+    }
 
     public Task<string?> GetLockerAsync(Locator l, CancellationToken ct = default)
         => locks.GetLockerAsync(l.SpaceName, l.Subpath, l.Shortname, settings.Value.LockPeriod, ct);
