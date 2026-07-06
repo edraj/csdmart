@@ -1,4 +1,5 @@
 using System.Text.Json;
+using Dmart.Auth;
 using Dmart.Config;
 using Dmart.DataAdapters.Sql;
 using Dmart.Models.Api;
@@ -34,6 +35,7 @@ public static class RequestHandler
                                   FolderContentValidator folderContent,
                                   SchemaValidator schemas,
                                   HistoryRepository history,
+                                  PasswordHasher hasher,
                                   IOptions<DmartSettings> dmartSettings,
                                   HttpContext http, CancellationToken ct) =>
             {
@@ -87,6 +89,9 @@ public static class RequestHandler
 
                 var actor = http.ActorOrAnonymous();
                 var managementSpace = dmartSettings.Value.ManagementSpace;
+                // Off by default: a `password` on the managed CRUD path is rejected.
+                // When on, an authorized admin may set another user's password here.
+                var allowPwByOther = dmartSettings.Value.IsPasswordUpdatableByOtherUser;
                 var responses = new List<Record>();
                 // Python parity: don't bail on the first failure — try every
                 // record and aggregate failures. Python's shape (utils.py:serve_request_delete):
@@ -156,7 +161,7 @@ public static class RequestHandler
                         var (resp, updated, diff) = await DispatchUpdateAsync(
                             rec, req.SpaceName, actor,
                             entries, users, access, spaces, attachments, perms, uniqueness,
-                            schemas, history, ct);
+                            schemas, history, allowPwByOther, hasher, ct);
                         result = (resp, updated);
                         updateDiff = diff;
                     }
@@ -168,7 +173,7 @@ public static class RequestHandler
                                 await RetryOnShortnameCollisionAsync(
                                     IsAutoShortname(rec.Shortname),
                                     () => DispatchCreateAsync(rec, req.SpaceName, actor,
-                                        entries, users, access, spaces, attachments, perms, uniqueness, folderContent, schemas, ct),
+                                        entries, users, access, spaces, attachments, perms, uniqueness, folderContent, schemas, allowPwByOther, hasher, ct),
                                     r => r.Response.Error?.Code == InternalErrorCode.SHORTNAME_ALREADY_EXIST),
                             RequestType.Delete =>
                                 await DispatchDeleteAsync(rec, req.SpaceName, actor, managementSpace, req.Force, req.DryRun,
@@ -355,7 +360,7 @@ public static class RequestHandler
         SpaceRepository spaces, AttachmentRepository attachments,
         PermissionService perms,
         UniquenessValidator uniqueness, FolderContentValidator folderContent,
-        SchemaValidator schemas, CancellationToken ct)
+        SchemaValidator schemas, bool allowPwByOther, PasswordHasher hasher, CancellationToken ct)
     {
         rec = ResolveAutoShortname(rec);
         // Gate non-entry branches here. The entry path runs through EntryService
@@ -430,7 +435,7 @@ public static class RequestHandler
         switch (rec.ResourceType)
         {
             case ResourceType.User:
-                return await CreateUserAsync(rec, space, actor, users, uniqueness, ct);
+                return await CreateUserAsync(rec, space, actor, users, uniqueness, allowPwByOther, hasher, ct);
             case ResourceType.Role:
                 return await CreateRoleAsync(rec, space, actor, access, uniqueness, ct);
             case ResourceType.Group:
@@ -471,27 +476,57 @@ public static class RequestHandler
             WithCreatedMetaAttributes(rec, saved.Uuid, saved.CreatedAt, saved.UpdatedAt, saved.OwnerShortname));
     }
 
-    // /managed/request must not set user passwords: those flow only through the
-    // user-driven paths (/user/create, the OTP password reset, /user/profile).
-    // Shared by the User create and update branches to reject — not silently
-    // drop — a password supplied on the generic CRUD path.
+    // /managed/request must not set user passwords UNLESS IsPasswordUpdatableByOtherUser
+    // is enabled: by default passwords flow only through the user-driven paths
+    // (/user/create, the OTP password reset, /user/profile). Shared by the User
+    // create and update branches to reject — not silently drop — a password
+    // supplied on the generic CRUD path.
     private const string PasswordNotAllowedMessage =
         "password cannot be set via /managed/request; use /user/create, the OTP password-reset flow, or /user/profile";
 
     private static bool HasPasswordAttribute(Dictionary<string, object> attrs)
         => attrs.TryGetValue("password", out var p) && !string.IsNullOrEmpty(ConvertToString(p));
 
+    // Decide what to do with a `password` attribute on the managed User create/update
+    // path. Returns (error, hash):
+    //   * no password supplied            → (null, null): callers leave the hash untouched.
+    //   * password supplied, flag OFF      → (rejection, null): PasswordNotAllowedMessage.
+    //   * password supplied, flag ON,
+    //       fails PasswordRules            → (INVALID_PASSWORD_RULES, null).
+    //   * password supplied, flag ON, ok   → (null, argon2-hash): persist it, clear
+    //                                        force_password_change.
+    // Gating this behind IsPasswordUpdatableByOtherUser keeps the secure default
+    // (an admin cannot set another user's password) while allowing opt-in
+    // admin-driven provisioning. RBAC on the user entry is already enforced by the
+    // CanCreate/CanUpdate gate before this runs.
+    private static (Response? Error, string? Hash) ResolveManagedPassword(
+        Dictionary<string, object> attrs, bool allowPwByOther, PasswordHasher hasher)
+    {
+        if (!HasPasswordAttribute(attrs))
+            return (null, null);
+        if (!allowPwByOther)
+            return (Response.Fail(InternalErrorCode.INVALID_DATA,
+                PasswordNotAllowedMessage, ErrorTypes.Request), null);
+        var pw = ConvertToString(attrs["password"]);
+        if (!PasswordRules.IsValid(pw))
+            return (Response.Fail(InternalErrorCode.INVALID_PASSWORD_RULES,
+                "password does not meet the required rules", ErrorTypes.Request), null);
+        return (null, hasher.Hash(pw!));
+    }
+
     private static async Task<(Response Response, Record UpdatedRecord)> CreateUserAsync(
         Record rec, string space, string actor, UserRepository users,
-        UniquenessValidator uniqueness, CancellationToken ct)
+        UniquenessValidator uniqueness, bool allowPwByOther, PasswordHasher hasher,
+        CancellationToken ct)
     {
         var attrs = rec.Attributes ?? new();
-        // Reject (rather than silently ignore) an attempt to set a password here
-        // so the caller isn't misled into thinking it took effect — passwords are
-        // only settable through the user-driven flows above.
-        if (HasPasswordAttribute(attrs))
-            return (Response.Fail(InternalErrorCode.INVALID_DATA,
-                PasswordNotAllowedMessage, ErrorTypes.Request), rec);
+        // By default reject (rather than silently ignore) an attempt to set a
+        // password here so the caller isn't misled into thinking it took effect —
+        // passwords are only settable through the user-driven flows above. When
+        // IsPasswordUpdatableByOtherUser is enabled, validate + hash it instead.
+        var (pwError, pwHash) = ResolveManagedPassword(attrs, allowPwByOther, hasher);
+        if (pwError is not null)
+            return (pwError, rec);
 
         var existing = await users.GetByShortnameAsync(rec.Shortname, ct);
         if (existing is not null)
@@ -530,7 +565,7 @@ public static class RequestHandler
             Payload = ParsePayloadFromAttrs(attrs),
             Email = attrs.TryGetValue("email", out var e) ? ConvertToString(e) : null,
             Msisdn = attrs.TryGetValue("msisdn", out var m) ? ConvertToString(m) : null,
-            Password = null,
+            Password = pwHash,
             Roles = rolesList ?? new(),
             Groups = groupsList ?? new(),
             Type = ParseUserType(typeStr),
@@ -538,7 +573,11 @@ public static class RequestHandler
             IsActive = !attrs.TryGetValue("is_active", out var ia) || !IsExplicitlyFalse(ia),
             IsEmailVerified = attrs.TryGetValue("is_email_verified", out var iev) && IsTruthy(iev),
             IsMsisdnVerified = attrs.TryGetValue("is_msisdn_verified", out var imv) && IsTruthy(imv),
-            ForcePasswordChange = true,
+            // Passwordless managed create forces a first-login password change
+            // (and overrides an explicit force_password_change:false). When an
+            // admin provisions a password (flag on), the user already has one, so
+            // there is nothing to force.
+            ForcePasswordChange = pwHash is null,
             // Python accepts device_id / locked_to_device on user create; mirror
             // so mobile clients can set their device fingerprint in one call
             // instead of create + update.
@@ -769,7 +808,8 @@ public static class RequestHandler
         EntryService entries, UserRepository users, AccessRepository access,
         SpaceRepository spaces, AttachmentRepository attachments,
         PermissionService perms, UniquenessValidator uniqueness,
-        SchemaValidator schemas, HistoryRepository history, CancellationToken ct)
+        SchemaValidator schemas, HistoryRepository history,
+        bool allowPwByOther, PasswordHasher hasher, CancellationToken ct)
     {
         var locator = new Locator(rec.ResourceType, space, rec.Subpath, rec.Shortname);
 
@@ -784,11 +824,13 @@ public static class RequestHandler
                 var userLocator = new Locator(ResourceType.User, existing.SpaceName, existing.Subpath, existing.Shortname);
                 if (!await perms.CanUpdateAsync(actor, userLocator, PermissionService.FromUser(existing), attrs, ct))
                     return (Response.Fail(InternalErrorCode.NOT_ALLOWED, "not allowed to update user", ErrorTypes.Request), rec, null);
-                // Passwords are not settable through the managed CRUD path (see
-                // CreateUserAsync) — reject rather than silently keep the old one.
-                if (HasPasswordAttribute(attrs))
-                    return (Response.Fail(InternalErrorCode.INVALID_DATA,
-                        PasswordNotAllowedMessage, ErrorTypes.Request), rec, null);
+                // Passwords are not settable through the managed CRUD path by
+                // default (see CreateUserAsync) — reject rather than silently keep
+                // the old one. When IsPasswordUpdatableByOtherUser is enabled,
+                // validate + hash the supplied password and persist it below.
+                var (pwError, pwHash) = ResolveManagedPassword(attrs, allowPwByOther, hasher);
+                if (pwError is not null)
+                    return (pwError, rec, null);
                 var userFloor = await EnforcePrivilegeFloorAsync(ResourceType.User, attrs, actor, perms, users, ct);
                 if (userFloor is not null) return (userFloor, rec, null);
                 var userUniq = await uniqueness.ValidateRawAsync(
@@ -815,7 +857,7 @@ public static class RequestHandler
                 {
                     Email = attrs.TryGetValue("email", out var e) ? ConvertToString(e) : existing.Email,
                     Msisdn = attrs.TryGetValue("msisdn", out var m) ? ConvertToString(m) : existing.Msisdn,
-                    Password = existing.Password,
+                    Password = pwHash ?? existing.Password,
                     Roles = ExtractStringList(attrs, "roles") ?? existing.Roles,
                     Groups = ExtractStringList(attrs, "groups") ?? existing.Groups,
                     Tags = ExtractStringList(attrs, "tags") ?? existing.Tags,
@@ -826,7 +868,12 @@ public static class RequestHandler
                     AttemptCount = reactivating ? 0 : existing.AttemptCount,
                     IsEmailVerified = attrs.TryGetValue("is_email_verified", out var iev) ? IsTruthy(iev) : existing.IsEmailVerified,
                     IsMsisdnVerified = attrs.TryGetValue("is_msisdn_verified", out var imv) ? IsTruthy(imv) : existing.IsMsisdnVerified,
-                    ForcePasswordChange = attrs.TryGetValue("force_password_change", out var fpc) ? IsTruthy(fpc) : existing.ForcePasswordChange,
+                    // Explicit force_password_change wins; otherwise a freshly
+                    // admin-set password clears the flag (the user has a real
+                    // password now), and with no password change we keep existing.
+                    ForcePasswordChange = attrs.TryGetValue("force_password_change", out var fpc)
+                        ? IsTruthy(fpc)
+                        : (pwHash is not null ? false : existing.ForcePasswordChange),
                     Type = attrs.TryGetValue("type", out var ut) ? ParseUserType(ConvertToString(ut)) : existing.Type,
                     Language = attrs.TryGetValue("language", out var ln) ? ParseLanguage(ConvertToString(ln)) : existing.Language,
                     // Python writes device_id through on user update when present

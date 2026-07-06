@@ -183,6 +183,20 @@ public sealed class DmartSettings
     public int UrlShorterExpires { get; set; } = 60 * 60;
     public bool IsRegistrable { get; set; } = true;
 
+    // When true, the generic admin CRUD path (POST /managed/request) may set a
+    // user's `password` on create/update — letting an authorized admin set
+    // ANOTHER user's password directly. Default FALSE (secure): passwords flow
+    // only through the user-driven paths (/user/create, the OTP password-reset
+    // flow, /user/profile), and a `password` attribute on /managed/request is
+    // REJECTED (not silently dropped) so the caller isn't misled. Enable only
+    // when an operator explicitly wants admin-driven password provisioning; it
+    // weakens the "no user can set another user's password" posture pinned by
+    // ManagedUserPasswordRejectedTests. When enabled, a supplied password is
+    // still RBAC-gated (the caller must pass CanCreate/CanUpdate on the user
+    // entry), validated against PasswordRules, and stored Argon2-hashed; setting
+    // it clears force_password_change. C#-only knob; no Python-parity field.
+    public bool IsPasswordUpdatableByOtherUser { get; set; }
+
     // Decompression-bomb guards for the zip import path (POST /managed/import).
     // A 50 MB upload can expand to many GB; reject archives whose central
     // directory declares more than this many entries or this much total
