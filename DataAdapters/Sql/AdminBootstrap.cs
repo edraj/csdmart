@@ -26,6 +26,7 @@ public sealed class AdminBootstrap(
     ILogger<AdminBootstrap> log) : IHostedService
 {
     private const string MgmtSpace = "management";
+    private static readonly string[] LockUnlockActions = { "lock", "unlock" };
 
     public async Task StartAsync(CancellationToken ct)
     {
@@ -210,13 +211,28 @@ public sealed class AdminBootstrap(
                     ResourceTypes = Enum.GetValues<ResourceType>()
                         .Select(JsonbHelpers.EnumMember)
                         .ToList(),
-                    Actions = new() { "view", "create", "update", "delete", "query", "attach" },
+                    Actions = new() { "view", "create", "update", "delete", "query", "attach", "lock", "unlock" },
                     Conditions = new(),
                     CreatedAt = TimeUtils.Now(),
                     UpdatedAt = TimeUtils.Now(),
                 };
                 await access.UpsertPermissionAsync(superManager, ct);
                 log.LogInformation("admin bootstrap: created super_manager permission");
+            }
+            else
+            {
+                var missingActions = LockUnlockActions
+                    .Where(a => !superManager.Actions.Contains(a)).ToList();
+                if (missingActions.Count > 0)
+                {
+                    var mergedActions = new List<string>(superManager.Actions);
+                    mergedActions.AddRange(missingActions);
+                    await access.UpsertPermissionAsync(
+                        superManager with { Actions = mergedActions, UpdatedAt = TimeUtils.Now() }, ct);
+                    log.LogInformation(
+                        "admin bootstrap: added {Actions} to super_manager permission",
+                        string.Join(", ", missingActions));
+                }
             }
 
             // Ensure the super_admin role exists and has super_manager attached.

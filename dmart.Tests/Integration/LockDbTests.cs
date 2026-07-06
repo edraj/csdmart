@@ -1,9 +1,7 @@
 using System.Net;
-using System.Net.Http.Headers;
 using System.Net.Http.Json;
 using System.Text.Json;
 using Dmart.Models.Api;
-using Dmart.Models.Enums;
 using Dmart.Models.Json;
 using Dmart.Tests.Infrastructure;
 using Microsoft.Extensions.DependencyInjection;
@@ -29,15 +27,11 @@ public class LockDbTests : IClassFixture<DmartFactory>
         var lockResp = await client.PutAsync($"/managed/lock/content/{space}/{subpath}/{shortname}", null);
         lockResp.StatusCode.ShouldBe(HttpStatusCode.OK);
 
-        // Trying to lock again as the same user is also a no-op success since the row exists.
+        // Re-locking as the SAME owner refreshes (extends) the lock and returns
+        // success — see LockRepository.TryLockAsync's ON CONFLICT DO UPDATE and
+        // LockEnforcementDbTests.Re_Lock_By_Owner_Succeeds_To_Extend.
         var secondLock = await client.PutAsync($"/managed/lock/content/{space}/{subpath}/{shortname}", null);
-        var secondBody = await secondLock.Content.ReadFromJsonAsync(DmartJsonContext.Default.Response);
-        // It returns either Success (HTTP 200) or Failed("locked", HTTP 423) depending on race;
-        // both are acceptable. The contract is: no exception, no 5xx.
-        if (secondBody?.Status == Dmart.Models.Api.Status.Success)
-            secondLock.StatusCode.ShouldBe(HttpStatusCode.OK);
-        else
-            secondLock.StatusCode.ShouldBe((HttpStatusCode)423);
+        secondLock.StatusCode.ShouldBe(HttpStatusCode.OK);
 
         var unlockResp = await client.DeleteAsync($"/managed/lock/{space}/{subpath}/{shortname}");
         unlockResp.StatusCode.ShouldBe(HttpStatusCode.OK);

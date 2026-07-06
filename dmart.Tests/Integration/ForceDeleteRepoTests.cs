@@ -269,7 +269,7 @@ public sealed class ForceDeleteRepoTests : IClassFixture<DmartFactory>
             RequestType = RequestType.Create, SpaceName = "test",
             Records = new() { new Record { ResourceType = ResourceType.Content, Subpath = "/itest", Shortname = sn } },
         }, DmartJsonContext.Default.Request)).EnsureSuccessStatusCode();
-        (await locks.TryLockAsync("test", "/itest", sn, owner.Shortname, 300)).ShouldBeTrue();
+        (await locks.TryLockAsync("test", "/itest", sn, owner.Shortname, 300)).ShouldBe(LockOutcome.Acquired);
         (await locks.GetLockerAsync("test", "/itest", sn, 300)).ShouldBe(owner.Shortname);
 
         await users.ForceDeleteAsync(owner.Shortname);

@@ -46,7 +46,9 @@
     "view",
     "attach",
     "assign",
-    "progress_ticket"
+    "progress_ticket",
+    "lock",
+    "unlock"
   ],
   "conditions": [],
   "restricted_fields": [],
