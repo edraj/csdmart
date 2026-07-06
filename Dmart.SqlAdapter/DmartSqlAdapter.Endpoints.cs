@@ -159,7 +159,10 @@ public sealed partial class DmartSqlAdapter
     // -------------------------------------------------------------------
 
     /// <summary>
-    /// Acquire an exclusive lock. Returns true if the caller now holds it.
+    /// Acquire an exclusive lock. Returns true if the caller now holds it —
+    /// either a fresh acquire or a refresh (extend) of the caller's own
+    /// still-valid lock, matching the server's LockRepository semantics; false
+    /// when another owner holds a live lock.
     /// The <paramref name="lockPeriodSeconds"/> argument is ignored — the
     /// adapter-wide period from <see cref="DmartSqlAdapterOptions.LockPeriodSeconds"/>
     /// is used so concurrent callers agree on the staleness threshold.
@@ -171,13 +174,15 @@ public sealed partial class DmartSqlAdapter
         _ = lockPeriodSeconds;  // Parity-only; see method docs.
         var subpath = Locator.NormalizeSubpath(locator.Subpath);
 
-        // Permission: lock is a state-change on the entry — require `update`.
+        // Permission: the fine-grained `lock` action or plain `update` access,
+        // matching the server's LockService gate.
         if (_engine is not null)
         {
             var existing = await LoadRawAsync(locator.SpaceName, subpath, locator.Shortname, ct).ConfigureAwait(false);
             if (existing is null) return false;
-            await _engine.RequireAsync(ownerShortname, "update", locator,
-                ResourceContext.FromEntry(existing), null, ct).ConfigureAwait(false);
+            var ctx = ResourceContext.FromEntry(existing);
+            if (!await _engine.CanAsync(ownerShortname, "lock", locator, ctx, null, ct).ConfigureAwait(false))
+                await _engine.RequireAsync(ownerShortname, "update", locator, ctx, null, ct).ConfigureAwait(false);
         }
 
         var period = _options.LockPeriodSeconds;
@@ -198,10 +203,18 @@ public sealed partial class DmartSqlAdapter
             await purge.ExecuteNonQueryAsync(ct).ConfigureAwait(false);
         }
 
+        // Same conflict clause as the server's LockRepository.TryLockAsync: a
+        // same-owner re-lock refreshes the timestamp (extend) and reports
+        // success; a lock held by anyone else fails the WHERE, degrades to
+        // DO NOTHING, and the 0-row result reports denial. Keeping the two
+        // components on identical semantics matters because they operate on
+        // the same live `locks` rows.
         await using var cmd = new NpgsqlCommand("""
             INSERT INTO locks (uuid, shortname, space_name, subpath, owner_shortname, timestamp)
             VALUES (gen_random_uuid(), $1, $2, $3, $4, NOW())
-            ON CONFLICT (shortname, space_name, subpath) DO NOTHING
+            ON CONFLICT (shortname, space_name, subpath) DO UPDATE
+                SET timestamp = NOW()
+                WHERE locks.owner_shortname = $4
             """, conn);
         cmd.Parameters.Add(new() { Value = locator.Shortname });
         cmd.Parameters.Add(new() { Value = locator.SpaceName });

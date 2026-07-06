@@ -61,9 +61,14 @@ public class LockPermissionDbTests : IClassFixture<DmartFactory>
     };
 
     // A logged-in user whose only role grants exactly `actions` on the whole
-    // `test` space for content + ticket resource types. Used to isolate the
-    // effect of granting/withholding the `lock` / `unlock` actions.
-    private async Task<DmartFactory.TestUser> UserWithActionsAsync(params string[] actions)
+    // `test` space for the given resource types (content + ticket by default).
+    // Used to isolate the effect of granting/withholding the `lock` / `unlock`
+    // actions and of the grant's resource-type scope.
+    private Task<DmartFactory.TestUser> UserWithActionsAsync(params string[] actions)
+        => UserWithActionsAsync(new List<string> { "content", "ticket" }, actions);
+
+    private async Task<DmartFactory.TestUser> UserWithActionsAsync(
+        List<string> resourceTypes, params string[] actions)
     {
         _factory.CreateClient(); // force host construction so AdminBootstrap + tables are ready
         var access = _factory.Services.GetRequiredService<AccessRepository>();
@@ -81,7 +86,7 @@ public class LockPermissionDbTests : IClassFixture<DmartFactory>
             IsActive = true,
             Subpaths = new() { [Space] = new() { PermissionService.AllSubpathsMw } },
             Actions = actions.ToList(),
-            ResourceTypes = new() { "content", "ticket" },
+            ResourceTypes = resourceTypes,
             Conditions = new(),
             CreatedAt = DateTime.UtcNow,
             UpdatedAt = DateTime.UtcNow,
@@ -103,10 +108,11 @@ public class LockPermissionDbTests : IClassFixture<DmartFactory>
     }
 
     [FactIfPg]
-    public async Task Lock_Without_Lock_Action_Is_Denied()
+    public async Task Lock_Without_Lock_Or_Update_Action_Is_Denied()
     {
-        // create/update/delete/view but NO lock.
-        var user = await UserWithActionsAsync("view", "create", "update", "delete");
+        // view/create but neither `lock` nor `update` — locking needs at least
+        // "may mutate the entry" once locks block other users' writes.
+        var user = await UserWithActionsAsync("view", "create");
         var shortname = Rnd();
         try
         {
@@ -116,6 +122,30 @@ public class LockPermissionDbTests : IClassFixture<DmartFactory>
             var resp = await user.Client.PutAsync($"/managed/lock/content/{Space}/{Sub}/{shortname}", null);
             resp.StatusCode.ShouldBe(HttpStatusCode.Unauthorized); // NOT_ALLOWED -> 401
             (await resp.Content.ReadAsStringAsync()).ShouldContain("lock access");
+        }
+        finally
+        {
+            await user.Client.DeleteAsync($"/managed/lock/{Space}/{Sub}/{shortname}");
+            await user.Client.PostAsJsonAsync("/managed/request", DeleteContent(shortname), DmartJsonContext.Default.Request);
+            await user.Cleanup();
+        }
+    }
+
+    [FactIfPg]
+    public async Task Lock_With_Update_Action_But_No_Lock_Action_Succeeds()
+    {
+        // Upgrade compatibility: `lock` is a new action no pre-existing
+        // permission carries. Plain update access must keep implying it, or
+        // every deployment's editors lose locking (and ticket claiming) the
+        // moment enforcement ships.
+        var user = await UserWithActionsAsync("view", "create", "update", "delete");
+        var shortname = Rnd();
+        try
+        {
+            (await user.Client.PostAsJsonAsync("/managed/request", CreateContent(shortname), DmartJsonContext.Default.Request))
+                .StatusCode.ShouldBe(HttpStatusCode.OK);
+            (await user.Client.PutAsync($"/managed/lock/content/{Space}/{Sub}/{shortname}", null))
+                .StatusCode.ShouldBe(HttpStatusCode.OK);
         }
         finally
         {
@@ -235,6 +265,99 @@ public class LockPermissionDbTests : IClassFixture<DmartFactory>
             await owner.Client.PostAsJsonAsync("/managed/request", DeleteContent(shortname), DmartJsonContext.Default.Request);
             await owner.Cleanup();
             await other.Cleanup();
+        }
+    }
+
+    [FactIfPg]
+    public async Task ForceUnlock_Grant_Scoped_To_Actual_Resource_Type_Succeeds()
+    {
+        // The unlock route carries no resource type, so the gate must resolve
+        // the entry's ACTUAL type. A grant scoped to ["folder"] force-unlocks
+        // a folder's lock — before the type resolution the gate always asked
+        // about "content" and this grant could never authorize anything.
+        var owner = await _factory.CreateLoggedInUserAsync();
+        var forcer = await UserWithActionsAsync(new List<string> { "folder" }, "unlock");
+        var shortname = Rnd();
+        try
+        {
+            var createFolder = new Request
+            {
+                RequestType = RequestType.Create,
+                SpaceName = Space,
+                Records = new()
+                {
+                    new Record
+                    {
+                        ResourceType = ResourceType.Folder,
+                        Subpath = Sub,
+                        Shortname = shortname,
+                        Attributes = new() { ["displayname"] = "lock type-scope probe" },
+                    },
+                },
+            };
+            (await owner.Client.PostAsJsonAsync("/managed/request", createFolder, DmartJsonContext.Default.Request))
+                .StatusCode.ShouldBe(HttpStatusCode.OK);
+            (await owner.Client.PutAsync($"/managed/lock/folder/{Space}/{Sub}/{shortname}", null))
+                .StatusCode.ShouldBe(HttpStatusCode.OK);
+
+            (await forcer.Client.DeleteAsync($"/managed/lock/{Space}/{Sub}/{shortname}"))
+                .StatusCode.ShouldBe(HttpStatusCode.OK);
+        }
+        finally
+        {
+            await owner.Client.DeleteAsync($"/managed/lock/{Space}/{Sub}/{shortname}");
+            await owner.Client.PostAsJsonAsync("/managed/request",
+                new Request { RequestType = RequestType.Delete, SpaceName = Space, Records = new() { new Record { ResourceType = ResourceType.Folder, Subpath = Sub, Shortname = shortname } } },
+                DmartJsonContext.Default.Request);
+            await owner.Cleanup();
+            await forcer.Cleanup();
+        }
+    }
+
+    [FactIfPg]
+    public async Task Assign_By_NonHolder_Is_Not_Lock_Blocked()
+    {
+        // Workflow-authorized actions (assign, progress_ticket) carry their
+        // own permission gate and are exempt from lock enforcement: a
+        // supervisor must be able to reassign a ticket whose (offline) agent
+        // parked a lock — the flow that worked before enforcement shipped.
+        // The same non-holder's PLAIN update stays blocked, proving the
+        // exemption is per-action, not a hole in the gate.
+        var owner = await _factory.CreateLoggedInUserAsync();          // holds the lock
+        var supervisor = await UserWithActionsAsync("view", "update", "assign");
+        var shortname = Rnd();
+        try
+        {
+            (await owner.Client.PostAsJsonAsync("/managed/request", CreateContent(shortname), DmartJsonContext.Default.Request))
+                .StatusCode.ShouldBe(HttpStatusCode.OK);
+            (await owner.Client.PutAsync($"/managed/lock/content/{Space}/{Sub}/{shortname}", null))
+                .StatusCode.ShouldBe(HttpStatusCode.OK);
+
+            var update = new Request
+            {
+                RequestType = RequestType.Update,
+                SpaceName = Space,
+                Records = new() { new Record { ResourceType = ResourceType.Content, Subpath = Sub, Shortname = shortname, Attributes = new() { ["displayname"] = "supervisor edit" } } },
+            };
+            var updateResp = await supervisor.Client.PostAsJsonAsync("/managed/request", update, DmartJsonContext.Default.Request);
+            updateResp.StatusCode.ShouldBe(HttpStatusCode.BadRequest);
+            (await updateResp.Content.ReadAsStringAsync()).ShouldContain("This entry is locked");
+
+            var assign = new Request
+            {
+                RequestType = RequestType.Assign,
+                SpaceName = Space,
+                Records = new() { new Record { ResourceType = ResourceType.Content, Subpath = Sub, Shortname = shortname, Attributes = new() { ["owner_shortname"] = supervisor.Shortname } } },
+            };
+            (await supervisor.Client.PostAsJsonAsync("/managed/request", assign, DmartJsonContext.Default.Request))
+                .StatusCode.ShouldBe(HttpStatusCode.OK);
+        }
+        finally
+        {
+            await owner.Client.DeleteAsync($"/managed/lock/{Space}/{Sub}/{shortname}");
+            await owner.Client.PostAsJsonAsync("/managed/request", DeleteContent(shortname), DmartJsonContext.Default.Request);
+            await owner.Cleanup();
+            await supervisor.Cleanup();
         }
     }
 

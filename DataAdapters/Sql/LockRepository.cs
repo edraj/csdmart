@@ -43,12 +43,9 @@ public sealed class LockRepository(Db db)
         // IS left it can only belong to another caller (stale ones were purged
         // in step 1) OR to this same owner. The DO UPDATE … WHERE clause lets
         // the owner REFRESH their own still-valid lock (Python's
-        // LockAction.extend): it bumps the timestamp and reports success. A lock
-        // held by anyone else fails the WHERE, degrades to DO NOTHING, and the
-        // 0-row result tells the caller they don't hold the lock.
-        // RETURNING (xmax = 0) distinguishes the insert (xmax = 0) from the
-        // same-owner DO UPDATE refresh (xmax <> 0). When the lock is held by
-        // someone else the WHERE fails, the conflict degrades to DO NOTHING,
+        // LockAction.extend). RETURNING (xmax = 0) distinguishes the insert
+        // (xmax = 0) from the same-owner refresh (xmax <> 0); a lock held by
+        // anyone else fails the WHERE, the conflict degrades to DO NOTHING,
         // no row is returned, and ExecuteScalar yields null → Denied.
         await using var cmd = new NpgsqlCommand("""
             INSERT INTO locks (uuid, shortname, space_name, subpath, owner_shortname, timestamp)
@@ -116,19 +113,6 @@ public sealed class LockRepository(Db db)
         cmd.Parameters.Add(new() { Value = spaceName });
         cmd.Parameters.Add(new() { Value = subpath });
         cmd.Parameters.Add(new() { Value = ownerShortname });
-        return await cmd.ExecuteNonQueryAsync(ct) > 0;
-    }
-
-    public async Task<bool> ForceUnlockAsync(string spaceName, string subpath, string shortname, CancellationToken ct = default)
-    {
-        await using var conn = await db.OpenAsync(ct);
-        await using var cmd = new NpgsqlCommand("""
-            DELETE FROM locks
-            WHERE shortname = $1 AND space_name = $2 AND subpath = $3
-            """, conn);
-        cmd.Parameters.Add(new() { Value = shortname });
-        cmd.Parameters.Add(new() { Value = spaceName });
-        cmd.Parameters.Add(new() { Value = subpath });
         return await cmd.ExecuteNonQueryAsync(ct) > 0;
     }
 

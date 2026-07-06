@@ -721,6 +721,57 @@ public sealed class EntryRepository(Db db)
             await cmd.ExecuteNonQueryAsync(ct);
         }
 
+        // 4. Relocate lock rows so a holder's lease keeps guarding the entry
+        //    at its new path (and no stale lock is left haunting the old one).
+        //    Root lock is re-keyed to the destination triple; descendant locks
+        //    (folder move) get the same prefix translation as attachments.
+        //    The destination keys are verifiably vacant for ENTRIES (step 1
+        //    would have hit the unique index otherwise), but a leftover lock
+        //    row for an entry long deleted could still occupy a destination
+        //    key — purge those first so the unique (shortname, space_name,
+        //    subpath) index can't abort the whole move.
+        await using (var cmd = new NpgsqlCommand("""
+            DELETE FROM locks
+             WHERE space_name = $1
+               AND ((subpath = $2 AND shortname = $3)
+                    OR subpath = $4 OR subpath LIKE $4 || '/%')
+            """, conn, tx))
+        {
+            cmd.Parameters.Add(new() { Value = to.SpaceName });
+            cmd.Parameters.Add(new() { Value = to.Subpath });
+            cmd.Parameters.Add(new() { Value = to.Shortname });
+            cmd.Parameters.Add(new() { Value = newPrefix });
+            await cmd.ExecuteNonQueryAsync(ct);
+        }
+        await using (var cmd = new NpgsqlCommand("""
+            UPDATE locks
+               SET space_name = $4, subpath = $5, shortname = $6
+             WHERE space_name = $1 AND subpath = $2 AND shortname = $3
+            """, conn, tx))
+        {
+            cmd.Parameters.Add(new() { Value = source.SpaceName });
+            cmd.Parameters.Add(new() { Value = source.Subpath });
+            cmd.Parameters.Add(new() { Value = source.Shortname });
+            cmd.Parameters.Add(new() { Value = to.SpaceName });
+            cmd.Parameters.Add(new() { Value = to.Subpath });
+            cmd.Parameters.Add(new() { Value = to.Shortname });
+            await cmd.ExecuteNonQueryAsync(ct);
+        }
+        await using (var cmd = new NpgsqlCommand("""
+            UPDATE locks
+               SET space_name = $3,
+                   subpath = $4 || substring(subpath FROM length($2) + 1)
+             WHERE space_name = $1
+               AND (subpath = $2 OR subpath LIKE $2 || '/%')
+            """, conn, tx))
+        {
+            cmd.Parameters.Add(new() { Value = source.SpaceName });
+            cmd.Parameters.Add(new() { Value = oldPrefix });
+            cmd.Parameters.Add(new() { Value = to.SpaceName });
+            cmd.Parameters.Add(new() { Value = newPrefix });
+            await cmd.ExecuteNonQueryAsync(ct);
+        }
+
         await tx.CommitAsync(ct);
         return totalMoved;
     }

@@ -247,6 +247,106 @@ public class LockEnforcementDbTests : IClassFixture<DmartFactory>
         }
     }
 
+    private static Request MoveContent(string subpath, string shortname, string destSubpath, string destShortname) => new()
+    {
+        RequestType = RequestType.Move,
+        SpaceName = Space,
+        Records = new()
+        {
+            new Record
+            {
+                ResourceType = ResourceType.Content,
+                Subpath = subpath,
+                Shortname = shortname,
+                Attributes = new()
+                {
+                    ["dest_subpath"] = destSubpath,
+                    ["dest_shortname"] = destShortname,
+                },
+            },
+        },
+    };
+
+    [FactIfPg]
+    public async Task Move_By_NonOwner_Is_Blocked_While_Locked()
+    {
+        var owner = await _factory.CreateLoggedInUserAsync();
+        var other = await _factory.CreateLoggedInUserAsync();
+        var subpath = "lockmove";
+        var shortname = $"lk_{Guid.NewGuid():N}".Substring(0, 12);
+
+        try
+        {
+            (await owner.Client.PostAsJsonAsync("/managed/request", CreateContent(subpath, shortname), DmartJsonContext.Default.Request))
+                .StatusCode.ShouldBe(HttpStatusCode.OK);
+            (await owner.Client.PutAsync($"/managed/lock/content/{Space}/{subpath}/{shortname}", null))
+                .StatusCode.ShouldBe(HttpStatusCode.OK);
+
+            // Move is an update-class mutation: the same lock gate as
+            // update/delete applies — otherwise any editor could relocate a
+            // locked entry out from under its holder.
+            var resp = await other.Client.PostAsJsonAsync("/managed/request",
+                MoveContent(subpath, shortname, subpath, $"{shortname}_mv"), DmartJsonContext.Default.Request);
+            resp.StatusCode.ShouldBe(HttpStatusCode.BadRequest);
+            (await resp.Content.ReadAsStringAsync()).ShouldContain("This entry is locked");
+        }
+        finally
+        {
+            await owner.Client.DeleteAsync($"/managed/lock/{Space}/{subpath}/{shortname}");
+            await owner.Client.PostAsJsonAsync("/managed/request", DeleteContent(subpath, shortname), DmartJsonContext.Default.Request);
+            await owner.Cleanup();
+            await other.Cleanup();
+        }
+    }
+
+    [FactIfPg]
+    public async Task Move_By_Holder_Relocates_Lock()
+    {
+        var owner = await _factory.CreateLoggedInUserAsync();
+        var subpath = "lockmove";
+        var shortname = $"lk_{Guid.NewGuid():N}".Substring(0, 12);
+        var movedShortname = $"{shortname}_mv";
+
+        try
+        {
+            (await owner.Client.PostAsJsonAsync("/managed/request", CreateContent(subpath, shortname), DmartJsonContext.Default.Request))
+                .StatusCode.ShouldBe(HttpStatusCode.OK);
+            (await owner.Client.PutAsync($"/managed/lock/content/{Space}/{subpath}/{shortname}", null))
+                .StatusCode.ShouldBe(HttpStatusCode.OK);
+
+            // The holder may move their own locked entry; the lock row moves
+            // with it so the lease keeps guarding the entry at its new path.
+            (await owner.Client.PostAsJsonAsync("/managed/request",
+                MoveContent(subpath, shortname, subpath, movedShortname), DmartJsonContext.Default.Request))
+                .StatusCode.ShouldBe(HttpStatusCode.OK);
+
+            var query = new Query
+            {
+                Type = QueryType.Search,
+                SpaceName = Space,
+                Subpath = subpath,
+                ExactSubpath = true,
+                FilterShortnames = new() { movedShortname },
+                RetrieveLockStatus = true,
+                Limit = 10,
+            };
+            var resp = await owner.Client.PostAsJsonAsync("/managed/query", query, DmartJsonContext.Default.Query);
+            resp.StatusCode.ShouldBe(HttpStatusCode.OK);
+            var body = await resp.Content.ReadFromJsonAsync(DmartJsonContext.Default.Response);
+            var rec = body!.Records!.ShouldHaveSingleItem();
+            rec.Attributes.ShouldNotBeNull();
+            rec.Attributes!.ShouldContainKey("locked");
+            var locked = (JsonElement)rec.Attributes!["locked"];
+            locked.GetProperty("owner_shortname").GetString().ShouldBe(owner.Shortname);
+        }
+        finally
+        {
+            await owner.Client.DeleteAsync($"/managed/lock/{Space}/{subpath}/{movedShortname}");
+            await owner.Client.PostAsJsonAsync("/managed/request", DeleteContent(subpath, movedShortname), DmartJsonContext.Default.Request);
+            await owner.Cleanup();
+        }
+    }
+
     [FactIfPg]
     public async Task Entry_Get_With_RetrieveLockStatus_Surfaces_Lock_Owner()
     {
