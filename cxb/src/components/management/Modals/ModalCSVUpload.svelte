@@ -91,11 +91,10 @@
     });
 
     function parseQuerySchemaResponse(schemas) {
-        if (schemas === null) {
-            return [];
-        }
+        const records = schemas?.records ?? [];
+
         let result = [];
-        const _schemas = schemas.records.map((e) => e.shortname);
+        const _schemas = records.map((e) => e.shortname);
         result = _schemas.filter(
             (e: any) => !["meta_schema", "folder_rendering"].includes(e),
         );
