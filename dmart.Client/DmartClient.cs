@@ -2,6 +2,7 @@ using System.Net.Http.Headers;
 using System.Net.Http.Json;
 using System.Text.Json;
 using Dmart.Models.Api;
+using Dmart.Models.Contracts;
 #if NET8_0_OR_GREATER
 using Dmart.Client.Json;
 #endif
@@ -23,7 +24,7 @@ namespace Dmart.Client;
 // (the default constructor). If an HttpClient is supplied, the consumer
 // owns it and must dispose it (the IHttpClientFactory pattern). Dispose
 // is idempotent.
-public sealed partial class DmartClient : IDisposable
+public sealed partial class DmartClient : IDisposable, IDmartData
 {
     private readonly HttpClient _http;
     private readonly bool _ownsHttp;
@@ -126,6 +127,47 @@ public sealed partial class DmartClient : IDisposable
         return req;
     }
 
+    // Translate a wire failure into the most specific DmartException subtype.
+    // The InternalErrorCode is the PRIMARY signal because the server's HTTP
+    // status is ambiguous: FailedResponseFilter routes NOT_ALLOWED (every RBAC
+    // denial) to 401 and almost everything else to 400. We mirror that filter
+    // in reverse so the typed hierarchy the client throws matches the codes the
+    // SQL adapter throws. The HTTP status is a fallback for responses without a
+    // recognized code (proxies, non-envelope bodies). A bare 401 that is NOT
+    // NOT_ALLOWED (bad credentials, expired token) stays a base DmartException.
+    internal static DmartException MapException(int statusCode, Error error)
+    {
+        switch (error.Code)
+        {
+            case InternalErrorCode.NOT_ALLOWED:
+                return new DmartPermissionDeniedException(statusCode, error);
+            case InternalErrorCode.SHORTNAME_DOES_NOT_EXIST:
+            case InternalErrorCode.OBJECT_NOT_FOUND:
+            case InternalErrorCode.DIR_NOT_FOUND:
+            case InternalErrorCode.USERNAME_NOT_EXIST:
+                return new DmartNotFoundException(statusCode, error);
+            case InternalErrorCode.CONFLICT:
+            case InternalErrorCode.SHORTNAME_ALREADY_EXIST:
+            case InternalErrorCode.ALREADY_EXIST_SPACE_NAME:
+            case InternalErrorCode.DATA_SHOULD_BE_UNIQUE:
+                return new DmartConflictException(statusCode, error);
+            case InternalErrorCode.INVALID_DATA:
+            case InternalErrorCode.INVALID_STANDALONE_DATA:
+            case InternalErrorCode.UNPROCESSABLE_ENTITY:
+            case InternalErrorCode.MISSING_DATA:
+            case InternalErrorCode.MISSING_METADATA:
+                return new DmartValidationException(statusCode, error);
+        }
+
+        return statusCode switch
+        {
+            404 => new DmartNotFoundException(statusCode, error),
+            409 => new DmartConflictException(statusCode, error),
+            403 => new DmartPermissionDeniedException(statusCode, error),
+            _ => new DmartException(statusCode, error),
+        };
+    }
+
     private async Task<Response> SendEnvelopeAsync(HttpRequestMessage req, CancellationToken ct)
     {
         HttpResponseMessage resp;
@@ -154,16 +196,18 @@ public sealed partial class DmartClient : IDisposable
         }
         catch (JsonException ex)
         {
-            throw new DmartException((int)resp.StatusCode, new Error(
+            // Route through MapException so a 404/409/… with an unparsable body
+            // still surfaces as the matching typed subtype (status-based fallback).
+            throw MapException((int)resp.StatusCode, new Error(
                 ErrorTypes.Request, 500, $"unparsable response body: {ex.Message}", null));
         }
 
         if (envelope is null)
-            throw new DmartException((int)resp.StatusCode, new Error(
+            throw MapException((int)resp.StatusCode, new Error(
                 ErrorTypes.Request, 500, "empty response body", null));
 
         if (envelope.Status == Status.Failed)
-            throw new DmartException((int)resp.StatusCode, envelope.Error ?? new Error(
+            throw MapException((int)resp.StatusCode, envelope.Error ?? new Error(
                 ErrorTypes.Request, 500, "failed without error payload", null));
 
         return envelope;
@@ -327,7 +371,7 @@ public sealed partial class DmartClient : IDisposable
                 ?? new Error(ErrorTypes.Request, 500, "unknown error", null);
 #endif
             doc.Dispose();
-            throw new DmartException((int)resp.StatusCode, err);
+            throw MapException((int)resp.StatusCode, err);
         }
         return doc;
     }

@@ -251,6 +251,26 @@ it when the client is disposed.
 - `net8.0` — LTS .NET 8.
 - `net10.0` — current .NET.
 
+## 0.10.0 — Interchangeable backends
+
+`Dmart.Client.DmartClient` and `Dmart.SqlAdapter.DmartSqlAdapter` now both
+implement `Dmart.Models.Contracts.IDmartData`, so an ASP.NET app can depend on
+the interface and swap HTTP ↔ direct-DB backends via DI.
+
+**Breaking changes:**
+
+- `DmartException` (and `DmartPermissionDeniedException`) moved to namespace
+  `Dmart.Models.Api`, and a typed hierarchy was added: `DmartNotFoundException`,
+  `DmartConflictException`, `DmartValidationException`,
+  `DmartPermissionDeniedException` (all `: DmartException`).
+  `catch (DmartException)` still works; update `using` directives.
+- `HistoryRow` moved to `Dmart.Models.Core.HistoryRow` (shared by both SDKs).
+- The typed query/spaces/children/profile methods are exposed under the
+  interface names `QueryEntriesAsync` / `LoadSpacesAsync` /
+  `GetChildrenEntriesAsync` / `GetProfileAsync(actor)`; the client's
+  `QueryAsync` / `GetSpacesAsync` / `GetChildrenAsync` / `GetProfileAsync()`
+  keep their `Response`-shaped contract for back-compat.
+
 ## License
 
 MIT.

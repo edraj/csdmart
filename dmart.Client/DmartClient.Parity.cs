@@ -252,18 +252,8 @@ public sealed partial class DmartClient
     // histories on RequestHandler operations.
     // -------------------------------------------------------------------
 
-    public sealed record HistoryRow
-    {
-        public required string Uuid { get; init; }
-        public required string SpaceName { get; init; }
-        public required string Subpath { get; init; }
-        public required string Shortname { get; init; }
-        public DateTime Timestamp { get; init; }
-        public string? OwnerShortname { get; init; }
-        public Dictionary<string, object>? RequestHeaders { get; init; }
-        public Dictionary<string, object>? Diff { get; init; }
-    }
-
+    // HistoryRow moved to Dmart.Models.Core.HistoryRow (shared with the SQL
+    // adapter). The client leaves LastChecksumHistory null.
     public async Task<List<HistoryRow>> QueryHistoryAsync(
         string spaceName, string subpath, string shortname,
         int limit = 50, string? actor = null, CancellationToken ct = default)
@@ -376,14 +366,19 @@ public sealed partial class DmartClient
         return result;
     }
 
-    // Load a user record. Matches SqlAdapter.LoadUserMetaAsync.
+    // Load a user record. Matches SqlAdapter.LoadUserMetaAsync — including the
+    // full payload BODY. retrieveJsonPayload MUST be true here: the server's
+    // EntryToJsonNode strips payload.body when it's false, whereas the SQL
+    // adapter reads the whole payload JSONB column, so a false flag would make
+    // User.Payload.Body null on the client but populated on the adapter,
+    // breaking IDmartData interchangeability for user payloads.
     public async Task<User?> LoadUserMetaAsync(string shortname, string? actor = null, CancellationToken ct = default)
     {
         try
         {
             using var doc = await RetrieveEntryAsync(
                 "user", "management", "/users", shortname,
-                retrieveJsonPayload: false, retrieveAttachments: false,
+                retrieveJsonPayload: true, retrieveAttachments: false,
                 scope: "managed", ct).ConfigureAwait(false);
             return DeserializeUser(doc);
         }
@@ -401,9 +396,11 @@ public sealed partial class DmartClient
     // token, scope selection.
     // -------------------------------------------------------------------
 
+    // Interface impl (IDmartData.QueryEntriesAsync). Single method with scope
+    // optional so the pre-refactor call `QueryEntriesAsync(query, scope: "public")`
+    // keeps working. Use scope="public" for anonymous reads.
     public async Task<(int Total, List<Entry> Records)> QueryEntriesAsync(
-        Query query, string? actor = null, string scope = "managed",
-        CancellationToken ct = default)
+        Query query, string? actor = null, string scope = "managed", CancellationToken ct = default)
     {
         var resp = await QueryAsync(query, scope, ct).ConfigureAwait(false);
         var entries = new List<Entry>(resp.Records?.Count ?? 0);
@@ -418,6 +415,28 @@ public sealed partial class DmartClient
         var total = resp.AttributesTotal();
         return (total, entries);
     }
+
+    // Interface impl — typed children listing. Matches DmartSqlAdapter.GetChildrenEntriesAsync.
+    // The existing GetChildrenAsync (returns Response) is kept for back-compat.
+    public Task<(int Total, List<Entry> Records)> GetChildrenEntriesAsync(
+        string spaceName, string subpath, string search = "", int limit = 20, int offset = 0,
+        IReadOnlyList<ResourceType>? restrictTypes = null, string? actor = null, CancellationToken ct = default)
+        => QueryEntriesAsync(new Query
+        {
+            Type = QueryType.Search,
+            SpaceName = spaceName,
+            Subpath = subpath,
+            FilterTypes = restrictTypes?.ToList(),
+            ExactSubpath = true,
+            Search = search,
+            Limit = limit,
+            Offset = offset,
+        }, actor, ct: ct);
+
+    // Interface impl — typed own-profile read. Matches DmartSqlAdapter.GetProfileAsync(actor).
+    // Coexists with the no-arg GetProfileAsync() -> Response (arity differs).
+    public Task<User?> GetProfileAsync(string actor, CancellationToken ct = default)
+        => LoadUserMetaAsync(actor, actor, ct);
 
     // -------------------------------------------------------------------
     // Internal helpers

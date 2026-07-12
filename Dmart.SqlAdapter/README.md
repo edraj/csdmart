@@ -46,7 +46,9 @@ Both SDKs expose the same dmart feature surface that other dmart SDKs
 (`Dmart.Models`: `Entry`, `User`, `Space`, `Query`, `Locator`,
 `Translation`, `Payload`, …), same method names, same return shapes.
 Most consumers can swap one for the other by changing the constructor
-and namespace import:
+and namespace import. **As of 0.10.0 both classes implement
+`Dmart.Models.Contracts.IDmartData`**, so you can also depend on that
+interface and inject either backend:
 
 | Feature                       | SqlAdapter (DB) | Client (HTTP)   |
 |-------------------------------|-----------------|-----------------|
@@ -748,3 +750,21 @@ adapter.InvalidateUserPermissionsCache("alice"); // user_permissions_cache slice
   repositories, which this SDK mirrors. Read them for reference if you need
   to extend the surface (e.g. add `LockHandlerAsync` or
   `SavePayloadAsync`).
+
+## 0.10.0 — Interchangeable backends
+
+`DmartSqlAdapter` and `Dmart.Client.DmartClient` now both implement
+`Dmart.Models.Contracts.IDmartData`, so an ASP.NET app can depend on the
+interface and swap direct-DB ↔ HTTP backends via DI.
+
+**Breaking changes:**
+
+- `CreateAsync` / `UpdateAsync` / `SaveAsync` now return `Task<Response>` (were
+  `Task`). On failure they throw `DmartConflictException` /
+  `DmartNotFoundException` (were `InvalidOperationException`).
+- `DmartPermissionDeniedException` moved from `Dmart.SqlAdapter.Permissions` to
+  `Dmart.Models.Api` (now a `DmartException` subtype). Update `using` directives.
+- `HistoryRow` moved to `Dmart.Models.Core.HistoryRow` (shared by both SDKs).
+- The interface names the typed methods `QueryEntriesAsync` / `LoadSpacesAsync`
+  / `GetChildrenEntriesAsync`; the existing `QueryAsync` / `GetSpacesAsync` /
+  `GetChildrenAsync` remain as the canonical implementations.

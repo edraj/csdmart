@@ -119,6 +119,69 @@ public class DmartClientTests
         ex.Error.Message.ShouldBe("unreachable");
     }
 
+    [Fact]
+    public async Task NotFound_Status_Throws_DmartNotFoundException()
+    {
+        var (client, _) = Make(_ => Task.FromResult(
+            new HttpResponseMessage(HttpStatusCode.NotFound)
+            {
+                Content = new StringContent(
+                    """{"status":"failed","error":{"type":"db","code":404,"message":"missing"}}""",
+                    Encoding.UTF8, "application/json"),
+            }));
+
+        var ex = await Should.ThrowAsync<DmartNotFoundException>(
+            () => client.RequestAsync(new Request
+            {
+                RequestType = RequestType.Update,
+                SpaceName = "app",
+                Records = new(),
+            }));
+        ex.StatusCode.ShouldBe(404);
+        ex.ShouldBeAssignableTo<DmartException>();
+    }
+
+    [Fact]
+    public async Task NotAllowed_Code_Throws_DmartPermissionDeniedException()
+    {
+        // The dmart server returns HTTP 401 with InternalErrorCode.NOT_ALLOWED
+        // (=401) for every RBAC denial — mapping must key on the code, not 403.
+        var (client, _) = Make(_ => Task.FromResult(
+            new HttpResponseMessage(HttpStatusCode.Unauthorized)
+            {
+                Content = new StringContent(
+                    """{"status":"failed","error":{"type":"request","code":401,"message":"not allowed to update"}}""",
+                    Encoding.UTF8, "application/json"),
+            }));
+
+        await Should.ThrowAsync<DmartPermissionDeniedException>(
+            () => client.RequestAsync(new Request
+            {
+                RequestType = RequestType.Update, SpaceName = "app", Records = new(),
+            }));
+    }
+
+    [Fact]
+    public async Task Generic_BadRequest_Stays_Base_DmartException_Not_Validation()
+    {
+        // The server routes most failures to HTTP 400; only specific codes are
+        // validation, so a generic 400 must NOT become DmartValidationException.
+        var (client, _) = Make(_ => Task.FromResult(
+            new HttpResponseMessage(HttpStatusCode.BadRequest)
+            {
+                Content = new StringContent(
+                    """{"status":"failed","error":{"type":"request","code":430,"message":"something wrong"}}""",
+                    Encoding.UTF8, "application/json"),
+            }));
+
+        var ex = await Should.ThrowAsync<DmartException>(
+            () => client.RequestAsync(new Request
+            {
+                RequestType = RequestType.Create, SpaceName = "app", Records = new(),
+            }));
+        ex.ShouldBeOfType<DmartException>();  // exactly base, not a subtype
+    }
+
     // ----- URL construction -----
 
     [Fact]
