@@ -1,12 +1,10 @@
 using System.Buffers;
 using System.Text.Json;
-using Dmart.Config;
 using Dmart.DataAdapters.Sql;
 using Dmart.Models.Api;
 using Dmart.Models.Core;
 using Dmart.Models.Enums;
 using Dmart.Models.Json;
-using Microsoft.Extensions.Options;
 
 namespace Dmart.Services;
 
@@ -58,7 +56,6 @@ public sealed class UniquenessValidator(
     UserRepository users,
     AccessRepository access,
     AttachmentRepository attachments,
-    IOptions<DmartSettings> settings,
     ILogger<UniquenessValidator> log)
 {
     // Characters that QueryHelper's tokenizer treats specially; values that
@@ -135,11 +132,7 @@ public sealed class UniquenessValidator(
                 if (paths.Count > 0) compounds.Add(paths);
             }
         }
-        // Scoped to the canonical /users folder so this floor isn't
-        // evaluated on every unrelated User-typed check.
-        if (resourceType == ResourceType.User
-            && spaceName == settings.Value.ManagementSpace
-            && folderShortname == "users")
+        if (resourceType == ResourceType.User)
         {
             var declared = compounds
                 .Where(c => c.Count == 1)
