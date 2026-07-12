@@ -8,22 +8,22 @@ using Xunit;
 
 namespace Dmart.Tests.Integration;
 
-// Pins the DB-level unique indexes added on `users` by PR #55:
+// Pins the DB-level unique indexes added on `users`:
 //   idx_users_google_id_unique
 //   idx_users_facebook_id_unique
 //   idx_users_apple_id_unique
+//   idx_users_email_lower_unique   (expression index on lower(email))
+//   idx_users_msisdn_unique
 //
 // Provider IDs (google/facebook/apple) are 1:1 by construction — one
-// provider account → one provider-id-keyed dmart account — so the unique
-// constraint is purely defense-in-depth. Email and msisdn are deliberately
-// NOT indexed (see the comment in SqlSchema.cs and
-// OAuthEndpointsTests.Resolver_EmailMatch_CreatesSeparateAccount_NoSilentMerge
-// for the security rationale: two accounts with the same email must be
-// able to coexist).
+// provider account → one provider-id-keyed dmart account — so their unique
+// constraint is purely defense-in-depth. Email/msisdn uniqueness is
+// primarily enforced by Services/UniquenessValidator.cs at the application
+// layer; the DB index here is defense-in-depth on top of that.
 //
 // If a future refactor accidentally drops one of these indexes, the
 // failure mode silently degrades from "409 Conflict at the wire" to
-// "two rows coexist with the same provider id" — exactly the kind of
+// "two rows coexist with the same identifier" — exactly the kind of
 // regression that's invisible until production. These tests fail loud
 // when an index is missing.
 public sealed class UserUniqueColumnConstraintTests : IClassFixture<DmartFactory>
@@ -75,30 +75,38 @@ public sealed class UserUniqueColumnConstraintTests : IClassFixture<DmartFactory
     };
 
     [FactIfPg]
-    public async Task Two_Users_Same_Email_Coexist_To_Preserve_OAuth_Separation()
+    public async Task Duplicate_Email_Rejected_By_DbIndex()
     {
-        // Two accounts with the same email MUST be allowed — see the
-        // OAuthEndpointsTests pin against silent-merge account takeover.
-        // If a future refactor adds a unique-email constraint, this test
-        // fails loud at the second UpsertAsync rather than silently
-        // breaking the OAuth security model.
         var users = _factory.Services.GetRequiredService<UserRepository>();
         var stamp = Guid.NewGuid().ToString("N")[..10];
-        var sharedEmail = $"shared_{stamp}@example.com";
-        var a = NewUser($"uniq_a_{stamp}", email: sharedEmail);
-        var b = NewUser($"uniq_b_{stamp}", email: sharedEmail);
-        try
-        {
-            await users.UpsertAsync(a);
-            await users.UpsertAsync(b);
-            (await users.GetByShortnameAsync(a.Shortname)).ShouldNotBeNull();
-            (await users.GetByShortnameAsync(b.Shortname)).ShouldNotBeNull();
-        }
-        finally
-        {
-            try { await users.DeleteAsync(a.Shortname); } catch { }
-            try { await users.DeleteAsync(b.Shortname); } catch { }
-        }
+        var email = $"dupe_{stamp}@example.com";
+        var a = NewUser($"uniq_a_{stamp}", email: email);
+        var b = NewUser($"uniq_b_{stamp}", email: email);
+        await InsertAndAssertUniqueViolationAsync(users, a, b, "email");
+    }
+
+    [FactIfPg]
+    public async Task Duplicate_Email_DifferentCase_Rejected_By_DbIndex()
+    {
+        // idx_users_email_lower_unique is an expression index on
+        // lower(email) — two rows differing only in case must still collide,
+        // matching UserService/RequestHandler's write-time normalization.
+        var users = _factory.Services.GetRequiredService<UserRepository>();
+        var stamp = Guid.NewGuid().ToString("N")[..10];
+        var a = NewUser($"uniq_a_{stamp}", email: $"Dupe_{stamp}@Example.com");
+        var b = NewUser($"uniq_b_{stamp}", email: $"dupe_{stamp}@example.com");
+        await InsertAndAssertUniqueViolationAsync(users, a, b, "email");
+    }
+
+    [FactIfPg]
+    public async Task Duplicate_Msisdn_Rejected_By_DbIndex()
+    {
+        var users = _factory.Services.GetRequiredService<UserRepository>();
+        var stamp = Guid.NewGuid().ToString("N")[..8];
+        var msisdn = "9647" + stamp.PadLeft(8, '1');
+        var a = NewUser($"uniq_a_{stamp}", msisdn: msisdn);
+        var b = NewUser($"uniq_b_{stamp}", msisdn: msisdn);
+        await InsertAndAssertUniqueViolationAsync(users, a, b, "msisdn");
     }
 
     [FactIfPg]

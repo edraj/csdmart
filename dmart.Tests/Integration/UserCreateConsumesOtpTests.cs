@@ -27,7 +27,7 @@ public sealed class UserCreateConsumesOtpTests : IClassFixture<DmartFactory>
     {
         var factory = OtpRequired();
         var otpRepo = factory.Services.GetRequiredService<OtpRepository>();
-        var email = $"otpc_{Guid.NewGuid():N}"[..16] + "@x.y";
+        var email = $"otpc_{Guid.NewGuid():N}"[..16] + "@x.yz";
         await otpRepo.StoreAsync(email, Otp, DateTime.UtcNow.AddMinutes(5));
 
         var body = "{\"attributes\":{\"email\":\"" + email + "\",\"password\":\"" + ValidPassword

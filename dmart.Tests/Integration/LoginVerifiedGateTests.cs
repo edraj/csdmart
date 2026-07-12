@@ -184,7 +184,7 @@ public sealed class LoginVerifiedGateTests : IClassFixture<DmartFactory>
         HttpClient admin, bool emailVerified)
     {
         var shortname = $"agate_{Guid.NewGuid():N}"[..16];
-        var email = $"{shortname}@x.y";
+        var email = $"{shortname}@x.yz";
         var verifiedAttr = emailVerified ? ",\"is_email_verified\":true" : "";
         var bodyJson = "{\"space_name\":\"management\",\"request_type\":\"create\",\"records\":[" +
             "{\"resource_type\":\"user\",\"shortname\":\"" + shortname + "\",\"subpath\":\"/users\"," +
@@ -212,7 +212,7 @@ public sealed class LoginVerifiedGateTests : IClassFixture<DmartFactory>
         bool emailVerified, bool msisdnVerified = false, bool withMsisdn = false)
     {
         var shortname = $"vgate_{Guid.NewGuid():N}"[..16];
-        var email = $"{shortname}@x.y";
+        var email = $"{shortname}@x.yz";
         var msisdn = withMsisdn ? $"+9647{Random.Shared.Next(10_000_000, 99_999_999)}" : null;
         var users = _factory.Services.GetRequiredService<UserRepository>();
         var hasher = _factory.Services.GetRequiredService<PasswordHasher>();
