@@ -108,11 +108,47 @@ public sealed class UniquenessValidator(
             log.LogDebug(ex, "uniqueness: parent folder load failed for {Space}/{Subpath}", spaceName, subpath);
             folder = null;
         }
-        if (folder?.Payload?.Body is not JsonElement body
-            || body.ValueKind != JsonValueKind.Object
-            || !body.TryGetProperty("unique_fields", out var uniqueFields)
-            || uniqueFields.ValueKind != JsonValueKind.Array)
-            return Result<bool>.Ok(true);
+
+        // Compounds to probe: whatever the folder declares via `unique_fields`,
+        // plus a hardcoded `["email"]`/`["msisdn"]` floor for User accounts so
+        // an unconfigured folder can't silently disable duplicate-account
+        // protection.
+        //
+        // The floor applies to EVERY User-typed write, in any space/folder —
+        // not just the management space's canonical /users. The probe below is
+        // folder-scoped (same space+subpath), so it exists to produce the
+        // friendly DATA_SHOULD_BE_UNIQUE error; global enforcement across
+        // folders is the DB's job (idx_users_email_lower_unique /
+        // idx_users_msisdn_unique in SqlSchema.cs, surfaced as 409).
+        var compounds = new List<List<string>>();
+        if (folder?.Payload?.Body is JsonElement body
+            && body.ValueKind == JsonValueKind.Object
+            && body.TryGetProperty("unique_fields", out var uniqueFields)
+            && uniqueFields.ValueKind == JsonValueKind.Array)
+        {
+            foreach (var compound in uniqueFields.EnumerateArray())
+            {
+                if (compound.ValueKind != JsonValueKind.Array) continue;
+                var paths = new List<string>();
+                foreach (var pathEl in compound.EnumerateArray())
+                {
+                    if (pathEl.ValueKind != JsonValueKind.String) continue;
+                    var path = pathEl.GetString();
+                    if (!string.IsNullOrEmpty(path)) paths.Add(path);
+                }
+                if (paths.Count > 0) compounds.Add(paths);
+            }
+        }
+        if (resourceType == ResourceType.User)
+        {
+            var declared = compounds
+                .Where(c => c.Count == 1)
+                .Select(c => c[0])
+                .ToHashSet(StringComparer.Ordinal);
+            if (!declared.Contains("email")) compounds.Add(["email"]);
+            if (!declared.Contains("msisdn")) compounds.Add(["msisdn"]);
+        }
+        if (compounds.Count == 0) return Result<bool>.Ok(true);
 
         // Materialize rawAttrs into a JsonElement so the existing WalkPath
         // helpers can drive both `payload.body.*` and flat (`email`/`msisdn`/
@@ -138,19 +174,12 @@ public sealed class UniquenessValidator(
             return Result<bool>.Ok(true);
         var root = rootOpt.Value;
 
-        foreach (var compound in uniqueFields.EnumerateArray())
+        foreach (var paths in compounds)
         {
-            if (compound.ValueKind != JsonValueKind.Array) continue;
-
             var perPathTokens = new List<List<string>>();
-            var declaredPaths = 0;
-            foreach (var pathEl in compound.EnumerateArray())
+            var declaredPaths = paths.Count;
+            foreach (var path in paths)
             {
-                if (pathEl.ValueKind != JsonValueKind.String) continue;
-                var path = pathEl.GetString();
-                if (string.IsNullOrEmpty(path)) continue;
-                declaredPaths++;
-
                 var newValues = ReadPathFromAttrs(root, path);
                 if (newValues.Count == 0) continue;
 
@@ -169,7 +198,7 @@ public sealed class UniquenessValidator(
                 {
                     log.LogDebug(
                         "uniqueness: compound key on {Space}{Subpath} resolved to no token sets for {Resource} create — likely path-convention mismatch (flat vs payload.body). Compound: {Compound}",
-                        spaceName, subpath, resourceType, compound);
+                        spaceName, subpath, resourceType, paths);
                 }
                 continue;
             }

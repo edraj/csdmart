@@ -45,7 +45,7 @@ public class UserCreateRolesTests : IClassFixture<DmartFactory>
             })));
         var client = factory.CreateClient();
 
-        var email = "rolesfree_" + Guid.NewGuid().ToString("N")[..6] + "@x.y";
+        var email = "rolesfree_" + Guid.NewGuid().ToString("N")[..6] + "@x.yz";
         var resp = await client.PostAsync("/user/create", EscalatedCreateBody(email));
         resp.IsSuccessStatusCode.ShouldBeTrue();
         var result = await resp.Content.ReadFromJsonAsync(DmartJsonContext.Default.Response);
@@ -76,7 +76,7 @@ public class UserCreateRolesTests : IClassFixture<DmartFactory>
             })));
         var client = factory.CreateClient();
 
-        var email = "defaultacc_" + Guid.NewGuid().ToString("N")[..6] + "@x.y";
+        var email = "defaultacc_" + Guid.NewGuid().ToString("N")[..6] + "@x.yz";
         var resp = await client.PostAsync("/user/create", EscalatedCreateBody(email));
         resp.IsSuccessStatusCode.ShouldBeTrue();
         var result = await resp.Content.ReadFromJsonAsync(DmartJsonContext.Default.Response);

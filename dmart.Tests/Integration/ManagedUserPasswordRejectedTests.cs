@@ -24,7 +24,7 @@ public sealed class ManagedUserPasswordRejectedTests : IClassFixture<DmartFactor
     private static string CreateBody(string shortname, bool withPassword) =>
         "{\"space_name\":\"management\",\"request_type\":\"create\",\"records\":[{" +
         "\"resource_type\":\"user\",\"subpath\":\"users\",\"shortname\":\"" + shortname + "\"," +
-        "\"attributes\":{\"is_active\":true,\"email\":\"" + shortname + "@x.y\"" +
+        "\"attributes\":{\"is_active\":true,\"email\":\"" + shortname + "@x.yz\"" +
         (withPassword ? ",\"password\":\"Sneaky1234\"" : "") + "}}]}";
 
     [FactIfPg]
@@ -97,7 +97,7 @@ public sealed class ManagedUserPasswordRejectedTests : IClassFixture<DmartFactor
             var body =
                 "{\"space_name\":\"management\",\"request_type\":\"create\",\"records\":[{" +
                 "\"resource_type\":\"user\",\"subpath\":\"users\",\"shortname\":\"" + shortname + "\"," +
-                "\"attributes\":{\"is_active\":true,\"email\":\"" + shortname + "@x.y\",\"force_password_change\":false}}]}";
+                "\"attributes\":{\"is_active\":true,\"email\":\"" + shortname + "@x.yz\",\"force_password_change\":false}}]}";
             var resp = await admin.Client.PostAsync("/managed/request",
                 new StringContent(body, Encoding.UTF8, "application/json"));
             var raw = await resp.Content.ReadAsStringAsync();

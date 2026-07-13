@@ -181,8 +181,8 @@ public sealed class UserRepository(Db db, AuthzCacheRefresher refresher, Session
         // Both match the C# enum member names lowercased (UserType.Web→"web", Language.En→"en").
         cmd.Parameters.Add(new() { Value = JsonbHelpers.EnumNameLower(u.Type) });
         cmd.Parameters.Add(new() { Value = JsonbHelpers.EnumNameLower(u.Language) });
-        cmd.Parameters.Add(new() { Value = (object?)u.Email ?? DBNull.Value });
-        cmd.Parameters.Add(new() { Value = (object?)u.Msisdn ?? DBNull.Value });
+        cmd.Parameters.Add(new() { Value = NullIfEmptyIdentifier(u.Email) });
+        cmd.Parameters.Add(new() { Value = NullIfEmptyIdentifier(u.Msisdn) });
         cmd.Parameters.Add(new() { Value = u.LockedToDevice });
         cmd.Parameters.Add(new() { Value = u.IsEmailVerified });
         cmd.Parameters.Add(new() { Value = u.IsMsisdnVerified });
@@ -338,8 +338,8 @@ public sealed class UserRepository(Db db, AuthzCacheRefresher refresher, Session
         AddJsonb(cmd, JsonbHelpers.ToJsonb(u.Relationships));
         cmd.Parameters.Add(new() { Value = JsonbHelpers.EnumNameLower(u.Type) });
         cmd.Parameters.Add(new() { Value = JsonbHelpers.EnumNameLower(u.Language) });
-        cmd.Parameters.Add(new() { Value = (object?)u.Email ?? DBNull.Value });
-        cmd.Parameters.Add(new() { Value = (object?)u.Msisdn ?? DBNull.Value });
+        cmd.Parameters.Add(new() { Value = NullIfEmptyIdentifier(u.Email) });
+        cmd.Parameters.Add(new() { Value = NullIfEmptyIdentifier(u.Msisdn) });
         cmd.Parameters.Add(new() { Value = u.LockedToDevice });
         cmd.Parameters.Add(new() { Value = u.IsEmailVerified });
         cmd.Parameters.Add(new() { Value = u.IsMsisdnVerified });
@@ -974,4 +974,14 @@ public sealed class UserRepository(Db db, AuthzCacheRefresher refresher, Session
         var s = r.GetString(ordinal);
         return s.Length == 0 ? null : s;
     }
+
+    // Write-side normalization for email/msisdn: '' and NULL both mean
+    // "absent", but the partial unique indexes (idx_users_email_lower_unique,
+    // idx_users_msisdn_unique — SqlSchema.cs) only exclude NULL rows. Callers
+    // routinely send `"email": ""` to mean "no email" (admin UIs, msisdn-only
+    // registration bodies); persisting that as '' would make the SECOND such
+    // user collide on the index with a baffling 409. Normalizing here, at the
+    // single write boundary, keeps '' out of the table entirely.
+    private static object NullIfEmptyIdentifier(string? v)
+        => string.IsNullOrEmpty(v) ? DBNull.Value : v;
 }
