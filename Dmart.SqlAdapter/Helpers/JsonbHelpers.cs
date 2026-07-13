@@ -44,6 +44,19 @@ public static class JsonbHelpers
         return p;
     }
 
+    // Positional (unnamed) variant for commands that use $1..$n placeholders.
+    // Npgsql refuses to mix named and positional parameters in one command —
+    // adding a named parameter to a $n-placeholder INSERT throws
+    // NotSupportedException at execute time.
+    public static NpgsqlParameter ToJsonbParameter<T>(T? value, JsonSerializerOptions? options = null)
+    {
+        var p = new NpgsqlParameter { NpgsqlDbType = NpgsqlDbType.Jsonb };
+        p.Value = value is null
+            ? DBNull.Value
+            : JsonSerializer.Serialize(value, options ?? DefaultOptions);
+        return p;
+    }
+
     // Wire-format string for an enum that may carry [EnumMember(Value="…")].
     // Dmart.Models enums use snake_case wire values (e.g. ResourceType.PluginWrapper
     // → "plugin_wrapper", DataAsset → "data_asset"). Reading `[EnumMember]` is the

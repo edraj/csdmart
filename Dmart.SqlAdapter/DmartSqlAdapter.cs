@@ -2,6 +2,7 @@ using System.Globalization;
 using System.Text;
 using System.Text.Json;
 using Dmart.Models.Api;
+using Dmart.Models.Contracts;
 using Dmart.Models.Core;
 using Dmart.Models.Enums;
 using Dmart.SqlAdapter.Helpers;
@@ -41,7 +42,7 @@ namespace Dmart.SqlAdapter;
 //   - A schema validator. JSON Schema enforcement, workflow transitions,
 //     and plugin dispatch live in the dmart server — calls that need those
 //     should still go through the HTTP API.
-public sealed partial class DmartSqlAdapter
+public sealed partial class DmartSqlAdapter : IDmartData
 {
     private readonly DmartDb _db;
     private readonly JsonSerializerOptions _json;
@@ -51,6 +52,11 @@ public sealed partial class DmartSqlAdapter
         = new(StringComparer.Ordinal);
     private static readonly TimeSpan UserPermissionsCacheTtl = TimeSpan.FromMinutes(5);
 
+    // NOTE: jsonOptions also shapes the Response.Records[].Attributes that the
+    // write methods echo (EntryToRecord round-trips through it). The default
+    // snake_case options match what the HTTP client's Responses carry; supply
+    // custom options with a different naming policy and the echoed attribute
+    // keys/shapes will no longer be interchangeable with Dmart.Client's.
     public DmartSqlAdapter(DmartDb db, JsonSerializerOptions? jsonOptions = null,
         PermissionEngine? engine = null, DmartSqlAdapterOptions? options = null)
     {
@@ -177,7 +183,7 @@ public sealed partial class DmartSqlAdapter
         return entry;
     }
 
-    public async Task SaveAsync(Entry entry, string? actor = null, CancellationToken ct = default)
+    public async Task<Response> SaveAsync(Entry entry, string? actor = null, CancellationToken ct = default)
     {
         // Single round-trip: load the (possibly missing) row once, then RBAC-gate
         // as "update" when present or "create" when absent. Avoids the EXISTS+LOAD
@@ -191,9 +197,10 @@ public sealed partial class DmartSqlAdapter
         }
         await UpsertEntryInternalAsync(entry, ct).ConfigureAwait(false);
         InvalidateRbacCacheFor(entry.ResourceType, entry.Shortname);
+        return Response.Ok(new[] { EntryToRecord(entry) });
     }
 
-    public async Task CreateAsync(Entry entry, string? actor = null, CancellationToken ct = default)
+    public async Task<Response> CreateAsync(Entry entry, string? actor = null, CancellationToken ct = default)
     {
         // One LoadRaw covers both the conflict check and the RBAC `create`
         // gate (which doesn't need a context but does need to see the row
@@ -201,21 +208,22 @@ public sealed partial class DmartSqlAdapter
         var existing = await LoadRawAsync(entry.SpaceName, entry.Subpath, entry.Shortname, ct).ConfigureAwait(false);
         if (existing is not null)
         {
-            throw new InvalidOperationException(
+            throw new DmartConflictException(
                 $"Entry already exists: {entry.SpaceName}{entry.Subpath}/{entry.Shortname}");
         }
         if (_engine is not null)
             await _engine.RequireAsync(actor, "create", LocatorFor(entry), null, null, ct).ConfigureAwait(false);
         await UpsertEntryInternalAsync(entry, ct).ConfigureAwait(false);
         InvalidateRbacCacheFor(entry.ResourceType, entry.Shortname);
+        return Response.Ok(new[] { EntryToRecord(entry) });
     }
 
-    public async Task UpdateAsync(Entry entry, string? actor = null, CancellationToken ct = default)
+    public async Task<Response> UpdateAsync(Entry entry, string? actor = null, CancellationToken ct = default)
     {
         var existing = await LoadRawAsync(entry.SpaceName, entry.Subpath, entry.Shortname, ct).ConfigureAwait(false);
         if (existing is null)
         {
-            throw new InvalidOperationException(
+            throw new DmartNotFoundException(
                 $"Entry does not exist: {entry.SpaceName}{entry.Subpath}/{entry.Shortname}");
         }
         if (_engine is not null)
@@ -223,6 +231,7 @@ public sealed partial class DmartSqlAdapter
                 ResourceContext.FromEntry(existing), null, ct).ConfigureAwait(false);
         await UpsertEntryInternalAsync(entry, ct).ConfigureAwait(false);
         InvalidateRbacCacheFor(entry.ResourceType, entry.Shortname);
+        return Response.Ok(new[] { EntryToRecord(entry) });
     }
 
     public async Task<bool> DeleteAsync(Locator locator, string? actor = null, CancellationToken ct = default)
@@ -291,8 +300,9 @@ public sealed partial class DmartSqlAdapter
         {
             // unique_violation on (shortname, space_name, subpath) — target
             // already occupied. Translate to a typed exception that mirrors
-            // CreateAsync's "already exists" failure shape.
-            throw new InvalidOperationException(
+            // CreateAsync's "already exists" failure shape, preserving the
+            // Postgres error as the inner exception for diagnostics.
+            throw new DmartConflictException(
                 $"Move target already exists: {target.SpaceName}{target.Subpath}/{target.Shortname}", ex);
         }
         if (rows > 0)
@@ -572,6 +582,25 @@ public sealed partial class DmartSqlAdapter
             Offset = offset,
         }, actor, ct);
 
+    // Interface aliases (IDmartData) — the adapter's canonical typed methods are
+    // QueryAsync / GetSpacesAsync / GetChildrenAsync; the interface names them
+    // QueryEntriesAsync / LoadSpacesAsync / GetChildrenEntriesAsync for parity
+    // with the HTTP client.
+    public Task<(int Total, List<Entry> Records)> QueryEntriesAsync(
+        Query query, string? actor = null, string scope = "managed", CancellationToken ct = default)
+    {
+        _ = scope;  // Parity-only: scope selects an HTTP endpoint on the client; RBAC here comes from actor.
+        return QueryAsync(query, actor, ct);
+    }
+
+    public Task<Dictionary<string, Space>> LoadSpacesAsync(string? actor = null, CancellationToken ct = default)
+        => GetSpacesAsync(actor, ct);
+
+    public Task<(int Total, List<Entry> Records)> GetChildrenEntriesAsync(
+        string spaceName, string subpath, string search = "", int limit = 20, int offset = 0,
+        IReadOnlyList<ResourceType>? restrictTypes = null, string? actor = null, CancellationToken ct = default)
+        => GetChildrenAsync(spaceName, subpath, search, limit, offset, restrictTypes, actor, ct);
+
     // ---------------------------------------------------------------------
     // Space
     // ---------------------------------------------------------------------
@@ -644,7 +673,7 @@ public sealed partial class DmartSqlAdapter
         created_at, updated_at, owner_shortname, owner_group_shortname, acl,
         password, roles, groups, type, language, email, msisdn,
         is_email_verified, is_msisdn_verified, force_password_change,
-        google_id, facebook_id, apple_id, attempt_count, query_policies
+        google_id, facebook_id, apple_id, attempt_count, query_policies, payload
         """;
 
     // Mirrors tsdmart's getProfile (GET /user/profile) — read the calling
@@ -653,13 +682,15 @@ public sealed partial class DmartSqlAdapter
     // shortname. Throws on `actor is null` because there's no profile to
     // return for an anonymous caller (HTTP returns 401 in that case).
     //
-    // GetProfileAsync uses the auth-shaped loader so the caller can read
-    // their own password hash for credential-flow scenarios (rotate, verify).
+    // GetProfileAsync returns the REDACTED profile (Password == null), matching
+    // the HTTP client's IDmartData.GetProfileAsync so the same interface call
+    // yields the same data on either backend. Credential-flow callers that need
+    // the password hash use LoadUserMetaForAuthAsync directly (off-interface).
     public Task<User?> GetProfileAsync(string actor, CancellationToken ct = default)
     {
         if (string.IsNullOrEmpty(actor))
             throw new ArgumentException("actor (current user shortname) is required", nameof(actor));
-        return LoadUserMetaForAuthAsync(actor, actor, ct);
+        return LoadUserMetaAsync(actor, actor, ct);
     }
 
     /// <summary>
@@ -782,6 +813,54 @@ public sealed partial class DmartSqlAdapter
     // Internal helpers
     // ---------------------------------------------------------------------
 
+    // Project an Entry into a wire Record for the write-method Response envelope.
+    // Includes created_at/updated_at/reporter so the adapter's echoed Record
+    // carries the same fields the server echoes to the HTTP client. Values are
+    // then normalized to JsonElement (below) so `(bool)Attributes["is_active"]`
+    // and friends behave identically regardless of which IDmartData backend
+    // produced the Response. Not static: needs the instance JSON options.
+    private Record EntryToRecord(Entry entry)
+    {
+        var attrs = new Dictionary<string, object>(StringComparer.Ordinal)
+        {
+            ["is_active"] = entry.IsActive,
+            ["tags"] = entry.Tags,
+            ["owner_shortname"] = entry.OwnerShortname,
+            ["created_at"] = entry.CreatedAt,
+            ["updated_at"] = entry.UpdatedAt,
+        };
+        if (entry.OwnerGroupShortname is not null) attrs["owner_group_shortname"] = entry.OwnerGroupShortname;
+        if (entry.Displayname is not null) attrs["displayname"] = entry.Displayname;
+        if (entry.Description is not null) attrs["description"] = entry.Description;
+        if (entry.Slug is not null) attrs["slug"] = entry.Slug;
+        if (entry.Acl is not null) attrs["acl"] = entry.Acl;
+        if (entry.Relationships is not null) attrs["relationships"] = entry.Relationships;
+        if (entry.Reporter is not null) attrs["reporter"] = entry.Reporter;
+        if (entry.State is not null) attrs["state"] = entry.State;
+        if (entry.IsOpen is not null) attrs["is_open"] = entry.IsOpen;
+        if (entry.WorkflowShortname is not null) attrs["workflow_shortname"] = entry.WorkflowShortname;
+        if (entry.Collaborators is not null) attrs["collaborators"] = entry.Collaborators;
+        if (entry.ResolutionReason is not null) attrs["resolution_reason"] = entry.ResolutionReason;
+        if (entry.Payload is not null) attrs["payload"] = entry.Payload;
+
+        // Round-trip through JSON so every value is a JsonElement — the same CLR
+        // shape System.Text.Json produces when the HTTP client deserializes the
+        // server's echoed Response. Without this, native boxed values (bool,
+        // List<string>, Payload, …) would make casts on Response.Records[].Attributes
+        // succeed against the adapter but throw against the client.
+        var normalized = JsonSerializer.Deserialize<Dictionary<string, object>>(
+            JsonSerializer.Serialize(attrs, _json), _json) ?? attrs;
+
+        return new Record
+        {
+            ResourceType = entry.ResourceType,
+            Shortname = entry.Shortname,
+            Subpath = entry.Subpath,
+            Uuid = entry.Uuid,
+            Attributes = normalized,
+        };
+    }
+
     private async Task UpsertEntryInternalAsync(Entry e, CancellationToken ct)
     {
         var subpath = Locator.NormalizeSubpath(e.Subpath);
@@ -822,16 +901,16 @@ public sealed partial class DmartSqlAdapter
         cmd.Parameters.Add(new() { Value = subpath });
         cmd.Parameters.Add(new() { Value = e.IsActive });
         cmd.Parameters.Add(new() { Value = (object?)e.Slug ?? DBNull.Value });
-        cmd.Parameters.Add(JsonbHelpers.ToJsonbParameter("@displayname", e.Displayname, _json));
-        cmd.Parameters.Add(JsonbHelpers.ToJsonbParameter("@description", e.Description, _json));
-        cmd.Parameters.Add(JsonbHelpers.ToJsonbParameter("@tags", e.Tags, _json));
+        cmd.Parameters.Add(JsonbHelpers.ToJsonbParameter(e.Displayname, _json));
+        cmd.Parameters.Add(JsonbHelpers.ToJsonbParameter(e.Description, _json));
+        cmd.Parameters.Add(JsonbHelpers.ToJsonbParameter(e.Tags, _json));
         cmd.Parameters.Add(new() { Value = e.CreatedAt == default ? DateTime.UtcNow : e.CreatedAt });
         cmd.Parameters.Add(new() { Value = e.UpdatedAt == default ? DateTime.UtcNow : e.UpdatedAt });
         cmd.Parameters.Add(new() { Value = e.OwnerShortname });
         cmd.Parameters.Add(new() { Value = (object?)e.OwnerGroupShortname ?? DBNull.Value });
-        cmd.Parameters.Add(JsonbHelpers.ToJsonbParameter("@acl", e.Acl, _json));
-        cmd.Parameters.Add(JsonbHelpers.ToJsonbParameter("@payload", e.Payload, _json));
-        cmd.Parameters.Add(JsonbHelpers.ToJsonbParameter("@relationships", e.Relationships, _json));
+        cmd.Parameters.Add(JsonbHelpers.ToJsonbParameter(e.Acl, _json));
+        cmd.Parameters.Add(JsonbHelpers.ToJsonbParameter(e.Payload, _json));
+        cmd.Parameters.Add(JsonbHelpers.ToJsonbParameter(e.Relationships, _json));
         cmd.Parameters.Add(new() { Value = (object?)e.LastChecksumHistory ?? DBNull.Value });
         cmd.Parameters.Add(new() { Value = EnumWire(e.ResourceType) });
         cmd.Parameters.Add(new() { Value = (object?)e.State ?? DBNull.Value });
@@ -839,11 +918,20 @@ public sealed partial class DmartSqlAdapter
         cmd.Parameters.Add(new() { Value = (object?)e.IsOpen ?? DBNull.Value });
 #pragma warning restore CA1508
         cmd.Parameters.Add(new() { Value = (object?)e.WorkflowShortname ?? DBNull.Value });
-        cmd.Parameters.Add(JsonbHelpers.ToJsonbParameter("@collaborators", e.Collaborators, _json));
+        cmd.Parameters.Add(JsonbHelpers.ToJsonbParameter(e.Collaborators, _json));
         cmd.Parameters.Add(new() { Value = (object?)e.ResolutionReason ?? DBNull.Value });
-        var qp = new NpgsqlParameter("@query_policies", NpgsqlDbType.Array | NpgsqlDbType.Text)
+        // Positional like every other parameter in this command — a named
+        // parameter here would trip Npgsql's no-mixing rule against the $n
+        // placeholders above.
+        //
+        // Regenerated deterministically on every write, matching the server's
+        // repositories: entries.query_policies carries a non-empty CHECK
+        // constraint, and a row with stale/empty patterns is invisible to
+        // ACL-filtered queries. Caller-supplied values are ignored.
+        var qp = new NpgsqlParameter
         {
-            Value = (object?)e.QueryPolicies?.ToArray() ?? Array.Empty<string>(),
+            NpgsqlDbType = NpgsqlDbType.Array | NpgsqlDbType.Text,
+            Value = QueryPoliciesHelper.Generate(e).ToArray(),
         };
         cmd.Parameters.Add(qp);
 
@@ -942,6 +1030,7 @@ public sealed partial class DmartSqlAdapter
             AppleId = r.IsDBNull(24) ? null : r.GetString(24),
             AttemptCount = r.IsDBNull(25) ? null : r.GetInt32(25),
             QueryPolicies = r.IsDBNull(26) ? new() : ((string[])r.GetValue(26)).ToList(),
+            Payload = r.ReadJsonb<Payload>(27, _json),
         };
     }
 

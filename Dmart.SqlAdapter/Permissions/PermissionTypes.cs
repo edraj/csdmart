@@ -46,28 +46,5 @@ public sealed record ResourceContext(
         new(s.IsActive, s.OwnerShortname, s.OwnerGroupShortname, s.Acl);
 }
 
-// Thrown when an actor lacks permission for the requested action. Carries
-// the action + target so handlers can map it to a 403 response if exposing
-// the adapter over HTTP.
-public sealed class DmartPermissionDeniedException : Exception
-{
-    public string Actor { get; }
-    public string Action { get; }
-    public string SpaceName { get; }
-    public string Subpath { get; }
-    public string Shortname { get; }
-    public string ResourceType { get; }
-
-    public DmartPermissionDeniedException(string actor, string action,
-        string spaceName, string subpath, string shortname, string resourceType)
-        : base($"Permission denied for actor '{actor}': {action} on " +
-               $"{spaceName}{subpath}/{shortname} ({resourceType})")
-    {
-        Actor = actor;
-        Action = action;
-        SpaceName = spaceName;
-        Subpath = subpath;
-        Shortname = shortname;
-        ResourceType = resourceType;
-    }
-}
+// DmartPermissionDeniedException moved to Dmart.Models.Api (re-parented onto
+// the shared DmartException hierarchy) so both SDKs throw the same type.
