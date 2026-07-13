@@ -493,34 +493,48 @@ public static class SqlSchema
     -- either shape); normalizing the '+' away at write time would close
     -- that gap but is left as a follow-up.
     --
+    -- Empty strings are excluded alongside NULL: legacy rows may hold ''
+    -- for "no email/msisdn" (the app now normalizes '' to NULL at write
+    -- time — UserRepository.NullIfEmptyIdentifier), and treating '' as a
+    -- collidable identifier would both break the second ''-row insert and
+    -- block index creation on databases with several such rows.
+    --
     -- Guarded like the query_policies CHECK below: skipped (with a NOTICE)
     -- when duplicate rows already exist, so `dmart migrate` doesn't break on
     -- legacy dupes. Resolve them, then re-run migrate to pick up the index.
+    -- The pg_indexes probe is scoped to current_schema() so an identically
+    -- named index in another schema can't suppress creation here.
     DO $$
     DECLARE
         dupes INTEGER;
     BEGIN
-        IF NOT EXISTS (SELECT 1 FROM pg_indexes WHERE indexname = 'idx_users_email_lower_unique') THEN
+        IF NOT EXISTS (SELECT 1 FROM pg_indexes
+                       WHERE schemaname = current_schema()
+                         AND indexname = 'idx_users_email_lower_unique') THEN
             SELECT COUNT(*) INTO dupes FROM (
-                SELECT lower(email) FROM users WHERE email IS NOT NULL
+                SELECT lower(email) FROM users WHERE email IS NOT NULL AND email <> ''
                 GROUP BY lower(email) HAVING COUNT(*) > 1
             ) d;
             IF dupes > 0 THEN
                 RAISE NOTICE 'Skipping idx_users_email_lower_unique: % duplicate email group(s) exist. Resolve them, then re-run migrate.', dupes;
             ELSE
-                CREATE UNIQUE INDEX idx_users_email_lower_unique ON users (lower(email)) WHERE email IS NOT NULL;
+                CREATE UNIQUE INDEX IF NOT EXISTS idx_users_email_lower_unique
+                    ON users (lower(email)) WHERE email IS NOT NULL AND email <> '';
             END IF;
         END IF;
 
-        IF NOT EXISTS (SELECT 1 FROM pg_indexes WHERE indexname = 'idx_users_msisdn_unique') THEN
+        IF NOT EXISTS (SELECT 1 FROM pg_indexes
+                       WHERE schemaname = current_schema()
+                         AND indexname = 'idx_users_msisdn_unique') THEN
             SELECT COUNT(*) INTO dupes FROM (
-                SELECT msisdn FROM users WHERE msisdn IS NOT NULL
+                SELECT msisdn FROM users WHERE msisdn IS NOT NULL AND msisdn <> ''
                 GROUP BY msisdn HAVING COUNT(*) > 1
             ) d;
             IF dupes > 0 THEN
                 RAISE NOTICE 'Skipping idx_users_msisdn_unique: % duplicate msisdn group(s) exist. Resolve them, then re-run migrate.', dupes;
             ELSE
-                CREATE UNIQUE INDEX idx_users_msisdn_unique ON users (msisdn) WHERE msisdn IS NOT NULL;
+                CREATE UNIQUE INDEX IF NOT EXISTS idx_users_msisdn_unique
+                    ON users (msisdn) WHERE msisdn IS NOT NULL AND msisdn <> '';
             END IF;
         END IF;
     END $$;

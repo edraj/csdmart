@@ -53,6 +53,16 @@ public sealed class UserService(
         if (!s.IsRegistrable)
             return Result<(User, string, string)>.Fail(
                 InternalErrorCode.SESSION, "Register API is disabled", ErrorTypes.Create);
+        // An empty REGISTRATION_ENABLED_CHANNELS means "no self-registration"
+        // — same outcome as IsRegistrable=false. Without this gate, disabling
+        // both channels would silently lift the "email or msisdn required"
+        // check below and open contact-less, OTP-less signup instead of
+        // closing registration.
+        var emailChannelEnabled = s.IsRegistrationChannelEnabled("email");
+        var msisdnChannelEnabled = s.IsRegistrationChannelEnabled("msisdn");
+        if (!emailChannelEnabled && !msisdnChannelEnabled)
+            return Result<(User, string, string)>.Fail(
+                InternalErrorCode.SESSION, "Register API is disabled", ErrorTypes.Create);
 
         var attrs = rec.Attributes ?? new();
         var email = ConvertToString(attrs.GetValueOrDefault("email"))?.ToLowerInvariant();
@@ -63,13 +73,11 @@ public sealed class UserService(
 
         // Python-parity validation chain (last-match wins — mirrors the
         // sequential `validation_message = …` assignments in router.py).
-        var emailChannelEnabled = s.IsRegistrationChannelEnabled("email");
-        var msisdnChannelEnabled = s.IsRegistrationChannelEnabled("msisdn");
+        // At least one channel is enabled here (both-disabled returned
+        // above), so the "required" check is unconditional; a supplied value
+        // on a DISABLED channel is rejected rather than counted.
         string? validationMessage = null;
-        // Only enabled channels count toward "required" — msisdn-only stays
-        // valid if email is disabled.
-        if ((emailChannelEnabled || msisdnChannelEnabled)
-            && string.IsNullOrEmpty(email) && string.IsNullOrEmpty(msisdn))
+        if (string.IsNullOrEmpty(email) && string.IsNullOrEmpty(msisdn))
             validationMessage = "Email or MSISDN is required";
         if (!string.IsNullOrEmpty(email) && !emailChannelEnabled)
             validationMessage = "Email registration is disabled";

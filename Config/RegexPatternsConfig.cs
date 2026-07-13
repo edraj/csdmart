@@ -19,9 +19,11 @@ public sealed class RegexPatternsConfig
     public const string DefaultEmailPattern =
         @"^[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}$";
 
-    // Optional leading '+' to match the existing msisdn convention
-    // (Auth/OtpProvider.cs::IsMsisdn).
-    public const string DefaultMsisdnPattern = @"^\+?[0-9]{1,15}$";
+    // Optional leading '+' and the 6-digit floor both match the existing
+    // msisdn convention (Auth/OtpProvider.cs::IsMsisdn); 15 is the E.164
+    // maximum. Deployments with shorter local numbering plans can relax
+    // this via the regex.json override.
+    public const string DefaultMsisdnPattern = @"^\+?[0-9]{6,15}$";
 
     private readonly Regex _emailRegex;
     private readonly Regex _msisdnRegex;
@@ -34,15 +36,25 @@ public sealed class RegexPatternsConfig
     }
 
     public string? ValidateEmailFormat(string? email)
-    {
-        if (string.IsNullOrEmpty(email)) return null;
-        return _emailRegex.IsMatch(email) ? null : "Email format is invalid";
-    }
+        => Validate(_emailRegex, email, "Email format is invalid");
 
     public string? ValidateMsisdnFormat(string? msisdn)
+        => Validate(_msisdnRegex, msisdn, "MSISDN format is invalid");
+
+    private static string? Validate(Regex regex, string? value, string invalidMessage)
     {
-        if (string.IsNullOrEmpty(msisdn)) return null;
-        return _msisdnRegex.IsMatch(msisdn) ? null : "MSISDN format is invalid";
+        if (string.IsNullOrEmpty(value)) return null;
+        try
+        {
+            return regex.IsMatch(value) ? null : invalidMessage;
+        }
+        catch (RegexMatchTimeoutException)
+        {
+            // A ReDoS-prone override pattern hit the 100ms match timeout.
+            // The value is unverifiable — report it as invalid (a 400 to the
+            // caller) rather than letting the exception surface as a 500.
+            return invalidMessage;
+        }
     }
 
     private static Regex CompileOrDefault(string? pattern, string fallback, string channel, ILogger log)

@@ -800,13 +800,18 @@ public static class RequestHandler
                 if (HasPasswordAttribute(attrs))
                     return (Response.Fail(InternalErrorCode.INVALID_DATA,
                         PasswordNotAllowedMessage, ErrorTypes.Request), rec, null);
-                var updateEmailErr = regexConfig.ValidateEmailFormat(
-                    attrs.TryGetValue("email", out var ue) ? ConvertToString(ue) : null);
-                if (updateEmailErr is not null)
+                // Format-check only CHANGED values. Legacy rows can predate
+                // the format regex (or a stricter override), and the standard
+                // read-modify-write client echoes the stored email/msisdn back
+                // untouched — rejecting that would block unrelated edits on
+                // legacy users. (UpdateProfileAsync gates the same way.)
+                var updEmail = attrs.TryGetValue("email", out var ue) ? ConvertToString(ue) : null;
+                if (!string.Equals(updEmail, existing.Email, StringComparison.Ordinal)
+                    && regexConfig.ValidateEmailFormat(updEmail) is { } updateEmailErr)
                     return (Response.Fail(InternalErrorCode.INVALID_DATA, updateEmailErr, ErrorTypes.Request), rec, null);
-                var updateMsisdnErr = regexConfig.ValidateMsisdnFormat(
-                    attrs.TryGetValue("msisdn", out var um) ? ConvertToString(um) : null);
-                if (updateMsisdnErr is not null)
+                var updMsisdn = attrs.TryGetValue("msisdn", out var um) ? ConvertToString(um) : null;
+                if (!string.Equals(updMsisdn, existing.Msisdn, StringComparison.Ordinal)
+                    && regexConfig.ValidateMsisdnFormat(updMsisdn) is { } updateMsisdnErr)
                     return (Response.Fail(InternalErrorCode.INVALID_DATA, updateMsisdnErr, ErrorTypes.Request), rec, null);
                 var userFloor = await EnforcePrivilegeFloorAsync(ResourceType.User, attrs, actor, perms, users, ct);
                 if (userFloor is not null) return (userFloor, rec, null);

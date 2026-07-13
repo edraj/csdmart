@@ -89,8 +89,11 @@ public sealed class UserUniqueColumnConstraintTests : IClassFixture<DmartFactory
     public async Task Duplicate_Email_DifferentCase_Rejected_By_DbIndex()
     {
         // idx_users_email_lower_unique is an expression index on
-        // lower(email) — two rows differing only in case must still collide,
-        // matching UserService/RequestHandler's write-time normalization.
+        // lower(email) — two rows differing only in case must still collide.
+        // Load-bearing for the managed path: UserService lowercases email on
+        // self-registration/profile update, but RequestHandler (admin
+        // create/update) preserves case, so the index is the only thing
+        // stopping "Foo@X.com" and "foo@x.com" from coexisting.
         var users = _factory.Services.GetRequiredService<UserRepository>();
         var stamp = Guid.NewGuid().ToString("N")[..10];
         var a = NewUser($"uniq_a_{stamp}", email: $"Dupe_{stamp}@Example.com");

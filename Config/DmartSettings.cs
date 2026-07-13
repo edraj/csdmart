@@ -379,15 +379,18 @@ public sealed class DmartSettings
     // "email" and "msisdn" — see RegexPatternsConfig. A missing file, a
     // missing channel key, or an empty value all fall back to the built-in
     // default regex for that channel (world-standard email; E.164-shaped
-    // msisdn, optional leading '+', up to 15 digits). Applied everywhere
-    // email/msisdn is set — self-registration, profile updates, AND
-    // managed/admin user create-update all get the same format check.
+    // msisdn, optional leading '+', 6-15 digits). Applied to CHANGED values
+    // everywhere email/msisdn is set — self-registration, profile updates,
+    // AND managed/admin user create-update all get the same format check;
+    // updates that echo a stored legacy value back unmodified are exempt.
     public string RegexConfigPath { get; set; } = "";
 
     // CSV list of channels callers may use for self-REGISTRATION
     // (/user/create) only — "email" and/or "msisdn". A channel left out is
-    // disabled: any create request supplying a value for it is rejected, and
-    // it stops counting toward "email or msisdn required". Default both on.
+    // disabled: any create request supplying a value for it is rejected.
+    // Default both on. Leaving the list EMPTY closes self-registration
+    // entirely (same error as IS_REGISTRABLE=false) — it does not permit
+    // contact-less signup.
     //
     // Deliberately NOT consulted anywhere else email/msisdn is set:
     //   * /user/profile — updating an already-registered user's own contact
@@ -410,9 +413,11 @@ public sealed class DmartSettings
     }
 
     // Convenience wrapper around ParseRegistrationEnabledChannels() for the
-    // common "is this one channel enabled" check — case-insensitive.
+    // common "is this one channel enabled" check — case-insensitive on the
+    // caller's side too (the parsed list is already lowercase).
     public bool IsRegistrationChannelEnabled(string channel)
-        => ParseRegistrationEnabledChannels().Contains(channel, StringComparer.OrdinalIgnoreCase);
+        => ParseRegistrationEnabledChannels()
+            .Contains(channel.ToLowerInvariant(), StringComparer.Ordinal);
 
     // Timeout (seconds) for the `jq` subprocess invoked when a join sub-query
     // carries a jq_filter expression. Python default (backend/utils/settings.py).

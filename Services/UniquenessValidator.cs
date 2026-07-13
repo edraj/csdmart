@@ -113,6 +113,13 @@ public sealed class UniquenessValidator(
         // plus a hardcoded `["email"]`/`["msisdn"]` floor for User accounts so
         // an unconfigured folder can't silently disable duplicate-account
         // protection.
+        //
+        // The floor applies to EVERY User-typed write, in any space/folder —
+        // not just the management space's canonical /users. The probe below is
+        // folder-scoped (same space+subpath), so it exists to produce the
+        // friendly DATA_SHOULD_BE_UNIQUE error; global enforcement across
+        // folders is the DB's job (idx_users_email_lower_unique /
+        // idx_users_msisdn_unique in SqlSchema.cs, surfaced as 409).
         var compounds = new List<List<string>>();
         if (folder?.Payload?.Body is JsonElement body
             && body.ValueKind == JsonValueKind.Object
