@@ -235,18 +235,9 @@ public sealed class UserService(
         return Result<(User, string, string)>.Ok((user, access, refresh));
     }
 
-    private static string? ConvertToString(object? v) => v switch
-    {
-        null => null,
-        string s => s,
-        JsonElement el => el.ValueKind switch
-        {
-            JsonValueKind.String => el.GetString(),
-            JsonValueKind.Null => null,
-            _ => el.GetRawText(),
-        },
-        _ => v.ToString(),
-    };
+    // Delegates to the canonical implementation (AttrHelper); kept as a
+    // private alias so the call sites in this file stay unqualified.
+    private static string? ConvertToString(object? v) => AttrHelper.ConvertToString(v);
 
     // Translate a configured default role/group into the new user's access
     // list: a configured value becomes the sole entry, a blank/whitespace
