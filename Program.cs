@@ -1723,6 +1723,7 @@ builder.Services.Configure<SpacesOptions>(builder.Configuration.GetSection("Spac
 // short-circuits when EnableChannelAuth=false, so the singleton is essentially
 // free in deployments that don't opt in.
 builder.Services.AddSingleton<ChannelsRegistry>();
+builder.Services.AddSingleton<RegexPatternsConfig>();
 
 // SQL backend
 builder.Services.AddSingleton<Db>();

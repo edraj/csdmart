@@ -44,7 +44,7 @@ public class UserCreateErrorCodesTests : IClassFixture<DmartFactory>
     {
         var client = _factory.CreateClient();
         var shortname = "otpmiss_" + Guid.NewGuid().ToString("N")[..6];
-        var body = "{\"resource_type\":\"user\",\"shortname\":\"" + shortname + "\",\"subpath\":\"/\",\"attributes\":{\"email\":\"" + shortname + "@x.y\",\"password\":\"Testtest1234\"}}";
+        var body = "{\"resource_type\":\"user\",\"shortname\":\"" + shortname + "\",\"subpath\":\"/\",\"attributes\":{\"email\":\"" + shortname + "@x.yz\",\"password\":\"Testtest1234\"}}";
         var resp = await client.PostAsync("/user/create",
             new StringContent(body, Encoding.UTF8, "application/json"));
         var result = await resp.Content.ReadFromJsonAsync(DmartJsonContext.Default.Response);
@@ -59,7 +59,7 @@ public class UserCreateErrorCodesTests : IClassFixture<DmartFactory>
         var client = _factory.CreateClient();
         var shortname = "weakpw_" + Guid.NewGuid().ToString("N")[..6];
         // No digits / uppercase → fails the password regex.
-        var body = "{\"resource_type\":\"user\",\"shortname\":\"" + shortname + "\",\"subpath\":\"/\",\"attributes\":{\"email\":\"" + shortname + "@x.y\",\"password\":\"password\",\"email_otp\":\"000000\"}}";
+        var body = "{\"resource_type\":\"user\",\"shortname\":\"" + shortname + "\",\"subpath\":\"/\",\"attributes\":{\"email\":\"" + shortname + "@x.yz\",\"password\":\"password\",\"email_otp\":\"000000\"}}";
         var resp = await client.PostAsync("/user/create",
             new StringContent(body, Encoding.UTF8, "application/json"));
         var result = await resp.Content.ReadFromJsonAsync(DmartJsonContext.Default.Response);
@@ -75,7 +75,7 @@ public class UserCreateErrorCodesTests : IClassFixture<DmartFactory>
             svcs.Configure<Dmart.Config.DmartSettings>(s => s.IsOtpForCreateRequired = false)));
         var client = factory.CreateClient();
 
-        var shared = "share_" + Guid.NewGuid().ToString("N")[..6] + "@x.y";
+        var shared = "share_" + Guid.NewGuid().ToString("N")[..6] + "@x.yz";
         // No shortname on the wire: /user/create allocates it server-side.
         var first = "{\"attributes\":{\"email\":\"" + shared + "\",\"password\":\"Testtest1234\"}}";
         var firstResp = await client.PostAsync("/user/create",
@@ -107,7 +107,7 @@ public class UserCreateErrorCodesTests : IClassFixture<DmartFactory>
         // Set up an existing user (OTP disabled for the setup factory).
         var setup = _factory.WithWebHostBuilder(b => b.ConfigureServices(svcs =>
             svcs.Configure<Dmart.Config.DmartSettings>(s => s.IsOtpForCreateRequired = false)));
-        var email = "enum_" + Guid.NewGuid().ToString("N")[..6] + "@x.y";
+        var email = "enum_" + Guid.NewGuid().ToString("N")[..6] + "@x.yz";
         var createBody = "{\"attributes\":{\"email\":\"" + email + "\",\"password\":\"Testtest1234\"}}";
         var first = await setup.CreateClient().PostAsync("/user/create",
             new StringContent(createBody, Encoding.UTF8, "application/json"));

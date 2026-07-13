@@ -4,6 +4,7 @@ using Dmart.Models.Core;
 using Dmart.Models.Enums;
 using Dmart.Plugins;
 using Microsoft.Extensions.Options;
+using Npgsql;
 
 namespace Dmart.Auth.OAuth;
 
@@ -103,7 +104,23 @@ public sealed class OAuthUserResolver(
 
         if (!dirty) return user;
         updated = updated with { UpdatedAt = TimeUtils.Now() };
-        await users.UpsertAsync(updated, ct);
+        try
+        {
+            await users.UpsertAsync(updated, ct);
+        }
+        catch (PostgresException ex) when (ex.SqlState == "23505")
+        {
+            // The refreshed email (or attached provider id) collides with a
+            // unique index on `users` — e.g. the provider-side email changed
+            // to an address another dmart account already holds. Login
+            // availability wins over profile freshness: keep the stale stored
+            // values and let the login proceed instead of surfacing the
+            // conflict as a failed login.
+            log.LogWarning(ex,
+                "oauth: skipped profile refresh for {Shortname} — refreshed value collides with another account (constraint {Constraint})",
+                user.Shortname, ex.ConstraintName);
+            return user;
+        }
         return updated;
     }
 

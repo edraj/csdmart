@@ -33,7 +33,7 @@ public sealed class OtpHashingTests : IClassFixture<DmartFactory>
     [FactIfPg]
     public async Task StoreAsync_Persists_Hashed_Code_Not_Plaintext()
     {
-        var key = $"otphash_{Guid.NewGuid():N}@x.y";
+        var key = $"otphash_{Guid.NewGuid():N}@x.yz";
         const string code = "123456";
         try
         {
@@ -50,7 +50,7 @@ public sealed class OtpHashingTests : IClassFixture<DmartFactory>
     [FactIfPg]
     public async Task VerifyAndConsume_Succeeds_With_Correct_Code_And_Deletes_Row()
     {
-        var key = $"otphash_{Guid.NewGuid():N}@x.y";
+        var key = $"otphash_{Guid.NewGuid():N}@x.yz";
         const string code = "654321";
         try
         {
@@ -65,7 +65,7 @@ public sealed class OtpHashingTests : IClassFixture<DmartFactory>
     [FactIfPg]
     public async Task VerifyAndConsume_Fails_With_Wrong_Code()
     {
-        var key = $"otphash_{Guid.NewGuid():N}@x.y";
+        var key = $"otphash_{Guid.NewGuid():N}@x.yz";
         try
         {
             await Repo().StoreAsync(key, "111111", DateTime.UtcNow.AddMinutes(5));
@@ -77,7 +77,7 @@ public sealed class OtpHashingTests : IClassFixture<DmartFactory>
     [FactIfPg]
     public async Task VerifyPeek_Matches_Correct_Code_Without_Consuming()
     {
-        var key = $"otphash_{Guid.NewGuid():N}@x.y";
+        var key = $"otphash_{Guid.NewGuid():N}@x.yz";
         const string code = "909090";
         try
         {

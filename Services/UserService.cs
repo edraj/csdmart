@@ -19,6 +19,7 @@ public sealed class UserService(
     HistoryRepository history,
     PluginManager plugins,
     SchemaValidator schemas,
+    RegexPatternsConfig regexConfig,
     IOptions<DmartSettings> settings,
     ILogger<UserService> log)
 {
@@ -52,6 +53,16 @@ public sealed class UserService(
         if (!s.IsRegistrable)
             return Result<(User, string, string)>.Fail(
                 InternalErrorCode.SESSION, "Register API is disabled", ErrorTypes.Create);
+        // An empty REGISTRATION_ENABLED_CHANNELS means "no self-registration"
+        // — same outcome as IsRegistrable=false. Without this gate, disabling
+        // both channels would silently lift the "email or msisdn required"
+        // check below and open contact-less, OTP-less signup instead of
+        // closing registration.
+        var emailChannelEnabled = s.IsRegistrationChannelEnabled("email");
+        var msisdnChannelEnabled = s.IsRegistrationChannelEnabled("msisdn");
+        if (!emailChannelEnabled && !msisdnChannelEnabled)
+            return Result<(User, string, string)>.Fail(
+                InternalErrorCode.SESSION, "Register API is disabled", ErrorTypes.Create);
 
         var attrs = rec.Attributes ?? new();
         var email = ConvertToString(attrs.GetValueOrDefault("email"))?.ToLowerInvariant();
@@ -62,9 +73,20 @@ public sealed class UserService(
 
         // Python-parity validation chain (last-match wins — mirrors the
         // sequential `validation_message = …` assignments in router.py).
+        // At least one channel is enabled here (both-disabled returned
+        // above), so the "required" check is unconditional; a supplied value
+        // on a DISABLED channel is rejected rather than counted.
         string? validationMessage = null;
         if (string.IsNullOrEmpty(email) && string.IsNullOrEmpty(msisdn))
             validationMessage = "Email or MSISDN is required";
+        if (!string.IsNullOrEmpty(email) && !emailChannelEnabled)
+            validationMessage = "Email registration is disabled";
+        if (!string.IsNullOrEmpty(msisdn) && !msisdnChannelEnabled)
+            validationMessage = "MSISDN registration is disabled";
+        if (regexConfig.ValidateEmailFormat(email) is { } emailFormatError)
+            validationMessage = emailFormatError;
+        if (regexConfig.ValidateMsisdnFormat(msisdn) is { } msisdnFormatError)
+            validationMessage = msisdnFormatError;
         if (!string.IsNullOrEmpty(email) && s.IsOtpForCreateRequired && string.IsNullOrEmpty(emailOtp))
             validationMessage = "Email OTP is required";
         if (!string.IsNullOrEmpty(msisdn) && s.IsOtpForCreateRequired && string.IsNullOrEmpty(msisdnOtp))
@@ -733,6 +755,8 @@ public sealed class UserService(
             var newEmail = rawEmail.ToLowerInvariant();
             if (!string.Equals(newEmail, user.Email, StringComparison.Ordinal))
             {
+                if (regexConfig.ValidateEmailFormat(newEmail) is { } emailFormatError)
+                    return Result<User>.Fail(InternalErrorCode.INVALID_DATA, emailFormatError, ErrorTypes.Request);
                 var emailOtp = Str(patch, "email_otp", null);
                 if (string.IsNullOrEmpty(emailOtp))
                     return Result<User>.Fail(InternalErrorCode.SESSION,
@@ -755,6 +779,8 @@ public sealed class UserService(
         var newMsisdn = Str(patch, "msisdn", null);
         if (!string.IsNullOrEmpty(newMsisdn) && !string.Equals(newMsisdn, user.Msisdn, StringComparison.Ordinal))
         {
+            if (regexConfig.ValidateMsisdnFormat(newMsisdn) is { } msisdnFormatError)
+                return Result<User>.Fail(InternalErrorCode.INVALID_DATA, msisdnFormatError, ErrorTypes.Request);
             var msisdnOtp = Str(patch, "msisdn_otp", null);
             if (string.IsNullOrEmpty(msisdnOtp))
                 return Result<User>.Fail(InternalErrorCode.SESSION,
