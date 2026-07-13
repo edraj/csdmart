@@ -46,7 +46,7 @@ Both SDKs expose the same dmart feature surface that other dmart SDKs
 (`Dmart.Models`: `Entry`, `User`, `Space`, `Query`, `Locator`,
 `Translation`, `Payload`, …), same method names, same return shapes.
 Most consumers can swap one for the other by changing the constructor
-and namespace import. **As of 0.10.0 both classes implement
+and namespace import. **As of 1.0.7 both classes implement
 `Dmart.Models.Contracts.IDmartData`**, so you can also depend on that
 interface and inject either backend:
 
@@ -751,7 +751,7 @@ adapter.InvalidateUserPermissionsCache("alice"); // user_permissions_cache slice
   to extend the surface (e.g. add `LockHandlerAsync` or
   `SavePayloadAsync`).
 
-## 0.10.0 — Interchangeable backends
+## 1.0.7 — Interchangeable backends
 
 `DmartSqlAdapter` and `Dmart.Client.DmartClient` now both implement
 `Dmart.Models.Contracts.IDmartData`, so an ASP.NET app can depend on the

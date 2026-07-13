@@ -251,7 +251,7 @@ it when the client is disposed.
 - `net8.0` — LTS .NET 8.
 - `net10.0` — current .NET.
 
-## 0.10.0 — Interchangeable backends
+## 1.0.7 — Interchangeable backends
 
 `Dmart.Client.DmartClient` and `Dmart.SqlAdapter.DmartSqlAdapter` now both
 implement `Dmart.Models.Contracts.IDmartData`, so an ASP.NET app can depend on
