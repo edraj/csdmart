@@ -433,10 +433,28 @@ public sealed partial class DmartClient
             Offset = offset,
         }, actor, ct: ct);
 
-    // Interface impl — typed own-profile read. Matches DmartSqlAdapter.GetProfileAsync(actor).
-    // Coexists with the no-arg GetProfileAsync() -> Response (arity differs).
-    public Task<User?> GetProfileAsync(string actor, CancellationToken ct = default)
-        => LoadUserMetaAsync(actor, actor, ct);
+    // Interface impl — typed own-profile read via GET /user/profile. Matches
+    // DmartSqlAdapter.GetProfileAsync(actor); coexists with the no-arg
+    // GetProfileAsync() -> Response (arity differs).
+    //
+    // Per the IDmartData caveats, `actor` does NOT select the target on the
+    // HTTP backend — the bearer token identifies the caller; the parameter is
+    // accepted only for signature parity and ignored. Deliberately NOT a
+    // managed /users entry read: ordinary users cannot managed-read their own
+    // row (it is owned by "dmart"), so that shape would 401 exactly where the
+    // SQL adapter succeeds, breaking backend interchangeability.
+    //
+    // The profile endpoint projects identity + profile attributes only, so
+    // the User's uuid / space_name / owner_shortname are synthesized (empty
+    // uuid and owner, canonical management space). Callers that need those
+    // columns want LoadUserMetaAsync (requires managed read permission).
+    public async Task<User?> GetProfileAsync(string actor, CancellationToken ct = default)
+    {
+        _ = actor;
+        var envelope = await GetProfileAsync(ct).ConfigureAwait(false);
+        var record = envelope.Records is { Count: > 0 } ? envelope.Records[0] : null;
+        return record is null ? null : DeserializeUserFromRecord(record);
+    }
 
     // -------------------------------------------------------------------
     // Internal helpers
@@ -544,6 +562,34 @@ public sealed partial class DmartClient
 #else
         var json = JsonSerializer.Serialize(merged, DefaultJsonOptions);
         return JsonSerializer.Deserialize<Entry>(json, DefaultJsonOptions);
+#endif
+    }
+
+    // Convert the /user/profile Record into a User, same round-trip technique
+    // as DeserializeEntryFromRecord. The profile endpoint does not project
+    // uuid / space_name / owner_shortname, but User declares them `required` —
+    // synthesize wire-truthful defaults (TryAdd keeps any value the server
+    // does send winning over the synthesized one).
+    private static User? DeserializeUserFromRecord(Record record)
+    {
+        var merged = new Dictionary<string, object>(
+            record.Attributes ?? new Dictionary<string, object>(StringComparer.Ordinal),
+            StringComparer.Ordinal)
+        {
+            ["resource_type"] = record.ResourceType,
+            ["shortname"] = record.Shortname,
+            ["subpath"] = string.IsNullOrEmpty(record.Subpath) ? "/users" : record.Subpath,
+        };
+        if (record.Uuid is not null) merged["uuid"] = record.Uuid;
+        merged.TryAdd("uuid", "");
+        merged.TryAdd("space_name", "management");
+        merged.TryAdd("owner_shortname", "");
+#if NET8_0_OR_GREATER
+        var json = JsonSerializer.Serialize(merged, DmartClientJsonContext.Default.DictionaryStringObject);
+        return JsonSerializer.Deserialize(json, DmartClientJsonContext.Default.User);
+#else
+        var json = JsonSerializer.Serialize(merged, DefaultJsonOptions);
+        return JsonSerializer.Deserialize<User>(json, DefaultJsonOptions);
 #endif
     }
 

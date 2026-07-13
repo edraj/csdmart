@@ -271,6 +271,19 @@ the interface and swap HTTP ↔ direct-DB backends via DI.
   `QueryAsync` / `GetSpacesAsync` / `GetChildrenAsync` / `GetProfileAsync()`
   keep their `Response`-shaped contract for back-compat.
 
+**Behavior changes:**
+
+- `LoadUserMetaAsync` now requests the payload body
+  (`retrieve_json_payload=true`), so `User.Payload.Body` is populated where it
+  was previously `null` — matching the SQL adapter, which reads the whole
+  payload column. Responses are marginally larger.
+- `GetProfileAsync(actor)` (the `IDmartData` overload) reads `GET
+  /user/profile` — the caller's own profile, identified by the bearer token;
+  the `actor` argument is ignored. The profile endpoint doesn't project
+  `uuid`/`space_name`/`owner_shortname`, so those `User` fields are
+  synthesized (`""`/`"management"`/`""`). Use `LoadUserMetaAsync` (requires
+  managed read permission) when you need the full row.
+
 ## License
 
 MIT.

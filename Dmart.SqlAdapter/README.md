@@ -768,3 +768,16 @@ interface and swap direct-DB ↔ HTTP backends via DI.
 - The interface names the typed methods `QueryEntriesAsync` / `LoadSpacesAsync`
   / `GetChildrenEntriesAsync`; the existing `QueryAsync` / `GetSpacesAsync` /
   `GetChildrenAsync` remain as the canonical implementations.
+
+**Fixes:**
+
+- Entry writes (`CreateAsync` / `UpdateAsync` / `SaveAsync` / `MoveAsync`'s
+  upsert) previously failed with `NotSupportedException: Mixing named and
+  positional parameters isn't supported` — the upsert SQL used `$n`
+  placeholders while several parameters were added named. All parameters are
+  now positional.
+- The upsert now generates `entries.query_policies` deterministically on every
+  write (same patterns as the server's repositories). Previously it persisted
+  whatever the caller supplied — usually an empty array, which violates the
+  schema's `entries_query_policies_nonempty` CHECK and would make the row
+  invisible to ACL-filtered queries.
