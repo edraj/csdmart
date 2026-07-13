@@ -74,6 +74,127 @@ public sealed class WorkflowServiceProgressTests : IClassFixture<DmartFactory>
     }
 
     // ------------------------------------------------------------------
+    // Optional progress comment — a `comment` attribute on the progress
+    // body is recorded as a Comment attachment under the ticket.
+    // ------------------------------------------------------------------
+
+    [FactIfPg]
+    public async Task Progress_With_Comment_Records_Comment_Attachment()
+    {
+        var ctx = await SetupAsync(grantedActions: new() { "progress_ticket" });
+        var attachments = _factory.Services.GetRequiredService<AttachmentRepository>();
+        try
+        {
+            var resp = await ctx.Workflow.ProgressAsync(
+                ctx.TicketLocator, action: "submit", actor: ctx.UserName,
+                attrs: new() { ["comment"] = "looks good to me" });
+
+            resp.Status.ShouldBe(Status.Success,
+                $"progress with a comment must succeed; got {resp.Error?.Code}/{resp.Error?.Message}");
+
+            var comments = await attachments.ListForParentAsync(
+                ctx.SpaceName, "/tickets", ctx.TicketName);
+            comments.Count.ShouldBe(1, "exactly one comment attachment must be minted");
+            var comment = comments[0];
+            comment.ResourceType.ShouldBe(ResourceType.Comment);
+            comment.OwnerShortname.ShouldBe(ctx.UserName, "the comment is attributed to the actor");
+            comment.IsActive.ShouldBeTrue();
+
+            // Modern shape: payload.body JSON carrying body + the new state.
+            comment.Payload.ShouldNotBeNull();
+            var body = comment.Payload!.Body!.Value;
+            body.GetProperty("body").GetString().ShouldBe("looks good to me");
+            body.GetProperty("state").GetString().ShouldBe("submitted");
+
+            // Legacy shape: the flat body/state columns some Comment consumers
+            // read (see RequestHandler.CreateAttachmentAsync's "legacy Comment
+            // rows") must carry the same values.
+            comment.Body.ShouldBe("looks good to me");
+            comment.State.ShouldBe("submitted");
+        }
+        finally
+        {
+            try { await attachments.DeleteUnderSubpathAsync(ctx.SpaceName, "/tickets/" + ctx.TicketName); } catch { }
+            await ctx.CleanupAsync();
+        }
+    }
+
+    [FactIfPg]
+    public async Task Progress_Without_Comment_Records_No_Attachment()
+    {
+        var ctx = await SetupAsync(grantedActions: new() { "progress_ticket" });
+        var attachments = _factory.Services.GetRequiredService<AttachmentRepository>();
+        try
+        {
+            var resp = await ctx.Workflow.ProgressAsync(
+                ctx.TicketLocator, action: "submit", actor: ctx.UserName, attrs: null);
+
+            resp.Status.ShouldBe(Status.Success);
+            (await attachments.ListForParentAsync(ctx.SpaceName, "/tickets", ctx.TicketName))
+                .ShouldBeEmpty("no comment attribute → no attachment");
+        }
+        finally
+        {
+            try { await attachments.DeleteUnderSubpathAsync(ctx.SpaceName, "/tickets/" + ctx.TicketName); } catch { }
+            await ctx.CleanupAsync();
+        }
+    }
+
+    [FactIfPg]
+    public async Task Progress_With_Empty_Comment_Records_No_Attachment()
+    {
+        var ctx = await SetupAsync(grantedActions: new() { "progress_ticket" });
+        var attachments = _factory.Services.GetRequiredService<AttachmentRepository>();
+        try
+        {
+            var resp = await ctx.Workflow.ProgressAsync(
+                ctx.TicketLocator, action: "submit", actor: ctx.UserName,
+                attrs: new() { ["comment"] = "" });
+
+            resp.Status.ShouldBe(Status.Success);
+            (await attachments.ListForParentAsync(ctx.SpaceName, "/tickets", ctx.TicketName))
+                .ShouldBeEmpty("an empty comment must not mint an attachment");
+        }
+        finally
+        {
+            try { await attachments.DeleteUnderSubpathAsync(ctx.SpaceName, "/tickets/" + ctx.TicketName); } catch { }
+            await ctx.CleanupAsync();
+        }
+    }
+
+    [FactIfPg]
+    public async Task ProgressTicket_Endpoint_Accepts_Comment_On_The_Wire()
+    {
+        // Pins the wire contract end-to-end: PUT /managed/progress-ticket/…
+        // with {"comment": …} lands a Comment attachment owned by the caller.
+        var ctx = await SetupAsync(grantedActions: new() { "progress_ticket" });
+        var attachments = _factory.Services.GetRequiredService<AttachmentRepository>();
+        var caller = await _factory.CreateLoggedInUserAsync(roles: new() { ctx.RoleName });
+        try
+        {
+            var url = $"/managed/progress-ticket/{ctx.SpaceName}/tickets/{ctx.TicketName}/submit";
+            var resp = await caller.Client.PutAsync(url, new StringContent(
+                """{"resolution":"fine","comment":"via wire"}""",
+                System.Text.Encoding.UTF8, "application/json"));
+            var raw = await resp.Content.ReadAsStringAsync();
+            var result = JsonSerializer.Deserialize(raw, DmartJsonContext.Default.Response);
+            result!.Status.ShouldBe(Status.Success, $"wire progress with comment must succeed; got: {raw}");
+
+            var comments = await attachments.ListForParentAsync(
+                ctx.SpaceName, "/tickets", ctx.TicketName);
+            comments.Count.ShouldBe(1);
+            comments[0].OwnerShortname.ShouldBe(caller.Shortname);
+            comments[0].Payload!.Body!.Value.GetProperty("body").GetString().ShouldBe("via wire");
+        }
+        finally
+        {
+            try { await attachments.DeleteUnderSubpathAsync(ctx.SpaceName, "/tickets/" + ctx.TicketName); } catch { }
+            await caller.Cleanup();
+            await ctx.CleanupAsync();
+        }
+    }
+
+    // ------------------------------------------------------------------
     // Setup helpers
     // ------------------------------------------------------------------
 

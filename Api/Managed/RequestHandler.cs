@@ -1784,18 +1784,9 @@ public static class RequestHandler
         return rec with { Attributes = attrs };
     }
 
-    private static string? ConvertToString(object? v) => v switch
-    {
-        null => null,
-        string s => s,
-        JsonElement el => el.ValueKind switch
-        {
-            JsonValueKind.String => el.GetString(),
-            JsonValueKind.Null   => null,
-            _                    => el.GetRawText(),
-        },
-        _ => v.ToString(),
-    };
+    // Delegates to the canonical implementation (AttrHelper); kept as a
+    // private alias so the many call sites in this file stay unqualified.
+    private static string? ConvertToString(object? v) => AttrHelper.ConvertToString(v);
 
     private static bool IsTruthy(object? v) => v switch
     {
