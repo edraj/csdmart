@@ -473,18 +473,6 @@ public static class SqlSchema
     -- NULLs are distinct under Postgres' default, so multiple rows missing
     -- a given identifier coexist.
     --
-    -- Email and msisdn are DELIBERATELY NOT indexed here. Two accounts with
-    -- the same email must be able to coexist — e.g. a local password account
-    -- and a Google OAuth account that happen to share an email. See
-    -- OAuthEndpointsTests.Resolver_EmailMatch_CreatesSeparateAccount_NoSilentMerge,
-    -- which pins the security property that the OAuth resolver creates a
-    -- SEPARATE account rather than silently attaching its provider id to a
-    -- pre-existing email-matching account. Adding a unique-email constraint
-    -- would either break that test or force the resolver into a
-    -- pre-auth-takeover-shaped merge path. Same reasoning applies to msisdn.
-    -- Application-level uniqueness on /user/create still runs through
-    -- UniquenessValidator.
-    --
     -- Provider IDs (google_id, facebook_id, apple_id) are 1:1 by construction
     -- (one provider account → one provider-id-keyed dmart account, named
     -- `<provider>_<id>`), so DB-level uniqueness here is defense-in-depth on
@@ -495,6 +483,61 @@ public static class SqlSchema
         ON users (facebook_id) WHERE facebook_id IS NOT NULL;
     CREATE UNIQUE INDEX IF NOT EXISTS idx_users_apple_id_unique
         ON users (apple_id) WHERE apple_id IS NOT NULL;
+
+    -- Email/msisdn uniqueness, DB-enforced — defense-in-depth on top of
+    -- UniquenessValidator's application-level check.
+    --
+    -- lower(email): expression index so case-differing rows still collide.
+    -- msisdn is indexed as-is — "+9647..." and "9647..." are NOT deduped
+    -- against each other (RegexPatternsConfig's default msisdn regex allows
+    -- either shape); normalizing the '+' away at write time would close
+    -- that gap but is left as a follow-up.
+    --
+    -- Empty strings are excluded alongside NULL: legacy rows may hold ''
+    -- for "no email/msisdn" (the app now normalizes '' to NULL at write
+    -- time — UserRepository.NullIfEmptyIdentifier), and treating '' as a
+    -- collidable identifier would both break the second ''-row insert and
+    -- block index creation on databases with several such rows.
+    --
+    -- Guarded like the query_policies CHECK below: skipped (with a NOTICE)
+    -- when duplicate rows already exist, so `dmart migrate` doesn't break on
+    -- legacy dupes. Resolve them, then re-run migrate to pick up the index.
+    -- The pg_indexes probe is scoped to current_schema() so an identically
+    -- named index in another schema can't suppress creation here.
+    DO $$
+    DECLARE
+        dupes INTEGER;
+    BEGIN
+        IF NOT EXISTS (SELECT 1 FROM pg_indexes
+                       WHERE schemaname = current_schema()
+                         AND indexname = 'idx_users_email_lower_unique') THEN
+            SELECT COUNT(*) INTO dupes FROM (
+                SELECT lower(email) FROM users WHERE email IS NOT NULL AND email <> ''
+                GROUP BY lower(email) HAVING COUNT(*) > 1
+            ) d;
+            IF dupes > 0 THEN
+                RAISE NOTICE 'Skipping idx_users_email_lower_unique: % duplicate email group(s) exist. Resolve them, then re-run migrate.', dupes;
+            ELSE
+                CREATE UNIQUE INDEX IF NOT EXISTS idx_users_email_lower_unique
+                    ON users (lower(email)) WHERE email IS NOT NULL AND email <> '';
+            END IF;
+        END IF;
+
+        IF NOT EXISTS (SELECT 1 FROM pg_indexes
+                       WHERE schemaname = current_schema()
+                         AND indexname = 'idx_users_msisdn_unique') THEN
+            SELECT COUNT(*) INTO dupes FROM (
+                SELECT msisdn FROM users WHERE msisdn IS NOT NULL AND msisdn <> ''
+                GROUP BY msisdn HAVING COUNT(*) > 1
+            ) d;
+            IF dupes > 0 THEN
+                RAISE NOTICE 'Skipping idx_users_msisdn_unique: % duplicate msisdn group(s) exist. Resolve them, then re-run migrate.', dupes;
+            ELSE
+                CREATE UNIQUE INDEX IF NOT EXISTS idx_users_msisdn_unique
+                    ON users (msisdn) WHERE msisdn IS NOT NULL AND msisdn <> '';
+            END IF;
+        END IF;
+    END $$;
 
     -- <table>.query_policies must be non-empty for every ACL-filterable
     -- table. A row with an empty array is invisible to AppendAclFilter

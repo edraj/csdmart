@@ -33,18 +33,7 @@ public sealed partial class DmartSqlAdapter
     // record so consumers don't have to reinvent the column list.
     // -------------------------------------------------------------------
 
-    public sealed record HistoryRow
-    {
-        public required string Uuid { get; init; }
-        public required string SpaceName { get; init; }
-        public required string Subpath { get; init; }
-        public required string Shortname { get; init; }
-        public DateTime Timestamp { get; init; }
-        public string? OwnerShortname { get; init; }
-        public Dictionary<string, object>? RequestHeaders { get; init; }
-        public Dictionary<string, object>? Diff { get; init; }
-        public string? LastChecksumHistory { get; init; }
-    }
+    // HistoryRow moved to Dmart.Models.Core.HistoryRow (shared with the HTTP client).
 
     // List history rows for a (space, subpath, shortname) target. Newest
     // first. RBAC: the histories table is excluded from the per-row ACL

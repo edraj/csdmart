@@ -34,6 +34,16 @@ instead if you want the ready-made HTTP client:
 dotnet add package Dmart.Client
 ```
 
+## 0.10.0 — `IDmartData` contract
+
+Adds `Dmart.Models.Contracts.IDmartData` — the backend-neutral interface
+implemented by both `Dmart.Client.DmartClient` and
+`Dmart.SqlAdapter.DmartSqlAdapter`, so consumers can swap HTTP ↔ direct-DB
+backends via DI. Also adds the shared `Dmart.Models.Core.HistoryRow` and the
+`Dmart.Models.Api.DmartException` hierarchy (`DmartNotFoundException`,
+`DmartConflictException`, `DmartValidationException`,
+`DmartPermissionDeniedException`).
+
 ## License
 
 MIT.

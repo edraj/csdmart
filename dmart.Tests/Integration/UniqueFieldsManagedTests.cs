@@ -26,7 +26,11 @@ namespace Dmart.Tests.Integration;
 //     for User folders, unique_fields must use FLAT paths
 //     (`["email"]`), NOT `["payload.body.email"]` — the latter form
 //     resolves to no values from the request's flat attrs and
-//     produces no probe.
+//     produces no probe. For email/msisdn specifically this quirk is
+//     now harmless — ValidateRawAsync always adds a hardcoded
+//     `["email"]`/`["msisdn"]` compound for User regardless of folder
+//     config — but it still applies to any other field an operator
+//     declares in `unique_fields`.
 public class UniqueFieldsManagedTests : IClassFixture<DmartFactory>
 {
     private readonly DmartFactory _factory;
@@ -200,15 +204,21 @@ public class UniqueFieldsManagedTests : IClassFixture<DmartFactory>
     }
 
     [FactIfPg]
-    public async Task User_PayloadBodyPath_IsSilentNoOp_DocumentsConvention()
+    public async Task User_PayloadBodyPath_IsCaughtByHardcodedEmailFloor()
     {
         // Folder declares the WRONG path shape for a User folder. Users have
         // promoted columns (`email`, `msisdn`); the request payload is flat,
-        // so `payload.body.email` resolves to no values and the gate doesn't
-        // fire — even when an actual collision exists. The class-level
-        // comment in ValidateRawAsync calls this out, and the LogDebug on
-        // zero-value compounds surfaces it in logs. This test is the
-        // executable spec.
+        // so `payload.body.email` resolves to no values and that DECLARED
+        // compound contributes nothing — the path-convention footgun the
+        // class-level comment in ValidateRawAsync still documents.
+        //
+        // This test used to pin that the wrong path shape let the collision
+        // through entirely. It no longer does: ValidateRawAsync now always
+        // adds a hardcoded `["email"]`/`["msisdn"]` compound for User
+        // regardless of what (if anything) the folder declares, so email
+        // uniqueness can't be silently disabled by a folder misconfiguration.
+        // The collision is caught by that hardcoded floor even though the
+        // folder's own declared compound is a no-op.
         var (spaces, entries, users, _, validator) = Resolve();
         var space = await SeedSpaceWithFolderAsync(spaces, entries, "people",
             """[["payload.body.email"]]""");
@@ -223,12 +233,8 @@ public class UniqueFieldsManagedTests : IClassFixture<DmartFactory>
             var result = await validator.ValidateRawAsync(
                 space, "/people", "alice2", ResourceType.User, attrs, ActionType.Create);
 
-            // The wrong path shape silently no-ops — this is the footgun the
-            // class comment warns about. If we ever auto-translate path
-            // shapes per resource type, this test should flip to expect
-            // a Fail and the comment should be revised.
-            result.IsOk.ShouldBeTrue(
-                "wrong path shape for User folder should silently no-op (path-convention quirk)");
+            result.IsOk.ShouldBeFalse(
+                "email must always be unique for User, even when the folder declares the wrong path shape");
         }
         finally
         {

@@ -282,7 +282,7 @@ public sealed partial class DmartClient
                 ?? new Error(ErrorTypes.Request, 500, "unknown error", null);
 #endif
             doc.Dispose();
-            throw new DmartException((int)resp.StatusCode, err);
+            throw MapException((int)resp.StatusCode, err);
         }
         return doc;
     }
