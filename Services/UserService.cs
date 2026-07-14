@@ -1,3 +1,4 @@
+using System.Linq;
 using System.Text.Json;
 using System.Text.RegularExpressions;
 using Dmart.Auth;
@@ -167,6 +168,7 @@ public sealed class UserService(
         var displayname = attrs.TryGetValue("displayname", out var dn) ? ParseTranslation(dn) : null;
         var description = attrs.TryGetValue("description", out var desc) ? ParseTranslation(desc) : null;
         var payload = ExtractPayload(attrs);
+        var tags = ExtractTags(attrs);
 
         // Python parity (serve_request_create): validate payload.body against
         // payload.schema_shortname before persisting. /user/create runs through
@@ -195,6 +197,7 @@ public sealed class UserService(
             Language = language,
             Displayname = displayname,
             Description = description,
+            Tags = tags,
             Payload = payload,
             Roles = rolesList,
             Groups = groupsList,
@@ -268,6 +271,8 @@ public sealed class UserService(
         }
         return new Translation(En: value.ToString());
     }
+    
+    private static List<string> ExtractTags(Dictionary<string, object> attrs) => AttrHelper.ExtractTags(attrs);
 
     private static Payload? ExtractPayload(Dictionary<string, object> attrs)
     {

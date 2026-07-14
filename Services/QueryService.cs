@@ -1,4 +1,5 @@
 using System.Diagnostics.CodeAnalysis;
+using System.Linq;
 using System.Text.Json;
 using Dmart.Config;
 using Dmart.DataAdapters.Sql;
@@ -1715,6 +1716,31 @@ internal static class AttrHelper
         },
         _ => v.ToString(),
     };
+
+    // Canonical tags-list parser: accepts a JSON array, a List<string>, or an
+    // IEnumerable<object>; unrecognized shapes return `fallback` (defaults to
+    // empty) rather than silently wiping out existing data on a malformed patch.
+    // ResourceWithPayloadHandler / EntryService / UserService all delegate here
+    // rather than keeping private copies.
+    public static List<string> ParseStringList(object? raw, List<string>? fallback = null)
+    {
+        fallback ??= new List<string>();
+        if (raw is null) return fallback;
+        if (raw is JsonElement el && el.ValueKind == JsonValueKind.Array)
+        {
+            var list = new List<string>();
+            foreach (var item in el.EnumerateArray())
+                if (item.ValueKind == JsonValueKind.String) list.Add(item.GetString()!);
+            return list;
+        }
+        if (raw is List<string> stringList) return stringList;
+        if (raw is IEnumerable<object> objs)
+            return objs.Select(o => o?.ToString() ?? "").Where(s => s.Length > 0).ToList();
+        return fallback;
+    }
+
+    public static List<string> ExtractTags(Dictionary<string, object> attrs)
+        => attrs.TryGetValue("tags", out var raw) ? ParseStringList(raw) : new List<string>();
 }
 
 internal static class EntryMapper
