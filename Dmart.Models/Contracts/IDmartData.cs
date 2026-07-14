@@ -29,6 +29,18 @@ namespace Dmart.Models.Contracts;
 ///   <item><description><c>scope</c> on <see cref="QueryEntriesAsync"/> selects the
 ///   HTTP endpoint scope ("managed"/"public") on the client; it is IGNORED on the
 ///   SQL adapter (RBAC there comes from <c>actor</c>).</description></item>
+///   <item><description>Failures: catch by exception TYPE. The typed
+///   <see cref="DmartException"/> subclass is the cross-backend contract;
+///   <see cref="DmartException.StatusCode"/> and <c>Error.Type</c> are
+///   backend-flavored (the client preserves the server's wire status/type,
+///   the adapter synthesizes canonical ones — 404/409/422, type "db") and
+///   must not be branched on.</description></item>
+///   <item><description><see cref="GetProfileAsync"/> on the client reads
+///   GET /user/profile, which projects identity + profile attributes only —
+///   the returned User's <c>Uuid</c>/<c>OwnerShortname</c> are synthesized
+///   empty and <c>SpaceName</c> defaults to "management". The adapter
+///   returns the full row (minus <c>Password</c>, redacted on BOTH
+///   backends).</description></item>
 /// </list>
 /// </summary>
 public interface IDmartData

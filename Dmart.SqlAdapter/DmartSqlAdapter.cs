@@ -52,6 +52,11 @@ public sealed partial class DmartSqlAdapter : IDmartData
         = new(StringComparer.Ordinal);
     private static readonly TimeSpan UserPermissionsCacheTtl = TimeSpan.FromMinutes(5);
 
+    // NOTE: jsonOptions also shapes the Response.Records[].Attributes that the
+    // write methods echo (EntryToRecord round-trips through it). The default
+    // snake_case options match what the HTTP client's Responses carry; supply
+    // custom options with a different naming policy and the echoed attribute
+    // keys/shapes will no longer be interchangeable with Dmart.Client's.
     public DmartSqlAdapter(DmartDb db, JsonSerializerOptions? jsonOptions = null,
         PermissionEngine? engine = null, DmartSqlAdapterOptions? options = null)
     {
@@ -896,16 +901,16 @@ public sealed partial class DmartSqlAdapter : IDmartData
         cmd.Parameters.Add(new() { Value = subpath });
         cmd.Parameters.Add(new() { Value = e.IsActive });
         cmd.Parameters.Add(new() { Value = (object?)e.Slug ?? DBNull.Value });
-        cmd.Parameters.Add(JsonbHelpers.ToJsonbParameter("@displayname", e.Displayname, _json));
-        cmd.Parameters.Add(JsonbHelpers.ToJsonbParameter("@description", e.Description, _json));
-        cmd.Parameters.Add(JsonbHelpers.ToJsonbParameter("@tags", e.Tags, _json));
+        cmd.Parameters.Add(JsonbHelpers.ToJsonbParameter(e.Displayname, _json));
+        cmd.Parameters.Add(JsonbHelpers.ToJsonbParameter(e.Description, _json));
+        cmd.Parameters.Add(JsonbHelpers.ToJsonbParameter(e.Tags, _json));
         cmd.Parameters.Add(new() { Value = e.CreatedAt == default ? DateTime.UtcNow : e.CreatedAt });
         cmd.Parameters.Add(new() { Value = e.UpdatedAt == default ? DateTime.UtcNow : e.UpdatedAt });
         cmd.Parameters.Add(new() { Value = e.OwnerShortname });
         cmd.Parameters.Add(new() { Value = (object?)e.OwnerGroupShortname ?? DBNull.Value });
-        cmd.Parameters.Add(JsonbHelpers.ToJsonbParameter("@acl", e.Acl, _json));
-        cmd.Parameters.Add(JsonbHelpers.ToJsonbParameter("@payload", e.Payload, _json));
-        cmd.Parameters.Add(JsonbHelpers.ToJsonbParameter("@relationships", e.Relationships, _json));
+        cmd.Parameters.Add(JsonbHelpers.ToJsonbParameter(e.Acl, _json));
+        cmd.Parameters.Add(JsonbHelpers.ToJsonbParameter(e.Payload, _json));
+        cmd.Parameters.Add(JsonbHelpers.ToJsonbParameter(e.Relationships, _json));
         cmd.Parameters.Add(new() { Value = (object?)e.LastChecksumHistory ?? DBNull.Value });
         cmd.Parameters.Add(new() { Value = EnumWire(e.ResourceType) });
         cmd.Parameters.Add(new() { Value = (object?)e.State ?? DBNull.Value });
@@ -913,11 +918,20 @@ public sealed partial class DmartSqlAdapter : IDmartData
         cmd.Parameters.Add(new() { Value = (object?)e.IsOpen ?? DBNull.Value });
 #pragma warning restore CA1508
         cmd.Parameters.Add(new() { Value = (object?)e.WorkflowShortname ?? DBNull.Value });
-        cmd.Parameters.Add(JsonbHelpers.ToJsonbParameter("@collaborators", e.Collaborators, _json));
+        cmd.Parameters.Add(JsonbHelpers.ToJsonbParameter(e.Collaborators, _json));
         cmd.Parameters.Add(new() { Value = (object?)e.ResolutionReason ?? DBNull.Value });
-        var qp = new NpgsqlParameter("@query_policies", NpgsqlDbType.Array | NpgsqlDbType.Text)
+        // Positional like every other parameter in this command — a named
+        // parameter here would trip Npgsql's no-mixing rule against the $n
+        // placeholders above.
+        //
+        // Regenerated deterministically on every write, matching the server's
+        // repositories: entries.query_policies carries a non-empty CHECK
+        // constraint, and a row with stale/empty patterns is invisible to
+        // ACL-filtered queries. Caller-supplied values are ignored.
+        var qp = new NpgsqlParameter
         {
-            Value = (object?)e.QueryPolicies?.ToArray() ?? Array.Empty<string>(),
+            NpgsqlDbType = NpgsqlDbType.Array | NpgsqlDbType.Text,
+            Value = QueryPoliciesHelper.Generate(e).ToArray(),
         };
         cmd.Parameters.Add(qp);
 

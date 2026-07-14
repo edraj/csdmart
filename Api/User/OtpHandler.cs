@@ -26,7 +26,7 @@ public static class OtpHandler
         // returning "" for shortname.
         g.MapPost("/otp-request", async (SendOTPRequest req, OtpProvider otp, OtpRepository repo,
             UserRepository users, UserService userService, HttpContext http,
-            IOptions<DmartSettings> settings, CancellationToken ct) =>
+            RegexPatternsConfig regexConfig, IOptions<DmartSettings> settings, CancellationToken ct) =>
         {
             var provided = (string.IsNullOrEmpty(req.Shortname) ? 0 : 1)
                          + (string.IsNullOrEmpty(req.Msisdn) ? 0 : 1)
@@ -37,6 +37,10 @@ public static class OtpHandler
             if (provided > 1)
                 return Response.Fail(InternalErrorCode.INVALID_STANDALONE_DATA,
                     "Too many input has been passed", "OTP");
+            if (!string.IsNullOrEmpty(req.Msisdn) && regexConfig.ValidateMsisdnFormat(req.Msisdn) is { } msisdnFormatErr)
+                return Response.Fail(InternalErrorCode.INVALID_DATA, msisdnFormatErr, ErrorTypes.Request);
+            if (!string.IsNullOrEmpty(req.Email) && regexConfig.ValidateEmailFormat(req.Email) is { } emailFormatErr)
+                return Response.Fail(InternalErrorCode.INVALID_DATA, emailFormatErr, ErrorTypes.Request);
 
             Models.Core.User? user;
             string? dest = null;

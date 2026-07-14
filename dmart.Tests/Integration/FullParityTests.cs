@@ -595,7 +595,7 @@ public class FullParityTests : IClassFixture<DmartFactory>
             svcs.Configure<Dmart.Config.DmartSettings>(s => s.IsOtpForCreateRequired = false);
         }));
         var client = factory.CreateClient();
-        var email = "otpoff_" + Guid.NewGuid().ToString("N")[..6] + "@x.y";
+        var email = "otpoff_" + Guid.NewGuid().ToString("N")[..6] + "@x.yz";
         // No shortname on the wire: /user/create allocates it server-side.
         var body = "{\"attributes\":{\"email\":\"" + email + "\",\"password\":\"Testtest1234\"}}";
         var resp = await client.PostAsync("/user/create",
@@ -619,7 +619,7 @@ public class FullParityTests : IClassFixture<DmartFactory>
         }));
         var client = factory.CreateClient();
         var users = factory.Services.GetRequiredService<UserRepository>();
-        var email = "fpcpwd_" + Guid.NewGuid().ToString("N")[..6] + "@x.y";
+        var email = "fpcpwd_" + Guid.NewGuid().ToString("N")[..6] + "@x.yz";
         var body = "{\"attributes\":{\"email\":\"" + email + "\",\"password\":\"Testtest1234\"}}";
         var resp = await client.PostAsync("/user/create",
             new StringContent(body, Encoding.UTF8, "application/json"));
@@ -645,7 +645,7 @@ public class FullParityTests : IClassFixture<DmartFactory>
         }));
         var client = factory.CreateClient();
         var users = factory.Services.GetRequiredService<UserRepository>();
-        var email = "fpcnopwd_" + Guid.NewGuid().ToString("N")[..6] + "@x.y";
+        var email = "fpcnopwd_" + Guid.NewGuid().ToString("N")[..6] + "@x.yz";
         var body = "{\"attributes\":{\"email\":\"" + email + "\"}}";
         var resp = await client.PostAsync("/user/create",
             new StringContent(body, Encoding.UTF8, "application/json"));

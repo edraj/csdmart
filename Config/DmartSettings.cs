@@ -374,6 +374,51 @@ public sealed class DmartSettings
     // header-bearing request is rejected (same behavior as Python).
     public string ChannelsConfigPath { get; set; } = "";
 
+    // Filesystem path to the regex-override JSON file. Empty = default
+    // `~/.dmart/regex.json`. Holds a per-channel regex override for
+    // "email" and "msisdn" — see RegexPatternsConfig. A missing file, a
+    // missing channel key, or an empty value all fall back to the built-in
+    // default regex for that channel (world-standard email; E.164-shaped
+    // msisdn, optional leading '+', 6-15 digits). Applied to CHANGED values
+    // everywhere email/msisdn is set — self-registration, profile updates,
+    // AND managed/admin user create-update all get the same format check;
+    // updates that echo a stored legacy value back unmodified are exempt.
+    public string RegexConfigPath { get; set; } = "";
+
+    // CSV list of channels callers may use for self-REGISTRATION
+    // (/user/create) only — "email" and/or "msisdn". A channel left out is
+    // disabled: any create request supplying a value for it is rejected.
+    // Default both on. Leaving the list EMPTY closes self-registration
+    // entirely (same error as IS_REGISTRABLE=false) — it does not permit
+    // contact-less signup.
+    //
+    // Deliberately NOT consulted anywhere else email/msisdn is set:
+    //   * /user/profile — updating an already-registered user's own contact
+    //     info is not "registration"; only the regex format check applies.
+    //   * /managed/request (admin create/update) — an admin is trusted to
+    //     set either field regardless of what self-registration currently
+    //     allows; only the regex format check (RegexConfigPath) applies.
+    public string RegistrationEnabledChannels { get; set; } = "email,msisdn";
+
+    // Helper — split the CSV into trimmed lowercase channel names. Done here
+    // (not in RegexPatternsConfig) so tests can assert the parsing behavior
+    // directly, matching ParseAllowedCorsOrigins's pattern.
+    public string[] ParseRegistrationEnabledChannels()
+    {
+        if (string.IsNullOrWhiteSpace(RegistrationEnabledChannels)) return Array.Empty<string>();
+        return RegistrationEnabledChannels
+            .Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
+            .Select(c => c.ToLowerInvariant())
+            .ToArray();
+    }
+
+    // Convenience wrapper around ParseRegistrationEnabledChannels() for the
+    // common "is this one channel enabled" check — case-insensitive on the
+    // caller's side too (the parsed list is already lowercase).
+    public bool IsRegistrationChannelEnabled(string channel)
+        => ParseRegistrationEnabledChannels()
+            .Contains(channel.ToLowerInvariant(), StringComparer.Ordinal);
+
     // Timeout (seconds) for the `jq` subprocess invoked when a join sub-query
     // carries a jq_filter expression. Python default (backend/utils/settings.py).
     public int JqTimeout { get; set; } = 2;

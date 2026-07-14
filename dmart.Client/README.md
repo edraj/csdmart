@@ -251,7 +251,7 @@ it when the client is disposed.
 - `net8.0` — LTS .NET 8.
 - `net10.0` — current .NET.
 
-## 0.10.0 — Interchangeable backends
+## 1.0.7 — Interchangeable backends
 
 `Dmart.Client.DmartClient` and `Dmart.SqlAdapter.DmartSqlAdapter` now both
 implement `Dmart.Models.Contracts.IDmartData`, so an ASP.NET app can depend on
@@ -270,6 +270,19 @@ the interface and swap HTTP ↔ direct-DB backends via DI.
   `GetChildrenEntriesAsync` / `GetProfileAsync(actor)`; the client's
   `QueryAsync` / `GetSpacesAsync` / `GetChildrenAsync` / `GetProfileAsync()`
   keep their `Response`-shaped contract for back-compat.
+
+**Behavior changes:**
+
+- `LoadUserMetaAsync` now requests the payload body
+  (`retrieve_json_payload=true`), so `User.Payload.Body` is populated where it
+  was previously `null` — matching the SQL adapter, which reads the whole
+  payload column. Responses are marginally larger.
+- `GetProfileAsync(actor)` (the `IDmartData` overload) reads `GET
+  /user/profile` — the caller's own profile, identified by the bearer token;
+  the `actor` argument is ignored. The profile endpoint doesn't project
+  `uuid`/`space_name`/`owner_shortname`, so those `User` fields are
+  synthesized (`""`/`"management"`/`""`). Use `LoadUserMetaAsync` (requires
+  managed read permission) when you need the full row.
 
 ## License
 

@@ -34,6 +34,7 @@ public static class RequestHandler
                                   FolderContentValidator folderContent,
                                   SchemaValidator schemas,
                                   HistoryRepository history,
+                                  RegexPatternsConfig regexConfig,
                                   IOptions<DmartSettings> dmartSettings,
                                   HttpContext http, CancellationToken ct) =>
             {
@@ -156,7 +157,7 @@ public static class RequestHandler
                         var (resp, updated, diff) = await DispatchUpdateAsync(
                             rec, req.SpaceName, actor,
                             entries, users, access, spaces, attachments, perms, uniqueness,
-                            schemas, history, ct);
+                            schemas, history, regexConfig, ct);
                         result = (resp, updated);
                         updateDiff = diff;
                     }
@@ -168,7 +169,8 @@ public static class RequestHandler
                                 await RetryOnShortnameCollisionAsync(
                                     IsAutoShortname(rec.Shortname),
                                     () => DispatchCreateAsync(rec, req.SpaceName, actor,
-                                        entries, users, access, spaces, attachments, perms, uniqueness, folderContent, schemas, ct),
+                                        entries, users, access, spaces, attachments, perms, uniqueness, folderContent, schemas,
+                                        regexConfig, ct),
                                     r => r.Response.Error?.Code == InternalErrorCode.SHORTNAME_ALREADY_EXIST),
                             RequestType.Delete =>
                                 await DispatchDeleteAsync(rec, req.SpaceName, actor, managementSpace, req.Force, req.DryRun,
@@ -355,7 +357,7 @@ public static class RequestHandler
         SpaceRepository spaces, AttachmentRepository attachments,
         PermissionService perms,
         UniquenessValidator uniqueness, FolderContentValidator folderContent,
-        SchemaValidator schemas, CancellationToken ct)
+        SchemaValidator schemas, RegexPatternsConfig regexConfig, CancellationToken ct)
     {
         rec = ResolveAutoShortname(rec);
         // Gate non-entry branches here. The entry path runs through EntryService
@@ -430,7 +432,7 @@ public static class RequestHandler
         switch (rec.ResourceType)
         {
             case ResourceType.User:
-                return await CreateUserAsync(rec, space, actor, users, uniqueness, ct);
+                return await CreateUserAsync(rec, space, actor, users, uniqueness, regexConfig, ct);
             case ResourceType.Role:
                 return await CreateRoleAsync(rec, space, actor, access, uniqueness, ct);
             case ResourceType.Group:
@@ -483,7 +485,7 @@ public static class RequestHandler
 
     private static async Task<(Response Response, Record UpdatedRecord)> CreateUserAsync(
         Record rec, string space, string actor, UserRepository users,
-        UniquenessValidator uniqueness, CancellationToken ct)
+        UniquenessValidator uniqueness, RegexPatternsConfig regexConfig, CancellationToken ct)
     {
         var attrs = rec.Attributes ?? new();
         // Reject (rather than silently ignore) an attempt to set a password here
@@ -492,6 +494,14 @@ public static class RequestHandler
         if (HasPasswordAttribute(attrs))
             return (Response.Fail(InternalErrorCode.INVALID_DATA,
                 PasswordNotAllowedMessage, ErrorTypes.Request), rec);
+        var emailErr = regexConfig.ValidateEmailFormat(
+            attrs.TryGetValue("email", out var eAttr) ? ConvertToString(eAttr) : null);
+        if (emailErr is not null)
+            return (Response.Fail(InternalErrorCode.INVALID_DATA, emailErr, ErrorTypes.Request), rec);
+        var msisdnErr = regexConfig.ValidateMsisdnFormat(
+            attrs.TryGetValue("msisdn", out var mAttr) ? ConvertToString(mAttr) : null);
+        if (msisdnErr is not null)
+            return (Response.Fail(InternalErrorCode.INVALID_DATA, msisdnErr, ErrorTypes.Request), rec);
 
         var existing = await users.GetByShortnameAsync(rec.Shortname, ct);
         if (existing is not null)
@@ -769,7 +779,8 @@ public static class RequestHandler
         EntryService entries, UserRepository users, AccessRepository access,
         SpaceRepository spaces, AttachmentRepository attachments,
         PermissionService perms, UniquenessValidator uniqueness,
-        SchemaValidator schemas, HistoryRepository history, CancellationToken ct)
+        SchemaValidator schemas, HistoryRepository history,
+        RegexPatternsConfig regexConfig, CancellationToken ct)
     {
         var locator = new Locator(rec.ResourceType, space, rec.Subpath, rec.Shortname);
 
@@ -789,6 +800,19 @@ public static class RequestHandler
                 if (HasPasswordAttribute(attrs))
                     return (Response.Fail(InternalErrorCode.INVALID_DATA,
                         PasswordNotAllowedMessage, ErrorTypes.Request), rec, null);
+                // Format-check only CHANGED values. Legacy rows can predate
+                // the format regex (or a stricter override), and the standard
+                // read-modify-write client echoes the stored email/msisdn back
+                // untouched — rejecting that would block unrelated edits on
+                // legacy users. (UpdateProfileAsync gates the same way.)
+                var updEmail = attrs.TryGetValue("email", out var ue) ? ConvertToString(ue) : null;
+                if (!string.Equals(updEmail, existing.Email, StringComparison.Ordinal)
+                    && regexConfig.ValidateEmailFormat(updEmail) is { } updateEmailErr)
+                    return (Response.Fail(InternalErrorCode.INVALID_DATA, updateEmailErr, ErrorTypes.Request), rec, null);
+                var updMsisdn = attrs.TryGetValue("msisdn", out var um) ? ConvertToString(um) : null;
+                if (!string.Equals(updMsisdn, existing.Msisdn, StringComparison.Ordinal)
+                    && regexConfig.ValidateMsisdnFormat(updMsisdn) is { } updateMsisdnErr)
+                    return (Response.Fail(InternalErrorCode.INVALID_DATA, updateMsisdnErr, ErrorTypes.Request), rec, null);
                 var userFloor = await EnforcePrivilegeFloorAsync(ResourceType.User, attrs, actor, perms, users, ct);
                 if (userFloor is not null) return (userFloor, rec, null);
                 var userUniq = await uniqueness.ValidateRawAsync(
@@ -1760,18 +1784,9 @@ public static class RequestHandler
         return rec with { Attributes = attrs };
     }
 
-    private static string? ConvertToString(object? v) => v switch
-    {
-        null => null,
-        string s => s,
-        JsonElement el => el.ValueKind switch
-        {
-            JsonValueKind.String => el.GetString(),
-            JsonValueKind.Null   => null,
-            _                    => el.GetRawText(),
-        },
-        _ => v.ToString(),
-    };
+    // Delegates to the canonical implementation (AttrHelper); kept as a
+    // private alias so the many call sites in this file stay unqualified.
+    private static string? ConvertToString(object? v) => AttrHelper.ConvertToString(v);
 
     private static bool IsTruthy(object? v) => v switch
     {

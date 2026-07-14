@@ -34,7 +34,7 @@ instead if you want the ready-made HTTP client:
 dotnet add package Dmart.Client
 ```
 
-## 0.10.0 — `IDmartData` contract
+## 1.0.7 — `IDmartData` contract
 
 Adds `Dmart.Models.Contracts.IDmartData` — the backend-neutral interface
 implemented by both `Dmart.Client.DmartClient` and

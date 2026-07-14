@@ -1698,6 +1698,23 @@ internal static class AttrHelper
         }
         return result;
     }
+
+    // Canonical stringifier for attribute-dict values: they arrive as raw CLR
+    // values from internal callers or as JsonElement from the HTTP
+    // deserialization path. RequestHandler / UserService / WorkflowService all
+    // delegate here rather than keeping private copies.
+    public static string? ConvertToString(object? v) => v switch
+    {
+        null => null,
+        string s => s,
+        System.Text.Json.JsonElement el => el.ValueKind switch
+        {
+            System.Text.Json.JsonValueKind.String => el.GetString(),
+            System.Text.Json.JsonValueKind.Null   => null,
+            _                                     => el.GetRawText(),
+        },
+        _ => v.ToString(),
+    };
 }
 
 internal static class EntryMapper

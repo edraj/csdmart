@@ -182,6 +182,99 @@ public class DmartClientTests
         ex.ShouldBeOfType<DmartException>();  // exactly base, not a subtype
     }
 
+    [Fact]
+    public async Task Conflict_Code_Throws_DmartConflictException()
+    {
+        // SHORTNAME_ALREADY_EXIST (=400) can arrive under HTTP 400 (service-
+        // layer catch) or 409 (the 23505 middleware) — the CODE selects the
+        // typed subclass, so even a 400 wrapper must map to Conflict.
+        var (client, _) = Make(_ => Task.FromResult(
+            new HttpResponseMessage(HttpStatusCode.BadRequest)
+            {
+                Content = new StringContent(
+                    """{"status":"failed","error":{"type":"request","code":400,"message":"already exists"}}""",
+                    Encoding.UTF8, "application/json"),
+            }));
+
+        var ex = await Should.ThrowAsync<DmartConflictException>(
+            () => client.RequestAsync(new Request
+            {
+                RequestType = RequestType.Create, SpaceName = "app", Records = new(),
+            }));
+        ex.StatusCode.ShouldBe(400, "the wire status is preserved even when the code drove the type");
+    }
+
+    [Fact]
+    public async Task InvalidData_Code_Throws_DmartValidationException()
+    {
+        // INVALID_DATA (=402) arrives under HTTP 400 — code drives the type.
+        var (client, _) = Make(_ => Task.FromResult(
+            new HttpResponseMessage(HttpStatusCode.BadRequest)
+            {
+                Content = new StringContent(
+                    """{"status":"failed","error":{"type":"request","code":402,"message":"Email format is invalid"}}""",
+                    Encoding.UTF8, "application/json"),
+            }));
+
+        await Should.ThrowAsync<DmartValidationException>(
+            () => client.RequestAsync(new Request
+            {
+                RequestType = RequestType.Create, SpaceName = "app", Records = new(),
+            }));
+    }
+
+    [Fact]
+    public async Task Unrecognized_Code_Falls_Back_To_Http_Status()
+    {
+        // A code the switch doesn't know (proxy / future server) must fall
+        // back to the HTTP status: 409 → Conflict.
+        var (client, _) = Make(_ => Task.FromResult(
+            new HttpResponseMessage(HttpStatusCode.Conflict)
+            {
+                Content = new StringContent(
+                    """{"status":"failed","error":{"type":"request","code":999,"message":"conflict, unknown code"}}""",
+                    Encoding.UTF8, "application/json"),
+            }));
+
+        await Should.ThrowAsync<DmartConflictException>(
+            () => client.RequestAsync(new Request
+            {
+                RequestType = RequestType.Update, SpaceName = "app", Records = new(),
+            }));
+    }
+
+    // ----- IDmartData.GetProfileAsync(actor) -----
+
+    [Fact]
+    public async Task GetProfileAsync_Actor_Uses_Profile_Endpoint_And_Maps_User()
+    {
+        // IDmartData.GetProfileAsync(actor) must be an own-profile read via
+        // GET /user/profile — NOT a managed entry read of /users/{actor}.
+        // The managed read 401s for ordinary users (their user row is owned
+        // by "dmart", not themselves), breaking HTTP↔SQL interchangeability;
+        // per the interface caveats the bearer token, not `actor`, identifies
+        // the caller on the HTTP backend.
+        var (client, handler) = Make(_ => Task.FromResult(Ok(
+            """{"status":"success","records":[{"resource_type":"user","shortname":"alice","subpath":"/users","attributes":{"email":"alice@x.yz","type":"web","language":"en","roles":["editor"],"is_email_verified":true}}]}""")));
+
+        var user = await client.GetProfileAsync("alice");
+
+        handler.LastRequest!.Method.ShouldBe(HttpMethod.Get);
+        handler.LastRequest.RequestUri!.AbsolutePath.ShouldBe("/user/profile");
+        user.ShouldNotBeNull();
+        user!.Shortname.ShouldBe("alice");
+        user.Email.ShouldBe("alice@x.yz");
+        user.Roles.ShouldContain("editor");
+        user.IsEmailVerified.ShouldBeTrue();
+    }
+
+    [Fact]
+    public async Task GetProfileAsync_Actor_Returns_Null_On_Empty_Records()
+    {
+        var (client, _) = Make(_ => Task.FromResult(Ok("""{"status":"success","records":[]}""")));
+        (await client.GetProfileAsync("alice")).ShouldBeNull();
+    }
+
     // ----- URL construction -----
 
     [Fact]
