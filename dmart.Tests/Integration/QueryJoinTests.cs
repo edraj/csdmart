@@ -1127,6 +1127,131 @@ public class QueryJoinTests : IClassFixture<DmartFactory>
         }, "dmart");
     }
 
+    // ── Wide right side: matches beyond the sub-query pull cap ────────────
+    // Regression for the "brands with products but empty joins" bug. The
+    // right-side pull used a hard-coded LIMIT 1000; when the base page's
+    // narrowed sub-query matched more than 1000 right rows, rows past the
+    // cap (in the sub-query's sort order) silently vanished — base records
+    // whose matches ALL sorted past position 1000 came back with an empty
+    // matched-list even though their matches exist. Fixture: brand_early
+    // owns 1000 products that fill the old cap; brand_late owns a single
+    // product whose shortname sorts after all of them.
+    [FactIfPg]
+    public async Task Left_Join_Attaches_Matches_Beyond_The_1000_Row_SubQuery_Pull()
+    {
+        var (query, entries, spaces) = Resolve();
+        var spaceName = $"jw_{Guid.NewGuid():N}".Substring(0, 12);
+        try
+        {
+            await SeedWideRightFixtureAsync(entries, spaces, spaceName);
+
+            var resp = await ExecuteWideRightJoin(query, spaceName, JoinType.Left);
+            resp.Status.ShouldBe(Status.Success, customMessage: resp.Error?.Message);
+            resp.Records.ShouldNotBeNull();
+            resp.Records!.Count.ShouldBe(2);
+
+            AssertWideMatchCount(resp.Records, "brand_early", min: 1);
+            AssertWideMatchCount(resp.Records, "brand_late", min: 1,
+                because: "brand_late's product sorts past the 1000th pulled row and must not be lost");
+        }
+        finally { try { await spaces.DeleteAsync(spaceName); } catch { } }
+    }
+
+    // Same truncation exercised through the INNER pushdown fast path: SQL's
+    // EXISTS keeps brand_late (it provably has a product), so the attach
+    // pass must deliver that product — a kept row with an empty matched-list
+    // is the exact wire symptom reported from UAT.
+    [FactIfPg]
+    public async Task Inner_Join_Pushdown_Attaches_Matches_Beyond_The_1000_Row_SubQuery_Pull()
+    {
+        var (query, entries, spaces) = Resolve();
+        var spaceName = $"jw_{Guid.NewGuid():N}".Substring(0, 12);
+        try
+        {
+            await SeedWideRightFixtureAsync(entries, spaces, spaceName);
+
+            var resp = await ExecuteWideRightJoin(query, spaceName, JoinType.Inner);
+            resp.Status.ShouldBe(Status.Success, customMessage: resp.Error?.Message);
+            resp.Records.ShouldNotBeNull();
+            resp.Records!.Count.ShouldBe(2, "both brands have products, so inner keeps both");
+
+            AssertWideMatchCount(resp.Records, "brand_early", min: 1);
+            AssertWideMatchCount(resp.Records, "brand_late", min: 1,
+                because: "SQL kept brand_late via EXISTS, so its match must be attached");
+        }
+        finally { try { await spaces.DeleteAsync(spaceName); } catch { } }
+    }
+
+    // 2 brands + 1001 products: p_0000..p_0999 → brand_early, z_late_product
+    // → brand_late. With the sub-query sorted by shortname ascending, the
+    // late product is row 1001 of the narrowed pull.
+    private static async Task SeedWideRightFixtureAsync(
+        EntryRepository entries, SpaceRepository spaces, string spaceName)
+    {
+        await UpsertJoinSpaceAsync(spaces, spaceName);
+        await SeedEntryAsync(entries, spaceName, "/brands", "brand_early", ResourceType.Content,
+            new() { ["title"] = JsonDocument.Parse("\"Early\"").RootElement });
+        await SeedEntryAsync(entries, spaceName, "/brands", "brand_late", ResourceType.Content,
+            new() { ["title"] = JsonDocument.Parse("\"Late\"").RootElement });
+
+        for (var i = 0; i < 1000; i++)
+            await SeedEntryAsync(entries, spaceName, "/products", $"p_{i:D4}", ResourceType.Content,
+                new() { ["brand"] = JsonDocument.Parse("\"brand_early\"").RootElement });
+        await SeedEntryAsync(entries, spaceName, "/products", "z_late_product", ResourceType.Content,
+            new() { ["brand"] = JsonDocument.Parse("\"brand_late\"").RootElement });
+    }
+
+    // Brands ⟕/⋈ products on shortname:payload.body.brand — the reported
+    // shape, where many right rows share one left value. The sub-query's
+    // own limit (5) is the per-base cap, applied client-side after matching.
+    private static async Task<Response> ExecuteWideRightJoin(
+        QueryService query, string spaceName, JoinType joinType)
+    {
+        var subQueryJson = JsonSerializer.SerializeToElement(new Query
+        {
+            Type = QueryType.Subpath,
+            SpaceName = spaceName,
+            Subpath = "products",
+            Limit = 5,
+            SortBy = "shortname",
+            SortType = SortType.Ascending,
+            RetrieveJsonPayload = true,
+        }, Dmart.Models.Json.DmartJsonContext.Default.Query);
+
+        return await query.ExecuteAsync(new Query
+        {
+            Type = QueryType.Subpath,
+            SpaceName = spaceName,
+            Subpath = "brands",
+            Limit = 100,
+            SortBy = "shortname",
+            SortType = SortType.Ascending,
+            RetrieveJsonPayload = true,
+            Join = new()
+            {
+                new JoinQuery
+                {
+                    JoinOn = "shortname:payload.body.brand",
+                    Alias = "products",
+                    Query = subQueryJson,
+                    Type = joinType,
+                },
+            },
+        }, "dmart");
+    }
+
+    private static void AssertWideMatchCount(
+        List<Record> records, string brand, int min, string? because = null)
+    {
+        var rec = records.FirstOrDefault(r => r.Shortname == brand);
+        rec.ShouldNotBeNull($"expected record {brand} in response");
+        var joinDict = (Dictionary<string, object>)rec!.Attributes!["join"];
+        joinDict.ShouldContainKey("products");
+        var matched = (List<Record>)joinDict["products"];
+        matched.Count.ShouldBeGreaterThanOrEqualTo(min,
+            because ?? $"{brand} should have at least {min} matched product(s)");
+    }
+
     // Round-trip a join request through the same JSON deserializer the HTTP
     // layer uses, so the JoinType wire-string also gets exercised.
     private static async Task<Response> ExecuteJoinViaWire(QueryService query, string spaceName, string joinType)

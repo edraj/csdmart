@@ -205,6 +205,14 @@ or a different space/subpath. The field is bound on the wire and the
 join logic lives in `QueryService.ApplyClientJoinsAsync` for the common
 case.
 
+The right-side pull that feeds the in-memory match is bounded by
+`MAX_QUERY_LIMIT` (default 10000; historically a hard-coded 1000, which
+silently lost matches for wide right sides). If a base page's matches
+still exceed the bound, rows sorting past it are dropped from the
+matched lists and a warning is logged naming the join alias, target
+space/subpath, and the cap — narrow `sub_query.search` (so the pull only
+fetches the relevant slice) or raise `MAX_QUERY_LIMIT` when that fires.
+
 ## Response shape
 
 ```json

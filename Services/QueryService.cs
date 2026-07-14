@@ -96,7 +96,7 @@ public sealed class QueryService(
 
                 // Attach matches for the page only. Pushed inner joins (and any
                 // left joins) attach as Left: SQL already decided membership, so
-                // the in-memory pass must never drop a row (its 1000-row narrowed
+                // the in-memory pass must never drop a row (its capped narrowed
                 // pull could otherwise miss a match SQL legitimately kept).
                 var attachJoins = q.Join.Select(j => j with { Type = JoinType.Left }).ToList();
                 try
@@ -971,12 +971,13 @@ public sealed class QueryService(
             // tenant-controlled value carrying any of those would corrupt
             // the synthesized `@field:v1|v2` expression. When narrowing is
             // unsafe, we fall back to pulling with the user's search alone
-            // and matching client-side (bounded by the 1000-row cap below).
+            // and matching client-side (bounded by the MaxQueryLimit pull
+            // cap below).
             //
             // Performance note: Right/Outer are O(right-table-size) by
             // design — the only way to know "which right records nobody
-            // referenced" is to enumerate the right side. The 1000-row cap
-            // bounds the worst case but doesn't make this cheap. Callers
+            // referenced" is to enumerate the right side. The MaxQueryLimit
+            // pull cap bounds the worst case but doesn't make this cheap. Callers
             // with large right tables (customers, users, etc.) should pair
             // Right/Outer with a selective `sub_query.search` so the
             // sub-query returns only the slice of the right side that
@@ -1065,15 +1066,20 @@ public sealed class QueryService(
                     combinedSearch = string.IsNullOrEmpty(subQuery.Search) ? null : subQuery.Search;
                 }
 
-                // Python caps sub-query at 1000 so a single join pull can't
-                // blow up memory when the base set is wide. Sub-query's
-                // jq_filter applies to the join's matched_list below (wrapped
-                // with map() for vectorization), not to the sub-query's own
-                // records — strip it before recursing.
+                // Python caps this pull at 1000, but that silently lost joins:
+                // a base page referencing >1000 right rows had every match
+                // sorting past the cap come back empty (brands with products
+                // but no attached join). Bound by MaxQueryLimit instead — the
+                // same ceiling the base-set scan uses — and warn below when it
+                // bites. Sub-query's jq_filter applies to the join's
+                // matched_list below (wrapped with map() for vectorization),
+                // not to the sub-query's own records — strip it before
+                // recursing.
+                var pullCap = settings.Value.MaxQueryLimit > 0 ? settings.Value.MaxQueryLimit : 1000;
                 var widened = subQuery with
                 {
                     Search = combinedSearch,
-                    Limit = 1000,
+                    Limit = pullCap,
                     JqFilter = null,
                     Join = null,
                     // The join code only consumes Records (line 602-603); the
@@ -1085,6 +1091,13 @@ public sealed class QueryService(
                 var subResponse = await ExecuteAsync(widened, actor, ct);
                 if (subResponse.Status == Status.Success && subResponse.Records is not null)
                     rightRecords = subResponse.Records;
+
+                // No silent caps: a full pull means matches likely sort past
+                // the cap and their base records will show empty join lists.
+                if (rightRecords.Count >= pullCap)
+                    logger.LogWarning(
+                        "client_join sub-query pull for alias {Alias} ({Space}{Subpath}) hit the {Cap}-row cap (MaxQueryLimit); matches beyond it are missing — narrow sub_query.search or raise MAX_QUERY_LIMIT",
+                        joinItem.Alias, widened.SpaceName, widened.Subpath, pullCap);
             }
 
             // Index the right records by the FIRST parsed join pair's right
