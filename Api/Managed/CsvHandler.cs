@@ -57,8 +57,15 @@ public static class CsvHandler
                         if (record is null)
                             return Results.BadRequest(Response.Fail(InternalErrorCode.INVALID_DATA,
                                 "record body is empty", ErrorTypes.Request));
-                        var response = await ExecuteTaskHandler.ExecuteSavedQueryRecordAsync(
-                            space_name, record, http.Actor(), entries, queries, ct);
+                        var resolved = await ExecuteTaskHandler.ResolveSavedQueryAsync(
+                            space_name, record, http.Actor(), entries, ct);
+                        if (!resolved.IsOk)
+                            return Results.BadRequest(Response.Fail(resolved.ErrorCode,
+                                resolved.ErrorMessage!, resolved.ErrorType ?? ErrorTypes.Request, resolved.Info));
+                        // CSV export renders Record columns, so the saved query's
+                        // top-level jq_filter (if any) is intentionally ignored —
+                        // jq output isn't a Record shape and can't feed columns.
+                        var response = await queries.ExecuteAsync(resolved.Value!, http.Actor(), ct);
                         if (response.Status != Status.Success)
                             return Results.BadRequest(response);
                         var recordStream = csv.ExportRecords(response.Records ?? Enumerable.Empty<Record>());
