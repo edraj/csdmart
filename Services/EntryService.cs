@@ -798,27 +798,15 @@ public sealed class EntryService(
             return fallback;
         }
 
-        // System.Text.Json source-gen lands JSON arrays in Dictionary<string, object>
-        // as JsonElement, not List<object> — so the prior `is IEnumerable<object>`
-        // pattern silently dropped tag patches from HTTP callers.
         // `"tags": null` collapses to an empty list (the column is non-nullable
-        // and defaults to []), matching the "null clears" patch contract.
+        // and defaults to []), matching the "null clears" patch contract. Array/
+        // list/enumerable parsing itself delegates to AttrHelper.ParseStringList
+        // (see its comment re: JsonElement vs List<object> from HTTP callers).
         List<string> PatchTags(List<string> fallback)
         {
             if (!patch.TryGetValue("tags", out var raw)) return fallback;
             if (IsPatchNull(raw)) return new List<string>();
-            if (raw is JsonElement el && el.ValueKind == JsonValueKind.Array)
-            {
-                var list = new List<string>();
-                foreach (var item in el.EnumerateArray())
-                    if (item.ValueKind == JsonValueKind.String && item.GetString() is { } s)
-                        list.Add(s);
-                return list;
-            }
-            if (raw is List<string> sl) return sl;
-            if (raw is IEnumerable<object> objs)
-                return objs.Select(t => t?.ToString() ?? "").ToList();
-            return fallback;
+            return AttrHelper.ParseStringList(raw, fallback);
         }
 
         // Relationships are a full-list replacement on patch, not a deep
