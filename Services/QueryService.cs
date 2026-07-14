@@ -1,5 +1,4 @@
 using System.Diagnostics.CodeAnalysis;
-using System.Linq;
 using System.Text.Json;
 using Dmart.Config;
 using Dmart.DataAdapters.Sql;
@@ -1717,26 +1716,43 @@ internal static class AttrHelper
         _ => v.ToString(),
     };
 
-    // Canonical tags-list parser: accepts a JSON array, a List<string>, or an
-    // IEnumerable<object>; unrecognized shapes return `fallback` (defaults to
-    // empty) rather than silently wiping out existing data on a malformed patch.
-    // ResourceWithPayloadHandler / EntryService / UserService all delegate here
-    // rather than keeping private copies.
+    // Canonical string-list parser behind tags (ResourceWithPayloadHandler,
+    // EntryService.PatchTags, UserService self-registration) and roles/groups/
+    // tags extraction (RequestHandler.ExtractStringList) — no private copies.
+    //
+    // Normalization policy, uniform across input shapes: entries are trimmed
+    // and empty/whitespace-only entries dropped. Non-string JSON array items
+    // are dropped (wire input is not coerced); non-string CLR objects are
+    // ToString()-coerced (internal callers pass boxed values).
+    //
+    // Unrecognized shapes return `fallback` (defaults to empty) rather than
+    // silently wiping existing data on a malformed patch. Callers that must
+    // distinguish "absent/unusable" from "explicitly empty" (the update-merge
+    // contract on roles/groups) use TryParseStringList instead.
     public static List<string> ParseStringList(object? raw, List<string>? fallback = null)
+        => TryParseStringList(raw) ?? fallback ?? new List<string>();
+
+    // Core parser: null means "not a recognizable list shape" (including CLR
+    // null and non-array JsonElements); a recognized-but-empty array is [].
+    public static List<string>? TryParseStringList(object? raw)
     {
-        fallback ??= new List<string>();
-        if (raw is null) return fallback;
-        if (raw is JsonElement el && el.ValueKind == JsonValueKind.Array)
+        switch (raw)
         {
-            var list = new List<string>();
-            foreach (var item in el.EnumerateArray())
-                if (item.ValueKind == JsonValueKind.String) list.Add(item.GetString()!);
-            return list;
+            case JsonElement { ValueKind: JsonValueKind.Array } el:
+            {
+                var list = new List<string>();
+                foreach (var item in el.EnumerateArray())
+                    if (item.ValueKind == JsonValueKind.String
+                        && item.GetString()!.Trim() is { Length: > 0 } s)
+                        list.Add(s);
+                return list;
+            }
+            case IEnumerable<object?> objs:
+                return objs.Select(o => (o?.ToString() ?? "").Trim())
+                    .Where(s => s.Length > 0).ToList();
+            default:
+                return null;
         }
-        if (raw is List<string> stringList) return stringList;
-        if (raw is IEnumerable<object> objs)
-            return objs.Select(o => o?.ToString() ?? "").Where(s => s.Length > 0).ToList();
-        return fallback;
     }
 
     public static List<string> ExtractTags(Dictionary<string, object> attrs)
