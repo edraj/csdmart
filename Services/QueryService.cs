@@ -1096,8 +1096,8 @@ public sealed class QueryService(
                 // the cap and their base records will show empty join lists.
                 if (rightRecords.Count >= pullCap)
                     logger.LogWarning(
-                        "client_join sub-query pull for alias {Alias} hit the {Cap}-row cap (MaxQueryLimit); matches beyond it are missing",
-                        joinItem.Alias, pullCap);
+                        "client_join sub-query pull for alias {Alias} ({Space}{Subpath}) hit the {Cap}-row cap (MaxQueryLimit); matches beyond it are missing — narrow sub_query.search or raise MAX_QUERY_LIMIT",
+                        joinItem.Alias, widened.SpaceName, widened.Subpath, pullCap);
             }
 
             // Index the right records by the FIRST parsed join pair's right
