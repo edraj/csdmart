@@ -1699,22 +1699,12 @@ public static class RequestHandler
         return null;
     }
 
+    // Null-signaling wrapper over the canonical parser (AttrHelper): null
+    // means "attribute absent or unusable" so update-merge call sites
+    // (`?? existing.Roles` etc.) keep the old value, while a recognized-but-
+    // empty array explicitly clears.
     private static List<string>? ExtractStringList(Dictionary<string, object> attrs, string key)
-    {
-        if (!attrs.TryGetValue(key, out var raw)) return null;
-        if (raw is null) return null;
-        if (raw is JsonElement el && el.ValueKind == JsonValueKind.Array)
-        {
-            var list = new List<string>();
-            foreach (var item in el.EnumerateArray())
-                if (item.ValueKind == JsonValueKind.String) list.Add(item.GetString()!);
-            return list;
-        }
-        if (raw is List<string> stringList) return stringList;
-        if (raw is IEnumerable<object> objs)
-            return objs.Select(o => o?.ToString() ?? "").ToList();
-        return null;
-    }
+        => attrs.TryGetValue(key, out var raw) ? AttrHelper.TryParseStringList(raw) : null;
 
     // Extracts attrs["relationships"] into the same `List<Dictionary<string, object>>`
     // shape JsonbHelpers.FromRelationships produces on read. Going through

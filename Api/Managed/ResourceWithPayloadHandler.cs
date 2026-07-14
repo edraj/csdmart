@@ -314,21 +314,7 @@ public static class ResourceWithPayloadHandler
     // Pull `tags` out of a record's attributes dict. Accepts a JSON array, a
     // List<string>, or an IEnumerable<object>; returns an empty list otherwise
     // so the Attachment record's `Tags` (non-nullable) is always populated.
-    private static List<string> ExtractTags(Dictionary<string, object> attrs)
-    {
-        if (!attrs.TryGetValue("tags", out var raw) || raw is null) return new List<string>();
-        if (raw is JsonElement el && el.ValueKind == JsonValueKind.Array)
-        {
-            var list = new List<string>();
-            foreach (var item in el.EnumerateArray())
-                if (item.ValueKind == JsonValueKind.String) list.Add(item.GetString()!);
-            return list;
-        }
-        if (raw is List<string> stringList) return stringList;
-        if (raw is IEnumerable<object> objs)
-            return objs.Select(o => o?.ToString() ?? "").Where(s => s.Length > 0).ToList();
-        return new List<string>();
-    }
+    private static List<string> ExtractTags(Dictionary<string, object> attrs) => AttrHelper.ExtractTags(attrs);
 
     // dmart's set of attachment-flavor resource types (anything stored in the
     // attachments table). All other types live in the entries table.

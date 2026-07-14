@@ -1728,6 +1728,48 @@ internal static class AttrHelper
         },
         _ => v.ToString(),
     };
+
+    // Canonical string-list parser behind tags (ResourceWithPayloadHandler,
+    // EntryService.PatchTags, UserService self-registration) and roles/groups/
+    // tags extraction (RequestHandler.ExtractStringList) — no private copies.
+    //
+    // Normalization policy, uniform across input shapes: entries are trimmed
+    // and empty/whitespace-only entries dropped. Non-string JSON array items
+    // are dropped (wire input is not coerced); non-string CLR objects are
+    // ToString()-coerced (internal callers pass boxed values).
+    //
+    // Unrecognized shapes return `fallback` (defaults to empty) rather than
+    // silently wiping existing data on a malformed patch. Callers that must
+    // distinguish "absent/unusable" from "explicitly empty" (the update-merge
+    // contract on roles/groups) use TryParseStringList instead.
+    public static List<string> ParseStringList(object? raw, List<string>? fallback = null)
+        => TryParseStringList(raw) ?? fallback ?? new List<string>();
+
+    // Core parser: null means "not a recognizable list shape" (including CLR
+    // null and non-array JsonElements); a recognized-but-empty array is [].
+    public static List<string>? TryParseStringList(object? raw)
+    {
+        switch (raw)
+        {
+            case JsonElement { ValueKind: JsonValueKind.Array } el:
+            {
+                var list = new List<string>();
+                foreach (var item in el.EnumerateArray())
+                    if (item.ValueKind == JsonValueKind.String
+                        && item.GetString()!.Trim() is { Length: > 0 } s)
+                        list.Add(s);
+                return list;
+            }
+            case IEnumerable<object?> objs:
+                return objs.Select(o => (o?.ToString() ?? "").Trim())
+                    .Where(s => s.Length > 0).ToList();
+            default:
+                return null;
+        }
+    }
+
+    public static List<string> ExtractTags(Dictionary<string, object> attrs)
+        => attrs.TryGetValue("tags", out var raw) ? ParseStringList(raw) : new List<string>();
 }
 
 internal static class EntryMapper
