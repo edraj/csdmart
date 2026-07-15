@@ -1,0 +1,31 @@
+name: Podman preflight
+description: >
+  Self-heal stale rootless-podman state on the self-hosted runners.
+  The runners keep XDG_RUNTIME_DIR on persistent disk
+  (/home/githubrunner/runners/<name>/runtime), so podman's per-boot
+  runtime state survives host reboots instead of being wiped with a
+  tmpfs. After a reboot every podman command then exits 125 with
+  "current system boot ID differs from cached boot ID" (or, one layer
+  earlier, "cannot re-exec process to join the existing user
+  namespace") and all container-building jobs fail at their first
+  podman call. This preflight detects the broken state and clears only
+  the per-boot runtime directories podman itself asks to have deleted —
+  images and named containers (e.g. the cached dmart-el9-builder) live
+  in the graphroot and are untouched.
+
+runs:
+  using: composite
+  steps:
+    - name: Clear stale podman per-boot state if unhealthy
+      shell: bash
+      run: |
+        if podman info >/dev/null 2>&1; then
+          exit 0
+        fi
+        echo "podman unhealthy — clearing stale per-boot runtime state"
+        RUNROOT="${XDG_RUNTIME_DIR:-/run/user/$(id -u)}"
+        rm -rf "$RUNROOT/containers" "$RUNROOT/libpod/tmp"
+        podman system migrate 2>/dev/null || true
+        # Hard gate: fail HERE with podman's own diagnostics if the
+        # cleanup wasn't enough, instead of failing mid-build later.
+        podman info >/dev/null
