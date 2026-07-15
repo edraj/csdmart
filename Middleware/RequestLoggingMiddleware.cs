@@ -159,7 +159,7 @@ public static class RequestLoggingMiddleware
             ["props"] = new Dictionary<string, object?>
             {
                 ["timestamp"] = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds() / 1000.0,
-                ["duration"] = sw.Elapsed.TotalSeconds,
+                ["duration"] = sw.Elapsed.TotalMilliseconds,
                 ["server"] = Environment.MachineName,
                 ["process_id"] = Environment.ProcessId,
                 ["user_shortname"] = user,
