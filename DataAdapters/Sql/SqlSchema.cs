@@ -499,9 +499,19 @@ public static class SqlSchema
     -- collidable identifier would both break the second ''-row insert and
     -- block index creation on databases with several such rows.
     --
-    -- Guarded like the query_policies CHECK below: skipped (with a NOTICE)
+    -- These indexes also serve the hot-path lookups (login, OTP,
+    -- uniqueness checks): UserRepository's WHERE fragments carry matching
+    -- `<> ''` clauses because the planner only uses a partial index when
+    -- the query provably implies its predicate. Change a predicate here
+    -- and UserLookupIndexPlanTests will fail until the fragments are
+    -- re-proven compatible.
+    --
+    -- Guarded like the query_policies CHECK below: skipped (with a WARNING)
     -- when duplicate rows already exist, so `dmart migrate` doesn't break on
     -- legacy dupes. Resolve them, then re-run migrate to pick up the index.
+    -- Skipping is a serious degradation — every identifier lookup on users
+    -- seq-scans until the index exists — hence WARNING severity, which
+    -- SchemaInitializer forwards to the application log.
     -- The pg_indexes probe is scoped to current_schema() so an identically
     -- named index in another schema can't suppress creation here.
     DO $$
@@ -516,7 +526,7 @@ public static class SqlSchema
                 GROUP BY lower(email) HAVING COUNT(*) > 1
             ) d;
             IF dupes > 0 THEN
-                RAISE NOTICE 'Skipping idx_users_email_lower_unique: % duplicate email group(s) exist. Resolve them, then re-run migrate.', dupes;
+                RAISE WARNING 'Skipping idx_users_email_lower_unique: % duplicate email group(s) exist — email lookups (login/OTP) will seq-scan the users table until this index exists. Resolve the duplicates, then re-run migrate.', dupes;
             ELSE
                 CREATE UNIQUE INDEX IF NOT EXISTS idx_users_email_lower_unique
                     ON users (lower(email)) WHERE email IS NOT NULL AND email <> '';
@@ -531,7 +541,7 @@ public static class SqlSchema
                 GROUP BY msisdn HAVING COUNT(*) > 1
             ) d;
             IF dupes > 0 THEN
-                RAISE NOTICE 'Skipping idx_users_msisdn_unique: % duplicate msisdn group(s) exist. Resolve them, then re-run migrate.', dupes;
+                RAISE WARNING 'Skipping idx_users_msisdn_unique: % duplicate msisdn group(s) exist — msisdn lookups (login/OTP) will seq-scan the users table until this index exists. Resolve the duplicates, then re-run migrate.', dupes;
             ELSE
                 CREATE UNIQUE INDEX IF NOT EXISTS idx_users_msisdn_unique
                     ON users (msisdn) WHERE msisdn IS NOT NULL AND msisdn <> '';
@@ -656,5 +666,16 @@ public static class SqlSchema
         // filter removes any false positives (e.g. JSON-key matches).
         "CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_entries_payload_trgm " +
             "ON entries USING GIN ((payload::text) gin_trgm_ops)",
+
+        // Containment (@>) filters over user payloads. The generic query
+        // machinery emits `payload::jsonb @> $n` against users exactly as
+        // it does against entries, but only entries had a GIN index — on
+        // users those filters seq-scan. jsonb_path_ops mirrors
+        // idx_entries_payload_gin. CONCURRENTLY because users on
+        // long-lived deployments is large and a blocking build would
+        // freeze logins (every auth path updates last_login /
+        // attempt_count on this table).
+        "CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_users_payload_gin " +
+            "ON users USING GIN (payload jsonb_path_ops)",
     };
 }
