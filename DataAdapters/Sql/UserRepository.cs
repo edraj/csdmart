@@ -36,10 +36,29 @@ public sealed class UserRepository(Db db, AuthzCacheRefresher refresher, Session
         return await reader.ReadAsync(ct) ? Hydrate(reader) : null;
     }
 
+    // WHERE fragments for the identifier lookups below, named so
+    // UserLookupIndexPlanTests can EXPLAIN-verify each one stays usable by
+    // its partial index in SqlSchema (idx_users_email_lower_unique /
+    // idx_users_msisdn_unique).
+    //
+    // The `<> ''` clauses look redundant but are load-bearing: those are
+    // PARTIAL indexes whose predicates exclude '' rows, and Postgres uses
+    // a partial index only when the query provably implies its predicate.
+    // `LOWER(email) = LOWER($1)` alone cannot prove `email <> ''`, so
+    // without the clause every lookup sequentially scans the users table.
+    // '' never identifies a user (writes normalize '' to NULL —
+    // NullIfEmptyIdentifier), so results are unchanged.
+    internal const string EmailLookupWhere = "LOWER(email) = LOWER($1) AND email <> ''";
+    internal const string MsisdnLookupWhere = "msisdn = $1 AND msisdn <> ''";
+    internal const string ExistsWhere =
+        "($1::text IS NOT NULL AND shortname = $1) " +
+        "OR ($2::text IS NOT NULL AND LOWER(email) = LOWER($2) AND email <> '') " +
+        "OR ($3::text IS NOT NULL AND msisdn = $3 AND msisdn <> '')";
+
     public async Task<User?> GetByEmailAsync(string email, CancellationToken ct = default)
     {
         await using var conn = await db.OpenAsync(ct);
-        await using var cmd = new NpgsqlCommand($"{SelectAllColumns} WHERE LOWER(email) = LOWER($1)", conn);
+        await using var cmd = new NpgsqlCommand($"{SelectAllColumns} WHERE {EmailLookupWhere}", conn);
         cmd.Parameters.Add(new() { Value = email });
         await using var reader = await cmd.ExecuteReaderAsync(ct);
         return await reader.ReadAsync(ct) ? Hydrate(reader) : null;
@@ -48,7 +67,7 @@ public sealed class UserRepository(Db db, AuthzCacheRefresher refresher, Session
     public async Task<User?> GetByMsisdnAsync(string msisdn, CancellationToken ct = default)
     {
         await using var conn = await db.OpenAsync(ct);
-        await using var cmd = new NpgsqlCommand($"{SelectAllColumns} WHERE msisdn = $1", conn);
+        await using var cmd = new NpgsqlCommand($"{SelectAllColumns} WHERE {MsisdnLookupWhere}", conn);
         cmd.Parameters.Add(new() { Value = msisdn });
         await using var reader = await cmd.ExecuteReaderAsync(ct);
         return await reader.ReadAsync(ct) ? Hydrate(reader) : null;
@@ -57,13 +76,7 @@ public sealed class UserRepository(Db db, AuthzCacheRefresher refresher, Session
     public async Task<bool> ExistsAsync(string? shortname, string? email, string? msisdn, CancellationToken ct = default)
     {
         await using var conn = await db.OpenAsync(ct);
-        await using var cmd = new NpgsqlCommand("""
-            SELECT 1 FROM users
-             WHERE ($1::text IS NOT NULL AND shortname = $1)
-                OR ($2::text IS NOT NULL AND LOWER(email) = LOWER($2))
-                OR ($3::text IS NOT NULL AND msisdn = $3)
-             LIMIT 1
-            """, conn);
+        await using var cmd = new NpgsqlCommand($"SELECT 1 FROM users WHERE {ExistsWhere} LIMIT 1", conn);
         cmd.Parameters.Add(new() { Value = (object?)shortname ?? DBNull.Value });
         cmd.Parameters.Add(new() { Value = (object?)email ?? DBNull.Value });
         cmd.Parameters.Add(new() { Value = (object?)msisdn ?? DBNull.Value });

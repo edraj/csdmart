@@ -18,6 +18,19 @@ public sealed class SchemaInitializer(Db db, ILogger<SchemaInitializer> log) : I
             try
             {
                 await using var conn = await db.OpenAsync(ct);
+                // RAISE NOTICE/WARNING from CreateAll's DO blocks (e.g.
+                // "Skipping idx_users_email_lower_unique: ...") arrives as
+                // a protocol notice, not a query result — without this
+                // handler those messages vanish and an operator can't know
+                // an index was skipped (the skip means identifier lookups
+                // seq-scan the users table).
+                conn.Notice += (_, e) =>
+                {
+                    if (e.Notice.Severity is "WARNING" or "ERROR")
+                        log.LogWarning("postgres (schema init): {Message}", e.Notice.MessageText);
+                    else
+                        log.LogInformation("postgres (schema init): {Message}", e.Notice.MessageText);
+                };
                 // Advisory lock 1 — serializes schema init across connections.
                 await using (var lk = new NpgsqlCommand("SELECT pg_advisory_lock(1)", conn))
                     await lk.ExecuteNonQueryAsync(ct);
@@ -79,13 +92,14 @@ public sealed class SchemaInitializer(Db db, ILogger<SchemaInitializer> log) : I
                             // loudly so the operator knows to manually
                             // DROP INDEX and restart; the system stays
                             // functional in the meantime, just without
-                            // the trigram acceleration for wildcard
-                            // searches (they fall back to seq scan).
+                            // the acceleration this index provides
+                            // (queries that rely on it fall back to
+                            // sequential scans).
                             log.LogWarning(ex,
-                                "concurrent index build failed: {Sql} — wildcard " +
-                                "searches will seq-scan until this is resolved; " +
-                                "manual recovery: DROP INDEX (the invalid one) and " +
-                                "restart dmart", sql);
+                                "concurrent index build failed: {Sql} — queries " +
+                                "relying on this index will seq-scan until it is " +
+                                "resolved; manual recovery: DROP INDEX (the invalid " +
+                                "one) and restart dmart", sql);
                         }
                     }
                 }
