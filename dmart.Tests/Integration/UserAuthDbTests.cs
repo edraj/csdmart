@@ -63,22 +63,6 @@ public class UserAuthDbTests : IClassFixture<DmartFactory>
     }
 
     [FactIfPg]
-    public async Task Authenticated_Me_Returns_Identity()
-    {
-        var client = _factory.CreateClient();
-        var token = await LoginAdminAndGetTokenAsync(client);
-        token.ShouldNotBeNull();
-
-        client.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Bearer", token);
-        var resp = await client.GetAsync("/info/me");
-        if (resp.StatusCode != HttpStatusCode.OK)
-        {
-            var wwwAuth = string.Join("; ", resp.Headers.WwwAuthenticate.Select(h => h.ToString()));
-            throw new Xunit.Sdk.XunitException($"expected OK, got {resp.StatusCode}; WWW-Authenticate: {wwwAuth}");
-        }
-    }
-
-    [FactIfPg]
     public async Task Profile_Returns_Admin_Details_When_Authenticated()
     {
         var client = _factory.CreateClient();

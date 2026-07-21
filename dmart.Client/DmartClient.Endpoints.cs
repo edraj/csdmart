@@ -115,13 +115,6 @@ public sealed partial class DmartClient
     // Info — server self-introspection
     // -------------------------------------------------------------------
 
-    // GET /info/me — minimal "who am I" probe. Reads the JWT-bound identity.
-    public async Task<Response> GetInfoMeAsync(CancellationToken ct = default)
-    {
-        using var req = BuildRequest(HttpMethod.Get, "/info/me");
-        return await SendEnvelopeAsync(req, ct).ConfigureAwait(false);
-    }
-
     // -------------------------------------------------------------------
     // Admin — server-side bookkeeping (require elevated permissions)
     // -------------------------------------------------------------------
