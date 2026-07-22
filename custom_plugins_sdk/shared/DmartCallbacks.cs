@@ -408,7 +408,7 @@ public static unsafe class DmartSdk
         using (var w = new Utf8JsonWriter(ms, new JsonWriterOptions { Indented = false }))
         {
             w.WriteStartObject();
-            w.WriteString("time", DateTimeOffset.UtcNow.ToString("o", CultureInfo.InvariantCulture));
+            w.WriteString("time", DateTime.Now.ToString("yyyy-MM-dd HH:mm:ss,fff", CultureInfo.InvariantCulture));
             w.WriteString("level", LevelName(level));
             if (!string.IsNullOrEmpty(category)) w.WriteString("category", category);
             w.WriteString("message", message);
