@@ -14,6 +14,7 @@ internal static partial class ProcessEnv
 {
     [LibraryImport("libc", EntryPoint = "setenv",
         StringMarshalling = StringMarshalling.Utf8, SetLastError = true)]
+    [DefaultDllImportSearchPaths(DllImportSearchPath.System32)]
     private static partial int SetEnvNative(string name, string value, int overwrite);
 
     // Call during single-threaded startup only: setenv(3) is not
