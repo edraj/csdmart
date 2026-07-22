@@ -1616,7 +1616,9 @@ builder.Services.AddOpenApi(options =>
     // responsible for opening its own `<shortname>.ljson.log` under this
     // path — the host does not intercept, format, or rotate plugin-emitted
     // lines. Subprocess plugins inherit the env from the dmart process;
-    // in-process .so plugins read it with Environment.GetEnvironmentVariable.
+    // in-process .so plugins read it from the real process environ, which
+    // is why this must go through ProcessEnv.Set (libc setenv) and not the
+    // managed API alone — see Plugins/Native/ProcessEnv.cs.
     // The value is absolutized because subprocess plugins run with their own
     // working directory (the plugin's own folder), so a relative path would
     // resolve to the wrong place. Empty LogFile = no env exported, and the
@@ -1630,7 +1632,7 @@ builder.Services.AddOpenApi(options =>
     {
         var dir = Path.GetDirectoryName(logFile);
         if (!string.IsNullOrEmpty(dir))
-            Environment.SetEnvironmentVariable("DMART_PLUGIN_LOG_DIR", Path.GetFullPath(dir));
+            Dmart.Plugins.Native.ProcessEnv.Set("DMART_PLUGIN_LOG_DIR", Path.GetFullPath(dir));
     }
 
     // Set minimum log level from config.env.
