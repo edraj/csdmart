@@ -20,6 +20,7 @@ public sealed class WorkflowService(
     EntryService entryService,
     AttachmentRepository attachments,
     WorkflowEngine engine,
+    PermissionService perms,
     ILogger<WorkflowService> log)
 {
     public async Task<Response> ProgressAsync(
@@ -28,6 +29,30 @@ public sealed class WorkflowService(
     {
         var existing = await entries.GetAsync(ticket.SpaceName, ticket.Subpath, ticket.Shortname, ticket.Type, ct);
         if (existing is null)
+            return Response.Fail(InternalErrorCode.SHORTNAME_DOES_NOT_EXIST, "ticket not found", ErrorTypes.Request);
+
+        // Authorize BEFORE evaluating the workflow. Every failure below this
+        // point describes the ticket to the caller — "has no
+        // workflow_shortname", "current state 'x' not in workflow", "You can't
+        // progress from <state> using <action>" — while the only real gate
+        // (inside entryService.UpdateAsync) is reached solely on an ALLOWED
+        // transition. That made /managed/progress-ticket an existence-and-state
+        // oracle: any authenticated user could enumerate tickets and read their
+        // current state off the error messages.
+        //
+        // The gate admits any grant that ALREADY reveals this ticket to the
+        // caller, so it changes no legitimate outcome: `view` (may read it
+        // outright), `progress_ticket` (the action the real gate enforces — a
+        // role granted only that must keep working), or `update` (may already
+        // mutate it via /managed/request, and still gets the sharper
+        // NOT_ALLOWED from the gate below). A caller holding none of them gets
+        // the exact failure a non-existent ticket gets, so the two are
+        // indistinguishable.
+        var ticketCtx = PermissionService.FromEntry(existing);
+        var mayKnowTicket = await perms.CanReadAsync(actor, ticket, ticketCtx, ct)
+            || await perms.CanAsync(actor, "progress_ticket", ticket, ticketCtx, null, ct)
+            || await perms.CanAsync(actor, "update", ticket, ticketCtx, null, ct);
+        if (!mayKnowTicket)
             return Response.Fail(InternalErrorCode.SHORTNAME_DOES_NOT_EXIST, "ticket not found", ErrorTypes.Request);
 
         if (string.IsNullOrEmpty(existing.WorkflowShortname))

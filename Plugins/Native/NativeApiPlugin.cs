@@ -54,15 +54,38 @@ internal sealed class NativeApiPlugin : IApiPlugin, IPluginVersionSource
         }
     }
 
+    // Credential headers stripped from the envelope handed to a plugin. A
+    // plugin is external code (a third-party .so or subprocess) that must not
+    // receive the caller's bearer token, session cookie, or the
+    // /broadcast-to-channels shared secret — with any of them it could replay
+    // the caller's identity against dmart's own API. The envelope's `User`
+    // field already carries the resolved actor, which is all a plugin
+    // legitimately needs. Same set/rationale as SpaceEventLogger's
+    // _excludedHeaders (audit log) — kept in sync deliberately.
+    internal static readonly HashSet<string> ExcludedHeaders =
+        new(StringComparer.OrdinalIgnoreCase)
+        { "authorization", "proxy-authorization", "cookie", "x-channel-key", "x-api-key" };
+
+    // Snapshots the request headers minus the credential set above. Shared
+    // with SubprocessApiPlugin so both plugin transports strip identically.
+    internal static Dictionary<string, string> CaptureHeaders(HttpRequest req)
+    {
+        var headers = new Dictionary<string, string>();
+        foreach (var h in req.Headers)
+        {
+            if (ExcludedHeaders.Contains(h.Key)) continue;
+            headers[h.Key] = h.Value.ToString();
+        }
+        return headers;
+    }
+
     private static async Task HandleNative(HttpContext ctx, NativePluginHandle handle, string shortname)
     {
         var query = new Dictionary<string, string>();
         foreach (var q in ctx.Request.Query)
             query[q.Key] = q.Value.ToString();
 
-        var headers = new Dictionary<string, string>();
-        foreach (var h in ctx.Request.Headers)
-            headers[h.Key] = h.Value.ToString();
+        var headers = CaptureHeaders(ctx.Request);
 
         string? body = null;
         if (ctx.Request.ContentLength > 0 || ctx.Request.Headers.ContentType.Count > 0)

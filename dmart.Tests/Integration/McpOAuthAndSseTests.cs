@@ -354,6 +354,10 @@ public sealed class McpOAuthAndSseTests : IClassFixture<DmartFactory>
         var httpCtx = new Microsoft.AspNetCore.Http.DefaultHttpContext
         {
             RequestServices = _factory.Services,
+            // Mcp-Session-Id is now bound to the authenticated caller, so an
+            // unauthenticated context can no longer answer a session's prompt.
+            // Present the session's own owner.
+            User = OwnerPrincipal(session.UserShortname!),
         };
         httpCtx.Request.Headers["Mcp-Session-Id"] = session.Id;
         var outcome = await McpElicitation.TryConfirmDeleteAsync(
@@ -386,6 +390,10 @@ public sealed class McpOAuthAndSseTests : IClassFixture<DmartFactory>
         var httpCtx = new Microsoft.AspNetCore.Http.DefaultHttpContext
         {
             RequestServices = _factory.Services,
+            // Mcp-Session-Id is now bound to the authenticated caller, so an
+            // unauthenticated context can no longer answer a session's prompt.
+            // Present the session's own owner.
+            User = OwnerPrincipal(session.UserShortname!),
         };
         httpCtx.Request.Headers["Mcp-Session-Id"] = session.Id;
         var outcome = await McpElicitation.TryConfirmDeleteAsync(
@@ -427,4 +435,12 @@ public sealed class McpOAuthAndSseTests : IClassFixture<DmartFactory>
         var text = await resp.Content.ReadAsStringAsync();
         return JsonDocument.Parse(text).RootElement.Clone();
     }
+
+    // Minimal authenticated principal whose Name matches what
+    // HttpContextExtensions.ActorOrAnonymous() reads, so an MCP session's
+    // owner check resolves to the given shortname.
+    private static System.Security.Claims.ClaimsPrincipal OwnerPrincipal(string shortname) =>
+        new(new System.Security.Claims.ClaimsIdentity(
+            [new System.Security.Claims.Claim(System.Security.Claims.ClaimTypes.Name, shortname)],
+            authenticationType: "Test"));
 }

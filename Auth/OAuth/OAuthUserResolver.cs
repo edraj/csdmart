@@ -19,10 +19,16 @@ namespace Dmart.Auth.OAuth;
 //      is attached to that account and it is logged in.
 //   3. No match: return null. The HTTP layer turns this into a 401.
 //
-// Account takeover caveat: step 2 trusts the provider to have verified the
-// email it hands us. Only enable providers that enforce email verification —
-// a provider that lets a user assert an arbitrary unverified email would let
-// an attacker take over the matching dmart account on first OAuth login.
+// Account takeover caveat: step 2 (and the IsEmailVerified stamp in
+// MaybeRefreshAsync) trusts the provider to have verified the email it hands
+// us — a provider that let a user assert an arbitrary unverified address would
+// let an attacker take over the matching dmart account on first OAuth login.
+// So the contract for every provider in this namespace is: populate
+// OAuthUserInfo.Email ONLY when the provider asserted the address is verified,
+// otherwise leave it null. GoogleProvider enforces it by dropping the email
+// when `email_verified` is absent/false; a null Email skips both the email
+// lookup below and the IsEmailVerified stamp, leaving the provider-keyed
+// `{provider}_{providerId}` shortname as the only way in.
 public sealed class OAuthUserResolver(
     UserRepository users,
     PluginManager plugins,

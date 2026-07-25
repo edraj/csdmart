@@ -384,7 +384,17 @@ public sealed class EntryService(
         if (existing is null)
             return Result<Entry>.Fail(InternalErrorCode.OBJECT_NOT_FOUND, "entry missing", ErrorTypes.Db);
         var action = actionOverride ?? "update";
-        if (!await perms.CanAsync(actor, action, locator, PermissionService.FromEntry(existing), patch, ct))
+        // Gate on the row's REAL resource_type, not the caller's declared one.
+        // EntryRepository.GetAsync deliberately retries without the type filter
+        // (uniqueness is shortname+space+subpath), so a caller can declare
+        // resource_type "content" and be handed a "schema" row. Checking the
+        // declared type would let an editor holding update on
+        // resource_types:["content"] overwrite a schema — and the upsert keeps
+        // the row's true type, so the write really does land on the schema.
+        var authzLocator = existing.ResourceType == locator.Type
+            ? locator
+            : locator with { Type = existing.ResourceType };
+        if (!await perms.CanAsync(actor, action, authzLocator, PermissionService.FromEntry(existing), patch, ct))
             return Result<Entry>.Fail(InternalErrorCode.NOT_ALLOWED, $"no {action} access", ErrorTypes.Auth);
 
         // A lock held by another user blocks the write. Checked after the
@@ -605,8 +615,17 @@ public sealed class EntryService(
         if (srcEntry is null)
             return Result<Entry>.Fail(InternalErrorCode.OBJECT_NOT_FOUND, "source entry missing", ErrorTypes.Db);
         var srcCtx = PermissionService.FromEntry(srcEntry);
-        if (!await perms.CanUpdateAsync(actor, from, srcCtx, null, ct) ||
-            !await perms.CanCreateAsync(actor, to, EntryToAttributesDict(srcEntry), ct))
+        // Same resource-type-confusion guard as UpdateAsync: the source load
+        // falls back to an untyped lookup, so gate on the row's real type or a
+        // content-only grant could relocate a folder (and its whole subtree).
+        var moveFrom = srcEntry.ResourceType == @from.Type
+            ? @from
+            : @from with { Type = srcEntry.ResourceType };
+        var moveTo = srcEntry.ResourceType == to.Type
+            ? to
+            : to with { Type = srcEntry.ResourceType };
+        if (!await perms.CanUpdateAsync(actor, moveFrom, srcCtx, null, ct) ||
+            !await perms.CanCreateAsync(actor, moveTo, EntryToAttributesDict(srcEntry), ct))
             return Result<Entry>.Fail(InternalErrorCode.NOT_ALLOWED, "no move access", ErrorTypes.Auth);
 
         // Move is an update-class mutation of the source, so the same lock

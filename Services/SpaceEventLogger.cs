@@ -36,9 +36,15 @@ public sealed class SpaceEventLogger(
 {
     // Header names Python's get_request_data() excludes from request_headers.
     // Authorization carries the bearer token, Cookie carries session state —
-    // both are credentials we never want to persist into an audit log.
+    // both are credentials we never want to persist into an audit log. The
+    // rest are the same class of secret and were landing verbatim in the
+    // on-disk log: x-channel-key is dmart's own broadcast shared secret, and
+    // proxy-authorization / x-api-key are credentials a fronting proxy or
+    // gateway commonly adds. events.jsonl is world-readable-ish, append-only,
+    // never rotated, and often shipped to a log collector.
     private static readonly HashSet<string> _excludedHeaders =
-        new(StringComparer.OrdinalIgnoreCase) { "cookie", "authorization" };
+        new(StringComparer.OrdinalIgnoreCase)
+        { "cookie", "authorization", "proxy-authorization", "x-channel-key", "x-api-key" };
 
     // Per-space write lock: multiple concurrent actions in the same space must
     // not interleave bytes inside one JSON line. Different spaces hit different

@@ -389,8 +389,22 @@ public static class SqlSchema
     CREATE UNIQUE INDEX IF NOT EXISTS idx_groups_shortname      ON groups (shortname);
     CREATE UNIQUE INDEX IF NOT EXISTS idx_permissions_shortname ON permissions (shortname);
     CREATE INDEX IF NOT EXISTS idx_sessions_shortname        ON sessions (shortname);
+    -- Every authenticated request validates the session with
+    -- `WHERE shortname = $1 AND token = $2` (UserRepository.IsSessionValidAsync /
+    -- TouchSessionAsync). The shortname-only index makes that scan the user's
+    -- whole session bucket, which grows without bound for OAuth clients that
+    -- refresh on a timer. Index the pair the lookup actually uses.
+    CREATE INDEX IF NOT EXISTS idx_sessions_shortname_token  ON sessions (shortname, token);
     CREATE INDEX IF NOT EXISTS idx_histories_lookup
         ON histories (space_name, subpath, shortname, timestamp DESC);
+
+    -- LinkRepository.CreateWithTokenAsync upserts with ON CONFLICT (token_uuid).
+    -- Without a matching unique index Postgres raises 42P10 ("no unique or
+    -- exclusion constraint matching the ON CONFLICT specification"), so
+    -- GET /managed/shortening/... failed with a 500 on every call. The index
+    -- also turns the /managed/s/{token} resolve lookup from a sequential scan
+    -- over an append-only table into an index probe.
+    CREATE UNIQUE INDEX IF NOT EXISTS idx_urlshorts_token_uuid ON urlshorts (token_uuid);
 
     CREATE INDEX IF NOT EXISTS idx_entries_payload_gin
         ON entries USING GIN (payload jsonb_path_ops);

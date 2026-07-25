@@ -17,7 +17,7 @@ namespace Dmart.Middleware;
 //      response carries the same CORS contract Python does.
 //   3. Security headers (X-Content-Type-Options, X-Frame-Options, Referrer-Policy,
 //      Permissions-Policy, Strict-Transport-Security) — added on every response
-//      regardless of CORS outcome.
+//      regardless of CORS outcome; plus a Content-Security-Policy on HTML.
 //   4. No-cache Cache-Control on API responses + x-server-time timestamp.
 //   5. Short-circuit OPTIONS preflight with 204 so the browser can complete the
 //      preflight without hitting the route layer (which would 405).
@@ -37,7 +37,19 @@ public static class ResponseHeadersMiddleware
     private const string PermissionsPolicy = "geolocation=(), camera=(), microphone=()";
     private const string Hsts = "max-age=31536000; includeSubDomains";
 
-    public static IApplicationBuilder UseDmartResponseHeaders(this IApplicationBuilder app)
+    // The SPA is served same-origin with the API, so 'self' covers every script,
+    // style, XHR and WebSocket it needs. Two deliberate relaxations:
+    //   * style-src 'unsafe-inline' — the Svelte bundles inject scoped styles at
+    //     runtime; without it the SPA renders unstyled.
+    //   * img-src https://www.plantuml.com — the schema/diagram views render
+    //     PlantUML images straight from that host.
+    private const string ContentSecurityPolicy =
+        "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; "
+        + "img-src 'self' data: https://www.plantuml.com; connect-src 'self'; "
+        + "frame-ancestors 'none'; object-src 'none'; base-uri 'self'";
+
+    public static IApplicationBuilder UseDmartResponseHeaders(
+        this IApplicationBuilder app, PathString cxbPath, PathString catPath)
     {
         // Resolve once at setup — DmartSettings is singleton-scoped.
         var settings = app.ApplicationServices.GetRequiredService<IOptions<DmartSettings>>().Value;
@@ -92,13 +104,23 @@ public static class ResponseHeadersMiddleware
                 headers["Access-Control-Expose-Headers"] = ExposeHeaders;
 
                 // --- Cache-Control + timestamp ---
-                // The C# port doesn't currently serve static assets, so the
-                // path-based cache-control branching Python does for
-                // .js/.css/.png is unnecessary. All our responses are API
-                // responses that must not be cached.
-                headers["Cache-Control"] = CacheControlNoCache;
-                headers["Pragma"] = "no-cache";
-                headers["Expires"] = "0";
+                // This callback is registered upstream of UseCxb()/UseCatalog(),
+                // so whatever it writes here WINS over the static-file
+                // middleware's own headers. Forcing no-store on the SPA bundles
+                // made the browser re-download ~2.7 MB of content-hashed assets
+                // on every single page load. Leave those responses alone so
+                // StaticFileMiddleware's ETag/Last-Modified can serve 304s.
+                //
+                // index.html and config.json are the exceptions: they are the
+                // un-hashed entry points that must never be served stale, or the
+                // browser keeps booting a build whose hashed assets are gone.
+                // Everything else (all API responses) keeps the no-store policy.
+                if (!IsCacheableSpaAsset(ctx.Request.Path, cxbPath, catPath))
+                {
+                    headers["Cache-Control"] = CacheControlNoCache;
+                    headers["Pragma"] = "no-cache";
+                    headers["Expires"] = "0";
+                }
                 headers["x-server-time"] = TimeUtils.Now().ToString("o");
 
                 // --- Security headers ---
@@ -109,6 +131,24 @@ public static class ResponseHeadersMiddleware
                 // HSTS must only be sent over HTTPS (RFC 6797).
                 if (ctx.Request.IsHttps)
                     headers["Strict-Transport-Security"] = Hsts;
+
+                // CSP only applies to documents, so scope it to HTML responses
+                // rather than paying for it on every JSON body.
+                //
+                // /docs (Swagger UI) and the /oauth consent + error pages ship
+                // their own <meta http-equiv> policies. A CSP header and a meta
+                // CSP are enforced as an INTERSECTION, so adding ours would
+                // silently break Swagger UI — its script/style come from
+                // unpkg.com, which our 'self'-only policy forbids. Leave both
+                // path trees to the policy they already declare.
+                var isHtml = headers.ContentType.ToString()
+                    .StartsWith("text/html", StringComparison.OrdinalIgnoreCase);
+                if (isHtml
+                    && !ctx.Request.Path.StartsWithSegments("/docs")
+                    && !ctx.Request.Path.StartsWithSegments("/oauth"))
+                {
+                    headers["Content-Security-Policy"] = ContentSecurityPolicy;
+                }
 
                 return Task.CompletedTask;
             });
@@ -126,5 +166,26 @@ public static class ResponseHeadersMiddleware
 
             await next();
         });
+    }
+
+    // True for the content-hashed bundle files under {CXB_URL}/ and {CAT_URL}/
+    // that are safe to revalidate instead of re-fetching.
+    //
+    // Excluded, so they keep no-store:
+    //   * index.html / config.json — un-hashed entry points, must stay fresh.
+    //   * extensionless paths — the SPA fallback in CxbMiddleware/CatalogMiddleware
+    //     answers those with index.html, so they are the entry point too.
+    private static bool IsCacheableSpaAsset(PathString path, PathString cxbPath, PathString catPath)
+    {
+        if (!path.StartsWithSegments(cxbPath, out var rest)
+            && !path.StartsWithSegments(catPath, out rest))
+            return false;
+
+        var value = rest.Value;
+        if (string.IsNullOrEmpty(value)) return false;
+        if (!Path.HasExtension(value)) return false;
+
+        return !value.EndsWith("/index.html", StringComparison.OrdinalIgnoreCase)
+            && !value.EndsWith("/config.json", StringComparison.OrdinalIgnoreCase);
     }
 }

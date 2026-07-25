@@ -36,6 +36,8 @@
             isRedirectingToLogin = true;
             localStorage.removeItem("authToken");
             localStorage.removeItem("user");
+            localStorage.removeItem("permissions");
+            localStorage.removeItem("roles");
             window.location.reload();
         }
         return Promise.reject(error);
@@ -58,6 +60,8 @@
             if (typeof localStorage !== "undefined") {
                 localStorage.removeItem("authToken");
                 localStorage.removeItem("user");
+                localStorage.removeItem("permissions");
+                localStorage.removeItem("roles");
             }
             user.set({signedin: false, locale: $user?.locale});
             throw new Error("not signed in");

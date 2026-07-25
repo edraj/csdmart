@@ -22,11 +22,25 @@ public sealed class OAuthClientStore
 
     private readonly ConcurrentDictionary<string, Client> _clients = new();
 
+    // Registration is unauthenticated and every accepted record is retained in
+    // this process singleton until OAuthStoreSweeper evicts it 24h later. With
+    // Kestrel's 50MB body limit and no caps, one anonymous caller could pin
+    // hundreds of MB of strings by registering huge redirect_uris lists. Real
+    // MCP clients register one or two loopback callbacks with a short name, so
+    // these limits are generous by an order of magnitude.
+    private const int MaxRedirectUris = 8;
+    private const int MaxRedirectUriLength = 512;
+    private const int MaxClientNameLength = 128;
+
     public Client Register(IEnumerable<string> redirectUris, string clientName)
     {
         var uris = redirectUris.Where(u => !string.IsNullOrWhiteSpace(u)).ToList();
         if (uris.Count == 0)
             throw new ArgumentException("at least one redirect_uri required");
+        if (uris.Count > MaxRedirectUris)
+            throw new ArgumentException($"at most {MaxRedirectUris} redirect_uris allowed");
+        if (clientName.Length > MaxClientNameLength)
+            throw new ArgumentException($"client_name must be at most {MaxClientNameLength} characters");
 
         // Reject non-http(s) schemes at registration time. RFC 8252 and the
         // OAuth 2.1 draft require redirect URIs to be http(s) URLs (or custom
@@ -35,6 +49,9 @@ public sealed class OAuthClientStore
         // and the authorize flow would redirect the victim into that URL.
         foreach (var u in uris)
         {
+            if (u.Length > MaxRedirectUriLength)
+                throw new ArgumentException(
+                    $"redirect_uri must be at most {MaxRedirectUriLength} characters");
             if (!Uri.TryCreate(u, UriKind.Absolute, out var parsed))
                 throw new ArgumentException($"redirect_uri is not an absolute URI: {u}");
             if (parsed.Scheme != Uri.UriSchemeHttp && parsed.Scheme != Uri.UriSchemeHttps)
