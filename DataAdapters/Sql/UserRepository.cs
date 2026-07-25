@@ -73,35 +73,41 @@ public sealed class UserRepository(Db db, AuthzCacheRefresher refresher, Session
         return await reader.ReadAsync(ct) ? Hydrate(reader) : null;
     }
 
-    // Maps an OAuth provider name to its column. A closed whitelist: the result
-    // is interpolated into SQL, so it must never be caller-controlled text.
-    // Returns null for an unknown provider, which callers treat as "no match"
-    // rather than falling through to an unfiltered query.
-    internal static string? ProviderIdColumn(string provider) => provider switch
-    {
-        "google" => "google_id",
-        "facebook" => "facebook_id",
-        "apple" => "apple_id",
-        _ => null,
-    };
-
     // Look a user up by the provider id OAuth authenticated them with. This is
     // the identity the provider actually asserts, so it beats matching on email
     // (which the provider may or may not have verified) and on the synthetic
     // `{provider}_{id}` shortname (which BuildShortname sanitizes, so it does
     // not round-trip for ids carrying '-' or '.').
     //
-    // Carries the same `<> ''` clause as the email/msisdn lookups so the
+    // One complete command per provider rather than interpolating the column
+    // name into a shared string. The provider set is closed and known at compile
+    // time, so there is no reason to assemble this text at runtime: each arm
+    // below interpolates only `const` values, which the compiler folds into a
+    // constant, so no dynamic SQL reaches NpgsqlCommand (CA2100) — the same
+    // property that makes the shortname/email lookups above safe. An
+    // unrecognized provider has no query to run and resolves to "no match"
+    // rather than to an unfiltered one.
+    //
+    // Each carries the same `<> ''` clause as the email/msisdn lookups so the
     // planner can use the partial index — see EmailLookupWhere.
     public async Task<User?> GetByProviderIdAsync(
         string provider, string providerId, CancellationToken ct = default)
     {
-        var column = ProviderIdColumn(provider);
-        if (column is null || string.IsNullOrEmpty(providerId)) return null;
+        if (string.IsNullOrEmpty(providerId)) return null;
 
         await using var conn = await db.OpenAsync(ct);
-        await using var cmd = new NpgsqlCommand(
-            $"{SelectAllColumns} WHERE {column} = $1 AND {column} <> ''", conn);
+        await using var cmd = provider switch
+        {
+            "google" => new NpgsqlCommand(
+                $"{SelectAllColumns} WHERE google_id = $1 AND google_id <> ''", conn),
+            "facebook" => new NpgsqlCommand(
+                $"{SelectAllColumns} WHERE facebook_id = $1 AND facebook_id <> ''", conn),
+            "apple" => new NpgsqlCommand(
+                $"{SelectAllColumns} WHERE apple_id = $1 AND apple_id <> ''", conn),
+            _ => null,
+        };
+        if (cmd is null) return null;
+
         cmd.Parameters.Add(new() { Value = providerId });
         await using var reader = await cmd.ExecuteReaderAsync(ct);
         return await reader.ReadAsync(ct) ? Hydrate(reader) : null;

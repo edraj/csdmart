@@ -111,20 +111,20 @@ public sealed class OAuthProviderIdLookupTests : IClassFixture<DmartFactory>
         }
     }
 
-    // An unknown provider name must not reach SQL — ProviderIdColumn is a closed
-    // whitelist precisely because its result is interpolated into the query.
+    // An unrecognized provider must resolve to "no match", never to an
+    // unfiltered query. The provider switch in GetByProviderIdAsync is the
+    // whitelist — anything outside it has no command to run.
     [FactIfPg]
-    public async Task Unknown_Provider_Never_Reaches_The_Query()
+    public async Task Unknown_Provider_Resolves_To_No_Match()
     {
         var users = _factory.Services.GetRequiredService<UserRepository>();
 
-        UserRepository.ProviderIdColumn("google").ShouldBe("google_id");
-        UserRepository.ProviderIdColumn("facebook").ShouldBe("facebook_id");
-        UserRepository.ProviderIdColumn("apple").ShouldBe("apple_id");
-        UserRepository.ProviderIdColumn("twitter").ShouldBeNull();
-        UserRepository.ProviderIdColumn("google_id\"; DROP TABLE users; --").ShouldBeNull();
-
         (await users.GetByProviderIdAsync("twitter", "whatever")).ShouldBeNull();
+        (await users.GetByProviderIdAsync("", "whatever")).ShouldBeNull();
+        (await users.GetByProviderIdAsync("google_id\"; DROP TABLE users; --", "x")).ShouldBeNull();
+
+        // An empty provider id is not an identity either — it must not match the
+        // rows whose column is NULL or ''.
         (await users.GetByProviderIdAsync("google", "")).ShouldBeNull();
     }
 }
