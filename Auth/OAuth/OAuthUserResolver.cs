@@ -12,12 +12,21 @@ namespace Dmart.Auth.OAuth;
 // NOT create accounts — the user must already exist in dmart.
 //
 // Lookup chain:
-//   1. By synthetic shortname `{provider}_{providerId}` — if the user has
-//      logged in with this provider before, this is the fastest path and
-//      also handles the case where they don't have an email.
-//   2. By email — if a dmart account carries the same email, the provider id
-//      is attached to that account and it is logged in.
-//   3. No match: return null. The HTTP layer turns this into a 401.
+//   1. By synthetic shortname `{provider}_{providerId}` — accounts that were
+//      auto-created by the legacy social-signup path carry this shortname.
+//   2. By stored provider id (google_id / facebook_id / apple_id) — the
+//      account was linked on an earlier login. This is the identity the
+//      provider actually authenticated, so it outranks the email match below
+//      and works for users with no email at all.
+//   3. By email — first link only. A dmart account carrying the same address
+//      adopts the provider id, so step 2 answers every subsequent login.
+//   4. No match: return null. The HTTP layer turns this into a 401.
+//
+// Step 2 is what makes the linkage in step 3 worth writing. Before it existed
+// the provider-id columns were written but never read back, so every login
+// re-resolved through the email — which meant a user whose provider stopped
+// asserting a verified email (see the caveat below) lost access to an account
+// they had already linked.
 //
 // Account takeover caveat: step 2 trusts the provider to have verified the
 // email it hands us. Only enable providers that enforce email verification —
@@ -67,30 +76,60 @@ public sealed class OAuthUserResolver(
         if (existing is not null)
             return await MaybeRefreshAsync(existing, info, ct);
 
+        // 2. Already linked to this provider identity.
+        var byProviderId = await users.GetByProviderIdAsync(info.Provider, info.ProviderId, ct);
+        if (byProviderId is not null)
+            return await MaybeRefreshAsync(byProviderId, info, ct);
+
+        // 3. First link: adopt the account carrying this (provider-verified)
+        //    email. MaybeRefreshAsync attaches and PERSISTS the provider id, so
+        //    step 2 resolves every login after this one.
         var byEmail = !string.IsNullOrEmpty(info.Email)
             ? await users.GetByEmailAsync(info.Email, ct)
             : null;
         if (byEmail is not null)
-        {
-            var updated = byEmail with
-            {
-                GoogleId = info.Provider == "google" ? info.ProviderId : byEmail.GoogleId,
-                FacebookId = info.Provider == "facebook" ? info.ProviderId : byEmail.FacebookId,
-                AppleId = info.Provider == "apple" ? info.ProviderId : byEmail.AppleId,
-            };
-            return await MaybeRefreshAsync(updated, info, ct);
-        }
+            return await MaybeRefreshAsync(byEmail, info, ct);
         // No dmart account matches this provider id or email. OAuth login no
         // longer auto-creates accounts — the caller turns null into a 401.
         return null;
     }
 
-    // Keep display/picture/email fresh on repeat logins — the provider is
-    // authoritative for these. Saves a DB round-trip for unchanged rows.
+    // Keep the provider link, display picture and email fresh on repeat logins —
+    // the provider is authoritative for these. Saves a DB round-trip for
+    // unchanged rows.
     private async Task<User> MaybeRefreshAsync(User user, OAuthUserInfo info, CancellationToken ct)
     {
         var dirty = false;
         var updated = user;
+
+        // Attach the provider id here rather than at the call site. Done by the
+        // caller it was silently discarded: the record was modified in memory,
+        // but `dirty` only tracked email and picture, so an otherwise-unchanged
+        // row returned early and never hit UpsertAsync. Accounts linked by email
+        // whose picture also happened to change got persisted; everyone else
+        // re-resolved through the email on every single login, and Apple — which
+        // never supplies a PictureUrl — never persisted a link at all.
+        var storedProviderId = info.Provider switch
+        {
+            "google" => user.GoogleId,
+            "facebook" => user.FacebookId,
+            "apple" => user.AppleId,
+            _ => null,
+        };
+        if (!string.IsNullOrEmpty(info.ProviderId) && info.ProviderId != storedProviderId)
+        {
+            updated = info.Provider switch
+            {
+                "google" => updated with { GoogleId = info.ProviderId },
+                "facebook" => updated with { FacebookId = info.ProviderId },
+                "apple" => updated with { AppleId = info.ProviderId },
+                _ => updated,
+            };
+            // Unknown provider leaves the record untouched — don't mark a
+            // no-op write dirty.
+            if (!ReferenceEquals(updated, user)) dirty = true;
+        }
+
         if (!string.IsNullOrEmpty(info.Email) && info.Email != user.Email)
         {
             updated = updated with { Email = info.Email, IsEmailVerified = true };

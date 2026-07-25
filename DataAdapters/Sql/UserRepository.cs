@@ -73,6 +73,40 @@ public sealed class UserRepository(Db db, AuthzCacheRefresher refresher, Session
         return await reader.ReadAsync(ct) ? Hydrate(reader) : null;
     }
 
+    // Maps an OAuth provider name to its column. A closed whitelist: the result
+    // is interpolated into SQL, so it must never be caller-controlled text.
+    // Returns null for an unknown provider, which callers treat as "no match"
+    // rather than falling through to an unfiltered query.
+    internal static string? ProviderIdColumn(string provider) => provider switch
+    {
+        "google" => "google_id",
+        "facebook" => "facebook_id",
+        "apple" => "apple_id",
+        _ => null,
+    };
+
+    // Look a user up by the provider id OAuth authenticated them with. This is
+    // the identity the provider actually asserts, so it beats matching on email
+    // (which the provider may or may not have verified) and on the synthetic
+    // `{provider}_{id}` shortname (which BuildShortname sanitizes, so it does
+    // not round-trip for ids carrying '-' or '.').
+    //
+    // Carries the same `<> ''` clause as the email/msisdn lookups so the
+    // planner can use the partial index — see EmailLookupWhere.
+    public async Task<User?> GetByProviderIdAsync(
+        string provider, string providerId, CancellationToken ct = default)
+    {
+        var column = ProviderIdColumn(provider);
+        if (column is null || string.IsNullOrEmpty(providerId)) return null;
+
+        await using var conn = await db.OpenAsync(ct);
+        await using var cmd = new NpgsqlCommand(
+            $"{SelectAllColumns} WHERE {column} = $1 AND {column} <> ''", conn);
+        cmd.Parameters.Add(new() { Value = providerId });
+        await using var reader = await cmd.ExecuteReaderAsync(ct);
+        return await reader.ReadAsync(ct) ? Hydrate(reader) : null;
+    }
+
     public async Task<bool> ExistsAsync(string? shortname, string? email, string? msisdn, CancellationToken ct = default)
     {
         await using var conn = await db.OpenAsync(ct);
