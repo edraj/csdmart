@@ -25,10 +25,19 @@ namespace Dmart.Auth.OAuth;
 // let an attacker take over the matching dmart account on first OAuth login.
 // So the contract for every provider in this namespace is: populate
 // OAuthUserInfo.Email ONLY when the provider asserted the address is verified,
-// otherwise leave it null. GoogleProvider enforces it by dropping the email
-// when `email_verified` is absent/false; a null Email skips both the email
-// lookup below and the IsEmailVerified stamp, leaving the provider-keyed
+// otherwise leave it null. A null Email skips both the email lookup below and
+// the IsEmailVerified stamp, leaving the provider-keyed
 // `{provider}_{providerId}` shortname as the only way in.
+//
+// Where each provider stands against that contract:
+//   * GoogleProvider — enforced. Drops the email when tokeninfo's
+//     `email_verified` is absent or false.
+//   * AppleProvider  — enforced. Drops the email when the id_token's
+//     `email_verified` is absent or false.
+//   * FacebookProvider — NOT enforced, because the Graph API exposes no
+//     verification claim (User.verified was removed in v3.3). It relies on
+//     Graph returning `email` only for a confirmed primary address, which is a
+//     weaker guarantee than the other two. See the note at its call site.
 public sealed class OAuthUserResolver(
     UserRepository users,
     PluginManager plugins,

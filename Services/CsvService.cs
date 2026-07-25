@@ -336,9 +336,16 @@ public sealed class CsvService(QueryService queries, EntryService entries)
     // the normal quoting rules. Deliberately export-side only: ImportAsync does not
     // strip the prefix, so an export→re-import cycle keeps the leading apostrophe
     // on an affected cell — a visible artifact is preferable to a live formula.
+    //
+    // Plain numbers are exempt. EscapeField runs over EVERY cell, and a leading
+    // `-` is far more often a negative number than an injection attempt: without
+    // the exemption `-5` exports as `'-5`, which spreadsheets import as text, so
+    // whole numeric columns silently stop summing. A value that parses as a
+    // number can't carry a formula payload anyway — the parse is the proof.
     private static string EscapeField(string s)
     {
-        if (s.Length > 0 && s[0] is '=' or '+' or '-' or '@' or '\t' or '\r')
+        if (s.Length > 0 && s[0] is '=' or '+' or '-' or '@' or '\t' or '\r'
+            && !double.TryParse(s, NumberStyles.Float, CultureInfo.InvariantCulture, out _))
             s = $"'{s}";
         if (s.Contains(',') || s.Contains('"') || s.Contains('\n') || s.Contains('\r'))
             return $"\"{s.Replace("\"", "\"\"")}\"";
