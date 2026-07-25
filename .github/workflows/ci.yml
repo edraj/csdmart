@@ -51,8 +51,29 @@ jobs:
           grep -q '^DATABASE_HOST' config.env || echo 'DATABASE_HOST="127.0.0.1"' >> config.env
           grep -q '^DATABASE_USERNAME' config.env || echo 'DATABASE_USERNAME="dmart"' >> config.env
           grep -q '^DATABASE_PASSWORD' config.env || echo 'DATABASE_PASSWORD="dmart"' >> config.env
-          grep -q '^DATABASE_NAME' config.env || echo 'DATABASE_NAME="dmart"' >> config.env
-          # Pre-amble: kick any sessions still attached to the dmart DB.
+          # Per-runner test database — NOT the host-global "dmart".
+          # This host runs several runner instances (r01, r02, …) against ONE
+          # PostgreSQL. The reset below drops and recreates the database, so
+          # when every job aims at the same name, a job starting on r02 nukes
+          # the schema that r01's `dotnet test` is actively using. That
+          # surfaced as a sub-second burst of failures in whichever test class
+          # happened to be mid-run, with the three SQLSTATEs tracking the
+          # three commands below: 57P01 (terminate) → 3D000 (dropped, not yet
+          # recreated) → 42P01 (recreated, schema not yet initialized).
+          # A runner only ever executes one job at a time, so keying the
+          # database on the runner name makes the reset collision-free
+          # without serializing CI across runners. Sanitized to [a-z0-9_]
+          # (so it is a safe bare SQL identifier no matter what the runner is
+          # named) and length-capped under PG's 63-byte identifier limit.
+          TEST_DB="dmart_ci_$(printf '%s' "${RUNNER_NAME:-local}" \
+            | tr '[:upper:]' '[:lower:]' | tr -c '[:alnum:]' '_' | cut -c1-40)"
+          echo "Test database: $TEST_DB"
+          # Replace rather than append-if-missing: the host config already
+          # pins DATABASE_NAME, and appending would leave two keys where the
+          # winner depends on parse order rather than on intent.
+          sed -i '/^DATABASE_NAME[[:space:]]*=/d' config.env
+          echo "DATABASE_NAME=\"$TEST_DB\"" >> config.env
+          # Pre-amble: kick any sessions still attached to THIS runner's DB.
           # The dmart server's IHostApplicationLifetime.ApplicationStopped
           # hook now calls NpgsqlConnection.ClearAllPools(), so a graceful
           # SIGTERM shouldn't leave orphan backends — but a hard kill
@@ -64,11 +85,13 @@ jobs:
           # from blocking; only dropdb is required to succeed.
           psql -w -h 127.0.0.1 -U dmart -d postgres -c \
             "SELECT pg_terminate_backend(pid) FROM pg_stat_activity \
-             WHERE datname='dmart' AND pid <> pg_backend_pid();" \
+             WHERE datname='$TEST_DB' AND pid <> pg_backend_pid();" \
             >/dev/null || true
           # -w makes these fail fast (no password prompt) if PGPASSFILE miss.
-          dropdb   -w --if-exists -h 127.0.0.1 -U dmart dmart
-          createdb -w             -h 127.0.0.1 -U dmart dmart
+          # Both connect to the `postgres` maintenance DB, so the existing
+          # .pgpass entry keeps working — only the target name changed.
+          dropdb   -w --if-exists -h 127.0.0.1 -U dmart "$TEST_DB"
+          createdb -w             -h 127.0.0.1 -U dmart "$TEST_DB"
 
       - name: Build
         run: dotnet build dmart.slnx -c Release --nologo
