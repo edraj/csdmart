@@ -531,6 +531,7 @@ public static class SqlSchema
     DO $$
     DECLARE
         dupes INTEGER;
+        provider_col TEXT;
     BEGIN
         IF NOT EXISTS (SELECT 1 FROM pg_indexes
                        WHERE schemaname = current_schema()
@@ -561,6 +562,37 @@ public static class SqlSchema
                     ON users (msisdn) WHERE msisdn IS NOT NULL AND msisdn <> '';
             END IF;
         END IF;
+
+        -- Social login resolves an account by the provider id it authenticated
+        -- (UserRepository.GetByProviderIdAsync). Without these, every OAuth
+        -- login seq-scans users. Unique because one provider identity must map
+        -- to at most one dmart account — two rows claiming the same google_id
+        -- would make which account a Google login lands in depend on scan
+        -- order. Partial (NOT NULL AND <> '') because the columns are null for
+        -- every password-only account, which is nearly all of them; the
+        -- lookup's matching `<> ''` clause is what lets the planner use them.
+        FOR provider_col IN SELECT unnest(ARRAY['google_id', 'facebook_id', 'apple_id'])
+        LOOP
+            IF NOT EXISTS (SELECT 1 FROM pg_indexes
+                           WHERE schemaname = current_schema()
+                             AND indexname = 'idx_users_' || provider_col) THEN
+                EXECUTE format(
+                    'SELECT COUNT(*) FROM (SELECT %I FROM users '
+                    || 'WHERE %I IS NOT NULL AND %I <> '''' '
+                    || 'GROUP BY %I HAVING COUNT(*) > 1) d',
+                    provider_col, provider_col, provider_col, provider_col)
+                INTO dupes;
+                IF dupes > 0 THEN
+                    RAISE WARNING 'Skipping idx_users_%: % duplicate group(s) exist — social login will seq-scan the users table until this index exists, and the duplicates make account resolution ambiguous. Resolve them, then re-run migrate.',
+                        provider_col, dupes;
+                ELSE
+                    EXECUTE format(
+                        'CREATE UNIQUE INDEX IF NOT EXISTS idx_users_%s ON users (%I) '
+                        || 'WHERE %I IS NOT NULL AND %I <> ''''',
+                        provider_col, provider_col, provider_col, provider_col);
+                END IF;
+            END IF;
+        END LOOP;
     END $$;
 
     -- <table>.query_policies must be non-empty for every ACL-filterable

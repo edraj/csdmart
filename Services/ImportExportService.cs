@@ -1623,7 +1623,7 @@ public sealed class ImportExportService(
             node["shortname"] ??= spaceName;
             node["subpath"] = "/";
             EnsureOwner(node);
-            StripNullChars(node);   // PG jsonb can't store   (22P05)
+            StripNullChars(node);   // PG jsonb can't store \0 (22P05)
             var space = node.Deserialize(DmartJsonContext.Default.Space);
             if (space is null) { st.AddFailure(new() { ["path"] = ze.FullName, ["error"] = "empty space meta" }); return; }
             if (preserveExisting && await (conn is null ? spaces.GetAsync(space.Shortname, ct) : spaces.GetAsync(space.Shortname, conn, ct)) is not null)
@@ -1652,7 +1652,7 @@ public sealed class ImportExportService(
             node["subpath"] = "/users";
             EnsureOwner(node);
             await InlinePayloadBodyAsync(node, $"{spaceName}/users", allByPath, ze, ct);
-            StripNullChars(node);   // PG jsonb can't store   (22P05)
+            StripNullChars(node);   // PG jsonb can't store \0 (22P05)
             var user = node.Deserialize(DmartJsonContext.Default.User);
             if (user is null) { st.AddFailure(new() { ["path"] = ze.FullName, ["error"] = "empty user meta" }); return; }
             if (preserveExisting && await (conn is null ? users.GetByShortnameAsync(user.Shortname, ct) : users.GetByShortnameAsync(user.Shortname, conn, ct)) is not null)
@@ -1680,7 +1680,7 @@ public sealed class ImportExportService(
             node["space_name"] = spaceName;
             node["subpath"] = "/roles";
             EnsureOwner(node);
-            StripNullChars(node);   // PG jsonb can't store   (22P05)
+            StripNullChars(node);   // PG jsonb can't store \0 (22P05)
             var role = node.Deserialize(DmartJsonContext.Default.Role);
             if (role is null) { st.AddFailure(new() { ["path"] = ze.FullName, ["error"] = "empty role meta" }); return; }
             if (preserveExisting && await (conn is null ? access.GetRoleAsync(role.Shortname, ct) : access.GetRoleAsync(role.Shortname, conn, ct)) is not null)
@@ -1708,7 +1708,7 @@ public sealed class ImportExportService(
             node["space_name"] = spaceName;
             node["subpath"] = "/permissions";
             EnsureOwner(node);
-            StripNullChars(node);   // PG jsonb can't store   (22P05)
+            StripNullChars(node);   // PG jsonb can't store \0 (22P05)
             var perm = node.Deserialize(DmartJsonContext.Default.Permission);
             if (perm is null) { st.AddFailure(new() { ["path"] = ze.FullName, ["error"] = "empty permission meta" }); return; }
             if (preserveExisting && await (conn is null ? access.GetPermissionAsync(perm.Shortname, ct) : access.GetPermissionAsync(perm.Shortname, conn, ct)) is not null)
@@ -1927,7 +1927,7 @@ public sealed class ImportExportService(
             InlinePayloadBody(node, baseDir, bodyLookup, ze);
             EnsureOwner(node);
 
-            // ---- Strip PG-incompatible NUL chars ( ) ----
+            // ---- Strip PG-incompatible NUL chars (\0) ----
             // Unconditional — runs even with --no-validate — because it's a
             // correctness fix for PG jsonb (22P05), not a validation choice.
             // Covers both meta fields and the just-inlined body. Logged to
