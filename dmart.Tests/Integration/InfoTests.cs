@@ -71,4 +71,31 @@ public class InfoTests : IClassFixture<DmartFactory>
         // Should have records with settings attributes
         doc.RootElement.GetProperty("status").GetString().ShouldBe("success");
     }
+
+    [FactIfPg]
+    public async Task Manifest_As_NonAdmin_Returns_401()
+    {
+        // Authenticated but role-less — the privilege level of a fresh
+        // self-registration. The whole /info group is gated to super_admin
+        // (GlobalAdminFilter), so mere authentication isn't enough.
+        var user = await _factory.CreateLoggedInUserAsync(roles: new());
+        try
+        {
+            var resp = await user.Client.GetAsync("/info/manifest");
+            resp.StatusCode.ShouldBe(HttpStatusCode.Unauthorized);
+        }
+        finally { await user.Cleanup(); }
+    }
+
+    [FactIfPg]
+    public async Task Settings_As_NonAdmin_Returns_401()
+    {
+        var user = await _factory.CreateLoggedInUserAsync(roles: new());
+        try
+        {
+            var resp = await user.Client.GetAsync("/info/settings");
+            resp.StatusCode.ShouldBe(HttpStatusCode.Unauthorized);
+        }
+        finally { await user.Cleanup(); }
+    }
 }

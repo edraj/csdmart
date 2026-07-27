@@ -283,9 +283,13 @@ public static class SelfCheckCommand
 
         // 2. /info/manifest — the first server-touching request when the
         //    JWT-mint path was used. Doubles as a "server up + token valid"
-        //    combined probe: a connection-refused here means dmart is down,
-        //    a 401 means the JWT_SECRET / JwtIssuer / JwtAudience don't
-        //    match the running server. Also captures the running server's
+        //    combined probe: a connection-refused here means dmart is down;
+        //    a 401 means either the JWT_SECRET / JwtIssuer / JwtAudience
+        //    don't match the running server, or the token lacks super_admin
+        //    (the whole /info group requires an effective global admin —
+        //    see GlobalAdminFilter). Selfcheck authenticates as the
+        //    bootstrap admin, which AdminBootstrap guarantees carries
+        //    super_admin. Also captures the running server's
         //    InformationalVersion (attributes.version) — useful for the
         //    "did the upgrade actually take?" check post-`dnf upgrade`,
         //    since this value comes from the live PID rather than the
