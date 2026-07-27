@@ -1,4 +1,5 @@
 using System.Text.Json;
+using System.Text.RegularExpressions;
 using Dmart.Sdk;
 using Shouldly;
 using Xunit;
@@ -73,6 +74,20 @@ public sealed class DmartSdkLoggingTests : IDisposable
         lines.Length.ShouldBe(2);
         JsonDocument.Parse(lines[0]).RootElement.GetProperty("level").GetString().ShouldBe("WARN");
         JsonDocument.Parse(lines[1]).RootElement.GetProperty("level").GetString().ShouldBe("ERROR");
+    }
+
+    [Fact]
+    public void Time_Field_Matches_Host_LogSink_Format()
+    {
+        // Must stay byte-for-byte compatible with Utils/LogSink.cs's
+        // TimeUtils.Now() format (local time, "yyyy-MM-dd HH:mm:ss,fff") so
+        // plugin and host log lines interleave with consistent timestamps.
+        DmartSdk.SetShortname("oodi_sync");
+        DmartSdk.LogInfo(in Cb, "format check");
+
+        var line = JsonDocument.Parse(File.ReadAllLines(DmartSdk.LogPath!).Single()).RootElement;
+        var time = line.GetProperty("time").GetString();
+        Regex.IsMatch(time!, @"^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2},\d{3}$").ShouldBeTrue($"unexpected time format: {time}");
     }
 
     [Fact]

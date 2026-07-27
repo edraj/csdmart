@@ -14,6 +14,8 @@ internal static partial class ProcessEnv
 {
     [LibraryImport("libc", EntryPoint = "setenv",
         StringMarshalling = StringMarshalling.Utf8, SetLastError = true)]
+    // System32 is a Windows-only search-path value; on Unix this attribute
+    // is a no-op and is present solely to satisfy the CA5392 analyzer.
     [DefaultDllImportSearchPaths(DllImportSearchPath.System32)]
     private static partial int SetEnvNative(string name, string value, int overwrite);
 
@@ -22,7 +24,8 @@ internal static partial class ProcessEnv
     public static void Set(string name, string value)
     {
         Environment.SetEnvironmentVariable(name, value);
-        if (!OperatingSystem.IsWindows())
-            SetEnvNative(name, value, 1);
+        if (!OperatingSystem.IsWindows() && SetEnvNative(name, value, 1) != 0)
+            Console.Error.WriteLine(
+                $"ProcessEnv.Set: setenv({name}) failed (errno={Marshal.GetLastPInvokeError()})");
     }
 }
