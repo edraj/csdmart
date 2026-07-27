@@ -66,6 +66,11 @@ package() {
 		"$pkgdir"/usr/share/fish/vendor_completions.d/dmart.fish
 
 	# Runtime directories (owned by dmart user, created by pre-install hook)
+	#
+	# /etc/dmart lands here as root:root — abuild's build root has no dmart
+	# group, so `-g dmart` would fail the build. post-install re-owns it to
+	# root:dmart; 0750 root:root would deny the service user the search
+	# permission it needs to read config.env at all.
 	install -dm0750 "$pkgdir"/etc/dmart
 	install -dm0755 "$pkgdir"/var/lib/dmart
 	install -dm0755 "$pkgdir"/var/lib/dmart/spaces
