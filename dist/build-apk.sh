@@ -164,6 +164,12 @@ $ENGINE run --rm $PLATFORM_FLAG \
 		   dist/apk/dmart.post-deinstall \
 		   "$APKROOT/"
 
+		# apk runs post-upgrade (not post-install) when replacing an
+		# installed version, and does not fall back between the two. Ship
+		# the same script under both names rather than keeping a second
+		# copy in git that would drift from the first.
+		cp dist/apk/dmart.post-install "$APKROOT/dmart.post-upgrade"
+
 		cd "$APKROOT"
 
 		# Ephemeral signing key — fresh per build, never persisted.
