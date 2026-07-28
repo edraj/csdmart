@@ -68,6 +68,9 @@ jobs:
           TEST_DB="dmart_ci_$(printf '%s' "${RUNNER_NAME:-local}" \
             | tr '[:upper:]' '[:lower:]' | tr -c '[:alnum:]' '_' | cut -c1-40)"
           echo "Test database: $TEST_DB"
+          # Publish it to the job env so the always() teardown at the end can
+          # drop it — the variable itself is local to this step's shell.
+          echo "TEST_DB=$TEST_DB" >> "$GITHUB_ENV"
           # Replace rather than append-if-missing: the host config already
           # pins DATABASE_NAME, and appending would leave two keys where the
           # winner depends on parse order rather than on intent.
@@ -171,3 +174,21 @@ jobs:
         with:
           name: test-results
           path: dmart.Tests/TestResults/
+
+      - name: Drop the per-runner test database
+        # if: always() — the reset at the start of a run only cleans up the
+        # database THIS runner will reuse, so a job that is cancelled, times
+        # out, or dies after a rename leaves its database on the host forever.
+        # Tearing down here bounds that to one database per active runner.
+        # Never fails the job: a missing TEST_DB (job died before the config
+        # step) or an unreachable PostgreSQL is not a test result.
+        if: always()
+        env:
+          PGPASSFILE: /home/githubrunner/.pgpass
+        run: |
+          [ -n "$TEST_DB" ] || { echo "no TEST_DB to drop"; exit 0; }
+          psql -w -h 127.0.0.1 -U dmart -d postgres -c \
+            "SELECT pg_terminate_backend(pid) FROM pg_stat_activity \
+             WHERE datname='$TEST_DB' AND pid <> pg_backend_pid();" \
+            >/dev/null || true
+          dropdb -w --if-exists -h 127.0.0.1 -U dmart "$TEST_DB" || true
