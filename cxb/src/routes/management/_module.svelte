@@ -47,25 +47,27 @@
         Dmart.setToken(storedToken);
     }
 
-    // Boot session probe: /info/me returns 200 with {authenticated: bool}
-    // for both signed-in and anonymous callers (no 401 noise on cold loads).
+    // Boot session probe: GET /user/profile is the authoritative session
+    // check — it returns the caller's user record (and the SDK caches roles /
+    // permissions in localStorage) when signed in, and fails otherwise.
     // Mid-session expiration is still detected by the response interceptor
     // above when a regular API call returns 401.
-    const profilePromise = dmartAxios.get("info/me").then(async (r) => {
-        const authed = r.data?.attributes?.authenticated === true;
-        if (!authed) {
-            // Clean up any stale local state so the Login form shows.
-            if (typeof localStorage !== "undefined") {
-                localStorage.removeItem("authToken");
-                localStorage.removeItem("user");
-            }
-            user.set({signedin: false, locale: $user?.locale});
+    const profilePromise = Dmart.getProfile().then((r) => {
+        if (r?.status !== "success" || !r?.records?.length) {
             throw new Error("not signed in");
         }
         // Authed — fire the spaces fetch (best-effort) and resolve.
-        await Dmart.getProfile()
         getSpaces().catch(() => {});
-        return r.data;
+        return r;
+    }).catch((error) => {
+        // Anonymous or expired session — clean up any stale local state so
+        // the Login form shows.
+        if (typeof localStorage !== "undefined") {
+            localStorage.removeItem("authToken");
+            localStorage.removeItem("user");
+        }
+        user.set({signedin: false, locale: $user?.locale});
+        throw error;
     });
 </script>
 
@@ -80,7 +82,7 @@
          Render it hidden so the timer is satisfied; the child mounts
          silently and gets revealed once the user signs in. Boot 401s
          from this early mount are already silenced upstream
-         (info/me probe + per-callsite log gating). -->
+         (per-callsite log gating). -->
     <div style="display:none"><slot /></div>
 {:then _}
     {#if !$user || !$user.signedin}
