@@ -224,13 +224,19 @@ public sealed class UserService(
 
         if (requestHeaders is not null)
         {
+            var timestamp = (int)DateTimeOffset.Now.ToUnixTimeSeconds();
             var loginInfo = new Dictionary<string, object>
             {
-                ["timestamp"] = (int)DateTimeOffset.Now.ToUnixTimeSeconds(),
+                ["timestamp"] = timestamp,
                 ["headers"] = requestHeaders,
             };
             var updated = user with { LastLogin = loginInfo, UpdatedAt = TimeUtils.Now() };
             await users.UpsertAsync(updated, ct);
+            // This path issues tokens inline rather than delegating to
+            // ProcessLoginAsync, so it needs its own audit row — otherwise the
+            // very first login of every account would be missing from the trail.
+            // `user` is still the pre-update row, so "old" correctly reads null.
+            await AppendLoginHistoryAsync(user, timestamp, requestHeaders, ct);
             user = updated;
         }
 
@@ -584,12 +590,14 @@ public sealed class UserService(
 
         // Python tracks last_login = {timestamp, headers} on every successful login.
         Dictionary<string, object>? loginInfo = null;
+        int? loginTimestamp = null;
         if (requestHeaders is not null)
         {
+            // Cast to int so source-gen JSON can serialize it (no Int64 TypeInfo).
+            loginTimestamp = (int)DateTimeOffset.Now.ToUnixTimeSeconds();
             loginInfo = new Dictionary<string, object>
             {
-                // Cast to int so source-gen JSON can serialize it (no Int64 TypeInfo).
-                ["timestamp"] = (int)DateTimeOffset.Now.ToUnixTimeSeconds(),
+                ["timestamp"] = loginTimestamp.Value,
                 ["headers"] = requestHeaders,
             };
             updatedUser = updatedUser with { LastLogin = loginInfo };
@@ -606,6 +614,11 @@ public sealed class UserService(
             updatedUser = updatedUser with { UpdatedAt = TimeUtils.Now() };
         }
 
+        // `user` is still the PRE-login row here, so its LastLogin is the
+        // previous login — exactly what the audit row's "old" side needs.
+        if (loginTimestamp is int ts)
+            await AppendLoginHistoryAsync(user, ts, requestHeaders!, ct);
+
         var access = jwt.IssueAccess(updatedUser.Shortname, updatedUser.Roles, updatedUser.Type);
         var refresh = jwt.IssueRefresh(updatedUser.Shortname, updatedUser.Type);
 
@@ -619,6 +632,71 @@ public sealed class UserService(
             await users.CreateSessionAsync(updatedUser.Shortname, access, req.FirebaseToken, ct);
 
         return Result<(string, string, User)>.Ok((access, refresh, updatedUser));
+    }
+
+    // Append-only login audit trail. `users.last_login` only ever holds the
+    // MOST RECENT login — every successful auth overwrites it — so after the
+    // fact there is no way to answer "when else did this account sign in, and
+    // from where". Mirroring each login into `histories` gives that trail a
+    // home that /managed/query?type=history already exposes, already gates on
+    // the caller's permission over management//users (QueryService.cs:430, so
+    // "anyone who can see the user can see their logins" needs no new rule),
+    // and already indexes — idx_histories_lookup is (space_name, subpath,
+    // shortname, timestamp DESC), precisely this access pattern.
+    //
+    // Deliberate divergence from Python dmart, which writes last_login through
+    // internal_sys_update_model (api/user/router.py:1265) and therefore records
+    // no history row at all. Nothing upstream to stay in parity with here.
+    //
+    // Headers ride in the `request_headers` column instead of being duplicated
+    // into `diff`. There is no pruning policy, so rows live forever; storing
+    // the full header dict twice per login is what would actually make this
+    // table hurt.
+    //
+    // Fail-open, and the only place in this file that swallows a history-write
+    // failure — UpdateUserAsync deliberately lets AppendAsync throw. A login is
+    // not a profile edit: a degraded `histories` table must not be able to lock
+    // every user out of the system. The cost is that the trail can have gaps,
+    // which is why the failure is logged at Error rather than ignored — that
+    // log line is the thing to alert on.
+    private async Task AppendLoginHistoryAsync(
+        User user, int timestamp, Dictionary<string, string> requestHeaders,
+        CancellationToken ct)
+    {
+        try
+        {
+            // Null on a first-ever login. Reads back as a JsonElement number
+            // when it came off the JSONB column, which the source-gen context
+            // serializes verbatim.
+            object? previous = null;
+            if (user.LastLogin is not null
+                && user.LastLogin.TryGetValue("timestamp", out var prev))
+                previous = prev;
+
+            var diff = new Dictionary<string, object>(StringComparer.Ordinal)
+            {
+                // Same {field: {old, new}} shape ComputeUserDiff produces, so
+                // existing history consumers can read these rows unchanged.
+                ["last_login"] = new Dictionary<string, object?>(StringComparer.Ordinal)
+                {
+                    ["old"] = previous,
+                    ["new"] = timestamp,
+                },
+            };
+
+            // owner_shortname == subject: a login is always self-initiated.
+            await history.AppendAsync(
+                MgmtSpace, "/users", user.Shortname, user.Shortname,
+                requestHeaders.ToDictionary(
+                    kv => kv.Key, kv => (object)kv.Value, StringComparer.OrdinalIgnoreCase),
+                diff, ct);
+        }
+        catch (Exception ex)
+        {
+            log.LogError(ex,
+                "login history append failed for {Shortname} — login allowed, audit row lost",
+                user.Shortname);
+        }
     }
 
     // Validate a password against the stored hash (Python: POST /validate_password).
