@@ -587,6 +587,12 @@ jobs:
       - name: Build APK (aarch64)
         # ubuntu-24.04-arm ships docker (not podman). CONTAINER_ENGINE
         # toggles the script's `$ENGINE run` call without other changes.
+        #
+        # This is also why the job has no podman-preflight step, unlike its
+        # five self-hosted siblings: no podman, and a hosted runner gets a
+        # fresh VM per job so there is no per-boot state to go stale. If this
+        # ever moves to a self-hosted runner, add the preflight — the action
+        # no-ops on hosted runners, so adding it is never wrong.
         run: |
           VERSION="${GITHUB_REF_NAME#v}"
           VERSION="${VERSION:-0.1.0}"
