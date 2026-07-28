@@ -1632,7 +1632,7 @@ builder.Services.AddOpenApi(options =>
     {
         var dir = Path.GetDirectoryName(logFile);
         if (!string.IsNullOrEmpty(dir))
-            Dmart.Plugins.Native.ProcessEnv.Set("DMART_PLUGIN_LOG_DIR", Path.GetFullPath(dir));
+            Dmart.Plugins.Native.ProcessEnv.SetAtStartup("DMART_PLUGIN_LOG_DIR", Path.GetFullPath(dir));
     }
 
     // Set minimum log level from config.env.

@@ -19,13 +19,17 @@ internal static partial class ProcessEnv
     [DefaultDllImportSearchPaths(DllImportSearchPath.System32)]
     private static partial int SetEnvNative(string name, string value, int overwrite);
 
-    // Call during single-threaded startup only: setenv(3) is not
-    // thread-safe against concurrent getenv from other threads.
-    public static void Set(string name, string value)
+    // Named for its one legal calling context rather than for what it does:
+    // setenv(3) is not thread-safe against a concurrent getenv, and by the time
+    // the host is serving requests, "concurrent getenv" includes any thread in
+    // the runtime or in a loaded plugin. Startup, before the web host is
+    // running, is the only window where that race cannot happen — so the
+    // constraint belongs in the name, where a second call site has to read it.
+    public static void SetAtStartup(string name, string value)
     {
         Environment.SetEnvironmentVariable(name, value);
         if (!OperatingSystem.IsWindows() && SetEnvNative(name, value, 1) != 0)
             Console.Error.WriteLine(
-                $"ProcessEnv.Set: setenv({name}) failed (errno={Marshal.GetLastPInvokeError()})");
+                $"ProcessEnv.SetAtStartup: setenv({name}) failed (errno={Marshal.GetLastPInvokeError()})");
     }
 }

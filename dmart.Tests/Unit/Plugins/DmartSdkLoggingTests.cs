@@ -1,5 +1,5 @@
 using System.Text.Json;
-using System.Text.RegularExpressions;
+using System.Globalization;
 using Dmart.Sdk;
 using Shouldly;
 using Xunit;
@@ -72,22 +72,37 @@ public sealed class DmartSdkLoggingTests : IDisposable
 
         var lines = File.ReadAllLines(DmartSdk.LogPath!);
         lines.Length.ShouldBe(2);
-        JsonDocument.Parse(lines[0]).RootElement.GetProperty("level").GetString().ShouldBe("WARN");
+        // Host vocabulary (LogSink.PythonLevel), not the SDK's own: plugin and
+        // host lines get grepped together, so `"level":"WARNING"` must match
+        // both. TRACE folds into DEBUG for the same reason.
+        JsonDocument.Parse(lines[0]).RootElement.GetProperty("level").GetString().ShouldBe("WARNING");
         JsonDocument.Parse(lines[1]).RootElement.GetProperty("level").GetString().ShouldBe("ERROR");
     }
 
     [Fact]
     public void Time_Field_Matches_Host_LogSink_Format()
     {
-        // Must stay byte-for-byte compatible with Utils/LogSink.cs's
-        // TimeUtils.Now() format (local time, "yyyy-MM-dd HH:mm:ss,fff") so
-        // plugin and host log lines interleave with consistent timestamps.
+        // Two assertions, because the shape alone doesn't pin the semantics:
+        //
+        //   * ParseExact against the host's exact format string — that IS the
+        //     format check, and it fails loudly on any drift from
+        //     Utils/LogSink.cs's `"yyyy-MM-dd HH:mm:ss,fff"` + InvariantCulture.
+        //   * the value must be LOCAL wall-clock, like TimeUtils.Now(), not UTC.
+        //     A format regex passes either way while the two streams silently
+        //     sit an offset apart. (On a host genuinely at UTC+0 this leg can't
+        //     tell them apart — nothing can.)
         DmartSdk.SetShortname("oodi_sync");
+        var before = DateTime.Now.AddSeconds(-1);
         DmartSdk.LogInfo(in Cb, "format check");
+        var after = DateTime.Now.AddSeconds(1);
 
         var line = JsonDocument.Parse(File.ReadAllLines(DmartSdk.LogPath!).Single()).RootElement;
         var time = line.GetProperty("time").GetString();
-        Regex.IsMatch(time!, @"^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2},\d{3}$").ShouldBeTrue($"unexpected time format: {time}");
+
+        var parsed = DateTime.ParseExact(
+            time!, "yyyy-MM-dd HH:mm:ss,fff", CultureInfo.InvariantCulture);
+        parsed.ShouldBeInRange(before, after,
+            $"plugin timestamp {time} is not local wall-clock — the host writes TimeUtils.Now()");
     }
 
     [Fact]

@@ -402,6 +402,25 @@ public static unsafe class DmartSdk
             + $" {message}");
     }
 
+    // BREAKING (SDK consumers): `time` and `level` changed shape here to match
+    // what the dmart host writes into the same directory (Utils/LogSink.cs).
+    //
+    //   time  — was ISO-8601 with offset ("o", e.g. 2026-07-29T09:15:00.0000000Z),
+    //           now "yyyy-MM-dd HH:mm:ss,fff" in LOCAL wall-clock. That is naive
+    //           by design: dmart is timezone-less end to end (see Utils/
+    //           TimeUtils.cs), so a plugin line and a host line written in the
+    //           same second now read the same. The cost is real — a naive local
+    //           stamp is ambiguous across a DST fall-back and can't be ordered
+    //           against a log from another timezone. Anything downstream that
+    //           parses <shortname>.ljson.log as ISO-8601 must be updated.
+    //   level — was the SDK's own vocabulary (TRACE/WARN), now the host's
+    //           Python-style one (DEBUG/WARNING), so one grep matches both.
+    //           Scoped to this file line only: the stderr fallback keeps the V4
+    //           tags it froze for older scrapers.
+    //
+    // Both fields are a wire contract with whatever collects these files, not
+    // display text — hence InvariantCulture below, since `-` and `:` are
+    // culture-dependent separators in .NET custom date formats.
     private static void WritePluginLogLine(FileStream stream, int level, string? category, string message)
     {
         using var ms = new MemoryStream(message.Length + 96);
@@ -409,7 +428,7 @@ public static unsafe class DmartSdk
         {
             w.WriteStartObject();
             w.WriteString("time", DateTime.Now.ToString("yyyy-MM-dd HH:mm:ss,fff", CultureInfo.InvariantCulture));
-            w.WriteString("level", LevelName(level));
+            w.WriteString("level", HostLevelName(level));
             if (!string.IsNullOrEmpty(category)) w.WriteString("category", category);
             w.WriteString("message", message);
             w.WriteNumber("process", Environment.ProcessId);
@@ -434,12 +453,32 @@ public static unsafe class DmartSdk
     public static void LogCritical(in DmartCallbacks cb, string message, string? category = null)
         => Log(in cb, LogLevelCritical, category, message);
 
+    // Stderr-fallback vocabulary. Deliberately NOT the host's: the stderr line
+    // format is frozen for V4-era log scrapers (see the fallback's own note),
+    // and stderr goes to the plugin's own stream, not into the shared log
+    // directory — so there is nothing there to interleave with.
     private static string LevelName(int level) => level switch
     {
         LogLevelTrace => "TRACE",
         LogLevelDebug => "DEBUG",
         LogLevelInfo => "INFO",
         LogLevelWarn => "WARN",
+        LogLevelError => "ERROR",
+        LogLevelCritical => "CRITICAL",
+        _ => "INFO",
+    };
+
+    // File-line vocabulary — what the host writes (Utils/LogSink.cs::PythonLevel).
+    // The .ljson.log files sit in the same directory as the host's and get
+    // grepped and shipped together, so `"level":"WARNING"` must not silently
+    // skip every plugin warning. Python has no TRACE, so it folds into DEBUG
+    // exactly as the host folds LogLevel.Trace.
+    private static string HostLevelName(int level) => level switch
+    {
+        LogLevelTrace => "DEBUG",
+        LogLevelDebug => "DEBUG",
+        LogLevelInfo => "INFO",
+        LogLevelWarn => "WARNING",
         LogLevelError => "ERROR",
         LogLevelCritical => "CRITICAL",
         _ => "INFO",
