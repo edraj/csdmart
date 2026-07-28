@@ -13,19 +13,62 @@ description: >
   images and named containers (e.g. the cached dmart-el9-builder) live
   in the graphroot and are untouched.
 
+  Safe to add to any podman job: it no-ops on GitHub-hosted runners, and
+  it refuses to touch a runtime directory it cannot prove is private to
+  this runner.
+
 runs:
   using: composite
   steps:
     - name: Clear stale podman per-boot state if unhealthy
       shell: bash
       run: |
-        if podman info >/dev/null 2>&1; then
+        # Hosted runners get a fresh VM per job, so XDG_RUNTIME_DIR is a tmpfs
+        # that cannot carry state across a reboot — nothing to heal, and podman
+        # may not even be installed this early in the job. Exiting here is what
+        # makes this action safe to apply to every podman job uniformly.
+        if [ "${RUNNER_ENVIRONMENT:-}" = "github-hosted" ]; then
+          echo "hosted runner — no persistent podman state to heal"
           exit 0
         fi
+
+        # `timeout` on both probes: a wedged store makes podman block on the
+        # libpod lock rather than exit non-zero, and an untimed probe would then
+        # hang until the job's own timeout — the exact opposite of self-healing.
+        # A timeout counts as unhealthy, so it falls through to the cleanup
+        # below, which is the right response either way.
+        if diag=$(timeout 60 podman info 2>&1); then
+          exit 0
+        fi
+
         echo "podman unhealthy — clearing stale per-boot runtime state"
-        RUNROOT="${XDG_RUNTIME_DIR:-/run/user/$(id -u)}"
-        rm -rf "$RUNROOT/containers" "$RUNROOT/libpod/tmp"
-        podman system migrate 2>/dev/null || true
-        # Hard gate: fail HERE with podman's own diagnostics if the
-        # cleanup wasn't enough, instead of failing mid-build later.
-        podman info >/dev/null
+        # Keep the reason. This step is meant to fire silently and repeatedly
+        # over time, so on the path where the cleanup SUCCEEDS this is the only
+        # record of what was wrong — the difference between "the boot-ID
+        # mismatch again, so the host-side tmpfiles.d rule still isn't
+        # deployed" and something new breaking podman.
+        printf '%s\n' "$diag" | sed 's/^/  podman info: /'
+
+        if [ -n "${XDG_RUNTIME_DIR:-}" ]; then
+          rm -rf "$XDG_RUNTIME_DIR/containers" "$XDG_RUNTIME_DIR/libpod/tmp"
+        else
+          # Deliberately NOT falling back to /run/user/$(id -u). Only $HOME is
+          # per-runner on this host — the real runtime dir is shared by all
+          # three runner instances, and the release workflow fans these jobs out
+          # in parallel, so deleting it could pull the rug from under a HEALTHY
+          # sibling job mid-build. An unset XDG_RUNTIME_DIR also means the
+          # per-runner override isn't in effect, in which case the runtime dir
+          # is a tmpfs and the stale-boot-ID state cannot exist there anyway.
+          # Skip to migrate and let the gate below decide.
+          echo "  XDG_RUNTIME_DIR unset — skipping cleanup rather than deleting the shared /run/user/\$(id -u)"
+        fi
+
+        # Keep migrate's stderr for the same reason as the probe's: when this
+        # does fix the host, we still want to know what it had to do.
+        if ! migrate_out=$(podman system migrate 2>&1); then
+          printf '%s\n' "$migrate_out" | sed 's/^/  podman system migrate: /'
+        fi
+
+        # Hard gate: fail HERE with podman's own diagnostics if the cleanup
+        # wasn't enough, instead of failing mid-build later.
+        timeout 60 podman info >/dev/null
