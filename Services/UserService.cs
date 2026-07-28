@@ -222,23 +222,28 @@ public sealed class UserService(
         var refresh = jwt.IssueRefresh(user.Shortname, user.Type);
         await users.CreateSessionAsync(user.Shortname, access, null, ct);
 
+        var timestamp = DateTimeOffset.Now.ToUnixTimeSeconds();
+        // Read the previous login off the pre-update row — null here, since the
+        // account was created moments ago — before the upsert below overwrites it.
+        var previousLogin = PreviousLoginTimestamp(user);
+
         if (requestHeaders is not null)
         {
-            var timestamp = (int)DateTimeOffset.Now.ToUnixTimeSeconds();
             var loginInfo = new Dictionary<string, object>
             {
                 ["timestamp"] = timestamp,
                 ["headers"] = requestHeaders,
             };
-            var updated = user with { LastLogin = loginInfo, UpdatedAt = TimeUtils.Now() };
-            await users.UpsertAsync(updated, ct);
-            // This path issues tokens inline rather than delegating to
-            // ProcessLoginAsync, so it needs its own audit row — otherwise the
-            // very first login of every account would be missing from the trail.
-            // `user` is still the pre-update row, so "old" correctly reads null.
-            await AppendLoginHistoryAsync(user, timestamp, requestHeaders, ct);
-            user = updated;
+            user = user with { LastLogin = loginInfo, UpdatedAt = TimeUtils.Now() };
+            await users.UpsertAsync(user, ct);
         }
+
+        // This path issues tokens inline rather than delegating to
+        // ProcessLoginAsync, so it needs its own audit row — otherwise the very
+        // first login of every account would be missing from the trail. Appended
+        // regardless of whether headers were threaded through: the audit trail's
+        // completeness must not depend on the caller (see AppendLoginHistoryAsync).
+        await AppendLoginHistoryAsync(user.Shortname, previousLogin, timestamp, requestHeaders, ct);
 
         return Result<(User, string, string)>.Ok((user, access, refresh));
     }
@@ -589,15 +594,16 @@ public sealed class UserService(
         }
 
         // Python tracks last_login = {timestamp, headers} on every successful login.
+        var loginTimestamp = DateTimeOffset.Now.ToUnixTimeSeconds();
+        // Captured from the PRE-login row, before the assignment below replaces
+        // it — this is the audit row's "old" side.
+        var previousLogin = PreviousLoginTimestamp(user);
         Dictionary<string, object>? loginInfo = null;
-        int? loginTimestamp = null;
         if (requestHeaders is not null)
         {
-            // Cast to int so source-gen JSON can serialize it (no Int64 TypeInfo).
-            loginTimestamp = (int)DateTimeOffset.Now.ToUnixTimeSeconds();
             loginInfo = new Dictionary<string, object>
             {
-                ["timestamp"] = loginTimestamp.Value,
+                ["timestamp"] = loginTimestamp,
                 ["headers"] = requestHeaders,
             };
             updatedUser = updatedUser with { LastLogin = loginInfo };
@@ -614,11 +620,6 @@ public sealed class UserService(
             updatedUser = updatedUser with { UpdatedAt = TimeUtils.Now() };
         }
 
-        // `user` is still the PRE-login row here, so its LastLogin is the
-        // previous login — exactly what the audit row's "old" side needs.
-        if (loginTimestamp is int ts)
-            await AppendLoginHistoryAsync(user, ts, requestHeaders!, ct);
-
         var access = jwt.IssueAccess(updatedUser.Shortname, updatedUser.Roles, updatedUser.Type);
         var refresh = jwt.IssueRefresh(updatedUser.Shortname, updatedUser.Type);
 
@@ -631,27 +632,74 @@ public sealed class UserService(
         if (!isBot)
             await users.CreateSessionAsync(updatedUser.Shortname, access, req.FirebaseToken, ct);
 
+        // Last, so the trail records only logins that actually completed: an
+        // exception from the session write above must not leave behind an audit
+        // row for a login the caller never got tokens for.
+        await AppendLoginHistoryAsync(
+            updatedUser.Shortname, previousLogin, loginTimestamp, requestHeaders, ct);
+
         return Result<(string, string, User)>.Ok((access, refresh, updatedUser));
     }
 
+    // The previous login's timestamp, or null when the account has never logged
+    // in. Read off the JSONB `last_login` column, so it comes back as a
+    // JsonElement number — the source-gen context serializes that verbatim.
+    private static object? PreviousLoginTimestamp(User user)
+        => user.LastLogin is not null
+            && user.LastLogin.TryGetValue("timestamp", out var prev)
+            ? prev
+            : null;
+
+    // The only headers worth keeping on an audit row: who/where the login came
+    // from. An allowlist rather than "everything except authorization/cookie"
+    // (what AuthHandler strips for last_login), because these rows are
+    // append-only and unpruned — a deployment that carries credentials in a
+    // non-standard header (x-api-key, x-auth-token) would otherwise persist
+    // them forever, in every export. `referer` is deliberately absent: on the
+    // OAuth paths it can carry query-string secrets.
+    private static readonly HashSet<string> AuditedLoginHeaders =
+        new(["user-agent", "x-forwarded-for", "x-real-ip", "origin", "host", "accept-language"],
+            StringComparer.OrdinalIgnoreCase);
+
     // Append-only login audit trail. `users.last_login` only ever holds the
     // MOST RECENT login — every successful auth overwrites it — so after the
-    // fact there is no way to answer "when else did this account sign in, and
-    // from where". Mirroring each login into `histories` gives that trail a
-    // home that /managed/query?type=history already exposes, already gates on
-    // the caller's permission over management//users (QueryService.cs:430, so
-    // "anyone who can see the user can see their logins" needs no new rule),
-    // and already indexes — idx_histories_lookup is (space_name, subpath,
-    // shortname, timestamp DESC), precisely this access pattern.
+    // fact there is no way to answer "when else did this account sign in".
+    // Mirroring each login into `histories` gives that trail a home that
+    // /managed/query?type=history already exposes and already indexes —
+    // idx_histories_lookup is (space_name, subpath, shortname, timestamp DESC),
+    // precisely this access pattern.
+    //
+    // Two things to be clear-eyed about on the read side:
+    //
+    //   * Exposure. The gate is QueryService.cs:430 —
+    //     CanQueryAsync(actor, Content, space, subpath) — which is SUBPATH
+    //     level, with no per-record filtering afterwards. So anyone who can
+    //     read history under management//users can enumerate EVERY account's
+    //     login times, not just those of users they can see. That is a wider
+    //     audience than `last_login` had (QueryService's user mapper omits the
+    //     column entirely), and is the deliberate trade for having a trail.
+    //   * Headers. HistoryMapper.ToRecord drops `request_headers`, so the
+    //     column is not readable through /managed/query at all — only via
+    //     export (ImportExportService.cs:396) or direct SQL. Python's history
+    //     record does carry it (dmart.Client/DmartClient.Parity.cs:282 parses
+    //     it), so the mapper has a parity gap; closing it is a separate change
+    //     because it widens what the exposure note above covers.
     //
     // Deliberate divergence from Python dmart, which writes last_login through
     // internal_sys_update_model (api/user/router.py:1265) and therefore records
     // no history row at all. Nothing upstream to stay in parity with here.
     //
     // Headers ride in the `request_headers` column instead of being duplicated
-    // into `diff`. There is no pruning policy, so rows live forever; storing
-    // the full header dict twice per login is what would actually make this
-    // table hurt.
+    // into `diff` — with no pruning policy rows live forever, and storing the
+    // header dict twice per login is what would actually make this table hurt.
+    // Retention is still unsolved: a bot authenticating on a schedule appends a
+    // row per login, forever. The allowlist above bounds the bytes per row, not
+    // the row count — a prune policy is the follow-up.
+    //
+    // Appended on EVERY completed login, including those whose caller passed no
+    // headers (/oauth/authorize does: OAuthEndpoints.cs:223). Gating the row on
+    // header presence would let an optional parameter decide whether a
+    // credential-verified sign-in is auditable at all.
     //
     // Fail-open, and the only place in this file that swallows a history-write
     // failure — UpdateUserAsync deliberately lets AppendAsync throw. A login is
@@ -660,42 +708,46 @@ public sealed class UserService(
     // which is why the failure is logged at Error rather than ignored — that
     // log line is the thing to alert on.
     private async Task AppendLoginHistoryAsync(
-        User user, int timestamp, Dictionary<string, string> requestHeaders,
-        CancellationToken ct)
+        string shortname, object? previousTimestamp, long timestamp,
+        Dictionary<string, string>? requestHeaders, CancellationToken ct)
     {
         try
         {
-            // Null on a first-ever login. Reads back as a JsonElement number
-            // when it came off the JSONB column, which the source-gen context
-            // serializes verbatim.
-            object? previous = null;
-            if (user.LastLogin is not null
-                && user.LastLogin.TryGetValue("timestamp", out var prev))
-                previous = prev;
-
             var diff = new Dictionary<string, object>(StringComparer.Ordinal)
             {
-                // Same {field: {old, new}} shape ComputeUserDiff produces, so
-                // existing history consumers can read these rows unchanged.
+                // The {field: {old, new}} wrapper matches what ComputeUserDiff
+                // produces, so existing history consumers can walk these rows
+                // unchanged. The values are bare timestamps rather than the
+                // {timestamp, headers} dict the column holds — the headers are
+                // already on the row, and HistoryMapper would strip them from a
+                // nested old/new object anyway (QueryService.cs:2153).
                 ["last_login"] = new Dictionary<string, object?>(StringComparer.Ordinal)
                 {
-                    ["old"] = previous,
+                    ["old"] = previousTimestamp,
                     ["new"] = timestamp,
                 },
             };
 
+            // Filtered by walking the source rather than probing it per allowed
+            // name, so the result doesn't depend on the caller's comparer.
+            // Keys are lowercased on the way in — JSONB has no case-insensitive
+            // lookup, so a reader shouldn't have to guess "User-Agent" vs
+            // "user-agent".
+            var headers = new Dictionary<string, object>(StringComparer.Ordinal);
+            if (requestHeaders is not null)
+                foreach (var (name, value) in requestHeaders)
+                    if (AuditedLoginHeaders.Contains(name) && !string.IsNullOrEmpty(value))
+                        headers[name.ToLowerInvariant()] = value;
+
             // owner_shortname == subject: a login is always self-initiated.
             await history.AppendAsync(
-                MgmtSpace, "/users", user.Shortname, user.Shortname,
-                requestHeaders.ToDictionary(
-                    kv => kv.Key, kv => (object)kv.Value, StringComparer.OrdinalIgnoreCase),
-                diff, ct);
+                MgmtSpace, "/users", shortname, shortname, headers, diff, ct);
         }
         catch (Exception ex)
         {
             log.LogError(ex,
                 "login history append failed for {Shortname} — login allowed, audit row lost",
-                user.Shortname);
+                shortname);
         }
     }
 
