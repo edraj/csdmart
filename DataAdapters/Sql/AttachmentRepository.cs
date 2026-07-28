@@ -35,13 +35,28 @@ public sealed class AttachmentRepository(Db db)
         FROM attachments
         """;
 
-    // includeMedia trails `ct` so the existing positional call sites
-    // (handlers passing the token as the 4th argument) keep compiling. It
-    // defaults to false because no current caller reads Attachment.Media off a
-    // listing — the two paths that genuinely need the bytes (the /managed/payload
-    // download and the MCP download tool) go through GetAsync/GetMediaAsync,
-    // which keep the media-bearing select.
-    public async Task<List<Attachment>> ListForParentAsync(string spaceName, string parentSubpath, string parentShortname, CancellationToken ct = default, bool includeMedia = false)
+    // Metadata-only listing — `media` comes back null. This is what every
+    // rendering path wants (AttachmentMapper drops the bytes anyway), so it
+    // keeps the short name and the callers that never think about media get
+    // the cheap query by default.
+    public Task<List<Attachment>> ListForParentAsync(
+        string spaceName, string parentSubpath, string parentShortname, CancellationToken ct = default)
+        => ListForParentAsync(spaceName, parentSubpath, parentShortname, includeMedia: false, ct);
+
+    // Listing WITH the media bytes. Separate method rather than a defaulted
+    // flag: the bytes-or-not decision is the difference between a working
+    // export and a zip full of empty files (which is exactly what shipped once
+    // — see Export_Writes_Attachment_Media_Bytes_Into_The_Zip), and a caller
+    // that needs them should have to say so at the call site where a reviewer
+    // can see it. Export is the only in-tree consumer; single-attachment
+    // downloads (/managed/payload, the MCP download tool) use GetAsync /
+    // GetMediaAsync, which always select media.
+    public Task<List<Attachment>> ListForParentWithMediaAsync(
+        string spaceName, string parentSubpath, string parentShortname, CancellationToken ct = default)
+        => ListForParentAsync(spaceName, parentSubpath, parentShortname, includeMedia: true, ct);
+
+    private async Task<List<Attachment>> ListForParentAsync(
+        string spaceName, string parentSubpath, string parentShortname, bool includeMedia, CancellationToken ct)
     {
         var normalized = Locator.NormalizeSubpath(parentSubpath);
         var attachmentSubpath = $"{normalized.TrimEnd('/')}/{parentShortname}";

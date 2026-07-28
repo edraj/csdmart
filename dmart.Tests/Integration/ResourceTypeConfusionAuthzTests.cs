@@ -165,6 +165,156 @@ public sealed class ResourceTypeConfusionAuthzTests : IClassFixture<DmartFactory
         }
     }
 
+    // The delete leg of the same bypass, and the destructive one.
+    //
+    // Declaring `folder` against a NON-folder row used to pass the gate on a
+    // folder-scoped grant, and the folder branch then ran the subtree cascade.
+    // The entries row itself survives — DeleteFolderTreeWithDependentsOnceAsync
+    // guards it with `AND resource_type = 'folder'` — but the histories, locks
+    // and attachments predicates beside it match on PATH alone, so the victim's
+    // audit trail and every attachment it owned were deleted anyway and the call
+    // reported success. No `force` needed: the non-empty guard counts entries
+    // under a path that a content row has none of.
+    [FactIfPg]
+    public async Task Folder_Only_Grant_Cannot_Cascade_Delete_A_Content_Row_By_Declaring_Folder()
+    {
+        _factory.CreateClient();
+        var users = _factory.Services.GetRequiredService<UserRepository>();
+        var access = _factory.Services.GetRequiredService<AccessRepository>();
+        var entries = _factory.Services.GetRequiredService<EntryRepository>();
+        var spaces = _factory.Services.GetRequiredService<SpaceRepository>();
+        var attachments = _factory.Services.GetRequiredService<AttachmentRepository>();
+        var histories = _factory.Services.GetRequiredService<HistoryRepository>();
+        var hasher = _factory.Services.GetRequiredService<PasswordHasher>();
+
+        var actor = Unique("rtc_folderer");
+        var role = Unique("rtc_frole");
+        var perm = Unique("rtc_fperm");
+        var space = Unique("rtc_fspace");
+        const string subpath = "/docs";
+        var victim = Unique("rtc_victim");
+        var now = DateTime.UtcNow;
+
+        await spaces.UpsertAsync(new Space
+        {
+            Uuid = Guid.NewGuid().ToString(),
+            Shortname = space,
+            SpaceName = "management",
+            Subpath = "/",
+            OwnerShortname = "dmart",
+            IsActive = true,
+            Languages = new() { Language.En },
+            CreatedAt = now,
+            UpdatedAt = now,
+        });
+
+        // Scoped to "folder" only — the shape a "space librarian" role carries.
+        await access.UpsertPermissionAsync(new Permission
+        {
+            Uuid = Guid.NewGuid().ToString(),
+            Shortname = perm,
+            SpaceName = "management",
+            Subpath = "/permissions",
+            OwnerShortname = "dmart",
+            IsActive = true,
+            Subpaths = new() { [space] = new() { PermissionService.AllSubpathsMw } },
+            ResourceTypes = new() { "folder" },
+            Actions = new() { "view", "query", "create", "update", "delete" },
+            CreatedAt = now,
+            UpdatedAt = now,
+        });
+        await access.UpsertRoleAsync(new Role
+        {
+            Uuid = Guid.NewGuid().ToString(),
+            Shortname = role,
+            SpaceName = "management",
+            Subpath = "/roles",
+            OwnerShortname = "dmart",
+            IsActive = true,
+            Permissions = new() { perm },
+            CreatedAt = now,
+            UpdatedAt = now,
+        });
+        await CreateUserAsync(users, hasher, actor, new() { role });
+
+        // The victim: a CONTENT entry the folder grant must not reach, carrying
+        // the two things the cascade would have destroyed without touching the
+        // entries row — an attachment and a history row.
+        await entries.UpsertAsync(new Entry
+        {
+            Uuid = Guid.NewGuid().ToString(),
+            Shortname = victim,
+            SpaceName = space,
+            Subpath = subpath,
+            ResourceType = ResourceType.Content,
+            OwnerShortname = "dmart",
+            IsActive = true,
+            CreatedAt = now,
+            UpdatedAt = now,
+        });
+        await attachments.UpsertAsync(new Attachment
+        {
+            Uuid = Guid.NewGuid().ToString(),
+            Shortname = "att1",
+            SpaceName = space,
+            // Attachments hang at "{parent subpath}/{parent shortname}".
+            Subpath = $"{subpath}/{victim}",
+            ResourceType = ResourceType.Comment,
+            OwnerShortname = "dmart",
+            IsActive = true,
+            CreatedAt = now,
+            UpdatedAt = now,
+        });
+        await histories.AppendAsync(space, subpath, victim, "dmart", null,
+            new Dictionary<string, object> { ["state"] = "seeded" });
+        await access.InvalidateAllCachesAsync();
+
+        try
+        {
+            var client = await LoginAsAsync(actor);
+
+            var body = new Request
+            {
+                RequestType = RequestType.Delete,
+                SpaceName = space,
+                Records = new()
+                {
+                    new Record
+                    {
+                        // The lie: a content row named as a folder.
+                        ResourceType = ResourceType.Folder,
+                        Subpath = subpath,
+                        Shortname = victim,
+                        Attributes = new(),
+                    },
+                },
+            };
+            var resp = await client.PostAsJsonAsync("/managed/request", body, DmartJsonContext.Default.Request);
+            var raw = await resp.Content.ReadAsStringAsync();
+
+            resp.StatusCode.ShouldNotBe(HttpStatusCode.OK,
+                $"folder-only grant must not delete a content row via resource-type confusion. Body: {raw}");
+
+            // The entries row was never the exposed part — these two were.
+            (await attachments.ListForParentAsync(space, subpath, victim))
+                .Count.ShouldBe(1, "the victim's attachments must survive a refused delete");
+            (await histories.ListAsync(space, subpath, victim))
+                .Count.ShouldBe(1, "the victim's history must survive a refused delete");
+            (await entries.GetAsync(space, subpath, victim)).ShouldNotBeNull();
+        }
+        finally
+        {
+            try { await users.DeleteAllSessionsAsync(actor); } catch { }
+            try { await users.DeleteAsync(actor); } catch { }
+            try { await access.DeleteRoleAsync(role); } catch { }
+            try { await access.DeletePermissionAsync(perm); } catch { }
+            try { await attachments.DeleteUnderSubpathAsync(space, $"{subpath}/{victim}"); } catch { }
+            try { await entries.DeleteAsync(space, subpath, victim, ResourceType.Content); } catch { }
+            try { await spaces.DeleteAsync(space); } catch { }
+            await access.InvalidateAllCachesAsync();
+        }
+    }
+
     private static string Unique(string prefix) => $"{prefix}_{Guid.NewGuid():N}"[..24];
 
     private static async Task CreateUserAsync(

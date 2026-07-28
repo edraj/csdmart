@@ -17,11 +17,24 @@ the cxb SPA, and the CLI/SDK.
 | | Before | After |
 |---|---|---|
 | `SecurityPenetrationTests` | 77 / 77 pass | 77 / 77 pass |
-| Full suite | 1672 pass | **1673 pass, 0 failed** |
+| Full suite | 1672 pass | **1679 pass, 0 failed** |
 
-The added test is `ResourceTypeConfusionAuthzTests`, a true exploit reproduction: with the
-fix reverted the attack request returns `{"status":"success"}`; with it, the request is
-denied.
+The added tests are `ResourceTypeConfusionAuthzTests` (two cases) and the export-media
+regression guard. Both confusion cases are true exploit reproductions: with the fix
+reverted the update attack returns `{"status":"success"}`, and the delete attack returns
+`{"status":"success"}` with `report: {entries: 0, attachments: 1, histories: 1}` — i.e.
+the row it was refused survives while everything hanging off it is gone.
+
+Two behaviour changes worth knowing, neither a defect:
+
+* **Response shape now varies with response size.** `JsonStripEmptiesMiddleware` skips the
+  empty-key trim above 1 MB, so the same query at `limit=50` and `limit=5000` can return
+  structurally different records. The trim is cosmetic — clients must treat an absent key
+  and an empty one as equivalent.
+* **`/user/validate_password` now counts failed attempts**, so repeated wrong guesses in a
+  "confirm your password" dialog lock the account exactly as they would at `/user/login`.
+  That is the point (it was an unmetered password oracle), but it is a new way for a
+  legitimate user to lock themselves out.
 
 > Also removed here: `dmart.Tests/Integration/UserLookupIndexTests.cs`, a pre-`ceb5e1f`
 > leftover asserting index names (`idx_users_email_lower`, `idx_users_msisdn`) that the
@@ -36,6 +49,7 @@ denied.
 | Area | Defect | Fix |
 |---|---|---|
 | Entry lifecycle | **Resource-type confusion → authz bypass.** `EntryRepository.GetAsync` retries without the `resource_type` filter, but `EntryService` gated on the *client-declared* type. An editor with `update` on `resource_types:["content"]` could declare `content`, be handed a **schema** row, pass the permission walk, and overwrite it (the upsert preserves the real type). | `EntryService.UpdateAsync`/`MoveAsync` re-derive the locator from `existing.ResourceType` before calling `PermissionService`. Regression test added. |
+| Entry lifecycle | **The same confusion on the DELETE path — destructive.** Caught in review of this PR: `DeleteAsync` still gated on the declared type. Declaring `folder` against a non-folder row passed a folder-scoped grant, and the folder branch ran the subtree cascade. The entries row survived (`AND resource_type = 'folder'`, `EntryRepository.cs:522`) but the `histories`/`locks`/`attachments` predicates beside it match on **path alone** — so the victim's audit trail, another user's live lock, and every attachment it owned were deleted, and the call returned `{"status":"success"}`. No `force` required. | `DeleteAsync` derives an `effective` locator from `existing.ResourceType` and uses it for the gate, the folder-vs-single branch, the typed delete and the schema-cache flush. `Folder_Only_Grant_Cannot_Cascade_Delete_A_Content_Row_By_Declaring_Folder` pins it: reverted, the request reports `success` with `attachments: 1, histories: 1` destroyed. |
 | Realtime | **WebSocket subscriptions had no authorization.** Any authenticated user could `notification_subscription` to any space/subpath and receive space/subpath/shortname/owner for every change there. | `CanSubscribeAsync` gate mirroring `QueryService.CanQueryAsync` (view → query → root fallback). |
 | cxb SPA | **Stored XSS via `{@html}` over raw server data** (`Table2Cols.svelte`), reachable from the entry List tab and `/info/settings`. | `{@html}` removed; scalars use auto-escaping interpolation, nesting recurses through real markup. |
 | cxb SPA | **Stored XSS via unsanitized `marked()` output** (`Media.svelte`, `MarkdownEditor.svelte`). `marked` v18 does not sanitize. | Output wrapped in `DOMPurify.sanitize(...)`; `dompurify` added to `cxb/package.json`. |
@@ -47,7 +61,7 @@ denied.
 | Config | **Apple ES256 private key returned by `GET /info/settings`** to any authenticated user — enough to forge Apple `client_secret` assertions. | Added to `RedactedProperties`, plus a name-based safety net that redacts any *string* setting matching `Secret/Password/Key/Token/Credential` so future secrets default to redacted. |
 | Repo hygiene | `appsettings.json` holds a real DB password, JWT secret and admin password; it was **not** gitignored and ships into publish/Docker output. | Added to `.gitignore` and `.dockerignore`. |
 | Auth | **Password reset never evicted sessions** — a stolen token survived the victim's recovery flow. | `/password-reset-confirm` honours `LogoutOnPwdChange` and calls `DeleteAllSessionsAsync`. |
-| Auth | **Username enumeration via Argon2 timing** — a miss returned in ~1 ms, a hit in 100–300 ms. | Constant-work decoy hash burned on both miss branches. |
+| Auth | **Username enumeration via Argon2 timing** — a miss returned in ~1 ms, a hit in 100–300 ms. | Constant-work decoy hash burned on both miss branches. **Scope:** this closes the clock for accounts that are neither locked nor deactivated. A locked account still answers `USER_ACCOUNT_LOCKED` and a deactivated one its own code, both before any hashing, so for those two states existence is disclosed by the response body regardless of timing. Collapsing them into the generic failure would diverge from Python and remove the message a locked-out user needs, so it stays open deliberately. |
 | Data layer | **`/managed/shortening` 500'd on every call** — `ON CONFLICT (token_uuid)` with no matching unique index (42P10). | Added `idx_urlshorts_token_uuid` (also converts the resolve lookup from a seq scan to an index probe). |
 | Query | **ReDoS in the search parser.** `RangeRegex` backtracks quadratically (16 k chars → 1.19 s) with no `MatchTimeout`, on the **unauthenticated** `/public/query`. | 100 ms `matchTimeout` on all five compiled regexes; timeouts and over-length input fail **closed** (`FALSE`), never open. |
 | Query | **jq stdout buffered unbounded** — `[range(200000000)]` (24 chars) streams hundreds of MB into the heap. | 32 MB output budget, process killed on overflow; timeout path now awaits the copy task instead of writing into a disposed stream. |
@@ -71,6 +85,7 @@ denied.
 | OAuth | Consent page showed only the opaque `client_id`, so a self-registered phishing client was indistinguishable from a real one. | Renders HTML-encoded client name + redirect-URI host. |
 | OAuth | Google `email_verified` ignored before email-based account linking. | Unverified emails dropped; `IsEmailVerified` only set from a verified claim. |
 | Public API | `/public/entry?retrieve_attachments=true` returned attachments with no per-attachment ACL check. | Filtered through `CanReadAsync`. |
+| Managed API | Same hole on the authenticated twin, `/managed/entry?retrieve_attachments=true` — caught in review of this PR. Not metadata-only: `AttachmentMapper.ToEntryRecord` emits `payload` **and** `body`, so any caller who could read the parent got the *content* of `comment`/`json` attachments they had no ACL path to (`/managed/payload` refuses the same bytes). | Same `CanReadAsync` filter as the public route. |
 | QR | `/qr/validate` was anonymous and **unconditionally returned success** over a stub service. | Both QR handlers return 501 until implemented. |
 | Auth | `/user/otp-confirm` marked contacts verified without proving ownership of the destination. | Flags gated on a match against the user's own email/msisdn. |
 | Auth | Anonymous callers could delete a victim's live OTP via the max-attempts purge. | Actor check moved above `VerifyAndConsumeAsync`. |

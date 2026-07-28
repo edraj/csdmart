@@ -46,6 +46,16 @@ public sealed class UserService(
     // Verifying against this throwaway makes the miss path pay what the hit
     // path pays. Hashed once at class init over a random password nobody
     // holds, so the verify can never succeed; its result is always discarded.
+    //
+    // SCOPE, so nobody reads this as "enumeration is solved": it closes the
+    // clock for accounts that are neither locked nor deactivated. A locked
+    // account still answers USER_ACCOUNT_LOCKED and a deactivated one its own
+    // code, both BEFORE any hashing — so for those two states existence is
+    // disclosed by the response body outright, and the timing follows. Closing
+    // that means collapsing those codes into the generic
+    // INVALID_USERNAME_AND_PASS, which diverges from Python and from what the
+    // cxb login UI shows the user ("your account is locked" is the message a
+    // legitimate locked-out user needs), so it is deliberately left open.
     private static readonly string DecoyHash =
         new PasswordHasher().Hash(Convert.ToBase64String(RandomNumberGenerator.GetBytes(32)));
 

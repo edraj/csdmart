@@ -38,6 +38,14 @@ public static class JsonStripEmptiesMiddleware
     // second serialized copy, all of it on the LOH — a 30 MB query result cost
     // hundreds of MB. Responses that big are bulk exports/queries whose consumers
     // are machines, not the SPA, so the cosmetic empty-key trim isn't worth it.
+    //
+    // CONTRACT NOTE, because the threshold is observable: the wire shape now
+    // depends on response SIZE. The same query at limit=50 and at limit=5000 can
+    // return records that differ structurally — null/empty keys stripped from the
+    // small page, present on the large one. Any client that reads "key absent" as
+    // meaning something (rather than treating absent and empty as equivalent) will
+    // see that flip as a page grows. Clients must treat the two as equivalent;
+    // this trim is cosmetic, never semantic.
     private const int MaxStripBytes = 1024 * 1024;
 
     // Matches what JsonNode.ToJsonString() used to build internally for

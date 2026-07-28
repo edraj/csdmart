@@ -165,17 +165,19 @@ public static class WebSocketHandler
                             // owner of every change there. Without this gate any
                             // authenticated user could subscribe to any space and
                             // watch entries they have no permission to read.
-                            if (channel is not null && !await CanSubscribeAsync(ctx, userShortname, msg))
-                            {
-                                await mgr.SendMessageAsync(userShortname,
-                                    "{\"type\":\"notification_subscription\",\"message\":{\"status\":\"failed\"}}");
-                                continue;
-                            }
                             if (channel is not null)
                             {
-                                mgr.Subscribe(userShortname, channel);
-                                await mgr.SendMessageAsync(userShortname,
-                                    "{\"type\":\"notification_subscription\",\"message\":{\"status\":\"success\"}}");
+                                if (await CanSubscribeAsync(ctx, userShortname, msg))
+                                {
+                                    mgr.Subscribe(userShortname, channel);
+                                    await mgr.SendMessageAsync(userShortname,
+                                        "{\"type\":\"notification_subscription\",\"message\":{\"status\":\"success\"}}");
+                                }
+                                else
+                                {
+                                    await mgr.SendMessageAsync(userShortname,
+                                        "{\"type\":\"notification_subscription\",\"message\":{\"status\":\"failed\"}}");
+                                }
                             }
                         }
                         else if (msgType == "notification_unsubscribe")
