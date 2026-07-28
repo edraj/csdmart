@@ -165,8 +165,8 @@ password with `dmart passwd` before exposing the server.
 | Managed   | `PUT /managed/progress-ticket/{space}/{subpath}/{shortname}/{action}` | Yes | Workflow state transition           |
 | Public    | `POST /public/query`                                       | No    | Public query                               |
 | Public    | `POST /public/submit/{space}/{schema}/{subpath}`           | No    | Public submission                          |
-| Info      | `GET /info/manifest`                                       | Yes   | Server manifest and plugins                |
-| Info      | `GET /info/settings`                                       | Yes   | Effective settings                         |
+| Info      | `GET /info/manifest`                                       | Admin | Server manifest and plugins (super_admin)  |
+| Info      | `GET /info/settings`                                       | Admin | Effective settings (super_admin)           |
 | WebSocket | `GET /ws?token=<jwt>`                                      | Token | Real-time channel subscriptions            |
 
 See [`ARCHITECTURE.md`](./ARCHITECTURE.md#request-lifecycle) for how
