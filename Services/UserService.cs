@@ -680,10 +680,11 @@ public sealed class UserService(
     //     column entirely), and is the deliberate trade for having a trail.
     //   * Headers. HistoryMapper.ToRecord drops `request_headers`, so the
     //     column is not readable through /managed/query at all — only via
-    //     export (ImportExportService.cs:396) or direct SQL. Python's history
-    //     record does carry it (dmart.Client/DmartClient.Parity.cs:282 parses
-    //     it), so the mapper has a parity gap; closing it is a separate change
-    //     because it widens what the exposure note above covers.
+    //     export (ImportExportService.cs:396) or direct SQL. That is upstream
+    //     behaviour, not an oversight: Python deletes the key outright for
+    //     history queries (adapter.py:3030), and HistoryQueryShapeTests pins
+    //     it. So these headers are written for a forensic read that has to go
+    //     through an admin channel — worth knowing before relying on them.
     //
     // Deliberate divergence from Python dmart, which writes last_login through
     // internal_sys_update_model (api/user/router.py:1265) and therefore records
