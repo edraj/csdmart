@@ -1826,6 +1826,25 @@ builder.Services.AddSingleton<WorkflowService>();
 // SpaceEventLogger captures inbound request headers (Python parity, minus
 // cookie/authorization) into the audit log; needs IHttpContextAccessor.
 builder.Services.AddHttpContextAccessor();
+
+// SPIKE: MCP SDK 2.0 server, tools registered explicitly with WithTools<T>()
+// — WithToolsFromAssembly() scans by reflection and is IL2026 under AOT.
+// The SDK's resolver chain has no reflection fallback under AOT, so our tool
+// argument/result types must be visible to it — see McpSdkJsonContext. Its
+// DefaultOptions is frozen once used, so hand the SDK a mutable COPY with our
+// context prepended rather than mutating the shared instance.
+var mcpJsonOptions = new System.Text.Json.JsonSerializerOptions(
+    ModelContextProtocol.McpJsonUtilities.DefaultOptions);
+mcpJsonOptions.TypeInfoResolverChain.Insert(0, Dmart.Api.Mcp.Sdk.McpSdkJsonContext.Default);
+// The SDK's options — not our context's JsonSourceGenerationOptions — decide
+// property naming, so dmart's snake_case wire contract has to be restated here
+// or the same Response type serializes as resource_type over REST and
+// resourceType over MCP. This also renames tool ARGUMENTS to snake_case,
+// matching what the hand-rolled tools already accept.
+mcpJsonOptions.PropertyNamingPolicy = System.Text.Json.JsonNamingPolicy.SnakeCaseLower;
+builder.Services.AddMcpServer()
+    .WithHttpTransport()
+    .WithTools<Dmart.Api.Mcp.Sdk.SdkQueryTool>(mcpJsonOptions);
 builder.Services.AddSingleton<SpaceEventLogger>();
 builder.Services.AddSingleton<PluginManager>();
 // Drains fire-and-forget concurrent plugin after-hooks on graceful shutdown.
@@ -2306,6 +2325,11 @@ Dmart.Api.Oauth.OAuthEndpoints.MapOAuth(app);
 // Auth is applied per-route inside MapMcp via RequireAuthorization() — the
 // caller's JWT flows through to tool handlers so permissions are enforced.
 Dmart.Api.Mcp.McpEndpoint.MapMcp(app);
+
+// SPIKE — see Api/Mcp/Sdk/SdkQueryTool.cs. The official SDK's Streamable HTTP
+// server mounted at /mcp-sdk, next to (not instead of) the hand-rolled one, so
+// an AOT publish exercises the SDK without changing what /mcp serves.
+app.MapMcp("/mcp-sdk").RequireAuthorization();
 
 // WebSocket server — port of dmart/websocket.py.
 // /ws?token=<jwt>, /send-message/{user}, /broadcast-to-channels, /ws-info
