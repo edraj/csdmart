@@ -1,5 +1,6 @@
 using System.Net;
 using System.Net.Http.Json;
+using System.Globalization;
 using System.Text.Json;
 using Dmart.Auth;
 using Dmart.Config;
@@ -60,16 +61,16 @@ public sealed class LoginHistoryTests : IClassFixture<DmartFactory>
             var (newestOld, newestNew) = ReadLastLoginDiff(rows[0]);
             var (oldestOld, oldestNew) = ReadLastLoginDiff(rows[1]);
 
-            oldestOld.ShouldBeNull("first-ever login has no previous timestamp");
-            oldestNew.ShouldNotBeNull();
+            oldestOld.ValueKind.ShouldBe(JsonValueKind.Null,
+                "first-ever login has no previous timestamp");
+            oldestNew.ValueKind.ShouldBe(JsonValueKind.String);
 
-            newestOld.ShouldBe(oldestNew,
+            newestOld.GetString().ShouldBe(oldestNew.GetString(),
                 "the second row's `old` must be the first row's `new` — that chain is what "
                 + "lets a reader walk the login sequence backwards");
-            // Unix-second granularity: back-to-back logins legitimately land in
-            // the same second, so this is >= rather than >. The chain assertion
-            // above is what actually proves the two rows are distinct logins.
-            newestNew!.Value.ShouldBeGreaterThanOrEqualTo(oldestNew!.Value);
+            ParseStamp(newestNew).ShouldBeGreaterThanOrEqualTo(ParseStamp(oldestNew),
+                "back-to-back logins may share a tick; the chain assertion above is what "
+                + "proves the two rows are distinct logins");
         }
         finally { await CleanupAsync(sp, sn); }
     }
@@ -197,8 +198,8 @@ public sealed class LoginHistoryTests : IClassFixture<DmartFactory>
             rows.Count.ShouldBe(1, "a headerless login is still a login");
 
             var (old, @new) = ReadLastLoginDiff(rows[0]);
-            old.ShouldBeNull();
-            @new.ShouldNotBeNull();
+            old.ValueKind.ShouldBe(JsonValueKind.Null);
+            @new.ValueKind.ShouldBe(JsonValueKind.String);
 
             // No headers to record — the column is NOT NULL, so it holds {}.
             JsonDocument.Parse(rows[0].RequestHeaders!).RootElement
@@ -238,8 +239,8 @@ public sealed class LoginHistoryTests : IClassFixture<DmartFactory>
             rows.Count.ShouldBe(1, "the auto-login at registration must be audited too");
 
             var (old, @new) = ReadLastLoginDiff(rows[0]);
-            old.ShouldBeNull("a brand-new account has no previous login");
-            @new.ShouldNotBeNull();
+            old.ValueKind.ShouldBe(JsonValueKind.Null, "a brand-new account has no previous login");
+            @new.ValueKind.ShouldBe(JsonValueKind.String);
             FindHeader(JsonDocument.Parse(rows[0].RequestHeaders!).RootElement, "user-agent")
                 .ShouldBe("registration-probe/1.0");
         }
@@ -248,6 +249,89 @@ public sealed class LoginHistoryTests : IClassFixture<DmartFactory>
             await DeleteLoginRowsAsync(sp, sn);
             await TestUserCleanup.DeleteUserAndOwnedAsync(sp, sn);
         }
+    }
+
+    // The stored shape itself. `last_login.timestamp` reads like created_at /
+    // updated_at rather than as epoch seconds, so the audit trail is legible
+    // without conversion — and the column and the history row must agree, since
+    // the row is supposed to be a faithful record of what the column was set to.
+    [FactIfPg]
+    public async Task LastLogin_Timestamp_Is_A_Naive_Local_Stamp_Matching_CreatedAt()
+    {
+        var sp = _factory.Services;
+        var (sn, password) = await CreateLoginCapableUserAsync(sp);
+        var users = sp.GetRequiredService<UserRepository>();
+        var history = sp.GetRequiredService<HistoryRepository>();
+
+        try
+        {
+            await LoginAsync(_factory.CreateClient(), sn, password);
+
+            var user = await users.GetByShortnameAsync(sn);
+            user!.LastLogin.ShouldNotBeNull();
+            var stamp = (JsonElement)user.LastLogin!["timestamp"]!;
+
+            stamp.ValueKind.ShouldBe(JsonValueKind.String,
+                "epoch seconds are unreadable in an audit trail — see UserService.LoginTimestamp");
+            var parsed = DateTime.ParseExact(stamp.GetString()!, "O",
+                CultureInfo.InvariantCulture, DateTimeStyles.RoundtripKind);
+
+            // Kind=Unspecified is what makes this render exactly like a
+            // created_at read back from a TIMESTAMP (without time zone) column:
+            // no trailing Z, no offset. A Kind=Local value would serialize with
+            // "+03:00" and stop matching.
+            parsed.Kind.ShouldBe(DateTimeKind.Unspecified);
+            stamp.GetString()!.ShouldNotContain("+");
+            stamp.GetString()!.EndsWith("Z", StringComparison.Ordinal).ShouldBeFalse();
+
+            // Same wall clock the row was created on, give or take the test.
+            parsed.ShouldBeInRange(DateTime.Now.AddMinutes(-5), DateTime.Now.AddMinutes(5));
+
+            // And the audit row records exactly what the column holds.
+            var (_, @new) = ReadLastLoginDiff((await QueryLoginRowsAsync(history, sn))[0]);
+            @new.GetString().ShouldBe(stamp.GetString());
+        }
+        finally { await CleanupAsync(sp, sn); }
+    }
+
+    // The migration case, and the reason PreviousLoginTimestamp stays untyped:
+    // rows written before this format change (or by Python dmart, which still
+    // writes int(datetime.now().timestamp())) hold an epoch NUMBER. The first
+    // login after an upgrade therefore produces one row whose `old` is a number
+    // and whose `new` is a string. That must be recorded verbatim, not crash and
+    // not be silently reinterpreted as a date it never was.
+    [FactIfPg]
+    public async Task Legacy_Epoch_Timestamp_Is_Carried_Into_The_Audit_Row_Unchanged()
+    {
+        var sp = _factory.Services;
+        var (sn, password) = await CreateLoginCapableUserAsync(sp);
+        var users = sp.GetRequiredService<UserRepository>();
+        var history = sp.GetRequiredService<HistoryRepository>();
+
+        try
+        {
+            // Exactly what a pre-upgrade row looks like.
+            const long legacyEpoch = 1_785_000_000;
+            var user = await users.GetByShortnameAsync(sn);
+            await users.UpsertAsync(user! with
+            {
+                LastLogin = new Dictionary<string, object>
+                {
+                    ["timestamp"] = legacyEpoch,
+                    ["headers"] = new Dictionary<string, object> { ["user-agent"] = "legacy" },
+                },
+            });
+
+            await LoginAsync(_factory.CreateClient(), sn, password);
+
+            var (old, @new) = ReadLastLoginDiff((await QueryLoginRowsAsync(history, sn))[0]);
+            old.ValueKind.ShouldBe(JsonValueKind.Number,
+                "a legacy epoch must be recorded as the number it was");
+            old.GetInt64().ShouldBe(legacyEpoch);
+            @new.ValueKind.ShouldBe(JsonValueKind.String,
+                "the new side is always the readable form");
+        }
+        finally { await CleanupAsync(sp, sn); }
     }
 
     // ----- helpers -----
@@ -295,18 +379,25 @@ public sealed class LoginHistoryTests : IClassFixture<DmartFactory>
             Limit = 50,
         });
 
-    // Returns the {old, new} timestamps of the row's last_login diff.
-    private static (long? Old, long? New) ReadLastLoginDiff(HistoryRecord row)
+    // Returns the {old, new} values of the row's last_login diff as raw
+    // elements rather than a parsed type, because the two sides are NOT
+    // guaranteed to share one: `new` is always a naive-local timestamp string,
+    // while `old` is whatever the previous login stored — an epoch number for
+    // any row written before the format change, or by Python dmart.
+    private static (JsonElement Old, JsonElement New) ReadLastLoginDiff(HistoryRecord row)
     {
         row.Diff.ShouldNotBeNull();
         var last = JsonDocument.Parse(row.Diff!).RootElement.GetProperty("last_login");
-        long? Read(string name)
-        {
-            var v = last.GetProperty(name);
-            return v.ValueKind == JsonValueKind.Null ? null : v.GetInt64();
-        }
-        return (Read("old"), Read("new"));
+        return (last.GetProperty("old").Clone(), last.GetProperty("new").Clone());
     }
+
+    // Parses a stamp written by UserService.LoginTimestamp(). ParseExact
+    // against the round-trip format is deliberate: it fails loudly if the
+    // field ever drifts away from what created_at/updated_at render, which is
+    // the entire point of storing it this way.
+    private static DateTime ParseStamp(JsonElement stamp) =>
+        DateTime.ParseExact(stamp.GetString()!, "O", CultureInfo.InvariantCulture,
+            DateTimeStyles.RoundtripKind);
 
     // Header names are lowercased on the way into the row, but match
     // case-insensitively so this helper keeps working if that changes.
