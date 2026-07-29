@@ -341,6 +341,12 @@ public static class OtpHandler
             // Successful reset clears the failed-attempt counter — symmetric
             // with the password-login success path (ProcessLoginAsync).
             await users.ResetAttemptsAsync(user.Shortname, ct);
+            // Same rule POST /user/profile applies when it rewrites the
+            // password (UserService.UpdateProfileAsync): evict every session.
+            // A reset is the victim's remedy after a compromise, so the token
+            // the attacker already holds must not survive it.
+            if (settings.Value.LogoutOnPwdChange)
+                await users.DeleteAllSessionsAsync(user.Shortname, ct);
             return Response.Ok();
         }).RequireRateLimiting("auth-by-ip");
 
@@ -350,6 +356,19 @@ public static class OtpHandler
             UserRepository users, HttpContext http, IOptions<DmartSettings> settings,
             CancellationToken ct) =>
         {
+            // Authenticated-only. The handler's only effect is flipping the
+            // caller's verified flags, so an anonymous call achieves nothing —
+            // yet it still reached VerifyAndConsumeAsync, which DELETES the
+            // OTP row at the bare {dest} key once MaxOtpVerifyAttempts wrong
+            // guesses land. That is the same key /user/login's OTP flow reads,
+            // so anyone who knew a victim's msisdn could wipe their
+            // just-issued code on demand. Demand an actor before we touch the
+            // OTP store at all.
+            var actor = http.Actor();
+            if (actor is null)
+                return Response.Fail(InternalErrorCode.NOT_AUTHENTICATED,
+                    "login required", ErrorTypes.Auth);
+
             var dest = req.Msisdn ?? req.Email ?? "";
             var ok = await repo.VerifyAndConsumeAsync(
                 dest, req.Code, settings.Value.MaxOtpVerifyAttempts, ct);
@@ -357,21 +376,29 @@ public static class OtpHandler
                 return Response.Fail(InternalErrorCode.OTP_INVALID,
                     "code mismatch or expired", ErrorTypes.Auth);
 
-            // If the caller is authenticated, update their verified flags.
-            var actor = http.Actor();
-            if (actor is not null)
+            var user = await users.GetByShortnameAsync(actor, ct);
+            if (user is not null)
             {
-                var user = await users.GetByShortnameAsync(actor, ct);
-                if (user is not null)
+                // Only mark a contact verified when the OTP was delivered to
+                // the caller's OWN contact. Without the destination match,
+                // proving control of ANY address (the attacker's own mailbox,
+                // say) flipped the flag on whatever contact sits on the
+                // caller's row — a verification that proves nothing about
+                // that row. Flags never regress: a mismatch leaves the stored
+                // value alone rather than clearing it.
+                var emailMatch = !string.IsNullOrEmpty(req.Email)
+                    && !string.IsNullOrEmpty(user.Email)
+                    && string.Equals(req.Email, user.Email, StringComparison.OrdinalIgnoreCase);
+                var msisdnMatch = !string.IsNullOrEmpty(req.Msisdn)
+                    && !string.IsNullOrEmpty(user.Msisdn)
+                    && string.Equals(req.Msisdn, user.Msisdn, StringComparison.Ordinal);
+                var updated = user with
                 {
-                    var updated = user with
-                    {
-                        IsEmailVerified = !string.IsNullOrEmpty(req.Email) || user.IsEmailVerified,
-                        IsMsisdnVerified = !string.IsNullOrEmpty(req.Msisdn) || user.IsMsisdnVerified,
-                        UpdatedAt = TimeUtils.Now(),
-                    };
-                    await users.UpsertAsync(updated, ct);
-                }
+                    IsEmailVerified = emailMatch || user.IsEmailVerified,
+                    IsMsisdnVerified = msisdnMatch || user.IsMsisdnVerified,
+                    UpdatedAt = TimeUtils.Now(),
+                };
+                await users.UpsertAsync(updated, ct);
             }
             return Response.Ok();
         }).RequireRateLimiting("auth-by-ip");

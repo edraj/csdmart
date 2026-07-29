@@ -2,6 +2,7 @@
     import {Button, Card, TabItem, Tabs} from "flowbite-svelte";
     import {createEventDispatcher} from "svelte";
     import {marked} from "marked";
+    import DOMPurify from "dompurify";
     import {mangle} from "marked-mangle";
     import {gfmHeadingId} from "marked-gfm-heading-id";
 
@@ -156,7 +157,9 @@
     <TabItem title="Preview">
       <div class="w-full">
         <article class="prose">
-          {@html marked(content)}
+          <!-- marked does NOT strip HTML, and `content` can be a server-loaded
+               payload — sanitize before injecting. -->
+          {@html DOMPurify.sanitize(marked(content) as string)}
         </article>
       </div>
     </TabItem>

@@ -29,21 +29,51 @@ public sealed class WsConnectionManager
         _connections[userShortname] = ws;
     }
 
-    public void Disconnect(string userShortname)
+    // Identity-aware disconnect. The caller is WebSocketHandler's `finally`,
+    // which runs on the socket whose read loop just ended — and that may be a
+    // STALE socket whose entry ConnectAsync has already replaced with the
+    // user's new one (reconnect while the old half-open socket is still
+    // unwinding). An unconditional TryRemove(key) there would unregister the
+    // LIVE connection and the client would silently stop receiving. The
+    // KeyValuePair overload is an atomic compare-and-remove: it only removes
+    // when the stored socket is still this exact instance.
+    public void Disconnect(string userShortname, WebSocket ws)
     {
-        _connections.TryRemove(userShortname, out _);
-        RemoveAllSubscriptions(userShortname);
+        // Same reason the subscriptions only go when the removal won: they
+        // belong to whichever socket currently owns the entry.
+        if (_connections.TryRemove(new KeyValuePair<string, WebSocket>(userShortname, ws)))
+            RemoveAllSubscriptions(userShortname);
     }
 
-    public async Task<bool> SendMessageAsync(string userShortname, string message)
+    // Upper bound on a single send. A client that stops reading (TCP
+    // zero-window) never completes SendAsync, so an untimed send pins the
+    // calling task forever — and on the broadcast path it used to pin the
+    // whole fan-out. Dropping a peer that can't drain 5s worth of backlog is
+    // safe: it reconnects and re-subscribes.
+    private static readonly TimeSpan SendTimeout = TimeSpan.FromSeconds(5);
+
+    public Task<bool> SendMessageAsync(string userShortname, string message)
+        => SendMessageAsync(userShortname, Encoding.UTF8.GetBytes(message));
+
+    private async Task<bool> SendMessageAsync(string userShortname, byte[] payload)
     {
         if (!_connections.TryGetValue(userShortname, out var ws)) return false;
         if (ws.State != WebSocketState.Open) return false;
+        using var cts = new CancellationTokenSource(SendTimeout);
         try
         {
-            var bytes = Encoding.UTF8.GetBytes(message);
-            await ws.SendAsync(bytes, WebSocketMessageType.Text, true, CancellationToken.None);
+            await ws.SendAsync(payload, WebSocketMessageType.Text, true, cts.Token);
             return true;
+        }
+        catch (OperationCanceledException)
+        {
+            // Timed out — the peer is wedged. Abort() rather than CloseAsync()
+            // because a graceful close writes a frame down the same stalled
+            // socket and would block just as long. Unregister so later
+            // broadcasts skip it instead of paying the timeout again.
+            try { ws.Abort(); } catch { /* already torn down */ }
+            Disconnect(userShortname, ws);
+            return false;
         }
         catch { return false; }
     }
@@ -58,10 +88,16 @@ public sealed class WsConnectionManager
             if (!_channels.TryGetValue(channelName, out var set)) return false;
             users = set.ToArray();
         }
-        var sent = false;
-        foreach (var user in users)
-            sent |= await SendMessageAsync(user, message);
-        return sent;
+        // Encode once per broadcast rather than once per subscriber — every
+        // recipient on the channel gets byte-identical bytes.
+        var payload = Encoding.UTF8.GetBytes(message);
+        // Fan out concurrently: awaited one at a time, a single slow (or
+        // timing-out) recipient delays everyone queued behind it.
+        var sends = new Task<bool>[users.Length];
+        for (var i = 0; i < users.Length; i++)
+            sends[i] = SendMessageAsync(users[i], payload);
+        var results = await Task.WhenAll(sends);
+        return results.Any(r => r);
     }
 
     public void Subscribe(string userShortname, string channelName)

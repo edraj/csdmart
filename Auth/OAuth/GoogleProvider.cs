@@ -63,10 +63,28 @@ public sealed class GoogleProvider(
             var sub = GetString(root, "sub");
             if (string.IsNullOrEmpty(sub)) return null;
 
+            // Only hand the email onwards when Google says it verified it.
+            // OAuthUserResolver links a provider identity onto ANY existing
+            // dmart account with a matching email (and stamps
+            // is_email_verified on it), so an unverified address is an
+            // account-takeover primitive: register a Google account claiming
+            // victim@corp, sign in, land in the victim's dmart account. The
+            // resolver's email branch is keyed on a non-empty Email, so
+            // dropping it here is what refuses the link — the provider id
+            // still identifies the user for the `google_<sub>` shortname path.
+            var email = GetString(root, "email");
+            if (!string.IsNullOrEmpty(email) && !IsVerified(root, "email_verified"))
+            {
+                log.LogWarning(
+                    "google tokeninfo: email_verified not asserted for sub {Sub} — dropping email so it can't link an existing account",
+                    sub);
+                email = null;
+            }
+
             return new OAuthUserInfo(
                 Provider: "google",
                 ProviderId: sub,
-                Email: GetString(root, "email"),
+                Email: email,
                 FirstName: GetString(root, "given_name"),
                 LastName: GetString(root, "family_name"),
                 PictureUrl: GetString(root, "picture"));
@@ -122,6 +140,16 @@ public sealed class GoogleProvider(
     private static string? GetString(JsonElement e, string prop) =>
         e.TryGetProperty(prop, out var v) && v.ValueKind == JsonValueKind.String
             ? v.GetString() : null;
+
+    // tokeninfo renders booleans as the strings "true"/"false" (a legacy of the
+    // endpoint's form-encoded ancestor), while the id_token payload uses real
+    // JSON booleans. Accept both; anything else — absent, "false", null — is
+    // "not asserted".
+    private static bool IsVerified(JsonElement e, string prop) =>
+        e.TryGetProperty(prop, out var v)
+        && (v.ValueKind == JsonValueKind.True
+            || (v.ValueKind == JsonValueKind.String
+                && string.Equals(v.GetString(), "true", StringComparison.OrdinalIgnoreCase)));
 
     private static string Trim(string s, int n) => s.Length <= n ? s : s[..n] + "...";
 }

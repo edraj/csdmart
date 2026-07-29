@@ -92,6 +92,10 @@ export async function signout() {
     localStorage.removeItem(KEY);
     localStorage.removeItem("rowPerPage");
     localStorage.removeItem("authToken");
+    // Written by the SDK's getProfile(); stale privilege data must not
+    // outlive the session or it drives the next user's UI gating.
+    localStorage.removeItem("permissions");
+    localStorage.removeItem("roles");
     authToken.set("");
     user.set(signedout);
   }

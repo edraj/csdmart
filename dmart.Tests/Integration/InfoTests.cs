@@ -7,7 +7,7 @@ using Xunit;
 
 namespace Dmart.Tests.Integration;
 
-// Mirrors dmart's pytests/test_info.py — /info/me, /info/manifest, /info/settings.
+// Mirrors dmart's pytests/test_info.py — /info/manifest, /info/settings.
 public class InfoTests : IClassFixture<DmartFactory>
 {
     private readonly DmartFactory _factory;
@@ -19,21 +19,6 @@ public class InfoTests : IClassFixture<DmartFactory>
         var client = _factory.CreateClient();
         var resp = await client.GetAsync("/info/manifest");
         resp.StatusCode.ShouldBe(HttpStatusCode.Unauthorized);
-    }
-
-    [Fact]
-    public async Task Me_Without_Auth_Returns_Anonymous()
-    {
-        // /info/me is anonymous-allowed so the SPA can use it as a session
-        // probe without painting a 401 on every cold load. Unauthed callers
-        // get 200 with authenticated:false and shortname=anonymous.
-        var client = _factory.CreateClient();
-        var resp = await client.GetAsync("/info/me");
-        resp.StatusCode.ShouldBe(HttpStatusCode.OK);
-        var doc = JsonDocument.Parse(await resp.Content.ReadAsStringAsync());
-        var attrs = doc.RootElement.GetProperty("attributes");
-        attrs.GetProperty("authenticated").GetBoolean().ShouldBeFalse();
-        attrs.GetProperty("shortname").GetString().ShouldBe("anonymous");
     }
 
     [Fact]
@@ -85,5 +70,32 @@ public class InfoTests : IClassFixture<DmartFactory>
         var doc = JsonDocument.Parse(body);
         // Should have records with settings attributes
         doc.RootElement.GetProperty("status").GetString().ShouldBe("success");
+    }
+
+    [FactIfPg]
+    public async Task Manifest_As_NonAdmin_Returns_401()
+    {
+        // Authenticated but role-less — the privilege level of a fresh
+        // self-registration. The whole /info group is gated to super_admin
+        // (GlobalAdminFilter), so mere authentication isn't enough.
+        var user = await _factory.CreateLoggedInUserAsync(roles: new());
+        try
+        {
+            var resp = await user.Client.GetAsync("/info/manifest");
+            resp.StatusCode.ShouldBe(HttpStatusCode.Unauthorized);
+        }
+        finally { await user.Cleanup(); }
+    }
+
+    [FactIfPg]
+    public async Task Settings_As_NonAdmin_Returns_401()
+    {
+        var user = await _factory.CreateLoggedInUserAsync(roles: new());
+        try
+        {
+            var resp = await user.Client.GetAsync("/info/settings");
+            resp.StatusCode.ShouldBe(HttpStatusCode.Unauthorized);
+        }
+        finally { await user.Cleanup(); }
     }
 }

@@ -1,3 +1,4 @@
+using System.Security.Cryptography;
 using System.Text.Json;
 using System.Text.RegularExpressions;
 using Dmart.Auth;
@@ -36,6 +37,27 @@ public sealed class UserService(
     private const string PasswordPattern =
         "^(?=.*[0-9\u0660-\u0669])(?=.*[A-Z\u0621-\u064a])" +
         "[a-zA-Z\u0621-\u064a0-9\u0660-\u0669 _#@%*!?$^&()+={}\\[\\]~|;:,.<>/-]{8,64}$";
+
+    // Decoy hash for LoginAsync's miss paths. An Argon2id verify at
+    // m=102400,t=3,p=8 costs 100-300ms, so a login that rejects in ~1ms
+    // because the identifier resolved to nothing (or to a row with no
+    // password) tells an unauthenticated caller which identifiers exist \u2014
+    // purely from the clock, no matter how uniform the error body is.
+    // Verifying against this throwaway makes the miss path pay what the hit
+    // path pays. Hashed once at class init over a random password nobody
+    // holds, so the verify can never succeed; its result is always discarded.
+    //
+    // SCOPE, so nobody reads this as "enumeration is solved": it closes the
+    // clock for accounts that are neither locked nor deactivated. A locked
+    // account still answers USER_ACCOUNT_LOCKED and a deactivated one its own
+    // code, both BEFORE any hashing — so for those two states existence is
+    // disclosed by the response body outright, and the timing follows. Closing
+    // that means collapsing those codes into the generic
+    // INVALID_USERNAME_AND_PASS, which diverges from Python and from what the
+    // cxb login UI shows the user ("your account is locked" is the message a
+    // legitimate locked-out user needs), so it is deliberately left open.
+    private static readonly string DecoyHash =
+        new PasswordHasher().Hash(Convert.ToBase64String(RandomNumberGenerator.GetBytes(32)));
 
     // Python's /user/create takes a core.Record body and returns a Record with
     // {access_token, type} — i.e. it auto-logs-in the new user. This mirrors
@@ -222,17 +244,28 @@ public sealed class UserService(
         var refresh = jwt.IssueRefresh(user.Shortname, user.Type);
         await users.CreateSessionAsync(user.Shortname, access, null, ct);
 
+        var timestamp = LoginTimestamp();
+        // Read the previous login off the pre-update row — null here, since the
+        // account was created moments ago — before the upsert below overwrites it.
+        var previousLogin = PreviousLoginTimestamp(user);
+
         if (requestHeaders is not null)
         {
             var loginInfo = new Dictionary<string, object>
             {
-                ["timestamp"] = (int)DateTimeOffset.Now.ToUnixTimeSeconds(),
+                ["timestamp"] = timestamp,
                 ["headers"] = requestHeaders,
             };
-            var updated = user with { LastLogin = loginInfo, UpdatedAt = TimeUtils.Now() };
-            await users.UpsertAsync(updated, ct);
-            user = updated;
+            user = user with { LastLogin = loginInfo, UpdatedAt = TimeUtils.Now() };
+            await users.UpsertAsync(user, ct);
         }
+
+        // This path issues tokens inline rather than delegating to
+        // ProcessLoginAsync, so it needs its own audit row — otherwise the very
+        // first login of every account would be missing from the trail. Appended
+        // regardless of whether headers were threaded through: the audit trail's
+        // completeness must not depend on the caller (see AppendLoginHistoryAsync).
+        await AppendLoginHistoryAsync(user.Shortname, previousLogin, timestamp, requestHeaders, ct);
 
         return Result<(User, string, string)>.Ok((user, access, refresh));
     }
@@ -292,16 +325,37 @@ public sealed class UserService(
     {
         var user = await ResolveUserAsync(req, ct);
         if (user is null)
+        {
+            // Deliberate constant-work path — see DecoyHash. The body already
+            // matches the wrong-password response; this makes the timing match
+            // too, so "no such user" isn't distinguishable from "bad password".
+            _ = hasher.Verify(req.Password ?? string.Empty, DecoyHash);
             return Result<(string, string, User)>.Fail(
                 InternalErrorCode.INVALID_USERNAME_AND_PASS, "Invalid username or password", ErrorTypes.Auth);
+        }
 
         var (attemptLocked, unlockedUser) = await RejectIfAttemptLockedAsync(user, ct);
         if (attemptLocked is { } al) return al;
         user = unlockedUser; // possibly auto-unlocked after the cool-down
         if (RejectIfNotActive(user) is { } inactiveReject) return inactiveReject;
 
-        if (string.IsNullOrEmpty(user.Password) || req.Password is null
-            || !hasher.Verify(req.Password, user.Password))
+        // A row with no password (OTP-only / OAuth-provisioned account), or a
+        // request that omitted one, short-circuits past hasher.Verify and so
+        // would reject in ~1ms — the same clock leak as the not-found branch,
+        // just over account state instead of existence. Burn the decoy on that
+        // leg too; see DecoyHash.
+        bool passwordOk;
+        if (string.IsNullOrEmpty(user.Password) || req.Password is null)
+        {
+            _ = hasher.Verify(req.Password ?? string.Empty, DecoyHash);
+            passwordOk = false;
+        }
+        else
+        {
+            passwordOk = hasher.Verify(req.Password, user.Password);
+        }
+
+        if (!passwordOk)
         {
             var locked = await HandleFailedLoginAttemptAsync(user, ct);
             return locked
@@ -583,13 +637,16 @@ public sealed class UserService(
         }
 
         // Python tracks last_login = {timestamp, headers} on every successful login.
+        var loginTimestamp = LoginTimestamp();
+        // Captured from the PRE-login row, before the assignment below replaces
+        // it — this is the audit row's "old" side.
+        var previousLogin = PreviousLoginTimestamp(user);
         Dictionary<string, object>? loginInfo = null;
         if (requestHeaders is not null)
         {
             loginInfo = new Dictionary<string, object>
             {
-                // Cast to int so source-gen JSON can serialize it (no Int64 TypeInfo).
-                ["timestamp"] = (int)DateTimeOffset.Now.ToUnixTimeSeconds(),
+                ["timestamp"] = loginTimestamp,
                 ["headers"] = requestHeaders,
             };
             updatedUser = updatedUser with { LastLogin = loginInfo };
@@ -618,7 +675,156 @@ public sealed class UserService(
         if (!isBot)
             await users.CreateSessionAsync(updatedUser.Shortname, access, req.FirebaseToken, ct);
 
+        // Last, so the trail records only logins that actually completed: an
+        // exception from the session write above must not leave behind an audit
+        // row for a login the caller never got tokens for.
+        await AppendLoginHistoryAsync(
+            updatedUser.Shortname, previousLogin, loginTimestamp, requestHeaders, ct);
+
         return Result<(string, string, User)>.Ok((access, refresh, updatedUser));
+    }
+
+    // The previous login's timestamp, or null when the account has never logged
+    // The stamp written into `last_login.timestamp` and into the audit row.
+    //
+    // A naive local DateTime, so it renders exactly like `created_at` /
+    // `updated_at` do — "2026-07-29T03:14:05.1234567", no offset. Those columns
+    // are TIMESTAMP (without time zone) and read back Kind=Unspecified, so
+    // TimeUtils.Naive is what makes this field match them character for
+    // character rather than merely look similar.
+    //
+    // DELIBERATE DIVERGENCE from Python dmart, which writes
+    // `int(datetime.now().timestamp())` — epoch seconds (api/user/router.py:1220).
+    // Nothing reads this field across the two implementations: QueryService's
+    // user mapper omits `last_login` entirely, so it reaches no API response in
+    // either port, and its only consumer here is the login audit trail, which
+    // exists to be read by a human. An epoch integer is the wrong shape for
+    // that. The cost is that a deployment sharing one database with the Python
+    // implementation would see both shapes in this field — see
+    // PreviousLoginTimestamp, which is why it stays typed as `object?`.
+    private static DateTime LoginTimestamp() => TimeUtils.Naive(TimeUtils.Now());
+
+    // in. Read off the JSONB `last_login` column, so it comes back as a
+    // JsonElement — a string for anything written since the change above, a
+    // NUMBER for rows written before it (or by Python). Deliberately untyped
+    // and passed through verbatim: the audit row records what the previous
+    // login actually said, and re-interpreting a legacy epoch as a date here
+    // would invent precision the stored value never had. Readers of
+    // `histories.diff.last_login.old` must therefore tolerate both.
+    private static object? PreviousLoginTimestamp(User user)
+        => user.LastLogin is not null
+            && user.LastLogin.TryGetValue("timestamp", out var prev)
+            ? prev
+            : null;
+
+    // The only headers worth keeping on an audit row: who/where the login came
+    // from. An allowlist rather than "everything except authorization/cookie"
+    // (what AuthHandler strips for last_login), because these rows are
+    // append-only and unpruned — a deployment that carries credentials in a
+    // non-standard header (x-api-key, x-auth-token) would otherwise persist
+    // them forever, in every export. `referer` is deliberately absent: on the
+    // OAuth paths it can carry query-string secrets.
+    private static readonly HashSet<string> AuditedLoginHeaders =
+        new(["user-agent", "x-forwarded-for", "x-real-ip", "origin", "host", "accept-language"],
+            StringComparer.OrdinalIgnoreCase);
+
+    // Append-only login audit trail. `users.last_login` only ever holds the
+    // MOST RECENT login — every successful auth overwrites it — so after the
+    // fact there is no way to answer "when else did this account sign in".
+    // Mirroring each login into `histories` gives that trail a home that
+    // /managed/query?type=history already exposes and already indexes —
+    // idx_histories_lookup is (space_name, subpath, shortname, timestamp DESC),
+    // precisely this access pattern.
+    //
+    // Two things to be clear-eyed about on the read side:
+    //
+    //   * Exposure. The gate is QueryService.cs:430 —
+    //     CanQueryAsync(actor, Content, space, subpath) — which is SUBPATH
+    //     level, with no per-record filtering afterwards. So anyone who can
+    //     read history under management//users can enumerate EVERY account's
+    //     login times, not just those of users they can see. That is a wider
+    //     audience than `last_login` had (QueryService's user mapper omits the
+    //     column entirely), and is the deliberate trade for having a trail.
+    //   * Headers. HistoryMapper.ToRecord drops `request_headers`, so the
+    //     column is not readable through /managed/query at all — only via
+    //     export (ImportExportService.cs:396) or direct SQL. That is upstream
+    //     behaviour, not an oversight: Python deletes the key outright for
+    //     history queries (adapter.py:3030), and HistoryQueryShapeTests pins
+    //     it. So these headers are written for a forensic read that has to go
+    //     through an admin channel — worth knowing before relying on them.
+    //
+    // Deliberate divergence from Python dmart, which writes last_login through
+    // internal_sys_update_model (api/user/router.py:1265) and therefore records
+    // no history row at all. Nothing upstream to stay in parity with here.
+    //
+    // Headers ride in the `request_headers` column instead of being duplicated
+    // into `diff` — with no pruning policy rows live forever, and storing the
+    // header dict twice per login is what would actually make this table hurt.
+    // Retention is still unsolved: a bot authenticating on a schedule appends a
+    // row per login, forever. The allowlist above bounds the bytes per row, not
+    // the row count — a prune policy is the follow-up.
+    //
+    // Appended on EVERY completed login, including those whose caller passed no
+    // headers (/oauth/authorize does: OAuthEndpoints.cs:223). Gating the row on
+    // header presence would let an optional parameter decide whether a
+    // credential-verified sign-in is auditable at all.
+    //
+    // Fail-open, and the only place in this file that swallows a history-write
+    // failure — UpdateUserAsync deliberately lets AppendAsync throw. A login is
+    // not a profile edit: a degraded `histories` table must not be able to lock
+    // every user out of the system. The cost is that the trail can have gaps,
+    // which is why the failure is logged at Error rather than ignored — that
+    // log line is the thing to alert on.
+    private async Task AppendLoginHistoryAsync(
+        string shortname, object? previousTimestamp, DateTime timestamp,
+        Dictionary<string, string>? requestHeaders, CancellationToken ct)
+    {
+        try
+        {
+            var diff = new Dictionary<string, object>(StringComparer.Ordinal)
+            {
+                // The {field: {old, new}} wrapper matches what ComputeUserDiff
+                // produces, so existing history consumers can walk these rows
+                // unchanged. The values are bare timestamps rather than the
+                // {timestamp, headers} dict the column holds — the headers are
+                // already on the row, and HistoryMapper would strip them from a
+                // nested old/new object anyway (QueryService.cs:2153).
+                //
+                // `new` is always a naive-local DateTime string; `old` is
+                // whatever the previous login stored, which for a row written
+                // before this change (or by Python) is an epoch NUMBER. The
+                // first login per account after an upgrade therefore produces
+                // one mixed-type row. That is deliberate — see
+                // PreviousLoginTimestamp — and harmless: this pair is display
+                // data, never a join key.
+                ["last_login"] = new Dictionary<string, object?>(StringComparer.Ordinal)
+                {
+                    ["old"] = previousTimestamp,
+                    ["new"] = timestamp,
+                },
+            };
+
+            // Filtered by walking the source rather than probing it per allowed
+            // name, so the result doesn't depend on the caller's comparer.
+            // Keys are lowercased on the way in — JSONB has no case-insensitive
+            // lookup, so a reader shouldn't have to guess "User-Agent" vs
+            // "user-agent".
+            var headers = new Dictionary<string, object>(StringComparer.Ordinal);
+            if (requestHeaders is not null)
+                foreach (var (name, value) in requestHeaders)
+                    if (AuditedLoginHeaders.Contains(name) && !string.IsNullOrEmpty(value))
+                        headers[name.ToLowerInvariant()] = value;
+
+            // owner_shortname == subject: a login is always self-initiated.
+            await history.AppendAsync(
+                MgmtSpace, "/users", shortname, shortname, headers, diff, ct);
+        }
+        catch (Exception ex)
+        {
+            log.LogError(ex,
+                "login history append failed for {Shortname} — login allowed, audit row lost",
+                shortname);
+        }
     }
 
     // Validate a password against the stored hash (Python: POST /validate_password).

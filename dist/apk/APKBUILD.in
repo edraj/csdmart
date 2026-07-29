@@ -15,7 +15,15 @@ license="AGPL-3.0-only"
 # dmart talks to a remote PG over TCP just as often as a local one.
 depends="jq"
 
-install="$pkgname.pre-install $pkgname.post-install $pkgname.post-deinstall"
+# post-upgrade is byte-identical to post-install — build-apk.sh copies one to
+# the other so they cannot drift. Both are needed because apk dispatches to
+# post-upgrade on an upgrade and post-install only on a fresh install, with no
+# fallback between them: listing just post-install means every fix in it is
+# silently inert for existing users, which is exactly how the /etc/dmart
+# ownership repair failed to reach anyone upgrading. The script is written to
+# be idempotent (the config.env seed is guarded, `install -d` is a no-op on
+# correct dirs), so running it on both paths is safe.
+install="$pkgname.pre-install $pkgname.post-install $pkgname.post-upgrade $pkgname.post-deinstall"
 
 source="
 	dmart
@@ -66,6 +74,11 @@ package() {
 		"$pkgdir"/usr/share/fish/vendor_completions.d/dmart.fish
 
 	# Runtime directories (owned by dmart user, created by pre-install hook)
+	#
+	# /etc/dmart lands here as root:root — abuild's build root has no dmart
+	# group, so `-g dmart` would fail the build. post-install re-owns it to
+	# root:dmart; 0750 root:root would deny the service user the search
+	# permission it needs to read config.env at all.
 	install -dm0750 "$pkgdir"/etc/dmart
 	install -dm0755 "$pkgdir"/var/lib/dmart
 	install -dm0755 "$pkgdir"/var/lib/dmart/spaces

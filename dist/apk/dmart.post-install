@@ -16,6 +16,25 @@ if [ ! -f /etc/dmart/config.env ]; then
 	      so the secret never sits as cleartext in any file).
 	EOF
 fi
+# /etc/dmart ships from package() as 0750 root:root — abuild's fakeroot has
+# no dmart group, so `install -d -g dmart` there would fail the build. Fix
+# the ownership here, where the pre-install hook has already created the
+# group. This is NOT optional: 0750 root:root denies the dmart service user
+# *search* permission on the directory, so config.env is unreadable however
+# the file itself is owned, DotEnv.FindConfigFile() takes the EACCES for
+# "no config file", and dmart boots on built-in defaults (symptom: repeated
+# "JwtSecret is the built-in placeholder" in /var/log/dmart/dmart.log).
+# The RPM gets this right via `%dir %attr(0750, root, dmart) /etc/dmart`.
+#
+# Runs unguarded so an install broken by an earlier package heals rather
+# than only ever being correct on a fresh install. Reaching upgrades takes
+# more than being unguarded, though: apk dispatches to post-upgrade, not
+# post-install, when replacing an installed version. APKBUILD lists both
+# names and build-apk.sh installs this same file as each, so the repair
+# runs on either path. The OpenRC script re-checks it at every start too,
+# which is what covers a host upgraded from a package that predates this.
+install -d -m 0750 -o root -g dmart /etc/dmart
+
 # Re-create the runtime dirs if missing, then make them owned by dmart.
 # Belt + suspenders: package() ships them but an unclean upgrade or
 # manual cleanup can leave them gone, and OpenRC doesn't have systemd's
