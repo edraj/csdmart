@@ -273,14 +273,14 @@ public sealed class LoginHistoryTests : IClassFixture<DmartFactory>
 
             stamp.ValueKind.ShouldBe(JsonValueKind.String,
                 "epoch seconds are unreadable in an audit trail — see UserService.LoginTimestamp");
-            var parsed = DateTime.ParseExact(stamp.GetString()!, "O",
-                CultureInfo.InvariantCulture, DateTimeStyles.RoundtripKind);
-
-            // Kind=Unspecified is what makes this render exactly like a
-            // created_at read back from a TIMESTAMP (without time zone) column:
-            // no trailing Z, no offset. A Kind=Local value would serialize with
-            // "+03:00" and stop matching.
-            parsed.Kind.ShouldBe(DateTimeKind.Unspecified);
+            // ParseStamp's format carries no offset specifier, so this both
+            // parses the value and asserts its shape: a Kind=Local or Kind=Utc
+            // stamp would render "+03:00" or "Z" and throw here. That is what
+            // makes it render exactly like a created_at read back from a
+            // TIMESTAMP (without time zone) column. The two explicit checks
+            // below say the same thing in the failure message, since a
+            // FormatException alone would not name the cause.
+            var parsed = ParseStamp(stamp);
             stamp.GetString()!.ShouldNotContain("+");
             stamp.GetString()!.EndsWith("Z", StringComparison.Ordinal).ShouldBeFalse();
 
@@ -333,6 +333,30 @@ public sealed class LoginHistoryTests : IClassFixture<DmartFactory>
         }
         finally { await CleanupAsync(sp, sn); }
     }
+
+    // Pins StampFormat itself, deterministically — the tests above can only
+    // exercise whatever width the clock happens to produce, and the width is
+    // exactly what went wrong: the first version of this helper used "O",
+    // which demands 7 fractional digits, while System.Text.Json trims trailing
+    // zeros. It passed until a login landed on a tick ending in zero.
+    [Theory]
+    [InlineData("2026-07-29T10:15:31.1365341")]  // full 7 digits
+    [InlineData("2026-07-29T10:15:31.136534")]   // one trailing zero trimmed — the failing case
+    [InlineData("2026-07-29T10:15:31.136")]
+    [InlineData("2026-07-29T10:15:31")]          // whole second: fraction dropped entirely
+    public void StampFormat_Accepts_Every_Width_Stj_Emits(string stamp)
+        => Should.NotThrow(() => DateTime.ParseExact(
+            stamp, StampFormat, CultureInfo.InvariantCulture, DateTimeStyles.None));
+
+    // And rejects the shapes that would mean the value stopped matching
+    // created_at / updated_at.
+    [Theory]
+    [InlineData("2026-07-29T10:15:31.136534+03:00")]  // Kind=Local leaked through
+    [InlineData("2026-07-29T10:15:31.136534Z")]       // Kind=Utc leaked through
+    [InlineData("1785293645")]                        // back to epoch seconds
+    public void StampFormat_Rejects_Offsets_And_Epochs(string stamp)
+        => Should.Throw<FormatException>(() => DateTime.ParseExact(
+            stamp, StampFormat, CultureInfo.InvariantCulture, DateTimeStyles.None));
 
     // ----- helpers -----
 
@@ -391,13 +415,21 @@ public sealed class LoginHistoryTests : IClassFixture<DmartFactory>
         return (last.GetProperty("old").Clone(), last.GetProperty("new").Clone());
     }
 
-    // Parses a stamp written by UserService.LoginTimestamp(). ParseExact
-    // against the round-trip format is deliberate: it fails loudly if the
-    // field ever drifts away from what created_at/updated_at render, which is
-    // the entire point of storing it this way.
+    // The shape UserService.LoginTimestamp() serializes to, and the format
+    // these tests hold it to.
+    //
+    // NOT "O". System.Text.Json writes ISO 8601 with trailing zeros TRIMMED, so
+    // the fraction is 0-7 digits wide, while "O" demands exactly 7 — a stamp
+    // whose tick count happens to end in a zero (about one run in ten) fails to
+    // parse. `FFFFFFF` accepts any width. Carrying no offset specifier is what
+    // keeps this strict about the part that matters: a Kind=Local or Kind=Utc
+    // value would render "+03:00" or "Z" and fail here, which is exactly the
+    // drift away from created_at/updated_at we want caught.
+    private const string StampFormat = "yyyy-MM-ddTHH:mm:ss.FFFFFFF";
+
     private static DateTime ParseStamp(JsonElement stamp) =>
-        DateTime.ParseExact(stamp.GetString()!, "O", CultureInfo.InvariantCulture,
-            DateTimeStyles.RoundtripKind);
+        DateTime.ParseExact(stamp.GetString()!, StampFormat,
+            CultureInfo.InvariantCulture, DateTimeStyles.None);
 
     // Header names are lowercased on the way into the row, but match
     // case-insensitively so this helper keeps working if that changes.

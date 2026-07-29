@@ -95,7 +95,7 @@ multipart file payloads (`UploadWithPayloadAsync`, `GetPayloadAsync`,
 `GetAttachmentUrl`, `FetchDataAssetAsync`), CSV import/export
 (`CsvAsync`, `ResourcesFromCsvAsync`, `ImportAsync`, `ExportAsync`),
 short links, info introspection (`GetManifestAsync`, `GetSettingsAsync`,
-`GetSpaceHealthAsync`), admin
+`GetSpaceHealthAsync`, `GetInfoMeAsync`), admin
 (`ReindexEmbeddingsAsync`, `ApplyAlterationAsync`,
 `ReloadSecurityDataAsync`, `SemanticSearchAsync`), WebSocket admin,
 MCP, QR, OAuth callbacks. Reach for `Dmart.Client` when you need any

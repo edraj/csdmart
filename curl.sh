@@ -735,13 +735,25 @@ else
 fi
 
 # ============================================================================
-# 37. (was Info/me) — the endpoint is gone, superseded by /user/profile, which
-#     this suite already exercises three times (steps 12, 34 and 47). Rather
-#     than add a fourth duplicate here, the budget moved to step 66b: the
-#     property this replacement actually introduced is that /info now demands
-#     super_admin, and that needs the limited user, which doesn't exist yet at
-#     this point in the run.
+# 37. Info/me — authenticated identity probe.
+#
+# Two assertions, because the pair is the contract: a token gets the caller's
+# shortname, and NO token gets a 401 rather than a 200 saying "anonymous".
+# That 401 is how a client is meant to detect an absent session now, so it is
+# as much a part of the API as the success case. Step 66b covers the other
+# half of the group's rule — that /info's *other* routes demand super_admin
+# where this one does not.
 # ============================================================================
+RESP=$(curl -s -H "$AUTH_HEADER" "$API_URL/info/me")
+expect_success "Info/me:" "$RESP"
+
+printf '%-45s' "Info/me anonymous is 401:" >&2
+ME_ANON=$(curl -s -o /dev/null -w '%{http_code}' "$API_URL/info/me")
+if [ "$ME_ANON" = "401" ]; then
+    ok
+else
+    nope "expected 401 without a token, got $ME_ANON"
+fi
 
 # ============================================================================
 # 38. Info/settings endpoint
