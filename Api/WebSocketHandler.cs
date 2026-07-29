@@ -160,11 +160,24 @@ public static class WebSocketHandler
                         if (msgType == "notification_subscription")
                         {
                             var channel = WsConnectionManager.GenerateChannelName(msg);
+                            // Subscribing is a read of the target subpath: the
+                            // broadcast payload carries space/subpath/shortname/
+                            // owner of every change there. Without this gate any
+                            // authenticated user could subscribe to any space and
+                            // watch entries they have no permission to read.
                             if (channel is not null)
                             {
-                                mgr.Subscribe(userShortname, channel);
-                                await mgr.SendMessageAsync(userShortname,
-                                    "{\"type\":\"notification_subscription\",\"message\":{\"status\":\"success\"}}");
+                                if (await CanSubscribeAsync(ctx, userShortname, msg))
+                                {
+                                    mgr.Subscribe(userShortname, channel);
+                                    await mgr.SendMessageAsync(userShortname,
+                                        "{\"type\":\"notification_subscription\",\"message\":{\"status\":\"success\"}}");
+                                }
+                                else
+                                {
+                                    await mgr.SendMessageAsync(userShortname,
+                                        "{\"type\":\"notification_subscription\",\"message\":{\"status\":\"failed\"}}");
+                                }
                             }
                         }
                         else if (msgType == "notification_unsubscribe")
@@ -181,7 +194,10 @@ public static class WebSocketHandler
             catch { /* client disconnected */ }
             finally
             {
-                mgr.Disconnect(userShortname);
+                // Pass the socket: on a reconnect this finally can run for a
+                // stale socket after ConnectAsync already registered the new
+                // one, and Disconnect must not unregister the live connection.
+                mgr.Disconnect(userShortname, ws);
                 if (ws.State == WebSocketState.Open)
                 {
                     try { await ws.CloseAsync(WebSocketCloseStatus.NormalClosure, "", CancellationToken.None); }
@@ -249,6 +265,31 @@ public static class WebSocketHandler
             }
             return Results.Text(Encoding.UTF8.GetString(stream.ToArray()), "application/json");
         }).WithTags("WebSocket").RequireAuthorization();
+    }
+
+    // Authorizes a notification_subscription against the target space+subpath.
+    // Mirrors QueryService.CanQueryAsync: "view" first (covers anonymous +
+    // authenticated), then "query" (Python exempts it from condition checks),
+    // then the root-subpath fallback for users whose grants are keyed to
+    // specific subpaths rather than "/".
+    private static async Task<bool> CanSubscribeAsync(
+        HttpContext ctx, string userShortname, JsonElement msg)
+    {
+        if (!msg.TryGetProperty("space_name", out var sn) || sn.ValueKind != JsonValueKind.String)
+            return false;
+        var space = sn.GetString();
+        if (string.IsNullOrEmpty(space)) return false;
+        var subpath = msg.TryGetProperty("subpath", out var sp) && sp.ValueKind == JsonValueKind.String
+            ? sp.GetString() ?? "/"
+            : "/";
+
+        var perms = ctx.RequestServices.GetRequiredService<PermissionService>();
+        var probe = new Models.Core.Locator(
+            Models.Enums.ResourceType.Content, space, subpath, "*");
+        if (await perms.CanAsync(userShortname, "view", probe, ct: ctx.RequestAborted)) return true;
+        if (await perms.CanAsync(userShortname, "query", probe, ct: ctx.RequestAborted)) return true;
+        return Models.Core.Locator.NormalizeSubpath(subpath) == "/"
+            && await perms.HasAnyAccessToSpaceAsync(userShortname, space, ctx.RequestAborted);
     }
 
     // Builds the outgoing WebSocket payload { type, message } using safe JSON writing.

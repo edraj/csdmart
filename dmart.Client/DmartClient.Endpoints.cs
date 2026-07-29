@@ -114,13 +114,19 @@ public sealed partial class DmartClient
     // -------------------------------------------------------------------
     // Info — server self-introspection
     // -------------------------------------------------------------------
-
-    // GET /info/me — minimal "who am I" probe. Reads the JWT-bound identity.
-    public async Task<Response> GetInfoMeAsync(CancellationToken ct = default)
-    {
-        using var req = BuildRequest(HttpMethod.Get, "/info/me");
-        return await SendEnvelopeAsync(req, ct).ConfigureAwait(false);
-    }
+    //
+    // BREAKING (this package is published as Dmart.Client): GetInfoMeAsync is
+    // gone — the server route it called, GET /info/me, was removed. Callers
+    // wanting "who am I" should use GetProfileAsync, which returns the caller's
+    // full user record. Note it requires authentication, whereas /info/me
+    // answered anonymously; a client using it as a session probe should check
+    // for a stored token first and only call the server when it has one.
+    //
+    // GetManifestAsync / GetSettingsAsync / GetSpaceHealthAsync still exist but
+    // now require an effective super_admin on the server side, so they return
+    // 401 for ordinary users where they used to succeed. Handle that rather
+    // than treating a failure as "server down" — Cli/DmartClient.ManifestAsync
+    // is the reference: null out and carry on.
 
     // -------------------------------------------------------------------
     // Admin — server-side bookkeeping (require elevated permissions)

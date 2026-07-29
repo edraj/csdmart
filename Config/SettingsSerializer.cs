@@ -32,7 +32,37 @@ public static class SettingsSerializer
         nameof(DmartSettings.FacebookClientSecret),
         // SMTP credentials — same risk profile as SmppAuthKey.
         nameof(DmartSettings.MailPassword),
+        // Apple Sign-In ES256 signing key. AppleProvider.MintClientSecret feeds
+        // this PEM to ECDsa.ImportFromPem; with it (plus the team/key/client ids
+        // in this same response) a caller can forge Apple client_secret
+        // assertions and impersonate arbitrary Apple identities through
+        // /user/apple/callback.
+        nameof(DmartSettings.AppleP8PrivateKey),
+        nameof(DmartSettings.AppleKeyId),
+        // SMTP account name — half of the mail credential pair.
+        nameof(DmartSettings.MailUsername),
+        // Fixed OTP used when the SMS gateway is mocked; knowing it defeats
+        // every OTP-gated flow on a deployment that left mocking enabled.
+        nameof(DmartSettings.MockOtpCode),
     };
+
+    // Safety net so a newly added secret isn't exposed just because someone
+    // forgot to extend the list above: redact any STRING property whose name
+    // reads like a credential. Restricted to strings on purpose — the numeric
+    // and boolean settings that match these tokens (OtpTokenTtl,
+    // AllowPasswordResetResendAfter, JwtRequireTokenUse) are operational knobs,
+    // not secrets, and operators need to see their values.
+    private static readonly string[] SecretNameTokens =
+        ["Secret", "Password", "Key", "Token", "Credential"];
+
+    private static bool IsSecret(PropertyInfo prop)
+    {
+        if (RedactedProperties.Contains(prop.Name)) return true;
+        if (prop.PropertyType != typeof(string)) return false;
+        foreach (var token in SecretNameTokens)
+            if (prop.Name.Contains(token, StringComparison.Ordinal)) return true;
+        return false;
+    }
 
     /// <summary>
     /// Snapshots the current DmartSettings as a snake_case Dictionary suitable
@@ -48,7 +78,7 @@ public static class SettingsSerializer
             var snake = DotEnvStrictCheck.PascalToUpperSnake(prop.Name).ToLowerInvariant();
             var value = prop.GetValue(s);
 
-            if (RedactedProperties.Contains(prop.Name))
+            if (IsSecret(prop))
             {
                 // Don't leak the value — but do surface whether it's configured
                 // so an operator can tell at a glance that e.g. JWT_SECRET is

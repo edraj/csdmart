@@ -24,6 +24,20 @@ public class InfoPluginsTests : IClassFixture<DmartFactory>
     }
 
     [FactIfPg]
+    public async Task Plugins_As_NonAdmin_Returns_401()
+    {
+        // Authenticated but role-less — the whole /info group is gated to
+        // super_admin (GlobalAdminFilter), so mere authentication isn't enough.
+        var user = await _factory.CreateLoggedInUserAsync(roles: new());
+        try
+        {
+            var resp = await user.Client.GetAsync("/info/plugins");
+            resp.StatusCode.ShouldBe(HttpStatusCode.Unauthorized);
+        }
+        finally { await user.Cleanup(); }
+    }
+
+    [FactIfPg]
     public async Task Plugins_With_Auth_Returns_Records_With_Version_And_Type()
     {
         var (client, _, _, _) = await _factory.CreateLoggedInUserAsync();

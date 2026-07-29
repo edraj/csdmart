@@ -47,6 +47,10 @@ public static class ChannelAuthMiddleware
             var registry = ctx.RequestServices.GetRequiredService<ChannelsRegistry>();
             var log = ctx.RequestServices.GetRequiredService<ILogger<ChannelsRegistry>>();
             var path = ctx.Request.Path.Value ?? "/";
+            // Patterns match against the real decoded path; only the value that
+            // reaches a log line is escaped, so a `%0d%0a` in the URL can't
+            // forge a log record. See RequestLoggingMiddleware.SanitizeForLog.
+            var logPath = RequestLoggingMiddleware.SanitizeForLog(path);
 
             // Match Python's `headers.get('x-channel-key')`: take the FIRST
             // value when multiple are present. StringValues.ToString() joins
@@ -64,11 +68,11 @@ public static class ChannelAuthMiddleware
                 {
                     foreach (var pattern in ch.AllowedApiPatterns)
                     {
-                        if (SafeIsMatch(pattern, path, log, ch.Name))
+                        if (SafeIsMatch(pattern, path, logPath, log, ch.Name))
                         {
                             log.LogWarning(
                                 "channel-auth denied: missing x-channel-key for restricted path {Path} (channel={Channel})",
-                                path, ch.Name);
+                                logPath, ch.Name);
                             await WriteForbidden(ctx, "Requested method or path is forbidden");
                             return;
                         }
@@ -90,14 +94,14 @@ public static class ChannelAuthMiddleware
 
             if (matched is null)
             {
-                log.LogWarning("channel-auth denied: unknown x-channel-key for {Path}", path);
+                log.LogWarning("channel-auth denied: unknown x-channel-key for {Path}", logPath);
                 await WriteForbidden(ctx, "Requested method or path is forbidden [2]");
                 return;
             }
 
             foreach (var pattern in matched.AllowedApiPatterns)
             {
-                if (SafeIsMatch(pattern, path, log, matched.Name))
+                if (SafeIsMatch(pattern, path, logPath, log, matched.Name))
                 {
                     await next();
                     return;
@@ -106,7 +110,7 @@ public static class ChannelAuthMiddleware
 
             log.LogWarning(
                 "channel-auth denied: channel {Channel} not authorized for {Path}",
-                matched.Name, path);
+                matched.Name, logPath);
             await WriteForbidden(ctx, "Requested method or path is forbidden [3]");
         });
     }
@@ -115,13 +119,13 @@ public static class ChannelAuthMiddleware
     // ChannelsRegistry) doesn't escape as an unhandled RegexMatchTimeoutException
     // and 500 the request — log it and treat as a non-match. The combination of
     // a 100ms timeout + a non-match fallback makes the gate ReDoS-resistant.
-    private static bool SafeIsMatch(Regex pattern, string path, ILogger log, string channelName)
+    private static bool SafeIsMatch(Regex pattern, string path, string logPath, ILogger log, string channelName)
     {
         try { return pattern.IsMatch(path); }
         catch (RegexMatchTimeoutException)
         {
             log.LogError("channel-auth: regex timeout on channel={Channel} pattern={Pattern} path={Path}",
-                channelName, pattern, path);
+                channelName, pattern, logPath);
             return false;
         }
     }

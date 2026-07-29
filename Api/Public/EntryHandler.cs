@@ -19,6 +19,7 @@ public static class EntryHandler
                    bool? retrieve_json_payload,
                    bool? retrieve_attachments,
                    EntryService svc, AttachmentRepository attachmentRepo,
+                   PermissionService perms,
                    CancellationToken ct) =>
             {
                 if (!Enum.TryParse<ResourceType>(resource_type, true, out var rt)) return Results.BadRequest();
@@ -31,9 +32,24 @@ public static class EntryHandler
                 if (retrieve_attachments == true)
                 {
                     var children = await attachmentRepo.ListForParentAsync(space, subpath, shortname, ct);
-                    if (children.Count > 0)
+                    // A world-readable parent says nothing about its children:
+                    // comment/json attachments carry their own ACL. Without
+                    // this gate the public route hands an anonymous caller
+                    // restricted attachments that /managed/payload refuses.
+                    // Same check, same shape as Api/Managed/PayloadHandler.cs:55
+                    // — actor stays null because /public is anonymous by
+                    // definition (like svc.GetAsync above).
+                    var visible = new List<Attachment>(children.Count);
+                    foreach (var a in children)
                     {
-                        attachmentsDict = children
+                        var attachmentLocator = new Locator(a.ResourceType, a.SpaceName, a.Subpath, a.Shortname);
+                        if (await perms.CanReadAsync(actor: null, attachmentLocator,
+                                PermissionService.FromAttachment(a), ct))
+                            visible.Add(a);
+                    }
+                    if (visible.Count > 0)
+                    {
+                        attachmentsDict = visible
                             .GroupBy(a => JsonbHelpers.EnumMember(a.ResourceType))
                             .ToDictionary(
                                 grp => grp.Key,

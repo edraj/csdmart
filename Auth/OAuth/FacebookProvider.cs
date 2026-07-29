@@ -102,6 +102,23 @@ public sealed class FacebookProvider(
                     picture = picUrl.GetString();
                 }
 
+                // NOTE — the verified-email contract in OAuthUserResolver:
+                // Google and Apple gate this on an explicit `email_verified`
+                // claim and drop the address when it isn't asserted. The Graph
+                // API has no equivalent: the User.verified field was removed in
+                // Graph v3.3, and /me exposes no per-address verification flag.
+                // What we rely on instead is Graph's documented behaviour — it
+                // returns `email` only for a confirmed primary address and omits
+                // the field entirely otherwise.
+                //
+                // That is a weaker assertion than the other two providers make,
+                // and it is the remaining exposure on the takeover path the
+                // resolver describes: anyone who can make Graph return an
+                // unconfirmed address inherits the matching dmart account. If
+                // that trade isn't acceptable for a deployment, the fix is to
+                // pass null here — Facebook users then reach their account
+                // solely through the `facebook_<id>` shortname, exactly as
+                // Google/Apple users do when their email is unverified.
                 return new OAuthUserInfo(
                     Provider: "facebook",
                     ProviderId: id,

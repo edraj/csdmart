@@ -102,7 +102,7 @@ public class DmartClientOptionsTests
             DefaultHeaders = { ["X-Tenant-Id"] = "tenant-42" },
         }, http);
 
-        await client.GetInfoMeAsync();
+        await client.GetProfileAsync();
 
         handler.LastRequest.ShouldNotBeNull();
         handler.LastRequest!.Headers.GetValues("X-Tenant-Id").ShouldContain("tenant-42");

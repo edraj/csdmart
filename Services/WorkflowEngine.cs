@@ -35,7 +35,11 @@ public sealed class WorkflowEngine(EntryRepository entries, ILogger<WorkflowEngi
         string spaceName, string workflowShortname, string currentState, string action,
         IReadOnlyCollection<string> actorRoles, CancellationToken ct = default)
     {
-        var workflow = await LoadWorkflowAsync(spaceName, workflowShortname, ct);
+        // `using`: JsonDocument.Parse rents its backing buffer from ArrayPool,
+        // so an undisposed document leaks that buffer on every transition.
+        // Safe to dispose here — everything this method returns (state names)
+        // is a copied string, never a JsonElement into the document.
+        using var workflow = await LoadWorkflowAsync(spaceName, workflowShortname, ct);
         if (workflow is null)
             return new TransitionResult(false, $"workflow {workflowShortname} not found", null, null, false);
 
@@ -99,7 +103,9 @@ public sealed class WorkflowEngine(EntryRepository entries, ILogger<WorkflowEngi
     /// </summary>
     public async Task<string?> GetInitialStateAsync(string spaceName, string workflowShortname, CancellationToken ct = default)
     {
-        var workflow = await LoadWorkflowAsync(spaceName, workflowShortname, ct);
+        // `using` for the same ArrayPool reason as EvaluateAsync; the returned
+        // initial-state name is a copied string, not a view into the document.
+        using var workflow = await LoadWorkflowAsync(spaceName, workflowShortname, ct);
         if (workflow is null) return null;
 
         if (workflow.RootElement.TryGetProperty("initial_state", out var init))

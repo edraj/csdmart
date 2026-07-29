@@ -140,10 +140,26 @@ public static class ProfileHandler
                 return Response.Fail(InternalErrorCode.MISSING_DATA, "password required", ErrorTypes.Request);
 
             var valid = await svc.ValidatePasswordAsync(actor, password, ct);
+            if (!valid)
+            {
+                // A wrong guess here must cost the same as a wrong guess at
+                // /user/login: this endpoint runs the identical Argon2id
+                // verify against the identical hash, so without the counter it
+                // is an unmetered password oracle for anyone holding a stolen
+                // session token (e.g. checking a candidate before using it to
+                // step up through POST /user/profile's old_password gate).
+                var user = await svc.GetByShortnameAsync(actor, ct);
+                if (user is not null)
+                    await svc.RecordFailedAttemptAsync(user, ct);
+            }
             return Response.Ok(attributes: new() { ["valid"] = valid });
         })
         .Accepts<ValidatePasswordBody>("application/json")
-        .Produces<Response>();
+        .Produces<Response>()
+        // Rate-limited like the other credential-handling routes: each call is
+        // a full Argon2id verify (m=102400 → 100 MiB per in-flight request),
+        // so an unthrottled caller is a memory-exhaustion lever as well.
+        .RequireRateLimiting("auth-by-ip");
 
         // GET /user/check-existing — Python parity: short-circuit on first
         // conflict. Iteration order matches Python dict: shortname → msisdn →
@@ -182,7 +198,14 @@ public static class ProfileHandler
             }
 
             return Response.Ok(attributes: new() { ["unique"] = true });
-        });
+        })
+        // Anonymous by design (signup forms probe it before a session
+        // exists), which also makes it a clean yes/no oracle over the whole
+        // user table — shortname, msisdn AND email, one query-string away.
+        // The rate limit is the only thing standing between it and a bulk
+        // enumeration of the directory, so it gets the same "auth-by-ip"
+        // bucket the credential routes use.
+        .RequireRateLimiting("auth-by-ip");
     }
 
     // Extract the caller's access token so UserService can update the exact

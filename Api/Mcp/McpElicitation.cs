@@ -132,7 +132,12 @@ public static class McpElicitation
     {
         var store = http.RequestServices.GetService(typeof(McpSessionStore)) as McpSessionStore;
         if (store is null) return null;
-        var sessionId = http.Request.Headers["Mcp-Session-Id"].ToString();
-        return string.IsNullOrEmpty(sessionId) ? null : store.Get(sessionId);
+        // Ownership-checked lookup, not a bare id lookup: the confirm prompt
+        // must be delivered to the caller's own client. Routing it into a
+        // session named by a borrowed `Mcp-Session-Id` would put the "are you
+        // sure?" in front of a different user — see
+        // McpEndpoint.ResolveOwnedSession. Unowned/unknown sessions fall back
+        // to Outcome.Unsupported, i.e. the explicit `confirm: true` argument.
+        return McpEndpoint.ResolveOwnedSession(http, store);
     }
 }

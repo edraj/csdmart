@@ -187,10 +187,28 @@ public sealed class AppleProvider(
         var sub = GetString(root, "sub");
         if (string.IsNullOrEmpty(sub)) return null;
 
+        // Same contract GoogleProvider enforces (see OAuthUserResolver): hand the
+        // email onwards ONLY when the provider asserted it is verified. Apple's
+        // id_token carries `email_verified`, and it is genuinely not always true —
+        // Sign in with Apple can surface an unverified address on accounts that
+        // never confirmed it. Since OAuthUserResolver links a provider identity
+        // onto ANY existing dmart account with a matching email (and stamps
+        // is_email_verified on it), an unverified address here is an
+        // account-takeover primitive. Dropping the email refuses the link; the
+        // `apple_<sub>` shortname path still identifies the user.
+        var email = GetString(root, "email");
+        if (!string.IsNullOrEmpty(email) && !IsVerified(root, "email_verified"))
+        {
+            log.LogWarning(
+                "apple id_token: email_verified not asserted for sub {Sub} — dropping email so it can't link an existing account",
+                sub);
+            email = null;
+        }
+
         return new OAuthUserInfo(
             Provider: "apple",
             ProviderId: sub,
-            Email: GetString(root, "email"),
+            Email: email,
             // Apple doesn't include the display name in the id_token — it's
             // only passed the first time the user signs in (separate `user`
             // param). Leave blank here; the resolver handles that gracefully.
@@ -282,6 +300,16 @@ public sealed class AppleProvider(
     private static string? GetString(JsonElement e, string prop) =>
         e.TryGetProperty(prop, out var v) && v.ValueKind == JsonValueKind.String
             ? v.GetString() : null;
+
+    // Apple renders id_token booleans inconsistently: `email_verified` arrives as
+    // a real JSON boolean on some flows and as the string "true" on others (the
+    // same legacy split GoogleProvider handles for tokeninfo). Accept both;
+    // anything else — absent, "false", null — is "not asserted".
+    private static bool IsVerified(JsonElement e, string prop) =>
+        e.TryGetProperty(prop, out var v)
+        && (v.ValueKind == JsonValueKind.True
+            || (v.ValueKind == JsonValueKind.String
+                && string.Equals(v.GetString(), "true", StringComparison.OrdinalIgnoreCase)));
 
     // ====================================================================
     // CODE EXCHANGE (web-callback flow)

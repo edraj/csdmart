@@ -204,6 +204,77 @@ public class DotEnvTests
         finally { File.Delete(tmp); }
     }
 
+    // Regression: an unreadable config.env used to satisfy File.Exists(), get
+    // returned from FindConfigFile(), and then throw out of Parse(). It must
+    // be skipped instead — see DotEnv.IsUsable. Root bypasses Unix mode bits
+    // entirely, so the test can't demonstrate anything when running as root.
+    [Fact]
+    public void FindConfigFile_Skips_Unreadable_File()
+    {
+        if (OperatingSystem.IsWindows() || Environment.IsPrivilegedProcess) return;
+
+        var tmp = Path.GetTempFileName();
+        try
+        {
+            File.WriteAllText(tmp, "JWT_SECRET=should-never-be-read\n");
+            File.SetUnixFileMode(tmp, UnixFileMode.None);
+
+            Environment.SetEnvironmentVariable("BACKEND_ENV", tmp);
+            try
+            {
+                DotEnv.FindConfigFile().ShouldNotBe(tmp);
+            }
+            finally
+            {
+                Environment.SetEnvironmentVariable("BACKEND_ENV", null);
+            }
+        }
+        finally
+        {
+            File.SetUnixFileMode(tmp, UnixFileMode.UserRead | UnixFileMode.UserWrite);
+            File.Delete(tmp);
+        }
+    }
+
+    // The complementary half: an unreadable candidate must be reported, not
+    // silently treated as "no config here". This is the failure mode that made
+    // a 0750 root:root /etc/dmart present as a bare "JwtSecret is the built-in
+    // placeholder" error with nothing pointing at permissions.
+    [Fact]
+    public void FindConfigFile_Warns_When_Candidate_Is_Unreadable()
+    {
+        if (OperatingSystem.IsWindows() || Environment.IsPrivilegedProcess) return;
+
+        var tmp = Path.GetTempFileName();
+        var stderr = Console.Error;
+        var captured = new StringWriter();
+        try
+        {
+            File.WriteAllText(tmp, "JWT_SECRET=should-never-be-read\n");
+            File.SetUnixFileMode(tmp, UnixFileMode.None);
+
+            Console.SetError(captured);
+            Environment.SetEnvironmentVariable("BACKEND_ENV", tmp);
+            try
+            {
+                DotEnv.FindConfigFile();
+            }
+            finally
+            {
+                Environment.SetEnvironmentVariable("BACKEND_ENV", null);
+                Console.SetError(stderr);
+            }
+
+            captured.ToString().ShouldContain(tmp);
+            captured.ToString().ShouldContain("permission denied");
+        }
+        finally
+        {
+            File.SetUnixFileMode(tmp, UnixFileMode.UserRead | UnixFileMode.UserWrite);
+            File.Delete(tmp);
+        }
+    }
+
     [Fact]
     public void FindConfigFile_Falls_Back_When_Env_Var_Path_Missing()
     {

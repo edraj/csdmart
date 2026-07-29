@@ -282,6 +282,104 @@ public class ImportExportRoundTripTests : IClassFixture<DmartFactory>
         try { await spaceRepo.DeleteAsync(spaceName); } catch { }
     }
 
+    // Regression guard: the exported zip must carry the attachment's actual
+    // BYTES, not just its meta.
+    //
+    // AttachmentRepository.ListForParentAsync defaults to a media-less
+    // projection (`NULL::bytea AS media`) because the listing and query paths
+    // only ever render metadata. Export is the one lister that does need the
+    // bytes — WriteAttachmentsAsync writes them into the archive — so it has to
+    // opt in with `includeMedia: true`. When it didn't, `att.Media` came back
+    // null, the media branch never fired, and every export silently produced a
+    // zip full of attachment meta with no files behind it. Nothing caught that,
+    // because no test had ever asserted the bytes survive.
+    [FactIfPg]
+    public async Task Export_Writes_Attachment_Media_Bytes_Into_The_Zip()
+    {
+        var sp = _factory.Services;
+        _factory.CreateClient();
+        var io = sp.GetRequiredService<ImportExportService>();
+        var entryRepo = sp.GetRequiredService<EntryRepository>();
+        var spaceRepo = sp.GetRequiredService<SpaceRepository>();
+        var attachRepo = sp.GetRequiredService<AttachmentRepository>();
+
+        var spaceName = "iexmedia_" + Guid.NewGuid().ToString("N")[..6];
+        const string parentShortname = "doc";
+        const string mediaFilename = "logo.png";
+        // Deliberately not valid PNG — export must move the bytes verbatim
+        // without interpreting them.
+        var mediaBytes = new byte[] { 0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A, 0xDE, 0xAD, 0xBE, 0xEF };
+
+        await spaceRepo.UpsertAsync(new Space
+        {
+            Uuid = Guid.NewGuid().ToString(),
+            Shortname = spaceName,
+            SpaceName = spaceName,
+            Subpath = "/",
+            OwnerShortname = "dmart",
+            IsActive = true,
+            Languages = new() { Language.En },
+            CreatedAt = DateTime.UtcNow,
+            UpdatedAt = DateTime.UtcNow,
+        });
+
+        var parent = MakeContent(spaceName, "/", parentShortname, new { title = "with media" });
+        await entryRepo.UpsertAsync(parent);
+
+        // Attachments hang at "{parent subpath}/{parent shortname}".
+        await attachRepo.UpsertAsync(new Attachment
+        {
+            Uuid = Guid.NewGuid().ToString(),
+            Shortname = "att1",
+            SpaceName = spaceName,
+            Subpath = $"/{parentShortname}",
+            ResourceType = ResourceType.Media,
+            IsActive = true,
+            OwnerShortname = "dmart",
+            CreatedAt = DateTime.UtcNow,
+            UpdatedAt = DateTime.UtcNow,
+            Media = mediaBytes,
+            Payload = new Payload
+            {
+                ContentType = ContentType.ImagePng,
+                // Python's convention: payload.body names the on-disk file the
+                // bytes are written to.
+                Body = JsonDocument.Parse($"\"{mediaFilename}\"").RootElement.Clone(),
+            },
+        });
+
+        try
+        {
+            var q = new Query
+            {
+                Type = QueryType.Search, SpaceName = spaceName, Subpath = "/",
+                FilterSchemaNames = new(), Limit = 10_000, RetrieveJsonPayload = true,
+            };
+            await using var exported = await io.ExportAsync(q, actor: null);
+            using var ms = new MemoryStream();
+            await exported.CopyToAsync(ms);
+            ms.Position = 0;
+
+            using var read = new ZipArchive(ms, ZipArchiveMode.Read, leaveOpen: true);
+            var mediaPath = $"{spaceName}/.dm/{parentShortname}/attachments.media/{mediaFilename}";
+
+            var entry = read.GetEntry(mediaPath);
+            entry.ShouldNotBeNull(
+                $"attachment media missing from the export. Zip contained: {string.Join(", ", read.Entries.Select(e => e.FullName))}");
+
+            using var entryStream = entry!.Open();
+            using var actual = new MemoryStream();
+            await entryStream.CopyToAsync(actual);
+            actual.ToArray().ShouldBe(mediaBytes);
+        }
+        finally
+        {
+            try { await attachRepo.DeleteUnderSubpathAsync(spaceName, $"/{parentShortname}"); } catch { }
+            try { await entryRepo.DeleteAsync(spaceName, "/", parentShortname, ResourceType.Content); } catch { }
+            try { await spaceRepo.DeleteAsync(spaceName); } catch { }
+        }
+    }
+
     private static Entry MakeContent(string space, string subpath, string shortname, object body)
     {
         var bodyJson = JsonSerializer.Serialize(body);

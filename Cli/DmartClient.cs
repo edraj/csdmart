@@ -149,7 +149,11 @@ public sealed class DmartClient : IDisposable
         return await ParseAsync(resp);
     }
 
-    // Lightweight server probe — used by `version` to show server-side info.
+    // Lightweight server probe — used by the interactive shell's `version`
+    // command to show server-side info. /info/manifest requires super_admin
+    // (GlobalAdminFilter); a non-admin caller gets a 401 here, which we
+    // swallow to null so `version` just omits the server-side fields
+    // instead of failing the command.
     public async Task<JsonElement?> ManifestAsync()
     {
         try

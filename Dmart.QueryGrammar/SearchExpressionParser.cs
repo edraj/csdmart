@@ -97,6 +97,35 @@ public static class SearchExpressionParser
     // ── Entry point ───────────────────────────────────────────────────────
 
     /// <summary>
+    /// Hard ceiling on the expression length the parser will look at. Longer
+    /// input is rejected before a single regex touches it.
+    /// </summary>
+    /// <remarks>
+    /// <c>Query.Search</c> carries no bound of its own and <c>POST /public/query</c>
+    /// is unauthenticated, so without this a megabyte body gets tokenized — and
+    /// re-scanned per token — on every request. The ceiling is deliberately well
+    /// above the ~4KB a hand-written expression ever needs: callers do not only
+    /// pass user text through here. <c>QueryService.ApplyClientJoinsAsync</c>
+    /// synthesizes <c>@rightField:v1|v2|…</c> narrowing terms from a whole base
+    /// page (bounded by <c>MaxQueryLimit</c>, default 10000) and
+    /// <c>ApplyFilterFieldsValues</c> appends the caller's permission clauses to
+    /// the same string — a 4KB cap here would silently zero out legitimate joins
+    /// on pages of more than ~100 records. A tighter bound on the user-supplied
+    /// <c>Query.Search</c> belongs at the HTTP boundary, where wire input is
+    /// still distinguishable from these synthesized expressions.
+    /// </remarks>
+    public const int MaxExpressionLength = 64 * 1024;
+
+    // Emitted in place of the caller's clauses when the expression cannot be
+    // parsed safely (over-length, or a pattern that blew its match timeout).
+    // Fails CLOSED on purpose: ApplyFilterFieldsValues folds the caller's
+    // permission filter INTO this same expression, so dropping the search and
+    // returning no clauses would widen the result set past what the caller is
+    // allowed to see. Carries no placeholder, so downstream $N / @s_n numbering
+    // is unaffected.
+    private const string NoMatchClause = "FALSE";
+
+    /// <summary>
     /// Parses a RediSearch-style expression and returns SQL clause fragments
     /// plus the bound parameters they reference.
     /// </summary>
@@ -134,25 +163,43 @@ public static class SearchExpressionParser
         var pars = new List<NpgsqlParameter>();
         if (string.IsNullOrWhiteSpace(expression)) return new Parsed(clauses, pars);
 
+        // Length gate before any regex sees the text — see MaxExpressionLength.
+        if (expression.Length > MaxExpressionLength)
+        {
+            clauses.Add(NoMatchClause);
+            return new Parsed(clauses, pars);
+        }
+
         var ctx = new ParamCtx(startingParamIndex, style, targetTable);
 
-        // Phase 1: tokenize + recursive-descent parse into a boolean AST.
-        // At the top level (stopAtParen: false) a stray `)` is skipped as noise
-        // rather than ending the parse, so ParseOrExpr consumes the entire
-        // stream — including any `or` that follows an unbalanced `)`. No
-        // post-hoc recovery pass is needed (one would wrongly drop such an
-        // `or`, silently turning OR into AND).
-        var ts = new TokenStream(Tokenize(expression));
-        var root = ParseOrExpr(ts, stopAtParen: false);
+        try
+        {
+            // Phase 1: tokenize + recursive-descent parse into a boolean AST.
+            // At the top level (stopAtParen: false) a stray `)` is skipped as noise
+            // rather than ending the parse, so ParseOrExpr consumes the entire
+            // stream — including any `or` that follows an unbalanced `)`. No
+            // post-hoc recovery pass is needed (one would wrongly drop such an
+            // `or`, silently turning OR into AND).
+            var ts = new TokenStream(Tokenize(expression));
+            var root = ParseOrExpr(ts, stopAtParen: false);
 
-        // Phase 2: emit SQL. Parameters are bound during the walk in
-        // left-to-right token order, so $N / @s_n numbering matches reading
-        // order — identical to the previous inline builder for non-`or` input.
-        var sql = EmitNode(root, ctx);
+            // Phase 2: emit SQL. Parameters are bound during the walk in
+            // left-to-right token order, so $N / @s_n numbering matches reading
+            // order — identical to the previous inline builder for non-`or` input.
+            var sql = EmitNode(root, ctx);
 
-        pars.AddRange(ctx.Parameters);
-        if (sql is not null) clauses.Add(sql);
-        return new Parsed(clauses, pars);
+            pars.AddRange(ctx.Parameters);
+            if (sql is not null) clauses.Add(sql);
+            return new Parsed(clauses, pars);
+        }
+        catch (RegexMatchTimeoutException)
+        {
+            // A pathological expression blew a pattern's RegexTimeoutMs budget.
+            // Discard the partial parse — including whatever ctx bound so far,
+            // which no emitted clause now references — and fail closed rather
+            // than letting the exception surface as a 500.
+            return new Parsed(new[] { NoMatchClause }, Array.Empty<NpgsqlParameter>());
+        }
     }
 
     // ── Parameter bookkeeping ─────────────────────────────────────────────
@@ -213,14 +260,30 @@ public static class SearchExpressionParser
 
     // ── Regex & column whitelists ─────────────────────────────────────────
 
+    // Every pattern below runs against caller-controlled text on an
+    // unauthenticated endpoint (POST /public/query), so each carries a match
+    // timeout. RangeRegex is the one that actually needs it: two lazy `.+?`
+    // pivoting on `[\s,]` with a `$`-anchored `]` that never arrives backtracks
+    // quadratically (2k chars ≈ 0.02s, 8k ≈ 0.3s, 16k ≈ 1.2s). Parse() catches
+    // the timeout and fails the expression closed — an escaping
+    // RegexMatchTimeoutException would be a 500. Same 100ms budget the other
+    // user-facing patterns use (Config/RegexPatternsConfig.cs,
+    // Middleware/ChannelAuthMiddleware.cs). Kept as a plain int const rather
+    // than a static readonly TimeSpan so static-field initialization order
+    // can't hand a regex TimeSpan.Zero.
+    private const int RegexTimeoutMs = 100;
+
     // Matches (in order): @field:[range] | @field:"quoted" | @field:value | plain_word
     private static readonly Regex SearchTokenRegex = new(
         @"-?@[^:\s]+:\[[^\]]*\]|-?@[^:\s]+:""[^""]*""|-?@[^:\s]+:[^\s]+|\S+",
-        RegexOptions.Compiled);
+        RegexOptions.Compiled, matchTimeout: TimeSpan.FromMilliseconds(RegexTimeoutMs));
 
-    private static readonly Regex ComparisonRegex = new(@"^(>=|<=|>|<|!)(.+)$", RegexOptions.Compiled);
-    private static readonly Regex NumericRegex = new(@"^-?\d+(?:\.\d+)?$", RegexOptions.Compiled);
-    private static readonly Regex RangeRegex = new(@"^\[(.+?)[\s,](.+?)\]$", RegexOptions.Compiled);
+    private static readonly Regex ComparisonRegex = new(@"^(>=|<=|>|<|!)(.+)$",
+        RegexOptions.Compiled, matchTimeout: TimeSpan.FromMilliseconds(RegexTimeoutMs));
+    private static readonly Regex NumericRegex = new(@"^-?\d+(?:\.\d+)?$",
+        RegexOptions.Compiled, matchTimeout: TimeSpan.FromMilliseconds(RegexTimeoutMs));
+    private static readonly Regex RangeRegex = new(@"^\[(.+?)[\s,](.+?)\]$",
+        RegexOptions.Compiled, matchTimeout: TimeSpan.FromMilliseconds(RegexTimeoutMs));
 
     private static readonly HashSet<string> JsonbArrayColumns = new(StringComparer.Ordinal)
         { "tags", "roles", "groups" };
@@ -240,7 +303,8 @@ public static class SearchExpressionParser
         { "msisdn", "email" };
 
     private static readonly Regex SafeColumnIdent = new(
-        @"^[a-z][a-z0-9_]{0,63}$", RegexOptions.Compiled);
+        @"^[a-z][a-z0-9_]{0,63}$",
+        RegexOptions.Compiled, matchTimeout: TimeSpan.FromMilliseconds(RegexTimeoutMs));
 
     private static string EscapeSqlLiteral(string s) => s.Replace("'", "''");
 

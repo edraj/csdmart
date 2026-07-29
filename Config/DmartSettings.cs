@@ -219,7 +219,10 @@ public sealed class DmartSettings
     // Minimum seconds between OTP re-sends for the same destination. Mirrors
     // Python's `allow_otp_resend_after`. /user/otp-request returns
     // OTP_RESEND_BLOCKED (HTTP 403) when a prior OTP was issued within this
-    // window.
+    // window. Default matches config.env.sample's ALLOW_OTP_RESEND_AFTER=60 —
+    // the previous in-code default of 1 silently gave any deployment that
+    // omits the key a one-second cooldown, i.e. effectively no throttle on
+    // OTP re-sends (SMS/email spend + OTP-rotation churn).
     public int AllowOtpResendAfter { get; set; } = 60;
 
     // Minimum seconds between password-reset OTP re-sends for the same

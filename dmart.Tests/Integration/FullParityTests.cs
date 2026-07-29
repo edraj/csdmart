@@ -717,8 +717,10 @@ public class FullParityTests : IClassFixture<DmartFactory>
             var rows = await users.CountSessionsAsync(shortname);
             rows.ShouldBe(0);
 
-            // Token works immediately.
-            var ok = await client.GetAsync("/info/manifest");
+            // Token works immediately. /user/profile only requires
+            // authentication (unlike /info/*, which is now super_admin-only),
+            // so it works for this role-less bot too.
+            var ok = await client.GetAsync("/user/profile");
             ok.StatusCode.ShouldBe(HttpStatusCode.OK);
 
             // Wait past the 1-second inactivity TTL. A web token would be
@@ -726,7 +728,7 @@ public class FullParityTests : IClassFixture<DmartFactory>
             await Task.Delay(2000);
 
             // Bot is exempt — token still works.
-            var stillOk = await client.GetAsync("/info/manifest");
+            var stillOk = await client.GetAsync("/user/profile");
             stillOk.StatusCode.ShouldBe(HttpStatusCode.OK);
         }
         finally

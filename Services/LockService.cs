@@ -60,36 +60,40 @@ public sealed class LockService(
         if (await BeforeActionAsync(l, ActionType.Lock, actor, ct) is { } lockBefore)
             return lockBefore;
 
-        // Python ticket locks mark the current processor before taking the
-        // lock. Keep the lock operation useful for ticket UIs that read
-        // collaborators.processed_by.
-        if (l.Type == ResourceType.Ticket)
-        {
-            var ticket = entry;
-            if (ticket is not null)
-            {
-                var collaborators = ticket.Collaborators is null
-                    ? new Dictionary<string, string>()
-                    : new Dictionary<string, string>(ticket.Collaborators);
-                if (!string.Equals(collaborators.GetValueOrDefault("processed_by"), actor, StringComparison.Ordinal))
-                {
-                    collaborators["processed_by"] = actor;
-                    var updated = await entryService.UpdateAsync(l,
-                        new Dictionary<string, object> { ["collaborators"] = collaborators },
-                        actor, ct);
-                    if (!updated.IsOk)
-                        return Response.Fail(updated.ErrorCode, updated.ErrorMessage!,
-                            updated.ErrorType ?? ErrorTypes.Request);
-                }
-            }
-        }
-
         var period = settings.Value.LockPeriod;
         var outcome = await locks.TryLockAsync(l.SpaceName, l.Subpath, l.Shortname, actor, period, ct);
         if (outcome == LockOutcome.Denied)
         {
             var holder = await locks.GetLockerAsync(l.SpaceName, l.Subpath, l.Shortname, period, ct);
             return Response.Fail(InternalErrorCode.LOCKED_ENTRY, $"already locked by {holder}", ErrorTypes.Db);
+        }
+
+        // Python ticket locks mark the current processor before taking the
+        // lock. We do it AFTER: the marker write mutates collaborators and
+        // appends a history row, so running it first meant a DENIED lock
+        // (someone else already holds it) still stamped processed_by and left
+        // an audit trail for a lock the caller never got.
+        // actionOverride gates the write on `lock` — the very action that
+        // authorized us above — so a fine-grained `lock` grant is sufficient;
+        // gating it on `update` made that grant unusable on tickets. It also
+        // skips EntryService's update-only lock gate, which would otherwise
+        // see the lock we just took. A failure here leaves the (genuinely
+        // acquired) lock in place; the caller can retry or unlock.
+        if (l.Type == ResourceType.Ticket && entry is not null)
+        {
+            var collaborators = entry.Collaborators is null
+                ? new Dictionary<string, string>()
+                : new Dictionary<string, string>(entry.Collaborators);
+            if (!string.Equals(collaborators.GetValueOrDefault("processed_by"), actor, StringComparison.Ordinal))
+            {
+                collaborators["processed_by"] = actor;
+                var updated = await entryService.UpdateAsync(l,
+                    new Dictionary<string, object> { ["collaborators"] = collaborators },
+                    actor, ct, actionOverride: "lock");
+                if (!updated.IsOk)
+                    return Response.Fail(updated.ErrorCode, updated.ErrorMessage!,
+                        updated.ErrorType ?? ErrorTypes.Request);
+            }
         }
 
         // History + after_action mirror Python's store_entry_diff({lock_type})

@@ -1019,6 +1019,32 @@ public sealed class QueryService(
                     searchTerms.Add($"@{rPath}:{string.Join('|', leftValues)}");
                 }
             }
+
+            // The synthesized narrowing expression has to survive the parser.
+            // SearchExpressionParser rejects anything over MaxExpressionLength by
+            // emitting FALSE — fail-closed, which is right for hostile wire input
+            // but catastrophic here: these terms are OURS, built from a base page
+            // bounded only by MaxQueryLimit (default 10000), so a wide enough page
+            // would hand the sub-query a clause that matches nothing and the join
+            // would come back empty with no error at all. Degrade to the
+            // un-narrowed pull instead — the same path an unsafe value already
+            // takes above. Slower (the right side is filtered in memory), but the
+            // results are correct, which silently-empty never is.
+            if (canNarrow && searchTerms.Count > 0)
+            {
+                var projectedLength = searchTerms.Sum(t => t.Length + 1)
+                    + (string.IsNullOrEmpty(subQuery.Search) ? 0 : subQuery.Search.Length + 1);
+                if (projectedLength > SearchExpressionParser.MaxExpressionLength)
+                {
+                    logger.LogWarning(
+                        "join narrowing skipped: synthesized search is {Length} chars, over the {Max} parser ceiling. "
+                        + "Falling back to an un-narrowed sub-query pull (correct, but slower) — "
+                        + "consider a smaller base page or a more selective sub_query.search.",
+                        projectedLength, SearchExpressionParser.MaxExpressionLength);
+                    canNarrow = false;
+                    searchTerms.Clear();
+                }
+            }
             // Probe for any left value when we couldn't narrow (Right/Outer,
             // or Left/Inner fell back). Used below to decide whether a
             // user-search-less Left/Inner pull is worth doing at all.
