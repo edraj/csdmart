@@ -244,7 +244,7 @@ public sealed class UserService(
         var refresh = jwt.IssueRefresh(user.Shortname, user.Type);
         await users.CreateSessionAsync(user.Shortname, access, null, ct);
 
-        var timestamp = DateTimeOffset.Now.ToUnixTimeSeconds();
+        var timestamp = LoginTimestamp();
         // Read the previous login off the pre-update row — null here, since the
         // account was created moments ago — before the upsert below overwrites it.
         var previousLogin = PreviousLoginTimestamp(user);
@@ -637,7 +637,7 @@ public sealed class UserService(
         }
 
         // Python tracks last_login = {timestamp, headers} on every successful login.
-        var loginTimestamp = DateTimeOffset.Now.ToUnixTimeSeconds();
+        var loginTimestamp = LoginTimestamp();
         // Captured from the PRE-login row, before the assignment below replaces
         // it — this is the audit row's "old" side.
         var previousLogin = PreviousLoginTimestamp(user);
@@ -685,8 +685,32 @@ public sealed class UserService(
     }
 
     // The previous login's timestamp, or null when the account has never logged
+    // The stamp written into `last_login.timestamp` and into the audit row.
+    //
+    // A naive local DateTime, so it renders exactly like `created_at` /
+    // `updated_at` do — "2026-07-29T03:14:05.1234567", no offset. Those columns
+    // are TIMESTAMP (without time zone) and read back Kind=Unspecified, so
+    // TimeUtils.Naive is what makes this field match them character for
+    // character rather than merely look similar.
+    //
+    // DELIBERATE DIVERGENCE from Python dmart, which writes
+    // `int(datetime.now().timestamp())` — epoch seconds (api/user/router.py:1220).
+    // Nothing reads this field across the two implementations: QueryService's
+    // user mapper omits `last_login` entirely, so it reaches no API response in
+    // either port, and its only consumer here is the login audit trail, which
+    // exists to be read by a human. An epoch integer is the wrong shape for
+    // that. The cost is that a deployment sharing one database with the Python
+    // implementation would see both shapes in this field — see
+    // PreviousLoginTimestamp, which is why it stays typed as `object?`.
+    private static DateTime LoginTimestamp() => TimeUtils.Naive(TimeUtils.Now());
+
     // in. Read off the JSONB `last_login` column, so it comes back as a
-    // JsonElement number — the source-gen context serializes that verbatim.
+    // JsonElement — a string for anything written since the change above, a
+    // NUMBER for rows written before it (or by Python). Deliberately untyped
+    // and passed through verbatim: the audit row records what the previous
+    // login actually said, and re-interpreting a legacy epoch as a date here
+    // would invent precision the stored value never had. Readers of
+    // `histories.diff.last_login.old` must therefore tolerate both.
     private static object? PreviousLoginTimestamp(User user)
         => user.LastLogin is not null
             && user.LastLogin.TryGetValue("timestamp", out var prev)
@@ -752,7 +776,7 @@ public sealed class UserService(
     // which is why the failure is logged at Error rather than ignored — that
     // log line is the thing to alert on.
     private async Task AppendLoginHistoryAsync(
-        string shortname, object? previousTimestamp, long timestamp,
+        string shortname, object? previousTimestamp, DateTime timestamp,
         Dictionary<string, string>? requestHeaders, CancellationToken ct)
     {
         try
@@ -765,6 +789,14 @@ public sealed class UserService(
                 // {timestamp, headers} dict the column holds — the headers are
                 // already on the row, and HistoryMapper would strip them from a
                 // nested old/new object anyway (QueryService.cs:2153).
+                //
+                // `new` is always a naive-local DateTime string; `old` is
+                // whatever the previous login stored, which for a row written
+                // before this change (or by Python) is an epoch NUMBER. The
+                // first login per account after an upgrade therefore produces
+                // one mixed-type row. That is deliberate — see
+                // PreviousLoginTimestamp — and harmless: this pair is display
+                // data, never a join key.
                 ["last_login"] = new Dictionary<string, object?>(StringComparer.Ordinal)
                 {
                     ["old"] = previousTimestamp,
