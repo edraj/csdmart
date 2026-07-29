@@ -115,18 +115,29 @@ public sealed partial class DmartClient
     // Info — server self-introspection
     // -------------------------------------------------------------------
     //
-    // BREAKING (this package is published as Dmart.Client): GetInfoMeAsync is
-    // gone — the server route it called, GET /info/me, was removed. Callers
-    // wanting "who am I" should use GetProfileAsync, which returns the caller's
-    // full user record. Note it requires authentication, whereas /info/me
-    // answered anonymously; a client using it as a session probe should check
-    // for a stored token first and only call the server when it has one.
-    //
+    // BEHAVIOUR CHANGE (this package is published as Dmart.Client):
     // GetManifestAsync / GetSettingsAsync / GetSpaceHealthAsync still exist but
     // now require an effective super_admin on the server side, so they return
     // 401 for ordinary users where they used to succeed. Handle that rather
     // than treating a failure as "server down" — Cli/DmartClient.ManifestAsync
     // is the reference: null out and carry on.
+    //
+    // GetInfoMeAsync is unaffected in signature but no longer answers for
+    // anonymous callers: see below.
+
+    // GET /info/me — minimal "who am I" probe, returning {shortname}.
+    //
+    // Requires a token. The server route used to be anonymous and reported
+    // `authenticated: false` instead of failing; it is authenticated now, so a
+    // 401 IS the "you are anonymous" answer and the flag is gone. A client
+    // using this as a session probe should check for a stored token first and
+    // only call when it has one — that avoids a guaranteed-401 round-trip on
+    // every cold start.
+    public async Task<Response> GetInfoMeAsync(CancellationToken ct = default)
+    {
+        using var req = BuildRequest(HttpMethod.Get, "/info/me");
+        return await SendEnvelopeAsync(req, ct).ConfigureAwait(false);
+    }
 
     // -------------------------------------------------------------------
     // Admin — server-side bookkeeping (require elevated permissions)
