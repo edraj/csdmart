@@ -45,11 +45,13 @@ public static class McpEndpoint
         // completes the outbox read cleanly.
         g.MapGet("/mcp", async (HttpContext http, McpSessionStore store, CancellationToken ct) =>
         {
-            var sessionId = http.Request.Headers[SessionHeader].ToString();
-            var session = string.IsNullOrEmpty(sessionId) ? null : store.Get(sessionId);
-            // Sessions MUST exist — the client has to call initialize first.
-            // If it hasn't, reject early with a 400 rather than hold a
-            // connection that can never receive anything routed to it.
+            var session = ResolveOwnedSession(http, store);
+            // Sessions MUST exist AND belong to the caller — the client has to
+            // call initialize first, and knowing a session id is not proof of
+            // owning it (see ResolveOwnedSession). If either fails, reject
+            // early with a 400 rather than hold a connection that can never
+            // receive anything routed to it — or, worse, one that drains
+            // another user's stream.
             if (session is null)
             {
                 http.Response.StatusCode = StatusCodes.Status400BadRequest;
@@ -105,12 +107,42 @@ public static class McpEndpoint
 
         g.MapDelete("/mcp", (HttpContext http, McpSessionStore store) =>
         {
-            var id = http.Request.Headers[SessionHeader].ToString();
-            if (!string.IsNullOrEmpty(id)) store.Remove(id);
+            // Ownership-checked: possession of a session id is not authority to
+            // terminate that session. An unknown id and someone else's id are
+            // answered identically (204, no removal) — the pre-existing shape
+            // for "nothing to close" — so this route can't be turned into an
+            // oracle for which session ids exist.
+            var session = ResolveOwnedSession(http, store);
+            if (session is not null) store.Remove(session.Id);
             return Results.NoContent();
         }).RequireAuthorization();
 
         return g;
+    }
+
+    // Resolves the session named by the `Mcp-Session-Id` header AND verifies it
+    // belongs to the authenticated caller. The header is plaintext: it rides
+    // through reverse proxies and lands in their access logs, so possession of
+    // an id must not by itself grant access to the session's SSE stream, its
+    // pending elicitation prompts (approving someone else's destructive
+    // delete), or its lifetime. `UserShortname` is stamped at initialize time
+    // (HandleInitialize) from the same JwtBearer identity, which is exactly
+    // what makes this comparison meaningful.
+    //
+    // Returns null for missing, unknown and foreign sessions alike so callers
+    // answer all three the same way and leak nothing about which ids exist.
+    internal static McpSessionState? ResolveOwnedSession(HttpContext http, McpSessionStore store)
+    {
+        var sessionId = http.Request.Headers[SessionHeader].ToString();
+        if (string.IsNullOrEmpty(sessionId)) return null;
+        var session = store.Get(sessionId);
+        if (session is null) return null;
+        // ActorOrAnonymous, not Actor: an unidentified caller resolves to
+        // "anonymous", which no session can be owned by (initialize is behind
+        // RequireAuthorization), so the comparison fails closed instead of
+        // matching null-against-null.
+        return string.Equals(session.UserShortname, http.ActorOrAnonymous(), StringComparison.Ordinal)
+            ? session : null;
     }
 
     // ---- core dispatch ----
@@ -134,13 +166,14 @@ public static class McpEndpoint
 
         // Client response to a server-originated request (elicitation reply).
         // Match by session + request id; resolve the TaskCompletionSource that
-        // the delete tool is awaiting.
+        // the delete tool is awaiting. The session must belong to the caller —
+        // otherwise anyone holding a leaked session id could answer another
+        // user's pending prompt and approve their destructive delete.
         if (!hasMethod)
         {
-            var sessionIdHeader = http.Request.Headers[SessionHeader].ToString();
-            if (!string.IsNullOrEmpty(sessionIdHeader) && id.HasValue)
+            if (id.HasValue)
             {
-                var session = store.Get(sessionIdHeader);
+                var session = ResolveOwnedSession(http, store);
                 if (session is not null)
                 {
                     var idKey = id.Value.ToString() ?? "";

@@ -53,9 +53,11 @@ internal sealed class SubprocessApiPlugin : IApiPlugin, IPluginVersionSource
         foreach (var q in ctx.Request.Query)
             query[q.Key] = q.Value.ToString();
 
-        var headers = new Dictionary<string, string>();
-        foreach (var h in ctx.Request.Headers)
-            headers[h.Key] = h.Value.ToString();
+        // Strips the caller's credentials (Authorization / Cookie /
+        // x-channel-key / ...) — a subprocess plugin is external code and the
+        // envelope's User field already names the resolved actor. Shared with
+        // NativeApiPlugin so both transports strip the same set.
+        var headers = NativeApiPlugin.CaptureHeaders(ctx.Request);
 
         string? body = null;
         if (ctx.Request.ContentLength > 0 || ctx.Request.Headers.ContentType.Count > 0)

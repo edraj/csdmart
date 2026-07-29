@@ -384,7 +384,17 @@ public sealed class EntryService(
         if (existing is null)
             return Result<Entry>.Fail(InternalErrorCode.OBJECT_NOT_FOUND, "entry missing", ErrorTypes.Db);
         var action = actionOverride ?? "update";
-        if (!await perms.CanAsync(actor, action, locator, PermissionService.FromEntry(existing), patch, ct))
+        // Gate on the row's REAL resource_type, not the caller's declared one.
+        // EntryRepository.GetAsync deliberately retries without the type filter
+        // (uniqueness is shortname+space+subpath), so a caller can declare
+        // resource_type "content" and be handed a "schema" row. Checking the
+        // declared type would let an editor holding update on
+        // resource_types:["content"] overwrite a schema — and the upsert keeps
+        // the row's true type, so the write really does land on the schema.
+        var authzLocator = existing.ResourceType == locator.Type
+            ? locator
+            : locator with { Type = existing.ResourceType };
+        if (!await perms.CanAsync(actor, action, authzLocator, PermissionService.FromEntry(existing), patch, ct))
             return Result<Entry>.Fail(InternalErrorCode.NOT_ALLOWED, $"no {action} access", ErrorTypes.Auth);
 
         // A lock held by another user blocks the write. Checked after the
@@ -485,7 +495,22 @@ public sealed class EntryService(
         // had a resource to gate against.
         var existing = await entries.GetAsync(locator.SpaceName, locator.Subpath, locator.Shortname, locator.Type, ct);
         var ctx = existing is not null ? PermissionService.FromEntry(existing) : null;
-        if (!await perms.CanDeleteAsync(actor, locator, ctx, ct))
+
+        // Same resource-type-confusion guard as UpdateAsync/MoveAsync, and the
+        // one place where getting it wrong is destructive rather than merely
+        // wrong. GetAsync above falls back to an untyped lookup, so the row in
+        // hand may be a different type than the caller declared. Gating on the
+        // declared type let a folder-scoped delete grant name a CONTENT entry
+        // as `folder`: the entries row itself survives (the cascade's own
+        // `resource_type = 'folder'` guard, EntryRepository.cs:522), but the
+        // histories/locks/attachments predicates next to it match on path
+        // alone — so the victim's audit trail, another user's live lock, and
+        // every attachment it owns were deleted anyway, and the call reported
+        // success. Everything below therefore uses the row's REAL type.
+        var effective = existing is null || existing.ResourceType == locator.Type
+            ? locator
+            : locator with { Type = existing.ResourceType };
+        if (!await perms.CanDeleteAsync(actor, effective, ctx, ct))
             return Result<DeleteReport>.Fail(InternalErrorCode.NOT_ALLOWED, "no delete access", ErrorTypes.Auth);
 
         // Same lock gate as UpdateAsync — a lock held by another user blocks the
@@ -502,10 +527,10 @@ public sealed class EntryService(
         // current users.delete-a-folder flow already accepts internal-only
         // refs disappearing along with the folder. Filed as a follow-up if
         // anyone needs symmetric folder-scoped checking.
-        if (existing is not null && locator.Type != ResourceType.Folder)
+        if (existing is not null && effective.Type != ResourceType.Folder)
         {
             var referencer = await entries.FindFirstReferencerAsync(
-                locator.SpaceName, locator.Subpath, locator.Shortname, locator.Type,
+                locator.SpaceName, locator.Subpath, locator.Shortname, effective.Type,
                 excludeSpace: locator.SpaceName, excludeSubpath: locator.Subpath,
                 excludeShortname: locator.Shortname, ct);
             if (referencer is { } r)
@@ -548,7 +573,7 @@ public sealed class EntryService(
         // DELETEs in one transaction so a partial failure rolls back instead
         // of leaving the DB half-deleted.
         DeleteReport report;
-        if (locator.Type == ResourceType.Folder)
+        if (effective.Type == ResourceType.Folder)
         {
             // A dryrun ignores `force` and projects the full subtree; a real delete
             // still refuses a non-empty folder unless force was passed.
@@ -580,7 +605,7 @@ public sealed class EntryService(
             }
             else
             {
-                var removed = await entries.DeleteAsync(locator.SpaceName, locator.Subpath, locator.Shortname, locator.Type, ct);
+                var removed = await entries.DeleteAsync(locator.SpaceName, locator.Subpath, locator.Shortname, effective.Type, ct);
                 long attCount = removed
                     ? await attachments.DeleteUnderSubpathAsync(locator.SpaceName, entryPath, ct)
                     : 0;
@@ -591,7 +616,7 @@ public sealed class EntryService(
 
         if (ok && !dryRun)
         {
-            if (locator.Type == ResourceType.Schema) schemas.ClearCache();
+            if (effective.Type == ResourceType.Schema) schemas.ClearCache();
             await plugins.AfterActionAsync(deleteEvent, ct);
         }
         return Result<DeleteReport>.Ok(report);
@@ -605,8 +630,17 @@ public sealed class EntryService(
         if (srcEntry is null)
             return Result<Entry>.Fail(InternalErrorCode.OBJECT_NOT_FOUND, "source entry missing", ErrorTypes.Db);
         var srcCtx = PermissionService.FromEntry(srcEntry);
-        if (!await perms.CanUpdateAsync(actor, from, srcCtx, null, ct) ||
-            !await perms.CanCreateAsync(actor, to, EntryToAttributesDict(srcEntry), ct))
+        // Same resource-type-confusion guard as UpdateAsync: the source load
+        // falls back to an untyped lookup, so gate on the row's real type or a
+        // content-only grant could relocate a folder (and its whole subtree).
+        var moveFrom = srcEntry.ResourceType == @from.Type
+            ? @from
+            : @from with { Type = srcEntry.ResourceType };
+        var moveTo = srcEntry.ResourceType == to.Type
+            ? to
+            : to with { Type = srcEntry.ResourceType };
+        if (!await perms.CanUpdateAsync(actor, moveFrom, srcCtx, null, ct) ||
+            !await perms.CanCreateAsync(actor, moveTo, EntryToAttributesDict(srcEntry), ct))
             return Result<Entry>.Fail(InternalErrorCode.NOT_ALLOWED, "no move access", ErrorTypes.Auth);
 
         // Move is an update-class mutation of the source, so the same lock
@@ -691,8 +725,11 @@ public sealed class EntryService(
             : Result<Entry>.Ok(moved);
     }
 
-    public Task<List<Attachment>> ListAttachmentsAsync(Locator parent, CancellationToken ct = default)
-        => attachments.ListForParentAsync(parent.SpaceName, parent.Subpath, parent.Shortname, ct);
+    // NOTE: a ListAttachmentsAsync(Locator) passthrough used to live here with no
+    // callers. Removed rather than left to rot: it forwarded to the metadata-only
+    // listing, so the next caller to reach for the obvious-looking name would have
+    // silently got attachments with no bytes. Call AttachmentRepository directly
+    // and pick ListForParentAsync / ListForParentWithMediaAsync deliberately.
 
     // Builds a plugin-dispatchable Event from an Entry. Mirrors the dict Python
     // assembles at the router level — keeping the attributes key minimal (just

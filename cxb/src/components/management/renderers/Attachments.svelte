@@ -442,6 +442,7 @@
                   ext: getFileExtension(attachment.attributes?.payload?.body),
                 })}
                 target="_blank"
+                rel="noopener noreferrer"
                 >{attachment.attributes?.displayname?.en ||
                   attachment.shortname}</a
               >

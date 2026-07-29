@@ -118,7 +118,21 @@ public static class EntryHandler
                 if (retrieve_attachments == true)
                 {
                     var children = await attachmentRepo.ListForParentAsync(space, subpath, shortname, ct);
-                    foreach (var grp in children.GroupBy(a => JsonbHelpers.EnumMember(a.ResourceType)))
+                    // Readable-parent does not imply readable-children: comment and
+                    // json attachments carry their own ACL, and ToEntryRecord emits
+                    // `payload` AND `body` — so an unfiltered list hands over the
+                    // attachment's CONTENT, not just its metadata. Same gate, same
+                    // shape as Api/Managed/PayloadHandler.cs:55 (which refuses the
+                    // bytes) and Api/Public/EntryHandler.cs (the anonymous twin).
+                    var visible = new List<Attachment>(children.Count);
+                    foreach (var a in children)
+                    {
+                        var attachmentLocator = new Locator(a.ResourceType, a.SpaceName, a.Subpath, a.Shortname);
+                        if (await perms.CanReadAsync(actor, attachmentLocator,
+                                PermissionService.FromAttachment(a), ct))
+                            visible.Add(a);
+                    }
+                    foreach (var grp in visible.GroupBy(a => JsonbHelpers.EnumMember(a.ResourceType)))
                     {
                         var arr = new JsonArray();
                         foreach (var rec in grp.Select(a => AttachmentMapper.ToEntryRecord(a)))

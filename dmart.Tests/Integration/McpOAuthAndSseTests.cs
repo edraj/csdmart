@@ -354,6 +354,10 @@ public sealed class McpOAuthAndSseTests : IClassFixture<DmartFactory>
         var httpCtx = new Microsoft.AspNetCore.Http.DefaultHttpContext
         {
             RequestServices = _factory.Services,
+            // Mcp-Session-Id is now bound to the authenticated caller, so an
+            // unauthenticated context can no longer answer a session's prompt.
+            // Present the session's own owner.
+            User = OwnerPrincipal(session.UserShortname!),
         };
         httpCtx.Request.Headers["Mcp-Session-Id"] = session.Id;
         var outcome = await McpElicitation.TryConfirmDeleteAsync(
@@ -386,6 +390,10 @@ public sealed class McpOAuthAndSseTests : IClassFixture<DmartFactory>
         var httpCtx = new Microsoft.AspNetCore.Http.DefaultHttpContext
         {
             RequestServices = _factory.Services,
+            // Mcp-Session-Id is now bound to the authenticated caller, so an
+            // unauthenticated context can no longer answer a session's prompt.
+            // Present the session's own owner.
+            User = OwnerPrincipal(session.UserShortname!),
         };
         httpCtx.Request.Headers["Mcp-Session-Id"] = session.Id;
         var outcome = await McpElicitation.TryConfirmDeleteAsync(
@@ -393,6 +401,46 @@ public sealed class McpOAuthAndSseTests : IClassFixture<DmartFactory>
             Dmart.Models.Enums.ResourceType.Content, default);
         await waiter;
         outcome.ShouldBe(McpElicitation.Outcome.Accepted);
+    }
+
+    // The point of binding Mcp-Session-Id to the caller: the two tests above
+    // now present the session's OWN owner, which proves the happy path still
+    // works but not that a stranger is refused — and the refusal is the entire
+    // security property. The header is plaintext, so it rides through proxies
+    // and lands in their access logs; anyone who scrapes one must not be able
+    // to answer the prompt guarding somebody else's destructive delete.
+    //
+    // A foreign caller must fall back to Outcome.Unsupported (i.e. "no session
+    // to ask", which forces the explicit `confirm: true` argument) rather than
+    // being handed the real session's pending elicitation.
+    [FactIfPg]
+    public async Task Elicitation_Refuses_A_Session_Owned_By_Another_User()
+    {
+        var store = _factory.Services.GetRequiredService<McpSessionStore>();
+        var session = store.Create("xunit-foreign", "0", "2025-03-26");
+        session.UserShortname = "victim";
+        session.ElicitationSupported = true;
+        while (session.Outbox.Reader.TryRead(out _)) { }
+
+        var httpCtx = new Microsoft.AspNetCore.Http.DefaultHttpContext
+        {
+            RequestServices = _factory.Services,
+            // Correct, existing session id — wrong owner.
+            User = OwnerPrincipal("attacker"),
+        };
+        httpCtx.Request.Headers["Mcp-Session-Id"] = session.Id;
+
+        var outcome = await McpElicitation.TryConfirmDeleteAsync(
+            httpCtx, "management", "/users", "xunit_target",
+            Dmart.Models.Enums.ResourceType.Content, default);
+
+        outcome.ShouldBe(McpElicitation.Outcome.Unsupported);
+        // And nothing may have been routed into the victim's stream: no prompt
+        // frame queued, no pending elicitation for them to be tricked into
+        // answering.
+        session.Outbox.Reader.TryRead(out _).ShouldBeFalse(
+            "a foreign caller must not be able to push an elicitation frame into another user's session");
+        session.PendingElicitations.ShouldBeEmpty();
     }
 
     // ---- PKCE primitives ----
@@ -427,4 +475,12 @@ public sealed class McpOAuthAndSseTests : IClassFixture<DmartFactory>
         var text = await resp.Content.ReadAsStringAsync();
         return JsonDocument.Parse(text).RootElement.Clone();
     }
+
+    // Minimal authenticated principal whose Name matches what
+    // HttpContextExtensions.ActorOrAnonymous() reads, so an MCP session's
+    // owner check resolves to the given shortname.
+    private static System.Security.Claims.ClaimsPrincipal OwnerPrincipal(string shortname) =>
+        new(new System.Security.Claims.ClaimsIdentity(
+            [new System.Security.Claims.Claim(System.Security.Claims.ClaimTypes.Name, shortname)],
+            authenticationType: "Test"));
 }

@@ -30,6 +30,13 @@ public static class JqRunner
 
     public const int MaxFilterLength = 1024;
 
+    // Hard ceiling on how much of jq's stdout we buffer. ValidateFilter caps the
+    // filter's *length*, not the volume it can produce: `[range(200000000)]` is
+    // 18 chars, passes validation, and streams hundreds of MB into the heap well
+    // inside JqTimeout — a few concurrent requests like that OOM the process.
+    // Overflow is reported as JqError (the filter is at fault), not Timeout.
+    public const int MaxOutputBytes = 32 * 1024 * 1024;
+
     public enum FailureKind
     {
         None = 0,
@@ -190,7 +197,7 @@ public static class JqRunner
             }, ct);
 
             using var stdoutMs = new MemoryStream();
-            var stdoutTask = proc.StandardOutput.BaseStream.CopyToAsync(stdoutMs, ct);
+            var stdoutTask = CopyStdoutBoundedAsync(proc, stdoutMs, ct);
             var stderrTask = proc.StandardError.ReadToEndAsync(ct);
 
             using var timeoutCts = CancellationTokenSource.CreateLinkedTokenSource(ct);
@@ -203,15 +210,48 @@ public static class JqRunner
             catch (OperationCanceledException)
             {
                 try { proc.Kill(entireProcessTree: true); } catch { }
+                // Settle the readers before returning: the enclosing `using`
+                // disposes stdoutMs the moment we do, and an un-awaited copy
+                // would then write into a disposed stream (surfacing as an
+                // unobserved task exception). The kill closes jq's pipes so
+                // these complete immediately; their results are discarded.
+                try { await Task.WhenAll(stdinTask, stdoutTask, stderrTask); } catch { }
                 return (FailureKind.Timeout, null, "jq timed out");
             }
 
             await Task.WhenAll(stdinTask, stdoutTask, stderrTask);
 
+            // Budget check before the exit code: an overflow kills jq, so the
+            // exit code would report the kill rather than the real cause.
+            if (!stdoutTask.Result)
+                return (FailureKind.JqError, null,
+                    $"jq filter produced more than the {MaxOutputBytes} byte output limit");
+
             if (proc.ExitCode != 0)
                 return (FailureKind.JqError, null, stderrTask.Result);
 
             return (FailureKind.None, stdoutMs.ToArray(), null);
+        }
+    }
+
+    // Copy jq's stdout into `dest`, stopping at MaxOutputBytes. Returns false
+    // when the budget is blown — jq is killed at that point so WaitForExitAsync
+    // returns straight away instead of blocking until JqTimeout on a full pipe.
+    private static async Task<bool> CopyStdoutBoundedAsync(
+        Process proc, MemoryStream dest, CancellationToken ct)
+    {
+        var src = proc.StandardOutput.BaseStream;
+        var buffer = new byte[81920];   // same chunk size Stream.CopyToAsync uses
+        while (true)
+        {
+            var read = await src.ReadAsync(buffer, ct);
+            if (read == 0) return true;
+            if (dest.Length + read > MaxOutputBytes)
+            {
+                try { proc.Kill(entireProcessTree: true); } catch { }
+                return false;
+            }
+            await dest.WriteAsync(buffer.AsMemory(0, read), ct);
         }
     }
 }

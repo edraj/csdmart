@@ -18,13 +18,52 @@ public sealed class AttachmentRepository(Db db)
         FROM attachments
         """;
 
-    public async Task<List<Attachment>> ListForParentAsync(string spaceName, string parentSubpath, string parentShortname, CancellationToken ct = default)
+    // Same projection, minus the `media` bytea. Listing paths only ever feed
+    // QueryService's AttachmentMapper (ToRecord / ToEntryRecord), both of which
+    // deliberately omit media — so selecting it meant Postgres detoasted every
+    // blob, shipped it over the wire, and Hydrate allocated a byte[] that was
+    // dropped on the next line. A 100-record page with 3x5MB attachments each
+    // moved ~1.5GB and burned 300 LOH arrays for a response containing zero
+    // bytes of media. `media` is replaced by a NULL literal (rather than dropped
+    // from the list) so column ordinals stay identical and Hydrate remains the
+    // single hydrator for this table — no second mapper to keep in sync.
+    private const string SelectColumnsNoMedia = """
+        SELECT uuid, shortname, space_name, subpath, is_active, slug,
+               displayname, description, tags, created_at, updated_at,
+               owner_shortname, owner_group_shortname, acl, payload, relationships,
+               last_checksum_history, resource_type, NULL::bytea AS media, body, state
+        FROM attachments
+        """;
+
+    // Metadata-only listing — `media` comes back null. This is what every
+    // rendering path wants (AttachmentMapper drops the bytes anyway), so it
+    // keeps the short name and the callers that never think about media get
+    // the cheap query by default.
+    public Task<List<Attachment>> ListForParentAsync(
+        string spaceName, string parentSubpath, string parentShortname, CancellationToken ct = default)
+        => ListForParentAsync(spaceName, parentSubpath, parentShortname, includeMedia: false, ct);
+
+    // Listing WITH the media bytes. Separate method rather than a defaulted
+    // flag: the bytes-or-not decision is the difference between a working
+    // export and a zip full of empty files (which is exactly what shipped once
+    // — see Export_Writes_Attachment_Media_Bytes_Into_The_Zip), and a caller
+    // that needs them should have to say so at the call site where a reviewer
+    // can see it. Export is the only in-tree consumer; single-attachment
+    // downloads (/managed/payload, the MCP download tool) use GetAsync /
+    // GetMediaAsync, which always select media.
+    public Task<List<Attachment>> ListForParentWithMediaAsync(
+        string spaceName, string parentSubpath, string parentShortname, CancellationToken ct = default)
+        => ListForParentAsync(spaceName, parentSubpath, parentShortname, includeMedia: true, ct);
+
+    private async Task<List<Attachment>> ListForParentAsync(
+        string spaceName, string parentSubpath, string parentShortname, bool includeMedia, CancellationToken ct)
     {
         var normalized = Locator.NormalizeSubpath(parentSubpath);
         var attachmentSubpath = $"{normalized.TrimEnd('/')}/{parentShortname}";
+        var columns = includeMedia ? SelectAllColumns : SelectColumnsNoMedia;
         await using var conn = await db.OpenAsync(ct);
         await using var cmd = new NpgsqlCommand(
-            $"{SelectAllColumns} WHERE space_name = $1 AND subpath = $2 ORDER BY created_at DESC", conn);
+            $"{columns} WHERE space_name = $1 AND subpath = $2 ORDER BY created_at DESC", conn);
         cmd.Parameters.Add(new() { Value = spaceName });
         cmd.Parameters.Add(new() { Value = attachmentSubpath });
         await using var r = await cmd.ExecuteReaderAsync(ct);
@@ -61,7 +100,7 @@ public sealed class AttachmentRepository(Db db)
 
         await using var conn = await db.OpenAsync(ct);
         await using var cmd = new NpgsqlCommand(
-            $"{SelectAllColumns} WHERE space_name = $1 AND subpath = ANY($2::text[]) " +
+            $"{SelectColumnsNoMedia} WHERE space_name = $1 AND subpath = ANY($2::text[]) " +
              "ORDER BY subpath, created_at DESC", conn);
         cmd.Parameters.Add(new() { Value = spaceName });
         cmd.Parameters.Add(new()
@@ -250,8 +289,10 @@ public sealed class AttachmentRepository(Db db)
 
     // ----- query support (used by QueryService for type=attachments) -----
 
+    // Media-less: both consumers (QueryService's attachment page → AttachmentMapper
+    // .ToRecord, and UniquenessValidator's shortname/subpath probe) discard the bytes.
     public Task<List<Attachment>> QueryAsync(Models.Api.Query q, CancellationToken ct = default)
-        => QueryHelper.RunQueryAsync(db, SelectAllColumns, q, Hydrate, ct, tableName: "attachments");
+        => QueryHelper.RunQueryAsync(db, SelectColumnsNoMedia, q, Hydrate, ct, tableName: "attachments");
 
     public Task<int> CountQueryAsync(Models.Api.Query q, CancellationToken ct = default)
         => QueryHelper.RunCountAsync(db, "attachments", q, ct);

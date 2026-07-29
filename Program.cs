@@ -2107,6 +2107,17 @@ app.Use(async (ctx, next) =>
 // Request timeout
 app.Use(async (ctx, next) =>
 {
+    // Long-lived connections must NOT get a deadline. Overwriting
+    // RequestAborted with a CancelAfter token kills every WebSocket session and
+    // every MCP SSE stream RequestTimeout seconds (default 35) after it opens —
+    // the 15s keep-alive ticker on those endpoints exists precisely because they
+    // are expected to stay open indefinitely. Skip before installing the token.
+    if (ctx.WebSockets.IsWebSocketRequest || ctx.Request.Path.StartsWithSegments("/mcp"))
+    {
+        await next();
+        return;
+    }
+
     var s = ctx.RequestServices.GetRequiredService<IOptions<DmartSettings>>().Value;
     var timeout = s.RequestTimeout > 0 ? s.RequestTimeout : 35;
     using var cts = CancellationTokenSource.CreateLinkedTokenSource(ctx.RequestAborted);
@@ -2115,8 +2126,22 @@ app.Use(async (ctx, next) =>
     await next();
 });
 
+// SPA URL prefixes ({CXB_URL}, {CAT_URL}). Computed once here because two
+// consumers need to agree on exactly which paths are SPA-served: the
+// response-header middleware (which must not force no-store onto static
+// assets) and the 404-envelope wrapper further down.
+static PathString NormalizedPrefix(string? raw, string fallback)
+{
+    var p = (raw?.Trim().TrimEnd('/') ?? fallback);
+    if (!p.StartsWith('/')) p = "/" + p;
+    return new PathString(p);
+}
+var spaSettings = app.Services.GetRequiredService<IOptions<DmartSettings>>().Value;
+var cxbPath = NormalizedPrefix(spaSettings.CxbUrl, "/cxb");
+var catPath = NormalizedPrefix(spaSettings.CatUrl, "/cat");
+
 // CORS + security headers + OPTIONS preflight
-app.UseDmartResponseHeaders();
+app.UseDmartResponseHeaders(cxbPath, catPath);
 
 // Channel-auth gate (Python parity: utils/middleware.py::ChannelMiddleware).
 // No-op when ENABLE_CHANNEL_AUTH=false. Placed after the response-headers
@@ -2133,16 +2158,6 @@ app.UseChannelAuth();
 // still return a plain 404 for /cxb/* — transforming it would trip the
 // `if (resp.StatusCode == NotFound) return;` skip branches in the CXB tests.
 {
-    var dmartSettings = app.Services.GetRequiredService<Microsoft.Extensions.Options.IOptions<DmartSettings>>().Value;
-    static PathString NormalizedPrefix(string? raw, string fallback)
-    {
-        var p = (raw?.Trim().TrimEnd('/') ?? fallback);
-        if (!p.StartsWith('/')) p = "/" + p;
-        return new PathString(p);
-    }
-    var cxbPath = NormalizedPrefix(dmartSettings.CxbUrl, "/cxb");
-    var catPath = NormalizedPrefix(dmartSettings.CatUrl, "/cat");
-
     app.Use(async (ctx, next) =>
     {
         // Wrap Response.Body in a byte counter so we can distinguish
@@ -2236,13 +2251,23 @@ app.UseCxb();
 app.UseCatalog();
 
 app.UseAuthentication();
+
+// Structured per-request logging. Mirrors Python's set_logging() — logs method,
+// path, status, duration, user. Output is JSON when LOG_FORMAT=json.
+//
+// Placement is load-bearing and must stay exactly here:
+//   * AFTER UseAuthentication  → ctx.User is populated, so the post-next
+//     ctx.ActorOrAnonymous() read still resolves the real shortname.
+//   * BEFORE UseAuthorization / UseRateLimiter → those short-circuit without
+//     ever invoking the rest of the pipeline. Registered after them, this
+//     middleware is the innermost one and never runs for a rejected request,
+//     so every 401/403/429 vanished from the access log — brute-force and
+//     enumeration attempts left zero evidence. MapLevel() maps exactly those
+//     three codes to Warning; that branch was unreachable.
+app.UseRequestLogging();
+
 app.UseAuthorization();
 app.UseRateLimiter();
-
-// Structured per-request logging (after auth so ctx.User is populated).
-// Mirrors Python's set_logging() — logs method, path, status, duration, user.
-// Output is JSON when LOG_FORMAT=json in config.env.
-app.UseRequestLogging();
 
 app.MapOpenApi("/docs/openapi.json");
 app.MapGet("/docs", () => Results.Content("""
@@ -2266,7 +2291,7 @@ app.MapHealth();
 app.MapGroup("/managed").WithTags("Managed").RequireAuthorization().AddEndpointFilter<FailedResponseFilter>().MapManaged();
 app.MapGroup("/public").WithTags("Public").AddEndpointFilter<FailedResponseFilter>().MapPublic();
 app.MapGroup("/user").WithTags("User").AddEndpointFilter<FailedResponseFilter>().MapUser();
-app.MapGroup("/info").WithTags("Info").RequireAuthorization().AddEndpointFilter<FailedResponseFilter>().MapInfo();
+app.MapGroup("/info").WithTags("Info").RequireAuthorization().AddEndpointFilter<FailedResponseFilter>().AddEndpointFilter<GlobalAdminFilter>().MapInfo();
 app.MapGroup("/qr").WithTags("QR").AddEndpointFilter<FailedResponseFilter>().MapQr();
 
 // OAuth 2.1 Authorization Server for MCP clients. Discovery + DCR + the
