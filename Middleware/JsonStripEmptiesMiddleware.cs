@@ -1,4 +1,3 @@
-using System.Text;
 using System.Text.Json;
 using System.Text.Json.Nodes;
 using Dmart.Models.Json;
@@ -34,6 +33,31 @@ namespace Dmart.Middleware;
 // response.
 public static class JsonStripEmptiesMiddleware
 {
+    // Above this size the strip is skipped and the buffer is copied straight
+    // through. Stripping a very large body costs a full JsonNode DOM plus a
+    // second serialized copy, all of it on the LOH — a 30 MB query result cost
+    // hundreds of MB. Responses that big are bulk exports/queries whose consumers
+    // are machines, not the SPA, so the cosmetic empty-key trim isn't worth it.
+    //
+    // CONTRACT NOTE, because the threshold is observable: the wire shape now
+    // depends on response SIZE. The same query at limit=50 and at limit=5000 can
+    // return records that differ structurally — null/empty keys stripped from the
+    // small page, present on the large one. Any client that reads "key absent" as
+    // meaning something (rather than treating absent and empty as equivalent) will
+    // see that flip as a page grows. Clients must treat the two as equivalent;
+    // this trim is cosmetic, never semantic.
+    private const int MaxStripBytes = 1024 * 1024;
+
+    // Matches what JsonNode.ToJsonString() used to build internally for
+    // DmartJsonContext's options: compact output, default (HTML-safe) encoder.
+    // SkipValidation is safe because the token stream comes from an already
+    // parsed JsonNode, so it is well-formed by construction.
+    private static readonly JsonWriterOptions WriterOptions = new()
+    {
+        Indented = false,
+        SkipValidation = true,
+    };
+
     public static IApplicationBuilder UseJsonStripEmpties(this IApplicationBuilder app)
     {
         return app.Use(async (ctx, next) =>
@@ -55,7 +79,7 @@ public static class JsonStripEmptiesMiddleware
                 var contentType = ctx.Response.ContentType ?? "";
                 var isJson = contentType.StartsWith("application/json", StringComparison.OrdinalIgnoreCase);
 
-                if (buffer.Length > 0 && isJson)
+                if (buffer.Length > 0 && buffer.Length <= MaxStripBytes && isJson)
                 {
                     JsonNode? node = null;
                     try { node = await JsonNode.ParseAsync(buffer, cancellationToken: ctx.RequestAborted); }
@@ -64,14 +88,21 @@ public static class JsonStripEmptiesMiddleware
                     if (node is not null)
                     {
                         StripEmpties(node);
-                        var bytes = Encoding.UTF8.GetBytes(
-                            node.ToJsonString(DmartJsonContext.Default.Options));
                         // Let ASP.NET re-infer Content-Length (compression /
                         // chunked may have changed it). Setting to null also
                         // covers the case where the handler set the original
-                        // pre-strip length.
+                        // pre-strip length. Must happen before the first write.
                         ctx.Response.ContentLength = null;
-                        await origBody.WriteAsync(bytes);
+                        // Serialize straight into the response stream. The
+                        // obvious `Encoding.UTF8.GetBytes(node.ToJsonString())`
+                        // materializes the whole body twice more — once as a
+                        // UTF-16 string, once as a byte[] — on top of the
+                        // MemoryStream and the DOM. Utf8JsonWriter writes UTF-8
+                        // through its own pooled buffers instead.
+                        await using (var writer = new Utf8JsonWriter(origBody, WriterOptions))
+                        {
+                            node.WriteTo(writer, DmartJsonContext.Default.Options);
+                        }
                         return;
                     }
 

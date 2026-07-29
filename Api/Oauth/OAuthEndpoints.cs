@@ -198,7 +198,7 @@ public static class OAuthEndpoints
         var p = ReadAuthorizeParams(req.Query);
         var validation = ValidateAuthorizeParams(p, clients);
         if (validation is not null) return validation;
-        return HtmlLoginForm(p, error: null);
+        return HtmlLoginForm(p, clients, error: null);
     }
 
     // ---- /oauth/authorize (POST) — authenticate + issue code ----
@@ -215,14 +215,14 @@ public static class OAuthEndpoints
         var shortname = form["shortname"].ToString();
         var password = form["password"].ToString();
         if (string.IsNullOrEmpty(shortname) || string.IsNullOrEmpty(password))
-            return HtmlLoginForm(p, error: "enter your shortname and password");
+            return HtmlLoginForm(p, clients, error: "enter your shortname and password");
 
         var loginReq = new UserLoginRequest(
             Shortname: shortname, Email: null, Msisdn: null,
             Password: password);
         var result = await users.LoginAsync(loginReq, requestHeaders: null, ct);
         if (!result.IsOk)
-            return HtmlLoginForm(p, error: "invalid credentials");
+            return HtmlLoginForm(p, clients, error: "invalid credentials");
 
         // Issue the authorization code bound to the user + client context.
         var code = codes.Issue(
@@ -423,10 +423,18 @@ public static class OAuthEndpoints
         CodeChallenge: f["code_challenge"].ToString(),
         CodeChallengeMethod: f["code_challenge_method"].ToString());
 
-    // Returns IResult (error page) if params are invalid, null if OK. Follows
-    // the spec: errors visible to the user (bad client_id / redirect_uri) are
-    // shown as a plain page; errors the client can recover from (missing
-    // response_type, bad challenge) are redirected back with `error=`.
+    // Returns IResult (error page) if params are invalid, null if OK. EVERY
+    // failure renders as a plain on-page error — none of them bounce the
+    // browser to the client-supplied redirect_uri.
+    //
+    // RFC 6749 §4.1.2.1 does allow the post-validation errors to be redirected
+    // back with `error=`, and we used to do that. But /oauth/register is open
+    // to anyone: an attacker registers a client whose redirect_uri points at
+    // their own site, then hands a victim an /oauth/authorize link with (say) a
+    // bogus response_type. dmart would 302 them straight off-origin — a fully
+    // functional open redirector on the dmart origin, reached before any login
+    // UI is even shown. The recoverable-error convenience isn't worth that;
+    // MCP clients surface a failed authorize the same way either path.
     private static IResult? ValidateAuthorizeParams(AuthorizeParams p, OAuthClientStore clients)
     {
         if (string.IsNullOrEmpty(p.ClientId))
@@ -436,16 +444,12 @@ public static class OAuthEndpoints
         if (!clients.ValidateRedirectUri(p.ClientId, p.RedirectUri))
             return HtmlPage(400, "Unknown client_id or redirect_uri mismatch.");
 
-        // From here on, errors can safely be redirected back to the client.
         if (p.ResponseType != "code")
-            return Results.Redirect(BuildErrorUrl(p.RedirectUri, "unsupported_response_type",
-                $"response_type must be `code`, got `{p.ResponseType}`", p.State));
+            return HtmlPage(400, $"response_type must be `code`, got `{p.ResponseType}`.");
         if (string.IsNullOrEmpty(p.CodeChallenge))
-            return Results.Redirect(BuildErrorUrl(p.RedirectUri, "invalid_request",
-                "code_challenge is required (PKCE)", p.State));
+            return HtmlPage(400, "code_challenge is required (PKCE).");
         if (p.CodeChallengeMethod is not "S256" and not null and not "")
-            return Results.Redirect(BuildErrorUrl(p.RedirectUri, "invalid_request",
-                "only S256 code_challenge_method is supported", p.State));
+            return HtmlPage(400, "Only S256 code_challenge_method is supported.");
         return null;
     }
 
@@ -474,17 +478,11 @@ public static class OAuthEndpoints
         return sb.ToString();
     }
 
-    private static string BuildErrorUrl(string redirectUri, string code,
-        string description, string? state)
-    {
-        var sb = new StringBuilder(redirectUri);
-        sb.Append(redirectUri.Contains('?') ? '&' : '?');
-        sb.Append("error=").Append(WebUtility.UrlEncode(code));
-        sb.Append("&error_description=").Append(WebUtility.UrlEncode(description));
-        if (!string.IsNullOrEmpty(state))
-            sb.Append("&state=").Append(WebUtility.UrlEncode(state));
-        return sb.ToString();
-    }
+    // NOTE: there is deliberately no BuildErrorUrl() counterpart to
+    // BuildCallbackUrl(). Authorize-time errors never redirect to the
+    // client-supplied redirect_uri — see ValidateAuthorizeParams. The only
+    // redirect this server emits is the success callback above, and it only
+    // happens after credentials have been verified.
 
     // ---- HTML rendering ----
     //
@@ -492,8 +490,21 @@ public static class OAuthEndpoints
     // Honors the X-Forwarded-Proto header implicitly because we only render
     // relative form actions.
 
-    private static IResult HtmlLoginForm(AuthorizeParams p, string? error)
+    private static IResult HtmlLoginForm(AuthorizeParams p, OAuthClientStore clients, string? error)
     {
+        // What the user is actually consenting to. The client_id alone
+        // ("mcp_3f9c1a…") tells a victim nothing, and /oauth/register is open
+        // to anyone — so show the registered client_name AND the host the
+        // authorization code will be delivered to. The name is attacker-
+        // chosen too, but the redirect host is the part that gives a
+        // self-registered phishing client away.
+        var client = string.IsNullOrEmpty(p.ClientId) ? null : clients.Get(p.ClientId);
+        var clientLabel = client?.ClientName is { Length: > 0 } name
+            ? name
+            : p.ClientId ?? "client";
+        var redirectHost = Uri.TryCreate(p.RedirectUri, UriKind.Absolute, out var ru)
+            ? ru.Host : null;
+
         var html = new StringBuilder();
         html.Append("""
             <!doctype html>
@@ -526,8 +537,15 @@ public static class OAuthEndpoints
               <h1>Authorize MCP client</h1>
             """);
         html.Append("<p class=\"sub\">Sign in to let <span class=\"client\">");
-        html.Append(HtmlEncode(p.ClientId ?? "client"));
-        html.Append("</span> access dmart as you.</p>");
+        html.Append(HtmlEncode(clientLabel));
+        html.Append("</span> access dmart as you.");
+        if (!string.IsNullOrEmpty(redirectHost))
+        {
+            html.Append(" The authorization code will be sent to <span class=\"client\">");
+            html.Append(HtmlEncode(redirectHost));
+            html.Append("</span> — only continue if you recognize both.");
+        }
+        html.Append("</p>");
 
         if (!string.IsNullOrEmpty(error))
         {

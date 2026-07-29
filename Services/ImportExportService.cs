@@ -325,7 +325,15 @@ public sealed class ImportExportService(
     {
         // AttachmentRepository keys attachments by (space, parent_subpath/parent_sn, att_sn).
         // parent.Subpath is the parent's OWN subpath; its children live at subpath "/parent/child".
-        var attList = await attachments.ListForParentAsync(spaceName, parent.Subpath, parent.Shortname, ct);
+        //
+        // ...WithMedia is REQUIRED here. Plain ListForParentAsync returns the
+        // media-less projection (NULL::bytea) because the listing/query paths only
+        // ever render metadata — but export is the one consumer that writes the raw
+        // bytes into the zip below. With the metadata-only projection att.Media is
+        // always null, the media branch never fires, and every export silently
+        // ships attachment metadata with no file behind it.
+        var attList = await attachments.ListForParentWithMediaAsync(
+            spaceName, parent.Subpath, parent.Shortname, ct);
         foreach (var att in attList)
         {
             var attRt = JsonbHelpers.EnumMember(att.ResourceType);

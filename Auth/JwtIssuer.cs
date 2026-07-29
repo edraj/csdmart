@@ -92,8 +92,19 @@ public sealed class JwtIssuer(IOptions<DmartSettings> settings)
         // Verify signature.
         var signingInput = $"{parts[0]}.{parts[1]}";
         using var hmac = new HMACSHA256(Encoding.UTF8.GetBytes(_s.JwtSecret));
-        var expectedSig = Base64UrlEncode(hmac.ComputeHash(Encoding.UTF8.GetBytes(signingInput)));
-        if (expectedSig != parts[2]) return null;
+        var expectedSig = hmac.ComputeHash(Encoding.UTF8.GetBytes(signingInput));
+        // Constant-time compare: an ordinary string `!=` bails at the first
+        // differing character, so how long the rejection takes leaks how many
+        // leading bytes of a forged signature were right — enough to forge a
+        // signature byte-by-byte given enough samples. FixedTimeEquals needs
+        // equal lengths, so the length check comes first (signature length is
+        // fixed and public, so leaking it costs nothing).
+        byte[] providedSig;
+        try { providedSig = Base64UrlDecode(parts[2]); }
+        catch (FormatException) { return null; }
+        if (providedSig.Length != expectedSig.Length
+            || !CryptographicOperations.FixedTimeEquals(providedSig, expectedSig))
+            return null;
 
         // Decode payload.
         var payloadJson = Encoding.UTF8.GetString(Base64UrlDecode(parts[1]));

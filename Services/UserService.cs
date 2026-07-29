@@ -1,3 +1,4 @@
+using System.Security.Cryptography;
 using System.Text.Json;
 using System.Text.RegularExpressions;
 using Dmart.Auth;
@@ -36,6 +37,27 @@ public sealed class UserService(
     private const string PasswordPattern =
         "^(?=.*[0-9\u0660-\u0669])(?=.*[A-Z\u0621-\u064a])" +
         "[a-zA-Z\u0621-\u064a0-9\u0660-\u0669 _#@%*!?$^&()+={}\\[\\]~|;:,.<>/-]{8,64}$";
+
+    // Decoy hash for LoginAsync's miss paths. An Argon2id verify at
+    // m=102400,t=3,p=8 costs 100-300ms, so a login that rejects in ~1ms
+    // because the identifier resolved to nothing (or to a row with no
+    // password) tells an unauthenticated caller which identifiers exist \u2014
+    // purely from the clock, no matter how uniform the error body is.
+    // Verifying against this throwaway makes the miss path pay what the hit
+    // path pays. Hashed once at class init over a random password nobody
+    // holds, so the verify can never succeed; its result is always discarded.
+    //
+    // SCOPE, so nobody reads this as "enumeration is solved": it closes the
+    // clock for accounts that are neither locked nor deactivated. A locked
+    // account still answers USER_ACCOUNT_LOCKED and a deactivated one its own
+    // code, both BEFORE any hashing — so for those two states existence is
+    // disclosed by the response body outright, and the timing follows. Closing
+    // that means collapsing those codes into the generic
+    // INVALID_USERNAME_AND_PASS, which diverges from Python and from what the
+    // cxb login UI shows the user ("your account is locked" is the message a
+    // legitimate locked-out user needs), so it is deliberately left open.
+    private static readonly string DecoyHash =
+        new PasswordHasher().Hash(Convert.ToBase64String(RandomNumberGenerator.GetBytes(32)));
 
     // Python's /user/create takes a core.Record body and returns a Record with
     // {access_token, type} — i.e. it auto-logs-in the new user. This mirrors
@@ -292,16 +314,37 @@ public sealed class UserService(
     {
         var user = await ResolveUserAsync(req, ct);
         if (user is null)
+        {
+            // Deliberate constant-work path — see DecoyHash. The body already
+            // matches the wrong-password response; this makes the timing match
+            // too, so "no such user" isn't distinguishable from "bad password".
+            _ = hasher.Verify(req.Password ?? string.Empty, DecoyHash);
             return Result<(string, string, User)>.Fail(
                 InternalErrorCode.INVALID_USERNAME_AND_PASS, "Invalid username or password", ErrorTypes.Auth);
+        }
 
         var (attemptLocked, unlockedUser) = await RejectIfAttemptLockedAsync(user, ct);
         if (attemptLocked is { } al) return al;
         user = unlockedUser; // possibly auto-unlocked after the cool-down
         if (RejectIfNotActive(user) is { } inactiveReject) return inactiveReject;
 
-        if (string.IsNullOrEmpty(user.Password) || req.Password is null
-            || !hasher.Verify(req.Password, user.Password))
+        // A row with no password (OTP-only / OAuth-provisioned account), or a
+        // request that omitted one, short-circuits past hasher.Verify and so
+        // would reject in ~1ms — the same clock leak as the not-found branch,
+        // just over account state instead of existence. Burn the decoy on that
+        // leg too; see DecoyHash.
+        bool passwordOk;
+        if (string.IsNullOrEmpty(user.Password) || req.Password is null)
+        {
+            _ = hasher.Verify(req.Password ?? string.Empty, DecoyHash);
+            passwordOk = false;
+        }
+        else
+        {
+            passwordOk = hasher.Verify(req.Password, user.Password);
+        }
+
+        if (!passwordOk)
         {
             var locked = await HandleFailedLoginAttemptAsync(user, ct);
             return locked

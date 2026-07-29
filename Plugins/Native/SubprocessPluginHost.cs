@@ -41,6 +41,13 @@ internal sealed class SubprocessPluginHost : IDisposable
         EnsureRunning();
     }
 
+    // Upper bound on one request→response exchange. The read below happens
+    // under _lock, which EVERY hook dispatch and plugin API call must take:
+    // a plugin that stops writing without exiting would otherwise wedge that
+    // lock forever and take the whole host down with it. Generous enough for
+    // a slow-but-honest plugin, short enough that a wedged one is a blip.
+    private static readonly TimeSpan ExchangeTimeout = TimeSpan.FromSeconds(30);
+
     public string SendAndReceive(string jsonLine)
     {
         lock (_lock)
@@ -52,10 +59,22 @@ internal sealed class SubprocessPluginHost : IDisposable
                     EnsureRunning();
                     _stdin!.WriteLine(jsonLine);
                     _stdin.Flush();
-                    var response = _stdout!.ReadLine();
+                    var response = ReadLineWithTimeout(_stdout!);
                     if (response is not null) return response;
                     // null = process died, retry
                     Kill();
+                }
+                catch (TimeoutException)
+                {
+                    // The plugin accepted the request but never answered. Kill
+                    // it so EnsureRunning respawns a fresh process on the next
+                    // call, and fail THIS call instead of retrying — a retry
+                    // would re-deliver a request the plugin may already have
+                    // acted on.
+                    Console.Error.WriteLine(
+                        $"SUBPROCESS_PLUGIN_TIMEOUT: {Shortname} no response within {ExchangeTimeout.TotalSeconds:0}s; killing");
+                    Kill();
+                    return "{\"status\":\"error\",\"message\":\"plugin process unresponsive\"}";
                 }
                 catch (Exception ex)
                 {
@@ -66,6 +85,21 @@ internal sealed class SubprocessPluginHost : IDisposable
             }
             return "{\"status\":\"error\",\"message\":\"plugin process unresponsive\"}";
         }
+    }
+
+    // Bounded ReadLine: StreamReader has no read timeout, so run the blocking
+    // read on the thread pool and abandon it after ExchangeTimeout (throws
+    // TimeoutException). The abandoned read swallows its own exception — Kill()
+    // disposes the stream out from under it — so it can never resurface as an
+    // unobserved task fault.
+    private static string? ReadLineWithTimeout(StreamReader stdout)
+    {
+        var read = Task.Run(() =>
+        {
+            try { return stdout.ReadLine(); }
+            catch { return null; }
+        });
+        return read.WaitAsync(ExchangeTimeout).GetAwaiter().GetResult();
     }
 
     private void EnsureRunning()

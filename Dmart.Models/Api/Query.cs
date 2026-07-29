@@ -24,6 +24,10 @@ public sealed record Query
     public List<string> FilterSchemaNames { get; init; } = new() { "meta" };
     public List<string>? FilterShortnames { get; init; } = new();
     public List<string>? FilterTags { get; init; }
+    // Length is bounded by the parser, not here: QueryService rewrites Search
+    // (join narrowing terms, permission filter-fields-values) before it reaches
+    // SQL, so a cap on the wire value alone would not cover what actually gets
+    // parsed. See SearchExpressionParser.MaxExpressionLength.
     public string? Search { get; init; }
     public DateTime? FromDate { get; init; }
     public DateTime? ToDate { get; init; }

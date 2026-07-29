@@ -81,7 +81,36 @@ public static class RequestLoggingMiddleware
 
         log.Log(MapLevel(status, clientAborted: false),
             "HTTP {Method} {Path} → {Status} ({Duration}ms) user={User} cid={Cid}",
-            ctx.Request.Method, ctx.Request.Path.Value, status, durationMs, user, correlationId);
+            ctx.Request.Method, SanitizeForLog(ctx.Request.Path.Value), status, durationMs, user, correlationId);
+    }
+
+    // Request.Path.Value is the DECODED path, so `GET /a%0d%0ainfo:...` arrives
+    // here containing a real CRLF. The default console/simple formatters are
+    // line-oriented, so writing it verbatim lets a caller forge whole log lines
+    // (and defeat grep-based triage). Replace every control character with an
+    // escaped form; the JSON sink path is unaffected because Utf8JsonWriter
+    // already escapes them, but this keeps one policy for both.
+    //
+    // Returns the input unchanged (no allocation) when there is nothing to
+    // escape, which is the case for essentially all real traffic.
+    internal static string SanitizeForLog(string? value)
+    {
+        if (string.IsNullOrEmpty(value)) return value ?? "";
+
+        var needsEscaping = false;
+        foreach (var c in value)
+        {
+            if (char.IsControl(c)) { needsEscaping = true; break; }
+        }
+        if (!needsEscaping) return value;
+
+        var sb = new StringBuilder(value.Length + 8);
+        foreach (var c in value)
+        {
+            if (char.IsControl(c)) sb.Append("\\u").Append(((int)c).ToString("x4"));
+            else sb.Append(c);
+        }
+        return sb.ToString();
     }
 
     // Maps a response to its log level — shared by the lightweight console
@@ -101,13 +130,37 @@ public static class RequestLoggingMiddleware
     private static async Task LogWithBodyCapture(HttpContext ctx, LogSink sink, Func<Task> next)
     {
         // --- capture request body (JSON only) ---
+        //
+        // Re-reading the body means buffering it, and EnableBuffering()'s
+        // defaults are a 30 KB memory threshold with an UNBOUNDED disk spill —
+        // so a 50 MB upload (Kestrel's cap) got written to a temp file purely
+        // so we could log its first 32 KB.
+        //
+        // A bufferLimit can't bound that: FileBufferingReadStream throws once
+        // the *handler* reads past the limit, so capping it at MaxBodyBytes
+        // would break every legitimate upload bigger than 32 KB. Instead skip
+        // the capture entirely when Content-Length already says the body
+        // exceeds what we would log, and pin the memory threshold to exactly
+        // what we read. Chunked bodies (no Content-Length) still buffer, but
+        // Kestrel's MaxRequestBodySize bounds them.
         object? requestBody = new Dictionary<string, object?>();
         if (HasJsonContent(ctx.Request.ContentType))
         {
-            ctx.Request.EnableBuffering();
-            var bodyBytes = await ReadBodyAsync(ctx.Request.Body, MaxBodyBytes, ctx.RequestAborted);
-            ctx.Request.Body.Position = 0;
-            requestBody = ParseJsonOrRaw(bodyBytes);
+            var declaredLength = ctx.Request.ContentLength;
+            if (declaredLength > MaxBodyBytes)
+            {
+                requestBody = new Dictionary<string, object?>
+                {
+                    ["_unparsed"] = $"{declaredLength} bytes",
+                };
+            }
+            else
+            {
+                ctx.Request.EnableBuffering(bufferThreshold: MaxBodyBytes);
+                var bodyBytes = await ReadBodyAsync(ctx.Request.Body, MaxBodyBytes, ctx.RequestAborted);
+                ctx.Request.Body.Position = 0;
+                requestBody = ParseJsonOrRaw(bodyBytes);
+            }
         }
 
         // --- intercept response body so we can capture the first MaxBodyBytes
@@ -225,11 +278,15 @@ public static class RequestLoggingMiddleware
         }
         catch
         {
-            // Not valid JSON (or truncated mid-stream) — log it as a string
-            // so the event still surfaces; easier to debug than a silent drop.
+            // Not valid JSON (or truncated mid-stream). NEVER echo the bytes:
+            // the redaction pass only walks parsed JSON keys, so a raw dump
+            // bypasses RedactedBodyFields entirely. Truncation at MaxBodyBytes
+            // *guarantees* a parse failure, which made every request larger
+            // than the cap — e.g. a bulk user-create — log its plaintext
+            // passwords. Record only the size so the event still surfaces.
             return new Dictionary<string, object?>
             {
-                ["_raw"] = Encoding.UTF8.GetString(bytes),
+                ["_unparsed"] = $"{bytes.Length} bytes",
             };
         }
     }

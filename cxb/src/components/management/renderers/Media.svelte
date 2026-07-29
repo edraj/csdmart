@@ -1,6 +1,7 @@
 <script lang="ts">
     import {ResourceType} from "@edraj/tsdmart";
     import {marked} from "marked";
+    import DOMPurify from "dompurify";
     import Prism from "@/components/Prism.svelte";
 
     export let attributes: any = {};
@@ -54,7 +55,9 @@
 {:else if ["markdown", "html", "text"].includes(content_type)}
   <div class="w-full h-full">
     <article class="prose">
-      {@html marked(body)}
+      <!-- marked does NOT strip HTML, and the body is server-supplied
+           attachment content — sanitize before injecting. -->
+      {@html DOMPurify.sanitize(marked(body) as string)}
     </article>
   </div>
 {:else}

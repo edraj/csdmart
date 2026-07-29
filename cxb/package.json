@@ -28,6 +28,7 @@
     "@roxi/routify": "^3.6.4",
     "@tailwindcss/vite": "^4.2.4",
     "@zerodevx/svelte-toast": "^0.9.6",
+    "dompurify": "^3.4.11",
     "flowbite": "^4.0.1",
     "flowbite-svelte": "^1.33.1",
     "flowbite-svelte-icons": "^3.1.0",
