@@ -25,7 +25,8 @@ namespace Dmart.Config;
 public static class DotEnv
 {
     // Standard Python-compatible lookup order. Returns the first file that
-    // exists AND passes the perms guard (Unix only — see AcceptablePerms),
+    // this process can actually open AND that passes the perms guard (Unix
+    // only — see IsUsable / AcceptablePerms),
     // or null if none do. Also honors DMART_ENV as an alias of BACKEND_ENV
     // — some dmart deployments use the former.
     public static string? FindConfigFile()
@@ -33,14 +34,13 @@ public static class DotEnv
         var backendEnv = Environment.GetEnvironmentVariable("BACKEND_ENV")
                       ?? Environment.GetEnvironmentVariable("DMART_ENV");
 
-        // 1. Explicit path via env var — only accepted if the file actually
-        //    exists. Python's behavior is "fall through" when the path is
-        //    missing, and we copy that so a typo doesn't silently disable
+        // 1. Explicit path via env var — only accepted if the file is there
+        //    and readable. Python's behavior is "fall through" when the path
+        //    is missing, and we copy that so a typo doesn't silently disable
         //    the other fallbacks. This is the dev workflow's escape hatch:
         //    set BACKEND_ENV=./config.env to point at a repo-local file
         //    without needing to drop one in ~/.dmart or /etc/dmart.
-        if (!string.IsNullOrEmpty(backendEnv) && File.Exists(backendEnv)
-            && AcceptablePerms(backendEnv))
+        if (!string.IsNullOrEmpty(backendEnv) && IsUsable(backendEnv))
             return backendEnv;
 
         // 2. ~/.dmart/config.env (per-user install via `dmart init`). Wins
@@ -51,7 +51,7 @@ public static class DotEnv
         if (!string.IsNullOrEmpty(home))
         {
             var homeConfig = Path.Combine(home, ".dmart", "config.env");
-            if (File.Exists(homeConfig) && AcceptablePerms(homeConfig)) return homeConfig;
+            if (IsUsable(homeConfig)) return homeConfig;
         }
 
         // 3. /etc/dmart/config.env (system-wide RPM/DEB install). Lets the
@@ -65,9 +65,58 @@ public static class DotEnv
         // we'd rather not ship. Set BACKEND_ENV explicitly for repo-local
         // dev workflows.
         const string SystemConfig = "/etc/dmart/config.env";
-        if (File.Exists(SystemConfig) && AcceptablePerms(SystemConfig)) return SystemConfig;
+        if (IsUsable(SystemConfig)) return SystemConfig;
 
         return null;
+    }
+
+    // A candidate counts only if this process can actually open it, and then
+    // only if its permissions clear the secrets guard below.
+    //
+    // Opening — rather than File.Exists() — is the whole point. File.Exists()
+    // answers "false" for both "not there" and "there, and you may not look
+    // at it", and the second is an operator error. The usual culprit isn't
+    // the file's own mode but a parent directory the process can't search: a
+    // 0750 root:root /etc/dmart locks out the dmart service user however
+    // carefully config.env itself is chowned root:dmart 0640. Swallowed, that
+    // EACCES is indistinguishable from having no config at all — the server
+    // boots on built-in defaults and the only breadcrumb is a downstream
+    // "JwtSecret is the built-in placeholder" error pointing nowhere near the
+    // real cause. So probe, and say so.
+    //
+    // Opening also closes the mirror-image hole: a file we can stat but not
+    // read (0600 root:root, parent searchable) used to satisfy File.Exists(),
+    // get returned from here, and then throw out of Parse()'s ReadAllLines.
+    //
+    // Absent files stay silent — a dev checkout with no config.env anywhere
+    // is normal and must not warn.
+    private static bool IsUsable(string path)
+    {
+        // A directory also throws UnauthorizedAccessException from OpenRead on
+        // Unix; screen it out so it can't trigger the permissions message.
+        if (Directory.Exists(path)) return false;
+
+        try
+        {
+            using var probe = File.OpenRead(path);
+        }
+        catch (UnauthorizedAccessException)
+        {
+            Console.Error.WriteLine(
+                $"warning: {path} exists but cannot be opened (permission denied) — skipping it. " +
+                $"The running user needs read access to the file AND search access to every " +
+                $"parent directory; for a system install that means " +
+                $"`chown root:dmart /etc/dmart && chmod 0750 /etc/dmart`.");
+            return false;
+        }
+        catch
+        {
+            // Absent, a dangling symlink, an unrelated IO error — nothing we
+            // could say here would help.
+            return false;
+        }
+
+        return AcceptablePerms(path);
     }
 
     // config.env carries JWT_SECRET, DATABASE_PASSWORD (the admin password

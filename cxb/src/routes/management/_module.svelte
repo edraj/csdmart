@@ -49,27 +49,47 @@
         Dmart.setToken(storedToken);
     }
 
-    // Boot session probe: /info/me returns 200 with {authenticated: bool}
-    // for both signed-in and anonymous callers (no 401 noise on cold loads).
+    // Boot session probe: GET /user/profile is the authoritative session
+    // check — it returns the caller's user record (and the SDK caches roles /
+    // permissions in localStorage) when signed in, and fails otherwise.
     // Mid-session expiration is still detected by the response interceptor
     // above when a regular API call returns 401.
-    const profilePromise = dmartAxios.get("info/me").then(async (r) => {
-        const authed = r.data?.attributes?.authenticated === true;
-        if (!authed) {
-            // Clean up any stale local state so the Login form shows.
-            if (typeof localStorage !== "undefined") {
-                localStorage.removeItem("authToken");
-                localStorage.removeItem("user");
-                localStorage.removeItem("permissions");
-                localStorage.removeItem("roles");
-            }
-            user.set({signedin: false, locale: $user?.locale});
+    //
+    // No token means signed out, and the browser already knows that — so
+    // answer locally rather than asking the server. /info/me used to be
+    // AllowAnonymous precisely so a cold load wouldn't paint a 401 in the
+    // console; /user/profile has no such branch, and without this check every
+    // anonymous visit would fire a request whose only possible answer is 401.
+    // It also keeps anonymous callers off the 401 interceptor above, which
+    // reloads the page.
+    const probe = storedToken
+        ? Dmart.getProfile()
+        : Promise.reject(new Error("no stored token"));
+
+    const profilePromise = probe.then((r) => {
+        // Both checks are load-bearing: getProfile REJECTS on a transport or
+        // auth failure, and RESOLVES with a non-success envelope when the
+        // server answered but refused. Dropping either lets one of those two
+        // reach the {:then} branch as if the session were live.
+        if (r?.status !== "success" || !r?.records?.length) {
             throw new Error("not signed in");
         }
         // Authed — fire the spaces fetch (best-effort) and resolve.
-        await Dmart.getProfile()
         getSpaces().catch(() => {});
-        return r.data;
+        return r;
+    }).catch((error) => {
+        // Anonymous or expired session — clean up any stale local state so
+        // the Login form shows. permissions/roles are written by the SDK as a
+        // side effect of getProfile and must go with the rest: stale privilege
+        // data outliving the session is what drives the next user's UI gating.
+        if (typeof localStorage !== "undefined") {
+            localStorage.removeItem("authToken");
+            localStorage.removeItem("user");
+            localStorage.removeItem("permissions");
+            localStorage.removeItem("roles");
+        }
+        user.set({signedin: false, locale: $user?.locale});
+        throw error;
     });
 </script>
 
@@ -83,8 +103,9 @@
          absent and Routify logs "Failed to render index within 5s".
          Render it hidden so the timer is satisfied; the child mounts
          silently and gets revealed once the user signs in. Boot 401s
-         from this early mount are already silenced upstream
-         (info/me probe + per-callsite log gating). -->
+         from this early mount are silenced by per-callsite log gating;
+         the session probe itself no longer contributes one, because it
+         skips the request entirely when there is no stored token. -->
     <div style="display:none"><slot /></div>
 {:then _}
     {#if !$user || !$user.signedin}

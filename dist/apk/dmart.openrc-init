@@ -11,23 +11,43 @@ command_args="serve"
 command_user="dmart:dmart"
 command_background="yes"
 
-# Sourced into the environment of the spawned dmart process. Same file
-# the systemd unit reads from /etc/dmart/config.env — keeping one
-# config source across both service managers is the whole point.
+# dmart finds config.env on its own — the lookup order is
+# $BACKEND_ENV → ~/.dmart/config.env → /etc/dmart/config.env. Name the
+# system file explicitly, exactly as dist/dmart.service does with its
+# Environment=BACKEND_ENV= line, so both service managers agree on one
+# config source instead of leaning on the last fallback.
+#
+# Do NOT dot-source config.env here. dmart only honors shell env vars in
+# the Dmart__Xxx form that AddEnvironmentVariables() reads, so exporting
+# DATABASE_HOST=... accomplishes nothing — it just copies JWT_SECRET and
+# DATABASE_PASSWORD into /proc/<pid>/environ for no benefit.
+export BACKEND_ENV="/etc/dmart/config.env"
+
 output_log="/var/log/dmart/dmart.log"
 error_log="/var/log/dmart/dmart.log"
 pidfile="/run/dmart.pid"
 
 start_pre() {
-	# Sourcing config.env into the supervisor's environment so it
-	# propagates to the child. OpenRC doesn't have systemd's EnvFile=
-	# directive — explicit dot-source is the canonical pattern.
-	if [ -r /etc/dmart/config.env ]; then
-		# shellcheck disable=SC1091
-		. /etc/dmart/config.env
-		export $(grep -v '^#' /etc/dmart/config.env | sed -e 's/=.*//' | tr '\n' ' ')
+	# The daemon runs as dmart:dmart, so it needs *search* permission on
+	# /etc/dmart. A 0750 root:root directory hides config.env no matter how
+	# the file itself is owned, and DotEnv.FindConfigFile() reads the
+	# resulting EACCES as "no config file" — dmart then boots on built-in
+	# defaults and dies on the JWT_SECRET placeholder check. checkpath
+	# corrects owner/mode on paths that already exist, which makes this the
+	# OpenRC stand-in for systemd's StateDirectory= self-heal.
+	checkpath -d -m 0750 -o root:dmart /etc/dmart || return 1
+	checkpath -d -m 0755 -o dmart:dmart /var/log/dmart || return 1
+
+	# Guard before the checkpath -f below, which would otherwise create an
+	# empty config.env and turn a clear "it's missing" into a silent
+	# everything-is-default boot.
+	if [ ! -f "$BACKEND_ENV" ]; then
+		eerror "$BACKEND_ENV is missing."
+		eerror "Seed it with: cp /usr/share/dmart/config.env.sample $BACKEND_ENV"
+		eerror "then set DATABASE_* and JWT_SECRET before starting dmart."
+		return 1
 	fi
-	checkpath -d -m 0755 -o dmart:dmart /var/log/dmart
+	checkpath -f -m 0640 -o root:dmart "$BACKEND_ENV" || return 1
 }
 
 depend() {
