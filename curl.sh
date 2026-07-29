@@ -735,10 +735,13 @@ else
 fi
 
 # ============================================================================
-# 37. Info/me endpoint
+# 37. (was Info/me) — the endpoint is gone, superseded by /user/profile, which
+#     this suite already exercises three times (steps 12, 34 and 47). Rather
+#     than add a fourth duplicate here, the budget moved to step 66b: the
+#     property this replacement actually introduced is that /info now demands
+#     super_admin, and that needs the limited user, which doesn't exist yet at
+#     this point in the run.
 # ============================================================================
-RESP=$(curl -s -H "$AUTH_HEADER" "$API_URL/info/me")
-expect_success "Info/me:" "$RESP"
 
 # ============================================================================
 # 38. Info/settings endpoint
@@ -1243,6 +1246,26 @@ if [ -n "$LTOKEN" ]; then
         ok
     else
         nope "spaces: $LSPACES"
+    fi
+else
+    nope "limited user login failed"
+fi
+
+# 66b. Limited user: /info is super_admin-only
+#
+# The whole /info group sits behind GlobalAdminFilter, so an authenticated but
+# non-super-admin caller must be refused. Asserted end-to-end here because the
+# gate is group-level wiring in Program.cs — a future route added to MapInfo
+# inherits it silently, and this step is what would notice if the group-level
+# filter were ever dropped. 401 (not 403) is the codebase's mapping for
+# NOT_ALLOWED — see FailedResponseFilter.
+printf '%-45s' "Limited user: /info is admin-only:" >&2
+if [ -n "$LTOKEN" ]; then
+    LINFO=$(curl -s -o /dev/null -w '%{http_code}' -H "$LAUTH" "$API_URL/info/manifest")
+    if [ "$LINFO" = "401" ]; then
+        ok
+    else
+        nope "expected 401 for non-admin on /info/manifest, got $LINFO"
     fi
 else
     nope "limited user login failed"

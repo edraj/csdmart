@@ -65,15 +65,31 @@
       return;
     }
 
-    // /info/me is anonymous-allowed and returns 200 with
-    // {authenticated: bool} regardless of auth state, so we don't pollute
-    // the console with a 401 on cold loads. Mid-session expiration is
-    // still detected by the response interceptor above on real API calls.
-    try {
-      const r = await dmartAxios.get("info/me");
-      const authed = r.data?.attributes?.authenticated === true;
+    // Session probe. /info/me is gone (the whole /info group is super_admin
+    // now), so this asks /user/profile — which, unlike /info/me, requires
+    // authentication. That loses the "200 with authenticated:false for
+    // anonymous callers" property the old probe was chosen for, so answer the
+    // anonymous case locally instead: no stored token means signed out, and
+    // there is nothing to ask the server about. Keeps cold loads free of the
+    // 401 the old comment cared about, and skips a round-trip.
+    //
+    // With a token, getProfile is strictly more useful than the old probe: it
+    // both validates the session AND repopulates the roles/permissions
+    // localStorage that syncRolesFromStorage/syncPermissionsFromStorage read
+    // (tsdmart writes them as a side effect). A failure here means the token
+    // is expired or revoked, which is exactly the signed-out path.
+    const storedToken =
+      typeof localStorage !== "undefined" && localStorage.getItem("authToken");
+    if (!storedToken) {
+      await signout();
+      redirectTo("/login");
+      return;
+    }
 
-      if (!authed) {
+    try {
+      const r = await Dmart.getProfile();
+
+      if (r?.status !== "success" || !r?.records?.length) {
         await signout();
         redirectTo("/login");
         return;
@@ -97,7 +113,11 @@
         redirectTo("/dashboard");
       }
     } catch (error: any) {
-      // /info/me itself failed (network, server down). Treat as signed-out.
+      // Expired/revoked token, or the server is unreachable. Both end the
+      // same way for a route that requires a session: sign out and show the
+      // login form. (A network blip therefore costs the user their local
+      // session — same as before this migration, when a failed /info/me was
+      // treated identically.)
       console.warn("Session probe failed:", error?.message ?? error);
       await signout();
       redirectTo("/login");

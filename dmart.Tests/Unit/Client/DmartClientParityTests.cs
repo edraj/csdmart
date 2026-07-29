@@ -171,15 +171,6 @@ public class DmartClientParityTests
     }
 
     [Fact]
-    public async Task GetInfoMeAsync_Hits_Info_Me()
-    {
-        var (client, handler) = Make();
-        await client.GetInfoMeAsync();
-        handler.LastRequest!.Method.ShouldBe(HttpMethod.Get);
-        handler.LastRequest.RequestUri!.AbsolutePath.ShouldBe("/info/me");
-    }
-
-    [Fact]
     public async Task AppleMobileLoginAsync_Posts_Token_And_Stores_Bearer()
     {
         var (client, handler) = Make(_ => Task.FromResult(Ok(
