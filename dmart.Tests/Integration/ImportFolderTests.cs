@@ -359,8 +359,8 @@ public class ImportFolderTests : IClassFixture<DmartFactory>
     }
 
     // Same batched-flush path as the test above, but on the DEFAULT (non --fast)
-    // session, so it runs without the superuser/pg_session_replication_role
-    // privilege that gates the --fast variant. Both sessions share the scratch
+    // session, so it runs without the session_replication_role privilege that
+    // gates the --fast variant. Both sessions share the scratch
     // TEMP tables, and this is the property that regressed the per-batch
     // CREATE/DROP into a create-once-per-session table:
     //

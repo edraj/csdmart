@@ -61,8 +61,11 @@ public sealed class Db(IOptions<DmartSettings> settings)
     // persists across the per-batch commits and is re-applied after a reconnect.
     //
     // Hard-fails with a clear InvalidOperationException if the caller's DB
-    // role can't set session_replication_role (requires superuser OR the
-    // pg_session_replication_role predefined role since PG 14). No silent
+    // role can't set session_replication_role. That GUC is superuser-context,
+    // so the role needs either superuser or — on PG 15+, which added
+    // per-parameter grants — `GRANT SET ON PARAMETER session_replication_role`.
+    // (There is no `pg_session_replication_role` predefined role; PostgreSQL
+    // has never shipped one, so don't send operators looking for it.) No silent
     // fallback — the operator explicitly opted into `--fast`.
     public async Task<FastImportSession> BeginFastImportSessionAsync(CancellationToken ct = default)
     {
@@ -133,9 +136,16 @@ public sealed class Db(IOptions<DmartSettings> settings)
             catch (PostgresException ex)
             {
                 await _conn.DisposeAsync();
+                // Actionable on purpose: the fix is one GRANT, but only if the
+                // operator is told the right one. session_replication_role is a
+                // superuser-context GUC, and PG 15+ can delegate exactly it via
+                // a per-parameter grant.
                 throw new InvalidOperationException(
-                    "dmart import --fast requires the DB role to be superuser or hold "
-                    + $"pg_session_replication_role; SET session_replication_role failed: {ex.MessageText}",
+                    "dmart import --fast could not SET session_replication_role: "
+                    + $"{ex.MessageText}. Grant the privilege as a superuser with "
+                    + "`GRANT SET ON PARAMETER session_replication_role TO <role>;` "
+                    + "(PostgreSQL 15+), or run the import as a superuser. Note there is no "
+                    + "`pg_session_replication_role` predefined role to grant.",
                     ex);
             }
             catch
