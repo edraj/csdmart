@@ -20,6 +20,7 @@ namespace Dmart.DataAdapters.Sql;
 public sealed class Db(IOptions<DmartSettings> settings)
 {
     private readonly string? _conn = BuildConnectionString(settings.Value);
+    private readonly string? _importConn = BuildImportConnectionString(settings.Value);
 
     public bool IsConfigured => !string.IsNullOrEmpty(_conn);
 
@@ -28,6 +29,18 @@ public sealed class Db(IOptions<DmartSettings> settings)
         if (string.IsNullOrEmpty(_conn))
             throw new InvalidOperationException("Dmart:PostgresConnection not configured");
         var c = new NpgsqlConnection(_conn);
+        await c.OpenAsync(ct);
+        return c;
+    }
+
+    // Connection used by the bulk-import sessions below. Identical to the app
+    // connection except the command timeout is lifted — see
+    // BuildImportConnectionString for why that matters.
+    private async Task<NpgsqlConnection> OpenImportAsync(CancellationToken ct)
+    {
+        if (string.IsNullOrEmpty(_importConn))
+            throw new InvalidOperationException("Dmart:PostgresConnection not configured");
+        var c = new NpgsqlConnection(_importConn);
         await c.OpenAsync(ct);
         return c;
     }
@@ -83,6 +96,12 @@ public sealed class Db(IOptions<DmartSettings> settings)
         private NpgsqlTransaction _tx = null!;
         private bool _success;
 
+        // Per-connection setup the caller depends on, re-run verbatim whenever
+        // this session gets a fresh connection or a fresh transaction. The
+        // import uses it for its scratch TEMP tables, which die with their
+        // session (reconnect) and are undone by a rollback (transaction reset).
+        private Func<NpgsqlConnection, CancellationToken, Task>? _onConnect;
+
         internal FastImportSession(Db db, bool bypassConstraints)
         {
             _db = db;
@@ -102,7 +121,7 @@ public sealed class Db(IOptions<DmartSettings> settings)
 
         internal async Task OpenAsync(CancellationToken ct)
         {
-            _conn = await _db.OpenAsync(ct);
+            _conn = await _db.OpenImportAsync(ct);
             try
             {
                 if (_bypassConstraints) await SetReplicaRoleAsync(_conn, ct);
@@ -128,6 +147,18 @@ public sealed class Db(IOptions<DmartSettings> settings)
 
         public void MarkSuccess() => _success = true;
 
+        // Register per-connection setup and run it once on the current
+        // connection. `init` MUST be idempotent: it re-runs after every
+        // reconnect (a fresh backend has none of the old session state) and
+        // after every transaction reset (a rollback undoes anything the
+        // initializer created). Call once, right after the session opens.
+        public async Task InitConnectionAsync(
+            Func<NpgsqlConnection, CancellationToken, Task> init, CancellationToken ct)
+        {
+            _onConnect = init;
+            await init(_conn, ct);
+        }
+
         // Run one batch as its own durable unit: execute `body` in the current
         // transaction, COMMIT it, then open a fresh transaction for the next
         // batch. On a TRANSPORT-level failure (connection reset, socket/IO
@@ -152,6 +183,29 @@ public sealed class Db(IOptions<DmartSettings> settings)
                     _tx = await _conn.BeginTransactionAsync(ct);
                     return result;
                 }
+                // A command timeout is NOT retried here. Replaying the same
+                // rows takes the same too-long time, so the old behaviour was
+                // to spend five timeouts' worth of wall-clock and then kill the
+                // shard anyway. Hand it straight to the bisecting overload,
+                // which halves the work instead — but leave the session usable
+                // first: a cancelled statement leaves the transaction aborted
+                // (every later command fails 25P02), and if Npgsql couldn't
+                // resync the cancel the connection is gone too.
+                catch (Exception ex) when (IsTimeout(ex) && !ct.IsCancellationRequested)
+                {
+                    try
+                    {
+                        if (_conn.State == System.Data.ConnectionState.Open) await ResetTransactionAsync(ct);
+                        else                                                 await ReconnectAsync(ct);
+                    }
+                    catch
+                    {
+                        // Cleanup on a half-dead connection — a fresh one is
+                        // the only remaining way to leave the session usable.
+                        try { await ReconnectAsync(ct); } catch { /* rethrow below carries the real cause */ }
+                    }
+                    throw;
+                }
                 // Retry on either an explicitly transient exception OR a dead
                 // connection (State != Open). The latter catches the case where
                 // a prior reconnect's connection later broke and Npgsql surfaces
@@ -175,15 +229,60 @@ public sealed class Db(IOptions<DmartSettings> settings)
             }
         }
 
+        // Row-oriented RunBatchAsync that BISECTS on timeout instead of giving
+        // up. Plain RunBatchAsync replays the identical body on every attempt,
+        // which is right for a dropped connection (replay succeeds on a healthy
+        // one) but futile for a batch that is simply too slow to finish inside
+        // the command timeout — there, five attempts fail identically and take
+        // the whole shard down with them. Splitting the rows halves the server
+        // work per attempt, and each half commits as its own durable batch.
+        //
+        // Only reachable when a command timeout is actually in force: the
+        // import's own connection string sets none (BuildImportConnectionString),
+        // so this is the safety net for an operator-supplied "Command Timeout"
+        // or a server-side statement_timeout.
+        //
+        // `body` must tolerate replay — same contract as RunBatchAsync — and
+        // `combine` folds two halves' stats into one. Deltas are returned, not
+        // applied, so the caller still applies them exactly once.
+        public async Task<T> RunBatchAsync<TRow, T>(
+            List<TRow> rows,
+            Func<NpgsqlConnection, List<TRow>, CancellationToken, Task<T>> body,
+            Func<T, T, T> combine,
+            ILogger? log, CancellationToken ct)
+        {
+            try
+            {
+                return await RunBatchAsync((c, t) => body(c, rows, t), log, ct);
+            }
+            catch (Exception ex) when (rows.Count > 1 && IsTimeout(ex) && !ct.IsCancellationRequested)
+            {
+                var half = rows.Count / 2;
+                log?.LogWarning(ex,
+                    "import: batch of {Count} exhausted its retries on a command timeout; "
+                    + "splitting into {Left}+{Right} and retrying each half",
+                    rows.Count, half, rows.Count - half);
+                // Recursive, so a batch that is still too slow keeps halving
+                // until it fits or reaches a single row (at which point the
+                // guard above stops and the real error propagates).
+                var left = await RunBatchAsync(rows.GetRange(0, half), body, combine, log, ct);
+                var right = await RunBatchAsync(rows.GetRange(half, rows.Count - half), body, combine, log, ct);
+                return combine(left, right);
+            }
+        }
+
         // Replace a dead connection with a fresh one in replica mode + open tx.
         // The old tx/conn are disposed best-effort — they're already broken.
         private async Task ReconnectAsync(CancellationToken ct)
         {
             try { await _tx.DisposeAsync(); }   catch { /* already broken */ }
             try { await _conn.DisposeAsync(); } catch { /* already broken */ }
-            _conn = await _db.OpenAsync(ct);
+            _conn = await _db.OpenImportAsync(ct);
             if (_bypassConstraints) await SetReplicaRoleAsync(_conn, ct);
             _tx = await _conn.BeginTransactionAsync(ct);
+            // The old backend's session state (TEMP tables) died with it —
+            // rebuild it before the caller replays its batch against it.
+            if (_onConnect is not null) await _onConnect(_conn, ct);
         }
 
         // Recover from a deterministically-aborted transaction (e.g. an
@@ -195,6 +294,10 @@ public sealed class Db(IOptions<DmartSettings> settings)
             try { await _tx.RollbackAsync(ct); } catch { /* already aborted server-side */ }
             await _tx.DisposeAsync();
             _tx = await _conn.BeginTransactionAsync(ct);
+            // The rollback also undid anything the initializer created inside
+            // the dead transaction (TEMP tables created but not yet committed),
+            // so re-run it on the fresh one.
+            if (_onConnect is not null) await _onConnect(_conn, ct);
         }
 
         // Run one statement inside a savepoint so a per-row/per-line failure
@@ -270,6 +373,24 @@ public sealed class Db(IOptions<DmartSettings> settings)
                 if (e is PostgresException pg) return IsConnectionFailureState(pg.SqlState);
                 if (e is NpgsqlException or System.Net.Sockets.SocketException or System.IO.IOException or TimeoutException)
                     return true;
+            }
+            return false;
+        }
+
+        // Narrower than IsTransient: is this specifically "the work didn't
+        // finish in time" rather than "the connection went away"? Npgsql wraps
+        // a client-side command timeout as NpgsqlException("Exception while
+        // reading from stream") over an inner TimeoutException; a server-side
+        // statement_timeout arrives as PostgresException 57014. Both mean
+        // replaying the same rows is pointless — only less work per attempt
+        // helps. A bare NpgsqlException (real socket loss) is deliberately NOT
+        // matched: replay on a fresh connection is the correct fix there.
+        internal static bool IsTimeout(Exception ex)
+        {
+            for (Exception? e = ex; e is not null; e = e.InnerException)
+            {
+                if (e is TimeoutException) return true;
+                if (e is PostgresException pg) return pg.SqlState == "57014";
             }
             return false;
         }
@@ -356,6 +477,40 @@ public sealed class Db(IOptions<DmartSettings> settings)
             csb.KeepAlive = s.DatabaseKeepalive;
             csb.TcpKeepAlive = true;
         }
+        return csb.ConnectionString;
+    }
+
+    // The app connection string with the per-command timeout lifted, used only
+    // by the import sessions.
+    //
+    // Npgsql defaults CommandTimeout to 30s. A bulk batch is a COPY into a
+    // scratch table plus an `INSERT ... ON CONFLICT` merge into a table that,
+    // late in a multi-million-entry import, already holds millions of rows and
+    // several indexes — routinely more than 30s of server work. Worse, Npgsql
+    // surfaces a command timeout as NpgsqlException("Exception while reading
+    // from stream") with an inner TimeoutException, which is indistinguishable
+    // from a dropped connection: FastImportSession.RunBatchAsync classifies it
+    // as transient and replays the identical batch, so all five attempts time
+    // out the same way and the shard dies at 90%+ of a three-hour run.
+    //
+    // 0 = no client-side limit, matching the CommandTimeout = 0 the schema
+    // initializer and the CLI's long-running DDL already use. This does not
+    // make a hung import unkillable: Keepalive + TcpKeepAlive (set above) are
+    // what detect a genuinely dead peer, and Ctrl-C still cancels via the
+    // CancellationToken. An operator who set "Command Timeout" explicitly in
+    // POSTGRES_CONNECTION keeps their value — explicit config always wins.
+    internal static string? BuildImportConnectionString(DmartSettings s)
+    {
+        var baseConn = BuildConnectionString(s);
+        if (string.IsNullOrEmpty(baseConn)) return baseConn;
+        var csb = new NpgsqlConnectionStringBuilder(baseConn);
+        // `Keys` holds only what the string actually set, normalized to Npgsql's
+        // canonical spelling (so "commandtimeout" and "COMMAND TIMEOUT" both
+        // land as "Command Timeout"). ContainsKey is NOT usable here: the typed
+        // builder answers true for every keyword it knows about, set or not.
+        var explicitTimeout = csb.Keys.Cast<string>()
+            .Any(k => string.Equals(k, "Command Timeout", StringComparison.OrdinalIgnoreCase));
+        if (!explicitTimeout) csb.CommandTimeout = 0;
         return csb.ConnectionString;
     }
 }
