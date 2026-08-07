@@ -4,12 +4,15 @@ using Xunit;
 namespace Dmart.Tests.Integration;
 
 // Marks a fact that needs the DB role to be able to set
-// `session_replication_role = 'replica'` — i.e. superuser, or a member of
-// the `pg_session_replication_role` predefined role (PG 14+). CI runs as
-// the `dmart` application role, which is NOT a superuser by default, so
-// these tests are skipped there instead of producing the documented hard
-// failure. Local dev environments where the application role IS a
-// superuser will run the tests as expected.
+// `session_replication_role = 'replica'`. That GUC is superuser-context, so
+// the role must be a superuser or — on PG 15+ — hold a per-parameter grant:
+//
+//     GRANT SET ON PARAMETER session_replication_role TO dmart;
+//
+// (There is no `pg_session_replication_role` predefined role; PostgreSQL has
+// never shipped one.) CI runs as the `dmart` application role, which has
+// neither by default, so these tests skip there instead of producing the
+// documented hard failure. An environment that grants either will run them.
 //
 // The probe runs ONCE per process (Lazy) so we don't pay the open+SET cost
 // per test. A connection failure or any non-42501 exception is treated as
@@ -41,7 +44,8 @@ public sealed class FactIfFastImportAttribute : FactAttribute
         }
         catch (PostgresException ex) when (ex.SqlState == "42501")
         {
-            return "DB role lacks privilege to SET session_replication_role (42501) — needs superuser or pg_session_replication_role";
+            return "DB role lacks privilege to SET session_replication_role (42501) — grant it as a "
+                   + "superuser with `GRANT SET ON PARAMETER session_replication_role TO <role>;` (PG 15+)";
         }
         catch (Exception ex)
         {

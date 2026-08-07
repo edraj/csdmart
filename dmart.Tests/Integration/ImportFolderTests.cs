@@ -358,6 +358,82 @@ public class ImportFolderTests : IClassFixture<DmartFactory>
         }
     }
 
+    // Same batched-flush path as the test above, but on the DEFAULT (non --fast)
+    // session, so it runs without the session_replication_role privilege that
+    // gates the --fast variant. Both sessions share the scratch
+    // TEMP tables, and this is the property that regressed the per-batch
+    // CREATE/DROP into a create-once-per-session table:
+    //
+    //   * the scratch table must survive the previous batch's COMMIT (it is no
+    //     longer ON COMMIT DROP), and
+    //   * it must be EMPTY at the start of every batch (ON COMMIT DELETE ROWS),
+    //     or batch N's merge re-reads batch N-1's rows.
+    //
+    // batchSize=1 over 6 metas means six COPY+merge cycles on one session.
+    // A table that vanished after the first COMMIT fails outright ("relation
+    // _imp_entries does not exist"). A table that ACCUMULATED is caught by the
+    // exact insert count: with replace semantics the merge is ON CONFLICT DO
+    // UPDATE, so batch N would re-merge batches 1..N-1 and the six batches
+    // would report 1+2+3+4+5+6 = 21 affected rows instead of 6.
+    [FactIfPg]
+    public async Task Folder_Import_BatchSize_One_Reuses_Session_Scratch_Tables()
+    {
+        var sp = _factory.Services;
+        _factory.CreateClient();
+        var io = sp.GetRequiredService<ImportExportService>();
+        var entryRepo = sp.GetRequiredService<EntryRepository>();
+        var spaceRepo = sp.GetRequiredService<SpaceRepository>();
+
+        var spaceName = "iexscratch_" + Guid.NewGuid().ToString("N")[..6];
+        var src = Path.Combine(Path.GetTempPath(), $"dmart-scratch-{Guid.NewGuid():N}");
+        var dmDir = Path.Combine(src, spaceName, ".dm");
+        Directory.CreateDirectory(dmDir);
+        try
+        {
+            await File.WriteAllTextAsync(Path.Combine(dmDir, "meta.space.json"),
+                $$"""{"uuid":"{{Guid.NewGuid()}}","shortname":"{{spaceName}}","is_active":true,"owner_shortname":"dmart","languages":["english"]}""");
+            for (var i = 0; i < 6; i++)
+            {
+                var entryDir = Path.Combine(dmDir, $"s{i}");
+                Directory.CreateDirectory(entryDir);
+                await File.WriteAllTextAsync(Path.Combine(entryDir, "meta.content.json"),
+                    $$"""{"uuid":"{{Guid.NewGuid()}}","shortname":"s{{i}}","is_active":true,"owner_shortname":"dmart"}""");
+            }
+
+            var resp = await io.ImportFolderAsync(src, actor: null,
+                preserveExisting: false, fastUnsafeNoFkCheck: false, fastParallelism: 1,
+                batchSize: 1, skipHistory: true);
+
+            resp.Status.ShouldBe(Status.Success,
+                customMessage: $"unexpected error: {resp.Error?.Message}");
+            ((int)resp.Attributes!["entries_inserted"]!).ShouldBe(6,
+                "each of the six single-row batches must merge exactly its own row — a scratch "
+                + "table still holding earlier batches' rows would report 21");
+
+            for (var i = 0; i < 6; i++)
+                (await entryRepo.GetAsync(spaceName, "/", $"s{i}", ResourceType.Content))
+                    .ShouldNotBeNull($"entry s{i} missing after a six-batch import");
+
+            // Re-import onto the now-populated table with preserveExisting:
+            // every row conflicts, so ON CONFLICT DO NOTHING affects none.
+            var again = await io.ImportFolderAsync(src, actor: null,
+                preserveExisting: true, fastUnsafeNoFkCheck: false, fastParallelism: 1,
+                batchSize: 1, skipHistory: true);
+            again.Status.ShouldBe(Status.Success,
+                customMessage: $"unexpected error: {again.Error?.Message}");
+            ((int)again.Attributes!["entries_inserted"]!).ShouldBe(0,
+                "an idempotent re-run must land no rows");
+            for (var i = 0; i < 6; i++)
+                (await entryRepo.GetAsync(spaceName, "/", $"s{i}", ResourceType.Content))
+                    .ShouldNotBeNull($"entry s{i} lost by the idempotent re-run");
+        }
+        finally
+        {
+            try { await spaceRepo.DeleteAsync(spaceName); } catch { }
+            try { Directory.Delete(src, recursive: true); } catch { }
+        }
+    }
+
     [FactIfPg]
     public async Task Folder_Import_Remap_Drops_Content_Under_Target_Space_And_Subpath()
     {
