@@ -507,7 +507,7 @@ public sealed partial class DmartSqlAdapter : IDmartData
             // uses, so grammar changes only need to land in one place.
             var parsed = Dmart.QueryGrammar.SearchExpressionParser.Parse(query.Search, pars.Count);
             foreach (var clause in parsed.Clauses) where.Add(clause);
-            foreach (var p in parsed.Parameters) pars.Add(p);
+            foreach (var p in parsed.Parameters) pars.Add(JsonbHelpers.ToNpgsqlParameter(p));
         }
 
         var whereClause = new StringBuilder(string.Join(" AND ", where));

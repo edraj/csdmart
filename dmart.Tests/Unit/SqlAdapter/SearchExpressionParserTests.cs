@@ -34,7 +34,7 @@ public class SearchExpressionParserTests
         parsed.Clauses.Count.ShouldBe(1);
         parsed.Clauses[0].ShouldContain("shortname::text = @s_0");
         parsed.Parameters.Count.ShouldBe(1);
-        parsed.Parameters[0].ParameterName.ShouldBe("@s_0");
+        parsed.Parameters[0].Name.ShouldBe("@s_0");
         parsed.Parameters[0].Value.ShouldBe("alice");
     }
 
@@ -190,7 +190,7 @@ public class SearchExpressionParserTests
     {
         var parsed = SearchExpressionParser.Parse("@shortname:alice", startingParamIndex: 7);
 
-        parsed.Parameters[0].ParameterName.ShouldBe("@s_7");
+        parsed.Parameters[0].Name.ShouldBe("@s_7");
         parsed.Clauses[0].ShouldContain("@s_7");
     }
 

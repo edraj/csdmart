@@ -140,7 +140,7 @@ public static class QueryHelper
 
         // Always append params (parser may bind even when clauses end up empty —
         // e.g. an all-negative group; the SDK side does the same).
-        foreach (var p in parsed.Parameters) args.Add(p);
+        foreach (var p in parsed.Parameters) args.Add(PostgresDialect.CreateParameter(p));
 
         if (parsed.Clauses.Count == 0) return;
 

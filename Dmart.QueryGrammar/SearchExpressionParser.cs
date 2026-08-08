@@ -1,8 +1,6 @@
 using System.Globalization;
 using System.Text;
 using System.Text.RegularExpressions;
-using Npgsql;
-using NpgsqlTypes;
 
 namespace Dmart.QueryGrammar;
 
@@ -43,7 +41,7 @@ namespace Dmart.QueryGrammar;
 /// Two callers, two conventions. The SDK (<c>DmartSqlAdapter.QueryAsync</c>) builds
 /// commands with named placeholders so it can coexist with <c>@space</c>/<c>@subpath</c>/etc.;
 /// the server's <c>QueryHelper</c> uses positional <c>$N</c> placeholders against a
-/// flat <c>List&lt;NpgsqlParameter&gt;</c>. Mixing styles in one command works on some
+/// flat parameter list. Mixing styles in one command works on some
 /// Npgsql versions and breaks on others, so the parser emits whichever style the
 /// caller is already using — no mixing.
 /// </remarks>
@@ -58,7 +56,7 @@ public enum PlaceholderStyle
 
 public static class SearchExpressionParser
 {
-    public sealed record Parsed(IReadOnlyList<string> Clauses, IReadOnlyList<NpgsqlParameter> Parameters);
+    public sealed record Parsed(IReadOnlyList<string> Clauses, IReadOnlyList<SqlParam> Parameters);
 
     // ── Grammar-aware safety check (kept beside the parser so the two
     // can't drift) ────────────────────────────────────────────────────────
@@ -160,7 +158,7 @@ public static class SearchExpressionParser
         string? targetTable = null)
     {
         var clauses = new List<string>();
-        var pars = new List<NpgsqlParameter>();
+        var pars = new List<SqlParam>();
         if (string.IsNullOrWhiteSpace(expression)) return new Parsed(clauses, pars);
 
         // Length gate before any regex sees the text — see MaxExpressionLength.
@@ -198,7 +196,7 @@ public static class SearchExpressionParser
             // Discard the partial parse — including whatever ctx bound so far,
             // which no emitted clause now references — and fail closed rather
             // than letting the exception surface as a 500.
-            return new Parsed(new[] { NoMatchClause }, Array.Empty<NpgsqlParameter>());
+            return new Parsed(new[] { NoMatchClause }, Array.Empty<SqlParam>());
         }
     }
 
@@ -208,7 +206,7 @@ public static class SearchExpressionParser
     {
         private int _next;
         private readonly PlaceholderStyle _style;
-        public List<NpgsqlParameter> Parameters { get; } = new();
+        public List<SqlParam> Parameters { get; } = new();
         public string? TargetTable { get; }
         public ParamCtx(int start, PlaceholderStyle style, string? targetTable = null)
         {
@@ -218,10 +216,17 @@ public static class SearchExpressionParser
         }
 
         // Bind a value, return the placeholder text to splice into SQL.
-        // For Named: emits @s_<n> and tags the NpgsqlParameter with that name.
+        // For Named: emits @s_<n> and tags the parameter with that name.
         // For Positional: emits $<n+1> (Npgsql is 1-based) and leaves the
-        // parameter nameless so Npgsql binds by position.
-        public string Add(object? value, NpgsqlDbType? dbType = null)
+        // parameter nameless so the provider binds by position.
+        //
+        // Produces a provider-neutral SqlParam; the caller's dialect
+        // materializes it into a concrete DbParameter. The distinction between
+        // an explicitly-typed and an inferred parameter is carried by
+        // SqlValueKind.Inferred and MUST be preserved — Npgsql types an
+        // untagged parameter differently from one tagged Text, which changes
+        // the server-side cast without changing the SQL text.
+        public string Add(object? value, SqlValueKind kind = SqlValueKind.Inferred)
         {
             string placeholder;
             string? paramName;
@@ -237,23 +242,7 @@ public static class SearchExpressionParser
                 paramName = null;
             }
             _next++;
-            NpgsqlParameter p;
-            if (dbType.HasValue)
-            {
-                // Set the type BEFORE Value so Npgsql doesn't pre-infer text
-                // and then refuse the cast. Critical for jsonb (containment
-                // params for `payload @> $literal`) and boolean.
-                p = paramName is null
-                    ? new NpgsqlParameter { NpgsqlDbType = dbType.Value, Value = value ?? DBNull.Value }
-                    : new NpgsqlParameter(paramName, dbType.Value) { Value = value ?? DBNull.Value };
-            }
-            else
-            {
-                p = paramName is null
-                    ? new NpgsqlParameter { Value = value ?? DBNull.Value }
-                    : new NpgsqlParameter(paramName, value ?? DBNull.Value);
-            }
-            Parameters.Add(p);
+            Parameters.Add(new SqlParam(paramName, value ?? DBNull.Value, kind));
             return placeholder;
         }
     }
@@ -983,7 +972,7 @@ public static class SearchExpressionParser
             foreach (var v in data.Values)
             {
                 var bv = v.Equals("true", StringComparison.OrdinalIgnoreCase);
-                var p = ctx.Add(bv, NpgsqlDbType.Boolean);
+                var p = ctx.Add(bv, SqlValueKind.Boolean);
                 var eq = (data.Negative || compOp == "!") ? "!=" : "=";
                 conditions.Add(
                     $"((jsonb_typeof(payload::jsonb->{arrowPath}) = 'boolean' AND ({textExtract})::boolean {eq} {p}) OR " +
@@ -1103,7 +1092,7 @@ public static class SearchExpressionParser
                 // skips). The absent-cond disjunct restores the expected
                 // "field doesn't exist counts as not equal" semantics.
                 var pVal = ctx.Add(value);
-                var pJsonArr = ctx.Add(ToJsonArray(value), NpgsqlDbType.Jsonb);
+                var pJsonArr = ctx.Add(ToJsonArray(value), SqlValueKind.Json);
                 var absentCond = $"(payload::jsonb->{arrowPath} IS NULL OR jsonb_typeof(payload::jsonb->{arrowPath}) = 'null')";
                 // CAST(... AS jsonb) is redundant alongside the typed param
                 // but kept verbatim from the server's pre-extraction emit
@@ -1123,9 +1112,9 @@ public static class SearchExpressionParser
             }
             else
             {
-                var pContainStr = ctx.Add(BuildPayloadContainmentJson(parts, ToJsonString(value)), NpgsqlDbType.Jsonb);
+                var pContainStr = ctx.Add(BuildPayloadContainmentJson(parts, ToJsonString(value)), SqlValueKind.Json);
                 var containStringCond = $"(payload::jsonb @> {pContainStr})";
-                var pContainArr = ctx.Add(BuildPayloadContainmentJson(parts, ToJsonArray(value)), NpgsqlDbType.Jsonb);
+                var pContainArr = ctx.Add(BuildPayloadContainmentJson(parts, ToJsonArray(value)), SqlValueKind.Json);
                 var containArrayCond = $"(payload::jsonb @> {pContainArr})";
 
                 if (isNum)
@@ -1151,7 +1140,7 @@ public static class SearchExpressionParser
         foreach (var value in data.Values)
         {
             var pVal = ctx.Add(value);
-            var pJson = ctx.Add(ToJsonArray(value), NpgsqlDbType.Jsonb);
+            var pJson = ctx.Add(ToJsonArray(value), SqlValueKind.Json);
             // CAST(... AS jsonb) is functionally redundant — the param is
             // already typed Jsonb — but kept verbatim from the server's
             // pre-extraction emit so logged SQL stays byte-identical and
@@ -1221,7 +1210,7 @@ public static class SearchExpressionParser
         foreach (var value in data.Values)
         {
             var bv = value.Equals("true", StringComparison.OrdinalIgnoreCase);
-            var p = ctx.Add(bv, NpgsqlDbType.Boolean);
+            var p = ctx.Add(bv, SqlValueKind.Boolean);
             var eq = (data.Negative || data.ComparisonOperator == "!") ? "!=" : "=";
             conditions.Add($"(CAST({column} AS BOOLEAN) {eq} {p})");
         }

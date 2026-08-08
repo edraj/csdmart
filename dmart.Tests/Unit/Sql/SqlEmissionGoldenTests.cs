@@ -294,7 +294,7 @@ public class SqlEmissionGoldenTests
                 var parsed = SearchExpressionParser.Parse(effective, 0, style, "entries");
                 yield return ($"{name}[{style}]",
                     string.Join(" AND ", parsed.Clauses),
-                    parsed.Parameters.ToList());
+                    Materialize(parsed.Parameters));
             }
         }
 
@@ -303,14 +303,14 @@ public class SqlEmissionGoldenTests
         {
             var parsed = SearchExpressionParser.Parse("@email:a@b.com", 0, PlaceholderStyle.Positional, table);
             yield return ($"user-meta-target-{table}",
-                string.Join(" AND ", parsed.Clauses), parsed.Parameters.ToList());
+                string.Join(" AND ", parsed.Clauses), Materialize(parsed.Parameters));
         }
 
         // Non-zero starting index: numbering must continue from the caller's.
         {
             var parsed = SearchExpressionParser.Parse("@shortname:a", 7, PlaceholderStyle.Positional, "entries");
             yield return ("starting-index-7",
-                string.Join(" AND ", parsed.Clauses), parsed.Parameters.ToList());
+                string.Join(" AND ", parsed.Clauses), Materialize(parsed.Parameters));
         }
     }
 
@@ -374,6 +374,15 @@ public class SqlEmissionGoldenTests
                 built is null ? "<null>" : built.Value.Sql, new List<NpgsqlParameter>());
         }
     }
+
+    // Snapshot the NpgsqlParameter the server will actually bind, not the
+    // grammar's neutral descriptor. The descriptor is an implementation detail
+    // of the seam; what must not change is the concrete parameter PostgreSQL
+    // receives — in particular whether NpgsqlDbType was set at all, since an
+    // untagged parameter resolves as `unknown` server-side and a tagged one
+    // does not.
+    private static List<NpgsqlParameter> Materialize(IReadOnlyList<SqlParam> pars)
+        => pars.Select(PostgresDialect.CreateParameter).ToList();
 
     private static IEnumerable<(string, string)> JoinKeyCases()
     {
