@@ -594,20 +594,130 @@ SQL: (email::text = $1)
 SQL: (shortname::text = $8)
   P1: name=<positional> type=Unknown value="a"
 
+## aggregation: count-no-group
+SQL: SELECT COUNT(*) AS count FROM entries WHERE space_name = $1  ORDER BY updated_at DESC LIMIT $2 OFFSET $3
+  P1: name=<positional> type=Unknown value="s"
+  P2: name=<positional> type=Unknown value=10
+  P3: name=<positional> type=Unknown value=0
+
+## aggregation: count-field
+SQL: SELECT COUNT(payload::jsonb->'body'->>'x') AS n FROM entries WHERE space_name = $1  ORDER BY updated_at DESC LIMIT $2 OFFSET $3
+  P1: name=<positional> type=Unknown value="s"
+  P2: name=<positional> type=Unknown value=10
+  P3: name=<positional> type=Unknown value=0
+
+## aggregation: count-distinct
+SQL: SELECT COUNT(DISTINCT shortname) AS count_distinct FROM entries WHERE space_name = $1  ORDER BY updated_at DESC LIMIT $2 OFFSET $3
+  P1: name=<positional> type=Unknown value="s"
+  P2: name=<positional> type=Unknown value=10
+  P3: name=<positional> type=Unknown value=0
+
+## aggregation: sum
+SQL: SELECT SUM((payload::jsonb->'body'->>'amount')::numeric) AS total FROM entries WHERE space_name = $1  ORDER BY updated_at DESC LIMIT $2 OFFSET $3
+  P1: name=<positional> type=Unknown value="s"
+  P2: name=<positional> type=Unknown value=10
+  P3: name=<positional> type=Unknown value=0
+
+## aggregation: avg
+SQL: SELECT AVG((payload::jsonb->'body'->>'amount')::numeric) AS avg FROM entries WHERE space_name = $1  ORDER BY updated_at DESC LIMIT $2 OFFSET $3
+  P1: name=<positional> type=Unknown value="s"
+  P2: name=<positional> type=Unknown value=10
+  P3: name=<positional> type=Unknown value=0
+
+## aggregation: min-max
+SQL: SELECT MIN(payload::jsonb->'body'->>'amount') AS lo, MAX(payload::jsonb->'body'->>'amount') AS hi FROM entries WHERE space_name = $1  ORDER BY updated_at DESC LIMIT $2 OFFSET $3
+  P1: name=<positional> type=Unknown value="s"
+  P2: name=<positional> type=Unknown value=10
+  P3: name=<positional> type=Unknown value=0
+
+## aggregation: stddev
+SQL: SELECT STDDEV((payload::jsonb->'body'->>'amount')::numeric) AS stddev FROM entries WHERE space_name = $1  ORDER BY updated_at DESC LIMIT $2 OFFSET $3
+  P1: name=<positional> type=Unknown value="s"
+  P2: name=<positional> type=Unknown value=10
+  P3: name=<positional> type=Unknown value=0
+
+## aggregation: group-concat
+SQL: SELECT STRING_AGG((shortname)::text, ',') AS group_concat FROM entries WHERE space_name = $1  ORDER BY updated_at DESC LIMIT $2 OFFSET $3
+  P1: name=<positional> type=Unknown value="s"
+  P2: name=<positional> type=Unknown value=10
+  P3: name=<positional> type=Unknown value=0
+
+## aggregation: quantile-default
+SQL: SELECT percentile_cont(0.5) WITHIN GROUP (ORDER BY (payload::jsonb->'body'->>'amount')::numeric) AS quantile FROM entries WHERE space_name = $1  ORDER BY updated_at DESC LIMIT $2 OFFSET $3
+  P1: name=<positional> type=Unknown value="s"
+  P2: name=<positional> type=Unknown value=10
+  P3: name=<positional> type=Unknown value=0
+
+## aggregation: quantile-explicit
+SQL: SELECT percentile_cont(0.9) WITHIN GROUP (ORDER BY (payload::jsonb->'body'->>'amount')::numeric) AS p90 FROM entries WHERE space_name = $1  ORDER BY updated_at DESC LIMIT $2 OFFSET $3
+  P1: name=<positional> type=Unknown value="s"
+  P2: name=<positional> type=Unknown value=10
+  P3: name=<positional> type=Unknown value=0
+
+## aggregation: quantile-clamped
+SQL: SELECT percentile_cont(1) WITHIN GROUP (ORDER BY (payload::jsonb->'body'->>'amount')::numeric) AS quantile FROM entries WHERE space_name = $1  ORDER BY updated_at DESC LIMIT $2 OFFSET $3
+  P1: name=<positional> type=Unknown value="s"
+  P2: name=<positional> type=Unknown value=10
+  P3: name=<positional> type=Unknown value=0
+
+## aggregation: first-value
+SQL: SELECT (ARRAY_AGG(shortname ORDER BY updated_at DESC))[1] AS first_value FROM entries WHERE space_name = $1  ORDER BY updated_at DESC LIMIT $2 OFFSET $3
+  P1: name=<positional> type=Unknown value="s"
+  P2: name=<positional> type=Unknown value=10
+  P3: name=<positional> type=Unknown value=0
+
+## aggregation: random-sample
+SQL: SELECT (ARRAY_AGG(shortname ORDER BY RANDOM()))[1] AS random_sample FROM entries WHERE space_name = $1  ORDER BY updated_at DESC LIMIT $2 OFFSET $3
+  P1: name=<positional> type=Unknown value="s"
+  P2: name=<positional> type=Unknown value=10
+  P3: name=<positional> type=Unknown value=0
+
+## aggregation: group-by-single
+SQL: SELECT resource_type AS resource_type, COUNT(*) AS count FROM entries WHERE space_name = $1  GROUP BY resource_type ORDER BY updated_at DESC LIMIT $2 OFFSET $3
+  P1: name=<positional> type=Unknown value="s"
+  P2: name=<positional> type=Unknown value=10
+  P3: name=<positional> type=Unknown value=0
+
+## aggregation: group-by-json-path
+SQL: SELECT payload::jsonb->'body'->>'category' AS payload_body_category, COUNT(*) AS count FROM entries WHERE space_name = $1  GROUP BY payload::jsonb->'body'->>'category' ORDER BY updated_at DESC LIMIT $2 OFFSET $3
+  P1: name=<positional> type=Unknown value="s"
+  P2: name=<positional> type=Unknown value=10
+  P3: name=<positional> type=Unknown value=0
+
+## aggregation: group-by-multi
+SQL: SELECT resource_type AS resource_type, payload::jsonb->'body'->>'category' AS payload_body_category, COUNT(*) AS n FROM entries WHERE space_name = $1  GROUP BY resource_type, payload::jsonb->'body'->>'category' ORDER BY updated_at DESC LIMIT $2 OFFSET $3
+  P1: name=<positional> type=Unknown value="s"
+  P2: name=<positional> type=Unknown value=10
+  P3: name=<positional> type=Unknown value=0
+
+## aggregation: with-acl
+SQL: SELECT resource_type AS resource_type, COUNT(*) AS count FROM entries WHERE space_name = $1  AND (owner_shortname = $2 OR EXISTS (SELECT 1 FROM unnest(query_policies) AS qp WHERE qp LIKE $3 ESCAPE '\') OR EXISTS (SELECT 1 FROM jsonb_array_elements(CASE WHEN jsonb_typeof(acl::jsonb) = 'array' THEN acl::jsonb ELSE '[]'::jsonb END) AS elem WHERE elem->>'user_shortname' = $2 AND (elem->'allowed_actions') ? 'query')) GROUP BY resource_type ORDER BY updated_at DESC LIMIT $4 OFFSET $5
+  P1: name=<positional> type=Unknown value="s"
+  P2: name=<positional> type=Unknown value="alice"
+  P3: name=<positional> type=Unknown value="s:/%"
+  P4: name=<positional> type=Unknown value=10
+  P5: name=<positional> type=Unknown value=0
+
+## aggregation: unknown-reducer-dropped
+SQL: <no selectable columns>
+
+## aggregation: no-aggregation-block
+SQL: <null>
+
 ## joinkey: shortname
-EXPR: (rshortname)::text
+EXPR: (r.shortname)::text
 
 ## joinkey: subpath
-EXPR: (rsubpath)::text
+EXPR: (r.subpath)::text
 
 ## joinkey: uuid
-EXPR: (ruuid)::text
+EXPR: (r.uuid)::text
 
 ## joinkey: resource-type
-EXPR: (rresource_type)::text
+EXPR: (r.resource_type)::text
 
 ## joinkey: payload-path
-EXPR: rpayload::jsonb->'body'->>'ref'
+EXPR: r.payload::jsonb->'body'->>'ref'
 
 ## joinkey: rejected-unknown
 EXPR: <rejected>

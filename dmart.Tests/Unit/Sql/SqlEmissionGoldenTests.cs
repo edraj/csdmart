@@ -88,6 +88,7 @@ public class SqlEmissionGoldenTests
         foreach (var (name, sql, args) in SemiJoinCases()) Emit(sb, "semijoin", name, sql, args);
         foreach (var (name, sql, args) in OrderPagingCases()) Emit(sb, "orderpaging", name, sql, args);
         foreach (var (name, sql, args) in SearchCases()) Emit(sb, "search", name, sql, args);
+        foreach (var (name, sql, args) in AggregationCases()) Emit(sb, "aggregation", name, sql, args);
         foreach (var (name, expr) in JoinKeyCases()) sb.Append($"\n## joinkey: {name}\nEXPR: {expr}\n");
 
         return sb.ToString();
@@ -313,6 +314,67 @@ public class SqlEmissionGoldenTests
         }
     }
 
+    // One case per reducer, because the reducer vocabulary is exactly what the
+    // SQLite dialect cannot fully implement (§2.8 of the audit: percentile_cont,
+    // stddev and ordered ARRAY_AGG have no equivalent). Snapshotting each keeps
+    // the PostgreSQL emission pinned while that divergence gets built.
+    private static IEnumerable<(string, string, List<NpgsqlParameter>)> AggregationCases()
+    {
+        static RedisReducer R(string name, string? alias, params string[] args)
+            => new() { ReducerName = name, Alias = alias, Args = args.ToList() };
+
+        foreach (var (name, agg, user, policies) in new (string, RedisAggregate, string?, List<string>?)[]
+        {
+            ("count-no-group", new() { Reducers = { R("count", null) } }, null, null),
+            ("count-field", new() { Reducers = { R("count", "n", "@payload.body.x") } }, null, null),
+            ("count-distinct", new() { Reducers = { R("count_distinct", null, "@shortname") } }, null, null),
+            ("sum", new() { Reducers = { R("sum", "total", "@payload.body.amount") } }, null, null),
+            ("avg", new() { Reducers = { R("avg", null, "@payload.body.amount") } }, null, null),
+            ("min-max", new()
+            {
+                Reducers = { R("min", "lo", "@payload.body.amount"), R("max", "hi", "@payload.body.amount") },
+            }, null, null),
+            ("stddev", new() { Reducers = { R("stddev", null, "@payload.body.amount") } }, null, null),
+            ("group-concat", new() { Reducers = { R("group_concat", null, "@shortname") } }, null, null),
+            ("quantile-default", new() { Reducers = { R("quantile", null, "@payload.body.amount") } }, null, null),
+            ("quantile-explicit", new() { Reducers = { R("quantile", "p90", "@payload.body.amount", "0.9") } }, null, null),
+            ("quantile-clamped", new() { Reducers = { R("quantile", null, "@payload.body.amount", "5") } }, null, null),
+            ("first-value", new() { Reducers = { R("first_value", null, "@shortname") } }, null, null),
+            ("random-sample", new() { Reducers = { R("random_sample", null, "@shortname") } }, null, null),
+            ("group-by-single", new()
+            {
+                GroupBy = { "@resource_type" }, Reducers = { R("count", null) },
+            }, null, null),
+            ("group-by-json-path", new()
+            {
+                GroupBy = { "@payload.body.category" }, Reducers = { R("count", null) },
+            }, null, null),
+            ("group-by-multi", new()
+            {
+                GroupBy = { "@resource_type", "@payload.body.category" }, Reducers = { R("count", "n") },
+            }, null, null),
+            ("with-acl", new()
+            {
+                GroupBy = { "@resource_type" }, Reducers = { R("count", null) },
+            }, "alice", new() { "s:/*" }),
+            ("unknown-reducer-dropped", new() { Reducers = { R("not_a_reducer", null, "@x") } }, null, null),
+        })
+        {
+            var q = Q("s", "/") with { Type = QueryType.Aggregation, AggregationData = agg };
+            var built = QueryHelper.BuildAggregationSql("entries", q, user, policies);
+            yield return built is null
+                ? (name, "<no selectable columns>", new List<NpgsqlParameter>())
+                : (name, built.Value.Sql, built.Value.Args);
+        }
+
+        // No aggregation block at all → null, not an empty statement.
+        {
+            var built = QueryHelper.BuildAggregationSql("entries", Q("s", "/"));
+            yield return ("no-aggregation-block",
+                built is null ? "<null>" : built.Value.Sql, new List<NpgsqlParameter>());
+        }
+    }
+
     private static IEnumerable<(string, string)> JoinKeyCases()
     {
         foreach (var (name, path) in new[]
@@ -326,8 +388,10 @@ public class SqlEmissionGoldenTests
             ("rejected-injection", "shortname; DROP TABLE entries"),
         })
         {
+            // Qualifier carries its own trailing dot — QueryService passes
+            // "entries." and "r." (QueryService.cs:1429-1430).
             yield return (name,
-                QueryHelper.TryJoinKeyToSql(path, "r", out var expr) ? expr : "<rejected>");
+                QueryHelper.TryJoinKeyToSql(path, "r.", out var expr) ? expr : "<rejected>");
         }
     }
 

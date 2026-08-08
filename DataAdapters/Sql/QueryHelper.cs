@@ -509,14 +509,19 @@ public static class QueryHelper
     // Mirrors Python's query_aggregation(). Builds:
     //   SELECT group_by_cols, FUNC(args) AS alias FROM table WHERE ... GROUP BY ...
 
-    [SuppressMessage("Security", "CA2100",
-        Justification = "Audited: `tableName` is internal; group-by/reducer expressions are built from a whitelisted ResolveFieldExpr/SanitizeAlias pipeline; user values flow through $N parameters.")]
-    public static async Task<List<Dictionary<string, object>>> RunAggregationAsync(
-        Db db, string tableName, Query q, CancellationToken ct,
+    // Builds the aggregation statement and its bound parameters, or null when
+    // the query resolves to nothing selectable (no aggregation block, or every
+    // group-by/reducer was rejected by the whitelist). Split out from
+    // RunAggregationAsync so the emitted text is reachable without a live
+    // connection — SqlEmissionGoldenTests snapshots it, and the reducer
+    // vocabulary is one of the places the SQLite dialect will have to diverge
+    // (no percentile_cont / stddev / ordered ARRAY_AGG).
+    public static (string Sql, List<NpgsqlParameter> Args)? BuildAggregationSql(
+        string tableName, Query q,
         string? userShortname = null, List<string>? queryPolicies = null)
     {
         if (q.AggregationData is null)
-            return new();
+            return null;
 
         var args = new List<NpgsqlParameter>();
         var where = BuildWhereClause(q, args, tableName);
@@ -545,7 +550,7 @@ public static class QueryHelper
             selectParts.Add($"{expr} AS {alias}");
         }
 
-        if (selectParts.Count == 0) return new();
+        if (selectParts.Count == 0) return null;
 
         var sql = new System.Text.StringBuilder(
             $"SELECT {string.Join(", ", selectParts)} FROM {tableName} WHERE {where} ");
@@ -568,8 +573,21 @@ public static class QueryHelper
         // ORDER + LIMIT
         AppendOrderAndPaging(sql, q, args, tableName);
 
+        return (sql.ToString(), args);
+    }
+
+    [SuppressMessage("Security", "CA2100",
+        Justification = "Audited: `tableName` is internal; group-by/reducer expressions are built from a whitelisted ResolveFieldExpr/SanitizeAlias pipeline; user values flow through $N parameters.")]
+    public static async Task<List<Dictionary<string, object>>> RunAggregationAsync(
+        Db db, string tableName, Query q, CancellationToken ct,
+        string? userShortname = null, List<string>? queryPolicies = null)
+    {
+        var built = BuildAggregationSql(tableName, q, userShortname, queryPolicies);
+        if (built is null) return new();
+        var (sql, args) = built.Value;
+
         await using var conn = await db.OpenAsync(ct);
-        await using var cmd = new NpgsqlCommand(sql.ToString(), conn);
+        await using var cmd = new NpgsqlCommand(sql, conn);
         foreach (var p in args) cmd.Parameters.Add(p);
         await using var reader = await cmd.ExecuteReaderAsync(ct);
 
