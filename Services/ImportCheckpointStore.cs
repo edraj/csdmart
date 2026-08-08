@@ -54,6 +54,16 @@ public sealed class ImportCheckpointStore
         [JsonPropertyName("attachments")] public int    Attachments  { get; set; }
     }
 
+    // An index `--drop-indexes` removed for the duration of the load, with the
+    // exact `CREATE INDEX` needed to put it back. Written BEFORE the drop, so
+    // a hard crash between drop and rebuild still leaves a durable record of
+    // what is missing and how to restore it.
+    public sealed class DroppedIndex
+    {
+        [JsonPropertyName("name")]       public string Name       { get; set; } = "";
+        [JsonPropertyName("definition")] public string Definition { get; set; } = "";
+    }
+
     [JsonIgnore] private readonly string _path;
     [JsonIgnore] private readonly object _lock = new();
 
@@ -63,6 +73,8 @@ public sealed class ImportCheckpointStore
     [JsonPropertyName("tail_done")]    public List<string> TailDone   { get; set; } = new();
     [JsonPropertyName("tail_progress")]
     public Dictionary<string, ShardProgress> TailProgress { get; set; } = new(StringComparer.Ordinal);
+    [JsonPropertyName("dropped_indexes")]
+    public List<DroppedIndex> DroppedIndexes { get; set; } = new();
 
     // Parameterless ctor for JSON deserialization; never use directly.
     public ImportCheckpointStore() { _path = ""; }
@@ -102,6 +114,7 @@ public sealed class ImportCheckpointStore
                         TailProgress = loaded.TailProgress is null
                             ? new(StringComparer.Ordinal)
                             : new(loaded.TailProgress, StringComparer.Ordinal),
+                        DroppedIndexes = loaded.DroppedIndexes ?? new(),
                     };
                     return store;
                 }
@@ -153,7 +166,39 @@ public sealed class ImportCheckpointStore
         }
     }
 
+    // Indexes an earlier run dropped and did not put back. Non-empty here means
+    // the database is currently missing them — either this run dropped them, or
+    // a previous one died before rebuilding.
+    public IReadOnlyList<DroppedIndex> PendingDroppedIndexes()
+    {
+        lock (_lock) return DroppedIndexes.ToList();
+    }
+
     // ---- Write-side markers ----------------------------------------
+
+    // Record what is about to be dropped. MUST be called and flushed BEFORE the
+    // DROP runs — the whole point is that a crash in between leaves evidence.
+    public void MarkIndexesDropped(IEnumerable<DroppedIndex> indexes)
+    {
+        lock (_lock)
+        {
+            foreach (var ix in indexes)
+                if (!DroppedIndexes.Any(d => string.Equals(d.Name, ix.Name, StringComparison.Ordinal)))
+                    DroppedIndexes.Add(ix);
+            FlushUnsafe();
+        }
+    }
+
+    // Clear the record once the indexes are actually back.
+    public void MarkIndexesRestored(IEnumerable<string> names)
+    {
+        lock (_lock)
+        {
+            var done = new HashSet<string>(names, StringComparer.Ordinal);
+            DroppedIndexes.RemoveAll(d => done.Contains(d.Name));
+            FlushUnsafe();
+        }
+    }
 
     // Record the committed prefix of a still-running shard. Called after each
     // batch commit lands, so a crash loses at most one batch instead of the
@@ -209,6 +254,11 @@ public sealed class ImportCheckpointStore
     {
         lock (_lock)
         {
+            // Refuse while indexes are still dropped: the sidecar is the only
+            // durable record of what is missing and how to rebuild it. Deleting
+            // it on an otherwise-successful import would strand the database
+            // without its indexes and without the recovery SQL.
+            if (DroppedIndexes.Count > 0) return;
             try { if (File.Exists(_path)) File.Delete(_path); } catch { }
         }
     }

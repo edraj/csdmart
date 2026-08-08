@@ -220,6 +220,87 @@ public sealed class ImportCheckpointStoreTests : IDisposable
             .TailProgressFor("galleon", "fp-a").ShouldBe((10, 0));
     }
 
+    // ---- --drop-indexes recovery record ------------------------------
+    //
+    // The sidecar is the ONLY durable evidence that indexes are missing after a
+    // hard kill between DROP and rebuild. These pin that contract.
+
+    private static ImportCheckpointStore.DroppedIndex Ix(string name) => new()
+    {
+        Name = name,
+        Definition = $"CREATE INDEX {name} ON public.entries USING gin (payload jsonb_path_ops)",
+    };
+
+    [Fact]
+    public void DroppedIndexes_RoundTripWithDefinitions()
+    {
+        var path = Path.Combine(_dir, ".ckpt.json");
+        var store = ImportCheckpointStore.LoadOrCreate(path, "/var/lib/dmart");
+        store.MarkIndexesDropped([Ix("idx_entries_payload_gin"), Ix("idx_entries_tags_gin")]);
+
+        var reload = ImportCheckpointStore.LoadOrCreate(path, "/var/lib/dmart");
+        var pending = reload.PendingDroppedIndexes();
+        pending.Count.ShouldBe(2);
+        pending[0].Definition.ShouldContain("CREATE INDEX",
+            customMessage: "the rebuild SQL must survive the crash, not just the name");
+    }
+
+    [Fact]
+    public void MarkIndexesDropped_IsIdempotent()
+    {
+        var path = Path.Combine(_dir, ".ckpt.json");
+        var store = ImportCheckpointStore.LoadOrCreate(path, "/var/lib/dmart");
+        store.MarkIndexesDropped([Ix("a"), Ix("b")]);
+        store.MarkIndexesDropped([Ix("b"), Ix("c")]);   // a resumed run re-records
+
+        store.PendingDroppedIndexes().Select(i => i.Name).OrderBy(n => n)
+             .ShouldBe(new[] { "a", "b", "c" });
+    }
+
+    [Fact]
+    public void MarkIndexesRestored_RemovesOnlyWhatCameBack()
+    {
+        var path = Path.Combine(_dir, ".ckpt.json");
+        var store = ImportCheckpointStore.LoadOrCreate(path, "/var/lib/dmart");
+        store.MarkIndexesDropped([Ix("a"), Ix("b"), Ix("c")]);
+        store.MarkIndexesRestored(["a", "c"]);          // "b" failed to rebuild
+
+        store.PendingDroppedIndexes().Select(i => i.Name).ShouldBe(new[] { "b" });
+        ImportCheckpointStore.LoadOrCreate(path, "/var/lib/dmart")
+            .PendingDroppedIndexes().Count.ShouldBe(1, "the survivor must persist for the next run");
+    }
+
+    [Fact]
+    public void Clear_RefusesWhileIndexesAreStillDropped()
+    {
+        // A successful import must NOT delete the sidecar while the database is
+        // missing indexes — that would strand it with no record and no SQL.
+        var path = Path.Combine(_dir, ".ckpt.json");
+        var store = ImportCheckpointStore.LoadOrCreate(path, "/var/lib/dmart");
+        store.MarkIndexesDropped([Ix("idx_entries_payload_gin")]);
+
+        store.Clear();
+        File.Exists(path).ShouldBeTrue("sidecar is the only recovery record — Clear must refuse");
+
+        store.MarkIndexesRestored(["idx_entries_payload_gin"]);
+        store.Clear();
+        File.Exists(path).ShouldBeFalse("once the indexes are back, Clear behaves normally");
+    }
+
+    [Fact]
+    public void LegacySidecar_WithoutDroppedIndexes_LoadsCleanly()
+    {
+        var path = Path.Combine(_dir, ".ckpt.json");
+        File.WriteAllText(path, """
+            {"started_at":"2026-05-26T14:48:19Z","source_path":"/var/lib/dmart/spaces",
+             "passes_done":["head"],"tail_done":["products"]}
+            """);
+
+        var store = ImportCheckpointStore.LoadOrCreate(path, "/var/lib/dmart");
+        store.PendingDroppedIndexes().ShouldBeEmpty();
+        store.IsTailDone("products").ShouldBeTrue();
+    }
+
     [Fact]
     public void DefaultPathFor_IsSidecarOfFolder()
     {
