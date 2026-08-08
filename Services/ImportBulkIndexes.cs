@@ -1,3 +1,5 @@
+using System.Diagnostics.CodeAnalysis;
+using System.Text.RegularExpressions;
 using Dmart.DataAdapters.Sql;
 using Microsoft.Extensions.Logging;
 using Npgsql;
@@ -42,6 +44,29 @@ internal static class ImportBulkIndexes
     // disk repeatedly. Session-local, so it cannot affect anything else.
     private const string RebuildWorkMem = "1GB";
 
+    // Both of these run as SQL, and both round-trip through the checkpoint
+    // sidecar — a JSON file on disk between the DROP and the rebuild. So they
+    // are NOT simply "trusted catalog output" by the time we execute them: a
+    // tampered or corrupted sidecar would otherwise be an arbitrary-SQL vector
+    // running with the import role's privileges. Validate at the point of use.
+    //
+    // The patterns are deliberately tighter than PostgreSQL's grammar — they
+    // describe exactly what DiscoverAsync can produce (a GIN index on one of
+    // our two tables), so anything else is rejected rather than executed.
+    // Verified against real `pg_indexes.indexdef` output, e.g.
+    //   CREATE INDEX idx_entries_acl_gin ON public.entries USING gin (acl jsonb_path_ops)
+    private static readonly Regex SafeIndexName =
+        new(@"^[A-Za-z_][A-Za-z0-9_]*$", RegexOptions.Compiled);
+
+    private static readonly Regex SafeIndexDefinition = new(
+        @"^CREATE INDEX [A-Za-z_][A-Za-z0-9_]* ON public\.(entries|attachments) USING gin \([^;]+\)$",
+        RegexOptions.Compiled);
+
+    // A semicolon anywhere would allow statement chaining; the anchored
+    // patterns already forbid it, but reject explicitly so the intent is plain.
+    internal static bool IsSafeName(string s) => !s.Contains(';') && SafeIndexName.IsMatch(s);
+    internal static bool IsSafeDefinition(string s) => !s.Contains(';') && SafeIndexDefinition.IsMatch(s);
+
     // Discover the indexes this import would drop. Returns (name, definition)
     // pairs; the definition is PostgreSQL's own `pg_indexes.indexdef`, which
     // round-trips exactly.
@@ -74,17 +99,25 @@ internal static class ImportBulkIndexes
         return found;
     }
 
-    // Drop the given indexes. Quoted identifiers throughout — index names come
-    // from the catalog, but quoting keeps this correct for mixed-case or
-    // otherwise awkward names rather than relying on them being tame.
+    // Drop the given indexes. DDL cannot take parameters, so the name is
+    // interpolated — but only after IsSafeName has restricted it to
+    // `[A-Za-z_][A-Za-z0-9_]*`, which contains no quote, semicolon or
+    // whitespace and therefore cannot escape the identifier position.
+    [SuppressMessage("Security", "CA2100",
+        Justification = "Audited: DDL takes no parameters. The only interpolated value is the index "
+                        + "name, gated by IsSafeName to ^[A-Za-z_][A-Za-z0-9_]*$ — no quotes, "
+                        + "semicolons or whitespace can reach the statement. Anything else throws.")]
     public static async Task DropAsync(
         NpgsqlConnection conn, IReadOnlyList<ImportCheckpointStore.DroppedIndex> indexes,
         ILogger log, CancellationToken ct)
     {
         foreach (var ix in indexes)
         {
-            await using var cmd = new NpgsqlCommand(
-                $"DROP INDEX IF EXISTS public.\"{ix.Name.Replace("\"", "\"\"")}\"", conn);
+            if (!IsSafeName(ix.Name))
+                throw new InvalidOperationException(
+                    $"refusing to drop index with unexpected name '{ix.Name}' — the checkpoint "
+                    + "sidecar may have been tampered with or corrupted");
+            await using var cmd = new NpgsqlCommand($"DROP INDEX IF EXISTS public.{ix.Name}", conn);
             cmd.CommandTimeout = 0;
             await cmd.ExecuteNonQueryAsync(ct);
             log.LogInformation("import: dropped index {Index} for the bulk load", ix.Name);
@@ -100,6 +133,13 @@ internal static class ImportBulkIndexes
     // Each statement is independent: one failure does not abandon the rest, and
     // the names that did not come back are reported so the operator knows
     // exactly what to fix.
+    [SuppressMessage("Security", "CA2100",
+        Justification = "Audited: a CREATE INDEX statement cannot be parameterised. The text comes "
+                        + "from pg_indexes.indexdef, but round-trips through the on-disk checkpoint, "
+                        + "so it is re-validated here against SafeIndexDefinition — anchored to "
+                        + "CREATE INDEX <ident> ON public.(entries|attachments) USING gin (...) with "
+                        + "no semicolon, so statement chaining is impossible. RebuildWorkMem is a "
+                        + "private const.")]
     public static async Task<List<string>> RestoreAsync(
         NpgsqlConnection conn, IReadOnlyList<ImportCheckpointStore.DroppedIndex> indexes,
         ILogger log, CancellationToken ct)
@@ -112,6 +152,10 @@ internal static class ImportBulkIndexes
         {
             try
             {
+                if (!IsSafeDefinition(ix.Definition))
+                    throw new InvalidOperationException(
+                        $"refusing to execute unexpected index definition for '{ix.Name}': "
+                        + $"{ix.Definition}");
                 log.LogInformation("import: rebuilding index {Index}...", ix.Name);
                 await using var cmd = new NpgsqlCommand(ix.Definition, conn);
                 cmd.CommandTimeout = 0;   // a multi-million-row GIN build takes minutes
