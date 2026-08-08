@@ -536,7 +536,7 @@ public sealed class ImportExportService(
     /// stripped, <c>""</c> or <c>"/"</c> means "directly under the space
     /// root". Required when <paramref name="targetSpace"/> is set.
     /// </param>
-    public async Task<Response> ImportFolderAsync(string folderPath, string? actor, bool preserveExisting, bool fastUnsafeNoFkCheck, int fastParallelism, int batchSize = DefaultBatchSize, string? targetSpace = null, string? targetSubpath = null, bool resume = false, string? checkpointPath = null, DateTime? sinceUtc = null, bool validate = true, string? issuesFilePath = null, bool skipHistory = false, IReadOnlyList<string>? importTags = null, string? fromListPath = null, string? saveListPath = null, IReadOnlyList<string>? includeSpaces = null, CancellationToken ct = default)
+    public async Task<Response> ImportFolderAsync(string folderPath, string? actor, bool preserveExisting, bool fastUnsafeNoFkCheck, int fastParallelism, int batchSize = DefaultBatchSize, string? targetSpace = null, string? targetSubpath = null, bool resume = false, string? checkpointPath = null, DateTime? sinceUtc = null, bool validate = true, string? issuesFilePath = null, bool skipHistory = false, IReadOnlyList<string>? importTags = null, string? fromListPath = null, string? saveListPath = null, IReadOnlyList<string>? includeSpaces = null, bool dropIndexes = false, CancellationToken ct = default)
     {
         _ = actor;
         if (!Directory.Exists(folderPath))
@@ -829,7 +829,7 @@ public sealed class ImportExportService(
         try
         {
             response = await ImportFromEntriesAsync(entries, ImportSourceKind.Filesystem,
-                preserveExisting, fastUnsafeNoFkCheck, fastParallelism, batchSize, checkpoint, validation, importTags, skipHistory, ct);
+                preserveExisting, fastUnsafeNoFkCheck, fastParallelism, batchSize, checkpoint, validation, importTags, skipHistory, dropIndexes, ct);
         }
         finally
         {
@@ -870,7 +870,7 @@ public sealed class ImportExportService(
         bool preserveExisting, bool fastUnsafeNoFkCheck, int fastParallelism,
         int batchSize, ImportCheckpointStore? checkpoint = null,
         ImportValidationContext? validation = null, IReadOnlyList<string>? importTags = null,
-        bool skipHistory = false, CancellationToken ct = default)
+        bool skipHistory = false, bool dropIndexes = false, CancellationToken ct = default)
     {
         // Clamp batch size — operators tune via --batch-size for their data
         // shape (smaller for fat payloads, larger for tiny ones). The hard
@@ -909,6 +909,75 @@ public sealed class ImportExportService(
         // >16 is rejected as nonsense for a CLI import — the Npgsql default
         // pool is 10+10 and we want headroom for whatever else is connected.
         var workers = Math.Clamp(fastParallelism, 1, 16);
+
+        // ---- Secondary indexes: drop for the load, rebuild after ----
+        //
+        // Two jobs here, in this order:
+        //  1. RECOVER. A checkpoint carrying `dropped_indexes` means an earlier
+        //     run died between DROP and rebuild, so the database is currently
+        //     missing them. If this run isn't going to drop them again, put
+        //     them back first — otherwise the operator silently keeps running
+        //     an unindexed database.
+        //  2. DROP, recording to the checkpoint BEFORE issuing the DROP so a
+        //     hard kill still leaves the recovery SQL on disk.
+        var droppedIndexes = new List<ImportCheckpointStore.DroppedIndex>();
+        var pendingFromCrash = checkpoint?.PendingDroppedIndexes() ?? [];
+        if (pendingFromCrash.Count > 0)
+        {
+            if (dropIndexes)
+            {
+                // They are already gone and we want them gone — adopt the
+                // recorded definitions rather than re-discovering (discovery
+                // would find nothing, losing the rebuild SQL).
+                droppedIndexes.AddRange(pendingFromCrash);
+                log.LogWarning(
+                    "import: {Count} index(es) were left dropped by an earlier run — reusing their "
+                    + "recorded definitions and rebuilding at the end of this one", pendingFromCrash.Count);
+            }
+            else
+            {
+                log.LogWarning(
+                    "import: {Count} index(es) are missing from an earlier --drop-indexes run that did "
+                    + "not finish — rebuilding them now before importing", pendingFromCrash.Count);
+                await using var restoreConn = await db.OpenAsync(ct);
+                var stillBroken = await ImportBulkIndexes.RestoreAsync(restoreConn, pendingFromCrash, log, ct);
+                checkpoint?.MarkIndexesRestored(pendingFromCrash.Select(i => i.Name).Except(stillBroken));
+                if (stillBroken.Count > 0)
+                    return Response.Fail(InternalErrorCode.SOMETHING_WRONG,
+                        $"could not rebuild index(es) left dropped by an earlier import: "
+                        + $"{string.Join(", ", stillBroken)}. Fix them manually before re-running:\n"
+                        + ImportBulkIndexes.RecoverySql(pendingFromCrash),
+                        ErrorTypes.Exception);
+            }
+        }
+
+        if (dropIndexes && droppedIndexes.Count == 0)
+        {
+            await using var dropConn = await db.OpenAsync(ct);
+            var found = await ImportBulkIndexes.DiscoverAsync(dropConn, ct);
+            if (found.Count == 0)
+            {
+                log.LogInformation("import: --drop-indexes found no droppable secondary indexes");
+            }
+            else
+            {
+                // Durable record FIRST — the ordering is the whole recovery story.
+                checkpoint?.MarkIndexesDropped(found);
+                if (checkpoint is null)
+                    log.LogWarning(
+                        "import: --drop-indexes without --resume — if this run is killed, the indexes stay "
+                        + "dropped with no sidecar to recover from. Rebuild SQL:\n{Sql}",
+                        ImportBulkIndexes.RecoverySql(found));
+                await ImportBulkIndexes.DropAsync(dropConn, found, log, ct);
+                droppedIndexes.AddRange(found);
+                log.LogInformation(
+                    "import: dropped {Count} index(es) for the bulk load — they are rebuilt when the "
+                    + "import finishes, and queries against them are degraded until then", found.Count);
+            }
+        }
+
+        try
+        {
 
         // ---- Pass 1+2: Users, Spaces, Roles, Permissions ----
         // These are small and load-bearing for everything that follows; run
@@ -1152,6 +1221,50 @@ public sealed class ImportExportService(
         }
 
         return Response.Ok(attributes: attributes);
+
+        }
+        finally
+        {
+            // Rebuild unconditionally — success, per-row failures, a failed
+            // shard, an exception, or Ctrl-C all land here. The one case this
+            // cannot cover is the process being killed outright, which is what
+            // the checkpoint record exists for.
+            //
+            // CancellationToken.None deliberately: if the operator cancelled,
+            // the token is already tripped and passing it would abort the
+            // rebuild and leave the database unindexed — the opposite of what
+            // cancelling an import should do. The rebuild is the cleanup.
+            if (droppedIndexes.Count > 0)
+            {
+                log.LogInformation("import: rebuilding {Count} index(es)...", droppedIndexes.Count);
+                try
+                {
+                    await using var conn = await db.OpenAsync(CancellationToken.None);
+                    var stillBroken = await ImportBulkIndexes.RestoreAsync(
+                        conn, droppedIndexes, log, CancellationToken.None);
+                    checkpoint?.MarkIndexesRestored(
+                        droppedIndexes.Select(i => i.Name).Except(stillBroken));
+                    if (stillBroken.Count == 0)
+                        log.LogInformation("import: all {Count} index(es) rebuilt", droppedIndexes.Count);
+                    else
+                        log.LogError(
+                            "import: {Count} index(es) could NOT be rebuilt ({Names}). The database is "
+                            + "missing them. Run:\n{Sql}",
+                            stillBroken.Count, string.Join(", ", stillBroken),
+                            ImportBulkIndexes.RecoverySql(
+                                droppedIndexes.Where(i => stillBroken.Contains(i.Name)).ToList()));
+                }
+                catch (Exception ex)
+                {
+                    // Swallowed on purpose: an exception escaping a finally
+                    // would replace the real import outcome with this one. Log
+                    // loudly instead — the checkpoint still holds the SQL.
+                    log.LogError(ex,
+                        "import: index rebuild failed outright. The database is missing {Count} index(es). Run:\n{Sql}",
+                        droppedIndexes.Count, ImportBulkIndexes.RecoverySql(droppedIndexes));
+                }
+            }
+        }
     }
 
     // ---- layout classifiers ----
