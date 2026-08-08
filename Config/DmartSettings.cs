@@ -29,6 +29,17 @@ public sealed class DmartSettings
     // claim, is EOL — every current issuer tags its tokens).
     public bool JwtRequireTokenUse { get; set; }
 
+    // Which SQL backend backs the index. Mirrors Python dmart's
+    // DATABASE_DRIVER. Accepted values are the members of
+    // Dmart.DataAdapters.Sql.DatabaseDriver, matched case-insensitively;
+    // DmartSettingsValidator rejects anything else at startup rather than
+    // letting it fall through to a default.
+    //
+    // The flat files under SPACES_FOLDER remain the source of truth in every
+    // mode — the SQL store is a rebuildable index — so this selects how that
+    // index is stored, not where the data lives.
+    public string DatabaseDriver { get; set; } = "postgresql";
+
     // Full Npgsql connection string. If unset, Db builds one from the
     // individual DATABASE_* components below (matching Python's behavior
     // of assembling a SQLAlchemy URL out of username/password/host/port/name).

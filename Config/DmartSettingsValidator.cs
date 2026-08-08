@@ -15,6 +15,28 @@ internal sealed class DmartSettingsValidator : IValidateOptions<DmartSettings>
 
         if (s.ListeningPort is < 1 or > 65535)
             failures.Add($"ListeningPort must be 1-65535 (got {s.ListeningPort})");
+
+        // Fail on an unrecognized driver rather than defaulting. A typo'd
+        // DATABASE_DRIVER that silently ran on PostgreSQL would only surface
+        // as "why is my SQLite file empty" long after deployment.
+        if (!Dmart.DataAdapters.Sql.DatabaseDriverParser.TryParse(s.DatabaseDriver, out var driver))
+        {
+            failures.Add(
+                $"DatabaseDriver '{s.DatabaseDriver}' is not recognized "
+                + $"(supported: {Dmart.DataAdapters.Sql.DatabaseDriverParser.Supported})");
+        }
+        else if (driver == Dmart.DataAdapters.Sql.DatabaseDriver.Sqlite)
+        {
+            // The knob and its validation land before the backend does, so the
+            // seam can be reviewed independently. Refusing to boot is the only
+            // honest response until the SQLite adapter exists — quietly serving
+            // PostgreSQL to an operator who asked for SQLite would be worse
+            // than not starting.
+            failures.Add(
+                "DatabaseDriver 'sqlite' is not implemented yet — this build supports "
+                + "'postgresql' only. Track the SQLite backend in "
+                + "docs/sqlite-backend-audit.md.");
+        }
         if (s.DatabasePort is < 1 or > 65535)
             failures.Add($"DatabasePort must be 1-65535 (got {s.DatabasePort})");
         if (s.DatabasePoolSize <= 0)
