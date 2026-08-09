@@ -1,3 +1,4 @@
+using System.Data.Common;
 using Dmart.Models.Core;
 using Npgsql;
 using NpgsqlTypes;
@@ -303,7 +304,7 @@ public sealed class AttachmentRepository(Db db)
     private static void AddJsonbNotNull(NpgsqlCommand cmd, string json)
         => cmd.Parameters.Add(new() { Value = json, NpgsqlDbType = NpgsqlDbType.Jsonb });
 
-    private static Attachment Hydrate(NpgsqlDataReader r)
+    private static Attachment Hydrate(DbDataReader r)
     {
         return new Attachment
         {

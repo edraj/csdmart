@@ -1,3 +1,4 @@
+using System.Data.Common;
 using System.Diagnostics.CodeAnalysis;
 using Dmart.Models.Core;
 using Dmart.Models.Enums;
@@ -207,7 +208,7 @@ public sealed class SpaceRepository(Db db)
     private static void AddJsonbNotNull(NpgsqlCommand cmd, string json)
         => cmd.Parameters.Add(new() { Value = json, NpgsqlDbType = NpgsqlDbType.Jsonb });
 
-    private static Space Hydrate(NpgsqlDataReader r)
+    private static Space Hydrate(DbDataReader r)
     {
         return new Space
         {

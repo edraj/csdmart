@@ -1,3 +1,4 @@
+using System.Data.Common;
 using System.Diagnostics.CodeAnalysis;
 using System.Text.Json;
 using Dmart.Models.Api;
@@ -926,7 +927,7 @@ public sealed class EntryRepository(Db db)
         });
     }
 
-    private static Entry Hydrate(NpgsqlDataReader r)
+    private static Entry Hydrate(DbDataReader r)
     {
         return new Entry
         {

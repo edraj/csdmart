@@ -74,7 +74,10 @@ internal static class CliBootstrap
         var refresher = new AuthzCacheRefresher();
         var entryRepo = new EntryRepository(db);
         var userRepo = new UserRepository(db, refresher, new SessionTokenHasher(s));
-        var accessRepo = new AccessRepository(db, refresher, userRepo);
+        // The CLI is PostgreSQL-only today (import/export leans on binary COPY and
+        // the SQLSTATE-driven import session), so it names the dialect directly
+        // rather than resolving one from DATABASE_DRIVER.
+        var accessRepo = new AccessRepository(db, Dmart.QueryGrammar.PostgresSqlDialect.Instance, refresher, userRepo);
         return new ImportExportService(
             entryRepo,
             new AttachmentRepository(db),

@@ -4,6 +4,7 @@ using Dmart.Models.Api;
 using Dmart.Models.Enums;
 using Dmart.QueryGrammar;
 using Microsoft.Extensions.Logging.Abstractions;
+using System.Data.Common;
 using Npgsql;
 using NpgsqlTypes;
 
@@ -444,8 +445,8 @@ public static class QueryHelper
     [SuppressMessage("Security", "CA2100",
         Justification = "Audited: `selectAllColumns` and `tableName` are internal-only identifiers from typed repository callers; user values flow through $N parameters built by BuildWhereClause/AppendAclFilter.")]
     public static async Task<List<T>> RunQueryAsync<T>(
-        Db db, string selectAllColumns, Query q,
-        Func<NpgsqlDataReader, T> hydrate,
+        IDbConnectionFactory db, string selectAllColumns, Query q,
+        Func<DbDataReader, T> hydrate,
         CancellationToken ct,
         string? userShortname = null, string? tableName = null,
         List<string>? queryPolicies = null,
@@ -467,8 +468,9 @@ public static class QueryHelper
         AppendOrderAndPaging(sql, q, args, tableName);
 
         await using var conn = await db.OpenAsync(ct);
-        await using var cmd = new NpgsqlCommand(sql.ToString(), conn);
-        foreach (var p in args) cmd.Parameters.Add(p);
+        await using var cmd = conn.CreateCommand();
+        cmd.CommandText = sql.ToString();
+        DbParams.BindAll(cmd, args);
         await using var reader = await cmd.ExecuteReaderAsync(ct);
         var results = new List<T>();
         while (await reader.ReadAsync(ct))
@@ -482,7 +484,7 @@ public static class QueryHelper
     [SuppressMessage("Security", "CA2100",
         Justification = "Audited: `tableName` is an internal-only identifier; user values flow through $N parameters.")]
     public static async Task<int> RunCountAsync(
-        Db db, string tableName, Query q,
+        IDbConnectionFactory db, string tableName, Query q,
         CancellationToken ct,
         string? userShortname = null, List<string>? queryPolicies = null,
         IReadOnlyList<InnerSemiJoinSpec>? semiJoins = null)
@@ -500,9 +502,15 @@ public static class QueryHelper
             AppendInnerSemiJoins(sqlBuilder, args, semiJoins);
 
         await using var conn = await db.OpenAsync(ct);
-        await using var cmd = new NpgsqlCommand(sqlBuilder.ToString(), conn);
-        foreach (var p in args) cmd.Parameters.Add(p);
-        return (int)(long)(await cmd.ExecuteScalarAsync(ct) ?? 0L);
+        await using var cmd = conn.CreateCommand();
+        cmd.CommandText = sqlBuilder.ToString();
+        DbParams.BindAll(cmd, args);
+        // COUNT(*) is int64 on PostgreSQL and int64 on SQLite too, but the
+        // provider may hand back a boxed int; Convert normalizes both.
+        var scalar = await cmd.ExecuteScalarAsync(ct);
+        return scalar is null or DBNull
+            ? 0
+            : Convert.ToInt32(scalar, System.Globalization.CultureInfo.InvariantCulture);
     }
 
     // ====================================================================
@@ -581,7 +589,7 @@ public static class QueryHelper
     [SuppressMessage("Security", "CA2100",
         Justification = "Audited: `tableName` is internal; group-by/reducer expressions are built from a whitelisted ResolveFieldExpr/SanitizeAlias pipeline; user values flow through $N parameters.")]
     public static async Task<List<Dictionary<string, object>>> RunAggregationAsync(
-        Db db, string tableName, Query q, CancellationToken ct,
+        IDbConnectionFactory db, string tableName, Query q, CancellationToken ct,
         string? userShortname = null, List<string>? queryPolicies = null)
     {
         var built = BuildAggregationSql(tableName, q, userShortname, queryPolicies);
@@ -589,8 +597,9 @@ public static class QueryHelper
         var (sql, args) = built.Value;
 
         await using var conn = await db.OpenAsync(ct);
-        await using var cmd = new NpgsqlCommand(sql, conn);
-        foreach (var p in args) cmd.Parameters.Add(p);
+        await using var cmd = conn.CreateCommand();
+        cmd.CommandText = sql;
+        DbParams.BindAll(cmd, args);
         await using var reader = await cmd.ExecuteReaderAsync(ct);
 
         var results = new List<Dictionary<string, object>>();

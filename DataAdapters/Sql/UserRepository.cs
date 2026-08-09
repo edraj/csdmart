@@ -1,3 +1,4 @@
+using System.Data.Common;
 using System.Diagnostics.CodeAnalysis;
 using Dmart.Auth;
 using Dmart.Models.Core;
@@ -974,7 +975,7 @@ public sealed class UserRepository(Db db, AuthzCacheRefresher refresher, Session
         });
     }
 
-    private static User Hydrate(NpgsqlDataReader r)
+    private static User Hydrate(DbDataReader r)
     {
         return new User
         {
@@ -1021,7 +1022,7 @@ public sealed class UserRepository(Db db, AuthzCacheRefresher refresher, Session
     }
 
     // Reads a string column, returning null for both DB NULL and empty strings.
-    private static string? NullIfEmpty(NpgsqlDataReader r, int ordinal)
+    private static string? NullIfEmpty(DbDataReader r, int ordinal)
     {
         if (r.IsDBNull(ordinal)) return null;
         var s = r.GetString(ordinal);

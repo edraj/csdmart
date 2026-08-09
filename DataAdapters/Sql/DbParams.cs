@@ -25,6 +25,31 @@ namespace Dmart.DataAdapters.Sql;
 // SQL string. Dispatch is on the concrete command type: both providers are
 // statically referenced, so nothing here is reflection-based and Native AOT
 // sees through it.
+public static class DbCommandFactory
+{
+    /// <summary>Creates a command carrying <paramref name="sql"/>.</summary>
+    /// <remarks>
+    /// Replaces `new NpgsqlCommand(sql, conn)` at call sites that are otherwise
+    /// provider-neutral. DbCommand has no such constructor — CommandText is a
+    /// settable property — and spelling that out at every call site would bury
+    /// the SQL under two lines of ceremony.
+    /// </remarks>
+    public static DbCommand Command(this DbConnection conn, string sql)
+    {
+        var cmd = conn.CreateCommand();
+        cmd.CommandText = sql;
+        return cmd;
+    }
+
+    /// <summary>Creates a command enlisted in an open transaction.</summary>
+    public static DbCommand Command(this DbConnection conn, string sql, DbTransaction? tx)
+    {
+        var cmd = conn.Command(sql);
+        cmd.Transaction = tx;
+        return cmd;
+    }
+}
+
 public static class DbParams
 {
     /// <summary>
@@ -49,6 +74,39 @@ public static class DbParams
                 new SqlParam(null, value ?? DBNull.Value, kind)));
         }
         return placeholder;
+    }
+
+    /// <summary>
+    /// Binds an accumulated parameter list onto a command.
+    /// </summary>
+    /// <remarks>
+    /// The query builders (BuildWhereClause, AppendAclFilter, …) accumulate
+    /// parameters into a flat list before any command exists, because the
+    /// caller composes several fragments and only then knows the final SQL.
+    /// This binds that list onto whichever provider's command it ends up on.
+    ///
+    /// Deliberately keyed on each value's CLR type rather than on the
+    /// accumulated NpgsqlParameter's NpgsqlDbType. That property is inferred
+    /// lazily and reports differently depending on whether a connection has
+    /// initialized Npgsql's global type mapper — the same instability that made
+    /// the emitted-SQL snapshot flaky. The CLR type is sufficient here anyway:
+    /// what SQLite needs to know is that a string[] becomes a JSON array and a
+    /// map becomes a JSON object, which the value itself already says.
+    /// </remarks>
+    public static void BindAll(DbCommand cmd, IReadOnlyList<NpgsqlParameter> args)
+    {
+        if (cmd is SqliteCommand)
+        {
+            for (var i = 0; i < args.Count; i++)
+            {
+                var name = "$" + (i + 1).ToString(System.Globalization.CultureInfo.InvariantCulture);
+                cmd.Parameters.Add(new SqliteParameter(
+                    name, ToSqliteStorage(args[i].Value, SqlValueKind.Inferred)));
+            }
+            return;
+        }
+        // Npgsql binds these by position, so they stay nameless and in order.
+        foreach (var p in args) cmd.Parameters.Add(p);
     }
 
     /// <summary>Appends several parameters in order, returning their placeholders.</summary>
