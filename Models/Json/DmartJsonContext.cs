@@ -28,6 +28,8 @@ namespace Dmart.Models.Json;
 // EnumMemberConverter.cs. We deliberately don't set UseStringEnumConverter here
 // because that emits source-gen converters that ignore [EnumMember].
 [JsonSerializable(typeof(ImportCheckpointStore))]
+[JsonSerializable(typeof(Dictionary<string, ImportCheckpointStore.ShardProgress>))]
+[JsonSerializable(typeof(List<ImportCheckpointStore.DroppedIndex>))]
 [JsonSerializable(typeof(Query))]
 [JsonSerializable(typeof(JoinQuery))]
 [JsonSerializable(typeof(RedisAggregate))]

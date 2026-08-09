@@ -7,7 +7,7 @@ using Xunit;
 
 namespace Dmart.Tests.Integration;
 
-// Mirrors dmart's pytests/test_info.py — /info/manifest, /info/settings.
+// Mirrors dmart's pytests/test_info.py — /info/me, /info/manifest, /info/settings.
 public class InfoTests : IClassFixture<DmartFactory>
 {
     private readonly DmartFactory _factory;
@@ -19,6 +19,47 @@ public class InfoTests : IClassFixture<DmartFactory>
         var client = _factory.CreateClient();
         var resp = await client.GetAsync("/info/manifest");
         resp.StatusCode.ShouldBe(HttpStatusCode.Unauthorized);
+    }
+
+    // /info/me is authenticated, not anonymous: the 401 IS how a caller learns
+    // it has no session. It used to answer 200 with authenticated:false, which
+    // made it the one unauthenticated route inside a group that is otherwise
+    // super_admin-only.
+    [Fact]
+    public async Task Me_Without_Auth_Returns_401()
+    {
+        var client = _factory.CreateClient();
+        var resp = await client.GetAsync("/info/me");
+        resp.StatusCode.ShouldBe(HttpStatusCode.Unauthorized);
+    }
+
+    // The load-bearing half of the exemption: a role-less user — the privilege
+    // level of a fresh self-registration — must get their own identity back,
+    // while the sibling routes tested below still refuse them. That pair is
+    // what proves AllowAuthenticated narrows the group's rule for exactly one
+    // route and nothing else.
+    [FactIfPg]
+    public async Task Me_As_NonAdmin_Returns_Own_Shortname()
+    {
+        var user = await _factory.CreateLoggedInUserAsync(roles: new());
+        try
+        {
+            var resp = await user.Client.GetAsync("/info/me");
+            resp.StatusCode.ShouldBe(HttpStatusCode.OK);
+
+            var doc = JsonDocument.Parse(await resp.Content.ReadAsStringAsync());
+            doc.RootElement.GetProperty("status").GetString().ShouldBe("success");
+            var attrs = doc.RootElement.GetProperty("attributes");
+            attrs.GetProperty("shortname").GetString().ShouldBe(user.Shortname);
+
+            // Python's /info/me returns {shortname} and nothing else
+            // (api/info/router.py:51). The old `authenticated` flag went with
+            // the anonymous branch that gave it meaning — here it could only
+            // ever read true.
+            attrs.TryGetProperty("authenticated", out _).ShouldBeFalse(
+                "the authenticated flag is meaningless on an authenticated-only route");
+        }
+        finally { await user.Cleanup(); }
     }
 
     [Fact]

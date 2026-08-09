@@ -72,6 +72,7 @@ backends by changing the constructor.
 | `GetPayloadAsync` / `GetAttachmentUrl` | yes    | n/a — DB doesn't serve URLs |
 | `FetchDataAssetAsync`         | yes             | n/a — server query engine |
 | **Info (Client)**             |                 |                 |
+| `GetInfoMeAsync` | yes | n/a — server-side identity |
 | `GetManifestAsync` / `GetSettingsAsync` | yes | n/a — both require super_admin |
 | `GetSpaceHealthAsync`         | yes             | n/a — server orchestration |
 | **Admin (Client)**            |                 |                 |

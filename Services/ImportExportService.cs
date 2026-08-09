@@ -536,7 +536,7 @@ public sealed class ImportExportService(
     /// stripped, <c>""</c> or <c>"/"</c> means "directly under the space
     /// root". Required when <paramref name="targetSpace"/> is set.
     /// </param>
-    public async Task<Response> ImportFolderAsync(string folderPath, string? actor, bool preserveExisting, bool fastUnsafeNoFkCheck, int fastParallelism, int batchSize = DefaultBatchSize, string? targetSpace = null, string? targetSubpath = null, bool resume = false, string? checkpointPath = null, DateTime? sinceUtc = null, bool validate = true, string? issuesFilePath = null, bool skipHistory = false, IReadOnlyList<string>? importTags = null, string? fromListPath = null, string? saveListPath = null, IReadOnlyList<string>? includeSpaces = null, CancellationToken ct = default)
+    public async Task<Response> ImportFolderAsync(string folderPath, string? actor, bool preserveExisting, bool fastUnsafeNoFkCheck, int fastParallelism, int batchSize = DefaultBatchSize, string? targetSpace = null, string? targetSubpath = null, bool resume = false, string? checkpointPath = null, DateTime? sinceUtc = null, bool validate = true, string? issuesFilePath = null, bool skipHistory = false, IReadOnlyList<string>? importTags = null, string? fromListPath = null, string? saveListPath = null, IReadOnlyList<string>? includeSpaces = null, bool dropIndexes = false, CancellationToken ct = default)
     {
         _ = actor;
         if (!Directory.Exists(folderPath))
@@ -829,7 +829,7 @@ public sealed class ImportExportService(
         try
         {
             response = await ImportFromEntriesAsync(entries, ImportSourceKind.Filesystem,
-                preserveExisting, fastUnsafeNoFkCheck, fastParallelism, batchSize, checkpoint, validation, importTags, skipHistory, ct);
+                preserveExisting, fastUnsafeNoFkCheck, fastParallelism, batchSize, checkpoint, validation, importTags, skipHistory, dropIndexes, ct);
         }
         finally
         {
@@ -870,7 +870,7 @@ public sealed class ImportExportService(
         bool preserveExisting, bool fastUnsafeNoFkCheck, int fastParallelism,
         int batchSize, ImportCheckpointStore? checkpoint = null,
         ImportValidationContext? validation = null, IReadOnlyList<string>? importTags = null,
-        bool skipHistory = false, CancellationToken ct = default)
+        bool skipHistory = false, bool dropIndexes = false, CancellationToken ct = default)
     {
         // Clamp batch size — operators tune via --batch-size for their data
         // shape (smaller for fat payloads, larger for tiny ones). The hard
@@ -909,6 +909,75 @@ public sealed class ImportExportService(
         // >16 is rejected as nonsense for a CLI import — the Npgsql default
         // pool is 10+10 and we want headroom for whatever else is connected.
         var workers = Math.Clamp(fastParallelism, 1, 16);
+
+        // ---- Secondary indexes: drop for the load, rebuild after ----
+        //
+        // Two jobs here, in this order:
+        //  1. RECOVER. A checkpoint carrying `dropped_indexes` means an earlier
+        //     run died between DROP and rebuild, so the database is currently
+        //     missing them. If this run isn't going to drop them again, put
+        //     them back first — otherwise the operator silently keeps running
+        //     an unindexed database.
+        //  2. DROP, recording to the checkpoint BEFORE issuing the DROP so a
+        //     hard kill still leaves the recovery SQL on disk.
+        var droppedIndexes = new List<ImportCheckpointStore.DroppedIndex>();
+        var pendingFromCrash = checkpoint?.PendingDroppedIndexes() ?? [];
+        if (pendingFromCrash.Count > 0)
+        {
+            if (dropIndexes)
+            {
+                // They are already gone and we want them gone — adopt the
+                // recorded definitions rather than re-discovering (discovery
+                // would find nothing, losing the rebuild SQL).
+                droppedIndexes.AddRange(pendingFromCrash);
+                log.LogWarning(
+                    "import: {Count} index(es) were left dropped by an earlier run — reusing their "
+                    + "recorded definitions and rebuilding at the end of this one", pendingFromCrash.Count);
+            }
+            else
+            {
+                log.LogWarning(
+                    "import: {Count} index(es) are missing from an earlier --drop-indexes run that did "
+                    + "not finish — rebuilding them now before importing", pendingFromCrash.Count);
+                await using var restoreConn = await db.OpenAsync(ct);
+                var stillBroken = await ImportBulkIndexes.RestoreAsync(restoreConn, pendingFromCrash, log, ct);
+                checkpoint?.MarkIndexesRestored(pendingFromCrash.Select(i => i.Name).Except(stillBroken));
+                if (stillBroken.Count > 0)
+                    return Response.Fail(InternalErrorCode.SOMETHING_WRONG,
+                        $"could not rebuild index(es) left dropped by an earlier import: "
+                        + $"{string.Join(", ", stillBroken)}. Fix them manually before re-running:\n"
+                        + ImportBulkIndexes.RecoverySql(pendingFromCrash),
+                        ErrorTypes.Exception);
+            }
+        }
+
+        if (dropIndexes && droppedIndexes.Count == 0)
+        {
+            await using var dropConn = await db.OpenAsync(ct);
+            var found = await ImportBulkIndexes.DiscoverAsync(dropConn, ct);
+            if (found.Count == 0)
+            {
+                log.LogInformation("import: --drop-indexes found no droppable secondary indexes");
+            }
+            else
+            {
+                // Durable record FIRST — the ordering is the whole recovery story.
+                checkpoint?.MarkIndexesDropped(found);
+                if (checkpoint is null)
+                    log.LogWarning(
+                        "import: --drop-indexes without --resume — if this run is killed, the indexes stay "
+                        + "dropped with no sidecar to recover from. Rebuild SQL:\n{Sql}",
+                        ImportBulkIndexes.RecoverySql(found));
+                await ImportBulkIndexes.DropAsync(dropConn, found, log, ct);
+                droppedIndexes.AddRange(found);
+                log.LogInformation(
+                    "import: dropped {Count} index(es) for the bulk load — they are rebuilt when the "
+                    + "import finishes, and queries against them are degraded until then", found.Count);
+            }
+        }
+
+        try
+        {
 
         // ---- Pass 1+2: Users, Spaces, Roles, Permissions ----
         // These are small and load-bearing for everything that follows; run
@@ -977,14 +1046,6 @@ public sealed class ImportExportService(
             .Where(g => !string.IsNullOrEmpty(g.Key))
             .ToList();
 
-        // Denominator for overall progress: the entry + attachment metas that
-        // the batch loop will flush (known now, whether the list came from the
-        // walk or --from-list). Set once before any worker starts so each batch
-        // line can show processed/total %. Histories aren't counted — they're a
-        // per-line unit and are skipped under --skip-history.
-        results.TotalToProcess = tailEntries.Count(e => IsEntryMeta(e) || IsAttachmentMeta(e));
-        log.LogInformation("import: {Total} entries to process", results.TotalToProcess);
-
         // Sub-sharding a single space is only safe for filesystem sources: the
         // FS lean walk derives bodies from each meta's on-disk sibling, so an
         // entry's meta/attachments/history are resolved independently of which
@@ -1007,12 +1068,54 @@ public sealed class ImportExportService(
                     before - shards.Count, before);
         }
 
+        // Per-shard resume offsets and the progress denominator, both derived
+        // from a single pass over each surviving shard's work-list.
+        //
+        // Shard-level bookkeeping only exists on the --fast path: it's the one
+        // that dispatches per shard, checkpoints per shard, and can therefore
+        // resume mid-shard. The default path below ignores the shard list
+        // entirely and runs the whole tail on one session.
+        var resumeByShard = new Dictionary<string, ShardResume>(StringComparer.Ordinal);
+        long remaining = 0;
+        if (fastUnsafeNoFkCheck)
+        {
+            foreach (var (key, shardEntries) in shards)
+            {
+                var (fingerprint, entryMetas, attachmentMetas) = ShardShape(shardEntries, checkpoint is not null);
+                var (doneEntries, doneAttachments) = checkpoint?.TailProgressFor(key, fingerprint) ?? (0, 0);
+                // A fingerprint match already implies the same list, but a
+                // hand-edited sidecar must not be able to skip past the end.
+                doneEntries = Math.Clamp(doneEntries, 0, entryMetas);
+                doneAttachments = Math.Clamp(doneAttachments, 0, attachmentMetas);
+                if (checkpoint is not null)
+                    resumeByShard[key] = new ShardResume(checkpoint, key, fingerprint, doneEntries, doneAttachments);
+                if (doneEntries > 0 || doneAttachments > 0)
+                    log.LogInformation(
+                        "import: --resume shard {Shard} continues mid-shard — skipping {Entries} entries "
+                        + "and {Attachments} attachments an earlier run already committed",
+                        key, doneEntries, doneAttachments);
+                remaining += (entryMetas - doneEntries) + (attachmentMetas - doneAttachments);
+            }
+        }
+
+        // Denominator for overall progress: the entry + attachment metas THIS
+        // run will actually flush. On the --fast path that excludes both the
+        // shards the checkpoint retired and the already-committed prefix of a
+        // resumed shard, so a resumed run shows progress against the work
+        // that's left rather than a total it will never reach. Set once before
+        // any worker starts. Histories aren't counted — they're a per-line unit
+        // and are skipped under --skip-history.
+        results.TotalToProcess = fastUnsafeNoFkCheck
+            ? (int)Math.Min(int.MaxValue, remaining)
+            : tailEntries.Count(e => IsEntryMeta(e) || IsAttachmentMeta(e));
+        log.LogInformation("import: {Total} entries to process", results.TotalToProcess);
+
         var runParallel = fastUnsafeNoFkCheck && workers > 1 && shards.Count > 1;
-        if (fastUnsafeNoFkCheck && workers > 1 && shards.Count <= 1)
+        if (fastUnsafeNoFkCheck && workers > 1 && shards.Count == 1)
             log.LogWarning(
-                "import: --fast-parallelism={Workers} requested but the work formed a single shard "
-                + "(one space{ZipNote}, or too few entries to split) — running serially",
-                workers, sourceKind == ImportSourceKind.Zip ? ", zip source" : "");
+                "import: --fast-parallelism={Workers} requested but one shard is left to run "
+                + "({Shard}{ZipNote}) — running serially",
+                workers, shards[0].Key, sourceKind == ImportSourceKind.Zip ? ", zip source" : "");
 
         if (shards.Count == 0)
         {
@@ -1044,7 +1147,7 @@ public sealed class ImportExportService(
                     shards,
                     new ParallelOptions { MaxDegreeOfParallelism = workers, CancellationToken = ct },
                     async (shard, ictx) =>
-                        await RunShardTailIsolatedAsync(shard.Key, shard.Entries, preserveExisting, results, batchSize, validation, importTags, checkpoint, skipHistory, ictx));
+                        await RunShardTailIsolatedAsync(shard.Key, shard.Entries, preserveExisting, results, batchSize, validation, importTags, checkpoint, resumeByShard.GetValueOrDefault(shard.Key), skipHistory, ictx));
             }
             finally
             {
@@ -1058,7 +1161,7 @@ public sealed class ImportExportService(
             // make even a serial run survive a transport drop, and the
             // per-shard checkpoint means --resume works serially too.
             foreach (var shard in shards)
-                await RunShardTailIsolatedAsync(shard.Key, shard.Entries, preserveExisting, results, batchSize, validation, importTags, checkpoint, skipHistory, ct);
+                await RunShardTailIsolatedAsync(shard.Key, shard.Entries, preserveExisting, results, batchSize, validation, importTags, checkpoint, resumeByShard.GetValueOrDefault(shard.Key), skipHistory, ct);
         }
         else
         {
@@ -1069,7 +1172,7 @@ public sealed class ImportExportService(
             // flush helpers, so one bad row fails alone instead of sinking
             // its batch. Histories ride the shared session connection rather
             // than opening one connection per line.
-            await ImportShardTailAsync("serial", tailEntries, preserveExisting, results, batchSize, validation, importTags, skipHistory, bypassConstraints: false, ct);
+            await ImportShardTailAsync("serial", tailEntries, preserveExisting, results, batchSize, validation, importTags, resume: null, skipHistory, bypassConstraints: false, ct);
         }
 
         // Fast mode deferred the per-role/per-permission cache invalidations
@@ -1118,6 +1221,50 @@ public sealed class ImportExportService(
         }
 
         return Response.Ok(attributes: attributes);
+
+        }
+        finally
+        {
+            // Rebuild unconditionally — success, per-row failures, a failed
+            // shard, an exception, or Ctrl-C all land here. The one case this
+            // cannot cover is the process being killed outright, which is what
+            // the checkpoint record exists for.
+            //
+            // CancellationToken.None deliberately: if the operator cancelled,
+            // the token is already tripped and passing it would abort the
+            // rebuild and leave the database unindexed — the opposite of what
+            // cancelling an import should do. The rebuild is the cleanup.
+            if (droppedIndexes.Count > 0)
+            {
+                log.LogInformation("import: rebuilding {Count} index(es)...", droppedIndexes.Count);
+                try
+                {
+                    await using var conn = await db.OpenAsync(CancellationToken.None);
+                    var stillBroken = await ImportBulkIndexes.RestoreAsync(
+                        conn, droppedIndexes, log, CancellationToken.None);
+                    checkpoint?.MarkIndexesRestored(
+                        droppedIndexes.Select(i => i.Name).Except(stillBroken));
+                    if (stillBroken.Count == 0)
+                        log.LogInformation("import: all {Count} index(es) rebuilt", droppedIndexes.Count);
+                    else
+                        log.LogError(
+                            "import: {Count} index(es) could NOT be rebuilt ({Names}). The database is "
+                            + "missing them. Run:\n{Sql}",
+                            stillBroken.Count, string.Join(", ", stillBroken),
+                            ImportBulkIndexes.RecoverySql(
+                                droppedIndexes.Where(i => stillBroken.Contains(i.Name)).ToList()));
+                }
+                catch (Exception ex)
+                {
+                    // Swallowed on purpose: an exception escaping a finally
+                    // would replace the real import outcome with this one. Log
+                    // loudly instead — the checkpoint still holds the SQL.
+                    log.LogError(ex,
+                        "import: index rebuild failed outright. The database is missing {Count} index(es). Run:\n{Sql}",
+                        droppedIndexes.Count, ImportBulkIndexes.RecoverySql(droppedIndexes));
+                }
+            }
+        }
     }
 
     // ---- layout classifiers ----
@@ -1198,12 +1345,13 @@ public sealed class ImportExportService(
         ImportValidationContext? validation,
         IReadOnlyList<string>? importTags,
         ImportCheckpointStore? checkpoint,
+        ShardResume? resume,
         bool skipHistory,
         CancellationToken ct)
     {
         try
         {
-            await ImportShardTailAsync(shardKey, shardEntries, preserveExisting, results, batchSize, validation, importTags, skipHistory, bypassConstraints: true, ct);
+            await ImportShardTailAsync(shardKey, shardEntries, preserveExisting, results, batchSize, validation, importTags, resume, skipHistory, bypassConstraints: true, ct);
             // Per-shard commit landed. Record it so a future --resume skips this
             // shard. MarkTailDone is lock-protected and atomically rewrites the
             // sidecar.
@@ -1232,6 +1380,7 @@ public sealed class ImportExportService(
         int batchSize,
         ImportValidationContext? validation,
         IReadOnlyList<string>? importTags,
+        ShardResume? resume,
         bool skipHistory,
         bool bypassConstraints,
         CancellationToken ct)
@@ -1241,7 +1390,10 @@ public sealed class ImportExportService(
             : await db.BeginBatchImportSessionAsync(ct);    // default: FKs enforced
         try
         {
-            await RunTailPassesAsync(session, label, shardEntries, preserveExisting, results, batchSize, validation, importTags, skipHistory, ct);
+            // Scratch tables live for the whole session and are re-created
+            // automatically after a reconnect or a transaction reset.
+            await session.InitConnectionAsync(CreateImportScratchTablesAsync, ct);
+            await RunTailPassesAsync(session, label, shardEntries, preserveExisting, results, batchSize, validation, importTags, resume, skipHistory, ct);
             session.MarkSuccess();
         }
         finally
@@ -1270,6 +1422,7 @@ public sealed class ImportExportService(
         int batchSize,
         ImportValidationContext? validation,
         IReadOnlyList<string>? importTags,
+        ShardResume? resume,
         bool skipHistory,
         CancellationToken ct)
     {
@@ -1293,15 +1446,33 @@ public sealed class ImportExportService(
         // in RAM until the loop completes. At ~10 KB avg payload and 10k batch
         // size, peak per-batch is ~100 MB; the import is bounded regardless of
         // total entry count. Each flush is also a durable commit boundary.
+        // --resume: skip the prefix an earlier run already committed. The offset
+        // counts SOURCE ITEMS consumed, not rows flushed, because an item that
+        // failed validation never reaches the batch — counting rows would drift
+        // the offset backwards past entries that were genuinely handled. One
+        // consequence worth knowing: issues already written to the sidecar for
+        // the skipped prefix are not re-emitted on the resumed run.
+        var doneEntries = resume?.EntriesDone ?? 0;
+        var consumedEntries = doneEntries;
         var bulkEntries = bulk ? new List<Entry>(batchSize) : null;
-        foreach (var ze in zes.Where(IsEntryMeta))
+        foreach (var ze in zes.Where(IsEntryMeta).Skip(doneEntries))
         {
             await TryImportEntryAsync(ze, bodyLookup, results, preserveExisting, signalConn, bulkEntries, validation, importTags, ct);
+            consumedEntries++;
+            results.AddProcessed(1);
             if (bulkEntries is { Count: > 0 } && bulkEntries.Count >= batchSize)
+            {
                 await FlushEntriesAsync(session!, label, bulkEntries, preserveExisting, results, ct);
+                // Only after the batch's commit lands — a crash before this
+                // point must replay the batch, not skip it.
+                resume?.Record(consumedEntries, 0);
+            }
         }
         if (bulkEntries is { Count: > 0 })
             await FlushEntriesAsync(session!, label, bulkEntries, preserveExisting, results, ct);
+        // Records "Pass 3 complete" even when the tail batch was empty, so a
+        // failure in Pass 4 doesn't drag Pass 3 through a full replay.
+        resume?.Record(consumedEntries, 0);
 
         // ---- Pass 4: Attachments ----
         var attachmentBodies = new Dictionary<string, ImportEntryRef>(StringComparer.Ordinal);
@@ -1309,15 +1480,23 @@ public sealed class ImportExportService(
             if (ze.FullName.Contains("/attachments.", StringComparison.Ordinal) && !ze.Name.StartsWith("meta.", StringComparison.Ordinal))
                 attachmentBodies[ze.FullName] = ze;
 
+        var doneAttachments = resume?.AttachmentsDone ?? 0;
+        var consumedAttachments = doneAttachments;
         var bulkAttachments = bulk ? new List<Attachment>(batchSize) : null;
-        foreach (var ze in zes.Where(IsAttachmentMeta))
+        foreach (var ze in zes.Where(IsAttachmentMeta).Skip(doneAttachments))
         {
             await TryImportAttachmentAsync(ze, attachmentBodies, results, preserveExisting, signalConn, bulkAttachments, ct);
+            consumedAttachments++;
+            results.AddProcessed(1);
             if (bulkAttachments is { Count: > 0 } && bulkAttachments.Count >= batchSize)
+            {
                 await FlushAttachmentsAsync(session!, label, bulkAttachments, preserveExisting, results, ct);
+                resume?.Record(consumedEntries, consumedAttachments);
+            }
         }
         if (bulkAttachments is { Count: > 0 })
             await FlushAttachmentsAsync(session!, label, bulkAttachments, preserveExisting, results, ct);
+        resume?.Record(consumedEntries, consumedAttachments);
 
         // ---- Pass 5: Histories ----
         // --skip-history covers BOTH the zip path (history.jsonl removed from the
@@ -1326,6 +1505,11 @@ public sealed class ImportExportService(
         // — the upstream RemoveAll can't reach the derived case, so the gate must
         // live here too.
         if (skipHistory) return;
+        // NOTE: the --resume offsets above deliberately do NOT apply here. The
+        // history slice commits once, at shard end (MarkSuccess ⇒ DisposeAsync),
+        // so a shard that died mid-run committed no history at all no matter how
+        // far its entry batches got — the whole slice has to replay, and doing so
+        // can't double-insert because nothing survived.
         // History append is NOT idempotent (every line inserts a fresh row), so
         // it deliberately skips the per-batch commit + replay path: it runs in
         // the session's trailing transaction, committed once at shard end
@@ -1371,7 +1555,10 @@ public sealed class ImportExportService(
         try
         {
             (affected, skipped) = await session.RunBatchAsync(
-                (c, t) => BulkInsertEntriesAsync(c, batch, preserveExisting, t), log, ct);
+                batch,
+                (c, rows, t) => BulkInsertEntriesAsync(c, rows, preserveExisting, t),
+                static (a, b) => (a.Affected + b.Affected, a.Skipped + b.Skipped),
+                log, ct);
         }
         catch (PostgresException ex) when (!session.BypassConstraints && IsIntegrityViolation(ex))
         {
@@ -1392,7 +1579,10 @@ public sealed class ImportExportService(
         }
         results.AddEntries(affected);
         if (preserveExisting) results.AddSkipped(skipped);
-        results.AddProcessed(count);
+        // Progress is counted by the caller, per source item consumed — not by
+        // rows flushed here. An item that failed validation never reaches a
+        // batch, so counting rows made `processed` lag the real position and
+        // the percentage never reached 100 on a run with validation issues.
         batch.Clear();
         log.LogInformation("import[{Label}]: entries +{Batch} (inserted {Inserted}, processed {Proc}/{Total} = {Pct}%)",
             label, affected, results.EntriesInserted, results.Processed, results.TotalToProcess, results.ProgressPct());
@@ -1407,7 +1597,10 @@ public sealed class ImportExportService(
         try
         {
             (affected, skipped) = await session.RunBatchAsync(
-                (c, t) => BulkInsertAttachmentsAsync(c, batch, preserveExisting, t), log, ct);
+                batch,
+                (c, rows, t) => BulkInsertAttachmentsAsync(c, rows, preserveExisting, t),
+                static (a, b) => (a.Affected + b.Affected, a.Skipped + b.Skipped),
+                log, ct);
         }
         catch (PostgresException ex) when (!session.BypassConstraints && IsIntegrityViolation(ex))
         {
@@ -1420,7 +1613,7 @@ public sealed class ImportExportService(
         }
         results.AddAttachments(affected);
         if (preserveExisting) results.AddSkipped(skipped);
-        results.AddProcessed(count);
+        // See FlushEntriesAsync — the caller counts progress per consumed item.
         batch.Clear();
         log.LogInformation("import[{Label}]: attachments +{Batch} (inserted {Inserted}, processed {Proc}/{Total} = {Pct}%)",
             label, affected, results.AttachmentsInserted, results.Processed, results.TotalToProcess, results.ProgressPct());
@@ -1502,23 +1695,60 @@ public sealed class ImportExportService(
     }
 
     // ---- Shard partitioning ----------------------------------------------
+
+    // Where an earlier run's committed batches left this shard, plus the sink
+    // for recording new progress as this run's batches commit.
     //
+    // Before this existed, `--resume` was per-shard only: a shard that died at
+    // 90% of a three-hour run replayed from entry zero, re-reading, re-parsing
+    // and re-COPYing millions of rows that were already committed (landing zero
+    // new rows each batch, because preserveExisting merges ON CONFLICT DO
+    // NOTHING) before it reached any real work. Recording the committed prefix
+    // after each batch caps that loss at one batch.
+    //
+    // Only ever constructed when a checkpoint is in play; null means "no resume
+    // bookkeeping", which is also what the non-fast serial path passes.
+    private sealed class ShardResume(
+        ImportCheckpointStore store, string shardKey, string fingerprint,
+        int entriesDone, int attachmentsDone)
+    {
+        public int EntriesDone => entriesDone;
+        public int AttachmentsDone => attachmentsDone;
+
+        // Call ONLY after the batch's commit has landed.
+        public void Record(int entries, int attachments)
+            => store.MarkTailProgress(shardKey, fingerprint, entries, attachments);
+    }
+
     // Build the list of shards to dispatch. A shard is a (key, entries) pair.
-    // When sub-sharding is allowed and there's spare worker capacity, a single
-    // space is split into up to N sub-shards so one big space saturates the
-    // worker pool; otherwise each space is its own shard.
-    private static List<(string Key, List<ImportEntryRef> Entries)> BuildShards(
+    // When sub-sharding is allowed, a space is split into sub-shards so one big
+    // space saturates the worker pool; otherwise each space is its own shard.
+    //
+    // Splitting is decided by ENTRY COUNT, not by space count. Spaces in a real
+    // deployment are wildly unequal — one can hold three quarters of the tree —
+    // so the old "workers / spaces" rule gave a 4-space, 4-worker import one
+    // shard each, the three small spaces finished in minutes, and the dominant
+    // space then ran single-threaded for the remaining hours with three workers
+    // idle. Targeting a shard of at most total/workers cuts the dominant space
+    // into enough pieces to keep the pool busy end-to-end, while small spaces
+    // stay whole (splitting them buys nothing and costs a session each).
+    internal static List<(string Key, List<ImportEntryRef> Entries)> BuildShards(
         List<IGrouping<string, ImportEntryRef>> spaceGroups, int workers, bool allowSubSharding)
     {
         var shards = new List<(string Key, List<ImportEntryRef> Entries)>();
-        // Sub-shards per space: 1 when serial, when sub-sharding is disallowed
-        // (zip), or when there are already ≥workers spaces (the pool is full of
-        // spaces); otherwise split each space so the shards total ≈ workers.
-        var subShards = !allowSubSharding || workers <= 1 || spaceGroups.Count >= workers
-            ? 1
-            : Math.Max(1, workers / Math.Max(1, spaceGroups.Count));
+        if (!allowSubSharding || workers <= 1)
+        {
+            foreach (var g in spaceGroups) shards.Add((g.Key!, g.ToList()));
+            return shards;
+        }
+
+        var total = spaceGroups.Sum(g => (long)g.Count());
+        var target = Math.Max(1L, total / workers);
         foreach (var g in spaceGroups)
         {
+            long count = g.Count();
+            // Cap at `workers`: more sub-shards than workers only adds sessions.
+            var subShards = (int)Math.Clamp((count + target - 1) / target, 1, workers);
             if (subShards <= 1)
             {
                 shards.Add((g.Key!, g.ToList()));
@@ -1533,6 +1763,41 @@ public sealed class ImportExportService(
                     shards.Add(($"{g.Key}#{i}", buckets[i]));
         }
         return shards;
+    }
+
+    // Stable identity of a shard's ordered work-list, paired with the counts the
+    // progress denominator needs — computed in one pass because both walk the
+    // same multi-million-element list.
+    //
+    // Resume offsets are positions, so they're only sound against the identical
+    // list in the identical order. The fingerprint is what lets a changed
+    // --from-list, a re-walk that enumerated different files, or a different
+    // --fast-parallelism (which re-partitions a space into different sub-shards)
+    // invalidate stale offsets instead of silently skipping unimported entries.
+    //
+    // FNV-1a 64-bit — same family as ShardIndexFor, chosen because it runs over
+    // every path on every run. `withFingerprint` is false when no checkpoint is
+    // in play, so a non-resume import doesn't pay for a hash nobody reads.
+    internal static (string Fingerprint, int EntryMetas, int AttachmentMetas) ShardShape(
+        List<ImportEntryRef> shard, bool withFingerprint)
+    {
+        ulong h = 14695981039346656037;
+        var entryMetas = 0;
+        var attachmentMetas = 0;
+        foreach (var ze in shard)
+        {
+            if (IsEntryMeta(ze)) entryMetas++;
+            else if (IsAttachmentMeta(ze)) attachmentMetas++;
+            if (!withFingerprint) continue;
+            foreach (var c in ze.FullName)
+            {
+                h ^= c;
+                h *= 1099511628211;
+            }
+            h ^= '\n';
+            h *= 1099511628211;
+        }
+        return (withFingerprint ? $"{shard.Count:x}-{h:x16}" : "", entryMetas, attachmentMetas);
     }
 
     // Strip the "#index" suffix BuildShards appends to a sub-sharded space, so
@@ -2317,10 +2582,8 @@ public sealed class ImportExportService(
         for (var i = 0; i < rows.Count; i++)
             rows[i] = rows[i] with { QueryPolicies = Utils.QueryPolicies.Generate(rows[i]) };
 
-        await using (var create = new NpgsqlCommand(
-            "CREATE TEMP TABLE _imp_entries (LIKE entries INCLUDING DEFAULTS) ON COMMIT DROP", conn))
-            await create.ExecuteNonQueryAsync(ct);
-
+        // _imp_entries is created once per session by
+        // CreateImportScratchTablesAsync and emptied by each batch's commit.
         await using (var writer = await conn.BeginBinaryImportAsync(
             $"COPY _imp_entries ({EntryCopyColumns}) FROM STDIN (FORMAT BINARY)", ct))
         {
@@ -2374,12 +2637,9 @@ public sealed class ImportExportService(
         await using (var merge = new NpgsqlCommand(mergeSql, conn))
             affected = await merge.ExecuteNonQueryAsync(ct);
 
-        // The temp table is `ON COMMIT DROP`, so the per-batch commit would
-        // drop it anyway — but drop explicitly to release the OID promptly and
-        // keep the helper self-contained (caller-order independent).
-        await using (var drop = new NpgsqlCommand("DROP TABLE _imp_entries", conn))
-            await drop.ExecuteNonQueryAsync(ct);
-
+        // No DROP: the table is `ON COMMIT DELETE ROWS` and this body always
+        // runs inside a per-batch transaction, so the commit that follows
+        // empties it for the next batch.
         return (affected, preserveExisting ? rows.Count - affected : 0);
     }
 
@@ -2416,10 +2676,7 @@ public sealed class ImportExportService(
     {
         var now = TimeUtils.Now();
 
-        await using (var create = new NpgsqlCommand(
-            "CREATE TEMP TABLE _imp_attachments (LIKE attachments INCLUDING DEFAULTS) ON COMMIT DROP", conn))
-            await create.ExecuteNonQueryAsync(ct);
-
+        // See BulkInsertEntriesAsync — scratch table is session-scoped.
         await using (var writer = await conn.BeginBinaryImportAsync(
             $"COPY _imp_attachments ({AttachmentCopyColumns}) FROM STDIN (FORMAT BINARY)", ct))
         {
@@ -2463,10 +2720,35 @@ public sealed class ImportExportService(
         await using (var merge = new NpgsqlCommand(mergeSql, conn))
             affected = await merge.ExecuteNonQueryAsync(ct);
 
-        await using (var drop = new NpgsqlCommand("DROP TABLE _imp_attachments", conn))
-            await drop.ExecuteNonQueryAsync(ct);
-
         return (affected, preserveExisting ? rows.Count - affected : 0);
+    }
+
+    // Session-scoped scratch tables for the bulk COPY + merge.
+    //
+    // These used to be created and dropped per batch. That wrote — and then
+    // deleted — a pg_class row, a pg_type row, and one pg_attribute row per
+    // column (~30 for `entries`) on every single batch, thousands of times over
+    // a multi-hour import. The resulting catalog bloat makes every subsequent
+    // batch's planning slower, which is how a batch that took seconds at the
+    // start of a run ends up past the command timeout near the end of it.
+    //
+    // ON COMMIT DELETE ROWS gives the same "empty at the start of every batch"
+    // guarantee — each batch is its own transaction, so its commit truncates
+    // the scratch heap — without touching the catalogs again.
+    //
+    // Registered via session.InitConnectionAsync, so it re-runs after a
+    // reconnect (TEMP tables die with their backend) and after a transaction
+    // reset (a rollback undoes a CREATE that hadn't committed yet). IF NOT
+    // EXISTS makes those re-runs a no-op catalog lookup in the common case.
+    private static async Task CreateImportScratchTablesAsync(NpgsqlConnection conn, CancellationToken ct)
+    {
+        await using var cmd = new NpgsqlCommand(
+            "CREATE TEMP TABLE IF NOT EXISTS _imp_entries "
+            + "(LIKE entries INCLUDING DEFAULTS) ON COMMIT DELETE ROWS;"
+            + "CREATE TEMP TABLE IF NOT EXISTS _imp_attachments "
+            + "(LIKE attachments INCLUDING DEFAULTS) ON COMMIT DELETE ROWS;",
+            conn);
+        await cmd.ExecuteNonQueryAsync(ct);
     }
 
     // Small adapters so the per-column WriteAsync loop above stays compact.

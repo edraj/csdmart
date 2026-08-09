@@ -215,7 +215,13 @@ switch (subcommand)
                              Usage: dmart preflight [--dry-run] [--workers N]
                                                     [--output-dir D] <spaces-folder>
               import         Load a zip or folder export into the database. Supports
-                             --fast, --fast-parallelism=N, --batch-size=N, --resume
+                             --fast, --fast-parallelism=N, --batch-size=N, --resume,
+                             --drop-indexes (drop the GIN indexes on entries/
+                             attachments for the load and rebuild them after —
+                             several times faster on multi-million-row loads, but
+                             those indexes are MISSING for the duration, so use it
+                             only in a maintenance window. Pair with --resume so a
+                             kill leaves a recoverable record.)
                              (filesystem only — sidecar checkpoint at
                              <source>/.dmart-import-checkpoint.json lets a crash
                              resume from the last committed pass / space).
@@ -705,6 +711,14 @@ switch (subcommand)
         // is a large fraction of on-disk bytes. Dropping it speeds the import
         // and sidesteps data-quality issues that cluster in history.
         var skipHistory = serverArgs.Any(a => a is "--skip-history");
+        // --drop-indexes trades query availability for load speed: the GIN
+        // indexes on entries/attachments are dropped before the load and
+        // rebuilt after. GIN maintenance is paid per row AND worsens as the
+        // index grows, so on a multi-million-row load this is worth several
+        // times the wall clock. Only sane in a maintenance window — those
+        // indexes are missing for the whole import, so queries that need them
+        // seq-scan until the rebuild completes.
+        var dropIndexes = serverArgs.Any(a => a is "--drop-indexes");
 
         // --no-validate: disable the always-on import-time validation
         // (owner remap, uuid dedup, schema validation, parse-error logging).
@@ -759,7 +773,7 @@ switch (subcommand)
         }
         if (string.IsNullOrEmpty(targetPath))
         {
-            Bail("Usage: dmart import [-r|--replace] [--fast] [--fast-parallelism=N] [--batch-size=N] [--type=zip|fs] [--space=NAME --subpath=PATH] [--since=ISO-DATE] [--skip-history] [--tag=VALUE] [--no-validate] [--issues-file=PATH] [--resume] [--checkpoint-file=PATH] [--from-list=FILE] [--save-list=FILE] [--spaces=A,B,C] <path>");
+            Bail("Usage: dmart import [-r|--replace] [--fast] [--fast-parallelism=N] [--batch-size=N] [--type=zip|fs] [--space=NAME --subpath=PATH] [--since=ISO-DATE] [--skip-history] [--tag=VALUE] [--no-validate] [--issues-file=PATH] [--resume] [--checkpoint-file=PATH] [--from-list=FILE] [--save-list=FILE] [--spaces=A,B,C] [--drop-indexes] <path>");
             return;
         }
 
@@ -827,7 +841,12 @@ switch (subcommand)
 
         var remapSuffix = targetSpace is not null ? $", into-space={targetSpace}, into-subpath={targetSubpath}" : "";
         var sinceSuffix = sinceUtc.HasValue ? $", since={sinceUtc.Value:o}" : "";
-        Console.WriteLine($"Importing from {targetPath} (type={effectiveType}, replace={replace}, fast={fast}, parallelism={parallelism}, batch-size={batchSize}{remapSuffix}{sinceSuffix})");
+        var dropSuffix = dropIndexes ? ", drop-indexes=True" : "";
+        Console.WriteLine($"Importing from {targetPath} (type={effectiveType}, replace={replace}, fast={fast}, parallelism={parallelism}, batch-size={batchSize}{remapSuffix}{sinceSuffix}{dropSuffix})");
+        if (dropIndexes && !resume)
+            Console.WriteLine(
+                "WARNING: --drop-indexes without --resume. If this process is killed outright the indexes "
+                + "stay dropped and there is no checkpoint sidecar to recover them from. Add --resume.");
 
         var (s, dbInst) = CliBootstrap.BuildOrExit(dotenvPath, dotenvValues);
         var importService = CliBootstrap.BuildImportExportService(s, dbInst);
@@ -850,13 +869,20 @@ switch (subcommand)
                 skipHistory: skipHistory,
                 importTags: importTags.Count > 0 ? importTags : null,
                 fromListPath: fromListPath, saveListPath: saveListPath,
-                includeSpaces: includeSpaces);
+                includeSpaces: includeSpaces, dropIndexes: dropIndexes);
         }
         else
         {
             if (targetSpace is not null || targetSubpath is not null)
             {
                 Bail("--space / --subpath remap mode requires --type=fs (zip remap is not supported)");
+                return;
+            }
+            if (dropIndexes)
+            {
+                // The drop/rebuild bracket is wired through the filesystem
+                // entry point only; refuse rather than silently ignoring it.
+                Bail("--drop-indexes requires --type=fs");
                 return;
             }
             await using var zipStream = File.OpenRead(targetPath);
@@ -1616,7 +1642,9 @@ builder.Services.AddOpenApi(options =>
     // responsible for opening its own `<shortname>.ljson.log` under this
     // path — the host does not intercept, format, or rotate plugin-emitted
     // lines. Subprocess plugins inherit the env from the dmart process;
-    // in-process .so plugins read it with Environment.GetEnvironmentVariable.
+    // in-process .so plugins read it from the real process environ, which
+    // is why this must go through ProcessEnv.Set (libc setenv) and not the
+    // managed API alone — see Plugins/Native/ProcessEnv.cs.
     // The value is absolutized because subprocess plugins run with their own
     // working directory (the plugin's own folder), so a relative path would
     // resolve to the wrong place. Empty LogFile = no env exported, and the
@@ -1630,7 +1658,7 @@ builder.Services.AddOpenApi(options =>
     {
         var dir = Path.GetDirectoryName(logFile);
         if (!string.IsNullOrEmpty(dir))
-            Environment.SetEnvironmentVariable("DMART_PLUGIN_LOG_DIR", Path.GetFullPath(dir));
+            Dmart.Plugins.Native.ProcessEnv.SetAtStartup("DMART_PLUGIN_LOG_DIR", Path.GetFullPath(dir));
     }
 
     // Set minimum log level from config.env.
