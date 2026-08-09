@@ -36,7 +36,10 @@ type PublicRoute = string | { path: string; wildcard: true };
 
 // Always public: auth pages only. /login is intentionally absent so that
 // _module.svelte can probe auth there and redirect signed-in users to /dashboard.
-export const ALWAYS_PUBLIC_ROUTES: PublicRoute[] = ["/register"];
+export const ALWAYS_PUBLIC_ROUTES: PublicRoute[] = [
+  "/register",
+  { path: "/reset-password", wildcard: true },
+];
 
 // Public-view routes: only reachable unauthenticated when
 // website.enable_public_view is true (the public browsing experience).
