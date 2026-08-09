@@ -17,12 +17,19 @@ namespace Dmart.DataAdapters.Sql;
 // DATABASE_NAME / DATABASE_POOL_SIZE components — matching how dmart Python builds
 // its SQLAlchemy URL from separate settings. This lets a plain config.env from a
 // Python deployment drop in unchanged.
-public sealed class Db(IOptions<DmartSettings> settings)
+public sealed class Db(IOptions<DmartSettings> settings) : IDbConnectionFactory
 {
     private readonly string? _conn = BuildConnectionString(settings.Value);
     private readonly string? _importConn = BuildImportConnectionString(settings.Value);
 
     public bool IsConfigured => !string.IsNullOrEmpty(_conn);
+
+    // Explicit interface implementation so the PostgreSQL-typed OpenAsync below
+    // stays the one repositories bind to. Widening its return type to
+    // DbConnection would force a cast at every COPY / SQLSTATE call site that
+    // legitimately needs Npgsql.
+    async Task<System.Data.Common.DbConnection> IDbConnectionFactory.OpenAsync(CancellationToken ct)
+        => await OpenAsync(ct);
 
     public async Task<NpgsqlConnection> OpenAsync(CancellationToken ct = default)
     {

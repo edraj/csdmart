@@ -27,6 +27,7 @@ install="$pkgname.pre-install $pkgname.post-install $pkgname.post-upgrade $pkgna
 
 source="
 	dmart
+	libe_sqlite3.so
 	dmart.service
 	dmart.openrc-init
 	dmart.bash
@@ -49,6 +50,13 @@ package() {
 	# Server binary
 	install -Dm755 "$srcdir"/dmart \
 		"$pkgdir"/usr/bin/dmart
+
+	# SQLite native library (DATABASE_DRIVER=sqlite). Native AOT cannot link
+	# it in — SQLitePCLRaw ships a static archive only for browser-wasm — so
+	# it installs as a real shared object. It is loaded by soname through
+	# dlopen, so /usr/lib is on the default search path.
+	install -Dm755 "$srcdir"/libe_sqlite3.so \
+		"$pkgdir"/usr/lib/libe_sqlite3.so
 
 	# Plugin configs
 	mkdir -p "$pkgdir"/usr/lib/dmart/plugins

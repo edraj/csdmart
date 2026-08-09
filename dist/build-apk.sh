@@ -218,6 +218,8 @@ APKROOT="${TMPDIR:-/tmp}/apkbuild"
 rm -rf "$APKROOT" && mkdir -p "$APKROOT"
 
 cp "bin/Release/net10.0/$RID/publish/dmart" "$APKROOT/dmart"
+# Native SQLite library — see APKBUILD.in package() for why it ships separately.
+cp "bin/Release/net10.0/$RID/publish/libe_sqlite3.so" "$APKROOT/libe_sqlite3.so"
 cp dist/dmart.service                       "$APKROOT/"
 cp dist/apk/dmart.openrc-init               "$APKROOT/"
 cp dist/dmart.bash dist/dmart.fish          "$APKROOT/"

@@ -224,6 +224,12 @@
     <!--PackageReference Include="Scalar.AspNetCore" Version="2.13.22" /-->
     <DirectPInvoke Include="libc" />
     <PackageReference Include="Npgsql" Version="10.0.2" />
+    <PackageReference Include="Microsoft.Data.Sqlite" Version="10.0.5" />
+    <!-- Pin the transitive native SQLite library. Microsoft.Data.Sqlite 10.0.5
+         resolves SQLitePCLRaw.lib.e_sqlite3 2.1.11, which carries a known high
+         severity vulnerability (NU1903 / GHSA-2m69-gcr7-jv3q). 2.1.12 clears it
+         and keeps the Native AOT publish warning-free. -->
+    <PackageReference Include="SQLitePCLRaw.lib.e_sqlite3" Version="2.1.12" />
     <PackageReference Include="Microsoft.Extensions.FileProviders.Embedded" Version="10.0.5" />
     <PackageReference Include="OpenTelemetry.Exporter.OpenTelemetryProtocol" Version="1.15.3" />
     <PackageReference Include="OpenTelemetry.Extensions.Hosting" Version="1.15.3" />

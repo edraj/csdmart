@@ -7,9 +7,11 @@ set -e
 #                     and symlinks bin/dmart -> it so `./bin/dmart serve`
 #                     works the same as in --aot mode. Needs `dotnet` on PATH
 #                     at run time. Right for dev iteration.
-#   --aot           — full AOT publish, ~3-4 minutes. Single 40 MB self-
-#                     contained native binary. Right for release artifacts
-#                     and CI / RPM packaging.
+#   --aot           — full AOT publish, ~3-4 minutes. ~45 MB native binary
+#                     plus the e_sqlite3 shared library beside it (SQLitePCLRaw
+#                     ships no static lib for non-wasm RIDs, so the SQLite
+#                     backend cannot be linked in). Ship both files together.
+#                     Right for release artifacts and CI / RPM packaging.
 MODE="fast"
 # Default RID is linux-x64; --rid overrides for cross-platform AOT publish
 # (osx-arm64 on Apple Silicon, win-x64 on Windows, etc.). NativeAOT cannot
@@ -34,8 +36,8 @@ while [ $# -gt 0 ]; do
 Usage: $0 [--aot] [--rid <runtime-id>]
   (default)         fast JIT build via \`dotnet build\` (~5-30s, dev iteration)
                     -> bin/dmart symlinks framework-dependent apphost
-  --aot             full native AOT publish (~3-4m, self-contained binary)
-                    -> bin/dmart is a standalone 40 MB native binary
+  --aot             full native AOT publish (~3-4m)
+                    -> bin/dmart native binary + libe_sqlite3.so beside it
   --rid <runtime>   target runtime identifier for --aot publish
                     (default: linux-x64; e.g. osx-arm64, win-x64)
                     NativeAOT cannot cross-compile — host OS+arch must match
@@ -144,12 +146,29 @@ if [ "$MODE" = "aot" ]; then
     rm -f bin/dmart
     cp "$PUBLISH_DIR/dmart" bin/
 
+    # The SQLite backend's native library is NOT linked into the AOT binary —
+    # SQLitePCLRaw ships a static .a only for browser-wasm, so every other RID
+    # gets a shared object beside the executable. It must travel with the
+    # binary: without it, the process aborts the first time DATABASE_DRIVER=sqlite
+    # touches the database, and the failure looks like a missing entry point
+    # rather than a missing file.
+    if [ -f "$PUBLISH_DIR/libe_sqlite3.so" ]; then
+        cp "$PUBLISH_DIR/libe_sqlite3.so" bin/
+    elif [ -f "$PUBLISH_DIR/e_sqlite3.dll" ]; then
+        cp "$PUBLISH_DIR/e_sqlite3.dll" bin/
+    elif [ -f "$PUBLISH_DIR/libe_sqlite3.dylib" ]; then
+        cp "$PUBLISH_DIR/libe_sqlite3.dylib" bin/
+    else
+        echo "WARNING: no e_sqlite3 native library found in $PUBLISH_DIR —" >&2
+        echo "         DATABASE_DRIVER=sqlite will fail at runtime." >&2
+    fi
+
     echo ""
     echo "Published (AOT) to $PUBLISH_DIR/"
     ls -lh "$PUBLISH_DIR/dmart"
     du -sh "$PUBLISH_DIR/"
     echo ""
-    echo "Binary copied to bin/:"
+    echo "Binary copied to bin/ (with the e_sqlite3 native library beside it):"
     ls -lh bin/dmart
 else
     # Fast JIT build — no AOT codegen, no -r RID, no publish. PublishAot=true

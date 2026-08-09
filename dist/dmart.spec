@@ -54,6 +54,19 @@ else
     install -D -m 0755 dmart %{buildroot}/usr/bin/dmart
 fi
 
+# SQLite native library (DATABASE_DRIVER=sqlite). Native AOT cannot link it in
+# — SQLitePCLRaw ships a static archive only for browser-wasm — so it must be
+# installed as a real shared object. SQLitePCLRaw loads it by soname through
+# dlopen, so %{_libdir} is on the default search path and no rpath or
+# ld.so.conf.d entry is needed. Not fatal when absent: the PostgreSQL driver
+# never loads it, and the SQLite driver fails loudly at startup.
+for so_src in out/libe_sqlite3.so libe_sqlite3.so; do
+    if [ -f "$so_src" ]; then
+        install -D -m 0755 "$so_src" %{buildroot}%{_libdir}/libe_sqlite3.so
+        break
+    fi
+done
+
 # Plugin configs
 for dir in plugins/*/; do
     name=$(basename "$dir")
@@ -143,6 +156,11 @@ fi
 
 %files
 %attr(0755, root, root) /usr/bin/dmart
+# Always produced: Microsoft.Data.Sqlite is a hard project dependency, so the
+# publish output carries this on every RID. Listed unconditionally because a
+# missing %files entry fails the build — which is the right failure, since a
+# package without it silently loses the SQLite driver.
+%{_libdir}/libe_sqlite3.so
 /usr/lib/dmart/plugins/
 /usr/share/dmart/config.env.sample
 /usr/lib/systemd/system/dmart.service

@@ -127,6 +127,10 @@ $ENGINE run --rm \
             "$STAGE/var/lib/dmart/custom_plugins"
 
         install -D -m 0755 bin/dmart "$STAGE/usr/bin/dmart"
+        # SQLite native library (DATABASE_DRIVER=sqlite). Native AOT cannot
+        # link it in, so it ships as a real shared object; SQLitePCLRaw loads
+        # it by soname through dlopen, so /usr/lib is already searched.
+        install -D -m 0755 bin/libe_sqlite3.so "$STAGE/usr/lib/libe_sqlite3.so"
 
         # Plugin configs — one config.json per plugin folder.
         for d in plugins/*/; do

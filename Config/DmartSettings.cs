@@ -40,6 +40,17 @@ public sealed class DmartSettings
     // index is stored, not where the data lives.
     public string DatabaseDriver { get; set; } = "postgresql";
 
+    // Filesystem path to the SQLite database file, used only when
+    // DATABASE_DRIVER=sqlite. Relative paths resolve against the process
+    // working directory.
+    //
+    // The file is a rebuildable index, not a system of record — the flat files
+    // under SPACES_FOLDER are the source of truth — so it is safe to delete and
+    // regenerate with `dmart reindex`. WAL mode creates two sidecar files
+    // (-wal, -shm) beside it; all three belong on the same local filesystem.
+    // Do NOT place it on NFS: SQLite's locking is unreliable there.
+    public string SqlitePath { get; set; } = "dmart.db";
+
     // Full Npgsql connection string. If unset, Db builds one from the
     // individual DATABASE_* components below (matching Python's behavior
     // of assembling a SQLAlchemy URL out of username/password/host/port/name).
