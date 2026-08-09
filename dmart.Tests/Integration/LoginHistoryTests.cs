@@ -376,7 +376,7 @@ public sealed class LoginHistoryTests : IClassFixture<DmartFactory>
             sp.GetRequiredService<OtpRepository>(),
             sp.GetRequiredService<PasswordHasher>(),
             sp.GetRequiredService<JwtIssuer>(),
-            new HistoryRepository(unreachable),
+            new HistoryRepository(unreachable, Dmart.QueryGrammar.PostgresSqlDialect.Instance),
             sp.GetRequiredService<PluginManager>(),
             sp.GetRequiredService<SchemaValidator>(),
             sp.GetRequiredService<RegexPatternsConfig>(),

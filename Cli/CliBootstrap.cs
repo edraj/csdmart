@@ -80,11 +80,11 @@ internal static class CliBootstrap
         var accessRepo = new AccessRepository(db, Dmart.QueryGrammar.PostgresSqlDialect.Instance, refresher, userRepo);
         return new ImportExportService(
             entryRepo,
-            new AttachmentRepository(db),
+            new AttachmentRepository(db, Dmart.QueryGrammar.PostgresSqlDialect.Instance),
             userRepo,
             accessRepo,
             new SpaceRepository(db),
-            new HistoryRepository(db),
+            new HistoryRepository(db, Dmart.QueryGrammar.PostgresSqlDialect.Instance),
             new PermissionService(userRepo, accessRepo, refresher),
             db,
             Options.Create(s),

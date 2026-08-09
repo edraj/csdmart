@@ -1,16 +1,15 @@
 using System.Data.Common;
+using Dmart.QueryGrammar;
 using System.Diagnostics.CodeAnalysis;
 using Dmart.Models.Core;
 using Dmart.Models.Enums;
-using Npgsql;
-using NpgsqlTypes;
 
 namespace Dmart.DataAdapters.Sql;
 
 // Mirrors UserRepository / AccessRepository pattern for the `spaces` table.
 // Spaces are first-class top-level entities in dmart — every space has its own row
 // in this table and acts as the namespace for entries/attachments/etc.
-public sealed class SpaceRepository(Db db)
+public sealed class SpaceRepository(IDbConnectionFactory db)
 {
     private const string SelectAllColumns = """
         SELECT uuid, shortname, space_name, subpath, is_active, slug,
@@ -33,10 +32,10 @@ public sealed class SpaceRepository(Db db)
         return await GetAsync(shortname, conn, ct);
     }
 
-    public async Task<Space?> GetAsync(string shortname, NpgsqlConnection conn, CancellationToken ct = default)
+    public async Task<Space?> GetAsync(string shortname, DbConnection conn, CancellationToken ct = default)
     {
-        await using var cmd = new NpgsqlCommand($"{SelectAllColumns} WHERE shortname = $1", conn);
-        cmd.Parameters.Add(new() { Value = shortname });
+        await using var cmd = conn.Command($"{SelectAllColumns} WHERE shortname = $1");
+        DbParams.Add(cmd, shortname);
         await using var r = await cmd.ExecuteReaderAsync(ct);
         return await r.ReadAsync(ct) ? Hydrate(r) : null;
     }
@@ -44,7 +43,7 @@ public sealed class SpaceRepository(Db db)
     public async Task<List<Space>> ListAsync(CancellationToken ct = default)
     {
         await using var conn = await db.OpenAsync(ct);
-        await using var cmd = new NpgsqlCommand($"{SelectAllColumns} ORDER BY shortname", conn);
+        await using var cmd = conn.Command($"{SelectAllColumns} ORDER BY shortname");
         await using var r = await cmd.ExecuteReaderAsync(ct);
         var results = new List<Space>();
         while (await r.ReadAsync(ct)) results.Add(Hydrate(r));
@@ -57,12 +56,12 @@ public sealed class SpaceRepository(Db db)
         await UpsertAsync(space, conn, ct);
     }
 
-    public async Task UpsertAsync(Space space, NpgsqlConnection conn, CancellationToken ct = default)
+    public async Task UpsertAsync(Space space, DbConnection conn, CancellationToken ct = default)
     {
         // Populate query_policies on every write (see EntryRepository.UpsertAsync).
         space = space with { QueryPolicies = Utils.QueryPolicies.Generate(space) };
 
-        await using var cmd = new NpgsqlCommand("""
+        await using var cmd = conn.Command("""
             INSERT INTO spaces (uuid, shortname, space_name, subpath, is_active, slug,
                                 displayname, description, tags, created_at, updated_at,
                                 owner_shortname, owner_group_shortname, acl, payload, relationships,
@@ -79,7 +78,7 @@ public sealed class SpaceRepository(Db db)
                 displayname = EXCLUDED.displayname,
                 description = EXCLUDED.description,
                 tags = EXCLUDED.tags,
-                updated_at = NOW(),
+                updated_at = EXCLUDED.updated_at,
                 owner_shortname = EXCLUDED.owner_shortname,
                 owner_group_shortname = EXCLUDED.owner_group_shortname,
                 acl = EXCLUDED.acl,
@@ -98,28 +97,28 @@ public sealed class SpaceRepository(Db db)
                 hide_space = EXCLUDED.hide_space,
                 ordinal = EXCLUDED.ordinal,
                 query_policies = EXCLUDED.query_policies
-            """, conn);
+            """);
             // active_plugins column NOT touched on writes — see SelectAllColumns
             // comment for the rationale.
 
-        cmd.Parameters.Add(new() { Value = Guid.Parse(space.Uuid) });
-        cmd.Parameters.Add(new() { Value = space.Shortname });
-        cmd.Parameters.Add(new() { Value = space.SpaceName });
-        cmd.Parameters.Add(new() { Value = space.Subpath });
-        cmd.Parameters.Add(new() { Value = space.IsActive });
-        cmd.Parameters.Add(new() { Value = (object?)space.Slug ?? DBNull.Value });
+        DbParams.Add(cmd, Guid.Parse(space.Uuid));
+        DbParams.Add(cmd, space.Shortname);
+        DbParams.Add(cmd, space.SpaceName);
+        DbParams.Add(cmd, space.Subpath);
+        DbParams.Add(cmd, space.IsActive);
+        DbParams.Add(cmd, (object?)space.Slug ?? DBNull.Value);
         AddJsonb(cmd, JsonbHelpers.ToJsonb(space.Displayname));
         AddJsonb(cmd, JsonbHelpers.ToJsonb(space.Description));
         AddJsonbNotNull(cmd, JsonbHelpers.ToJsonbList(space.Tags));
-        cmd.Parameters.Add(new() { Value = space.CreatedAt == default ? TimeUtils.Now() : space.CreatedAt });
-        cmd.Parameters.Add(new() { Value = TimeUtils.Now() });
-        cmd.Parameters.Add(new() { Value = space.OwnerShortname });
-        cmd.Parameters.Add(new() { Value = (object?)space.OwnerGroupShortname ?? DBNull.Value });
+        DbParams.Add(cmd, space.CreatedAt == default ? TimeUtils.Now() : space.CreatedAt);
+        DbParams.Add(cmd, TimeUtils.Now());
+        DbParams.Add(cmd, space.OwnerShortname);
+        DbParams.Add(cmd, (object?)space.OwnerGroupShortname ?? DBNull.Value);
         AddJsonb(cmd, JsonbHelpers.ToJsonb(space.Acl));
         AddJsonb(cmd, JsonbHelpers.ToJsonb(space.Payload));
         AddJsonb(cmd, JsonbHelpers.ToJsonb(space.Relationships));
-        cmd.Parameters.Add(new() { Value = (object?)space.LastChecksumHistory ?? DBNull.Value });
-        cmd.Parameters.Add(new() { Value = JsonbHelpers.EnumMember(space.ResourceType) });
+        DbParams.Add(cmd, (object?)space.LastChecksumHistory ?? DBNull.Value);
+        DbParams.Add(cmd, JsonbHelpers.EnumMember(space.ResourceType));
         // The `?? ""` backstops are load-bearing despite the C# property
         // initializers (`= ""`). When STJ source-gen deserializes a record
         // with `required` members (Shortname/SpaceName/Subpath/Uuid/
@@ -129,24 +128,20 @@ public sealed class SpaceRepository(Db db)
         // arrives here with the property null, even though the C# default
         // is `""`. The matching DB columns are NOT NULL DEFAULT '', so an
         // empty string is the right value either way.
-        cmd.Parameters.Add(new() { Value = space.RootRegistrationSignature ?? "" });
-        cmd.Parameters.Add(new() { Value = space.PrimaryWebsite ?? "" });
-        cmd.Parameters.Add(new() { Value = space.IndexingEnabled });
-        cmd.Parameters.Add(new() { Value = space.CaptureMisses });
-        cmd.Parameters.Add(new() { Value = space.CheckHealth });
+        DbParams.Add(cmd, space.RootRegistrationSignature ?? "");
+        DbParams.Add(cmd, space.PrimaryWebsite ?? "");
+        DbParams.Add(cmd, space.IndexingEnabled);
+        DbParams.Add(cmd, space.CaptureMisses);
+        DbParams.Add(cmd, space.CheckHealth);
         AddJsonbNotNull(cmd, JsonbHelpers.ToJsonbLanguagesNotNull(space.Languages));
-        cmd.Parameters.Add(new() { Value = space.Icon ?? "" });
+        DbParams.Add(cmd, space.Icon ?? "");
         AddJsonb(cmd, JsonbHelpers.ToJsonb(space.Mirrors));
         AddJsonb(cmd, JsonbHelpers.ToJsonb(space.HideFolders));
 #pragma warning disable CA1508 // Analyzer limitation: bool?/int? boxed via (object?) cast IS null when source is null; the ?? is load-bearing.
-        cmd.Parameters.Add(new() { Value = (object?)space.HideSpace ?? DBNull.Value });
-        cmd.Parameters.Add(new() { Value = (object?)space.Ordinal ?? DBNull.Value });
+        DbParams.Add(cmd, (object?)space.HideSpace ?? DBNull.Value);
+        DbParams.Add(cmd, (object?)space.Ordinal ?? DBNull.Value);
 #pragma warning restore CA1508
-        cmd.Parameters.Add(new()
-        {
-            Value = space.QueryPolicies.ToArray(),
-            NpgsqlDbType = NpgsqlDbType.Array | NpgsqlDbType.Text,
-        });
+        DbParams.Add(cmd, space.QueryPolicies.ToArray(), SqlValueKind.TextArray);
 
         await cmd.ExecuteNonQueryAsync(ct);
     }
@@ -166,7 +161,7 @@ public sealed class SpaceRepository(Db db)
     // over a predicate equals what a DELETE over the same predicate removes), so the
     // DeleteReport is a pure, lock-free projection.
     public Task<DeleteReport> DeleteAsync(string shortname, bool dryRun = false, CancellationToken ct = default)
-        => db.ExecuteWithRetryOnDeadlockAsync(c => DeleteOnceAsync(shortname, dryRun, c), ct);
+        => db.ExecuteWithRetryAsync(c => DeleteOnceAsync(shortname, dryRun, c), ct);
 
     [SuppressMessage("Security", "CA2100",
         Justification = "Audited: `table`/`column` are compile-time string literals and `verb` is a const literal (DELETE / SELECT count(*)); shortname flows through $1.")]
@@ -185,8 +180,8 @@ public sealed class SpaceRepository(Db db)
             var sql = dryRun
                 ? $"SELECT count(*) FROM {table} WHERE {column} = $1"
                 : $"DELETE FROM {table} WHERE {column} = $1";
-            await using var cmd = new NpgsqlCommand(sql, conn, tx);
-            cmd.Parameters.Add(new() { Value = shortname });
+            await using var cmd = conn.Command(sql, tx);
+            DbParams.Add(cmd, shortname);
             return dryRun
                 ? (long)(await cmd.ExecuteScalarAsync(ct) ?? 0L)
                 : await cmd.ExecuteNonQueryAsync(ct);
@@ -202,11 +197,11 @@ public sealed class SpaceRepository(Db db)
         return new DeleteReport(entries, attachments, histories, locks);
     }
 
-    private static void AddJsonb(NpgsqlCommand cmd, string? json)
-        => cmd.Parameters.Add(new() { Value = (object?)json ?? DBNull.Value, NpgsqlDbType = NpgsqlDbType.Jsonb });
+    private static void AddJsonb(DbCommand cmd, string? json)
+        => DbParams.Add(cmd, (object?)json ?? DBNull.Value, SqlValueKind.Json);
 
-    private static void AddJsonbNotNull(NpgsqlCommand cmd, string json)
-        => cmd.Parameters.Add(new() { Value = json, NpgsqlDbType = NpgsqlDbType.Jsonb });
+    private static void AddJsonbNotNull(DbCommand cmd, string json)
+        => DbParams.Add(cmd, json, SqlValueKind.Json);
 
     private static Space Hydrate(DbDataReader r)
     {

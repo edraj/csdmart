@@ -1,5 +1,6 @@
+using System.Data.Common;
 using System.Diagnostics.CodeAnalysis;
-using Npgsql;
+using Microsoft.Data.Sqlite;
 
 namespace Dmart.DataAdapters.Sql;
 
@@ -14,7 +15,7 @@ namespace Dmart.DataAdapters.Sql;
 //   * "soft"      → counts only
 //   * "hard"      → counts + sample rows
 //   * "all"       → everything
-public sealed class HealthCheckRepository(Db db)
+public sealed class HealthCheckRepository(IDbConnectionFactory db)
 {
     public sealed record IssueCheck(string Name, long Count, List<string> Samples);
 
@@ -42,10 +43,13 @@ public sealed class HealthCheckRepository(Db db)
             AND NOT EXISTS (SELECT 1 FROM users u WHERE u.shortname = e.owner_shortname)
             """, spaceName, sampleLimit, ct));
 
+        // The 24h cutoff is computed here rather than with NOW() - INTERVAL:
+        // SQLite has neither, and the locks timestamps are client wall-clock on
+        // both backends.
         results.Add(await RunCheck(conn, "stale_locks", """
             SELECT l.shortname FROM locks l
-            WHERE l.space_name = $1 AND l.timestamp < (NOW() - INTERVAL '24 hours')
-            """, spaceName, sampleLimit, ct));
+            WHERE l.space_name = $1 AND l.timestamp < $2
+            """, spaceName, sampleLimit, ct, TimeUtils.Now().AddHours(-24)));
 
         results.Add(await RunCheck(conn, "missing_payload_body", """
             SELECT e.shortname FROM entries e
@@ -77,6 +81,22 @@ public sealed class HealthCheckRepository(Db db)
         // written during an ENFORCE_FOLDER_CONTENT_POLICY=false dry-run).
         // The parent split duplicates FolderContentValidator.SplitSubpath in
         // SQL: '/a/b' -> folder 'b' under '/a'; '/a' -> folder 'a' under '/'.
+        // PostgreSQL-only. The query leans on regexp_replace / left / greatest
+        // to split the parent subpath, plus jsonb containment — none of which
+        // SQLite has, and each needs a different rewrite rather than a
+        // translation. Rather than emit SQL that would either error or, worse,
+        // silently report zero violations, the check reports itself as
+        // unavailable so an operator reading the health report can tell the
+        // difference between "clean" and "not run".
+        if (conn is SqliteConnection)
+        {
+            results.Add(new IssueCheck("folder_content_violations_unsupported", -1, new List<string>
+            {
+                "This check is not implemented on the SQLite driver; run it against PostgreSQL.",
+            }));
+            return results;
+        }
+
         results.Add(await RunCheck(conn, "folder_content_violations", """
             SELECT e.subpath || '/' || e.shortname FROM entries e
             JOIN entries f
@@ -112,24 +132,26 @@ public sealed class HealthCheckRepository(Db db)
     [SuppressMessage("Security", "CA2100",
         Justification = "Audited: `sql` is a compile-time constant from in-class call sites (the five HealthCheck SQL literals); `spaceName` flows through $1.")]
     private static async Task<IssueCheck> RunCheck(
-        NpgsqlConnection conn, string name, string sql, string spaceName,
-        int sampleLimit, CancellationToken ct)
+        DbConnection conn, string name, string sql, string spaceName,
+        int sampleLimit, CancellationToken ct, object? extra = null)
     {
         var samples = new List<string>();
         long count = 0;
 
         // Count
-        await using (var cmd = new NpgsqlCommand($"SELECT COUNT(*) FROM ({sql}) c", conn))
+        await using (var cmd = conn.Command($"SELECT COUNT(*) FROM ({sql}) c"))
         {
-            cmd.Parameters.Add(new() { Value = spaceName });
+            DbParams.Add(cmd, spaceName);
+            if (extra is not null) DbParams.Add(cmd, extra);
             count = (long)(await cmd.ExecuteScalarAsync(ct) ?? 0L);
         }
 
         // Samples
         if (sampleLimit > 0 && count > 0)
         {
-            await using var cmd = new NpgsqlCommand($"{sql} LIMIT {sampleLimit}", conn);
-            cmd.Parameters.Add(new() { Value = spaceName });
+            await using var cmd = conn.Command($"{sql} LIMIT {sampleLimit}");
+            if (extra is not null) DbParams.Add(cmd, extra);
+            DbParams.Add(cmd, spaceName);
             await using var reader = await cmd.ExecuteReaderAsync(ct);
             while (await reader.ReadAsync(ct)) samples.Add(reader.GetString(0));
         }

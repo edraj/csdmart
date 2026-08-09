@@ -1,3 +1,5 @@
+using System.Data.Common;
+using Dmart.QueryGrammar;
 using System.Diagnostics.CodeAnalysis;
 using Npgsql;
 using NpgsqlTypes;
@@ -5,7 +7,7 @@ using NpgsqlTypes;
 namespace Dmart.DataAdapters.Sql;
 
 // histories table — flat (no Metas inheritance in dmart).
-public sealed class HistoryRepository(Db db)
+public sealed class HistoryRepository(IDbConnectionFactory db, ISqlDialect dialect)
 {
     public async Task AppendAsync(string spaceName, string subpath, string shortname, string? actor,
                                    Dictionary<string, object>? requestHeaders, Dictionary<string, object>? diff,
@@ -17,47 +19,47 @@ public sealed class HistoryRepository(Db db)
 
     public async Task AppendAsync(string spaceName, string subpath, string shortname, string? actor,
                                    Dictionary<string, object>? requestHeaders, Dictionary<string, object>? diff,
-                                   NpgsqlConnection conn,
+                                   DbConnection conn,
                                    CancellationToken ct = default)
     {
-        await using var cmd = new NpgsqlCommand("""
+        // uuid and timestamp are bound rather than produced by SQL: pgcrypto's
+        // gen_random_uuid() and NOW() have no SQLite equivalents. History rows
+        // are append-only and never compared against a server clock, so the
+        // client wall-clock is the right basis on both backends — it is what
+        // TimeUtils uses everywhere else.
+        await using var cmd = conn.CreateCommand();
+        // request_headers and diff are NOT NULL in dmart's schema — default to {}.
+        DbParams.Add(cmd, JsonbHelpers.ToJsonb(requestHeaders) ?? "{}", SqlValueKind.Json);
+        DbParams.Add(cmd, JsonbHelpers.ToJsonb(diff) ?? "{}", SqlValueKind.Json);
+        DbParams.Add(cmd, (object?)actor ?? DBNull.Value);
+        DbParams.Add(cmd, spaceName);
+        DbParams.Add(cmd, subpath);
+        DbParams.Add(cmd, shortname);
+        var uuid = DbParams.Add(cmd, Guid.NewGuid());
+        var stamp = DbParams.Add(cmd, TimeUtils.Now());
+        cmd.CommandText = $"""
             INSERT INTO histories (uuid, request_headers, diff, timestamp,
                                    owner_shortname, last_checksum_history,
                                    space_name, subpath, shortname)
-            VALUES (gen_random_uuid(), $1, $2, NOW(), $3, NULL, $4, $5, $6)
-            """, conn);
-        // request_headers and diff are NOT NULL in dmart's schema — default to {}.
-        cmd.Parameters.Add(new()
-        {
-            Value = JsonbHelpers.ToJsonb(requestHeaders) ?? "{}",
-            NpgsqlDbType = NpgsqlDbType.Jsonb,
-        });
-        cmd.Parameters.Add(new()
-        {
-            Value = JsonbHelpers.ToJsonb(diff) ?? "{}",
-            NpgsqlDbType = NpgsqlDbType.Jsonb,
-        });
-        cmd.Parameters.Add(new() { Value = (object?)actor ?? DBNull.Value });
-        cmd.Parameters.Add(new() { Value = spaceName });
-        cmd.Parameters.Add(new() { Value = subpath });
-        cmd.Parameters.Add(new() { Value = shortname });
+            VALUES ({uuid}, $1, $2, {stamp}, $3, NULL, $4, $5, $6)
+            """;
         await cmd.ExecuteNonQueryAsync(ct);
     }
 
     public async Task<List<HistoryEntry>> ListAsync(string spaceName, string subpath, string shortname, int limit = 50, CancellationToken ct = default)
     {
         await using var conn = await db.OpenAsync(ct);
-        await using var cmd = new NpgsqlCommand("""
+        await using var cmd = conn.Command("""
             SELECT uuid, owner_shortname, diff, timestamp
             FROM histories
             WHERE space_name = $1 AND subpath = $2 AND shortname = $3
             ORDER BY timestamp DESC
             LIMIT $4
-            """, conn);
-        cmd.Parameters.Add(new() { Value = spaceName });
-        cmd.Parameters.Add(new() { Value = subpath });
-        cmd.Parameters.Add(new() { Value = shortname });
-        cmd.Parameters.Add(new() { Value = limit });
+            """);
+        DbParams.Add(cmd, spaceName);
+        DbParams.Add(cmd, subpath);
+        DbParams.Add(cmd, shortname);
+        DbParams.Add(cmd, limit);
         await using var reader = await cmd.ExecuteReaderAsync(ct);
         var results = new List<HistoryEntry>();
         while (await reader.ReadAsync(ct))
@@ -94,8 +96,12 @@ public sealed class HistoryRepository(Db db)
         }
         if (q.FilterShortnames is { Count: > 0 })
         {
-            args.Add(new() { Value = q.FilterShortnames.ToArray(), NpgsqlDbType = NpgsqlDbType.Array | NpgsqlDbType.Text });
-            sql.Append($"AND shortname = ANY(${args.Count}) ");
+            // PostgreSQL binds one text[]; SQLite expands to an IN list. The
+            // binder appends to the same positional args list either way.
+            sql.Append($"AND {dialect.AnyOf("shortname", q.FilterShortnames, (v, k) => {
+                args.Add(PostgresDialect.CreateParameter(new SqlParam(null, v, k)));
+                return "$" + args.Count.ToString(System.Globalization.CultureInfo.InvariantCulture);
+            })} ");
         }
         if (q.FromDate is not null)
         {
@@ -115,8 +121,8 @@ public sealed class HistoryRepository(Db db)
         sql.Append($"OFFSET ${args.Count}");
 
         await using var conn = await db.OpenAsync(ct);
-        await using var cmd = new NpgsqlCommand(sql.ToString(), conn);
-        foreach (var p in args) cmd.Parameters.Add(p);
+        await using var cmd = conn.Command(sql.ToString());
+        DbParams.BindAll(cmd, args);
         await using var reader = await cmd.ExecuteReaderAsync(ct);
         var results = new List<HistoryRecord>();
         while (await reader.ReadAsync(ct))
@@ -149,8 +155,12 @@ public sealed class HistoryRepository(Db db)
         }
         if (q.FilterShortnames is { Count: > 0 })
         {
-            args.Add(new() { Value = q.FilterShortnames.ToArray(), NpgsqlDbType = NpgsqlDbType.Array | NpgsqlDbType.Text });
-            sql.Append($"AND shortname = ANY(${args.Count}) ");
+            // PostgreSQL binds one text[]; SQLite expands to an IN list. The
+            // binder appends to the same positional args list either way.
+            sql.Append($"AND {dialect.AnyOf("shortname", q.FilterShortnames, (v, k) => {
+                args.Add(PostgresDialect.CreateParameter(new SqlParam(null, v, k)));
+                return "$" + args.Count.ToString(System.Globalization.CultureInfo.InvariantCulture);
+            })} ");
         }
         if (q.FromDate is not null)
         {
@@ -163,8 +173,8 @@ public sealed class HistoryRepository(Db db)
             sql.Append($"AND timestamp <= ${args.Count} ");
         }
         await using var conn = await db.OpenAsync(ct);
-        await using var cmd = new NpgsqlCommand(sql.ToString(), conn);
-        foreach (var p in args) cmd.Parameters.Add(p);
+        await using var cmd = conn.Command(sql.ToString());
+        DbParams.BindAll(cmd, args);
         return (int)(long)(await cmd.ExecuteScalarAsync(ct) ?? 0L);
     }
 }
