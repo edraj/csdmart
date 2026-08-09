@@ -155,7 +155,8 @@ public static class SearchExpressionParser
         string expression,
         int startingParamIndex,
         PlaceholderStyle style = PlaceholderStyle.Named,
-        string? targetTable = null)
+        string? targetTable = null,
+        ISqlDialect? dialect = null)
     {
         var clauses = new List<string>();
         var pars = new List<SqlParam>();
@@ -168,7 +169,7 @@ public static class SearchExpressionParser
             return new Parsed(clauses, pars);
         }
 
-        var ctx = new ParamCtx(startingParamIndex, style, targetTable);
+        var ctx = new ParamCtx(startingParamIndex, style, targetTable, dialect);
 
         try
         {
@@ -208,12 +209,23 @@ public static class SearchExpressionParser
         private readonly PlaceholderStyle _style;
         public List<SqlParam> Parameters { get; } = new();
         public string? TargetTable { get; }
-        public ParamCtx(int start, PlaceholderStyle style, string? targetTable = null)
+
+        // The backend the emitted SQL is destined for. Carried here rather than
+        // passed to each Build* method: every one of them needs it, and an
+        // extra parameter on ten signatures would obscure the actual arguments.
+        public ISqlDialect Dialect { get; }
+
+        public ParamCtx(int start, PlaceholderStyle style, string? targetTable = null,
+                        ISqlDialect? dialect = null)
         {
             _next = start;
             _style = style;
             TargetTable = targetTable;
+            Dialect = dialect ?? PostgresSqlDialect.Instance;
         }
+
+        // Convenience: bind through the dialect's binder shape.
+        public SqlBinder Binder => (value, kind) => Add(value, kind);
 
         // Bind a value, return the placeholder text to splice into SQL.
         // For Named: emits @s_<n> and tags the parameter with that name.
@@ -585,7 +597,7 @@ public static class SearchExpressionParser
         {
             var p = ctx.Add($"%{term}%");
             conditions.Add(
-                $"(shortname ILIKE {p} OR payload::text ILIKE {p} OR displayname::text ILIKE {p} OR description::text ILIKE {p} OR tags::text ILIKE {p})");
+                BuildFreeTextTerm(p, ctx));
         }
 
         if (conditions.Count == 0) return null;
@@ -689,8 +701,7 @@ public static class SearchExpressionParser
             if (field.StartsWith("payload.", StringComparison.Ordinal))
             {
                 var parts = field["payload.".Length..].Split('.');
-                var arrowPath = string.Join("->", parts.Select(p => $"'{EscapeSqlLiteral(p)}'"));
-                return $"payload::jsonb->{arrowPath} {nullCheck}";
+                return $"{ctx.Dialect.JsonValue("payload", parts)} {nullCheck}";
             }
             if (!SafeColumnIdent.IsMatch(field)) return null;
             if (TextArrayColumns.Contains(field))
@@ -777,25 +788,16 @@ public static class SearchExpressionParser
         if (parts.Contains("*"))
         {
             var wildcardIdx = Array.IndexOf(parts, "*");
-            string baseExpr;
-            if (wildcardIdx == 0) baseExpr = "payload::jsonb";
-            else
-            {
-                var sb = new StringBuilder("payload::jsonb");
-                for (int i = 0; i < wildcardIdx; i++) sb.Append($"->'{EscapeSqlLiteral(parts[i])}'");
-                baseExpr = sb.ToString();
-            }
+            var baseExpr = ctx.Dialect.JsonValue("payload", parts[..wildcardIdx]);
             return BuildWildcardTextSql($"({baseExpr})", data, ctx);
         }
 
-        var arrowPath = string.Join("->", parts.Select(p => $"'{EscapeSqlLiteral(p)}'"));
-        string textExtract;
-        if (parts.Length > 1)
-        {
-            var nested = string.Join("->", parts[..^1].Select(p => $"'{EscapeSqlLiteral(p)}'"));
-            textExtract = $"payload::jsonb->{nested}->>'{EscapeSqlLiteral(parts[^1])}'";
-        }
-        else textExtract = $"payload::jsonb->>'{EscapeSqlLiteral(parts[0])}'";
+        // jsonExpr addresses the value AS JSON (for type tests and containment);
+        // textExtract addresses it as SQL text (for comparisons). PostgreSQL
+        // spells these as an arrow chain ending in -> or ->>; SQLite as one
+        // path string. Both come from the dialect so neither is spelled here.
+        var jsonExpr = ctx.Dialect.JsonValue("payload", parts);
+        var textExtract = ctx.Dialect.JsonText("payload", parts);
 
         if (data.IsRange && data.Values.Count == 2)
         {
@@ -806,7 +808,7 @@ public static class SearchExpressionParser
                 if (double.TryParse(v1, out var d1) && double.TryParse(v2, out var d2) && d1 > d2) (v1, v2) = (v2, v1);
                 var p1 = ctx.Add(v1);
                 var p2 = ctx.Add(v2);
-                return $"(jsonb_typeof(payload::jsonb->{arrowPath}) = 'number' AND (payload::jsonb->{arrowPath})::float {(data.Negative ? "NOT " : "")}BETWEEN CAST({p1} AS float) AND CAST({p2} AS float))";
+                return $"({ctx.Dialect.JsonTypeIs(jsonExpr, JsonKind.Number)} AND ({jsonExpr})::float {(data.Negative ? "NOT " : "")}BETWEEN CAST({p1} AS float) AND CAST({p2} AS float))";
             }
             if (string.Compare(v1, v2, StringComparison.Ordinal) > 0) (v1, v2) = (v2, v1);
             var sp1 = ctx.Add(v1);
@@ -814,7 +816,7 @@ public static class SearchExpressionParser
             return $"({textExtract} {(data.Negative ? "NOT " : "")}BETWEEN {sp1} AND {sp2})";
         }
 
-        return BuildPayloadValueSql(arrowPath, textExtract, parts, data, ctx);
+        return BuildPayloadValueSql(jsonExpr, textExtract, parts, data, ctx);
     }
 
     private static string BuildPayloadContainmentJson(string[] parts, string jsonValueLiteral)
@@ -947,7 +949,7 @@ public static class SearchExpressionParser
         return JoinConditions(conditions, data.Operation, data.Negative);
     }
 
-    private static string? BuildPayloadValueSql(string arrowPath, string textExtract, string[] parts, SearchField data, ParamCtx ctx)
+    private static string? BuildPayloadValueSql(string jsonExpr, string textExtract, string[] parts, SearchField data, ParamCtx ctx)
     {
         var conditions = new List<string>();
         var compOp = data.ComparisonOperator;
@@ -961,7 +963,7 @@ public static class SearchExpressionParser
             && data.Values.Count == 1
             && data.Values[0].Equals("null", StringComparison.OrdinalIgnoreCase))
         {
-            var pathExpr = $"payload::jsonb->{arrowPath}";
+            var pathExpr = jsonExpr;
             return data.Negative
                 ? $"({pathExpr} IS NOT NULL AND jsonb_typeof({pathExpr}) != 'null')"
                 : $"({pathExpr} IS NULL OR jsonb_typeof({pathExpr}) = 'null')";
@@ -975,8 +977,8 @@ public static class SearchExpressionParser
                 var p = ctx.Add(bv, SqlValueKind.Boolean);
                 var eq = (data.Negative || compOp == "!") ? "!=" : "=";
                 conditions.Add(
-                    $"((jsonb_typeof(payload::jsonb->{arrowPath}) = 'boolean' AND ({textExtract})::boolean {eq} {p}) OR " +
-                    $"(jsonb_typeof(payload::jsonb->{arrowPath}) = 'string' AND ({textExtract})::boolean {eq} {p}))");
+                    $"(({ctx.Dialect.JsonTypeIs(jsonExpr, JsonKind.Boolean)} AND ({textExtract})::boolean {eq} {p}) OR " +
+                    $"({ctx.Dialect.JsonTypeIs(jsonExpr, JsonKind.String)} AND ({textExtract})::boolean {eq} {p}))");
             }
             return JoinConditions(conditions, data.Operation, data.Negative);
         }
@@ -1034,7 +1036,7 @@ public static class SearchExpressionParser
                     .Replace('*', '%');
                 var pPath = ctx.Add(perPathPattern);
 
-                var pathExpr = $"payload::jsonb->{arrowPath}";
+                var pathExpr = jsonExpr;
                 if (data.Negative)
                 {
                     // A direct `NOT (typeof='string' AND ILIKE pattern)` is
@@ -1052,7 +1054,7 @@ public static class SearchExpressionParser
                     // precise per-path negated check; planner will pick
                     // the most selective path.
                     conditions.Add(
-                        $"({pathExpr} IS NULL OR jsonb_typeof({pathExpr}) IS DISTINCT FROM 'string' OR {textExtract} NOT ILIKE {pPath})");
+                        BuildNegatedWildcard(pathExpr, textExtract, pPath, ctx));
                 }
                 else
                 {
@@ -1071,7 +1073,7 @@ public static class SearchExpressionParser
                         .Replace('*', '%') + "%";
                     var pPre = ctx.Add(corePattern);
                     conditions.Add(
-                        $"(payload::text ILIKE {pPre} AND jsonb_typeof({pathExpr}) = 'string' AND {textExtract} ILIKE {pPath})");
+                        BuildPositiveWildcard(pathExpr, textExtract, pPre, pPath, ctx));
                 }
                 continue;
             }
@@ -1081,7 +1083,7 @@ public static class SearchExpressionParser
                 var sqlOp = compOp switch { "!" => "!=", ">" => ">", ">=" => ">=", "<" => "<", "<=" => "<=", _ => "=" };
                 var pNum = ctx.Add(double.Parse(value, CultureInfo.InvariantCulture));
                 conditions.Add(
-                    $"(jsonb_typeof(payload::jsonb->{arrowPath}) = 'number' AND ({textExtract})::float {sqlOp} CAST({pNum} AS float))");
+                    $"({ctx.Dialect.JsonTypeIs(jsonExpr, JsonKind.Number)} AND ({textExtract})::float {sqlOp} CAST({pNum} AS float))");
             }
             else if (data.Negative || compOp == "!")
             {
@@ -1093,16 +1095,16 @@ public static class SearchExpressionParser
                 // "field doesn't exist counts as not equal" semantics.
                 var pVal = ctx.Add(value);
                 var pJsonArr = ctx.Add(ToJsonArray(value), SqlValueKind.Json);
-                var absentCond = $"(payload::jsonb->{arrowPath} IS NULL OR jsonb_typeof(payload::jsonb->{arrowPath}) = 'null')";
+                var absentCond = $"({jsonExpr} IS NULL OR {ctx.Dialect.JsonTypeIs(jsonExpr, JsonKind.Null)})";
                 // CAST(... AS jsonb) is redundant alongside the typed param
                 // but kept verbatim from the server's pre-extraction emit
                 // so logged SQL stays byte-identical (see BuildJsonbArraySql).
-                var arrayCond = $"(jsonb_typeof(payload::jsonb->{arrowPath}) = 'array' AND NOT (payload::jsonb->{arrowPath} @> CAST({pJsonArr} AS jsonb)))";
-                var stringCond = $"(jsonb_typeof(payload::jsonb->{arrowPath}) = 'string' AND {textExtract} != {pVal})";
+                var arrayCond = $"({ctx.Dialect.JsonTypeIs(jsonExpr, JsonKind.Array)} AND NOT ({jsonExpr} @> CAST({pJsonArr} AS jsonb)))";
+                var stringCond = $"({ctx.Dialect.JsonTypeIs(jsonExpr, JsonKind.String)} AND {textExtract} != {pVal})";
                 if (isNum)
                 {
                     var pNum = ctx.Add(double.Parse(value, CultureInfo.InvariantCulture));
-                    var numCond = $"(jsonb_typeof(payload::jsonb->{arrowPath}) = 'number' AND ({textExtract})::float != CAST({pNum} AS float))";
+                    var numCond = $"({ctx.Dialect.JsonTypeIs(jsonExpr, JsonKind.Number)} AND ({textExtract})::float != CAST({pNum} AS float))";
                     conditions.Add($"({absentCond} OR {arrayCond} OR {stringCond} OR {numCond})");
                 }
                 else
@@ -1120,7 +1122,7 @@ public static class SearchExpressionParser
                 if (isNum)
                 {
                     var pNum = ctx.Add(double.Parse(value, CultureInfo.InvariantCulture));
-                    var numCond = $"(jsonb_typeof(payload::jsonb->{arrowPath}) = 'number' AND ({textExtract})::float = CAST({pNum} AS float))";
+                    var numCond = $"({ctx.Dialect.JsonTypeIs(jsonExpr, JsonKind.Number)} AND ({textExtract})::float = CAST({pNum} AS float))";
                     conditions.Add($"({containStringCond} OR {containArrayCond} OR {numCond})");
                 }
                 else
@@ -1130,6 +1132,57 @@ public static class SearchExpressionParser
             }
         }
         return JoinConditions(conditions, data.Operation, data.Negative);
+    }
+
+    // A bare word matches across the columns a human would expect to search:
+    // the shortname plus the textual rendering of the JSON-ish columns.
+    private static string BuildFreeTextTerm(string p, ParamCtx ctx)
+    {
+        var d = ctx.Dialect;
+        var tests = new[]
+        {
+            d.ILike("shortname", p, negated: false),
+            d.ILike(d.AsText("payload"), p, negated: false),
+            d.ILike(d.AsText("displayname"), p, negated: false),
+            d.ILike(d.AsText("description"), p, negated: false),
+            d.ILike(d.AsText("tags"), p, negated: false),
+        };
+        return "(" + string.Join(" OR ", tests) + ")";
+    }
+
+    // Negated wildcard. A direct NOT(...) is wrong under three-valued logic:
+    // when the field is missing both the type test and the extract are NULL, so
+    // the AND is NULL and NOT NULL is NULL, which WHERE drops. Spelling out the
+    // three passing cases keeps missing / non-string / non-matching all TRUE.
+    private static string BuildNegatedWildcard(
+        string pathExpr, string textExtract, string pPath, ParamCtx ctx)
+    {
+        var notString = ctx.Dialect.JsonTypeIsNot(pathExpr, JsonKind.String);
+        var notLike = ctx.Dialect.ILike(textExtract, pPath, negated: true);
+        return $"({pathExpr} IS NULL OR {notString} OR {notLike})";
+    }
+
+    // Positive wildcard: a cheap whole-document prefilter AND the precise
+    // per-path check. On PostgreSQL the prefilter is what the pg_trgm GIN index
+    // serves; SQLite has no such index, so it is simply a second comparison and
+    // the result set is identical, just slower.
+    private static string BuildPositiveWildcard(
+        string pathExpr, string textExtract, string pPre, string pPath, ParamCtx ctx)
+    {
+        var prefilter = ctx.Dialect.ILike(ctx.Dialect.AsText("payload"), pPre, negated: false);
+        var isString = ctx.Dialect.JsonTypeIs(pathExpr, JsonKind.String);
+        var precise = ctx.Dialect.ILike(textExtract, pPath, negated: false);
+        return $"({prefilter} AND {isString} AND {precise})";
+    }
+
+    // Substring match against a JSON object rendered as text — the fallback for
+    // a column holding an object where an array was expected.
+    private static string BuildObjectContains(
+        string column, string pVal, bool negated, ParamCtx ctx)
+    {
+        var isObject = ctx.Dialect.JsonTypeIs(column, JsonKind.Object);
+        var like = ctx.Dialect.ILike(ctx.Dialect.AsText(column), $"'%' || {pVal} || '%'", negated: false);
+        return negated ? $"({isObject} AND NOT ({like})" : $"({isObject} AND {like}";
     }
 
     // — JSONB array columns ————————————————————————————————————————————————
@@ -1150,13 +1203,13 @@ public static class SearchExpressionParser
             {
                 conditions.Add(
                     $"((jsonb_typeof({column}) = 'array' AND NOT ({column} @> CAST({pJson} AS jsonb))) OR " +
-                    $"(jsonb_typeof({column}) = 'object' AND NOT ({column}::text ILIKE '%' || {pVal} || '%')))");
+                    BuildObjectContains(column, pVal, negated: true, ctx) + "))");
             }
             else
             {
                 conditions.Add(
                     $"((jsonb_typeof({column}) = 'array' AND {column} @> CAST({pJson} AS jsonb)) OR " +
-                    $"(jsonb_typeof({column}) = 'object' AND {column}::text ILIKE '%' || {pVal} || '%'))");
+                    BuildObjectContains(column, pVal, negated: false, ctx) + "))");
             }
         }
         return JoinConditions(conditions, data.Operation, data.Negative);
@@ -1174,7 +1227,7 @@ public static class SearchExpressionParser
             if (value.Contains('*'))
             {
                 var p = ctx.Add(value.Replace('*', '%'));
-                predicate = $"elem ILIKE {p}";
+                predicate = ctx.Dialect.ILike("elem", p, negated: false);
             }
             else
             {
@@ -1196,8 +1249,8 @@ public static class SearchExpressionParser
         {
             var p = ctx.Add($"%{value}%");
             conditions.Add(data.Negative
-                ? $"({baseExpr}::text NOT ILIKE {p})"
-                : $"({baseExpr}::text ILIKE {p})");
+                ? "(" + ctx.Dialect.ILike(ctx.Dialect.AsText(baseExpr), p, negated: true) + ")"
+                : "(" + ctx.Dialect.ILike(ctx.Dialect.AsText(baseExpr), p, negated: false) + ")");
         }
         return JoinConditions(conditions, data.Operation, data.Negative);
     }
@@ -1306,7 +1359,7 @@ public static class SearchExpressionParser
                 if (value.Contains('*'))
                 {
                     var p = ctx.Add(value.Replace('*', '%'));
-                    conditions.Add($"{fieldExpr} ILIKE {p}");
+                    conditions.Add(ctx.Dialect.ILike(fieldExpr, p, negated: false));
                 }
                 else
                 {

@@ -48,6 +48,12 @@ public sealed class PostgresSqlDialect : ISqlDialect
     public string JsonTypeIs(string jsonExpr, JsonKind kind)
         => $"jsonb_typeof({jsonExpr}) = '{TypeName(kind)}'";
 
+    // IS DISTINCT FROM, not NOT(... = ...): it is NULL-safe, so a missing field
+    // yields TRUE rather than NULL. This is the exact text the pre-seam parser
+    // emitted, and the golden pins it.
+    public string JsonTypeIsNot(string jsonExpr, JsonKind kind)
+        => $"jsonb_typeof({jsonExpr}) IS DISTINCT FROM '{TypeName(kind)}'";
+
     private static string TypeName(JsonKind kind) => kind switch
     {
         JsonKind.String => "string",

@@ -68,6 +68,20 @@ public interface ISqlDialect
     string JsonTypeIs(string jsonExpr, JsonKind kind);
 
     /// <summary>
+    /// NULL-safe negation of <see cref="JsonTypeIs"/>: true when the value is
+    /// absent OR is of some other type.
+    /// </summary>
+    /// <remarks>
+    /// Deliberately its own method rather than NOT(JsonTypeIs(...)). Wrapping
+    /// the positive test in NOT is wrong under three-valued logic: a missing
+    /// field makes the type function NULL, `NULL = 'string'` is NULL, and
+    /// `NOT NULL` is still NULL — which WHERE discards. A negated filter must
+    /// KEEP rows where the field is absent, so the absence has to be folded in
+    /// rather than negated away.
+    /// </remarks>
+    string JsonTypeIsNot(string jsonExpr, JsonKind kind);
+
+    /// <summary>
     /// True when the column's value equals any of <paramref name="values"/>.
     /// </summary>
     string AnyOf(string columnExpr, IReadOnlyList<string> values, SqlBinder bind);

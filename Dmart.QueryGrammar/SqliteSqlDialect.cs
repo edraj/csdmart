@@ -49,6 +49,22 @@ public sealed class SqliteSqlDialect : ISqlDialect
         _ => throw new ArgumentOutOfRangeException(nameof(kind), kind, null),
     };
 
+    // SQLite's IS NOT is NULL-safe, matching PostgreSQL's IS DISTINCT FROM, so
+    // a missing field yields TRUE. The kinds that map to a SET of json_type
+    // answers cannot use IS NOT directly, so their absence case is spelled out.
+    public string JsonTypeIsNot(string jsonExpr, JsonKind kind) => kind switch
+    {
+        JsonKind.Number =>
+            $"(json_type({jsonExpr}) IS NULL OR json_type({jsonExpr}) NOT IN ('integer','real'))",
+        JsonKind.Boolean =>
+            $"(json_type({jsonExpr}) IS NULL OR json_type({jsonExpr}) NOT IN ('true','false'))",
+        JsonKind.String => $"json_type({jsonExpr}) IS NOT 'text'",
+        JsonKind.Array => $"json_type({jsonExpr}) IS NOT 'array'",
+        JsonKind.Object => $"json_type({jsonExpr}) IS NOT 'object'",
+        JsonKind.Null => $"json_type({jsonExpr}) IS NOT 'null'",
+        _ => throw new ArgumentOutOfRangeException(nameof(kind), kind, null),
+    };
+
     // No array type, so the list expands to one parameter per value.
     public string AnyOf(string columnExpr, IReadOnlyList<string> values, SqlBinder bind)
     {
