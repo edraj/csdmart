@@ -1057,7 +1057,7 @@ public sealed class UserRepository(IDbConnectionFactory db, AuthzCacheRefresher 
             AttemptCount = r.IsDBNull(34) ? null : r.GetInt32(34),
             LastLogin = JsonbHelpers.FromDictStringObject(r.IsDBNull(35) ? null : r.GetString(35)),
             Notes = r.IsDBNull(36) ? null : r.GetString(36),
-            QueryPolicies = r.IsDBNull(37) ? new() : ((string[])r.GetValue(37)).ToList(),
+            QueryPolicies = DbParams.ReadTextArray(r.IsDBNull(37) ? null : r.GetValue(37)),
             LastFailedLogin = r.IsDBNull(38) ? null : r.GetDateTime(38),
         };
     }

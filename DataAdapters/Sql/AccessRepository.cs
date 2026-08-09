@@ -601,7 +601,7 @@ public sealed class AccessRepository(IDbConnectionFactory db, ISqlDialect dialec
             Relationships = JsonbHelpers.FromRelationships(r.IsDBNull(15) ? null : r.GetString(15)),
             LastChecksumHistory = r.IsDBNull(16) ? null : r.GetString(16),
             ResourceType = JsonbHelpers.ParseEnumMember<Models.Enums.ResourceType>(r.GetString(17)),
-            QueryPolicies = r.IsDBNull(18) ? new() : ((string[])r.GetValue(18)).ToList(),
+            QueryPolicies = DbParams.ReadTextArray(r.IsDBNull(18) ? null : r.GetValue(18)),
             GrantableBy = JsonbHelpers.FromListString(r.IsDBNull(19) ? null : r.GetString(19)),
         };
     }
@@ -629,7 +629,7 @@ public sealed class AccessRepository(IDbConnectionFactory db, ISqlDialect dialec
             LastChecksumHistory = r.IsDBNull(16) ? null : r.GetString(16),
             ResourceType = JsonbHelpers.ParseEnumMember<Models.Enums.ResourceType>(r.GetString(17)),
             Permissions = JsonbHelpers.FromListString(r.IsDBNull(18) ? null : r.GetString(18)) ?? new(),
-            QueryPolicies = r.IsDBNull(19) ? new() : ((string[])r.GetValue(19)).ToList(),
+            QueryPolicies = DbParams.ReadTextArray(r.IsDBNull(19) ? null : r.GetValue(19)),
             GrantableBy = JsonbHelpers.FromListString(r.IsDBNull(20) ? null : r.GetString(20)),
         };
     }
@@ -663,7 +663,7 @@ public sealed class AccessRepository(IDbConnectionFactory db, ISqlDialect dialec
             RestrictedFields = JsonbHelpers.FromListString(r.IsDBNull(22) ? null : r.GetString(22)),
             AllowedFieldsValues = JsonbHelpers.FromDictStringObject(r.IsDBNull(23) ? null : r.GetString(23)),
             FilterFieldsValues = r.IsDBNull(24) ? null : r.GetString(24),
-            QueryPolicies = r.IsDBNull(25) ? new() : ((string[])r.GetValue(25)).ToList(),
+            QueryPolicies = DbParams.ReadTextArray(r.IsDBNull(25) ? null : r.GetValue(25)),
         };
     }
 }

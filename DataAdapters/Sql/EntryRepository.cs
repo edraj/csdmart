@@ -5,15 +5,14 @@ using Dmart.Models.Api;
 using Dmart.Models.Core;
 using Dmart.Models.Enums;
 using Dmart.Models.Json;
-using Npgsql;
-using NpgsqlTypes;
+using Dmart.QueryGrammar;
 
 namespace Dmart.DataAdapters.Sql;
 
 // Maps the `entries` table column-for-column to the C# Entry record. No `doc` jsonb
 // fast-path; every column is read and written explicitly so dmart Python and dmart C#
 // see the same row layout.
-public sealed class EntryRepository(Db db)
+public sealed class EntryRepository(IDbConnectionFactory db)
 {
     private const string SelectAllColumns = """
         SELECT uuid, shortname, space_name, subpath, is_active, slug,
@@ -31,21 +30,20 @@ public sealed class EntryRepository(Db db)
         return await GetAsync(spaceName, subpath, shortname, type, conn, ct);
     }
 
-    public async Task<Entry?> GetAsync(string spaceName, string subpath, string shortname, ResourceType type, NpgsqlConnection conn, CancellationToken ct = default)
+    public async Task<Entry?> GetAsync(string spaceName, string subpath, string shortname, ResourceType type, DbConnection conn, CancellationToken ct = default)
     {
         // Try with the specified resource_type first (most callers know the type).
         // Scoped braces around the typed lookup so the reader+command release
         // the connection BEFORE the fallback issues a second command on it —
-        // Npgsql forbids "command already in progress" on a shared session.
+        // both providers forbid "command already in progress" on a shared session.
         Entry? typed = null;
         {
-            await using var cmd = new NpgsqlCommand(
-                $"{SelectAllColumns} WHERE space_name = $1 AND subpath = $2 AND shortname = $3 AND resource_type = $4",
-                conn);
-            cmd.Parameters.Add(new() { Value = spaceName });
-            cmd.Parameters.Add(new() { Value = subpath });
-            cmd.Parameters.Add(new() { Value = shortname });
-            cmd.Parameters.Add(new() { Value = JsonbHelpers.EnumMember(type) });
+            await using var cmd = conn.Command(
+                $"{SelectAllColumns} WHERE space_name = $1 AND subpath = $2 AND shortname = $3 AND resource_type = $4");
+            DbParams.Add(cmd, spaceName);
+            DbParams.Add(cmd, subpath);
+            DbParams.Add(cmd, shortname);
+            DbParams.Add(cmd, JsonbHelpers.EnumMember(type));
             await using var reader = await cmd.ExecuteReaderAsync(ct);
             if (await reader.ReadAsync(ct)) typed = Hydrate(reader);
         }
@@ -69,14 +67,12 @@ public sealed class EntryRepository(Db db)
         return await GetAsync(spaceName, subpath, shortname, conn, ct);
     }
 
-    public async Task<Entry?> GetAsync(string spaceName, string subpath, string shortname, NpgsqlConnection conn, CancellationToken ct = default)
+    public async Task<Entry?> GetAsync(string spaceName, string subpath, string shortname, DbConnection conn, CancellationToken ct = default)
     {
-        await using var cmd = new NpgsqlCommand(
-            $"{SelectAllColumns} WHERE space_name = $1 AND subpath = $2 AND shortname = $3",
-            conn);
-        cmd.Parameters.Add(new() { Value = spaceName });
-        cmd.Parameters.Add(new() { Value = subpath });
-        cmd.Parameters.Add(new() { Value = shortname });
+        await using var cmd = conn.Command($"{SelectAllColumns} WHERE space_name = $1 AND subpath = $2 AND shortname = $3");
+        DbParams.Add(cmd, spaceName);
+        DbParams.Add(cmd, subpath);
+        DbParams.Add(cmd, shortname);
         await using var reader = await cmd.ExecuteReaderAsync(ct);
         return await reader.ReadAsync(ct) ? Hydrate(reader) : null;
     }
@@ -84,8 +80,8 @@ public sealed class EntryRepository(Db db)
     public async Task<Entry?> GetByUuidAsync(Guid uuid, CancellationToken ct = default)
     {
         await using var conn = await db.OpenAsync(ct);
-        await using var cmd = new NpgsqlCommand($"{SelectAllColumns} WHERE uuid = $1", conn);
-        cmd.Parameters.Add(new() { Value = uuid });
+        await using var cmd = conn.Command($"{SelectAllColumns} WHERE uuid = $1");
+        DbParams.Add(cmd, uuid);
         await using var reader = await cmd.ExecuteReaderAsync(ct);
         return await reader.ReadAsync(ct) ? Hydrate(reader) : null;
     }
@@ -93,11 +89,39 @@ public sealed class EntryRepository(Db db)
     public async Task<Entry?> GetBySlugAsync(string slug, CancellationToken ct = default)
     {
         await using var conn = await db.OpenAsync(ct);
-        await using var cmd = new NpgsqlCommand($"{SelectAllColumns} WHERE slug = $1", conn);
-        cmd.Parameters.Add(new() { Value = slug });
+        await using var cmd = conn.Command($"{SelectAllColumns} WHERE slug = $1");
+        DbParams.Add(cmd, slug);
         await using var reader = await cmd.ExecuteReaderAsync(ct);
         return await reader.ReadAsync(ct) ? Hydrate(reader) : null;
     }
+
+    // "Now" for the plain UPDATEs below. PostgreSQL keeps server-side NOW() so
+    // the value agrees with every other server-clock write on the row; SQLite
+    // is in-process and has only the one clock.
+    private static string NowExpr(DbCommand cmd)
+        => cmd is Microsoft.Data.Sqlite.SqliteCommand
+            ? DbParams.Add(cmd, TimeUtils.Now())
+            : "NOW()";
+
+    // True when the backend can report whether an upsert inserted or updated.
+    // PostgreSQL exposes it via the xmax system column; SQLite has none, so the
+    // caller derives the same answer from its in-transaction read.
+    private static bool ReturnsInsertedFlag(DbConnection conn)
+        => conn is not Microsoft.Data.Sqlite.SqliteConnection;
+
+    // Suffix that locks the row being read for a read-modify-write. SQLite has
+    // no row locks and needs none: the transaction is already IMMEDIATE and
+    // holds the database write lock, and FOR UPDATE would be a syntax error.
+    private static string LockClause(DbConnection conn)
+        => conn is Microsoft.Data.Sqlite.SqliteConnection ? "" : " FOR UPDATE";
+
+    // Extracts the tail of `subpath` from 1-based position `startExpr`.
+    // PostgreSQL accepts the SQL-standard substring(x FROM n); SQLite only
+    // knows substr(x, n).
+    private static string SubpathTail(DbCommand cmd, string subpathCol, string startExpr)
+        => cmd is Microsoft.Data.Sqlite.SqliteCommand
+            ? $"substr({subpathCol}, {startExpr})"
+            : $"substring({subpathCol} FROM {startExpr})";
 
     public async Task UpsertAsync(Entry e, CancellationToken ct = default)
     {
@@ -116,9 +140,8 @@ public sealed class EntryRepository(Db db)
                 await UpsertAsync(e, conn, ct);
                 return;
             }
-            catch (PostgresException ex) when (
-                attempt < MaxAttempts &&
-                (ex.SqlState == "40P01" || ex.SqlState == "40001"))
+            catch (DbException ex) when (
+                attempt < MaxAttempts && DbRetry.IsTransientContention(ex))
             {
 #pragma warning disable CA5394 // Backoff jitter — randomness here is timing, not security.
                 await Task.Delay(Random.Shared.Next(5, 25), ct);
@@ -127,7 +150,7 @@ public sealed class EntryRepository(Db db)
         }
     }
 
-    public async Task UpsertAsync(Entry e, NpgsqlConnection conn, CancellationToken ct = default)
+    public async Task UpsertAsync(Entry e, DbConnection conn, CancellationToken ct = default)
     {
         // Row-level ACL depends on entries.query_policies carrying the
         // owner/is_active/subpath fingerprints Python's generate_query_policies
@@ -141,7 +164,7 @@ public sealed class EntryRepository(Db db)
         // policies reflect reality.
         e = e with { QueryPolicies = Utils.QueryPolicies.Generate(e) };
 
-        await using var cmd = new NpgsqlCommand("""
+        await using var cmd = conn.Command("""
             INSERT INTO entries (uuid, shortname, space_name, subpath, is_active, slug,
                                  displayname, description, tags, created_at, updated_at,
                                  owner_shortname, owner_group_shortname, acl, payload, relationships,
@@ -170,43 +193,39 @@ public sealed class EntryRepository(Db db)
                 collaborators = EXCLUDED.collaborators,
                 resolution_reason = EXCLUDED.resolution_reason,
                 query_policies = EXCLUDED.query_policies
-            """, conn);
+            """);
 
-        cmd.Parameters.Add(new() { Value = Guid.Parse(e.Uuid) });
-        cmd.Parameters.Add(new() { Value = e.Shortname });
-        cmd.Parameters.Add(new() { Value = e.SpaceName });
-        cmd.Parameters.Add(new() { Value = e.Subpath });
-        cmd.Parameters.Add(new() { Value = e.IsActive });
-        cmd.Parameters.Add(new() { Value = (object?)e.Slug ?? DBNull.Value });
+        DbParams.Add(cmd, Guid.Parse(e.Uuid));
+        DbParams.Add(cmd, e.Shortname);
+        DbParams.Add(cmd, e.SpaceName);
+        DbParams.Add(cmd, e.Subpath);
+        DbParams.Add(cmd, e.IsActive);
+        DbParams.Add(cmd, (object?)e.Slug ?? DBNull.Value);
         AddJsonb(cmd, JsonbHelpers.ToJsonb(e.Displayname));
         AddJsonb(cmd, JsonbHelpers.ToJsonb(e.Description));
         AddJsonbNotNull(cmd, JsonbHelpers.ToJsonbList(e.Tags));   // tags is NOT NULL
-        cmd.Parameters.Add(new() { Value = e.CreatedAt == default ? TimeUtils.Now() : e.CreatedAt });
+        DbParams.Add(cmd, e.CreatedAt == default ? TimeUtils.Now() : e.CreatedAt);
         // Honor the caller's UpdatedAt — normal create/update flows set it to
         // TimeUtils.Now() themselves, so behavior there is unchanged. The
         // import path needs to preserve the imported value so a round-trip
         // (export → delete → import) reproduces the row verbatim.
-        cmd.Parameters.Add(new() { Value = e.UpdatedAt == default ? TimeUtils.Now() : e.UpdatedAt });
-        cmd.Parameters.Add(new() { Value = e.OwnerShortname });
-        cmd.Parameters.Add(new() { Value = (object?)e.OwnerGroupShortname ?? DBNull.Value });
+        DbParams.Add(cmd, e.UpdatedAt == default ? TimeUtils.Now() : e.UpdatedAt);
+        DbParams.Add(cmd, e.OwnerShortname);
+        DbParams.Add(cmd, (object?)e.OwnerGroupShortname ?? DBNull.Value);
         AddJsonb(cmd, JsonbHelpers.ToJsonb(e.Acl));
         AddJsonb(cmd, JsonbHelpers.ToJsonb(e.Payload));
         AddJsonb(cmd, JsonbHelpers.ToJsonb(e.Relationships));
-        cmd.Parameters.Add(new() { Value = (object?)e.LastChecksumHistory ?? DBNull.Value });
-        cmd.Parameters.Add(new() { Value = JsonbHelpers.EnumMember(e.ResourceType) });
-        cmd.Parameters.Add(new() { Value = (object?)e.State ?? DBNull.Value });
+        DbParams.Add(cmd, (object?)e.LastChecksumHistory ?? DBNull.Value);
+        DbParams.Add(cmd, JsonbHelpers.EnumMember(e.ResourceType));
+        DbParams.Add(cmd, (object?)e.State ?? DBNull.Value);
 #pragma warning disable CA1508 // Analyzer limitation: bool? boxed via (object?) cast IS null when source is null; the ?? is load-bearing.
-        cmd.Parameters.Add(new() { Value = (object?)e.IsOpen ?? DBNull.Value });
+        DbParams.Add(cmd, (object?)e.IsOpen ?? DBNull.Value);
 #pragma warning restore CA1508
         AddJsonb(cmd, JsonbHelpers.ToJsonb(e.Reporter));
-        cmd.Parameters.Add(new() { Value = (object?)e.WorkflowShortname ?? DBNull.Value });
+        DbParams.Add(cmd, (object?)e.WorkflowShortname ?? DBNull.Value);
         AddJsonb(cmd, JsonbHelpers.ToJsonb(e.Collaborators));
-        cmd.Parameters.Add(new() { Value = (object?)e.ResolutionReason ?? DBNull.Value });
-        cmd.Parameters.Add(new()
-        {
-            Value = (e.QueryPolicies ?? new()).ToArray(),
-            NpgsqlDbType = NpgsqlDbType.Array | NpgsqlDbType.Text,
-        });
+        DbParams.Add(cmd, (object?)e.ResolutionReason ?? DBNull.Value);
+        DbParams.Add(cmd, (e.QueryPolicies ?? new()).ToArray(), SqlValueKind.TextArray);
 
         await cmd.ExecuteNonQueryAsync(ct);
     }
@@ -242,9 +261,8 @@ public sealed class EntryRepository(Db db)
             {
                 return await UpsertWithPriorCoreAsync(e, ct);
             }
-            catch (PostgresException ex) when (
-                attempt < MaxAttempts &&
-                (ex.SqlState == "40P01" || ex.SqlState == "40001"))
+            catch (DbException ex) when (
+                attempt < MaxAttempts && DbRetry.IsTransientContention(ex))
             {
 #pragma warning disable CA5394 // Backoff jitter — randomness here is timing, not security.
                 await Task.Delay(Random.Shared.Next(5, 25), ct);
@@ -263,18 +281,17 @@ public sealed class EntryRepository(Db db)
         // resolves on — so no resource_type filter; if the row exists under
         // a different type, that change should surface in the diff.
         Entry? prior = null;
-        await using (var sel = new NpgsqlCommand(
-            $"{SelectAllColumns} WHERE space_name = $1 AND subpath = $2 AND shortname = $3 FOR UPDATE",
-            conn, tx))
+        await using (var sel = conn.Command(
+            $"{SelectAllColumns} WHERE space_name = $1 AND subpath = $2 AND shortname = $3{LockClause(conn)}", tx))
         {
-            sel.Parameters.Add(new() { Value = e.SpaceName });
-            sel.Parameters.Add(new() { Value = e.Subpath });
-            sel.Parameters.Add(new() { Value = e.Shortname });
+            DbParams.Add(sel, e.SpaceName);
+            DbParams.Add(sel, e.Subpath);
+            DbParams.Add(sel, e.Shortname);
             await using var reader = await sel.ExecuteReaderAsync(ct);
             if (await reader.ReadAsync(ct)) prior = Hydrate(reader);
         }
 
-        await using var cmd = new NpgsqlCommand("""
+        await using var cmd = conn.Command("""
             INSERT INTO entries (uuid, shortname, space_name, subpath, is_active, slug,
                                  displayname, description, tags, created_at, updated_at,
                                  owner_shortname, owner_group_shortname, acl, payload, relationships,
@@ -303,43 +320,50 @@ public sealed class EntryRepository(Db db)
                 collaborators = EXCLUDED.collaborators,
                 resolution_reason = EXCLUDED.resolution_reason,
                 query_policies = EXCLUDED.query_policies
-            RETURNING (xmax = 0) AS inserted
-            """, conn, tx);
+            """ + (ReturnsInsertedFlag(conn) ? "\n            RETURNING (xmax = 0) AS inserted" : ""), tx);
 
-        cmd.Parameters.Add(new() { Value = Guid.Parse(e.Uuid) });
-        cmd.Parameters.Add(new() { Value = e.Shortname });
-        cmd.Parameters.Add(new() { Value = e.SpaceName });
-        cmd.Parameters.Add(new() { Value = e.Subpath });
-        cmd.Parameters.Add(new() { Value = e.IsActive });
-        cmd.Parameters.Add(new() { Value = (object?)e.Slug ?? DBNull.Value });
+        DbParams.Add(cmd, Guid.Parse(e.Uuid));
+        DbParams.Add(cmd, e.Shortname);
+        DbParams.Add(cmd, e.SpaceName);
+        DbParams.Add(cmd, e.Subpath);
+        DbParams.Add(cmd, e.IsActive);
+        DbParams.Add(cmd, (object?)e.Slug ?? DBNull.Value);
         AddJsonb(cmd, JsonbHelpers.ToJsonb(e.Displayname));
         AddJsonb(cmd, JsonbHelpers.ToJsonb(e.Description));
         AddJsonbNotNull(cmd, JsonbHelpers.ToJsonbList(e.Tags));
-        cmd.Parameters.Add(new() { Value = e.CreatedAt == default ? TimeUtils.Now() : e.CreatedAt });
-        cmd.Parameters.Add(new() { Value = e.UpdatedAt == default ? TimeUtils.Now() : e.UpdatedAt });
-        cmd.Parameters.Add(new() { Value = e.OwnerShortname });
-        cmd.Parameters.Add(new() { Value = (object?)e.OwnerGroupShortname ?? DBNull.Value });
+        DbParams.Add(cmd, e.CreatedAt == default ? TimeUtils.Now() : e.CreatedAt);
+        DbParams.Add(cmd, e.UpdatedAt == default ? TimeUtils.Now() : e.UpdatedAt);
+        DbParams.Add(cmd, e.OwnerShortname);
+        DbParams.Add(cmd, (object?)e.OwnerGroupShortname ?? DBNull.Value);
         AddJsonb(cmd, JsonbHelpers.ToJsonb(e.Acl));
         AddJsonb(cmd, JsonbHelpers.ToJsonb(e.Payload));
         AddJsonb(cmd, JsonbHelpers.ToJsonb(e.Relationships));
-        cmd.Parameters.Add(new() { Value = (object?)e.LastChecksumHistory ?? DBNull.Value });
-        cmd.Parameters.Add(new() { Value = JsonbHelpers.EnumMember(e.ResourceType) });
-        cmd.Parameters.Add(new() { Value = (object?)e.State ?? DBNull.Value });
+        DbParams.Add(cmd, (object?)e.LastChecksumHistory ?? DBNull.Value);
+        DbParams.Add(cmd, JsonbHelpers.EnumMember(e.ResourceType));
+        DbParams.Add(cmd, (object?)e.State ?? DBNull.Value);
 #pragma warning disable CA1508 // Analyzer limitation: bool? boxed via (object?) cast IS null when source is null; the ?? is load-bearing.
-        cmd.Parameters.Add(new() { Value = (object?)e.IsOpen ?? DBNull.Value });
+        DbParams.Add(cmd, (object?)e.IsOpen ?? DBNull.Value);
 #pragma warning restore CA1508
         AddJsonb(cmd, JsonbHelpers.ToJsonb(e.Reporter));
-        cmd.Parameters.Add(new() { Value = (object?)e.WorkflowShortname ?? DBNull.Value });
+        DbParams.Add(cmd, (object?)e.WorkflowShortname ?? DBNull.Value);
         AddJsonb(cmd, JsonbHelpers.ToJsonb(e.Collaborators));
-        cmd.Parameters.Add(new() { Value = (object?)e.ResolutionReason ?? DBNull.Value });
-        cmd.Parameters.Add(new()
-        {
-            Value = (e.QueryPolicies ?? new()).ToArray(),
-            NpgsqlDbType = NpgsqlDbType.Array | NpgsqlDbType.Text,
-        });
+        DbParams.Add(cmd, (object?)e.ResolutionReason ?? DBNull.Value);
+        DbParams.Add(cmd, (e.QueryPolicies ?? new()).ToArray(), SqlValueKind.TextArray);
 
-        var raw = await cmd.ExecuteScalarAsync(ct);
-        var inserted = raw is bool b && b;
+        bool inserted;
+        if (ReturnsInsertedFlag(conn))
+        {
+            var raw = await cmd.ExecuteScalarAsync(ct);
+            inserted = raw is bool b && b;
+        }
+        else
+        {
+            // No xmax to ask, and none needed: the SELECT above ran inside this
+            // same write-locked transaction, so "there was no prior row" is
+            // exactly "this statement inserted".
+            await cmd.ExecuteNonQueryAsync(ct);
+            inserted = prior is null;
+        }
         await tx.CommitAsync(ct);
         return (prior, inserted);
     }
@@ -347,14 +371,14 @@ public sealed class EntryRepository(Db db)
     public async Task<bool> DeleteAsync(string spaceName, string subpath, string shortname, ResourceType type, CancellationToken ct = default)
     {
         await using var conn = await db.OpenAsync(ct);
-        await using var cmd = new NpgsqlCommand("""
+        await using var cmd = conn.Command("""
             DELETE FROM entries
             WHERE space_name = $1 AND subpath = $2 AND shortname = $3 AND resource_type = $4
-            """, conn);
-        cmd.Parameters.Add(new() { Value = spaceName });
-        cmd.Parameters.Add(new() { Value = subpath });
-        cmd.Parameters.Add(new() { Value = shortname });
-        cmd.Parameters.Add(new() { Value = JsonbHelpers.EnumMember(type) });
+            """);
+        DbParams.Add(cmd, spaceName);
+        DbParams.Add(cmd, subpath);
+        DbParams.Add(cmd, shortname);
+        DbParams.Add(cmd, JsonbHelpers.EnumMember(type));
         return await cmd.ExecuteNonQueryAsync(ct) > 0;
     }
 
@@ -368,9 +392,9 @@ public sealed class EntryRepository(Db db)
     // SQL is `WHERE (space_name, subpath, shortname) IN ((...), ...)` with
     // 3*N positional parameters — safe to interpolate the placeholder list
     // because only integer indices are embedded; every caller-supplied value
-    // binds through Npgsql parameter substitution.
+    // binds through provider parameter substitution.
     [SuppressMessage("Security", "CA2100",
-        Justification = "Audited: SQL placeholder list is built from integer indices; all caller-supplied values flow through NpgsqlCommand.Parameters.")]
+        Justification = "Audited: SQL placeholder list is built from integer indices; all caller-supplied values flow through DbCommand.Parameters.")]
     public async Task<HashSet<(string SpaceName, string Subpath, string Shortname)>> ExistMaskAsync(
         IReadOnlyList<(string SpaceName, string Subpath, string Shortname)> targets,
         CancellationToken ct = default)
@@ -381,16 +405,16 @@ public sealed class EntryRepository(Db db)
         await using var conn = await db.OpenAsync(ct);
         var sb = new System.Text.StringBuilder(
             "SELECT space_name, subpath, shortname FROM entries WHERE (space_name, subpath, shortname) IN (");
-        await using var cmd = new NpgsqlCommand { Connection = conn };
+        await using var cmd = conn.CreateCommand();
         for (var i = 0; i < targets.Count; i++)
         {
             if (i > 0) sb.Append(',');
             sb.Append("($").Append(i * 3 + 1)
               .Append(",$").Append(i * 3 + 2)
               .Append(",$").Append(i * 3 + 3).Append(')');
-            cmd.Parameters.Add(new() { Value = targets[i].SpaceName });
-            cmd.Parameters.Add(new() { Value = targets[i].Subpath });
-            cmd.Parameters.Add(new() { Value = targets[i].Shortname });
+            DbParams.Add(cmd, targets[i].SpaceName);
+            DbParams.Add(cmd, targets[i].Subpath);
+            DbParams.Add(cmd, targets[i].Shortname);
         }
         sb.Append(')');
         cmd.CommandText = sb.ToString();
@@ -439,17 +463,53 @@ public sealed class EntryRepository(Db db)
             },
         }, DmartJsonContext.Default.ListDictionaryStringObject);
 
-        await using var cmd = new NpgsqlCommand("""
+        // PostgreSQL answers this with the `@>` containment operator, backed by
+        // idx_entries_relationships_gin. SQLite has no containment operator and
+        // no JSON index, so the dialect emits a json_each walk instead — correct
+        // but a full scan. This runs on every delete, so it is one of the two
+        // predicates that set the SQLite tier's practical row ceiling (see
+        // docs/sqlite-backend-audit.md §4).
+        await using var cmd = conn.CreateCommand();
+        // The two engines need different INPUTS here, not just different
+        // operators, which is why this branches locally instead of going
+        // through ISqlDialect: PostgreSQL matches one serialized probe document
+        // with `@>`, while SQLite has to compare the four fields individually.
+        string contains;
+        if (cmd is Microsoft.Data.Sqlite.SqliteCommand)
+        {
+            // No containment operator and no JSON index, so this walks the
+            // array per row — correct, but a full scan. It runs on every
+            // delete, making it one of the two predicates that set the SQLite
+            // tier's practical row ceiling (docs/sqlite-backend-audit.md §4).
+            var t = DbParams.Add(cmd, JsonbHelpers.EnumMember(targetType));
+            var sp = DbParams.Add(cmd, targetSpace);
+            var su = DbParams.Add(cmd, targetSubpath);
+            var sh = DbParams.Add(cmd, targetShortname);
+            contains =
+                "EXISTS (SELECT 1 FROM json_each(relationships) AS rel "
+                + "WHERE json_valid(relationships) AND json_type(relationships) = 'array' "
+                + $"AND rel.value ->> '$.related_to.type' = {t} "
+                + $"AND rel.value ->> '$.related_to.space_name' = {sp} "
+                + $"AND rel.value ->> '$.related_to.subpath' = {su} "
+                + $"AND rel.value ->> '$.related_to.shortname' = {sh})";
+        }
+        else
+        {
+            // Backed by idx_entries_relationships_gin (jsonb_path_ops), which
+            // turns this from a sequential scan over every entry into an index
+            // range scan.
+            contains = $"relationships @> {DbParams.Add(cmd, probe)}::jsonb";
+        }
+        var ex1 = DbParams.Add(cmd, excludeSpace ?? string.Empty);
+        var ex2 = DbParams.Add(cmd, excludeSubpath ?? string.Empty);
+        var ex3 = DbParams.Add(cmd, excludeShortname ?? string.Empty);
+        cmd.CommandText = $"""
             SELECT space_name, subpath, shortname
             FROM entries
-            WHERE relationships @> $1::jsonb
-              AND NOT (space_name = $2 AND subpath = $3 AND shortname = $4)
+            WHERE {contains}
+              AND NOT (space_name = {ex1} AND subpath = {ex2} AND shortname = {ex3})
             LIMIT 1
-            """, conn);
-        cmd.Parameters.Add(new() { Value = probe });
-        cmd.Parameters.Add(new() { Value = excludeSpace ?? string.Empty });
-        cmd.Parameters.Add(new() { Value = excludeSubpath ?? string.Empty });
-        cmd.Parameters.Add(new() { Value = excludeShortname ?? string.Empty });
+            """;
         await using var reader = await cmd.ExecuteReaderAsync(ct);
         if (!await reader.ReadAsync(ct)) return null;
         return (reader.GetString(0), reader.GetString(1), reader.GetString(2));
@@ -486,7 +546,7 @@ public sealed class EntryRepository(Db db)
     public Task<DeleteReport> DeleteFolderTreeWithDependentsAsync(
         string spaceName, string parentSubpath, string folderShortname,
         bool dryRun = false, CancellationToken ct = default)
-        => db.ExecuteWithRetryOnDeadlockAsync(
+        => db.ExecuteWithRetryAsync(
             c => DeleteFolderTreeWithDependentsOnceAsync(spaceName, parentSubpath, folderShortname, dryRun, c),
             ct);
 
@@ -533,32 +593,32 @@ public sealed class EntryRepository(Db db)
 
         // COUNT (dryRun) or DELETE the rows matching `where`, returning the affected /
         // matching row count. `bind` supplies the positional parameters for `where`.
-        async Task<long> RunAsync(string table, string where, Action<NpgsqlCommand> bind)
+        async Task<long> RunAsync(string table, string where, Action<DbCommand> bind)
         {
             var sql = dryRun
                 ? $"SELECT count(*) FROM {table} WHERE {where}"
                 : $"DELETE FROM {table} WHERE {where}";
-            await using var cmd = new NpgsqlCommand(sql, conn, tx);
+            await using var cmd = conn.Command(sql, tx);
             bind(cmd);
             return dryRun
                 ? (long)(await cmd.ExecuteScalarAsync(ct) ?? 0L)
                 : await cmd.ExecuteNonQueryAsync(ct);
         }
 
-        void BindSubtree(NpgsqlCommand cmd)
+        void BindSubtree(DbCommand cmd)
         {
-            cmd.Parameters.Add(new() { Value = spaceName });
-            cmd.Parameters.Add(new() { Value = parentSubpath });
-            cmd.Parameters.Add(new() { Value = folderShortname });
-            cmd.Parameters.Add(new() { Value = folderPath });
+            DbParams.Add(cmd, spaceName);
+            DbParams.Add(cmd, parentSubpath);
+            DbParams.Add(cmd, folderShortname);
+            DbParams.Add(cmd, folderPath);
         }
 
         var histories   = await RunAsync("histories",   subtreeWithFolderRow, BindSubtree);
         var locks       = await RunAsync("locks",        subtreeWithFolderRow, BindSubtree);
         var attachments = await RunAsync("attachments",  attachmentsPredicate, cmd =>
         {
-            cmd.Parameters.Add(new() { Value = spaceName });
-            cmd.Parameters.Add(new() { Value = folderPath });
+            DbParams.Add(cmd, spaceName);
+            DbParams.Add(cmd, folderPath);
         });
         var entries     = await RunAsync("entries",      entriesPredicate, BindSubtree);
 
@@ -600,7 +660,7 @@ public sealed class EntryRepository(Db db)
     // The caller (EntryService.MoveAsync) hands us the loaded source Entry
     // so we don't need a re-fetch to compute the regenerated policies.
     public Task<int> MoveAsync(Entry source, Locator to, CancellationToken ct = default)
-        => db.ExecuteWithRetryOnDeadlockAsync(c => MoveOnceAsync(source, to, c), ct);
+        => db.ExecuteWithRetryAsync(c => MoveOnceAsync(source, to, c), ct);
 
     private async Task<int> MoveOnceAsync(Entry source, Locator to, CancellationToken ct)
     {
@@ -626,23 +686,21 @@ public sealed class EntryRepository(Db db)
         };
         var rootPolicies = Utils.QueryPolicies.Generate(movedRoot).ToArray();
         int totalMoved;
-        await using (var rootCmd = new NpgsqlCommand("""
-            UPDATE entries
-               SET space_name = $2, subpath = $3, shortname = $4,
-                   query_policies = $5,
-                   updated_at = NOW()
-             WHERE uuid = $1
-            """, conn, tx))
+        await using (var rootCmd = conn.CreateCommand())
         {
-            rootCmd.Parameters.Add(new() { Value = Guid.Parse(source.Uuid) });
-            rootCmd.Parameters.Add(new() { Value = to.SpaceName });
-            rootCmd.Parameters.Add(new() { Value = to.Subpath });
-            rootCmd.Parameters.Add(new() { Value = to.Shortname });
-            rootCmd.Parameters.Add(new()
-            {
-                Value = rootPolicies,
-                NpgsqlDbType = NpgsqlDbType.Array | NpgsqlDbType.Text,
-            });
+            DbParams.Add(rootCmd, Guid.Parse(source.Uuid));
+            DbParams.Add(rootCmd, to.SpaceName);
+            DbParams.Add(rootCmd, to.Subpath);
+            DbParams.Add(rootCmd, to.Shortname);
+            DbParams.Add(rootCmd, rootPolicies, SqlValueKind.TextArray);
+            rootCmd.Transaction = tx;
+            rootCmd.CommandText = $"""
+                UPDATE entries
+                   SET space_name = $2, subpath = $3, shortname = $4,
+                       query_policies = $5,
+                       updated_at = {NowExpr(rootCmd)}
+                 WHERE uuid = $1
+                """;
             totalMoved = await rootCmd.ExecuteNonQueryAsync(ct);
         }
 
@@ -706,19 +764,21 @@ public sealed class EntryRepository(Db db)
         //    plus, on a folder move, attachments owned by descendants
         //    (subpath LIKE oldPrefix/%). Attachments have no query_policies
         //    column, so nothing else to refresh here.
-        await using (var cmd = new NpgsqlCommand("""
-            UPDATE attachments
-               SET space_name = $3,
-                   subpath = $4 || substring(subpath FROM length($2) + 1),
-                   updated_at = NOW()
-             WHERE space_name = $1
-               AND (subpath = $2 OR subpath LIKE $2 || '/%')
-            """, conn, tx))
+        await using (var cmd = conn.CreateCommand())
         {
-            cmd.Parameters.Add(new() { Value = source.SpaceName });
-            cmd.Parameters.Add(new() { Value = oldPrefix });
-            cmd.Parameters.Add(new() { Value = to.SpaceName });
-            cmd.Parameters.Add(new() { Value = newPrefix });
+            DbParams.Add(cmd, source.SpaceName);
+            DbParams.Add(cmd, oldPrefix);
+            DbParams.Add(cmd, to.SpaceName);
+            cmd.Transaction = tx;
+            cmd.CommandText = $"""
+                UPDATE attachments
+                   SET space_name = $3,
+                       subpath = $4 || {SubpathTail(cmd, "subpath", "length($2) + 1")},
+                       updated_at = {NowExpr(cmd)}
+                 WHERE space_name = $1
+                   AND (subpath = $2 OR subpath LIKE $2 || '/%')
+                """;
+            DbParams.Add(cmd, newPrefix);
             await cmd.ExecuteNonQueryAsync(ct);
         }
 
@@ -731,45 +791,47 @@ public sealed class EntryRepository(Db db)
         //    row for an entry long deleted could still occupy a destination
         //    key — purge those first so the unique (shortname, space_name,
         //    subpath) index can't abort the whole move.
-        await using (var cmd = new NpgsqlCommand("""
+        await using (var cmd = conn.Command("""
             DELETE FROM locks
              WHERE space_name = $1
                AND ((subpath = $2 AND shortname = $3)
                     OR subpath = $4 OR subpath LIKE $4 || '/%')
-            """, conn, tx))
+            """, tx))
         {
-            cmd.Parameters.Add(new() { Value = to.SpaceName });
-            cmd.Parameters.Add(new() { Value = to.Subpath });
-            cmd.Parameters.Add(new() { Value = to.Shortname });
-            cmd.Parameters.Add(new() { Value = newPrefix });
+            DbParams.Add(cmd, to.SpaceName);
+            DbParams.Add(cmd, to.Subpath);
+            DbParams.Add(cmd, to.Shortname);
+            DbParams.Add(cmd, newPrefix);
             await cmd.ExecuteNonQueryAsync(ct);
         }
-        await using (var cmd = new NpgsqlCommand("""
+        await using (var cmd = conn.Command("""
             UPDATE locks
                SET space_name = $4, subpath = $5, shortname = $6
              WHERE space_name = $1 AND subpath = $2 AND shortname = $3
-            """, conn, tx))
+            """, tx))
         {
-            cmd.Parameters.Add(new() { Value = source.SpaceName });
-            cmd.Parameters.Add(new() { Value = source.Subpath });
-            cmd.Parameters.Add(new() { Value = source.Shortname });
-            cmd.Parameters.Add(new() { Value = to.SpaceName });
-            cmd.Parameters.Add(new() { Value = to.Subpath });
-            cmd.Parameters.Add(new() { Value = to.Shortname });
+            DbParams.Add(cmd, source.SpaceName);
+            DbParams.Add(cmd, source.Subpath);
+            DbParams.Add(cmd, source.Shortname);
+            DbParams.Add(cmd, to.SpaceName);
+            DbParams.Add(cmd, to.Subpath);
+            DbParams.Add(cmd, to.Shortname);
             await cmd.ExecuteNonQueryAsync(ct);
         }
-        await using (var cmd = new NpgsqlCommand("""
-            UPDATE locks
-               SET space_name = $3,
-                   subpath = $4 || substring(subpath FROM length($2) + 1)
-             WHERE space_name = $1
-               AND (subpath = $2 OR subpath LIKE $2 || '/%')
-            """, conn, tx))
+        await using (var cmd = conn.CreateCommand())
         {
-            cmd.Parameters.Add(new() { Value = source.SpaceName });
-            cmd.Parameters.Add(new() { Value = oldPrefix });
-            cmd.Parameters.Add(new() { Value = to.SpaceName });
-            cmd.Parameters.Add(new() { Value = newPrefix });
+            DbParams.Add(cmd, source.SpaceName);
+            DbParams.Add(cmd, oldPrefix);
+            cmd.Transaction = tx;
+            cmd.CommandText = $"""
+                UPDATE locks
+                   SET space_name = $3,
+                       subpath = $4 || {SubpathTail(cmd, "subpath", "length($2) + 1")}
+                 WHERE space_name = $1
+                   AND (subpath = $2 OR subpath LIKE $2 || '/%')
+                """;
+            DbParams.Add(cmd, to.SpaceName);
+            DbParams.Add(cmd, newPrefix);
             await cmd.ExecuteNonQueryAsync(ct);
         }
 
@@ -785,15 +847,15 @@ public sealed class EntryRepository(Db db)
     // The VALUES list is built dynamically because Postgres has no way to
     // bind a variable-length tuple list to a single parameter. Only integer
     // placeholder indices are concatenated into the SQL; every value flows
-    // through NpgsqlCommand.Parameters — no caller-supplied string ends up
+    // through DbCommand.Parameters — no caller-supplied string ends up
     // in the SQL text. Pattern matches ExistMaskAsync above.
     //
     // Caller is responsible for chunking so 1 + 3*len stays well below
     // Postgres's 65535-parameter limit.
     [SuppressMessage("Security", "CA2100",
-        Justification = "Audited: the dynamic VALUES list embeds only constant string fragments and integer placeholder indices. Every caller-supplied value flows through NpgsqlCommand.Parameters; no caller-supplied string is concatenated into the SQL.")]
+        Justification = "Audited: the dynamic VALUES list embeds only constant string fragments and integer placeholder indices. Every caller-supplied value flows through DbCommand.Parameters; no caller-supplied string is concatenated into the SQL.")]
     private static async Task<int> BulkUpdateDescendantsAsync(
-        NpgsqlConnection conn, NpgsqlTransaction tx,
+        DbConnection conn, DbTransaction tx,
         string newSpaceName,
         List<(Guid Uuid, string NewSubpath, string[] NewPolicies)> updates,
         int offset, int len,
@@ -801,42 +863,80 @@ public sealed class EntryRepository(Db db)
     {
         if (len == 0) return 0;
 
+        await using var cmd = conn.CreateCommand();
+        cmd.Transaction = tx;
+        var sqlite = cmd is Microsoft.Data.Sqlite.SqliteCommand;
+
         // ~80 chars per row in the VALUES clause + a fixed header.
         var sb = new System.Text.StringBuilder(120 + 80 * len);
-        sb.Append("""
-            UPDATE entries AS e
-               SET space_name = $1,
-                   subpath = v.subpath,
-                   query_policies = v.policies,
-                   updated_at = NOW()
-              FROM (VALUES
-            """);
+
+        // Both engines join the target rows against an inline VALUES list, but
+        // they spell the join source differently and SQLite rejects
+        // PostgreSQL's form outright:
+        //
+        //   PostgreSQL:  UPDATE ... FROM (VALUES ...) AS v(cols)
+        //   SQLite:      WITH v(cols) AS (VALUES ...) UPDATE ... FROM v
+        //
+        // SQLite has no column-alias list on a subquery (the `AS v(a,b,c)`
+        // part), so the column names have to be introduced by a CTE instead.
+        // Verified against SQLite 3.51 before relying on it.
+        if (sqlite) sb.Append("WITH v(uuid, subpath, policies) AS (VALUES ");
+        else
+            sb.Append("""
+                UPDATE entries AS e
+                   SET space_name = $1,
+                       subpath = v.subpath,
+                       query_policies = v.policies,
+                       updated_at = NOW()
+                  FROM (VALUES
+                """);
+
         for (var i = 0; i < len; i++)
         {
             if (i > 0) sb.Append(',');
             // Param indexing: $1 = newSpaceName; then 3 params per row
-            // starting at $2. Cast the first row explicitly so Postgres can
-            // infer the VALUES column types; later rows inherit.
+            // starting at $2. PostgreSQL needs the first row cast explicitly so
+            // it can infer the VALUES column types (later rows inherit);
+            // SQLite is dynamically typed and has no such syntax.
             var p = 2 + i * 3;
-            sb.Append('(').Append('$').Append(p).Append("::uuid,$")
-                          .Append(p + 1).Append("::text,$")
-                          .Append(p + 2).Append("::text[])");
+            if (sqlite)
+                sb.Append('(').Append('$').Append(p).Append(",$")
+                              .Append(p + 1).Append(",$")
+                              .Append(p + 2).Append(')');
+            else
+                sb.Append('(').Append('$').Append(p).Append("::uuid,$")
+                              .Append(p + 1).Append("::text,$")
+                              .Append(p + 2).Append("::text[])");
         }
-        sb.Append(") AS v(uuid, subpath, policies) WHERE e.uuid = v.uuid");
 
-        await using var cmd = new NpgsqlCommand(sb.ToString(), conn, tx);
-        cmd.Parameters.Add(new() { Value = newSpaceName });
-        for (var i = 0; i < len; i++)
+        // SQLite has no NOW(), so it binds a timestamp. That parameter must
+        // come AFTER the row parameters, because the $N the SQL already
+        // references are positional and binding out of order would shift every
+        // one of them.
+        var nowPlaceholder = sqlite
+            ? "$" + (2 + len * 3).ToString(System.Globalization.CultureInfo.InvariantCulture)
+            : "NOW()";
+
+        if (sqlite)
+            sb.Append(") UPDATE entries SET space_name = $1, subpath = v.subpath, "
+                    + "query_policies = v.policies, updated_at = ")
+              .Append(nowPlaceholder)
+              .Append(" FROM v WHERE entries.uuid = v.uuid");
+        else
+            sb.Append(") AS v(uuid, subpath, policies) WHERE e.uuid = v.uuid");
+
+        cmd.CommandText = sb.ToString();
+
+        // Bind in the exact order the placeholders were numbered.
+        DbParams.Add(cmd, newSpaceName);                       // $1
+        for (var i = 0; i < len; i++)                          // $2 .. $(1+3n)
         {
             var row = updates[offset + i];
-            cmd.Parameters.Add(new() { Value = row.Uuid });
-            cmd.Parameters.Add(new() { Value = row.NewSubpath });
-            cmd.Parameters.Add(new()
-            {
-                Value = row.NewPolicies,
-                NpgsqlDbType = NpgsqlDbType.Array | NpgsqlDbType.Text,
-            });
+            DbParams.Add(cmd, row.Uuid);
+            DbParams.Add(cmd, row.NewSubpath);
+            DbParams.Add(cmd, row.NewPolicies, SqlValueKind.TextArray);
         }
+        if (sqlite) DbParams.Add(cmd, TimeUtils.Now());        // $(2+3n)
         return await cmd.ExecuteNonQueryAsync(ct);
     }
 
@@ -848,17 +948,15 @@ public sealed class EntryRepository(Db db)
     // — whose subpath no longer matches the predicate after their UPDATE —
     // are skipped naturally on the next pass.
     private static async Task<List<Entry>> ReadDescendantPageForMoveAsync(
-        NpgsqlConnection conn, NpgsqlTransaction tx,
+        DbConnection conn, DbTransaction tx,
         string spaceName, string folderPath, Guid cursor, int pageSize,
         CancellationToken ct)
     {
-        await using var cmd = new NpgsqlCommand(
-            $"{SelectAllColumns} WHERE space_name = $1 AND (subpath = $2 OR subpath LIKE $2 || '/%') AND uuid > $3 ORDER BY uuid LIMIT $4",
-            conn, tx);
-        cmd.Parameters.Add(new() { Value = spaceName });
-        cmd.Parameters.Add(new() { Value = folderPath });
-        cmd.Parameters.Add(new() { Value = cursor });
-        cmd.Parameters.Add(new() { Value = pageSize });
+        await using var cmd = conn.Command($"{SelectAllColumns} WHERE space_name = $1 AND (subpath = $2 OR subpath LIKE $2 || '/%') AND uuid > $3 ORDER BY uuid LIMIT $4", tx);
+        DbParams.Add(cmd, spaceName);
+        DbParams.Add(cmd, folderPath);
+        DbParams.Add(cmd, cursor);
+        DbParams.Add(cmd, pageSize);
         await using var r = await cmd.ExecuteReaderAsync(ct);
         var page = new List<Entry>(pageSize);
         while (await r.ReadAsync(ct)) page.Add(Hydrate(r));
@@ -900,31 +998,23 @@ public sealed class EntryRepository(Db db)
     public async Task<long> CountAsync(string spaceName, string subpath, CancellationToken ct = default)
     {
         await using var conn = await db.OpenAsync(ct);
-        await using var cmd = new NpgsqlCommand("""
+        await using var cmd = conn.Command("""
             SELECT COUNT(*) FROM entries
              WHERE space_name = $1 AND (subpath = $2 OR subpath LIKE $2 || '/%')
-            """, conn);
-        cmd.Parameters.Add(new() { Value = spaceName });
-        cmd.Parameters.Add(new() { Value = subpath });
+            """);
+        DbParams.Add(cmd, spaceName);
+        DbParams.Add(cmd, subpath);
         return (long)(await cmd.ExecuteScalarAsync(ct) ?? 0L);
     }
 
-    private static void AddJsonbNotNull(NpgsqlCommand cmd, string json)
+    private static void AddJsonbNotNull(DbCommand cmd, string json)
     {
-        cmd.Parameters.Add(new()
-        {
-            Value = json,
-            NpgsqlDbType = NpgsqlDbType.Jsonb,
-        });
+        DbParams.Add(cmd, json, SqlValueKind.Json);
     }
 
-    private static void AddJsonb(NpgsqlCommand cmd, string? json)
+    private static void AddJsonb(DbCommand cmd, string? json)
     {
-        cmd.Parameters.Add(new()
-        {
-            Value = (object?)json ?? DBNull.Value,
-            NpgsqlDbType = NpgsqlDbType.Jsonb,
-        });
+        DbParams.Add(cmd, (object?)json ?? DBNull.Value, SqlValueKind.Json);
     }
 
     private static Entry Hydrate(DbDataReader r)
@@ -955,7 +1045,7 @@ public sealed class EntryRepository(Db db)
             WorkflowShortname = r.IsDBNull(21) ? null : r.GetString(21),
             Collaborators = JsonbHelpers.FromDictStringString(r.IsDBNull(22) ? null : r.GetString(22)),
             ResolutionReason = r.IsDBNull(23) ? null : r.GetString(23),
-            QueryPolicies = r.IsDBNull(24) ? null : ((string[])r.GetValue(24)).ToList(),
+            QueryPolicies = DbParams.ReadTextArray(r.IsDBNull(24) ? null : r.GetValue(24)),
         };
     }
 }

@@ -208,6 +208,45 @@ public static class DbParams
     }
 
     /// <summary>
+    /// Reads a string-array column written by either backend.
+    /// </summary>
+    /// <remarks>
+    /// The symmetric counterpart of the string[] write conversion, and just as
+    /// necessary: Npgsql materializes a text[] column as a real string[], while
+    /// SQLite stores the same value as a JSON array and returns it as a string.
+    /// A read path that assumes the PostgreSQL shape throws InvalidCastException
+    /// on SQLite — which is how this was found.
+    /// </remarks>
+    public static List<string> ReadTextArray(object? raw)
+    {
+        switch (raw)
+        {
+            case null or DBNull:
+                return new List<string>();
+            case string[] arr:
+                return arr.ToList();
+            case string json when json.Length > 0:
+                try
+                {
+                    using var doc = System.Text.Json.JsonDocument.Parse(json);
+                    if (doc.RootElement.ValueKind != System.Text.Json.JsonValueKind.Array)
+                        return new List<string>();
+                    var result = new List<string>(doc.RootElement.GetArrayLength());
+                    foreach (var el in doc.RootElement.EnumerateArray())
+                        if (el.ValueKind == System.Text.Json.JsonValueKind.String)
+                            result.Add(el.GetString()!);
+                    return result;
+                }
+                catch (System.Text.Json.JsonException)
+                {
+                    return new List<string>();
+                }
+            default:
+                return new List<string>();
+        }
+    }
+
+    /// <summary>
     /// Reads a key/value map column written by either backend.
     /// </summary>
     /// <remarks>

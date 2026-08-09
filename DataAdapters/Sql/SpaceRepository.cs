@@ -243,7 +243,7 @@ public sealed class SpaceRepository(Db db)
             // Index 28 was active_plugins (now unread) — Ordinal/QueryPolicies
             // shifted up by one in SelectAllColumns to match.
             Ordinal = r.IsDBNull(28) ? null : r.GetInt32(28),
-            QueryPolicies = r.IsDBNull(29) ? new() : ((string[])r.GetValue(29)).ToList(),
+            QueryPolicies = DbParams.ReadTextArray(r.IsDBNull(29) ? null : r.GetValue(29)),
         };
     }
 }
