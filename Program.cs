@@ -1768,6 +1768,32 @@ builder.Services.AddSingleton<RegexPatternsConfig>();
 
 // SQL backend
 builder.Services.AddSingleton<Db>();
+
+// Driver selection. An explicit switch, not DbProviderFactories: that resolves
+// providers by assembly name through reflection, which Native AOT cannot see
+// through. Both implementations are constructed directly, so both are
+// statically rooted.
+//
+// Db is registered unconditionally above because the PostgreSQL-only paths
+// that take it directly — the import sessions' SQLSTATE-driven reconnect
+// logic, binary COPY, pgvector — still need it. What varies by driver is which
+// factory the backend-neutral repositories resolve.
+{
+    if (!DatabaseDriverParser.TryParse(builder.Configuration["Dmart:DatabaseDriver"], out var driver))
+        driver = DatabaseDriver.Postgresql;   // DmartSettingsValidator rejects bad values at start
+
+    if (driver == DatabaseDriver.Sqlite)
+    {
+        builder.Services.AddSingleton<SqliteConnectionFactory>();
+        builder.Services.AddSingleton<IDbConnectionFactory>(
+            sp => sp.GetRequiredService<SqliteConnectionFactory>());
+        builder.Services.AddHostedService<SqliteSchemaInitializer>();
+    }
+    else
+    {
+        builder.Services.AddSingleton<IDbConnectionFactory>(sp => sp.GetRequiredService<Db>());
+    }
+}
 builder.Services.AddSingleton<AuthzCacheRefresher>();
 builder.Services.AddSingleton<EntryRepository>();
 builder.Services.AddSingleton<UserRepository>();
