@@ -39,6 +39,17 @@ public enum SqlValueKind
     /// to a string.
     /// </remarks>
     TextArray,
+
+    /// <summary>
+    /// A string-to-string map — PostgreSQL <c>hstore</c>.
+    /// </summary>
+    /// <remarks>
+    /// Used only by the OTP row's value column. PostgreSQL stores it as hstore
+    /// and Npgsql round-trips it as an IDictionary; SQLite has no such type, so
+    /// the same map is stored as a JSON object in TEXT and read back with the
+    /// json1 functions.
+    /// </remarks>
+    KeyValueMap,
 }
 
 /// <summary>

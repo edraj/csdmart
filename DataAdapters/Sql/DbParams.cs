@@ -82,6 +82,10 @@ public static class DbParams
         // and read back with json_each.
         string[] arr => ToJsonArray(arr),
 
+        // The OTP row's value map. PostgreSQL stores it as hstore; SQLite has
+        // no such type, so the same map becomes a JSON object.
+        IDictionary<string, string?> map => ToJsonObject(map),
+
         // Everything else — string, numeric, byte[] — maps directly onto TEXT,
         // INTEGER/REAL or BLOB.
         _ => value,
@@ -98,28 +102,95 @@ public static class DbParams
         for (var i = 0; i < values.Length; i++)
         {
             if (i > 0) sb.Append(',');
-            sb.Append('"');
-            foreach (var c in values[i])
-            {
-                switch (c)
-                {
-                    case '"': sb.Append("\\\""); break;
-                    case '\\': sb.Append("\\\\"); break;
-                    case '\n': sb.Append("\\n"); break;
-                    case '\r': sb.Append("\\r"); break;
-                    case '\t': sb.Append("\\t"); break;
-                    default:
-                        // Control characters must be escaped for the result to
-                        // be valid JSON that json_each will parse.
-                        if (c < 0x20) sb.Append("\\u").Append(((int)c).ToString("x4",
-                            System.Globalization.CultureInfo.InvariantCulture));
-                        else sb.Append(c);
-                        break;
-                }
-            }
-            sb.Append('"');
+            AppendJsonString(sb, values[i]);
         }
         return sb.Append(']').ToString();
+    }
+
+    private static void AppendJsonString(StringBuilder sb, string value)
+    {
+        sb.Append('"');
+        foreach (var c in value)
+        {
+            switch (c)
+            {
+                case '"': sb.Append("\\\""); break;
+                case '\\': sb.Append("\\\\"); break;
+                case '\n': sb.Append("\\n"); break;
+                case '\r': sb.Append("\\r"); break;
+                case '\t': sb.Append("\\t"); break;
+                default:
+                    // Control characters must be escaped for the result to be
+                    // valid JSON that the json1 functions will parse.
+                    if (c < 0x20) sb.Append("\\u").Append(((int)c).ToString("x4",
+                        System.Globalization.CultureInfo.InvariantCulture));
+                    else sb.Append(c);
+                    break;
+            }
+        }
+        sb.Append('"');
+    }
+
+    private static string ToJsonObject(IDictionary<string, string?> map)
+    {
+        var sb = new StringBuilder("{");
+        var first = true;
+        foreach (var (key, value) in map)
+        {
+            if (!first) sb.Append(',');
+            first = false;
+            AppendJsonString(sb, key);
+            sb.Append(':');
+            // A null map value becomes JSON null, matching how hstore stores a
+            // missing value rather than collapsing it to an empty string.
+            if (value is null) sb.Append("null");
+            else AppendJsonString(sb, value);
+        }
+        return sb.Append('}').ToString();
+    }
+
+    /// <summary>
+    /// Reads a key/value map column written by either backend.
+    /// </summary>
+    /// <remarks>
+    /// The two engines hand back different CLR shapes for the same logical
+    /// value: Npgsql materializes hstore as an IDictionary, while SQLite
+    /// returns the JSON object as a string. Callers get one shape.
+    /// </remarks>
+    public static IDictionary<string, string?>? ReadMap(object? raw)
+    {
+        switch (raw)
+        {
+            case null or DBNull:
+                return null;
+            case IDictionary<string, string?> dict:
+                return dict;
+            case string json when json.Length > 0:
+                // JsonDocument is not reflection-based, so it stays AOT-safe
+                // under JsonSerializerIsReflectionEnabledByDefault=false.
+                try
+                {
+                    using var doc = System.Text.Json.JsonDocument.Parse(json);
+                    if (doc.RootElement.ValueKind != System.Text.Json.JsonValueKind.Object) return null;
+                    var result = new Dictionary<string, string?>(StringComparer.Ordinal);
+                    foreach (var prop in doc.RootElement.EnumerateObject())
+                    {
+                        result[prop.Name] = prop.Value.ValueKind == System.Text.Json.JsonValueKind.Null
+                            ? null
+                            : prop.Value.ToString();
+                    }
+                    return result;
+                }
+                catch (System.Text.Json.JsonException)
+                {
+                    // A malformed value is treated as absent rather than
+                    // throwing on an auth path — the caller's "no live OTP"
+                    // branch is the safe answer.
+                    return null;
+                }
+            default:
+                return null;
+        }
     }
 
     // Convenience for the many repository sites that bind a text[] of policies.
