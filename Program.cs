@@ -1788,10 +1788,14 @@ builder.Services.AddSingleton<Db>();
         builder.Services.AddSingleton<IDbConnectionFactory>(
             sp => sp.GetRequiredService<SqliteConnectionFactory>());
         builder.Services.AddHostedService<SqliteSchemaInitializer>();
+        builder.Services.AddSingleton<Dmart.QueryGrammar.ISqlDialect>(
+            Dmart.QueryGrammar.SqliteSqlDialect.Instance);
     }
     else
     {
         builder.Services.AddSingleton<IDbConnectionFactory>(sp => sp.GetRequiredService<Db>());
+        builder.Services.AddSingleton<Dmart.QueryGrammar.ISqlDialect>(
+            Dmart.QueryGrammar.PostgresSqlDialect.Instance);
     }
 }
 builder.Services.AddSingleton<AuthzCacheRefresher>();
