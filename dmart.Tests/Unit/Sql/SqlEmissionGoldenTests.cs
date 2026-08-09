@@ -420,26 +420,64 @@ public class SqlEmissionGoldenTests
     // change how PostgreSQL casts the parameter without changing the SQL string.
     private static string DescribeParam(NpgsqlParameter p)
     {
-        string declaredType;
-        try
-        {
-            // Npgsql infers a type from Value when none was set explicitly;
-            // capturing whatever it reports keeps the snapshot honest either way.
-            declaredType = DescribeDbType(p.NpgsqlDbType);
-        }
-        catch (InvalidCastException)
-        {
-            // Npgsql throws rather than inferring for some CLR types.
-            declaredType = "<uninferrable>";
-        }
-        catch (NotSupportedException)
-        {
-            declaredType = "<unsupported>";
-        }
-
         var name = string.IsNullOrEmpty(p.ParameterName) ? "<positional>" : p.ParameterName;
-        return $"name={name} type={declaredType} value={RenderValue(p.Value)}";
+        return $"name={name} type={DescribeDeclaredType(p)} value={RenderValue(p.Value)}";
     }
+
+    // Reports the type tag the code EXPLICITLY attached, or <inferred> when it
+    // let Npgsql decide.
+    //
+    // Reading p.NpgsqlDbType directly is not stable enough to snapshot.
+    // Npgsql infers it lazily from Value, and the inferred answer depends on
+    // whether the global type mapper has been initialized — which happens the
+    // first time any connection opens. So the same parameter reports Unknown in
+    // a unit-only run and Text in a run that also opened a database, and the
+    // snapshot fails depending on which tests ran alongside it.
+    //
+    // Comparing against a same-valued untyped probe removes that dependence:
+    // both are inferred under identical global state, so a difference means the
+    // code set the type deliberately. That is exactly the property worth
+    // pinning — a dropped Jsonb tag changes how PostgreSQL casts the value
+    // without changing the SQL text. Tags that merely restate what inference
+    // would produce (Boolean on a bool, Array|Text on a string[]) report as
+    // <inferred>, which is correct: they are behaviourally identical.
+    private static string DescribeDeclaredType(NpgsqlParameter p)
+    {
+        NpgsqlTypes.NpgsqlDbType actual;
+        try { actual = p.NpgsqlDbType; }
+        catch (InvalidCastException) { return "<uninferrable>"; }
+        catch (NotSupportedException) { return "<unsupported>"; }
+        catch (ArgumentException) { return "<uninferrable>"; }
+
+        // A tag that merely restates the CLR value's natural PostgreSQL type
+        // carries no information and, worse, is reported inconsistently:
+        // uninitialized, Npgsql answers Unknown; once a connection has
+        // initialized the global type mapper, it answers the natural type. The
+        // mapping below is keyed only on the CLR type, so the snapshot depends
+        // on nothing outside this method.
+        //
+        // What survives normalization is the case that actually matters: a tag
+        // that OVERRIDES inference, such as Jsonb on a string. Dropping one of
+        // those changes how PostgreSQL casts the value while leaving the SQL
+        // text untouched, which is precisely what this snapshot exists to catch.
+        return actual == NpgsqlTypes.NpgsqlDbType.Unknown || actual == NaturalType(p.Value)
+            ? "<inferred>"
+            : DescribeDbType(actual);
+    }
+
+    private static NpgsqlTypes.NpgsqlDbType NaturalType(object? value) => value switch
+    {
+        string => NpgsqlTypes.NpgsqlDbType.Text,
+        bool => NpgsqlTypes.NpgsqlDbType.Boolean,
+        string[] => NpgsqlTypes.NpgsqlDbType.Array | NpgsqlTypes.NpgsqlDbType.Text,
+        DateTime => NpgsqlTypes.NpgsqlDbType.Timestamp,
+        double => NpgsqlTypes.NpgsqlDbType.Double,
+        int => NpgsqlTypes.NpgsqlDbType.Integer,
+        long => NpgsqlTypes.NpgsqlDbType.Bigint,
+        Guid => NpgsqlTypes.NpgsqlDbType.Uuid,
+        byte[] => NpgsqlTypes.NpgsqlDbType.Bytea,
+        _ => NpgsqlTypes.NpgsqlDbType.Unknown,
+    };
 
     // NpgsqlDbType.Array is a flag (int.MinValue) OR'd onto an element type, so
     // `Array | Text` has no enum name and renders as a bare -2147483629. Decode
