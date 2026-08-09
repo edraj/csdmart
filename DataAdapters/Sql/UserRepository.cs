@@ -3,12 +3,11 @@ using System.Diagnostics.CodeAnalysis;
 using Dmart.Auth;
 using Dmart.Models.Core;
 using Dmart.Models.Enums;
-using Npgsql;
-using NpgsqlTypes;
+using Dmart.QueryGrammar;
 
 namespace Dmart.DataAdapters.Sql;
 
-public sealed class UserRepository(Db db, AuthzCacheRefresher refresher, SessionTokenHasher tokenHasher)
+public sealed class UserRepository(IDbConnectionFactory db, AuthzCacheRefresher refresher, SessionTokenHasher tokenHasher)
 {
     private const string SelectAllColumns = """
         SELECT uuid, shortname, space_name, subpath, is_active, slug,
@@ -29,10 +28,10 @@ public sealed class UserRepository(Db db, AuthzCacheRefresher refresher, Session
         return await GetByShortnameAsync(shortname, conn, ct);
     }
 
-    public async Task<User?> GetByShortnameAsync(string shortname, NpgsqlConnection conn, CancellationToken ct = default)
+    public async Task<User?> GetByShortnameAsync(string shortname, DbConnection conn, CancellationToken ct = default)
     {
-        await using var cmd = new NpgsqlCommand($"{SelectAllColumns} WHERE shortname = $1", conn);
-        cmd.Parameters.Add(new() { Value = shortname });
+        await using var cmd = conn.Command($"{SelectAllColumns} WHERE shortname = $1");
+        DbParams.Add(cmd, shortname);
         await using var reader = await cmd.ExecuteReaderAsync(ct);
         return await reader.ReadAsync(ct) ? Hydrate(reader) : null;
     }
@@ -59,8 +58,8 @@ public sealed class UserRepository(Db db, AuthzCacheRefresher refresher, Session
     public async Task<User?> GetByEmailAsync(string email, CancellationToken ct = default)
     {
         await using var conn = await db.OpenAsync(ct);
-        await using var cmd = new NpgsqlCommand($"{SelectAllColumns} WHERE {EmailLookupWhere}", conn);
-        cmd.Parameters.Add(new() { Value = email });
+        await using var cmd = conn.Command($"{SelectAllColumns} WHERE {EmailLookupWhere}");
+        DbParams.Add(cmd, email);
         await using var reader = await cmd.ExecuteReaderAsync(ct);
         return await reader.ReadAsync(ct) ? Hydrate(reader) : null;
     }
@@ -68,8 +67,8 @@ public sealed class UserRepository(Db db, AuthzCacheRefresher refresher, Session
     public async Task<User?> GetByMsisdnAsync(string msisdn, CancellationToken ct = default)
     {
         await using var conn = await db.OpenAsync(ct);
-        await using var cmd = new NpgsqlCommand($"{SelectAllColumns} WHERE {MsisdnLookupWhere}", conn);
-        cmd.Parameters.Add(new() { Value = msisdn });
+        await using var cmd = conn.Command($"{SelectAllColumns} WHERE {MsisdnLookupWhere}");
+        DbParams.Add(cmd, msisdn);
         await using var reader = await cmd.ExecuteReaderAsync(ct);
         return await reader.ReadAsync(ct) ? Hydrate(reader) : null;
     }
@@ -84,7 +83,7 @@ public sealed class UserRepository(Db db, AuthzCacheRefresher refresher, Session
     // name into a shared string. The provider set is closed and known at compile
     // time, so there is no reason to assemble this text at runtime: each arm
     // below interpolates only `const` values, which the compiler folds into a
-    // constant, so no dynamic SQL reaches NpgsqlCommand (CA2100) — the same
+    // constant, so no dynamic SQL reaches the command (CA2100) — the same
     // property that makes the shortname/email lookups above safe. An
     // unrecognized provider has no query to run and resolves to "no match"
     // rather than to an unfiltered one.
@@ -99,17 +98,17 @@ public sealed class UserRepository(Db db, AuthzCacheRefresher refresher, Session
         await using var conn = await db.OpenAsync(ct);
         await using var cmd = provider switch
         {
-            "google" => new NpgsqlCommand(
-                $"{SelectAllColumns} WHERE google_id = $1 AND google_id <> ''", conn),
-            "facebook" => new NpgsqlCommand(
-                $"{SelectAllColumns} WHERE facebook_id = $1 AND facebook_id <> ''", conn),
-            "apple" => new NpgsqlCommand(
-                $"{SelectAllColumns} WHERE apple_id = $1 AND apple_id <> ''", conn),
+            "google" => conn.Command(
+                $"{SelectAllColumns} WHERE google_id = $1 AND google_id <> ''"),
+            "facebook" => conn.Command(
+                $"{SelectAllColumns} WHERE facebook_id = $1 AND facebook_id <> ''"),
+            "apple" => conn.Command(
+                $"{SelectAllColumns} WHERE apple_id = $1 AND apple_id <> ''"),
             _ => null,
         };
         if (cmd is null) return null;
 
-        cmd.Parameters.Add(new() { Value = providerId });
+        DbParams.Add(cmd, providerId);
         await using var reader = await cmd.ExecuteReaderAsync(ct);
         return await reader.ReadAsync(ct) ? Hydrate(reader) : null;
     }
@@ -117,10 +116,10 @@ public sealed class UserRepository(Db db, AuthzCacheRefresher refresher, Session
     public async Task<bool> ExistsAsync(string? shortname, string? email, string? msisdn, CancellationToken ct = default)
     {
         await using var conn = await db.OpenAsync(ct);
-        await using var cmd = new NpgsqlCommand($"SELECT 1 FROM users WHERE {ExistsWhere} LIMIT 1", conn);
-        cmd.Parameters.Add(new() { Value = (object?)shortname ?? DBNull.Value });
-        cmd.Parameters.Add(new() { Value = (object?)email ?? DBNull.Value });
-        cmd.Parameters.Add(new() { Value = (object?)msisdn ?? DBNull.Value });
+        await using var cmd = conn.Command($"SELECT 1 FROM users WHERE {ExistsWhere} LIMIT 1");
+        DbParams.Add(cmd, (object?)shortname ?? DBNull.Value);
+        DbParams.Add(cmd, (object?)email ?? DBNull.Value);
+        DbParams.Add(cmd, (object?)msisdn ?? DBNull.Value);
         return await cmd.ExecuteScalarAsync(ct) is not null;
     }
 
@@ -138,9 +137,8 @@ public sealed class UserRepository(Db db, AuthzCacheRefresher refresher, Session
                 await UpsertAsync(u, conn, ct);
                 return;
             }
-            catch (PostgresException ex) when (
-                attempt < MaxAttempts &&
-                (ex.SqlState == "40P01" || ex.SqlState == "40001"))
+            catch (DbException ex) when (
+                attempt < MaxAttempts && DbRetry.IsTransientContention(ex))
             {
 #pragma warning disable CA5394 // Backoff jitter — randomness here is timing, not security.
                 await Task.Delay(Random.Shared.Next(5, 25), ct);
@@ -149,7 +147,7 @@ public sealed class UserRepository(Db db, AuthzCacheRefresher refresher, Session
         }
     }
 
-    public async Task UpsertAsync(User u, NpgsqlConnection conn, CancellationToken ct = default)
+    public async Task UpsertAsync(User u, DbConnection conn, CancellationToken ct = default)
     {
         // Populate query_policies deterministically on every write so the
         // row-level ACL filter (QueryHelper.AppendAclFilter) can match
@@ -157,7 +155,7 @@ public sealed class UserRepository(Db db, AuthzCacheRefresher refresher, Session
         // full rationale — same pattern, same invariant.
         u = u with { QueryPolicies = Utils.QueryPolicies.Generate(u) };
 
-        await using var cmd = new NpgsqlCommand("""
+        await using var cmd = conn.Command("""
             INSERT INTO users (uuid, shortname, space_name, subpath, is_active, slug,
                                displayname, description, tags, created_at, updated_at,
                                owner_shortname, owner_group_shortname, payload,
@@ -177,7 +175,7 @@ public sealed class UserRepository(Db db, AuthzCacheRefresher refresher, Session
                 displayname = EXCLUDED.displayname,
                 description = EXCLUDED.description,
                 tags = EXCLUDED.tags,
-                updated_at = NOW(),
+                updated_at = EXCLUDED.updated_at,
                 owner_shortname = EXCLUDED.owner_shortname,
                 owner_group_shortname = EXCLUDED.owner_group_shortname,
                 payload = EXCLUDED.payload,
@@ -208,59 +206,62 @@ public sealed class UserRepository(Db db, AuthzCacheRefresher refresher, Session
                 last_login = EXCLUDED.last_login,
                 notes = EXCLUDED.notes,
                 query_policies = EXCLUDED.query_policies
-            """, conn);
+            """);
 
-        cmd.Parameters.Add(new() { Value = Guid.Parse(u.Uuid) });
-        cmd.Parameters.Add(new() { Value = u.Shortname });
-        cmd.Parameters.Add(new() { Value = u.SpaceName });
-        cmd.Parameters.Add(new() { Value = u.Subpath });
-        cmd.Parameters.Add(new() { Value = u.IsActive });
-        cmd.Parameters.Add(new() { Value = (object?)u.Slug ?? DBNull.Value });
+        DbParams.Add(cmd, Guid.Parse(u.Uuid));
+        DbParams.Add(cmd, u.Shortname);
+        DbParams.Add(cmd, u.SpaceName);
+        DbParams.Add(cmd, u.Subpath);
+        DbParams.Add(cmd, u.IsActive);
+        DbParams.Add(cmd, (object?)u.Slug ?? DBNull.Value);
         AddJsonb(cmd, JsonbHelpers.ToJsonb(u.Displayname));
         AddJsonb(cmd, JsonbHelpers.ToJsonb(u.Description));
         AddJsonbNotNull(cmd, JsonbHelpers.ToJsonbList(u.Tags));   // tags is NOT NULL
-        cmd.Parameters.Add(new() { Value = u.CreatedAt == default ? TimeUtils.Now() : u.CreatedAt });
-        cmd.Parameters.Add(new() { Value = TimeUtils.Now() });
-        cmd.Parameters.Add(new() { Value = u.OwnerShortname });
-        cmd.Parameters.Add(new() { Value = (object?)u.OwnerGroupShortname ?? DBNull.Value });
+        DbParams.Add(cmd, u.CreatedAt == default ? TimeUtils.Now() : u.CreatedAt);
+        DbParams.Add(cmd, TimeUtils.Now());
+        DbParams.Add(cmd, u.OwnerShortname);
+        DbParams.Add(cmd, (object?)u.OwnerGroupShortname ?? DBNull.Value);
         AddJsonb(cmd, JsonbHelpers.ToJsonb(u.Payload));
-        cmd.Parameters.Add(new() { Value = (object?)u.LastChecksumHistory ?? DBNull.Value });
-        cmd.Parameters.Add(new() { Value = JsonbHelpers.EnumMember(u.ResourceType) });
-        cmd.Parameters.Add(new() { Value = (object?)u.Password ?? DBNull.Value });
+        DbParams.Add(cmd, (object?)u.LastChecksumHistory ?? DBNull.Value);
+        DbParams.Add(cmd, JsonbHelpers.EnumMember(u.ResourceType));
+        DbParams.Add(cmd, (object?)u.Password ?? DBNull.Value);
         AddJsonbNotNull(cmd, JsonbHelpers.ToJsonbList(u.Roles));   // roles is NOT NULL
         AddJsonbNotNull(cmd, JsonbHelpers.ToJsonbList(u.Groups));  // groups is NOT NULL
         AddJsonb(cmd, JsonbHelpers.ToJsonb(u.Acl));
         AddJsonb(cmd, JsonbHelpers.ToJsonb(u.Relationships));
         // PG enum values: usertype='web'/'mobile'/'bot', language='ar'/'en'/'ku'/'fr'/'tr'.
         // Both match the C# enum member names lowercased (UserType.Web→"web", Language.En→"en").
-        cmd.Parameters.Add(new() { Value = JsonbHelpers.EnumNameLower(u.Type) });
-        cmd.Parameters.Add(new() { Value = JsonbHelpers.EnumNameLower(u.Language) });
-        cmd.Parameters.Add(new() { Value = NullIfEmptyIdentifier(u.Email) });
-        cmd.Parameters.Add(new() { Value = NullIfEmptyIdentifier(u.Msisdn) });
-        cmd.Parameters.Add(new() { Value = u.LockedToDevice });
-        cmd.Parameters.Add(new() { Value = u.IsEmailVerified });
-        cmd.Parameters.Add(new() { Value = u.IsMsisdnVerified });
-        cmd.Parameters.Add(new() { Value = u.ForcePasswordChange });
-        cmd.Parameters.Add(new() { Value = (object?)u.DeviceId ?? DBNull.Value });
-        cmd.Parameters.Add(new() { Value = (object?)u.GoogleId ?? DBNull.Value });
-        cmd.Parameters.Add(new() { Value = (object?)u.FacebookId ?? DBNull.Value });
-        cmd.Parameters.Add(new() { Value = (object?)u.AppleId ?? DBNull.Value });
-        cmd.Parameters.Add(new() { Value = (object?)u.SocialAvatarUrl ?? DBNull.Value });
+        DbParams.Add(cmd, JsonbHelpers.EnumNameLower(u.Type));
+        DbParams.Add(cmd, JsonbHelpers.EnumNameLower(u.Language));
+        DbParams.Add(cmd, NullIfEmptyIdentifier(u.Email));
+        DbParams.Add(cmd, NullIfEmptyIdentifier(u.Msisdn));
+        DbParams.Add(cmd, u.LockedToDevice);
+        DbParams.Add(cmd, u.IsEmailVerified);
+        DbParams.Add(cmd, u.IsMsisdnVerified);
+        DbParams.Add(cmd, u.ForcePasswordChange);
+        DbParams.Add(cmd, (object?)u.DeviceId ?? DBNull.Value);
+        DbParams.Add(cmd, (object?)u.GoogleId ?? DBNull.Value);
+        DbParams.Add(cmd, (object?)u.FacebookId ?? DBNull.Value);
+        DbParams.Add(cmd, (object?)u.AppleId ?? DBNull.Value);
+        DbParams.Add(cmd, (object?)u.SocialAvatarUrl ?? DBNull.Value);
 #pragma warning disable CA1508 // Analyzer limitation: int? boxed via (object?) cast IS null when source is null; the ?? is load-bearing.
-        cmd.Parameters.Add(new() { Value = (object?)u.AttemptCount ?? DBNull.Value });
+        DbParams.Add(cmd, (object?)u.AttemptCount ?? DBNull.Value);
 #pragma warning restore CA1508
         AddJsonb(cmd, JsonbHelpers.ToJsonb(u.LastLogin));
-        cmd.Parameters.Add(new() { Value = (object?)u.Notes ?? DBNull.Value });
-        cmd.Parameters.Add(new()
-        {
-            Value = u.QueryPolicies.ToArray(),
-            NpgsqlDbType = NpgsqlDbType.Array | NpgsqlDbType.Text,
-        });
+        DbParams.Add(cmd, (object?)u.Notes ?? DBNull.Value);
+        DbParams.Add(cmd, u.QueryPolicies.ToArray(), SqlValueKind.TextArray);
 
         await cmd.ExecuteNonQueryAsync(ct);
         // user.roles may have changed → clear the in-memory permission cache.
         await refresher.RefreshAsync(ct);
     }
+
+    // True when the backend can report whether an upsert inserted or updated.
+    // PostgreSQL exposes it through the xmax system column; SQLite has no
+    // equivalent, so the caller derives the same answer from the in-transaction
+    // read instead.
+    private static bool ReturnsInsertedFlag(DbConnection conn)
+        => conn is not Microsoft.Data.Sqlite.SqliteConnection;
 
     // Atomic prior-fetch + upsert for the native-plugin update_user path.
     // See EntryRepository.UpsertWithPriorAsync for the full rationale —
@@ -288,9 +289,8 @@ public sealed class UserRepository(Db db, AuthzCacheRefresher refresher, Session
             {
                 return await UpsertWithPriorCoreAsync(u, ct);
             }
-            catch (PostgresException ex) when (
-                attempt < MaxAttempts &&
-                (ex.SqlState == "40P01" || ex.SqlState == "40001"))
+            catch (DbException ex) when (
+                attempt < MaxAttempts && DbRetry.IsTransientContention(ex))
             {
                 // 40P01 = deadlock_detected, 40001 = serialization_failure.
                 // Both are transient by design — back off briefly so the
@@ -310,16 +310,21 @@ public sealed class UserRepository(Db db, AuthzCacheRefresher refresher, Session
         // users' unique key is `shortname` only — that's also what the
         // ON CONFLICT below resolves on.
         User? prior = null;
-        await using (var sel = new NpgsqlCommand(
-            $"{SelectAllColumns} WHERE shortname = $1 FOR UPDATE",
-            conn, tx))
+        // PostgreSQL locks the incumbent row for the read-modify-write below.
+        // SQLite has no row locks and needs none: Microsoft.Data.Sqlite begins
+        // IMMEDIATE, so this transaction already holds the database write lock
+        // and no other writer can interleave. Appending FOR UPDATE there would
+        // simply be a syntax error.
+        var lockClause = conn is Microsoft.Data.Sqlite.SqliteConnection ? "" : " FOR UPDATE";
+        await using (var sel = conn.Command(
+            $"{SelectAllColumns} WHERE shortname = $1{lockClause}", tx))
         {
-            sel.Parameters.Add(new() { Value = u.Shortname });
+            DbParams.Add(sel, u.Shortname);
             await using var reader = await sel.ExecuteReaderAsync(ct);
             if (await reader.ReadAsync(ct)) prior = Hydrate(reader);
         }
 
-        await using var cmd = new NpgsqlCommand("""
+        await using var cmd = conn.Command("""
             INSERT INTO users (uuid, shortname, space_name, subpath, is_active, slug,
                                displayname, description, tags, created_at, updated_at,
                                owner_shortname, owner_group_shortname, payload,
@@ -339,7 +344,7 @@ public sealed class UserRepository(Db db, AuthzCacheRefresher refresher, Session
                 displayname = EXCLUDED.displayname,
                 description = EXCLUDED.description,
                 tags = EXCLUDED.tags,
-                updated_at = NOW(),
+                updated_at = EXCLUDED.updated_at,
                 owner_shortname = EXCLUDED.owner_shortname,
                 owner_group_shortname = EXCLUDED.owner_group_shortname,
                 payload = COALESCE(EXCLUDED.payload, users.payload),
@@ -366,56 +371,63 @@ public sealed class UserRepository(Db db, AuthzCacheRefresher refresher, Session
                 last_login = EXCLUDED.last_login,
                 notes = EXCLUDED.notes,
                 query_policies = EXCLUDED.query_policies
-            RETURNING (xmax = 0) AS inserted
-            """, conn, tx);
+            """ + (ReturnsInsertedFlag(conn) ? "\n            RETURNING (xmax = 0) AS inserted" : ""), tx);
 
-        cmd.Parameters.Add(new() { Value = Guid.Parse(u.Uuid) });
-        cmd.Parameters.Add(new() { Value = u.Shortname });
-        cmd.Parameters.Add(new() { Value = u.SpaceName });
-        cmd.Parameters.Add(new() { Value = u.Subpath });
-        cmd.Parameters.Add(new() { Value = u.IsActive });
-        cmd.Parameters.Add(new() { Value = (object?)u.Slug ?? DBNull.Value });
+        DbParams.Add(cmd, Guid.Parse(u.Uuid));
+        DbParams.Add(cmd, u.Shortname);
+        DbParams.Add(cmd, u.SpaceName);
+        DbParams.Add(cmd, u.Subpath);
+        DbParams.Add(cmd, u.IsActive);
+        DbParams.Add(cmd, (object?)u.Slug ?? DBNull.Value);
         AddJsonb(cmd, JsonbHelpers.ToJsonb(u.Displayname));
         AddJsonb(cmd, JsonbHelpers.ToJsonb(u.Description));
         AddJsonbNotNull(cmd, JsonbHelpers.ToJsonbList(u.Tags));
-        cmd.Parameters.Add(new() { Value = u.CreatedAt == default ? TimeUtils.Now() : u.CreatedAt });
-        cmd.Parameters.Add(new() { Value = TimeUtils.Now() });
-        cmd.Parameters.Add(new() { Value = u.OwnerShortname });
-        cmd.Parameters.Add(new() { Value = (object?)u.OwnerGroupShortname ?? DBNull.Value });
+        DbParams.Add(cmd, u.CreatedAt == default ? TimeUtils.Now() : u.CreatedAt);
+        DbParams.Add(cmd, TimeUtils.Now());
+        DbParams.Add(cmd, u.OwnerShortname);
+        DbParams.Add(cmd, (object?)u.OwnerGroupShortname ?? DBNull.Value);
         AddJsonb(cmd, JsonbHelpers.ToJsonb(u.Payload));
-        cmd.Parameters.Add(new() { Value = (object?)u.LastChecksumHistory ?? DBNull.Value });
-        cmd.Parameters.Add(new() { Value = JsonbHelpers.EnumMember(u.ResourceType) });
-        cmd.Parameters.Add(new() { Value = (object?)u.Password ?? DBNull.Value });
+        DbParams.Add(cmd, (object?)u.LastChecksumHistory ?? DBNull.Value);
+        DbParams.Add(cmd, JsonbHelpers.EnumMember(u.ResourceType));
+        DbParams.Add(cmd, (object?)u.Password ?? DBNull.Value);
         AddJsonbNotNull(cmd, JsonbHelpers.ToJsonbList(u.Roles));
         AddJsonbNotNull(cmd, JsonbHelpers.ToJsonbList(u.Groups));
         AddJsonb(cmd, JsonbHelpers.ToJsonb(u.Acl));
         AddJsonb(cmd, JsonbHelpers.ToJsonb(u.Relationships));
-        cmd.Parameters.Add(new() { Value = JsonbHelpers.EnumNameLower(u.Type) });
-        cmd.Parameters.Add(new() { Value = JsonbHelpers.EnumNameLower(u.Language) });
-        cmd.Parameters.Add(new() { Value = NullIfEmptyIdentifier(u.Email) });
-        cmd.Parameters.Add(new() { Value = NullIfEmptyIdentifier(u.Msisdn) });
-        cmd.Parameters.Add(new() { Value = u.LockedToDevice });
-        cmd.Parameters.Add(new() { Value = u.IsEmailVerified });
-        cmd.Parameters.Add(new() { Value = u.IsMsisdnVerified });
-        cmd.Parameters.Add(new() { Value = u.ForcePasswordChange });
-        cmd.Parameters.Add(new() { Value = (object?)u.DeviceId ?? DBNull.Value });
-        cmd.Parameters.Add(new() { Value = (object?)u.GoogleId ?? DBNull.Value });
-        cmd.Parameters.Add(new() { Value = (object?)u.FacebookId ?? DBNull.Value });
-        cmd.Parameters.Add(new() { Value = (object?)u.AppleId ?? DBNull.Value });
-        cmd.Parameters.Add(new() { Value = (object?)u.SocialAvatarUrl ?? DBNull.Value });
+        DbParams.Add(cmd, JsonbHelpers.EnumNameLower(u.Type));
+        DbParams.Add(cmd, JsonbHelpers.EnumNameLower(u.Language));
+        DbParams.Add(cmd, NullIfEmptyIdentifier(u.Email));
+        DbParams.Add(cmd, NullIfEmptyIdentifier(u.Msisdn));
+        DbParams.Add(cmd, u.LockedToDevice);
+        DbParams.Add(cmd, u.IsEmailVerified);
+        DbParams.Add(cmd, u.IsMsisdnVerified);
+        DbParams.Add(cmd, u.ForcePasswordChange);
+        DbParams.Add(cmd, (object?)u.DeviceId ?? DBNull.Value);
+        DbParams.Add(cmd, (object?)u.GoogleId ?? DBNull.Value);
+        DbParams.Add(cmd, (object?)u.FacebookId ?? DBNull.Value);
+        DbParams.Add(cmd, (object?)u.AppleId ?? DBNull.Value);
+        DbParams.Add(cmd, (object?)u.SocialAvatarUrl ?? DBNull.Value);
 #pragma warning disable CA1508 // Analyzer limitation: int? boxed via (object?) cast IS null when source is null; the ?? is load-bearing.
-        cmd.Parameters.Add(new() { Value = (object?)u.AttemptCount ?? DBNull.Value });
+        DbParams.Add(cmd, (object?)u.AttemptCount ?? DBNull.Value);
 #pragma warning restore CA1508
         AddJsonb(cmd, JsonbHelpers.ToJsonb(u.LastLogin));
-        cmd.Parameters.Add(new() { Value = (object?)u.Notes ?? DBNull.Value });
-        cmd.Parameters.Add(new()
-        {
-            Value = u.QueryPolicies.ToArray(),
-            NpgsqlDbType = NpgsqlDbType.Array | NpgsqlDbType.Text,
-        });
+        DbParams.Add(cmd, (object?)u.Notes ?? DBNull.Value);
+        DbParams.Add(cmd, u.QueryPolicies.ToArray(), SqlValueKind.TextArray);
 
-        var raw = await cmd.ExecuteScalarAsync(ct);
-        var inserted = raw is bool flag && flag;
+        bool inserted;
+        if (ReturnsInsertedFlag(conn))
+        {
+            var raw = await cmd.ExecuteScalarAsync(ct);
+            inserted = raw is bool flag && flag;
+        }
+        else
+        {
+            // No xmax to ask, but nothing needs asking: the SELECT above ran in
+            // this same transaction, which holds the write lock, so "there was
+            // no incumbent" is exactly "this statement inserted".
+            await cmd.ExecuteNonQueryAsync(ct);
+            inserted = prior is null;
+        }
         await tx.CommitAsync(ct);
         // user.roles may have changed → clear the in-memory permission cache.
         await refresher.RefreshAsync(ct);
@@ -425,8 +437,8 @@ public sealed class UserRepository(Db db, AuthzCacheRefresher refresher, Session
     public async Task DeleteAsync(string shortname, CancellationToken ct = default)
     {
         await using var conn = await db.OpenAsync(ct);
-        await using var cmd = new NpgsqlCommand("DELETE FROM users WHERE shortname = $1", conn);
-        cmd.Parameters.Add(new() { Value = shortname });
+        await using var cmd = conn.Command("DELETE FROM users WHERE shortname = $1");
+        DbParams.Add(cmd, shortname);
         await cmd.ExecuteNonQueryAsync(ct);
         await refresher.RefreshAsync(ct);
     }
@@ -442,7 +454,7 @@ public sealed class UserRepository(Db db, AuthzCacheRefresher refresher, Session
     public async Task<bool> OwnsAnyRecordsAsync(string shortname, CancellationToken ct = default)
     {
         await using var conn = await db.OpenAsync(ct);
-        await using var cmd = new NpgsqlCommand("""
+        await using var cmd = conn.Command("""
             SELECT EXISTS (SELECT 1 FROM entries     WHERE owner_shortname = $1)
                 OR EXISTS (SELECT 1 FROM attachments WHERE owner_shortname = $1)
                 OR EXISTS (SELECT 1 FROM spaces      WHERE owner_shortname = $1)
@@ -450,8 +462,8 @@ public sealed class UserRepository(Db db, AuthzCacheRefresher refresher, Session
                 OR EXISTS (SELECT 1 FROM groups      WHERE owner_shortname = $1)
                 OR EXISTS (SELECT 1 FROM permissions WHERE owner_shortname = $1)
                 OR EXISTS (SELECT 1 FROM users       WHERE owner_shortname = $1 AND shortname <> $1)
-            """, conn);
-        cmd.Parameters.Add(new() { Value = shortname });
+            """);
+        DbParams.Add(cmd, shortname);
         return (bool)(await cmd.ExecuteScalarAsync(ct) ?? false);
     }
 
@@ -460,10 +472,10 @@ public sealed class UserRepository(Db db, AuthzCacheRefresher refresher, Session
     public async Task<bool> OwnsSpaceAsync(string shortname, string spaceName, CancellationToken ct = default)
     {
         await using var conn = await db.OpenAsync(ct);
-        await using var cmd = new NpgsqlCommand(
-            "SELECT EXISTS (SELECT 1 FROM spaces WHERE owner_shortname = $1 AND shortname = $2)", conn);
-        cmd.Parameters.Add(new() { Value = shortname });
-        cmd.Parameters.Add(new() { Value = spaceName });
+        await using var cmd = conn.Command(
+            "SELECT EXISTS (SELECT 1 FROM spaces WHERE owner_shortname = $1 AND shortname = $2)");
+        DbParams.Add(cmd, shortname);
+        DbParams.Add(cmd, spaceName);
         return (bool)(await cmd.ExecuteScalarAsync(ct) ?? false);
     }
 
@@ -493,7 +505,7 @@ public sealed class UserRepository(Db db, AuthzCacheRefresher refresher, Session
     // taking write locks, materialising the sentinel owner, or reassigning anything.
     public async Task<DeleteReport> ForceDeleteAsync(string shortname, bool dryRun = false, CancellationToken ct = default)
     {
-        var report = await db.ExecuteWithRetryOnDeadlockAsync(c => ForceDeleteOnceAsync(shortname, dryRun, c), ct);
+        var report = await db.ExecuteWithRetryAsync(c => ForceDeleteOnceAsync(shortname, dryRun, c), ct);
         if (!dryRun) await refresher.RefreshAsync(ct);
         return report;
     }
@@ -514,8 +526,8 @@ public sealed class UserRepository(Db db, AuthzCacheRefresher refresher, Session
         {
             async Task<long> CountAsync(string sql)
             {
-                await using var cmd = new NpgsqlCommand(sql, conn);
-                cmd.Parameters.Add(new() { Value = shortname });
+                await using var cmd = conn.Command(sql);
+                DbParams.Add(cmd, shortname);
                 return (long)(await cmd.ExecuteScalarAsync(ct) ?? 0L);
             }
 
@@ -544,15 +556,15 @@ public sealed class UserRepository(Db db, AuthzCacheRefresher refresher, Session
         //    actually owning one, so force-deleting a user who owns nothing
         //    structural never materialises the sentinel row.
         var ownsStructural = false;
-        await using (var cmd = new NpgsqlCommand("""
+        await using (var cmd = conn.Command("""
             SELECT EXISTS (SELECT 1 FROM spaces      WHERE owner_shortname = $1)
                 OR EXISTS (SELECT 1 FROM roles       WHERE owner_shortname = $1)
                 OR EXISTS (SELECT 1 FROM groups      WHERE owner_shortname = $1)
                 OR EXISTS (SELECT 1 FROM permissions WHERE owner_shortname = $1)
                 OR EXISTS (SELECT 1 FROM users       WHERE owner_shortname = $1 AND shortname <> $1)
-            """, conn, tx))
+            """, tx))
         {
-            cmd.Parameters.Add(new() { Value = shortname });
+            DbParams.Add(cmd, shortname);
             ownsStructural = (bool)(await cmd.ExecuteScalarAsync(ct) ?? false);
         }
 
@@ -565,14 +577,17 @@ public sealed class UserRepository(Db db, AuthzCacheRefresher refresher, Session
             // with the freshly generated patterns for the sentinel's own row.
             var anonPolicies = Utils.QueryPolicies.Generate(
                 "management", "/users", "user", isActive: true, FallbackOwner, null, null).ToArray();
-            await using (var cmd = new NpgsqlCommand("""
+            // $1 is referenced twice (shortname and owner_shortname), so the
+            // uuid binds last and the existing numbering is left alone.
+            await using (var cmd = conn.Command("""
                 INSERT INTO users (uuid, shortname, space_name, subpath, owner_shortname, is_active, query_policies)
-                VALUES (gen_random_uuid(), $1, 'management', '/users', $1, true, $2)
+                VALUES ($3, $1, 'management', '/users', $1, true, $2)
                 ON CONFLICT (shortname) DO NOTHING
-                """, conn, tx))
+                """, tx))
             {
-                cmd.Parameters.Add(new() { Value = FallbackOwner });
-                cmd.Parameters.Add(new() { Value = anonPolicies, NpgsqlDbType = NpgsqlDbType.Array | NpgsqlDbType.Text });
+                DbParams.Add(cmd, FallbackOwner);
+                DbParams.Add(cmd, anonPolicies, SqlValueKind.TextArray);
+                DbParams.Add(cmd, Guid.NewGuid());
                 await cmd.ExecuteNonQueryAsync(ct);
             }
 
@@ -588,8 +603,8 @@ public sealed class UserRepository(Db db, AuthzCacheRefresher refresher, Session
 
         async Task<long> DeleteCountAsync(string sql)
         {
-            await using var cmd = new NpgsqlCommand(sql, conn, tx);
-            cmd.Parameters.Add(new() { Value = shortname });
+            await using var cmd = conn.Command(sql, tx);
+            DbParams.Add(cmd, shortname);
             return await cmd.ExecuteNonQueryAsync(ct);
         }
 
@@ -623,14 +638,14 @@ public sealed class UserRepository(Db db, AuthzCacheRefresher refresher, Session
             "DELETE FROM userpermissionscache WHERE user_shortname = $1",
         })
         {
-            await using var cmd = new NpgsqlCommand(sql, conn, tx);
-            cmd.Parameters.Add(new() { Value = shortname });
+            await using var cmd = conn.Command(sql, tx);
+            DbParams.Add(cmd, shortname);
             await cmd.ExecuteNonQueryAsync(ct);
         }
 
-        await using (var del = new NpgsqlCommand("DELETE FROM users WHERE shortname = $1", conn, tx))
+        await using (var del = conn.Command("DELETE FROM users WHERE shortname = $1", tx))
         {
-            del.Parameters.Add(new() { Value = shortname });
+            DbParams.Add(del, shortname);
             await del.ExecuteNonQueryAsync(ct);
         }
 
@@ -648,16 +663,16 @@ public sealed class UserRepository(Db db, AuthzCacheRefresher refresher, Session
     [SuppressMessage("Security", "CA2100",
         Justification = "Audited: `table` and `resourceType` are hardcoded constants supplied only by ForceDeleteOnceAsync (never user input); all user-supplied values bind through positional parameters.")]
     private static async Task ReassignOwnerAsync(
-        NpgsqlConnection conn, NpgsqlTransaction tx, string table, string resourceType,
+        DbConnection conn, DbTransaction tx, string table, string resourceType,
         string fromOwner, bool excludeSelf, CancellationToken ct)
     {
         var rows = new List<(Guid Uuid, string Space, string Subpath, bool Active, string? OwnerGroup)>();
         var selectSql =
             $"SELECT uuid, space_name, subpath, is_active, owner_group_shortname FROM {table} WHERE owner_shortname = $1"
             + (excludeSelf ? " AND shortname <> $1" : "");
-        await using (var sel = new NpgsqlCommand(selectSql, conn, tx))
+        await using (var sel = conn.Command(selectSql, tx))
         {
-            sel.Parameters.Add(new() { Value = fromOwner });
+            DbParams.Add(sel, fromOwner);
             await using var reader = await sel.ExecuteReaderAsync(ct);
             while (await reader.ReadAsync(ct))
                 rows.Add((reader.GetGuid(0), reader.GetString(1), reader.GetString(2),
@@ -668,11 +683,10 @@ public sealed class UserRepository(Db db, AuthzCacheRefresher refresher, Session
         {
             var policies = Utils.QueryPolicies.Generate(
                 row.Space, row.Subpath, resourceType, row.Active, FallbackOwner, row.OwnerGroup, null).ToArray();
-            await using var upd = new NpgsqlCommand(
-                $"UPDATE {table} SET owner_shortname = $2, query_policies = $3 WHERE uuid = $1", conn, tx);
-            upd.Parameters.Add(new() { Value = row.Uuid });
-            upd.Parameters.Add(new() { Value = FallbackOwner });
-            upd.Parameters.Add(new() { Value = policies, NpgsqlDbType = NpgsqlDbType.Array | NpgsqlDbType.Text });
+            await using var upd = conn.Command($"UPDATE {table} SET owner_shortname = $2, query_policies = $3 WHERE uuid = $1", tx);
+            DbParams.Add(upd, row.Uuid);
+            DbParams.Add(upd, FallbackOwner);
+            DbParams.Add(upd, policies, SqlValueKind.TextArray);
             await upd.ExecuteNonQueryAsync(ct);
         }
     }
@@ -680,10 +694,9 @@ public sealed class UserRepository(Db db, AuthzCacheRefresher refresher, Session
     public async Task IncrementAttemptAsync(string shortname, DateTime failedAt, CancellationToken ct = default)
     {
         await using var conn = await db.OpenAsync(ct);
-        await using var cmd = new NpgsqlCommand(
-            "UPDATE users SET attempt_count = COALESCE(attempt_count, 0) + 1, last_failed_login = $2 WHERE shortname = $1", conn);
-        cmd.Parameters.Add(new() { Value = shortname });
-        cmd.Parameters.Add(new() { Value = failedAt, NpgsqlDbType = NpgsqlDbType.Timestamp });
+        await using var cmd = conn.Command("UPDATE users SET attempt_count = COALESCE(attempt_count, 0) + 1, last_failed_login = $2 WHERE shortname = $1");
+        DbParams.Add(cmd, shortname);
+        DbParams.Add(cmd, failedAt);
         await cmd.ExecuteNonQueryAsync(ct);
     }
 
@@ -692,10 +705,10 @@ public sealed class UserRepository(Db db, AuthzCacheRefresher refresher, Session
     public async Task TouchLastFailedLoginAsync(string shortname, DateTime failedAt, CancellationToken ct = default)
     {
         await using var conn = await db.OpenAsync(ct);
-        await using var cmd = new NpgsqlCommand(
-            "UPDATE users SET last_failed_login = $2 WHERE shortname = $1", conn);
-        cmd.Parameters.Add(new() { Value = shortname });
-        cmd.Parameters.Add(new() { Value = failedAt, NpgsqlDbType = NpgsqlDbType.Timestamp });
+        await using var cmd = conn.Command(
+            "UPDATE users SET last_failed_login = $2 WHERE shortname = $1");
+        DbParams.Add(cmd, shortname);
+        DbParams.Add(cmd, failedAt);
         await cmd.ExecuteNonQueryAsync(ct);
     }
 
@@ -704,18 +717,18 @@ public sealed class UserRepository(Db db, AuthzCacheRefresher refresher, Session
     public async Task UnlockAfterCooldownAsync(string shortname, CancellationToken ct = default)
     {
         await using var conn = await db.OpenAsync(ct);
-        await using var cmd = new NpgsqlCommand(
-            "UPDATE users SET attempt_count = 0, is_active = true, last_failed_login = NULL WHERE shortname = $1", conn);
-        cmd.Parameters.Add(new() { Value = shortname });
+        await using var cmd = conn.Command(
+            "UPDATE users SET attempt_count = 0, is_active = true, last_failed_login = NULL WHERE shortname = $1");
+        DbParams.Add(cmd, shortname);
         await cmd.ExecuteNonQueryAsync(ct);
     }
 
     public async Task ResetAttemptsAsync(string shortname, CancellationToken ct = default)
     {
         await using var conn = await db.OpenAsync(ct);
-        await using var cmd = new NpgsqlCommand(
-            "UPDATE users SET attempt_count = 0, last_failed_login = NULL WHERE shortname = $1", conn);
-        cmd.Parameters.Add(new() { Value = shortname });
+        await using var cmd = conn.Command(
+            "UPDATE users SET attempt_count = 0, last_failed_login = NULL WHERE shortname = $1");
+        DbParams.Add(cmd, shortname);
         await cmd.ExecuteNonQueryAsync(ct);
     }
 
@@ -733,25 +746,28 @@ public sealed class UserRepository(Db db, AuthzCacheRefresher refresher, Session
     {
         if (deviceId is null && lastLogin is null) return;
         await using var conn = await db.OpenAsync(ct);
-        await using var cmd = new NpgsqlCommand("""
+        // A plain UPDATE, so there is no EXCLUDED row to read updated_at from —
+        // it binds the same client wall-clock the upsert paths use.
+        await using var cmd = conn.Command("""
             UPDATE users SET
                 device_id  = COALESCE($2, device_id),
                 last_login = COALESCE($3, last_login),
-                updated_at = NOW()
+                updated_at = $4
             WHERE shortname = $1
-            """, conn);
-        cmd.Parameters.Add(new() { Value = shortname });
-        cmd.Parameters.Add(new() { Value = (object?)deviceId ?? DBNull.Value });
+            """);
+        DbParams.Add(cmd, shortname);
+        DbParams.Add(cmd, (object?)deviceId ?? DBNull.Value);
         AddJsonb(cmd, JsonbHelpers.ToJsonb(lastLogin));
+        DbParams.Add(cmd, TimeUtils.Now());
         await cmd.ExecuteNonQueryAsync(ct);
     }
 
     public async Task<int> GetAttemptCountAsync(string shortname, CancellationToken ct = default)
     {
         await using var conn = await db.OpenAsync(ct);
-        await using var cmd = new NpgsqlCommand(
-            "SELECT attempt_count FROM users WHERE shortname = $1", conn);
-        cmd.Parameters.Add(new() { Value = shortname });
+        await using var cmd = conn.Command(
+            "SELECT attempt_count FROM users WHERE shortname = $1");
+        DbParams.Add(cmd, shortname);
         var raw = await cmd.ExecuteScalarAsync(ct);
         return raw is null or DBNull ? 0 : Convert.ToInt32(raw);
     }
@@ -775,13 +791,20 @@ public sealed class UserRepository(Db db, AuthzCacheRefresher refresher, Session
     {
         var tokenHash = tokenHasher.Hash(token);
         await using var conn = await db.OpenAsync(ct);
-        await using var cmd = new NpgsqlCommand("""
+        // uuid and timestamp are bound rather than generated in SQL: pgcrypto's
+        // gen_random_uuid() and NOW() have no SQLite equivalents, and the rest
+        // of the codebase already mints UUIDs client-side.
+        await using var cmd = conn.CreateCommand();
+        var uuid = DbParams.Add(cmd, Guid.NewGuid());
+        var sn = DbParams.Add(cmd, shortname);
+        var tk = DbParams.Add(cmd, tokenHash);
+        var fb = DbParams.Add(cmd, (object?)firebaseToken ?? DBNull.Value);
+        // Same clock as the freshness comparisons that will read this row.
+        var now = NowExpr(cmd);
+        cmd.CommandText = $"""
             INSERT INTO sessions (uuid, shortname, token, firebase_token, timestamp)
-            VALUES (gen_random_uuid(), $1, $2, $3, NOW())
-            """, conn);
-        cmd.Parameters.Add(new() { Value = shortname });
-        cmd.Parameters.Add(new() { Value = tokenHash });
-        cmd.Parameters.Add(new() { Value = (object?)firebaseToken ?? DBNull.Value });
+            VALUES ({uuid}, {sn}, {tk}, {fb}, {now})
+            """;
         await cmd.ExecuteNonQueryAsync(ct);
     }
 
@@ -794,13 +817,13 @@ public sealed class UserRepository(Db db, AuthzCacheRefresher refresher, Session
     {
         var tokenHash = tokenHasher.Hash(token);
         await using var conn = await db.OpenAsync(ct);
-        await using var cmd = new NpgsqlCommand("""
+        await using var cmd = conn.Command("""
             UPDATE sessions SET firebase_token = $3
             WHERE shortname = $1 AND token = $2
-            """, conn);
-        cmd.Parameters.Add(new() { Value = shortname });
-        cmd.Parameters.Add(new() { Value = tokenHash });
-        cmd.Parameters.Add(new() { Value = firebaseToken });
+            """);
+        DbParams.Add(cmd, shortname);
+        DbParams.Add(cmd, tokenHash);
+        DbParams.Add(cmd, firebaseToken);
         await cmd.ExecuteNonQueryAsync(ct);
     }
 
@@ -814,24 +837,23 @@ public sealed class UserRepository(Db db, AuthzCacheRefresher refresher, Session
     {
         var result = new List<string>();
         await using var conn = await db.OpenAsync(ct);
-        NpgsqlCommand cmd;
+        DbCommand cmd;
         if (inactivityTtlSeconds is int ttl && ttl > 0)
         {
-            cmd = new NpgsqlCommand("""
+            cmd = conn.CreateCommand();
+            var sn = DbParams.Add(cmd, shortname);
+            cmd.CommandText = $"""
                 SELECT firebase_token FROM sessions
-                WHERE shortname = $1
+                WHERE shortname = {sn}
                   AND firebase_token IS NOT NULL
-                  AND timestamp >= NOW() - ($2 || ' seconds')::interval
-                """, conn);
-            cmd.Parameters.Add(new() { Value = shortname });
-            cmd.Parameters.Add(new() { Value = ttl.ToString() });
+                  AND timestamp >= {SessionLiveSince(cmd, ttl)}
+                """;
         }
         else
         {
-            cmd = new NpgsqlCommand(
-                "SELECT firebase_token FROM sessions WHERE shortname = $1 AND firebase_token IS NOT NULL",
-                conn);
-            cmd.Parameters.Add(new() { Value = shortname });
+            cmd = conn.Command(
+                "SELECT firebase_token FROM sessions WHERE shortname = $1 AND firebase_token IS NOT NULL");
+            DbParams.Add(cmd, shortname);
         }
         await using (cmd)
         await using (var reader = await cmd.ExecuteReaderAsync(ct))
@@ -852,11 +874,37 @@ public sealed class UserRepository(Db db, AuthzCacheRefresher refresher, Session
     {
         var tokenHash = tokenHasher.Hash(token);
         await using var conn = await db.OpenAsync(ct);
-        await using var cmd = new NpgsqlCommand(
-            "SELECT 1 FROM sessions WHERE shortname = $1 AND token = $2", conn);
-        cmd.Parameters.Add(new() { Value = shortname });
-        cmd.Parameters.Add(new() { Value = tokenHash });
+        await using var cmd = conn.Command("SELECT 1 FROM sessions WHERE shortname = $1 AND token = $2");
+        DbParams.Add(cmd, shortname);
+        DbParams.Add(cmd, tokenHash);
         return await cmd.ExecuteScalarAsync(ct) is not null;
+    }
+
+    // Emits "the current instant" for the session columns.
+    //
+    // MUST agree with SessionLiveSince about which clock it reads. PostgreSQL
+    // compares against server-side NOW(), so the write has to be server-side
+    // NOW() too: writing a client wall-clock while comparing against the
+    // server's silently breaks expiry whenever the two differ — a container
+    // running UTC against a +03 host stamps every session three hours into the
+    // future and no session ever expires. SQLite is in-process, so there is
+    // only one clock and both sides use it.
+    private static string NowExpr(DbCommand cmd)
+        => cmd is Microsoft.Data.Sqlite.SqliteCommand
+            ? DbParams.Add(cmd, TimeUtils.Now())
+            : "NOW()";
+
+    // Emits the session-freshness cutoff and binds whatever the engine needs.
+    // PostgreSQL evaluates it server-side, which is the right authority when
+    // several app hosts share one database clock. SQLite has no interval type
+    // and, being in-process, no separate server clock, so the cutoff is
+    // computed from the same wall-clock basis the timestamps were written with.
+    private static string SessionLiveSince(DbCommand cmd, int inactivityTtlSeconds)
+    {
+        if (cmd is Microsoft.Data.Sqlite.SqliteCommand)
+            return DbParams.Add(cmd, TimeUtils.Now().AddSeconds(-inactivityTtlSeconds));
+        var p = DbParams.Add(cmd, inactivityTtlSeconds.ToString(System.Globalization.CultureInfo.InvariantCulture));
+        return $"NOW() - ({p} || ' seconds')::interval";
     }
 
     // Atomic session activity check + touch. When SessionInactivityTtl > 0:
@@ -873,21 +921,22 @@ public sealed class UserRepository(Db db, AuthzCacheRefresher refresher, Session
     {
         var tokenHash = tokenHasher.Hash(token);
         await using var conn = await db.OpenAsync(ct);
-        await using var cmd = new NpgsqlCommand("""
-            UPDATE sessions SET timestamp = NOW()
-            WHERE shortname = $1 AND token = $2
-              AND timestamp >= NOW() - ($3 || ' seconds')::interval
-            """, conn);
-        cmd.Parameters.Add(new() { Value = shortname });
-        cmd.Parameters.Add(new() { Value = tokenHash });
-        cmd.Parameters.Add(new() { Value = inactivityTtlSeconds.ToString() });
+        await using var cmd = conn.CreateCommand();
+        var sn = DbParams.Add(cmd, shortname);
+        var tk = DbParams.Add(cmd, tokenHash);
+        var now = NowExpr(cmd);
+        cmd.CommandText = $"""
+            UPDATE sessions SET timestamp = {now}
+            WHERE shortname = {sn} AND token = {tk}
+              AND timestamp >= {SessionLiveSince(cmd, inactivityTtlSeconds)}
+            """;
         var touched = await cmd.ExecuteNonQueryAsync(ct);
         if (touched > 0) return true;
         // Not touched — evict any stale row so SELECTs see the session gone.
-        await using var purge = new NpgsqlCommand(
-            "DELETE FROM sessions WHERE shortname = $1 AND token = $2", conn);
-        purge.Parameters.Add(new() { Value = shortname });
-        purge.Parameters.Add(new() { Value = tokenHash });
+        await using var purge = conn.Command(
+            "DELETE FROM sessions WHERE shortname = $1 AND token = $2");
+        DbParams.Add(purge, shortname);
+        DbParams.Add(purge, tokenHash);
         await purge.ExecuteNonQueryAsync(ct);
         return false;
     }
@@ -896,10 +945,10 @@ public sealed class UserRepository(Db db, AuthzCacheRefresher refresher, Session
     {
         var tokenHash = tokenHasher.Hash(token);
         await using var conn = await db.OpenAsync(ct);
-        await using var cmd = new NpgsqlCommand(
-            "DELETE FROM sessions WHERE shortname = $1 AND token = $2", conn);
-        cmd.Parameters.Add(new() { Value = shortname });
-        cmd.Parameters.Add(new() { Value = tokenHash });
+        await using var cmd = conn.Command(
+            "DELETE FROM sessions WHERE shortname = $1 AND token = $2");
+        DbParams.Add(cmd, shortname);
+        DbParams.Add(cmd, tokenHash);
         await cmd.ExecuteNonQueryAsync(ct);
     }
 
@@ -923,8 +972,8 @@ public sealed class UserRepository(Db db, AuthzCacheRefresher refresher, Session
     public async Task DeleteAllSessionsAsync(string shortname, CancellationToken ct = default)
     {
         await using var conn = await db.OpenAsync(ct);
-        await using var cmd = new NpgsqlCommand("DELETE FROM sessions WHERE shortname = $1", conn);
-        cmd.Parameters.Add(new() { Value = shortname });
+        await using var cmd = conn.Command("DELETE FROM sessions WHERE shortname = $1");
+        DbParams.Add(cmd, shortname);
         await cmd.ExecuteNonQueryAsync(ct);
     }
 
@@ -933,8 +982,8 @@ public sealed class UserRepository(Db db, AuthzCacheRefresher refresher, Session
     public async Task<int> CountSessionsAsync(string shortname, CancellationToken ct = default)
     {
         await using var conn = await db.OpenAsync(ct);
-        await using var cmd = new NpgsqlCommand("SELECT COUNT(*) FROM sessions WHERE shortname = $1", conn);
-        cmd.Parameters.Add(new() { Value = shortname });
+        await using var cmd = conn.Command("SELECT COUNT(*) FROM sessions WHERE shortname = $1");
+        DbParams.Add(cmd, shortname);
         var result = await cmd.ExecuteScalarAsync(ct);
         return Convert.ToInt32(result);
     }
@@ -945,34 +994,26 @@ public sealed class UserRepository(Db db, AuthzCacheRefresher refresher, Session
     {
         if (keep < 0) keep = 0;
         await using var conn = await db.OpenAsync(ct);
-        await using var cmd = new NpgsqlCommand("""
+        await using var cmd = conn.Command("""
             DELETE FROM sessions WHERE shortname = $1
             AND uuid NOT IN (
                 SELECT uuid FROM sessions WHERE shortname = $1
                 ORDER BY timestamp DESC LIMIT $2
             )
-            """, conn);
-        cmd.Parameters.Add(new() { Value = shortname });
-        cmd.Parameters.Add(new() { Value = keep });
+            """);
+        DbParams.Add(cmd, shortname);
+        DbParams.Add(cmd, keep);
         await cmd.ExecuteNonQueryAsync(ct);
     }
 
-    private static void AddJsonb(NpgsqlCommand cmd, string? json)
+    private static void AddJsonb(DbCommand cmd, string? json)
     {
-        cmd.Parameters.Add(new()
-        {
-            Value = (object?)json ?? DBNull.Value,
-            NpgsqlDbType = NpgsqlDbType.Jsonb,
-        });
+        DbParams.Add(cmd, (object?)json ?? DBNull.Value, SqlValueKind.Json);
     }
 
-    private static void AddJsonbNotNull(NpgsqlCommand cmd, string json)
+    private static void AddJsonbNotNull(DbCommand cmd, string json)
     {
-        cmd.Parameters.Add(new()
-        {
-            Value = json,
-            NpgsqlDbType = NpgsqlDbType.Jsonb,
-        });
+        DbParams.Add(cmd, json, SqlValueKind.Json);
     }
 
     private static User Hydrate(DbDataReader r)
