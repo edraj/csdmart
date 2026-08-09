@@ -39,8 +39,25 @@ public static class QueryHelper
     // WHERE CLAUSE BUILDER
     // ====================================================================
 
+    // Binds a value into the positional arg list and returns its $N placeholder.
+    // Handed to the dialect so it can bind its own parameters — necessary
+    // because some constructs differ in shape, not just spelling: PostgreSQL
+    // matches a list with one array parameter, SQLite with one parameter per
+    // element.
+    private static SqlBinder Binder(List<NpgsqlParameter> args)
+        => (value, kind) =>
+        {
+            args.Add(PostgresDialect.CreateParameter(new SqlParam(null, value, kind)));
+            return "$" + args.Count.ToString(System.Globalization.CultureInfo.InvariantCulture);
+        };
+
     public static string BuildWhereClause(Query q, List<NpgsqlParameter> args, string? tableName = null)
+        => BuildWhereClause(q, args, PostgresSqlDialect.Instance, tableName);
+
+    public static string BuildWhereClause(
+        Query q, List<NpgsqlParameter> args, ISqlDialect dialect, string? tableName = null)
     {
+        var bind = Binder(args);
         // Add the param FIRST, then reference its 1-based index. For a base
         // query (empty args) this is $1 — byte-identical to before. For a nested
         // reuse (EXISTS semi-join, args already populated) it continues the
@@ -64,46 +81,27 @@ public static class QueryHelper
 
         if (q.FilterTypes is { Count: > 0 })
         {
-            args.Add(new()
-            {
-                Value = q.FilterTypes.Select(JsonbHelpers.EnumMember).ToArray(),
-                NpgsqlDbType = NpgsqlDbType.Array | NpgsqlDbType.Text,
-            });
-            sql.Append($"AND resource_type = ANY(${args.Count}) ");
+            var types = q.FilterTypes.Select(JsonbHelpers.EnumMember).ToList();
+            sql.Append($"AND {dialect.AnyOf("resource_type", types, bind)} ");
         }
 
         if (q.FilterShortnames is { Count: > 0 })
         {
-            args.Add(new()
-            {
-                Value = q.FilterShortnames.ToArray(),
-                NpgsqlDbType = NpgsqlDbType.Array | NpgsqlDbType.Text,
-            });
-            sql.Append($"AND shortname = ANY(${args.Count}) ");
+            sql.Append($"AND {dialect.AnyOf("shortname", q.FilterShortnames, bind)} ");
         }
 
         if (q.FilterSchemaNames is { Count: > 0 })
         {
-            var effective = q.FilterSchemaNames.Where(n => n != "meta").ToArray();
-            if (effective.Length > 0)
+            var effective = q.FilterSchemaNames.Where(n => n != "meta").ToList();
+            if (effective.Count > 0)
             {
-                args.Add(new()
-                {
-                    Value = effective,
-                    NpgsqlDbType = NpgsqlDbType.Array | NpgsqlDbType.Text,
-                });
-                sql.Append($"AND (payload->>'schema_shortname') = ANY(${args.Count}) ");
+                sql.Append($"AND {dialect.AnyOf(dialect.SchemaShortnameExpr, effective, bind)} ");
             }
         }
 
         if (q.FilterTags is { Count: > 0 })
         {
-            args.Add(new()
-            {
-                Value = q.FilterTags.ToArray(),
-                NpgsqlDbType = NpgsqlDbType.Array | NpgsqlDbType.Text,
-            });
-            sql.Append($"AND tags ?| ${args.Count} ");
+            sql.Append($"AND {dialect.JsonArrayContainsAny("tags", q.FilterTags, bind)} ");
         }
 
         // RediSearch-style search: @field:value syntax → SQL WHERE clauses.
@@ -199,7 +197,14 @@ public static class QueryHelper
     public static void AppendAclFilter(
         System.Text.StringBuilder sql, List<NpgsqlParameter> args,
         string? userShortname, string tableName, List<string>? queryPolicies)
+        => AppendAclFilter(sql, args, userShortname, tableName, queryPolicies, PostgresSqlDialect.Instance);
+
+    public static void AppendAclFilter(
+        System.Text.StringBuilder sql, List<NpgsqlParameter> args,
+        string? userShortname, string tableName, List<string>? queryPolicies,
+        ISqlDialect dialect)
     {
+        var bind = Binder(args);
         // Python skips ACL for attachments, histories, and spaces.
         if (tableName is "attachments" or "histories") return;
 
@@ -212,33 +217,30 @@ public static class QueryHelper
         var conditions = new List<string>
         {
             $"owner_shortname = ${userParam}",
-            $"EXISTS (SELECT 1 FROM jsonb_array_elements(CASE WHEN jsonb_typeof(acl::jsonb) = 'array' THEN acl::jsonb ELSE '[]'::jsonb END) AS elem WHERE elem->>'user_shortname' = ${userParam} AND (elem->'allowed_actions') ? 'query')",
+            dialect.AclGrants("acl", $"${userParam}", "query"),
         };
 
         // Add query_policies LIKE patterns if the user has any.
         if (queryPolicies is { Count: > 0 })
         {
-            var likeConditions = new List<string>();
-            for (var i = 0; i < queryPolicies.Count; i++)
-            {
-                // Build a LIKE pattern from the dmart wildcard ('*' → '%').
-                // Order matters: escape backslash FIRST (otherwise the replacements
-                // below introduce new backslashes that get double-escaped), then
-                // the LIKE metacharacters %, _, finally expand '*'.
-                var pattern = queryPolicies[i]
+            // Build LIKE patterns from the dmart wildcard ('*' → '%').
+            // Order matters: escape backslash FIRST (otherwise the replacements
+            // below introduce new backslashes that get double-escaped), then
+            // the LIKE metacharacters %, _, finally expand '*'.
+            //
+            // Both dialects consume these patterns identically, and both match
+            // case-SENSITIVELY — PostgreSQL because that is LIKE's default,
+            // SQLite because SqliteConnectionFactory sets
+            // PRAGMA case_sensitive_like=ON. That equivalence is what keeps the
+            // two backends from granting different access for the same policy.
+            var patterns = queryPolicies
+                .Select(p => p
                     .Replace("\\", "\\\\")
                     .Replace("%", "\\%")
                     .Replace("_", "\\_")
-                    .Replace("*", "%");
-                args.Add(new() { Value = pattern });
-                // ESCAPE '\' so the backslash escapes above are honored by LIKE.
-                likeConditions.Add($"qp LIKE ${args.Count} ESCAPE '\\'");
-            }
-            if (likeConditions.Count > 0)
-            {
-                conditions.Insert(1,
-                    $"EXISTS (SELECT 1 FROM unnest(query_policies) AS qp WHERE {string.Join(" OR ", likeConditions)})");
-            }
+                    .Replace("*", "%"))
+                .ToList();
+            conditions.Insert(1, dialect.ArrayAnyLike("query_policies", patterns, bind));
         }
 
         sql.Append($"AND ({string.Join(" OR ", conditions)}) ");

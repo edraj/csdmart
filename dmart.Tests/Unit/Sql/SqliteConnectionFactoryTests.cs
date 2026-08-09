@@ -53,6 +53,31 @@ public sealed class SqliteConnectionFactoryTests : IDisposable
     }
 
     [Fact]
+    public async Task LikeIsCaseSensitive_SoTheAclFilterCannotWiden()
+    {
+        // The single most consequential PRAGMA here. SQLite's LIKE is
+        // ASCII-case-insensitive by default while PostgreSQL's is
+        // case-sensitive, and the row-level ACL matches policy patterns with
+        // LIKE. Left at the default, a caller holding 'management:/users:*'
+        // would also match rows under '/USERS' — access PostgreSQL denies.
+        await using var conn = await NewFactory().OpenAsync();
+
+        (await ScalarAsync(conn, "SELECT 'management:/USERS:content' LIKE 'management:/users:%'"))
+            .ShouldBe("0", "ACL policy matching must be case-sensitive, as it is on PostgreSQL");
+
+        // Same-case still matches, so the filter is not merely broken.
+        (await ScalarAsync(conn, "SELECT 'management:/users:content' LIKE 'management:/users:%'"))
+            .ShouldBe("1");
+
+        // ESCAPE keeps working, so a policy containing a literal % or _ is
+        // matched literally rather than as a wildcard. This is what GLOB —
+        // the other way to get case-sensitive matching — cannot express: it
+        // has no ESCAPE clause and treats ? and [ ] as metacharacters.
+        (await ScalarAsync(conn, @"SELECT 'a_b:/x' LIKE 'a\_b:/x' ESCAPE '\'")).ShouldBe("1");
+        (await ScalarAsync(conn, @"SELECT 'aXb:/x' LIKE 'a\_b:/x' ESCAPE '\'")).ShouldBe("0");
+    }
+
+    [Fact]
     public async Task PragmasApplyToEveryConnection_NotJustTheFirst()
     {
         var factory = NewFactory();

@@ -37,6 +37,24 @@ namespace Dmart.DataAdapters.Sql;
 //                      unconditionally.
 //   cache_size         Negative = KiB rather than pages, so the footprint does
 //                      not change meaning with page_size.
+//   case_sensitive_like=ON
+//                      SQLite's LIKE is ASCII-case-INSENSITIVE by default;
+//                      PostgreSQL's is case-SENSITIVE. Two emission sites rely
+//                      on the PostgreSQL semantics, and both are correctness-
+//                      critical: the row-level ACL policy match
+//                      (QueryHelper.AppendAclFilter) and the hierarchical
+//                      subpath prefix filter. Left at the default, the ACL
+//                      would match MORE rows on SQLite than on PostgreSQL —
+//                      'management:/USERS:*' would satisfy a
+//                      'management:/users:%' policy — which is an
+//                      access-control widening, not a cosmetic difference.
+//
+//                      This works only because the case-INSENSITIVE sites
+//                      (PostgreSQL ILIKE) are emitted as explicit
+//                      lower(x) LIKE lower(y) by SqliteSqlDialect rather than
+//                      relying on LIKE's default folding. The two halves are a
+//                      pair: turning this pragma on without the lower() emission
+//                      would silently make every wildcard search case-sensitive.
 public sealed class SqliteConnectionFactory : IDbConnectionFactory
 {
     private readonly string _connectionString;
@@ -100,6 +118,7 @@ public sealed class SqliteConnectionFactory : IDbConnectionFactory
             "PRAGMA foreign_keys = ON",
             $"PRAGMA mmap_size = {_mmapBytes}",
             $"PRAGMA cache_size = -{_cacheKib}",
+            "PRAGMA case_sensitive_like = ON",
         };
         foreach (var pragma in pragmas)
         {

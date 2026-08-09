@@ -27,6 +27,18 @@ public enum SqlValueKind
 
     /// <summary>Boolean.</summary>
     Boolean,
+
+    /// <summary>
+    /// An array of strings, bound as a single value — PostgreSQL <c>text[]</c>.
+    /// </summary>
+    /// <remarks>
+    /// PostgreSQL-only by nature. SQLite has no array type, so
+    /// <see cref="SqliteSqlDialect"/> never binds this kind: it expands a list
+    /// into one parameter per element instead. A SQLite parameter factory that
+    /// receives it should treat that as a bug rather than serializing the array
+    /// to a string.
+    /// </remarks>
+    TextArray,
 }
 
 /// <summary>

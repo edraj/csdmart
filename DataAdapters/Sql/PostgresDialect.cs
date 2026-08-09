@@ -45,6 +45,7 @@ public static class PostgresDialect
     {
         SqlValueKind.Json => NpgsqlDbType.Jsonb,
         SqlValueKind.Boolean => NpgsqlDbType.Boolean,
+        SqlValueKind.TextArray => NpgsqlDbType.Array | NpgsqlDbType.Text,
         // Inferred is handled by the caller (it must not set a type at all);
         // reaching here means a new SqlValueKind was added without deciding how
         // PostgreSQL should type it. Fail loudly rather than binding it as text.

@@ -56,6 +56,7 @@ public static class JsonbHelpers
         {
             Dmart.QueryGrammar.SqlValueKind.Json => NpgsqlDbType.Jsonb,
             Dmart.QueryGrammar.SqlValueKind.Boolean => NpgsqlDbType.Boolean,
+            Dmart.QueryGrammar.SqlValueKind.TextArray => NpgsqlDbType.Array | NpgsqlDbType.Text,
             _ => throw new ArgumentOutOfRangeException(
                 nameof(p), kind, "No PostgreSQL type mapping for this SqlValueKind."),
         };
