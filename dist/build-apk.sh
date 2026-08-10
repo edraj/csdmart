@@ -112,8 +112,34 @@ echo "Building dmart-${VERSION} APK for ${ARCH} (${BUILD_MODE})..."
 # `--version` with "0.1.0 branch= date=". The host always has a working git —
 # VERSION above is already derived from `git describe` — so ask build.sh here
 # and hand the result to whichever environment does the build.
-export DMART_INFORMATIONAL_VERSION="${DMART_INFORMATIONAL_VERSION:-$(sh ./build.sh --print-version)}"
-echo "Stamping version: $DMART_INFORMATIONAL_VERSION"
+if [ -n "$DMART_INFORMATIONAL_VERSION" ]; then
+	export DMART_INFORMATIONAL_VERSION
+else
+	# A plain assignment, deliberately not `export VAR=$(...)`: with the
+	# latter the exit status is export's own, always 0, so `set -e` would not
+	# notice build.sh failing and we would hand the build an empty string —
+	# which it treats as unset and answers by asking git itself, landing right
+	# back on the failure this exists to avoid.
+	host_version=$(sh ./build.sh --print-version)
+
+	# If the host cannot resolve a version either, pass nothing rather than a
+	# known-bad answer: an environment that still has a working git deserves
+	# its own attempt instead of being overridden with the fallback.
+	case "$host_version" in
+		0.1.0*)
+			echo "WARNING: no version resolvable on this host; leaving it to the build environment." >&2
+			;;
+		*)
+			export DMART_INFORMATIONAL_VERSION="$host_version"
+			;;
+	esac
+fi
+# An `[ ... ] && echo` one-liner would be wrong here: when the test is false
+# the list exits non-zero, and `set -e` at the top of this script takes that
+# as a build failure.
+if [ -n "$DMART_INFORMATIONAL_VERSION" ]; then
+	echo "Stamping version: $DMART_INFORMATIONAL_VERSION"
+fi
 
 # UI dists must exist before the build runs — the Alpine SDK image has no
 # Node.js toolchain, and a native build has no reason to assume one either.
