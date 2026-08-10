@@ -1,22 +1,27 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import { detectIdentifier, isValidResetPassword } from "./password_reset";
 import {
   ResetError,
-  confirmPasswordReset,
-  requestPasswordReset,
-} from "./password_reset";
-
-const post = vi.fn();
-const passwordResetRequest = vi.fn();
-
+  createPasswordResetClient,
+  detectIdentifier,
+  isValidResetPassword,
+} from "@shared/password-reset";
+// The app-side binding is imported for its message-key map only. Importing it
+// also constructs its transport, which reaches for catalog's tsdmart copy —
+// stubbed here because the SDK is not what these tests exercise.
 vi.mock("@edraj/tsdmart", () => ({
-  Dmart: {
-    get axiosDmartInstance() {
-      return { post };
-    },
-    passwordResetRequest: (...args: any[]) => passwordResetRequest(...args),
-  },
+  Dmart: { passwordResetRequest: vi.fn(), axiosDmartInstance: { post: vi.fn() } },
 }));
+import { resetErrorKey } from "./password_reset";
+
+// The shared client takes its transport by injection precisely so this needs
+// no module mocking — and so the test cannot accidentally bind to a different
+// copy of the SDK than the app does.
+const requestReset = vi.fn();
+const confirmReset = vi.fn();
+const { requestPasswordReset, confirmPasswordReset } = createPasswordResetClient({
+  requestReset: (body) => requestReset(body),
+  confirmReset: (body) => confirmReset(body),
+});
 
 describe("detectIdentifier", () => {
   it("recognises an email and lowercases it", () => {
@@ -46,6 +51,21 @@ describe("detectIdentifier", () => {
 
   it("rejects digit strings shorter than 6", () => {
     expect(detectIdentifier("12345")).toBeNull();
+  });
+
+  // The server's msisdn pattern tops out at 15 digits (E.164), and
+  // /password-reset-request answers an unmatchable number with a silent Ok().
+  // Anything we let through past 15 would strand the user on the OTP screen.
+  it("accepts exactly 15 digits", () => {
+    expect(detectIdentifier("+123456789012345")).toEqual({
+      kind: "msisdn",
+      value: "+123456789012345",
+    });
+  });
+
+  it("rejects digit strings longer than 15", () => {
+    expect(detectIdentifier("1234567890123456")).toBeNull();
+    expect(detectIdentifier("+1234567890123456")).toBeNull();
   });
 
   it("rejects an empty or whitespace-only string", () => {
@@ -88,6 +108,8 @@ describe("isValidResetPassword", () => {
     expect(isValidResetPassword("Password1€")).toBe(false);
   });
 
+  // Arabic is unicameral, so the "uppercase" lookahead accepts any Arabic
+  // letter. The requirements string shown to the user has to say so.
   it("accepts Arabic letters and Arabic-Indic digits", () => {
     expect(isValidResetPassword("مرحبا١٢٣٤")).toBe(true);
   });
@@ -97,25 +119,33 @@ describe("isValidResetPassword", () => {
   });
 });
 
+describe("resetErrorKey", () => {
+  it("maps every reason to a catalog message key", () => {
+    expect(resetErrorKey("code_invalid")).toBe("ResetCodeInvalid");
+    expect(resetErrorKey("password_rules")).toBe("PasswordRequirements");
+    expect(resetErrorKey("account_locked")).toBe("ResetAccountLocked");
+    expect(resetErrorKey("unknown")).toBe("ResetFailed");
+  });
+});
+
 describe("requestPasswordReset", () => {
   beforeEach(() => {
-    post.mockReset();
-    passwordResetRequest.mockReset();
-    passwordResetRequest.mockResolvedValue({ status: "success" });
+    requestReset.mockReset();
+    requestReset.mockResolvedValue({ status: "success" });
   });
 
   it("sends only the email field for an email identifier", async () => {
     await requestPasswordReset({ kind: "email", value: "a@b.co" });
-    expect(passwordResetRequest).toHaveBeenCalledWith({ email: "a@b.co" });
+    expect(requestReset).toHaveBeenCalledWith({ email: "a@b.co" });
   });
 
   it("sends only the msisdn field for an msisdn identifier", async () => {
     await requestPasswordReset({ kind: "msisdn", value: "+964770" });
-    expect(passwordResetRequest).toHaveBeenCalledWith({ msisdn: "+964770" });
+    expect(requestReset).toHaveBeenCalledWith({ msisdn: "+964770" });
   });
 
   it("propagates a transport failure", async () => {
-    passwordResetRequest.mockRejectedValue(new Error("Network Error"));
+    requestReset.mockRejectedValue(new Error("Network Error"));
     await expect(
       requestPasswordReset({ kind: "email", value: "a@b.co" }),
     ).rejects.toThrow("Network Error");
@@ -124,13 +154,13 @@ describe("requestPasswordReset", () => {
 
 describe("confirmPasswordReset", () => {
   beforeEach(() => {
-    post.mockReset();
-    post.mockResolvedValue({ data: { status: "success" } });
+    confirmReset.mockReset();
+    confirmReset.mockResolvedValue({ status: "success" });
   });
 
   it("posts the identifier, otp and password", async () => {
     await confirmPasswordReset({ kind: "email", value: "a@b.co" }, "123456", "Password1");
-    expect(post).toHaveBeenCalledWith("user/password-reset-confirm", {
+    expect(confirmReset).toHaveBeenCalledWith({
       email: "a@b.co",
       otp: "123456",
       password: "Password1",
@@ -143,45 +173,45 @@ describe("confirmPasswordReset", () => {
     ).resolves.toBeUndefined();
   });
 
-  it("maps OTP_INVALID (307) to ResetCodeInvalid", async () => {
-    post.mockRejectedValue({ response: { data: { error: { code: 307 } } } });
+  it("maps OTP_INVALID (307) to code_invalid", async () => {
+    confirmReset.mockRejectedValue({ response: { data: { error: { code: 307 } } } });
     await expect(
       confirmPasswordReset({ kind: "email", value: "a@b.co" }, "000000", "Password1"),
-    ).rejects.toMatchObject({ messageKey: "ResetCodeInvalid", code: 307 });
+    ).rejects.toMatchObject({ reason: "code_invalid", code: 307 });
   });
 
-  it("maps INVALID_PASSWORD_RULES (17) to PasswordRequirements", async () => {
-    post.mockRejectedValue({ response: { data: { error: { code: 17 } } } });
+  it("maps INVALID_PASSWORD_RULES (17) to password_rules", async () => {
+    confirmReset.mockRejectedValue({ response: { data: { error: { code: 17 } } } });
     await expect(
       confirmPasswordReset({ kind: "email", value: "a@b.co" }, "123456", "weak"),
-    ).rejects.toMatchObject({ messageKey: "PasswordRequirements", code: 17 });
+    ).rejects.toMatchObject({ reason: "password_rules", code: 17 });
   });
 
-  it("maps USER_ACCOUNT_LOCKED (110) to ResetAccountLocked", async () => {
-    post.mockRejectedValue({ response: { data: { error: { code: 110 } } } });
+  it("maps USER_ACCOUNT_LOCKED (110) to account_locked", async () => {
+    confirmReset.mockRejectedValue({ response: { data: { error: { code: 110 } } } });
     await expect(
       confirmPasswordReset({ kind: "email", value: "a@b.co" }, "000000", "Password1"),
-    ).rejects.toMatchObject({ messageKey: "ResetAccountLocked", code: 110 });
+    ).rejects.toMatchObject({ reason: "account_locked", code: 110 });
   });
 
-  it("maps an unrecognised code to ResetFailed", async () => {
-    post.mockRejectedValue({ response: { data: { error: { code: 999 } } } });
+  it("maps an unrecognised code to unknown", async () => {
+    confirmReset.mockRejectedValue({ response: { data: { error: { code: 999 } } } });
     await expect(
       confirmPasswordReset({ kind: "email", value: "a@b.co" }, "123456", "Password1"),
-    ).rejects.toMatchObject({ messageKey: "ResetFailed" });
+    ).rejects.toMatchObject({ reason: "unknown" });
   });
 
-  it("maps a bodyless transport error to ResetFailed", async () => {
-    post.mockRejectedValue(new Error("Network Error"));
+  it("maps a bodyless transport error to a ResetError", async () => {
+    confirmReset.mockRejectedValue(new Error("Network Error"));
     await expect(
       confirmPasswordReset({ kind: "email", value: "a@b.co" }, "123456", "Password1"),
     ).rejects.toBeInstanceOf(ResetError);
   });
 
   it("treats a 2xx body with status failed as an error", async () => {
-    post.mockResolvedValue({ data: { status: "failed", error: { code: 307 } } });
+    confirmReset.mockResolvedValue({ status: "failed", error: { code: 307 } });
     await expect(
       confirmPasswordReset({ kind: "email", value: "a@b.co" }, "000000", "Password1"),
-    ).rejects.toMatchObject({ messageKey: "ResetCodeInvalid" });
+    ).rejects.toMatchObject({ reason: "code_invalid" });
   });
 });

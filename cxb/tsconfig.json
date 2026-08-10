@@ -18,6 +18,9 @@
       ],
       "@/*": [
         "./src/*"
+      ],
+      "@shared/*": [
+        "../ui-shared/*"
       ]
     },
     "strict": true,
@@ -25,6 +28,7 @@
   },
   "include": [
     "vite-env.d.ts",
+    "../ui-shared/**/*.ts",
     "src/**/*.d.ts",
     "src/**/*.ts",
     "src/**/*.js",

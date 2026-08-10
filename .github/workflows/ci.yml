@@ -39,6 +39,15 @@ jobs:
         # invokes the checked-in build-ui.sh script with no arguments.
         run: ./build-ui.sh
 
+      - name: Frontend unit tests (catalog + ui-shared)
+        # The vite build above type-checks nothing and runs no assertions, so
+        # without this step the frontend suite — including everything covering
+        # ui-shared/, which both cxb and catalog depend on — was dead weight
+        # that only ever ran on a developer's machine. build-ui.sh has already
+        # done the hoisted `yarn install`, so node_modules is populated here.
+        # cxb has no runner of its own; its shared code is covered from here.
+        run: yarn --cwd catalog test
+
       - name: Copy host config
         # Absolute paths throughout — the runner's $HOME is per-instance
         # (/home/githubrunner/runners/rXX/home) under the systemd override

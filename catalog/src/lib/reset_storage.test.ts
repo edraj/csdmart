@@ -1,14 +1,17 @@
 // @vitest-environment jsdom
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
+  RESEND_COOLDOWN_SECONDS,
   clearResetTarget,
   consumeResetDone,
   consumeResetStartOver,
   getResetTarget,
+  markResetCodeIssued,
+  resendSecondsRemaining,
   setResetDone,
   setResetStartOver,
   setResetTarget,
-} from "./reset_target";
+} from "@shared/password-reset";
 
 describe("reset target handoff", () => {
   beforeEach(() => {
@@ -68,6 +71,72 @@ describe("reset target handoff", () => {
       throw new Error("SecurityError");
     });
     expect(getResetTarget()).toBeNull();
+  });
+});
+
+describe("resend cooldown", () => {
+  beforeEach(() => {
+    sessionStorage.clear();
+    vi.restoreAllMocks();
+    vi.useFakeTimers();
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  it("reports the full cooldown immediately after a code is issued", () => {
+    markResetCodeIssued();
+    expect(resendSecondsRemaining()).toBe(RESEND_COOLDOWN_SECONDS);
+  });
+
+  // The bug this guards: the countdown used to restart at 60 on every mount,
+  // so refreshing step 2 at t=50s cost the user another full minute for a
+  // resend the server would already have accepted.
+  it("counts down as real time passes, surviving a remount", () => {
+    markResetCodeIssued();
+    vi.advanceTimersByTime(50_000);
+    expect(resendSecondsRemaining()).toBe(10);
+  });
+
+  it("reaches zero once the cooldown has elapsed", () => {
+    markResetCodeIssued();
+    vi.advanceTimersByTime(RESEND_COOLDOWN_SECONDS * 1000);
+    expect(resendSecondsRemaining()).toBe(0);
+  });
+
+  it("never goes negative", () => {
+    markResetCodeIssued();
+    vi.advanceTimersByTime(10 * 60 * 1000);
+    expect(resendSecondsRemaining()).toBe(0);
+  });
+
+  it("assumes a full cooldown when nothing was recorded", () => {
+    expect(resendSecondsRemaining()).toBe(RESEND_COOLDOWN_SECONDS);
+  });
+
+  it("assumes a full cooldown for a malformed timestamp", () => {
+    sessionStorage.setItem("pwdResetIssuedAt", "not-a-number");
+    expect(resendSecondsRemaining()).toBe(RESEND_COOLDOWN_SECONDS);
+  });
+
+  it("assumes a full cooldown when the clock moves backwards", () => {
+    sessionStorage.setItem("pwdResetIssuedAt", String(Date.now() + 30_000));
+    expect(resendSecondsRemaining()).toBe(RESEND_COOLDOWN_SECONDS);
+  });
+
+  it("is cleared along with the target", () => {
+    markResetCodeIssued();
+    vi.advanceTimersByTime(50_000);
+    clearResetTarget();
+    expect(resendSecondsRemaining()).toBe(RESEND_COOLDOWN_SECONDS);
+  });
+
+  it("swallows a throwing sessionStorage write", () => {
+    vi.spyOn(Storage.prototype, "setItem").mockImplementation(() => {
+      throw new Error("QuotaExceededError");
+    });
+    expect(() => markResetCodeIssued()).not.toThrow();
   });
 });
 

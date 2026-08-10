@@ -9,7 +9,7 @@
   } from "flowbite-svelte-icons";
   import { loginBy, signin } from "@/stores/user";
   import { onMount } from "svelte";
-  import { consumeResetDone } from "@/lib/reset_target";
+  import { consumeResetDone } from "@/lib/dmart_services/password_reset";
 
   $goto;
   let identifier = "";
@@ -222,11 +222,7 @@
       </div>
 
       <div class="forgot-link" class:rtl={isRTL}>
-        <button
-          aria-label={`Go to password reset`}
-          class="link-button"
-          onclick={goToResetPassword}
-        >
+        <button class="link-button" onclick={goToResetPassword}>
           {$_("ForgotPassword")}
         </button>
       </div>

@@ -80,4 +80,19 @@ describe("isPublicRoute on live pathnames", () => {
     setBaseHref("/cat/");
     expect(isPublicRoute(stripBasePrefix("/cat/dashboard"))).toBe(false);
   });
+
+  // The wildcard matches whole segments, so a route that merely starts with
+  // the same characters does not inherit the public exemption.
+  it("does not extend the wildcard past a segment boundary", () => {
+    setBaseHref("/");
+    expect(isPublicRoute("/reset-password-debug")).toBe(false);
+    expect(isPublicRoute("/reset-passwordX")).toBe(false);
+  });
+
+  it("still covers the wildcard's own path and its children", () => {
+    setBaseHref("/");
+    expect(isPublicRoute("/reset-password")).toBe(true);
+    expect(isPublicRoute("/reset-password/confirm")).toBe(true);
+    expect(isPublicRoute("/reset-password/confirm/deeper")).toBe(true);
+  });
 });

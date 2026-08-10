@@ -242,12 +242,12 @@
   "email_or_phone": "Email or phone number",
   "invalid_email_or_phone": "Enter a valid email address or phone number.",
   "send_reset_code": "Send code",
-  "reset_code_sent": "If an account matches {target}, we've sent it a verification code. The code expires in 5 minutes.",
+  "reset_code_sent": "If an account matches {target}, we've sent it a verification code. The code expires in {minutes} minutes.",
   "choose_new_password": "Choose a new password",
   "verification_code": "Verification code",
   "new_password": "New password",
   "confirm_new_password": "Confirm new password",
-  "password_requirements": "Use 8 to 64 characters, including at least one number and one capital letter.",
+  "password_requirements": "Use 8 to 64 characters, with at least one digit and at least one capital Latin letter or Arabic letter.",
   "resend_code": "Resend code",
   "resend_code_in": "Resend code in {seconds}s",
   "update_password": "Update password",
@@ -261,5 +261,6 @@
   "reset_failed": "Something went wrong. Please try again.",
   "reset_start_over": "Your reset session ended. Please start again.",
   "reset_password_success": "Password updated. Sign in with your new password.",
-  "back_to_login": "Back to sign in"
+  "back_to_login": "Back to sign in",
+  "toggle_password_visibility": "Toggle password visibility"
 }

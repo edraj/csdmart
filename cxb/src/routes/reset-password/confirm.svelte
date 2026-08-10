@@ -5,12 +5,16 @@
   import { onDestroy, onMount } from "svelte";
   import { _ } from "@/i18n";
   import {
+    OTP_TTL_MINUTES,
     ResetError,
     clearResetTarget,
     confirmPasswordReset,
     getResetTarget,
     isValidResetPassword,
+    markResetCodeIssued,
     requestPasswordReset,
+    resendSecondsRemaining,
+    resetErrorKey,
     setResetDone,
     setResetStartOver,
     type ResetIdentifier,
@@ -28,11 +32,12 @@
   let formError: string | null = $state(null);
   let errors: { otp?: string; password?: string; confirmPassword?: string } = $state({});
 
-  // 60s matches AllowPasswordResetResendAfter. Inside that window the server
-  // silently no-ops a resend, so blocking the button locally is the only
-  // feedback available.
+  // Countdown to the next allowed resend. The remaining time comes from when
+  // the code was actually issued (step 1, or the last resend), not from when
+  // this component mounted — otherwise a refresh here would cost the user
+  // another full cooldown for a resend the server would already accept.
   let canResend: boolean = $state(false);
-  let resendCountdown: number = $state(60);
+  let resendCountdown: number = $state(0);
   let resendTimer: any;
 
   onMount(() => {
@@ -49,9 +54,10 @@
   });
 
   function startResendTimer() {
-    canResend = false;
-    resendCountdown = 60;
     clearInterval(resendTimer);
+    resendCountdown = resendSecondsRemaining();
+    canResend = resendCountdown <= 0;
+    if (canResend) return;
     resendTimer = setInterval(() => {
       resendCountdown--;
       if (resendCountdown <= 0) {
@@ -71,6 +77,7 @@
     formError = null;
     try {
       await requestPasswordReset(target);
+      markResetCodeIssued();
       startResendTimer();
     } catch {
       formError = $_("reset_failed");
@@ -116,7 +123,7 @@
       clearResetTarget();
       succeeded = true;
     } catch (e: any) {
-      formError = e instanceof ResetError ? $_(e.messageKey) : $_("reset_failed");
+      formError = e instanceof ResetError ? $_(resetErrorKey(e.reason)) : $_("reset_failed");
     } finally {
       isSubmitting = false;
     }
@@ -138,7 +145,9 @@
     {#if target}
       <Heading class="text-primary" tag="h2">{$_("choose_new_password")}</Heading>
       <p class="mt-2 text-sm opacity-75">
-        {$_("reset_code_sent", { values: { target: target.value } })}
+        {$_("reset_code_sent", {
+          values: { target: target.value, minutes: OTP_TTL_MINUTES },
+        })}
       </p>
 
       <form onsubmit={handleSubmit} class="mt-8">
@@ -169,7 +178,8 @@
             required
           />
           <Button class="flex items-center border-s-0" color="light"
-                  onclick={() => (showPassword = !showPassword)} aria-controls="password">
+                  onclick={() => (showPassword = !showPassword)} aria-controls="password"
+                  aria-label={$_("toggle_password_visibility")} aria-pressed={showPassword}>
             {#if showPassword}<EyeSolid />{:else}<EyeSlashSolid />{/if}
           </Button>
         </ButtonGroup>
