@@ -65,6 +65,11 @@ public sealed class PostgresSqlDialect : ISqlDialect
         _ => throw new ArgumentOutOfRangeException(nameof(kind), kind, null),
     };
 
+    public string JsonIsNullOrAbsent(string jsonExpr, bool negated)
+        => negated
+            ? $"({jsonExpr} IS NOT NULL AND jsonb_typeof({jsonExpr}) != 'null')"
+            : $"({jsonExpr} IS NULL OR jsonb_typeof({jsonExpr}) = 'null')";
+
     // One array parameter, matched with = ANY($n). This is why the interface
     // hands dialects a binder rather than only rewriting text.
     public string AnyOf(string columnExpr, IReadOnlyList<string> values, SqlBinder bind)
@@ -90,6 +95,32 @@ public sealed class PostgresSqlDialect : ISqlDialect
         => $"{lhs} {(negated ? "NOT ILIKE" : "ILIKE")} {patternPlaceholder}";
 
     public string AsText(string expr) => $"{expr}::text";
+
+    public string AsNumber(string expr) => $"({expr})::float";
+
+    public string NumberParam(string placeholder) => $"CAST({placeholder} AS float)";
+
+    public string ColumnAsNumber(string column) => $"CAST({column} AS FLOAT)";
+
+    public string AsBoolean(string expr) => $"({expr})::boolean";
+
+    public string ColumnAsBoolean(string column) => $"CAST({column} AS BOOLEAN)";
+
+    // Backed by the jsonb_path_ops GIN indexes in SqlSchema.
+    public string JsonParam(string placeholder) => $"CAST({placeholder} AS jsonb)";
+
+    public string JsonContains(string jsonExpr, string placeholder)
+        => $"{jsonExpr} @> {placeholder}";
+
+    public string ArrayElements(string column, string alias) => $"unnest({column}) AS {alias}";
+
+    public string ArrayElementRef(string alias) => alias;
+
+    // array_length returns NULL for an empty array, hence the COALESCE.
+    public string ArrayLength(string column) => $"COALESCE(array_length({column}, 1), 0)";
+
+    public string TimestampFrom(string placeholder, bool epochMillis)
+        => epochMillis ? $"to_timestamp({placeholder}::float8 / 1000.0)" : $"{placeholder}::timestamptz";
 
     // Parenthesized to match the pre-seam emission exactly. idx_entries_schema_shortname
     // is an expression index over this same text.

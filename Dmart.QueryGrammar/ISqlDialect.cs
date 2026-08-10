@@ -82,6 +82,18 @@ public interface ISqlDialect
     string JsonTypeIsNot(string jsonExpr, JsonKind kind);
 
     /// <summary>
+    /// Tests whether a JSON value is absent or explicitly JSON null.
+    /// </summary>
+    /// <remarks>
+    /// This is the `@field:null` filter, and it is one concept rather than two
+    /// composable ones: "missing" and "present but null" must both count, so the
+    /// SQL-NULL check and the JSON-type check have to be emitted together.
+    /// Building it from JsonTypeIs plus a negation would lose that, and on
+    /// PostgreSQL would also change the emitted text.
+    /// </remarks>
+    string JsonIsNullOrAbsent(string jsonExpr, bool negated);
+
+    /// <summary>
     /// True when the column's value equals any of <paramref name="values"/>.
     /// </summary>
     string AnyOf(string columnExpr, IReadOnlyList<string> values, SqlBinder bind);
@@ -111,6 +123,72 @@ public interface ISqlDialect
 
     /// <summary>Renders a column as text for comparison or concatenation.</summary>
     string AsText(string expr);
+
+    /// <summary>Casts an extracted JSON value to a number for comparison.</summary>
+    string AsNumber(string expr);
+
+    /// <summary>Casts a bound parameter to a number for comparison.</summary>
+    string NumberParam(string placeholder);
+
+    /// <summary>Casts a whole COLUMN to a number for comparison.</summary>
+    /// <remarks>
+    /// Three members rather than one because PostgreSQL's pre-seam SQL spells
+    /// the same cast three ways depending on the site — (x)::float on a JSON
+    /// extract, CAST(x AS float) on a parameter, CAST(x AS FLOAT) on a column.
+    /// They are the identical cast; keeping them distinct is purely what makes
+    /// the emitted text byte-identical, and the alternative was rewriting
+    /// assertions in tests that had every right to keep passing.
+    /// </remarks>
+    string ColumnAsNumber(string column);
+
+    /// <summary>Casts a whole COLUMN to a boolean for comparison.</summary>
+    /// <remarks>
+    /// Separate from <see cref="AsBoolean"/> only because PostgreSQL spells the
+    /// two sites differently in the pre-seam SQL — CAST(x AS BOOLEAN) on a
+    /// column, (x)::boolean on an extracted JSON value. Both are the same cast;
+    /// keeping them distinct is what lets the emitted text stay byte-identical.
+    /// </remarks>
+    string ColumnAsBoolean(string column);
+
+    /// <summary>Casts an expression to a boolean for comparison.</summary>
+    /// <remarks>
+    /// PostgreSQL has a real boolean type. SQLite does not: it stores 0/1, and
+    /// a JSON boolean extracted with -&gt;&gt; comes back as the text 'true' or
+    /// 'false'. The dialect normalizes whichever form its engine produces.
+    /// </remarks>
+    string AsBoolean(string expr);
+
+    /// <summary>Renders a bound JSON parameter for use in a JSON expression.</summary>
+    /// <remarks>
+    /// PostgreSQL wraps it in a CAST that is redundant beside an already-typed
+    /// jsonb parameter, kept verbatim so the emitted text does not move.
+    /// </remarks>
+    string JsonParam(string placeholder);
+
+    /// <summary>True when the JSON column contains the bound JSON document.</summary>
+    /// <remarks>
+    /// PostgreSQL's <c>@&gt;</c>, backed by a GIN index. SQLite has no
+    /// containment operator and no JSON index, so this degrades to a per-row
+    /// walk — see docs/sqlite-backend-audit.md §4.
+    /// </remarks>
+    string JsonContains(string jsonExpr, string placeholder);
+
+    /// <summary>FROM-clause fragment iterating a string-array column's elements.</summary>
+    string ArrayElements(string column, string alias);
+
+    /// <summary>References an element produced by <see cref="ArrayElements"/>.</summary>
+    string ArrayElementRef(string alias);
+
+    /// <summary>Number of elements in a string-array column; 0 when absent.</summary>
+    string ArrayLength(string column);
+
+    /// <summary>
+    /// Renders a bound value as a timestamp comparable against a timestamp column.
+    /// </summary>
+    /// <param name="epochMillis">
+    /// True when the bound value is a millisecond epoch rather than a date string.
+    /// </param>
+    string TimestampFrom(string placeholder, bool epochMillis);
 
     /// <summary>
     /// Expression selecting an entry's schema shortname, index-backed on both

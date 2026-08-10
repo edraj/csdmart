@@ -65,6 +65,12 @@ public sealed class SqliteSqlDialect : ISqlDialect
         _ => throw new ArgumentOutOfRangeException(nameof(kind), kind, null),
     };
 
+    // IS NOT is NULL-safe, so an absent value does not poison the comparison.
+    public string JsonIsNullOrAbsent(string jsonExpr, bool negated)
+        => negated
+            ? $"({jsonExpr} IS NOT NULL AND json_type({jsonExpr}) IS NOT 'null')"
+            : $"({jsonExpr} IS NULL OR json_type({jsonExpr}) = 'null')";
+
     // No array type, so the list expands to one parameter per value.
     public string AnyOf(string columnExpr, IReadOnlyList<string> values, SqlBinder bind)
     {
@@ -113,6 +119,61 @@ public sealed class SqliteSqlDialect : ISqlDialect
     // No cast needed: SQLite compares TEXT-affinity values directly, and an
     // explicit CAST would defeat index use on the column.
     public string AsText(string expr) => expr;
+
+    public string AsNumber(string expr) => $"CAST({expr} AS REAL)";
+
+    public string NumberParam(string placeholder) => $"CAST({placeholder} AS REAL)";
+
+    public string ColumnAsNumber(string column) => $"CAST({column} AS REAL)";
+
+    // A stored column is already 0/1, so it compares directly.
+    public string ColumnAsBoolean(string column) => column;
+
+    // SQLite has no boolean type. A JSON boolean read through ->> arrives as
+    // the text 'true'/'false', while a column stores 0/1 — so normalize both
+    // into 0/1 rather than casting, which would silently make 'true' become 0.
+    public string AsBoolean(string expr)
+        => $"(CASE WHEN {expr} IN ('true', 1, '1') THEN 1 WHEN {expr} IN ('false', 0, '0') THEN 0 END)";
+
+    // The parameter is already JSON text; no cast exists or is needed.
+    public string JsonParam(string placeholder) => placeholder;
+
+    // No containment operator and no JSON index. The bound value is a JSON
+    // document, so this asks whether every one of its leaves is present at the
+    // same path in the target — the semantics PostgreSQL's @> gives for the
+    // shapes this grammar builds (a nested object, or a one-element array).
+    // Every leaf of the probe must appear at the same path in the target.
+    //
+    // The key comparison is skipped for ARRAY elements — an integer json_tree
+    // key is an array index, and PostgreSQL's @> is order-independent over
+    // arrays. Requiring the index to match would make `@payload.body.tags:x`
+    // miss any entry whose tags do not happen to start with "x": wrong results,
+    // silently. Object members still require their key to match, so a value
+    // found under a different property is not a match.
+    public string JsonContains(string jsonExpr, string placeholder)
+        => $"(SELECT count(*) = 0 FROM json_tree({placeholder}) AS probe "
+         + $"WHERE probe.atom IS NOT NULL "
+         + $"AND NOT EXISTS (SELECT 1 FROM json_tree({jsonExpr}) AS target "
+         + $"WHERE target.atom IS NOT NULL AND target.atom = probe.atom "
+         + $"AND target.path IS probe.path "
+         + $"AND (typeof(probe.key) = 'integer' OR target.key IS probe.key)))";
+
+    // query_policies is a JSON array in TEXT, so json_each replaces unnest.
+    public string ArrayElements(string column, string alias) => $"json_each({column}) AS {alias}";
+
+    public string ArrayElementRef(string alias) => $"{alias}.value";
+
+    public string ArrayLength(string column)
+        => $"COALESCE(CASE WHEN json_valid({column}) AND json_type({column}) = 'array' "
+         + $"THEN json_array_length({column}) END, 0)";
+
+    // Timestamps are stored as fixed-width local wall-clock text (SqliteValues),
+    // so a date string compares directly. An epoch-millis value is converted to
+    // that same format so the comparison stays lexicographic.
+    public string TimestampFrom(string placeholder, bool epochMillis)
+        => epochMillis
+            ? $"strftime('%Y-%m-%d %H:%M:%f', {placeholder} / 1000.0, 'unixepoch', 'localtime') || '0000'"
+            : placeholder;
 
     // The VIRTUAL generated column, not the json path it derives from —
     // idx_entries_schema_shortname is only selected when the query names the

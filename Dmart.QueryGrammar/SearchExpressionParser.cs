@@ -706,7 +706,7 @@ public static class SearchExpressionParser
             if (!SafeColumnIdent.IsMatch(field)) return null;
             if (TextArrayColumns.Contains(field))
             {
-                var lengthExpr = $"COALESCE(array_length({field}, 1), 0)";
+                var lengthExpr = ctx.Dialect.ArrayLength(field);
                 return data.Negative ? $"{lengthExpr} = 0" : $"{lengthExpr} > 0";
             }
             return $"{field} {nullCheck}";
@@ -748,7 +748,7 @@ public static class SearchExpressionParser
             return BuildTimestampColumnSql(field, data, ctx);
 
         if (!SafeColumnIdent.IsMatch(field)) return null;
-        return BuildScalarSql($"{field}::text", data, ctx);
+        return BuildScalarSql(ctx.Dialect.AsText(field), data, ctx);
     }
 
     // — User-meta join (extension over csdmart) ———————————————————————————
@@ -808,7 +808,7 @@ public static class SearchExpressionParser
                 if (double.TryParse(v1, out var d1) && double.TryParse(v2, out var d2) && d1 > d2) (v1, v2) = (v2, v1);
                 var p1 = ctx.Add(v1);
                 var p2 = ctx.Add(v2);
-                return $"({ctx.Dialect.JsonTypeIs(jsonExpr, JsonKind.Number)} AND ({jsonExpr})::float {(data.Negative ? "NOT " : "")}BETWEEN CAST({p1} AS float) AND CAST({p2} AS float))";
+                return $"({ctx.Dialect.JsonTypeIs(jsonExpr, JsonKind.Number)} AND {ctx.Dialect.AsNumber(jsonExpr)} {(data.Negative ? "NOT " : "")}BETWEEN {ctx.Dialect.NumberParam(p1)} AND {ctx.Dialect.NumberParam(p2)})";
             }
             if (string.Compare(v1, v2, StringComparison.Ordinal) > 0) (v1, v2) = (v2, v1);
             var sp1 = ctx.Add(v1);
@@ -913,8 +913,8 @@ public static class SearchExpressionParser
                 var sqlOp = compOp switch { "!" => "!=", ">" => ">", ">=" => ">=", "<" => "<", "<=" => "<=", _ => "=" };
                 var pNum = ctx.Add(double.Parse(value, CultureInfo.InvariantCulture));
                 predicate = hasSubPath
-                    ? $"(jsonb_typeof({elementJsonb}) = 'number' AND ({elementJsonb})::float {sqlOp} CAST({pNum} AS float))"
-                    : $"e::float {sqlOp} CAST({pNum} AS float)";
+                    ? $"(jsonb_typeof({elementJsonb}) = 'number' AND ({elementJsonb})::float {sqlOp} {ctx.Dialect.NumberParam(pNum)})"
+                    : $"e::float {sqlOp} {ctx.Dialect.NumberParam(pNum)}";
             }
             else if (data.Negative || compOp == "!")
             {
@@ -927,12 +927,12 @@ public static class SearchExpressionParser
                 {
                     var pNum = ctx.Add(double.Parse(value, CultureInfo.InvariantCulture));
                     var pStr = ctx.Add(value);
-                    predicate = $"((jsonb_typeof({elementJsonb}) = 'number' AND ({elementJsonb})::float = CAST({pNum} AS float)) OR {elementText} = {pStr})";
+                    predicate = $"((jsonb_typeof({elementJsonb}) = 'number' AND ({elementJsonb})::float = {ctx.Dialect.NumberParam(pNum)}) OR {elementText} = {pStr})";
                 }
                 else
                 {
                     var pNum = ctx.Add(double.Parse(value, CultureInfo.InvariantCulture));
-                    predicate = $"e::float = CAST({pNum} AS float)";
+                    predicate = $"e::float = {ctx.Dialect.NumberParam(pNum)}";
                 }
             }
             else
@@ -964,9 +964,7 @@ public static class SearchExpressionParser
             && data.Values[0].Equals("null", StringComparison.OrdinalIgnoreCase))
         {
             var pathExpr = jsonExpr;
-            return data.Negative
-                ? $"({pathExpr} IS NOT NULL AND jsonb_typeof({pathExpr}) != 'null')"
-                : $"({pathExpr} IS NULL OR jsonb_typeof({pathExpr}) = 'null')";
+            return ctx.Dialect.JsonIsNullOrAbsent(pathExpr, negated: data.Negative);
         }
 
         if (data.ValueType == "boolean")
@@ -977,8 +975,8 @@ public static class SearchExpressionParser
                 var p = ctx.Add(bv, SqlValueKind.Boolean);
                 var eq = (data.Negative || compOp == "!") ? "!=" : "=";
                 conditions.Add(
-                    $"(({ctx.Dialect.JsonTypeIs(jsonExpr, JsonKind.Boolean)} AND ({textExtract})::boolean {eq} {p}) OR " +
-                    $"({ctx.Dialect.JsonTypeIs(jsonExpr, JsonKind.String)} AND ({textExtract})::boolean {eq} {p}))");
+                    $"(({ctx.Dialect.JsonTypeIs(jsonExpr, JsonKind.Boolean)} AND {ctx.Dialect.AsBoolean(textExtract)} {eq} {p}) OR " +
+                    $"({ctx.Dialect.JsonTypeIs(jsonExpr, JsonKind.String)} AND {ctx.Dialect.AsBoolean(textExtract)} {eq} {p}))");
             }
             return JoinConditions(conditions, data.Operation, data.Negative);
         }
@@ -1083,7 +1081,7 @@ public static class SearchExpressionParser
                 var sqlOp = compOp switch { "!" => "!=", ">" => ">", ">=" => ">=", "<" => "<", "<=" => "<=", _ => "=" };
                 var pNum = ctx.Add(double.Parse(value, CultureInfo.InvariantCulture));
                 conditions.Add(
-                    $"({ctx.Dialect.JsonTypeIs(jsonExpr, JsonKind.Number)} AND ({textExtract})::float {sqlOp} CAST({pNum} AS float))");
+                    $"({ctx.Dialect.JsonTypeIs(jsonExpr, JsonKind.Number)} AND {ctx.Dialect.AsNumber(textExtract)} {sqlOp} {ctx.Dialect.NumberParam(pNum)})");
             }
             else if (data.Negative || compOp == "!")
             {
@@ -1099,12 +1097,12 @@ public static class SearchExpressionParser
                 // CAST(... AS jsonb) is redundant alongside the typed param
                 // but kept verbatim from the server's pre-extraction emit
                 // so logged SQL stays byte-identical (see BuildJsonbArraySql).
-                var arrayCond = $"({ctx.Dialect.JsonTypeIs(jsonExpr, JsonKind.Array)} AND NOT ({jsonExpr} @> CAST({pJsonArr} AS jsonb)))";
+                var arrayCond = $"({ctx.Dialect.JsonTypeIs(jsonExpr, JsonKind.Array)} AND NOT ({ctx.Dialect.JsonContains(jsonExpr, ctx.Dialect.JsonParam(pJsonArr))}))";
                 var stringCond = $"({ctx.Dialect.JsonTypeIs(jsonExpr, JsonKind.String)} AND {textExtract} != {pVal})";
                 if (isNum)
                 {
                     var pNum = ctx.Add(double.Parse(value, CultureInfo.InvariantCulture));
-                    var numCond = $"({ctx.Dialect.JsonTypeIs(jsonExpr, JsonKind.Number)} AND ({textExtract})::float != CAST({pNum} AS float))";
+                    var numCond = $"({ctx.Dialect.JsonTypeIs(jsonExpr, JsonKind.Number)} AND {ctx.Dialect.AsNumber(textExtract)} != {ctx.Dialect.NumberParam(pNum)})";
                     conditions.Add($"({absentCond} OR {arrayCond} OR {stringCond} OR {numCond})");
                 }
                 else
@@ -1115,14 +1113,14 @@ public static class SearchExpressionParser
             else
             {
                 var pContainStr = ctx.Add(BuildPayloadContainmentJson(parts, ToJsonString(value)), SqlValueKind.Json);
-                var containStringCond = $"(payload::jsonb @> {pContainStr})";
+                var containStringCond = $"({ctx.Dialect.JsonContains(ctx.Dialect.JsonValue("payload", Array.Empty<string>()), pContainStr)})";
                 var pContainArr = ctx.Add(BuildPayloadContainmentJson(parts, ToJsonArray(value)), SqlValueKind.Json);
-                var containArrayCond = $"(payload::jsonb @> {pContainArr})";
+                var containArrayCond = $"({ctx.Dialect.JsonContains(ctx.Dialect.JsonValue("payload", Array.Empty<string>()), pContainArr)})";
 
                 if (isNum)
                 {
                     var pNum = ctx.Add(double.Parse(value, CultureInfo.InvariantCulture));
-                    var numCond = $"({ctx.Dialect.JsonTypeIs(jsonExpr, JsonKind.Number)} AND ({textExtract})::float = CAST({pNum} AS float))";
+                    var numCond = $"({ctx.Dialect.JsonTypeIs(jsonExpr, JsonKind.Number)} AND {ctx.Dialect.AsNumber(textExtract)} = {ctx.Dialect.NumberParam(pNum)})";
                     conditions.Add($"({containStringCond} OR {containArrayCond} OR {numCond})");
                 }
                 else
@@ -1202,13 +1200,13 @@ public static class SearchExpressionParser
             if (data.Negative)
             {
                 conditions.Add(
-                    $"((jsonb_typeof({column}) = 'array' AND NOT ({column} @> CAST({pJson} AS jsonb))) OR " +
+                    $"(({ctx.Dialect.JsonTypeIs(column, JsonKind.Array)} AND NOT ({ctx.Dialect.JsonContains(column, ctx.Dialect.JsonParam(pJson))})) OR " +
                     BuildObjectContains(column, pVal, negated: true, ctx) + "))");
             }
             else
             {
                 conditions.Add(
-                    $"((jsonb_typeof({column}) = 'array' AND {column} @> CAST({pJson} AS jsonb)) OR " +
+                    $"(({ctx.Dialect.JsonTypeIs(column, JsonKind.Array)} AND {column} @> CAST({pJson} AS jsonb)) OR " +
                     BuildObjectContains(column, pVal, negated: false, ctx) + "))");
             }
         }
@@ -1234,7 +1232,7 @@ public static class SearchExpressionParser
                 var p = ctx.Add(value);
                 predicate = $"elem = {p}";
             }
-            var exists = $"EXISTS (SELECT 1 FROM unnest({column}) AS elem WHERE {predicate})";
+            var exists = $"EXISTS (SELECT 1 FROM {ctx.Dialect.ArrayElements(column, "elem")} WHERE {predicate})";
             conditions.Add(negative ? $"NOT {exists}" : exists);
         }
         return JoinConditions(conditions, data.Operation, negative);
@@ -1265,7 +1263,7 @@ public static class SearchExpressionParser
             var bv = value.Equals("true", StringComparison.OrdinalIgnoreCase);
             var p = ctx.Add(bv, SqlValueKind.Boolean);
             var eq = (data.Negative || data.ComparisonOperator == "!") ? "!=" : "=";
-            conditions.Add($"(CAST({column} AS BOOLEAN) {eq} {p})");
+            conditions.Add($"({ctx.Dialect.ColumnAsBoolean(column)} {eq} {p})");
         }
         return JoinConditions(conditions, data.Operation, data.Negative);
     }
@@ -1277,7 +1275,7 @@ public static class SearchExpressionParser
         string ParamExpr(string v)
         {
             var p = ctx.Add(v);
-            return NumericRegex.IsMatch(v) ? $"to_timestamp({p}::float8 / 1000.0)" : $"{p}::timestamptz";
+            return ctx.Dialect.TimestampFrom(p, epochMillis: NumericRegex.IsMatch(v));
         }
 
         if (data.IsRange && data.Values.Count == 2)
@@ -1331,7 +1329,7 @@ public static class SearchExpressionParser
                 if (double.TryParse(v1, out var d1) && double.TryParse(v2, out var d2) && d1 > d2) (v1, v2) = (v2, v1);
                 var p1 = ctx.Add(v1);
                 var p2 = ctx.Add(v2);
-                return $"(CAST({fieldExpr} AS FLOAT) {(data.Negative ? "NOT " : "")}BETWEEN CAST({p1} AS float) AND CAST({p2} AS float))";
+                return $"({ctx.Dialect.ColumnAsNumber(fieldExpr)} {(data.Negative ? "NOT " : "")}BETWEEN {ctx.Dialect.NumberParam(p1)} AND {ctx.Dialect.NumberParam(p2)})";
             }
             if (string.Compare(v1, v2, StringComparison.Ordinal) > 0) (v1, v2) = (v2, v1);
             var sp1 = ctx.Add(v1);
