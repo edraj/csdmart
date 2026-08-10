@@ -173,6 +173,26 @@ public interface ISqlDialect
     /// </remarks>
     string JsonContains(string jsonExpr, string placeholder);
 
+    /// <summary>
+    /// Iterates a JSON array, yielding the FROM fragment plus expressions for
+    /// each element as JSON and as text.
+    /// </summary>
+    /// <param name="jsonExpr">The array-valued expression to iterate.</param>
+    /// <param name="elementPath">
+    /// Path INSIDE each element to address, empty to use the element itself.
+    /// </param>
+    /// <remarks>
+    /// Returned as a triple because the three parts must agree on the alias and
+    /// on how an element is dereferenced, and the two engines disagree on both.
+    /// PostgreSQL picks a different set-returning function depending on whether
+    /// a sub-path is needed (jsonb_array_elements vs …_text) and dereferences
+    /// the alias directly; SQLite always uses json_each and reaches the element
+    /// through its `value` column. Splitting this into three members would let
+    /// a caller mix an alias from one with a dereference from another.
+    /// </remarks>
+    (string From, string ElementJson, string ElementText) JsonArrayIterate(
+        string jsonExpr, IReadOnlyList<string> elementPath);
+
     /// <summary>FROM-clause fragment iterating a string-array column's elements.</summary>
     string ArrayElements(string column, string alias);
 

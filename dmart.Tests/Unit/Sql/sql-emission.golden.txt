@@ -358,6 +358,66 @@ SQL: ((payload::text ILIKE @s_1 AND jsonb_typeof(payload::jsonb->'body'->'title'
   P1: name=@s_0 type=<inferred> value="%a\%b\_c\\d%"
   P2: name=@s_1 type=<inferred> value="%a\%b\_c\\d%"
 
+## search: payload-array-scalar[Positional]
+SQL: ((jsonb_typeof(payload::jsonb->'tags') = 'array' AND EXISTS (SELECT 1 FROM jsonb_array_elements_text(payload::jsonb->'tags') AS e WHERE e = $1)))
+  P1: name=<positional> type=<inferred> value="red"
+
+## search: payload-array-scalar[Named]
+SQL: ((jsonb_typeof(payload::jsonb->'tags') = 'array' AND EXISTS (SELECT 1 FROM jsonb_array_elements_text(payload::jsonb->'tags') AS e WHERE e = @s_0)))
+  P1: name=@s_0 type=<inferred> value="red"
+
+## search: payload-array-subpath[Positional]
+SQL: ((jsonb_typeof(payload::jsonb->'items') = 'array' AND EXISTS (SELECT 1 FROM jsonb_array_elements(payload::jsonb->'items') AS x WHERE ((jsonb_typeof(x->'price') = 'number' AND (x->'price')::float = CAST($1 AS float)) OR x->>'price' = $2))))
+  P1: name=<positional> type=<inferred> value=100
+  P2: name=<positional> type=<inferred> value="100"
+
+## search: payload-array-subpath[Named]
+SQL: ((jsonb_typeof(payload::jsonb->'items') = 'array' AND EXISTS (SELECT 1 FROM jsonb_array_elements(payload::jsonb->'items') AS x WHERE ((jsonb_typeof(x->'price') = 'number' AND (x->'price')::float = CAST(@s_0 AS float)) OR x->>'price' = @s_1))))
+  P1: name=@s_0 type=<inferred> value=100
+  P2: name=@s_1 type=<inferred> value="100"
+
+## search: payload-array-subpath-nested[Positional]
+SQL: ((jsonb_typeof(payload::jsonb->'items') = 'array' AND EXISTS (SELECT 1 FROM jsonb_array_elements(payload::jsonb->'items') AS x WHERE x->'meta'->>'sku' = $1)))
+  P1: name=<positional> type=<inferred> value="abc"
+
+## search: payload-array-subpath-nested[Named]
+SQL: ((jsonb_typeof(payload::jsonb->'items') = 'array' AND EXISTS (SELECT 1 FROM jsonb_array_elements(payload::jsonb->'items') AS x WHERE x->'meta'->>'sku' = @s_0)))
+  P1: name=@s_0 type=<inferred> value="abc"
+
+## search: payload-array-numeric-gt[Positional]
+SQL: ((jsonb_typeof(payload::jsonb->'items') = 'array' AND EXISTS (SELECT 1 FROM jsonb_array_elements(payload::jsonb->'items') AS x WHERE (jsonb_typeof(x->'price') = 'number' AND (x->'price')::float > CAST($1 AS float)))))
+  P1: name=<positional> type=<inferred> value=5
+
+## search: payload-array-numeric-gt[Named]
+SQL: ((jsonb_typeof(payload::jsonb->'items') = 'array' AND EXISTS (SELECT 1 FROM jsonb_array_elements(payload::jsonb->'items') AS x WHERE (jsonb_typeof(x->'price') = 'number' AND (x->'price')::float > CAST(@s_0 AS float)))))
+  P1: name=@s_0 type=<inferred> value=5
+
+## search: payload-array-numeric-range[Positional]
+SQL: ((jsonb_typeof(payload::jsonb->'items') = 'array' AND EXISTS (SELECT 1 FROM jsonb_array_elements(payload::jsonb->'items') AS x WHERE jsonb_typeof(x->'price') = 'number' AND (x->'price')::float BETWEEN CAST($1 AS float) AND CAST($2 AS float))))
+  P1: name=<positional> type=<inferred> value="5"
+  P2: name=<positional> type=<inferred> value="10"
+
+## search: payload-array-numeric-range[Named]
+SQL: ((jsonb_typeof(payload::jsonb->'items') = 'array' AND EXISTS (SELECT 1 FROM jsonb_array_elements(payload::jsonb->'items') AS x WHERE jsonb_typeof(x->'price') = 'number' AND (x->'price')::float BETWEEN CAST(@s_0 AS float) AND CAST(@s_1 AS float))))
+  P1: name=@s_0 type=<inferred> value="5"
+  P2: name=@s_1 type=<inferred> value="10"
+
+## search: payload-array-negated[Positional]
+SQL: ((payload::jsonb->'items' IS NULL OR jsonb_typeof(payload::jsonb->'items') = 'null' OR (jsonb_typeof(payload::jsonb->'items') = 'array' AND NOT EXISTS (SELECT 1 FROM jsonb_array_elements(payload::jsonb->'items') AS x WHERE x->>'price' != $1))))
+  P1: name=<positional> type=<inferred> value="100"
+
+## search: payload-array-negated[Named]
+SQL: ((payload::jsonb->'items' IS NULL OR jsonb_typeof(payload::jsonb->'items') = 'null' OR (jsonb_typeof(payload::jsonb->'items') = 'array' AND NOT EXISTS (SELECT 1 FROM jsonb_array_elements(payload::jsonb->'items') AS x WHERE x->>'price' != @s_0))))
+  P1: name=@s_0 type=<inferred> value="100"
+
+## search: payload-array-scalar-negated[Positional]
+SQL: ((payload::jsonb->'tags' IS NULL OR jsonb_typeof(payload::jsonb->'tags') = 'null' OR (jsonb_typeof(payload::jsonb->'tags') = 'array' AND NOT EXISTS (SELECT 1 FROM jsonb_array_elements_text(payload::jsonb->'tags') AS e WHERE e != $1))))
+  P1: name=<positional> type=<inferred> value="red"
+
+## search: payload-array-scalar-negated[Named]
+SQL: ((payload::jsonb->'tags' IS NULL OR jsonb_typeof(payload::jsonb->'tags') = 'null' OR (jsonb_typeof(payload::jsonb->'tags') = 'array' AND NOT EXISTS (SELECT 1 FROM jsonb_array_elements_text(payload::jsonb->'tags') AS e WHERE e != @s_0))))
+  P1: name=@s_0 type=<inferred> value="red"
+
 ## search: payload-boolean-true[Positional]
 SQL: (((jsonb_typeof(payload::jsonb->'body'->'enabled') = 'boolean' AND (payload::jsonb->'body'->>'enabled')::boolean = $1) OR (jsonb_typeof(payload::jsonb->'body'->'enabled') = 'string' AND (payload::jsonb->'body'->>'enabled')::boolean = $1)))
   P1: name=<positional> type=<inferred> value=true

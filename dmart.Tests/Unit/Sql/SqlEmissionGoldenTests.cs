@@ -254,6 +254,16 @@ public class SqlEmissionGoldenTests
         ("payload-wildcard-suffix", "@payload.body.title:*foo"),
         ("payload-wildcard-negated", "-@payload.body.title:*foo*"),
         ("payload-wildcard-metachars", @"@payload.body.title:*a%b_c\d*"),
+        // Array iteration (BuildPayloadArraySql). The two engines need
+        // different set-returning functions and element dereferencing here, so
+        // these pin the PostgreSQL side of that.
+        ("payload-array-scalar", "@payload.tags[]:red"),
+        ("payload-array-subpath", "@payload.items[].price:100"),
+        ("payload-array-subpath-nested", "@payload.items[].meta.sku:abc"),
+        ("payload-array-numeric-gt", "@payload.items[].price:>5"),
+        ("payload-array-numeric-range", "@payload.items[].price:[5 10]"),
+        ("payload-array-negated", "-@payload.items[].price:100"),
+        ("payload-array-scalar-negated", "-@payload.tags[]:red"),
         ("payload-boolean-true", "@payload.body.enabled:true"),
         ("payload-boolean-false", "@payload.body.enabled:false"),
         ("jsonb-array-tags", "@tags:red"),

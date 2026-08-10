@@ -158,6 +158,21 @@ public sealed class SqliteSqlDialect : ISqlDialect
          + $"AND target.path IS probe.path "
          + $"AND (typeof(probe.key) = 'integer' OR target.key IS probe.key)))";
 
+    // json_each covers both cases: its `value` column already yields the SQL
+    // value for a scalar element, and a sub-path is walked from that value. So
+    // unlike PostgreSQL there is no second iterator to choose between.
+    public (string From, string ElementJson, string ElementText) JsonArrayIterate(
+        string jsonExpr, IReadOnlyList<string> elementPath)
+    {
+        if (elementPath.Count == 0)
+            return ($"json_each({jsonExpr}) AS e", "e.value", "e.value");
+
+        var path = JsonPath(elementPath);
+        return ($"json_each({jsonExpr}) AS x",
+                $"x.value -> '{path}'",
+                $"x.value ->> '{path}'");
+    }
+
     // query_policies is a JSON array in TEXT, so json_each replaces unnest.
     public string ArrayElements(string column, string alias) => $"json_each({column}) AS {alias}";
 

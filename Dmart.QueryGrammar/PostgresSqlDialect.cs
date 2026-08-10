@@ -112,6 +112,24 @@ public sealed class PostgresSqlDialect : ISqlDialect
     public string JsonContains(string jsonExpr, string placeholder)
         => $"{jsonExpr} @> {placeholder}";
 
+    // Two different set-returning functions on purpose, matching the pre-seam
+    // SQL: the _text variant yields SQL text directly (so a bare element
+    // compares without a cast), while the plain variant keeps elements as jsonb
+    // so a sub-path can be walked into them.
+    public (string From, string ElementJson, string ElementText) JsonArrayIterate(
+        string jsonExpr, IReadOnlyList<string> elementPath)
+    {
+        if (elementPath.Count == 0)
+            return ($"jsonb_array_elements_text({jsonExpr}) AS e", "e::jsonb", "e");
+
+        var lead = string.Concat(elementPath.Take(elementPath.Count - 1)
+                                            .Select(p => $"->'{Escape(p)}'"));
+        var last = Escape(elementPath[^1]);
+        return ($"jsonb_array_elements({jsonExpr}) AS x",
+                $"x{lead}->'{last}'",
+                $"x{lead}->>'{last}'");
+    }
+
     public string ArrayElements(string column, string alias) => $"unnest({column}) AS {alias}";
 
     public string ArrayElementRef(string alias) => alias;

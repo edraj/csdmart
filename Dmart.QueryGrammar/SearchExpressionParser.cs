@@ -837,36 +837,18 @@ public static class SearchExpressionParser
         var prefixParts = new List<string>(arrayIdx + 1);
         for (int i = 0; i < arrayIdx; i++) prefixParts.Add(parts[i]);
         prefixParts.Add(parts[arrayIdx][..^2]);
-        var arrayPathArrow = string.Join("->", prefixParts.Select(p => $"'{EscapeSqlLiteral(p)}'"));
-        var arrayExpr = $"payload::jsonb->{arrayPathArrow}";
+        var arrayExpr = ctx.Dialect.JsonValue("payload", prefixParts);
 
         var remaining = parts.Skip(arrayIdx + 1).ToArray();
         bool hasSubPath = remaining.Length > 0;
 
-        string elementText, elementJsonb, iterator;
-        if (hasSubPath)
-        {
-            if (remaining.Length == 1)
-            {
-                elementText = $"x->>'{EscapeSqlLiteral(remaining[0])}'";
-                elementJsonb = $"x->'{EscapeSqlLiteral(remaining[0])}'";
-            }
-            else
-            {
-                var nested = string.Join("->", remaining[..^1].Select(p => $"'{EscapeSqlLiteral(p)}'"));
-                elementText = $"x->{nested}->>'{EscapeSqlLiteral(remaining[^1])}'";
-                elementJsonb = $"x->{nested}->'{EscapeSqlLiteral(remaining[^1])}'";
-            }
-            iterator = $"jsonb_array_elements({arrayExpr}) AS x";
-        }
-        else
-        {
-            elementText = "e";
-            elementJsonb = "e::jsonb";
-            iterator = $"jsonb_array_elements_text({arrayExpr}) AS e";
-        }
+        // The iterator and both element accessors come as a set: they have to
+        // agree on the alias and on how an element is dereferenced, and the two
+        // engines differ on both.
+        var (iterator, elementJsonb, elementText) =
+            ctx.Dialect.JsonArrayIterate(arrayExpr, remaining);
 
-        var typeofGuard = $"jsonb_typeof({arrayExpr}) = 'array'";
+        var typeofGuard = ctx.Dialect.JsonTypeIs(arrayExpr, JsonKind.Array);
 
         if (data.IsRange && data.Values.Count == 2)
         {
@@ -878,8 +860,8 @@ public static class SearchExpressionParser
                 var p1 = ctx.Add(v1);
                 var p2 = ctx.Add(v2);
                 string between = hasSubPath
-                    ? $"jsonb_typeof({elementJsonb}) = 'number' AND ({elementJsonb})::float BETWEEN CAST({p1} AS float) AND CAST({p2} AS float)"
-                    : $"e::float BETWEEN CAST({p1} AS float) AND CAST({p2} AS float)";
+                    ? $"{ctx.Dialect.JsonTypeIs(elementJsonb, JsonKind.Number)} AND {ctx.Dialect.AsNumber(elementJsonb)} BETWEEN {ctx.Dialect.NumberParam(p1)} AND {ctx.Dialect.NumberParam(p2)}"
+                    : $"{ctx.Dialect.ColumnAsNumber(elementText)} BETWEEN {ctx.Dialect.NumberParam(p1)} AND {ctx.Dialect.NumberParam(p2)}";
                 var exists = $"EXISTS (SELECT 1 FROM {iterator} WHERE {between})";
                 // Negation: absent/null fields are intentionally included so
                 // `-@items[].price:[100 200]` also matches rows that don't
@@ -888,7 +870,7 @@ public static class SearchExpressionParser
                 // IS NULL OR jsonb null disjunct restores the expected
                 // "field doesn't exist counts as out-of-range" semantics.
                 return data.Negative
-                    ? $"({arrayExpr} IS NULL OR jsonb_typeof({arrayExpr}) = 'null' OR ({typeofGuard} AND NOT {exists}))"
+                    ? $"({arrayExpr} IS NULL OR {ctx.Dialect.JsonTypeIs(arrayExpr, JsonKind.Null)} OR ({typeofGuard} AND NOT {exists}))"
                     : $"({typeofGuard} AND {exists})";
             }
             if (string.Compare(v1, v2, StringComparison.Ordinal) > 0) (v1, v2) = (v2, v1);
@@ -897,7 +879,7 @@ public static class SearchExpressionParser
             var between2 = $"{elementText} BETWEEN {sp1} AND {sp2}";
             var exists2 = $"EXISTS (SELECT 1 FROM {iterator} WHERE {between2})";
             return data.Negative
-                ? $"({arrayExpr} IS NULL OR jsonb_typeof({arrayExpr}) = 'null' OR ({typeofGuard} AND NOT {exists2}))"
+                ? $"({arrayExpr} IS NULL OR {ctx.Dialect.JsonTypeIs(arrayExpr, JsonKind.Null)} OR ({typeofGuard} AND NOT {exists2}))"
                 : $"({typeofGuard} AND {exists2})";
         }
 
@@ -913,8 +895,8 @@ public static class SearchExpressionParser
                 var sqlOp = compOp switch { "!" => "!=", ">" => ">", ">=" => ">=", "<" => "<", "<=" => "<=", _ => "=" };
                 var pNum = ctx.Add(double.Parse(value, CultureInfo.InvariantCulture));
                 predicate = hasSubPath
-                    ? $"(jsonb_typeof({elementJsonb}) = 'number' AND ({elementJsonb})::float {sqlOp} {ctx.Dialect.NumberParam(pNum)})"
-                    : $"e::float {sqlOp} {ctx.Dialect.NumberParam(pNum)}";
+                    ? $"({ctx.Dialect.JsonTypeIs(elementJsonb, JsonKind.Number)} AND {ctx.Dialect.AsNumber(elementJsonb)} {sqlOp} {ctx.Dialect.NumberParam(pNum)})"
+                    : $"{ctx.Dialect.ColumnAsNumber(elementText)} {sqlOp} {ctx.Dialect.NumberParam(pNum)}";
             }
             else if (data.Negative || compOp == "!")
             {
@@ -927,12 +909,12 @@ public static class SearchExpressionParser
                 {
                     var pNum = ctx.Add(double.Parse(value, CultureInfo.InvariantCulture));
                     var pStr = ctx.Add(value);
-                    predicate = $"((jsonb_typeof({elementJsonb}) = 'number' AND ({elementJsonb})::float = {ctx.Dialect.NumberParam(pNum)}) OR {elementText} = {pStr})";
+                    predicate = $"(({ctx.Dialect.JsonTypeIs(elementJsonb, JsonKind.Number)} AND {ctx.Dialect.AsNumber(elementJsonb)} = {ctx.Dialect.NumberParam(pNum)}) OR {elementText} = {pStr})";
                 }
                 else
                 {
                     var pNum = ctx.Add(double.Parse(value, CultureInfo.InvariantCulture));
-                    predicate = $"e::float = {ctx.Dialect.NumberParam(pNum)}";
+                    predicate = $"{ctx.Dialect.ColumnAsNumber(elementText)} = {ctx.Dialect.NumberParam(pNum)}";
                 }
             }
             else
@@ -943,7 +925,7 @@ public static class SearchExpressionParser
 
             var exists = $"EXISTS (SELECT 1 FROM {iterator} WHERE {predicate})";
             conditions.Add(data.Negative
-                ? $"({arrayExpr} IS NULL OR jsonb_typeof({arrayExpr}) = 'null' OR ({typeofGuard} AND NOT {exists}))"
+                ? $"({arrayExpr} IS NULL OR {ctx.Dialect.JsonTypeIs(arrayExpr, JsonKind.Null)} OR ({typeofGuard} AND NOT {exists}))"
                 : $"({typeofGuard} AND {exists})");
         }
         return JoinConditions(conditions, data.Operation, data.Negative);
@@ -1206,7 +1188,7 @@ public static class SearchExpressionParser
             else
             {
                 conditions.Add(
-                    $"(({ctx.Dialect.JsonTypeIs(column, JsonKind.Array)} AND {column} @> CAST({pJson} AS jsonb)) OR " +
+                    $"(({ctx.Dialect.JsonTypeIs(column, JsonKind.Array)} AND {ctx.Dialect.JsonContains(column, ctx.Dialect.JsonParam(pJson))}) OR " +
                     BuildObjectContains(column, pVal, negated: false, ctx) + "))");
             }
         }
