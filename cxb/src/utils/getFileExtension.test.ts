@@ -43,14 +43,19 @@ describe("getFileExtension", () => {
     expect(getFileExtension("/some/dir/file.txt")).toBe("txt");
   });
 
-  // KNOWN LIMITATION, asserted so a future fix is a deliberate change rather
-  // than a surprise: the capture group is `[^.]+`, which happily matches "/".
-  // A path whose *directory* contains a dot and whose *filename* has none
-  // yields the tail of the path instead of "". Latent today — both callers
-  // (Attachments.svelte, ModalViewAttachments.svelte) pass a bare
-  // `payload.body` filename, never a path. Taking the basename first would
-  // fix it.
-  it("mishandles a dotted directory with an extensionless file", () => {
-    expect(getFileExtension("/some.dir/file")).toBe("dir/file");
+  // Regression guard: `[^.]+` also matches "/", so before the basename was
+  // taken first this returned the path tail ("dir/file") instead of "".
+  it("does not mistake a dotted directory for an extension", () => {
+    expect(getFileExtension("/some.dir/file")).toBe("");
+    expect(getFileExtension("/a.b/c.d/e")).toBe("");
+  });
+
+  it("reads the extension from the basename when the directory has dots", () => {
+    expect(getFileExtension("/some.dir/file.txt")).toBe("txt");
+    expect(getFileExtension("v1.2/archive.tar.gz")).toBe("gz");
+  });
+
+  it("still treats a dotfile in a directory as having no extension", () => {
+    expect(getFileExtension("/etc/.env")).toBe("");
   });
 });
