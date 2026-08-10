@@ -15,7 +15,14 @@ MODE="fast"
 # (osx-arm64 on Apple Silicon, win-x64 on Windows, etc.). NativeAOT cannot
 # cross-compile, so the host must match the requested RID's OS+arch.
 RID="linux-x64"
-while [[ $# -gt 0 ]]; do
+# POSIX `[` rather than bash's `[[`: this file is run as `sh ./build.sh` from
+# dist/build-apk.sh, and on a host whose /bin/sh is dash there is no `[[`. The
+# failure is silent — a `while` condition is exempt from `set -e`, so the loop
+# simply exits without parsing anything, leaving MODE at its default. That is
+# how a `--print-version` call came back with a whole build log attached and
+# fed it to MSBuild as a property value. Alpine hides this because busybox
+# ships `[[` as an external applet.
+while [ $# -gt 0 ]; do
   case "$1" in
     --aot|--full|--release) MODE="aot"; shift ;;
     --fast|--dev)           MODE="fast"; shift ;;

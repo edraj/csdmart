@@ -122,11 +122,23 @@ else
 	# back on the failure this exists to avoid.
 	host_version=$(sh ./build.sh --print-version)
 
+	# Check the shape, not just the exit status. build.sh's argument loop was
+	# once bash-only, so on a host whose /bin/sh is dash the `--print-version`
+	# flag was silently dropped and this captured an entire build log — which
+	# then reached MSBuild as a property value and failed the publish with a
+	# baffling "MSB1006: Property is not valid. Switch: skipping". A version is
+	# one line; anything else means the contract broke and must not be passed
+	# on as if it were an answer.
+	if [ "$(printf '%s\n' "$host_version" | wc -l)" -ne 1 ]; then
+		echo "WARNING: build.sh --print-version returned more than one line; not stamping." >&2
+		host_version=""
+	fi
+
 	# If the host cannot resolve a version either, pass nothing rather than a
 	# known-bad answer: an environment that still has a working git deserves
 	# its own attempt instead of being overridden with the fallback.
 	case "$host_version" in
-		0.1.0*)
+		"" | 0.1.0*)
 			echo "WARNING: no version resolvable on this host; leaving it to the build environment." >&2
 			;;
 		*)
