@@ -34,7 +34,7 @@ public sealed class QueryService(
     HistoryRepository history,
     PermissionService perms,
     SpaceEventLogger eventLogger,
-    Db db,
+    IDbConnectionFactory db,
     LockRepository locks,
     IOptions<DmartSettings> settings,
     ILogger<QueryService> logger)
@@ -645,16 +645,20 @@ public sealed class QueryService(
 
         var effectiveActor = actor ?? PermissionService.AnonymousUser;
 
-        // SQL: unnest tags jsonb array, group by tag, count.
+        // Unnest the tags JSON array, group by tag, count. The set-returning
+        // function differs per backend, so it comes from the dialect rather
+        // than being spelled inline.
+        var dialect = QueryHelper.DialectFor(db);
         var args = new List<NpgsqlParameter>();
-        var where = QueryHelper.BuildWhereClause(q, args, "entries");
+        var where = QueryHelper.BuildWhereClause(q, args, dialect, "entries");
+        var (tagFrom, _, tagText) = dialect.JsonArrayIterate("tags", Array.Empty<string>());
         var sql = new System.Text.StringBuilder($"""
-            SELECT tag, COUNT(*) AS cnt
-            FROM entries, jsonb_array_elements_text(tags) AS tag
+            SELECT {tagText} AS tag, COUNT(*) AS cnt
+            FROM entries, {tagFrom}
             WHERE {where}
             """);
-        QueryHelper.AppendAclFilter(sql, args, effectiveActor, "entries", policies);
-        sql.Append("GROUP BY tag ORDER BY cnt DESC");
+        QueryHelper.AppendAclFilter(sql, args, effectiveActor, "entries", policies, dialect);
+        sql.Append($"GROUP BY {tagText} ORDER BY cnt DESC");
         // Apply limit/offset on the aggregated result.
         args.Add(new() { Value = Math.Max(1, q.Limit) });
         sql.Append($" LIMIT ${args.Count}");
@@ -662,8 +666,8 @@ public sealed class QueryService(
         sql.Append($" OFFSET ${args.Count}");
 
         await using var conn = await db.OpenAsync(ct);
-        await using var cmd = new NpgsqlCommand(sql.ToString(), conn);
-        foreach (var p in args) cmd.Parameters.Add(p);
+        await using var cmd = conn.Command(sql.ToString());
+        DbParams.BindAll(cmd, args);
         await using var reader = await cmd.ExecuteReaderAsync(ct);
 
         var tags = new List<string>();

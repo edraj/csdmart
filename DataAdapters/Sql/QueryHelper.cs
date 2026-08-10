@@ -303,6 +303,11 @@ public static class QueryHelper
     public static void AppendInnerSemiJoins(
         System.Text.StringBuilder sql, List<NpgsqlParameter> args,
         IReadOnlyList<InnerSemiJoinSpec> specs)
+        => AppendInnerSemiJoins(sql, args, specs, PostgresSqlDialect.Instance);
+
+    public static void AppendInnerSemiJoins(
+        System.Text.StringBuilder sql, List<NpgsqlParameter> args,
+        IReadOnlyList<InnerSemiJoinSpec> specs, ISqlDialect dialect)
     {
         foreach (var spec in specs)
         {
@@ -310,11 +315,11 @@ public static class QueryHelper
             // Right-side filters. Bare columns bind to the inner `r` (it shadows
             // the outer `entries`). BuildWhereClause is positional-param safe,
             // so its $N continue the shared sequence.
-            sql.Append(BuildWhereClause(spec.RightQuery, args, "entries"));
+            sql.Append(BuildWhereClause(spec.RightQuery, args, dialect, "entries"));
             // Right-side ACL — MANDATORY. Bare owner_shortname/acl/query_policies
             // bind to `r`. Without this a base row could survive on a right row
             // the caller can't query.
-            AppendAclFilter(sql, args, spec.Actor, "entries", spec.RightQueryPolicies);
+            AppendAclFilter(sql, args, spec.Actor, "entries", spec.RightQueryPolicies, dialect);
             foreach (var (leftExpr, rightExpr) in spec.Correlations)
                 sql.Append($"AND {rightExpr} = {leftExpr} ");
             sql.Append(") ");
@@ -473,7 +478,7 @@ public static class QueryHelper
         // Inject INNER-join EXISTS semi-joins (filter base by existence of a
         // matching right row) so LIMIT/OFFSET below page the post-filter set.
         if (semiJoins is { Count: > 0 })
-            AppendInnerSemiJoins(sql, args, semiJoins);
+            AppendInnerSemiJoins(sql, args, semiJoins, dialect);
 
         AppendOrderAndPaging(sql, q, args, tableName);
 
@@ -510,7 +515,7 @@ public static class QueryHelper
             AppendAclFilter(sqlBuilder, args, userShortname, tableName, queryPolicies, dialect);
 
         if (semiJoins is { Count: > 0 })
-            AppendInnerSemiJoins(sqlBuilder, args, semiJoins);
+            AppendInnerSemiJoins(sqlBuilder, args, semiJoins, dialect);
 
         await using var conn = await db.OpenAsync(ct);
         await using var cmd = conn.CreateCommand();
@@ -539,6 +544,11 @@ public static class QueryHelper
     // (no percentile_cont / stddev / ordered ARRAY_AGG).
     public static (string Sql, List<NpgsqlParameter> Args)? BuildAggregationSql(
         string tableName, Query q,
+        string? userShortname = null, List<string>? queryPolicies = null)
+        => BuildAggregationSql(tableName, q, PostgresSqlDialect.Instance, userShortname, queryPolicies);
+
+    public static (string Sql, List<NpgsqlParameter> Args)? BuildAggregationSql(
+        string tableName, Query q, ISqlDialect dialect,
         string? userShortname = null, List<string>? queryPolicies = null)
     {
         if (q.AggregationData is null)
@@ -577,7 +587,7 @@ public static class QueryHelper
             $"SELECT {string.Join(", ", selectParts)} FROM {tableName} WHERE {where} ");
 
         if (userShortname is not null)
-            AppendAclFilter(sql, args, userShortname, tableName, queryPolicies);
+            AppendAclFilter(sql, args, userShortname, tableName, queryPolicies, dialect);
 
         // GROUP BY
         if (groupBy.Count > 0)
@@ -603,7 +613,7 @@ public static class QueryHelper
         IDbConnectionFactory db, string tableName, Query q, CancellationToken ct,
         string? userShortname = null, List<string>? queryPolicies = null)
     {
-        var built = BuildAggregationSql(tableName, q, userShortname, queryPolicies);
+        var built = BuildAggregationSql(tableName, q, DialectFor(db), userShortname, queryPolicies);
         if (built is null) return new();
         var (sql, args) = built.Value;
 
