@@ -25,7 +25,7 @@
     "marked-gfm-heading-id": "^4.1.4",
     "marked-mangle": "^1.1.13",
     "mdsvex": "^0.12.7",
-    "svelte": "5.56.8",
+    "svelte": "^5.56.8",
     "svelte-check": "^4.7.1",
     "svelte-i18n": "^4.0.1",
     "svelte-loading-spinners": "^0.3.6",
@@ -38,7 +38,7 @@
     "vitest": "^4.1.6"
   },
   "peerDependencies": {
-    "svelte": "^5.56.4"
+    "svelte": "^5.56.8"
   },
   "dependencies": {
     "@edraj/tsdmart": "^5.4.0",
