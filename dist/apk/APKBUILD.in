@@ -33,6 +33,8 @@ source="
 	dmart.fish
 	config.env.sample
 	plugins.tar.gz
+	cxb-ui.tar.gz
+	catalog-ui.tar.gz
 "
 
 # !check — no test phase in this recipe (suite runs in CI before packaging).
@@ -52,6 +54,25 @@ package() {
 	mkdir -p "$pkgdir"/usr/lib/dmart/plugins
 	tar -xzf "$srcdir"/plugins.tar.gz \
 		-C "$pkgdir"/usr/lib/dmart/plugins
+
+	# UI frontends. Also embedded in the binary, but the manifest provider
+	# they are read through does not survive NativeAOT on musl — both
+	# middlewares then look for these paths on disk, and a miss makes them
+	# skip themselves silently (every /cxb and /cat URL 404s with no log
+	# line). See the tarball staging in dist/build-apk.sh.
+	#
+	# A server-only build stages an empty tarball to satisfy the fixed source
+	# list; rmdir then drops the directory, because an empty one still has
+	# File.Exists(index.html) false and would just be dead weight in the
+	# package. rmdir is deliberate over `rm -rf` — it refuses a non-empty
+	# directory, so a UI that extracted but somehow lacks index.html surfaces
+	# as a build failure instead of being silently discarded.
+	for ui in cxb catalog; do
+		mkdir -p "$pkgdir"/usr/lib/dmart/"$ui"
+		tar -xzf "$srcdir/$ui-ui.tar.gz" -C "$pkgdir"/usr/lib/dmart/"$ui"
+		[ -f "$pkgdir"/usr/lib/dmart/"$ui"/index.html ] \
+			|| rmdir "$pkgdir"/usr/lib/dmart/"$ui"
+	done
 
 	# Config sample
 	install -Dm644 "$srcdir"/config.env.sample \
