@@ -23,11 +23,15 @@
       ],
       "@/*": [
         "./src/*"
+      ],
+      "@shared/*": [
+        "../ui-shared/*"
       ]
     }
   },
   "include": [
     "vite-env.d.ts",
+    "../ui-shared/**/*.ts",
     "src/**/*.d.ts",
     "src/**/*.ts",
     "src/**/*.js",

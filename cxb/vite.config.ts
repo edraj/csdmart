@@ -71,6 +71,9 @@ export default defineConfig(({command}) => ({
     alias: {
       "@": process.cwd() + "/src",
       "~": process.cwd() + "/node_modules",
+      // Code shared with catalog/. Lives above both workspaces rather than
+      // being duplicated into each — see ui-shared/password-reset.ts.
+      "@shared": process.cwd() + "/../ui-shared",
     },
   },
   plugins: [

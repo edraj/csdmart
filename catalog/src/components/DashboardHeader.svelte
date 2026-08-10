@@ -12,11 +12,12 @@
   import { wsConnected } from "@/stores/websocket";
   import { isPublicRoute } from "@/lib/constants";
   import { website } from "@/config";
+  import { stripBasePrefix } from "@/lib/basePath";
 
   $goto;
 
   $effect(() => {
-    const path = window.location.pathname;
+    const path = stripBasePrefix(window.location.pathname);
     if (!$user?.signedin && path !== "/login" && !isPublicRoute(path)) {
       $goto("/login");
     }

@@ -8,6 +8,8 @@
     UserSolid,
   } from "flowbite-svelte-icons";
   import { loginBy, signin } from "@/stores/user";
+  import { onMount } from "svelte";
+  import { consumeResetDone } from "@/lib/dmart_services/password_reset";
 
   $goto;
   let identifier = "";
@@ -18,6 +20,16 @@
   let errors: { identifier?: string; password?: string } = {};
   let isError: boolean;
   $: isRTL = $locale === "ar" || $locale === "ku";
+
+  // Set by the confirm route before it redirects here.
+  let resetSuccess = false;
+  onMount(() => {
+    resetSuccess = consumeResetDone();
+  });
+
+  function goToResetPassword() {
+    $goto("/reset-password");
+  }
 
   function isEmail(input: string): boolean {
     return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(input);
@@ -78,6 +90,10 @@
         <p class="login-description">{$_("PleaseSignInToContinue")}</p>
       </div>
     </div>
+
+    {#if resetSuccess}
+      <div class="success-message" role="status">{$_("ResetPasswordSuccess")}</div>
+    {/if}
 
     {#if showError}
       <div class="error-message" class:rtl={isRTL} role="alert">
@@ -205,6 +221,12 @@
         </button>
       </div>
 
+      <div class="forgot-link" class:rtl={isRTL}>
+        <button class="link-button" onclick={goToResetPassword}>
+          {$_("ForgotPassword")}
+        </button>
+      </div>
+
       <div class="terms-text" class:rtl={isRTL}>
         <p>{$_("TermsAndConditions")}</p>
       </div>
@@ -313,6 +335,15 @@
 
   .error-message.rtl {
     flex-direction: row-reverse;
+  }
+
+  .success-message {
+    padding: 0.75rem;
+    border-radius: 0.5rem;
+    background: rgba(16, 122, 54, 0.1);
+    color: var(--color-success, #107a36);
+    font-size: 0.875rem;
+    margin-bottom: 1rem;
   }
 
   .error-text {
@@ -493,6 +524,13 @@
     border-top: 1px solid var(--color-gray-100);
   }
 
+  /* Its own row below the register row, but deliberately without a second
+     border-top: one divider above the whole block is enough. */
+  .forgot-link {
+    text-align: center;
+    margin-top: 0.75rem;
+  }
+
   .register-text {
     color: var(--color-gray-500);
     font-size: 0.8125rem;
@@ -510,7 +548,8 @@
     transition: color var(--duration-fast) ease;
   }
 
-  .register-link.rtl .link-button {
+  .register-link.rtl .link-button,
+  .forgot-link.rtl .link-button {
     margin-left: 0;
     margin-right: 0.25rem;
   }

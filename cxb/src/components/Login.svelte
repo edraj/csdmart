@@ -1,14 +1,25 @@
 <script lang="ts">
     import {Button, ButtonGroup, Heading, Input, InputAddon, Label, Spinner,} from "flowbite-svelte";
     import {EyeSlashSolid, EyeSolid} from 'flowbite-svelte-icons';
+    import {goto} from "@roxi/routify";
     import {signin} from "@/stores/user";
     import {_} from "@/i18n";
+    import {onMount} from "svelte";
+    import {consumeResetDone} from "@/lib/password_reset";
+
+    $goto;
 
   let username: string = $state("");
   let password: string = $state("");
   let errorMessage: string | null = $state(null);
   let showPassword: boolean = $state(false);
   let isLoginLoading: boolean = $state(false);
+  // Set by reset-password/confirm.svelte just before it navigates here.
+  let resetSuccess: boolean = $state(false);
+
+  onMount(() => {
+    resetSuccess = consumeResetDone();
+  });
 
   async function handleSubmit(event: Event) {
     event.preventDefault();
@@ -35,6 +46,10 @@
       Welcome back <br>
       log in to your account
     </Heading>
+
+    {#if resetSuccess}
+      <p class="text-green-600 mt-4" role="status">{$_("reset_password_success")}</p>
+    {/if}
 
     <form onsubmit={handleSubmit} class="mt-12">
         <Label for="username">{$_("username")}</Label>
@@ -80,6 +95,13 @@
         {#if errorMessage}
             <p class="text-red-600 mt-2">{errorMessage}</p>
         {/if}
+        <div class="mt-4 text-center">
+            <button type="button" class="text-primary underline"
+                    style="cursor: pointer"
+                    onclick={() => $goto('/reset-password')}>
+                {$_("forgot_password")}
+            </button>
+        </div>
     </form>
   </div>
   <div class="flex content-center items-center justify-center w-1/2 bg-primary"></div>

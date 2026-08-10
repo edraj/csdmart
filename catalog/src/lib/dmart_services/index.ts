@@ -65,3 +65,6 @@ export * from "./workflows";
 
 // Critical resources bootstrap
 export * from "./critical_resources";
+
+// Password reset
+export * from "./password_reset";

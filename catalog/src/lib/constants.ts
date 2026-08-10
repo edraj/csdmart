@@ -36,7 +36,10 @@ type PublicRoute = string | { path: string; wildcard: true };
 
 // Always public: auth pages only. /login is intentionally absent so that
 // _module.svelte can probe auth there and redirect signed-in users to /dashboard.
-export const ALWAYS_PUBLIC_ROUTES: PublicRoute[] = ["/register"];
+export const ALWAYS_PUBLIC_ROUTES: PublicRoute[] = [
+  "/register",
+  { path: "/reset-password", wildcard: true },
+];
 
 // Public-view routes: only reachable unauthenticated when
 // website.enable_public_view is true (the public browsing experience).
@@ -51,8 +54,10 @@ export const PUBLIC_VIEW_ROUTES: PublicRoute[] = [
 
 function matchRoute(path: string, route: PublicRoute): boolean {
   if (typeof route === "string") return path === route;
-  if (route.wildcard) return path.startsWith(route.path);
-  return path === route.path;
+  // Segment boundary, not a bare prefix: a wildcard "/reset-password" covers
+  // "/reset-password" and "/reset-password/confirm", but must not make
+  // "/reset-password-debug" public just because the characters line up.
+  return path === route.path || path.startsWith(`${route.path}/`);
 }
 
 export function isPublicRoute(path: string): boolean {

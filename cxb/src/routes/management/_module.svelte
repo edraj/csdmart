@@ -2,12 +2,9 @@
 <script>
     import {goto} from '@roxi/routify';
     import {Dmart} from "@edraj/tsdmart";
-    import {website} from "@/config";
-    import axios from "axios";
+    import {ensureDmartAxios} from "@/lib/dmart_axios";
     import Login from "@/components/Login.svelte";
     import ManagementHeader from "@/components/management/ManagementHeader.svelte";
-    import {Level} from "@/utils/toast";
-    import {debouncedShowToast} from "@/utils/debounce";
     import {Spinner} from "flowbite-svelte";
     import {getSpaces} from "@/lib/dmart_services.js";
     import {onMount} from "svelte";
@@ -15,34 +12,11 @@
 
     $goto
 
-    const dmartAxios = axios.create({
-        baseURL: website.backend,
-        withCredentials: true,
-        timeout: website.backend_timeout,
-    });
-    let isRedirectingToLogin = false;
-    dmartAxios.interceptors.response.use((request) => {
-        return request;
-    }, (error) => {
-        if(error.code === 'ERR_NETWORK'){
-            debouncedShowToast(Level.warn, "Network error.\nPlease check your connection or the server is down.");
-        }
-        if (
-            error.response?.status === 401
-            && [47, 48, 49].includes(error.response?.data?.error?.code)
-            && !isRedirectingToLogin
-            && localStorage.getItem("authToken")
-        ) {
-            isRedirectingToLogin = true;
-            localStorage.removeItem("authToken");
-            localStorage.removeItem("user");
-            localStorage.removeItem("permissions");
-            localStorage.removeItem("roles");
-            window.location.reload();
-        }
-        return Promise.reject(error);
-    });
-    Dmart.setAxiosInstance(dmartAxios);
+    // The axios instance (and its 401 interceptor) now lives in
+    // src/lib/dmart_axios.ts so routes outside /management — the
+    // password-reset pages — have a working SDK too. Idempotent: the root
+    // layout has normally created it already.
+    ensureDmartAxios();
 
     const storedToken = typeof localStorage !== 'undefined' && localStorage.getItem("authToken");
     if (storedToken) {
@@ -53,15 +27,15 @@
     // check — it returns the caller's user record (and the SDK caches roles /
     // permissions in localStorage) when signed in, and fails otherwise.
     // Mid-session expiration is still detected by the response interceptor
-    // above when a regular API call returns 401.
+    // in src/lib/dmart_axios.ts when a regular API call returns 401.
     //
     // No token means signed out, and the browser already knows that — so
     // answer locally rather than asking the server. /info/me used to be
     // AllowAnonymous precisely so a cold load wouldn't paint a 401 in the
     // console; /user/profile has no such branch, and without this check every
     // anonymous visit would fire a request whose only possible answer is 401.
-    // It also keeps anonymous callers off the 401 interceptor above, which
-    // reloads the page.
+    // It also keeps anonymous callers off the 401 interceptor, which reloads
+    // the page.
     const probe = storedToken
         ? Dmart.getProfile()
         : Promise.reject(new Error("no stored token"));
