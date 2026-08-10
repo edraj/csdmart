@@ -107,7 +107,7 @@ public static class QueryHelper
 
         // RediSearch-style search: @field:value syntax → SQL WHERE clauses.
         if (!string.IsNullOrEmpty(q.Search))
-            AppendSearchClauses(sql, q.Search, args, tableName);
+            AppendSearchClauses(sql, q.Search, args, tableName, dialect);
 
         if (q.FromDate is not null)
         {
@@ -131,11 +131,20 @@ public static class QueryHelper
     // SDK so the two cannot drift. The server uses positional $N parameters
     // so we ask the parser for that style.
 
+    // Which dialect a connection factory will produce. The generic runners open
+    // their own connection, so they resolve it here rather than taking it as a
+    // parameter every repository would have to thread through.
+    internal static ISqlDialect DialectFor(IDbConnectionFactory db)
+        => db is SqliteConnectionFactory
+            ? SqliteSqlDialect.Instance
+            : PostgresSqlDialect.Instance;
+
     private static void AppendSearchClauses(
-        System.Text.StringBuilder sql, string search, List<NpgsqlParameter> args, string? tableName = null)
+        System.Text.StringBuilder sql, string search, List<NpgsqlParameter> args,
+        string? tableName = null, ISqlDialect? dialect = null)
     {
         var parsed = SearchExpressionParser.Parse(
-            search, args.Count, PlaceholderStyle.Positional, tableName);
+            search, args.Count, PlaceholderStyle.Positional, tableName, dialect);
 
         // Always append params (parser may bind even when clauses end up empty —
         // e.g. an all-negative group; the SDK side does the same).
@@ -453,12 +462,13 @@ public static class QueryHelper
         IReadOnlyList<InnerSemiJoinSpec>? semiJoins = null)
     {
         var args = new List<NpgsqlParameter>();
-        var where = BuildWhereClause(q, args, tableName);
+        var dialect = DialectFor(db);
+        var where = BuildWhereClause(q, args, dialect, tableName);
         var sql = new System.Text.StringBuilder($"{selectAllColumns} WHERE {where} ");
 
         // Apply ACL filtering if user info provided.
         if (userShortname is not null && tableName is not null)
-            AppendAclFilter(sql, args, userShortname, tableName, queryPolicies);
+            AppendAclFilter(sql, args, userShortname, tableName, queryPolicies, dialect);
 
         // Inject INNER-join EXISTS semi-joins (filter base by existence of a
         // matching right row) so LIMIT/OFFSET below page the post-filter set.
@@ -469,7 +479,7 @@ public static class QueryHelper
 
         await using var conn = await db.OpenAsync(ct);
         await using var cmd = conn.CreateCommand();
-        cmd.CommandText = sql.ToString();
+        cmd.CommandText = DbCommandFactory.ResolveDialectPlaceholders(sql.ToString(), conn);
         DbParams.BindAll(cmd, args);
         await using var reader = await cmd.ExecuteReaderAsync(ct);
         var results = new List<T>();
@@ -490,20 +500,21 @@ public static class QueryHelper
         IReadOnlyList<InnerSemiJoinSpec>? semiJoins = null)
     {
         var args = new List<NpgsqlParameter>();
-        var where = BuildWhereClause(q, args, tableName);
+        var dialect = DialectFor(db);
+        var where = BuildWhereClause(q, args, dialect, tableName);
         var sqlBuilder = new System.Text.StringBuilder($"SELECT COUNT(*) FROM {tableName} WHERE {where} ");
         // Parity with RunQueryAsync: apply owner/ACL/query_policies predicate
         // so COUNT(*) is scoped to rows the actor can actually see. Skipped
         // for attachments/histories inside AppendAclFilter (Python parity).
         if (userShortname is not null)
-            AppendAclFilter(sqlBuilder, args, userShortname, tableName, queryPolicies);
+            AppendAclFilter(sqlBuilder, args, userShortname, tableName, queryPolicies, dialect);
 
         if (semiJoins is { Count: > 0 })
             AppendInnerSemiJoins(sqlBuilder, args, semiJoins);
 
         await using var conn = await db.OpenAsync(ct);
         await using var cmd = conn.CreateCommand();
-        cmd.CommandText = sqlBuilder.ToString();
+        cmd.CommandText = DbCommandFactory.ResolveDialectPlaceholders(sqlBuilder.ToString(), conn);
         DbParams.BindAll(cmd, args);
         // COUNT(*) is int64 on PostgreSQL and int64 on SQLite too, but the
         // provider may hand back a boxed int; Convert normalizes both.
@@ -598,7 +609,7 @@ public static class QueryHelper
 
         await using var conn = await db.OpenAsync(ct);
         await using var cmd = conn.CreateCommand();
-        cmd.CommandText = sql;
+        cmd.CommandText = DbCommandFactory.ResolveDialectPlaceholders(sql, conn);
         DbParams.BindAll(cmd, args);
         await using var reader = await cmd.ExecuteReaderAsync(ct);
 

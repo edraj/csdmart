@@ -25,18 +25,7 @@ internal sealed class DmartSettingsValidator : IValidateOptions<DmartSettings>
                 $"DatabaseDriver '{s.DatabaseDriver}' is not recognized "
                 + $"(supported: {Dmart.DataAdapters.Sql.DatabaseDriverParser.Supported})");
         }
-        else if (driver == Dmart.DataAdapters.Sql.DatabaseDriver.Sqlite)
-        {
-            // The knob and its validation land before the backend does, so the
-            // seam can be reviewed independently. Refusing to boot is the only
-            // honest response until the SQLite adapter exists — quietly serving
-            // PostgreSQL to an operator who asked for SQLite would be worse
-            // than not starting.
-            failures.Add(
-                "DatabaseDriver 'sqlite' is not implemented yet — this build supports "
-                + "'postgresql' only. Track the SQLite backend in "
-                + "docs/sqlite-backend-audit.md.");
-        }
+
         if (s.DatabasePort is < 1 or > 65535)
             failures.Add($"DatabasePort must be 1-65535 (got {s.DatabasePort})");
         if (s.DatabasePoolSize <= 0)
@@ -45,10 +34,21 @@ internal sealed class DmartSettingsValidator : IValidateOptions<DmartSettings>
             failures.Add($"DatabasePoolTimeout must be > 0 (got {s.DatabasePoolTimeout})");
         if (s.DatabaseMaxOverflow < 0)
             failures.Add($"DatabaseMaxOverflow must be >= 0 (got {s.DatabaseMaxOverflow})");
-        if (string.IsNullOrWhiteSpace(s.DatabaseHost) && string.IsNullOrWhiteSpace(s.PostgresConnection))
-            failures.Add("DatabaseHost (or PostgresConnection) must be configured");
-        if (string.IsNullOrWhiteSpace(s.DatabaseName) && string.IsNullOrWhiteSpace(s.PostgresConnection))
-            failures.Add("DatabaseName (or PostgresConnection) must be configured");
+        // The DATABASE_* connection settings describe PostgreSQL only; the
+        // SQLite backend is configured by SqlitePath instead, so requiring them
+        // in that mode would make a valid SQLite deployment refuse to start.
+        var usingSqlite = driver == Dmart.DataAdapters.Sql.DatabaseDriver.Sqlite;
+        if (!usingSqlite)
+        {
+            if (string.IsNullOrWhiteSpace(s.DatabaseHost) && string.IsNullOrWhiteSpace(s.PostgresConnection))
+                failures.Add("DatabaseHost (or PostgresConnection) must be configured");
+            if (string.IsNullOrWhiteSpace(s.DatabaseName) && string.IsNullOrWhiteSpace(s.PostgresConnection))
+                failures.Add("DatabaseName (or PostgresConnection) must be configured");
+        }
+        else if (string.IsNullOrWhiteSpace(s.SqlitePath))
+        {
+            failures.Add("SqlitePath must be set when DatabaseDriver is 'sqlite'");
+        }
         if (s.JwtAccessExpires <= 0)
             failures.Add($"JwtAccessExpires must be > 0 (got {s.JwtAccessExpires})");
         if (s.JwtRefreshDays <= 0)

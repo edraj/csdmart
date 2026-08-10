@@ -1778,6 +1778,7 @@ builder.Services.AddSingleton<Db>();
 // that take it directly — the import sessions' SQLSTATE-driven reconnect
 // logic, binary COPY, pgvector — still need it. What varies by driver is which
 // factory the backend-neutral repositories resolve.
+var sqliteSelected = false;
 {
     if (!DatabaseDriverParser.TryParse(builder.Configuration["Dmart:DatabaseDriver"], out var driver))
         driver = DatabaseDriver.Postgresql;   // DmartSettingsValidator rejects bad values at start
@@ -1788,6 +1789,7 @@ builder.Services.AddSingleton<Db>();
         builder.Services.AddSingleton<IDbConnectionFactory>(
             sp => sp.GetRequiredService<SqliteConnectionFactory>());
         builder.Services.AddHostedService<SqliteSchemaInitializer>();
+        sqliteSelected = true;
         builder.Services.AddSingleton<Dmart.QueryGrammar.ISqlDialect>(
             Dmart.QueryGrammar.SqliteSqlDialect.Instance);
     }
@@ -1845,7 +1847,11 @@ builder.Services.Configure<Microsoft.AspNetCore.Builder.ForwardedHeadersOptions>
 
 // Schema bootstrapper runs once on startup. AdminBootstrap MUST be registered AFTER
 // SchemaInitializer — IHostedServices run StartAsync sequentially in registration order.
-builder.Services.AddHostedService<SchemaInitializer>();
+// Only on PostgreSQL: the SQLite schema initializer is registered alongside its
+// connection factory above. Gating on the driver rather than on Db.IsConfigured
+// so a deployment that still has DATABASE_* set does not quietly initialize a
+// PostgreSQL schema nothing will read.
+if (!sqliteSelected) builder.Services.AddHostedService<SchemaInitializer>();
 builder.Services.AddHostedService<AdminBootstrap>();
 
 // IP-based rate limiter for authentication endpoints. Account lockout (on the

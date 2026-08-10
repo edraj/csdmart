@@ -27,6 +27,35 @@ namespace Dmart.DataAdapters.Sql;
 // sees through it.
 public static class DbCommandFactory
 {
+    /// <summary>
+    /// Resolves the dialect placeholders a shared SQL constant may carry.
+    /// </summary>
+    /// <remarks>
+    /// A few column lists are shared between repositories and the generic query
+    /// runners, which receive them as a plain string and so cannot know which
+    /// backend they will run against. Those constants carry a placeholder that
+    /// is resolved here, once, at the point the connection IS known.
+    ///
+    /// Applied by Command() so it cannot be forgotten: an unresolved
+    /// placeholder reaches SQLite as `unrecognized token: "{"` and PostgreSQL
+    /// as a syntax error, which is a confusing way to learn about it.
+    /// </remarks>
+    public static string ResolveDialectPlaceholders(string sql, DbConnection conn)
+    {
+        if (!sql.Contains('{', StringComparison.Ordinal)) return sql;
+        var sqlite = conn is SqliteConnection;
+        return sql
+            // PostgreSQL ENUM columns need a text cast to read; SQLite stores
+            // them as TEXT already.
+            .Replace("{TYPE_COLS}",
+                sqlite ? "type, language" : "type::text, language::text",
+                StringComparison.Ordinal)
+            // ...and need the bound value cast to the enum type to write.
+            .Replace("{ENUM_CASTS}",
+                sqlite ? "$22,$23" : "$22::usertype,$23::language",
+                StringComparison.Ordinal);
+    }
+
     /// <summary>Creates a command carrying <paramref name="sql"/>.</summary>
     /// <remarks>
     /// Replaces `new NpgsqlCommand(sql, conn)` at call sites that are otherwise
@@ -37,7 +66,7 @@ public static class DbCommandFactory
     public static DbCommand Command(this DbConnection conn, string sql)
     {
         var cmd = conn.CreateCommand();
-        cmd.CommandText = sql;
+        cmd.CommandText = ResolveDialectPlaceholders(sql, conn);
         return cmd;
     }
 

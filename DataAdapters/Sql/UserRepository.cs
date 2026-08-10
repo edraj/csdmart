@@ -15,12 +15,40 @@ public sealed class UserRepository(IDbConnectionFactory db, AuthzCacheRefresher 
                owner_shortname, owner_group_shortname, payload,
                last_checksum_history, resource_type,
                password, roles, groups, acl, relationships,
-               type::text, language::text, email, msisdn, locked_to_device,
+               {TYPE_COLS}, email, msisdn, locked_to_device,
                is_email_verified, is_msisdn_verified, force_password_change,
                device_id, google_id, facebook_id, apple_id, social_avatar_url,
                attempt_count, last_login, notes, query_policies, last_failed_login
         FROM users
         """;
+
+    // `type` and `language` are PostgreSQL ENUM columns and must be cast to
+    // text to read them as strings; on SQLite they are already TEXT and the
+    // cast is a syntax error. Same column list either way, so the two forms are
+    // derived from one template rather than maintained separately.
+    private static string SelectAll(DbConnection conn) =>
+        SelectAllColumns.Replace("{TYPE_COLS}",
+            conn is Microsoft.Data.Sqlite.SqliteConnection
+                ? "type, language"
+                : "type::text, language::text",
+            StringComparison.Ordinal);
+
+    // `type` and `language` are PostgreSQL ENUM columns, so the bound text has
+    // to be cast to the enum type on insert. SQLite stores them as TEXT with a
+    // CHECK constraint, where the cast is a syntax error.
+    private static string EnumCasts(DbConnection conn, string sql) =>
+        sql.Replace("{ENUM_CASTS}",
+            conn is Microsoft.Data.Sqlite.SqliteConnection
+                ? "$22,$23"
+                : "$22::usertype,$23::language",
+            StringComparison.Ordinal);
+
+    // PostgreSQL needs the parameter cast so it can resolve the type of a bare
+    // `$n IS NOT NULL`; SQLite has no such syntax and needs no hint.
+    private static string ExistsWhereFor(DbConnection conn) =>
+        conn is Microsoft.Data.Sqlite.SqliteConnection
+            ? ExistsWhere.Replace("::text", "", StringComparison.Ordinal)
+            : ExistsWhere;
 
     public async Task<User?> GetByShortnameAsync(string shortname, CancellationToken ct = default)
     {
@@ -116,7 +144,7 @@ public sealed class UserRepository(IDbConnectionFactory db, AuthzCacheRefresher 
     public async Task<bool> ExistsAsync(string? shortname, string? email, string? msisdn, CancellationToken ct = default)
     {
         await using var conn = await db.OpenAsync(ct);
-        await using var cmd = conn.Command($"SELECT 1 FROM users WHERE {ExistsWhere} LIMIT 1");
+        await using var cmd = conn.Command($"SELECT 1 FROM users WHERE {ExistsWhereFor(conn)} LIMIT 1");
         DbParams.Add(cmd, (object?)shortname ?? DBNull.Value);
         DbParams.Add(cmd, (object?)email ?? DBNull.Value);
         DbParams.Add(cmd, (object?)msisdn ?? DBNull.Value);
@@ -166,7 +194,7 @@ public sealed class UserRepository(IDbConnectionFactory db, AuthzCacheRefresher 
                                device_id, google_id, facebook_id, apple_id, social_avatar_url,
                                attempt_count, last_login, notes, query_policies)
             VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,
-                    $22::usertype,$23::language,$24,$25,$26,$27,$28,$29,$30,$31,$32,$33,$34,$35,$36,$37,$38)
+                    {ENUM_CASTS},$24,$25,$26,$27,$28,$29,$30,$31,$32,$33,$34,$35,$36,$37,$38)
             ON CONFLICT (shortname) DO UPDATE SET
                 space_name = EXCLUDED.space_name,
                 subpath = EXCLUDED.subpath,
@@ -335,7 +363,7 @@ public sealed class UserRepository(IDbConnectionFactory db, AuthzCacheRefresher 
                                device_id, google_id, facebook_id, apple_id, social_avatar_url,
                                attempt_count, last_login, notes, query_policies)
             VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,
-                    $22::usertype,$23::language,$24,$25,$26,$27,$28,$29,$30,$31,$32,$33,$34,$35,$36,$37,$38)
+                    {ENUM_CASTS},$24,$25,$26,$27,$28,$29,$30,$31,$32,$33,$34,$35,$36,$37,$38)
             ON CONFLICT (shortname) DO UPDATE SET
                 space_name = EXCLUDED.space_name,
                 subpath = EXCLUDED.subpath,
