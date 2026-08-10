@@ -21,6 +21,7 @@ while [[ $# -gt 0 ]]; do
     --fast|--dev)           MODE="fast"; shift ;;
     --rid)                  RID="$2"; shift 2 ;;
     --rid=*)                RID="${1#*=}"; shift ;;
+    --print-version)        MODE="print-version"; shift ;;
     -h|--help)
       cat <<-EOF
 Usage: $0 [--aot] [--rid <runtime-id>]
@@ -31,6 +32,13 @@ Usage: $0 [--aot] [--rid <runtime-id>]
   --rid <runtime>   target runtime identifier for --aot publish
                     (default: linux-x64; e.g. osx-arm64, win-x64)
                     NativeAOT cannot cross-compile — host OS+arch must match
+  --print-version   print the InformationalVersion string and exit, so a
+                    caller that builds elsewhere (dist/build-apk.sh's
+                    container) can resolve it here, where git works, and
+                    pass it in via DMART_INFORMATIONAL_VERSION
+Environment:
+  DMART_INFORMATIONAL_VERSION
+                    use this verbatim instead of asking git
 EOF
       exit 0 ;;
     *) echo "Unknown arg: $1 (try --help)" >&2; exit 2 ;;
@@ -42,6 +50,16 @@ done
 # HEAD is exactly on the tag (n=0). Without --long, `git describe` collapses
 # to just the tag name on tagged commits and the short SHA disappears from
 # `dmart -v` output for release builds.
+#
+# DMART_INFORMATIONAL_VERSION short-circuits all of it. The aarch64 APK is
+# published from a qemu-emulated container where git does not work, and the
+# fallbacks below are individually silent — the release simply shipped
+# "0.1.0 branch= date=" and every aarch64 binary since has been unable to
+# identify itself. dist/build-apk.sh now resolves this on the host, where git
+# is known good, and passes the answer in.
+if [ -n "$DMART_INFORMATIONAL_VERSION" ]; then
+  INFORMATIONAL_VERSION="$DMART_INFORMATIONAL_VERSION"
+else
 BRANCH=$(git rev-parse --abbrev-ref HEAD 2>/dev/null || echo "")
 # actions/checkout lands on a detached HEAD for tag/release builds, so a raw
 # `rev-parse --abbrev-ref` returns the literal string "HEAD". Prefer the
@@ -53,6 +71,21 @@ fi
 DESCRIBE=$(git describe --tags --always --long 2>/dev/null || echo "0.1.0")
 VERSION_DATE=$(git show --pretty=format:%ad --date=iso -q 2>/dev/null | head -1 || echo "")
 INFORMATIONAL_VERSION="${DESCRIBE} branch=${BRANCH} date=${VERSION_DATE}"
+
+# Say so instead of shipping the fallback quietly. Losing the stamp is not
+# fatal to the build, but it is invisible afterwards: the binary answers
+# `--version` with 0.1.0 and there is nothing left to say why.
+if [ "$DESCRIBE" = "0.1.0" ]; then
+  echo "WARNING: git describe failed here — the binary will report version 0.1.0." >&2
+  echo "         Set DMART_INFORMATIONAL_VERSION to stamp it explicitly." >&2
+fi
+fi
+
+if [ "$MODE" = "print-version" ]; then
+  printf '%s\n' "$INFORMATIONAL_VERSION"
+  exit 0
+fi
+
 echo "Version: $INFORMATIONAL_VERSION"
 echo "Mode:    $MODE"
 

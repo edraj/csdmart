@@ -105,6 +105,42 @@ fi
 
 echo "Building dmart-${VERSION} APK for ${ARCH} (${BUILD_MODE})..."
 
+# Resolve the InformationalVersion here rather than letting build.sh ask git
+# from wherever it ends up running. The aarch64 APK is produced in a
+# qemu-emulated container where git does not work, and build.sh's fallbacks
+# are silent: every aarch64 release so far has shipped a binary that answers
+# `--version` with "0.1.0 branch= date=". The host always has a working git —
+# VERSION above is already derived from `git describe` — so ask build.sh here
+# and hand the result to whichever environment does the build.
+if [ -n "$DMART_INFORMATIONAL_VERSION" ]; then
+	export DMART_INFORMATIONAL_VERSION
+else
+	# A plain assignment, deliberately not `export VAR=$(...)`: with the
+	# latter the exit status is export's own, always 0, so `set -e` would not
+	# notice build.sh failing and we would hand the build an empty string —
+	# which it treats as unset and answers by asking git itself, landing right
+	# back on the failure this exists to avoid.
+	host_version=$(sh ./build.sh --print-version)
+
+	# If the host cannot resolve a version either, pass nothing rather than a
+	# known-bad answer: an environment that still has a working git deserves
+	# its own attempt instead of being overridden with the fallback.
+	case "$host_version" in
+		0.1.0*)
+			echo "WARNING: no version resolvable on this host; leaving it to the build environment." >&2
+			;;
+		*)
+			export DMART_INFORMATIONAL_VERSION="$host_version"
+			;;
+	esac
+fi
+# An `[ ... ] && echo` one-liner would be wrong here: when the test is false
+# the list exits non-zero, and `set -e` at the top of this script takes that
+# as a build failure.
+if [ -n "$DMART_INFORMATIONAL_VERSION" ]; then
+	echo "Stamping version: $DMART_INFORMATIONAL_VERSION"
+fi
+
 # UI dists must exist before the build runs — the Alpine SDK image has no
 # Node.js toolchain, and a native build has no reason to assume one either.
 # Build on the host if missing; CI pre-extracts from the shared ui-tarballs
@@ -179,6 +215,31 @@ cp config.env.sample                        "$APKROOT/"
 # source entry instead of a moving glob. Extracted into
 # /usr/lib/dmart/plugins/ inside package().
 tar -czf "$APKROOT/plugins.tar.gz" -C plugins .
+
+# UI frontends, same tarball trick, extracted into /usr/lib/dmart/{cxb,catalog}.
+#
+# They are ALSO embedded in the binary as manifest resources (see the
+# EmbeddedResource entries in dmart.csproj), and on a glibc native build
+# CxbMiddleware/CatalogMiddleware serve them straight from there. Under
+# NativeAOT on musl the ManifestEmbeddedFileProvider constructor throws, both
+# middlewares catch it and fall through to a filesystem lookup — of which
+# /usr/lib/dmart/{cxb,catalog} is the packaged candidate. Nothing was shipping
+# to that path, so the fallback found no index.html, and the middleware's last
+# resort is `return app` — a silent skip. The symptom is every /cxb and /cat
+# URL answering 404 with nothing in the log to say why, on every Alpine
+# release build.
+#
+# Empty tarballs when a dist is absent: the source list in APKBUILD.in is
+# fixed, so the entries have to exist even for a server-only build. package()
+# skips the install when the extracted tree has no index.html.
+for ui in cxb catalog; do
+	if [ -f "$ui/dist/client/index.html" ]; then
+		tar -czf "$APKROOT/$ui-ui.tar.gz" -C "$ui/dist/client" .
+	else
+		echo "No $ui/dist/client/index.html — packaging without the $ui UI"
+		tar -czf "$APKROOT/$ui-ui.tar.gz" -T /dev/null
+	fi
+done
 
 # Render APKBUILD from template with version + arch.
 sed -e "s|__VERSION__|$VERSION|g" \
@@ -263,6 +324,7 @@ if [ "$BUILD_MODE" = "native" ]; then
 	# since apk-tools is installed. The container never hits this because it
 	# runs as root.
 	VERSION="$VERSION" ARCH="$ARCH" RID="$RID" \
+	DMART_INFORMATIONAL_VERSION="$DMART_INFORMATIONAL_VERSION" \
 	APK_OUTDIR="$SRCDIR/dist/out" \
 	PATH="/sbin:/usr/sbin:$PATH" \
 		sh -c "$BUILD_SCRIPT"
@@ -291,6 +353,7 @@ else
 		-v "${SRCDIR}:/src:z" \
 		-v "${HOST_NUGET_CACHE}:/nuget-packages:z" \
 		-e VERSION="$VERSION" \
+		-e DMART_INFORMATIONAL_VERSION="$DMART_INFORMATIONAL_VERSION" \
 		-e ARCH="$ARCH" \
 		-e RID="$RID" \
 		-e APK_OUTDIR=/src/dist/out \
