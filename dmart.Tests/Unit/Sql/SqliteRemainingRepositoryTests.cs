@@ -131,19 +131,76 @@ public sealed class SqliteRemainingRepositoryTests : IAsyncLifetime
         reloaded!.PrimaryWebsite.ShouldBe("https://example.test");
     }
 
+    // Inserts a folder carrying a content policy, plus entries under it.
+    private async Task SeedFolderPolicyAsync()
+    {
+        await using var conn = await _factory.OpenAsync();
+        async Task Exec(string sql)
+        {
+            await using var c = conn.CreateCommand();
+            c.CommandText = sql;
+            await c.ExecuteNonQueryAsync();
+        }
+
+        // Folder '/docs' allows only `content`, schema 'note', workflow 'wf1'.
+        await Exec("""
+            INSERT INTO entries (uuid, shortname, space_name, subpath, owner_shortname,
+                                 resource_type, payload, query_policies)
+            VALUES ('10000000-0000-0000-0000-000000000001','docs','sp','/','owner','folder',
+                    '{"body":{"content_resource_types":["content"],
+                              "content_schema_shortnames":["note"],
+                              "workflow_shortnames":["wf1"]}}',
+                    '["sp:/:folder"]')
+            """);
+
+        async Task AddChild(string uuid, string shortname, string rt, string payload, string? workflow)
+            => await Exec($"""
+                INSERT INTO entries (uuid, shortname, space_name, subpath, owner_shortname,
+                                     resource_type, payload, workflow_shortname, query_policies)
+                VALUES ('{uuid}','{shortname}','sp','/docs','owner','{rt}',{payload},
+                        {(workflow is null ? "NULL" : $"'{workflow}'")}, '["sp:/docs:{rt}"]')
+                """);
+
+        // Compliant: right type, allowed schema.
+        await AddChild("20000000-0000-0000-0000-000000000001", "ok-typed", "content",
+            "'{\"schema_shortname\":\"note\"}'", null);
+        // Compliant: declares no schema at all, so that dimension is skipped.
+        await AddChild("20000000-0000-0000-0000-000000000002", "ok-schemaless", "content", "'{}'", null);
+        // Violation: resource_type not in content_resource_types.
+        await AddChild("20000000-0000-0000-0000-000000000003", "bad-type", "ticket", "'{}'", "wf1");
+        // Violation: declares a schema the folder does not allow.
+        await AddChild("20000000-0000-0000-0000-000000000004", "bad-schema", "content",
+            "'{\"schema_shortname\":\"invoice\"}'", null);
+    }
+
     [Fact]
-    public async Task HealthCheck_ReportsFolderContentCheckAsUnavailable()
+    public async Task HealthCheck_FindsFolderContentViolations()
+    {
+        await SeedFolderPolicyAsync();
+        var repo = new HealthCheckRepository(_factory);
+        var results = await repo.RunAsync("sp", "all");
+
+        var check = results.SingleOrDefault(r => r.Name == "folder_content_violations");
+        check.ShouldNotBeNull("the check must run on SQLite, not report itself unavailable");
+
+        // A check that silently reported zero would be worse than one that did
+        // not run: an operator would enable enforcement on data that breaks it.
+        check!.Count.ShouldBe(2);
+        check.Samples.ShouldContain("/docs/bad-type");
+        check.Samples.ShouldContain("/docs/bad-schema");
+        check.Samples.ShouldNotContain("/docs/ok-typed");
+        check.Samples.ShouldNotContain("/docs/ok-schemaless");
+    }
+
+    [Fact]
+    public async Task HealthCheck_ReportsNoViolationsForACompliantFolder()
     {
         var repo = new HealthCheckRepository(_factory);
         var results = await repo.RunAsync("sp", "all");
 
-        // The folder-content query has no SQLite translation yet. It must
-        // announce itself rather than silently report zero violations — an
-        // operator has to be able to tell "clean" from "not run".
-        results.ShouldContain(r => r.Name == "folder_content_violations_unsupported");
-        results.ShouldNotContain(r => r.Name == "folder_content_violations");
-
-        // The checks that DO run still work.
+        // Empty store: the check runs and finds nothing, and the other probes
+        // still work alongside it.
+        results.SingleOrDefault(r => r.Name == "folder_content_violations")!.Count.ShouldBe(0);
         results.ShouldContain(r => r.Name == "orphan_attachments");
         results.ShouldContain(r => r.Name == "stale_locks");
     }

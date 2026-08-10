@@ -81,53 +81,104 @@ public sealed class HealthCheckRepository(IDbConnectionFactory db)
         // written during an ENFORCE_FOLDER_CONTENT_POLICY=false dry-run).
         // The parent split duplicates FolderContentValidator.SplitSubpath in
         // SQL: '/a/b' -> folder 'b' under '/a'; '/a' -> folder 'a' under '/'.
-        // PostgreSQL-only. The query leans on regexp_replace / left / greatest
-        // to split the parent subpath, plus jsonb containment — none of which
-        // SQLite has, and each needs a different rewrite rather than a
-        // translation. Rather than emit SQL that would either error or, worse,
-        // silently report zero violations, the check reports itself as
-        // unavailable so an operator reading the health report can tell the
-        // difference between "clean" and "not run".
-        if (conn is SqliteConnection)
-        {
-            results.Add(new IssueCheck("folder_content_violations_unsupported", -1, new List<string>
-            {
-                "This check is not implemented on the SQLite driver; run it against PostgreSQL.",
-            }));
-            return results;
-        }
-
-        results.Add(await RunCheck(conn, "folder_content_violations", """
-            SELECT e.subpath || '/' || e.shortname FROM entries e
-            JOIN entries f
-              ON f.space_name = e.space_name
-             AND f.resource_type = 'folder'
-             AND f.shortname = regexp_replace(e.subpath, '^.*/', '')
-             AND f.subpath = COALESCE(NULLIF(left(e.subpath,
-                   greatest(length(e.subpath) - length(regexp_replace(e.subpath, '^.*/', '')) - 1, 0)), ''), '/')
-            WHERE e.space_name = $1
-              AND e.subpath <> '/'
-              AND jsonb_typeof(f.payload->'body') = 'object'
-              AND (
-                (jsonb_typeof(f.payload->'body'->'content_resource_types') = 'array'
-                 AND jsonb_array_length(f.payload->'body'->'content_resource_types') > 0
-                 AND NOT (f.payload->'body'->'content_resource_types' @> to_jsonb(e.resource_type::text)))
-                OR
-                ((e.payload->>'schema_shortname') IS NOT NULL
-                 AND jsonb_typeof(f.payload->'body'->'content_schema_shortnames') = 'array'
-                 AND jsonb_array_length(f.payload->'body'->'content_schema_shortnames') > 0
-                 AND NOT (f.payload->'body'->'content_schema_shortnames' @> to_jsonb(e.payload->>'schema_shortname')))
-                OR
-                (e.resource_type = 'ticket'
-                 AND e.workflow_shortname IS NOT NULL
-                 AND jsonb_typeof(f.payload->'body'->'workflow_shortnames') = 'array'
-                 AND jsonb_array_length(f.payload->'body'->'workflow_shortnames') > 0
-                 AND NOT (f.payload->'body'->'workflow_shortnames' @> to_jsonb(e.workflow_shortname)))
-              )
-            """, spaceName, sampleLimit, ct));
+        // Entries whose parent folder declares a content policy they violate.
+        //
+        // Mirrors FolderContentValidator, which enforces the same three arrays
+        // on write. This is the read-side audit: it lists stock that is ALREADY
+        // stored and would now be rejected — what an operator runs before
+        // turning ENFORCE_FOLDER_CONTENT_POLICY on, or after importing legacy
+        // data written when these arrays were only rendering hints.
+        //
+        // Each dimension is guarded the same way the validator guards it: an
+        // absent or empty policy array means "no restriction", and an absent
+        // incoming value skips that dimension, so a schema-less entry is never
+        // flagged for having no schema.
+        //
+        // The two backends differ in the parent-path split and in every JSON
+        // operator, so they get separate text rather than a translation:
+        //
+        //   PostgreSQL  regexp_replace / left / greatest, jsonb_typeof,
+        //               jsonb_array_length, `@> to_jsonb(x)`
+        //   SQLite      has no regex at all, so the split uses
+        //               rtrim(s, <the non-slash characters of s>) to find the
+        //               last separator; json_type / json_array_length; and
+        //               containment becomes an EXISTS over json_each.
+        results.Add(await RunCheck(conn, "folder_content_violations",
+            conn is SqliteConnection ? SqliteFolderContentViolations : PostgresFolderContentViolations,
+            spaceName, sampleLimit, ct));
 
         return results;
     }
+
+    private const string PostgresFolderContentViolations = """
+        SELECT e.subpath || '/' || e.shortname FROM entries e
+        JOIN entries f
+          ON f.space_name = e.space_name
+         AND f.resource_type = 'folder'
+         AND f.shortname = regexp_replace(e.subpath, '^.*/', '')
+         AND f.subpath = COALESCE(NULLIF(left(e.subpath,
+               greatest(length(e.subpath) - length(regexp_replace(e.subpath, '^.*/', '')) - 1, 0)), ''), '/')
+        WHERE e.space_name = $1
+          AND e.subpath <> '/'
+          AND jsonb_typeof(f.payload->'body') = 'object'
+          AND (
+            (jsonb_typeof(f.payload->'body'->'content_resource_types') = 'array'
+             AND jsonb_array_length(f.payload->'body'->'content_resource_types') > 0
+             AND NOT (f.payload->'body'->'content_resource_types' @> to_jsonb(e.resource_type::text)))
+            OR
+            ((e.payload->>'schema_shortname') IS NOT NULL
+             AND jsonb_typeof(f.payload->'body'->'content_schema_shortnames') = 'array'
+             AND jsonb_array_length(f.payload->'body'->'content_schema_shortnames') > 0
+             AND NOT (f.payload->'body'->'content_schema_shortnames' @> to_jsonb(e.payload->>'schema_shortname')))
+            OR
+            (e.resource_type = 'ticket'
+             AND e.workflow_shortname IS NOT NULL
+             AND jsonb_typeof(f.payload->'body'->'workflow_shortnames') = 'array'
+             AND jsonb_array_length(f.payload->'body'->'workflow_shortnames') > 0
+             AND NOT (f.payload->'body'->'workflow_shortnames' @> to_jsonb(e.workflow_shortname)))
+          )
+        """;
+
+    // `rtrim(s, replace(s,'/',''))` trims every character that is NOT a slash
+    // off the right-hand end, which leaves the prefix up to and including the
+    // last separator. The tail after it is the parent folder's shortname, and
+    // the prefix minus its trailing slash is that folder's own subpath ('/'
+    // when the entry sits one level down).
+    private const string SqliteFolderContentViolations = """
+        SELECT e.subpath || '/' || e.shortname FROM entries e
+        JOIN entries f
+          ON f.space_name = e.space_name
+         AND f.resource_type = 'folder'
+         AND f.shortname = substr(e.subpath, length(rtrim(e.subpath, replace(e.subpath, '/', ''))) + 1)
+         AND f.subpath = CASE
+               WHEN length(rtrim(e.subpath, replace(e.subpath, '/', ''))) <= 1 THEN '/'
+               ELSE substr(rtrim(e.subpath, replace(e.subpath, '/', '')), 1,
+                           length(rtrim(e.subpath, replace(e.subpath, '/', ''))) - 1)
+             END
+        WHERE e.space_name = $1
+          AND e.subpath <> '/'
+          AND json_valid(f.payload)
+          AND json_type(f.payload, '$.body') = 'object'
+          AND (
+            (json_type(f.payload, '$.body.content_resource_types') = 'array'
+             AND json_array_length(f.payload, '$.body.content_resource_types') > 0
+             AND NOT EXISTS (SELECT 1 FROM json_each(f.payload, '$.body.content_resource_types') AS ct
+                             WHERE ct.value = e.resource_type))
+            OR
+            ((e.payload ->> '$.schema_shortname') IS NOT NULL
+             AND json_type(f.payload, '$.body.content_schema_shortnames') = 'array'
+             AND json_array_length(f.payload, '$.body.content_schema_shortnames') > 0
+             AND NOT EXISTS (SELECT 1 FROM json_each(f.payload, '$.body.content_schema_shortnames') AS cs
+                             WHERE cs.value = e.payload ->> '$.schema_shortname'))
+            OR
+            (e.resource_type = 'ticket'
+             AND e.workflow_shortname IS NOT NULL
+             AND json_type(f.payload, '$.body.workflow_shortnames') = 'array'
+             AND json_array_length(f.payload, '$.body.workflow_shortnames') > 0
+             AND NOT EXISTS (SELECT 1 FROM json_each(f.payload, '$.body.workflow_shortnames') AS ws
+                             WHERE ws.value = e.workflow_shortname))
+          )
+        """;
 
     [SuppressMessage("Security", "CA2100",
         Justification = "Audited: `sql` is a compile-time constant from in-class call sites (the five HealthCheck SQL literals); `spaceName` flows through $1.")]
