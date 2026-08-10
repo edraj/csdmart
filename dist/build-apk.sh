@@ -105,6 +105,16 @@ fi
 
 echo "Building dmart-${VERSION} APK for ${ARCH} (${BUILD_MODE})..."
 
+# Resolve the InformationalVersion here rather than letting build.sh ask git
+# from wherever it ends up running. The aarch64 APK is produced in a
+# qemu-emulated container where git does not work, and build.sh's fallbacks
+# are silent: every aarch64 release so far has shipped a binary that answers
+# `--version` with "0.1.0 branch= date=". The host always has a working git —
+# VERSION above is already derived from `git describe` — so ask build.sh here
+# and hand the result to whichever environment does the build.
+export DMART_INFORMATIONAL_VERSION="${DMART_INFORMATIONAL_VERSION:-$(sh ./build.sh --print-version)}"
+echo "Stamping version: $DMART_INFORMATIONAL_VERSION"
+
 # UI dists must exist before the build runs — the Alpine SDK image has no
 # Node.js toolchain, and a native build has no reason to assume one either.
 # Build on the host if missing; CI pre-extracts from the shared ui-tarballs
@@ -263,6 +273,7 @@ if [ "$BUILD_MODE" = "native" ]; then
 	# since apk-tools is installed. The container never hits this because it
 	# runs as root.
 	VERSION="$VERSION" ARCH="$ARCH" RID="$RID" \
+	DMART_INFORMATIONAL_VERSION="$DMART_INFORMATIONAL_VERSION" \
 	APK_OUTDIR="$SRCDIR/dist/out" \
 	PATH="/sbin:/usr/sbin:$PATH" \
 		sh -c "$BUILD_SCRIPT"
@@ -291,6 +302,7 @@ else
 		-v "${SRCDIR}:/src:z" \
 		-v "${HOST_NUGET_CACHE}:/nuget-packages:z" \
 		-e VERSION="$VERSION" \
+		-e DMART_INFORMATIONAL_VERSION="$DMART_INFORMATIONAL_VERSION" \
 		-e ARCH="$ARCH" \
 		-e RID="$RID" \
 		-e APK_OUTDIR=/src/dist/out \
