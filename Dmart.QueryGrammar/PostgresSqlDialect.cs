@@ -91,6 +91,13 @@ public sealed class PostgresSqlDialect : ISqlDialect
          + $"WHERE elem->>'user_shortname' = {userPlaceholder} "
          + $"AND (elem->'allowed_actions') ? '{Escape(action)}')";
 
+    // Unchanged from the pre-seam emission: a plain ILIKE over the serialized
+    // document, which idx_entries_payload_trgm accelerates when present and
+    // which is still correct when it is not.
+    public string? WildcardPrefilter(
+        string column, string patternPlaceholder, string? targetTable, string patternLiteral)
+        => ILike(AsText(column), patternPlaceholder, negated: false);
+
     public string ILike(string lhs, string patternPlaceholder, bool negated)
         => $"{lhs} {(negated ? "NOT ILIKE" : "ILIKE")} {patternPlaceholder}";
 

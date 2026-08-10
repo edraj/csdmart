@@ -108,6 +108,38 @@ public sealed class SqliteSqlDialect : ISqlDialect
          + $"AND EXISTS (SELECT 1 FROM json_each(elem.value, '$.allowed_actions') AS act "
          + $"WHERE act.value = '{Escape(action)}'))";
 
+    // Reads the FTS5 trigram index (SqliteSchema.entries_fts), which is the only
+    // way SQLite can serve a LIKE '%...%' from an index rather than by scanning.
+    // The index covers entries only, matching PostgreSQL, where the pg_trgm GIN
+    // is also declared on entries alone; any other table falls back to the plain
+    // comparison, which is correct and merely slower.
+    //
+    // LIKE inside the subquery is deliberately NOT lowered on both sides the way
+    // ILike does it: the trigram tokenizer is case-insensitive by default, and
+    // wrapping the column in lower() would make the expression unindexable and
+    // silently turn this back into a scan.
+    public string? WildcardPrefilter(
+        string column, string patternPlaceholder, string? targetTable, string patternLiteral)
+    {
+        // Declined for non-ASCII patterns, and this is a correctness rule, not
+        // a tuning one. System.Text.Json escapes non-ASCII to \uXXXX, and
+        // unlike PostgreSQL's jsonb — which decodes escapes on ingest, so
+        // payload::text renders real characters — SQLite stores the document
+        // verbatim. Its json() does NOT normalize the escapes either (only
+        // json_extract does, which is why the precise per-path check still
+        // matches). So a whole-document LIKE for Arabic text can never match
+        // the stored form, and emitting this prefilter would AND the query down
+        // to nothing: silent false negatives on exactly the content this
+        // project exists to serve.
+        if (patternLiteral.Any(c => c > 127)) return null;
+
+        // Only entries carries the index, matching PostgreSQL, where the
+        // pg_trgm GIN is likewise declared on entries alone.
+        return string.Equals(targetTable, "entries", StringComparison.Ordinal)
+            ? $"entries.rowid IN (SELECT rowid FROM entries_fts WHERE {column} LIKE {patternPlaceholder})"
+            : ILike(column, patternPlaceholder, negated: false);
+    }
+
     // PRAGMA case_sensitive_like=ON makes plain LIKE case-sensitive, so an
     // ILIKE site must fold both sides itself. lower() is ASCII-only in stock
     // SQLite (no ICU), so accented Latin does not fold the way PostgreSQL's

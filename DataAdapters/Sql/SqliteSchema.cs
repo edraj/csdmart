@@ -442,6 +442,53 @@ public static class SqliteSchema
         ON users (facebook_id) WHERE facebook_id IS NOT NULL AND facebook_id <> '';
     CREATE UNIQUE INDEX IF NOT EXISTS idx_users_apple_id
         ON users (apple_id) WHERE apple_id IS NOT NULL AND apple_id <> '';
+
+    -- ============================================================
+    -- WILDCARD SEARCH INDEX
+    -- ------------------------------------------------------------
+    -- The SQLite counterpart of PostgreSQL's pg_trgm GIN over
+    -- (payload::text), which accelerates `@payload.body.x:*foo*` lookups.
+    -- FTS5's `trigram` tokenizer is the only one that can serve a
+    -- LIKE '%...%' query from an index, and unlike `unicode61` it does not
+    -- shatter diacritized Arabic into single letters (see the audit, §5) —
+    -- it indexes character trigrams, so scripts without word breaks work.
+    --
+    -- external content (content='entries'): the FTS table stores only the
+    -- index, reading column values back from `entries` by rowid. That keeps
+    -- the payload from being duplicated, at the cost of needing the triggers
+    -- below to stay in sync.
+    --
+    -- Those triggers are load-bearing for CORRECTNESS, not just freshness.
+    -- The wildcard filter ANDs this prefilter onto a precise per-path check,
+    -- so a stale index cannot produce wrong rows — but it can silently drop
+    -- rows that should have matched. Every write path to `entries` must be
+    -- reflected here, which is why the triggers hang off the table rather
+    -- than off any particular repository method.
+    --
+    -- Patterns shorter than 3 characters cannot be served by a trigram index;
+    -- SQLite falls back to scanning the FTS content, exactly as PostgreSQL's
+    -- planner does for short pg_trgm patterns.
+    CREATE VIRTUAL TABLE IF NOT EXISTS entries_fts USING fts5(
+        payload,
+        content='entries',
+        content_rowid='rowid',
+        tokenize='trigram'
+    );
+
+    CREATE TRIGGER IF NOT EXISTS entries_fts_ai AFTER INSERT ON entries BEGIN
+        INSERT INTO entries_fts(rowid, payload) VALUES (new.rowid, new.payload);
+    END;
+
+    CREATE TRIGGER IF NOT EXISTS entries_fts_ad AFTER DELETE ON entries BEGIN
+        INSERT INTO entries_fts(entries_fts, rowid, payload)
+        VALUES ('delete', old.rowid, old.payload);
+    END;
+
+    CREATE TRIGGER IF NOT EXISTS entries_fts_au AFTER UPDATE ON entries BEGIN
+        INSERT INTO entries_fts(entries_fts, rowid, payload)
+        VALUES ('delete', old.rowid, old.payload);
+        INSERT INTO entries_fts(rowid, payload) VALUES (new.rowid, new.payload);
+    END;
     """;
 
     // Tables the initializer patches for forward-compatibility, mirroring the

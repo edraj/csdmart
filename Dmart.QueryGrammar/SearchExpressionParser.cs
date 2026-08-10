@@ -1053,7 +1053,7 @@ public static class SearchExpressionParser
                         .Replace('*', '%') + "%";
                     var pPre = ctx.Add(corePattern);
                     conditions.Add(
-                        BuildPositiveWildcard(pathExpr, textExtract, pPre, pPath, ctx));
+                        BuildPositiveWildcard(pathExpr, textExtract, pPre, pPath, core, ctx));
                 }
                 continue;
             }
@@ -1147,12 +1147,17 @@ public static class SearchExpressionParser
     // serves; SQLite has no such index, so it is simply a second comparison and
     // the result set is identical, just slower.
     private static string BuildPositiveWildcard(
-        string pathExpr, string textExtract, string pPre, string pPath, ParamCtx ctx)
+        string pathExpr, string textExtract, string pPre, string pPath,
+        string coreLiteral, ParamCtx ctx)
     {
-        var prefilter = ctx.Dialect.ILike(ctx.Dialect.AsText("payload"), pPre, negated: false);
+        var prefilter = ctx.Dialect.WildcardPrefilter("payload", pPre, ctx.TargetTable, coreLiteral);
         var isString = ctx.Dialect.JsonTypeIs(pathExpr, JsonKind.String);
         var precise = ctx.Dialect.ILike(textExtract, pPath, negated: false);
-        return $"({prefilter} AND {isString} AND {precise})";
+        // A dialect that cannot serve the prefilter for this pattern omits it;
+        // the precise check alone is exact, just unindexed.
+        return prefilter is null
+            ? $"({isString} AND {precise})"
+            : $"({prefilter} AND {isString} AND {precise})";
     }
 
     // Substring match against a JSON object rendered as text — the fallback for

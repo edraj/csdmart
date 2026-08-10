@@ -118,6 +118,31 @@ public interface ISqlDialect
     /// </summary>
     string AclGrants(string aclColumn, string userPlaceholder, string action);
 
+    /// <summary>
+    /// Cheap whole-document prefilter for a wildcard search, AND-ed onto the
+    /// precise per-path check.
+    /// </summary>
+    /// <param name="targetTable">
+    /// Table the surrounding WHERE applies to, when known. Only the entries
+    /// table carries a wildcard index on either backend.
+    /// </param>
+    /// <remarks>
+    /// The prefilter is allowed to over-match — the precise check that follows
+    /// removes false positives — but it must never UNDER-match, or rows that
+    /// should have matched disappear. PostgreSQL satisfies that trivially: its
+    /// prefilter is a plain ILIKE that a pg_trgm GIN may or may not accelerate,
+    /// and correctness does not depend on the index existing. SQLite's version
+    /// reads an FTS5 trigram index instead, so there the index being in sync IS
+    /// the correctness condition — see the triggers in SqliteSchema.
+    /// </remarks>
+    /// <param name="patternLiteral">
+    /// The pattern's literal text, so a dialect can decline when its index
+    /// cannot serve that particular pattern. Returning null omits the conjunct
+    /// entirely, leaving only the precise per-path check — slower, still exact.
+    /// </param>
+    string? WildcardPrefilter(
+        string column, string patternPlaceholder, string? targetTable, string patternLiteral);
+
     /// <summary>Case-INSENSITIVE pattern match (PostgreSQL <c>ILIKE</c>).</summary>
     string ILike(string lhs, string patternPlaceholder, bool negated);
 
