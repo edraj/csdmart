@@ -18,6 +18,9 @@ export default defineConfig(({ command }) => ({
     alias: {
       "@": path.resolve(__dirname, "src"),
       "~": path.resolve(__dirname, "node_modules"),
+      // Code shared with cxb/. Lives above both workspaces rather than being
+      // duplicated into each — see ui-shared/password-reset.ts.
+      "@shared": path.resolve(__dirname, "..", "ui-shared"),
     },
   },
   optimizeDeps: {

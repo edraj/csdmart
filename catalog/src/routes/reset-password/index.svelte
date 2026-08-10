@@ -3,12 +3,14 @@
   import { goto } from "@roxi/routify";
   import { _, locale } from "@/i18n";
   import { EnvelopeSolid, LockSolid } from "flowbite-svelte-icons";
-  import { detectIdentifier, requestPasswordReset } from "@/lib/dmart_services";
   import {
     clearResetTarget,
     consumeResetStartOver,
+    detectIdentifier,
+    markResetCodeIssued,
+    requestPasswordReset,
     setResetTarget,
-  } from "@/lib/reset_target";
+  } from "@/lib/dmart_services/password_reset";
 
   $goto;
 
@@ -46,6 +48,9 @@
       // advance unconditionally and let step 2 be where a typo surfaces.
       await requestPasswordReset(id);
       setResetTarget(id);
+      // Stamp the issue time so step 2's resend countdown reflects the
+      // server's cooldown rather than restarting on every mount.
+      markResetCodeIssued();
       $goto("/reset-password/confirm");
     } catch {
       // Transport failure or the auth-by-ip rate limiter.
@@ -65,7 +70,7 @@
     </div>
 
     {#if startOver}
-      <div class="error-message" class:rtl={isRTL} role="status">{$_("ResetStartOver")}</div>
+      <div class="notice-message" class:rtl={isRTL} role="status">{$_("ResetStartOver")}</div>
     {/if}
 
     {#if formError}
@@ -175,6 +180,7 @@
   .error-text-small.rtl,
   .submit-button.rtl,
   .error-message.rtl,
+  .notice-message.rtl,
   .back-link.rtl {
     direction: rtl;
   }
@@ -205,6 +211,16 @@
     border-radius: 0.5rem;
     background: rgba(220, 38, 38, 0.08);
     color: var(--color-error);
+    font-size: 0.875rem;
+    margin-bottom: 1rem;
+  }
+  /* "Your reset session ended, start again" is information, not a failure —
+     giving it the red error treatment reads as though something broke. */
+  .notice-message {
+    padding: 0.75rem;
+    border-radius: 0.5rem;
+    background: rgba(160, 86, 10, 0.1);
+    color: var(--color-warning, #a0560a);
     font-size: 0.875rem;
     margin-bottom: 1rem;
   }

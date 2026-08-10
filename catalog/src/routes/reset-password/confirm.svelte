@@ -4,18 +4,20 @@
   import { _, locale } from "@/i18n";
   import { EyeSlashSolid, EyeSolid, LockSolid } from "flowbite-svelte-icons";
   import {
+    OTP_TTL_MINUTES,
     ResetError,
-    confirmPasswordReset,
-    isValidResetPassword,
-    requestPasswordReset,
-    type ResetIdentifier,
-  } from "@/lib/dmart_services";
-  import {
     clearResetTarget,
+    confirmPasswordReset,
     getResetTarget,
+    isValidResetPassword,
+    markResetCodeIssued,
+    requestPasswordReset,
+    resendSecondsRemaining,
+    resetErrorKey,
     setResetDone,
     setResetStartOver,
-  } from "@/lib/reset_target";
+    type ResetIdentifier,
+  } from "@/lib/dmart_services/password_reset";
 
   $goto;
 
@@ -28,11 +30,12 @@
   let formError = $state("");
   let errors: { otp?: string; password?: string; confirmPassword?: string } = $state({});
 
-  // 60s matches AllowPasswordResetResendAfter. Inside that window the server
-  // silently no-ops the resend, so blocking the button locally is the only
-  // feedback the user can get.
+  // Countdown to the next allowed resend. The remaining time comes from when
+  // the code was actually issued (step 1, or the last resend), not from when
+  // this component mounted — otherwise a refresh here would cost the user
+  // another full cooldown for a resend the server would already accept.
   let canResend = $state(false);
-  let resendCountdown = $state(60);
+  let resendCountdown = $state(0);
   let resendTimer: any;
 
   const isRTL = $derived($locale === "ar" || $locale === "ku");
@@ -50,9 +53,10 @@
   });
 
   function startResendTimer() {
-    canResend = false;
-    resendCountdown = 60;
     clearInterval(resendTimer);
+    resendCountdown = resendSecondsRemaining();
+    canResend = resendCountdown <= 0;
+    if (canResend) return;
     resendTimer = setInterval(() => {
       resendCountdown--;
       if (resendCountdown <= 0) {
@@ -72,6 +76,7 @@
     formError = "";
     try {
       await requestPasswordReset(target);
+      markResetCodeIssued();
       startResendTimer();
     } catch {
       formError = $_("ResetFailed");
@@ -117,7 +122,7 @@
       clearResetTarget();
       succeeded = true;
     } catch (e: any) {
-      formError = e instanceof ResetError ? $_(e.messageKey) : $_("ResetFailed");
+      formError = e instanceof ResetError ? $_(resetErrorKey(e.reason)) : $_("ResetFailed");
     } finally {
       isSubmitting = false;
     }
@@ -140,7 +145,9 @@
         <div class="icon-wrapper"><LockSolid class="text-white w-6 h-6" /></div>
         <h1 class="auth-title">{$_("ChooseNewPassword")}</h1>
         <p class="auth-description">
-          {$_("ResetCodeSent", { values: { target: target.value } })}
+          {$_("ResetCodeSent", {
+            values: { target: target.value, minutes: OTP_TTL_MINUTES },
+          })}
         </p>
       </div>
 
@@ -187,7 +194,7 @@
             <button
               type="button"
               class="password-toggle"
-              aria-label={$_("NewPassword")}
+              aria-label={$_("TogglePasswordVisibility")}
               aria-pressed={showPassword}
               onclick={() => (showPassword = !showPassword)}
             >

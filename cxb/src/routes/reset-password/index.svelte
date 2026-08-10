@@ -7,6 +7,7 @@
     clearResetTarget,
     consumeResetStartOver,
     detectIdentifier,
+    markResetCodeIssued,
     requestPasswordReset,
     setResetTarget,
   } from "@/lib/password_reset";
@@ -48,6 +49,9 @@
       // answers identically for unknown users and for the resend cooldown.
       await requestPasswordReset(id);
       setResetTarget(id);
+      // Stamp the issue time so step 2's resend countdown reflects the
+      // server's cooldown rather than restarting on every mount.
+      markResetCodeIssued();
       $goto("/reset-password/confirm");
     } catch {
       formError = $_("reset_failed");

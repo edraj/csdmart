@@ -19,6 +19,7 @@
     "@tailwindcss/vite": "^4.2.4",
     "axios": "^1.15.2",
     "eslint": "^10.2.1",
+    "jsdom": "^16.4.0",
     "lightningcss": "^1.32.0",
     "marked": "^18.0.2",
     "marked-gfm-heading-id": "^4.1.4",
