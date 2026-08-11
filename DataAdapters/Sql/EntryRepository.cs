@@ -771,6 +771,11 @@ public sealed class EntryRepository(IDbConnectionFactory db)
             DbParams.Add(cmd, source.SpaceName);
             DbParams.Add(cmd, oldPrefix);
             DbParams.Add(cmd, to.SpaceName);
+            // Bind in placeholder order, BEFORE building the text: NowExpr
+            // binds a parameter of its own on SQLite, so deferring $4 to after
+            // the interpolation would hand the timestamp $4 and shift the new
+            // prefix to $5 — the UPDATE would run and write the wrong subpath.
+            DbParams.Add(cmd, newPrefix);
             cmd.Transaction = tx;
             cmd.CommandText = $"""
                 UPDATE attachments
@@ -780,7 +785,6 @@ public sealed class EntryRepository(IDbConnectionFactory db)
                  WHERE space_name = $1
                    AND (subpath = $2 OR subpath LIKE $2 || '/%')
                 """;
-            DbParams.Add(cmd, newPrefix);
             await cmd.ExecuteNonQueryAsync(ct);
         }
 

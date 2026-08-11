@@ -1430,8 +1430,12 @@ public sealed class QueryService(
             var corr = new List<(string, string)>();
             foreach (var (lPath, _, rPath, _) in pairs)
             {
-                if (!DataAdapters.Sql.QueryHelper.TryJoinKeyToSql(lPath, "entries.", out var lExpr)
-                    || !DataAdapters.Sql.QueryHelper.TryJoinKeyToSql(rPath, "r.", out var rExpr))
+                // Correlation expressions must be emitted by the backend's own
+                // dialect: PostgreSQL casts with ::text and walks JSON with
+                // arrow operators, neither of which SQLite parses.
+                var joinDialect = DataAdapters.Sql.QueryHelper.DialectFor(db);
+                if (!DataAdapters.Sql.QueryHelper.TryJoinKeyToSql(lPath, "entries.", joinDialect, out var lExpr)
+                    || !DataAdapters.Sql.QueryHelper.TryJoinKeyToSql(rPath, "r.", joinDialect, out var rExpr))
                     return null;
                 corr.Add((lExpr, rExpr));
             }

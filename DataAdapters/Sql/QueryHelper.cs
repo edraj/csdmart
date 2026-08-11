@@ -183,17 +183,12 @@ public static class QueryHelper
 
     // Converts a dotted JSONB path like "body.user.email" into
     // payload::jsonb->'body'->'user'->>'email' (last segment uses ->>).
-    private static string BuildJsonbPath(string column, string dotPath)
+    private static string BuildJsonbPath(string column, string dotPath, ISqlDialect dialect)
     {
         var segments = dotPath.Split('.');
-        if (segments.Length == 0) return $"{column}::text";
-        if (segments.Length == 1) return $"{column}::jsonb->>'{EscapeSqlLiteral(segments[0])}'";
-
-        var sb = new System.Text.StringBuilder($"{column}::jsonb");
-        for (var i = 0; i < segments.Length - 1; i++)
-            sb.Append($"->'{EscapeSqlLiteral(segments[i])}'");
-        sb.Append($"->>'{EscapeSqlLiteral(segments[^1])}'");
-        return sb.ToString();
+        return segments.Length == 0
+            ? dialect.AsText(column)
+            : dialect.JsonText(column, segments);
     }
 
     // ====================================================================
@@ -275,13 +270,17 @@ public static class QueryHelper
     // ("entries." for the outer row, "r." for the semi-join inner row).
     // Returns false for any path we can't safely express (→ caller falls back).
     public static bool TryJoinKeyToSql(string path, string qualifier, out string expr)
+        => TryJoinKeyToSql(path, qualifier, PostgresSqlDialect.Instance, out expr);
+
+    public static bool TryJoinKeyToSql(
+        string path, string qualifier, ISqlDialect dialect, out string expr)
     {
         expr = "";
         if (string.IsNullOrEmpty(path)) return false;
 
         if (JoinMetaColumns.Contains(path))
         {
-            expr = $"({qualifier}{path})::text";
+            expr = dialect.AsText($"({qualifier}{path})");
             return true;
         }
 
@@ -294,7 +293,7 @@ public static class QueryHelper
             if (!SafeSortSegmentRegex.IsMatch(seg)) return false;
 
         // qualifier+"payload" → entries.payload / r.payload; BuildJsonbPath adds ::jsonb->...->>'last'.
-        expr = BuildJsonbPath($"{qualifier}payload", dot);
+        expr = BuildJsonbPath($"{qualifier}payload", dot, dialect);
         return true;
     }
 
@@ -567,7 +566,7 @@ public static class QueryHelper
         foreach (var gb in groupBy)
         {
             var raw = gb.StartsWith('@') ? gb[1..] : gb;
-            var expr = ResolveFieldExpr(raw);
+            var expr = ResolveFieldExpr(raw, dialect);
             if (expr is null) continue;
             selectParts.Add($"{expr} AS {SanitizeAlias(gb)}");
         }
@@ -576,7 +575,7 @@ public static class QueryHelper
         foreach (var reducer in reducers)
         {
             var alias = !string.IsNullOrEmpty(reducer.Alias) ? SanitizeAlias(reducer.Alias) : SanitizeAlias(reducer.ReducerName);
-            var expr = BuildReducerExpression(reducer);
+            var expr = BuildReducerExpression(reducer, dialect);
             if (expr is null) continue;
             selectParts.Add($"{expr} AS {alias}");
         }
@@ -594,7 +593,7 @@ public static class QueryHelper
         {
             var gbExprs = groupBy
                 .Select(gb => gb.StartsWith('@') ? gb[1..] : gb)
-                .Select(ResolveFieldExpr)
+                .Select(x => ResolveFieldExpr(x, dialect))
                 .Where(e => e is not null)
                 .ToList();
             if (gbExprs.Count > 0)
@@ -640,7 +639,7 @@ public static class QueryHelper
         return results;
     }
 
-    private static string? BuildReducerExpression(RedisReducer reducer)
+    private static string? BuildReducerExpression(RedisReducer reducer, ISqlDialect dialect)
     {
         var reducerArgs = reducer.Args ?? new();
         var name = reducer.ReducerName.ToLowerInvariant();
@@ -650,7 +649,7 @@ public static class QueryHelper
             if (reducerArgs.Count <= index) return null;
             var arg = reducerArgs[index];
             if (arg.StartsWith('@')) arg = arg[1..];
-            return ResolveFieldExpr(arg);
+            return ResolveFieldExpr(arg, dialect);
         }
 
         var fieldExpr = ResolveArg(0);
@@ -691,18 +690,18 @@ public static class QueryHelper
     }
 
     // Resolves a field name (possibly dotted JSONB path) to a SQL expression.
-    private static string? ResolveFieldExpr(string field)
+    private static string? ResolveFieldExpr(string field, ISqlDialect dialect)
     {
         if (field.StartsWith("payload.body.", StringComparison.Ordinal))
-            return BuildJsonbPath("payload", field["payload.".Length..]);
+            return BuildJsonbPath("payload", field["payload.".Length..], dialect);
         if (field.StartsWith("payload.", StringComparison.Ordinal))
-            return BuildJsonbPath("payload", field["payload.".Length..]);
+            return BuildJsonbPath("payload", field["payload.".Length..], dialect);
         if (field.Contains('.'))
         {
             var dot = field.IndexOf('.');
             var col = field[..dot];
             if (!SafeColumnIdent.IsMatch(col)) return null;
-            return BuildJsonbPath(col, field[(dot + 1)..]);
+            return BuildJsonbPath(col, field[(dot + 1)..], dialect);
         }
         if (!SafeColumnIdent.IsMatch(field)) return null;
         return field;
