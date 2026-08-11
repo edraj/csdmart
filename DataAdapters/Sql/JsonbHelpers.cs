@@ -8,8 +8,36 @@ namespace Dmart.DataAdapters.Sql;
 // All "ToJsonb" return null for null input — so we can pass DBNull straight through.
 public static class JsonbHelpers
 {
+    // Serializer used for everything written to a JSON/JSONB column.
+    //
+    // Identical to DmartJsonContext.Default except that non-ASCII is emitted
+    // literally instead of as \uXXXX escapes. That matters because the two
+    // backends disagree about escapes: PostgreSQL's jsonb DECODES them on
+    // ingest, so `payload::text` holds real characters, while SQLite stores the
+    // document byte-for-byte and its json() does not normalize them either
+    // (only json_extract does). Escaped storage therefore made the FTS5 trigram
+    // wildcard index unable to match Arabic on SQLite — the prefilter could
+    // never hit, and ANDing it with the precise check returned nothing.
+    //
+    // Create(UnicodeRanges.All), NOT UnsafeRelaxedJsonEscaping: both emit
+    // literal non-ASCII, but the "unsafe" one also stops escaping the
+    // HTML-sensitive characters < > & ' +, which is what its name refers to.
+    // Nothing here needs that, and these values are read back out and rendered
+    // by the SPAs, so the HTML escaping stays.
+    //
+    // Scoped to the storage boundary on purpose. DmartJsonContext.Default still
+    // serializes HTTP responses, so wire bytes are unchanged and this carries
+    // no API-compatibility risk.
+    private static readonly JsonSerializerOptions StorageOptions = new(DmartJsonContext.Default.Options)
+    {
+        Encoder = System.Text.Encodings.Web.JavaScriptEncoder.Create(
+            System.Text.Unicode.UnicodeRanges.All),
+    };
+
+    private static readonly DmartJsonContext Storage = new(StorageOptions);
+
     public static string? ToJsonb(Translation? t)
-        => t is null ? null : JsonSerializer.Serialize(t, DmartJsonContext.Default.Translation);
+        => t is null ? null : JsonSerializer.Serialize(t, Storage.Translation);
 
     public static Translation? FromTranslation(string? json)
     {
@@ -24,67 +52,67 @@ public static class JsonbHelpers
     }
 
     public static string? ToJsonb(Payload? p)
-        => p is null ? null : JsonSerializer.Serialize(p, DmartJsonContext.Default.Payload);
+        => p is null ? null : JsonSerializer.Serialize(p, Storage.Payload);
 
     public static Payload? FromPayload(string? json)
         => string.IsNullOrEmpty(json) ? null : JsonSerializer.Deserialize(json, DmartJsonContext.Default.Payload);
 
     public static string? ToJsonb(Reporter? r)
-        => r is null ? null : JsonSerializer.Serialize(r, DmartJsonContext.Default.Reporter);
+        => r is null ? null : JsonSerializer.Serialize(r, Storage.Reporter);
 
     public static Reporter? FromReporter(string? json)
         => string.IsNullOrEmpty(json) ? null : JsonSerializer.Deserialize(json, DmartJsonContext.Default.Reporter);
 
     public static string? ToJsonb(List<string>? list)
-        => list is null ? null : JsonSerializer.Serialize(list, DmartJsonContext.Default.ListString);
+        => list is null ? null : JsonSerializer.Serialize(list, Storage.ListString);
 
     // For NOT NULL jsonb columns: returns "[]" for null/empty, never null.
     public static string ToJsonbList(List<string>? list)
-        => list is null || list.Count == 0 ? "[]" : JsonSerializer.Serialize(list, DmartJsonContext.Default.ListString);
+        => list is null || list.Count == 0 ? "[]" : JsonSerializer.Serialize(list, Storage.ListString);
 
     public static string ToJsonbDict(Dictionary<string, List<string>>? d)
-        => d is null || d.Count == 0 ? "{}" : JsonSerializer.Serialize(d, DmartJsonContext.Default.DictionaryStringListString);
+        => d is null || d.Count == 0 ? "{}" : JsonSerializer.Serialize(d, Storage.DictionaryStringListString);
 
     // For Spaces.languages — non-null jsonb array of language enum strings.
     public static string ToJsonbLanguagesNotNull(List<Models.Enums.Language>? langs)
-        => langs is null || langs.Count == 0 ? "[]" : JsonSerializer.Serialize(langs, DmartJsonContext.Default.ListLanguage);
+        => langs is null || langs.Count == 0 ? "[]" : JsonSerializer.Serialize(langs, Storage.ListLanguage);
 
     public static List<string>? FromListString(string? json)
         => string.IsNullOrEmpty(json) ? null : JsonSerializer.Deserialize(json, DmartJsonContext.Default.ListString);
 
     public static string? ToJsonb(List<AclEntry>? acl)
-        => acl is null ? null : JsonSerializer.Serialize(acl, DmartJsonContext.Default.ListAclEntry);
+        => acl is null ? null : JsonSerializer.Serialize(acl, Storage.ListAclEntry);
 
     public static List<AclEntry>? FromAclList(string? json)
         => string.IsNullOrEmpty(json) ? null : JsonSerializer.Deserialize(json, DmartJsonContext.Default.ListAclEntry);
 
     public static string? ToJsonb(List<Dictionary<string, object>>? rels)
-        => rels is null ? null : JsonSerializer.Serialize(rels, DmartJsonContext.Default.ListDictionaryStringObject);
+        => rels is null ? null : JsonSerializer.Serialize(rels, Storage.ListDictionaryStringObject);
 
     public static List<Dictionary<string, object>>? FromRelationships(string? json)
         => string.IsNullOrEmpty(json) ? null : JsonSerializer.Deserialize(json, DmartJsonContext.Default.ListDictionaryStringObject);
 
     public static string? ToJsonb(Dictionary<string, List<string>>? d)
-        => d is null ? null : JsonSerializer.Serialize(d, DmartJsonContext.Default.DictionaryStringListString);
+        => d is null ? null : JsonSerializer.Serialize(d, Storage.DictionaryStringListString);
 
     public static Dictionary<string, List<string>>? FromDictListString(string? json)
         => string.IsNullOrEmpty(json) ? null : JsonSerializer.Deserialize(json, DmartJsonContext.Default.DictionaryStringListString);
 
     public static string? ToJsonb(Dictionary<string, string>? d)
-        => d is null ? null : JsonSerializer.Serialize(d, DmartJsonContext.Default.DictionaryStringString);
+        => d is null ? null : JsonSerializer.Serialize(d, Storage.DictionaryStringString);
 
     public static Dictionary<string, string>? FromDictStringString(string? json)
         => string.IsNullOrEmpty(json) ? null : JsonSerializer.Deserialize(json, DmartJsonContext.Default.DictionaryStringString);
 
     public static string? ToJsonb(Dictionary<string, object>? d)
-        => d is null ? null : JsonSerializer.Serialize(d, DmartJsonContext.Default.DictionaryStringObject);
+        => d is null ? null : JsonSerializer.Serialize(d, Storage.DictionaryStringObject);
 
     public static Dictionary<string, object>? FromDictStringObject(string? json)
         => string.IsNullOrEmpty(json) ? null : JsonSerializer.Deserialize(json, DmartJsonContext.Default.DictionaryStringObject);
 
     // Languages list — stored as JSONB array of language enum strings.
     public static string? ToJsonbLanguages(List<Models.Enums.Language>? langs)
-        => langs is null ? null : JsonSerializer.Serialize(langs, DmartJsonContext.Default.ListLanguage);
+        => langs is null ? null : JsonSerializer.Serialize(langs, Storage.ListLanguage);
 
     public static List<Models.Enums.Language>? FromLanguages(string? json)
         => string.IsNullOrEmpty(json) ? null : JsonSerializer.Deserialize(json, DmartJsonContext.Default.ListLanguage);

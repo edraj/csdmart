@@ -128,6 +128,22 @@ public sealed class SqliteWildcardIndexTests : IAsyncLifetime
         // word breaks works — unicode61 would have shattered this (audit §5).
         (await SearchAsync("@payload.body.title:*رحبا*")).ShouldBe(new[] { "ar" });
 
+        // And it goes THROUGH the index, not around it. That only holds because
+        // JsonbHelpers stores JSON with literal UTF-8: with \uXXXX escapes the
+        // indexed text would not contain the Arabic at all.
+        await using var conn = await _factory.OpenAsync();
+        await using var stored = conn.CreateCommand();
+        stored.CommandText = "SELECT payload FROM entries WHERE shortname = 'ar'";
+        var raw = (string)(await stored.ExecuteScalarAsync())!;
+        raw.ShouldContain("مرحبا", Case.Sensitive,
+            "escaped storage would make the wildcard index unable to match Arabic");
+        raw.ShouldNotContain("\\u06", Case.Sensitive);
+
+        await using var fts = conn.CreateCommand();
+        fts.CommandText = "SELECT count(*) FROM entries_fts WHERE payload LIKE '%رحبا%'";
+        Convert.ToInt32(await fts.ExecuteScalarAsync(), System.Globalization.CultureInfo.InvariantCulture)
+            .ShouldBe(1, "the FTS index itself must contain the Arabic text");
+
         // Under three characters the index cannot serve the pattern and SQLite
         // scans the FTS content instead. The result must still be correct.
         (await SearchAsync("@payload.body.title:*ai*")).ShouldBe(new[] { "en" });

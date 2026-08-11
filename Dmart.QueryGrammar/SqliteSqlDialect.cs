@@ -121,17 +121,13 @@ public sealed class SqliteSqlDialect : ISqlDialect
     public string? WildcardPrefilter(
         string column, string patternPlaceholder, string? targetTable, string patternLiteral)
     {
-        // Declined for non-ASCII patterns, and this is a correctness rule, not
-        // a tuning one. System.Text.Json escapes non-ASCII to \uXXXX, and
-        // unlike PostgreSQL's jsonb — which decodes escapes on ingest, so
-        // payload::text renders real characters — SQLite stores the document
-        // verbatim. Its json() does NOT normalize the escapes either (only
-        // json_extract does, which is why the precise per-path check still
-        // matches). So a whole-document LIKE for Arabic text can never match
-        // the stored form, and emitting this prefilter would AND the query down
-        // to nothing: silent false negatives on exactly the content this
-        // project exists to serve.
-        if (patternLiteral.Any(c => c > 127)) return null;
+        // Non-ASCII is served too, because JsonbHelpers writes JSON columns with
+        // an encoder that emits literal UTF-8 rather than \uXXXX escapes. That
+        // is load-bearing here: with escaped storage the indexed text would
+        // contain "\u0645\u0631..." and a wildcard for Arabic could never
+        // match, silently ANDing the query down to nothing. If that encoder is
+        // ever reverted, this must go back to declining non-ASCII patterns.
+        _ = patternLiteral;
 
         // Only entries carries the index, matching PostgreSQL, where the
         // pg_trgm GIN is likewise declared on entries alone.
