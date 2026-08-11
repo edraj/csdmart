@@ -37,14 +37,12 @@ public sealed class TimestampWallClockTests : IClassFixture<DmartFactory>
             // Read the raw value straight from Postgres — same DateTime that
             // psql would print, because the column is TIMESTAMP WITHOUT TIME
             // ZONE post-migration. No `AT TIME ZONE` projection.
-            var db = _factory.Services.GetRequiredService<Db>();
+            var db = _factory.Services.GetRequiredService<IDbConnectionFactory>();
             await using var conn = await db.OpenAsync();
-            await using var cmd = new Npgsql.NpgsqlCommand(
-                "SELECT created_at FROM entries WHERE shortname = $1 AND space_name = $2 AND subpath = $3",
-                conn);
-            cmd.Parameters.Add(new() { Value = shortname });
-            cmd.Parameters.Add(new() { Value = space });
-            cmd.Parameters.Add(new() { Value = subpath });
+            await using var cmd = conn.Command("SELECT created_at FROM entries WHERE shortname = $1 AND space_name = $2 AND subpath = $3");
+            DbParams.Add(cmd, shortname);
+            DbParams.Add(cmd, space);
+            DbParams.Add(cmd, subpath);
             var dbValue = (DateTime)(await cmd.ExecuteScalarAsync())!;
 
             // Round to seconds — the wire format trims trailing fractional

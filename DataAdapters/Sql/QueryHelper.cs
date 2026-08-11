@@ -364,29 +364,19 @@ public static class QueryHelper
     // The CASE makes numeric values sort numerically (1,2,10) while non-numeric
     // values still sort lexically as a tiebreaker. Returns null when any segment
     // fails validation (sanitizer rejects the whole token, we keep other tokens).
-    private static string? BuildJsonPathSortExpression(string token, string direction)
+    private static string? BuildJsonPathSortExpression(string token, string direction, ISqlDialect dialect)
     {
         var parts = token.Split('.');
         foreach (var p in parts)
             if (!SafeSortSegmentRegex.IsMatch(p)) return null;
 
-        var root = parts[0];
-        string expr;
-        if (parts.Length == 1)
-        {
-            expr = root;
-        }
-        else
-        {
-            var middle = parts.Length > 2 ? " -> " + string.Join(" -> ", parts[1..^1].Select(p => $"'{p}'")) : "";
-            expr = $"{root}::jsonb{middle} ->> '{parts[^1]}'";
-        }
-        return $"CASE WHEN ({expr}) ~ '^-?[0-9]+(\\.[0-9]+)?$' THEN ({expr})::float END {direction}, ({expr}) {direction}";
+        return dialect.JsonSortKeys(parts[0], parts[1..], direction);
     }
 
     // Resolve a single sort token into either a bare whitelisted column or a
     // JSON-path expression. Returns null to mean "skip this token".
-    private static string? ResolveSortToken(string rawToken, string direction, string? tableName)
+    private static string? ResolveSortToken(
+        string rawToken, string direction, string? tableName, ISqlDialect dialect)
     {
         var token = rawToken.Trim();
         if (token.Length == 0) return null;
@@ -402,7 +392,7 @@ public static class QueryHelper
         if (token.StartsWith("body.", StringComparison.Ordinal)) token = "payload." + token;
 
         if (token.Contains('.'))
-            return BuildJsonPathSortExpression(token, direction);
+            return BuildJsonPathSortExpression(token, direction, dialect);
 
         var allowed = tableName is not null && TableSortColumns.TryGetValue(tableName, out var set)
             ? set
@@ -413,7 +403,8 @@ public static class QueryHelper
     // Parse comma-separated sort_by into one ORDER BY clause body (without the
     // leading "ORDER BY "). Returns null when nothing resolves → caller falls
     // back to `updated_at DESC`.
-    private static string? BuildOrderClauseBody(string? sortBy, SortType? sortType, string? tableName)
+    private static string? BuildOrderClauseBody(
+        string? sortBy, SortType? sortType, string? tableName, ISqlDialect dialect)
     {
         if (string.IsNullOrWhiteSpace(sortBy)) return null;
 
@@ -421,19 +412,25 @@ public static class QueryHelper
         var pieces = new List<string>();
         foreach (var raw in sortBy.Split(','))
         {
-            var expr = ResolveSortToken(raw, direction, tableName);
+            var expr = ResolveSortToken(raw, direction, tableName, dialect);
             if (expr is not null) pieces.Add(expr);
         }
         return pieces.Count == 0 ? null : string.Join(", ", pieces);
     }
 
-    public static void AppendOrderAndPaging(System.Text.StringBuilder sql, Query q, List<NpgsqlParameter> args, string? tableName = null)
+    public static void AppendOrderAndPaging(
+        System.Text.StringBuilder sql, Query q, List<NpgsqlParameter> args, string? tableName = null)
+        => AppendOrderAndPaging(sql, q, args, PostgresSqlDialect.Instance, tableName);
+
+    public static void AppendOrderAndPaging(
+        System.Text.StringBuilder sql, Query q, List<NpgsqlParameter> args,
+        ISqlDialect dialect, string? tableName = null)
     {
         if (q.Type == QueryType.Random)
             sql.Append("ORDER BY RANDOM() ");
         else
         {
-            var clause = BuildOrderClauseBody(q.SortBy, q.SortType, tableName);
+            var clause = BuildOrderClauseBody(q.SortBy, q.SortType, tableName, dialect);
             if (clause is not null)
             {
                 sql.Append($"ORDER BY {clause} ");
@@ -479,7 +476,7 @@ public static class QueryHelper
         if (semiJoins is { Count: > 0 })
             AppendInnerSemiJoins(sql, args, semiJoins, dialect);
 
-        AppendOrderAndPaging(sql, q, args, tableName);
+        AppendOrderAndPaging(sql, q, args, dialect, tableName);
 
         await using var conn = await db.OpenAsync(ct);
         await using var cmd = conn.CreateCommand();
@@ -601,7 +598,7 @@ public static class QueryHelper
         }
 
         // ORDER + LIMIT
-        AppendOrderAndPaging(sql, q, args, tableName);
+        AppendOrderAndPaging(sql, q, args, dialect, tableName);
 
         return (sql.ToString(), args);
     }

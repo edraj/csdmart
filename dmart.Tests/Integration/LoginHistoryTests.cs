@@ -477,12 +477,11 @@ public sealed class LoginHistoryTests : IClassFixture<DmartFactory>
     {
         try
         {
-            var db = sp.GetRequiredService<Db>();
+            var db = sp.GetRequiredService<IDbConnectionFactory>();
             await using var conn = await db.OpenAsync();
-            await using var cmd = new NpgsqlCommand(
-                "DELETE FROM histories WHERE space_name = 'management' "
-                + "AND subpath = '/users' AND shortname = $1", conn);
-            cmd.Parameters.Add(new() { Value = sn });
+            await using var cmd = conn.Command("DELETE FROM histories WHERE space_name = 'management' "
+                + "AND subpath = '/users' AND shortname = $1");
+            DbParams.Add(cmd, sn);
             await cmd.ExecuteNonQueryAsync();
         }
         catch { /* best-effort */ }

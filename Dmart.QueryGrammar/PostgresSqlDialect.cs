@@ -45,6 +45,24 @@ public sealed class PostgresSqlDialect : ISqlDialect
         return sb.ToString();
     }
 
+    // Byte-identical to the pre-seam emission in QueryHelper.
+    public string JsonSortKeys(string column, IReadOnlyList<string> path, string direction)
+    {
+        string expr;
+        if (path.Count == 0)
+        {
+            expr = column;
+        }
+        else
+        {
+            var middle = path.Count > 1
+                ? " -> " + string.Join(" -> ", path.Take(path.Count - 1).Select(p => $"'{p}'"))
+                : "";
+            expr = $"{column}::jsonb{middle} ->> '{path[^1]}'";
+        }
+        return $"CASE WHEN ({expr}) ~ '^-?[0-9]+(\\.[0-9]+)?$' THEN ({expr})::float END {direction}, ({expr}) {direction}";
+    }
+
     public string JsonTypeIs(string jsonExpr, JsonKind kind)
         => $"jsonb_typeof({jsonExpr}) = '{TypeName(kind)}'";
 

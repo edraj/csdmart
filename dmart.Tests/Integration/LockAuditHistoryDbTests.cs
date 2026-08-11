@@ -40,15 +40,13 @@ public sealed class LockAuditHistoryDbTests
         },
     };
 
-    private static async Task<long> CountHistoryAsync(Db db, string shortname, string lockType)
+    private static async Task<long> CountHistoryAsync(IDbConnectionFactory db, string shortname, string lockType)
     {
         await using var conn = await db.OpenAsync();
-        await using var cmd = new Npgsql.NpgsqlCommand(
-            "SELECT COUNT(*) FROM histories WHERE space_name = $1 AND shortname = $2 AND diff->>'lock_type' = $3",
-            conn);
-        cmd.Parameters.Add(new() { Value = Space });
-        cmd.Parameters.Add(new() { Value = shortname });
-        cmd.Parameters.Add(new() { Value = lockType });
+        await using var cmd = conn.Command("SELECT COUNT(*) FROM histories WHERE space_name = $1 AND shortname = $2 AND diff->>'lock_type' = $3");
+        DbParams.Add(cmd, Space);
+        DbParams.Add(cmd, shortname);
+        DbParams.Add(cmd, lockType);
         return (long)(await cmd.ExecuteScalarAsync())!;
     }
 
@@ -78,7 +76,7 @@ public sealed class LockAuditHistoryDbTests
         await DmartFactory.ResetBootstrapAdminStateAsync(factory.Services);
         using var dmart = new DmartFactory();
         var user = await dmart.CreateLoggedInUserAsync(host: factory);
-        var db = factory.Services.GetRequiredService<Db>();
+        var db = factory.Services.GetRequiredService<IDbConnectionFactory>();
 
         var subpath = "lockaudit";
         var shortname = $"lk_{Guid.NewGuid():N}".Substring(0, 12);
@@ -114,7 +112,7 @@ public sealed class LockAuditHistoryDbTests
         await DmartFactory.ResetBootstrapAdminStateAsync(factory.Services);
         using var dmart = new DmartFactory();
         var user = await dmart.CreateLoggedInUserAsync(host: factory);
-        var db = factory.Services.GetRequiredService<Db>();
+        var db = factory.Services.GetRequiredService<IDbConnectionFactory>();
 
         var subpath = "lockaudit";
         var shortname = $"lk_{Guid.NewGuid():N}".Substring(0, 12);

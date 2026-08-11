@@ -141,12 +141,11 @@ public sealed class OtpRequestGateTests : IClassFixture<DmartFactory>
 
     private async Task SetAttemptCountAsync(string shortname, int count)
     {
-        var db = _factory.Services.GetRequiredService<Db>();
+        var db = _factory.Services.GetRequiredService<IDbConnectionFactory>();
         await using var conn = await db.OpenAsync();
-        await using var cmd = new Npgsql.NpgsqlCommand(
-            "UPDATE users SET attempt_count = $1 WHERE shortname = $2", conn);
-        cmd.Parameters.Add(new() { Value = count });
-        cmd.Parameters.Add(new() { Value = shortname });
+        await using var cmd = conn.Command("UPDATE users SET attempt_count = $1 WHERE shortname = $2");
+        DbParams.Add(cmd, count);
+        DbParams.Add(cmd, shortname);
         await cmd.ExecuteNonQueryAsync();
     }
 

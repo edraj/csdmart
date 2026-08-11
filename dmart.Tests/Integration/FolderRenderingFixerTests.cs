@@ -64,7 +64,7 @@ public class FolderRenderingFixerTests : IClassFixture<DmartFactory>
         var spaces = sp.GetRequiredService<SpaceRepository>();
         var entries = sp.GetRequiredService<EntryRepository>();
         var health = sp.GetRequiredService<HealthCheckRepository>();
-        var fixer = new FolderRenderingFixer(sp.GetRequiredService<Db>());
+        var fixer = new FolderRenderingFixer(sp.GetRequiredService<IDbConnectionFactory>());
         var seededSchema = await EnsureManagementSchemaAsync(entries);
 
         var spaceName = $"ffx_{Guid.NewGuid():N}"[..16];

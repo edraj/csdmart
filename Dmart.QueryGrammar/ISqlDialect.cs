@@ -149,6 +149,24 @@ public interface ISqlDialect
     /// <summary>Renders a column as text for comparison or concatenation.</summary>
     string AsText(string expr);
 
+    /// <summary>
+    /// The ORDER BY key list for a dotted JSON path — a numeric key that is
+    /// NULL for non-numeric values, followed by a textual tiebreaker, both in
+    /// <paramref name="direction"/>.
+    /// </summary>
+    /// <remarks>
+    /// A whole fragment rather than composed parts because the two backends
+    /// answer "is this value a number?" in structurally different ways.
+    /// PostgreSQL's jsonb ->> always yields text, so it has to regex-match the
+    /// digits and cast. SQLite's ->> preserves the JSON type, so typeof() is
+    /// both cheaper and stricter — and the difference is visible: a number
+    /// stored as a JSON STRING ("42") sorts numerically on PostgreSQL and
+    /// lexically on SQLite. Documented in docs/sqlite-backend-audit.md §9;
+    /// closing it would mean reimplementing the regex, which SQLite has no
+    /// built-in for.
+    /// </remarks>
+    string JsonSortKeys(string column, IReadOnlyList<string> path, string direction);
+
     /// <summary>Casts an extracted JSON value to a number for comparison.</summary>
     string AsNumber(string expr);
 

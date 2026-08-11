@@ -38,6 +38,16 @@ public sealed class SqliteSqlDialect : ISqlDialect
     // integer/real and `boolean` into true/false, so those two kinds test a set
     // rather than a single value. Collapsing them to one name would silently
     // drop every integer (or every false) from a filter.
+    // ->> hands back the JSON value's own SQL type, so typeof() answers the
+    // "is it a number?" question directly — no regex, no cast, and integers
+    // keep integer precision instead of round-tripping through float.
+    public string JsonSortKeys(string column, IReadOnlyList<string> path, string direction)
+    {
+        var expr = path.Count == 0 ? column : JsonText(column, path);
+        return $"CASE WHEN typeof({expr}) IN ('integer','real') THEN {expr} END {direction}, "
+             + $"({expr}) {direction}";
+    }
+
     public string JsonTypeIs(string jsonExpr, JsonKind kind) => kind switch
     {
         JsonKind.String => $"json_type({jsonExpr}) = 'text'",
