@@ -492,7 +492,7 @@ public sealed class UserRepository(IDbConnectionFactory db, AuthzCacheRefresher 
                 OR EXISTS (SELECT 1 FROM users       WHERE owner_shortname = $1 AND shortname <> $1)
             """);
         DbParams.Add(cmd, shortname);
-        return (bool)(await cmd.ExecuteScalarAsync(ct) ?? false);
+        return DbParams.ReadBool(await cmd.ExecuteScalarAsync(ct));
     }
 
     // True if the user owns the given space. Used to refuse a force-delete that
@@ -504,7 +504,7 @@ public sealed class UserRepository(IDbConnectionFactory db, AuthzCacheRefresher 
             "SELECT EXISTS (SELECT 1 FROM spaces WHERE owner_shortname = $1 AND shortname = $2)");
         DbParams.Add(cmd, shortname);
         DbParams.Add(cmd, spaceName);
-        return (bool)(await cmd.ExecuteScalarAsync(ct) ?? false);
+        return DbParams.ReadBool(await cmd.ExecuteScalarAsync(ct));
     }
 
     // The owner that inherits the user's STRUCTURAL objects (other users, roles,
@@ -556,7 +556,7 @@ public sealed class UserRepository(IDbConnectionFactory db, AuthzCacheRefresher 
             {
                 await using var cmd = conn.Command(sql);
                 DbParams.Add(cmd, shortname);
-                return (long)(await cmd.ExecuteScalarAsync(ct) ?? 0L);
+                return DbParams.ReadCount(await cmd.ExecuteScalarAsync(ct));
             }
 
             var hProj = await CountAsync("""
@@ -593,7 +593,7 @@ public sealed class UserRepository(IDbConnectionFactory db, AuthzCacheRefresher 
             """, tx))
         {
             DbParams.Add(cmd, shortname);
-            ownsStructural = (bool)(await cmd.ExecuteScalarAsync(ct) ?? false);
+            ownsStructural = DbParams.ReadBool(await cmd.ExecuteScalarAsync(ct));
         }
 
         if (ownsStructural)

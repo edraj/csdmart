@@ -236,6 +236,33 @@ public static class DbParams
         return sb.Append('}').ToString();
     }
 
+    /// <summary>Reads a scalar as a count, from either backend.</summary>
+    /// <remarks>
+    /// The two providers box the same value as different CLR types: SQLite
+    /// returns every INTEGER as long, while Npgsql returns whatever the column
+    /// type maps to — int for an integer column, long for COUNT(*). An unboxing
+    /// cast like (long)scalar therefore throws InvalidCastException on one
+    /// backend or the other depending on the query, which is how this was
+    /// found. Convert handles every numeric shape.
+    /// </remarks>
+    public static long ReadCount(object? raw)
+        => raw is null or DBNull
+            ? 0L
+            : Convert.ToInt64(raw, System.Globalization.CultureInfo.InvariantCulture);
+
+    /// <summary>Reads a scalar as a boolean, from either backend.</summary>
+    /// <remarks>
+    /// PostgreSQL has a real boolean type, so `SELECT EXISTS(...)` comes back
+    /// as bool. SQLite has none and returns INTEGER 0/1 as long, so the same
+    /// query cannot be unboxed with a (bool) cast.
+    /// </remarks>
+    public static bool ReadBool(object? raw) => raw switch
+    {
+        null or DBNull => false,
+        bool b => b,
+        _ => Convert.ToInt64(raw, System.Globalization.CultureInfo.InvariantCulture) != 0,
+    };
+
     /// <summary>
     /// Reads a string-array column written by either backend.
     /// </summary>

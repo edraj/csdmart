@@ -282,7 +282,7 @@ public sealed class AttachmentRepository(IDbConnectionFactory db, ISqlDialect di
             """);
         DbParams.Add(cmd, spaceName);
         DbParams.Add(cmd, prefix);
-        return (long)(await cmd.ExecuteScalarAsync(ct) ?? 0L);
+        return DbParams.ReadCount(await cmd.ExecuteScalarAsync(ct));
     }
 
     // ----- query support (used by QueryService for type=attachments) -----

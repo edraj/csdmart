@@ -601,7 +601,7 @@ public sealed class EntryRepository(IDbConnectionFactory db)
             await using var cmd = conn.Command(sql, tx);
             bind(cmd);
             return dryRun
-                ? (long)(await cmd.ExecuteScalarAsync(ct) ?? 0L)
+                ? DbParams.ReadCount(await cmd.ExecuteScalarAsync(ct))
                 : await cmd.ExecuteNonQueryAsync(ct);
         }
 
@@ -1004,7 +1004,7 @@ public sealed class EntryRepository(IDbConnectionFactory db)
             """);
         DbParams.Add(cmd, spaceName);
         DbParams.Add(cmd, subpath);
-        return (long)(await cmd.ExecuteScalarAsync(ct) ?? 0L);
+        return DbParams.ReadCount(await cmd.ExecuteScalarAsync(ct));
     }
 
     private static void AddJsonbNotNull(DbCommand cmd, string json)

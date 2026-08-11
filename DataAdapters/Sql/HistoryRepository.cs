@@ -175,7 +175,7 @@ public sealed class HistoryRepository(IDbConnectionFactory db, ISqlDialect diale
         await using var conn = await db.OpenAsync(ct);
         await using var cmd = conn.Command(sql.ToString());
         DbParams.BindAll(cmd, args);
-        return (int)(long)(await cmd.ExecuteScalarAsync(ct) ?? 0L);
+        return (int)DbParams.ReadCount(await cmd.ExecuteScalarAsync(ct));
     }
 }
 

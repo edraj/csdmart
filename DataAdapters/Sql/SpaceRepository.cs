@@ -183,7 +183,7 @@ public sealed class SpaceRepository(IDbConnectionFactory db)
             await using var cmd = conn.Command(sql, tx);
             DbParams.Add(cmd, shortname);
             return dryRun
-                ? (long)(await cmd.ExecuteScalarAsync(ct) ?? 0L)
+                ? DbParams.ReadCount(await cmd.ExecuteScalarAsync(ct))
                 : await cmd.ExecuteNonQueryAsync(ct);
         }
 

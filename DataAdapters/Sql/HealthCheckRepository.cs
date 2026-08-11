@@ -194,7 +194,7 @@ public sealed class HealthCheckRepository(IDbConnectionFactory db)
         {
             DbParams.Add(cmd, spaceName);
             if (extra is not null) DbParams.Add(cmd, extra);
-            count = (long)(await cmd.ExecuteScalarAsync(ct) ?? 0L);
+            count = DbParams.ReadCount(await cmd.ExecuteScalarAsync(ct));
         }
 
         // Samples
