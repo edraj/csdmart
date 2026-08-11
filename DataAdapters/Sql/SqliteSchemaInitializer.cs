@@ -17,10 +17,18 @@ namespace Dmart.DataAdapters.Sql;
 // DO blocks. SQLite has neither, so both move here — see PatchColumnsAsync.
 public sealed class SqliteSchemaInitializer(
     SqliteConnectionFactory factory,
+    Microsoft.Extensions.Options.IOptions<Dmart.Config.DmartSettings> settings,
     ILogger<SqliteSchemaInitializer> log) : IHostedService
 {
     public async Task StartAsync(CancellationToken cancellationToken)
     {
+        // Both schema initializers are registered because the driver is not
+        // known at registration time; each declines when it is not the one
+        // selected. Creating a SQLite schema in a PostgreSQL deployment would
+        // leave a stray database file nothing ever reads.
+        if (!DatabaseDriverParser.TryParse(settings.Value.DatabaseDriver, out var driver)
+            || driver != DatabaseDriver.Sqlite) return;
+
         var ct = cancellationToken;
         await SqliteRetry.ExecuteAsync(async token =>
         {

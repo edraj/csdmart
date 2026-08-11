@@ -30,7 +30,7 @@ public sealed class SqliteWildcardIndexTests : IAsyncLifetime
     {
         _factory = new SqliteConnectionFactory(
             Options.Create(new DmartSettings { SqlitePath = _dbPath }));
-        await new SqliteSchemaInitializer(_factory, NullLogger<SqliteSchemaInitializer>.Instance)
+        await new SqliteSchemaInitializer(_factory, Options.Create(new DmartSettings { DatabaseDriver = "sqlite" }), NullLogger<SqliteSchemaInitializer>.Instance)
             .StartAsync(CancellationToken.None);
         _repo = new EntryRepository(_factory);
 

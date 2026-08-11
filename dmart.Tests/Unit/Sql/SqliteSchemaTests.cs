@@ -27,7 +27,7 @@ public sealed class SqliteSchemaTests : IAsyncLifetime
     {
         var settings = Options.Create(new DmartSettings { SqlitePath = _dbPath });
         _factory = new SqliteConnectionFactory(settings);
-        var init = new SqliteSchemaInitializer(_factory, NullLogger<SqliteSchemaInitializer>.Instance);
+        var init = new SqliteSchemaInitializer(_factory, Options.Create(new DmartSettings { DatabaseDriver = "sqlite" }), NullLogger<SqliteSchemaInitializer>.Instance);
         await init.StartAsync(CancellationToken.None);
     }
 
@@ -67,7 +67,7 @@ public sealed class SqliteSchemaTests : IAsyncLifetime
     {
         // Re-running against an existing database must be a no-op, because the
         // initializer runs on every start.
-        var init = new SqliteSchemaInitializer(_factory, NullLogger<SqliteSchemaInitializer>.Instance);
+        var init = new SqliteSchemaInitializer(_factory, Options.Create(new DmartSettings { DatabaseDriver = "sqlite" }), NullLogger<SqliteSchemaInitializer>.Instance);
         await init.StartAsync(CancellationToken.None);
         await init.StartAsync(CancellationToken.None);
 
@@ -244,7 +244,7 @@ public sealed class SqliteSchemaTests : IAsyncLifetime
                 "SELECT count(*) FROM pragma_table_info('users') WHERE name='notes'")).ShouldBe("0");
         }
 
-        var init = new SqliteSchemaInitializer(_factory, NullLogger<SqliteSchemaInitializer>.Instance);
+        var init = new SqliteSchemaInitializer(_factory, Options.Create(new DmartSettings { DatabaseDriver = "sqlite" }), NullLogger<SqliteSchemaInitializer>.Instance);
         await init.StartAsync(CancellationToken.None);
 
         await using var after = await _factory.OpenAsync();

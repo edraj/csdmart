@@ -26,7 +26,7 @@ public sealed class SqliteRemainingRepositoryTests : IAsyncLifetime
     {
         _factory = new SqliteConnectionFactory(
             Options.Create(new DmartSettings { SqlitePath = _dbPath }));
-        await new SqliteSchemaInitializer(_factory, NullLogger<SqliteSchemaInitializer>.Instance)
+        await new SqliteSchemaInitializer(_factory, Options.Create(new DmartSettings { DatabaseDriver = "sqlite" }), NullLogger<SqliteSchemaInitializer>.Instance)
             .StartAsync(CancellationToken.None);
 
         await using var conn = await _factory.OpenAsync();

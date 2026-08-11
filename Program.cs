@@ -1778,28 +1778,37 @@ builder.Services.AddSingleton<Db>();
 // that take it directly — the import sessions' SQLSTATE-driven reconnect
 // logic, binary COPY, pgvector — still need it. What varies by driver is which
 // factory the backend-neutral repositories resolve.
-var sqliteSelected = false;
-{
-    if (!DatabaseDriverParser.TryParse(builder.Configuration["Dmart:DatabaseDriver"], out var driver))
-        driver = DatabaseDriver.Postgresql;   // DmartSettingsValidator rejects bad values at start
+// Driver selection. An explicit switch, not DbProviderFactories: that resolves
+// providers by assembly name through reflection, which Native AOT cannot see
+// through. Both implementations are constructed directly, so both are
+// statically rooted.
+//
+// Resolved from IOptions at RESOLUTION time rather than read out of
+// builder.Configuration at registration time. Registration-time reads see
+// whatever configuration exists at that moment, which is wrong for anything
+// that layers configuration afterwards — the integration-test factory does
+// exactly that, and it silently got the PostgreSQL factory under
+// DMART_TEST_DRIVER=sqlite.
+//
+// Db stays registered unconditionally: the PostgreSQL-only paths that take it
+// directly (binary COPY, the SQLSTATE-driven import session, pgvector) still
+// need it.
+builder.Services.AddSingleton<SqliteConnectionFactory>();
 
-    if (driver == DatabaseDriver.Sqlite)
-    {
-        builder.Services.AddSingleton<SqliteConnectionFactory>();
-        builder.Services.AddSingleton<IDbConnectionFactory>(
-            sp => sp.GetRequiredService<SqliteConnectionFactory>());
-        builder.Services.AddHostedService<SqliteSchemaInitializer>();
-        sqliteSelected = true;
-        builder.Services.AddSingleton<Dmart.QueryGrammar.ISqlDialect>(
-            Dmart.QueryGrammar.SqliteSqlDialect.Instance);
-    }
-    else
-    {
-        builder.Services.AddSingleton<IDbConnectionFactory>(sp => sp.GetRequiredService<Db>());
-        builder.Services.AddSingleton<Dmart.QueryGrammar.ISqlDialect>(
-            Dmart.QueryGrammar.PostgresSqlDialect.Instance);
-    }
+static bool UsesSqlite(IServiceProvider sp)
+{
+    var settings = sp.GetRequiredService<IOptions<DmartSettings>>().Value;
+    return DatabaseDriverParser.TryParse(settings.DatabaseDriver, out var d)
+        && d == DatabaseDriver.Sqlite;
 }
+
+builder.Services.AddSingleton<IDbConnectionFactory>(sp => UsesSqlite(sp)
+    ? sp.GetRequiredService<SqliteConnectionFactory>()
+    : sp.GetRequiredService<Db>());
+
+builder.Services.AddSingleton<Dmart.QueryGrammar.ISqlDialect>(sp => UsesSqlite(sp)
+    ? Dmart.QueryGrammar.SqliteSqlDialect.Instance
+    : Dmart.QueryGrammar.PostgresSqlDialect.Instance);
 builder.Services.AddSingleton<AuthzCacheRefresher>();
 builder.Services.AddSingleton<EntryRepository>();
 builder.Services.AddSingleton<UserRepository>();
@@ -1847,11 +1856,11 @@ builder.Services.Configure<Microsoft.AspNetCore.Builder.ForwardedHeadersOptions>
 
 // Schema bootstrapper runs once on startup. AdminBootstrap MUST be registered AFTER
 // SchemaInitializer — IHostedServices run StartAsync sequentially in registration order.
-// Only on PostgreSQL: the SQLite schema initializer is registered alongside its
-// connection factory above. Gating on the driver rather than on Db.IsConfigured
-// so a deployment that still has DATABASE_* set does not quietly initialize a
-// PostgreSQL schema nothing will read.
-if (!sqliteSelected) builder.Services.AddHostedService<SchemaInitializer>();
+// Both are registered; each returns early when it is not the selected driver.
+// They cannot be gated here, because the driver is not known until options
+// resolve — see the comment on the connection-factory registration.
+builder.Services.AddHostedService<SchemaInitializer>();
+builder.Services.AddHostedService<SqliteSchemaInitializer>();
 builder.Services.AddHostedService<AdminBootstrap>();
 
 // IP-based rate limiter for authentication endpoints. Account lockout (on the
