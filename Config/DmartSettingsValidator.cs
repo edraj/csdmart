@@ -73,6 +73,9 @@ internal sealed class DmartSettingsValidator : IValidateOptions<DmartSettings>
             failures.Add($"MaxQueryLimit must be >= 1 (got {s.MaxQueryLimit})");
         if (s.RequestTimeout <= 0)
             failures.Add($"RequestTimeout must be > 0 (got {s.RequestTimeout})");
+        if (!string.Equals(s.UserDeletionMode, "soft", StringComparison.OrdinalIgnoreCase)
+            && !string.Equals(s.UserDeletionMode, "hard", StringComparison.OrdinalIgnoreCase))
+            failures.Add($"UserDeletionMode must be \"soft\" or \"hard\" (got \"{s.UserDeletionMode}\")");
 
         return failures.Count > 0
             ? ValidateOptionsResult.Fail(failures)

@@ -209,6 +209,10 @@ internal static class HistoryDiffUtil
             ["is_msisdn_verified"] = u.IsMsisdnVerified,
             ["force_password_change"] = u.ForcePasswordChange,
             ["device_id"] = u.DeviceId,
+            // Only ever transitions false→true, on soft-delete (UserService.
+            // DeleteUserAsync) — surfaces that event in the user's history. Inert
+            // for every other update path, where it never changes.
+            ["is_deleted"] = u.IsDeleted,
         };
         if (u.Displayname is not null)
         {

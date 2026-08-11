@@ -123,7 +123,7 @@ public sealed class ForceDeleteEndpointTests : IClassFixture<DmartFactory>
     }
 
     [FactIfPg]
-    public async Task DeleteUser_With_Records_NoForce_Fails_ForceCascades()
+    public async Task DeleteUser_SoftMode_Default_MarksDeleted_KeepsOwnedRecords()
     {
         var admin = await _factory.CreateLoggedInUserAsync();         // super_admin
         var victim = await _factory.CreateLoggedInUserAsync();        // will own an entry
@@ -134,23 +134,57 @@ public sealed class ForceDeleteEndpointTests : IClassFixture<DmartFactory>
             Records = new() { new Record { ResourceType = ResourceType.Content, Subpath = "/itest", Shortname = sn } },
         }, DmartJsonContext.Default.Request)).EnsureSuccessStatusCode();
 
-        // force=false → friendly failure, user still present.
-        var noForce = await admin.Client.PostAsJsonAsync("/managed/request",
-            Del("management", ResourceType.User, "/users", victim.Shortname, force: false),
-            DmartJsonContext.Default.Request);
-        var noForceBody = JsonSerializer.Deserialize(await noForce.Content.ReadAsStringAsync(), DmartJsonContext.Default.Response)!;
-        noForceBody.Status.ShouldBe(Status.Failed);
-        var users = _factory.Services.GetRequiredService<Dmart.DataAdapters.Sql.UserRepository>();
-        (await users.GetByShortnameAsync(victim.Shortname)).ShouldNotBeNull();
-
-        // force=true → user + entry gone, response reports the cascade.
-        var forced = await admin.Client.PostAsJsonAsync("/managed/request",
+        // Default factory config → soft mode. force is ignored entirely.
+        var resp = await admin.Client.PostAsJsonAsync("/managed/request",
             Del("management", ResourceType.User, "/users", victim.Shortname, force: true),
+            DmartJsonContext.Default.Request);
+        resp.StatusCode.ShouldBe(HttpStatusCode.OK);
+        var body = JsonSerializer.Deserialize(await resp.Content.ReadAsStringAsync(), DmartJsonContext.Default.Response)!;
+        body.Status.ShouldBe(Status.Success);
+
+        var users = _factory.Services.GetRequiredService<Dmart.DataAdapters.Sql.UserRepository>();
+        var deleted = await users.GetByShortnameAsync(victim.Shortname);
+        deleted.ShouldNotBeNull();
+        deleted.IsDeleted.ShouldBeTrue();
+        deleted.DeletedAt.ShouldNotBeNull();
+        deleted.Email.ShouldBeNull();
+        deleted.Password.ShouldBeNull();
+
+        // Nothing the victim owned was touched.
+        (await admin.Client.GetAsync($"/managed/entry/content/test/itest/{sn}")).StatusCode
+            .ShouldBe(HttpStatusCode.OK);
+
+        // Best-effort cleanup — soft delete is irreversible via the API, so the
+        // victim row/entry are cleaned up directly rather than left behind.
+        await admin.Client.PostAsJsonAsync("/managed/request",
+            Del("test", ResourceType.Content, "/itest", sn, force: true), DmartJsonContext.Default.Request);
+        try { await users.DeleteAsync(victim.Shortname); } catch { }
+        await admin.Cleanup();
+    }
+
+    [FactIfPg]
+    public async Task DeleteUser_HardMode_Cascades_RemovesUserAndOwnedEntries()
+    {
+        var hardHost = _factory.WithWebHostBuilder(b => b.ConfigureServices(svcs =>
+            svcs.Configure<Dmart.Config.DmartSettings>(s => s.UserDeletionMode = "hard")));
+        var admin = await _factory.CreateLoggedInUserAsync(hardHost);
+        var victim = await _factory.CreateLoggedInUserAsync(hardHost);
+        var sn = $"v{Guid.NewGuid():N}"[..12];
+        (await victim.Client.PostAsJsonAsync("/managed/request", new Request
+        {
+            RequestType = RequestType.Create, SpaceName = "test",
+            Records = new() { new Record { ResourceType = ResourceType.Content, Subpath = "/itest", Shortname = sn } },
+        }, DmartJsonContext.Default.Request)).EnsureSuccessStatusCode();
+
+        var forced = await admin.Client.PostAsJsonAsync("/managed/request",
+            Del("management", ResourceType.User, "/users", victim.Shortname, force: false),
             DmartJsonContext.Default.Request);
         forced.StatusCode.ShouldBe(HttpStatusCode.OK);
         var body = JsonSerializer.Deserialize(await forced.Content.ReadAsStringAsync(), DmartJsonContext.Default.Response)!;
         Attr(body, "report").GetProperty("entries").GetInt64().ShouldBe(1);  // the victim's one entry
         Attr(body, "affected").GetInt64().ShouldBeGreaterThanOrEqualTo(1);
+
+        var users = hardHost.Services.GetRequiredService<Dmart.DataAdapters.Sql.UserRepository>();
         (await users.GetByShortnameAsync(victim.Shortname)).ShouldBeNull();
         await admin.Cleanup();
     }

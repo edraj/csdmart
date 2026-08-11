@@ -87,6 +87,8 @@ public static class SqlSchema
         last_login              JSONB,
         notes                   TEXT,
         query_policies          TEXT[] NOT NULL DEFAULT '{}',
+        is_deleted              BOOLEAN NOT NULL DEFAULT FALSE,
+        deleted_at              TIMESTAMP,
 
         UNIQUE (shortname, space_name, subpath)
     );
@@ -523,6 +525,8 @@ public static class SqlSchema
     ALTER TABLE users       ADD COLUMN IF NOT EXISTS locked_to_device      BOOLEAN NOT NULL DEFAULT FALSE;
     ALTER TABLE users       ADD COLUMN IF NOT EXISTS last_checksum_history TEXT;
     ALTER TABLE users       ADD COLUMN IF NOT EXISTS query_policies        TEXT[] NOT NULL DEFAULT '{}';
+    ALTER TABLE users       ADD COLUMN IF NOT EXISTS is_deleted            BOOLEAN NOT NULL DEFAULT FALSE;
+    ALTER TABLE users       ADD COLUMN IF NOT EXISTS deleted_at            TIMESTAMP;
     ALTER TABLE roles       ADD COLUMN IF NOT EXISTS last_checksum_history TEXT;
     ALTER TABLE roles       ADD COLUMN IF NOT EXISTS grantable_by          JSONB;
     ALTER TABLE roles       ADD COLUMN IF NOT EXISTS query_policies        TEXT[] NOT NULL DEFAULT '{}';
