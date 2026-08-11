@@ -25,6 +25,8 @@ namespace Dmart.DataAdapters.Sql;
 // SQL string. Dispatch is on the concrete command type: both providers are
 // statically referenced, so nothing here is reflection-based and Native AOT
 // sees through it.
+[System.Diagnostics.CodeAnalysis.SuppressMessage("Security", "CA2100",
+    Justification = "Audited: CommandText is assembled from compile-time SQL, dialect-produced fragments and $N placeholders only. Every caller-supplied value is bound through DbParams, never concatenated.")]
 public static class DbCommandFactory
 {
     /// <summary>

@@ -15,6 +15,8 @@ namespace Dmart.DataAdapters.Sql;
 // The PostgreSQL schema does its forward-compatibility patching in SQL
 // (`ADD COLUMN IF NOT EXISTS`) and its conditional index creation in PL/pgSQL
 // DO blocks. SQLite has neither, so both move here — see PatchColumnsAsync.
+[System.Diagnostics.CodeAnalysis.SuppressMessage("Security", "CA2100",
+    Justification = "Audited: CommandText is assembled from compile-time SQL, dialect-produced fragments and $N placeholders only. Every caller-supplied value is bound through DbParams, never concatenated.")]
 public sealed class SqliteSchemaInitializer(
     SqliteConnectionFactory factory,
     Microsoft.Extensions.Options.IOptions<Dmart.Config.DmartSettings> settings,

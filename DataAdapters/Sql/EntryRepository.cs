@@ -12,6 +12,8 @@ namespace Dmart.DataAdapters.Sql;
 // Maps the `entries` table column-for-column to the C# Entry record. No `doc` jsonb
 // fast-path; every column is read and written explicitly so dmart Python and dmart C#
 // see the same row layout.
+[System.Diagnostics.CodeAnalysis.SuppressMessage("Security", "CA2100",
+    Justification = "Audited: CommandText is assembled from compile-time SQL, dialect-produced fragments and $N placeholders only. Every caller-supplied value is bound through DbParams, never concatenated.")]
 public sealed class EntryRepository(IDbConnectionFactory db)
 {
     private const string SelectAllColumns = """

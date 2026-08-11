@@ -20,6 +20,8 @@ public enum LockOutcome
 //
 // This is the one repository where the two backends need genuinely different
 // strategies rather than different spellings; see TryLockAsync.
+[System.Diagnostics.CodeAnalysis.SuppressMessage("Security", "CA2100",
+    Justification = "Audited: CommandText is assembled from compile-time SQL, dialect-produced fragments and $N placeholders only. Every caller-supplied value is bound through DbParams, never concatenated.")]
 public sealed class LockRepository(IDbConnectionFactory db, ISqlDialect dialect)
 {
     // Emits the expiry comparison and binds whatever the engine needs for it.

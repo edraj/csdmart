@@ -18,6 +18,8 @@ namespace Dmart.DataAdapters.Sql;
 // so a DB read can't surface a live, replayable credential within its TTL. The
 // hash is deterministic, so verification stays a single SELECT + fixed-time
 // compare (no per-row KDF on the auth hot path).
+[System.Diagnostics.CodeAnalysis.SuppressMessage("Security", "CA2100",
+    Justification = "Audited: CommandText is assembled from compile-time SQL, dialect-produced fragments and $N placeholders only. Every caller-supplied value is bound through DbParams, never concatenated.")]
 public sealed class OtpRepository(IDbConnectionFactory db, OtpHasher hasher)
 {
     public async Task StoreAsync(string key, string code, DateTime expiresAt, CancellationToken ct = default)

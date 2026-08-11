@@ -25,6 +25,8 @@ namespace Dmart.DataAdapters.Sql;
 // shape: a thundering herd on one file lock, where unjittered backoff
 // resynchronizes the herd and makes collisions more likely on each round. Two
 // different failure modes, two different policies.
+[System.Diagnostics.CodeAnalysis.SuppressMessage("Security", "CA2100",
+    Justification = "Audited: CommandText is assembled from compile-time SQL, dialect-produced fragments and $N placeholders only. Every caller-supplied value is bound through DbParams, never concatenated.")]
 public static class SqliteRetry
 {
     private const int MaxAttempts = 3;

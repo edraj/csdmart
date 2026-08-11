@@ -7,6 +7,8 @@ namespace Dmart.DataAdapters.Sql;
 
 // roles + groups + permissions + userpermissionscache. Column-for-column mapping to dmart's
 // Roles, Permissions, and UserPermissionsCache SQLModel tables.
+[System.Diagnostics.CodeAnalysis.SuppressMessage("Security", "CA2100",
+    Justification = "Audited: CommandText is assembled from compile-time SQL, dialect-produced fragments and $N placeholders only. Every caller-supplied value is bound through DbParams, never concatenated.")]
 public sealed class AccessRepository(IDbConnectionFactory db, ISqlDialect dialect, AuthzCacheRefresher refresher, UserRepository userRepository)
 {
     private const string SelectGroupColumns = """

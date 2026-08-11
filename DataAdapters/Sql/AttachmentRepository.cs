@@ -8,6 +8,8 @@ namespace Dmart.DataAdapters.Sql;
 // expressed via the (space_name, subpath, shortname) of the attachment row, where the
 // subpath includes the parent shortname (e.g. /content/foo/.attachments). We follow
 // dmart's convention here.
+[System.Diagnostics.CodeAnalysis.SuppressMessage("Security", "CA2100",
+    Justification = "Audited: CommandText is assembled from compile-time SQL, dialect-produced fragments and $N placeholders only. Every caller-supplied value is bound through DbParams, never concatenated.")]
 public sealed class AttachmentRepository(IDbConnectionFactory db, ISqlDialect dialect)
 {
     private const string SelectAllColumns = """

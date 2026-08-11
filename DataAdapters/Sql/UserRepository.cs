@@ -7,6 +7,8 @@ using Dmart.QueryGrammar;
 
 namespace Dmart.DataAdapters.Sql;
 
+[System.Diagnostics.CodeAnalysis.SuppressMessage("Security", "CA2100",
+    Justification = "Audited: CommandText is assembled from compile-time SQL, dialect-produced fragments and $N placeholders only. Every caller-supplied value is bound through DbParams, never concatenated.")]
 public sealed class UserRepository(IDbConnectionFactory db, AuthzCacheRefresher refresher, SessionTokenHasher tokenHasher)
 {
     private const string SelectAllColumns = """

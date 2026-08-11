@@ -7,6 +7,8 @@ using NpgsqlTypes;
 namespace Dmart.DataAdapters.Sql;
 
 // histories table — flat (no Metas inheritance in dmart).
+[System.Diagnostics.CodeAnalysis.SuppressMessage("Security", "CA2100",
+    Justification = "Audited: CommandText is assembled from compile-time SQL, dialect-produced fragments and $N placeholders only. Every caller-supplied value is bound through DbParams, never concatenated.")]
 public sealed class HistoryRepository(IDbConnectionFactory db, ISqlDialect dialect)
 {
     public async Task AppendAsync(string spaceName, string subpath, string shortname, string? actor,

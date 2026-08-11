@@ -55,6 +55,8 @@ namespace Dmart.DataAdapters.Sql;
 //                      relying on LIKE's default folding. The two halves are a
 //                      pair: turning this pragma on without the lower() emission
 //                      would silently make every wildcard search case-sensitive.
+[System.Diagnostics.CodeAnalysis.SuppressMessage("Security", "CA2100",
+    Justification = "Audited: CommandText is assembled from compile-time SQL, dialect-produced fragments and $N placeholders only. Every caller-supplied value is bound through DbParams, never concatenated.")]
 public sealed class SqliteConnectionFactory : IDbConnectionFactory
 {
     private readonly string _connectionString;
