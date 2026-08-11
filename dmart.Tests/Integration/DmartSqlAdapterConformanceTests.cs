@@ -51,7 +51,7 @@ public sealed class DmartSqlAdapterConformanceTests : IClassFixture<DmartFactory
     private static Locator LocatorFor(Entry e) =>
         new(e.ResourceType, e.SpaceName, e.Subpath, e.Shortname);
 
-    [FactIfPg]
+    [FactIfPostgresOnly]
     public async Task CreateAsync_Returns_Response_With_JsonElement_Attribute_Values()
     {
         var adapter = MakeAdapter();
@@ -88,7 +88,7 @@ public sealed class DmartSqlAdapterConformanceTests : IClassFixture<DmartFactory
         }
     }
 
-    [FactIfPg]
+    [FactIfPostgresOnly]
     public async Task CreateAsync_On_Existing_Entry_Throws_DmartConflictException()
     {
         var adapter = MakeAdapter();
@@ -107,7 +107,7 @@ public sealed class DmartSqlAdapterConformanceTests : IClassFixture<DmartFactory
         }
     }
 
-    [FactIfPg]
+    [FactIfPostgresOnly]
     public async Task UpdateAsync_On_Missing_Entry_Throws_DmartNotFoundException()
     {
         var adapter = MakeAdapter();
@@ -117,7 +117,7 @@ public sealed class DmartSqlAdapterConformanceTests : IClassFixture<DmartFactory
         ex.StatusCode.ShouldBe(404);
     }
 
-    [FactIfPg]
+    [FactIfPostgresOnly]
     public async Task SaveAsync_Upserts_And_Returns_Response_On_Both_Paths()
     {
         var adapter = MakeAdapter();
@@ -143,7 +143,7 @@ public sealed class DmartSqlAdapterConformanceTests : IClassFixture<DmartFactory
         }
     }
 
-    [FactIfPg]
+    [FactIfPostgresOnly]
     public async Task GetProfileAsync_Returns_Redacted_User_With_Payload()
     {
         // Seed through the server's repository (same database), including a

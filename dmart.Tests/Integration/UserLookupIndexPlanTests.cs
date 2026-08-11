@@ -99,7 +99,7 @@ public sealed class UserLookupIndexPlanTests
         plan.ShouldContain(index, customMessage:
             $"Planner could not use {index} — this lookup will sequentially scan the users table. Plan:\n{plan}");
 
-    [FactIfPg]
+    [FactIfPostgresOnly]
     public void Probe_Index_Ddl_Matches_Schema()
     {
         SqlSchema.CreateAll.ShouldContain(EmailIndexDdl,
@@ -108,7 +108,7 @@ public sealed class UserLookupIndexPlanTests
             customMessage: "users msisdn index DDL changed — update this probe and re-verify UserRepository.MsisdnLookupWhere implies the new predicate");
     }
 
-    [FactIfPg]
+    [FactIfPostgresOnly]
     public async Task Email_Lookup_Uses_Index_Under_Custom_Plan()
     {
         await using var conn = await OpenProbeAsync();
@@ -118,7 +118,7 @@ public sealed class UserLookupIndexPlanTests
         AssertUsesIndex(plan, "idx_users_email_lower_unique");
     }
 
-    [FactIfPg]
+    [FactIfPostgresOnly]
     public async Task Email_Lookup_Uses_Index_Under_Generic_Plan()
     {
         await using var conn = await OpenProbeAsync();
@@ -128,7 +128,7 @@ public sealed class UserLookupIndexPlanTests
         AssertUsesIndex(plan, "idx_users_email_lower_unique");
     }
 
-    [FactIfPg]
+    [FactIfPostgresOnly]
     public async Task Msisdn_Lookup_Uses_Index_Under_Generic_Plan()
     {
         await using var conn = await OpenProbeAsync();
@@ -138,7 +138,7 @@ public sealed class UserLookupIndexPlanTests
         AssertUsesIndex(plan, "idx_users_msisdn_unique");
     }
 
-    [FactIfPg]
+    [FactIfPostgresOnly]
     public async Task Exists_Check_Uses_All_Three_Indexes_Under_Generic_Plan()
     {
         await using var conn = await OpenProbeAsync();
