@@ -134,6 +134,18 @@ public sealed class DmartFactory : WebApplicationFactory<Program>, IAsyncLifetim
             // is null, leave the individual components alone so the values
             // loaded from config.env by Program.cs remain authoritative (and
             // the settings validator sees a populated DatabaseHost).
+            ApplyDriverOverrides(overrides);
+
+            cfg.AddInMemoryCollection(overrides);
+        });
+    }
+
+    // Points a configuration override set at the selected backend. Shared so the
+    // handful of test classes that build their own WebApplicationFactory (to pin
+    // a rate limit, a log path, and so on) stay driver-aware too — otherwise
+    // they silently keep booting against PostgreSQL under DMART_TEST_DRIVER=sqlite.
+    public static void ApplyDriverOverrides(IDictionary<string, string?> overrides)
+    {
             if (UseSqlite)
             {
                 // Null the PostgreSQL components so the settings validator does
@@ -153,9 +165,6 @@ public sealed class DmartFactory : WebApplicationFactory<Program>, IAsyncLifetim
                 overrides["Dmart:DatabasePassword"] = null;
                 overrides["Dmart:DatabaseName"] = null;
             }
-
-            cfg.AddInMemoryCollection(overrides);
-        });
     }
 
     async Task IAsyncLifetime.InitializeAsync()

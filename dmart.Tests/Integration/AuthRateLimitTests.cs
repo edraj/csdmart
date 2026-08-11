@@ -82,7 +82,7 @@ public sealed class AuthRateLimitTests : IClassFixture<AuthRateLimitTests.LowRat
                 };
                 if (!string.IsNullOrEmpty(DmartFactory.PgConn))
                 {
-                    overrides["Dmart:PostgresConnection"] = DmartFactory.PgConn;
+                DmartFactory.ApplyDriverOverrides(overrides);
                     overrides["Dmart:DatabaseHost"] = null;
                     overrides["Dmart:DatabasePassword"] = null;
                     overrides["Dmart:DatabaseName"] = null;

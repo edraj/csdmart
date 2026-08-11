@@ -138,7 +138,7 @@ public sealed class ShortLinkAnonymousResolveTests
         overrides["Dmart:AuthRateLimitPerMinute"] = authRateLimit.ToString();
         if (!string.IsNullOrEmpty(DmartFactory.PgConn))
         {
-            overrides["Dmart:PostgresConnection"] = DmartFactory.PgConn;
+                DmartFactory.ApplyDriverOverrides(overrides);
             overrides["Dmart:DatabaseHost"] = null;
             overrides["Dmart:DatabasePassword"] = null;
             overrides["Dmart:DatabaseName"] = null;
