@@ -136,13 +136,7 @@ public sealed class ShortLinkAnonymousResolveTests
         overrides["Dmart:AdminEmail"] = "admin@test.local";
         overrides["Dmart:AppUrl"] = AppUrl;
         overrides["Dmart:AuthRateLimitPerMinute"] = authRateLimit.ToString();
-        if (!string.IsNullOrEmpty(DmartFactory.PgConn))
-        {
                 DmartFactory.ApplyDriverOverrides(overrides);
-            overrides["Dmart:DatabaseHost"] = null;
-            overrides["Dmart:DatabasePassword"] = null;
-            overrides["Dmart:DatabaseName"] = null;
-        }
     }
 
     public sealed class OnHostFactory : WebApplicationFactory<Program>

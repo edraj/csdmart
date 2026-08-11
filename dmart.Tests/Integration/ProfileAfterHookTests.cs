@@ -215,13 +215,7 @@ public sealed class ProfileAfterHookTests
                     ["Dmart:AuthRateLimitPerMinute"] = "1000",
                     ["Dmart:SpacesFolder"] = _spacesFolder,
                 };
-                if (!string.IsNullOrEmpty(DmartFactory.PgConn))
-                {
                 DmartFactory.ApplyDriverOverrides(overrides);
-                    overrides["Dmart:DatabaseHost"] = null;
-                    overrides["Dmart:DatabasePassword"] = null;
-                    overrides["Dmart:DatabaseName"] = null;
-                }
                 cfg.AddInMemoryCollection(overrides);
             });
         }

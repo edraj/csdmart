@@ -3176,13 +3176,7 @@ public sealed class SecurityPenetrationTests : IClassFixture<SecurityPenetration
                     // Pentest runs many logins back-to-back. 1000/min is generous.
                     ["Dmart:AuthRateLimitPerMinute"] = "1000",
                 };
-                if (!string.IsNullOrEmpty(DmartFactory.PgConn))
-                {
                 DmartFactory.ApplyDriverOverrides(overrides);
-                    overrides["Dmart:DatabaseHost"] = null;
-                    overrides["Dmart:DatabasePassword"] = null;
-                    overrides["Dmart:DatabaseName"] = null;
-                }
                 cfg.AddInMemoryCollection(overrides);
             });
         }

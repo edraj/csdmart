@@ -218,13 +218,7 @@ public sealed class LogFileTests
                     ["Dmart:AdminEmail"] = "admin@test.local",
                     ["Dmart:LogFile"] = _logFilePath,
                 };
-                if (!string.IsNullOrEmpty(DmartFactory.PgConn))
-                {
                 DmartFactory.ApplyDriverOverrides(overrides);
-                    overrides["Dmart:DatabaseHost"] = null;
-                    overrides["Dmart:DatabasePassword"] = null;
-                    overrides["Dmart:DatabaseName"] = null;
-                }
                 cfg.AddInMemoryCollection(overrides);
             });
         }

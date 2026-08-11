@@ -80,13 +80,7 @@ public sealed class AuthRateLimitTests : IClassFixture<AuthRateLimitTests.LowRat
                     // The one knob under test.
                     ["Dmart:AuthRateLimitPerMinute"] = "3",
                 };
-                if (!string.IsNullOrEmpty(DmartFactory.PgConn))
-                {
                 DmartFactory.ApplyDriverOverrides(overrides);
-                    overrides["Dmart:DatabaseHost"] = null;
-                    overrides["Dmart:DatabasePassword"] = null;
-                    overrides["Dmart:DatabaseName"] = null;
-                }
                 cfg.AddInMemoryCollection(overrides);
             });
         }
