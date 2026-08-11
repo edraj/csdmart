@@ -54,7 +54,9 @@ public static class SqliteRetry
                 // Exponential with full jitter. Random is fine here — this
                 // picks a backoff delay, it is not security-sensitive.
                 var ceiling = BaseDelay * Math.Pow(2, attempt - 1);
+#pragma warning disable CA5394 // Backoff jitter — this picks a delay, not a secret.
                 var delay = TimeSpan.FromMilliseconds(Random.Shared.NextDouble() * ceiling.TotalMilliseconds);
+#pragma warning restore CA5394
                 await Task.Delay(delay, ct);
             }
         }

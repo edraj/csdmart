@@ -831,10 +831,17 @@ public sealed class UserRepository(IDbConnectionFactory db, AuthzCacheRefresher 
         var fb = DbParams.Add(cmd, (object?)firebaseToken ?? DBNull.Value);
         // Same clock as the freshness comparisons that will read this row.
         var now = NowExpr(cmd);
+        // CA3001 traces `shortname` from the HTTP boundary into this method and
+        // flags the interpolation. It never reaches the SQL: every value here is
+        // a $N placeholder returned by DbParams.Add, and `now` is either the
+        // literal NOW() or another placeholder. Only placeholder text is
+        // interpolated.
+#pragma warning disable CA3001
         cmd.CommandText = $"""
             INSERT INTO sessions (uuid, shortname, token, firebase_token, timestamp)
             VALUES ({uuid}, {sn}, {tk}, {fb}, {now})
             """;
+#pragma warning restore CA3001
         await cmd.ExecuteNonQueryAsync(ct);
     }
 
