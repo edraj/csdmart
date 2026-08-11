@@ -22,7 +22,7 @@ public class ImportExportRoundTripTests : IClassFixture<DmartFactory>
     private readonly DmartFactory _factory;
     public ImportExportRoundTripTests(DmartFactory factory) => _factory = factory;
 
-    [FactIfPg]
+    [FactIfImportSupported]
     public async Task Export_Then_Import_Round_Trips_Entries_Folders_And_Payload_Bodies()
     {
         var sp = _factory.Services;
@@ -135,7 +135,7 @@ public class ImportExportRoundTripTests : IClassFixture<DmartFactory>
         try { await spaceRepo.DeleteAsync(spaceName); } catch { }
     }
 
-    [FactIfPg]
+    [FactIfImportSupported]
     public async Task Import_Hard_Fails_On_Legacy_Flat_Layout()
     {
         var sp = _factory.Services;
@@ -158,7 +158,7 @@ public class ImportExportRoundTripTests : IClassFixture<DmartFactory>
         resp.Error!.Message.ShouldContain("legacy flat layout is not supported");
     }
 
-    [FactIfPg]
+    [FactIfImportSupported]
     public async Task RootSubpath_History_Round_Trips()
     {
         // Regression: TryImportHistoryAsync previously computed the subpath via
@@ -239,7 +239,7 @@ public class ImportExportRoundTripTests : IClassFixture<DmartFactory>
         }
     }
 
-    [FactIfPg]
+    [FactIfImportSupported]
     public async Task Import_Falls_Back_To_Dmart_Owner_When_Meta_Has_No_Owner_Shortname()
     {
         var sp = _factory.Services;
@@ -293,7 +293,7 @@ public class ImportExportRoundTripTests : IClassFixture<DmartFactory>
     // null, the media branch never fired, and every export silently produced a
     // zip full of attachment meta with no files behind it. Nothing caught that,
     // because no test had ever asserted the bytes survive.
-    [FactIfPg]
+    [FactIfImportSupported]
     public async Task Export_Writes_Attachment_Media_Bytes_Into_The_Zip()
     {
         var sp = _factory.Services;

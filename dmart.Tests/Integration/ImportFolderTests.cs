@@ -30,7 +30,7 @@ public class ImportFolderTests : IClassFixture<DmartFactory>
     // history pass. Before the Pass-5 gate, --skip-history was silently a no-op
     // for fs (histories imported anyway). Verifies 0 histories with the flag,
     // and that the sibling history.jsonl IS picked up without it.
-    [FactIfPg]
+    [FactIfImportSupported]
     public async Task Folder_Import_SkipHistory_Skips_Derived_History_For_Filesystem()
     {
         var sp = _factory.Services;
@@ -74,7 +74,7 @@ public class ImportFolderTests : IClassFixture<DmartFactory>
 
     // --spaces filter: pointed at a spaces-root holding sibling space folders,
     // only the selected space(s) import; the others are skipped entirely.
-    [FactIfPg]
+    [FactIfImportSupported]
     public async Task Folder_Import_Spaces_Filter_Imports_Only_Selected()
     {
         var sp = _factory.Services;
@@ -118,7 +118,7 @@ public class ImportFolderTests : IClassFixture<DmartFactory>
         }
     }
 
-    [FactIfPg]
+    [FactIfImportSupported]
     public async Task Folder_Import_Round_Trips_From_Unzipped_Export()
     {
         var sp = _factory.Services;
@@ -198,7 +198,7 @@ public class ImportFolderTests : IClassFixture<DmartFactory>
         }
     }
 
-    [FactIfPg]
+    [FactIfImportSupported]
     public async Task Folder_Import_Hard_Fails_When_No_Space_Layout()
     {
         var sp = _factory.Services;
@@ -223,7 +223,7 @@ public class ImportFolderTests : IClassFixture<DmartFactory>
         }
     }
 
-    [FactIfPg]
+    [FactIfImportSupported]
     public async Task Folder_Import_Skips_DotPrefixed_Directories()
     {
         // Stage a minimal valid dump with extra `.git/` and `.DS_Store`
@@ -375,7 +375,7 @@ public class ImportFolderTests : IClassFixture<DmartFactory>
     // exact insert count: with replace semantics the merge is ON CONFLICT DO
     // UPDATE, so batch N would re-merge batches 1..N-1 and the six batches
     // would report 1+2+3+4+5+6 = 21 affected rows instead of 6.
-    [FactIfPg]
+    [FactIfImportSupported]
     public async Task Folder_Import_BatchSize_One_Reuses_Session_Scratch_Tables()
     {
         var sp = _factory.Services;
@@ -434,7 +434,7 @@ public class ImportFolderTests : IClassFixture<DmartFactory>
         }
     }
 
-    [FactIfPg]
+    [FactIfImportSupported]
     public async Task Folder_Import_Remap_Drops_Content_Under_Target_Space_And_Subpath()
     {
         // Remap mode: source folder contains content (no meta.space.json
@@ -502,7 +502,7 @@ public class ImportFolderTests : IClassFixture<DmartFactory>
         }
     }
 
-    [FactIfPg]
+    [FactIfImportSupported]
     public async Task Folder_Import_Remap_Hard_Fails_On_Missing_Target_Space()
     {
         // Pre-flight check: the target space must already exist. If the
@@ -529,7 +529,7 @@ public class ImportFolderTests : IClassFixture<DmartFactory>
         }
     }
 
-    [Fact]
+    [FactIfImportSupported]
     public void Cli_Import_TypeZip_On_Directory_Exits_Nonzero()
     {
         // Pre-validation in Program.cs: `--type=zip` against a directory
