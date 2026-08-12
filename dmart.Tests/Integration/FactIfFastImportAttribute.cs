@@ -30,6 +30,14 @@ public sealed class FactIfFastImportAttribute : FactAttribute
 
     private static string? Probe()
     {
+        // --fast has no SQLite form at all: it works by bypassing FK checks and
+        // triggers, and the FTS5 triggers that maintain the wildcard index MUST
+        // fire during a rebuild. The import service refuses the flag there; see
+        // ImportFromEntriesAsync.
+        if (DmartFactory.UseSqlite)
+            return "--fast is PostgreSQL-only (session_replication_role='replica'); "
+                 + "SQLite has no equivalent and its FTS5 triggers must fire — "
+                 + "see docs/sqlite-backend-audit.md §9";
         if (!DmartFactory.HasPg)
             return "PostgreSQL not configured (set DMART_TEST_PG_CONN or create a config.env)";
         try

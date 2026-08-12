@@ -54,7 +54,7 @@ public sealed class ImportExportService(
     SpaceRepository spaces,
     HistoryRepository histories,
     PermissionService perms,
-    Db db,
+    IDbConnectionFactory db,
     IOptions<DmartSettings> settingsOpt,
     ILogger<ImportExportService> log)
 {
@@ -70,6 +70,15 @@ public sealed class ImportExportService(
     // Retained for callers that still want a bounded "sample" query. It is no
     // longer what any full export runs.
     private const int QueryLimit = 100_000;
+
+    // The bulk-load machinery — binary COPY sessions, the SQLSTATE-driven
+    // reconnect/replay, and the GIN index drop/restore bracket — exists only
+    // on PostgreSQL. Null under any other driver, and that null is what routes
+    // an import to the per-row path instead. Deliberately a cast rather than a
+    // capability flag: the PostgreSQL-only calls need the concrete type
+    // anyway, so one expression both answers "can we?" and hands over the
+    // object to do it with.
+    private Db? Bulk => db as Db;
 
     // Maximum rows accumulated in memory before a bulk COPY flush. Bounds
     // peak working-set of `bulkEntries` / `bulkAttachments` independent of
@@ -976,7 +985,7 @@ public sealed class ImportExportService(
             try
             {
                 await using var seedConn = await db.OpenAsync(ct);
-                await using var cmd = new NpgsqlCommand("SELECT shortname FROM users", seedConn);
+                await using var cmd = seedConn.Command("SELECT shortname FROM users");
                 await using var rdr = await cmd.ExecuteReaderAsync(ct);
                 var seeded = 0;
                 while (await rdr.ReadAsync(ct))
@@ -1048,6 +1057,34 @@ public sealed class ImportExportService(
         // the ceiling of 1M is a sanity cap (above that, peak working-set
         // approaches the pre-batching world even with --fast).
         batchSize = Math.Clamp(batchSize, 1, 1_000_000);
+
+        // Reject the PostgreSQL-only load options rather than ignoring them.
+        // Each is a deliberate safety/performance trade the operator opted
+        // into; silently running without it would produce a slower import (or
+        // a differently-durable one) than the command line asked for, and the
+        // operator would have no way to tell.
+        if (Bulk is null)
+        {
+            if (fastUnsafeNoFkCheck)
+                return Response.Fail(InternalErrorCode.INVALID_DATA,
+                    "--fast is PostgreSQL-only: it works by setting session_replication_role='replica' "
+                    + "to bypass FK checks and triggers for the load. SQLite has no equivalent, and the "
+                    + "FTS5 triggers that maintain the wildcard index MUST fire during a rebuild. "
+                    + "Re-run without --fast.",
+                    ErrorTypes.Request);
+            if (dropIndexes)
+                return Response.Fail(InternalErrorCode.INVALID_DATA,
+                    "--drop-indexes is PostgreSQL-only: it exists because GIN index maintenance is paid "
+                    + "per row and worsens as the index grows. SQLite's B-tree and FTS5 indexes do not "
+                    + "have that cost curve, so there is nothing to win here. Re-run without it.",
+                    ErrorTypes.Request);
+            if (fastParallelism > 1)
+                return Response.Fail(InternalErrorCode.INVALID_DATA,
+                    "--fast-parallelism is PostgreSQL-only. SQLite admits exactly one writer at a time, "
+                    + "so parallel workers would serialize on the file lock and merely add contention.",
+                    ErrorTypes.Request);
+        }
+
         // Layout validation — hard-fail on the legacy flat C# layout. Every
         // entry must live under `{space}/…` where `{space}` has no leading
         // slash and no `.dm` segment at position 0.
@@ -1109,7 +1146,7 @@ public sealed class ImportExportService(
                 log.LogWarning(
                     "import: {Count} index(es) are missing from an earlier --drop-indexes run that did "
                     + "not finish — rebuilding them now before importing", pendingFromCrash.Count);
-                await using var restoreConn = await db.OpenAsync(ct);
+                await using var restoreConn = (NpgsqlConnection)await db.OpenAsync(ct);
                 var stillBroken = await ImportBulkIndexes.RestoreAsync(restoreConn, pendingFromCrash, log, ct);
                 checkpoint?.MarkIndexesRestored(pendingFromCrash.Select(i => i.Name).Except(stillBroken));
                 if (stillBroken.Count > 0)
@@ -1123,7 +1160,7 @@ public sealed class ImportExportService(
 
         if (dropIndexes && droppedIndexes.Count == 0)
         {
-            await using var dropConn = await db.OpenAsync(ct);
+            await using var dropConn = (NpgsqlConnection)await db.OpenAsync(ct);
             var found = await ImportBulkIndexes.DiscoverAsync(dropConn, ct);
             if (found.Count == 0)
             {
@@ -1165,7 +1202,7 @@ public sealed class ImportExportService(
         {
             Db.FastImportSession? headSession = null;
             if (fastUnsafeNoFkCheck)
-                headSession = await db.BeginFastImportSessionAsync(ct);
+                headSession = await Bulk!.BeginFastImportSessionAsync(ct);
             var headConn = headSession?.Connection;
             try
             {
@@ -1409,7 +1446,7 @@ public sealed class ImportExportService(
                 log.LogInformation("import: rebuilding {Count} index(es)...", droppedIndexes.Count);
                 try
                 {
-                    await using var conn = await db.OpenAsync(CancellationToken.None);
+                    await using var conn = (NpgsqlConnection)await db.OpenAsync(CancellationToken.None);
                     var stillBroken = await ImportBulkIndexes.RestoreAsync(
                         conn, droppedIndexes, log, CancellationToken.None);
                     checkpoint?.MarkIndexesRestored(
@@ -1555,9 +1592,21 @@ public sealed class ImportExportService(
         bool bypassConstraints,
         CancellationToken ct)
     {
+        if (Bulk is null)
+        {
+            // No COPY, no scratch tables, no session. The Try* helpers already
+            // carry a per-row contract for a null connection — that is the
+            // reindex path, and it writes through the same repositories the
+            // HTTP layer uses, so every backend-specific concern (JSON storage
+            // shape, text[] encoding, FTS5 trigger fan-out) is handled once.
+            await RunTailPassesAsync(null, label, shardEntries, preserveExisting, results,
+                batchSize, validation, importTags, resume, skipHistory, ct);
+            return;
+        }
+
         var session = bypassConstraints
-            ? await db.BeginFastImportSessionAsync(ct)      // --fast: replica role
-            : await db.BeginBatchImportSessionAsync(ct);    // default: FKs enforced
+            ? await Bulk.BeginFastImportSessionAsync(ct)      // --fast: replica role
+            : await Bulk.BeginBatchImportSessionAsync(ct);    // default: FKs enforced
         try
         {
             // Scratch tables live for the whole session and are re-created

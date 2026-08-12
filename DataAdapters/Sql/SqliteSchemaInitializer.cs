@@ -31,7 +31,18 @@ public sealed class SqliteSchemaInitializer(
         if (!DatabaseDriverParser.TryParse(settings.Value.DatabaseDriver, out var driver)
             || driver != DatabaseDriver.Sqlite) return;
 
-        var ct = cancellationToken;
+        await EnsureSchemaAsync(factory, log, cancellationToken);
+    }
+
+    /// <summary>
+    /// Creates or patches the schema. Idempotent, and safe to call from
+    /// outside the host — `dmart import` uses it so a reindex onto a fresh
+    /// database file works without a separate migrate step, which is the whole
+    /// point of a rebuildable index.
+    /// </summary>
+    public static async Task EnsureSchemaAsync(
+        SqliteConnectionFactory factory, ILogger log, CancellationToken ct = default)
+    {
         await SqliteRetry.ExecuteAsync(async token =>
         {
             await using var conn = await factory.OpenAsync(token);
@@ -42,7 +53,7 @@ public sealed class SqliteSchemaInitializer(
             try
             {
                 await ExecAsync(conn, SqliteSchema.CreateAll, token);
-                await PatchColumnsAsync(conn, token);
+                await PatchColumnsAsync(conn, log, token);
                 await tx.CommitAsync(token);
             }
             catch
@@ -68,7 +79,7 @@ public sealed class SqliteSchemaInitializer(
     // is rejected outright. Every definition in SqliteSchema.ExpectedColumns
     // satisfies that; a future entry that does not will fail loudly here rather
     // than silently skipping.
-    private async Task PatchColumnsAsync(DbConnection conn, CancellationToken ct)
+    private static async Task PatchColumnsAsync(DbConnection conn, ILogger log, CancellationToken ct)
     {
         foreach (var group in SqliteSchema.ExpectedColumns.GroupBy(c => c.Table, StringComparer.Ordinal))
         {

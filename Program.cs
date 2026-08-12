@@ -861,7 +861,13 @@ switch (subcommand)
                 "WARNING: --drop-indexes without --resume. If this process is killed outright the indexes "
                 + "stay dropped and there is no checkpoint sidecar to recover them from. Add --resume.");
 
-        var (s, dbInst) = CliBootstrap.BuildOrExit(dotenvPath, dotenvValues);
+        // Driver-aware: `dmart import` is the path that rebuilds the SQL store
+        // from the flat files, and that has to work on every backend the
+        // server can read — a rebuildable index that cannot be rebuilt is not
+        // one. On SQLite the service routes to the per-row repository path;
+        // --fast, --drop-indexes and --fast-parallelism are refused with a
+        // reason rather than silently ignored.
+        var (s, dbInst) = CliBootstrap.BuildFactoryOrExit(dotenvPath, dotenvValues);
         var importService = CliBootstrap.BuildImportExportService(s, dbInst);
 
         // The actor argument is accepted for API stability but unused — every

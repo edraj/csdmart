@@ -1,12 +1,11 @@
 # SQLite reindex path — handoff
 
-The last open item in Phase 3 of the SQLite backend. Everything else on
-`feat/sqlite-backend-seam` is done and verified; this is deliberately *not*
-started, because a half-built rebuild path is worse than none — see "Why this
-was deferred".
+> **STATUS: DONE.** Landed on `feat/sqlite-backend-seam`. `dmart import`
+> rebuilds the SQL store from the flat files on both drivers, verified
+> end-to-end through the CLI and covered by `ReindexFromFlatFilesTests`.
+> Kept as a record of the design decision and the tier's limits; section 4
+> below describes what was NOT built and why.
 
-Read `docs/sqlite-backend-audit.md` first for the tier's scope. This document
-only covers what is needed to finish the reindex.
 
 ---
 
@@ -25,17 +24,17 @@ tags, and aggregation with `group_by`.
 - PostgreSQL is unchanged throughout: `SqlEmissionGoldenTests` passes with no
   regeneration, and 1836 tests pass with zero skipped.
 
-## 2. What is missing
+## 2. What was missing
 
 `dmart import` — the path that rebuilds the SQL store from the flat files under
-`SPACES_FOLDER` — is PostgreSQL-only. On SQLite it fails when
-`ImportFolderAsync` opens its import session.
+`SPACES_FOLDER` — was PostgreSQL-only. On SQLite it failed when
+`ImportFolderAsync` opened its import session.
 
-This matters more than a normal missing feature: the whole premise of the tier
+This mattered more than a normal missing feature: the whole premise of the tier
 is that the SQL store is a *rebuildable index* over the flat files. Without a
-rebuild path, that premise is unbacked on SQLite.
+rebuild path, that premise was unbacked on SQLite.
 
-## 3. Why it cannot simply be switched on
+## 3. Why it could not simply be switched on
 
 `Services/ImportExportService.cs` is built around PostgreSQL bulk loading:
 
@@ -53,35 +52,74 @@ The **writing** half is already done, though: the per-row path at
 exists only as the fallback after a bulk batch fails — it is not a selectable
 mode. That is the gap.
 
-## 4. Recommended design
+## 4. What was built — and why NOT the recommended design
 
-A separate `SqliteReindexService`, **not** a translation of the COPY importer.
-This mirrors the call already made for the bulk path in the audit (§2.9, §7.3):
-the two backends want genuinely different strategies, and one parameterized
-importer would obscure that rather than manage it.
+The recommendation here was a separate `SqliteReindexService`. **That was the
+wrong call, and it was not followed.** Recording why, because the reasoning
+generalizes:
 
-1. **Enumerate** with the existing `.dm/meta.*.json` convention. `ImportWorkList`
-   already persists and reads that list — reuse it rather than re-walking.
-2. **Materialize** each meta file into the domain record using whatever
-   `ImportExportService` already uses; do not duplicate that parsing.
-3. **Write** through the repositories in batches (a few thousand rows), each
-   batch inside one `BEGIN IMMEDIATE` transaction. SQLite's bottleneck is fsync,
-   not statement parsing, so a batched prepared insert recovers most of COPY's
-   advantage. `SqliteRetry` already handles `SQLITE_BUSY` around a whole
-   transaction.
-4. **Skip** `--fast` and `--drop-indexes` entirely; both are listed as
-   PostgreSQL-only in audit §9. Reject them with a clear message rather than
-   ignoring them.
-5. **Route** on the driver in the CLI's `import` handler (`Program.cs:589`), the
-   same way `Program.cs` already picks the connection factory and dialect.
+A separate service would have had to duplicate `ImportExportService`'s
+enumeration, meta parsing, owner remapping, uuid dedup, schema validation,
+payload-body inlining, ticket handling, tag stamping and the issues sidecar —
+roughly 1500 lines of *semantics*, none of it backend-specific. Duplicating
+semantics to avoid duplicating a strategy is a bad trade: the two copies drift,
+and the drift shows up as a rebuild that quietly indexes a slightly different
+thing than the live write path does.
 
-Note the FTS5 triggers fire on every `entries` insert, so the wildcard index
-populates automatically during a reindex. No separate index build is needed.
+What was actually backend-specific turned out to be small and already isolated:
+the bulk COPY session, and nothing else. The `Try*` helpers had carried a
+per-row contract for a null connection since before the seam existed. So:
 
-## 5. Tests the change must carry
+  * `ImportExportService` takes `IDbConnectionFactory` instead of `Db`, and
+    exposes `Bulk => db as Db`. That one cast both answers "can we bulk-load?"
+    and hands over the object needed to do it.
+  * `ImportShardTailAsync` runs `RunTailPassesAsync(session: null, …)` when
+    `Bulk` is null — the per-row path, writing through the same repositories the
+    HTTP layer uses. Every backend-specific concern (JSON storage shape, text[]
+    encoding, FTS5 trigger fan-out) is therefore handled exactly once.
+  * The PostgreSQL-only load OPTIONS — `--fast`, `--drop-indexes`,
+    `--fast-parallelism` — are refused with a reason rather than ignored.
+  * `CliBootstrap.BuildFactoryOrExit` resolves the driver for `dmart import`,
+    and creates the SQLite schema if the file does not exist yet: requiring a
+    separate migrate step first would make "rebuild the index" a two-command
+    operation for no reason.
 
-The failure mode here is a *silently incomplete* index — it looks like working
-software and quietly returns fewer rows. Assert on content, not just counts.
+The original design points that DID survive:
+
+reuse the existing enumeration and parsing; reject the PostgreSQL-only flags
+rather than ignoring them; route on the driver in the CLI handler.
+
+One point was dropped: **batching writes inside an explicit `BEGIN IMMEDIATE`.**
+The repositories open their own connection per call, so batching would mean
+threading a connection through every repository signature — a wide change to
+buy throughput on a tier whose stated scope is dev, CI, single-node and edge.
+Under WAL with `synchronous=NORMAL` a commit is a WAL append, not an fsync, so
+the per-row path is not the fsync-per-row disaster it would be under the
+rollback journal. If a bulk rebuild ever becomes the bottleneck, this is the
+first thing to revisit — and the benchmark in Phase 4 is what should decide it,
+not intuition.
+
+The FTS5 triggers fire on every `entries` insert, so the wildcard index
+populates during a reindex with no separate build step. Verified directly:
+after a CLI reindex, `SELECT rowid FROM entries_fts WHERE payload LIKE …`
+returns the imported row.
+
+### Prerequisite, on BOTH drivers
+
+`owner_shortname` is a NOT NULL foreign key to `users(shortname)` in both
+schemas, so importing into a schema-only database whose `users` table is empty
+fails every row. Confirmed identical on PostgreSQL (23503) and SQLite (FK
+constraint failed) against freshly-migrated databases — this is a pre-existing
+property of the import, not a SQLite limitation. Either the source tree carries
+its users (they land in the head pass, before entries) or the database already
+has them.
+
+## 5. Tests the change carries
+
+All in `dmart.Tests/Integration/ReindexFromFlatFilesTests.cs`, running on both
+drivers. The failure mode is a *silently incomplete* index — it looks like
+working software and quietly returns fewer rows — so they assert on content,
+not just counts.
 
 - **Idempotence.** Reindex the same tree twice; the second run must be a no-op
   and the row counts identical. This is what makes a rebuild trustworthy.
@@ -91,11 +129,19 @@ software and quietly returns fewer rows. Assert on content, not just counts.
 - **Every table.** Entries, attachments, users, roles, permissions, groups,
   spaces. A walker that silently skips a resource type is the likely bug.
 - **Wildcard search after reindex**, to prove the FTS triggers fired.
-- **A deleted flat file** — decide and then test whether reindex prunes rows
-  with no backing file, or only adds/updates. Python dmart's behaviour is the
-  reference; if it prunes, that path needs its own test.
+- **A deleted flat file.** Decided: reindex is **additive** — it adds and
+  updates, it does not prune. This matches Python dmart, where removal happens
+  through the delete API, which unlinks the file and the row together. Pinned
+  as a test because the opposite assumption ("reindex makes the store match the
+  disk") is the natural one to make and is wrong.
 
-## 6. Environment notes that cost time last session
+Beyond these, the 17 pre-existing import tests now run on SQLite instead of
+skipping. The wildcard test deliberately uses the FIELD-SCOPED form
+(`@payload.body.note:*needle*`), not a bare term: only that emits the prefilter
+conjunct, so only that fails when the index is empty. A bare term falls back to
+an unindexed scan of `payload` and would pass against an empty FTS table.
+
+## 6. Environment notes
 
 - **Scratch PostgreSQL** for the existing suite:
   ```
@@ -130,14 +176,10 @@ software and quietly returns fewer rows. Assert on content, not just counts.
 
 ## 7. Open decisions, unrelated to the reindex
 
-- **JSON encoder.** `System.Text.Json` escapes non-ASCII to `\uXXXX`.
-  PostgreSQL's `jsonb` decodes escapes on ingest so `payload::text` holds real
-  characters; SQLite stores the document verbatim and its `json()` does not
-  normalize them either. The wildcard prefilter therefore cannot match Arabic on
-  SQLite and is deliberately declined for non-ASCII patterns (correct, just
-  unindexed). Setting `JavaScriptEncoder.UnsafeRelaxedJsonEscaping` on
-  `DmartJsonContext` would fix it — but that context also serializes HTTP
-  responses, so it changes response bytes on both backends. Wire-format call.
+- ~~**JSON encoder.**~~ RESOLVED. Non-ASCII is now written literally at the
+  storage boundary only (`JsonbHelpers`, `JavaScriptEncoder.Create(UnicodeRanges.All)`),
+  so the wildcard prefilter serves Arabic and HTTP response bytes are unchanged
+  on both backends.
 
 - **Single-file AOT.** Publish emits `libe_sqlite3.so` beside the binary;
   SQLitePCLRaw ships a static archive only for `browser-wasm`. Packaging
@@ -147,7 +189,10 @@ software and quietly returns fewer rows. Assert on content, not just counts.
 
 ## 8. After this: Phase 4
 
-Not started. Parameterize the suite over both drivers with an explicit skip
-list, add a CI matrix entry per driver plus an AOT publish job, benchmark cold
-read / filtered search / bulk rebuild / concurrent write on both, and document
-the tier and its limits in the readme.
+Mostly done. The suite is parameterized over both drivers and green on each —
+PostgreSQL 1842 pass / 0 skip, SQLite 1827 pass / 15 skip, every skip carrying
+a one-line reason at its call site.
+
+Left: a CI matrix entry per driver plus an AOT publish job; benchmarks for cold
+read, filtered search, bulk index rebuild and concurrent write; and the readme
+section describing the tier and its limits.
