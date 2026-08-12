@@ -424,7 +424,7 @@ public static class QueryHelper
 
     public static void AppendOrderAndPaging(
         System.Text.StringBuilder sql, Query q, List<NpgsqlParameter> args,
-        ISqlDialect dialect, string? tableName = null)
+        ISqlDialect dialect, string? tableName = null, bool defaultOrder = true)
     {
         if (q.Type == QueryType.Random)
             sql.Append("ORDER BY RANDOM() ");
@@ -435,7 +435,7 @@ public static class QueryHelper
             {
                 sql.Append($"ORDER BY {clause} ");
             }
-            else
+            else if (defaultOrder)
             {
                 sql.Append("ORDER BY updated_at ");
                 sql.Append(q.SortType == SortType.Ascending ? "ASC " : "DESC ");
@@ -597,8 +597,17 @@ public static class QueryHelper
                 sql.Append($"GROUP BY {string.Join(", ", gbExprs)} ");
         }
 
-        // ORDER + LIMIT
-        AppendOrderAndPaging(sql, q, args, dialect, tableName);
+        // ORDER + LIMIT.
+        //
+        // defaultOrder: false — an aggregation SELECTs only the group-by
+        // expressions and the aggregates, so the usual `ORDER BY updated_at`
+        // fallback names a column that is neither grouped nor aggregated.
+        // PostgreSQL rejects that outright (42803), which meant every
+        // aggregation query WITHOUT an explicit sort_by returned a 500; SQLite
+        // accepts it and silently picks an arbitrary row's value to sort on.
+        // Neither is what the caller wanted. An explicit sort_by is still
+        // honoured, and is still the caller's job to keep group-compatible.
+        AppendOrderAndPaging(sql, q, args, dialect, tableName, defaultOrder: false);
 
         return (sql.ToString(), args);
     }
@@ -650,31 +659,27 @@ public static class QueryHelper
         }
 
         var fieldExpr = ResolveArg(0);
-        return name switch
+        var quantile = ParseQuantile(reducerArgs);
+
+        var expr = dialect.Reducer(name, fieldExpr, quantile);
+        if (expr is not null) return expr;
+
+        // The dialect produced nothing. Two very different reasons, and they
+        // must not be conflated — see UnsupportedReducerException.
+        //
+        // PostgreSQL is the reference vocabulary: this port is defined against
+        // it, so "does dmart know this reducer, called this way?" is exactly
+        // "would the PostgreSQL dialect have emitted something?". Asking it
+        // also covers the no-argument case (`sum` with no field yields null on
+        // every backend, and skipping that is long-standing behaviour), and it
+        // means a reducer added to PostgreSQL later starts REFUSING on SQLite
+        // rather than silently vanishing from responses.
+        if (dialect is not PostgresSqlDialect
+            && PostgresSqlDialect.Instance.Reducer(name, fieldExpr, quantile) is not null)
         {
-            "count" or "r_count" => fieldExpr is null ? "COUNT(*)" : $"COUNT({fieldExpr})",
-            "count_distinct" or "count_distinctish" =>
-                fieldExpr is null ? "COUNT(*)" : $"COUNT(DISTINCT {fieldExpr})",
-            "sum" or "total" =>
-                fieldExpr is null ? null : $"SUM(({fieldExpr})::numeric)",
-            "avg" =>
-                fieldExpr is null ? null : $"AVG(({fieldExpr})::numeric)",
-            "min" =>
-                fieldExpr is null ? null : $"MIN({fieldExpr})",
-            "max" =>
-                fieldExpr is null ? null : $"MAX({fieldExpr})",
-            "stddev" =>
-                fieldExpr is null ? null : $"STDDEV(({fieldExpr})::numeric)",
-            "group_concat" or "tolist" =>
-                fieldExpr is null ? null : $"STRING_AGG(({fieldExpr})::text, ',')",
-            "quantile" =>
-                fieldExpr is null ? null : $"percentile_cont({ParseQuantile(reducerArgs)}) WITHIN GROUP (ORDER BY ({fieldExpr})::numeric)",
-            "first_value" =>
-                fieldExpr is null ? null : $"(ARRAY_AGG({fieldExpr} ORDER BY updated_at DESC))[1]",
-            "random_sample" =>
-                fieldExpr is null ? null : $"(ARRAY_AGG({fieldExpr} ORDER BY RANDOM()))[1]",
-            _ => null,
-        };
+            throw new UnsupportedReducerException(name, dialect.Name);
+        }
+        return null;
     }
 
     private static string ParseQuantile(List<string> args)

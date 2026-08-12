@@ -173,16 +173,14 @@ Unavailable — the feature is off, not silently different:
 | Semantic / vector search | needs pgvector | cleanly disabled — the capability probe returns false |
 | `dmart import --fast`, `--drop-indexes`, `--fast-parallelism` | `session_replication_role`, and GIN-specific index juggling | refused with a reason naming the flag, never ignored |
 | `Dmart.SqlAdapter` SDK | stays PostgreSQL-only | separate distributable |
-| Aggregation reducers `stddev`, `quantile`, `first_value`, `random_sample` | no SQLite equivalent | **database error, not a clean message** — see below |
+| Aggregation reducers `stddev`, `quantile`, `first_value`, `random_sample` | no core-SQLite equivalent (no stddev, no `percentile_cont`, no ordered array aggregation) | HTTP 400 naming the reducer |
 | `db_size_info` API plugin | `pg_total_relation_size` | **database error, not a clean message** |
 
-The last two rows fail with an opaque database error rather than a clean
-"unsupported on this backend" message, and there is one further gap beside
-them: `sum`, `avg` and `group_concat` *do* have SQLite equivalents but are
-still emitted as PostgreSQL SQL, so they fail the same way. **Aggregation on
-SQLite is therefore limited to `count`, `count_distinct`, `min` and `max`
-today.** The reducer vocabulary is the one place the dialect seam was not
-threaded through; it is a known gap, not a property of the engine.
+Every other reducer works: `count`, `count_distinct`, `sum`, `avg`, `min`,
+`max`, `group_concat`. A reducer name dmart does not recognize is still
+ignored on both backends, which is long-standing behaviour — only a reducer
+the backend genuinely cannot compute is refused, and it is refused loudly
+rather than dropped from the response.
 
 Degraded — works, but materially slower or subtly different:
 
@@ -193,6 +191,7 @@ Degraded — works, but materially slower or subtly different:
 | Wildcard `*foo*` search | FTS5 `trigram` index instead of `pg_trgm` — indexed, different tokenizer |
 | `ILIKE` on non-ASCII | ASCII-only case folding, so accented Latin does not fold (Arabic is unaffected — no case) |
 | Numeric sort of a JSON *string* (`"42"`) | sorts lexically; PostgreSQL sorts it numerically |
+| `sum` / `avg` precision | `CAST(x AS REAL)` — no exact decimal type, so money-like sums accumulate float error where PostgreSQL's `numeric` would not |
 | Concurrent writes | serialized — one writer at a time |
 | AOT deployment | ships a `libe_sqlite3.so` sidecar next to the binary |
 

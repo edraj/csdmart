@@ -63,6 +63,29 @@ public sealed class PostgresSqlDialect : ISqlDialect
         return $"CASE WHEN ({expr}) ~ '^-?[0-9]+(\\.[0-9]+)?$' THEN ({expr})::float END {direction}, ({expr}) {direction}";
     }
 
+    // Byte-identical to the pre-seam emission in QueryHelper. PostgreSQL can
+    // express every reducer in the vocabulary, so this never returns null.
+    public string? Reducer(string name, string? field, string quantile) => name switch
+    {
+        "count" or "r_count" => field is null ? "COUNT(*)" : $"COUNT({field})",
+        "count_distinct" or "count_distinctish" =>
+            field is null ? "COUNT(*)" : $"COUNT(DISTINCT {field})",
+        "sum" or "total" => field is null ? null : $"SUM(({field})::numeric)",
+        "avg" => field is null ? null : $"AVG(({field})::numeric)",
+        "min" => field is null ? null : $"MIN({field})",
+        "max" => field is null ? null : $"MAX({field})",
+        "stddev" => field is null ? null : $"STDDEV(({field})::numeric)",
+        "group_concat" or "tolist" =>
+            field is null ? null : $"STRING_AGG(({field})::text, ',')",
+        "quantile" => field is null ? null
+            : $"percentile_cont({quantile}) WITHIN GROUP (ORDER BY ({field})::numeric)",
+        "first_value" => field is null ? null
+            : $"(ARRAY_AGG({field} ORDER BY updated_at DESC))[1]",
+        "random_sample" => field is null ? null
+            : $"(ARRAY_AGG({field} ORDER BY RANDOM()))[1]",
+        _ => null,
+    };
+
     public string JsonTypeIs(string jsonExpr, JsonKind kind)
         => $"jsonb_typeof({jsonExpr}) = '{TypeName(kind)}'";
 

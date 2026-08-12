@@ -699,7 +699,7 @@ into a project whose PostgreSQL path has none.
 | `dmart import --drop-indexes` | GIN-specific (`ImportBulkIndexes.cs`) |
 | `DbSizeInfoPlugin` | `pg_total_relation_size` |
 | `Dmart.SqlAdapter` SDK | Stays PostgreSQL-only (separate distributable) |
-| `quantile` and `stddev` aggregation reducers | No SQLite equivalent (§2.8) — must **error**, not silently return wrong numbers |
+| `quantile`, `stddev`, `first_value`, `random_sample` reducers | No SQLite equivalent (§2.8). **Implemented**: `ISqlDialect.Reducer` declines them and the caller raises a request error naming the reducer, rather than returning wrong numbers or a response silently missing the column |
 | `CREATE INDEX CONCURRENTLY` | Index builds lock |
 
 **Degraded (works, materially slower or subtly different):**

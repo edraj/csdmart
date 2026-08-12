@@ -167,6 +167,23 @@ public interface ISqlDialect
     /// </remarks>
     string JsonSortKeys(string column, IReadOnlyList<string> path, string direction);
 
+    /// <summary>
+    /// The aggregate SELECT item for one reducer, or null when this backend
+    /// cannot express it.
+    /// </summary>
+    /// <remarks>
+    /// Null is a REFUSAL, not "unknown reducer" — the caller turns it into a
+    /// request error naming the reducer. That distinction is the whole point of
+    /// putting this on the dialect: an unrecognized name has always been
+    /// skipped silently, and a reducer this backend genuinely cannot compute
+    /// must not take the same path, or the response would come back missing a
+    /// column the client asked for and nothing would say why.
+    ///
+    /// <paramref name="field"/> is null when the reducer was called with no
+    /// argument; only the counting reducers accept that.
+    /// </remarks>
+    string? Reducer(string name, string? field, string quantile);
+
     /// <summary>Casts an extracted JSON value to a number for comparison.</summary>
     string AsNumber(string expr);
 

@@ -48,6 +48,36 @@ public sealed class SqliteSqlDialect : ISqlDialect
              + $"({expr}) {direction}";
     }
 
+    // SQLite covers the counting, extremum, summing and concatenating
+    // reducers. The four it does not are refused rather than approximated:
+    //
+    //   stddev        not in core SQLite (extension-only), and computing it
+    //                 from SUM/SUM-of-squares in SQL would silently change
+    //                 which of population/sample variance the caller gets.
+    //   quantile      no percentile_cont, and no ordered-set aggregates.
+    //   first_value   PostgreSQL uses (ARRAY_AGG(x ORDER BY updated_at DESC))[1].
+    //   random_sample SQLite has neither ordered array aggregation nor array
+    //                 subscripting. The bare-column-beside-max() trick would
+    //                 need a second aggregate in the SELECT list, which is not
+    //                 a shape one reducer expression can produce.
+    //
+    // CAST(x AS REAL) rather than PostgreSQL's ::numeric is the documented
+    // precision degradation: SQLite has no exact decimal type, so a sum of
+    // money-like values accumulates float error where PostgreSQL would not.
+    public string? Reducer(string name, string? field, string quantile) => name switch
+    {
+        "count" or "r_count" => field is null ? "COUNT(*)" : $"COUNT({field})",
+        "count_distinct" or "count_distinctish" =>
+            field is null ? "COUNT(*)" : $"COUNT(DISTINCT {field})",
+        "sum" or "total" => field is null ? null : $"SUM(CAST({field} AS REAL))",
+        "avg" => field is null ? null : $"AVG(CAST({field} AS REAL))",
+        "min" => field is null ? null : $"MIN({field})",
+        "max" => field is null ? null : $"MAX({field})",
+        "group_concat" or "tolist" =>
+            field is null ? null : $"group_concat(CAST({field} AS TEXT), ',')",
+        _ => null,
+    };
+
     public string JsonTypeIs(string jsonExpr, JsonKind kind) => kind switch
     {
         JsonKind.String => $"json_type({jsonExpr}) = 'text'",

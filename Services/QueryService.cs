@@ -810,7 +810,19 @@ public sealed class QueryService(
         q = await MergeFilterFieldsValuesAsync(q, policies, actor, ct);
 
         var effectiveActor = actor ?? PermissionService.AnonymousUser;
-        var rows = await QueryHelper.RunAggregationAsync(db, tableName, q, ct, effectiveActor, policies);
+        List<Dictionary<string, object>> rows;
+        try
+        {
+            rows = await QueryHelper.RunAggregationAsync(db, tableName, q, ct, effectiveActor, policies);
+        }
+        catch (Dmart.QueryGrammar.UnsupportedReducerException ex)
+        {
+            // A reducer this backend cannot compute is the CALLER's problem to
+            // fix (pick another reducer, or run against PostgreSQL), so it is a
+            // request error naming the reducer — not a 500, and emphatically
+            // not a 200 with the column quietly missing.
+            return Response.Fail(InternalErrorCode.INVALID_DATA, ex.Message, ErrorTypes.Request);
+        }
 
         // Convert each aggregation row to a Record with the grouped values + reducer results
         // in attributes. Python returns a single Record per group.
