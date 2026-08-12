@@ -146,6 +146,27 @@ jobs:
           # .pgpass entry keeps working — only the target name changed.
           dropdb   -w --if-exists -h 127.0.0.1 -U dmart "$TEST_DB"
           createdb -w             -h 127.0.0.1 -U dmart "$TEST_DB"
+          # Per-runner smoke port. The runners share ONE host and one network
+          # stack, so two jobs that both bind the config's LISTENING_PORT
+          # cannot coexist — and the smoke step used to DISCOVER its server by
+          # scanning fixed ports, which meant the loser of that race happily
+          # found the OTHER job's server and ran the whole suite against the
+          # wrong database. That surfaced as "entry exists" and duplicate-key
+          # errors on same-second fixture names. Harmless while one job ran per
+          # push; the driver matrix made three.
+          #
+          # Keyed on the runner for the same reason the test database is: a
+          # runner executes one job at a time, so a per-runner port is
+          # collision-free by construction without serializing CI.
+          # 10# forces base 10: a runner named r08 yields "08", which the
+          # shell would otherwise read as octal and reject. :-0 covers a
+          # runner whose name has no digits at all.
+          RUNNER_DIGITS=$(printf '%s' "${RUNNER_NAME:-local}" | tr -cd '0-9' | tail -c 3)
+          SMOKE_PORT=$(( 5100 + 10#${RUNNER_DIGITS:-0} % 100 ))
+          echo "SMOKE_PORT=$SMOKE_PORT" >> "$GITHUB_ENV"
+          sed -i '/^LISTENING_PORT[[:space:]]*=/d' config.env
+          echo "LISTENING_PORT=$SMOKE_PORT" >> config.env
+          echo "Smoke port: $SMOKE_PORT"
 
       - name: Write SQLite config
         if: matrix.driver == 'sqlite'
@@ -180,6 +201,27 @@ jobs:
           mkdir -p ci-spaces
           grep -q '^JWT_SECRET' config.env || echo 'JWT_SECRET="ci-test-secret-ci-test-secret-32bytes"' >> config.env
           grep -q '^ADMIN_PASSWORD' config.env || echo 'ADMIN_PASSWORD="dmart"' >> config.env
+          # Per-runner smoke port. The runners share ONE host and one network
+          # stack, so two jobs that both bind the config's LISTENING_PORT
+          # cannot coexist — and the smoke step used to DISCOVER its server by
+          # scanning fixed ports, which meant the loser of that race happily
+          # found the OTHER job's server and ran the whole suite against the
+          # wrong database. That surfaced as "entry exists" and duplicate-key
+          # errors on same-second fixture names. Harmless while one job ran per
+          # push; the driver matrix made three.
+          #
+          # Keyed on the runner for the same reason the test database is: a
+          # runner executes one job at a time, so a per-runner port is
+          # collision-free by construction without serializing CI.
+          # 10# forces base 10: a runner named r08 yields "08", which the
+          # shell would otherwise read as octal and reject. :-0 covers a
+          # runner whose name has no digits at all.
+          RUNNER_DIGITS=$(printf '%s' "${RUNNER_NAME:-local}" | tr -cd '0-9' | tail -c 3)
+          SMOKE_PORT=$(( 5100 + 10#${RUNNER_DIGITS:-0} % 100 ))
+          echo "SMOKE_PORT=$SMOKE_PORT" >> "$GITHUB_ENV"
+          sed -i '/^LISTENING_PORT[[:space:]]*=/d' config.env
+          echo "LISTENING_PORT=$SMOKE_PORT" >> config.env
+          echo "Smoke port: $SMOKE_PORT"
 
       - name: Build
         run: dotnet build dmart.slnx -c Release --nologo
@@ -225,26 +267,20 @@ jobs:
           # the smoke tests collapse on missing BASE_URL etc.
           (cd "$BUILD_DIR" && BACKEND_ENV=./config.env ./dmart serve) &
           SERVER_PID=$!
-          # Wait for server to come up — try both common ports
-          sleep 3
-          DMART_PORT=""
-          for port in 5099 7979 8080; do
-            if curl -sf "http://127.0.0.1:${port}/" >/dev/null 2>&1; then
-              DMART_PORT=$port
-              break
-            fi
+          # Wait on the port THIS job's server was configured with. Never
+          # scan: a scan cannot tell "my server is slow to start" from "my
+          # server failed to bind and I am now talking to somebody else's".
+          DMART_PORT="$SMOKE_PORT"
+          for _ in $(seq 1 40); do
+            curl -sf "http://127.0.0.1:${DMART_PORT}/" >/dev/null 2>&1 && break
+            sleep 1
           done
-          if [ -z "$DMART_PORT" ]; then
-            # Longer wait, scan again
-            sleep 10
-            for port in 5099 7979 8080; do
-              if curl -sf "http://127.0.0.1:${port}/" >/dev/null 2>&1; then
-                DMART_PORT=$port
-                break
-              fi
-            done
+          if ! curl -sf "http://127.0.0.1:${DMART_PORT}/" >/dev/null 2>&1; then
+            echo "server never came up on ${DMART_PORT}"
+            kill $SERVER_PID 2>/dev/null || true
+            exit 1
           fi
-          echo "Server detected on port: ${DMART_PORT:-NONE}"
+          echo "Server on port: ${DMART_PORT}"
           # Use DmartSettings defaults (dmart/dmart) — on a fresh DB the
           # bootstrap creates this admin user automatically.
           DMART_URL="http://127.0.0.1:${DMART_PORT}" DMART_ADMIN=dmart DMART_PWD=dmart ./curl.sh
@@ -321,6 +357,11 @@ jobs:
           test -f "$PUB/libe_sqlite3.so" \
             || { echo "libe_sqlite3.so missing from the publish output"; exit 1; }
           mkdir -p "$PUB/aot-spaces"
+          # Same per-runner keying as the matrix legs — this job runs
+          # concurrently with them on the same host.
+          RUNNER_DIGITS=$(printf '%s' "${RUNNER_NAME:-local}" | tr -cd '0-9' | tail -c 3)
+          AOT_PORT=$(( 5200 + 10#${RUNNER_DIGITS:-0} % 100 ))
+          echo "AOT smoke port: $AOT_PORT"
           # Written with echo rather than a heredoc: the body of a heredoc
           # inside an indented `run: |` block keeps its leading spaces, and its
           # terminator has to sit at column 0 to match at all.
@@ -328,7 +369,7 @@ jobs:
             echo 'DATABASE_DRIVER="sqlite"'
             echo "SQLITE_PATH=\"$(pwd)/$PUB/aot.db\""
             echo "SPACES_FOLDER=\"$(pwd)/$PUB/aot-spaces\""
-            echo 'LISTENING_PORT=5097'
+            echo "LISTENING_PORT=$AOT_PORT"
             echo 'JWT_SECRET="ci-test-secret-ci-test-secret-32bytes"'
             echo 'ADMIN_PASSWORD="dmart"'
             echo 'MOCK_SMTP_API=true'
@@ -336,19 +377,19 @@ jobs:
           (cd "$PUB" && BACKEND_ENV=./config.env ./dmart serve) &
           SERVER_PID=$!
           for _ in $(seq 1 40); do
-            curl -sf http://127.0.0.1:5097/health/ready >/dev/null 2>&1 && break
+            curl -sf http://127.0.0.1:${AOT_PORT}/health/ready >/dev/null 2>&1 && break
             sleep 1
           done
           # /health/ready is not a formality here: it runs SELECT 1 through the
           # configured factory, so a 200 already means the native SQLite
           # library loaded and answered a query.
-          curl -sf http://127.0.0.1:5097/health/ready >/dev/null \
+          curl -sf http://127.0.0.1:${AOT_PORT}/health/ready >/dev/null \
             || { echo "native binary did not become ready"; kill $SERVER_PID 2>/dev/null; exit 1; }
           # Guarded by `if` rather than trailing `$?`: `set -e` is on for this
           # step, so a bare failing command would abort before the kill below
           # and leave the server running on the runner.
           CURL_RC=0
-          if ! DMART_URL="http://127.0.0.1:5097" DMART_ADMIN=dmart DMART_PWD=dmart ./curl.sh; then
+          if ! DMART_URL="http://127.0.0.1:${AOT_PORT}" DMART_ADMIN=dmart DMART_PWD=dmart ./curl.sh; then
             CURL_RC=1
           fi
           kill $SERVER_PID 2>/dev/null || true
