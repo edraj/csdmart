@@ -146,6 +146,90 @@ LOG_FORMAT="json"
 The admin user `dmart` is created passwordless on first startup. Set a
 password with `dmart passwd` before exposing the server.
 
+## Storage backends
+
+The flat files under `SPACES_FOLDER` are the source of truth. The SQL store
+is a **rebuildable index** over them — `dmart import` reconstructs it from
+disk on either backend. Which backend holds that index is one setting:
+
+```
+DATABASE_DRIVER="postgresql"     # default
+DATABASE_DRIVER="sqlite"         # + SQLITE_PATH="/var/lib/dmart/dmart.db"
+```
+
+**PostgreSQL is the supported production tier.** SQLite is a *reduced tier*
+for development, CI, single-node and edge deployments — deliberately not at
+parity. It serves the same REST API and runs the same test suite — 1,827 of
+1,842 tests, with each of the 15 skips carrying a one-line reason at its call
+site — and CI exercises both drivers on every push. It is real; it is just
+smaller.
+
+### What you give up on SQLite
+
+Unavailable — the feature is off, not silently different:
+
+| Feature | Why | How it fails |
+|---|---|---|
+| Semantic / vector search | needs pgvector | cleanly disabled — the capability probe returns false |
+| `dmart import --fast`, `--drop-indexes`, `--fast-parallelism` | `session_replication_role`, and GIN-specific index juggling | refused with a reason naming the flag, never ignored |
+| `Dmart.SqlAdapter` SDK | stays PostgreSQL-only | separate distributable |
+| Aggregation reducers `stddev`, `quantile`, `first_value`, `random_sample` | no SQLite equivalent | **database error, not a clean message** — see below |
+| `db_size_info` API plugin | `pg_total_relation_size` | **database error, not a clean message** |
+
+The last two rows fail with an opaque database error rather than a clean
+"unsupported on this backend" message, and there is one further gap beside
+them: `sum`, `avg` and `group_concat` *do* have SQLite equivalents but are
+still emitted as PostgreSQL SQL, so they fail the same way. **Aggregation on
+SQLite is therefore limited to `count`, `count_distinct`, `min` and `max`
+today.** The reducer vocabulary is the one place the dialect seam was not
+threaded through; it is a known gap, not a property of the engine.
+
+Degraded — works, but materially slower or subtly different:
+
+| Behaviour | On SQLite |
+|---|---|
+| JSON payload filters (`@payload.body.x:v`) | **unindexed scan** — no GIN analogue. The main limit; see below |
+| Row-level ACL filter | scans on every authorized query |
+| Wildcard `*foo*` search | FTS5 `trigram` index instead of `pg_trgm` — indexed, different tokenizer |
+| `ILIKE` on non-ASCII | ASCII-only case folding, so accented Latin does not fold (Arabic is unaffected — no case) |
+| Numeric sort of a JSON *string* (`"42"`) | sorts lexically; PostgreSQL sorts it numerically |
+| Concurrent writes | serialized — one writer at a time |
+| AOT deployment | ships a `libe_sqlite3.so` sidecar next to the binary |
+
+### Measured, not estimated
+
+From [`bench/REPORT-sqlite-vs-postgresql.md`](./bench/REPORT-sqlite-vs-postgresql.md)
+— 20,000 entries, same host, end-to-end through the HTTP API:
+
+| | SQLite | PostgreSQL |
+|---|---:|---:|
+| warm read p50 | **0.63 ms** | 1.13 ms |
+| filtered search p50 | 67 ms | **10.7 ms** |
+| index rebuild | 3,913 rows/s | **13,950 rows/s** |
+| concurrent write p50 / max | **2.6 ms** / 555 ms | 8.8 ms / **51 ms** |
+
+Reads are faster on SQLite and rebuilds are comfortably fast enough. Two
+results decide whether it fits:
+
+- **Filtered search is a structural gap, not a constant factor.** PostgreSQL
+  answers a payload filter from a GIN index; SQLite has no equivalent and
+  walks the JSON per row, so the cost grows with corpus size where
+  PostgreSQL's does not. 67 ms over 20k entries is fine — the same query over
+  500k will not be. **This is the number to check against your corpus before
+  choosing SQLite.**
+- **Concurrent writes trade tail latency, not correctness.** SQLite's median
+  write is *faster* than PostgreSQL's; its worst is ~10× slower, because a
+  writer that misses the lock queues behind every other one. Nothing failed
+  in 800 concurrent writes — `busy_timeout` and a bounded retry turn
+  contention into latency rather than errors.
+
+Rule of thumb, straight off those numbers: use PostgreSQL if a
+payload-filtered query over your whole corpus has to stay under ~50 ms, or if
+sustained concurrent writing means p99 latency has to stay bounded. Otherwise
+SQLite will not be the thing that limits you.
+
+Full analysis in [`docs/sqlite-backend-audit.md`](./docs/sqlite-backend-audit.md).
+
 ## API Endpoints
 
 | Group     | Path                                                       | Auth  | Description                                |
@@ -258,12 +342,21 @@ dotnet run -- serve
 ## Testing
 
 ```
-# Unit and integration tests
+# Unit and integration tests (PostgreSQL)
 dotnet test dmart.Tests/dmart.Tests.csproj -c Release
+
+# The same suite against SQLite — needs no database, writes one temp file
+DMART_TEST_DRIVER=sqlite dotnet test dmart.Tests/dmart.Tests.csproj -c Release
 
 # E2E smoke tests against a running server
 DMART_URL=http://localhost:5099 ./curl.sh
+
+# Backend comparison benchmark (see bench/REPORT-sqlite-vs-postgresql.md)
+./bench/sqlite-vs-postgresql.py --rows 20000
 ```
+
+CI runs both drivers on every push, plus a native-AOT publish that smoke-tests
+the linked binary on SQLite.
 
 See [`docs/testing.md`](./docs/testing.md) for fixtures, parallelism
 rules, and the commands that include DB-backed integration tests.
@@ -284,6 +377,7 @@ diagrams:
 - [`docs/testing.md`](./docs/testing.md) — xUnit + curl.sh + parallelism + common recipes
 - [`docs/debugging.md`](./docs/debugging.md) — known pitfalls, AOT gotchas, SQL inspection
 - [`docs/contributing.md`](./docs/contributing.md) — recipes: add endpoint, repository, service, plugin
+- [`docs/sqlite-backend-audit.md`](./docs/sqlite-backend-audit.md) — the SQLite tier: dialect seam, what is unsupported and why
 
 ## Deployment
 
@@ -324,8 +418,9 @@ Services/         Business logic
 ## Technology
 
 - **.NET 10** with Native AOT — single binary, no runtime needed
-- **PostgreSQL** — DMART DDL in `DataAdapters/Sql/SqlSchema.cs`
-- **Npgsql** — direct SQL, no ORM
+- **PostgreSQL** — the supported production tier; DDL in `DataAdapters/Sql/SqlSchema.cs`
+- **SQLite** — reduced tier for dev / CI / edge; DDL in `DataAdapters/Sql/SqliteSchema.cs`
+- **Npgsql** and **Microsoft.Data.Sqlite** — direct SQL, no ORM, one dialect seam
 - **Svelte** — CXB and Catalog admin UIs, embedded in the binary
 - **System.Text.Json** with source-generated serializers
 
