@@ -697,7 +697,7 @@ into a project whose PostgreSQL path has none.
 | Semantic / vector search (`/query` semantic mode, `SemanticSearchService`, `SemanticIndexerService`, `EmbeddingProvider`) | pgvector. Already gated behind `EmbeddingProvider.IsEnabledAsync` — stays false |
 | `dmart import --fast` | `session_replication_role` is PostgreSQL-specific (`Db.cs:70-75,364-368`) |
 | `dmart import --drop-indexes` | GIN-specific (`ImportBulkIndexes.cs`) |
-| `DbSizeInfoPlugin` | `pg_total_relation_size` |
+| `DbSizeInfoPlugin` per-table breakdown | `pg_total_relation_size`. **Implemented**: the SQLite path reports the whole-database size (page_count x page_size) and names the missing `dbstat` vtab, rather than leaking a connection-setting name |
 | `Dmart.SqlAdapter` SDK | Stays PostgreSQL-only (separate distributable) |
 | `quantile`, `stddev`, `first_value`, `random_sample` reducers | No SQLite equivalent (§2.8). **Implemented**: `ISqlDialect.Reducer` declines them and the caller raises a request error naming the reducer, rather than returning wrong numbers or a response silently missing the column |
 | `CREATE INDEX CONCURRENTLY` | Index builds lock |

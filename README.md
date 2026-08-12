@@ -174,13 +174,14 @@ Unavailable — the feature is off, not silently different:
 | `dmart import --fast`, `--drop-indexes`, `--fast-parallelism` | `session_replication_role`, and GIN-specific index juggling | refused with a reason naming the flag, never ignored |
 | `Dmart.SqlAdapter` SDK | stays PostgreSQL-only | separate distributable |
 | Aggregation reducers `stddev`, `quantile`, `first_value`, `random_sample` | no core-SQLite equivalent (no stddev, no `percentile_cont`, no ordered array aggregation) | HTTP 400 naming the reducer |
-| `db_size_info` API plugin | `pg_total_relation_size` | **database error, not a clean message** |
+| `db_size_info` per-table breakdown | needs the `dbstat` virtual table (`SQLITE_ENABLE_DBSTAT_VTAB`), which the bundled SQLite is not built with | reports the whole-database size and says why the breakdown is missing |
 
 Every other reducer works: `count`, `count_distinct`, `sum`, `avg`, `min`,
 `max`, `group_concat`. A reducer name dmart does not recognize is still
 ignored on both backends, which is long-standing behaviour — only a reducer
 the backend genuinely cannot compute is refused, and it is refused loudly
-rather than dropped from the response.
+rather than dropped from the response. Nothing in this table fails with an
+opaque database error any more.
 
 Degraded — works, but materially slower or subtly different:
 
