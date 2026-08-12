@@ -2143,6 +2143,44 @@ app.Use(async (ctx, next) =>
                 $"Database error. Reference: {cid}");
         }
     }
+    catch (Microsoft.Data.Sqlite.SqliteException ex)
+    {
+        // The SQLite mirror of the PostgreSQL branch above. Only the two cases
+        // that map to a non-500 are translated — a unique violation and an
+        // unknown column — because those are the two an API CLIENT caused and
+        // can act on. Everything else is a server fault on either backend and
+        // stays a 500 with the correlation id.
+        var cid = ctx.Response.Headers["X-Correlation-ID"].ToString();
+        var logger = ctx.RequestServices.GetService<ILoggerFactory>()?.CreateLogger("ExceptionHandler");
+        logger?.LogError(ex, "SQLite error cid={Cid} code={Code} extended={Extended}",
+            cid, ex.SqliteErrorCode, ex.SqliteExtendedErrorCode);
+
+        if (Dmart.DataAdapters.Sql.DbErrors.IsUniqueViolation(ex))
+        {
+            // Same redaction rule as PostgreSQL: name the column, never the
+            // value, so a duplicate-key failure on /user/create cannot be used
+            // to enumerate registered identifiers.
+            var column = Dmart.Utils.SqliteErrorParsing.ExtractUniqueViolationColumn(ex.Message);
+            await WriteDbFailureAsync(ctx, StatusCodes.Status409Conflict,
+                Dmart.Models.Api.InternalErrorCode.SHORTNAME_ALREADY_EXIST,
+                column is not null
+                    ? $"resource with this {column} already exists"
+                    : "resource already exists");
+        }
+        else if (Dmart.Utils.SqliteErrorParsing.ExtractUndefinedColumn(ex.Message) is { } col)
+        {
+            await WriteRequestFailureAsync(ctx, StatusCodes.Status400BadRequest,
+                Dmart.Models.Api.InternalErrorCode.INVALID_DATA,
+                $"Unknown search field '{col}'. To search a custom payload field, use "
+                + $"'@payload.body.{col}:<value>' instead of '@{col}:<value>'.");
+        }
+        else
+        {
+            await WriteDbFailureAsync(ctx, StatusCodes.Status500InternalServerError,
+                Dmart.Models.Api.InternalErrorCode.SOMETHING_WRONG,
+                $"Database error. Reference: {cid}");
+        }
+    }
     catch (Npgsql.NpgsqlException ex)
     {
         // Transport/connection-level Npgsql failure (pool exhaustion, socket

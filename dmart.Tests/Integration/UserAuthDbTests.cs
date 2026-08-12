@@ -6,6 +6,7 @@ using Dmart.Models.Api;
 using Dmart.Models.Json;
 using Microsoft.Extensions.DependencyInjection;
 using Shouldly;
+using Dmart.DataAdapters.Sql;
 using Xunit;
 
 namespace Dmart.Tests.Integration;
@@ -122,15 +123,14 @@ public class UserAuthDbTests : IClassFixture<DmartFactory>
     public async Task Successful_Login_Resets_AttemptCount_To_Zero()
     {
         var users = _factory.Services.GetRequiredService<Dmart.DataAdapters.Sql.UserRepository>();
-        var db = _factory.Services.GetRequiredService<Dmart.DataAdapters.Sql.Db>();
+        var db = _factory.Services.GetRequiredService<IDbConnectionFactory>();
 
         // Seed: admin row with attempt_count=3 (simulating 3 prior failed tries
         // that didn't cross the lockout threshold).
         await using (var conn = await db.OpenAsync())
-        await using (var cmd = new Npgsql.NpgsqlCommand(
-            "UPDATE users SET attempt_count = 3 WHERE shortname = $1", conn))
+        await using (var cmd = conn.Command("UPDATE users SET attempt_count = 3 WHERE shortname = $1"))
         {
-            cmd.Parameters.Add(new() { Value = _factory.AdminShortname });
+            DbParams.Add(cmd, _factory.AdminShortname);
             await cmd.ExecuteNonQueryAsync();
         }
 
@@ -144,9 +144,8 @@ public class UserAuthDbTests : IClassFixture<DmartFactory>
             // Verify attempt_count was reset to 0 and persisted (not overwritten
             // by the follow-up UpsertAsync in ProcessLoginAsync).
             await using var conn = await db.OpenAsync();
-            await using var cmd = new Npgsql.NpgsqlCommand(
-                "SELECT attempt_count FROM users WHERE shortname = $1", conn);
-            cmd.Parameters.Add(new() { Value = _factory.AdminShortname });
+            await using var cmd = conn.Command("SELECT attempt_count FROM users WHERE shortname = $1");
+            DbParams.Add(cmd, _factory.AdminShortname);
             var stored = await cmd.ExecuteScalarAsync();
             var count = stored is int i ? i : (stored is null || stored is DBNull ? (int?)null : Convert.ToInt32(stored));
             (count ?? 0).ShouldBe(0);

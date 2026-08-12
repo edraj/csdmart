@@ -23,7 +23,7 @@ public class ImportBadRowIsolationTests : IClassFixture<DmartFactory>
     private readonly DmartFactory _factory;
     public ImportBadRowIsolationTests(DmartFactory factory) => _factory = factory;
 
-    [FactIfPg]
+    [FactIfImportSupported]
     public async Task Default_Import_Isolates_Bad_Rows_And_Lands_Good_Ones()
     {
         var sp = _factory.Services;

@@ -23,7 +23,10 @@ public sealed class OtpHashingTests : IClassFixture<DmartFactory>
     {
         var db = _factory.Services.GetRequiredService<IDbConnectionFactory>();
         await using var conn = await db.OpenAsync();
-        await using var cmd = conn.Command("SELECT value -> 'code' FROM otp WHERE key = $1");
+        // hstore's -> yields text; SQLite stores the same map as JSON, where
+        // -> would hand back a quoted JSON string, so it needs ->>.
+        var codeExpr = DmartFactory.UseSqlite ? "value ->> '$.code'" : "value -> 'code'";
+        await using var cmd = conn.Command($"SELECT {codeExpr} FROM otp WHERE key = $1");
         DbParams.Add(cmd, key);
         var raw = await cmd.ExecuteScalarAsync();
         return raw is null or DBNull ? null : (string)raw;

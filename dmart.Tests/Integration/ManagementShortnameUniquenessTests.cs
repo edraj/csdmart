@@ -32,9 +32,12 @@ public class ManagementShortnameUniquenessTests : IClassFixture<DmartFactory>
         await access.UpsertRoleAsync(Make("/roles"));
         try
         {
-            var ex = await Should.ThrowAsync<Npgsql.PostgresException>(
+            // Asserted through DbErrors rather than on the concrete exception
+            // type: both backends enforce the same index, and the property
+            // under test is that the second write is REJECTED as a duplicate.
+            var ex = await Should.ThrowAsync<Exception>(
                 () => access.UpsertRoleAsync(Make("/roles/other")));
-            ex.SqlState.ShouldBe("23505"); // unique_violation
+            DbErrors.IsUniqueViolation(ex).ShouldBeTrue($"expected a unique violation, got {ex}");
         }
         finally { try { await access.DeleteRoleAsync(name); } catch { } }
     }
@@ -54,9 +57,9 @@ public class ManagementShortnameUniquenessTests : IClassFixture<DmartFactory>
         await access.UpsertGroupAsync(Make("/groups"));
         try
         {
-            var ex = await Should.ThrowAsync<Npgsql.PostgresException>(
+            var ex = await Should.ThrowAsync<Exception>(
                 () => access.UpsertGroupAsync(Make("/groups/other")));
-            ex.SqlState.ShouldBe("23505");
+            DbErrors.IsUniqueViolation(ex).ShouldBeTrue($"expected a unique violation, got {ex}");
         }
         finally { try { await access.DeleteGroupAsync(name); } catch { } }
     }
@@ -79,9 +82,9 @@ public class ManagementShortnameUniquenessTests : IClassFixture<DmartFactory>
         await access.UpsertPermissionAsync(Make("/permissions"));
         try
         {
-            var ex = await Should.ThrowAsync<Npgsql.PostgresException>(
+            var ex = await Should.ThrowAsync<Exception>(
                 () => access.UpsertPermissionAsync(Make("/permissions/other")));
-            ex.SqlState.ShouldBe("23505");
+            DbErrors.IsUniqueViolation(ex).ShouldBeTrue($"expected a unique violation, got {ex}");
         }
         finally { try { await access.DeletePermissionAsync(name); } catch { } }
     }

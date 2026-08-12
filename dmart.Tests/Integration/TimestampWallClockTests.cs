@@ -43,7 +43,10 @@ public sealed class TimestampWallClockTests : IClassFixture<DmartFactory>
             DbParams.Add(cmd, shortname);
             DbParams.Add(cmd, space);
             DbParams.Add(cmd, subpath);
-            var dbValue = (DateTime)(await cmd.ExecuteScalarAsync())!;
+            // PostgreSQL hands back a DateTime; SQLite stores the same local
+            // wall-clock string in a TEXT column and hands back that string.
+            var raw = (await cmd.ExecuteScalarAsync())!;
+            var dbValue = raw as DateTime? ?? SqliteValues.ToDateTime((string)raw);
 
             // Round to seconds — the wire format trims trailing fractional
             // zeros, and psql defaults to microsecond precision; comparing
