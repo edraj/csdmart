@@ -7,32 +7,32 @@ weekly pipeline ships only what changed.
 Status: **design only, nothing implemented.** Decisions taken so far are
 recorded in §6. Everything marked *[measured]* was run, not estimated.
 
-> **Depends on PR #152** (the SQLite backend). Several things referenced here —
-> `SqliteSchema.cs`, `DbParams.ReadTextArray`, `bench/sqlite-vs-postgresql.py`,
-> the `libe_sqlite3.so` packaging note — land with that branch and do not exist
-> on `master` yet. The design does not *require* SQLite, but the exporter has to
-> work on both backends once it merges, which is why the dual-backend
-> obligations (tombstone DDL in two schema files, one canonical array encoding)
-> are called out throughout.
+> Assumes the SQLite backend (#152, merged). The exporter has to work on both
+> backends, which is why the dual-backend obligations — tombstone DDL in two
+> schema files, one canonical array encoding — are called out throughout.
 
 ---
 
-## 1. The current export does not scale, for three reasons — and only one is the format
+## 1. The current export did not scale, for three reasons — and only one was the format
 
-Worth separating, because switching to Parquet fixes only the third.
+Worth separating, because switching to Parquet addresses only the third. **The
+first two were bugs, and are fixed** (#156, merged) — recorded here because
+they explain why the format was never the first thing in the way.
 
-**It buffers the whole archive in RAM.** `ImportExportService.ExportAsync`
-opens `new MemoryStream()` and builds the entire `ZipArchive` in it before
-returning a byte. A 4 GB export needs 4 GB of memory plus the zip's own
-buffers. No format change helps: Parquet written into a `MemoryStream` OOMs
-just as well.
+**~~It buffered the whole archive in RAM.~~** `ExportAsync` built the entire
+`ZipArchive` in a `MemoryStream`, so a 4 GB export needed 4 GB of memory. It
+now spools to a temp file and offers `ExportToAsync(Stream, …)` for callers
+with a destination. Note this was never a format problem: Parquet written into
+a `MemoryStream` OOMs just as well.
 
-**It silently truncates at 100,000 entries.** `QueryLimit = 100_000` bounds the
-query that drives the export. A space with more entries exports *partially*,
-reports success, and produces an archive that looks complete. This is a bug
-independent of this feature and probably worth fixing on its own.
+**~~It silently truncated at 100,000 entries.~~** `QueryLimit = 100_000` bounded
+the query driving the export, so a larger space exported *partially* and
+reported success. It now pages to exhaustion, forcing a `uuid` sort because the
+default `updated_at DESC` is not a total order and paging on it would drop rows
+just as quietly.
 
-**Attachment media is loaded whole, per parent.**
+**Attachment media is still loaded whole, per parent** — the one of the three
+that remains, and the one this design actually addresses.
 `ListForParentWithMediaAsync` is required here (the metadata-only projection
 returns `NULL::bytea` and would ship attachment metadata with no file behind
 it — a bug the comment there records as already fixed). But it means every
@@ -317,9 +317,8 @@ Two consequences to be explicit about:
 2. **Compression codec.** zstd measured here; snappy is faster to write and
    more widely supported by older readers. Worth measuring both at GB scale
    before pinning.
-3. **Where does the 100k `QueryLimit` fix land?** It affects the existing
-   exporter too. Fixing it there separately is cleaner than only fixing it in
-   the new path, and it is arguably urgent regardless of this work.
+3. ~~**Where does the 100k `QueryLimit` fix land?**~~ Resolved: fixed in the
+   existing exporter (#156) rather than only in the new path.
 4. **Re-base cadence and tombstone retention.** Both answer "how far back can
    we recover", and they must be chosen together — retention shorter than the
    chain's reach loses deletions silently (§5.2).
@@ -331,9 +330,9 @@ independently verifiable and the risky part is not last.
 
 1. **This document.** Stop, agree the shape.
 2. **Full export, streaming, no incremental.** Prove the round trip:
-   export → import into an empty store → the two stores are equal. Fix the
-   `MemoryStream` and `QueryLimit` ceilings here. Land the AOT suppression with
-   its evidence.
+   export → import into an empty store → the two stores are equal. Land the AOT
+   suppression with its evidence. (The `MemoryStream` and `QueryLimit` ceilings
+   are already gone — #156.)
 3. **Tombstones.** Schema on both backends, write on every delete path
    including cascades, tests that pin folder-cascade and `--fast`.
 4. **Incremental.** Watermark, `updated_at` indexes, blob dedup across
