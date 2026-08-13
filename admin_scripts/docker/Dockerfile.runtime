@@ -2,6 +2,11 @@
 #
 # Used by notes.sh after building via the persistent builder container.
 # For a self-contained build, use Dockerfile instead.
+#
+# Shares entrypoint.sh with Dockerfile, so it is SQLite-backed for the same
+# reasons and must carry the same package set — shipping a PostgreSQL server
+# the entrypoint never starts would be dead weight and a misleading signal
+# about what the image runs on.
 
 ARG VERSION=unknown
 
@@ -9,8 +14,9 @@ FROM alpine:edge
 
 # No icu-libs: dmart is built with InvariantGlobalization=true (no ICU
 # dependency). tzdata STAYS — TimeZoneInfo reads OS tzdata, not ICU.
+# krb5-libs stays for Npgsql's client-side Kerberos path: the server is gone,
+# but pointing this image at an EXTERNAL PostgreSQL is still supported.
 RUN apk add --no-cache \
-      postgresql18 postgresql18-contrib \
       bash curl tzdata krb5-libs \
       jq
 

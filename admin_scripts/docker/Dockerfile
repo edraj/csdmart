@@ -1,4 +1,12 @@
-# All-in-one Alpine container: dmart (AOT) + PostgreSQL
+# Single-process Alpine container: dmart (AOT) on SQLite.
+#
+# Previous tags bundled PostgreSQL 18 and supervised two processes. This one
+# ships dmart alone: the SQL store is a rebuildable index over the flat files,
+# and for a single-node container the SQLite tier is the right size for it
+# (see the readme's "Storage backends" section for where that tier stops).
+# Point DATABASE_DRIVER / DATABASE_* at an external PostgreSQL for anything
+# beyond that. The entrypoint refuses to start on a volume left behind by a
+# PostgreSQL-era image rather than silently coming up with an empty index.
 #
 # Prerequisites: build UI first: ./build-ui.sh
 #
@@ -52,8 +60,13 @@ FROM alpine:edge
 # No icu-libs: dmart is built with InvariantGlobalization=true, so the binary
 # has no ICU dependency (culture data is compiled out; all parses/compares are
 # invariant/ordinal). tzdata STAYS — TimeZoneInfo reads OS tzdata, not ICU.
+# No postgresql18: this image runs dmart on SQLite, whose engine ships inside
+# the binary via SQLitePCLRaw. krb5-libs STAYS even though the PostgreSQL
+# server is gone — Npgsql is still compiled in and this image documents
+# pointing at an external PostgreSQL, so the client's Kerberos path must keep
+# working. (DOTNET_SYSTEM_NET_SECURITY_DISABLEGSSAPIPAL below may make it
+# redundant; that is a separate, testable trim, not something to infer.)
 RUN apk add --no-cache \
-      postgresql18 postgresql18-contrib \
       bash curl tzdata krb5-libs \
       jq
 
@@ -71,7 +84,7 @@ LABEL name="dmart" vendor="dmart.cc" version="${VERSION}" license="AGPLv3+" \
       org.opencontainers.image.name="dmart" \
       org.opencontainers.image.vendor="dmart.cc" \
       org.opencontainers.image.version="${VERSION}" \
-      org.opencontainers.image.description="dmart C# with PostgreSQL — all-in-one Alpine container" \
+      org.opencontainers.image.description="dmart C# on SQLite — single-process Alpine container" \
       org.opencontainers.image.url="https://dmart.cc" \
       org.opencontainers.image.source="https://github.com/edraj/csdmart" \
       org.opencontainers.image.license="AGPLv3+"

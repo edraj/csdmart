@@ -1,6 +1,7 @@
 #!/bin/bash
 
-# Build and run dmart (C#) + PostgreSQL all-in-one Alpine container.
+# Build and run the dmart (C#) single-process Alpine container.
+# SQLite-backed: no database server to stand up, one process, no initdb.
 #
 # Uses a persistent builder container so the .NET SDK + NuGet cache
 # survive between builds (~2 min first time, ~30s thereafter).

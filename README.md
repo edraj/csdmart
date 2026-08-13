@@ -413,9 +413,15 @@ journalctl -u dmart -f
 
 ```
 ./admin_scripts/docker/notes.sh
-# Includes PostgreSQL 18 + dmart
+# Single process, SQLite-backed — no database server to stand up
 # Access: http://localhost:8000/cxb/
 ```
+
+The image runs dmart alone and stores its index in SQLite under
+`/root/.dmart`. Point `DATABASE_DRIVER` / `DATABASE_*` at an external
+PostgreSQL for anything past the tier limits above. Images before this change
+bundled PostgreSQL 18; a container reusing one of those volumes refuses to
+start and prints how to migrate rather than coming up with an empty index.
 
 ## Project Layout
 
