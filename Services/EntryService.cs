@@ -472,8 +472,9 @@ public sealed class EntryService(
         // diff column — broke the /managed/query?type=history response shape
         // which clients expect to be `{old, new}`-only per key.
         var historyDiff = HistoryDiffUtil.ComputeEntryDiff(existing, merged);
-        await history.AppendAsync(locator.SpaceName, locator.Subpath, locator.Shortname, actor, null,
-            historyDiff.Count > 0 ? historyDiff : null, ct);
+        if (historyDiff.Count > 0)
+            await history.AppendAsync(locator.SpaceName, locator.Subpath, locator.Shortname, actor, null,
+                historyDiff, ct);
 
         var afterEvent = BuildEvent(merged, ActionType.Update, actor, isBulkImport);
         if (historyDiff.Count > 0) afterEvent.Attributes["history_diff"] = historyDiff;
