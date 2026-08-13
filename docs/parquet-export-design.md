@@ -11,6 +11,13 @@ recorded in §6. Everything marked *[measured]* was run, not estimated.
 > backends, which is why the dual-backend obligations — tombstone DDL in two
 > schema files, one canonical array encoding — are called out throughout.
 
+> **Read §2.1 first.** Parquet in this codebase was already proposed and
+> deliberately dropped once (PR #75), on an AOT argument that is still valid
+> for the API it used. This design proceeds only because it uses a *different*
+> Parquet API — and that difference is not yet verified on the version #75
+> tested. If you are about to suggest putting Parquet in a non-AOT subproject
+> like `Dmart.SqlAdapter`, §2.1 explains why that was tried and does not work.
+
 ---
 
 ## 1. The current export did not scale, for three reasons — and only one was the format
@@ -72,6 +79,63 @@ So this needs a **narrowly scoped `IL3050` suppression with the runtime
 evidence in its justification**. That is a real cost and should be a conscious
 decision, not a footnote — it is the first suppression of an AOT analyzer in
 this codebase rather than of a security analyzer.
+
+### 2.1 Prior art: PR #75 was dropped over exactly this, and why that changes
+
+**This ground has been walked before.** PR #75 (2026-05-26, closed the same
+day) added `dmart archive` / `dmart unarchive` — per-folder Parquet archival of
+the flat files, in a non-AOT `Dmart.ParquetAdapter` subproject mirroring
+`Dmart.SqlAdapter`. It was closed deliberately, not abandoned. The reasoning,
+verbatim:
+
+> Parquet.Net 6 is reflection-heavy and not AOT-compatible. Pulling it into the
+> main project's AOT publish graph fails ilc with IL2104/IL3053. The SqlAdapter
+> pattern (Compile Remove + UndefineProperties PublishAot) only works because
+> SqlAdapter is structurally orphaned from main's call graph (NuGet-only).
+> Archive/unarchive would need a separate framework-dependent companion binary,
+> which exceeds the value vs. just using `tar -czf` for file count reduction +
+> dmart's existing JSON export for offline query.
+
+Two things in there are load-bearing and should not be re-derived:
+
+1. **The subproject escape hatch does not generalise.** `Dmart.SqlAdapter` gets
+   away with `Compile Remove` + `UndefineProperties PublishAot` only because
+   nothing in the main call graph reaches it — it is a NuGet-only distributable.
+   A CLI subcommand or an API handler *is* in the call graph, so the exclusion
+   collapses and ilc pulls the dependency in anyway. Anyone proposing "just put
+   Parquet in a subproject like SqlAdapter" is proposing the thing that was
+   already tried.
+2. **A framework-dependent companion binary was judged not worth it.** That
+   judgement was about ARCHIVAL, whose alternative is `tar -czf` plus the
+   existing JSON export. It does not automatically carry to incremental export,
+   which `tar` cannot do — but it is the bar this work has to clear.
+
+**What is different now** is the API, not the willingness to suppress. #75
+measured Parquet.Net 6 through `ParquetSerializer` — the reflection path, which
+maps rows to a POCO and is exactly what IL2104/IL3053 fire on. §2 above measures
+the LOW-LEVEL column API (`ParquetWriter` + `DataColumn` + explicit
+`ParquetSchema`), which does no such mapping: one IL3050, verified at runtime as
+a false positive for statically-declared schemas. If that holds, there is no
+companion binary and no orphaning — the dependency lives in the main assembly
+like any other.
+
+**It is not yet proven to hold**, and this is the single most important open
+item in this document:
+
+- §2 measured **5.6.1**; #75 hit **6.0.3**. Different major version.
+- #75's failures came from the serializer path, which §2 avoids — so the two
+  results are not in contradiction, but neither does one supersede the other.
+- **Re-measure the low-level API on 6.x before committing to this design.** If
+  6.x cannot be made AOT-clean through the low-level API either, #75's
+  conclusion stands and this design needs the companion binary it assumes away
+  — at which point the value judgement in #75 has to be re-argued rather than
+  inherited.
+
+For context, #75 was Phase C of a 24M-entry / 400 GB legacy migration. Phase A
+(PR #73, preflight) and Phase B (PR #74, `import --resume`) shipped and covered
+the migration's must-haves. That scale also dwarfs the "several gigabytes"
+framing this document was written against, and is worth revisiting against §4.2
+row-group sizing and §4.3 blob-store sharding before Phase 2.
 
 ## 3. The size win *[measured]*
 
@@ -314,12 +378,15 @@ Two consequences to be explicit about:
    policies when `actor` is non-null; the CLI passes null for a full dump. A
    Parquet export is an operator tool — it should be explicitly actor-null and
    refuse an actor argument, rather than quietly producing a filtered "backup".
-2. **Compression codec.** zstd measured here; snappy is faster to write and
+2. **Does the low-level API stay AOT-clean on Parquet.Net 6.x?** The whole
+   design assumes it does (§2.1). Measured only on 5.6.1 so far. If not, #75's
+   companion-binary conclusion stands and the value case must be re-argued.
+3. **Compression codec.** zstd measured here; snappy is faster to write and
    more widely supported by older readers. Worth measuring both at GB scale
    before pinning.
-3. ~~**Where does the 100k `QueryLimit` fix land?**~~ Resolved: fixed in the
+4. ~~**Where does the 100k `QueryLimit` fix land?**~~ Resolved: fixed in the
    existing exporter (#156) rather than only in the new path.
-4. **Re-base cadence and tombstone retention.** Both answer "how far back can
+5. **Re-base cadence and tombstone retention.** Both answer "how far back can
    we recover", and they must be chosen together — retention shorter than the
    chain's reach loses deletions silently (§5.2).
 
@@ -329,15 +396,21 @@ Mirrors how the SQLite backend was staged, for the same reason: each phase is
 independently verifiable and the risky part is not last.
 
 1. **This document.** Stop, agree the shape.
-2. **Full export, streaming, no incremental.** Prove the round trip:
+2. **Settle the AOT question on the version we would actually ship (§2.1).**
+   Re-run the §2 probe against Parquet.Net 6.x with the low-level API. This is
+   a day's work and it gates everything after it: if 6.x cannot be made
+   AOT-clean, #75's companion-binary conclusion stands and the value case has
+   to be re-argued before any exporter is written. Do not skip to step 3
+   because the 5.6.1 numbers look good.
+3. **Full export, streaming, no incremental.** Prove the round trip:
    export → import into an empty store → the two stores are equal. Land the AOT
    suppression with its evidence. (The `MemoryStream` and `QueryLimit` ceilings
    are already gone — #156.)
-3. **Tombstones.** Schema on both backends, write on every delete path
+4. **Tombstones.** Schema on both backends, write on every delete path
    including cascades, tests that pin folder-cascade and `--fast`.
-4. **Incremental.** Watermark, `updated_at` indexes, blob dedup across
+5. **Incremental.** Watermark, `updated_at` indexes, blob dedup across
    manifests, apply-order semantics, and the chain enforcement in §5.4 — the
    `chain_id`/`sequence` refusal is worth landing *with* the first increment,
    not after, since it is the thing that makes a wrong apply loud.
-5. **Scale.** Benchmark at multi-GB with the harness pattern in
+6. **Scale.** Benchmark at multi-GB with the harness pattern in
    `bench/sqlite-vs-postgresql.py`; document the tier in the readme.
