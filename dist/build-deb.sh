@@ -140,11 +140,12 @@ $ENGINE run --rm \
         done
 
         install -D -m 0644 config.env.sample      "$STAGE/usr/share/dmart/config.env.sample"
+        install -D -m 0644 dist/config.env.packaged "$STAGE/usr/share/dmart/config.env.packaged"
         # Ship the initial /etc/dmart/config.env as a conffile (see
         # DEBIAN/conffiles below). dpkg only manages files it actually
         # ships, so the empty initial copy must be in the .deb tree;
         # postinst chowns it root:dmart 0640 after extraction.
-        install -D -m 0640 config.env.sample      "$STAGE/etc/dmart/config.env"
+        install -D -m 0640 dist/config.env.packaged "$STAGE/etc/dmart/config.env"
         install -D -m 0644 dist/dmart.service     "$STAGE/usr/lib/systemd/system/dmart.service"
         install -D -m 0644 dist/dmart.bash        "$STAGE/etc/bash_completion.d/dmart"
         install -D -m 0644 dist/dmart.fish        "$STAGE/usr/share/fish/vendor_completions.d/dmart.fish"

@@ -37,6 +37,7 @@ if [[ "$TARGET" == "srpm" ]]; then
           Cli/ Auth/ Utils/ "$TARDIR/" 2>/dev/null || true
     cp dmart.csproj dmart.slnx Program.cs config.env.sample \
        Directory.Build.props Directory.Packages.props 2>/dev/null "$TARDIR/" || true
+    cp dist/config.env.packaged "$TARDIR/" 2>/dev/null || true
     # NuGet config if present
     cp nuget.config "$TARDIR/" 2>/dev/null || true
     # Plugin configs
@@ -238,8 +239,9 @@ cp bin/dmart "$TARDIR/"
 # Plugin configs
 cp -r plugins/*/ "$TARDIR/plugins/"
 
-# Config sample
+# Config sample (full key reference) + the packaged default seeded into /etc
 cp config.env.sample "$TARDIR/"
+cp dist/config.env.packaged "$TARDIR/"
 
 # Systemd unit + shell completions
 cp dist/dmart.service "$TARDIR/"

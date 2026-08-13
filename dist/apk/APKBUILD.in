@@ -33,6 +33,7 @@ source="
 	dmart.bash
 	dmart.fish
 	config.env.sample
+	config.env.packaged
 	plugins.tar.gz
 	cxb-ui.tar.gz
 	catalog-ui.tar.gz
@@ -85,6 +86,8 @@ package() {
 	# Config sample
 	install -Dm644 "$srcdir"/config.env.sample \
 		"$pkgdir"/usr/share/dmart/config.env.sample
+	install -Dm644 "$srcdir"/config.env.packaged \
+		"$pkgdir"/usr/share/dmart/config.env.packaged
 
 	# OpenRC init script (Alpine default service manager)
 	install -Dm755 "$srcdir"/dmart.openrc-init \

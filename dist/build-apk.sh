@@ -224,6 +224,7 @@ cp dist/dmart.service                       "$APKROOT/"
 cp dist/apk/dmart.openrc-init               "$APKROOT/"
 cp dist/dmart.bash dist/dmart.fish          "$APKROOT/"
 cp config.env.sample                        "$APKROOT/"
+cp dist/config.env.packaged                 "$APKROOT/"
 
 # Plugin configs bundled as a tarball so the APKBUILD has one named
 # source entry instead of a moving glob. Extracted into

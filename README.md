@@ -157,6 +157,12 @@ DATABASE_DRIVER="postgresql"     # + DATABASE_HOST / DATABASE_NAME / ...
 DATABASE_DRIVER="sqlite"         # + SQLITE_PATH="/var/lib/dmart/dmart.db"
 ```
 
+Packaged installs (RPM/deb/apk) ship a `/etc/dmart/config.env` that selects
+SQLite at `/var/lib/dmart/dmart.db`, so `dnf install dmart` needs only a
+`JWT_SECRET` before the service starts — no database server to stand up. The
+file documents how to switch to PostgreSQL, and it is seeded on **first install
+only**, so an upgrade never touches a config you have edited.
+
 Leaving it **unset is supported**, and is inferred rather than defaulted: any
 PostgreSQL connection setting selects `postgresql`, nothing pointing at
 PostgreSQL selects `sqlite`. So `dmart serve` works on a fresh box with no
