@@ -579,9 +579,22 @@ switch (subcommand)
         // symptom — the ACL gate excluded entries whose stored
         // query_policies didn't intersect with the dmart user's, so those
         // shortnames never landed in the zip).
-        await using var exportStream = await exportService.ExportAsync(spaceName, "/", actor: null);
-        await using var fileStream = File.Create(outputPath);
-        await exportStream.CopyToAsync(fileStream);
+        // Straight into the destination file: the CLI already has somewhere to
+        // put the bytes, so it needs neither a MemoryStream nor the temp-file
+        // spool ExportAsync uses to keep its Stream-returning signature.
+        //
+        // A failed export leaves a partial .zip that looks like a backup, so
+        // remove it. Better no file than a file that lies.
+        try
+        {
+            await using (var fileStream = File.Create(outputPath))
+                await exportService.ExportToAsync(fileStream, spaceName, "/", actor: null);
+        }
+        catch
+        {
+            try { File.Delete(outputPath); } catch { /* best effort */ }
+            throw;
+        }
         Console.WriteLine($"Exported space '{spaceName}' to {outputPath}");
         return;
     }

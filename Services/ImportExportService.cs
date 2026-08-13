@@ -58,6 +58,17 @@ public sealed class ImportExportService(
     IOptions<DmartSettings> settingsOpt,
     ILogger<ImportExportService> log)
 {
+    // Rows fetched per page while exporting. NOT a cap on the export: the
+    // export pages until the source is exhausted (see ForEachMatchAsync).
+    //
+    // Settable so tests can exercise the multi-page path without seeding
+    // enough rows to cross a realistic page boundary — proving the ORIGINAL
+    // bug would otherwise need 100,001 entries. Test-only; not thread-safe,
+    // and nothing in the request path writes it.
+    internal static int ExportPageSize { get; set; } = 10_000;
+
+    // Retained for callers that still want a bounded "sample" query. It is no
+    // longer what any full export runs.
     private const int QueryLimit = 100_000;
 
     // Maximum rows accumulated in memory before a bulk COPY flush. Bounds
@@ -85,19 +96,94 @@ public sealed class ImportExportService(
             SpaceName = spaceName,
             Subpath = subpath ?? "/",
             FilterSchemaNames = new(),
-            Limit = QueryLimit,
+            Limit = 0,   // 0 = unbounded; ForEachMatchAsync pages to the end
             RetrieveJsonPayload = true,
         }, actor, ct);
 
+    /// <summary>Space/subpath convenience form of <see cref="ExportToAsync"/>.</summary>
+    public Task ExportToAsync(
+        Stream destination, string spaceName, string? subpath, string? actor, CancellationToken ct = default)
+        => ExportToAsync(destination, new Query
+        {
+            Type = QueryType.Search,
+            SpaceName = spaceName,
+            Subpath = subpath ?? "/",
+            FilterSchemaNames = new(),
+            Limit = 0,   // 0 = unbounded; ForEachMatchAsync pages to the end
+            RetrieveJsonPayload = true,
+        }, actor, ct);
+
+    /// <summary>
+    /// Writes the export archive straight into <paramref name="destination"/>.
+    /// Nothing is buffered beyond one zip entry at a time.
+    /// </summary>
+    /// <remarks>
+    /// Prefer this when the caller already has somewhere to put the bytes — a
+    /// file, a response body — because it is the only form with a memory
+    /// ceiling independent of the export's size.
+    ///
+    /// <paramref name="destination"/> need not be seekable: ZipArchiveMode.Create
+    /// writes sequentially and emits data descriptors when it cannot rewind to
+    /// patch sizes into local headers.
+    /// </remarks>
+    public async Task ExportToAsync(
+        Stream destination, Query clientQuery, string? actor, CancellationToken ct = default)
+    {
+        using var zip = new ZipArchive(destination, ZipArchiveMode.Create, leaveOpen: true);
+        await ExportInternalAsync(zip, clientQuery, actor, ct);
+    }
+
+    /// <summary>
+    /// Produces the export archive as a readable stream. Spools to a temporary
+    /// file, which is deleted when the returned stream is disposed.
+    /// </summary>
+    /// <remarks>
+    /// This used to build the whole archive in a MemoryStream, so a 4 GB export
+    /// needed 4 GB of RAM and a big enough space simply took the process down.
+    /// Spooling moves that ceiling from memory to temp disk, which is the
+    /// cheaper resource and the one an operator can actually provision.
+    ///
+    /// The signature is deliberately unchanged so every existing caller gets
+    /// the bound without being touched.
+    ///
+    /// Spooling rather than streaming the response directly is also a
+    /// CORRECTNESS choice, not just an easier one. The export can fail
+    /// part-way — one unreadable attachment, a dropped connection to the
+    /// database — and a directly-streamed response would already have sent
+    /// 200 OK plus a prefix of a zip. The caller would receive a truncated
+    /// archive that reports success, which is precisely the failure shape the
+    /// 100,000-row cap used to have. Finishing the file first means a failure
+    /// is still an error response.
+    ///
+    /// Requires temp space of roughly the archive size. FileOptions.DeleteOnClose
+    /// removes the file when the stream closes, including on a client
+    /// disconnect that disposes it early.
+    /// </remarks>
     public async Task<Stream> ExportAsync(Query clientQuery, string? actor, CancellationToken ct = default)
     {
-        var ms = new MemoryStream();
-        using (var zip = new ZipArchive(ms, ZipArchiveMode.Create, leaveOpen: true))
+        var spoolPath = Path.Combine(Path.GetTempPath(), $"dmart-export-{Guid.NewGuid():N}.zip");
+        FileStream? readBack = null;
+        try
         {
-            await ExportInternalAsync(zip, clientQuery, actor, ct);
+            await using (var spool = new FileStream(
+                spoolPath, FileMode.CreateNew, FileAccess.Write, FileShare.None,
+                bufferSize: 64 * 1024, FileOptions.SequentialScan))
+            {
+                await ExportToAsync(spool, clientQuery, actor, ct);
+            }
+
+            readBack = new FileStream(
+                spoolPath, FileMode.Open, FileAccess.Read, FileShare.Read,
+                bufferSize: 64 * 1024, FileOptions.DeleteOnClose | FileOptions.SequentialScan);
+            return readBack;
         }
-        ms.Position = 0;
-        return ms;
+        catch
+        {
+            // The spool exists but no DeleteOnClose handle owns it yet.
+            readBack?.Dispose();
+            try { File.Delete(spoolPath); } catch { /* best effort */ }
+            throw;
+        }
     }
 
     private async Task ExportInternalAsync(ZipArchive zip, Query clientQuery, string? actor, CancellationToken ct)
@@ -138,20 +224,93 @@ public sealed class ImportExportService(
         {
             FilterSchemaNames = new(), // export everything regardless of schema
             RetrieveJsonPayload = true,
-            Limit = clientQuery.Limit <= 0 || clientQuery.Limit > QueryLimit ? QueryLimit : clientQuery.Limit,
+            // Limit is passed through UNCAPPED. <= 0 means "everything", which
+            // is what the space/subpath entry point asks for and what used to
+            // stop dead at 100,000.
+            Limit = clientQuery.Limit,
         };
-        var rows = actor is not null
-            ? await entries.QueryAsync(query, actor, policies!, ct)
-            : await entries.QueryAsync(query, ct);
 
-        foreach (var entry in rows)
-        {
-            try { await WriteEntryAsync(zip, entry, spaceName, ct); }
-            catch (Exception ex)
+        await ForEachMatchAsync(
+            query,
+            q => actor is not null
+                ? entries.QueryAsync(q, actor, policies!, ct)
+                : entries.QueryAsync(q, ct),
+            async entry =>
             {
-                log.LogWarning(ex, "export: failed to emit entry {Space}/{Subpath}/{Shortname}",
-                    entry.SpaceName, entry.Subpath, entry.Shortname);
+                try { await WriteEntryAsync(zip, entry, spaceName, ct); }
+                catch (Exception ex)
+                {
+                    log.LogWarning(ex, "export: failed to emit entry {Space}/{Subpath}/{Shortname}",
+                        entry.SpaceName, entry.Subpath, entry.Shortname);
+                }
+            },
+            ct);
+    }
+
+    // Walk EVERY row a query matches, a page at a time.
+    //
+    // The export's contract is "everything that matches", but it used to run a
+    // single query with LIMIT 100000 and drop the remainder in silence: a space
+    // with more entries exported PARTIALLY, reported success, and produced an
+    // archive that looked complete. Silent truncation of a backup is about the
+    // worst shape a bug can take, because it is only discovered at restore.
+    //
+    // Paging needs a TOTAL order, or it reintroduces the same class of bug from
+    // the other end. The default sort is `updated_at DESC`, which is not one —
+    // rows sharing a timestamp can be skipped or repeated as the window
+    // advances, so the fix would drop rows just as quietly as the cap did.
+    // `uuid` is unique and on the shared sort whitelist, so it provides one.
+    //
+    // A caller-supplied positive Limit is still honoured exactly — sampling an
+    // export is a legitimate request — and when it fits in a single page the
+    // caller's own sort is left untouched.
+    //
+    // Residual caveat, stated because it is real: with OFFSET paging, a row
+    // inserted BEFORE the current window while a long export runs shifts the
+    // window and can cost one row. Keyset pagination would close that; it needs
+    // a cursor the Query surface does not currently expose. An export is a
+    // fuzzy point-in-time snapshot of a live store either way, and this is
+    // categorically smaller than discarding everything past row 100,000.
+    private static async Task ForEachMatchAsync<T>(
+        Query query,
+        Func<Query, Task<List<T>>> fetch,
+        Func<T, Task> emit,
+        CancellationToken ct)
+    {
+        var wantAll = query.Limit <= 0;
+
+        if (!wantAll && query.Limit <= ExportPageSize)
+        {
+            foreach (var row in await fetch(query))
+            {
+                ct.ThrowIfCancellationRequested();
+                await emit(row);
             }
+            return;
+        }
+
+        var paged = query with { SortBy = "uuid", SortType = SortType.Ascending };
+        var remaining = wantAll ? long.MaxValue : query.Limit;
+        var offset = query.Offset;
+
+        while (remaining > 0)
+        {
+            ct.ThrowIfCancellationRequested();
+            var take = (int)Math.Min(ExportPageSize, remaining);
+            var page = await fetch(paged with { Limit = take, Offset = offset });
+            if (page.Count == 0) break;
+
+            foreach (var row in page)
+            {
+                ct.ThrowIfCancellationRequested();
+                await emit(row);
+            }
+
+            offset += page.Count;
+            remaining -= page.Count;
+            // A short page means the source is exhausted; asking again would
+            // only cost a round trip to be told the same thing.
+            if (page.Count < take) break;
         }
     }
 
@@ -170,10 +329,9 @@ public sealed class ImportExportService(
         var q = new Query
         {
             Type = QueryType.Search, SpaceName = MgmtSpace, Subpath = "/users",
-            FilterSchemaNames = new(), Limit = QueryLimit, RetrieveJsonPayload = true,
+            FilterSchemaNames = new(), Limit = 0, RetrieveJsonPayload = true,
         };
-        var all = await users.QueryAsync(q, ct);
-        foreach (var u in all)
+        await ForEachMatchAsync(q, qq => users.QueryAsync(qq, ct), async u =>
         {
             var node = ToJsonObject(u, DmartJsonContext.Default.User);
             StripMetaFields(node);
@@ -183,7 +341,7 @@ public sealed class ImportExportService(
             var bodyBase = $"{MgmtSpace}/users";
             await MaybeExternalizePayloadBodyAsync(zip, node, bodyBase, u.Shortname, ct);
             await WriteJsonAsync(zip, $"{MgmtSpace}/users/.dm/{u.Shortname}/meta.user.json", node, ct);
-        }
+        }, ct);
     }
 
     private async Task WriteAllRolesAsync(ZipArchive zip, CancellationToken ct)
@@ -191,16 +349,15 @@ public sealed class ImportExportService(
         var q = new Query
         {
             Type = QueryType.Search, SpaceName = MgmtSpace, Subpath = "/roles",
-            FilterSchemaNames = new(), Limit = QueryLimit,
+            FilterSchemaNames = new(), Limit = 0,
         };
-        var all = await access.QueryRolesAsync(q, ct);
-        foreach (var r in all)
+        await ForEachMatchAsync(q, qq => access.QueryRolesAsync(qq, ct), async r =>
         {
             var node = ToJsonObject(r, DmartJsonContext.Default.Role);
             StripMetaFields(node);
             node.Remove("subpath");
             await WriteJsonAsync(zip, $"{MgmtSpace}/roles/.dm/{r.Shortname}/meta.role.json", node, ct);
-        }
+        }, ct);
     }
 
     private async Task WriteAllPermissionsAsync(ZipArchive zip, CancellationToken ct)
@@ -208,16 +365,15 @@ public sealed class ImportExportService(
         var q = new Query
         {
             Type = QueryType.Search, SpaceName = MgmtSpace, Subpath = "/permissions",
-            FilterSchemaNames = new(), Limit = QueryLimit,
+            FilterSchemaNames = new(), Limit = 0,
         };
-        var all = await access.QueryPermissionsAsync(q, ct);
-        foreach (var p in all)
+        await ForEachMatchAsync(q, qq => access.QueryPermissionsAsync(qq, ct), async p =>
         {
             var node = ToJsonObject(p, DmartJsonContext.Default.Permission);
             StripMetaFields(node);
             node.Remove("subpath");
             await WriteJsonAsync(zip, $"{MgmtSpace}/permissions/.dm/{p.Shortname}/meta.permission.json", node, ct);
-        }
+        }, ct);
     }
 
     private async Task WriteEntryAsync(ZipArchive zip, Entry entry, string spaceName, CancellationToken ct)
@@ -388,6 +544,20 @@ public sealed class ImportExportService(
         try { rows = await histories.QueryHistoryAsync(q, ct); }
         catch (Exception ex) { log.LogWarning(ex, "history export skipped"); return; }
         if (rows.Count == 0) return;
+
+        // Deliberately still bounded, unlike every other export query. Paging
+        // this one would have to sort by a unique column, and that would
+        // scramble the chronological order history.jsonl exists to preserve —
+        // trading a bound nobody realistically hits (100,000 revisions of ONE
+        // entry) for corrupting the file's meaning.
+        //
+        // What is fixed is the SILENCE. Truncating without saying so is the
+        // defect; truncating a pathological case loudly is a limit.
+        if (rows.Count >= QueryLimit)
+            log.LogWarning(
+                "export: history for {Space}/{Subpath}/{Shortname} hit the {Limit}-row ceiling — "
+                + "the exported history.jsonl is TRUNCATED and the entry's older revisions are absent",
+                parent.SpaceName, parent.Subpath, parent.Shortname, QueryLimit);
 
         var sb = new StringBuilder();
         foreach (var h in rows)
