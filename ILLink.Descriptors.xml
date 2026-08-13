@@ -1,0 +1,25 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  Roots the Parquet encoder so the AOT gate actually covers it.
+
+  ILC only analyses code it can reach from the entry point. The encoder is not
+  wired into the exporter yet, so without this it is trimmed away unanalysed and
+  `dotnet publish /p:PublishAot=true` reports zero trim/AOT diagnostics for it —
+  a clean result that means nothing, because none of the code was looked at.
+
+  That is precisely how PR #75's adapter passed: `Dmart.SqlAdapter` was orphaned
+  from the call graph, so its diagnostics never surfaced. Verifying a hand-
+  written encoder is the entire reason for not taking a Parquet library, and
+  the verification has to be real to be worth anything.
+
+  Remove this once the exporter calls the encoder — reachability from the real
+  call path is a better root than a descriptor file, because it cannot drift.
+-->
+<linker>
+  <assembly fullname="dmart">
+    <type fullname="Dmart.DataAdapters.Parquet.ParquetFileWriter" preserve="all" />
+    <type fullname="Dmart.DataAdapters.Parquet.ThriftCompactWriter" preserve="all" />
+    <type fullname="Dmart.DataAdapters.Parquet.RleEncoder" preserve="all" />
+    <type fullname="Dmart.DataAdapters.Parquet.CountingStream" preserve="all" />
+  </assembly>
+</linker>

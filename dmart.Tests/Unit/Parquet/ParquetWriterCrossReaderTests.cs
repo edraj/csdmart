@@ -321,6 +321,92 @@ public class ParquetWriterCrossReaderTests
         finally { try { File.Delete(path); } catch { } }
     }
 
+    // Every test above now writes zstd, since that is the default. This one
+    // pins the two claims those cannot make: that the codec is DECLARED as zstd
+    // in the footer, and that the bytes really are compressed. Declaring a
+    // codec without applying it (or the reverse) produces a file that fails at
+    // the consumer, not at us.
+    [FactIfPyArrow]
+    public void Pages_Are_Zstd_Compressed_And_Declared_As_Such()
+    {
+        var path = Path.Combine(Path.GetTempPath(), $"dmart-pq-{Guid.NewGuid():N}.parquet");
+        try
+        {
+            var writer = new ParquetFileWriter([new("payload", ParquetType.ByteArray, ConvertedType.Utf8)]);
+
+            // Highly repetitive on purpose: the size assertion below is only
+            // meaningful if the input is genuinely compressible.
+            var values = Enumerable.Range(0, 2000)
+                .Select(i => $"{{\"kind\":\"content\",\"seq\":{i},\"pad\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaa\"}}")
+                .ToArray();
+            var raw = ParquetFileWriter.PlainByteArray(values);
+
+            using (var fs = File.Create(path))
+                writer.Write(fs, [raw], values.Length);
+
+            PyArrow.Codec(path).ShouldBe("ZSTD");
+
+            // pyarrow returning the right values IS the decompression check: it
+            // reads the declared codec from the footer, so raw bytes labelled
+            // zstd would throw here rather than compare unequal.
+            PyArrow.ReadTable(path).GetProperty("payload").EnumerateArray()
+                .Select(x => x.GetString()).ShouldBe(values);
+
+            new FileInfo(path).Length.ShouldBeLessThan(raw.Length / 2,
+                "a compressible payload that barely shrinks means the codec was declared but not applied");
+        }
+        finally { try { File.Delete(path); } catch { } }
+    }
+
+    // Definition levels live INSIDE the compressed region of a v1 data page.
+    // Compressing only the values yields a page whose levels a reader tries to
+    // decompress — so nulls and compression have to be tested together.
+    [FactIfPyArrow]
+    public void Nulls_Survive_Compression()
+    {
+        var path = Path.Combine(Path.GetTempPath(), $"dmart-pq-{Guid.NewGuid():N}.parquet");
+        try
+        {
+            var writer = new ParquetFileWriter(
+                [new("payload", ParquetType.ByteArray, ConvertedType.Utf8, Optional: true)]);
+            string?[] rows = ["x", null, "y", null, null, "z"];
+
+            using (var fs = File.Create(path))
+                writer.Write(fs,
+                    [new ParquetFileWriter.ColumnPage(
+                        ParquetFileWriter.PlainByteArray([.. rows.Where(r => r is not null).Select(r => r!)]),
+                        [.. rows.Select(r => r is null ? 0 : 1)])],
+                    rows.Length);
+
+            PyArrow.ReadTable(path).GetProperty("payload").EnumerateArray()
+                .Select(x => x.ValueKind == JsonValueKind.Null ? null : x.GetString())
+                .ShouldBe(rows);
+        }
+        finally { try { File.Delete(path); } catch { } }
+    }
+
+    // The uncompressed path is still reachable and still correct — it is what
+    // already-compressed data should use, and defaulting to zstd would
+    // otherwise leave it untested.
+    [FactIfPyArrow]
+    public void Uncompressed_Codec_Still_Round_Trips()
+    {
+        var path = Path.Combine(Path.GetTempPath(), $"dmart-pq-{Guid.NewGuid():N}.parquet");
+        try
+        {
+            var writer = new ParquetFileWriter(
+                [new("seq", ParquetType.Int64, null)], CompressionCodec.Uncompressed);
+            long[] values = [100, 200, 300];
+            using (var fs = File.Create(path))
+                writer.Write(fs, [ParquetFileWriter.PlainInt64(values)], values.Length);
+
+            PyArrow.Codec(path).ShouldBe("UNCOMPRESSED");
+            PyArrow.ReadTable(path).GetProperty("seq").EnumerateArray()
+                .Select(x => x.GetInt64()).ShouldBe(values);
+        }
+        finally { try { File.Delete(path); } catch { } }
+    }
+
     // Write-only, forward-only: what an HTTP response body behaves like.
     private sealed class ForwardOnlyStream(Stream inner) : Stream
     {
@@ -374,6 +460,12 @@ internal static class PyArrow
             Run($"import pyarrow.parquet as pq; print(pq.ParquetFile(r'{path}').num_row_groups)")
             ?? throw new InvalidOperationException("pyarrow row-group read failed"),
             System.Globalization.CultureInfo.InvariantCulture);
+
+    // What the footer DECLARES, independent of whether the bytes match it.
+    internal static string Codec(string path)
+        => Run($"import pyarrow.parquet as pq; "
+             + $"print(pq.ParquetFile(r'{path}').metadata.row_group(0).column(0).compression)")
+           ?? throw new InvalidOperationException("pyarrow codec read failed");
 
     internal static string ReadSchema(string path)
         => Run($"import pyarrow.parquet as pq; print(pq.read_table(r'{path}').schema)")

@@ -44,11 +44,29 @@ internal sealed class ParquetFileWriter
 
     private readonly List<ColumnSpec> _columns;
     private readonly List<RowGroupResult> _rowGroups = [];
+    private readonly CompressionCodec _codec;
+    private ZstdSharp.Compressor? _compressor;
     private CountingStream? _out;
     private long _totalRows;
     private bool _finished;
 
-    public ParquetFileWriter(IReadOnlyList<ColumnSpec> columns) => _columns = [.. columns];
+    // zstd level 3 is zstd's own default: most of the ratio for a fraction of
+    // the cost of the high levels. An export is I/O-bound against the database
+    // long before it is bound by the compressor, so buying ratio with CPU here
+    // would slow the export without shrinking it much.
+    private const int ZstdLevel = 3;
+
+    /// <param name="codec">
+    /// Zstd by default — see docs/parquet-export-design.md §3. Uncompressed
+    /// exists for tests and for data that is already compressed (blobs), where
+    /// a second pass costs CPU and gains nothing.
+    /// </param>
+    public ParquetFileWriter(
+        IReadOnlyList<ColumnSpec> columns, CompressionCodec codec = CompressionCodec.Zstd)
+    {
+        _columns = [.. columns];
+        _codec = codec;
+    }
 
     /// <summary>
     /// One column's page content: PLAIN-encoded values for the rows that have
@@ -128,21 +146,42 @@ internal sealed class ParquetFileWriter
             // reads correctly and whose every later group reads garbage.
             var pageStart = o.BytesWritten;
 
-            // Page header, then the page body. Uncompressed for now, so the
-            // two sizes are equal — kept as separate fields because they stop
-            // being equal the moment compression is switched on.
-            //
+            // In a v1 data page the definition levels are INSIDE the compressed
+            // region, so the whole body is compressed as one unit. Compressing
+            // only the values would produce a page whose levels a reader tries
+            // to decompress.
+            var payload = Compress(body);
+
             // num_values counts ROWS, not stored values: for an optional column
             // the nulls are counted here but absent from the values section.
-            WriteDataPageHeader(o, rowCount, body.Length, body.Length);
-            o.Write(body);
+            //
+            // The two sizes describe the page BODY only, so the header must be
+            // written before the offsets that follow it are read back.
+            WriteDataPageHeader(o, rowCount, body.Length, payload.Length);
+            var headerBytes = o.BytesWritten - pageStart;
+            o.Write(payload);
 
-            chunks.Add(new ChunkResult(col, pageStart, o.BytesWritten - pageStart,
-                                       o.BytesWritten - pageStart, rowCount));
+            // The chunk totals include the page header, per the format — the
+            // uncompressed figure is therefore the header plus the ORIGINAL
+            // body, not the header plus what was written.
+            chunks.Add(new ChunkResult(
+                col, pageStart,
+                CompressedSize: o.BytesWritten - pageStart,
+                UncompressedSize: headerBytes + body.Length,
+                rowCount));
         }
 
         _rowGroups.Add(new RowGroupResult(chunks, rowCount));
         _totalRows += rowCount;
+    }
+
+    // One compressor for the whole file rather than one per page: it carries
+    // reusable working buffers, and a multi-GB export writes a great many pages.
+    private byte[] Compress(byte[] body)
+    {
+        if (_codec == CompressionCodec.Uncompressed) return body;
+        _compressor ??= new ZstdSharp.Compressor(ZstdLevel);
+        return _compressor.Wrap(body).ToArray();
     }
 
     /// <summary>Writes the footer. Nothing may be written after this.</summary>
@@ -151,6 +190,8 @@ internal sealed class ParquetFileWriter
         var o = _out ?? throw new InvalidOperationException("Start must be called first");
         if (_finished) throw new InvalidOperationException("already finished");
         _finished = true;
+        _compressor?.Dispose();
+        _compressor = null;
 
         var footerStart = o.BytesWritten;
         WriteFileMetaData(o);
@@ -256,7 +297,7 @@ internal sealed class ParquetFileWriter
                 t.WriteListI32((int)ParquetEncoding.Plain);
                 t.WriteListFieldBegin(3, ThriftCompactWriter.ElemBinary, 1);
                 t.WriteListString(ch.Spec.Name);         // path_in_schema
-                t.WriteI32Field(4, (int)CompressionCodec.Uncompressed);
+                t.WriteI32Field(4, (int)_codec);          // codec
                 t.WriteI64Field(5, ch.NumValues);
                 t.WriteI64Field(6, ch.UncompressedSize);
                 t.WriteI64Field(7, ch.CompressedSize);
