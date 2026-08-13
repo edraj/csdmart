@@ -19,7 +19,10 @@ internal sealed class DmartSettingsValidator : IValidateOptions<DmartSettings>
         // Fail on an unrecognized driver rather than defaulting. A typo'd
         // DATABASE_DRIVER that silently ran on PostgreSQL would only surface
         // as "why is my SQLite file empty" long after deployment.
-        if (!Dmart.DataAdapters.Sql.DatabaseDriverParser.TryParse(s.DatabaseDriver, out var driver))
+        // TryResolve, not TryParse: an ABSENT driver is inferred from whether a
+        // PostgreSQL connection is configured, and the host/name rules below
+        // must apply to the driver that inference actually selects.
+        if (!Dmart.DataAdapters.Sql.DatabaseDriverParser.TryResolve(s, out var driver, out _))
         {
             failures.Add(
                 $"DatabaseDriver '{s.DatabaseDriver}' is not recognized "

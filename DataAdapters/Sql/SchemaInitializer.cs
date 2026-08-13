@@ -14,7 +14,7 @@ public sealed class SchemaInitializer(
         // it is not the selected driver. Gating on the driver rather than only
         // on Db.IsConfigured so a deployment that still carries DATABASE_* does
         // not quietly initialize a PostgreSQL schema nothing will read.
-        if (DatabaseDriverParser.TryParse(settings.Value.DatabaseDriver, out var driver)
+        if (DatabaseDriverParser.TryResolve(settings.Value, out var driver, out _)
             && driver == DatabaseDriver.Sqlite) return;
 
         var ct = cancellationToken;

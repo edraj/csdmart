@@ -68,12 +68,14 @@ internal static class CliBootstrap
         var s = new DmartSettings();
         cfg.GetSection("Dmart").Bind(s);
 
-        if (!DatabaseDriverParser.TryParse(s.DatabaseDriver, out var driver))
+        if (!DatabaseDriverParser.TryResolve(s, out var driver, out var inferred))
         {
             Console.Error.WriteLine(
                 $"Unknown DATABASE_DRIVER '{s.DatabaseDriver}' (supported: {DatabaseDriverParser.Supported})");
             Environment.Exit(1);
         }
+
+        Console.Error.WriteLine($"database driver: {DatabaseDriverParser.Describe(driver, inferred)}");
 
         if (driver == DatabaseDriver.Sqlite)
         {

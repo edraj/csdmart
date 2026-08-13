@@ -153,8 +153,21 @@ is a **rebuildable index** over them — `dmart import` reconstructs it from
 disk on either backend. Which backend holds that index is one setting:
 
 ```
-DATABASE_DRIVER="postgresql"     # default
+DATABASE_DRIVER="postgresql"     # + DATABASE_HOST / DATABASE_NAME / ...
 DATABASE_DRIVER="sqlite"         # + SQLITE_PATH="/var/lib/dmart/dmart.db"
+```
+
+Leaving it **unset is supported**, and is inferred rather than defaulted: any
+PostgreSQL connection setting selects `postgresql`, nothing pointing at
+PostgreSQL selects `sqlite`. So `dmart serve` works on a fresh box with no
+database configuration at all, while a `config.env` written before this key
+existed keeps the backend it always had — an upgrade never silently moves a
+deployment onto an empty store. The startup log always states which driver was
+chosen and whether it was inferred:
+
+```
+database driver: sqlite (inferred — no PostgreSQL connection configured)
+sqlite database at /var/lib/dmart/dmart.db — set DATABASE_DRIVER explicitly to pin this choice
 ```
 
 **PostgreSQL is the supported production tier.** SQLite is a *reduced tier*

@@ -454,22 +454,37 @@ public sealed class Db(IOptions<DmartSettings> settings) : IDbConnectionFactory
     // we build from the components. If none of the DATABASE_* fields have been
     // set, we still emit a localhost-ish string with empty password so Npgsql
     // can surface a clearer error than "connection string is null".
+    /// <summary>
+    /// True when the operator actually configured PostgreSQL, as opposed to
+    /// leaving every DATABASE_* field at its built-in default.
+    /// </summary>
+    /// <remarks>
+    /// Mirrors Python's behaviour: if every component is still at its default,
+    /// the database counts as "not configured" so IsConfigured stays false and
+    /// smoke/test hosts can boot without PostgreSQL. Null values (from test
+    /// overrides that explicitly clear a field) are treated as "not set".
+    ///
+    /// Named and made internal because DATABASE_DRIVER inference asks the very
+    /// same question — "did anyone point this deployment at PostgreSQL?" — and
+    /// two different answers to it would be a bug generator. In particular the
+    /// bound settings object CANNOT be read directly for this: DatabaseHost
+    /// defaults to "localhost" and DatabaseName to "dmart", so a config with no
+    /// DATABASE_* keys at all still looks fully populated.
+    /// </remarks>
+    internal static bool HasExplicitPostgresConfig(DmartSettings s) =>
+        !string.IsNullOrEmpty(s.PostgresConnection)
+        || !string.IsNullOrEmpty(s.DatabasePassword)
+        || (!string.IsNullOrEmpty(s.DatabaseUsername) && s.DatabaseUsername != "dmart")
+        || (!string.IsNullOrEmpty(s.DatabaseName) && s.DatabaseName != "dmart")
+        || (!string.IsNullOrEmpty(s.DatabaseHost) && s.DatabaseHost != "localhost")
+        || s.DatabasePort != 5432;
+
     private static string? BuildConnectionString(DmartSettings s)
     {
         if (!string.IsNullOrEmpty(s.PostgresConnection))
             return s.PostgresConnection;
 
-        // Mirror Python's behavior: if every component is still at its default,
-        // treat the DB as "not configured" so IsConfigured stays false and
-        // smoke/test hosts can boot without Postgres. Null values (from test
-        // overrides that explicitly clear a field) are treated as "not set".
-        var hasExplicitDbConfig =
-            !string.IsNullOrEmpty(s.DatabasePassword)
-            || (!string.IsNullOrEmpty(s.DatabaseUsername) && s.DatabaseUsername != "dmart")
-            || (!string.IsNullOrEmpty(s.DatabaseName) && s.DatabaseName != "dmart")
-            || (!string.IsNullOrEmpty(s.DatabaseHost) && s.DatabaseHost != "localhost")
-            || s.DatabasePort != 5432;
-        if (!hasExplicitDbConfig) return null;
+        if (!HasExplicitPostgresConfig(s)) return null;
 
         // Guard: Host is required by Npgsql — if it's null/empty we can't connect.
         if (string.IsNullOrEmpty(s.DatabaseHost)) return null;

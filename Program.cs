@@ -1804,7 +1804,7 @@ builder.Services.AddSingleton<SqliteConnectionFactory>();
 static bool UsesSqlite(IServiceProvider sp)
 {
     var settings = sp.GetRequiredService<IOptions<DmartSettings>>().Value;
-    return DatabaseDriverParser.TryParse(settings.DatabaseDriver, out var d)
+    return DatabaseDriverParser.TryResolve(settings, out var d, out _)
         && d == DatabaseDriver.Sqlite;
 }
 
@@ -2040,9 +2040,24 @@ Dmart.Plugins.Native.NativePluginLoader.WireSubprocessShutdown(
         .GetCustomAttributes(typeof(System.Reflection.AssemblyInformationalVersionAttribute), false)
         .OfType<System.Reflection.AssemblyInformationalVersionAttribute>()
         .FirstOrDefault()?.InformationalVersion ?? "dev";
-    app.Services.GetRequiredService<ILoggerFactory>()
-        .CreateLogger("Dmart.Startup")
-        .LogInformation("dmart {Version} on .NET {Runtime}", v, Environment.Version);
+    var startupLog = app.Services.GetRequiredService<ILoggerFactory>()
+        .CreateLogger("Dmart.Startup");
+    startupLog.LogInformation("dmart {Version} on .NET {Runtime}", v, Environment.Version);
+
+    // Always state the driver, and whether it was chosen or inferred. An
+    // operator upgrading a deployment that predates DATABASE_DRIVER has no
+    // other way to see which backend they ended up on until queries come back
+    // empty, and inference is precisely the case where they did not choose.
+    var startupSettings = app.Services.GetRequiredService<IOptions<DmartSettings>>().Value;
+    if (DatabaseDriverParser.TryResolve(startupSettings, out var startupDriver, out var startupInferred))
+    {
+        startupLog.LogInformation("database driver: {Driver}",
+            DatabaseDriverParser.Describe(startupDriver, startupInferred));
+        if (startupInferred && startupDriver == DatabaseDriver.Sqlite)
+            startupLog.LogInformation(
+                "sqlite database at {Path} — set DATABASE_DRIVER explicitly to pin this choice",
+                startupSettings.SqlitePath);
+    }
 }
 
 // Wire structured logging into static QueryHelper so it doesn't use Console.Error.

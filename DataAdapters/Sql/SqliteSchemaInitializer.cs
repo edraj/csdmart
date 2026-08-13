@@ -28,7 +28,7 @@ public sealed class SqliteSchemaInitializer(
         // known at registration time; each declines when it is not the one
         // selected. Creating a SQLite schema in a PostgreSQL deployment would
         // leave a stray database file nothing ever reads.
-        if (!DatabaseDriverParser.TryParse(settings.Value.DatabaseDriver, out var driver)
+        if (!DatabaseDriverParser.TryResolve(settings.Value, out var driver, out _)
             || driver != DatabaseDriver.Sqlite) return;
 
         await EnsureSchemaAsync(factory, log, cancellationToken);

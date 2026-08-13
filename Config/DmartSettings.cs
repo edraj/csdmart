@@ -38,7 +38,11 @@ public sealed class DmartSettings
     // The flat files under SPACES_FOLDER remain the source of truth in every
     // mode — the SQL store is a rebuildable index — so this selects how that
     // index is stored, not where the data lives.
-    public string DatabaseDriver { get; set; } = "postgresql";
+    // Empty means "not set", which is NOT the same as "postgresql" — see
+    // DatabaseDriverParser.TryResolve. Unset infers PostgreSQL when a
+    // connection is configured and SQLite when none is, so a fresh install
+    // serves with no configuration while an existing one keeps its backend.
+    public string DatabaseDriver { get; set; } = "";
 
     // Filesystem path to the SQLite database file, used only when
     // DATABASE_DRIVER=sqlite. Relative paths resolve against the process
