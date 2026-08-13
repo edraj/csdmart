@@ -16,6 +16,7 @@ install/run/CLI — this folder goes into the **how** and **why**.
 | …understand query semantics (search syntax, sort_by, aggregation) | [query.md](./query.md) |
 | …drive dmart from the command line (REPL, scripts, JSON pipelines) | [cli.md](./cli.md) |
 | …run or extend the test suite (xUnit + curl.sh) | [testing.md](./testing.md) |
+| …build, run, or upgrade the container image | [container.md](./container.md) |
 | …debug a live issue | [debugging.md](./debugging.md) |
 | …add a new endpoint, repository, service, or plugin | [contributing.md](./contributing.md) |
 

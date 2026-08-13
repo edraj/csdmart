@@ -397,6 +397,7 @@ diagrams:
 - [`docs/debugging.md`](./docs/debugging.md) — known pitfalls, AOT gotchas, SQL inspection
 - [`docs/contributing.md`](./docs/contributing.md) — recipes: add endpoint, repository, service, plugin
 - [`docs/sqlite-backend-audit.md`](./docs/sqlite-backend-audit.md) — the SQLite tier: dialect seam, what is unsupported and why
+- [`docs/container.md`](./docs/container.md) — the container image: what is in it, upgrading from the PostgreSQL-era image, build pitfalls
 
 ## Deployment
 
@@ -417,11 +418,11 @@ journalctl -u dmart -f
 # Access: http://localhost:8000/cxb/
 ```
 
-The image runs dmart alone and stores its index in SQLite under
-`/root/.dmart`. Point `DATABASE_DRIVER` / `DATABASE_*` at an external
-PostgreSQL for anything past the tier limits above. Images before this change
-bundled PostgreSQL 18; a container reusing one of those volumes refuses to
-start and prints how to migrate rather than coming up with an empty index.
+The image runs dmart alone and stores its index in SQLite under `/root/.dmart`.
+Images before this change bundled PostgreSQL 18; a container reusing one of
+those volumes refuses to start and prints how to migrate rather than coming up
+with an empty index. Full details — external PostgreSQL, first-run behaviour,
+build pitfalls — in [`docs/container.md`](./docs/container.md).
 
 ## Project Layout
 
