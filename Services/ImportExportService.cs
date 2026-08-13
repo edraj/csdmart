@@ -100,15 +100,90 @@ public sealed class ImportExportService(
             RetrieveJsonPayload = true,
         }, actor, ct);
 
+    /// <summary>Space/subpath convenience form of <see cref="ExportToAsync"/>.</summary>
+    public Task ExportToAsync(
+        Stream destination, string spaceName, string? subpath, string? actor, CancellationToken ct = default)
+        => ExportToAsync(destination, new Query
+        {
+            Type = QueryType.Search,
+            SpaceName = spaceName,
+            Subpath = subpath ?? "/",
+            FilterSchemaNames = new(),
+            Limit = 0,   // 0 = unbounded; ForEachMatchAsync pages to the end
+            RetrieveJsonPayload = true,
+        }, actor, ct);
+
+    /// <summary>
+    /// Writes the export archive straight into <paramref name="destination"/>.
+    /// Nothing is buffered beyond one zip entry at a time.
+    /// </summary>
+    /// <remarks>
+    /// Prefer this when the caller already has somewhere to put the bytes — a
+    /// file, a response body — because it is the only form with a memory
+    /// ceiling independent of the export's size.
+    ///
+    /// <paramref name="destination"/> need not be seekable: ZipArchiveMode.Create
+    /// writes sequentially and emits data descriptors when it cannot rewind to
+    /// patch sizes into local headers.
+    /// </remarks>
+    public async Task ExportToAsync(
+        Stream destination, Query clientQuery, string? actor, CancellationToken ct = default)
+    {
+        using var zip = new ZipArchive(destination, ZipArchiveMode.Create, leaveOpen: true);
+        await ExportInternalAsync(zip, clientQuery, actor, ct);
+    }
+
+    /// <summary>
+    /// Produces the export archive as a readable stream. Spools to a temporary
+    /// file, which is deleted when the returned stream is disposed.
+    /// </summary>
+    /// <remarks>
+    /// This used to build the whole archive in a MemoryStream, so a 4 GB export
+    /// needed 4 GB of RAM and a big enough space simply took the process down.
+    /// Spooling moves that ceiling from memory to temp disk, which is the
+    /// cheaper resource and the one an operator can actually provision.
+    ///
+    /// The signature is deliberately unchanged so every existing caller gets
+    /// the bound without being touched.
+    ///
+    /// Spooling rather than streaming the response directly is also a
+    /// CORRECTNESS choice, not just an easier one. The export can fail
+    /// part-way — one unreadable attachment, a dropped connection to the
+    /// database — and a directly-streamed response would already have sent
+    /// 200 OK plus a prefix of a zip. The caller would receive a truncated
+    /// archive that reports success, which is precisely the failure shape the
+    /// 100,000-row cap used to have. Finishing the file first means a failure
+    /// is still an error response.
+    ///
+    /// Requires temp space of roughly the archive size. FileOptions.DeleteOnClose
+    /// removes the file when the stream closes, including on a client
+    /// disconnect that disposes it early.
+    /// </remarks>
     public async Task<Stream> ExportAsync(Query clientQuery, string? actor, CancellationToken ct = default)
     {
-        var ms = new MemoryStream();
-        using (var zip = new ZipArchive(ms, ZipArchiveMode.Create, leaveOpen: true))
+        var spoolPath = Path.Combine(Path.GetTempPath(), $"dmart-export-{Guid.NewGuid():N}.zip");
+        FileStream? readBack = null;
+        try
         {
-            await ExportInternalAsync(zip, clientQuery, actor, ct);
+            await using (var spool = new FileStream(
+                spoolPath, FileMode.CreateNew, FileAccess.Write, FileShare.None,
+                bufferSize: 64 * 1024, FileOptions.SequentialScan))
+            {
+                await ExportToAsync(spool, clientQuery, actor, ct);
+            }
+
+            readBack = new FileStream(
+                spoolPath, FileMode.Open, FileAccess.Read, FileShare.Read,
+                bufferSize: 64 * 1024, FileOptions.DeleteOnClose | FileOptions.SequentialScan);
+            return readBack;
         }
-        ms.Position = 0;
-        return ms;
+        catch
+        {
+            // The spool exists but no DeleteOnClose handle owns it yet.
+            readBack?.Dispose();
+            try { File.Delete(spoolPath); } catch { /* best effort */ }
+            throw;
+        }
     }
 
     private async Task ExportInternalAsync(ZipArchive zip, Query clientQuery, string? actor, CancellationToken ct)
