@@ -330,14 +330,23 @@ switch (subcommand)
         if (string.IsNullOrEmpty(password) || password.Length < 8) { Console.Error.WriteLine("Password must be >= 8 chars"); Environment.ExitCode = 1; return; }
 
         // Build minimal DI to get Db + UserRepository + PasswordHasher
-        var (s, dbInst) = CliBootstrap.BuildOrExit(dotenvPath, dotenvValues);
+        // Driver-aware: `dmart passwd` is the documented first step after every
+        // install — the RPM/deb/apk hints and the container both end with it —
+        // and those now default to SQLite. On the PostgreSQL-only bootstrap it
+        // failed with "connection refused", or worse, SUCCEEDED against an
+        // unrelated PostgreSQL that happened to be running and wrote the
+        // password into a database the server does not read.
+        //
+        // The statement itself is portable as written; only the connection was
+        // ever PostgreSQL-specific.
+        var (s, dbInst) = CliBootstrap.BuildFactoryOrExit(dotenvPath, dotenvValues);
         var hasher = new PasswordHasher();
         var hashed = hasher.Hash(password);
         await using var conn = await dbInst.OpenAsync();
-        await using var cmd = new Npgsql.NpgsqlCommand(
-            "UPDATE users SET password = $1, is_active = true, attempt_count = 0 WHERE shortname = $2", conn);
-        cmd.Parameters.Add(new() { Value = hashed });
-        cmd.Parameters.Add(new() { Value = username });
+        await using var cmd = conn.Command(
+            "UPDATE users SET password = $1, is_active = true, attempt_count = 0 WHERE shortname = $2");
+        DbParams.Add(cmd, hashed);
+        DbParams.Add(cmd, username);
         var rows = await cmd.ExecuteNonQueryAsync();
         if (rows > 0)
         {
@@ -445,7 +454,9 @@ switch (subcommand)
         var space = serverArgs.Length > 0 ? serverArgs[0] : null;
         var healthType = serverArgs.Length > 1 ? serverArgs[1] : "soft";
         var includeSamples = healthType is "hard" or "all";
-        var (_, dbInst) = CliBootstrap.BuildOrExit(dotenvPath, dotenvValues);
+        // HealthCheckRepository and EntryRepository are both backend-neutral, so
+        // this only ever needed the driver-aware bootstrap to work on SQLite.
+        var (_, dbInst) = CliBootstrap.BuildFactoryOrExit(dotenvPath, dotenvValues);
         var healthRepo = new HealthCheckRepository(dbInst);
         var entryRepo = new EntryRepository(dbInst);
         var schemaValidator = new Dmart.Services.SchemaValidator(entryRepo,
@@ -471,10 +482,15 @@ switch (subcommand)
             var folders = new List<(string Path, System.Text.Json.JsonElement Body)>();
             await using (var conn = await dbInst.OpenAsync())
             {
-                await using var cmd = new Npgsql.NpgsqlCommand(
-                    "SELECT subpath, shortname, payload->>'body' FROM entries " +
-                    "WHERE space_name = $1 AND resource_type = 'folder' AND jsonb_typeof(payload->'body') = 'object'", conn);
-                cmd.Parameters.Add(new() { Value = sp });
+                // Same shape FolderRenderingFixer emits — jsonb arrows and
+                // jsonb_typeof have no SQLite spelling, so it goes through the
+                // dialect rather than being written for one backend.
+                var hcDialect = Dmart.DataAdapters.Sql.QueryHelper.DialectFor(dbInst);
+                await using var cmd = conn.Command(
+                    $"SELECT subpath, shortname, {hcDialect.JsonText("payload", ["body"])} FROM entries " +
+                    "WHERE space_name = $1 AND resource_type = 'folder' AND " +
+                    hcDialect.JsonTypeIs(hcDialect.JsonValue("payload", ["body"]), Dmart.QueryGrammar.JsonKind.Object));
+                DbParams.Add(cmd, sp);
                 await using var reader = await cmd.ExecuteReaderAsync();
                 while (await reader.ReadAsync())
                 {

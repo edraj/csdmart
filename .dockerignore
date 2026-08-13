@@ -1,8 +1,17 @@
 # Never copy build output, test projects, or scratch into the build context.
 # Only source files the AOT publish actually needs.
+# **/ matters: a bare `obj/` matches only the context ROOT, so a developer who
+# has run `dotnet build` locally would ship Dmart.Models/obj and
+# Dmart.QueryGrammar/obj into the image. Those carry a project.assets.json
+# written by the HOST SDK, which `COPY . .` then drops on top of the one the
+# container's own restore just produced — and publish dies with NETSDK1064
+# looking for an ILLink.Tasks version the image never restored. CI never hit
+# it because a fresh clone has no obj/ at all.
 bin/
 obj/
 publish/
+**/bin/
+**/obj/
 
 # The test project builds an xUnit DLL that the container never runs. Its
 # sources would only pull ~100 MB of test NuGets through `dotnet restore`.

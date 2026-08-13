@@ -81,8 +81,14 @@ SQLITE_PATH='$CONFIG_DIR/dmart.db'
 JWT_SECRET='$JWT_SECRET'
 EOF
 
+  # config.env holds the generated JWT_SECRET; dmart itself warns when this is
+  # world-readable, and in a container the default umask leaves it 0644.
+  chmod 600 "$CONFIG_ENV"
+
   touch "$MARKER"
   echo "=== Initialized ==="
+  echo "Set an admin password before exposing this container:"
+  echo "  podman exec -it <container> dmart passwd dmart"
 fi
 
 # --- Run dmart in the foreground ------------------------------------------

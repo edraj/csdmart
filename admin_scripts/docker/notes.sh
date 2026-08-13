@@ -64,6 +64,9 @@ podman exec -e HOME=/tmp -e NUGET_PACKAGES=/nuget-packages -w /src "$BUILDER" \
 
 # Copy binary to staging location (.dockerignore excludes bin/)
 cp bin/musl-out/dmart admin_scripts/docker/dmart-binary
+# The SQLite native library rides along: AOT cannot link it in, and the
+# runtime image has no other source for it.
+cp bin/musl-out/libe_sqlite3.so admin_scripts/docker/libe_sqlite3.so
 podman stop -t 1 "$BUILDER"
 
 # 3. Remove old runtime container/image
@@ -76,7 +79,7 @@ podman build \
     -f admin_scripts/docker/Dockerfile.runtime \
     --build-arg VERSION="$VERSION" \
     .
-rm -f admin_scripts/docker/dmart-binary
+rm -f admin_scripts/docker/dmart-binary admin_scripts/docker/libe_sqlite3.so
 
 # 5. Run the container
 podman run --name dmart -p 8000:8000 -d dmart

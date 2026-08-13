@@ -692,7 +692,7 @@ jobs:
             -t ghcr.io/${{ github.repository }}:${{ steps.version.outputs.version }} \
             -t ghcr.io/${{ github.repository }}:latest \
             -f admin_scripts/docker/Dockerfile \
-            --build-arg VERSION=${{ steps.version.outputs.version }} \
+            --build-arg DMART_VERSION=${{ steps.version.outputs.version }} \
             --build-arg GIT_DESCRIBE="${GIT_DESCRIBE}" \
             --build-arg GIT_BRANCH="${GITHUB_REF_NAME}" \
             --build-arg GIT_DATE="${GIT_DATE}" \
