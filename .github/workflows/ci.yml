@@ -45,11 +45,51 @@ jobs:
         # `uses: ./.github/actions/...` paths, requires `shell:` on composite
         # run steps, and shellchecks the run blocks — exactly the errors that
         # would otherwise surface at tag time.
+        #
+        # Cached, retried and checksum-verified, because the naive form failed
+        # twice on unrelated PRs. Three separate problems, all fixed here:
+        #
+        #   * No retry. A single transient CDN error failed a build that had
+        #     nothing to do with workflows — once with `curl: (56) Connection
+        #     died`, once on a docs-only change.
+        #   * No cache. It re-downloaded on every leg of every run; the driver
+        #     matrix doubled that, doubling the exposure too.
+        #   * `curl | tar`. A truncated download became `gzip: stdin:
+        #     unexpected end of file`, which names neither the download nor the
+        #     network as the cause. Downloading to a file first turns a partial
+        #     transfer into a checksum failure that says so.
+        #
+        # The checksum is the release's own published value (verified against
+        # actionlint_${ver}_checksums.txt). Bumping `ver` means bumping `sha`.
         run: |
+          set -euo pipefail
           ver=1.7.7
-          curl -fsSL "https://github.com/rhysd/actionlint/releases/download/v${ver}/actionlint_${ver}_linux_amd64.tar.gz" \
-            | tar -xz -C /tmp actionlint
-          /tmp/actionlint -color
+          sha=023070a287cd8cccd71515fedc843f1985bf96c436b7effaecce67290e7e0757
+          bin="${RUNNER_TOOL_CACHE:-/tmp}/actionlint/${ver}/actionlint"
+
+          if [ ! -x "$bin" ]; then
+            tmp=$(mktemp -d)
+            trap 'rm -rf "$tmp"' EXIT
+            url="https://github.com/rhysd/actionlint/releases/download/v${ver}/actionlint_${ver}_linux_amd64.tar.gz"
+            ok=
+            for attempt in 1 2 3; do
+              if curl -fsSL --retry 3 --retry-delay 2 -o "$tmp/al.tgz" "$url"; then ok=1; break; fi
+              echo "actionlint download attempt ${attempt}/3 failed"
+              sleep $((attempt * 5))
+            done
+            [ -n "$ok" ] || { echo "could not download actionlint after 3 attempts"; exit 1; }
+
+            echo "${sha}  ${tmp}/al.tgz" | sha256sum -c - \
+              || { echo "actionlint checksum mismatch — refusing to run it"; exit 1; }
+
+            tar -xzf "$tmp/al.tgz" -C "$tmp" actionlint
+            mkdir -p "$(dirname "$bin")"
+            # Same-filesystem mv, so a concurrent runner either sees the old
+            # absence or the complete binary, never a half-written one.
+            mv -f "$tmp/actionlint" "$bin"
+          fi
+
+          "$bin" -color
 
       - name: Build UI tarballs (smoke)
         # Mirror what release.yml's build-ui-tarballs job does — runs
