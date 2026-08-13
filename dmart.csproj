@@ -86,6 +86,13 @@
   </Target>
 
   <ItemGroup>
+    <!-- The export pager's page size is internal and test-only settable; a
+         test otherwise could not exercise the multi-page path without seeding
+         enough rows to cross a realistic page boundary. -->
+    <InternalsVisibleTo Include="dmart.Tests" />
+  </ItemGroup>
+
+  <ItemGroup>
     <!-- Git worktrees created under .claude/worktrees/ are full repo checkouts.
          The Web SDK's default Compile glob would otherwise pull their .cs files
          into this assembly, causing duplicate-symbol errors whenever a worktree
