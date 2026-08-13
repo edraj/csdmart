@@ -471,6 +471,9 @@ internal static class PyArrow
         => Run($"import pyarrow.parquet as pq; print(pq.read_table(r'{path}').schema)")
            ?? throw new InvalidOperationException("pyarrow schema read failed");
 
+    /// <summary>Runs a python snippet — used by the reader tests to have pyarrow WRITE a file.</summary>
+    internal static void Exec(string script) => Run(script);
+
     private static string? Run(string script)
     {
         var psi = new ProcessStartInfo("python3", ["-c", script])

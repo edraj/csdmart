@@ -21,5 +21,8 @@
     <type fullname="Dmart.DataAdapters.Parquet.ThriftCompactWriter" preserve="all" />
     <type fullname="Dmart.DataAdapters.Parquet.RleEncoder" preserve="all" />
     <type fullname="Dmart.DataAdapters.Parquet.CountingStream" preserve="all" />
+    <type fullname="Dmart.DataAdapters.Parquet.ParquetFileReader" preserve="all" />
+    <type fullname="Dmart.DataAdapters.Parquet.ThriftCompactReader" preserve="all" />
+    <type fullname="Dmart.DataAdapters.Parquet.RleDecoder" preserve="all" />
   </assembly>
 </linker>
