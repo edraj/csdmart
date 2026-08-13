@@ -17,6 +17,7 @@ install/run/CLI — this folder goes into the **how** and **why**.
 | …drive dmart from the command line (REPL, scripts, JSON pipelines) | [cli.md](./cli.md) |
 | …run or extend the test suite (xUnit + curl.sh) | [testing.md](./testing.md) |
 | …build, run, or upgrade the container image | [container.md](./container.md) |
+| …export/import at gigabyte scale, or run an incremental pipeline | [parquet-export-design.md](./parquet-export-design.md) |
 | …debug a live issue | [debugging.md](./debugging.md) |
 | …add a new endpoint, repository, service, or plugin | [contributing.md](./contributing.md) |
 
