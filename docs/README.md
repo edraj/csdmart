@@ -18,6 +18,7 @@ install/run/CLI — this folder goes into the **how** and **why**.
 | …run or extend the test suite (xUnit + curl.sh) | [testing.md](./testing.md) |
 | …build, run, or upgrade the container image | [container.md](./container.md) |
 | …export/import at gigabyte scale, or run an incremental pipeline | [parquet-export-design.md](./parquet-export-design.md) |
+| …decide whether to adopt the official MCP SDK | [mcp-sdk-2-spike.md](./mcp-sdk-2-spike.md) |
 | …debug a live issue | [debugging.md](./debugging.md) |
 | …add a new endpoint, repository, service, or plugin | [contributing.md](./contributing.md) |
 
