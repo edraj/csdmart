@@ -205,6 +205,142 @@ public class ParquetWriterCrossReaderTests
         }
         finally { try { File.Delete(path); } catch { } }
     }
+
+    // Row groups are the unit of writer memory, so the export streams them one
+    // at a time. Two things have to hold and only one of them is about values:
+    // the rows must read back in write order, AND they must actually be
+    // separate row groups. A writer that merged everything into one group would
+    // pass every value assertion here while quietly reintroducing the
+    // whole-file-in-memory shape this exists to avoid — hence num_row_groups.
+    [FactIfPyArrow]
+    public void Multiple_Row_Groups_Read_Back_In_Order()
+    {
+        var path = Path.Combine(Path.GetTempPath(), $"dmart-pq-{Guid.NewGuid():N}.parquet");
+        try
+        {
+            var writer = new ParquetFileWriter(
+            [
+                new("seq",  ParquetType.Int64,     null),
+                new("name", ParquetType.ByteArray, ConvertedType.Utf8),
+            ]);
+
+            // Deliberately uneven: 4, 4, 2. The last group being short is the
+            // normal case for a pager, and a writer that assumes a fixed size
+            // reads the tail as garbage.
+            long[][] groups = [[1, 2, 3, 4], [5, 6, 7, 8], [9, 10]];
+
+            using (var fs = File.Create(path))
+            {
+                writer.Start(fs);
+                foreach (var g in groups)
+                    writer.WriteRowGroup(
+                    [
+                        new ParquetFileWriter.ColumnPage(ParquetFileWriter.PlainInt64(g), null),
+                        new ParquetFileWriter.ColumnPage(
+                            ParquetFileWriter.PlainByteArray([.. g.Select(n => $"row{n}")]), null),
+                    ], g.Length);
+                writer.Finish();
+            }
+
+            var all = groups.SelectMany(g => g).ToArray();
+            var table = PyArrow.ReadTable(path);
+            table.GetProperty("seq").EnumerateArray().Select(x => x.GetInt64()).ShouldBe(all);
+            table.GetProperty("name").EnumerateArray().Select(x => x.GetString())
+                 .ShouldBe(all.Select(n => $"row{n}"));
+
+            PyArrow.NumRowGroups(path).ShouldBe(3,
+                "merging the groups would pass the value checks and lose the memory bound");
+        }
+        finally { try { File.Delete(path); } catch { } }
+    }
+
+    // Definition levels are per row group, so a null pattern that differs
+    // between groups catches level state leaking across the boundary — which
+    // decodes cleanly and puts values in the wrong rows.
+    [FactIfPyArrow]
+    public void Nulls_Are_Scoped_To_Their_Row_Group()
+    {
+        var path = Path.Combine(Path.GetTempPath(), $"dmart-pq-{Guid.NewGuid():N}.parquet");
+        try
+        {
+            var writer = new ParquetFileWriter(
+                [new("payload", ParquetType.ByteArray, ConvertedType.Utf8, Optional: true)]);
+
+            string?[][] groups =
+            [
+                ["a", null, "b"],       // nulls in the middle
+                [null, null, null],     // all null
+                ["c", "d"],             // none null
+            ];
+
+            using (var fs = File.Create(path))
+            {
+                writer.Start(fs);
+                foreach (var g in groups)
+                    writer.WriteRowGroup(
+                    [
+                        new ParquetFileWriter.ColumnPage(
+                            ParquetFileWriter.PlainByteArray([.. g.Where(v => v is not null).Select(v => v!)]),
+                            [.. g.Select(v => v is null ? 0 : 1)]),
+                    ], g.Length);
+                writer.Finish();
+            }
+
+            PyArrow.ReadTable(path).GetProperty("payload").EnumerateArray()
+                .Select(x => x.ValueKind == JsonValueKind.Null ? null : x.GetString())
+                .ShouldBe(groups.SelectMany(g => g));
+        }
+        finally { try { File.Delete(path); } catch { } }
+    }
+
+    // The whole reason offsets are counted rather than read from the stream:
+    // an HTTP response body cannot be seeked, and streaming an export straight
+    // to a client is the case the format exists for. Using stream.Position
+    // instead throws here rather than in production.
+    [FactIfPyArrow]
+    public void Writes_To_A_Non_Seekable_Destination()
+    {
+        var path = Path.Combine(Path.GetTempPath(), $"dmart-pq-{Guid.NewGuid():N}.parquet");
+        try
+        {
+            var writer = new ParquetFileWriter([new("seq", ParquetType.Int64, null)]);
+            long[] a = [1, 2, 3], b = [4, 5];
+
+            using (var fs = File.Create(path))
+            using (var forwardOnly = new ForwardOnlyStream(fs))
+            {
+                writer.Start(forwardOnly);
+                writer.WriteRowGroup([new ParquetFileWriter.ColumnPage(ParquetFileWriter.PlainInt64(a), null)], a.Length);
+                writer.WriteRowGroup([new ParquetFileWriter.ColumnPage(ParquetFileWriter.PlainInt64(b), null)], b.Length);
+                writer.Finish();
+            }
+
+            PyArrow.ReadTable(path).GetProperty("seq").EnumerateArray()
+                .Select(x => x.GetInt64()).ShouldBe([1, 2, 3, 4, 5]);
+        }
+        finally { try { File.Delete(path); } catch { } }
+    }
+
+    // Write-only, forward-only: what an HTTP response body behaves like.
+    private sealed class ForwardOnlyStream(Stream inner) : Stream
+    {
+        public override bool CanRead => false;
+        public override bool CanSeek => false;
+        public override bool CanWrite => true;
+        public override long Length => throw new NotSupportedException();
+        public override long Position
+        {
+            get => throw new NotSupportedException();
+            set => throw new NotSupportedException();
+        }
+        public override void Flush() => inner.Flush();
+        public override void Write(byte[] buffer, int offset, int count) => inner.Write(buffer, offset, count);
+        public override void Write(ReadOnlySpan<byte> buffer) => inner.Write(buffer);
+        public override void WriteByte(byte value) => inner.WriteByte(value);
+        public override int Read(byte[] buffer, int offset, int count) => throw new NotSupportedException();
+        public override long Seek(long offset, SeekOrigin origin) => throw new NotSupportedException();
+        public override void SetLength(long value) => throw new NotSupportedException();
+    }
 }
 
 // Shells out to pyarrow. Deliberately a separate process: the point is an
@@ -229,6 +365,15 @@ internal static class PyArrow
             ?? throw new InvalidOperationException("pyarrow read failed");
         return JsonDocument.Parse(json).RootElement.Clone();
     }
+
+    // Proves the groups are physically separate rather than concatenated —
+    // invisible in the values, but the difference between a bounded export and
+    // one that holds the whole file.
+    internal static int NumRowGroups(string path)
+        => int.Parse(
+            Run($"import pyarrow.parquet as pq; print(pq.ParquetFile(r'{path}').num_row_groups)")
+            ?? throw new InvalidOperationException("pyarrow row-group read failed"),
+            System.Globalization.CultureInfo.InvariantCulture);
 
     internal static string ReadSchema(string path)
         => Run($"import pyarrow.parquet as pq; print(pq.read_table(r'{path}').schema)")
