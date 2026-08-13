@@ -171,7 +171,6 @@ public sealed class ImportExportService(
     public async Task<Stream> ExportAsync(Query clientQuery, string? actor, CancellationToken ct = default)
     {
         var spoolPath = Path.Combine(Path.GetTempPath(), $"dmart-export-{Guid.NewGuid():N}.zip");
-        FileStream? readBack = null;
         try
         {
             await using (var spool = new FileStream(
@@ -181,15 +180,16 @@ public sealed class ImportExportService(
                 await ExportToAsync(spool, clientQuery, actor, ct);
             }
 
-            readBack = new FileStream(
+            // Once this hands back, the DeleteOnClose handle owns the spool and
+            // the caller's dispose is what removes it.
+            return new FileStream(
                 spoolPath, FileMode.Open, FileAccess.Read, FileShare.Read,
                 bufferSize: 64 * 1024, FileOptions.DeleteOnClose | FileOptions.SequentialScan);
-            return readBack;
         }
         catch
         {
-            // The spool exists but no DeleteOnClose handle owns it yet.
-            readBack?.Dispose();
+            // Reached only before that handle exists, so the spool is orphaned
+            // and nothing else will clean it up.
             try { File.Delete(spoolPath); } catch { /* best effort */ }
             throw;
         }
