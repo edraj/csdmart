@@ -11,12 +11,12 @@ recorded in §6. Everything marked *[measured]* was run, not estimated.
 > backends, which is why the dual-backend obligations — tombstone DDL in two
 > schema files, one canonical array encoding — are called out throughout.
 
-> **Read §2.1 first.** Parquet in this codebase was already proposed and
-> deliberately dropped once (PR #75), on an AOT argument that is still valid
-> for the API it used. This design proceeds only because it uses a *different*
-> Parquet API — and that difference is not yet verified on the version #75
-> tested. If you are about to suggest putting Parquet in a non-AOT subproject
-> like `Dmart.SqlAdapter`, §2.1 explains why that was tried and does not work.
+> **Read §2 before anything else.** No third-party Parquet library meets
+> csdmart's 100%-AOT / no-reflection rule, at any version — measured, not
+> assumed. Parquet remains possible only by writing the encoder in-house
+> (§2.2, ~900 lines, sized). PR #75 dropped Parquet for a narrower version of
+> the same reason, and §2.1 explains why the "put it in a subproject like
+> `Dmart.SqlAdapter`" idea does not work either.
 
 ---
 
@@ -56,29 +56,49 @@ one blob in memory.
 The constraint that could have killed this: Native AOT, zero new
 IL2026/IL2027/IL3050, no reflection-based serialization.
 
-**Parquet.Net 5.6.1 works, with one caveat.**
+**Verdict: no third-party Parquet library qualifies. Write the encoder.**
 
-- Its compression dependency is `ZstdSharp.Port` — **pure managed**. No native
-  sidecar to place, unlike `libe_sqlite3.so`. One less packaging problem.
-- Publishing with `IlcTreatWarningsAsErrors=true` produces **exactly one**
-  error: `IL3050` on `Type.MakeGenericType` in
-  `Parquet.TypeExtensions.GetNullable(Type)`.
-- That warning is a **false positive for statically-declared schemas**.
-  Verified by building a native binary with a `DataField<DateTime?>` column —
-  the precise `Nullable<T>` path the flag is about — and running it: 50,000
-  rows, 16,667 nulls, read back correctly. The instantiation exists in the
-  compiled code because it is statically referenced.
+csdmart's rule is 100% AOT — no JIT, no reflection — and the build enforces it
+rather than trusting convention:
 
-  It would only bite if the schema were built from a type unknown at compile
-  time. We never do that: every column is declared in C#.
-- **Use the low-level API only.** `ParquetWriter` + `DataColumn` + explicit
-  `ParquetSchema`. `ParquetSerializer.SerializeAsync<T>` is the reflection
-  path and is exactly what the project's constraints exclude.
+```
+PublishAot=true                 IlcTreatWarningsAsErrors=true
+TrimmerSingleWarn=false         JsonSerializerIsReflectionEnabledByDefault=false
+```
 
-So this needs a **narrowly scoped `IL3050` suppression with the runtime
-evidence in its justification**. That is a real cost and should be a conscious
-decision, not a footnote — it is the first suppression of an AOT analyzer in
-this codebase rather than of a security analyzer.
+**The codebase carries zero trim/AOT suppressions today.** Every `IL2026` /
+`IL3050` mention in the source is a comment explaining how code was
+*restructured to avoid* reflection — never a `SuppressMessage` silencing one.
+That is the standard this work has to meet.
+
+Parquet.Net uses reflection internally in every version. Measured on the schema
+this design actually needs, via the low-level column API (never
+`ParquetSerializer`, which is the reflection front door):
+
+| | 5.6.1 | 6.0.3 |
+|---|---|---|
+| AOT diagnostics, no list columns | 1 (`IL3050`) | 3 |
+| AOT diagnostics, **with** list columns | **3** (`IL3050` + 2× `IL2070`) | **3** |
+| links and runs natively | yes | yes |
+| nullable value-type column | yes | yes |
+| `list<string>` round-trip | yes | **no — throws** |
+| bytes/row (50k entries) | 26.9 | 25.7 |
+
+Those diagnostics are the compiler reporting that it **cannot prove** the
+reflection is safe under trimming. Suppressing them does not remove the
+reflection — it removes the warning. That the probes ran correctly means the
+types happened to survive trimming for the schemas tested: a runtime
+observation, not a guarantee, and not the same property as "no reflection".
+
+**So Parquet.Net is disqualified at any version.** PR #75 reached the same
+conclusion (§2.1) by a narrower route — it tested the reflection serializer —
+but the broader reason holds regardless of API or version.
+
+Recorded because it is easy to re-derive and wrong: an earlier reading of this
+section concluded "exactly one `IL3050`, therefore one narrow suppression". That
+was measured on a schema *without* list columns, and the design needs them —
+adding a `ListField` brings two `IL2070`s on both versions. The count was never
+the point: one suppression violates the rule as surely as three.
 
 ### 2.1 Prior art: PR #75 was dropped over exactly this, and why that changes
 
@@ -119,23 +139,81 @@ a false positive for statically-declared schemas. If that holds, there is no
 companion binary and no orphaning — the dependency lives in the main assembly
 like any other.
 
-**It is not yet proven to hold**, and this is the single most important open
-item in this document:
-
-- §2 measured **5.6.1**; #75 hit **6.0.3**. Different major version.
-- #75's failures came from the serializer path, which §2 avoids — so the two
-  results are not in contradiction, but neither does one supersede the other.
-- **Re-measure the low-level API on 6.x before committing to this design.** If
-  6.x cannot be made AOT-clean through the low-level API either, #75's
-  conclusion stands and this design needs the companion binary it assumes away
-  — at which point the value judgement in #75 has to be re-argued rather than
-  inherited.
+**This has now been measured on both versions (§2), and the answer is not the
+one this section originally anticipated.** The low-level API does link and run
+under AOT on 5.6.1 and 6.0.3 alike — so #75's *specific* blocker, the
+reflection serializer, is genuinely avoidable. But avoiding it still leaves
+reflection inside the library, which the project rule forbids outright. #75's
+conclusion therefore stands, for a broader reason than the one it gave.
 
 For context, #75 was Phase C of a 24M-entry / 400 GB legacy migration. Phase A
 (PR #73, preflight) and Phase B (PR #74, `import --resume`) shipped and covered
 the migration's must-haves. That scale also dwarfs the "several gigabytes"
 framing this document was written against, and is worth revisiting against §4.2
 row-group sizing and §4.3 blob-store sharding before Phase 2.
+
+### 2.2 Option B: write the encoder in-house — sizing
+
+The remaining way to have Parquet under this rule is to emit the format
+directly with no reflection anywhere. That is more tractable than it sounds,
+because **the schema is fixed and known at compile time** and Parquet is a
+documented open format.
+
+Sized against what the constrained subset actually requires — verified by
+emitting exactly that subset with pyarrow and inspecting the resulting chunk
+metadata, rather than from memory of the spec:
+
+- **3 physical types** — `BYTE_ARRAY` (strings, JSON), `BOOLEAN`, `INT64`
+  (timestamps). `INT32`/`DOUBLE` only if a numeric column appears.
+- **2 encodings** — `PLAIN` for values, `RLE`/bit-packed hybrid for definition
+  levels. No dictionary encoding, no statistics, no bloom filters, no column
+  indexes: all optional in the format.
+- **No repetition levels**, by dropping native `list<string>` (trade below) —
+  which removes the fiddliest encoder entirely.
+- **zstd** through `ZstdSharp.Port`, already proven pure-managed and AOT-clean.
+
+| Component | ~lines | Risk |
+|---|---:|---|
+| Thrift compact protocol writer (varint, zigzag, field deltas) | 250 | **medium** — spec-fiddly, self-contained, unit-testable |
+| Parquet metadata structs (FileMetaData, SchemaElement, RowGroup, ColumnChunk, ColumnMetaData, PageHeader) | 200 | low — plain data |
+| RLE/bit-packed hybrid encoder, definition levels only (0/1 values) | 120 | **medium** — the simplest case of the encoding |
+| PLAIN value encoders per physical type | 120 | low |
+| Page → chunk → file assembly, zstd framing | 200 | low-medium |
+| **Writer total** | **~900** | |
+| *Reader, only if round-trip restore is required* | *+550* | *medium — Thrift parsing, page and level decoding* |
+
+**The verification strategy is the non-negotiable part.** A hand-rolled format
+writer validated only by our own reader is worthless — both sides can share the
+same misunderstanding and agree with each other indefinitely. Every test must
+round-trip through an **independent** implementation. `pyarrow` is present on
+the build host, so the loop is: write from C#, read with pyarrow, assert
+values, nulls and logical types. Property-style over generated data covering
+nulls and every supported type, not a fixed golden file.
+
+**What this gives up versus a library:**
+
+- **Native `list<string>`** for `tags` / `query_policies`; they become JSON
+  strings. Consistent with `payload` / `acl` / `relationships`, which §4.2
+  already keeps opaque, and still queryable in DuckDB via `json_extract`. This
+  is the trade that removes repetition levels.
+- **Dictionary encoding** — larger files on low-cardinality columns. Worth
+  measuring against the 27 B/row baseline before assuming it does not matter.
+- **Statistics** — no min/max predicate pushdown, so analytics scans more.
+  Affects speed, not correctness; addable later.
+
+**The scope question this forces (§6 revisited).** The writer alone serves
+analytics but *not* the round-trip restore §6 chose as the primary consumer.
+Either the reader is built too — +550 lines carrying the same independent
+verification burden — or restore stays on the existing JSON/zip path and this
+format is analytics-and-archival only. **That is a decision, not a detail:** it
+inverts the "round-trip first" call in §6 and should be settled before any code
+is written.
+
+**And the bar from #75 still applies.** It judged a Parquet archival path not
+worth a companion binary *versus `tar -czf` plus the existing JSON export*. A
+~900-line hand-written encoder is a different cost with a different payoff —
+incremental export, which `tar` cannot do — but it has to clear that bar
+explicitly rather than inherit a pass.
 
 ## 3. The size win *[measured]*
 
@@ -378,9 +456,17 @@ Two consequences to be explicit about:
    policies when `actor` is non-null; the CLI passes null for a full dump. A
    Parquet export is an operator tool — it should be explicitly actor-null and
    refuse an actor argument, rather than quietly producing a filtered "backup".
-2. **Does the low-level API stay AOT-clean on Parquet.Net 6.x?** The whole
-   design assumes it does (§2.1). Measured only on 5.6.1 so far. If not, #75's
-   companion-binary conclusion stands and the value case must be re-argued.
+2. ~~**Does the low-level API stay AOT-clean on Parquet.Net 6.x?**~~ Measured
+   on both versions (§2). Wrong question, as it turns out: both link and run,
+   and both still contain reflection, which the project rule forbids. Replaced
+   by the two live questions below.
+2a. **Writer-only, or writer + reader?** §2.2 — decides whether this serves
+   round-trip restore (§6's choice) or analytics only, and whether the estimate
+   is ~900 or ~1450 lines.
+2b. **Does a hand-written encoder clear #75's bar?** It judged Parquet not
+   worth a companion binary versus `tar -czf` + the JSON export. The payoff
+   here is incremental export, which `tar` cannot do — but the bar is not
+   inherited.
 3. **Compression codec.** zstd measured here; snappy is faster to write and
    more widely supported by older readers. Worth measuring both at GB scale
    before pinning.
@@ -396,12 +482,10 @@ Mirrors how the SQLite backend was staged, for the same reason: each phase is
 independently verifiable and the risky part is not last.
 
 1. **This document.** Stop, agree the shape.
-2. **Settle the AOT question on the version we would actually ship (§2.1).**
-   Re-run the §2 probe against Parquet.Net 6.x with the low-level API. This is
-   a day's work and it gates everything after it: if 6.x cannot be made
-   AOT-clean, #75's companion-binary conclusion stands and the value case has
-   to be re-argued before any exporter is written. Do not skip to step 3
-   because the 5.6.1 numbers look good.
+2. ~~**Settle the AOT question.**~~ Measured (§2): no library qualifies. The
+   replacement gate is a **decision, not an experiment** — writer-only or
+   writer+reader (§2.2), and whether ~900 lines of hand-written encoder clears
+   #75's bar. Nothing after this is worth starting until both are answered.
 3. **Full export, streaming, no incremental.** Prove the round trip:
    export → import into an empty store → the two stores are equal. Land the AOT
    suppression with its evidence. (The `MemoryStream` and `QueryLimit` ceilings
