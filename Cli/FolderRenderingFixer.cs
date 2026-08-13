@@ -3,6 +3,7 @@ using System.Text.Json.Nodes;
 using Dmart.DataAdapters.Sql;
 using Dmart.Models.Core;
 using Dmart.Models.Enums;
+using Dmart.QueryGrammar;
 using Npgsql;
 
 namespace Dmart.Cli;
@@ -24,7 +25,7 @@ namespace Dmart.Cli;
 //   4. invalid enum values inside content_resource_types are reported but NOT
 //      removed — dropping the last entry would flip the folder from
 //      "restricted" to "unrestricted" silently
-public sealed class FolderRenderingFixer(Db db)
+public sealed class FolderRenderingFixer(IDbConnectionFactory db)
 {
     public sealed record FolderFix(
         string Space,
@@ -71,11 +72,12 @@ public sealed class FolderRenderingFixer(Db db)
         var folders = new List<(string Subpath, string Shortname, string BodyJson)>();
         await using (var conn = await db.OpenAsync(ct))
         {
-            await using var cmd = new NpgsqlCommand(
-                "SELECT subpath, shortname, payload->>'body' FROM entries " +
-                "WHERE space_name = $1 AND resource_type = 'folder' AND jsonb_typeof(payload->'body') = 'object'",
-                conn);
-            cmd.Parameters.Add(new() { Value = spaceName });
+            var dialect = QueryHelper.DialectFor(db);
+            await using var cmd = conn.Command(
+                $"SELECT subpath, shortname, {dialect.JsonText("payload", ["body"])} FROM entries " +
+                "WHERE space_name = $1 AND resource_type = 'folder' AND " +
+                dialect.JsonTypeIs(dialect.JsonValue("payload", ["body"]), JsonKind.Object));
+            DbParams.Add(cmd, spaceName);
             await using var reader = await cmd.ExecuteReaderAsync(ct);
             while (await reader.ReadAsync(ct))
                 folders.Add((reader.GetString(0), reader.GetString(1), reader.GetString(2)));
@@ -178,12 +180,14 @@ public sealed class FolderRenderingFixer(Db db)
         var schemas = new HashSet<string>(StringComparer.Ordinal);
         var workflows = new HashSet<string>(StringComparer.Ordinal);
         await using var conn = await db.OpenAsync(ct);
-        await using var cmd = new NpgsqlCommand(
-            "SELECT DISTINCT e.resource_type::text, e.payload->>'schema_shortname', " +
+        var dialect = QueryHelper.DialectFor(db);
+        await using var cmd = conn.Command(
+            $"SELECT DISTINCT {dialect.AsText("e.resource_type")}, " +
+            dialect.JsonText("e.payload", ["schema_shortname"]) + ", " +
             "CASE WHEN e.resource_type = 'ticket' THEN e.workflow_shortname END " +
-            "FROM entries e WHERE e.space_name = $1 AND e.subpath = $2", conn);
-        cmd.Parameters.Add(new() { Value = spaceName });
-        cmd.Parameters.Add(new() { Value = folderPath });
+            "FROM entries e WHERE e.space_name = $1 AND e.subpath = $2");
+        DbParams.Add(cmd, spaceName);
+        DbParams.Add(cmd, folderPath);
         await using var reader = await cmd.ExecuteReaderAsync(ct);
         while (await reader.ReadAsync(ct))
         {

@@ -37,14 +37,33 @@ public sealed class UserUniqueColumnConstraintTests : IClassFixture<DmartFactory
         await users.UpsertAsync(first);
         try
         {
-            var ex = await Should.ThrowAsync<PostgresException>(() => users.UpsertAsync(second));
-            ex.SqlState.ShouldBe("23505");
-            // ConstraintName names the offending index; the helper at
-            // PgErrorParsing.ExtractUniqueViolationKey unwraps it to the
-            // column name. We assert on a hint substring rather than the
-            // exact name to leave room for the constraint-name to evolve.
-            (ex.ConstraintName ?? "").ShouldContain(expectedColumnHint,
-                customMessage: $"23505 fired but the constraint name did not include '{expectedColumnHint}' — index may have been renamed or dropped");
+            // Both backends must reject the duplicate; they report it
+            // differently, so assert the behaviour first and the provider's
+            // detail second rather than pinning the exception type.
+            var ex = await Should.ThrowAsync<System.Data.Common.DbException>(
+                () => users.UpsertAsync(second));
+            switch (ex)
+            {
+                case PostgresException pg:
+                    pg.SqlState.ShouldBe("23505");
+                    // ConstraintName names the offending index; the helper at
+                    // PgErrorParsing.ExtractUniqueViolationKey unwraps it to the
+                    // column name. We assert on a hint substring rather than the
+                    // exact name to leave room for the constraint-name to evolve.
+                    (pg.ConstraintName ?? "").ShouldContain(expectedColumnHint,
+                        customMessage: $"23505 fired but the constraint name did not include '{expectedColumnHint}' — index may have been renamed or dropped");
+                    break;
+                case Microsoft.Data.Sqlite.SqliteException se:
+                    // 19 = SQLITE_CONSTRAINT. SQLite names the offending table
+                    // column or index in the message rather than in a field.
+                    se.SqliteErrorCode.ShouldBe(19);
+                    se.Message.ShouldContain(expectedColumnHint,
+                        customMessage: $"a constraint fired but the message did not name '{expectedColumnHint}' — index may have been renamed or dropped");
+                    break;
+                default:
+                    throw new Xunit.Sdk.XunitException(
+                        $"unexpected provider exception {ex.GetType().Name}: {ex.Message}");
+            }
         }
         finally
         {

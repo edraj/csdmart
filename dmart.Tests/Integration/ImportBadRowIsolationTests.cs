@@ -23,14 +23,14 @@ public class ImportBadRowIsolationTests : IClassFixture<DmartFactory>
     private readonly DmartFactory _factory;
     public ImportBadRowIsolationTests(DmartFactory factory) => _factory = factory;
 
-    [FactIfPg]
+    [FactIfImportSupported]
     public async Task Default_Import_Isolates_Bad_Rows_And_Lands_Good_Ones()
     {
         var sp = _factory.Services;
         _factory.CreateClient();
         var io = sp.GetRequiredService<ImportExportService>();
         var entryRepo = sp.GetRequiredService<EntryRepository>();
-        var db = sp.GetRequiredService<Db>();
+        var db = sp.GetRequiredService<IDbConnectionFactory>();
 
         var spaceName = "impiso_" + Guid.NewGuid().ToString("N")[..6];
         var dupUuid = Guid.NewGuid().ToString();
@@ -72,14 +72,16 @@ public class ImportBadRowIsolationTests : IClassFixture<DmartFactory>
         finally
         {
             await using var conn = await db.OpenAsync();
-            await using (var del = new NpgsqlCommand(
-                "DELETE FROM entries WHERE space_name = $1", conn)
-                { Parameters = { new() { Value = spaceName } } })
+            await using (var del = conn.Command("DELETE FROM entries WHERE space_name = $1"))
+            {
+                DbParams.Add(del, spaceName);
                 await del.ExecuteNonQueryAsync();
-            await using (var del = new NpgsqlCommand(
-                "DELETE FROM spaces WHERE shortname = $1", conn)
-                { Parameters = { new() { Value = spaceName } } })
+            }
+            await using (var del = conn.Command("DELETE FROM spaces WHERE shortname = $1"))
+            {
+                DbParams.Add(del, spaceName);
                 await del.ExecuteNonQueryAsync();
+            }
         }
     }
 

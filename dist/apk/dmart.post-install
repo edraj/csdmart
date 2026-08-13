@@ -3,13 +3,15 @@
 # preserving any prior file on upgrades (Alpine runs post-install on
 # both install and upgrade — guard the copy with -f).
 if [ ! -f /etc/dmart/config.env ]; then
-	cp /usr/share/dmart/config.env.sample /etc/dmart/config.env
+	cp /usr/share/dmart/config.env.packaged /etc/dmart/config.env
 	chmod 0640 /etc/dmart/config.env
 	chown root:dmart /etc/dmart/config.env
 	cat <<-EOF
 	Installed default config: /etc/dmart/config.env
 	Next steps:
-	  1. Edit /etc/dmart/config.env — set DATABASE_* and JWT_SECRET.
+	  1. Edit /etc/dmart/config.env — set JWT_SECRET (openssl rand -base64 48).
+	     Storage defaults to SQLite at /var/lib/dmart/dmart.db; see the
+	     file for how to switch to PostgreSQL.
 	  2. rc-update add dmart && rc-service dmart start
 	  3. dmart passwd dmart
 	     (prompts for a password. The admin is created passwordless

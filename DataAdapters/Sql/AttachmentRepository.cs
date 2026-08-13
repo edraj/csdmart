@@ -1,6 +1,6 @@
+using System.Data.Common;
+using Dmart.QueryGrammar;
 using Dmart.Models.Core;
-using Npgsql;
-using NpgsqlTypes;
 
 namespace Dmart.DataAdapters.Sql;
 
@@ -8,7 +8,9 @@ namespace Dmart.DataAdapters.Sql;
 // expressed via the (space_name, subpath, shortname) of the attachment row, where the
 // subpath includes the parent shortname (e.g. /content/foo/.attachments). We follow
 // dmart's convention here.
-public sealed class AttachmentRepository(Db db)
+[System.Diagnostics.CodeAnalysis.SuppressMessage("Security", "CA2100",
+    Justification = "Audited: CommandText is assembled from compile-time SQL, dialect-produced fragments and $N placeholders only. Every caller-supplied value is bound through DbParams, never concatenated.")]
+public sealed class AttachmentRepository(IDbConnectionFactory db, ISqlDialect dialect)
 {
     private const string SelectAllColumns = """
         SELECT uuid, shortname, space_name, subpath, is_active, slug,
@@ -31,7 +33,7 @@ public sealed class AttachmentRepository(Db db)
         SELECT uuid, shortname, space_name, subpath, is_active, slug,
                displayname, description, tags, created_at, updated_at,
                owner_shortname, owner_group_shortname, acl, payload, relationships,
-               last_checksum_history, resource_type, NULL::bytea AS media, body, state
+               last_checksum_history, resource_type, NULL AS media, body, state
         FROM attachments
         """;
 
@@ -62,10 +64,9 @@ public sealed class AttachmentRepository(Db db)
         var attachmentSubpath = $"{normalized.TrimEnd('/')}/{parentShortname}";
         var columns = includeMedia ? SelectAllColumns : SelectColumnsNoMedia;
         await using var conn = await db.OpenAsync(ct);
-        await using var cmd = new NpgsqlCommand(
-            $"{columns} WHERE space_name = $1 AND subpath = $2 ORDER BY created_at DESC", conn);
-        cmd.Parameters.Add(new() { Value = spaceName });
-        cmd.Parameters.Add(new() { Value = attachmentSubpath });
+        await using var cmd = conn.Command($"{columns} WHERE space_name = $1 AND subpath = $2 ORDER BY created_at DESC");
+        DbParams.Add(cmd, spaceName);
+        DbParams.Add(cmd, attachmentSubpath);
         await using var r = await cmd.ExecuteReaderAsync(ct);
         var results = new List<Attachment>();
         while (await r.ReadAsync(ct)) results.Add(Hydrate(r));
@@ -99,15 +100,15 @@ public sealed class AttachmentRepository(Db db)
         }
 
         await using var conn = await db.OpenAsync(ct);
-        await using var cmd = new NpgsqlCommand(
-            $"{SelectColumnsNoMedia} WHERE space_name = $1 AND subpath = ANY($2::text[]) " +
-             "ORDER BY subpath, created_at DESC", conn);
-        cmd.Parameters.Add(new() { Value = spaceName });
-        cmd.Parameters.Add(new()
-        {
-            Value = keys,
-            NpgsqlDbType = NpgsqlDbType.Array | NpgsqlDbType.Text,
-        });
+        // PostgreSQL matches the key list with one bound text[]; SQLite has no
+        // array type and expands to an IN list, so the dialect emits the form
+        // and binds the values.
+        await using var cmd = conn.CreateCommand();
+        DbParams.Add(cmd, spaceName);
+        var inList = dialect.AnyOf("subpath", keys, (v, k) => DbParams.Add(cmd, v, k));
+        cmd.CommandText =
+            $"{SelectColumnsNoMedia} WHERE space_name = $1 AND {inList} "
+            + "ORDER BY subpath, created_at DESC";
 
         await using var r = await cmd.ExecuteReaderAsync(ct);
         while (await r.ReadAsync(ct))
@@ -128,13 +129,12 @@ public sealed class AttachmentRepository(Db db)
         return await GetAsync(spaceName, subpath, shortname, conn, ct);
     }
 
-    public async Task<Attachment?> GetAsync(string spaceName, string subpath, string shortname, NpgsqlConnection conn, CancellationToken ct = default)
+    public async Task<Attachment?> GetAsync(string spaceName, string subpath, string shortname, DbConnection conn, CancellationToken ct = default)
     {
-        await using var cmd = new NpgsqlCommand(
-            $"{SelectAllColumns} WHERE space_name = $1 AND subpath = $2 AND shortname = $3", conn);
-        cmd.Parameters.Add(new() { Value = spaceName });
-        cmd.Parameters.Add(new() { Value = Locator.NormalizeSubpath(subpath) });
-        cmd.Parameters.Add(new() { Value = shortname });
+        await using var cmd = conn.Command($"{SelectAllColumns} WHERE space_name = $1 AND subpath = $2 AND shortname = $3");
+        DbParams.Add(cmd, spaceName);
+        DbParams.Add(cmd, Locator.NormalizeSubpath(subpath));
+        DbParams.Add(cmd, shortname);
         await using var r = await cmd.ExecuteReaderAsync(ct);
         return await r.ReadAsync(ct) ? Hydrate(r) : null;
     }
@@ -142,8 +142,8 @@ public sealed class AttachmentRepository(Db db)
     public async Task<Attachment?> GetByUuidAsync(Guid uuid, CancellationToken ct = default)
     {
         await using var conn = await db.OpenAsync(ct);
-        await using var cmd = new NpgsqlCommand($"{SelectAllColumns} WHERE uuid = $1", conn);
-        cmd.Parameters.Add(new() { Value = uuid });
+        await using var cmd = conn.Command($"{SelectAllColumns} WHERE uuid = $1");
+        DbParams.Add(cmd, uuid);
         await using var r = await cmd.ExecuteReaderAsync(ct);
         return await r.ReadAsync(ct) ? Hydrate(r) : null;
     }
@@ -154,9 +154,9 @@ public sealed class AttachmentRepository(Db db)
         await UpsertAsync(a, conn, ct);
     }
 
-    public async Task UpsertAsync(Attachment a, NpgsqlConnection conn, CancellationToken ct = default)
+    public async Task UpsertAsync(Attachment a, DbConnection conn, CancellationToken ct = default)
     {
-        await using var cmd = new NpgsqlCommand("""
+        await using var cmd = conn.Command("""
             INSERT INTO attachments (uuid, shortname, space_name, subpath, is_active, slug,
                                      displayname, description, tags, created_at, updated_at,
                                      owner_shortname, owner_group_shortname, acl, payload, relationships,
@@ -179,7 +179,7 @@ public sealed class AttachmentRepository(Db db)
                 media = EXCLUDED.media,
                 body = EXCLUDED.body,
                 state = EXCLUDED.state
-            """, conn);
+            """);
 
         BindAttachment(cmd, a);
         await cmd.ExecuteNonQueryAsync(ct);
@@ -192,50 +192,50 @@ public sealed class AttachmentRepository(Db db)
     public async Task<bool> TryInsertAsync(Attachment a, CancellationToken ct = default)
     {
         await using var conn = await db.OpenAsync(ct);
-        await using var cmd = new NpgsqlCommand("""
+        await using var cmd = conn.Command("""
             INSERT INTO attachments (uuid, shortname, space_name, subpath, is_active, slug,
                                      displayname, description, tags, created_at, updated_at,
                                      owner_shortname, owner_group_shortname, acl, payload, relationships,
                                      last_checksum_history, resource_type, media, body, state)
             VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21)
             ON CONFLICT (shortname, space_name, subpath) DO NOTHING
-            """, conn);
+            """);
         BindAttachment(cmd, a);
         return await cmd.ExecuteNonQueryAsync(ct) > 0;
     }
 
-    private static void BindAttachment(NpgsqlCommand cmd, Attachment a)
+    private static void BindAttachment(DbCommand cmd, Attachment a)
     {
-        cmd.Parameters.Add(new() { Value = Guid.Parse(a.Uuid) });
-        cmd.Parameters.Add(new() { Value = a.Shortname });
-        cmd.Parameters.Add(new() { Value = a.SpaceName });
-        cmd.Parameters.Add(new() { Value = a.Subpath });
-        cmd.Parameters.Add(new() { Value = a.IsActive });
-        cmd.Parameters.Add(new() { Value = (object?)a.Slug ?? DBNull.Value });
+        DbParams.Add(cmd, Guid.Parse(a.Uuid));
+        DbParams.Add(cmd, a.Shortname);
+        DbParams.Add(cmd, a.SpaceName);
+        DbParams.Add(cmd, a.Subpath);
+        DbParams.Add(cmd, a.IsActive);
+        DbParams.Add(cmd, (object?)a.Slug ?? DBNull.Value);
         AddJsonb(cmd, JsonbHelpers.ToJsonb(a.Displayname));
         AddJsonb(cmd, JsonbHelpers.ToJsonb(a.Description));
         AddJsonbNotNull(cmd, JsonbHelpers.ToJsonbList(a.Tags));   // tags is NOT NULL
-        cmd.Parameters.Add(new() { Value = a.CreatedAt == default ? TimeUtils.Now() : a.CreatedAt });
+        DbParams.Add(cmd, a.CreatedAt == default ? TimeUtils.Now() : a.CreatedAt);
         // Honor the caller's UpdatedAt — see EntryRepository.UpsertAsync for
         // the full reasoning; same pattern keeps round-trip verbatim.
-        cmd.Parameters.Add(new() { Value = a.UpdatedAt == default ? TimeUtils.Now() : a.UpdatedAt });
-        cmd.Parameters.Add(new() { Value = a.OwnerShortname });
-        cmd.Parameters.Add(new() { Value = (object?)a.OwnerGroupShortname ?? DBNull.Value });
+        DbParams.Add(cmd, a.UpdatedAt == default ? TimeUtils.Now() : a.UpdatedAt);
+        DbParams.Add(cmd, a.OwnerShortname);
+        DbParams.Add(cmd, (object?)a.OwnerGroupShortname ?? DBNull.Value);
         AddJsonb(cmd, JsonbHelpers.ToJsonb(a.Acl));
         AddJsonb(cmd, JsonbHelpers.ToJsonb(a.Payload));
         AddJsonb(cmd, JsonbHelpers.ToJsonb(a.Relationships));
-        cmd.Parameters.Add(new() { Value = (object?)a.LastChecksumHistory ?? DBNull.Value });
-        cmd.Parameters.Add(new() { Value = JsonbHelpers.EnumMember(a.ResourceType) });
-        cmd.Parameters.Add(new() { Value = (object?)a.Media ?? DBNull.Value, NpgsqlDbType = NpgsqlDbType.Bytea });
-        cmd.Parameters.Add(new() { Value = (object?)a.Body ?? DBNull.Value });
-        cmd.Parameters.Add(new() { Value = (object?)a.State ?? DBNull.Value });
+        DbParams.Add(cmd, (object?)a.LastChecksumHistory ?? DBNull.Value);
+        DbParams.Add(cmd, JsonbHelpers.EnumMember(a.ResourceType));
+        DbParams.Add(cmd, (object?)a.Media ?? DBNull.Value);
+        DbParams.Add(cmd, (object?)a.Body ?? DBNull.Value);
+        DbParams.Add(cmd, (object?)a.State ?? DBNull.Value);
     }
 
     public async Task<(byte[]? Bytes, string? ContentType)> GetMediaAsync(Guid uuid, CancellationToken ct = default)
     {
         await using var conn = await db.OpenAsync(ct);
-        await using var cmd = new NpgsqlCommand("SELECT media, payload FROM attachments WHERE uuid = $1", conn);
-        cmd.Parameters.Add(new() { Value = uuid });
+        await using var cmd = conn.Command("SELECT media, payload FROM attachments WHERE uuid = $1");
+        DbParams.Add(cmd, uuid);
         await using var r = await cmd.ExecuteReaderAsync(ct);
         if (!await r.ReadAsync(ct)) return (null, null);
         var bytes = r.IsDBNull(0) ? null : (byte[])r.GetValue(0);
@@ -247,8 +247,8 @@ public sealed class AttachmentRepository(Db db)
     public async Task DeleteAsync(Guid uuid, CancellationToken ct = default)
     {
         await using var conn = await db.OpenAsync(ct);
-        await using var cmd = new NpgsqlCommand("DELETE FROM attachments WHERE uuid = $1", conn);
-        cmd.Parameters.Add(new() { Value = uuid });
+        await using var cmd = conn.Command("DELETE FROM attachments WHERE uuid = $1");
+        DbParams.Add(cmd, uuid);
         await cmd.ExecuteNonQueryAsync(ct);
     }
 
@@ -262,13 +262,13 @@ public sealed class AttachmentRepository(Db db)
     public async Task<int> DeleteUnderSubpathAsync(string spaceName, string prefix, CancellationToken ct = default)
     {
         await using var conn = await db.OpenAsync(ct);
-        await using var cmd = new NpgsqlCommand("""
+        await using var cmd = conn.Command("""
             DELETE FROM attachments
             WHERE space_name = $1
               AND (subpath = $2 OR subpath LIKE $2 || '/%')
-            """, conn);
-        cmd.Parameters.Add(new() { Value = spaceName });
-        cmd.Parameters.Add(new() { Value = prefix });
+            """);
+        DbParams.Add(cmd, spaceName);
+        DbParams.Add(cmd, prefix);
         return await cmd.ExecuteNonQueryAsync(ct);
     }
 
@@ -277,14 +277,14 @@ public sealed class AttachmentRepository(Db db)
     public async Task<long> CountUnderSubpathAsync(string spaceName, string prefix, CancellationToken ct = default)
     {
         await using var conn = await db.OpenAsync(ct);
-        await using var cmd = new NpgsqlCommand("""
+        await using var cmd = conn.Command("""
             SELECT count(*) FROM attachments
             WHERE space_name = $1
               AND (subpath = $2 OR subpath LIKE $2 || '/%')
-            """, conn);
-        cmd.Parameters.Add(new() { Value = spaceName });
-        cmd.Parameters.Add(new() { Value = prefix });
-        return (long)(await cmd.ExecuteScalarAsync(ct) ?? 0L);
+            """);
+        DbParams.Add(cmd, spaceName);
+        DbParams.Add(cmd, prefix);
+        return DbParams.ReadCount(await cmd.ExecuteScalarAsync(ct));
     }
 
     // ----- query support (used by QueryService for type=attachments) -----
@@ -297,13 +297,13 @@ public sealed class AttachmentRepository(Db db)
     public Task<int> CountQueryAsync(Models.Api.Query q, CancellationToken ct = default)
         => QueryHelper.RunCountAsync(db, "attachments", q, ct);
 
-    private static void AddJsonb(NpgsqlCommand cmd, string? json)
-        => cmd.Parameters.Add(new() { Value = (object?)json ?? DBNull.Value, NpgsqlDbType = NpgsqlDbType.Jsonb });
+    private static void AddJsonb(DbCommand cmd, string? json)
+        => DbParams.Add(cmd, (object?)json ?? DBNull.Value, SqlValueKind.Json);
 
-    private static void AddJsonbNotNull(NpgsqlCommand cmd, string json)
-        => cmd.Parameters.Add(new() { Value = json, NpgsqlDbType = NpgsqlDbType.Jsonb });
+    private static void AddJsonbNotNull(DbCommand cmd, string json)
+        => DbParams.Add(cmd, json, SqlValueKind.Json);
 
-    private static Attachment Hydrate(NpgsqlDataReader r)
+    private static Attachment Hydrate(DbDataReader r)
     {
         return new Attachment
         {

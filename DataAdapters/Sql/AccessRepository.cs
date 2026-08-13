@@ -1,13 +1,15 @@
+using System.Data.Common;
+using Dmart.QueryGrammar;
 using Dmart.Models.Core;
 using Dmart.Models.Enums;
-using Npgsql;
-using NpgsqlTypes;
 
 namespace Dmart.DataAdapters.Sql;
 
 // roles + groups + permissions + userpermissionscache. Column-for-column mapping to dmart's
 // Roles, Permissions, and UserPermissionsCache SQLModel tables.
-public sealed class AccessRepository(Db db, AuthzCacheRefresher refresher, UserRepository userRepository)
+[System.Diagnostics.CodeAnalysis.SuppressMessage("Security", "CA2100",
+    Justification = "Audited: CommandText is assembled from compile-time SQL, dialect-produced fragments and $N placeholders only. Every caller-supplied value is bound through DbParams, never concatenated.")]
+public sealed class AccessRepository(IDbConnectionFactory db, ISqlDialect dialect, AuthzCacheRefresher refresher, UserRepository userRepository)
 {
     private const string SelectGroupColumns = """
         SELECT uuid, shortname, space_name, subpath, is_active, slug,
@@ -41,10 +43,10 @@ public sealed class AccessRepository(Db db, AuthzCacheRefresher refresher, UserR
         return await GetGroupAsync(shortname, conn, ct);
     }
 
-    public async Task<Group?> GetGroupAsync(string shortname, NpgsqlConnection conn, CancellationToken ct = default)
+    public async Task<Group?> GetGroupAsync(string shortname, DbConnection conn, CancellationToken ct = default)
     {
-        await using var cmd = new NpgsqlCommand($"{SelectGroupColumns} WHERE shortname = $1", conn);
-        cmd.Parameters.Add(new() { Value = shortname });
+        await using var cmd = conn.Command($"{SelectGroupColumns} WHERE shortname = $1");
+        DbParams.Add(cmd, shortname);
         await using var r = await cmd.ExecuteReaderAsync(ct);
         return await r.ReadAsync(ct) ? HydrateGroup(r) : null;
     }
@@ -54,8 +56,9 @@ public sealed class AccessRepository(Db db, AuthzCacheRefresher refresher, UserR
         var arr = shortnames.ToArray();
         if (arr.Length == 0) return new();
         await using var conn = await db.OpenAsync(ct);
-        await using var cmd = new NpgsqlCommand($"{SelectGroupColumns} WHERE shortname = ANY($1)", conn);
-        cmd.Parameters.Add(new() { Value = arr, NpgsqlDbType = NpgsqlDbType.Array | NpgsqlDbType.Text });
+        await using var cmd = conn.CreateCommand();
+        var inList = dialect.AnyOf("shortname", arr, (v, k) => DbParams.Add(cmd, v, k));
+        cmd.CommandText = $"{SelectGroupColumns} WHERE {inList}";
         await using var r = await cmd.ExecuteReaderAsync(ct);
         var results = new List<Group>();
         while (await r.ReadAsync(ct)) results.Add(HydrateGroup(r));
@@ -68,14 +71,14 @@ public sealed class AccessRepository(Db db, AuthzCacheRefresher refresher, UserR
         await UpsertGroupAsync(group, conn, ct);
     }
 
-    public Task UpsertGroupAsync(Group group, NpgsqlConnection conn, CancellationToken ct = default)
+    public Task UpsertGroupAsync(Group group, DbConnection conn, CancellationToken ct = default)
         => UpsertGroupAsync(group, conn, deferCacheRefresh: false, ct);
 
-    public async Task UpsertGroupAsync(Group group, NpgsqlConnection conn, bool deferCacheRefresh, CancellationToken ct = default)
+    public async Task UpsertGroupAsync(Group group, DbConnection conn, bool deferCacheRefresh, CancellationToken ct = default)
     {
         group = group with { QueryPolicies = Utils.QueryPolicies.Generate(group) };
 
-        await using var cmd = new NpgsqlCommand("""
+        await using var cmd = conn.Command("""
             INSERT INTO groups (uuid, shortname, space_name, subpath, is_active, slug,
                                 displayname, description, tags, created_at, updated_at,
                                 owner_shortname, owner_group_shortname, acl, payload, relationships,
@@ -87,7 +90,7 @@ public sealed class AccessRepository(Db db, AuthzCacheRefresher refresher, UserR
                 displayname = EXCLUDED.displayname,
                 description = EXCLUDED.description,
                 tags = EXCLUDED.tags,
-                updated_at = NOW(),
+                updated_at = EXCLUDED.updated_at,
                 owner_shortname = EXCLUDED.owner_shortname,
                 owner_group_shortname = EXCLUDED.owner_group_shortname,
                 acl = EXCLUDED.acl,
@@ -96,32 +99,28 @@ public sealed class AccessRepository(Db db, AuthzCacheRefresher refresher, UserR
                 last_checksum_history = EXCLUDED.last_checksum_history,
                 query_policies = EXCLUDED.query_policies,
                 grantable_by = EXCLUDED.grantable_by
-            """, conn);
+            """);
 
-        cmd.Parameters.Add(new() { Value = Guid.Parse(group.Uuid) });
-        cmd.Parameters.Add(new() { Value = group.Shortname });
-        cmd.Parameters.Add(new() { Value = group.SpaceName });
-        cmd.Parameters.Add(new() { Value = group.Subpath });
-        cmd.Parameters.Add(new() { Value = group.IsActive });
-        cmd.Parameters.Add(new() { Value = (object?)group.Slug ?? DBNull.Value });
-        AddJsonb(cmd, JsonbHelpers.ToJsonb(group.Displayname));
-        AddJsonb(cmd, JsonbHelpers.ToJsonb(group.Description));
-        AddJsonbNotNull(cmd, JsonbHelpers.ToJsonbList(group.Tags));
-        cmd.Parameters.Add(new() { Value = group.CreatedAt == default ? TimeUtils.Now() : group.CreatedAt });
-        cmd.Parameters.Add(new() { Value = TimeUtils.Now() });
-        cmd.Parameters.Add(new() { Value = group.OwnerShortname });
-        cmd.Parameters.Add(new() { Value = (object?)group.OwnerGroupShortname ?? DBNull.Value });
-        AddJsonb(cmd, JsonbHelpers.ToJsonb(group.Acl));
-        AddJsonb(cmd, JsonbHelpers.ToJsonb(group.Payload));
-        AddJsonb(cmd, JsonbHelpers.ToJsonb(group.Relationships));
-        cmd.Parameters.Add(new() { Value = (object?)group.LastChecksumHistory ?? DBNull.Value });
-        cmd.Parameters.Add(new() { Value = JsonbHelpers.EnumMember(group.ResourceType) });
-        cmd.Parameters.Add(new()
-        {
-            Value = group.QueryPolicies.ToArray(),
-            NpgsqlDbType = NpgsqlDbType.Array | NpgsqlDbType.Text,
-        });
-        AddJsonb(cmd, JsonbHelpers.ToJsonb(group.GrantableBy));
+        DbParams.Add(cmd, Guid.Parse(group.Uuid));
+        DbParams.Add(cmd, group.Shortname);
+        DbParams.Add(cmd, group.SpaceName);
+        DbParams.Add(cmd, group.Subpath);
+        DbParams.Add(cmd, group.IsActive);
+        DbParams.Add(cmd, (object?)group.Slug ?? DBNull.Value);
+        DbParams.AddJson(cmd, JsonbHelpers.ToJsonb(group.Displayname));
+        DbParams.AddJson(cmd, JsonbHelpers.ToJsonb(group.Description));
+        DbParams.AddJson(cmd, JsonbHelpers.ToJsonbList(group.Tags));
+        DbParams.Add(cmd, group.CreatedAt == default ? TimeUtils.Now() : group.CreatedAt);
+        DbParams.Add(cmd, TimeUtils.Now());
+        DbParams.Add(cmd, group.OwnerShortname);
+        DbParams.Add(cmd, (object?)group.OwnerGroupShortname ?? DBNull.Value);
+        DbParams.AddJson(cmd, JsonbHelpers.ToJsonb(group.Acl));
+        DbParams.AddJson(cmd, JsonbHelpers.ToJsonb(group.Payload));
+        DbParams.AddJson(cmd, JsonbHelpers.ToJsonb(group.Relationships));
+        DbParams.Add(cmd, (object?)group.LastChecksumHistory ?? DBNull.Value);
+        DbParams.Add(cmd, JsonbHelpers.EnumMember(group.ResourceType));
+        DbParams.Add(cmd, group.QueryPolicies.ToArray(), SqlValueKind.TextArray);
+        DbParams.AddJson(cmd, JsonbHelpers.ToJsonb(group.GrantableBy));
 
         await cmd.ExecuteNonQueryAsync(ct);
         if (!deferCacheRefresh) await refresher.RefreshAsync(ct);
@@ -130,8 +129,8 @@ public sealed class AccessRepository(Db db, AuthzCacheRefresher refresher, UserR
     public async Task<bool> DeleteGroupAsync(string shortname, CancellationToken ct = default)
     {
         await using var conn = await db.OpenAsync(ct);
-        await using var cmd = new NpgsqlCommand("DELETE FROM groups WHERE shortname = $1", conn);
-        cmd.Parameters.Add(new() { Value = shortname });
+        await using var cmd = conn.Command("DELETE FROM groups WHERE shortname = $1");
+        DbParams.Add(cmd, shortname);
         var rows = await cmd.ExecuteNonQueryAsync(ct);
         if (rows == 0) return false;
         await refresher.RefreshAsync(ct);
@@ -159,10 +158,10 @@ public sealed class AccessRepository(Db db, AuthzCacheRefresher refresher, UserR
         return await GetRoleAsync(shortname, conn, ct);
     }
 
-    public async Task<Role?> GetRoleAsync(string shortname, NpgsqlConnection conn, CancellationToken ct = default)
+    public async Task<Role?> GetRoleAsync(string shortname, DbConnection conn, CancellationToken ct = default)
     {
-        await using var cmd = new NpgsqlCommand($"{SelectRoleColumns} WHERE shortname = $1", conn);
-        cmd.Parameters.Add(new() { Value = shortname });
+        await using var cmd = conn.Command($"{SelectRoleColumns} WHERE shortname = $1");
+        DbParams.Add(cmd, shortname);
         await using var r = await cmd.ExecuteReaderAsync(ct);
         return await r.ReadAsync(ct) ? HydrateRole(r) : null;
     }
@@ -172,8 +171,9 @@ public sealed class AccessRepository(Db db, AuthzCacheRefresher refresher, UserR
         var arr = shortnames.ToArray();
         if (arr.Length == 0) return new();
         await using var conn = await db.OpenAsync(ct);
-        await using var cmd = new NpgsqlCommand($"{SelectRoleColumns} WHERE shortname = ANY($1)", conn);
-        cmd.Parameters.Add(new() { Value = arr, NpgsqlDbType = NpgsqlDbType.Array | NpgsqlDbType.Text });
+        await using var cmd = conn.CreateCommand();
+        var inList = dialect.AnyOf("shortname", arr, (v, k) => DbParams.Add(cmd, v, k));
+        cmd.CommandText = $"{SelectRoleColumns} WHERE {inList}";
         await using var r = await cmd.ExecuteReaderAsync(ct);
         var results = new List<Role>();
         while (await r.ReadAsync(ct)) results.Add(HydrateRole(r));
@@ -186,20 +186,20 @@ public sealed class AccessRepository(Db db, AuthzCacheRefresher refresher, UserR
         await UpsertRoleAsync(role, conn, ct);
     }
 
-    public Task UpsertRoleAsync(Role role, NpgsqlConnection conn, CancellationToken ct = default)
+    public Task UpsertRoleAsync(Role role, DbConnection conn, CancellationToken ct = default)
         => UpsertRoleAsync(role, conn, deferCacheRefresh: false, ct);
 
     // `deferCacheRefresh` skips the post-write `refresher.RefreshAsync` call.
     // Used exclusively by the fast-import path, which fires one invalidate at
     // the end of the run instead of one per row. Default false preserves the
     // existing per-write contract for every other caller.
-    public async Task UpsertRoleAsync(Role role, NpgsqlConnection conn, bool deferCacheRefresh, CancellationToken ct = default)
+    public async Task UpsertRoleAsync(Role role, DbConnection conn, bool deferCacheRefresh, CancellationToken ct = default)
     {
         // Populate query_policies on every write (see EntryRepository.UpsertAsync
         // for rationale). Without this, the row is only reachable to its owner.
         role = role with { QueryPolicies = Utils.QueryPolicies.Generate(role) };
 
-        await using var cmd = new NpgsqlCommand("""
+        await using var cmd = conn.Command("""
             INSERT INTO roles (uuid, shortname, space_name, subpath, is_active, slug,
                                displayname, description, tags, created_at, updated_at,
                                owner_shortname, owner_group_shortname, acl, payload, relationships,
@@ -212,7 +212,7 @@ public sealed class AccessRepository(Db db, AuthzCacheRefresher refresher, UserR
                 displayname = EXCLUDED.displayname,
                 description = EXCLUDED.description,
                 tags = EXCLUDED.tags,
-                updated_at = NOW(),
+                updated_at = EXCLUDED.updated_at,
                 owner_shortname = EXCLUDED.owner_shortname,
                 owner_group_shortname = EXCLUDED.owner_group_shortname,
                 acl = EXCLUDED.acl,
@@ -222,33 +222,29 @@ public sealed class AccessRepository(Db db, AuthzCacheRefresher refresher, UserR
                 permissions = EXCLUDED.permissions,
                 query_policies = EXCLUDED.query_policies,
                 grantable_by = EXCLUDED.grantable_by
-            """, conn);
+            """);
 
-        cmd.Parameters.Add(new() { Value = Guid.Parse(role.Uuid) });
-        cmd.Parameters.Add(new() { Value = role.Shortname });
-        cmd.Parameters.Add(new() { Value = role.SpaceName });
-        cmd.Parameters.Add(new() { Value = role.Subpath });
-        cmd.Parameters.Add(new() { Value = role.IsActive });
-        cmd.Parameters.Add(new() { Value = (object?)role.Slug ?? DBNull.Value });
-        AddJsonb(cmd, JsonbHelpers.ToJsonb(role.Displayname));
-        AddJsonb(cmd, JsonbHelpers.ToJsonb(role.Description));
-        AddJsonbNotNull(cmd, JsonbHelpers.ToJsonbList(role.Tags));   // tags is NOT NULL
-        cmd.Parameters.Add(new() { Value = role.CreatedAt == default ? TimeUtils.Now() : role.CreatedAt });
-        cmd.Parameters.Add(new() { Value = TimeUtils.Now() });
-        cmd.Parameters.Add(new() { Value = role.OwnerShortname });
-        cmd.Parameters.Add(new() { Value = (object?)role.OwnerGroupShortname ?? DBNull.Value });
-        AddJsonb(cmd, JsonbHelpers.ToJsonb(role.Acl));
-        AddJsonb(cmd, JsonbHelpers.ToJsonb(role.Payload));
-        AddJsonb(cmd, JsonbHelpers.ToJsonb(role.Relationships));
-        cmd.Parameters.Add(new() { Value = (object?)role.LastChecksumHistory ?? DBNull.Value });
-        cmd.Parameters.Add(new() { Value = JsonbHelpers.EnumMember(role.ResourceType) });
-        AddJsonbNotNull(cmd, JsonbHelpers.ToJsonbList(role.Permissions));   // permissions is NOT NULL
-        cmd.Parameters.Add(new()
-        {
-            Value = role.QueryPolicies.ToArray(),
-            NpgsqlDbType = NpgsqlDbType.Array | NpgsqlDbType.Text,
-        });
-        AddJsonb(cmd, JsonbHelpers.ToJsonb(role.GrantableBy));
+        DbParams.Add(cmd, Guid.Parse(role.Uuid));
+        DbParams.Add(cmd, role.Shortname);
+        DbParams.Add(cmd, role.SpaceName);
+        DbParams.Add(cmd, role.Subpath);
+        DbParams.Add(cmd, role.IsActive);
+        DbParams.Add(cmd, (object?)role.Slug ?? DBNull.Value);
+        DbParams.AddJson(cmd, JsonbHelpers.ToJsonb(role.Displayname));
+        DbParams.AddJson(cmd, JsonbHelpers.ToJsonb(role.Description));
+        DbParams.AddJson(cmd, JsonbHelpers.ToJsonbList(role.Tags));   // tags is NOT NULL
+        DbParams.Add(cmd, role.CreatedAt == default ? TimeUtils.Now() : role.CreatedAt);
+        DbParams.Add(cmd, TimeUtils.Now());
+        DbParams.Add(cmd, role.OwnerShortname);
+        DbParams.Add(cmd, (object?)role.OwnerGroupShortname ?? DBNull.Value);
+        DbParams.AddJson(cmd, JsonbHelpers.ToJsonb(role.Acl));
+        DbParams.AddJson(cmd, JsonbHelpers.ToJsonb(role.Payload));
+        DbParams.AddJson(cmd, JsonbHelpers.ToJsonb(role.Relationships));
+        DbParams.Add(cmd, (object?)role.LastChecksumHistory ?? DBNull.Value);
+        DbParams.Add(cmd, JsonbHelpers.EnumMember(role.ResourceType));
+        DbParams.AddJson(cmd, JsonbHelpers.ToJsonbList(role.Permissions));   // permissions is NOT NULL
+        DbParams.Add(cmd, role.QueryPolicies.ToArray(), SqlValueKind.TextArray);
+        DbParams.AddJson(cmd, JsonbHelpers.ToJsonb(role.GrantableBy));
 
         await cmd.ExecuteNonQueryAsync(ct);
         // role.permissions may have changed → clear the in-memory permission cache.
@@ -262,10 +258,10 @@ public sealed class AccessRepository(Db db, AuthzCacheRefresher refresher, UserR
         return await GetPermissionAsync(shortname, conn, ct);
     }
 
-    public async Task<Permission?> GetPermissionAsync(string shortname, NpgsqlConnection conn, CancellationToken ct = default)
+    public async Task<Permission?> GetPermissionAsync(string shortname, DbConnection conn, CancellationToken ct = default)
     {
-        await using var cmd = new NpgsqlCommand($"{SelectPermissionColumns} WHERE shortname = $1", conn);
-        cmd.Parameters.Add(new() { Value = shortname });
+        await using var cmd = conn.Command($"{SelectPermissionColumns} WHERE shortname = $1");
+        DbParams.Add(cmd, shortname);
         await using var r = await cmd.ExecuteReaderAsync(ct);
         return await r.ReadAsync(ct) ? HydratePermission(r) : null;
     }
@@ -275,8 +271,9 @@ public sealed class AccessRepository(Db db, AuthzCacheRefresher refresher, UserR
         var arr = shortnames.ToArray();
         if (arr.Length == 0) return new();
         await using var conn = await db.OpenAsync(ct);
-        await using var cmd = new NpgsqlCommand($"{SelectPermissionColumns} WHERE shortname = ANY($1)", conn);
-        cmd.Parameters.Add(new() { Value = arr, NpgsqlDbType = NpgsqlDbType.Array | NpgsqlDbType.Text });
+        await using var cmd = conn.CreateCommand();
+        var inList = dialect.AnyOf("shortname", arr, (v, k) => DbParams.Add(cmd, v, k));
+        cmd.CommandText = $"{SelectPermissionColumns} WHERE {inList}";
         await using var r = await cmd.ExecuteReaderAsync(ct);
         var results = new List<Permission>();
         while (await r.ReadAsync(ct)) results.Add(HydratePermission(r));
@@ -289,18 +286,18 @@ public sealed class AccessRepository(Db db, AuthzCacheRefresher refresher, UserR
         await UpsertPermissionAsync(p, conn, ct);
     }
 
-    public Task UpsertPermissionAsync(Permission p, NpgsqlConnection conn, CancellationToken ct = default)
+    public Task UpsertPermissionAsync(Permission p, DbConnection conn, CancellationToken ct = default)
         => UpsertPermissionAsync(p, conn, deferCacheRefresh: false, ct);
 
     // `deferCacheRefresh` skips `InvalidateAllCachesAsync` — the expensive
     // DELETE FROM userpermissionscache that would otherwise fire per row.
     // Fast-import drives that DELETE exactly once after all permissions land.
-    public async Task UpsertPermissionAsync(Permission p, NpgsqlConnection conn, bool deferCacheRefresh, CancellationToken ct = default)
+    public async Task UpsertPermissionAsync(Permission p, DbConnection conn, bool deferCacheRefresh, CancellationToken ct = default)
     {
         // Populate query_policies on every write (see EntryRepository.UpsertAsync).
         p = p with { QueryPolicies = Utils.QueryPolicies.Generate(p) };
 
-        await using var cmd = new NpgsqlCommand("""
+        await using var cmd = conn.Command("""
             INSERT INTO permissions (uuid, shortname, space_name, subpath, is_active, slug,
                                      displayname, description, tags, created_at, updated_at,
                                      owner_shortname, owner_group_shortname, acl, payload, relationships,
@@ -314,7 +311,7 @@ public sealed class AccessRepository(Db db, AuthzCacheRefresher refresher, UserR
                 displayname = EXCLUDED.displayname,
                 description = EXCLUDED.description,
                 tags = EXCLUDED.tags,
-                updated_at = NOW(),
+                updated_at = EXCLUDED.updated_at,
                 owner_shortname = EXCLUDED.owner_shortname,
                 owner_group_shortname = EXCLUDED.owner_group_shortname,
                 acl = EXCLUDED.acl,
@@ -329,38 +326,34 @@ public sealed class AccessRepository(Db db, AuthzCacheRefresher refresher, UserR
                 allowed_fields_values = EXCLUDED.allowed_fields_values,
                 filter_fields_values = EXCLUDED.filter_fields_values,
                 query_policies = EXCLUDED.query_policies
-            """, conn);
+            """);
 
-        cmd.Parameters.Add(new() { Value = Guid.Parse(p.Uuid) });
-        cmd.Parameters.Add(new() { Value = p.Shortname });
-        cmd.Parameters.Add(new() { Value = p.SpaceName });
-        cmd.Parameters.Add(new() { Value = p.Subpath });
-        cmd.Parameters.Add(new() { Value = p.IsActive });
-        cmd.Parameters.Add(new() { Value = (object?)p.Slug ?? DBNull.Value });
-        AddJsonb(cmd, JsonbHelpers.ToJsonb(p.Displayname));
-        AddJsonb(cmd, JsonbHelpers.ToJsonb(p.Description));
-        AddJsonbNotNull(cmd, JsonbHelpers.ToJsonbList(p.Tags));   // tags is NOT NULL
-        cmd.Parameters.Add(new() { Value = p.CreatedAt == default ? TimeUtils.Now() : p.CreatedAt });
-        cmd.Parameters.Add(new() { Value = TimeUtils.Now() });
-        cmd.Parameters.Add(new() { Value = p.OwnerShortname });
-        cmd.Parameters.Add(new() { Value = (object?)p.OwnerGroupShortname ?? DBNull.Value });
-        AddJsonb(cmd, JsonbHelpers.ToJsonb(p.Acl));
-        AddJsonb(cmd, JsonbHelpers.ToJsonb(p.Payload));
-        AddJsonb(cmd, JsonbHelpers.ToJsonb(p.Relationships));
-        cmd.Parameters.Add(new() { Value = (object?)p.LastChecksumHistory ?? DBNull.Value });
-        cmd.Parameters.Add(new() { Value = JsonbHelpers.EnumMember(p.ResourceType) });
-        AddJsonbNotNull(cmd, JsonbHelpers.ToJsonbDict(p.Subpaths));               // NOT NULL
-        AddJsonbNotNull(cmd, JsonbHelpers.ToJsonbList(p.ResourceTypes));          // NOT NULL
-        AddJsonbNotNull(cmd, JsonbHelpers.ToJsonbList(p.Actions));                // NOT NULL
-        AddJsonbNotNull(cmd, JsonbHelpers.ToJsonbList(p.Conditions));             // NOT NULL
-        AddJsonb(cmd, JsonbHelpers.ToJsonb(p.RestrictedFields));
-        AddJsonb(cmd, JsonbHelpers.ToJsonb(p.AllowedFieldsValues));
-        cmd.Parameters.Add(new() { Value = (object?)p.FilterFieldsValues ?? DBNull.Value });
-        cmd.Parameters.Add(new()
-        {
-            Value = p.QueryPolicies.ToArray(),
-            NpgsqlDbType = NpgsqlDbType.Array | NpgsqlDbType.Text,
-        });
+        DbParams.Add(cmd, Guid.Parse(p.Uuid));
+        DbParams.Add(cmd, p.Shortname);
+        DbParams.Add(cmd, p.SpaceName);
+        DbParams.Add(cmd, p.Subpath);
+        DbParams.Add(cmd, p.IsActive);
+        DbParams.Add(cmd, (object?)p.Slug ?? DBNull.Value);
+        DbParams.AddJson(cmd, JsonbHelpers.ToJsonb(p.Displayname));
+        DbParams.AddJson(cmd, JsonbHelpers.ToJsonb(p.Description));
+        DbParams.AddJson(cmd, JsonbHelpers.ToJsonbList(p.Tags));   // tags is NOT NULL
+        DbParams.Add(cmd, p.CreatedAt == default ? TimeUtils.Now() : p.CreatedAt);
+        DbParams.Add(cmd, TimeUtils.Now());
+        DbParams.Add(cmd, p.OwnerShortname);
+        DbParams.Add(cmd, (object?)p.OwnerGroupShortname ?? DBNull.Value);
+        DbParams.AddJson(cmd, JsonbHelpers.ToJsonb(p.Acl));
+        DbParams.AddJson(cmd, JsonbHelpers.ToJsonb(p.Payload));
+        DbParams.AddJson(cmd, JsonbHelpers.ToJsonb(p.Relationships));
+        DbParams.Add(cmd, (object?)p.LastChecksumHistory ?? DBNull.Value);
+        DbParams.Add(cmd, JsonbHelpers.EnumMember(p.ResourceType));
+        DbParams.AddJson(cmd, JsonbHelpers.ToJsonbDict(p.Subpaths));               // NOT NULL
+        DbParams.AddJson(cmd, JsonbHelpers.ToJsonbList(p.ResourceTypes));          // NOT NULL
+        DbParams.AddJson(cmd, JsonbHelpers.ToJsonbList(p.Actions));                // NOT NULL
+        DbParams.AddJson(cmd, JsonbHelpers.ToJsonbList(p.Conditions));             // NOT NULL
+        DbParams.AddJson(cmd, JsonbHelpers.ToJsonb(p.RestrictedFields));
+        DbParams.AddJson(cmd, JsonbHelpers.ToJsonb(p.AllowedFieldsValues));
+        DbParams.Add(cmd, (object?)p.FilterFieldsValues ?? DBNull.Value);
+        DbParams.Add(cmd, p.QueryPolicies.ToArray(), SqlValueKind.TextArray);
 
         await cmd.ExecuteNonQueryAsync(ct);
         // permission shape changed → invalidate cached resolutions.
@@ -374,8 +367,8 @@ public sealed class AccessRepository(Db db, AuthzCacheRefresher refresher, UserR
     public async Task<bool> DeleteRoleAsync(string shortname, CancellationToken ct = default)
     {
         await using var conn = await db.OpenAsync(ct);
-        await using var cmd = new NpgsqlCommand("DELETE FROM roles WHERE shortname = $1", conn);
-        cmd.Parameters.Add(new() { Value = shortname });
+        await using var cmd = conn.Command("DELETE FROM roles WHERE shortname = $1");
+        DbParams.Add(cmd, shortname);
         var rows = await cmd.ExecuteNonQueryAsync(ct);
         if (rows == 0) return false;
         await refresher.RefreshAsync(ct);
@@ -386,8 +379,8 @@ public sealed class AccessRepository(Db db, AuthzCacheRefresher refresher, UserR
     public async Task<bool> DeletePermissionAsync(string shortname, CancellationToken ct = default)
     {
         await using var conn = await db.OpenAsync(ct);
-        await using var cmd = new NpgsqlCommand("DELETE FROM permissions WHERE shortname = $1", conn);
-        cmd.Parameters.Add(new() { Value = shortname });
+        await using var cmd = conn.Command("DELETE FROM permissions WHERE shortname = $1");
+        DbParams.Add(cmd, shortname);
         var rows = await cmd.ExecuteNonQueryAsync(ct);
         if (rows == 0) return false;
         await refresher.RefreshAsync(ct);
@@ -432,9 +425,9 @@ public sealed class AccessRepository(Db db, AuthzCacheRefresher refresher, UserR
     public async Task<Dictionary<string, object>?> GetCachedUserPermissionsAsync(string userShortname, CancellationToken ct = default)
     {
         await using var conn = await db.OpenAsync(ct);
-        await using var cmd = new NpgsqlCommand(
-            "SELECT permissions FROM userpermissionscache WHERE user_shortname = $1", conn);
-        cmd.Parameters.Add(new() { Value = userShortname });
+        await using var cmd = conn.Command(
+            "SELECT permissions FROM userpermissionscache WHERE user_shortname = $1");
+        DbParams.Add(cmd, userShortname);
         var json = (string?)await cmd.ExecuteScalarAsync(ct);
         return json is not null ? JsonbHelpers.FromDictStringObject(json) : null;
     }
@@ -566,13 +559,13 @@ public sealed class AccessRepository(Db db, AuthzCacheRefresher refresher, UserR
     {
         var json = JsonbHelpers.ToJsonb(resolved);
         await using var conn = await db.OpenAsync(ct);
-        await using var cmd = new NpgsqlCommand("""
+        await using var cmd = conn.Command("""
             INSERT INTO userpermissionscache (user_shortname, permissions)
             VALUES ($1, $2)
             ON CONFLICT (user_shortname) DO UPDATE SET permissions = EXCLUDED.permissions
-            """, conn);
-        cmd.Parameters.Add(new() { Value = userShortname });
-        cmd.Parameters.Add(new() { Value = (object?)json ?? DBNull.Value, NpgsqlDbType = NpgsqlDbType.Jsonb });
+            """);
+        DbParams.Add(cmd, userShortname);
+        DbParams.Add(cmd, (object?)json ?? DBNull.Value, SqlValueKind.Json);
         await cmd.ExecuteNonQueryAsync(ct);
     }
 
@@ -584,11 +577,11 @@ public sealed class AccessRepository(Db db, AuthzCacheRefresher refresher, UserR
         refresher.InvalidateAllInMemory();
 
         await using var conn = await db.OpenAsync(ct);
-        await using var cmd = new NpgsqlCommand("DELETE FROM userpermissionscache", conn);
+        await using var cmd = conn.Command("DELETE FROM userpermissionscache");
         await cmd.ExecuteNonQueryAsync(ct);
     }
 
-    private static Group HydrateGroup(NpgsqlDataReader r)
+    private static Group HydrateGroup(DbDataReader r)
     {
         return new Group
         {
@@ -610,18 +603,12 @@ public sealed class AccessRepository(Db db, AuthzCacheRefresher refresher, UserR
             Relationships = JsonbHelpers.FromRelationships(r.IsDBNull(15) ? null : r.GetString(15)),
             LastChecksumHistory = r.IsDBNull(16) ? null : r.GetString(16),
             ResourceType = JsonbHelpers.ParseEnumMember<Models.Enums.ResourceType>(r.GetString(17)),
-            QueryPolicies = r.IsDBNull(18) ? new() : ((string[])r.GetValue(18)).ToList(),
+            QueryPolicies = DbParams.ReadTextArray(r.IsDBNull(18) ? null : r.GetValue(18)),
             GrantableBy = JsonbHelpers.FromListString(r.IsDBNull(19) ? null : r.GetString(19)),
         };
     }
 
-    private static void AddJsonb(NpgsqlCommand cmd, string? json)
-        => cmd.Parameters.Add(new() { Value = (object?)json ?? DBNull.Value, NpgsqlDbType = NpgsqlDbType.Jsonb });
-
-    private static void AddJsonbNotNull(NpgsqlCommand cmd, string json)
-        => cmd.Parameters.Add(new() { Value = json, NpgsqlDbType = NpgsqlDbType.Jsonb });
-
-    private static Role HydrateRole(NpgsqlDataReader r)
+    private static Role HydrateRole(DbDataReader r)
     {
         return new Role
         {
@@ -644,12 +631,12 @@ public sealed class AccessRepository(Db db, AuthzCacheRefresher refresher, UserR
             LastChecksumHistory = r.IsDBNull(16) ? null : r.GetString(16),
             ResourceType = JsonbHelpers.ParseEnumMember<Models.Enums.ResourceType>(r.GetString(17)),
             Permissions = JsonbHelpers.FromListString(r.IsDBNull(18) ? null : r.GetString(18)) ?? new(),
-            QueryPolicies = r.IsDBNull(19) ? new() : ((string[])r.GetValue(19)).ToList(),
+            QueryPolicies = DbParams.ReadTextArray(r.IsDBNull(19) ? null : r.GetValue(19)),
             GrantableBy = JsonbHelpers.FromListString(r.IsDBNull(20) ? null : r.GetString(20)),
         };
     }
 
-    private static Permission HydratePermission(NpgsqlDataReader r)
+    private static Permission HydratePermission(DbDataReader r)
     {
         return new Permission
         {
@@ -678,7 +665,7 @@ public sealed class AccessRepository(Db db, AuthzCacheRefresher refresher, UserR
             RestrictedFields = JsonbHelpers.FromListString(r.IsDBNull(22) ? null : r.GetString(22)),
             AllowedFieldsValues = JsonbHelpers.FromDictStringObject(r.IsDBNull(23) ? null : r.GetString(23)),
             FilterFieldsValues = r.IsDBNull(24) ? null : r.GetString(24),
-            QueryPolicies = r.IsDBNull(25) ? new() : ((string[])r.GetValue(25)).ToList(),
+            QueryPolicies = DbParams.ReadTextArray(r.IsDBNull(25) ? null : r.GetValue(25)),
         };
     }
 }

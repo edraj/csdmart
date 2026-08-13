@@ -29,6 +29,32 @@ public sealed class DmartSettings
     // claim, is EOL — every current issuer tags its tokens).
     public bool JwtRequireTokenUse { get; set; }
 
+    // Which SQL backend backs the index. Mirrors Python dmart's
+    // DATABASE_DRIVER. Accepted values are the members of
+    // Dmart.DataAdapters.Sql.DatabaseDriver, matched case-insensitively;
+    // DmartSettingsValidator rejects anything else at startup rather than
+    // letting it fall through to a default.
+    //
+    // The flat files under SPACES_FOLDER remain the source of truth in every
+    // mode — the SQL store is a rebuildable index — so this selects how that
+    // index is stored, not where the data lives.
+    // Empty means "not set", which is NOT the same as "postgresql" — see
+    // DatabaseDriverParser.TryResolve. Unset infers PostgreSQL when a
+    // connection is configured and SQLite when none is, so a fresh install
+    // serves with no configuration while an existing one keeps its backend.
+    public string DatabaseDriver { get; set; } = "";
+
+    // Filesystem path to the SQLite database file, used only when
+    // DATABASE_DRIVER=sqlite. Relative paths resolve against the process
+    // working directory.
+    //
+    // The file is a rebuildable index, not a system of record — the flat files
+    // under SPACES_FOLDER are the source of truth — so it is safe to delete and
+    // regenerate with `dmart reindex`. WAL mode creates two sidecar files
+    // (-wal, -shm) beside it; all three belong on the same local filesystem.
+    // Do NOT place it on NFS: SQLite's locking is unreliable there.
+    public string SqlitePath { get; set; } = "dmart.db";
+
     // Full Npgsql connection string. If unset, Db builds one from the
     // individual DATABASE_* components below (matching Python's behavior
     // of assembling a SQLAlchemy URL out of username/password/host/port/name).

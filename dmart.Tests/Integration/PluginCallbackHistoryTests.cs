@@ -436,16 +436,16 @@ public sealed class PluginCallbackHistoryTests : IClassFixture<DmartFactory>
     private static async Task<JsonElement> ReadHeadersAsync(
         IServiceProvider sp, string spaceName, string subpath, string shortname)
     {
-        var db = sp.GetRequiredService<Db>();
+        var db = sp.GetRequiredService<IDbConnectionFactory>();
         await using var conn = await db.OpenAsync();
-        await using var cmd = new Npgsql.NpgsqlCommand("""
+        await using var cmd = conn.Command("""
             SELECT request_headers FROM histories
             WHERE space_name = $1 AND subpath = $2 AND shortname = $3
             ORDER BY timestamp DESC LIMIT 1
-            """, conn);
-        cmd.Parameters.Add(new() { Value = spaceName });
-        cmd.Parameters.Add(new() { Value = subpath });
-        cmd.Parameters.Add(new() { Value = shortname });
+            """);
+        DbParams.Add(cmd, spaceName);
+        DbParams.Add(cmd, subpath);
+        DbParams.Add(cmd, shortname);
         var raw = (string?)await cmd.ExecuteScalarAsync();
         raw.ShouldNotBeNull();
         return JsonDocument.Parse(raw!).RootElement;

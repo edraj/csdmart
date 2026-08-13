@@ -25,9 +25,12 @@ public static class HealthEndpoints
             Results.Json(Response.Ok(), DmartJsonContext.Default.Response))
             .AllowAnonymous().ExcludeFromDescription().WithTags("Health");
 
-        // Process is up AND PostgreSQL answers a trivial query. 503 takes the
-        // node out of rotation when the DB is unreachable.
-        app.MapGet("/health/ready", async (Db db, CancellationToken ct) =>
+        // Process is up AND the configured backend answers a trivial query.
+        // 503 takes the node out of rotation when the DB is unreachable.
+        // Injected as IDbConnectionFactory, not Db: under DATABASE_DRIVER=sqlite
+        // the PostgreSQL factory is registered but unconfigured, so probing it
+        // would report the node unready while it is serving fine.
+        app.MapGet("/health/ready", async (IDbConnectionFactory db, CancellationToken ct) =>
         {
             if (!db.IsConfigured)
                 return NotReady("database not configured");
@@ -37,7 +40,7 @@ public static class HealthEndpoints
                 using var cts = CancellationTokenSource.CreateLinkedTokenSource(ct);
                 cts.CancelAfter(ReadyProbeTimeout);
                 await using var conn = await db.OpenAsync(cts.Token);
-                await using var cmd = new NpgsqlCommand("SELECT 1", conn);
+                await using var cmd = conn.Command("SELECT 1");
                 await cmd.ExecuteScalarAsync(cts.Token);
             }
             catch (Exception ex) when (ex is not OperationCanceledException || !ct.IsCancellationRequested)

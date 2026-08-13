@@ -1,10 +1,16 @@
+using System.Data.Common;
 using Dmart.Auth;
-using Npgsql;
-using NpgsqlTypes;
+using Dmart.QueryGrammar;
+using Microsoft.Data.Sqlite;
 
 namespace Dmart.DataAdapters.Sql;
 
-// dmart's `otp` table uses HSTORE for the `value` column (not JSONB).
+// dmart's `otp` table uses HSTORE for the `value` column on PostgreSQL (not
+// JSONB). SQLite has no hstore, so the same key->string map is stored as a JSON
+// object in TEXT; DbParams handles both directions, and every read here goes
+// through DbParams.ReadMap so the two providers' different CLR shapes —
+// IDictionary from Npgsql, string from SQLite — converge before use.
+//
 // HSTORE is a key→string map; we store the code, the destination, and an expires_at
 // ISO timestamp so the application layer can enforce TTL.
 //
@@ -12,7 +18,9 @@ namespace Dmart.DataAdapters.Sql;
 // so a DB read can't surface a live, replayable credential within its TTL. The
 // hash is deterministic, so verification stays a single SELECT + fixed-time
 // compare (no per-row KDF on the auth hot path).
-public sealed class OtpRepository(Db db, OtpHasher hasher)
+[System.Diagnostics.CodeAnalysis.SuppressMessage("Security", "CA2100",
+    Justification = "Audited: CommandText is assembled from compile-time SQL, dialect-produced fragments and $N placeholders only. Every caller-supplied value is bound through DbParams, never concatenated.")]
+public sealed class OtpRepository(IDbConnectionFactory db, OtpHasher hasher)
 {
     public async Task StoreAsync(string key, string code, DateTime expiresAt, CancellationToken ct = default)
     {
@@ -22,13 +30,18 @@ public sealed class OtpRepository(Db db, OtpHasher hasher)
             ["expires_at"] = expiresAt.ToString("O"),
         };
         await using var conn = await db.OpenAsync(ct);
-        await using var cmd = new NpgsqlCommand("""
+        await using var cmd = conn.CreateCommand();
+        var k = DbParams.Add(cmd, key);
+        var v = DbParams.Add(cmd, hstore, SqlValueKind.KeyValueMap);
+        // Timestamp bound rather than NOW(): SQLite has no NOW(), and
+        // CURRENT_TIMESTAMP is UTC with second resolution, which would not match
+        // the local wall-clock format this column stores.
+        var t = DbParams.Add(cmd, TimeUtils.Now());
+        cmd.CommandText = $"""
             INSERT INTO otp (key, value, timestamp)
-            VALUES ($1, $2, NOW())
-            ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value, timestamp = NOW()
-            """, conn);
-        cmd.Parameters.Add(new() { Value = key });
-        cmd.Parameters.Add(new() { Value = hstore, NpgsqlDbType = NpgsqlDbType.Hstore });
+            VALUES ({k}, {v}, {t})
+            ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value, timestamp = {t}
+            """;
         await cmd.ExecuteNonQueryAsync(ct);
     }
 
@@ -38,12 +51,26 @@ public sealed class OtpRepository(Db db, OtpHasher hasher)
     public async Task<int?> GetCreatedSinceAsync(string key, CancellationToken ct = default)
     {
         await using var conn = await db.OpenAsync(ct);
-        await using var cmd = new NpgsqlCommand(
-            "SELECT EXTRACT(EPOCH FROM (NOW() - timestamp))::int FROM otp WHERE key = $1", conn);
-        cmd.Parameters.Add(new() { Value = key });
+        await using var cmd = conn.CreateCommand();
+        // SQLite reads the stored timestamp and subtracts here rather than using
+        // julianday(): that returns a float day count, and the round trip loses
+        // resolution — a 60-second gap measures as 59, which would let a resend
+        // through a second early. PostgreSQL keeps its server-side EXTRACT.
+        if (cmd is SqliteCommand)
+        {
+            var k = DbParams.Add(cmd, key);
+            cmd.CommandText = $"SELECT timestamp FROM otp WHERE key = {k}";
+            var stamp = await cmd.ExecuteScalarAsync(ct);
+            if (stamp is null or DBNull) return null;
+            if (!SqliteValues.TryToDateTime(stamp as string, out var written)) return null;
+            var elapsed = (TimeUtils.Now() - written).TotalSeconds;
+            return (int)Math.Max(0, elapsed);
+        }
+        var pk = DbParams.Add(cmd, key);
+        cmd.CommandText = $"SELECT EXTRACT(EPOCH FROM (NOW() - timestamp))::int FROM otp WHERE key = {pk}";
         var raw = await cmd.ExecuteScalarAsync(ct);
         if (raw is null || raw is DBNull) return null;
-        return Convert.ToInt32(raw);
+        return Convert.ToInt32(raw, System.Globalization.CultureInfo.InvariantCulture);
     }
 
     // Peek-verify: true when a non-expired OTP at `key` hashes to the same value
@@ -74,10 +101,11 @@ public sealed class OtpRepository(Db db, OtpHasher hasher)
     public async Task<string?> PeekStoredHashAsync(string key, CancellationToken ct = default)
     {
         await using var conn = await db.OpenAsync(ct);
-        await using var cmd = new NpgsqlCommand("SELECT value FROM otp WHERE key = $1", conn);
-        cmd.Parameters.Add(new() { Value = key });
+        await using var cmd = conn.CreateCommand();
+        var k = DbParams.Add(cmd, key);
+        cmd.CommandText = $"SELECT value FROM otp WHERE key = {k}";
         var raw = await cmd.ExecuteScalarAsync(ct);
-        if (raw is not IDictionary<string, string?> dict) return null;
+        if (DbParams.ReadMap(raw) is not { } dict) return null;
         if (!dict.TryGetValue("code", out var code)) return null;
         if (dict.TryGetValue("expires_at", out var expRaw)
             && DateTime.TryParse(expRaw, out var exp) && exp < TimeUtils.Now()) return null;
@@ -91,8 +119,9 @@ public sealed class OtpRepository(Db db, OtpHasher hasher)
     public async Task DeleteAsync(string key, CancellationToken ct = default)
     {
         await using var conn = await db.OpenAsync(ct);
-        await using var cmd = new NpgsqlCommand("DELETE FROM otp WHERE key = $1", conn);
-        cmd.Parameters.Add(new() { Value = key });
+        await using var cmd = conn.CreateCommand();
+        var k = DbParams.Add(cmd, key);
+        cmd.CommandText = $"DELETE FROM otp WHERE key = {k}";
         await cmd.ExecuteNonQueryAsync(ct);
     }
 
@@ -116,11 +145,13 @@ public sealed class OtpRepository(Db db, OtpHasher hasher)
         await using var tx = await conn.BeginTransactionAsync(ct);
         try
         {
-            await using (var cmd = new NpgsqlCommand("SELECT value FROM otp WHERE key = $1", conn, tx))
+            await using (var cmd = conn.CreateCommand())
             {
-                cmd.Parameters.Add(new() { Value = key });
+                cmd.Transaction = tx;
+                var k = DbParams.Add(cmd, key);
+                cmd.CommandText = $"SELECT value FROM otp WHERE key = {k}";
                 var raw = await cmd.ExecuteScalarAsync(ct);
-                if (raw is not IDictionary<string, string?> dict) return false;
+                if (DbParams.ReadMap(raw) is not { } dict) return false;
                 if (!dict.TryGetValue("code", out var stored) || stored is null) return false;
                 if (dict.TryGetValue("expires_at", out var expRaw)
                     && DateTime.TryParse(expRaw, out var exp) && exp < TimeUtils.Now()) return false;
@@ -138,8 +169,10 @@ public sealed class OtpRepository(Db db, OtpHasher hasher)
                     return false;
                 }
             }
-            await using var del = new NpgsqlCommand("DELETE FROM otp WHERE key = $1", conn, tx);
-            del.Parameters.Add(new() { Value = key });
+            await using var del = conn.CreateCommand();
+            del.Transaction = tx;
+            var dk = DbParams.Add(del, key);
+            del.CommandText = $"DELETE FROM otp WHERE key = {dk}";
             await del.ExecuteNonQueryAsync(ct);
             await tx.CommitAsync(ct);
             return true;
@@ -155,28 +188,36 @@ public sealed class OtpRepository(Db db, OtpHasher hasher)
     // reached, delete the row so the code is permanently spent. No-op when
     // capping is disabled (maxAttempts <= 0).
     private static async Task RecordFailedAttemptAsync(
-        NpgsqlConnection conn, NpgsqlTransaction tx, string key,
+        DbConnection conn, DbTransaction tx, string key,
         IDictionary<string, string?> dict, int maxAttempts, CancellationToken ct)
     {
         if (maxAttempts <= 0) return;
 
         var attempts = dict.TryGetValue("attempts", out var a)
-            && int.TryParse(a, out var n) ? n + 1 : 1;
+            && int.TryParse(a, System.Globalization.CultureInfo.InvariantCulture, out var n) ? n + 1 : 1;
 
         if (attempts >= maxAttempts)
         {
-            await using var del = new NpgsqlCommand("DELETE FROM otp WHERE key = $1", conn, tx);
-            del.Parameters.Add(new() { Value = key });
+            await using var del = conn.CreateCommand();
+            del.Transaction = tx;
+            var dk = DbParams.Add(del, key);
+            del.CommandText = $"DELETE FROM otp WHERE key = {dk}";
             await del.ExecuteNonQueryAsync(ct);
             return;
         }
 
-        // hstore || hstore('attempts', $2) merges/overwrites just the one key,
-        // leaving code/expires_at intact.
-        await using var upd = new NpgsqlCommand(
-            "UPDATE otp SET value = value || hstore('attempts', $2) WHERE key = $1", conn, tx);
-        upd.Parameters.Add(new() { Value = key });
-        upd.Parameters.Add(new() { Value = attempts.ToString() });
+        // Merge/overwrite just the one key, leaving code and expires_at intact.
+        // PostgreSQL concatenates a single-pair hstore; SQLite's json_set does
+        // the same to a JSON object. Both are in-place partial updates — a
+        // read-modify-write of the whole map would race with a concurrent
+        // attempt and lose one of the increments.
+        await using var upd = conn.CreateCommand();
+        upd.Transaction = tx;
+        var k = DbParams.Add(upd, key);
+        var v = DbParams.Add(upd, attempts.ToString(System.Globalization.CultureInfo.InvariantCulture));
+        upd.CommandText = upd is SqliteCommand
+            ? $"UPDATE otp SET value = json_set(value, '$.attempts', {v}) WHERE key = {k}"
+            : $"UPDATE otp SET value = value || hstore('attempts', {v}) WHERE key = {k}";
         await upd.ExecuteNonQueryAsync(ct);
     }
 }

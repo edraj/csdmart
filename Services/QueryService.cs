@@ -34,7 +34,7 @@ public sealed class QueryService(
     HistoryRepository history,
     PermissionService perms,
     SpaceEventLogger eventLogger,
-    Db db,
+    IDbConnectionFactory db,
     LockRepository locks,
     IOptions<DmartSettings> settings,
     ILogger<QueryService> logger)
@@ -645,16 +645,20 @@ public sealed class QueryService(
 
         var effectiveActor = actor ?? PermissionService.AnonymousUser;
 
-        // SQL: unnest tags jsonb array, group by tag, count.
+        // Unnest the tags JSON array, group by tag, count. The set-returning
+        // function differs per backend, so it comes from the dialect rather
+        // than being spelled inline.
+        var dialect = QueryHelper.DialectFor(db);
         var args = new List<NpgsqlParameter>();
-        var where = QueryHelper.BuildWhereClause(q, args, "entries");
+        var where = QueryHelper.BuildWhereClause(q, args, dialect, "entries");
+        var (tagFrom, _, tagText) = dialect.JsonArrayIterate("tags", Array.Empty<string>());
         var sql = new System.Text.StringBuilder($"""
-            SELECT tag, COUNT(*) AS cnt
-            FROM entries, jsonb_array_elements_text(tags) AS tag
+            SELECT {tagText} AS tag, COUNT(*) AS cnt
+            FROM entries, {tagFrom}
             WHERE {where}
             """);
-        QueryHelper.AppendAclFilter(sql, args, effectiveActor, "entries", policies);
-        sql.Append("GROUP BY tag ORDER BY cnt DESC");
+        QueryHelper.AppendAclFilter(sql, args, effectiveActor, "entries", policies, dialect);
+        sql.Append($"GROUP BY {tagText} ORDER BY cnt DESC");
         // Apply limit/offset on the aggregated result.
         args.Add(new() { Value = Math.Max(1, q.Limit) });
         sql.Append($" LIMIT ${args.Count}");
@@ -662,8 +666,8 @@ public sealed class QueryService(
         sql.Append($" OFFSET ${args.Count}");
 
         await using var conn = await db.OpenAsync(ct);
-        await using var cmd = new NpgsqlCommand(sql.ToString(), conn);
-        foreach (var p in args) cmd.Parameters.Add(p);
+        await using var cmd = conn.Command(sql.ToString());
+        DbParams.BindAll(cmd, args);
         await using var reader = await cmd.ExecuteReaderAsync(ct);
 
         var tags = new List<string>();
@@ -806,7 +810,19 @@ public sealed class QueryService(
         q = await MergeFilterFieldsValuesAsync(q, policies, actor, ct);
 
         var effectiveActor = actor ?? PermissionService.AnonymousUser;
-        var rows = await QueryHelper.RunAggregationAsync(db, tableName, q, ct, effectiveActor, policies);
+        List<Dictionary<string, object>> rows;
+        try
+        {
+            rows = await QueryHelper.RunAggregationAsync(db, tableName, q, ct, effectiveActor, policies);
+        }
+        catch (Dmart.QueryGrammar.UnsupportedReducerException ex)
+        {
+            // A reducer this backend cannot compute is the CALLER's problem to
+            // fix (pick another reducer, or run against PostgreSQL), so it is a
+            // request error naming the reducer — not a 500, and emphatically
+            // not a 200 with the column quietly missing.
+            return Response.Fail(InternalErrorCode.INVALID_DATA, ex.Message, ErrorTypes.Request);
+        }
 
         // Convert each aggregation row to a Record with the grouped values + reducer results
         // in attributes. Python returns a single Record per group.
@@ -1426,8 +1442,12 @@ public sealed class QueryService(
             var corr = new List<(string, string)>();
             foreach (var (lPath, _, rPath, _) in pairs)
             {
-                if (!DataAdapters.Sql.QueryHelper.TryJoinKeyToSql(lPath, "entries.", out var lExpr)
-                    || !DataAdapters.Sql.QueryHelper.TryJoinKeyToSql(rPath, "r.", out var rExpr))
+                // Correlation expressions must be emitted by the backend's own
+                // dialect: PostgreSQL casts with ::text and walks JSON with
+                // arrow operators, neither of which SQLite parses.
+                var joinDialect = DataAdapters.Sql.QueryHelper.DialectFor(db);
+                if (!DataAdapters.Sql.QueryHelper.TryJoinKeyToSql(lPath, "entries.", joinDialect, out var lExpr)
+                    || !DataAdapters.Sql.QueryHelper.TryJoinKeyToSql(rPath, "r.", joinDialect, out var rExpr))
                     return null;
                 corr.Add((lExpr, rExpr));
             }

@@ -34,6 +34,38 @@ public static class JsonbHelpers
         return JsonSerializer.Deserialize<T>(raw, options ?? DefaultOptions);
     }
 
+    // Materializes a parameter described by Dmart.QueryGrammar into an
+    // NpgsqlParameter. The grammar carries no database package reference, so
+    // each consumer supplies this translation; the server has its own copy in
+    // DataAdapters/Sql/PostgresDialect.cs. Kept small and duplicated rather
+    // than shared, because this SDK ships as standalone drop-in source and
+    // must not gain a dependency on the server's assemblies.
+    //
+    // The Inferred case must NOT set a type: Npgsql resolves an untagged
+    // parameter as `unknown`, which PostgreSQL types per-context. Tagging it
+    // Text would change the server-side cast without changing the SQL.
+    public static NpgsqlParameter ToNpgsqlParameter(Dmart.QueryGrammar.SqlParam p)
+    {
+        var kind = p.Kind;
+        if (kind == Dmart.QueryGrammar.SqlValueKind.Inferred)
+            return p.Name is null
+                ? new NpgsqlParameter { Value = p.Value }
+                : new NpgsqlParameter(p.Name, p.Value);
+
+        var dbType = kind switch
+        {
+            Dmart.QueryGrammar.SqlValueKind.Json => NpgsqlDbType.Jsonb,
+            Dmart.QueryGrammar.SqlValueKind.Boolean => NpgsqlDbType.Boolean,
+            Dmart.QueryGrammar.SqlValueKind.TextArray => NpgsqlDbType.Array | NpgsqlDbType.Text,
+            Dmart.QueryGrammar.SqlValueKind.KeyValueMap => NpgsqlDbType.Hstore,
+            _ => throw new ArgumentOutOfRangeException(
+                nameof(p), kind, "No PostgreSQL type mapping for this SqlValueKind."),
+        };
+        return p.Name is null
+            ? new NpgsqlParameter { NpgsqlDbType = dbType, Value = p.Value }
+            : new NpgsqlParameter(p.Name, dbType) { Value = p.Value };
+    }
+
     public static NpgsqlParameter ToJsonbParameter<T>(string name, T? value,
         JsonSerializerOptions? options = null)
     {

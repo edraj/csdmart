@@ -3,10 +3,20 @@ using Npgsql;
 namespace Dmart.DataAdapters.Sql;
 
 // Runs once on startup; creates tables if they don't exist. Idempotent.
-public sealed class SchemaInitializer(Db db, ILogger<SchemaInitializer> log) : IHostedService
+public sealed class SchemaInitializer(
+    Db db,
+    Microsoft.Extensions.Options.IOptions<Dmart.Config.DmartSettings> settings,
+    ILogger<SchemaInitializer> log) : IHostedService
 {
     public async Task StartAsync(CancellationToken cancellationToken)
     {
+        // See SqliteSchemaInitializer: both are registered, each declines when
+        // it is not the selected driver. Gating on the driver rather than only
+        // on Db.IsConfigured so a deployment that still carries DATABASE_* does
+        // not quietly initialize a PostgreSQL schema nothing will read.
+        if (DatabaseDriverParser.TryResolve(settings.Value, out var driver, out _)
+            && driver == DatabaseDriver.Sqlite) return;
+
         var ct = cancellationToken;
         if (!db.IsConfigured) return;
 

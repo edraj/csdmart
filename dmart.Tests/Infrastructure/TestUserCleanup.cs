@@ -1,6 +1,5 @@
 using Dmart.DataAdapters.Sql;
 using Microsoft.Extensions.DependencyInjection;
-using Npgsql;
 
 namespace Dmart.Tests.Infrastructure;
 
@@ -24,7 +23,7 @@ public static class TestUserCleanup
 {
     public static async Task DeleteUserAndOwnedAsync(IServiceProvider sp, string shortname)
     {
-        var db = sp.GetRequiredService<Db>();
+        var db = sp.GetRequiredService<IDbConnectionFactory>();
         var users = sp.GetRequiredService<UserRepository>();
 
         await using (var conn = await db.OpenAsync())
@@ -35,9 +34,8 @@ public static class TestUserCleanup
             // single round-trip per table — fine for tests.
             foreach (var table in new[] { "attachments", "entries", "spaces", "roles", "permissions" })
             {
-                await using var cmd = new NpgsqlCommand(
-                    $"DELETE FROM {table} WHERE owner_shortname = $1", conn);
-                cmd.Parameters.Add(new() { Value = shortname });
+                await using var cmd = conn.Command($"DELETE FROM {table} WHERE owner_shortname = $1");
+                DbParams.Add(cmd, shortname);
                 await cmd.ExecuteNonQueryAsync();
             }
         }

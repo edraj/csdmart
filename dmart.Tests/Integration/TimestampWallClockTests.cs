@@ -37,15 +37,16 @@ public sealed class TimestampWallClockTests : IClassFixture<DmartFactory>
             // Read the raw value straight from Postgres — same DateTime that
             // psql would print, because the column is TIMESTAMP WITHOUT TIME
             // ZONE post-migration. No `AT TIME ZONE` projection.
-            var db = _factory.Services.GetRequiredService<Db>();
+            var db = _factory.Services.GetRequiredService<IDbConnectionFactory>();
             await using var conn = await db.OpenAsync();
-            await using var cmd = new Npgsql.NpgsqlCommand(
-                "SELECT created_at FROM entries WHERE shortname = $1 AND space_name = $2 AND subpath = $3",
-                conn);
-            cmd.Parameters.Add(new() { Value = shortname });
-            cmd.Parameters.Add(new() { Value = space });
-            cmd.Parameters.Add(new() { Value = subpath });
-            var dbValue = (DateTime)(await cmd.ExecuteScalarAsync())!;
+            await using var cmd = conn.Command("SELECT created_at FROM entries WHERE shortname = $1 AND space_name = $2 AND subpath = $3");
+            DbParams.Add(cmd, shortname);
+            DbParams.Add(cmd, space);
+            DbParams.Add(cmd, subpath);
+            // PostgreSQL hands back a DateTime; SQLite stores the same local
+            // wall-clock string in a TEXT column and hands back that string.
+            var raw = (await cmd.ExecuteScalarAsync())!;
+            var dbValue = raw as DateTime? ?? SqliteValues.ToDateTime((string)raw);
 
             // Round to seconds — the wire format trims trailing fractional
             // zeros, and psql defaults to microsecond precision; comparing

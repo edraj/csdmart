@@ -273,12 +273,11 @@ public sealed class FailedAttemptLockoutTests : IClassFixture<DmartFactory>
 
     private async Task SetAttemptCountAsync(string shortname, int count)
     {
-        var db = _factory.Services.GetRequiredService<Db>();
+        var db = _factory.Services.GetRequiredService<IDbConnectionFactory>();
         await using var conn = await db.OpenAsync();
-        await using var cmd = new Npgsql.NpgsqlCommand(
-            "UPDATE users SET attempt_count = $1 WHERE shortname = $2", conn);
-        cmd.Parameters.Add(new() { Value = count });
-        cmd.Parameters.Add(new() { Value = shortname });
+        await using var cmd = conn.Command("UPDATE users SET attempt_count = $1 WHERE shortname = $2");
+        DbParams.Add(cmd, count);
+        DbParams.Add(cmd, shortname);
         await cmd.ExecuteNonQueryAsync();
     }
 
@@ -292,14 +291,13 @@ public sealed class FailedAttemptLockoutTests : IClassFixture<DmartFactory>
     // clock (DateTime.Now, naive) — the same clock the cool-down gate compares against.
     private async Task SetLockedStateAsync(string shortname, int attemptCount, bool isActive, DateTime? lastFailed)
     {
-        var db = _factory.Services.GetRequiredService<Db>();
+        var db = _factory.Services.GetRequiredService<IDbConnectionFactory>();
         await using var conn = await db.OpenAsync();
-        await using var cmd = new Npgsql.NpgsqlCommand(
-            "UPDATE users SET attempt_count = $1, is_active = $2, last_failed_login = $3 WHERE shortname = $4", conn);
-        cmd.Parameters.Add(new() { Value = attemptCount });
-        cmd.Parameters.Add(new() { Value = isActive });
-        cmd.Parameters.Add(new() { Value = (object?)lastFailed ?? DBNull.Value, NpgsqlDbType = NpgsqlTypes.NpgsqlDbType.Timestamp });
-        cmd.Parameters.Add(new() { Value = shortname });
+        await using var cmd = conn.Command("UPDATE users SET attempt_count = $1, is_active = $2, last_failed_login = $3 WHERE shortname = $4");
+        DbParams.Add(cmd, attemptCount);
+        DbParams.Add(cmd, isActive);
+        DbParams.Add(cmd, (object?)lastFailed ?? DBNull.Value);
+        DbParams.Add(cmd, shortname);
         await cmd.ExecuteNonQueryAsync();
     }
 

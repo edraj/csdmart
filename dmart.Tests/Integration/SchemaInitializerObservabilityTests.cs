@@ -27,7 +27,7 @@ public sealed class SchemaInitializerObservabilityTests : IClassFixture<DmartFac
     private readonly DmartFactory _factory;
     public SchemaInitializerObservabilityTests(DmartFactory factory) => _factory = factory;
 
-    [FactIfPg]
+    [FactIfPostgresOnly]
     public async Task Users_Payload_Gin_Index_Is_Created_On_Startup()
     {
         _ = _factory.Services; // force host start → SchemaInitializer ran
@@ -43,7 +43,7 @@ public sealed class SchemaInitializerObservabilityTests : IClassFixture<DmartFac
             "idx_users_payload_gin missing — payload containment filters on users will seq-scan");
     }
 
-    [FactIfPg]
+    [FactIfPostgresOnly]
     public void Postgres_Notices_Are_Forwarded_To_The_Log()
     {
         // Boot the base factory first so every table exists; the derived

@@ -43,12 +43,33 @@ public class SettingsValidatorTests
     [Fact]
     public void DatabaseHost_Empty_Fails_When_No_ConnString()
     {
+        // The property this protects is "a deployment ON PostgreSQL must name a
+        // host". The driver has to be explicit for that to be the situation:
+        // with everything at its defaults and an empty host, nothing points at
+        // PostgreSQL at all, and the case below is what happens instead.
         var s = Valid();
+        s.DatabaseDriver = "postgresql";
         s.DatabaseHost = "";
         s.PostgresConnection = null;
         var r = new DmartSettingsValidator().Validate(null, s);
         r.Failed.ShouldBeTrue();
         r.FailureMessage!.ShouldContain("DatabaseHost");
+    }
+
+    [Fact]
+    public void Empty_Host_With_No_Driver_And_No_Connection_Is_A_Fresh_Sqlite_Install()
+    {
+        // Behaviour change, pinned deliberately. Before driver inference this
+        // failed with "DatabaseHost must be configured"; now a configuration
+        // that points at no database at all resolves to SQLite and starts, which
+        // is what makes `dmart serve` work on a fresh box. A config that DOES
+        // name a PostgreSQL connection is unaffected — see the test above and
+        // DatabaseDriverTests.Unset_Driver_Infers_Postgres_When_Anything_Points_At_It.
+        var s = Valid();
+        s.DatabaseHost = "";
+        s.PostgresConnection = null;
+
+        new DmartSettingsValidator().Validate(null, s).Succeeded.ShouldBeTrue();
     }
 
     [Fact]

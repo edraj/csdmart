@@ -349,16 +349,16 @@ public sealed class PasswordResetConfirmTests : IClassFixture<DmartFactory>
             if (!string.IsNullOrEmpty(msisdn)) keys.Add(ResetPrefix + msisdn);
             if (keys.Count == 0) return;
 
-            var db = _factory.Services.GetRequiredService<Db>();
+            var db = _factory.Services.GetRequiredService<IDbConnectionFactory>();
             await using var conn = await db.OpenAsync();
-            await using var cmd = new Npgsql.NpgsqlCommand(
-                "DELETE FROM otp WHERE key = ANY($1)", conn);
-            cmd.Parameters.Add(new()
+            // One DELETE per key rather than `= ANY($1)`: the array-parameter
+            // form is PostgreSQL-only, and this is a handful of test rows.
+            foreach (var key in keys)
             {
-                Value = keys.ToArray(),
-                NpgsqlDbType = NpgsqlDbType.Array | NpgsqlDbType.Text,
-            });
-            await cmd.ExecuteNonQueryAsync();
+                await using var cmd = conn.Command("DELETE FROM otp WHERE key = $1");
+                DbParams.Add(cmd, key);
+                await cmd.ExecuteNonQueryAsync();
+            }
         }
         catch { /* best-effort cleanup */ }
     }

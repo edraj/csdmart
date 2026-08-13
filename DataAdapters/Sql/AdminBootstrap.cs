@@ -15,7 +15,7 @@ namespace Dmart.DataAdapters.Sql;
 // Designed to be safe to leave in production: if the admin shortname is unset,
 // the admin-creation step is a no-op but #2 still runs.
 public sealed class AdminBootstrap(
-    Db db,
+    IDbConnectionFactory db,
     IOptions<DmartSettings> settings,
     UserRepository users,
     AccessRepository access,

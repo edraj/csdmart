@@ -162,7 +162,7 @@ public sealed class OAuthUserResolver(
         {
             await users.UpsertAsync(updated, ct);
         }
-        catch (PostgresException ex) when (ex.SqlState == "23505")
+        catch (Exception ex) when (Dmart.DataAdapters.Sql.DbErrors.IsUniqueViolation(ex))
         {
             // The refreshed email (or attached provider id) collides with a
             // unique index on `users` — e.g. the provider-side email changed
@@ -172,7 +172,10 @@ public sealed class OAuthUserResolver(
             // conflict as a failed login.
             log.LogWarning(ex,
                 "oauth: skipped profile refresh for {Shortname} — refreshed value collides with another account (constraint {Constraint})",
-                user.Shortname, ex.ConstraintName);
+                user.Shortname,
+                // PostgreSQL names the constraint in a field of its own;
+                // SQLite only ever puts it in the message text.
+                (ex as PostgresException)?.ConstraintName ?? ex.Message);
             return user;
         }
         return updated;

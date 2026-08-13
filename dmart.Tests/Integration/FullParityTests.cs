@@ -60,11 +60,10 @@ public class FullParityTests : IClassFixture<DmartFactory>
     public async Task Login_Creates_Session_Row_In_DB()
     {
         var (_, _, shortname) = await LoginAsync();
-        var db = _factory.Services.GetRequiredService<Db>();
+        var db = _factory.Services.GetRequiredService<IDbConnectionFactory>();
         await using var conn = await db.OpenAsync();
-        await using var cmd = new Npgsql.NpgsqlCommand(
-            $"SELECT COUNT(*) FROM sessions WHERE shortname = $1", conn);
-        cmd.Parameters.Add(new() { Value = shortname });
+        await using var cmd = conn.Command($"SELECT COUNT(*) FROM sessions WHERE shortname = $1");
+        DbParams.Add(cmd, shortname);
         var count = (long)(await cmd.ExecuteScalarAsync())!;
         count.ShouldBeGreaterThan(0);
     }
@@ -192,7 +191,7 @@ public class FullParityTests : IClassFixture<DmartFactory>
     {
         var users = _factory.Services.GetRequiredService<UserRepository>();
         var hasher = _factory.Services.GetRequiredService<Dmart.Auth.PasswordHasher>();
-        var db = _factory.Services.GetRequiredService<Db>();
+        var db = _factory.Services.GetRequiredService<IDbConnectionFactory>();
 
         // Use a throwaway user instead of the admin so a parallel test that
         // logs in as admin can't stumble into the locked state we're setting
@@ -227,10 +226,9 @@ public class FullParityTests : IClassFixture<DmartFactory>
             // would race with HandleFailedLoginAttempt; direct SQL is
             // deterministic.
             await using (var conn = await db.OpenAsync())
-            await using (var cmd = new Npgsql.NpgsqlCommand(
-                "UPDATE users SET attempt_count = 5 WHERE shortname = $1", conn))
+            await using (var cmd = conn.Command("UPDATE users SET attempt_count = 5 WHERE shortname = $1"))
             {
-                cmd.Parameters.Add(new() { Value = shortname });
+                DbParams.Add(cmd, shortname);
                 await cmd.ExecuteNonQueryAsync();
             }
 

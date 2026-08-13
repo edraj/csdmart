@@ -7,6 +7,7 @@ using Dmart.Models.Enums;
 using Dmart.Models.Json;
 using Microsoft.Extensions.DependencyInjection;
 using Shouldly;
+using Dmart.DataAdapters.Sql;
 using Xunit;
 
 namespace Dmart.Tests.Integration;
@@ -331,16 +332,14 @@ public class ManagedCrudDbTests : IClassFixture<DmartFactory>
                     Records = new() { new Record { ResourceType = rt, Subpath = subpath, Shortname = shortname } },
                 }, DmartJsonContext.Default.Request);
 
-        var db = _factory.Services.GetRequiredService<Dmart.DataAdapters.Sql.Db>();
+        var db = _factory.Services.GetRequiredService<IDbConnectionFactory>();
 
         async Task<long> CountWhereSubtreeAsync(string table, string subtreePath)
         {
             await using var conn = await db.OpenAsync();
-            await using var cmd = new Npgsql.NpgsqlCommand(
-                $"SELECT COUNT(*) FROM {table} WHERE space_name = $1 AND (subpath = $2 OR subpath LIKE $2 || '/%')",
-                conn);
-            cmd.Parameters.Add(new() { Value = space });
-            cmd.Parameters.Add(new() { Value = subtreePath });
+            await using var cmd = conn.Command($"SELECT COUNT(*) FROM {table} WHERE space_name = $1 AND (subpath = $2 OR subpath LIKE $2 || '/%')");
+            DbParams.Add(cmd, space);
+            DbParams.Add(cmd, subtreePath);
             return (long)(await cmd.ExecuteScalarAsync())!;
         }
 
@@ -359,26 +358,34 @@ public class ManagedCrudDbTests : IClassFixture<DmartFactory>
             // contract rather than on any specific upload/history-write API.
             await using (var conn = await db.OpenAsync())
             {
-                await using var attCmd = new Npgsql.NpgsqlCommand("""
+                // uuid and the timestamps are bound rather than emitted:
+                // gen_random_uuid() and NOW() are PostgreSQL-only. The jsonb
+                // casts are dropped because an untyped literal in INSERT VALUES
+                // is coerced to the column type on both backends.
+                await using var attCmd = conn.Command("""
                     INSERT INTO attachments
                         (uuid, shortname, space_name, subpath, is_active, tags, created_at,
                          updated_at, owner_shortname, resource_type)
-                    VALUES (gen_random_uuid(), 'a1', $1, $2, true, '[]'::jsonb,
-                            NOW(), NOW(), 'dmart', 'json')
-                    """, conn);
-                attCmd.Parameters.Add(new() { Value = space });
-                attCmd.Parameters.Add(new() { Value = $"/{rootFolder}/sub/c2" });
+                    VALUES ($1, 'a1', $2, $3, true, '[]',
+                            $4, $4, 'dmart', 'json')
+                    """);
+                DbParams.Add(attCmd, Guid.NewGuid());
+                DbParams.Add(attCmd, space);
+                DbParams.Add(attCmd, $"/{rootFolder}/sub/c2");
+                DbParams.Add(attCmd, Dmart.Utils.TimeUtils.Now());
                 await attCmd.ExecuteNonQueryAsync();
 
-                await using var histCmd = new Npgsql.NpgsqlCommand("""
+                await using var histCmd = conn.Command("""
                     INSERT INTO histories
                         (uuid, request_headers, diff, timestamp, owner_shortname,
                          space_name, subpath, shortname)
-                    VALUES (gen_random_uuid(), '{}'::jsonb, '{}'::jsonb, NOW(),
-                            'dmart', $1, $2, 'c3')
-                    """, conn);
-                histCmd.Parameters.Add(new() { Value = space });
-                histCmd.Parameters.Add(new() { Value = $"/{rootFolder}/sub/deeper" });
+                    VALUES ($1, '{}', '{}', $2,
+                            'dmart', $3, $4, 'c3')
+                    """);
+                DbParams.Add(histCmd, Guid.NewGuid());
+                DbParams.Add(histCmd, Dmart.Utils.TimeUtils.Now());
+                DbParams.Add(histCmd, space);
+                DbParams.Add(histCmd, $"/{rootFolder}/sub/deeper");
                 await histCmd.ExecuteNonQueryAsync();
             }
 

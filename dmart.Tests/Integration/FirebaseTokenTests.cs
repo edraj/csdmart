@@ -141,12 +141,11 @@ public sealed class FirebaseTokenTests : IClassFixture<DmartFactory>
             loginResp.StatusCode.ShouldBe(HttpStatusCode.OK);
             var rawJwt = (await ExtractAccessTokenAsync(loginResp))!;
 
-            var db = _factory.Services.GetRequiredService<Db>();
+            var db = _factory.Services.GetRequiredService<IDbConnectionFactory>();
             var tokenHasher = _factory.Services.GetRequiredService<SessionTokenHasher>();
             await using var conn = await db.OpenAsync();
-            await using var cmd = new NpgsqlCommand(
-                "SELECT token FROM sessions WHERE shortname = $1", conn);
-            cmd.Parameters.Add(new() { Value = shortname });
+            await using var cmd = conn.Command("SELECT token FROM sessions WHERE shortname = $1");
+            DbParams.Add(cmd, shortname);
             await using var reader = await cmd.ExecuteReaderAsync();
             (await reader.ReadAsync()).ShouldBeTrue();
             var stored = reader.GetString(0);
@@ -212,13 +211,12 @@ public sealed class FirebaseTokenTests : IClassFixture<DmartFactory>
     // hash the raw token once and look it up directly.
     private async Task<string?> ReadFirebaseTokenAsync(string shortname, string token)
     {
-        var db = _factory.Services.GetRequiredService<Db>();
+        var db = _factory.Services.GetRequiredService<IDbConnectionFactory>();
         var tokenHasher = _factory.Services.GetRequiredService<SessionTokenHasher>();
         await using var conn = await db.OpenAsync();
-        await using var cmd = new NpgsqlCommand(
-            "SELECT firebase_token FROM sessions WHERE shortname = $1 AND token = $2", conn);
-        cmd.Parameters.Add(new() { Value = shortname });
-        cmd.Parameters.Add(new() { Value = tokenHasher.Hash(token) });
+        await using var cmd = conn.Command("SELECT firebase_token FROM sessions WHERE shortname = $1 AND token = $2");
+        DbParams.Add(cmd, shortname);
+        DbParams.Add(cmd, tokenHasher.Hash(token));
         var raw = await cmd.ExecuteScalarAsync();
         return raw is string s ? s : null;
     }

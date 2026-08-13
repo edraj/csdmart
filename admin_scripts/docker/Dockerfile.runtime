@@ -2,29 +2,40 @@
 #
 # Used by notes.sh after building via the persistent builder container.
 # For a self-contained build, use Dockerfile instead.
+#
+# Shares entrypoint.sh with Dockerfile, so it is SQLite-backed for the same
+# reasons and must carry the same package set — shipping a PostgreSQL server
+# the entrypoint never starts would be dead weight and a misleading signal
+# about what the image runs on.
 
-ARG VERSION=unknown
+# See Dockerfile: a build arg named VERSION becomes MSBuild's $(Version).
+# This image does not compile, but the name stays consistent across both.
+ARG DMART_VERSION=0.0.0-local
 
 FROM alpine:edge
 
 # No icu-libs: dmart is built with InvariantGlobalization=true (no ICU
 # dependency). tzdata STAYS — TimeZoneInfo reads OS tzdata, not ICU.
+# krb5-libs stays for Npgsql's client-side Kerberos path: the server is gone,
+# but pointing this image at an EXTERNAL PostgreSQL is still supported.
 RUN apk add --no-cache \
-      postgresql18 postgresql18-contrib \
       bash curl tzdata krb5-libs \
       jq
 
 COPY --chmod=755 admin_scripts/docker/dmart-binary /usr/bin/dmart
+# See Dockerfile: the SQLite native library is a dlopen'd sidecar that AOT
+# cannot link in, and this image runs on SQLite.
+COPY --chmod=755 admin_scripts/docker/libe_sqlite3.so /usr/lib/libe_sqlite3.so
 COPY plugins/ /usr/lib/dmart/plugins/
 COPY cxb/dist/client/     /usr/lib/dmart/cxb/
 COPY catalog/dist/client/ /usr/lib/dmart/catalog/
 COPY --chmod=755 admin_scripts/docker/entrypoint.sh /entrypoint.sh
 
 ENV DOTNET_SYSTEM_NET_SECURITY_DISABLEGSSAPIPAL=true
-LABEL name="dmart" vendor="dmart.cc" version="${VERSION}" license="AGPLv3+" \
+LABEL name="dmart" vendor="dmart.cc" version="${DMART_VERSION}" license="AGPLv3+" \
       org.opencontainers.image.name="dmart" \
       org.opencontainers.image.vendor="dmart.cc" \
-      org.opencontainers.image.version="${VERSION}" \
+      org.opencontainers.image.version="${DMART_VERSION}" \
       org.opencontainers.image.description="dmart C# with PostgreSQL — all-in-one Alpine container" \
       org.opencontainers.image.url="https://dmart.cc" \
       org.opencontainers.image.source="https://github.com/edraj/csdmart" \

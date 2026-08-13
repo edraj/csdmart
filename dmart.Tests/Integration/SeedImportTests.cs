@@ -44,7 +44,7 @@ public class SeedImportTests : IClassFixture<DmartFactory>, IAsyncLifetime
         }
     }
 
-    [FactIfPg]
+    [FactIfImportSupported]
     public async Task Seed_Imports_All_Three_Sample_Spaces_Including_Personal()
     {
         var sp = _factory.Services;
@@ -96,7 +96,7 @@ public class SeedImportTests : IClassFixture<DmartFactory>, IAsyncLifetime
     // preserveExisting:false should overwrite mutable fields, while
     // preserveExisting:true must leave them as-is. Pins the contract
     // documented for `dmart seed --force` (mirrors `dmart import -r`).
-    [FactIfPg]
+    [FactIfImportSupported]
     public async Task Force_Upsert_Replaces_Mutable_Fields_While_Skip_Preserves_Them()
     {
         var sp = _factory.Services;

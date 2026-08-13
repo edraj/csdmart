@@ -47,9 +47,25 @@ public sealed class DmartFactory : WebApplicationFactory<Program>, IAsyncLifetim
         return $"Host={host};Port={port};Username={user};Password={password};Database={db}";
     }
 
+    // Which backend the suite runs against. DMART_TEST_DRIVER=sqlite points the
+    // whole integration suite at a throwaway SQLite file instead of PostgreSQL,
+    // which is how the dual-driver CI matrix exercises the SQLite tier through
+    // the real HTTP surface rather than only through repository tests.
+    public static bool UseSqlite => string.Equals(
+        Environment.GetEnvironmentVariable("DMART_TEST_DRIVER"), "sqlite",
+        StringComparison.OrdinalIgnoreCase);
+
+    // One database file per test run, not per factory: test classes boot their
+    // own factories and share the bootstrapped admin row, exactly as they share
+    // one PostgreSQL database today.
+    private static readonly string SqliteRunPath = Path.Combine(
+        Path.GetTempPath(), $"dmart-testrun-{Guid.NewGuid():N}.db");
+
     private static readonly string? _pgConn = ResolvePgConn();
     public static string? PgConn => _pgConn;
-    public static bool HasPg => !string.IsNullOrEmpty(PgConn);
+    // "Is a database configured" — the gate DB-backed tests skip on. Named for
+    // PostgreSQL historically; true under either driver now.
+    public static bool HasPg => UseSqlite || !string.IsNullOrEmpty(PgConn);
 
     // Cache config.env values in static fields so they are resolved ONCE,
     // before ConfigureWebHost poisons BACKEND_ENV with /dev/null.
@@ -118,16 +134,37 @@ public sealed class DmartFactory : WebApplicationFactory<Program>, IAsyncLifetim
             // is null, leave the individual components alone so the values
             // loaded from config.env by Program.cs remain authoritative (and
             // the settings validator sees a populated DatabaseHost).
-            if (!string.IsNullOrEmpty(PgConn))
+            ApplyDriverOverrides(overrides);
+
+            cfg.AddInMemoryCollection(overrides);
+        });
+    }
+
+    // Points a configuration override set at the selected backend. Shared so the
+    // handful of test classes that build their own WebApplicationFactory (to pin
+    // a rate limit, a log path, and so on) stay driver-aware too — otherwise
+    // they silently keep booting against PostgreSQL under DMART_TEST_DRIVER=sqlite.
+    public static void ApplyDriverOverrides(IDictionary<string, string?> overrides)
+    {
+            if (UseSqlite)
+            {
+                // Null the PostgreSQL components so the settings validator does
+                // not demand them and Db stays unconfigured — nothing should be
+                // reaching PostgreSQL in this mode.
+                overrides["Dmart:DatabaseDriver"] = "sqlite";
+                overrides["Dmart:SqlitePath"] = SqliteRunPath;
+                overrides["Dmart:PostgresConnection"] = null;
+                overrides["Dmart:DatabaseHost"] = null;
+                overrides["Dmart:DatabasePassword"] = null;
+                overrides["Dmart:DatabaseName"] = null;
+            }
+            else if (!string.IsNullOrEmpty(PgConn))
             {
                 overrides["Dmart:PostgresConnection"] = PgConn;
                 overrides["Dmart:DatabaseHost"] = null;
                 overrides["Dmart:DatabasePassword"] = null;
                 overrides["Dmart:DatabaseName"] = null;
             }
-
-            cfg.AddInMemoryCollection(overrides);
-        });
     }
 
     async Task IAsyncLifetime.InitializeAsync()
@@ -147,17 +184,17 @@ public sealed class DmartFactory : WebApplicationFactory<Program>, IAsyncLifetim
         string adminShortname = "dmart",
         string? adminPassword = null)
     {
-        var db = services.GetRequiredService<Db>();
+        var db = services.GetRequiredService<Dmart.DataAdapters.Sql.IDbConnectionFactory>();
         await using var conn = await db.OpenAsync();
 
         // Reset transient lockout state (attempt_count + is_active) every
         // factory boot. Multiple test classes' factories race on the same
         // admin row, and a wrong-password test elsewhere can leave
         // attempt_count high enough to block subsequent logins.
-        await using (var resetCmd = new Npgsql.NpgsqlCommand(
-            "UPDATE users SET is_active = true, attempt_count = 0 WHERE shortname = $1", conn))
+        await using (var resetCmd = conn.Command(
+            "UPDATE users SET is_active = true, attempt_count = 0 WHERE shortname = $1"))
         {
-            resetCmd.Parameters.Add(new() { Value = adminShortname });
+            Dmart.DataAdapters.Sql.DbParams.Add(resetCmd, adminShortname);
             await resetCmd.ExecuteNonQueryAsync();
         }
 
@@ -171,10 +208,10 @@ public sealed class DmartFactory : WebApplicationFactory<Program>, IAsyncLifetim
         {
             var hasher = services.GetRequiredService<Dmart.Auth.PasswordHasher>();
             var hashed = hasher.Hash(adminPassword);
-            await using var pwdCmd = new Npgsql.NpgsqlCommand(
-                "UPDATE users SET password = $2 WHERE shortname = $1", conn);
-            pwdCmd.Parameters.Add(new() { Value = adminShortname });
-            pwdCmd.Parameters.Add(new() { Value = hashed });
+            await using var pwdCmd = conn.Command(
+                "UPDATE users SET password = $2 WHERE shortname = $1");
+            Dmart.DataAdapters.Sql.DbParams.Add(pwdCmd, adminShortname);
+            Dmart.DataAdapters.Sql.DbParams.Add(pwdCmd, hashed);
             await pwdCmd.ExecuteNonQueryAsync();
         }
     }

@@ -689,7 +689,7 @@ public sealed class EntryService(
         {
             totalMoved = await entries.MoveAsync(srcEntry, to, ct);
         }
-        catch (PostgresException ex) when (ex.SqlState == "23505")
+        catch (Exception ex) when (DataAdapters.Sql.DbErrors.IsUniqueViolation(ex))
         {
             // UNIQUE-violation at the destination: an entry or attachment with
             // the same (shortname, space_name, subpath) already exists there.

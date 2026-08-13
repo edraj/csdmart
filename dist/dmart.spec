@@ -54,6 +54,19 @@ else
     install -D -m 0755 dmart %{buildroot}/usr/bin/dmart
 fi
 
+# SQLite native library (DATABASE_DRIVER=sqlite). Native AOT cannot link it in
+# — SQLitePCLRaw ships a static archive only for browser-wasm — so it must be
+# installed as a real shared object. SQLitePCLRaw loads it by soname through
+# dlopen, so %{_libdir} is on the default search path and no rpath or
+# ld.so.conf.d entry is needed. Not fatal when absent: the PostgreSQL driver
+# never loads it, and the SQLite driver fails loudly at startup.
+for so_src in out/libe_sqlite3.so libe_sqlite3.so; do
+    if [ -f "$so_src" ]; then
+        install -D -m 0755 "$so_src" %{buildroot}%{_libdir}/libe_sqlite3.so
+        break
+    fi
+done
+
 # Plugin configs
 for dir in plugins/*/; do
     name=$(basename "$dir")
@@ -63,6 +76,11 @@ done
 
 # Config sample
 install -D -m 0644 config.env.sample %{buildroot}/usr/share/dmart/config.env.sample
+/usr/share/dmart/config.env.packaged
+# The packaged default seeded into /etc on first install — SQLite-backed, so a
+# fresh install serves without standing up a database server. The sample above
+# stays the full annotated key reference.
+install -D -m 0644 config.env.packaged %{buildroot}/usr/share/dmart/config.env.packaged
 
 # Systemd unit
 install -D -m 0644 dmart.service %{buildroot}/usr/lib/systemd/system/dmart.service
@@ -88,12 +106,14 @@ exit 0
 %post
 # Install default config.env if missing
 if [ ! -f /etc/dmart/config.env ]; then
-    cp /usr/share/dmart/config.env.sample /etc/dmart/config.env
+    cp /usr/share/dmart/config.env.packaged /etc/dmart/config.env
     chmod 0640 /etc/dmart/config.env
     chown root:dmart /etc/dmart/config.env
     echo "Installed default config: /etc/dmart/config.env"
     echo "Next steps:"
-    echo "  1. Edit /etc/dmart/config.env — set DATABASE_* and JWT_SECRET."
+    echo "  1. Edit /etc/dmart/config.env — set JWT_SECRET (openssl rand -base64 48)."
+    echo "     Storage defaults to SQLite at /var/lib/dmart/dmart.db; see the file"
+    echo "     for how to switch to PostgreSQL."
     echo "  2. systemctl enable --now dmart"
     echo "  3. dmart passwd dmart"
     echo "     (prompts for a password. The admin is created passwordless"
@@ -143,8 +163,14 @@ fi
 
 %files
 %attr(0755, root, root) /usr/bin/dmart
+# Always produced: Microsoft.Data.Sqlite is a hard project dependency, so the
+# publish output carries this on every RID. Listed unconditionally because a
+# missing %files entry fails the build — which is the right failure, since a
+# package without it silently loses the SQLite driver.
+%{_libdir}/libe_sqlite3.so
 /usr/lib/dmart/plugins/
 /usr/share/dmart/config.env.sample
+/usr/share/dmart/config.env.packaged
 /usr/lib/systemd/system/dmart.service
 /etc/bash_completion.d/dmart
 /usr/share/fish/vendor_completions.d/dmart.fish

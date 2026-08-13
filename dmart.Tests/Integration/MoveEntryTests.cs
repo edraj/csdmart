@@ -445,7 +445,7 @@ public sealed class MoveEntryTests : IClassFixture<DmartFactory>
     // ============================================================
 
     private (EntryRepository entries, AttachmentRepository attachments,
-             HistoryRepository history, EntryService service, Db db) Resolve()
+             HistoryRepository history, EntryService service, IDbConnectionFactory db) Resolve()
     {
         _factory.CreateClient();
         var sp = _factory.Services;
@@ -454,7 +454,7 @@ public sealed class MoveEntryTests : IClassFixture<DmartFactory>
             sp.GetRequiredService<AttachmentRepository>(),
             sp.GetRequiredService<HistoryRepository>(),
             sp.GetRequiredService<EntryService>(),
-            sp.GetRequiredService<Db>());
+            sp.GetRequiredService<IDbConnectionFactory>());
     }
 
     // Cap at 24 chars to keep the test-row shortnames readable while keeping
@@ -556,68 +556,62 @@ public sealed class MoveEntryTests : IClassFixture<DmartFactory>
 
     private async Task<List<string>> GetQueryPoliciesAsync(string spaceName, string subpath, string shortname)
     {
-        var db = _factory.Services.GetRequiredService<Db>();
+        var db = _factory.Services.GetRequiredService<IDbConnectionFactory>();
         await using var conn = await db.OpenAsync();
-        await using var cmd = new NpgsqlCommand(
-            "SELECT query_policies FROM entries WHERE space_name = $1 AND subpath = $2 AND shortname = $3",
-            conn);
-        cmd.Parameters.Add(new() { Value = spaceName });
-        cmd.Parameters.Add(new() { Value = Locator.NormalizeSubpath(subpath) });
-        cmd.Parameters.Add(new() { Value = shortname });
+        await using var cmd = conn.Command("SELECT query_policies FROM entries WHERE space_name = $1 AND subpath = $2 AND shortname = $3");
+        DbParams.Add(cmd, spaceName);
+        DbParams.Add(cmd, Locator.NormalizeSubpath(subpath));
+        DbParams.Add(cmd, shortname);
         await using var r = await cmd.ExecuteReaderAsync();
         if (!await r.ReadAsync()) return new();
-        return ((string[])r.GetValue(0)).ToList();
+        // text[] on PostgreSQL, a JSON array in TEXT on SQLite.
+        return DbParams.ReadTextArray(r.GetValue(0)).ToList();
     }
 
     private async Task<string?> GetLatestHistoryDiffAsync(string spaceName, string subpath, string shortname)
     {
-        var db = _factory.Services.GetRequiredService<Db>();
+        var db = _factory.Services.GetRequiredService<IDbConnectionFactory>();
         await using var conn = await db.OpenAsync();
-        await using var cmd = new NpgsqlCommand(
-            "SELECT diff::text FROM histories WHERE space_name = $1 AND subpath = $2 AND shortname = $3 ORDER BY timestamp DESC LIMIT 1",
-            conn);
-        cmd.Parameters.Add(new() { Value = spaceName });
-        cmd.Parameters.Add(new() { Value = Locator.NormalizeSubpath(subpath) });
-        cmd.Parameters.Add(new() { Value = shortname });
+        // `diff` is jsonb on PostgreSQL and TEXT on SQLite; only the former
+        // needs the cast to come back as a string.
+        var diffCol = DmartFactory.UseSqlite ? "diff" : "diff::text";
+        await using var cmd = conn.Command($"SELECT {diffCol} FROM histories WHERE space_name = $1 AND subpath = $2 AND shortname = $3 ORDER BY timestamp DESC LIMIT 1");
+        DbParams.Add(cmd, spaceName);
+        DbParams.Add(cmd, Locator.NormalizeSubpath(subpath));
+        DbParams.Add(cmd, shortname);
         var result = await cmd.ExecuteScalarAsync();
         return result is null or DBNull ? null : (string)result;
     }
 
     private async Task CleanupEntryAsync(string spaceName, string subpath, string shortname)
     {
-        var db = _factory.Services.GetRequiredService<Db>();
+        var db = _factory.Services.GetRequiredService<IDbConnectionFactory>();
         await using var conn = await db.OpenAsync();
-        await using var cmd = new NpgsqlCommand(
-            "DELETE FROM entries WHERE space_name = $1 AND subpath = $2 AND shortname = $3",
-            conn);
-        cmd.Parameters.Add(new() { Value = spaceName });
-        cmd.Parameters.Add(new() { Value = Locator.NormalizeSubpath(subpath) });
-        cmd.Parameters.Add(new() { Value = shortname });
+        await using var cmd = conn.Command("DELETE FROM entries WHERE space_name = $1 AND subpath = $2 AND shortname = $3");
+        DbParams.Add(cmd, spaceName);
+        DbParams.Add(cmd, Locator.NormalizeSubpath(subpath));
+        DbParams.Add(cmd, shortname);
         try { await cmd.ExecuteNonQueryAsync(); } catch { }
     }
 
     private async Task CleanupAttachmentsForParentAsync(string spaceName, string parentPath)
     {
-        var db = _factory.Services.GetRequiredService<Db>();
+        var db = _factory.Services.GetRequiredService<IDbConnectionFactory>();
         await using var conn = await db.OpenAsync();
-        await using var cmd = new NpgsqlCommand(
-            "DELETE FROM attachments WHERE space_name = $1 AND (subpath = $2 OR subpath LIKE $2 || '/%')",
-            conn);
-        cmd.Parameters.Add(new() { Value = spaceName });
-        cmd.Parameters.Add(new() { Value = Locator.NormalizeSubpath(parentPath) });
+        await using var cmd = conn.Command("DELETE FROM attachments WHERE space_name = $1 AND (subpath = $2 OR subpath LIKE $2 || '/%')");
+        DbParams.Add(cmd, spaceName);
+        DbParams.Add(cmd, Locator.NormalizeSubpath(parentPath));
         try { await cmd.ExecuteNonQueryAsync(); } catch { }
     }
 
     private async Task CleanupHistoryAsync(string spaceName, string subpath, string shortname)
     {
-        var db = _factory.Services.GetRequiredService<Db>();
+        var db = _factory.Services.GetRequiredService<IDbConnectionFactory>();
         await using var conn = await db.OpenAsync();
-        await using var cmd = new NpgsqlCommand(
-            "DELETE FROM histories WHERE space_name = $1 AND subpath = $2 AND shortname = $3",
-            conn);
-        cmd.Parameters.Add(new() { Value = spaceName });
-        cmd.Parameters.Add(new() { Value = Locator.NormalizeSubpath(subpath) });
-        cmd.Parameters.Add(new() { Value = shortname });
+        await using var cmd = conn.Command("DELETE FROM histories WHERE space_name = $1 AND subpath = $2 AND shortname = $3");
+        DbParams.Add(cmd, spaceName);
+        DbParams.Add(cmd, Locator.NormalizeSubpath(subpath));
+        DbParams.Add(cmd, shortname);
         try { await cmd.ExecuteNonQueryAsync(); } catch { }
     }
 }

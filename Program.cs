@@ -100,40 +100,63 @@ if (dotenvPath is not null)
 [System.Diagnostics.CodeAnalysis.SuppressMessage("Security", "CA2100",
     Justification = "Audited: tableName is from a hardcoded set in each caller (entries/users/roles/permissions/spaces for fix_query_policies, 'entries' for update_query_policies). The dynamic VALUES list embeds only integer placeholder indices; all caller-supplied values flow through NpgsqlCommand.Parameters.")]
 static async Task<int> BulkUpdatePoliciesAsync(
-    Npgsql.NpgsqlConnection conn,
+    System.Data.Common.DbConnection conn,
     string tableName,
     List<(string Shortname, string SpaceName, string Subpath, string[] Policies)> rows,
     int offset, int len)
 {
     if (len == 0) return 0;
 
+    await using var cmd = conn.CreateCommand();
+    var sqlite = cmd is Microsoft.Data.Sqlite.SqliteCommand;
+
     var sb = new System.Text.StringBuilder(120 + 100 * len);
-    sb.Append("UPDATE ").Append(tableName).Append(" AS t SET query_policies = v.policies FROM (VALUES");
+
+    // Same split as EntryRepository.BulkUpdateDescendantsAsync, for the same
+    // reason: SQLite has no column-alias list on a subquery (`AS v(a,b,c)`),
+    // so the column names have to come from a CTE instead.
+    //
+    //   PostgreSQL:  UPDATE ... FROM (VALUES ...) AS v(cols)
+    //   SQLite:      WITH v(cols) AS (VALUES ...) UPDATE ... FROM v
+    if (sqlite) sb.Append("WITH v(shortname, space_name, subpath, policies) AS (VALUES ");
+    else sb.Append("UPDATE ").Append(tableName)
+           .Append(" AS t SET query_policies = v.policies FROM (VALUES");
+
     for (var i = 0; i < len; i++)
     {
         if (i > 0) sb.Append(',');
-        // 4 params per row, starting at $1. Cast the first row's columns so
-        // Postgres can infer the VALUES column types; later rows inherit.
+        // 4 params per row, starting at $1. PostgreSQL needs the casts so it
+        // can infer the VALUES column types (later rows inherit); SQLite is
+        // dynamically typed and rejects the syntax.
         var p = 1 + i * 4;
-        sb.Append('(').Append('$').Append(p).Append("::text,$")
-                      .Append(p + 1).Append("::text,$")
-                      .Append(p + 2).Append("::text,$")
-                      .Append(p + 3).Append("::text[])");
+        if (sqlite)
+            sb.Append('(').Append('$').Append(p).Append(",$")
+                          .Append(p + 1).Append(",$")
+                          .Append(p + 2).Append(",$")
+                          .Append(p + 3).Append(')');
+        else
+            sb.Append('(').Append('$').Append(p).Append("::text,$")
+                          .Append(p + 1).Append("::text,$")
+                          .Append(p + 2).Append("::text,$")
+                          .Append(p + 3).Append("::text[])");
     }
-    sb.Append(") AS v(shortname, space_name, subpath, policies) WHERE t.shortname = v.shortname AND t.space_name = v.space_name AND t.subpath = v.subpath");
 
-    await using var cmd = new Npgsql.NpgsqlCommand(sb.ToString(), conn);
+    const string joinOn = " WHERE t.shortname = v.shortname AND t.space_name = v.space_name AND t.subpath = v.subpath";
+    if (sqlite)
+        sb.Append(") UPDATE ").Append(tableName)
+          .Append(" AS t SET query_policies = v.policies FROM v").Append(joinOn);
+    else
+        sb.Append(") AS v(shortname, space_name, subpath, policies)").Append(joinOn);
+
+    cmd.CommandText = sb.ToString();
     for (var i = 0; i < len; i++)
     {
         var row = rows[offset + i];
-        cmd.Parameters.Add(new() { Value = row.Shortname });
-        cmd.Parameters.Add(new() { Value = row.SpaceName });
-        cmd.Parameters.Add(new() { Value = row.Subpath });
-        cmd.Parameters.Add(new()
-        {
-            Value = row.Policies,
-            NpgsqlDbType = NpgsqlTypes.NpgsqlDbType.Array | NpgsqlTypes.NpgsqlDbType.Text,
-        });
+        DbParams.Add(cmd, row.Shortname);
+        DbParams.Add(cmd, row.SpaceName);
+        DbParams.Add(cmd, row.Subpath);
+        // TextArray: text[] on PostgreSQL, a JSON array in TEXT on SQLite.
+        DbParams.Add(cmd, row.Policies, Dmart.QueryGrammar.SqlValueKind.TextArray);
     }
     return await cmd.ExecuteNonQueryAsync();
 }
@@ -330,14 +353,23 @@ switch (subcommand)
         if (string.IsNullOrEmpty(password) || password.Length < 8) { Console.Error.WriteLine("Password must be >= 8 chars"); Environment.ExitCode = 1; return; }
 
         // Build minimal DI to get Db + UserRepository + PasswordHasher
-        var (s, dbInst) = CliBootstrap.BuildOrExit(dotenvPath, dotenvValues);
+        // Driver-aware: `dmart passwd` is the documented first step after every
+        // install — the RPM/deb/apk hints and the container both end with it —
+        // and those now default to SQLite. On the PostgreSQL-only bootstrap it
+        // failed with "connection refused", or worse, SUCCEEDED against an
+        // unrelated PostgreSQL that happened to be running and wrote the
+        // password into a database the server does not read.
+        //
+        // The statement itself is portable as written; only the connection was
+        // ever PostgreSQL-specific.
+        var (s, dbInst) = CliBootstrap.BuildFactoryOrExit(dotenvPath, dotenvValues);
         var hasher = new PasswordHasher();
         var hashed = hasher.Hash(password);
         await using var conn = await dbInst.OpenAsync();
-        await using var cmd = new Npgsql.NpgsqlCommand(
-            "UPDATE users SET password = $1, is_active = true, attempt_count = 0 WHERE shortname = $2", conn);
-        cmd.Parameters.Add(new() { Value = hashed });
-        cmd.Parameters.Add(new() { Value = username });
+        await using var cmd = conn.Command(
+            "UPDATE users SET password = $1, is_active = true, attempt_count = 0 WHERE shortname = $2");
+        DbParams.Add(cmd, hashed);
+        DbParams.Add(cmd, username);
         var rows = await cmd.ExecuteNonQueryAsync();
         if (rows > 0)
         {
@@ -388,7 +420,7 @@ switch (subcommand)
         // Cli/FolderRenderingFixer.cs for the (conservative) fix rules.
         var space = serverArgs.FirstOrDefault(a => !a.StartsWith("--", StringComparison.Ordinal));
         var apply = serverArgs.Contains("--apply");
-        var (_, dbInst) = CliBootstrap.BuildOrExit(dotenvPath, dotenvValues);
+        var (_, dbInst) = CliBootstrap.BuildFactoryOrExit(dotenvPath, dotenvValues);
         var fixer = new FolderRenderingFixer(dbInst);
         var spacesToFix = new List<string>();
         if (!string.IsNullOrEmpty(space))
@@ -445,7 +477,9 @@ switch (subcommand)
         var space = serverArgs.Length > 0 ? serverArgs[0] : null;
         var healthType = serverArgs.Length > 1 ? serverArgs[1] : "soft";
         var includeSamples = healthType is "hard" or "all";
-        var (_, dbInst) = CliBootstrap.BuildOrExit(dotenvPath, dotenvValues);
+        // HealthCheckRepository and EntryRepository are both backend-neutral, so
+        // this only ever needed the driver-aware bootstrap to work on SQLite.
+        var (_, dbInst) = CliBootstrap.BuildFactoryOrExit(dotenvPath, dotenvValues);
         var healthRepo = new HealthCheckRepository(dbInst);
         var entryRepo = new EntryRepository(dbInst);
         var schemaValidator = new Dmart.Services.SchemaValidator(entryRepo,
@@ -471,10 +505,15 @@ switch (subcommand)
             var folders = new List<(string Path, System.Text.Json.JsonElement Body)>();
             await using (var conn = await dbInst.OpenAsync())
             {
-                await using var cmd = new Npgsql.NpgsqlCommand(
-                    "SELECT subpath, shortname, payload->>'body' FROM entries " +
-                    "WHERE space_name = $1 AND resource_type = 'folder' AND jsonb_typeof(payload->'body') = 'object'", conn);
-                cmd.Parameters.Add(new() { Value = sp });
+                // Same shape FolderRenderingFixer emits — jsonb arrows and
+                // jsonb_typeof have no SQLite spelling, so it goes through the
+                // dialect rather than being written for one backend.
+                var hcDialect = Dmart.DataAdapters.Sql.QueryHelper.DialectFor(dbInst);
+                await using var cmd = conn.Command(
+                    $"SELECT subpath, shortname, {hcDialect.JsonText("payload", ["body"])} FROM entries " +
+                    "WHERE space_name = $1 AND resource_type = 'folder' AND " +
+                    hcDialect.JsonTypeIs(hcDialect.JsonValue("payload", ["body"]), Dmart.QueryGrammar.JsonKind.Object));
+                DbParams.Add(cmd, sp);
                 await using var reader = await cmd.ExecuteReaderAsync();
                 while (await reader.ReadAsync())
                 {
@@ -567,7 +606,10 @@ switch (subcommand)
             outputPath = Path.GetFullPath(outputPath);
         }
 
-        var (s, dbInst) = CliBootstrap.BuildOrExit(dotenvPath, dotenvValues);
+        // Driver-aware for the same reason `import` is: ImportExportService is
+        // backend-neutral, and an export that silently read a different
+        // database than the server writes would be worse than a failure.
+        var (s, dbInst) = CliBootstrap.BuildFactoryOrExit(dotenvPath, dotenvValues);
         var exportService = CliBootstrap.BuildImportExportService(s, dbInst);
 
         // Same call path as the HTTP /managed/export handler — but with
@@ -861,7 +903,13 @@ switch (subcommand)
                 "WARNING: --drop-indexes without --resume. If this process is killed outright the indexes "
                 + "stay dropped and there is no checkpoint sidecar to recover them from. Add --resume.");
 
-        var (s, dbInst) = CliBootstrap.BuildOrExit(dotenvPath, dotenvValues);
+        // Driver-aware: `dmart import` is the path that rebuilds the SQL store
+        // from the flat files, and that has to work on every backend the
+        // server can read — a rebuildable index that cannot be rebuilt is not
+        // one. On SQLite the service routes to the per-row repository path;
+        // --fast, --drop-indexes and --fast-parallelism are refused with a
+        // reason rather than silently ignored.
+        var (s, dbInst) = CliBootstrap.BuildFactoryOrExit(dotenvPath, dotenvValues);
         var importService = CliBootstrap.BuildImportExportService(s, dbInst);
 
         // The actor argument is accepted for API stability but unused — every
@@ -1128,12 +1176,40 @@ switch (subcommand)
         //   -q, --quiet    Suppress per-statement output (show summary only)
         var quiet = serverArgs.Contains("-q") || serverArgs.Contains("--quiet");
 
+        // Resolve the driver BEFORE the PostgreSQL-only bootstrap. On SQLite
+        // this command still has a real job — "make the schema current" is
+        // meaningful on both backends — it just does it with different DDL.
+        // Falling through to BuildOrExit would either refuse with "database
+        // not configured" or, with an unrelated PostgreSQL running, migrate a
+        // database the server never reads.
+        {
+            var migrateCfg = new ConfigurationBuilder();
+            if (dotenvPath is not null) migrateCfg.AddInMemoryCollection(dotenvValues);
+            migrateCfg.AddEnvironmentVariables();
+            var migrateSettings = new DmartSettings();
+            migrateCfg.Build().GetSection("Dmart").Bind(migrateSettings);
+
+            if (DatabaseDriverParser.TryResolve(migrateSettings, out var migrateDriver, out var migrateInferred)
+                && migrateDriver == DatabaseDriver.Sqlite)
+            {
+                Console.WriteLine($"database driver: {DatabaseDriverParser.Describe(migrateDriver, migrateInferred)}");
+                Console.WriteLine($"Migrating {migrateSettings.SqlitePath} ...");
+                var sqliteFactory = new SqliteConnectionFactory(Options.Create(migrateSettings));
+                // The same idempotent create+patch the server runs at startup
+                // and `dmart import` runs before a rebuild.
+                await SqliteSchemaInitializer.EnsureSchemaAsync(
+                    sqliteFactory, Microsoft.Extensions.Logging.Abstractions.NullLogger.Instance);
+                Console.WriteLine("dmart schema ready.");
+                return;
+            }
+        }
+
         var (s, dbInst) = CliBootstrap.BuildOrExit(dotenvPath, dotenvValues,
             "Error: Database not configured. Set DATABASE_HOST/PORT/USERNAME/PASSWORD/NAME in config.env.");
 
         try
         {
-            Console.WriteLine($"Migrating {s.DatabaseName}@{s.DatabaseHost}:{s.DatabasePort} ...");
+            Console.WriteLine($"Migrating {CliBootstrap.DescribeStore(s, dbInst)} ...");
 
             await using var conn = await dbInst.OpenAsync();
             // PG emits NOTICE when `IF NOT EXISTS` guards short-circuit — capture
@@ -1218,10 +1294,10 @@ switch (subcommand)
             else if (!a.StartsWith('-')) spaceFilter = a;
         }
 
-        var (s, dbInst) = CliBootstrap.BuildOrExit(dotenvPath, dotenvValues,
+        var (s, dbInst) = CliBootstrap.BuildFactoryOrExit(dotenvPath, dotenvValues,
             "Error: Database not configured. Set DATABASE_* in config.env.");
 
-        Console.WriteLine($"{(dryRun ? "[dry-run] " : "")}Scanning {s.DatabaseName}@{s.DatabaseHost}:{s.DatabasePort} for rows with empty query_policies"
+        Console.WriteLine($"{(dryRun ? "[dry-run] " : "")}Scanning {CliBootstrap.DescribeStore(s, dbInst)} for rows with empty query_policies"
             + (spaceFilter is null ? " across all spaces..." : $" in space '{spaceFilter}'..."));
 
         await using var conn = await dbInst.OpenAsync();
@@ -1240,16 +1316,16 @@ switch (subcommand)
                 SELECT shortname, space_name, subpath, resource_type, is_active,
                        owner_shortname, owner_group_shortname
                 FROM {tableName}
-                WHERE COALESCE(array_length(query_policies, 1), 0) = 0
+                WHERE {QueryHelper.DialectFor(dbInst).ArrayLength("query_policies")} = 0
                 """ + (spaceFilter is null ? "" : "\n  AND space_name = $1") + """
 
                 ORDER BY space_name, subpath, shortname
                 """;
 #pragma warning disable CA2100 // Audited: selectSql is composed of constants + the loop variable `tableName` which iterates the hardcoded `tables` array; spaceFilter binds via $1.
-            await using var sel = new Npgsql.NpgsqlCommand(selectSql, conn);
+            await using var sel = conn.Command(selectSql);
 #pragma warning restore CA2100
             if (spaceFilter is not null)
-                sel.Parameters.Add(new() { Value = spaceFilter });
+                DbParams.Add(sel, spaceFilter);
 
             var orphans = new List<(string shortname, string spaceName, string subpath,
                 string resourceType, bool isActive, string owner, string? ownerGroup)>();
@@ -1332,13 +1408,12 @@ switch (subcommand)
         // Idempotent: each folder is checked first via EntryRepository.GetAsync
         // and skipped when present. owner_shortname is the user themselves,
         // matching the plugin and Python.
-        var (_, dbInst) = CliBootstrap.BuildOrExit(dotenvPath, dotenvValues,
+        var (_, dbInst) = CliBootstrap.BuildFactoryOrExit(dotenvPath, dotenvValues,
             "Error: Database not configured. Set DATABASE_* in config.env.");
         var entryRepo = new EntryRepository(dbInst);
 
         await using var conn = await dbInst.OpenAsync();
-        await using var sel = new Npgsql.NpgsqlCommand(
-            "SELECT shortname FROM users ORDER BY shortname", conn);
+        await using var sel = conn.Command("SELECT shortname FROM users ORDER BY shortname");
         var shortnames = new List<string>();
         await using (var r = await sel.ExecuteReaderAsync())
         {
@@ -1426,10 +1501,10 @@ switch (subcommand)
                 batchSize = b;
         }
 
-        var (s, dbInst) = CliBootstrap.BuildOrExit(dotenvPath, dotenvValues,
+        var (s, dbInst) = CliBootstrap.BuildFactoryOrExit(dotenvPath, dotenvValues,
             "Error: Database not configured. Set DATABASE_* in config.env.");
 
-        Console.WriteLine($"Recomputing query_policies for entries in {s.DatabaseName}@{s.DatabaseHost}:{s.DatabasePort} (batch={batchSize})...");
+        Console.WriteLine($"Recomputing query_policies for entries in {CliBootstrap.DescribeStore(s, dbInst)} (batch={batchSize})...");
 
         await using var conn = await dbInst.OpenAsync();
 
@@ -1437,15 +1512,17 @@ switch (subcommand)
         var offset = 0;
         while (true)
         {
-            await using var sel = new Npgsql.NpgsqlCommand("""
+            // LIMIT before OFFSET: PostgreSQL accepts either order, SQLite
+            // only this one. Parameters follow the new order.
+            await using var sel = conn.Command("""
                 SELECT shortname, space_name, subpath, resource_type, is_active,
                        owner_shortname, owner_group_shortname, query_policies
                 FROM entries
                 ORDER BY space_name, subpath, shortname
-                OFFSET $1 LIMIT $2
-                """, conn);
-            sel.Parameters.Add(new() { Value = offset });
-            sel.Parameters.Add(new() { Value = batchSize });
+                LIMIT $1 OFFSET $2
+                """);
+            DbParams.Add(sel, batchSize);
+            DbParams.Add(sel, offset);
 
             var rows = new List<(string sn, string sp, string subp, string rt, bool act,
                 string own, string? og, string[] policies)>();
@@ -1457,7 +1534,7 @@ switch (subcommand)
                         r.GetString(0), r.GetString(1), r.GetString(2),
                         r.GetString(3), r.GetBoolean(4),
                         r.GetString(5), r.IsDBNull(6) ? null : r.GetString(6),
-                        r.IsDBNull(7) ? Array.Empty<string>() : r.GetFieldValue<string[]>(7)));
+                        r.IsDBNull(7) ? Array.Empty<string>() : DbParams.ReadTextArray(r.GetValue(7)).ToArray()));
                 }
             }
             if (rows.Count == 0) break;
@@ -1768,6 +1845,47 @@ builder.Services.AddSingleton<RegexPatternsConfig>();
 
 // SQL backend
 builder.Services.AddSingleton<Db>();
+
+// Driver selection. An explicit switch, not DbProviderFactories: that resolves
+// providers by assembly name through reflection, which Native AOT cannot see
+// through. Both implementations are constructed directly, so both are
+// statically rooted.
+//
+// Db is registered unconditionally above because the PostgreSQL-only paths
+// that take it directly — the import sessions' SQLSTATE-driven reconnect
+// logic, binary COPY, pgvector — still need it. What varies by driver is which
+// factory the backend-neutral repositories resolve.
+// Driver selection. An explicit switch, not DbProviderFactories: that resolves
+// providers by assembly name through reflection, which Native AOT cannot see
+// through. Both implementations are constructed directly, so both are
+// statically rooted.
+//
+// Resolved from IOptions at RESOLUTION time rather than read out of
+// builder.Configuration at registration time. Registration-time reads see
+// whatever configuration exists at that moment, which is wrong for anything
+// that layers configuration afterwards — the integration-test factory does
+// exactly that, and it silently got the PostgreSQL factory under
+// DMART_TEST_DRIVER=sqlite.
+//
+// Db stays registered unconditionally: the PostgreSQL-only paths that take it
+// directly (binary COPY, the SQLSTATE-driven import session, pgvector) still
+// need it.
+builder.Services.AddSingleton<SqliteConnectionFactory>();
+
+static bool UsesSqlite(IServiceProvider sp)
+{
+    var settings = sp.GetRequiredService<IOptions<DmartSettings>>().Value;
+    return DatabaseDriverParser.TryResolve(settings, out var d, out _)
+        && d == DatabaseDriver.Sqlite;
+}
+
+builder.Services.AddSingleton<IDbConnectionFactory>(sp => UsesSqlite(sp)
+    ? sp.GetRequiredService<SqliteConnectionFactory>()
+    : sp.GetRequiredService<Db>());
+
+builder.Services.AddSingleton<Dmart.QueryGrammar.ISqlDialect>(sp => UsesSqlite(sp)
+    ? Dmart.QueryGrammar.SqliteSqlDialect.Instance
+    : Dmart.QueryGrammar.PostgresSqlDialect.Instance);
 builder.Services.AddSingleton<AuthzCacheRefresher>();
 builder.Services.AddSingleton<EntryRepository>();
 builder.Services.AddSingleton<UserRepository>();
@@ -1815,7 +1933,11 @@ builder.Services.Configure<Microsoft.AspNetCore.Builder.ForwardedHeadersOptions>
 
 // Schema bootstrapper runs once on startup. AdminBootstrap MUST be registered AFTER
 // SchemaInitializer — IHostedServices run StartAsync sequentially in registration order.
+// Both are registered; each returns early when it is not the selected driver.
+// They cannot be gated here, because the driver is not known until options
+// resolve — see the comment on the connection-factory registration.
 builder.Services.AddHostedService<SchemaInitializer>();
+builder.Services.AddHostedService<SqliteSchemaInitializer>();
 builder.Services.AddHostedService<AdminBootstrap>();
 
 // IP-based rate limiter for authentication endpoints. Account lockout (on the
@@ -1989,9 +2111,24 @@ Dmart.Plugins.Native.NativePluginLoader.WireSubprocessShutdown(
         .GetCustomAttributes(typeof(System.Reflection.AssemblyInformationalVersionAttribute), false)
         .OfType<System.Reflection.AssemblyInformationalVersionAttribute>()
         .FirstOrDefault()?.InformationalVersion ?? "dev";
-    app.Services.GetRequiredService<ILoggerFactory>()
-        .CreateLogger("Dmart.Startup")
-        .LogInformation("dmart {Version} on .NET {Runtime}", v, Environment.Version);
+    var startupLog = app.Services.GetRequiredService<ILoggerFactory>()
+        .CreateLogger("Dmart.Startup");
+    startupLog.LogInformation("dmart {Version} on .NET {Runtime}", v, Environment.Version);
+
+    // Always state the driver, and whether it was chosen or inferred. An
+    // operator upgrading a deployment that predates DATABASE_DRIVER has no
+    // other way to see which backend they ended up on until queries come back
+    // empty, and inference is precisely the case where they did not choose.
+    var startupSettings = app.Services.GetRequiredService<IOptions<DmartSettings>>().Value;
+    if (DatabaseDriverParser.TryResolve(startupSettings, out var startupDriver, out var startupInferred))
+    {
+        startupLog.LogInformation("database driver: {Driver}",
+            DatabaseDriverParser.Describe(startupDriver, startupInferred));
+        if (startupInferred && startupDriver == DatabaseDriver.Sqlite)
+            startupLog.LogInformation(
+                "sqlite database at {Path} — set DATABASE_DRIVER explicitly to pin this choice",
+                startupSettings.SqlitePath);
+    }
 }
 
 // Wire structured logging into static QueryHelper so it doesn't use Console.Error.
@@ -2090,6 +2227,44 @@ app.Use(async (ctx, next) =>
                 : $"Unknown search field '{col}'. To search a custom payload field, use '@payload.body.{col}:<value>' instead of '@{col}:<value>'.";
             await WriteRequestFailureAsync(ctx, StatusCodes.Status400BadRequest,
                 Dmart.Models.Api.InternalErrorCode.INVALID_DATA, message);
+        }
+        else
+        {
+            await WriteDbFailureAsync(ctx, StatusCodes.Status500InternalServerError,
+                Dmart.Models.Api.InternalErrorCode.SOMETHING_WRONG,
+                $"Database error. Reference: {cid}");
+        }
+    }
+    catch (Microsoft.Data.Sqlite.SqliteException ex)
+    {
+        // The SQLite mirror of the PostgreSQL branch above. Only the two cases
+        // that map to a non-500 are translated — a unique violation and an
+        // unknown column — because those are the two an API CLIENT caused and
+        // can act on. Everything else is a server fault on either backend and
+        // stays a 500 with the correlation id.
+        var cid = ctx.Response.Headers["X-Correlation-ID"].ToString();
+        var logger = ctx.RequestServices.GetService<ILoggerFactory>()?.CreateLogger("ExceptionHandler");
+        logger?.LogError(ex, "SQLite error cid={Cid} code={Code} extended={Extended}",
+            cid, ex.SqliteErrorCode, ex.SqliteExtendedErrorCode);
+
+        if (Dmart.DataAdapters.Sql.DbErrors.IsUniqueViolation(ex))
+        {
+            // Same redaction rule as PostgreSQL: name the column, never the
+            // value, so a duplicate-key failure on /user/create cannot be used
+            // to enumerate registered identifiers.
+            var column = Dmart.Utils.SqliteErrorParsing.ExtractUniqueViolationColumn(ex.Message);
+            await WriteDbFailureAsync(ctx, StatusCodes.Status409Conflict,
+                Dmart.Models.Api.InternalErrorCode.SHORTNAME_ALREADY_EXIST,
+                column is not null
+                    ? $"resource with this {column} already exists"
+                    : "resource already exists");
+        }
+        else if (Dmart.Utils.SqliteErrorParsing.ExtractUndefinedColumn(ex.Message) is { } col)
+        {
+            await WriteRequestFailureAsync(ctx, StatusCodes.Status400BadRequest,
+                Dmart.Models.Api.InternalErrorCode.INVALID_DATA,
+                $"Unknown search field '{col}'. To search a custom payload field, use "
+                + $"'@payload.body.{col}:<value>' instead of '@{col}:<value>'.");
         }
         else
         {

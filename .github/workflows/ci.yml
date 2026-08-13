@@ -10,8 +10,30 @@ permissions:
   contents: read
 
 jobs:
-  build-and-test:
+  build-and-test-matrix:
     runs-on: self-hosted
+
+    # One axis: the SQL backend. Both drivers ship in the same binary and share
+    # the same REST surface, so the only way to know a change is safe on both
+    # is to run the suite twice against the same commit.
+    #
+    # The whole job is matrixed rather than just the test step, because a
+    # matrix job gets its own workspace and would have to rebuild anyway.
+    # Splitting build into a shared job and shipping bin/ between them as an
+    # artifact would trade ~3 minutes of compile for an upload and download of
+    # the full output tree on a self-hosted runner — not obviously a win, and
+    # it couples the jobs. The duplicated cheap prelude (lint, UI build,
+    # frontend tests) is ~20s.
+    strategy:
+      # Never fail-fast. When one driver breaks, the OTHER driver's result is
+      # the single most useful fact for triage: it separates "this change is
+      # wrong" from "this change is wrong on this backend". Cancelling the
+      # sibling throws that away exactly when it is needed.
+      fail-fast: false
+      matrix:
+        driver: [postgresql, sqlite]
+
+    name: build-and-test (${{ matrix.driver }})
 
     steps:
       - uses: actions/checkout@v6
@@ -54,7 +76,8 @@ jobs:
           yarn --cwd cxb test || rc=1
           exit $rc
 
-      - name: Copy host config
+      - name: Copy host config (PostgreSQL)
+        if: matrix.driver == 'postgresql'
         # Absolute paths throughout — the runner's $HOME is per-instance
         # (/home/githubrunner/runners/rXX/home) under the systemd override
         # that isolates per-runner podman/NuGet state. The host config and
@@ -123,6 +146,82 @@ jobs:
           # .pgpass entry keeps working — only the target name changed.
           dropdb   -w --if-exists -h 127.0.0.1 -U dmart "$TEST_DB"
           createdb -w             -h 127.0.0.1 -U dmart "$TEST_DB"
+          # Per-runner smoke port. The runners share ONE host and one network
+          # stack, so two jobs that both bind the config's LISTENING_PORT
+          # cannot coexist — and the smoke step used to DISCOVER its server by
+          # scanning fixed ports, which meant the loser of that race happily
+          # found the OTHER job's server and ran the whole suite against the
+          # wrong database. That surfaced as "entry exists" and duplicate-key
+          # errors on same-second fixture names. Harmless while one job ran per
+          # push; the driver matrix made three.
+          #
+          # Keyed on the runner for the same reason the test database is: a
+          # runner executes one job at a time, so a per-runner port is
+          # collision-free by construction without serializing CI.
+          # 10# forces base 10: a runner named r08 yields "08", which the
+          # shell would otherwise read as octal and reject. :-0 covers a
+          # runner whose name has no digits at all.
+          RUNNER_DIGITS=$(printf '%s' "${RUNNER_NAME:-local}" | tr -cd '0-9' | tail -c 3)
+          SMOKE_PORT=$(( 5100 + 10#${RUNNER_DIGITS:-0} % 100 ))
+          echo "SMOKE_PORT=$SMOKE_PORT" >> "$GITHUB_ENV"
+          sed -i '/^LISTENING_PORT[[:space:]]*=/d' config.env
+          echo "LISTENING_PORT=$SMOKE_PORT" >> config.env
+          echo "Smoke port: $SMOKE_PORT"
+
+      - name: Write SQLite config
+        if: matrix.driver == 'sqlite'
+        # No host database to reset, no per-runner name to derive, no teardown:
+        # the store is one file inside this job's workspace, which the runner
+        # discards. That is most of the point of the tier.
+        run: |
+          set -e
+          cp /home/githubrunner/config.env ./
+          # Drop every PostgreSQL key rather than leaving them alongside
+          # DATABASE_DRIVER="sqlite". They would be inert, but a config that
+          # still names a host and database is a config someone will later read
+          # as "this talks to PostgreSQL" — and if the driver line is ever lost
+          # in a merge, the job would silently go back to hitting the shared
+          # host database instead of failing.
+          # SPACES_FOLDER is stripped alongside the PostgreSQL keys for the
+          # same reason the PostgreSQL step replaces DATABASE_NAME rather than
+          # appending it: leaving the host's value in place and adding ours
+          # below would leave two keys, and which one wins would depend on
+          # parse order rather than on intent.
+          sed -i -E '/^(DATABASE_(DRIVER|HOST|PORT|USERNAME|PASSWORD|NAME)|POSTGRES_CONNECTION|SPACES_FOLDER)[[:space:]]*=/d' config.env
+          {
+            echo 'DATABASE_DRIVER="sqlite"'
+            echo "SQLITE_PATH=\"$(pwd)/ci-smoke.db\""
+            # Workspace-local spaces folder. The host config points at a shared
+            # one, and with two matrix jobs now running per push, two servers
+            # writing the same flat files would race. Empty is fine: the admin
+            # bootstrap creates the management space on first boot, which is
+            # exactly the cold-start path worth exercising.
+            echo "SPACES_FOLDER=\"$(pwd)/ci-spaces\""
+          } >> config.env
+          mkdir -p ci-spaces
+          grep -q '^JWT_SECRET' config.env || echo 'JWT_SECRET="ci-test-secret-ci-test-secret-32bytes"' >> config.env
+          grep -q '^ADMIN_PASSWORD' config.env || echo 'ADMIN_PASSWORD="dmart"' >> config.env
+          # Per-runner smoke port. The runners share ONE host and one network
+          # stack, so two jobs that both bind the config's LISTENING_PORT
+          # cannot coexist — and the smoke step used to DISCOVER its server by
+          # scanning fixed ports, which meant the loser of that race happily
+          # found the OTHER job's server and ran the whole suite against the
+          # wrong database. That surfaced as "entry exists" and duplicate-key
+          # errors on same-second fixture names. Harmless while one job ran per
+          # push; the driver matrix made three.
+          #
+          # Keyed on the runner for the same reason the test database is: a
+          # runner executes one job at a time, so a per-runner port is
+          # collision-free by construction without serializing CI.
+          # 10# forces base 10: a runner named r08 yields "08", which the
+          # shell would otherwise read as octal and reject. :-0 covers a
+          # runner whose name has no digits at all.
+          RUNNER_DIGITS=$(printf '%s' "${RUNNER_NAME:-local}" | tr -cd '0-9' | tail -c 3)
+          SMOKE_PORT=$(( 5100 + 10#${RUNNER_DIGITS:-0} % 100 ))
+          echo "SMOKE_PORT=$SMOKE_PORT" >> "$GITHUB_ENV"
+          sed -i '/^LISTENING_PORT[[:space:]]*=/d' config.env
+          echo "LISTENING_PORT=$SMOKE_PORT" >> config.env
+          echo "Smoke port: $SMOKE_PORT"
 
       - name: Build
         run: dotnet build dmart.slnx -c Release --nologo
@@ -132,18 +231,17 @@ jobs:
         # Without this, Directory.GetCurrentDirectory() during `dotnet test`
         # may resolve to the test project's output dir, making the ./config.env
         # lookup miss the file at the repo root.
+        #
+        # DMART_TEST_DRIVER is what DmartFactory reads to point every test host
+        # at SQLite (it overrides the config in-memory and nulls the PostgreSQL
+        # settings, so nothing can silently fall back). Empty for the
+        # PostgreSQL leg, which keeps that command byte-identical to before.
+        env:
+          DMART_TEST_DRIVER: ${{ matrix.driver == 'sqlite' && 'sqlite' || '' }}
         run: BACKEND_ENV=$(pwd)/config.env DMART_TEST_PWD=dmart dotnet test dmart.Tests/dmart.Tests.csproj -c Release --nologo --logger "trx;LogFileName=results.trx"
 
-      # AOT publish lives in release.yml (build-fedora-rpm, build-el9-rpm,
-      # build-windows, build-container — all exercise `dotnet publish
-      # -p:PublishAot=true` on their respective RIDs). Running it again on
-      # every push cost ~3 min per CI run for the smallest of incremental
-      # signals: the trim/AOT/single-file analyzers (unconditional errors in
-      # dmart.csproj — they run on every build, local and CI) already fire
-      # during the regular `dotnet build` step above and catch the
-      # analyzer-detectable subset. What's only caught at native-link time
-      # (deep trimmer + ILC errors, IlcTreatWarningsAsErrors) is acceptable
-      # to defer to release.yml as long as releases keep going out regularly.
+      # AOT publish is no longer deferred to release.yml — see the aot-publish
+      # job at the bottom of this file for why the tradeoff changed.
 
       - name: E2E smoke tests (curl.sh)
         run: |
@@ -152,7 +250,8 @@ jobs:
           # serializer, and middleware path — what it doesn't exercise
           # is the native-trimmed binary shape, which release.yml covers.
           BUILD_DIR="bin/Release/net10.0"
-          # config.env already populated in the "Copy host config" step.
+          # config.env already populated by whichever of the two config
+          # steps this matrix leg ran.
           cp config.env "$BUILD_DIR/"
           # #96: admin-provisioned users are passwordless and authenticate via
           # OTP. The smoke "Limited user" flow logs in with the mock OTP code, so
@@ -168,26 +267,20 @@ jobs:
           # the smoke tests collapse on missing BASE_URL etc.
           (cd "$BUILD_DIR" && BACKEND_ENV=./config.env ./dmart serve) &
           SERVER_PID=$!
-          # Wait for server to come up — try both common ports
-          sleep 3
-          DMART_PORT=""
-          for port in 5099 7979 8080; do
-            if curl -sf "http://127.0.0.1:${port}/" >/dev/null 2>&1; then
-              DMART_PORT=$port
-              break
-            fi
+          # Wait on the port THIS job's server was configured with. Never
+          # scan: a scan cannot tell "my server is slow to start" from "my
+          # server failed to bind and I am now talking to somebody else's".
+          DMART_PORT="$SMOKE_PORT"
+          for _ in $(seq 1 40); do
+            curl -sf "http://127.0.0.1:${DMART_PORT}/" >/dev/null 2>&1 && break
+            sleep 1
           done
-          if [ -z "$DMART_PORT" ]; then
-            # Longer wait, scan again
-            sleep 10
-            for port in 5099 7979 8080; do
-              if curl -sf "http://127.0.0.1:${port}/" >/dev/null 2>&1; then
-                DMART_PORT=$port
-                break
-              fi
-            done
+          if ! curl -sf "http://127.0.0.1:${DMART_PORT}/" >/dev/null 2>&1; then
+            echo "server never came up on ${DMART_PORT}"
+            kill $SERVER_PID 2>/dev/null || true
+            exit 1
           fi
-          echo "Server detected on port: ${DMART_PORT:-NONE}"
+          echo "Server on port: ${DMART_PORT}"
           # Use DmartSettings defaults (dmart/dmart) — on a fresh DB the
           # bootstrap creates this admin user automatically.
           DMART_URL="http://127.0.0.1:${DMART_PORT}" DMART_ADMIN=dmart DMART_PWD=dmart ./curl.sh
@@ -200,7 +293,9 @@ jobs:
         if: always()
         uses: actions/upload-artifact@v7
         with:
-          name: test-results
+          # Per-driver name: upload-artifact rejects a duplicate name, so a
+          # shared one would fail the second leg to finish.
+          name: test-results-${{ matrix.driver }}
           path: dmart.Tests/TestResults/
 
       - name: Drop the per-runner test database
@@ -210,7 +305,7 @@ jobs:
         # Tearing down here bounds that to one database per active runner.
         # Never fails the job: a missing TEST_DB (job died before the config
         # step) or an unreachable PostgreSQL is not a test result.
-        if: always()
+        if: always() && matrix.driver == 'postgresql'
         env:
           PGPASSFILE: /home/githubrunner/.pgpass
         run: |
@@ -220,3 +315,110 @@ jobs:
              WHERE datname='$TEST_DB' AND pid <> pg_backend_pid();" \
             >/dev/null || true
           dropdb -w --if-exists -h 127.0.0.1 -U dmart "$TEST_DB" || true
+
+  # The branch ruleset on master requires a status check named exactly
+  # `build-and-test`. Matrixing that job renamed it to
+  # `build-and-test (postgresql)` / `build-and-test (sqlite)`, so the required
+  # check stopped being produced at all — which blocks not just this PR but
+  # EVERY future one, on a check that can never appear.
+  #
+  # This job restores the name as an aggregate. It runs no build of its own; it
+  # simply fails when any matrix leg failed or was cancelled, so the gate keeps
+  # meaning what it meant. Adding a third driver later needs no ruleset edit.
+  #
+  # needs: + an explicit result check, because `needs:` alone would let this job
+  # be SKIPPED when a dependency fails — and a skipped required check reads as
+  # "not failed" to some gates, which is exactly the silent pass to avoid.
+  build-and-test:
+    name: build-and-test
+    runs-on: self-hosted
+    needs: [build-and-test-matrix]
+    if: always()
+    steps:
+      - name: Report the matrix result
+        run: |
+          echo "matrix result: ${{ needs.build-and-test-matrix.result }}"
+          [ "${{ needs.build-and-test-matrix.result }}" = "success" ] || {
+            echo "one or more driver legs did not succeed"
+            exit 1
+          }
+
+  aot-publish:
+    runs-on: self-hosted
+    # Independent of build-and-test: a native-link failure and a test failure
+    # are different diagnoses, and there is no reason to make one wait on the
+    # other.
+
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Native AOT publish
+        # This used to live only in release.yml, deliberately — the reasoning
+        # was that the trim/AOT analyzers are unconditional errors in
+        # dmart.csproj and already fire during the ordinary `dotnet build`, so
+        # paying ~3 min per push to re-catch the analyzer-detectable subset was
+        # a poor trade, and native-link-only failures could wait for the next
+        # tag.
+        #
+        # Adding SQLite changed that. Microsoft.Data.Sqlite reaches its engine
+        # through SQLitePCLRaw, which resolves a NATIVE library at runtime via
+        # dlopen — a shape the analyzers cannot see and the ordinary build
+        # cannot exercise. A failure there is invisible until a native binary
+        # actually opens a database, so deferring it to tag time means finding
+        # it after a release is already cut.
+        #
+        # IlcTreatWarningsAsErrors is set in dmart.csproj, so any new IL2026 /
+        # IL2027 / IL3050 fails this step rather than being printed and passed.
+        run: dotnet publish dmart.csproj -r linux-x64 -c Release -p:PublishAot=true --nologo
+
+      - name: Smoke the native binary on SQLite
+        # The point of the job. The publish above proves it LINKS; this proves
+        # the linked binary can actually load libe_sqlite3.so and serve — which
+        # is the specific failure mode AOT introduces here and the only one the
+        # JIT smoke above cannot see. SQLite rather than PostgreSQL because
+        # SQLite is the driver with the native dependency, and because it needs
+        # no host database.
+        run: |
+          set -e
+          PUB="bin/Release/net10.0/linux-x64/publish"
+          test -f "$PUB/libe_sqlite3.so" \
+            || { echo "libe_sqlite3.so missing from the publish output"; exit 1; }
+          mkdir -p "$PUB/aot-spaces"
+          # Same per-runner keying as the matrix legs — this job runs
+          # concurrently with them on the same host.
+          RUNNER_DIGITS=$(printf '%s' "${RUNNER_NAME:-local}" | tr -cd '0-9' | tail -c 3)
+          AOT_PORT=$(( 5200 + 10#${RUNNER_DIGITS:-0} % 100 ))
+          echo "AOT smoke port: $AOT_PORT"
+          # Written with echo rather than a heredoc: the body of a heredoc
+          # inside an indented `run: |` block keeps its leading spaces, and its
+          # terminator has to sit at column 0 to match at all.
+          {
+            echo 'DATABASE_DRIVER="sqlite"'
+            echo "SQLITE_PATH=\"$(pwd)/$PUB/aot.db\""
+            echo "SPACES_FOLDER=\"$(pwd)/$PUB/aot-spaces\""
+            echo "LISTENING_PORT=$AOT_PORT"
+            echo 'JWT_SECRET="ci-test-secret-ci-test-secret-32bytes"'
+            echo 'ADMIN_PASSWORD="dmart"'
+            echo 'MOCK_SMTP_API=true'
+          } > "$PUB/config.env"
+          (cd "$PUB" && BACKEND_ENV=./config.env ./dmart serve) &
+          SERVER_PID=$!
+          for _ in $(seq 1 40); do
+            curl -sf http://127.0.0.1:${AOT_PORT}/health/ready >/dev/null 2>&1 && break
+            sleep 1
+          done
+          # /health/ready is not a formality here: it runs SELECT 1 through the
+          # configured factory, so a 200 already means the native SQLite
+          # library loaded and answered a query.
+          curl -sf http://127.0.0.1:${AOT_PORT}/health/ready >/dev/null \
+            || { echo "native binary did not become ready"; kill $SERVER_PID 2>/dev/null; exit 1; }
+          # Guarded by `if` rather than trailing `$?`: `set -e` is on for this
+          # step, so a bare failing command would abort before the kill below
+          # and leave the server running on the runner.
+          CURL_RC=0
+          if ! DMART_URL="http://127.0.0.1:${AOT_PORT}" DMART_ADMIN=dmart DMART_PWD=dmart ./curl.sh; then
+            CURL_RC=1
+          fi
+          kill $SERVER_PID 2>/dev/null || true
+          wait $SERVER_PID 2>/dev/null || true
+          exit $CURL_RC

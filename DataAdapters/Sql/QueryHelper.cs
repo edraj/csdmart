@@ -4,6 +4,7 @@ using Dmart.Models.Api;
 using Dmart.Models.Enums;
 using Dmart.QueryGrammar;
 using Microsoft.Extensions.Logging.Abstractions;
+using System.Data.Common;
 using Npgsql;
 using NpgsqlTypes;
 
@@ -39,8 +40,25 @@ public static class QueryHelper
     // WHERE CLAUSE BUILDER
     // ====================================================================
 
+    // Binds a value into the positional arg list and returns its $N placeholder.
+    // Handed to the dialect so it can bind its own parameters — necessary
+    // because some constructs differ in shape, not just spelling: PostgreSQL
+    // matches a list with one array parameter, SQLite with one parameter per
+    // element.
+    private static SqlBinder Binder(List<NpgsqlParameter> args)
+        => (value, kind) =>
+        {
+            args.Add(PostgresDialect.CreateParameter(new SqlParam(null, value, kind)));
+            return "$" + args.Count.ToString(System.Globalization.CultureInfo.InvariantCulture);
+        };
+
     public static string BuildWhereClause(Query q, List<NpgsqlParameter> args, string? tableName = null)
+        => BuildWhereClause(q, args, PostgresSqlDialect.Instance, tableName);
+
+    public static string BuildWhereClause(
+        Query q, List<NpgsqlParameter> args, ISqlDialect dialect, string? tableName = null)
     {
+        var bind = Binder(args);
         // Add the param FIRST, then reference its 1-based index. For a base
         // query (empty args) this is $1 — byte-identical to before. For a nested
         // reuse (EXISTS semi-join, args already populated) it continues the
@@ -64,51 +82,32 @@ public static class QueryHelper
 
         if (q.FilterTypes is { Count: > 0 })
         {
-            args.Add(new()
-            {
-                Value = q.FilterTypes.Select(JsonbHelpers.EnumMember).ToArray(),
-                NpgsqlDbType = NpgsqlDbType.Array | NpgsqlDbType.Text,
-            });
-            sql.Append($"AND resource_type = ANY(${args.Count}) ");
+            var types = q.FilterTypes.Select(JsonbHelpers.EnumMember).ToList();
+            sql.Append($"AND {dialect.AnyOf("resource_type", types, bind)} ");
         }
 
         if (q.FilterShortnames is { Count: > 0 })
         {
-            args.Add(new()
-            {
-                Value = q.FilterShortnames.ToArray(),
-                NpgsqlDbType = NpgsqlDbType.Array | NpgsqlDbType.Text,
-            });
-            sql.Append($"AND shortname = ANY(${args.Count}) ");
+            sql.Append($"AND {dialect.AnyOf("shortname", q.FilterShortnames, bind)} ");
         }
 
         if (q.FilterSchemaNames is { Count: > 0 })
         {
-            var effective = q.FilterSchemaNames.Where(n => n != "meta").ToArray();
-            if (effective.Length > 0)
+            var effective = q.FilterSchemaNames.Where(n => n != "meta").ToList();
+            if (effective.Count > 0)
             {
-                args.Add(new()
-                {
-                    Value = effective,
-                    NpgsqlDbType = NpgsqlDbType.Array | NpgsqlDbType.Text,
-                });
-                sql.Append($"AND (payload->>'schema_shortname') = ANY(${args.Count}) ");
+                sql.Append($"AND {dialect.AnyOf(dialect.SchemaShortnameExpr, effective, bind)} ");
             }
         }
 
         if (q.FilterTags is { Count: > 0 })
         {
-            args.Add(new()
-            {
-                Value = q.FilterTags.ToArray(),
-                NpgsqlDbType = NpgsqlDbType.Array | NpgsqlDbType.Text,
-            });
-            sql.Append($"AND tags ?| ${args.Count} ");
+            sql.Append($"AND {dialect.JsonArrayContainsAny("tags", q.FilterTags, bind)} ");
         }
 
         // RediSearch-style search: @field:value syntax → SQL WHERE clauses.
         if (!string.IsNullOrEmpty(q.Search))
-            AppendSearchClauses(sql, q.Search, args, tableName);
+            AppendSearchClauses(sql, q.Search, args, tableName, dialect);
 
         if (q.FromDate is not null)
         {
@@ -132,15 +131,24 @@ public static class QueryHelper
     // SDK so the two cannot drift. The server uses positional $N parameters
     // so we ask the parser for that style.
 
+    // Which dialect a connection factory will produce. The generic runners open
+    // their own connection, so they resolve it here rather than taking it as a
+    // parameter every repository would have to thread through.
+    internal static ISqlDialect DialectFor(IDbConnectionFactory db)
+        => db is SqliteConnectionFactory
+            ? SqliteSqlDialect.Instance
+            : PostgresSqlDialect.Instance;
+
     private static void AppendSearchClauses(
-        System.Text.StringBuilder sql, string search, List<NpgsqlParameter> args, string? tableName = null)
+        System.Text.StringBuilder sql, string search, List<NpgsqlParameter> args,
+        string? tableName = null, ISqlDialect? dialect = null)
     {
         var parsed = SearchExpressionParser.Parse(
-            search, args.Count, PlaceholderStyle.Positional, tableName);
+            search, args.Count, PlaceholderStyle.Positional, tableName, dialect);
 
         // Always append params (parser may bind even when clauses end up empty —
         // e.g. an all-negative group; the SDK side does the same).
-        foreach (var p in parsed.Parameters) args.Add(p);
+        foreach (var p in parsed.Parameters) args.Add(PostgresDialect.CreateParameter(p));
 
         if (parsed.Clauses.Count == 0) return;
 
@@ -175,17 +183,12 @@ public static class QueryHelper
 
     // Converts a dotted JSONB path like "body.user.email" into
     // payload::jsonb->'body'->'user'->>'email' (last segment uses ->>).
-    private static string BuildJsonbPath(string column, string dotPath)
+    private static string BuildJsonbPath(string column, string dotPath, ISqlDialect dialect)
     {
         var segments = dotPath.Split('.');
-        if (segments.Length == 0) return $"{column}::text";
-        if (segments.Length == 1) return $"{column}::jsonb->>'{EscapeSqlLiteral(segments[0])}'";
-
-        var sb = new System.Text.StringBuilder($"{column}::jsonb");
-        for (var i = 0; i < segments.Length - 1; i++)
-            sb.Append($"->'{EscapeSqlLiteral(segments[i])}'");
-        sb.Append($"->>'{EscapeSqlLiteral(segments[^1])}'");
-        return sb.ToString();
+        return segments.Length == 0
+            ? dialect.AsText(column)
+            : dialect.JsonText(column, segments);
     }
 
     // ====================================================================
@@ -199,7 +202,14 @@ public static class QueryHelper
     public static void AppendAclFilter(
         System.Text.StringBuilder sql, List<NpgsqlParameter> args,
         string? userShortname, string tableName, List<string>? queryPolicies)
+        => AppendAclFilter(sql, args, userShortname, tableName, queryPolicies, PostgresSqlDialect.Instance);
+
+    public static void AppendAclFilter(
+        System.Text.StringBuilder sql, List<NpgsqlParameter> args,
+        string? userShortname, string tableName, List<string>? queryPolicies,
+        ISqlDialect dialect)
     {
+        var bind = Binder(args);
         // Python skips ACL for attachments, histories, and spaces.
         if (tableName is "attachments" or "histories") return;
 
@@ -212,33 +222,30 @@ public static class QueryHelper
         var conditions = new List<string>
         {
             $"owner_shortname = ${userParam}",
-            $"EXISTS (SELECT 1 FROM jsonb_array_elements(CASE WHEN jsonb_typeof(acl::jsonb) = 'array' THEN acl::jsonb ELSE '[]'::jsonb END) AS elem WHERE elem->>'user_shortname' = ${userParam} AND (elem->'allowed_actions') ? 'query')",
+            dialect.AclGrants("acl", $"${userParam}", "query"),
         };
 
         // Add query_policies LIKE patterns if the user has any.
         if (queryPolicies is { Count: > 0 })
         {
-            var likeConditions = new List<string>();
-            for (var i = 0; i < queryPolicies.Count; i++)
-            {
-                // Build a LIKE pattern from the dmart wildcard ('*' → '%').
-                // Order matters: escape backslash FIRST (otherwise the replacements
-                // below introduce new backslashes that get double-escaped), then
-                // the LIKE metacharacters %, _, finally expand '*'.
-                var pattern = queryPolicies[i]
+            // Build LIKE patterns from the dmart wildcard ('*' → '%').
+            // Order matters: escape backslash FIRST (otherwise the replacements
+            // below introduce new backslashes that get double-escaped), then
+            // the LIKE metacharacters %, _, finally expand '*'.
+            //
+            // Both dialects consume these patterns identically, and both match
+            // case-SENSITIVELY — PostgreSQL because that is LIKE's default,
+            // SQLite because SqliteConnectionFactory sets
+            // PRAGMA case_sensitive_like=ON. That equivalence is what keeps the
+            // two backends from granting different access for the same policy.
+            var patterns = queryPolicies
+                .Select(p => p
                     .Replace("\\", "\\\\")
                     .Replace("%", "\\%")
                     .Replace("_", "\\_")
-                    .Replace("*", "%");
-                args.Add(new() { Value = pattern });
-                // ESCAPE '\' so the backslash escapes above are honored by LIKE.
-                likeConditions.Add($"qp LIKE ${args.Count} ESCAPE '\\'");
-            }
-            if (likeConditions.Count > 0)
-            {
-                conditions.Insert(1,
-                    $"EXISTS (SELECT 1 FROM unnest(query_policies) AS qp WHERE {string.Join(" OR ", likeConditions)})");
-            }
+                    .Replace("*", "%"))
+                .ToList();
+            conditions.Insert(1, dialect.ArrayAnyLike("query_policies", patterns, bind));
         }
 
         sql.Append($"AND ({string.Join(" OR ", conditions)}) ");
@@ -263,13 +270,17 @@ public static class QueryHelper
     // ("entries." for the outer row, "r." for the semi-join inner row).
     // Returns false for any path we can't safely express (→ caller falls back).
     public static bool TryJoinKeyToSql(string path, string qualifier, out string expr)
+        => TryJoinKeyToSql(path, qualifier, PostgresSqlDialect.Instance, out expr);
+
+    public static bool TryJoinKeyToSql(
+        string path, string qualifier, ISqlDialect dialect, out string expr)
     {
         expr = "";
         if (string.IsNullOrEmpty(path)) return false;
 
         if (JoinMetaColumns.Contains(path))
         {
-            expr = $"({qualifier}{path})::text";
+            expr = dialect.AsText($"({qualifier}{path})");
             return true;
         }
 
@@ -282,7 +293,7 @@ public static class QueryHelper
             if (!SafeSortSegmentRegex.IsMatch(seg)) return false;
 
         // qualifier+"payload" → entries.payload / r.payload; BuildJsonbPath adds ::jsonb->...->>'last'.
-        expr = BuildJsonbPath($"{qualifier}payload", dot);
+        expr = BuildJsonbPath($"{qualifier}payload", dot, dialect);
         return true;
     }
 
@@ -291,6 +302,11 @@ public static class QueryHelper
     public static void AppendInnerSemiJoins(
         System.Text.StringBuilder sql, List<NpgsqlParameter> args,
         IReadOnlyList<InnerSemiJoinSpec> specs)
+        => AppendInnerSemiJoins(sql, args, specs, PostgresSqlDialect.Instance);
+
+    public static void AppendInnerSemiJoins(
+        System.Text.StringBuilder sql, List<NpgsqlParameter> args,
+        IReadOnlyList<InnerSemiJoinSpec> specs, ISqlDialect dialect)
     {
         foreach (var spec in specs)
         {
@@ -298,11 +314,11 @@ public static class QueryHelper
             // Right-side filters. Bare columns bind to the inner `r` (it shadows
             // the outer `entries`). BuildWhereClause is positional-param safe,
             // so its $N continue the shared sequence.
-            sql.Append(BuildWhereClause(spec.RightQuery, args, "entries"));
+            sql.Append(BuildWhereClause(spec.RightQuery, args, dialect, "entries"));
             // Right-side ACL — MANDATORY. Bare owner_shortname/acl/query_policies
             // bind to `r`. Without this a base row could survive on a right row
             // the caller can't query.
-            AppendAclFilter(sql, args, spec.Actor, "entries", spec.RightQueryPolicies);
+            AppendAclFilter(sql, args, spec.Actor, "entries", spec.RightQueryPolicies, dialect);
             foreach (var (leftExpr, rightExpr) in spec.Correlations)
                 sql.Append($"AND {rightExpr} = {leftExpr} ");
             sql.Append(") ");
@@ -348,29 +364,19 @@ public static class QueryHelper
     // The CASE makes numeric values sort numerically (1,2,10) while non-numeric
     // values still sort lexically as a tiebreaker. Returns null when any segment
     // fails validation (sanitizer rejects the whole token, we keep other tokens).
-    private static string? BuildJsonPathSortExpression(string token, string direction)
+    private static string? BuildJsonPathSortExpression(string token, string direction, ISqlDialect dialect)
     {
         var parts = token.Split('.');
         foreach (var p in parts)
             if (!SafeSortSegmentRegex.IsMatch(p)) return null;
 
-        var root = parts[0];
-        string expr;
-        if (parts.Length == 1)
-        {
-            expr = root;
-        }
-        else
-        {
-            var middle = parts.Length > 2 ? " -> " + string.Join(" -> ", parts[1..^1].Select(p => $"'{p}'")) : "";
-            expr = $"{root}::jsonb{middle} ->> '{parts[^1]}'";
-        }
-        return $"CASE WHEN ({expr}) ~ '^-?[0-9]+(\\.[0-9]+)?$' THEN ({expr})::float END {direction}, ({expr}) {direction}";
+        return dialect.JsonSortKeys(parts[0], parts[1..], direction);
     }
 
     // Resolve a single sort token into either a bare whitelisted column or a
     // JSON-path expression. Returns null to mean "skip this token".
-    private static string? ResolveSortToken(string rawToken, string direction, string? tableName)
+    private static string? ResolveSortToken(
+        string rawToken, string direction, string? tableName, ISqlDialect dialect)
     {
         var token = rawToken.Trim();
         if (token.Length == 0) return null;
@@ -386,7 +392,7 @@ public static class QueryHelper
         if (token.StartsWith("body.", StringComparison.Ordinal)) token = "payload." + token;
 
         if (token.Contains('.'))
-            return BuildJsonPathSortExpression(token, direction);
+            return BuildJsonPathSortExpression(token, direction, dialect);
 
         var allowed = tableName is not null && TableSortColumns.TryGetValue(tableName, out var set)
             ? set
@@ -397,7 +403,8 @@ public static class QueryHelper
     // Parse comma-separated sort_by into one ORDER BY clause body (without the
     // leading "ORDER BY "). Returns null when nothing resolves → caller falls
     // back to `updated_at DESC`.
-    private static string? BuildOrderClauseBody(string? sortBy, SortType? sortType, string? tableName)
+    private static string? BuildOrderClauseBody(
+        string? sortBy, SortType? sortType, string? tableName, ISqlDialect dialect)
     {
         if (string.IsNullOrWhiteSpace(sortBy)) return null;
 
@@ -405,24 +412,30 @@ public static class QueryHelper
         var pieces = new List<string>();
         foreach (var raw in sortBy.Split(','))
         {
-            var expr = ResolveSortToken(raw, direction, tableName);
+            var expr = ResolveSortToken(raw, direction, tableName, dialect);
             if (expr is not null) pieces.Add(expr);
         }
         return pieces.Count == 0 ? null : string.Join(", ", pieces);
     }
 
-    public static void AppendOrderAndPaging(System.Text.StringBuilder sql, Query q, List<NpgsqlParameter> args, string? tableName = null)
+    public static void AppendOrderAndPaging(
+        System.Text.StringBuilder sql, Query q, List<NpgsqlParameter> args, string? tableName = null)
+        => AppendOrderAndPaging(sql, q, args, PostgresSqlDialect.Instance, tableName);
+
+    public static void AppendOrderAndPaging(
+        System.Text.StringBuilder sql, Query q, List<NpgsqlParameter> args,
+        ISqlDialect dialect, string? tableName = null, bool defaultOrder = true)
     {
         if (q.Type == QueryType.Random)
             sql.Append("ORDER BY RANDOM() ");
         else
         {
-            var clause = BuildOrderClauseBody(q.SortBy, q.SortType, tableName);
+            var clause = BuildOrderClauseBody(q.SortBy, q.SortType, tableName, dialect);
             if (clause is not null)
             {
                 sql.Append($"ORDER BY {clause} ");
             }
-            else
+            else if (defaultOrder)
             {
                 sql.Append("ORDER BY updated_at ");
                 sql.Append(q.SortType == SortType.Ascending ? "ASC " : "DESC ");
@@ -442,31 +455,33 @@ public static class QueryHelper
     [SuppressMessage("Security", "CA2100",
         Justification = "Audited: `selectAllColumns` and `tableName` are internal-only identifiers from typed repository callers; user values flow through $N parameters built by BuildWhereClause/AppendAclFilter.")]
     public static async Task<List<T>> RunQueryAsync<T>(
-        Db db, string selectAllColumns, Query q,
-        Func<NpgsqlDataReader, T> hydrate,
+        IDbConnectionFactory db, string selectAllColumns, Query q,
+        Func<DbDataReader, T> hydrate,
         CancellationToken ct,
         string? userShortname = null, string? tableName = null,
         List<string>? queryPolicies = null,
         IReadOnlyList<InnerSemiJoinSpec>? semiJoins = null)
     {
         var args = new List<NpgsqlParameter>();
-        var where = BuildWhereClause(q, args, tableName);
+        var dialect = DialectFor(db);
+        var where = BuildWhereClause(q, args, dialect, tableName);
         var sql = new System.Text.StringBuilder($"{selectAllColumns} WHERE {where} ");
 
         // Apply ACL filtering if user info provided.
         if (userShortname is not null && tableName is not null)
-            AppendAclFilter(sql, args, userShortname, tableName, queryPolicies);
+            AppendAclFilter(sql, args, userShortname, tableName, queryPolicies, dialect);
 
         // Inject INNER-join EXISTS semi-joins (filter base by existence of a
         // matching right row) so LIMIT/OFFSET below page the post-filter set.
         if (semiJoins is { Count: > 0 })
-            AppendInnerSemiJoins(sql, args, semiJoins);
+            AppendInnerSemiJoins(sql, args, semiJoins, dialect);
 
-        AppendOrderAndPaging(sql, q, args, tableName);
+        AppendOrderAndPaging(sql, q, args, dialect, tableName);
 
         await using var conn = await db.OpenAsync(ct);
-        await using var cmd = new NpgsqlCommand(sql.ToString(), conn);
-        foreach (var p in args) cmd.Parameters.Add(p);
+        await using var cmd = conn.CreateCommand();
+        cmd.CommandText = DbCommandFactory.ResolveDialectPlaceholders(sql.ToString(), conn);
+        DbParams.BindAll(cmd, args);
         await using var reader = await cmd.ExecuteReaderAsync(ct);
         var results = new List<T>();
         while (await reader.ReadAsync(ct))
@@ -480,27 +495,34 @@ public static class QueryHelper
     [SuppressMessage("Security", "CA2100",
         Justification = "Audited: `tableName` is an internal-only identifier; user values flow through $N parameters.")]
     public static async Task<int> RunCountAsync(
-        Db db, string tableName, Query q,
+        IDbConnectionFactory db, string tableName, Query q,
         CancellationToken ct,
         string? userShortname = null, List<string>? queryPolicies = null,
         IReadOnlyList<InnerSemiJoinSpec>? semiJoins = null)
     {
         var args = new List<NpgsqlParameter>();
-        var where = BuildWhereClause(q, args, tableName);
+        var dialect = DialectFor(db);
+        var where = BuildWhereClause(q, args, dialect, tableName);
         var sqlBuilder = new System.Text.StringBuilder($"SELECT COUNT(*) FROM {tableName} WHERE {where} ");
         // Parity with RunQueryAsync: apply owner/ACL/query_policies predicate
         // so COUNT(*) is scoped to rows the actor can actually see. Skipped
         // for attachments/histories inside AppendAclFilter (Python parity).
         if (userShortname is not null)
-            AppendAclFilter(sqlBuilder, args, userShortname, tableName, queryPolicies);
+            AppendAclFilter(sqlBuilder, args, userShortname, tableName, queryPolicies, dialect);
 
         if (semiJoins is { Count: > 0 })
-            AppendInnerSemiJoins(sqlBuilder, args, semiJoins);
+            AppendInnerSemiJoins(sqlBuilder, args, semiJoins, dialect);
 
         await using var conn = await db.OpenAsync(ct);
-        await using var cmd = new NpgsqlCommand(sqlBuilder.ToString(), conn);
-        foreach (var p in args) cmd.Parameters.Add(p);
-        return (int)(long)(await cmd.ExecuteScalarAsync(ct) ?? 0L);
+        await using var cmd = conn.CreateCommand();
+        cmd.CommandText = DbCommandFactory.ResolveDialectPlaceholders(sqlBuilder.ToString(), conn);
+        DbParams.BindAll(cmd, args);
+        // COUNT(*) is int64 on PostgreSQL and int64 on SQLite too, but the
+        // provider may hand back a boxed int; Convert normalizes both.
+        var scalar = await cmd.ExecuteScalarAsync(ct);
+        return scalar is null or DBNull
+            ? 0
+            : Convert.ToInt32(scalar, System.Globalization.CultureInfo.InvariantCulture);
     }
 
     // ====================================================================
@@ -509,14 +531,24 @@ public static class QueryHelper
     // Mirrors Python's query_aggregation(). Builds:
     //   SELECT group_by_cols, FUNC(args) AS alias FROM table WHERE ... GROUP BY ...
 
-    [SuppressMessage("Security", "CA2100",
-        Justification = "Audited: `tableName` is internal; group-by/reducer expressions are built from a whitelisted ResolveFieldExpr/SanitizeAlias pipeline; user values flow through $N parameters.")]
-    public static async Task<List<Dictionary<string, object>>> RunAggregationAsync(
-        Db db, string tableName, Query q, CancellationToken ct,
+    // Builds the aggregation statement and its bound parameters, or null when
+    // the query resolves to nothing selectable (no aggregation block, or every
+    // group-by/reducer was rejected by the whitelist). Split out from
+    // RunAggregationAsync so the emitted text is reachable without a live
+    // connection — SqlEmissionGoldenTests snapshots it, and the reducer
+    // vocabulary is one of the places the SQLite dialect will have to diverge
+    // (no percentile_cont / stddev / ordered ARRAY_AGG).
+    public static (string Sql, List<NpgsqlParameter> Args)? BuildAggregationSql(
+        string tableName, Query q,
+        string? userShortname = null, List<string>? queryPolicies = null)
+        => BuildAggregationSql(tableName, q, PostgresSqlDialect.Instance, userShortname, queryPolicies);
+
+    public static (string Sql, List<NpgsqlParameter> Args)? BuildAggregationSql(
+        string tableName, Query q, ISqlDialect dialect,
         string? userShortname = null, List<string>? queryPolicies = null)
     {
         if (q.AggregationData is null)
-            return new();
+            return null;
 
         var args = new List<NpgsqlParameter>();
         var where = BuildWhereClause(q, args, tableName);
@@ -531,7 +563,7 @@ public static class QueryHelper
         foreach (var gb in groupBy)
         {
             var raw = gb.StartsWith('@') ? gb[1..] : gb;
-            var expr = ResolveFieldExpr(raw);
+            var expr = ResolveFieldExpr(raw, dialect);
             if (expr is null) continue;
             selectParts.Add($"{expr} AS {SanitizeAlias(gb)}");
         }
@@ -540,37 +572,60 @@ public static class QueryHelper
         foreach (var reducer in reducers)
         {
             var alias = !string.IsNullOrEmpty(reducer.Alias) ? SanitizeAlias(reducer.Alias) : SanitizeAlias(reducer.ReducerName);
-            var expr = BuildReducerExpression(reducer);
+            var expr = BuildReducerExpression(reducer, dialect);
             if (expr is null) continue;
             selectParts.Add($"{expr} AS {alias}");
         }
 
-        if (selectParts.Count == 0) return new();
+        if (selectParts.Count == 0) return null;
 
         var sql = new System.Text.StringBuilder(
             $"SELECT {string.Join(", ", selectParts)} FROM {tableName} WHERE {where} ");
 
         if (userShortname is not null)
-            AppendAclFilter(sql, args, userShortname, tableName, queryPolicies);
+            AppendAclFilter(sql, args, userShortname, tableName, queryPolicies, dialect);
 
         // GROUP BY
         if (groupBy.Count > 0)
         {
             var gbExprs = groupBy
                 .Select(gb => gb.StartsWith('@') ? gb[1..] : gb)
-                .Select(ResolveFieldExpr)
+                .Select(x => ResolveFieldExpr(x, dialect))
                 .Where(e => e is not null)
                 .ToList();
             if (gbExprs.Count > 0)
                 sql.Append($"GROUP BY {string.Join(", ", gbExprs)} ");
         }
 
-        // ORDER + LIMIT
-        AppendOrderAndPaging(sql, q, args, tableName);
+        // ORDER + LIMIT.
+        //
+        // defaultOrder: false — an aggregation SELECTs only the group-by
+        // expressions and the aggregates, so the usual `ORDER BY updated_at`
+        // fallback names a column that is neither grouped nor aggregated.
+        // PostgreSQL rejects that outright (42803), which meant every
+        // aggregation query WITHOUT an explicit sort_by returned a 500; SQLite
+        // accepts it and silently picks an arbitrary row's value to sort on.
+        // Neither is what the caller wanted. An explicit sort_by is still
+        // honoured, and is still the caller's job to keep group-compatible.
+        AppendOrderAndPaging(sql, q, args, dialect, tableName, defaultOrder: false);
+
+        return (sql.ToString(), args);
+    }
+
+    [SuppressMessage("Security", "CA2100",
+        Justification = "Audited: `tableName` is internal; group-by/reducer expressions are built from a whitelisted ResolveFieldExpr/SanitizeAlias pipeline; user values flow through $N parameters.")]
+    public static async Task<List<Dictionary<string, object>>> RunAggregationAsync(
+        IDbConnectionFactory db, string tableName, Query q, CancellationToken ct,
+        string? userShortname = null, List<string>? queryPolicies = null)
+    {
+        var built = BuildAggregationSql(tableName, q, DialectFor(db), userShortname, queryPolicies);
+        if (built is null) return new();
+        var (sql, args) = built.Value;
 
         await using var conn = await db.OpenAsync(ct);
-        await using var cmd = new NpgsqlCommand(sql.ToString(), conn);
-        foreach (var p in args) cmd.Parameters.Add(p);
+        await using var cmd = conn.CreateCommand();
+        cmd.CommandText = DbCommandFactory.ResolveDialectPlaceholders(sql, conn);
+        DbParams.BindAll(cmd, args);
         await using var reader = await cmd.ExecuteReaderAsync(ct);
 
         var results = new List<Dictionary<string, object>>();
@@ -590,7 +645,7 @@ public static class QueryHelper
         return results;
     }
 
-    private static string? BuildReducerExpression(RedisReducer reducer)
+    private static string? BuildReducerExpression(RedisReducer reducer, ISqlDialect dialect)
     {
         var reducerArgs = reducer.Args ?? new();
         var name = reducer.ReducerName.ToLowerInvariant();
@@ -600,35 +655,31 @@ public static class QueryHelper
             if (reducerArgs.Count <= index) return null;
             var arg = reducerArgs[index];
             if (arg.StartsWith('@')) arg = arg[1..];
-            return ResolveFieldExpr(arg);
+            return ResolveFieldExpr(arg, dialect);
         }
 
         var fieldExpr = ResolveArg(0);
-        return name switch
+        var quantile = ParseQuantile(reducerArgs);
+
+        var expr = dialect.Reducer(name, fieldExpr, quantile);
+        if (expr is not null) return expr;
+
+        // The dialect produced nothing. Two very different reasons, and they
+        // must not be conflated — see UnsupportedReducerException.
+        //
+        // PostgreSQL is the reference vocabulary: this port is defined against
+        // it, so "does dmart know this reducer, called this way?" is exactly
+        // "would the PostgreSQL dialect have emitted something?". Asking it
+        // also covers the no-argument case (`sum` with no field yields null on
+        // every backend, and skipping that is long-standing behaviour), and it
+        // means a reducer added to PostgreSQL later starts REFUSING on SQLite
+        // rather than silently vanishing from responses.
+        if (dialect is not PostgresSqlDialect
+            && PostgresSqlDialect.Instance.Reducer(name, fieldExpr, quantile) is not null)
         {
-            "count" or "r_count" => fieldExpr is null ? "COUNT(*)" : $"COUNT({fieldExpr})",
-            "count_distinct" or "count_distinctish" =>
-                fieldExpr is null ? "COUNT(*)" : $"COUNT(DISTINCT {fieldExpr})",
-            "sum" or "total" =>
-                fieldExpr is null ? null : $"SUM(({fieldExpr})::numeric)",
-            "avg" =>
-                fieldExpr is null ? null : $"AVG(({fieldExpr})::numeric)",
-            "min" =>
-                fieldExpr is null ? null : $"MIN({fieldExpr})",
-            "max" =>
-                fieldExpr is null ? null : $"MAX({fieldExpr})",
-            "stddev" =>
-                fieldExpr is null ? null : $"STDDEV(({fieldExpr})::numeric)",
-            "group_concat" or "tolist" =>
-                fieldExpr is null ? null : $"STRING_AGG(({fieldExpr})::text, ',')",
-            "quantile" =>
-                fieldExpr is null ? null : $"percentile_cont({ParseQuantile(reducerArgs)}) WITHIN GROUP (ORDER BY ({fieldExpr})::numeric)",
-            "first_value" =>
-                fieldExpr is null ? null : $"(ARRAY_AGG({fieldExpr} ORDER BY updated_at DESC))[1]",
-            "random_sample" =>
-                fieldExpr is null ? null : $"(ARRAY_AGG({fieldExpr} ORDER BY RANDOM()))[1]",
-            _ => null,
-        };
+            throw new UnsupportedReducerException(name, dialect.Name);
+        }
+        return null;
     }
 
     private static string ParseQuantile(List<string> args)
@@ -641,18 +692,18 @@ public static class QueryHelper
     }
 
     // Resolves a field name (possibly dotted JSONB path) to a SQL expression.
-    private static string? ResolveFieldExpr(string field)
+    private static string? ResolveFieldExpr(string field, ISqlDialect dialect)
     {
         if (field.StartsWith("payload.body.", StringComparison.Ordinal))
-            return BuildJsonbPath("payload", field["payload.".Length..]);
+            return BuildJsonbPath("payload", field["payload.".Length..], dialect);
         if (field.StartsWith("payload.", StringComparison.Ordinal))
-            return BuildJsonbPath("payload", field["payload.".Length..]);
+            return BuildJsonbPath("payload", field["payload.".Length..], dialect);
         if (field.Contains('.'))
         {
             var dot = field.IndexOf('.');
             var col = field[..dot];
             if (!SafeColumnIdent.IsMatch(col)) return null;
-            return BuildJsonbPath(col, field[(dot + 1)..]);
+            return BuildJsonbPath(col, field[(dot + 1)..], dialect);
         }
         if (!SafeColumnIdent.IsMatch(field)) return null;
         return field;

@@ -34,7 +34,9 @@ case "$1" in
             cat <<EOF
 Installed default config: /etc/dmart/config.env
 Next steps:
-  1. Edit /etc/dmart/config.env — set DATABASE_* and JWT_SECRET.
+  1. Edit /etc/dmart/config.env — set JWT_SECRET (openssl rand -base64 48).
+     Storage defaults to SQLite at /var/lib/dmart/dmart.db; see the file
+     for how to switch to PostgreSQL.
   2. systemctl enable --now dmart
   3. dmart passwd dmart
      (prompts for a password. The admin is created passwordless
