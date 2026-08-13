@@ -24,7 +24,12 @@ internal sealed class ParquetFileWriter
 {
     private static readonly byte[] Magic = "PAR1"u8.ToArray();
 
-    internal sealed record ColumnSpec(string Name, ParquetType Type, ConvertedType? Converted);
+    // Optional columns carry definition levels; required ones do not. This is
+    // a property of the SCHEMA, not of whether a particular batch happens to
+    // contain nulls — a reader decides how to parse the page from the schema,
+    // so an optional column with no nulls still needs its levels section.
+    internal sealed record ColumnSpec(
+        string Name, ParquetType Type, ConvertedType? Converted, bool Optional = false);
 
     // What the footer must record about a column chunk once its pages are out.
     private sealed record ChunkResult(
@@ -34,10 +39,25 @@ internal sealed class ParquetFileWriter
     public ParquetFileWriter(IReadOnlyList<ColumnSpec> columns) => _columns = [.. columns];
 
     /// <summary>
+    /// One column's page content: PLAIN-encoded values for the rows that have
+    /// them, plus a definition level per row when the column is optional.
+    /// </summary>
+    /// <remarks>
+    /// <paramref name="DefinitionLevels"/> must have one entry per ROW, while
+    /// <paramref name="PlainValues"/> holds only the PRESENT values. Conflating
+    /// the two is the mistake that produces a file which decodes cleanly with
+    /// every value shifted into the wrong row.
+    /// </remarks>
+    internal sealed record ColumnPage(byte[] PlainValues, IReadOnlyList<int>? DefinitionLevels);
+
+    /// <summary>
     /// Writes a single-row-group file. <paramref name="columnValues"/> supplies
     /// one already-PLAIN-encoded payload per column, in schema order.
     /// </summary>
     public void Write(Stream output, IReadOnlyList<byte[]> columnValues, int rowCount)
+        => Write(output, [.. columnValues.Select(v => new ColumnPage(v, null))], rowCount);
+
+    public void Write(Stream output, IReadOnlyList<ColumnPage> columnValues, int rowCount)
     {
         if (columnValues.Count != _columns.Count)
             throw new ArgumentException("one payload per column is required", nameof(columnValues));
@@ -47,16 +67,46 @@ internal sealed class ParquetFileWriter
 
         for (var i = 0; i < _columns.Count; i++)
         {
-            var payload = columnValues[i];
+            var col = _columns[i];
+            var page = columnValues[i];
+
+            if (col.Optional != (page.DefinitionLevels is not null))
+                throw new ArgumentException(
+                    $"column '{col.Name}' is {(col.Optional ? "optional" : "required")} but was given "
+                    + $"{(page.DefinitionLevels is null ? "no" : "")} definition levels", nameof(columnValues));
+
+            // v1 page body = [definition levels][values]. The levels section is
+            // RLE with its own 4-byte length prefix; max level is 1 for a flat
+            // optional column, so one bit is enough to express it.
+            byte[] body;
+            if (page.DefinitionLevels is { } levels)
+            {
+                if (levels.Count != rowCount)
+                    throw new ArgumentException(
+                        $"column '{col.Name}': {levels.Count} definition levels for {rowCount} rows",
+                        nameof(columnValues));
+                var encoded = RleEncoder.EncodeLevelsWithLengthPrefix(levels, bitWidth: 1);
+                body = new byte[encoded.Length + page.PlainValues.Length];
+                encoded.CopyTo(body, 0);
+                page.PlainValues.CopyTo(body, encoded.Length);
+            }
+            else
+            {
+                body = page.PlainValues;
+            }
+
             var pageStart = output.Position;
 
             // Page header, then the page body. Uncompressed for now, so the
             // two sizes are equal — kept as separate fields because they stop
             // being equal the moment zstd is switched on.
-            WriteDataPageHeader(output, rowCount, payload.Length, payload.Length);
-            output.Write(payload);
+            //
+            // num_values counts ROWS, not stored values: for an optional column
+            // the nulls are counted here but absent from the values section.
+            WriteDataPageHeader(output, rowCount, body.Length, body.Length);
+            output.Write(body);
 
-            chunks.Add(new ChunkResult(_columns[i], pageStart, output.Position - pageStart,
+            chunks.Add(new ChunkResult(col, pageStart, output.Position - pageStart,
                                        output.Position - pageStart, rowCount));
         }
 
@@ -113,7 +163,9 @@ internal sealed class ParquetFileWriter
         {
             t.StructBegin();
             t.WriteI32Field(1, (int)c.Type);                          // type
-            t.WriteI32Field(3, (int)FieldRepetitionType.Required);    // repetition_type
+            t.WriteI32Field(3, (int)(c.Optional                        // repetition_type
+                ? FieldRepetitionType.Optional
+                : FieldRepetitionType.Required));
             t.WriteStringField(4, c.Name);                            // name
             if (c.Converted is { } cv) t.WriteI32Field(6, (int)cv);   // converted_type
             t.StructEnd();
@@ -164,6 +216,45 @@ internal sealed class ParquetFileWriter
         for (var i = 0; i < values.Count; i++)
             BinaryPrimitives.WriteInt64LittleEndian(buf.AsSpan(i * 8, 8), values[i]);
         return buf;
+    }
+
+    /// <summary>
+    /// PLAIN encoding for BOOLEAN: bit-packed, LSB first, NOT one byte per
+    /// value. Writing a byte each produces a file that decodes without error
+    /// and returns eight times too many rows of nonsense.
+    /// </summary>
+    public static byte[] PlainBoolean(IReadOnlyList<bool> values)
+    {
+        var buf = new byte[(values.Count + 7) / 8];
+        for (var i = 0; i < values.Count; i++)
+            if (values[i]) buf[i / 8] |= (byte)(1 << (i % 8));
+        return buf;
+    }
+
+    /// <summary>
+    /// PLAIN encoding for INT64 timestamps, as microseconds since the Unix
+    /// epoch — the unit ConvertedType.TimestampMicros declares. DateTime is
+    /// normalised to UTC first: a local-kind value would otherwise be written
+    /// as though its wall-clock reading were UTC, shifting every timestamp by
+    /// the host's offset with nothing in the file to reveal it.
+    /// </summary>
+    public static byte[] PlainTimestampMicros(IReadOnlyList<DateTime> values)
+    {
+        var micros = new long[values.Count];
+        for (var i = 0; i < values.Count; i++)
+        {
+            var utc = values[i].Kind switch
+            {
+                DateTimeKind.Utc => values[i],
+                DateTimeKind.Local => values[i].ToUniversalTime(),
+                // Unspecified is what comes back from a timestamp-without-tz
+                // column; dmart stores wall-clock local time there, so treat it
+                // as local rather than silently relabelling it UTC.
+                _ => DateTime.SpecifyKind(values[i], DateTimeKind.Local).ToUniversalTime(),
+            };
+            micros[i] = (utc - DateTime.UnixEpoch).Ticks / 10;   // 10 ticks per microsecond
+        }
+        return PlainInt64(micros);
     }
 
     /// <summary>PLAIN encoding for BYTE_ARRAY: 4-byte LE length, then bytes.</summary>

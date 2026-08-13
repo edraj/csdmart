@@ -96,6 +96,115 @@ public class ParquetWriterCrossReaderTests
         }
         finally { try { File.Delete(path); } catch { } }
     }
+
+    // Nulls are the thing most likely to be silently wrong. A definition-level
+    // bug does not corrupt the file — it decodes, with values shifted into the
+    // wrong rows. So this asserts null POSITIONS against a pattern where a
+    // shift of one would still produce the right null COUNT.
+    [FactIfPyArrow]
+    public void Null_Positions_Survive_The_Definition_Levels()
+    {
+        var path = Path.Combine(Path.GetTempPath(), $"dmart-pq-{Guid.NewGuid():N}.parquet");
+        try
+        {
+            var writer = new ParquetFileWriter(
+                [new("payload", ParquetType.ByteArray, ConvertedType.Utf8, Optional: true)]);
+
+            //            row: 0     1      2     3      4     5
+            string?[] rows = ["a", null, null, "b", null, "c"];
+            var present = rows.Where(r => r is not null).Select(r => r!).ToArray();
+            var levels = rows.Select(r => r is null ? 0 : 1).ToList();
+
+            using (var fs = File.Create(path))
+                writer.Write(fs,
+                    [new ParquetFileWriter.ColumnPage(
+                        ParquetFileWriter.PlainByteArray(present), levels)],
+                    rows.Length);
+
+            var back = PyArrow.ReadTable(path).GetProperty("payload").EnumerateArray()
+                .Select(x => x.ValueKind == JsonValueKind.Null ? null : x.GetString())
+                .ToArray();
+
+            back.ShouldBe(rows, "a shifted definition level keeps the null count and moves the values");
+        }
+        finally { try { File.Delete(path); } catch { } }
+    }
+
+    // An optional column containing no nulls still needs its levels section,
+    // because the reader decides how to parse the page from the SCHEMA. Omit
+    // it and the values are read as levels.
+    [FactIfPyArrow]
+    public void Optional_Column_With_No_Nulls_Still_Round_Trips()
+    {
+        var path = Path.Combine(Path.GetTempPath(), $"dmart-pq-{Guid.NewGuid():N}.parquet");
+        try
+        {
+            var writer = new ParquetFileWriter(
+                [new("n", ParquetType.Int64, null, Optional: true)]);
+            long[] values = [7, 8, 9];
+            using (var fs = File.Create(path))
+                writer.Write(fs,
+                    [new ParquetFileWriter.ColumnPage(
+                        ParquetFileWriter.PlainInt64(values), [1, 1, 1])],
+                    values.Length);
+
+            PyArrow.ReadTable(path).GetProperty("n").EnumerateArray()
+                .Select(x => x.GetInt64()).ShouldBe(values);
+        }
+        finally { try { File.Delete(path); } catch { } }
+    }
+
+    // BOOLEAN is bit-packed in PLAIN, not one byte per value. Nine values on
+    // purpose: it crosses a byte boundary, where an off-by-one in the packing
+    // shows up and an eight-value test would not.
+    [FactIfPyArrow]
+    public void Booleans_Are_Bit_Packed()
+    {
+        var path = Path.Combine(Path.GetTempPath(), $"dmart-pq-{Guid.NewGuid():N}.parquet");
+        try
+        {
+            var writer = new ParquetFileWriter([new("flag", ParquetType.Boolean, null)]);
+            bool[] flags = [true, false, true, true, false, false, true, false, true];
+            using (var fs = File.Create(path))
+                writer.Write(fs, [ParquetFileWriter.PlainBoolean(flags)], flags.Length);
+
+            PyArrow.ReadTable(path).GetProperty("flag").EnumerateArray()
+                .Select(x => x.GetBoolean()).ShouldBe(flags);
+        }
+        finally { try { File.Delete(path); } catch { } }
+    }
+
+    // Timestamps must come back as the same instant, not the same wall clock.
+    // pyarrow reports TIMESTAMP_MICROS as an ISO string, so this compares the
+    // instant it decoded against the UTC value we meant.
+    [FactIfPyArrow]
+    public void Timestamps_Round_Trip_As_The_Same_Instant()
+    {
+        var path = Path.Combine(Path.GetTempPath(), $"dmart-pq-{Guid.NewGuid():N}.parquet");
+        try
+        {
+            var writer = new ParquetFileWriter(
+                [new("ts", ParquetType.Int64, ConvertedType.TimestampMicros)]);
+            DateTime[] stamps =
+            [
+                new(2026, 8, 13, 17, 4, 5, DateTimeKind.Utc),
+                DateTime.UnixEpoch,
+            ];
+            using (var fs = File.Create(path))
+                writer.Write(fs, [ParquetFileWriter.PlainTimestampMicros(stamps)], stamps.Length);
+
+            var back = PyArrow.ReadTable(path).GetProperty("ts").EnumerateArray()
+                .Select(x => DateTime.Parse(x.GetString()!,
+                    System.Globalization.CultureInfo.InvariantCulture,
+                    System.Globalization.DateTimeStyles.AdjustToUniversal
+                    | System.Globalization.DateTimeStyles.AssumeUniversal))
+                .ToArray();
+
+            back[0].ShouldBe(stamps[0]);
+            back[1].ShouldBe(DateTime.UnixEpoch);
+        }
+        finally { try { File.Delete(path); } catch { } }
+    }
 }
 
 // Shells out to pyarrow. Deliberately a separate process: the point is an
@@ -112,8 +221,11 @@ internal static class PyArrow
 
     internal static JsonElement ReadTable(string path)
     {
+        // default=str because json.dumps cannot encode datetime — pyarrow
+        // returns real datetime objects for TIMESTAMP columns, and without
+        // this the harness fails on a file that is perfectly valid.
         var json = Run($"import pyarrow.parquet as pq, json; "
-                     + $"print(json.dumps(pq.read_table(r'{path}').to_pydict()))")
+                     + $"print(json.dumps(pq.read_table(r'{path}').to_pydict(), default=str))")
             ?? throw new InvalidOperationException("pyarrow read failed");
         return JsonDocument.Parse(json).RootElement.Clone();
     }
