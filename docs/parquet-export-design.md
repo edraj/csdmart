@@ -201,13 +201,53 @@ nulls and every supported type, not a fixed golden file.
 - **Statistics** — no min/max predicate pushdown, so analytics scans more.
   Affects speed, not correctness; addable later.
 
-**The scope question this forces (§6 revisited).** The writer alone serves
-analytics but *not* the round-trip restore §6 chose as the primary consumer.
-Either the reader is built too — +550 lines carrying the same independent
-verification burden — or restore stays on the existing JSON/zip path and this
-format is analytics-and-archival only. **That is a decision, not a detail:** it
-inverts the "round-trip first" call in §6 and should be settled before any code
-is written.
+### 2.3 The reader is not optional — and it is smaller than a general one
+
+*Decision taken: writer AND reader (§6).*
+
+An export that cannot be imported is not a backup, and §6 already chose
+round-trip restore as the primary consumer. So the reader is in scope, and the
+"use a library just for reading" escape does not exist: `dmart import` is a CLI
+subcommand in the same binary, which is exactly the call-graph position §2.1
+shows the `Dmart.SqlAdapter` exclusion cannot cover.
+
+**But a reader for our own dialect is much smaller than a general Parquet
+reader.** We control what we emit: always `PLAIN` values, always `RLE`
+definition levels, always zstd, no dictionary pages, no statistics, v1 data
+pages, a known row-group layout. Decoding that is close to symmetric with
+encoding it:
+
+| Component | ~lines | Note |
+|---|---:|---|
+| Thrift compact **parser** (same field subset) | 200 | mirrors the writer |
+| Page header + zstd decompression | 80 | `ZstdSharp` decompresses too |
+| `PLAIN` value decoders per physical type | 100 | mirrors the writer |
+| RLE/bit-packed **decoder**, definition levels | 100 | mirrors the writer |
+| **Reader total** | **~480** | |
+| **Writer + reader** | **~1,400** | |
+
+A *general* Parquet reader — every encoding, dictionary pages, v2 pages, nested
+repetition — is a different and much larger project, and is explicitly **not**
+what this is. Which forces one rule:
+
+**Refuse what we did not write, loudly.** On encountering a dictionary page, a
+v2 data page, an unsupported encoding or a schema shape outside our dialect,
+the reader must fail with a message naming what it found — never guess, never
+partially decode. Silently misreading someone else's Parquet file would be the
+same failure shape as the 100,000-row truncation (#156): plausible output,
+quietly wrong. A file produced by Spark or pandas is therefore *not* importable
+by design, and says so.
+
+**The testing consequence is the important one.** Round-tripping our own writer
+through our own reader proves almost nothing: both sides can share a
+misunderstanding of the spec and agree with each other perfectly. The
+verification has to cross an independent implementation in **both** directions:
+
+- ours → `pyarrow`  (does anyone else understand what we wrote?)
+- `pyarrow` → ours  (do we understand what the format actually says?)
+
+The second direction is the one that catches a writer and reader agreeing on
+the same bug, and it is the one that is easy to skip.
 
 **And the bar from #75 still applies.** It judged a Parquet archival path not
 worth a companion binary *versus `tar -czf` plus the existing JSON export*. A
@@ -448,6 +488,7 @@ Two consequences to be explicit about:
 | Consumer | **Round-trip first, analytics-readable** | Opaque JSON columns; Hive partitioning; native lists for arrays |
 | Deletions | **Tombstone table** | Schema change on both backends; write on every delete path; retention policy |
 | History | **Optional, default off** | `--with-history`; pinned per chain; needs a `timestamp` index when enabled |
+| Parquet code | **Hand-written writer AND reader** (§2.2, §2.3) | ~1,400 lines, no third-party library, no reflection; reads only our own dialect and refuses anything else |
 | Increments | **Chained, not independent** | `chain_id`/`sequence`/`parent` enforced; whole-chain verify before apply; documented re-base cadence |
 
 ## 7. Open questions
@@ -460,9 +501,8 @@ Two consequences to be explicit about:
    on both versions (§2). Wrong question, as it turns out: both link and run,
    and both still contain reflection, which the project rule forbids. Replaced
    by the two live questions below.
-2a. **Writer-only, or writer + reader?** §2.2 — decides whether this serves
-   round-trip restore (§6's choice) or analytics only, and whether the estimate
-   is ~900 or ~1450 lines.
+2a. ~~**Writer-only, or writer + reader?**~~ Both — an export that cannot be
+   imported is not a backup (§2.3). ~1,400 lines total.
 2b. **Does a hand-written encoder clear #75's bar?** It judged Parquet not
    worth a companion binary versus `tar -czf` + the JSON export. The payoff
    here is incremental export, which `tar` cannot do — but the bar is not
@@ -483,9 +523,10 @@ independently verifiable and the risky part is not last.
 
 1. **This document.** Stop, agree the shape.
 2. ~~**Settle the AOT question.**~~ Measured (§2): no library qualifies. The
-   replacement gate is a **decision, not an experiment** — writer-only or
-   writer+reader (§2.2), and whether ~900 lines of hand-written encoder clears
-   #75's bar. Nothing after this is worth starting until both are answered.
+   replacement gate is a **decision, not an experiment**, and half of it is
+   now settled: writer AND reader (§2.3, ~1,400 lines). What remains is whether
+   that clears #75's bar — *not worth it versus `tar -czf` + the JSON export* —
+   for a payoff `tar` cannot give: incremental export.
 3. **Full export, streaming, no incremental.** Prove the round trip:
    export → import into an empty store → the two stores are equal. Land the AOT
    suppression with its evidence. (The `MemoryStream` and `QueryLimit` ceilings
