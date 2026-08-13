@@ -10,7 +10,7 @@ permissions:
   contents: read
 
 jobs:
-  build-and-test:
+  build-and-test-matrix:
     runs-on: self-hosted
 
     # One axis: the SQL backend. Both drivers ship in the same binary and share
@@ -315,6 +315,33 @@ jobs:
              WHERE datname='$TEST_DB' AND pid <> pg_backend_pid();" \
             >/dev/null || true
           dropdb -w --if-exists -h 127.0.0.1 -U dmart "$TEST_DB" || true
+
+  # The branch ruleset on master requires a status check named exactly
+  # `build-and-test`. Matrixing that job renamed it to
+  # `build-and-test (postgresql)` / `build-and-test (sqlite)`, so the required
+  # check stopped being produced at all — which blocks not just this PR but
+  # EVERY future one, on a check that can never appear.
+  #
+  # This job restores the name as an aggregate. It runs no build of its own; it
+  # simply fails when any matrix leg failed or was cancelled, so the gate keeps
+  # meaning what it meant. Adding a third driver later needs no ruleset edit.
+  #
+  # needs: + an explicit result check, because `needs:` alone would let this job
+  # be SKIPPED when a dependency fails — and a skipped required check reads as
+  # "not failed" to some gates, which is exactly the silent pass to avoid.
+  build-and-test:
+    name: build-and-test
+    runs-on: self-hosted
+    needs: [build-and-test-matrix]
+    if: always()
+    steps:
+      - name: Report the matrix result
+        run: |
+          echo "matrix result: ${{ needs.build-and-test-matrix.result }}"
+          [ "${{ needs.build-and-test-matrix.result }}" = "success" ] || {
+            echo "one or more driver legs did not succeed"
+            exit 1
+          }
 
   aot-publish:
     runs-on: self-hosted
