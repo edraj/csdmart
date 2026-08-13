@@ -100,40 +100,63 @@ if (dotenvPath is not null)
 [System.Diagnostics.CodeAnalysis.SuppressMessage("Security", "CA2100",
     Justification = "Audited: tableName is from a hardcoded set in each caller (entries/users/roles/permissions/spaces for fix_query_policies, 'entries' for update_query_policies). The dynamic VALUES list embeds only integer placeholder indices; all caller-supplied values flow through NpgsqlCommand.Parameters.")]
 static async Task<int> BulkUpdatePoliciesAsync(
-    Npgsql.NpgsqlConnection conn,
+    System.Data.Common.DbConnection conn,
     string tableName,
     List<(string Shortname, string SpaceName, string Subpath, string[] Policies)> rows,
     int offset, int len)
 {
     if (len == 0) return 0;
 
+    await using var cmd = conn.CreateCommand();
+    var sqlite = cmd is Microsoft.Data.Sqlite.SqliteCommand;
+
     var sb = new System.Text.StringBuilder(120 + 100 * len);
-    sb.Append("UPDATE ").Append(tableName).Append(" AS t SET query_policies = v.policies FROM (VALUES");
+
+    // Same split as EntryRepository.BulkUpdateDescendantsAsync, for the same
+    // reason: SQLite has no column-alias list on a subquery (`AS v(a,b,c)`),
+    // so the column names have to come from a CTE instead.
+    //
+    //   PostgreSQL:  UPDATE ... FROM (VALUES ...) AS v(cols)
+    //   SQLite:      WITH v(cols) AS (VALUES ...) UPDATE ... FROM v
+    if (sqlite) sb.Append("WITH v(shortname, space_name, subpath, policies) AS (VALUES ");
+    else sb.Append("UPDATE ").Append(tableName)
+           .Append(" AS t SET query_policies = v.policies FROM (VALUES");
+
     for (var i = 0; i < len; i++)
     {
         if (i > 0) sb.Append(',');
-        // 4 params per row, starting at $1. Cast the first row's columns so
-        // Postgres can infer the VALUES column types; later rows inherit.
+        // 4 params per row, starting at $1. PostgreSQL needs the casts so it
+        // can infer the VALUES column types (later rows inherit); SQLite is
+        // dynamically typed and rejects the syntax.
         var p = 1 + i * 4;
-        sb.Append('(').Append('$').Append(p).Append("::text,$")
-                      .Append(p + 1).Append("::text,$")
-                      .Append(p + 2).Append("::text,$")
-                      .Append(p + 3).Append("::text[])");
+        if (sqlite)
+            sb.Append('(').Append('$').Append(p).Append(",$")
+                          .Append(p + 1).Append(",$")
+                          .Append(p + 2).Append(",$")
+                          .Append(p + 3).Append(')');
+        else
+            sb.Append('(').Append('$').Append(p).Append("::text,$")
+                          .Append(p + 1).Append("::text,$")
+                          .Append(p + 2).Append("::text,$")
+                          .Append(p + 3).Append("::text[])");
     }
-    sb.Append(") AS v(shortname, space_name, subpath, policies) WHERE t.shortname = v.shortname AND t.space_name = v.space_name AND t.subpath = v.subpath");
 
-    await using var cmd = new Npgsql.NpgsqlCommand(sb.ToString(), conn);
+    const string joinOn = " WHERE t.shortname = v.shortname AND t.space_name = v.space_name AND t.subpath = v.subpath";
+    if (sqlite)
+        sb.Append(") UPDATE ").Append(tableName)
+          .Append(" AS t SET query_policies = v.policies FROM v").Append(joinOn);
+    else
+        sb.Append(") AS v(shortname, space_name, subpath, policies)").Append(joinOn);
+
+    cmd.CommandText = sb.ToString();
     for (var i = 0; i < len; i++)
     {
         var row = rows[offset + i];
-        cmd.Parameters.Add(new() { Value = row.Shortname });
-        cmd.Parameters.Add(new() { Value = row.SpaceName });
-        cmd.Parameters.Add(new() { Value = row.Subpath });
-        cmd.Parameters.Add(new()
-        {
-            Value = row.Policies,
-            NpgsqlDbType = NpgsqlTypes.NpgsqlDbType.Array | NpgsqlTypes.NpgsqlDbType.Text,
-        });
+        DbParams.Add(cmd, row.Shortname);
+        DbParams.Add(cmd, row.SpaceName);
+        DbParams.Add(cmd, row.Subpath);
+        // TextArray: text[] on PostgreSQL, a JSON array in TEXT on SQLite.
+        DbParams.Add(cmd, row.Policies, Dmart.QueryGrammar.SqlValueKind.TextArray);
     }
     return await cmd.ExecuteNonQueryAsync();
 }
@@ -397,7 +420,7 @@ switch (subcommand)
         // Cli/FolderRenderingFixer.cs for the (conservative) fix rules.
         var space = serverArgs.FirstOrDefault(a => !a.StartsWith("--", StringComparison.Ordinal));
         var apply = serverArgs.Contains("--apply");
-        var (_, dbInst) = CliBootstrap.BuildOrExit(dotenvPath, dotenvValues);
+        var (_, dbInst) = CliBootstrap.BuildFactoryOrExit(dotenvPath, dotenvValues);
         var fixer = new FolderRenderingFixer(dbInst);
         var spacesToFix = new List<string>();
         if (!string.IsNullOrEmpty(space))
@@ -583,7 +606,10 @@ switch (subcommand)
             outputPath = Path.GetFullPath(outputPath);
         }
 
-        var (s, dbInst) = CliBootstrap.BuildOrExit(dotenvPath, dotenvValues);
+        // Driver-aware for the same reason `import` is: ImportExportService is
+        // backend-neutral, and an export that silently read a different
+        // database than the server writes would be worse than a failure.
+        var (s, dbInst) = CliBootstrap.BuildFactoryOrExit(dotenvPath, dotenvValues);
         var exportService = CliBootstrap.BuildImportExportService(s, dbInst);
 
         // Same call path as the HTTP /managed/export handler — but with
@@ -1150,12 +1176,40 @@ switch (subcommand)
         //   -q, --quiet    Suppress per-statement output (show summary only)
         var quiet = serverArgs.Contains("-q") || serverArgs.Contains("--quiet");
 
+        // Resolve the driver BEFORE the PostgreSQL-only bootstrap. On SQLite
+        // this command still has a real job — "make the schema current" is
+        // meaningful on both backends — it just does it with different DDL.
+        // Falling through to BuildOrExit would either refuse with "database
+        // not configured" or, with an unrelated PostgreSQL running, migrate a
+        // database the server never reads.
+        {
+            var migrateCfg = new ConfigurationBuilder();
+            if (dotenvPath is not null) migrateCfg.AddInMemoryCollection(dotenvValues);
+            migrateCfg.AddEnvironmentVariables();
+            var migrateSettings = new DmartSettings();
+            migrateCfg.Build().GetSection("Dmart").Bind(migrateSettings);
+
+            if (DatabaseDriverParser.TryResolve(migrateSettings, out var migrateDriver, out var migrateInferred)
+                && migrateDriver == DatabaseDriver.Sqlite)
+            {
+                Console.WriteLine($"database driver: {DatabaseDriverParser.Describe(migrateDriver, migrateInferred)}");
+                Console.WriteLine($"Migrating {migrateSettings.SqlitePath} ...");
+                var sqliteFactory = new SqliteConnectionFactory(Options.Create(migrateSettings));
+                // The same idempotent create+patch the server runs at startup
+                // and `dmart import` runs before a rebuild.
+                await SqliteSchemaInitializer.EnsureSchemaAsync(
+                    sqliteFactory, Microsoft.Extensions.Logging.Abstractions.NullLogger.Instance);
+                Console.WriteLine("dmart schema ready.");
+                return;
+            }
+        }
+
         var (s, dbInst) = CliBootstrap.BuildOrExit(dotenvPath, dotenvValues,
             "Error: Database not configured. Set DATABASE_HOST/PORT/USERNAME/PASSWORD/NAME in config.env.");
 
         try
         {
-            Console.WriteLine($"Migrating {s.DatabaseName}@{s.DatabaseHost}:{s.DatabasePort} ...");
+            Console.WriteLine($"Migrating {CliBootstrap.DescribeStore(s, dbInst)} ...");
 
             await using var conn = await dbInst.OpenAsync();
             // PG emits NOTICE when `IF NOT EXISTS` guards short-circuit — capture
@@ -1240,10 +1294,10 @@ switch (subcommand)
             else if (!a.StartsWith('-')) spaceFilter = a;
         }
 
-        var (s, dbInst) = CliBootstrap.BuildOrExit(dotenvPath, dotenvValues,
+        var (s, dbInst) = CliBootstrap.BuildFactoryOrExit(dotenvPath, dotenvValues,
             "Error: Database not configured. Set DATABASE_* in config.env.");
 
-        Console.WriteLine($"{(dryRun ? "[dry-run] " : "")}Scanning {s.DatabaseName}@{s.DatabaseHost}:{s.DatabasePort} for rows with empty query_policies"
+        Console.WriteLine($"{(dryRun ? "[dry-run] " : "")}Scanning {CliBootstrap.DescribeStore(s, dbInst)} for rows with empty query_policies"
             + (spaceFilter is null ? " across all spaces..." : $" in space '{spaceFilter}'..."));
 
         await using var conn = await dbInst.OpenAsync();
@@ -1262,16 +1316,16 @@ switch (subcommand)
                 SELECT shortname, space_name, subpath, resource_type, is_active,
                        owner_shortname, owner_group_shortname
                 FROM {tableName}
-                WHERE COALESCE(array_length(query_policies, 1), 0) = 0
+                WHERE {QueryHelper.DialectFor(dbInst).ArrayLength("query_policies")} = 0
                 """ + (spaceFilter is null ? "" : "\n  AND space_name = $1") + """
 
                 ORDER BY space_name, subpath, shortname
                 """;
 #pragma warning disable CA2100 // Audited: selectSql is composed of constants + the loop variable `tableName` which iterates the hardcoded `tables` array; spaceFilter binds via $1.
-            await using var sel = new Npgsql.NpgsqlCommand(selectSql, conn);
+            await using var sel = conn.Command(selectSql);
 #pragma warning restore CA2100
             if (spaceFilter is not null)
-                sel.Parameters.Add(new() { Value = spaceFilter });
+                DbParams.Add(sel, spaceFilter);
 
             var orphans = new List<(string shortname, string spaceName, string subpath,
                 string resourceType, bool isActive, string owner, string? ownerGroup)>();
@@ -1354,13 +1408,12 @@ switch (subcommand)
         // Idempotent: each folder is checked first via EntryRepository.GetAsync
         // and skipped when present. owner_shortname is the user themselves,
         // matching the plugin and Python.
-        var (_, dbInst) = CliBootstrap.BuildOrExit(dotenvPath, dotenvValues,
+        var (_, dbInst) = CliBootstrap.BuildFactoryOrExit(dotenvPath, dotenvValues,
             "Error: Database not configured. Set DATABASE_* in config.env.");
         var entryRepo = new EntryRepository(dbInst);
 
         await using var conn = await dbInst.OpenAsync();
-        await using var sel = new Npgsql.NpgsqlCommand(
-            "SELECT shortname FROM users ORDER BY shortname", conn);
+        await using var sel = conn.Command("SELECT shortname FROM users ORDER BY shortname");
         var shortnames = new List<string>();
         await using (var r = await sel.ExecuteReaderAsync())
         {
@@ -1448,10 +1501,10 @@ switch (subcommand)
                 batchSize = b;
         }
 
-        var (s, dbInst) = CliBootstrap.BuildOrExit(dotenvPath, dotenvValues,
+        var (s, dbInst) = CliBootstrap.BuildFactoryOrExit(dotenvPath, dotenvValues,
             "Error: Database not configured. Set DATABASE_* in config.env.");
 
-        Console.WriteLine($"Recomputing query_policies for entries in {s.DatabaseName}@{s.DatabaseHost}:{s.DatabasePort} (batch={batchSize})...");
+        Console.WriteLine($"Recomputing query_policies for entries in {CliBootstrap.DescribeStore(s, dbInst)} (batch={batchSize})...");
 
         await using var conn = await dbInst.OpenAsync();
 
@@ -1459,15 +1512,17 @@ switch (subcommand)
         var offset = 0;
         while (true)
         {
-            await using var sel = new Npgsql.NpgsqlCommand("""
+            // LIMIT before OFFSET: PostgreSQL accepts either order, SQLite
+            // only this one. Parameters follow the new order.
+            await using var sel = conn.Command("""
                 SELECT shortname, space_name, subpath, resource_type, is_active,
                        owner_shortname, owner_group_shortname, query_policies
                 FROM entries
                 ORDER BY space_name, subpath, shortname
-                OFFSET $1 LIMIT $2
-                """, conn);
-            sel.Parameters.Add(new() { Value = offset });
-            sel.Parameters.Add(new() { Value = batchSize });
+                LIMIT $1 OFFSET $2
+                """);
+            DbParams.Add(sel, batchSize);
+            DbParams.Add(sel, offset);
 
             var rows = new List<(string sn, string sp, string subp, string rt, bool act,
                 string own, string? og, string[] policies)>();
@@ -1479,7 +1534,7 @@ switch (subcommand)
                         r.GetString(0), r.GetString(1), r.GetString(2),
                         r.GetString(3), r.GetBoolean(4),
                         r.GetString(5), r.IsDBNull(6) ? null : r.GetString(6),
-                        r.IsDBNull(7) ? Array.Empty<string>() : r.GetFieldValue<string[]>(7)));
+                        r.IsDBNull(7) ? Array.Empty<string>() : DbParams.ReadTextArray(r.GetValue(7)).ToArray()));
                 }
             }
             if (rows.Count == 0) break;

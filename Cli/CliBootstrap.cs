@@ -97,6 +97,23 @@ internal static class CliBootstrap
         return (s, db);
     }
 
+    /// <summary>
+    /// Human-readable name of the store a CLI command is about to touch, for
+    /// the "Migrating X ..." style banners.
+    /// </summary>
+    /// <remarks>
+    /// Printing "$name@$host:$port" unconditionally was actively misleading
+    /// once these commands became driver-aware: a SQLite run reported the
+    /// PostgreSQL host and database it was NOT using, both of which come from
+    /// DmartSettings defaults and are populated even when nothing configured
+    /// them. An operator reading that has every reason to believe the command
+    /// hit PostgreSQL.
+    /// </remarks>
+    public static string DescribeStore(DmartSettings s, IDbConnectionFactory db) =>
+        db is SqliteConnectionFactory
+            ? s.SqlitePath
+            : $"{s.DatabaseName}@{s.DatabaseHost}:{s.DatabasePort}";
+
     // Build the ImportExportService with the same null-logger / null-plugin
     // wiring the CLI subcommands need. Used by `export`, `import`, and `seed`
     // — three sites that historically each constructed an identical 9-line
