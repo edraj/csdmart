@@ -56,13 +56,45 @@ one blob in memory.
 The constraint that could have killed this: Native AOT, zero new
 IL2026/IL2027/IL3050, no reflection-based serialization.
 
-**Parquet.Net 5.6.1 works, with one caveat.**
+**Verdict: use Parquet.Net 5.6.1, with three suppressions.** The measurements
+below were re-run across both major versions after §2.1 surfaced PR #75; the
+earlier claim of "exactly one IL3050" was measured on a schema *without list
+columns* and did not survive contact with the schema this design actually
+needs.
+
+| | 5.6.1 | 6.0.3 |
+|---|---|---|
+| AOT diagnostics, no list columns | 1 (`IL3050`) | 3 |
+| AOT diagnostics, **with** list columns | **3** (`IL3050` + 2× `IL2070`) | **3** (same) |
+| Native binary links and runs | yes | yes |
+| Nullable value-type column (`DateTime?`) | yes | yes |
+| `byte[]` column via low-level API | — | yes |
+| **`list<string>` round-trip** | **yes** | **no — throws** |
+| bytes/row (50k entries) | 26.9 | 25.7 |
+
+Three things follow, and only the last is about AOT:
+
+1. **The diagnostic count is a function of which features you use, not of the
+   version.** Both versions emit the same three once a `ListField` is in the
+   schema: the two `IL2070`s live in `TypeExtensions.TryExtractIEnumerableType`
+   and `IsGenericIDictionary`, which only the list/map path reaches. A probe
+   without lists measures a schema this design does not have.
+2. **6.0.3 cannot read back a list column through its low-level API.** Reading
+   `tags` throws `ArgumentException: Definition levels buffer is too small`,
+   sized from `RowCount` rather than from the value count — and no `ReadAsync`
+   overload exposes definition levels to size it correctly. The same logical
+   round-trip succeeds on 5.6.1. Since §4.2 specifies native `list<string>` for
+   `tags` and `query_policies`, this decides the version.
+3. **Neither version's diagnostics are real at runtime.** Both link and both
+   run correctly, including the nullable value-type column that `IL3050` is
+   about, verified on the native binary rather than inferred.
 
 - Its compression dependency is `ZstdSharp.Port` — **pure managed**. No native
   sidecar to place, unlike `libe_sqlite3.so`. One less packaging problem.
-- Publishing with `IlcTreatWarningsAsErrors=true` produces **exactly one**
-  error: `IL3050` on `Type.MakeGenericType` in
-  `Parquet.TypeExtensions.GetNullable(Type)`.
+- Publishing with `IlcTreatWarningsAsErrors=true` on the schema this design
+  needs produces **three** errors: `IL3050` on `Type.MakeGenericType` in
+  `Parquet.TypeExtensions.GetNullable(Type)`, and two `IL2070` trim errors on
+  reflection over interfaces in the list-handling path.
 - That warning is a **false positive for statically-declared schemas**.
   Verified by building a native binary with a `DataField<DateTime?>` column —
   the precise `Nullable<T>` path the flag is about — and running it: 50,000
@@ -75,10 +107,11 @@ IL2026/IL2027/IL3050, no reflection-based serialization.
   `ParquetSchema`. `ParquetSerializer.SerializeAsync<T>` is the reflection
   path and is exactly what the project's constraints exclude.
 
-So this needs a **narrowly scoped `IL3050` suppression with the runtime
-evidence in its justification**. That is a real cost and should be a conscious
-decision, not a footnote — it is the first suppression of an AOT analyzer in
-this codebase rather than of a security analyzer.
+So this needs **three narrowly scoped suppressions with the runtime evidence in
+their justification** — one `IL3050`, two `IL2070`. That is a real cost and
+should be a conscious decision, not a footnote: they are the first suppressions
+of AOT/trim analyzers in this codebase rather than of a security analyzer, and
+three is a different conversation from one.
 
 ### 2.1 Prior art: PR #75 was dropped over exactly this, and why that changes
 
@@ -119,17 +152,22 @@ a false positive for statically-declared schemas. If that holds, there is no
 companion binary and no orphaning — the dependency lives in the main assembly
 like any other.
 
-**It is not yet proven to hold**, and this is the single most important open
-item in this document:
+**This has now been measured on both versions** (see the table in §2), and it
+holds — with a correction to how it was first stated:
 
-- §2 measured **5.6.1**; #75 hit **6.0.3**. Different major version.
-- #75's failures came from the serializer path, which §2 avoids — so the two
-  results are not in contradiction, but neither does one supersede the other.
-- **Re-measure the low-level API on 6.x before committing to this design.** If
-  6.x cannot be made AOT-clean through the low-level API either, #75's
-  conclusion stands and this design needs the companion binary it assumes away
-  — at which point the value judgement in #75 has to be re-argued rather than
-  inherited.
+- **The low-level API links and runs under AOT on both 5.6.1 and 6.0.3.** #75's
+  blocker was specific to `ParquetSerializer`, not to Parquet.Net. No companion
+  binary is needed, and the subproject orphaning problem does not arise.
+- **But the cost is three suppressions, not one.** The original "exactly one
+  IL3050" was measured without list columns; adding the `list<string>` the
+  design requires brings in two `IL2070`s on both versions. Same features, same
+  diagnostics, either version.
+- **And 6.0.3 cannot read a list column back**, so the version choice is 5.6.1.
+  Ironically the escape from #75 is to go *down* a major version, not up.
+
+#75's judgement was therefore correct **for the API and version it tested**, and
+remains correct for that combination. What it did not test is the combination
+this design uses.
 
 For context, #75 was Phase C of a 24M-entry / 400 GB legacy migration. Phase A
 (PR #73, preflight) and Phase B (PR #74, `import --resume`) shipped and covered
@@ -378,9 +416,9 @@ Two consequences to be explicit about:
    policies when `actor` is non-null; the CLI passes null for a full dump. A
    Parquet export is an operator tool — it should be explicitly actor-null and
    refuse an actor argument, rather than quietly producing a filtered "backup".
-2. **Does the low-level API stay AOT-clean on Parquet.Net 6.x?** The whole
-   design assumes it does (§2.1). Measured only on 5.6.1 so far. If not, #75's
-   companion-binary conclusion stands and the value case must be re-argued.
+2. ~~**Does the low-level API stay AOT-clean on Parquet.Net 6.x?**~~ Measured
+   (§2): yes on both versions, but at three suppressions rather than one, and
+   6.0.3 cannot read list columns — so the design pins **5.6.1**.
 3. **Compression codec.** zstd measured here; snappy is faster to write and
    more widely supported by older readers. Worth measuring both at GB scale
    before pinning.
@@ -396,12 +434,9 @@ Mirrors how the SQLite backend was staged, for the same reason: each phase is
 independently verifiable and the risky part is not last.
 
 1. **This document.** Stop, agree the shape.
-2. **Settle the AOT question on the version we would actually ship (§2.1).**
-   Re-run the §2 probe against Parquet.Net 6.x with the low-level API. This is
-   a day's work and it gates everything after it: if 6.x cannot be made
-   AOT-clean, #75's companion-binary conclusion stands and the value case has
-   to be re-argued before any exporter is written. Do not skip to step 3
-   because the 5.6.1 numbers look good.
+2. ~~**Settle the AOT question.**~~ Done — see §2. Pin **Parquet.Net 5.6.1**,
+   budget three suppressions, and carry the runtime evidence in their
+   justifications.
 3. **Full export, streaming, no incremental.** Prove the round trip:
    export → import into an empty store → the two stores are equal. Land the AOT
    suppression with its evidence. (The `MemoryStream` and `QueryLimit` ceilings
