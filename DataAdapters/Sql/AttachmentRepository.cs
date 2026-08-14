@@ -85,15 +85,22 @@ public sealed class AttachmentRepository(IDbConnectionFactory db, ISqlDialect di
     /// Index: idx_attachments_updated_at.
     /// </param>
     public async Task<List<(Attachment Attachment, long MediaSize)>> ListForSpacePagedAsync(
-        string spaceName, int limit, int offset, DateTime? since = null, CancellationToken ct = default)
+        string spaceName, int limit, int offset, DateTime? since = null,
+        string? subpath = null, CancellationToken ct = default)
     {
         await using var conn = await db.OpenAsync(ct);
         var sinceClause = since is null ? "" : "AND updated_at >= $4";
+        // An attachment's subpath is "<parent subpath>/<parent shortname>", so
+        // the folder's own attachments sit AT the scope and everything deeper
+        // sits under it — the same predicate the folder cascade uses.
+        var scoped = !string.IsNullOrEmpty(subpath) && subpath != "/";
+        var scopeParam = since is null ? "$4" : "$5";
+        var scopeClause = scoped ? $"AND (subpath = {scopeParam} OR subpath LIKE {scopeParam} || '/%')" : "";
         await using var cmd = conn.Command($"""
             {SelectColumnsNoMedia.Replace("FROM attachments", "").TrimEnd()},
                    COALESCE(length(media), 0) AS media_size
             FROM attachments
-            WHERE space_name = $1 {sinceClause}
+            WHERE space_name = $1 {sinceClause} {scopeClause}
             ORDER BY uuid
             LIMIT $2 OFFSET $3
             """);
@@ -101,6 +108,7 @@ public sealed class AttachmentRepository(IDbConnectionFactory db, ISqlDialect di
         DbParams.Add(cmd, limit);
         DbParams.Add(cmd, offset);
         if (since is not null) DbParams.Add(cmd, since.Value);
+        if (scoped) DbParams.Add(cmd, subpath!);
 
         var result = new List<(Attachment, long)>();
         await using var r = await cmd.ExecuteReaderAsync(ct);

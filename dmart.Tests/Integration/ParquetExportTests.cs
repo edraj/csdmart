@@ -206,6 +206,134 @@ public class ParquetExportTests : IClassFixture<DmartFactory>, IDisposable
         });
     }
 
+    // ---- scoping and full backup ----
+
+    // Exporting the management space IS asking for users, roles and
+    // permissions — they live in it.
+    [FactIfPg]
+    public async Task Exporting_The_Management_Space_Includes_The_Global_Tables()
+    {
+        var svc = _factory.Services.GetRequiredService<ParquetArchiveService>();
+        _factory.CreateClient();
+        var dir = NewDir();
+
+        var manifest = await svc.ExportAsync(dir, "management", "/", actor: null);
+
+        manifest.Tables.Select(t => t.Name).ShouldContain("users");
+        manifest.RowsIn("users").ShouldBeGreaterThan(0);
+    }
+
+    // A subfolder export must carry that folder's subtree and nothing else —
+    // including not sweeping up a sibling whose name it prefixes.
+    [FactIfPg]
+    public async Task A_Subpath_Export_Carries_Only_That_Subtree()
+    {
+        await WithSpaceAsync(0, async (svc, space, _) =>
+        {
+            var entries = _factory.Services.GetRequiredService<EntryRepository>();
+            async Task Add(string subpath, string shortname) =>
+                await entries.UpsertAsync(new Entry
+                {
+                    Uuid = Guid.NewGuid().ToString(), Shortname = shortname,
+                    SpaceName = space, Subpath = subpath, ResourceType = ResourceType.Content,
+                    IsActive = true, OwnerShortname = "dmart",
+                });
+
+            await Add("/docs", "inside");
+            await Add("/docs/deep", "deeper");
+            await Add("/docs_old", "sibling");   // prefixes "/docs" as a string
+            await Add("/", "root");
+
+            var dir = NewDir();
+            var manifest = await svc.ExportAsync(dir, space, "/docs", actor: null);
+
+            manifest.RowsIn("entries").ShouldBe(2);
+            // "inside" and "deeper" only — NOT "sibling" (under "/docs_old",
+            // which prefixes "/docs" as a string) and not "root".
+            var names = ParquetArchiveService.ReadEntries(dir)
+                .Select(e => e.Shortname).OrderBy(x => x, StringComparer.Ordinal).ToList();
+            names.Count.ShouldBe(2);
+            names[0].ShouldBe("deeper");
+            names[1].ShouldBe("inside");
+        });
+    }
+
+    // The full backup: every space in one archive, each in its own partition,
+    // global tables written once rather than per space.
+    [FactIfPg]
+    public async Task A_Full_Backup_Covers_Every_Space_And_Restores()
+    {
+        await WithSpaceAsync(2, async (svc, spaceA, namesA) =>
+        {
+            await WithSpaceAsync(3, async (_, spaceB, namesB) =>
+            {
+                var dir = NewDir();
+                var manifest = await svc.ExportAllAsync(dir);
+
+                manifest.Spaces.ShouldNotBeNull();
+                manifest.Spaces!.ShouldContain(spaceA);
+                manifest.Spaces!.ShouldContain(spaceB);
+                manifest.Tables.Select(t => t.Name).ShouldContain("users");
+
+                // Each space in its OWN partition — restoring them all under
+                // one name would silently merge spaces.
+                File.Exists(Path.Combine(dir, "entries", $"space_name={spaceA}", "part-00000.parquet"))
+                    .ShouldBeTrue();
+                File.Exists(Path.Combine(dir, "entries", $"space_name={spaceB}", "part-00000.parquet"))
+                    .ShouldBeTrue();
+
+                var back = ParquetArchiveService.ReadEntries(dir);
+                back.Where(e => e.SpaceName == spaceA).Select(e => e.Shortname)
+                    .OrderBy(x => x, StringComparer.Ordinal)
+                    .ShouldBe(namesA.OrderBy(x => x, StringComparer.Ordinal));
+                back.Where(e => e.SpaceName == spaceB).Select(e => e.Shortname)
+                    .OrderBy(x => x, StringComparer.Ordinal)
+                    .ShouldBe(namesB.OrderBy(x => x, StringComparer.Ordinal));
+            });
+        });
+    }
+
+    // Verification re-reads what was written. A backup nobody has read is one
+    // you are guessing about — so a damaged archive must fail here, loudly,
+    // rather than at restore time.
+    [FactIfPg]
+    public async Task Verification_Catches_A_Damaged_Archive()
+    {
+        await WithSpaceAsync(2, async (svc, space, _) =>
+        {
+            var dir = NewDir();
+            var manifest = await svc.ExportAllAsync(dir);   // verifies, and passes
+
+            var file = Path.Combine(dir, "entries", $"space_name={space}", "part-00000.parquet");
+            await File.WriteAllTextAsync(file, "not a parquet file any more");
+
+            await Should.ThrowAsync<Exception>(
+                ParquetArchiveService.VerifyAsync(dir, manifest));
+        });
+    }
+
+    // A truncated blob must be caught by verification, not discovered when
+    // someone opens the attachment months later.
+    [FactIfPg]
+    public async Task Verification_Catches_A_Truncated_Blob()
+    {
+        await WithSpaceAsync(1, async (svc, space, shortnames) =>
+        {
+            await AddAttachmentAsync(space, shortnames[0], "att1",
+                System.Text.Encoding.UTF8.GetBytes("some media bytes"));
+
+            var dir = NewDir();
+            var manifest = await svc.ExportAllAsync(dir);
+
+            var blob = Directory.EnumerateFiles(Path.Combine(dir, "blobs"), "*", SearchOption.AllDirectories)
+                                .First();
+            await File.WriteAllTextAsync(blob, "truncated");
+
+            await Should.ThrowAsync<InvalidDataException>(
+                ParquetArchiveService.VerifyAsync(dir, manifest));
+        });
+    }
+
     // ---- incremental (§5) ----
 
     // The core claim: an increment carries what changed and nothing else.
@@ -612,24 +740,23 @@ public class ParquetExportTests : IClassFixture<DmartFactory>, IDisposable
     // Entries alone give you content in a system nobody can log into. These are
     // what make the export a backup rather than a table dump.
     [FactIfPg]
-    public async Task Exports_The_Global_Tables_Alongside_Entries()
+    public async Task A_Scoped_Export_Carries_Content_Only()
     {
         await WithSpaceAsync(2, async (svc, space, _) =>
         {
             var dir = NewDir();
             var manifest = await svc.ExportAsync(dir, space, "/", actor: null);
 
+            // A SCOPED export carries content only. The global tables — and
+            // with them every password hash — come with a full backup or an
+            // explicit management export, not as a side effect of exporting
+            // one space.
             manifest.Tables.Select(t => t.Name).ShouldBe(
-                ["entries", "attachments", "histories", "spaces", "users", "roles", "permissions"],
-                ignoreOrder: true);
+                ["entries", "attachments", "histories"], ignoreOrder: true);
 
             foreach (var table in new[] { "spaces", "users", "roles", "permissions" })
-                File.Exists(Path.Combine(dir, table, "part-00000.parquet"))
-                    .ShouldBeTrue($"{table} must be written");
-
-            // The space just created must be in there, or the export is not a
-            // snapshot of the system it claims to describe.
-            manifest.RowsIn("spaces").ShouldBeGreaterThan(0);
+                Directory.Exists(Path.Combine(dir, table))
+                    .ShouldBeFalse($"{table} must NOT be written by a scoped export");
         });
     }
 
@@ -642,7 +769,7 @@ public class ParquetExportTests : IClassFixture<DmartFactory>, IDisposable
         await WithSpaceAsync(1, async (svc, space, _) =>
         {
             var dir = NewDir();
-            await svc.ExportAsync(dir, space, "/", actor: null);
+            await svc.ExportAllAsync(dir, verify: false);
 
             if (!Unit.Parquet.PyArrow.Available) return;
 
@@ -668,7 +795,7 @@ public class ParquetExportTests : IClassFixture<DmartFactory>, IDisposable
         await WithSpaceAsync(2, async (svc, space, _) =>
         {
             var dir = NewDir();
-            await svc.ExportAsync(dir, space, "/", actor: null);
+            await svc.ExportAllAsync(dir, verify: false);
 
             var result = await svc.ImportAsync(dir, replaceExisting: true);
 

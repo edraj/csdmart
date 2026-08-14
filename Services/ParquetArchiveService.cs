@@ -78,7 +78,7 @@ public sealed class ParquetArchiveService(
     /// </param>
     public Task<ParquetExportManifest> ExportAsync(
         string outputDirectory, string spaceName, string? subpath, string? actor,
-        DateTime? since = null, CancellationToken ct = default)
+        DateTime? since = null, bool forceGlobal = false, CancellationToken ct = default)
         => ExportAsync(outputDirectory, new Query
         {
             Type = QueryType.Search,
@@ -87,11 +87,140 @@ public sealed class ParquetArchiveService(
             FilterSchemaNames = new(),
             Limit = 0,   // 0 = unbounded; ForEachMatchAsync pages to the end
             RetrieveJsonPayload = true,
-        }, actor, since, ct);
+        }, actor, since, forceGlobal, ct);
+
+    /// <summary>
+    /// Full backup: every space, plus the global tables, into one directory.
+    /// </summary>
+    /// <remarks>
+    /// Each space lands in its own Hive partition, so the result is one
+    /// directory a consumer reads with `hive_partitioning=true` and a restore
+    /// replays whole. The global tables are written ONCE, not per space.
+    ///
+    /// Verification is on by default and re-reads every file and every blob
+    /// before reporting success. It roughly doubles read I/O, which is the
+    /// right trade for a backup: one that has never been read is one you are
+    /// guessing about.
+    /// </remarks>
+    public async Task<ParquetExportManifest> ExportAllAsync(
+        string outputDirectory, string? actor = null, DateTime? since = null,
+        bool verify = true, CancellationToken ct = default)
+    {
+        var watermark = TimeUtils.Now();
+        var all = await spaces.ListAsync(ct);
+        if (all.Count == 0)
+            log.LogWarning("parquet backup: no spaces found — the archive will hold only global tables");
+
+        var tables = new List<ParquetTableManifest>();
+        var exported = new List<string>();
+        var blobCount = 0;
+        long blobBytes = 0;
+
+        foreach (var space in all)
+        {
+            ct.ThrowIfCancellationRequested();
+            // Per space, content only. The global tables come once, below —
+            // writing them per space would repeat every password hash N times.
+            var m = await ExportAsync(outputDirectory, space.Shortname, "/", actor, since,
+                                      forceGlobal: false, ct);
+            foreach (var t in m.Tables) MergeTable(tables, t);
+            blobCount += m.BlobCount;
+            blobBytes += m.BlobBytes;
+            exported.Add(space.Shortname);
+        }
+
+        // Global tables once, for the whole backup.
+        var globals = await ExportGlobalTablesAsync(outputDirectory, ct);
+        foreach (var t in globals) MergeTable(tables, t);
+
+        var manifest = await WriteManifestAsync(
+            outputDirectory, MgmtSpace, watermark, tables,
+            tables.Sum(t => t.RowCount), blobCount, blobBytes, since, exported, ct);
+
+        if (verify) await VerifyAsync(outputDirectory, manifest, ct);
+        return manifest;
+    }
+
+    // Row counts and file lists accumulate across spaces; one entry per table.
+    private static void MergeTable(List<ParquetTableManifest> into, ParquetTableManifest add)
+    {
+        var existing = into.FindIndex(t => t.Name == add.Name);
+        if (existing < 0) { into.Add(add); return; }
+        var merged = into[existing];
+        into[existing] = merged with
+        {
+            Files = [.. merged.Files, .. add.Files],
+            RowCount = merged.RowCount + add.RowCount,
+        };
+    }
+
+    private async Task<List<ParquetTableManifest>> ExportGlobalTablesAsync(
+        string outputDirectory, CancellationToken ct) =>
+    [
+        await WriteGlobalAsync(outputDirectory, "spaces", SpaceParquetTable.Schema,
+            await spaces.ListAsync(ct), SpaceParquetTable.BuildPages, ct),
+        await WriteGlobalAsync(outputDirectory, "users", UserParquetTable.Schema,
+            await CollectAsync<User>("/users", q => users.QueryAsync(q, ct)),
+            UserParquetTable.BuildPages, ct),
+        await WriteGlobalAsync(outputDirectory, "roles", RoleParquetTable.Schema,
+            await CollectAsync<Role>("/roles", q => access.QueryRolesAsync(q, ct)),
+            RoleParquetTable.BuildPages, ct),
+        await WriteGlobalAsync(outputDirectory, "permissions", PermissionParquetTable.Schema,
+            await CollectAsync<Permission>("/permissions", q => access.QueryPermissionsAsync(q, ct)),
+            PermissionParquetTable.BuildPages, ct),
+    ];
+
+    /// <summary>
+    /// Re-reads every file and every blob an export wrote, verifying blob
+    /// contents against their own names.
+    /// </summary>
+    /// <remarks>
+    /// Deliberately reads the files back through the READER rather than
+    /// trusting the writer's own row counts: a writer that miscounted would
+    /// agree with itself. Throws on the first failure, because a backup that is
+    /// partially readable is not one an operator should be told is fine.
+    /// </remarks>
+    public static async Task VerifyAsync(
+        string exportDirectory, ParquetExportManifest manifest, CancellationToken ct = default)
+    {
+        foreach (var table in manifest.Tables)
+        {
+            long rows = 0;
+            foreach (var relative in table.Files)
+            {
+                ct.ThrowIfCancellationRequested();
+                var path = Path.Combine(exportDirectory, relative);
+                if (!File.Exists(path))
+                    throw new InvalidDataException($"{table.Name}: '{relative}' is missing from the archive");
+                rows += ParquetFileReader.ReadFile(path).RowCount;
+            }
+            if (rows != table.RowCount)
+                throw new InvalidDataException(
+                    $"{table.Name}: manifest claims {table.RowCount} rows, the files hold {rows}");
+        }
+
+        // Every blob, rehashed. BlobStore.Read verifies the content against the
+        // filename, which is the only check that catches a truncated blob.
+        var blobRoot = Path.Combine(exportDirectory, BlobStore.DirectoryName);
+        var blobs = 0;
+        if (Directory.Exists(blobRoot))
+            foreach (var file in Directory.EnumerateFiles(blobRoot, "*", SearchOption.AllDirectories))
+            {
+                ct.ThrowIfCancellationRequested();
+                BlobStore.Read(exportDirectory, Path.GetFileName(file));
+                blobs++;
+            }
+
+        if (blobs != manifest.BlobCount)
+            throw new InvalidDataException(
+                $"manifest claims {manifest.BlobCount} blobs, the store holds {blobs}");
+
+        await Task.CompletedTask;
+    }
 
     public async Task<ParquetExportManifest> ExportAsync(
         string outputDirectory, Query clientQuery, string? actor,
-        DateTime? since = null, CancellationToken ct = default)
+        DateTime? since = null, bool forceGlobal = false, CancellationToken ct = default)
     {
         // An incremental export selects straight from the repositories by
         // updated_at, which bypasses the row-level ACL gate the full export
@@ -105,6 +234,11 @@ public sealed class ParquetArchiveService(
 
         var spaceName = clientQuery.SpaceName;
         var subpath = string.IsNullOrEmpty(clientQuery.Subpath) ? "/" : clientQuery.Subpath;
+
+        // Exporting the management space IS asking for users, roles and
+        // permissions — they live in it. `--all` forces it on for every space.
+        var includeGlobal = forceGlobal
+            || string.Equals(spaceName, MgmtSpace, StringComparison.Ordinal);
 
         // The watermark is stamped BEFORE reading anything. §5.1: a later
         // incremental run selects `updated_at >= watermark`, and taking it from
@@ -127,7 +261,7 @@ public sealed class ParquetArchiveService(
         {
             policies = await perms.BuildUserQueryPoliciesAsync(actor, spaceName, subpath, ct);
             if (policies.Count == 0)
-                return await WriteManifestAsync(outputDirectory, spaceName, watermark, [], 0, 0, 0, since, ct);
+                return await WriteManifestAsync(outputDirectory, spaceName, watermark, [], 0, 0, 0, since, null, ct);
         }
 
         Directory.CreateDirectory(outputDirectory);
@@ -172,7 +306,8 @@ public sealed class ParquetArchiveService(
                 {
                     ct.ThrowIfCancellationRequested();
                     var page = await entries.ListForSpaceUpdatedSincePagedAsync(
-                        spaceName, watermarkFloor, ImportExportService.ExportPageSize, offset, ct);
+                        spaceName, watermarkFloor, ImportExportService.ExportPageSize, offset,
+                        subpath, ct);
                     if (page.Count == 0) break;
 
                     foreach (var entry in page)
@@ -221,10 +356,10 @@ public sealed class ParquetArchiveService(
         };
 
         var (attachmentTable, blobCount, blobBytes) =
-            await WriteAttachmentsAsync(outputDirectory, spaceName, since, ct);
+            await WriteAttachmentsAsync(outputDirectory, spaceName, since, subpath, ct);
         tables.Add(attachmentTable);
 
-        tables.Add(await WriteHistoriesAsync(outputDirectory, spaceName, since, ct));
+        tables.Add(await WriteHistoriesAsync(outputDirectory, spaceName, since, subpath, ct));
 
         // Tombstones, INCREMENTS ONLY (§4.1). A full export is the state, so
         // anything absent from it is deleted by construction; writing a
@@ -232,32 +367,41 @@ public sealed class ParquetArchiveService(
         if (since is { } deletionsFloor)
             tables.Add(await WriteDeletionsAsync(outputDirectory, spaceName, deletionsFloor, ct));
 
-        // The global tables. Without them a restore gives you content in a
-        // system nobody can log into, with no ACL and no space definitions —
-        // which is the difference between a backup and a table dump.
+        // The global tables — spaces, users, roles, permissions.
+        //
+        // Written only for a FULL BACKUP or an explicit management-space export.
+        // A scoped export of one space or one folder carries that content and
+        // nothing else, for two reasons: repeating the entire user table in
+        // every scoped export is waste, and — the one that matters — the users
+        // table holds Argon2 PASSWORD HASHES. Writing those to disk is a
+        // consequence an operator should get when they ask for a backup or for
+        // management, not as a side effect of exporting a folder.
         //
         // Not Hive-partitioned: §4.1 puts them at `<table>/part-00000.parquet`
         // with no `space_name=` directory, so unlike entries they DO carry
         // space_name as a column. Users, roles and permissions all live in the
         // management space; spaces span every space by definition.
-        tables.Add(await WriteGlobalAsync(outputDirectory, "spaces", SpaceParquetTable.Schema,
-            await spaces.ListAsync(ct), SpaceParquetTable.BuildPages, ct));
+        if (includeGlobal)
+        {
+            tables.Add(await WriteGlobalAsync(outputDirectory, "spaces", SpaceParquetTable.Schema,
+                await spaces.ListAsync(ct), SpaceParquetTable.BuildPages, ct));
 
-        tables.Add(await WriteGlobalAsync(outputDirectory, "users", UserParquetTable.Schema,
-            await CollectAsync<User>("/users", q => users.QueryAsync(q, ct)),
-            UserParquetTable.BuildPages, ct));
+            tables.Add(await WriteGlobalAsync(outputDirectory, "users", UserParquetTable.Schema,
+                await CollectAsync<User>("/users", q => users.QueryAsync(q, ct)),
+                UserParquetTable.BuildPages, ct));
 
-        tables.Add(await WriteGlobalAsync(outputDirectory, "roles", RoleParquetTable.Schema,
-            await CollectAsync<Role>("/roles", q => access.QueryRolesAsync(q, ct)),
-            RoleParquetTable.BuildPages, ct));
+            tables.Add(await WriteGlobalAsync(outputDirectory, "roles", RoleParquetTable.Schema,
+                await CollectAsync<Role>("/roles", q => access.QueryRolesAsync(q, ct)),
+                RoleParquetTable.BuildPages, ct));
 
-        tables.Add(await WriteGlobalAsync(outputDirectory, "permissions", PermissionParquetTable.Schema,
-            await CollectAsync<Permission>("/permissions", q => access.QueryPermissionsAsync(q, ct)),
-            PermissionParquetTable.BuildPages, ct));
+            tables.Add(await WriteGlobalAsync(outputDirectory, "permissions", PermissionParquetTable.Schema,
+                await CollectAsync<Permission>("/permissions", q => access.QueryPermissionsAsync(q, ct)),
+                PermissionParquetTable.BuildPages, ct));
+        }
 
         return await WriteManifestAsync(
             outputDirectory, spaceName, watermark, tables,
-            tables.Sum(t => t.RowCount), blobCount, blobBytes, since, ct);
+            tables.Sum(t => t.RowCount), blobCount, blobBytes, since, null, ct);
     }
 
     // Writes histories/space_name=<s>/part-00000.parquet.
@@ -266,7 +410,7 @@ public sealed class ParquetArchiveService(
     // most installations — one row per change, forever — so buffering it whole
     // would undo the memory bound the rest of the export maintains.
     private async Task<ParquetTableManifest> WriteHistoriesAsync(
-        string outputDirectory, string spaceName, DateTime? since, CancellationToken ct)
+        string outputDirectory, string spaceName, DateTime? since, string? subpath, CancellationToken ct)
     {
         var relative = Path.Combine("histories", $"space_name={spaceName}", "part-00000.parquet");
         var absolute = Path.Combine(outputDirectory, relative);
@@ -286,7 +430,8 @@ public sealed class ParquetArchiveService(
             while (true)
             {
                 ct.ThrowIfCancellationRequested();
-                var page = await histories.ListForSpacePagedAsync(spaceName, HistoryPageSize, offset, since, ct);
+                var page = await histories.ListForSpacePagedAsync(
+                    spaceName, HistoryPageSize, offset, since, subpath, ct);
                 if (page.Count == 0) break;
 
                 foreach (var row in page)
@@ -371,7 +516,7 @@ public sealed class ParquetArchiveService(
     // The cost is a query per attachment that HAS media. Attachments without
     // media skip it entirely, which is why the listing returns the size.
     private async Task<(ParquetTableManifest Table, int Blobs, long BlobBytes)> WriteAttachmentsAsync(
-        string outputDirectory, string spaceName, DateTime? since, CancellationToken ct)
+        string outputDirectory, string spaceName, DateTime? since, string? subpath, CancellationToken ct)
     {
         var relative = Path.Combine("attachments", $"space_name={spaceName}", "part-00000.parquet");
         var absolute = Path.Combine(outputDirectory, relative);
@@ -398,7 +543,7 @@ public sealed class ParquetArchiveService(
             {
                 ct.ThrowIfCancellationRequested();
                 var page = await attachments.ListForSpacePagedAsync(
-                    spaceName, AttachmentPageSize, offset, since, ct);
+                    spaceName, AttachmentPageSize, offset, since, subpath, ct);
                 if (page.Count == 0) break;
 
                 foreach (var (attachment, mediaSize) in page)
@@ -496,7 +641,8 @@ public sealed class ParquetArchiveService(
     private static async Task<ParquetExportManifest> WriteManifestAsync(
         string directory, string spaceName, DateTime watermark,
         List<ParquetTableManifest> tables, long rowCount,
-        int blobCount, long blobBytes, DateTime? since, CancellationToken ct)
+        int blobCount, long blobBytes, DateTime? since,
+        List<string>? spacesExported, CancellationToken ct)
     {
         Directory.CreateDirectory(directory);
         // TimeUtils.Now() so the manifest is in ONE clock: mixing a local-naive
@@ -504,7 +650,7 @@ public sealed class ParquetArchiveService(
         // watermark is the field a chain depends on.
         var manifest = new ParquetExportManifest(
             FormatVersion, TimeUtils.Now(), watermark, spaceName, tables, rowCount,
-            blobCount, blobBytes, since);
+            blobCount, blobBytes, since, spacesExported ?? [spaceName]);
 
         await File.WriteAllTextAsync(
             Path.Combine(directory, "manifest.json"),
@@ -632,8 +778,8 @@ public sealed class ParquetArchiveService(
         string exportDirectory, CancellationToken ct)
     {
         var manifest = ReadManifest(exportDirectory);
-        var rows = ReadTable(exportDirectory, "histories",
-            t => HistoryParquetTable.FromTable(t, manifest.SpaceName));
+        var rows = ReadPartitionedTable(exportDirectory, "histories",
+            (t, space) => HistoryParquetTable.FromTable(t, space), manifest.SpaceName);
 
         int imported = 0, skipped = 0, failed = 0;
         foreach (var row in rows)
@@ -669,8 +815,8 @@ public sealed class ParquetArchiveService(
         string exportDirectory, bool replaceExisting, CancellationToken ct)
     {
         var manifest = ReadManifest(exportDirectory);
-        var rows = ReadTable(exportDirectory, "attachments",
-            t => AttachmentParquetTable.FromTable(t, manifest.SpaceName));
+        var rows = ReadPartitionedTable(exportDirectory, "attachments",
+            (t, space) => AttachmentParquetTable.FromTable(t, space), manifest.SpaceName);
 
         int imported = 0, skipped = 0, failed = 0;
         foreach (var row in rows)
@@ -770,6 +916,29 @@ public sealed class ParquetArchiveService(
         return result;
     }
 
+    // Like ReadTable, but hands each file's Hive partition value to the mapper
+    // so a multi-space backup restores each space under its own name.
+    private static List<T> ReadPartitionedTable<T>(
+        string exportDirectory, string table,
+        Func<ParquetFileReader.ParquetTable, string, List<T>> fromTable, string fallbackSpace)
+    {
+        var manifest = ReadManifest(exportDirectory);
+        var entry = manifest.Tables.FirstOrDefault(t => t.Name == table);
+        if (entry is null) return [];
+
+        var result = new List<T>();
+        foreach (var relative in entry.Files)
+            result.AddRange(fromTable(
+                ParquetFileReader.ReadFile(Path.Combine(exportDirectory, relative)),
+                SpaceFromPartitionPath(relative, fallbackSpace)));
+
+        if (result.Count != entry.RowCount)
+            throw new InvalidDataException(
+                $"manifest claims {entry.RowCount} rows in '{table}' but the files hold {result.Count}");
+
+        return result;
+    }
+
     private static ParquetExportManifest ReadManifest(string exportDirectory)
     {
         var manifestPath = Path.Combine(exportDirectory, "manifest.json");
@@ -803,6 +972,24 @@ public sealed class ParquetArchiveService(
     public static DateTime WatermarkOf(string exportDirectory) =>
         ReadManifest(exportDirectory).Watermark;
 
+    /// <summary>
+    /// The Hive partition value encoded in a path like
+    /// `entries/space_name=alpha/part-00000.parquet`.
+    /// </summary>
+    /// <remarks>
+    /// Taken from the PATH, not the manifest. A full backup holds many spaces
+    /// in one archive, so a single manifest-level space name would restore
+    /// every one of them under the same name — silently merging spaces, which
+    /// is unrecoverable without the original.
+    /// </remarks>
+    internal static string SpaceFromPartitionPath(string relativePath, string fallback)
+    {
+        foreach (var segment in relativePath.Split(['/', '\\'], StringSplitOptions.RemoveEmptyEntries))
+            if (segment.StartsWith("space_name=", StringComparison.Ordinal))
+                return segment["space_name=".Length..];
+        return fallback;
+    }
+
     /// <summary>Reads back the entries an export wrote, in file order.</summary>
     /// <remarks>
     /// The restore half. Kept here rather than in the reader so the reader stays
@@ -818,7 +1005,7 @@ public sealed class ParquetArchiveService(
         foreach (var relative in table.Files)
             result.AddRange(EntryParquetTable.FromTable(
                 ParquetFileReader.ReadFile(Path.Combine(exportDirectory, relative)),
-                manifest.SpaceName));
+                SpaceFromPartitionPath(relative, manifest.SpaceName)));
 
         // The manifest's count is written independently of the files, so a
         // disagreement means one of them is wrong — most likely a truncated
@@ -850,7 +1037,13 @@ public sealed record ParquetExportManifest(
     /// the `watermark` of the run it follows, and a gap between them is exactly
     /// the window in which changes could have been lost.
     /// </summary>
-    [property: JsonPropertyName("since")] DateTime? Since = null)
+    [property: JsonPropertyName("since")] DateTime? Since = null,
+    /// <summary>
+    /// Every space this archive covers. A scoped export lists one; a full
+    /// backup lists them all. Present so a restore can report what it is about
+    /// to touch before it touches it.
+    /// </summary>
+    [property: JsonPropertyName("spaces")] List<string>? Spaces = null)
 {
     /// <summary>
     /// Rows written for one table. <see cref="RowCount"/> is the total across

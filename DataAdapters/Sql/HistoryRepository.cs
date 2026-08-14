@@ -65,15 +65,19 @@ public sealed class HistoryRepository(IDbConnectionFactory db, ISqlDialect diale
     /// `timestamp` is its updated_at. Index: idx_histories_timestamp.
     /// </param>
     public async Task<List<HistoryRow>> ListForSpacePagedAsync(
-        string spaceName, int limit, int offset, DateTime? since = null, CancellationToken ct = default)
+        string spaceName, int limit, int offset, DateTime? since = null,
+        string? subpath = null, CancellationToken ct = default)
     {
         await using var conn = await db.OpenAsync(ct);
         var sinceClause = since is null ? "" : "AND timestamp >= $4";
+        var scoped = !string.IsNullOrEmpty(subpath) && subpath != "/";
+        var scopeParam = since is null ? "$4" : "$5";
+        var scopeClause = scoped ? $"AND (subpath = {scopeParam} OR subpath LIKE {scopeParam} || '/%')" : "";
         await using var cmd = conn.Command($"""
             SELECT uuid, request_headers, diff, timestamp, owner_shortname,
                    last_checksum_history, space_name, subpath, shortname
             FROM histories
-            WHERE space_name = $1 {sinceClause}
+            WHERE space_name = $1 {sinceClause} {scopeClause}
             ORDER BY uuid
             LIMIT $2 OFFSET $3
             """);
@@ -81,6 +85,7 @@ public sealed class HistoryRepository(IDbConnectionFactory db, ISqlDialect diale
         DbParams.Add(cmd, limit);
         DbParams.Add(cmd, offset);
         if (since is not null) DbParams.Add(cmd, since.Value);
+        if (scoped) DbParams.Add(cmd, subpath!);
 
         var rows = new List<HistoryRow>();
         await using var r = await cmd.ExecuteReaderAsync(ct);

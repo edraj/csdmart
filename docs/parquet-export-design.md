@@ -297,9 +297,35 @@ fall out of it: writers stream row group by row group with bounded memory,
 readers project single columns without decompressing the rest, and increments
 reference blobs by hash without re-shipping them.
 
+### 4.1.1 Scope, and what each scope carries
+
+| Command | Carries |
+|---|---|
+| `export <space> --parquet` | that space's entries, attachments, histories |
+| `export <space> --parquet --subpath /docs` | that subtree only |
+| `export management --parquet` | the above **plus** users, roles, permissions |
+| `export --all --parquet` | every space, plus the global tables once, verified |
+
+The global tables are **not** written by a scoped export. Two reasons, and the
+second is the one that matters: repeating the whole user table in every scoped
+export is waste, and the users table holds **password hashes**. Writing those
+to disk should follow from asking for a backup or for management — not from
+exporting one folder.
+
+A scoped export therefore restores INTO AN EXISTING SYSTEM; it is not a
+standalone backup, and the CLI says so after every one.
+
+`--all` verifies by default: every file is re-read through the reader and every
+blob is rehashed against its own name. It roughly doubles read I/O, which is
+the right trade — a backup nobody has read is one you are guessing about.
+`--no-verify` opts out.
+
 `space_name=<s>` is Hive-style partitioning — what DuckDB and Spark expect
 (`read_parquet('entries/**/*.parquet', hive_partitioning=true)`) and also the
-natural unit for a per-space restore. This is the "restore first, analytics
+natural unit for a per-space restore. A restore takes each file's space from
+its PATH rather than from the manifest: a full backup holds many spaces in one
+archive, and a manifest-level space name would restore all of them under one
+name — silently merging spaces, which is unrecoverable without the original. This is the "restore first, analytics
 later" compromise: one layout serves both.
 
 Partitioning by date is deliberately **not** used. Increments are already

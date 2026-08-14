@@ -579,11 +579,30 @@ switch (subcommand)
         var outputIdx = Array.IndexOf(serverArgs, "--output");
         var output = outputIdx >= 0 && outputIdx + 1 < serverArgs.Length ? serverArgs[outputIdx + 1] : null;
         var asParquet = serverArgs.Contains("--parquet");
-        if (string.IsNullOrEmpty(spaceName))
+        var allSpaces = serverArgs.Contains("--all");
+
+        // --subpath scopes to a folder AND its subtree within the space.
+        var subpathIdx = Array.IndexOf(serverArgs, "--subpath");
+        var scopeSubpath = subpathIdx >= 0 && subpathIdx + 1 < serverArgs.Length
+            ? serverArgs[subpathIdx + 1]
+            : "/";
+
+        if (string.IsNullOrEmpty(spaceName) && !allSpaces)
         {
             Console.Error.WriteLine(
-                "Usage: dmart export <space_name> [--parquet] [--since <previous-export-dir>] "
-                + "[--output <path|dir|.>]");
+                "Usage: dmart export <space_name> [--parquet] [--subpath <path>] "
+                + "[--since <previous-export-dir>] [--output <path|dir|.>]");
+            Console.Error.WriteLine(
+                "       dmart export --all --parquet [--output <dir>] [--no-verify]   (full backup)");
+            Environment.ExitCode = 1;
+            return;
+        }
+        if (allSpaces && !asParquet)
+        {
+            // The zip path has no multi-space form, and silently exporting one
+            // space when the operator asked for all of them is the kind of
+            // partial backup that is only discovered at restore.
+            Console.Error.WriteLine("--all requires --parquet");
             Environment.ExitCode = 1;
             return;
         }
@@ -596,7 +615,9 @@ switch (subcommand)
         if (asParquet)
         {
             var outDir = Path.GetFullPath(
-                string.IsNullOrEmpty(output) ? $"{spaceName}-parquet" : output);
+                string.IsNullOrEmpty(output)
+                    ? (allSpaces ? "dmart-backup" : $"{spaceName}-parquet")
+                    : output);
 
             // --since <previous-export-dir> chains an increment off a previous
             // run. A DIRECTORY rather than a timestamp on purpose: the
@@ -630,13 +651,19 @@ switch (subcommand)
             // leave behind something that looks like a backup.
             try
             {
-                var manifest = await parquet.ExportAsync(outDir, spaceName, "/", actor: null, since);
+                var manifest = allSpaces
+                    ? await parquet.ExportAllAsync(
+                        outDir, actor: null, since, verify: !serverArgs.Contains("--no-verify"))
+                    : await parquet.ExportAsync(outDir, spaceName!, scopeSubpath, actor: null, since);
                 // Per table. The aggregate alone reads as an entry count and is
                 // not one — most of it is users, roles and permissions.
                 foreach (var t in manifest.Tables)
                     Console.WriteLine($"  {t.Name,-12} {t.RowCount} rows");
+                var scope = allSpaces
+                    ? $"{manifest.Spaces?.Count ?? 0} spaces"
+                    : $"'{spaceName}'" + (scopeSubpath == "/" ? "" : $" at {scopeSubpath}");
                 Console.WriteLine(
-                    $"Exported {manifest.RowsIn("entries")} entries from '{spaceName}' "
+                    $"Exported {manifest.RowsIn("entries")} entries from {scope} "
                     + $"({manifest.RowCount} rows total) to {outDir}");
                 if (manifest.BlobCount > 0)
                     Console.WriteLine(
@@ -645,19 +672,29 @@ switch (subcommand)
                 // Every table is covered now; what remains is INCREMENTAL
                 // selection (§5), which needs a tombstone table before a
                 // consumer can tell a deleted row from an unchanged one.
+                if (allSpaces && !serverArgs.Contains("--no-verify"))
+                    Console.WriteLine(
+                        "Verified: every file re-read and every blob rehashed against its own name.");
                 if (since is { } from)
                     Console.WriteLine(
                         $"Incremental since {from:o} — apply on top of the run it follows, "
                         + "in order. deletions/ lists rows to REMOVE.");
+                else if (allSpaces)
+                    Console.WriteLine("Full backup: every space, plus users, roles and permissions.");
+                else if (manifest.Tables.Any(t => t.Name == "users"))
+                    Console.WriteLine("Note: full export of this space, including global tables.");
                 else
-                    Console.WriteLine("Note: full export.");
+                    Console.WriteLine(
+                        "Note: CONTENT ONLY — no users, roles or permissions. This restores into an "
+                        + "existing system, it is not a standalone backup. Use --all for that.");
                 // Not a footnote. The users table holds Argon2 hashes, which is
                 // what lets a restore recover logins; it also means this
                 // directory is credential material and must be treated like a
                 // database dump rather than a content archive.
-                Console.WriteLine(
-                    "WARNING: users/part-00000.parquet contains password hashes. "
-                    + "Protect this directory like a database dump.");
+                if (manifest.Tables.Any(t => t.Name == "users"))
+                    Console.WriteLine(
+                        "WARNING: users/part-00000.parquet contains password hashes. "
+                        + "Protect this directory like a database dump.");
             }
             catch
             {
@@ -712,7 +749,7 @@ switch (subcommand)
         try
         {
             await using (var fileStream = File.Create(outputPath))
-                await exportService.ExportToAsync(fileStream, spaceName, "/", actor: null);
+                await exportService.ExportToAsync(fileStream, spaceName!, "/", actor: null);
         }
         catch
         {

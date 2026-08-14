@@ -418,13 +418,21 @@ public sealed class EntryRepository(IDbConnectionFactory db)
     /// TOTAL order and updated_at collides freely — a bulk edit stamps many
     /// rows identically.
     /// </remarks>
+    /// <param name="subpath">
+    /// When set and not "/", restricts to that subpath AND its subtree. The
+    /// trailing-slash guard matters: without it "/docs" also matches
+    /// "/docs_old", which would silently widen a scoped export.
+    /// </param>
     public async Task<List<Entry>> ListForSpaceUpdatedSincePagedAsync(
-        string spaceName, DateTime since, int limit, int offset, CancellationToken ct = default)
+        string spaceName, DateTime since, int limit, int offset,
+        string? subpath = null, CancellationToken ct = default)
     {
+        var scoped = !string.IsNullOrEmpty(subpath) && subpath != "/";
         await using var conn = await db.OpenAsync(ct);
         await using var cmd = conn.Command($"""
             {SelectAllColumns}
             WHERE space_name = $1 AND updated_at >= $2
+            {(scoped ? "AND (subpath = $5 OR subpath LIKE $5 || '/%')" : "")}
             ORDER BY uuid
             LIMIT $3 OFFSET $4
             """);
@@ -432,6 +440,7 @@ public sealed class EntryRepository(IDbConnectionFactory db)
         DbParams.Add(cmd, since);
         DbParams.Add(cmd, limit);
         DbParams.Add(cmd, offset);
+        if (scoped) DbParams.Add(cmd, subpath!);
 
         var rows = new List<Entry>();
         await using var r = await cmd.ExecuteReaderAsync(ct);
