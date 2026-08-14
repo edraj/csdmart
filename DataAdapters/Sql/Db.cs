@@ -524,15 +524,19 @@ public sealed class Db(IOptions<DmartSettings> settings) : IDbConnectionFactory
     /// path keep their offset, and no migration here can safely guess which
     /// ones those were.
     /// </remarks>
-    private static string ApplyHostTimezone(string connectionString)
+    internal static string ApplyHostTimezone(string connectionString)
     {
         var csb = new NpgsqlConnectionStringBuilder(connectionString);
         if (!string.IsNullOrEmpty(csb.Timezone)) return connectionString;
+        if (csb.Options?.Contains("timezone", StringComparison.OrdinalIgnoreCase) == true)
+            return connectionString;
 
         var zone = HostIanaTimeZone();
         if (zone is null) return connectionString;
 
-        csb.Timezone = zone;
+        csb.Options = string.IsNullOrEmpty(csb.Options)
+            ? $"-c timezone={zone}"
+            : $"{csb.Options} -c timezone={zone}";
         return csb.ConnectionString;
     }
 
@@ -569,7 +573,10 @@ public sealed class Db(IOptions<DmartSettings> settings) : IDbConnectionFactory
         // See ApplyHostTimezone: NOW() and TimeUtils.Now() must read the same
         // clock, or naive timestamps written by different paths are hours apart.
         var zone = HostIanaTimeZone();
-        if (zone is not null) csb.Timezone = zone;
+        if (zone is not null)
+            csb.Options = string.IsNullOrEmpty(csb.Options)
+                ? $"-c timezone={zone}"
+                : $"{csb.Options} -c timezone={zone}";
         return csb.ConnectionString;
     }
 
