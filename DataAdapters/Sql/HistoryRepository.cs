@@ -1,5 +1,6 @@
 using System.Data.Common;
 using Dmart.QueryGrammar;
+using Dmart.Models.Core;
 using System.Diagnostics.CodeAnalysis;
 using Npgsql;
 using NpgsqlTypes;
@@ -46,6 +47,88 @@ public sealed class HistoryRepository(IDbConnectionFactory db, ISqlDialect diale
             VALUES ({uuid}, $1, $2, {stamp}, $3, NULL, $4, $5, $6)
             """;
         await cmd.ExecuteNonQueryAsync(ct);
+    }
+
+    /// <summary>Pages every history row in a space, for the Parquet export.</summary>
+    /// <remarks>
+    /// Index: the leading `space_name` column of idx_histories_lookup
+    /// (space_name, subpath, shortname, timestamp DESC) serves the filter.
+    ///
+    /// Ordered by uuid, not timestamp: paging needs a TOTAL order, and
+    /// timestamps collide freely — several rows share one when a single request
+    /// touches several resources. Ordering by a non-unique column would skip or
+    /// repeat rows as the window advances, which is the same silent corruption
+    /// ImportExportService.ForEachMatchAsync documents.
+    /// </remarks>
+    public async Task<List<HistoryRow>> ListForSpacePagedAsync(
+        string spaceName, int limit, int offset, CancellationToken ct = default)
+    {
+        await using var conn = await db.OpenAsync(ct);
+        await using var cmd = conn.Command("""
+            SELECT uuid, request_headers, diff, timestamp, owner_shortname,
+                   last_checksum_history, space_name, subpath, shortname
+            FROM histories
+            WHERE space_name = $1
+            ORDER BY uuid
+            LIMIT $2 OFFSET $3
+            """);
+        DbParams.Add(cmd, spaceName);
+        DbParams.Add(cmd, limit);
+        DbParams.Add(cmd, offset);
+
+        var rows = new List<HistoryRow>();
+        await using var r = await cmd.ExecuteReaderAsync(ct);
+        while (await r.ReadAsync(ct))
+            rows.Add(new HistoryRow
+            {
+                Uuid = r.GetGuid(0).ToString(),
+                RequestHeaders = JsonbHelpers.FromDictStringObject(r.IsDBNull(1) ? null : r.GetString(1)),
+                Diff = JsonbHelpers.FromDictStringObject(r.IsDBNull(2) ? null : r.GetString(2)),
+                Timestamp = r.GetDateTime(3),
+                OwnerShortname = r.IsDBNull(4) ? null : r.GetString(4),
+                LastChecksumHistory = r.IsDBNull(5) ? null : r.GetString(5),
+                SpaceName = r.GetString(6),
+                Subpath = r.GetString(7),
+                Shortname = r.GetString(8),
+            });
+        return rows;
+    }
+
+    /// <summary>
+    /// Inserts a history row PRESERVING its original uuid and timestamp, for a
+    /// restore. Returns true if it was inserted, false if it was already there.
+    /// </summary>
+    /// <remarks>
+    /// <see cref="AppendAsync"/> cannot be used here: it mints a fresh uuid and
+    /// stamps the current time, which would turn a restored audit trail into a
+    /// record of the restore itself.
+    ///
+    /// History is append-only and immutable, so an existing uuid is left alone
+    /// rather than overwritten — there is nothing about a past event that a
+    /// later export could legitimately correct. ON CONFLICT DO NOTHING also
+    /// makes this race-free and halves the queries versus check-then-insert.
+    /// </remarks>
+    public async Task<bool> RestoreAsync(HistoryRow row, CancellationToken ct = default)
+    {
+        await using var conn = await db.OpenAsync(ct);
+        await using var cmd = conn.CreateCommand();
+        DbParams.Add(cmd, JsonbHelpers.ToJsonb(row.RequestHeaders) ?? "{}", SqlValueKind.Json);
+        DbParams.Add(cmd, JsonbHelpers.ToJsonb(row.Diff) ?? "{}", SqlValueKind.Json);
+        DbParams.Add(cmd, (object?)row.OwnerShortname ?? DBNull.Value);
+        DbParams.Add(cmd, (object?)row.LastChecksumHistory ?? DBNull.Value);
+        DbParams.Add(cmd, row.SpaceName);
+        DbParams.Add(cmd, row.Subpath);
+        DbParams.Add(cmd, row.Shortname);
+        var uuid = DbParams.Add(cmd, Guid.Parse(row.Uuid));
+        var stamp = DbParams.Add(cmd, row.Timestamp);
+        cmd.CommandText = $"""
+            INSERT INTO histories (uuid, request_headers, diff, timestamp,
+                                   owner_shortname, last_checksum_history,
+                                   space_name, subpath, shortname)
+            VALUES ({uuid}, $1, $2, {stamp}, $3, $4, $5, $6, $7)
+            ON CONFLICT (uuid) DO NOTHING
+            """;
+        return await cmd.ExecuteNonQueryAsync(ct) > 0;
     }
 
     public async Task<List<HistoryEntry>> ListAsync(string spaceName, string subpath, string shortname, int limit = 50, CancellationToken ct = default)

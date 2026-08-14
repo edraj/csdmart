@@ -365,6 +365,22 @@ Mirror the SQL columns, one Parquet table per SQL table, with three rules:
   actually would — as a partitioned dataset — surfaced it.
 - **Timestamps as Parquet TIMESTAMP (micros, UTC)**, not strings.
 
+  **Known limit — microsecond precision.** Parquet `TIMESTAMP_MICROS` stores 6
+  decimal places; .NET `DateTime` stores 7 (100 ns ticks). On PostgreSQL this
+  is invisible: its `timestamp` column is already microsecond, so a value is
+  rounded before it ever reaches the file, and the round trip is exact. SQLite
+  keeps the full tick, so a restored timestamp there can differ from the
+  original by up to 999 ns.
+
+  Accepted deliberately rather than worked around. The alternatives were a
+  parallel raw-ticks column (two sources of truth to keep in agreement) or
+  `TIMESTAMP_NANOS` via `LogicalType` (drops the legacy `ConvertedType`
+  annotation that every reader understands, and needs encoder and decoder work).
+  Neither is worth it for a difference no consumer of these timestamps depends
+  on. Tests compare at microsecond granularity for this reason, which still
+  catches the failure that matters — a row re-stamped at restore time is off by
+  milliseconds at least.
+
 Row group target ~50–100k rows. That is the unit of both column projection and
 writer memory, so it is what bounds the export's footprint.
 

@@ -24,10 +24,9 @@ namespace Dmart.Services;
 // unstable-sort traps ImportExportService.ForEachMatchAsync documents apply
 // identically here, and a second copy would drift.
 //
-// Covers a FULL export of entries, attachments (with their media blobs, §4.3),
-// spaces, users, roles and permissions. Histories and the incremental watermark
-// (§5) are not wired yet; the manifest records enough for them to be added
-// without changing what is already written.
+// Covers a FULL export of every table: entries, attachments (with their media
+// blobs, §4.3), histories, spaces, users, roles and permissions. The
+// incremental watermark (§5) is stamped but not yet USED to select rows.
 //
 // The users table carries the Argon2 PASSWORD HASH, so an export directory is
 // credential material and needs the handling a database dump gets. That is a
@@ -36,6 +35,7 @@ namespace Dmart.Services;
 public sealed class ParquetArchiveService(
     EntryRepository entries,
     AttachmentRepository attachments,
+    HistoryRepository histories,
     SpaceRepository spaces,
     UserRepository users,
     AccessRepository access,
@@ -174,6 +174,8 @@ public sealed class ParquetArchiveService(
             await WriteAttachmentsAsync(outputDirectory, spaceName, ct);
         tables.Add(attachmentTable);
 
+        tables.Add(await WriteHistoriesAsync(outputDirectory, spaceName, ct));
+
         // The global tables. Without them a restore gives you content in a
         // system nobody can log into, with no ACL and no space definitions —
         // which is the difference between a backup and a table dump.
@@ -201,6 +203,68 @@ public sealed class ParquetArchiveService(
             outputDirectory, spaceName, watermark, tables,
             tables.Sum(t => t.RowCount), blobCount, blobBytes, ct);
     }
+
+    // Writes histories/space_name=<s>/part-00000.parquet.
+    //
+    // Streamed a page at a time like entries. History is the largest table in
+    // most installations — one row per change, forever — so buffering it whole
+    // would undo the memory bound the rest of the export maintains.
+    private async Task<ParquetTableManifest> WriteHistoriesAsync(
+        string outputDirectory, string spaceName, CancellationToken ct)
+    {
+        var relative = Path.Combine("histories", $"space_name={spaceName}", "part-00000.parquet");
+        var absolute = Path.Combine(outputDirectory, relative);
+        Directory.CreateDirectory(Path.GetDirectoryName(absolute)!);
+
+        long rows = 0;
+        var buffer = new List<Models.Core.HistoryRow>(Math.Min(RowGroupRows, 1024));
+
+        await using (var file = new FileStream(
+            absolute, FileMode.Create, FileAccess.Write, FileShare.None,
+            bufferSize: 64 * 1024, FileOptions.SequentialScan))
+        {
+            var writer = new ParquetFileWriter(HistoryParquetTable.Schema);
+            writer.Start(file);
+
+            var offset = 0;
+            while (true)
+            {
+                ct.ThrowIfCancellationRequested();
+                var page = await histories.ListForSpacePagedAsync(spaceName, HistoryPageSize, offset, ct);
+                if (page.Count == 0) break;
+
+                foreach (var row in page)
+                {
+                    buffer.Add(row);
+                    if (buffer.Count >= RowGroupRows)
+                    {
+                        writer.WriteRowGroup(HistoryParquetTable.BuildPages(buffer), buffer.Count);
+                        rows += buffer.Count;
+                        buffer.Clear();
+                    }
+                }
+
+                offset += page.Count;
+                if (page.Count < HistoryPageSize) break;
+            }
+
+            if (buffer.Count > 0)
+            {
+                writer.WriteRowGroup(HistoryParquetTable.BuildPages(buffer), buffer.Count);
+                rows += buffer.Count;
+            }
+
+            writer.Finish();
+        }
+
+        if (rows > 0)
+            log.LogInformation("parquet export: {Rows} history rows", rows);
+
+        return new ParquetTableManifest("histories", [relative], rows);
+    }
+
+    /// <summary>History rows fetched per page.</summary>
+    internal static int HistoryPageSize { get; set; } = 10_000;
 
     /// <summary>
     /// Attachments per page. Metadata only — the bytes are fetched one blob at
@@ -453,6 +517,10 @@ public sealed class ParquetArchiveService(
         imported += ai; skipped += ak; failed += af;
         perTable.Add(new ParquetTableResult("attachments", ai, ak, af));
 
+        var (hi, hk, hf) = await RestoreHistoriesAsync(exportDirectory, ct);
+        imported += hi; skipped += hk; failed += hf;
+        perTable.Add(new ParquetTableResult("histories", hi, hk, hf));
+
         log.LogInformation(
             "parquet import: {Imported} imported, {Skipped} skipped, {Failed} failed from {Path}",
             imported, skipped, failed, exportDirectory);
@@ -460,6 +528,44 @@ public sealed class ParquetArchiveService(
         perTable.Add(new ParquetTableResult("entries", entriesImported, entriesSkipped, entriesFailed));
         return new ParquetImportResult(
             imported, skipped, failed, imported + skipped + failed, perTable);
+    }
+
+    // Restores the audit trail, preserving each row's original uuid and
+    // timestamp.
+    //
+    // There is no replaceExisting here, deliberately. History is append-only
+    // and immutable: an existing uuid is the same past event, and nothing a
+    // later export could say would legitimately correct it. Rewriting one would
+    // only ever be a way to falsify an audit record.
+    private async Task<(int Imported, int Skipped, int Failed)> RestoreHistoriesAsync(
+        string exportDirectory, CancellationToken ct)
+    {
+        var manifest = ReadManifest(exportDirectory);
+        var rows = ReadTable(exportDirectory, "histories",
+            t => HistoryParquetTable.FromTable(t, manifest.SpaceName));
+
+        int imported = 0, skipped = 0, failed = 0;
+        foreach (var row in rows)
+        {
+            ct.ThrowIfCancellationRequested();
+            try
+            {
+                if (await histories.RestoreAsync(row, ct)) imported++;
+                else skipped++;
+            }
+            catch (Exception ex)
+            {
+                failed++;
+                log.LogWarning(ex, "parquet import: failed to restore history row {Uuid}", row.Uuid);
+            }
+        }
+
+        if (rows.Count > 0)
+            log.LogInformation(
+                "parquet import: histories — {Imported} imported, {Skipped} skipped, {Failed} failed",
+                imported, skipped, failed);
+
+        return (imported, skipped, failed);
     }
 
     // Restores attachments and rehydrates their media from the blob store.

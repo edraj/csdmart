@@ -616,7 +616,10 @@ switch (subcommand)
                     Console.WriteLine(
                         $"  blobs        {manifest.BlobCount} distinct ({manifest.BlobBytes} bytes) "
                         + "— identical media is stored once");
-                Console.WriteLine("Note: history is not yet included.");
+                // Every table is covered now; what remains is INCREMENTAL
+                // selection (§5), which needs a tombstone table before a
+                // consumer can tell a deleted row from an unchanged one.
+                Console.WriteLine("Note: full export. Incremental (--since) is not yet supported.");
                 // Not a footnote. The users table holds Argon2 hashes, which is
                 // what lets a restore recover logins; it also means this
                 // directory is credential material and must be treated like a

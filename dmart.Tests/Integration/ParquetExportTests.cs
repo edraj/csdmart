@@ -206,6 +206,124 @@ public class ParquetExportTests : IClassFixture<DmartFactory>, IDisposable
         });
     }
 
+    // ---- histories ----
+
+    // The audit trail must come back EXACTLY as it went out. Every other table
+    // describes current state, which a later export would legitimately correct;
+    // history describes past events. A row restored with a regenerated uuid or
+    // a re-stamped timestamp is a record of the RESTORE, which is worse than no
+    // history at all because it looks authentic.
+    [FactIfPg]
+    public async Task History_Restores_With_Its_Original_Uuid_And_Timestamp()
+    {
+        await WithSpaceAsync(1, async (svc, space, shortnames) =>
+        {
+            var histories = _factory.Services.GetRequiredService<HistoryRepository>();
+            await histories.AppendAsync(space, "/", shortnames[0], "alice",
+                new Dictionary<string, object> { ["ua"] = "test" },
+                new Dictionary<string, object> { ["slug"] = "changed" });
+
+            var before = (await histories.ListForSpacePagedAsync(space, 100, 0)).Single();
+
+            var dir = NewDir();
+            var manifest = await svc.ExportAsync(dir, space, "/", actor: null);
+            manifest.RowsIn("histories").ShouldBe(1);
+
+            await WipeHistoryAsync(space);
+            var result = await svc.ImportAsync(dir);
+            result.For("histories").Imported.ShouldBe(1);
+
+            var after = (await histories.ListForSpacePagedAsync(space, 100, 0)).Single();
+            after.Uuid.ShouldBe(before.Uuid, "a regenerated uuid is a new event, not a restored one");
+
+            // Compared at MICROSECOND granularity, not tick-for-tick. Parquet
+            // TIMESTAMP_MICROS holds 6 decimal places; .NET DateTime holds 7.
+            // On PostgreSQL this is invisible — its timestamp column is already
+            // microsecond, so the value was rounded before it reached the file.
+            // SQLite keeps the full tick, so a round trip there drops the last
+            // digit. Accepted and documented (§4.2); asserting tick equality
+            // would pass on one driver and fail on the other for a difference
+            // no audit trail depends on.
+            //
+            // A RE-STAMPED row, which is the failure this guards against, is off
+            // by milliseconds at least — orders of magnitude coarser than this
+            // tolerance — so the check still bites. Mutation-verified: replacing
+            // row.Timestamp with TimeUtils.Now() fails this test.
+            ToMicroseconds(after.Timestamp).ShouldBe(ToMicroseconds(before.Timestamp),
+                "a re-stamped row records the restore, not the change");
+            after.OwnerShortname.ShouldBe("alice");
+            after.Shortname.ShouldBe(shortnames[0]);
+            after.Diff!["slug"].ToString().ShouldBe("changed");
+            after.RequestHeaders!["ua"].ToString().ShouldBe("test");
+        });
+    }
+
+    // History is append-only, so re-importing must not duplicate the trail —
+    // and must not need to know whether a previous run finished.
+    [FactIfPg]
+    public async Task Re_Importing_History_Skips_Rather_Than_Duplicating()
+    {
+        await WithSpaceAsync(1, async (svc, space, shortnames) =>
+        {
+            var histories = _factory.Services.GetRequiredService<HistoryRepository>();
+            for (var i = 0; i < 3; i++)
+                await histories.AppendAsync(space, "/", shortnames[0], "bob", null,
+                    new Dictionary<string, object> { ["n"] = i });
+
+            var dir = NewDir();
+            await svc.ExportAsync(dir, space, "/", actor: null);
+
+            // Rows are still present, so every one is a no-op on conflict.
+            var first = await svc.ImportAsync(dir);
+            first.For("histories").Skipped.ShouldBe(3);
+            first.For("histories").Imported.ShouldBe(0);
+
+            (await histories.ListForSpacePagedAsync(space, 100, 0)).Count
+                .ShouldBe(3, "the trail must not grow on re-import");
+        });
+    }
+
+    // Timestamps collide freely — one request touching several resources writes
+    // several rows with the same stamp — so paging orders by uuid. Ordering by
+    // a non-unique column skips or repeats rows as the window advances.
+    [FactIfPg]
+    public async Task History_Pages_Without_Losing_Rows_To_Colliding_Timestamps()
+    {
+        ParquetArchiveService.HistoryPageSize = 4;
+        try
+        {
+            await WithSpaceAsync(1, async (svc, space, shortnames) =>
+            {
+                var histories = _factory.Services.GetRequiredService<HistoryRepository>();
+                for (var i = 0; i < 11; i++)
+                    await histories.AppendAsync(space, "/", shortnames[0], "carol", null,
+                        new Dictionary<string, object> { ["n"] = i });
+
+                var dir = NewDir();
+                var manifest = await svc.ExportAsync(dir, space, "/", actor: null);
+
+                manifest.RowsIn("histories").ShouldBe(11,
+                    "11 rows over pages of 4 — none dropped, none repeated");
+
+                await WipeHistoryAsync(space);
+                (await svc.ImportAsync(dir)).For("histories").Imported.ShouldBe(11);
+            });
+        }
+        finally { ParquetArchiveService.HistoryPageSize = 10_000; }
+    }
+
+    // Truncates to the precision Parquet TIMESTAMP_MICROS actually stores.
+    private static long ToMicroseconds(DateTime t) => t.Ticks / 10;
+
+    private async Task WipeHistoryAsync(string space)
+    {
+        var db = _factory.Services.GetRequiredService<IDbConnectionFactory>();
+        await using var conn = await db.OpenAsync();
+        await using var cmd = conn.CreateCommand();
+        cmd.CommandText = $"DELETE FROM histories WHERE space_name = '{space}'";
+        await cmd.ExecuteNonQueryAsync();
+    }
+
     // ---- attachments and blobs ----
 
     // Media bytes live in blobs/<sha[0:2]>/<sha>, not in the row group (§4.3),
@@ -370,7 +488,8 @@ public class ParquetExportTests : IClassFixture<DmartFactory>, IDisposable
             var manifest = await svc.ExportAsync(dir, space, "/", actor: null);
 
             manifest.Tables.Select(t => t.Name).ShouldBe(
-                ["entries", "attachments", "spaces", "users", "roles", "permissions"], ignoreOrder: true);
+                ["entries", "attachments", "histories", "spaces", "users", "roles", "permissions"],
+                ignoreOrder: true);
 
             foreach (var table in new[] { "spaces", "users", "roles", "permissions" })
                 File.Exists(Path.Combine(dir, table, "part-00000.parquet"))

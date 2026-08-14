@@ -178,6 +178,7 @@ internal static class CliBootstrap
         return new ParquetArchiveService(
             new EntryRepository(db),
             new AttachmentRepository(db, dialect),
+            new HistoryRepository(db, dialect),
             new SpaceRepository(db),
             userRepo,
             accessRepo,
