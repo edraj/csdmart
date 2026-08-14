@@ -422,7 +422,19 @@ prerequisite, not an optimization.
 
 ### 5.2 Deletions — a tombstone table
 
-*Decision taken: tombstone table (§6).*
+*Decision taken: tombstone table (§6). **IMPLEMENTED** — see
+`DataAdapters/Sql/Tombstones.cs` and `TombstoneTests`.*
+
+The shipped table differs from the sketch below in one way: it carries
+`table_name`, so one table serves entries, attachments, histories, spaces,
+users, roles and permissions rather than needing seven. `locks` is deliberately
+excluded — transient coordination state, not replicated content.
+
+Every content-removing path is covered: single entry and attachment deletes,
+the folder-subtree cascade, the space cascade, the by-owner cascade inside
+`ForceDeleteAsync`, and the user/role/permission deletes. The insert runs over
+the SAME PREDICATE as the delete it accompanies, so the two cannot disagree
+about what a cascade took.
 
 A row deleted since the last run is simply absent, and absence is
 indistinguishable from unchanged. Without tombstones an incremental consumer

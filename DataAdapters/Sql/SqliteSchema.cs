@@ -350,6 +350,23 @@ public static class SqliteSchema
     );
 
     -- ============================================================
+    -- DELETIONS  (tombstones — see docs/parquet-export-design.md §5.2)
+    -- ============================================================
+    -- See SqlSchema for why these are written in code rather than by a trigger.
+    -- INTEGER PRIMARY KEY is SQLite's rowid alias, which is its BIGSERIAL.
+    CREATE TABLE IF NOT EXISTS deletions (
+        id             INTEGER PRIMARY KEY AUTOINCREMENT,
+        table_name     TEXT NOT NULL,
+        space_name     TEXT NOT NULL,
+        subpath        TEXT NOT NULL,
+        shortname      TEXT NOT NULL,
+        resource_type  TEXT NOT NULL DEFAULT '',
+        deleted_at     TEXT NOT NULL DEFAULT {NowExpr}
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_deletions_deleted_at ON deletions (deleted_at);
+
+    -- ============================================================
     -- SESSIONS
     -- ============================================================
     CREATE TABLE IF NOT EXISTS sessions (

@@ -291,9 +291,19 @@ public sealed class AttachmentRepository(IDbConnectionFactory db, ISqlDialect di
     public async Task DeleteAsync(Guid uuid, CancellationToken ct = default)
     {
         await using var conn = await db.OpenAsync(ct);
-        await using var cmd = conn.Command("DELETE FROM attachments WHERE uuid = $1");
+        // Tombstone and delete share one transaction so a crash cannot separate
+        // them, leaving a row gone with nothing recording that it went (§5.2).
+        // The tombstone runs FIRST because it reads the row being removed.
+        await using var tx = await conn.BeginTransactionAsync(ct);
+
+        await Tombstones.RecordAsync(conn, tx, "attachments", "uuid = $1",
+            c => DbParams.Add(c, uuid), hasResourceType: true, ct);
+
+        await using var cmd = conn.Command("DELETE FROM attachments WHERE uuid = $1", tx);
         DbParams.Add(cmd, uuid);
         await cmd.ExecuteNonQueryAsync(ct);
+
+        await tx.CommitAsync(ct);
     }
 
     // Bulk-delete every attachment whose subpath sits at or under `prefix`.
@@ -305,15 +315,31 @@ public sealed class AttachmentRepository(IDbConnectionFactory db, ISqlDialect di
     // siblings (`/products` vs `/products_old`).
     public async Task<int> DeleteUnderSubpathAsync(string spaceName, string prefix, CancellationToken ct = default)
     {
-        await using var conn = await db.OpenAsync(ct);
-        await using var cmd = conn.Command("""
-            DELETE FROM attachments
-            WHERE space_name = $1
+        const string predicate = """
+            space_name = $1
               AND (subpath = $2 OR subpath LIKE $2 || '/%')
-            """);
-        DbParams.Add(cmd, spaceName);
-        DbParams.Add(cmd, prefix);
-        return await cmd.ExecuteNonQueryAsync(ct);
+            """;
+
+        void Bind(DbCommand c)
+        {
+            DbParams.Add(c, spaceName);
+            DbParams.Add(c, prefix);
+        }
+
+        await using var conn = await db.OpenAsync(ct);
+        await using var tx = await conn.BeginTransactionAsync(ct);
+
+        // Over the SAME predicate as the delete, so the tombstones and the
+        // removal cannot disagree about which attachments a cascade took.
+        await Tombstones.RecordAsync(conn, tx, "attachments", predicate,
+            Bind, hasResourceType: true, ct);
+
+        await using var cmd = conn.Command($"DELETE FROM attachments WHERE {predicate}", tx);
+        Bind(cmd);
+        var deleted = await cmd.ExecuteNonQueryAsync(ct);
+
+        await tx.CommitAsync(ct);
+        return deleted;
     }
 
     // Count (don't delete) every attachment at or under `prefix` — the dryrun

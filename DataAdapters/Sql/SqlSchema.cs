@@ -319,6 +319,30 @@ public static class SqlSchema
     );
 
     -- ============================================================
+    -- DELETIONS  (tombstones — see docs/parquet-export-design.md §5.2)
+    -- ============================================================
+    -- A row deleted since the last incremental export is simply ABSENT, and
+    -- absence is indistinguishable from unchanged. Without these an incremental
+    -- consumer drifts from source permanently and never notices.
+    --
+    -- Written in CODE, in the same transaction as the delete. Deliberately NOT
+    -- a trigger: `dmart import --fast` sets session_replication_role='replica',
+    -- which bypasses triggers — so a trigger-based tombstone would be silently
+    -- skipped during exactly the bulk operations that move the most rows.
+    CREATE TABLE IF NOT EXISTS deletions (
+        id             BIGSERIAL PRIMARY KEY,
+        table_name     TEXT NOT NULL,
+        space_name     TEXT NOT NULL,
+        subpath        TEXT NOT NULL,
+        shortname      TEXT NOT NULL,
+        resource_type  TEXT NOT NULL DEFAULT '',
+        deleted_at     TIMESTAMP NOT NULL DEFAULT NOW()
+    );
+
+    -- Serves the incremental scan `WHERE deleted_at >= watermark`.
+    CREATE INDEX IF NOT EXISTS idx_deletions_deleted_at ON deletions (deleted_at);
+
+    -- ============================================================
     -- SESSIONS
     -- ============================================================
     CREATE TABLE IF NOT EXISTS sessions (

@@ -367,10 +367,18 @@ public sealed class AccessRepository(IDbConnectionFactory db, ISqlDialect dialec
     public async Task<bool> DeleteRoleAsync(string shortname, CancellationToken ct = default)
     {
         await using var conn = await db.OpenAsync(ct);
-        await using var cmd = conn.Command("DELETE FROM roles WHERE shortname = $1");
+        // Tombstone in the same transaction as the delete (§5.2). Roles are
+        // exported, so a consumer that never learns one was removed keeps
+        // granting through it.
+        await using var tx = await conn.BeginTransactionAsync(ct);
+        await Tombstones.RecordAsync(conn, tx, "roles", "shortname = $1",
+            c => DbParams.Add(c, shortname), hasResourceType: false, ct);
+
+        await using var cmd = conn.Command("DELETE FROM roles WHERE shortname = $1", tx);
         DbParams.Add(cmd, shortname);
         var rows = await cmd.ExecuteNonQueryAsync(ct);
-        if (rows == 0) return false;
+        if (rows == 0) { await tx.RollbackAsync(ct); return false; }
+        await tx.CommitAsync(ct);
         await refresher.RefreshAsync(ct);
         await InvalidateAllCachesAsync(ct);
         return true;
@@ -379,10 +387,17 @@ public sealed class AccessRepository(IDbConnectionFactory db, ISqlDialect dialec
     public async Task<bool> DeletePermissionAsync(string shortname, CancellationToken ct = default)
     {
         await using var conn = await db.OpenAsync(ct);
-        await using var cmd = conn.Command("DELETE FROM permissions WHERE shortname = $1");
+        // Same reasoning as DeleteRoleAsync: a permission a consumer never
+        // learns was removed keeps granting.
+        await using var tx = await conn.BeginTransactionAsync(ct);
+        await Tombstones.RecordAsync(conn, tx, "permissions", "shortname = $1",
+            c => DbParams.Add(c, shortname), hasResourceType: false, ct);
+
+        await using var cmd = conn.Command("DELETE FROM permissions WHERE shortname = $1", tx);
         DbParams.Add(cmd, shortname);
         var rows = await cmd.ExecuteNonQueryAsync(ct);
-        if (rows == 0) return false;
+        if (rows == 0) { await tx.RollbackAsync(ct); return false; }
+        await tx.CommitAsync(ct);
         await refresher.RefreshAsync(ct);
         await InvalidateAllCachesAsync(ct);
         return true;

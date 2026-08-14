@@ -372,16 +372,32 @@ public sealed class EntryRepository(IDbConnectionFactory db)
 
     public async Task<bool> DeleteAsync(string spaceName, string subpath, string shortname, ResourceType type, CancellationToken ct = default)
     {
+        const string predicate =
+            "space_name = $1 AND subpath = $2 AND shortname = $3 AND resource_type = $4";
+
+        void Bind(DbCommand c)
+        {
+            DbParams.Add(c, spaceName);
+            DbParams.Add(c, subpath);
+            DbParams.Add(c, shortname);
+            DbParams.Add(c, JsonbHelpers.EnumMember(type));
+        }
+
         await using var conn = await db.OpenAsync(ct);
-        await using var cmd = conn.Command("""
-            DELETE FROM entries
-            WHERE space_name = $1 AND subpath = $2 AND shortname = $3 AND resource_type = $4
-            """);
-        DbParams.Add(cmd, spaceName);
-        DbParams.Add(cmd, subpath);
-        DbParams.Add(cmd, shortname);
-        DbParams.Add(cmd, JsonbHelpers.EnumMember(type));
-        return await cmd.ExecuteNonQueryAsync(ct) > 0;
+        // One transaction so the tombstone and the delete cannot be separated
+        // by a crash — §5.2's first rule, and the one whose failure is
+        // invisible: the row is gone and nothing records that it went.
+        await using var tx = await conn.BeginTransactionAsync(ct);
+
+        // Before the delete: this reads the row the delete removes.
+        await Tombstones.RecordAsync(conn, tx, "entries", predicate, Bind, hasResourceType: true, ct);
+
+        await using var cmd = conn.Command($"DELETE FROM entries WHERE {predicate}", tx);
+        Bind(cmd);
+        var deleted = await cmd.ExecuteNonQueryAsync(ct) > 0;
+
+        await tx.CommitAsync(ct);
+        return deleted;
     }
 
     // Batched existence probe used by EntryService.ValidateRelationshipsAsync.
@@ -615,13 +631,35 @@ public sealed class EntryRepository(IDbConnectionFactory db)
             DbParams.Add(cmd, folderPath);
         }
 
-        var histories   = await RunAsync("histories",   subtreeWithFolderRow, BindSubtree);
-        var locks       = await RunAsync("locks",        subtreeWithFolderRow, BindSubtree);
-        var attachments = await RunAsync("attachments",  attachmentsPredicate, cmd =>
+        void BindAttachments(DbCommand cmd)
         {
             DbParams.Add(cmd, spaceName);
             DbParams.Add(cmd, folderPath);
-        });
+        }
+
+        // Tombstones BEFORE the deletes, in this same transaction, over the
+        // SAME predicates (§5.2). Deriving the removed rows separately would
+        // let the two disagree about what a cascade actually took, which is the
+        // failure this whole mechanism exists to prevent — and it would be
+        // invisible, because the rows are gone either way.
+        //
+        // `locks` is deliberately absent: a lock is transient coordination
+        // state, not replicated content, so a consumer has nothing to reconcile.
+        //
+        // A dryRun tombstones nothing, because it deletes nothing.
+        if (!dryRun)
+        {
+            await Tombstones.RecordAsync(conn, tx, "attachments", attachmentsPredicate,
+                BindAttachments, hasResourceType: true, ct);
+            await Tombstones.RecordAsync(conn, tx, "histories", subtreeWithFolderRow,
+                BindSubtree, hasResourceType: false, ct);
+            await Tombstones.RecordAsync(conn, tx, "entries", entriesPredicate,
+                BindSubtree, hasResourceType: true, ct);
+        }
+
+        var histories   = await RunAsync("histories",   subtreeWithFolderRow, BindSubtree);
+        var locks       = await RunAsync("locks",        subtreeWithFolderRow, BindSubtree);
+        var attachments = await RunAsync("attachments",  attachmentsPredicate, BindAttachments);
         var entries     = await RunAsync("entries",      entriesPredicate, BindSubtree);
 
         if (tx is not null) await tx.CommitAsync(ct);
