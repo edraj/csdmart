@@ -237,12 +237,6 @@
   </ItemGroup>
 
   <ItemGroup>
-    <!-- Keeps the Parquet encoder in the AOT image so ILC analyses it; see the
-         file's comment. Drop this once the exporter references the encoder. -->
-    <TrimmerRootDescriptor Include="ILLink.Descriptors.xml" />
-  </ItemGroup>
-
-  <ItemGroup>
     <_ContentIncludedByDefault Remove="catalog\babel.config.json" />
     <_ContentIncludedByDefault Remove="catalog\dist\client\config.json" />
     <_ContentIncludedByDefault Remove="catalog\package.json" />

@@ -315,11 +315,25 @@ Mirror the SQL columns, one Parquet table per SQL table, with three rules:
   Exploding payload into typed columns would require per-schema knowledge and
   break round-tripping; if analytics later wants that, it is a view over this,
   not a change to it.
-- **Array columns become native Parquet lists** — `tags`, `query_policies` as
-  `list<string>`. Better for analytics than a JSON string, and still lossless.
-  This is also the one place the two backends already differ (`text[]` vs a
-  JSON array in TEXT), so the exporter reads them through `DbParams.ReadTextArray`
-  and writes one canonical form.
+- **Array columns become JSON strings** — `tags`, `query_policies`. §2.2 is the
+  binding decision here; the earlier text in this section called for native
+  `list<string>` and was wrong, because native lists need repetition levels and
+  dropping those is what kept the encoder small enough to hand-write at all.
+  Consistent with `payload` / `acl` / `relationships`, and still queryable in
+  DuckDB via `json_extract`. This is also the one place the two backends already
+  differ (`text[]` vs a JSON array in TEXT), so the exporter writes one
+  canonical form regardless of driver.
+
+- **`space_name` is NOT a column.** It is the Hive partition key in the
+  directory name, and a Hive partition column lives in the path, not in the
+  file. Writing both makes every partition-inferring reader — DuckDB, Spark,
+  pyarrow — fail outright with `Field space_name has incompatible types: string
+  vs dictionary`, which defeats the compatibility §4.1 is asking for. The value
+  is carried in the manifest and restored from there.
+
+  Found by the cross-reader test, not by review: the files were valid Parquet
+  and read fine individually. Only reading the export the way a consumer
+  actually would — as a partitioned dataset — surfaced it.
 - **Timestamps as Parquet TIMESTAMP (micros, UTC)**, not strings.
 
 Row group target ~50–100k rows. That is the unit of both column projection and

@@ -578,10 +578,43 @@ switch (subcommand)
         var spaceName = serverArgs.FirstOrDefault(a => !a.StartsWith('-'));
         var outputIdx = Array.IndexOf(serverArgs, "--output");
         var output = outputIdx >= 0 && outputIdx + 1 < serverArgs.Length ? serverArgs[outputIdx + 1] : null;
+        var asParquet = serverArgs.Contains("--parquet");
         if (string.IsNullOrEmpty(spaceName))
         {
-            Console.Error.WriteLine("Usage: dmart export <space_name> [--output <path|dir|.>]");
+            Console.Error.WriteLine(
+                "Usage: dmart export <space_name> [--parquet] [--output <path|dir|.>]");
             Environment.ExitCode = 1;
+            return;
+        }
+
+        // --parquet writes the columnar layout (docs/parquet-export-design.md)
+        // instead of the zip: a DIRECTORY, because the format's whole point is
+        // that a reader can project one column or one space without unpacking
+        // everything. Entries only for now; the remaining tables and the blob
+        // store are not wired yet, so this is not yet a full backup and says so.
+        if (asParquet)
+        {
+            var outDir = Path.GetFullPath(
+                string.IsNullOrEmpty(output) ? $"{spaceName}-parquet" : output);
+
+            var (ps, pdb) = CliBootstrap.BuildFactoryOrExit(dotenvPath, dotenvValues);
+            var parquet = CliBootstrap.BuildParquetArchiveService(ps, pdb);
+
+            // Same reasoning as the zip path below: a failed export must not
+            // leave behind something that looks like a backup.
+            try
+            {
+                var manifest = await parquet.ExportAsync(outDir, spaceName, "/", actor: null);
+                Console.WriteLine(
+                    $"Exported {manifest.RowCount} entries from '{spaceName}' to {outDir}");
+                Console.WriteLine(
+                    "Note: entries only — attachments, history and blobs are not yet included.");
+            }
+            catch
+            {
+                try { Directory.Delete(outDir, recursive: true); } catch { /* best effort */ }
+                throw;
+            }
             return;
         }
 
@@ -659,6 +692,32 @@ switch (subcommand)
         // -r the import is idempotent — pre-existing rows are skipped and
         // the operator sees them counted as `skipped` in the summary.
         var replace = serverArgs.Any(a => a is "-r" or "--replace");
+
+        // --parquet restores the columnar layout `dmart export --parquet`
+        // produced. Deliberately a separate branch rather than sniffing the
+        // directory: guessing the format of a restore source and getting it
+        // wrong is not a mistake worth being clever about.
+        if (serverArgs.Contains("--parquet"))
+        {
+            if (string.IsNullOrEmpty(targetPath))
+            {
+                Bail("Usage: dmart import <export-directory> --parquet [-r]");
+                return;
+            }
+
+            var (qs, qdb) = CliBootstrap.BuildFactoryOrExit(dotenvPath, dotenvValues);
+            var archive = CliBootstrap.BuildParquetArchiveService(qs, qdb);
+            var result = await archive.ImportAsync(targetPath, replace);
+
+            Console.WriteLine(
+                $"Imported {result.Imported}, skipped {result.Skipped}, failed {result.Failed} "
+                + $"of {result.Total} entries from {targetPath}");
+            // A restore that lost rows must not exit 0: a backup pipeline reads
+            // the exit code, not the wording.
+            if (result.Failed > 0) Environment.ExitCode = 1;
+            return;
+        }
+
         // --fast bypasses FK constraints AND user-defined triggers for the
         // entire import by setting session_replication_role='replica' on a
         // single shared session. Trades safety for speed; only safe when
@@ -1996,6 +2055,7 @@ builder.Services.AddSingleton<LockService>();
 builder.Services.AddSingleton<ShortLinkService>();
 builder.Services.AddSingleton<CsvService>();
 builder.Services.AddSingleton<ImportExportService>();
+builder.Services.AddSingleton<ParquetArchiveService>();
 builder.Services.AddSingleton<QrService>();
 builder.Services.AddSingleton<WsConnectionManager>();
 

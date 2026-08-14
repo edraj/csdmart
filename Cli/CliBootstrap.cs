@@ -161,6 +161,26 @@ internal static class CliBootstrap
             nlog.CreateLogger<ImportExportService>());
     }
 
+    // The Parquet exporter needs far less of the graph than the zip one: it
+    // reads entries and applies the ACL gate, and nothing else.
+    public static ParquetArchiveService BuildParquetArchiveService(
+        DmartSettings s, IDbConnectionFactory db)
+    {
+        var nlog = LoggerFactory.Create(b => b
+            .SetMinimumLevel(LogLevel.Information)
+            .AddProvider(new StderrLoggerProvider(LogLevel.Information)));
+        var refresher = new AuthzCacheRefresher();
+        var userRepo = new UserRepository(db, refresher, new SessionTokenHasher(s));
+        var dialect = db is SqliteConnectionFactory
+            ? (Dmart.QueryGrammar.ISqlDialect)Dmart.QueryGrammar.SqliteSqlDialect.Instance
+            : Dmart.QueryGrammar.PostgresSqlDialect.Instance;
+        var accessRepo = new AccessRepository(db, dialect, refresher, userRepo);
+        return new ParquetArchiveService(
+            new EntryRepository(db),
+            new PermissionService(userRepo, accessRepo, refresher),
+            nlog.CreateLogger<ParquetArchiveService>());
+    }
+
     // Logger for bootstrap-time work that happens before the service graph
     // exists (schema creation). Same stderr provider the import uses, so the
     // two are visually consistent in one CLI run.

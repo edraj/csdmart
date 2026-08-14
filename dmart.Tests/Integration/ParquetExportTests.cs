@@ -1,0 +1,331 @@
+using Dmart.DataAdapters.Sql;
+using Dmart.Models.Core;
+using Dmart.Models.Enums;
+using Dmart.Services;
+using Microsoft.Extensions.DependencyInjection;
+using Shouldly;
+using Xunit;
+
+namespace Dmart.Tests.Integration;
+
+// The Parquet export end to end: database -> files on disk -> entries back.
+//
+// The unit tests cover the format and the column mapping. What only a real
+// export can show is whether the pieces are wired together — that the pager
+// feeds the writer, that row groups flush at the boundary AND at the tail, and
+// that what lands on disk is what the manifest claims.
+public class ParquetExportTests : IClassFixture<DmartFactory>, IDisposable
+{
+    private readonly DmartFactory _factory;
+    private readonly int _originalRowGroup = ParquetArchiveService.RowGroupRows;
+    private readonly List<string> _dirs = [];
+
+    public ParquetExportTests(DmartFactory factory) => _factory = factory;
+
+    public void Dispose()
+    {
+        ParquetArchiveService.RowGroupRows = _originalRowGroup;
+        foreach (var d in _dirs)
+            try { Directory.Delete(d, recursive: true); } catch { /* best effort */ }
+        GC.SuppressFinalize(this);
+    }
+
+    private string NewDir()
+    {
+        var dir = Path.Combine(Path.GetTempPath(), $"dmart-pqx-{Guid.NewGuid():N}");
+        _dirs.Add(dir);
+        return dir;
+    }
+
+    [FactIfPg]
+    public async Task Exports_Entries_And_Reads_Them_Back()
+    {
+        await WithSpaceAsync(5, async (svc, space, shortnames) =>
+        {
+            var dir = NewDir();
+            var manifest = await svc.ExportAsync(dir, space, "/", actor: null);
+
+            manifest.RowCount.ShouldBe(5);
+            manifest.SpaceName.ShouldBe(space);
+            File.Exists(Path.Combine(dir, "manifest.json")).ShouldBeTrue();
+
+            // Hive-style partitioning is what DuckDB and Spark expect, and it is
+            // the unit of a per-space restore — see design §4.1.
+            File.Exists(Path.Combine(dir, "entries", $"space_name={space}", "part-00000.parquet"))
+                .ShouldBeTrue("the layout is part of the format, not an implementation detail");
+
+            var back = ParquetArchiveService.ReadEntries(dir);
+            back.Count.ShouldBe(5);
+            back.Select(e => e.Shortname).OrderBy(x => x, StringComparer.Ordinal)
+                .ShouldBe(shortnames.OrderBy(x => x, StringComparer.Ordinal));
+            back.ShouldAllBe(e => e.SpaceName == space);
+        });
+    }
+
+    // Row groups are the unit of writer memory, so the boundary logic has to
+    // hold on real data: 13 rows over groups of 5 means two full groups and a
+    // short tail, which is the case a writer that only flushes when full drops.
+    [FactIfPg]
+    public async Task Exports_Every_Row_Across_Row_Group_Boundaries()
+    {
+        ParquetArchiveService.RowGroupRows = 5;
+
+        await WithSpaceAsync(13, async (svc, space, shortnames) =>
+        {
+            var dir = NewDir();
+            var manifest = await svc.ExportAsync(dir, space, "/", actor: null);
+
+            manifest.RowCount.ShouldBe(13, "the tail row group must be flushed too");
+
+            var back = ParquetArchiveService.ReadEntries(dir);
+            back.Count.ShouldBe(13);
+            back.Select(e => e.Shortname).OrderBy(x => x, StringComparer.Ordinal)
+                .ShouldBe(shortnames.OrderBy(x => x, StringComparer.Ordinal));
+        });
+    }
+
+    // The off-by-one companion: a total that lands exactly on the boundary must
+    // not flush an empty tail group, which the encoder rejects outright.
+    [FactIfPg]
+    public async Task Exports_An_Exact_Multiple_Of_The_Row_Group_Size()
+    {
+        ParquetArchiveService.RowGroupRows = 4;
+
+        await WithSpaceAsync(8, async (svc, space, _) =>
+        {
+            var dir = NewDir();
+            var manifest = await svc.ExportAsync(dir, space, "/", actor: null);
+
+            manifest.RowCount.ShouldBe(8);
+            ParquetArchiveService.ReadEntries(dir).Count.ShouldBe(8);
+        });
+    }
+
+    // No rows still has to produce a valid, readable export. A restore must be
+    // able to tell "nothing matched" from "the export failed", and an absent
+    // file cannot express that difference.
+    [FactIfPg]
+    public async Task An_Empty_Space_Produces_A_Valid_Empty_Export()
+    {
+        await WithSpaceAsync(0, async (svc, space, _) =>
+        {
+            var dir = NewDir();
+            var manifest = await svc.ExportAsync(dir, space, "/", actor: null);
+
+            manifest.RowCount.ShouldBe(0);
+            ParquetArchiveService.ReadEntries(dir).ShouldBeEmpty();
+        });
+    }
+
+    // The manifest is written separately from the files, so a disagreement
+    // means one of them is wrong — a truncated copy being the likely cause, and
+    // exactly what a restore must refuse rather than silently accept.
+    [FactIfPg]
+    public async Task A_Manifest_That_Disagrees_With_The_Files_Is_Refused()
+    {
+        await WithSpaceAsync(3, async (svc, space, _) =>
+        {
+            var dir = NewDir();
+            await svc.ExportAsync(dir, space, "/", actor: null);
+
+            var manifestPath = Path.Combine(dir, "manifest.json");
+            await File.WriteAllTextAsync(manifestPath,
+                (await File.ReadAllTextAsync(manifestPath)).Replace("\"row_count\": 3", "\"row_count\": 99"));
+
+            Should.Throw<InvalidDataException>(() => ParquetArchiveService.ReadEntries(dir))
+                  .Message.ShouldContain("99");
+        });
+    }
+
+    // A file written by a newer build may have a layout this one cannot see.
+    // Reading it anyway and producing partial results is the failure a restore
+    // can least afford.
+    [FactIfPg]
+    public async Task A_Future_Format_Version_Is_Refused()
+    {
+        await WithSpaceAsync(2, async (svc, space, _) =>
+        {
+            var dir = NewDir();
+            await svc.ExportAsync(dir, space, "/", actor: null);
+
+            var manifestPath = Path.Combine(dir, "manifest.json");
+            await File.WriteAllTextAsync(manifestPath,
+                (await File.ReadAllTextAsync(manifestPath)).Replace("\"format_version\": 1", "\"format_version\": 99"));
+
+            Should.Throw<NotSupportedException>(() => ParquetArchiveService.ReadEntries(dir));
+        });
+    }
+
+    // The watermark is stamped BEFORE any row is read, so a later incremental
+    // run overlaps this export rather than starting after it (§5.1). An import
+    // upserts, so a re-shipped row is free; a missed one is silent corruption.
+    [FactIfPg]
+    public async Task The_Watermark_Precedes_The_Export()
+    {
+        await WithSpaceAsync(2, async (svc, space, _) =>
+        {
+            var before = DateTime.UtcNow;
+            var manifest = await svc.ExportAsync(NewDir(), space, "/", actor: null);
+
+            manifest.Watermark.ShouldBeLessThanOrEqualTo(manifest.CreatedAt);
+            manifest.Watermark.ShouldBeGreaterThanOrEqualTo(before.AddSeconds(-1));
+        });
+    }
+
+    // The export must be readable by the tools the format was chosen for, not
+    // only by us.
+    [FactIfPg]
+    public async Task PyArrow_Can_Read_The_Exported_File()
+    {
+        await WithSpaceAsync(4, async (svc, space, _) =>
+        {
+            var dir = NewDir();
+            await svc.ExportAsync(dir, space, "/", actor: null);
+            var file = Path.Combine(dir, "entries", $"space_name={space}", "part-00000.parquet");
+
+            if (!Unit.Parquet.PyArrow.Available) return;   // covered elsewhere; not a failure here
+
+            var table = Unit.Parquet.PyArrow.ReadTable(file);
+            table.GetProperty("shortname").EnumerateArray().Count().ShouldBe(4);
+            table.GetProperty("space_name").EnumerateArray()
+                 .ShouldAllBe(x => x.GetString() == space);
+        });
+    }
+
+    // Query.Limit defaults to 10, so a hand-built Query is a bounded SAMPLE,
+    // not an export. That default is why the space/subpath overload above
+    // exists; this pins that the explicit form still means what it says.
+    [FactIfPg]
+    public async Task An_Explicit_Query_Limit_Is_Still_Honoured()
+    {
+        await WithSpaceAsync(13, async (svc, space, _) =>
+        {
+            var dir = NewDir();
+            var manifest = await svc.ExportAsync(dir, QueryFor(space) with { Limit = 6 }, actor: null);
+            manifest.RowCount.ShouldBe(6, "an explicit limit must cap the export");
+        });
+    }
+
+    // ---- restore ----
+
+    // The claim the whole format rests on: an export can be imported. Rows are
+    // deleted between export and import so the restore genuinely recreates
+    // them rather than finding them already there.
+    [FactIfPg]
+    public async Task An_Export_Restores_Into_An_Empty_Space()
+    {
+        await WithSpaceAsync(6, async (svc, space, shortnames) =>
+        {
+            var dir = NewDir();
+            await svc.ExportAsync(dir, space, "/", actor: null);
+
+            var entries = _factory.Services.GetRequiredService<EntryRepository>();
+            foreach (var sn in shortnames)
+                await entries.DeleteAsync(space, "/", sn, ResourceType.Content);
+
+            var result = await svc.ImportAsync(dir);
+
+            result.Imported.ShouldBe(6);
+            result.Skipped.ShouldBe(0);
+            result.Failed.ShouldBe(0);
+            result.Total.ShouldBe(result.Imported + result.Skipped + result.Failed);
+
+            // Restored from the archive, not merely reported as restored.
+            foreach (var sn in shortnames)
+                (await entries.GetAsync(space, "/", sn, ResourceType.Content))
+                    .ShouldNotBeNull($"'{sn}' should have been restored");
+        });
+    }
+
+    // A rerun must be idempotent. A restore pipeline that runs twice — after a
+    // partial failure, say — must not need to know whether the first run
+    // finished.
+    [FactIfPg]
+    public async Task Importing_Twice_Skips_Instead_Of_Duplicating()
+    {
+        await WithSpaceAsync(4, async (svc, space, _) =>
+        {
+            var dir = NewDir();
+            await svc.ExportAsync(dir, space, "/", actor: null);
+
+            var first = await svc.ImportAsync(dir);
+            first.Skipped.ShouldBe(4, "the rows are still there, so all four are skipped");
+
+            var second = await svc.ImportAsync(dir);
+            second.Skipped.ShouldBe(4);
+            second.Failed.ShouldBe(0);
+        });
+    }
+
+    // -r rewrites existing rows from the archive. Without it the archive's
+    // values would be silently ignored for any row that already exists, which
+    // is the wrong default for "restore this backup over the top".
+    [FactIfPg]
+    public async Task Replace_Rewrites_Existing_Rows_From_The_Archive()
+    {
+        await WithSpaceAsync(2, async (svc, space, shortnames) =>
+        {
+            var dir = NewDir();
+            await svc.ExportAsync(dir, space, "/", actor: null);
+
+            var entries = _factory.Services.GetRequiredService<EntryRepository>();
+            var target = shortnames[0];
+            var live = (await entries.GetAsync(space, "/", target, ResourceType.Content))!;
+            await entries.UpsertAsync(live with { Slug = "changed-after-export" });
+
+            var result = await svc.ImportAsync(dir, replaceExisting: true);
+            result.Imported.ShouldBe(2);
+            result.Skipped.ShouldBe(0);
+
+            (await entries.GetAsync(space, "/", target, ResourceType.Content))!
+                .Slug.ShouldNotBe("changed-after-export", "the archive's value must win under -r");
+        });
+    }
+
+    // ====================================================================
+
+    private static Dmart.Models.Api.Query QueryFor(string space) => new()
+    {
+        Type = QueryType.Search,
+        SpaceName = space,
+        Subpath = "/",
+        FilterSchemaNames = new(),
+    };
+
+    private async Task WithSpaceAsync(
+        int entryCount, Func<ParquetArchiveService, string, List<string>, Task> body)
+    {
+        var sp = _factory.Services;
+        _factory.CreateClient();
+        var svc = sp.GetRequiredService<ParquetArchiveService>();
+        var entries = sp.GetRequiredService<EntryRepository>();
+        var spaces = sp.GetRequiredService<SpaceRepository>();
+
+        var space = "pqx_" + Guid.NewGuid().ToString("N")[..8];
+        await spaces.UpsertAsync(new Space
+        {
+            Uuid = Guid.NewGuid().ToString(), Shortname = space,
+            SpaceName = space, Subpath = "/",
+            IsActive = true, OwnerShortname = "dmart",
+        });
+        try
+        {
+            var shortnames = new List<string>();
+            for (var i = 0; i < entryCount; i++)
+            {
+                var sn = $"e{i:D4}";
+                shortnames.Add(sn);
+                await entries.UpsertAsync(new Entry
+                {
+                    Uuid = Guid.NewGuid().ToString(), Shortname = sn,
+                    SpaceName = space, Subpath = "/", ResourceType = ResourceType.Content,
+                    IsActive = true, OwnerShortname = "dmart",
+                    Tags = i % 2 == 0 ? ["even"] : [],
+                    Slug = i % 3 == 0 ? $"slug-{i}" : null,
+                });
+            }
+            await body(svc, space, shortnames);
+        }
+        finally { try { await spaces.DeleteAsync(space); } catch { } }
+    }
+}
