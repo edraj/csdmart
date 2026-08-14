@@ -359,6 +359,128 @@ public class ParquetExportTests : IClassFixture<DmartFactory>, IDisposable
         });
     }
 
+    // ---- restore verification ----
+
+    // The counts an import reports come from the writer's own bookkeeping.
+    // Verification re-reads BOTH sides and answers the question those counts
+    // cannot: does the database now match the archive?
+    [FactIfPg]
+    public async Task Verification_Passes_After_A_Good_Restore()
+    {
+        await WithSpaceAsync(4, async (svc, space, shortnames) =>
+        {
+            await AddAttachmentAsync(space, shortnames[0], "att1",
+                System.Text.Encoding.UTF8.GetBytes("verified media"));
+            var histories = _factory.Services.GetRequiredService<HistoryRepository>();
+            await histories.AppendAsync(space, "/", shortnames[0], "eve", null,
+                new Dictionary<string, object> { ["n"] = 1 });
+
+            var dir = NewDir();
+            await svc.ExportAsync(dir, space, "/", actor: null);
+            await svc.ImportAsync(dir, replaceExisting: true);
+
+            var check = await Verifier().VerifyAsync(dir);
+
+            check.Ok.ShouldBeTrue(
+                "a correct restore must verify clean: " + string.Join("; ", check.Problems));
+            check.Checked.ShouldBeGreaterThan(4, "entries, the attachment and the history row are all checked");
+        });
+    }
+
+    // The failure this exists to catch: rows that never landed.
+    [FactIfPg]
+    public async Task Verification_Reports_Rows_That_Never_Landed()
+    {
+        await WithSpaceAsync(4, async (svc, space, shortnames) =>
+        {
+            var dir = NewDir();
+            await svc.ExportAsync(dir, space, "/", actor: null);
+
+            var entries = _factory.Services.GetRequiredService<EntryRepository>();
+            await entries.DeleteAsync(space, "/", shortnames[0], ResourceType.Content);
+            await entries.DeleteAsync(space, "/", shortnames[1], ResourceType.Content);
+
+            var check = await Verifier().VerifyAsync(dir);
+
+            check.Ok.ShouldBeFalse();
+            check.Missing.ShouldBe(2);
+            check.Problems.ShouldContain(p => p.Contains(shortnames[0], StringComparison.Ordinal));
+        });
+    }
+
+    // A row that exists but holds different content is the harder failure —
+    // presence alone would report success.
+    [FactIfPg]
+    public async Task Verification_Reports_A_Row_That_Differs()
+    {
+        await WithSpaceAsync(2, async (svc, space, shortnames) =>
+        {
+            var dir = NewDir();
+            await svc.ExportAsync(dir, space, "/", actor: null);
+
+            var entries = _factory.Services.GetRequiredService<EntryRepository>();
+            var live = (await entries.GetAsync(space, "/", shortnames[0], ResourceType.Content))!;
+            await entries.UpsertAsync(live with { Slug = "drifted-after-the-backup" });
+
+            var check = await Verifier().VerifyAsync(dir);
+
+            check.Ok.ShouldBeFalse();
+            check.Mismatched.ShouldBe(1);
+            check.Missing.ShouldBe(0, "the row is present, just different");
+            check.Problems.ShouldContain(p => p.Contains("slug", StringComparison.Ordinal));
+        });
+    }
+
+    // Media is compared by hash, not length — length survives a byte-for-byte
+    // substitution, and attachment media is exactly the payload nothing
+    // downstream would notice was wrong.
+    [FactIfPg]
+    public async Task Verification_Catches_Media_Replaced_With_Different_Bytes_Of_The_Same_Length()
+    {
+        await WithSpaceAsync(1, async (svc, space, shortnames) =>
+        {
+            await AddAttachmentAsync(space, shortnames[0], "att1",
+                System.Text.Encoding.UTF8.GetBytes("AAAAAAAAAA"));
+
+            var dir = NewDir();
+            await svc.ExportAsync(dir, space, "/", actor: null);
+
+            // Same length, different content.
+            var repo = _factory.Services.GetRequiredService<AttachmentRepository>();
+            var live = (await repo.GetAsync(space, $"/{shortnames[0]}", "att1"))!;
+            await repo.UpsertAsync(live with { Media = System.Text.Encoding.UTF8.GetBytes("BBBBBBBBBB") });
+
+            var check = await Verifier().VerifyAsync(dir);
+
+            check.Ok.ShouldBeFalse();
+            check.Mismatched.ShouldBe(1, "a length check would have passed this");
+            check.Problems.ShouldContain(p => p.Contains("media differs", StringComparison.Ordinal));
+        });
+    }
+
+    // query_policies is regenerated on write, so a correct restore can hold
+    // different policies from the archive. Comparing it would fail a good
+    // restore, and a verifier that cries wolf is one people stop running.
+    [FactIfPg]
+    public async Task Verification_Ignores_Regenerated_Query_Policies()
+    {
+        await WithSpaceAsync(2, async (svc, space, shortnames) =>
+        {
+            var dir = NewDir();
+            await svc.ExportAsync(dir, space, "/", actor: null);
+
+            var entries = _factory.Services.GetRequiredService<EntryRepository>();
+            var live = (await entries.GetAsync(space, "/", shortnames[0], ResourceType.Content))!;
+            await entries.UpsertAsync(live with { QueryPolicies = ["deliberately:different:policy"] });
+
+            (await Verifier().VerifyAsync(dir)).Ok
+                .ShouldBeTrue("query_policies is recomputed on write and must not be compared");
+        });
+    }
+
+    private ParquetRestoreVerifier Verifier() =>
+        _factory.Services.GetRequiredService<ParquetRestoreVerifier>();
+
     // ---- scoping and full backup ----
 
     // Exporting the management space IS asking for users, roles and

@@ -787,7 +787,7 @@ switch (subcommand)
         {
             if (string.IsNullOrEmpty(targetPath))
             {
-                Bail("Usage: dmart import <export-directory> --parquet [-r]");
+                Bail("Usage: dmart import <export-directory> --parquet [-r] [--verify]");
                 return;
             }
 
@@ -806,6 +806,27 @@ switch (subcommand)
             // A restore that lost rows must not exit 0: a backup pipeline reads
             // the exit code, not the wording.
             if (result.Failed > 0) Environment.ExitCode = 1;
+
+            // --verify answers the question the counts above cannot: does the
+            // DATABASE now match the archive? Counts come from the writer's own
+            // bookkeeping; this re-reads both sides.
+            if (serverArgs.Contains("--verify"))
+            {
+                var verifier = CliBootstrap.BuildParquetRestoreVerifier(qs, qdb);
+                var check = await verifier.VerifyAsync(targetPath);
+
+                foreach (var problem in check.Problems) Console.Error.WriteLine($"  {problem}");
+                if (check.Problems.Count == ParquetRestoreVerifier.MaxProblems)
+                    Console.Error.WriteLine(
+                        $"  ... list capped at {ParquetRestoreVerifier.MaxProblems}; "
+                        + "totals above are complete");
+
+                Console.WriteLine(check.Ok
+                    ? $"Verified: {check.Checked} rows in the database match the archive."
+                    : $"VERIFY FAILED: {check.Missing} missing, {check.Mismatched} differing "
+                      + $"of {check.Checked} checked.");
+                if (!check.Ok) Environment.ExitCode = 1;
+            }
             return;
         }
 
@@ -2147,6 +2168,7 @@ builder.Services.AddSingleton<ShortLinkService>();
 builder.Services.AddSingleton<CsvService>();
 builder.Services.AddSingleton<ImportExportService>();
 builder.Services.AddSingleton<ParquetArchiveService>();
+builder.Services.AddSingleton<ParquetRestoreVerifier>();
 builder.Services.AddSingleton<QrService>();
 builder.Services.AddSingleton<WsConnectionManager>();
 

@@ -189,6 +189,24 @@ internal static class CliBootstrap
             nlog.CreateLogger<ParquetArchiveService>());
     }
 
+    // Verifies that the DATABASE matches an archive after a restore — the other
+    // half of the archive-readability check the export already does.
+    public static ParquetRestoreVerifier BuildParquetRestoreVerifier(
+        DmartSettings s, IDbConnectionFactory db)
+    {
+        var nlog = LoggerFactory.Create(b => b
+            .SetMinimumLevel(LogLevel.Information)
+            .AddProvider(new StderrLoggerProvider(LogLevel.Information)));
+        var dialect = db is SqliteConnectionFactory
+            ? (Dmart.QueryGrammar.ISqlDialect)Dmart.QueryGrammar.SqliteSqlDialect.Instance
+            : Dmart.QueryGrammar.PostgresSqlDialect.Instance;
+        return new ParquetRestoreVerifier(
+            new EntryRepository(db),
+            new AttachmentRepository(db, dialect),
+            new HistoryRepository(db, dialect),
+            nlog.CreateLogger<ParquetRestoreVerifier>());
+    }
+
     // Logger for bootstrap-time work that happens before the service graph
     // exists (schema creation). Same stderr provider the import uses, so the
     // two are visually consistent in one CLI run.
