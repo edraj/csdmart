@@ -8,6 +8,7 @@ using Dmart.Models.Enums;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
 using Dmart.Config;
+using Dmart.Utils;
 
 namespace Dmart.Services;
 
@@ -33,6 +34,7 @@ namespace Dmart.Services;
 // deliberate divergence from the zip export, which omits it and therefore
 // cannot restore a login.
 public sealed class ParquetArchiveService(
+    IDbConnectionFactory db,
     EntryRepository entries,
     AttachmentRepository attachments,
     HistoryRepository histories,
@@ -70,9 +72,13 @@ public sealed class ParquetArchiveService(
     /// unbounded intent belongs in a named method, not in a flag every caller
     /// has to remember.
     /// </remarks>
+    /// <param name="since">
+    /// When set, exports only rows changed at or after this instant, plus the
+    /// tombstones recorded since then — an INCREMENTAL export (§5).
+    /// </param>
     public Task<ParquetExportManifest> ExportAsync(
         string outputDirectory, string spaceName, string? subpath, string? actor,
-        CancellationToken ct = default)
+        DateTime? since = null, CancellationToken ct = default)
         => ExportAsync(outputDirectory, new Query
         {
             Type = QueryType.Search,
@@ -81,11 +87,22 @@ public sealed class ParquetArchiveService(
             FilterSchemaNames = new(),
             Limit = 0,   // 0 = unbounded; ForEachMatchAsync pages to the end
             RetrieveJsonPayload = true,
-        }, actor, ct);
+        }, actor, since, ct);
 
     public async Task<ParquetExportManifest> ExportAsync(
-        string outputDirectory, Query clientQuery, string? actor, CancellationToken ct = default)
+        string outputDirectory, Query clientQuery, string? actor,
+        DateTime? since = null, CancellationToken ct = default)
     {
+        // An incremental export selects straight from the repositories by
+        // updated_at, which bypasses the row-level ACL gate the full export
+        // applies. Rather than silently returning rows the actor cannot see,
+        // refuse: incremental is an operator/pipeline operation, and the CLI
+        // already runs it with actor: null.
+        if (since is not null && actor is not null)
+            throw new NotSupportedException(
+                "incremental export does not apply the row-level ACL filter; "
+                + "run it without an actor, or take a full export");
+
         var spaceName = clientQuery.SpaceName;
         var subpath = string.IsNullOrEmpty(clientQuery.Subpath) ? "/" : clientQuery.Subpath;
 
@@ -93,7 +110,15 @@ public sealed class ParquetArchiveService(
         // incremental run selects `updated_at >= watermark`, and taking it from
         // the START of this export makes the two overlap. Overlap costs a
         // re-shipped row that the import upserts away; a gap loses one silently.
-        var watermark = DateTime.UtcNow;
+        //
+        // TimeUtils.Now(), NOT DateTime.UtcNow: dmart stores timestamps
+        // LOCAL-NAIVE in `timestamp without time zone` columns, so a watermark
+        // in UTC would be compared against a different clock. On a host ahead
+        // of UTC that makes every increment a full export (wasteful but safe);
+        // on a host BEHIND UTC it silently skips every row changed inside the
+        // offset — which is the corruption this whole mechanism exists to
+        // prevent. Caught by the increment tests returning 3 rows instead of 1.
+        var watermark = TimeUtils.Now();
 
         // Row-level ACL, same gate the zip export applies. An unauthenticated
         // caller skips it and gets unfiltered rows.
@@ -102,7 +127,7 @@ public sealed class ParquetArchiveService(
         {
             policies = await perms.BuildUserQueryPoliciesAsync(actor, spaceName, subpath, ct);
             if (policies.Count == 0)
-                return await WriteManifestAsync(outputDirectory, spaceName, watermark, [], 0, 0, 0, ct);
+                return await WriteManifestAsync(outputDirectory, spaceName, watermark, [], 0, 0, 0, since, ct);
         }
 
         Directory.CreateDirectory(outputDirectory);
@@ -129,31 +154,56 @@ public sealed class ParquetArchiveService(
             var writer = new ParquetFileWriter(EntryParquetTable.Schema);
             writer.Start(file);
 
-            await ImportExportService.ForEachMatchAsync(
-                query,
-                q => actor is not null
-                    ? entries.QueryAsync(q, actor, policies!, ct)
-                    : entries.QueryAsync(q, ct),
-                entry =>
-                {
-                    buffer.Add(entry);
-                    if (buffer.Count >= RowGroupRows)
-                    {
-                        writer.WriteRowGroup(EntryParquetTable.BuildPages(buffer), buffer.Count);
-                        rowCount += buffer.Count;
-                        buffer.Clear();
-                    }
-                    return Task.CompletedTask;
-                },
-                ct);
-
-            // The tail. Writing an empty row group is rejected by the encoder,
-            // so a total that lands exactly on the boundary must not flush again.
-            if (buffer.Count > 0)
+            void Flush()
             {
                 writer.WriteRowGroup(EntryParquetTable.BuildPages(buffer), buffer.Count);
                 rowCount += buffer.Count;
+                buffer.Clear();
             }
+
+            if (since is { } watermarkFloor)
+            {
+                // Query.FromDate filters on created_at, so it CANNOT serve this:
+                // an entry edited since the last run still has its original
+                // created_at and would be silently missed — exactly the rows an
+                // increment exists to carry. Hence a dedicated updated_at scan.
+                var offset = 0;
+                while (true)
+                {
+                    ct.ThrowIfCancellationRequested();
+                    var page = await entries.ListForSpaceUpdatedSincePagedAsync(
+                        spaceName, watermarkFloor, ImportExportService.ExportPageSize, offset, ct);
+                    if (page.Count == 0) break;
+
+                    foreach (var entry in page)
+                    {
+                        buffer.Add(entry);
+                        if (buffer.Count >= RowGroupRows) Flush();
+                    }
+
+                    offset += page.Count;
+                    if (page.Count < ImportExportService.ExportPageSize) break;
+                }
+            }
+            else
+            {
+                await ImportExportService.ForEachMatchAsync(
+                    query,
+                    q => actor is not null
+                        ? entries.QueryAsync(q, actor, policies!, ct)
+                        : entries.QueryAsync(q, ct),
+                    entry =>
+                    {
+                        buffer.Add(entry);
+                        if (buffer.Count >= RowGroupRows) Flush();
+                        return Task.CompletedTask;
+                    },
+                    ct);
+            }
+
+            // The tail. Writing an empty row group is rejected by the encoder,
+            // so a total that lands exactly on the boundary must not flush again.
+            if (buffer.Count > 0) Flush();
 
             writer.Finish();
         }
@@ -171,10 +221,16 @@ public sealed class ParquetArchiveService(
         };
 
         var (attachmentTable, blobCount, blobBytes) =
-            await WriteAttachmentsAsync(outputDirectory, spaceName, ct);
+            await WriteAttachmentsAsync(outputDirectory, spaceName, since, ct);
         tables.Add(attachmentTable);
 
-        tables.Add(await WriteHistoriesAsync(outputDirectory, spaceName, ct));
+        tables.Add(await WriteHistoriesAsync(outputDirectory, spaceName, since, ct));
+
+        // Tombstones, INCREMENTS ONLY (§4.1). A full export is the state, so
+        // anything absent from it is deleted by construction; writing a
+        // deletions file there would invite a consumer to apply deletes twice.
+        if (since is { } deletionsFloor)
+            tables.Add(await WriteDeletionsAsync(outputDirectory, spaceName, deletionsFloor, ct));
 
         // The global tables. Without them a restore gives you content in a
         // system nobody can log into, with no ACL and no space definitions —
@@ -201,7 +257,7 @@ public sealed class ParquetArchiveService(
 
         return await WriteManifestAsync(
             outputDirectory, spaceName, watermark, tables,
-            tables.Sum(t => t.RowCount), blobCount, blobBytes, ct);
+            tables.Sum(t => t.RowCount), blobCount, blobBytes, since, ct);
     }
 
     // Writes histories/space_name=<s>/part-00000.parquet.
@@ -210,7 +266,7 @@ public sealed class ParquetArchiveService(
     // most installations — one row per change, forever — so buffering it whole
     // would undo the memory bound the rest of the export maintains.
     private async Task<ParquetTableManifest> WriteHistoriesAsync(
-        string outputDirectory, string spaceName, CancellationToken ct)
+        string outputDirectory, string spaceName, DateTime? since, CancellationToken ct)
     {
         var relative = Path.Combine("histories", $"space_name={spaceName}", "part-00000.parquet");
         var absolute = Path.Combine(outputDirectory, relative);
@@ -230,7 +286,7 @@ public sealed class ParquetArchiveService(
             while (true)
             {
                 ct.ThrowIfCancellationRequested();
-                var page = await histories.ListForSpacePagedAsync(spaceName, HistoryPageSize, offset, ct);
+                var page = await histories.ListForSpacePagedAsync(spaceName, HistoryPageSize, offset, since, ct);
                 if (page.Count == 0) break;
 
                 foreach (var row in page)
@@ -263,6 +319,38 @@ public sealed class ParquetArchiveService(
         return new ParquetTableManifest("histories", [relative], rows);
     }
 
+    // Writes deletions/part-00000.parquet — the record of what an increment
+    // must REMOVE, as opposed to what it must upsert.
+    private async Task<ParquetTableManifest> WriteDeletionsAsync(
+        string outputDirectory, string spaceName, DateTime since, CancellationToken ct)
+    {
+        await using var conn = await db.OpenAsync(ct);
+        var rows = await Tombstones.ReadSinceAsync(conn, spaceName, since, ct);
+
+        var relative = Path.Combine("deletions", "part-00000.parquet");
+        var absolute = Path.Combine(outputDirectory, relative);
+        Directory.CreateDirectory(Path.GetDirectoryName(absolute)!);
+
+        await using (var file = new FileStream(
+            absolute, FileMode.Create, FileAccess.Write, FileShare.None,
+            bufferSize: 64 * 1024, FileOptions.SequentialScan))
+        {
+            var writer = new ParquetFileWriter(DeletionParquetTable.Schema);
+            writer.Start(file);
+            for (var offset = 0; offset < rows.Count; offset += RowGroupRows)
+            {
+                var slice = rows.GetRange(offset, Math.Min(RowGroupRows, rows.Count - offset));
+                writer.WriteRowGroup(DeletionParquetTable.BuildPages(slice), slice.Count);
+            }
+            writer.Finish();
+        }
+
+        if (rows.Count > 0)
+            log.LogInformation("parquet export: {Rows} tombstones since {Since:o}", rows.Count, since);
+
+        return new ParquetTableManifest("deletions", [relative], rows.Count);
+    }
+
     /// <summary>History rows fetched per page.</summary>
     internal static int HistoryPageSize { get; set; } = 10_000;
 
@@ -283,7 +371,7 @@ public sealed class ParquetArchiveService(
     // The cost is a query per attachment that HAS media. Attachments without
     // media skip it entirely, which is why the listing returns the size.
     private async Task<(ParquetTableManifest Table, int Blobs, long BlobBytes)> WriteAttachmentsAsync(
-        string outputDirectory, string spaceName, CancellationToken ct)
+        string outputDirectory, string spaceName, DateTime? since, CancellationToken ct)
     {
         var relative = Path.Combine("attachments", $"space_name={spaceName}", "part-00000.parquet");
         var absolute = Path.Combine(outputDirectory, relative);
@@ -310,7 +398,7 @@ public sealed class ParquetArchiveService(
             {
                 ct.ThrowIfCancellationRequested();
                 var page = await attachments.ListForSpacePagedAsync(
-                    spaceName, AttachmentPageSize, offset, ct);
+                    spaceName, AttachmentPageSize, offset, since, ct);
                 if (page.Count == 0) break;
 
                 foreach (var (attachment, mediaSize) in page)
@@ -408,12 +496,15 @@ public sealed class ParquetArchiveService(
     private static async Task<ParquetExportManifest> WriteManifestAsync(
         string directory, string spaceName, DateTime watermark,
         List<ParquetTableManifest> tables, long rowCount,
-        int blobCount, long blobBytes, CancellationToken ct)
+        int blobCount, long blobBytes, DateTime? since, CancellationToken ct)
     {
         Directory.CreateDirectory(directory);
+        // TimeUtils.Now() so the manifest is in ONE clock: mixing a local-naive
+        // watermark with a UTC created_at makes the pair incomparable, and the
+        // watermark is the field a chain depends on.
         var manifest = new ParquetExportManifest(
-            FormatVersion, DateTime.UtcNow, watermark, spaceName, tables, rowCount,
-            blobCount, blobBytes);
+            FormatVersion, TimeUtils.Now(), watermark, spaceName, tables, rowCount,
+            blobCount, blobBytes, since);
 
         await File.WriteAllTextAsync(
             Path.Combine(directory, "manifest.json"),
@@ -699,6 +790,19 @@ public sealed class ParquetArchiveService(
         return manifest;
     }
 
+    /// <summary>
+    /// The watermark to pass as <c>since</c> for the NEXT run, read from a
+    /// previous export directory.
+    /// </summary>
+    /// <remarks>
+    /// Returns the previous run's <c>watermark</c> — stamped BEFORE it read
+    /// anything — not its <c>created_at</c>. §5.1: the two runs must overlap.
+    /// Chaining from the end of the previous export would skip every row
+    /// changed WHILE it ran, and those rows would never be picked up again.
+    /// </remarks>
+    public static DateTime WatermarkOf(string exportDirectory) =>
+        ReadManifest(exportDirectory).Watermark;
+
     /// <summary>Reads back the entries an export wrote, in file order.</summary>
     /// <remarks>
     /// The restore half. Kept here rather than in the reader so the reader stays
@@ -739,7 +843,14 @@ public sealed record ParquetExportManifest(
     [property: JsonPropertyName("tables")] List<ParquetTableManifest> Tables,
     [property: JsonPropertyName("row_count")] long RowCount,
     [property: JsonPropertyName("blob_count")] int BlobCount = 0,
-    [property: JsonPropertyName("blob_bytes")] long BlobBytes = 0)
+    [property: JsonPropertyName("blob_bytes")] long BlobBytes = 0,
+    /// <summary>
+    /// The lower bound this export selected from, or null for a full export.
+    /// Present so a chain of increments is auditable: `since` here should equal
+    /// the `watermark` of the run it follows, and a gap between them is exactly
+    /// the window in which changes could have been lost.
+    /// </summary>
+    [property: JsonPropertyName("since")] DateTime? Since = null)
 {
     /// <summary>
     /// Rows written for one table. <see cref="RowCount"/> is the total across

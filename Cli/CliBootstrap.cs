@@ -176,6 +176,7 @@ internal static class CliBootstrap
             : Dmart.QueryGrammar.PostgresSqlDialect.Instance;
         var accessRepo = new AccessRepository(db, dialect, refresher, userRepo);
         return new ParquetArchiveService(
+            db,
             new EntryRepository(db),
             new AttachmentRepository(db, dialect),
             new HistoryRepository(db, dialect),

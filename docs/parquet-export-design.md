@@ -414,11 +414,45 @@ re-shipping a boundary row is free; missing one is silent corruption. Given
 that asymmetry, bias every ambiguity toward overlap — including taking the
 watermark from the *start* of the previous export rather than its end.
 
-**This needs an index that does not exist.** `entries` has indexes on
+**IMPLEMENTED** — `dmart export <space> --parquet --since <previous-export-dir>`.
+
+`--since` takes a DIRECTORY, not a timestamp: the watermark that makes two runs
+overlap correctly is recorded in the previous run's manifest, and asking an
+operator to retype it is asking them to get it wrong.
+
+Three clock traps were found building this, all of the same shape — dmart
+stores timestamps LOCAL-NAIVE in `timestamp without time zone` columns, so any
+value compared against them must be in the same clock:
+
+1. The watermark was stamped `DateTime.UtcNow`. On a host AHEAD of UTC that
+   makes every increment a full export (wasteful, safe); on a host BEHIND UTC
+   it silently skips every row changed inside the offset. Now `TimeUtils.Now()`.
+2. `deletions.deleted_at` relied on the column's `NOW()` default, which the
+   DATABASE SERVER evaluates in ITS timezone. On a UTC server with a +03 host
+   the tombstones landed three hours behind everything else and an incremental
+   scan saw none of them. Now bound explicitly, as `histories` already does.
+3. The manifest mixed a local-naive `watermark` with a UTC `created_at`, making
+   the pair incomparable. Both are now local-naive.
+
+**Selection cannot use `Query.FromDate`**, which filters on `created_at`. An
+entry EDITED since the last run still has its original `created_at`, so
+reusing it would miss exactly the rows an increment exists to carry.
+`EntryRepository.ListForSpaceUpdatedSincePagedAsync` scans `updated_at` instead.
+
+**An increment only sees writers that maintain `updated_at`.** `UpsertAsync`
+honours whatever the caller passes and only defaults when it is unset, so a
+writer that preserves an old stamp is invisible to increments.
+
+**Incremental refuses an actor.** It selects straight from the repositories,
+bypassing the row-level ACL gate a full export applies; returning rows the
+actor cannot see would be worse than refusing.
+
+**This needs an index that does not exist.** `entries` had indexes on
 `space_name`, `subpath`, `owner_shortname`, `resource_type` and four GIN
-indexes, but **none on `updated_at`**. An incremental scan seq-scans today.
-Adding `idx_entries_updated_at` (and the same on `attachments`) is a
-prerequisite, not an optimization.
+indexes, but **none on `updated_at`**. Added as a prerequisite, not an
+optimization: `idx_entries_updated_at`, `idx_attachments_updated_at`, and
+`idx_histories_timestamp` (the append-only equivalent — `idx_histories_lookup`
+leads with `space_name` and cannot serve a scan keyed on time alone).
 
 ### 5.2 Deletions — a tombstone table
 

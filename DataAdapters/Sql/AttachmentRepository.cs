@@ -78,21 +78,29 @@ public sealed class AttachmentRepository(IDbConnectionFactory db, ISqlDialect di
     ///
     /// Index: scans by `space_name`, served by idx_attachments_space_name.
     /// </remarks>
+    /// <param name="since">
+    /// When set, only rows with <c>updated_at &gt;= since</c> — the incremental
+    /// selection (§5.1). Inclusive, so it overlaps the previous run: an upsert
+    /// makes a re-shipped row free, while a missed one is silent corruption.
+    /// Index: idx_attachments_updated_at.
+    /// </param>
     public async Task<List<(Attachment Attachment, long MediaSize)>> ListForSpacePagedAsync(
-        string spaceName, int limit, int offset, CancellationToken ct = default)
+        string spaceName, int limit, int offset, DateTime? since = null, CancellationToken ct = default)
     {
         await using var conn = await db.OpenAsync(ct);
+        var sinceClause = since is null ? "" : "AND updated_at >= $4";
         await using var cmd = conn.Command($"""
             {SelectColumnsNoMedia.Replace("FROM attachments", "").TrimEnd()},
                    COALESCE(length(media), 0) AS media_size
             FROM attachments
-            WHERE space_name = $1
+            WHERE space_name = $1 {sinceClause}
             ORDER BY uuid
             LIMIT $2 OFFSET $3
             """);
         DbParams.Add(cmd, spaceName);
         DbParams.Add(cmd, limit);
         DbParams.Add(cmd, offset);
+        if (since is not null) DbParams.Add(cmd, since.Value);
 
         var result = new List<(Attachment, long)>();
         await using var r = await cmd.ExecuteReaderAsync(ct);

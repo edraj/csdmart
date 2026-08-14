@@ -60,21 +60,27 @@ public sealed class HistoryRepository(IDbConnectionFactory db, ISqlDialect diale
     /// repeat rows as the window advances, which is the same silent corruption
     /// ImportExportService.ForEachMatchAsync documents.
     /// </remarks>
+    /// <param name="since">
+    /// When set, only rows at or after this instant. History is append-only, so
+    /// `timestamp` is its updated_at. Index: idx_histories_timestamp.
+    /// </param>
     public async Task<List<HistoryRow>> ListForSpacePagedAsync(
-        string spaceName, int limit, int offset, CancellationToken ct = default)
+        string spaceName, int limit, int offset, DateTime? since = null, CancellationToken ct = default)
     {
         await using var conn = await db.OpenAsync(ct);
-        await using var cmd = conn.Command("""
+        var sinceClause = since is null ? "" : "AND timestamp >= $4";
+        await using var cmd = conn.Command($"""
             SELECT uuid, request_headers, diff, timestamp, owner_shortname,
                    last_checksum_history, space_name, subpath, shortname
             FROM histories
-            WHERE space_name = $1
+            WHERE space_name = $1 {sinceClause}
             ORDER BY uuid
             LIMIT $2 OFFSET $3
             """);
         DbParams.Add(cmd, spaceName);
         DbParams.Add(cmd, limit);
         DbParams.Add(cmd, offset);
+        if (since is not null) DbParams.Add(cmd, since.Value);
 
         var rows = new List<HistoryRow>();
         await using var r = await cmd.ExecuteReaderAsync(ct);

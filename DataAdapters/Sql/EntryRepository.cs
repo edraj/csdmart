@@ -400,6 +400,45 @@ public sealed class EntryRepository(IDbConnectionFactory db)
         return deleted;
     }
 
+    /// <summary>
+    /// Pages every entry in a space whose <c>updated_at</c> is at or after
+    /// <paramref name="since"/> — the incremental export's selection (§5.1).
+    /// </summary>
+    /// <remarks>
+    /// A separate method rather than <see cref="Models.Api.Query.FromDate"/>,
+    /// which filters on `created_at`. An entry EDITED since the last run still
+    /// has its original created_at, so reusing FromDate would silently miss
+    /// exactly the rows an increment exists to carry.
+    ///
+    /// The bound is INCLUSIVE and deliberately overlaps the previous run (§5.1):
+    /// the import upserts, so re-shipping a boundary row is free, while missing
+    /// one is silent corruption. Bias every ambiguity toward overlap.
+    ///
+    /// Index: idx_entries_updated_at. Ordered by uuid because paging needs a
+    /// TOTAL order and updated_at collides freely — a bulk edit stamps many
+    /// rows identically.
+    /// </remarks>
+    public async Task<List<Entry>> ListForSpaceUpdatedSincePagedAsync(
+        string spaceName, DateTime since, int limit, int offset, CancellationToken ct = default)
+    {
+        await using var conn = await db.OpenAsync(ct);
+        await using var cmd = conn.Command($"""
+            {SelectAllColumns}
+            WHERE space_name = $1 AND updated_at >= $2
+            ORDER BY uuid
+            LIMIT $3 OFFSET $4
+            """);
+        DbParams.Add(cmd, spaceName);
+        DbParams.Add(cmd, since);
+        DbParams.Add(cmd, limit);
+        DbParams.Add(cmd, offset);
+
+        var rows = new List<Entry>();
+        await using var r = await cmd.ExecuteReaderAsync(ct);
+        while (await r.ReadAsync(ct)) rows.Add(Hydrate(r));
+        return rows;
+    }
+
     // Batched existence probe used by EntryService.ValidateRelationshipsAsync.
     // Returns the set of (space, subpath, shortname) tuples present in
     // `entries`. Type is intentionally NOT part of the key — the entries

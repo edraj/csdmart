@@ -63,14 +63,59 @@ internal static class Tombstones
         // deletions on a rollback.
         cmd.Transaction = tx;
         bind(cmd);
+        // deleted_at is BOUND, not left to the column's NOW() default. The
+        // default is evaluated by the database server in ITS timezone, while
+        // everything dmart writes is host-local wall clock — so on a UTC server
+        // with a +03 host the tombstones land three hours behind every other
+        // timestamp, and an incremental scan keyed on deleted_at silently sees
+        // none of them. Same reasoning as HistoryRepository.AppendAsync, and
+        // caught here by an increment reporting 0 tombstones for a real delete.
+        var stamp = DbParams.Add(cmd, Utils.TimeUtils.Now());
         var typeExpr = hasResourceType ? "resource_type" : "''";
         cmd.CommandText = $"""
-            INSERT INTO deletions (table_name, space_name, subpath, shortname, resource_type)
-            SELECT '{table}', space_name, subpath, shortname, {typeExpr}
+            INSERT INTO deletions (table_name, space_name, subpath, shortname, resource_type, deleted_at)
+            SELECT '{table}', space_name, subpath, shortname, {typeExpr}, {stamp}
             FROM {table}
             WHERE {wherePredicate}
             """;
         return await cmd.ExecuteNonQueryAsync(ct);
+    }
+
+    /// <summary>
+    /// Reads tombstones recorded at or after <paramref name="since"/> for one
+    /// space, for an incremental export.
+    /// </summary>
+    /// <remarks>
+    /// Index: idx_deletions_deleted_at. Ordered by id — the insertion order,
+    /// and unique — because deleted_at collides freely: one cascade stamps
+    /// every row it removes identically.
+    /// </remarks>
+    public static async Task<List<Models.Core.DeletionRow>> ReadSinceAsync(
+        DbConnection conn, string spaceName, DateTime since, CancellationToken ct)
+    {
+        await using var cmd = conn.CreateCommand();
+        DbParams.Add(cmd, spaceName);
+        DbParams.Add(cmd, since);
+        cmd.CommandText = """
+            SELECT table_name, space_name, subpath, shortname, resource_type, deleted_at
+            FROM deletions
+            WHERE space_name = $1 AND deleted_at >= $2
+            ORDER BY id
+            """;
+
+        var rows = new List<Models.Core.DeletionRow>();
+        await using var r = await cmd.ExecuteReaderAsync(ct);
+        while (await r.ReadAsync(ct))
+            rows.Add(new Models.Core.DeletionRow
+            {
+                TableName = r.GetString(0),
+                SpaceName = r.GetString(1),
+                Subpath = r.GetString(2),
+                Shortname = r.GetString(3),
+                ResourceType = r.GetString(4),
+                DeletedAt = r.GetDateTime(5),
+            });
+        return rows;
     }
 
     /// <summary>Records a single known row, for deletes that already have its identity.</summary>
@@ -85,9 +130,10 @@ internal static class Tombstones
         DbParams.Add(cmd, subpath);
         DbParams.Add(cmd, shortname);
         DbParams.Add(cmd, resourceType);
-        cmd.CommandText = """
-            INSERT INTO deletions (table_name, space_name, subpath, shortname, resource_type)
-            VALUES ($1, $2, $3, $4, $5)
+        var stamp = DbParams.Add(cmd, Utils.TimeUtils.Now());
+        cmd.CommandText = $"""
+            INSERT INTO deletions (table_name, space_name, subpath, shortname, resource_type, deleted_at)
+            VALUES ($1, $2, $3, $4, $5, {stamp})
             """;
         await cmd.ExecuteNonQueryAsync(ct);
     }

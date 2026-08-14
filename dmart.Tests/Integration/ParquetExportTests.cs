@@ -206,6 +206,138 @@ public class ParquetExportTests : IClassFixture<DmartFactory>, IDisposable
         });
     }
 
+    // ---- incremental (§5) ----
+
+    // The core claim: an increment carries what changed and nothing else.
+    [FactIfPg]
+    public async Task An_Increment_Carries_Only_What_Changed()
+    {
+        await WithSpaceAsync(3, async (svc, space, shortnames) =>
+        {
+            var full = NewDir();
+            var first = await svc.ExportAsync(full, space, "/", actor: null);
+            first.RowsIn("entries").ShouldBe(3);
+            first.Since.ShouldBeNull("a full export has no lower bound");
+
+            // A real edit bumps updated_at — UpsertAsync honours whatever the
+            // caller passes, and the service layer is what stamps it. An
+            // increment can only see writers that maintain updated_at; one that
+            // does not is invisible to it, which is worth knowing.
+            var entries = _factory.Services.GetRequiredService<EntryRepository>();
+            var target = (await entries.GetAsync(space, "/", shortnames[1], ResourceType.Content))!;
+            await entries.UpsertAsync(target with { Slug = "changed-after-full", UpdatedAt = Dmart.Utils.TimeUtils.Now() });
+
+            var inc = NewDir();
+            var second = await svc.ExportAsync(
+                inc, space, "/", actor: null, since: ParquetArchiveService.WatermarkOf(full));
+
+            second.Since.ShouldNotBeNull();
+            second.RowsIn("entries").ShouldBe(1, "only the touched row changed");
+            ParquetArchiveService.ReadEntries(inc).Single().Shortname.ShouldBe(shortnames[1]);
+        });
+    }
+
+    // §5.1's overlap rule. The watermark comes from the START of the previous
+    // run, so a row changed WHILE that run was executing is re-shipped rather
+    // than skipped. An upsert makes the duplicate free; a gap loses the row
+    // permanently, and silently.
+    [FactIfPg]
+    public async Task The_Chain_Watermark_Comes_From_The_Start_Of_The_Previous_Run()
+    {
+        await WithSpaceAsync(1, async (svc, space, _) =>
+        {
+            var dir = NewDir();
+            var manifest = await svc.ExportAsync(dir, space, "/", actor: null);
+
+            ParquetArchiveService.WatermarkOf(dir).ShouldBe(manifest.Watermark);
+            manifest.Watermark.ShouldBeLessThanOrEqualTo(manifest.CreatedAt,
+                "chaining from created_at would skip everything changed during the run");
+        });
+    }
+
+    // A deleted row is ABSENT from an increment, and absence is
+    // indistinguishable from unchanged — so the increment must carry the
+    // tombstone explicitly or a consumer keeps the row forever.
+    [FactIfPg]
+    public async Task An_Increment_Carries_Tombstones_For_Deleted_Rows()
+    {
+        await WithSpaceAsync(3, async (svc, space, shortnames) =>
+        {
+            var full = NewDir();
+            await svc.ExportAsync(full, space, "/", actor: null);
+
+            var entries = _factory.Services.GetRequiredService<EntryRepository>();
+            await entries.DeleteAsync(space, "/", shortnames[0], ResourceType.Content);
+
+            var inc = NewDir();
+            var manifest = await svc.ExportAsync(
+                inc, space, "/", actor: null, since: ParquetArchiveService.WatermarkOf(full));
+
+            manifest.RowsIn("entries").ShouldBe(0, "nothing was edited");
+            manifest.RowsIn("deletions").ShouldBe(1, "but one row was deleted");
+            File.Exists(Path.Combine(inc, "deletions", "part-00000.parquet")).ShouldBeTrue();
+        });
+    }
+
+    // A full export IS the state, so anything absent from it is deleted by
+    // construction. Writing a deletions file there would invite a consumer to
+    // apply deletes twice.
+    [FactIfPg]
+    public async Task A_Full_Export_Carries_No_Deletions_File()
+    {
+        await WithSpaceAsync(1, async (svc, space, shortnames) =>
+        {
+            var entries = _factory.Services.GetRequiredService<EntryRepository>();
+            await entries.DeleteAsync(space, "/", shortnames[0], ResourceType.Content);
+
+            var dir = NewDir();
+            var manifest = await svc.ExportAsync(dir, space, "/", actor: null);
+
+            manifest.Tables.ShouldNotContain(t => t.Name == "deletions");
+            Directory.Exists(Path.Combine(dir, "deletions")).ShouldBeFalse();
+        });
+    }
+
+    // Incremental bypasses the row-level ACL gate, so it refuses an actor
+    // rather than silently returning rows that actor cannot see.
+    [FactIfPg]
+    public async Task Incremental_Refuses_An_Actor_Rather_Than_Skipping_The_Acl()
+    {
+        await WithSpaceAsync(1, async (svc, space, _) =>
+        {
+            await Should.ThrowAsync<NotSupportedException>(
+                svc.ExportAsync(NewDir(), space, "/", actor: "dmart", since: DateTime.UtcNow));
+        });
+    }
+
+    // An increment restores like any other export — it is the same format,
+    // just fewer rows.
+    [FactIfPg]
+    public async Task An_Increment_Restores_On_Top_Of_The_Full_Export()
+    {
+        await WithSpaceAsync(2, async (svc, space, shortnames) =>
+        {
+            var full = NewDir();
+            await svc.ExportAsync(full, space, "/", actor: null);
+
+            var entries = _factory.Services.GetRequiredService<EntryRepository>();
+            var target = (await entries.GetAsync(space, "/", shortnames[0], ResourceType.Content))!;
+            await entries.UpsertAsync(target with { Slug = "edited", UpdatedAt = Dmart.Utils.TimeUtils.Now() });
+
+            var inc = NewDir();
+            await svc.ExportAsync(inc, space, "/", actor: null,
+                since: ParquetArchiveService.WatermarkOf(full));
+
+            // Revert the live row, then apply the increment over the top.
+            await entries.UpsertAsync(target with { Slug = null });
+            var result = await svc.ImportAsync(inc, replaceExisting: true);
+
+            result.For("entries").Imported.ShouldBe(1);
+            (await entries.GetAsync(space, "/", shortnames[0], ResourceType.Content))!
+                .Slug.ShouldBe("edited", "the increment's value must win");
+        });
+    }
+
     // ---- histories ----
 
     // The audit trail must come back EXACTLY as it went out. Every other table

@@ -582,7 +582,8 @@ switch (subcommand)
         if (string.IsNullOrEmpty(spaceName))
         {
             Console.Error.WriteLine(
-                "Usage: dmart export <space_name> [--parquet] [--output <path|dir|.>]");
+                "Usage: dmart export <space_name> [--parquet] [--since <previous-export-dir>] "
+                + "[--output <path|dir|.>]");
             Environment.ExitCode = 1;
             return;
         }
@@ -597,6 +598,31 @@ switch (subcommand)
             var outDir = Path.GetFullPath(
                 string.IsNullOrEmpty(output) ? $"{spaceName}-parquet" : output);
 
+            // --since <previous-export-dir> chains an increment off a previous
+            // run. A DIRECTORY rather than a timestamp on purpose: the
+            // watermark that makes the two runs overlap correctly is recorded
+            // in that run's manifest, and asking an operator to retype it is
+            // asking them to get it wrong. §5.1.
+            DateTime? since = null;
+            var sinceIdx = Array.IndexOf(serverArgs, "--since");
+            if (sinceIdx >= 0)
+            {
+                if (sinceIdx + 1 >= serverArgs.Length)
+                {
+                    Console.Error.WriteLine("--since needs the path of a previous export directory");
+                    Environment.ExitCode = 1;
+                    return;
+                }
+                var previous = serverArgs[sinceIdx + 1];
+                try { since = ParquetArchiveService.WatermarkOf(previous); }
+                catch (Exception ex)
+                {
+                    Console.Error.WriteLine($"cannot read a watermark from '{previous}': {ex.Message}");
+                    Environment.ExitCode = 1;
+                    return;
+                }
+            }
+
             var (ps, pdb) = CliBootstrap.BuildFactoryOrExit(dotenvPath, dotenvValues);
             var parquet = CliBootstrap.BuildParquetArchiveService(ps, pdb);
 
@@ -604,7 +630,7 @@ switch (subcommand)
             // leave behind something that looks like a backup.
             try
             {
-                var manifest = await parquet.ExportAsync(outDir, spaceName, "/", actor: null);
+                var manifest = await parquet.ExportAsync(outDir, spaceName, "/", actor: null, since);
                 // Per table. The aggregate alone reads as an entry count and is
                 // not one — most of it is users, roles and permissions.
                 foreach (var t in manifest.Tables)
@@ -619,7 +645,12 @@ switch (subcommand)
                 // Every table is covered now; what remains is INCREMENTAL
                 // selection (§5), which needs a tombstone table before a
                 // consumer can tell a deleted row from an unchanged one.
-                Console.WriteLine("Note: full export. Incremental (--since) is not yet supported.");
+                if (since is { } from)
+                    Console.WriteLine(
+                        $"Incremental since {from:o} — apply on top of the run it follows, "
+                        + "in order. deletions/ lists rows to REMOVE.");
+                else
+                    Console.WriteLine("Note: full export.");
                 // Not a footnote. The users table holds Argon2 hashes, which is
                 // what lets a restore recover logins; it also means this
                 // directory is credential material and must be treated like a
