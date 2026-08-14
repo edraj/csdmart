@@ -35,6 +35,7 @@ namespace Dmart.Services;
 // cannot restore a login.
 public sealed class ParquetArchiveService(
     IDbConnectionFactory db,
+    ImportExportService importExport,
     EntryRepository entries,
     AttachmentRepository attachments,
     HistoryRepository histories,
@@ -716,32 +717,8 @@ public sealed class ParquetArchiveService(
             skipped = sk + rk + pk + uk,
             failed = sf + rf + pf + uf;
 
-        int entriesImported = 0, entriesSkipped = 0, entriesFailed = 0;
-        foreach (var entry in rows)
-        {
-            ct.ThrowIfCancellationRequested();
-            try
-            {
-                if (!replaceExisting)
-                {
-                    var existing = await entries.GetAsync(
-                        entry.SpaceName, entry.Subpath, entry.Shortname, entry.ResourceType, ct);
-                    if (existing is not null) { entriesSkipped++; continue; }
-                }
-
-                await entries.UpsertAsync(entry, ct);
-                entriesImported++;
-            }
-            catch (Exception ex)
-            {
-                // One bad row must not abandon the rest of a restore, but it
-                // must be counted — a summary that says "imported 900" out of
-                // 1000 with no failure count reads as success.
-                entriesFailed++;
-                log.LogWarning(ex, "parquet import: failed to restore {Space}{Subpath}/{Shortname}",
-                    entry.SpaceName, entry.Subpath, entry.Shortname);
-            }
-        }
+        var (entriesImported, entriesSkipped, entriesFailed) =
+            await RestoreEntriesAsync(rows, replaceExisting, ct);
 
         imported += entriesImported;
         skipped += entriesSkipped;
@@ -802,6 +779,114 @@ public sealed class ParquetArchiveService(
                 "parquet import: histories — {Imported} imported, {Skipped} skipped, {Failed} failed",
                 imported, skipped, failed);
 
+        return (imported, skipped, failed);
+    }
+
+    /// <summary>
+    /// Restores entries, using the bulk COPY path on PostgreSQL and falling
+    /// back to per-row elsewhere.
+    /// </summary>
+    /// <remarks>
+    /// The bulk path is ImportExportService.BulkUpsertEntriesAsync — the SAME
+    /// machinery the zip importer uses, deliberately reused rather than
+    /// reimplemented. Its COPY semantics are not obvious: query_policies must
+    /// be regenerated because COPY writes the column verbatim, the scratch
+    /// tables must exist on the session, and an integrity violation aborts a
+    /// whole batch and is replayed row-by-row to isolate the offender. A second
+    /// implementation would get one of those wrong, quietly.
+    ///
+    /// Bulk requires PostgreSQL — the COPY session, the scratch tables and the
+    /// SQLSTATE-driven replay are all Npgsql. SQLite takes the per-row path,
+    /// which is correct, just slower.
+    ///
+    /// `replaceExisting` maps to the importer's INVERSE flag: it calls the
+    /// parameter `preserveExisting`, so restoring over the top means passing
+    /// preserveExisting: false. Getting that backwards silently turns a
+    /// restore into a no-op on every row that already exists.
+    /// </remarks>
+    private async Task<(int Imported, int Skipped, int Failed)> RestoreEntriesAsync(
+        List<Entry> rows, bool replaceExisting, CancellationToken ct)
+    {
+        if (rows.Count == 0) return (0, 0, 0);
+
+        // Two restore paths now exist, so they must agree on semantics. The
+        // toggle exists to test exactly that, and to measure the difference.
+        if (db is Db bulk && importExport is not null && !ForcePerRowRestore)
+        {
+            var session = await bulk.BeginBatchImportSessionAsync(ct);
+            try
+            {
+                await session.InitConnectionAsync(
+                    ImportExportService.CreateImportScratchTablesAsync, ct);
+
+                int imported = 0, skipped = 0, failed = 0;
+                for (var offset = 0; offset < rows.Count; offset += BulkBatchSize)
+                {
+                    ct.ThrowIfCancellationRequested();
+                    var batch = rows.GetRange(offset, Math.Min(BulkBatchSize, rows.Count - offset));
+                    var (affected, wasSkipped, failures) = await importExport.BulkUpsertEntriesAsync(
+                        session, "parquet-restore", batch,
+                        preserveExisting: !replaceExisting, ct);
+
+                    imported += affected;
+                    skipped += wasSkipped;
+                    failed += failures.Count;
+                    foreach (var f in failures)
+                        log.LogWarning("parquet import: entry failed — {Path}: {Error}",
+                            f.GetValueOrDefault("path"), f.GetValueOrDefault("error"));
+                }
+
+                session.MarkSuccess();
+                log.LogInformation(
+                    "parquet import: entries via bulk COPY — {Imported} imported, {Skipped} skipped, {Failed} failed",
+                    imported, skipped, failed);
+                return (imported, skipped, failed);
+            }
+            finally { await session.DisposeAsync(); }
+        }
+
+        return await RestoreEntriesPerRowAsync(rows, replaceExisting, ct);
+    }
+
+    /// <summary>
+    /// Forces the per-row path even on PostgreSQL. Test-only: it exists so the
+    /// two paths can be asserted equivalent, and so the difference between them
+    /// can be measured. Not thread-safe; nothing in the request path writes it.
+    /// </summary>
+    internal static bool ForcePerRowRestore { get; set; }
+
+    /// <summary>Rows per bulk COPY batch. Bounds the scratch table and the replay unit.</summary>
+    internal static int BulkBatchSize { get; set; } = ImportExportService.DefaultBatchSize;
+
+    private async Task<(int Imported, int Skipped, int Failed)> RestoreEntriesPerRowAsync(
+        List<Entry> rows, bool replaceExisting, CancellationToken ct)
+    {
+        int imported = 0, skipped = 0, failed = 0;
+        foreach (var entry in rows)
+        {
+            ct.ThrowIfCancellationRequested();
+            try
+            {
+                if (!replaceExisting)
+                {
+                    var existing = await entries.GetAsync(
+                        entry.SpaceName, entry.Subpath, entry.Shortname, entry.ResourceType, ct);
+                    if (existing is not null) { skipped++; continue; }
+                }
+
+                await entries.UpsertAsync(entry, ct);
+                imported++;
+            }
+            catch (Exception ex)
+            {
+                // One bad row must not abandon the rest of a restore, but it
+                // must be counted — a summary that says "imported 900" out of
+                // 1000 with no failure count reads as success.
+                failed++;
+                log.LogWarning(ex, "parquet import: failed to restore {Space}{Subpath}/{Shortname}",
+                    entry.SpaceName, entry.Subpath, entry.Shortname);
+            }
+        }
         return (imported, skipped, failed);
     }
 

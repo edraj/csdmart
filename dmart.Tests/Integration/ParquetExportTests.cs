@@ -206,6 +206,145 @@ public class ParquetExportTests : IClassFixture<DmartFactory>, IDisposable
         });
     }
 
+    // ---- bulk restore ----
+
+    // The bulk path COPYs in batches, so a restore larger than one batch must
+    // still land every row — the boundary is where a batching bug hides.
+    [FactIfPg]
+    public async Task A_Restore_Larger_Than_One_Batch_Lands_Every_Row()
+    {
+        var original = ParquetArchiveService.BulkBatchSize;
+        ParquetArchiveService.BulkBatchSize = 7;   // 20 rows => 2 full batches + a short tail
+        try
+        {
+            await WithSpaceAsync(20, async (svc, space, shortnames) =>
+            {
+                var dir = NewDir();
+                await svc.ExportAsync(dir, space, "/", actor: null);
+
+                var entries = _factory.Services.GetRequiredService<EntryRepository>();
+                foreach (var sn in shortnames)
+                    await entries.DeleteAsync(space, "/", sn, ResourceType.Content);
+
+                var result = await svc.ImportAsync(dir);
+
+                result.For("entries").Imported.ShouldBe(20, "the short tail batch must flush too");
+                result.For("entries").Failed.ShouldBe(0);
+
+                foreach (var sn in shortnames)
+                    (await entries.GetAsync(space, "/", sn, ResourceType.Content))
+                        .ShouldNotBeNull($"'{sn}' must survive a multi-batch restore");
+            });
+        }
+        finally { ParquetArchiveService.BulkBatchSize = original; }
+    }
+
+    // COPY writes query_policies VERBATIM, so the bulk path has to regenerate
+    // them. If it does not, restored rows carry stale policies and become
+    // invisible to ACL-filtered queries — a restore that "succeeds" and leaves
+    // the data unreachable.
+    [FactIfPg]
+    public async Task Bulk_Restored_Rows_Carry_Regenerated_Query_Policies()
+    {
+        await WithSpaceAsync(2, async (svc, space, shortnames) =>
+        {
+            var dir = NewDir();
+            await svc.ExportAsync(dir, space, "/", actor: null);
+
+            var entries = _factory.Services.GetRequiredService<EntryRepository>();
+            foreach (var sn in shortnames)
+                await entries.DeleteAsync(space, "/", sn, ResourceType.Content);
+
+            await svc.ImportAsync(dir);
+
+            var db = _factory.Services.GetRequiredService<IDbConnectionFactory>();
+            // The bulk COPY path is PostgreSQL-only, and so is cardinality().
+            // SQLite restores per row through UpsertAsync, which regenerates
+            // query_policies itself — there is nothing here for it to get wrong.
+            if (db is not Db) return;
+
+            await using var conn = await db.OpenAsync();
+            await using var cmd = conn.CreateCommand();
+            DbParams.Add(cmd, space);
+            cmd.CommandText = "SELECT count(*) FROM entries WHERE space_name = $1 AND cardinality(query_policies) = 0";
+            var empty = Convert.ToInt64(await cmd.ExecuteScalarAsync());
+
+            empty.ShouldBe(0, "a row restored with empty query_policies is invisible to ACL-filtered reads");
+        });
+    }
+
+    // A batch that hits an integrity violation aborts WHOLE on PostgreSQL, so
+    // the importer replays it row by row. The good rows must still land and the
+    // offender must fail alone — otherwise one bad row loses a whole batch.
+    [FactIfPg]
+    public async Task One_Bad_Row_Fails_Alone_Rather_Than_Losing_Its_Batch()
+    {
+        await WithSpaceAsync(3, async (svc, space, shortnames) =>
+        {
+            var dir = NewDir();
+            await svc.ExportAsync(dir, space, "/", actor: null);
+
+            var entries = _factory.Services.GetRequiredService<EntryRepository>();
+            foreach (var sn in shortnames)
+                await entries.DeleteAsync(space, "/", sn, ResourceType.Content);
+
+            // Point one archived row at an owner that does not exist — an FK
+            // violation, raised at the deferred commit for the whole batch.
+            var rows = ParquetArchiveService.ReadEntries(dir);
+            rows[1] = rows[1] with { OwnerShortname = "no_such_user_" + Guid.NewGuid().ToString("N")[..6] };
+            await RewriteEntriesFileAsync(dir, space, rows);
+
+            var result = await svc.ImportAsync(dir);
+
+            result.For("entries").Imported.ShouldBe(2, "the two good rows must still land");
+            result.For("entries").Failed.ShouldBe(1, "the offender must fail alone, and be counted");
+        });
+    }
+
+    // Rewrites the entries file in place, so a test can plant a row the
+    // database will reject.
+    private static async Task RewriteEntriesFileAsync(string dir, string space, List<Entry> rows)
+    {
+        var path = Path.Combine(dir, "entries", $"space_name={space}", "part-00000.parquet");
+        var writer = new Dmart.DataAdapters.Parquet.ParquetFileWriter(
+            Dmart.DataAdapters.Parquet.EntryParquetTable.Schema);
+        await using (var fs = File.Create(path))
+            writer.Write(fs, Dmart.DataAdapters.Parquet.EntryParquetTable.BuildPages(rows), rows.Count);
+    }
+
+    // Two restore paths exist now. They must be indistinguishable from the
+    // outside, or "which driver am I on?" becomes a behavioural question.
+    [FactIfPg]
+    public async Task Bulk_And_Per_Row_Restores_Agree()
+    {
+        await WithSpaceAsync(12, async (svc, space, shortnames) =>
+        {
+            var dir = NewDir();
+            await svc.ExportAsync(dir, space, "/", actor: null);
+
+            var entries = _factory.Services.GetRequiredService<EntryRepository>();
+
+            async Task WipeAsync()
+            {
+                foreach (var sn in shortnames)
+                    await entries.DeleteAsync(space, "/", sn, ResourceType.Content);
+            }
+
+            await WipeAsync();
+            var bulk = await svc.ImportAsync(dir);
+
+            await WipeAsync();
+            ParquetArchiveService.ForcePerRowRestore = true;
+            ParquetImportResult perRow;
+            try { perRow = await svc.ImportAsync(dir); }
+            finally { ParquetArchiveService.ForcePerRowRestore = false; }
+
+            perRow.For("entries").Imported.ShouldBe(bulk.For("entries").Imported);
+            perRow.For("entries").Skipped.ShouldBe(bulk.For("entries").Skipped);
+            perRow.For("entries").Failed.ShouldBe(bulk.For("entries").Failed);
+        });
+    }
+
     // ---- scoping and full backup ----
 
     // Exporting the management space IS asking for users, roles and

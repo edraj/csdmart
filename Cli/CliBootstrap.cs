@@ -177,6 +177,7 @@ internal static class CliBootstrap
         var accessRepo = new AccessRepository(db, dialect, refresher, userRepo);
         return new ParquetArchiveService(
             db,
+            BuildImportExportService(s, db),
             new EntryRepository(db),
             new AttachmentRepository(db, dialect),
             new HistoryRepository(db, dialect),

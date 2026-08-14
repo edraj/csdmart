@@ -1769,12 +1769,27 @@ public sealed class ImportExportService(
     // count) and clear the accumulator. The batch list is cleared AFTER
     // RunBatchAsync returns because a transport replay re-runs the body against
     // the same rows.
-    private async Task FlushEntriesAsync(
-        Db.FastImportSession session, string label, List<Entry> batch,
-        bool preserveExisting, ImportStats results, CancellationToken ct)
+    /// <summary>
+    /// One bulk COPY + merge of entries, with the per-row replay fallback.
+    /// Returns counts and the failures it isolated, rather than writing into
+    /// <see cref="ImportStats"/>.
+    /// </summary>
+    /// <remarks>
+    /// Internal so the Parquet importer uses THIS rather than growing a second
+    /// bulk path. The COPY semantics here are not obvious — query_policies must
+    /// be regenerated because COPY writes the column verbatim, the scratch
+    /// tables must exist on the session, and an integrity violation aborts a
+    /// whole batch and has to be replayed row by row to isolate the offender.
+    /// A second implementation would get one of those wrong, quietly.
+    /// </remarks>
+    internal async Task<(int Affected, int Skipped, List<Dictionary<string, object>> Failures)>
+        BulkUpsertEntriesAsync(
+            Db.FastImportSession session, string label, List<Entry> batch,
+            bool preserveExisting, CancellationToken ct)
     {
         var count = batch.Count;
         int affected, skipped;
+        var failures = new List<Dictionary<string, object>>();
         try
         {
             (affected, skipped) = await session.RunBatchAsync(
@@ -1783,23 +1798,32 @@ public sealed class ImportExportService(
                 static (a, b) => (a.Affected + b.Affected, a.Skipped + b.Skipped),
                 log, ct);
         }
+        // Default-path batches run with constraints enforced, so one bad row
+        // (unknown owner → FK at the deferred commit, duplicate uuid → PK at
+        // the merge) aborts its WHOLE batch. Replay row-by-row on autonomous
+        // connections: the good rows land and the offender(s) fail alone.
+        //
+        // Not engaged under --fast (BypassConstraints): replica mode skips FK
+        // checks, and a per-row replay WOULD enforce them — silently changing
+        // what --fast imports.
         catch (PostgresException ex) when (!session.BypassConstraints && IsIntegrityViolation(ex))
         {
-            // Default-path batches run with constraints enforced, so one bad
-            // row (unknown owner → FK at the deferred commit, duplicate uuid
-            // → PK at the merge) aborts its whole batch. Replay the batch
-            // row-by-row on autonomous connections: the good rows land, the
-            // offender(s) fail alone into results.Failed — the same per-row
-            // semantics the importer's default path always had. Not engaged
-            // under --fast (BypassConstraints): replica mode skips FK checks,
-            // and a per-row replay WOULD enforce them, silently changing what
-            // --fast imports.
             log.LogWarning(
                 "import[{Label}]: entry batch of {Count} hit integrity violation {State} ({Constraint}); replaying row-by-row to isolate the offender(s)",
                 label, count, ex.SqlState, ex.ConstraintName ?? "?");
             await session.ResetTransactionAsync(ct);
-            (affected, skipped) = await ReplayEntriesPerRowAsync(batch, preserveExisting, results, ct);
+            (affected, skipped) = await ReplayEntriesPerRowAsync(batch, preserveExisting, failures, ct);
         }
+        return (affected, skipped, failures);
+    }
+
+    private async Task FlushEntriesAsync(
+        Db.FastImportSession session, string label, List<Entry> batch,
+        bool preserveExisting, ImportStats results, CancellationToken ct)
+    {
+        var (affected, skipped, failures) =
+            await BulkUpsertEntriesAsync(session, label, batch, preserveExisting, ct);
+        foreach (var f in failures) results.AddFailure(f);
         results.AddEntries(affected);
         if (preserveExisting) results.AddSkipped(skipped);
         // Progress is counted by the caller, per source item consumed — not by
@@ -1854,7 +1878,8 @@ public sealed class ImportExportService(
     // still lands. Mirrors TryImportEntryAsync's historical per-row path,
     // including the preserveExisting existence check.
     private async Task<(int Affected, int Skipped)> ReplayEntriesPerRowAsync(
-        List<Entry> batch, bool preserveExisting, ImportStats results, CancellationToken ct)
+        List<Entry> batch, bool preserveExisting,
+        List<Dictionary<string, object>> failures, CancellationToken ct)
     {
         int affected = 0, skipped = 0;
         foreach (var e in batch)
@@ -1874,7 +1899,7 @@ public sealed class ImportExportService(
             {
                 log.LogWarning(ex, "import entry failed at {Space}{Subpath}/{Shortname}",
                     e.SpaceName, e.Subpath, e.Shortname);
-                results.AddFailure(new()
+                failures.Add(new()
                 {
                     ["path"] = $"{e.SpaceName}{e.Subpath}/{e.Shortname}",
                     ["kind"] = "entry",
@@ -2963,7 +2988,10 @@ public sealed class ImportExportService(
     // reconnect (TEMP tables die with their backend) and after a transaction
     // reset (a rollback undoes a CREATE that hadn't committed yet). IF NOT
     // EXISTS makes those re-runs a no-op catalog lookup in the common case.
-    private static async Task CreateImportScratchTablesAsync(NpgsqlConnection conn, CancellationToken ct)
+    // Internal so the Parquet restore initialises the SAME scratch tables the
+    // zip import uses — BulkInsertEntriesAsync COPYs into _imp_entries, so a
+    // session without them fails at the first batch.
+    internal static async Task CreateImportScratchTablesAsync(NpgsqlConnection conn, CancellationToken ct)
     {
         await using var cmd = new NpgsqlCommand(
             "CREATE TEMP TABLE IF NOT EXISTS _imp_entries "
