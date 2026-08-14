@@ -70,14 +70,11 @@
   <PropertyGroup>
     <IncludeSourceRevisionInInformationalVersion>false</IncludeSourceRevisionInInformationalVersion>
   </PropertyGroup>
-  <Target Name="SetGitVersion" BeforeTargets="GetAssemblyVersion"
-          Condition="'$(InformationalVersion)' == ''">
-    <Exec Command="git describe --tags --always --long 2>/dev/null || echo dev"
-          ConsoleToMSBuild="true" StandardOutputImportance="low" IgnoreExitCode="true">
+  <Target Name="SetGitVersion" BeforeTargets="GetAssemblyVersion" Condition="'$(InformationalVersion)' == ''">
+    <Exec Command="git describe --tags --always --long 2&gt;/dev/null || echo dev" ConsoleToMSBuild="true" StandardOutputImportance="low" IgnoreExitCode="true">
       <Output TaskParameter="ConsoleOutput" PropertyName="GitDescribe" />
     </Exec>
-    <Exec Command="git rev-parse --abbrev-ref HEAD 2>/dev/null || echo unknown"
-          ConsoleToMSBuild="true" StandardOutputImportance="low" IgnoreExitCode="true">
+    <Exec Command="git rev-parse --abbrev-ref HEAD 2&gt;/dev/null || echo unknown" ConsoleToMSBuild="true" StandardOutputImportance="low" IgnoreExitCode="true">
       <Output TaskParameter="ConsoleOutput" PropertyName="GitBranch" />
     </Exec>
     <PropertyGroup>
@@ -236,6 +233,7 @@
     <!-- CLI subcommand (merged from dmart.Cli) -->
     <PackageReference Include="ReadLine" Version="2.0.1" />
     <PackageReference Include="Spectre.Console" Version="0.50.0" />
+    <PackageReference Include="ZstdSharp.Port" Version="0.8.8" />
   </ItemGroup>
 
   <ItemGroup>

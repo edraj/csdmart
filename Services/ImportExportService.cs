@@ -280,7 +280,11 @@ public sealed class ImportExportService(
     // a cursor the Query surface does not currently expose. An export is a
     // fuzzy point-in-time snapshot of a live store either way, and this is
     // categorically smaller than discarding everything past row 100,000.
-    private static async Task ForEachMatchAsync<T>(
+    // Internal rather than private so the Parquet exporter uses THIS pager
+    // instead of growing a second one. The truncation and unstable-sort traps
+    // above are not specific to the zip format, and two implementations of the
+    // same paging rule would drift apart exactly where it is hardest to notice.
+    internal static async Task ForEachMatchAsync<T>(
         Query query,
         Func<Query, Task<List<T>>> fetch,
         Func<T, Task> emit,

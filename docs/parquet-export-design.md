@@ -297,9 +297,35 @@ fall out of it: writers stream row group by row group with bounded memory,
 readers project single columns without decompressing the rest, and increments
 reference blobs by hash without re-shipping them.
 
+### 4.1.1 Scope, and what each scope carries
+
+| Command | Carries |
+|---|---|
+| `export <space> --parquet` | that space's entries, attachments, histories |
+| `export <space> --parquet --subpath /docs` | that subtree only |
+| `export management --parquet` | the above **plus** users, roles, permissions |
+| `export --all --parquet` | every space, plus the global tables once, verified |
+
+The global tables are **not** written by a scoped export. Two reasons, and the
+second is the one that matters: repeating the whole user table in every scoped
+export is waste, and the users table holds **password hashes**. Writing those
+to disk should follow from asking for a backup or for management — not from
+exporting one folder.
+
+A scoped export therefore restores INTO AN EXISTING SYSTEM; it is not a
+standalone backup, and the CLI says so after every one.
+
+`--all` verifies by default: every file is re-read through the reader and every
+blob is rehashed against its own name. It roughly doubles read I/O, which is
+the right trade — a backup nobody has read is one you are guessing about.
+`--no-verify` opts out.
+
 `space_name=<s>` is Hive-style partitioning — what DuckDB and Spark expect
 (`read_parquet('entries/**/*.parquet', hive_partitioning=true)`) and also the
-natural unit for a per-space restore. This is the "restore first, analytics
+natural unit for a per-space restore. A restore takes each file's space from
+its PATH rather than from the manifest: a full backup holds many spaces in one
+archive, and a manifest-level space name would restore all of them under one
+name — silently merging spaces, which is unrecoverable without the original. This is the "restore first, analytics
 later" compromise: one layout serves both.
 
 Partitioning by date is deliberately **not** used. Increments are already
@@ -315,12 +341,71 @@ Mirror the SQL columns, one Parquet table per SQL table, with three rules:
   Exploding payload into typed columns would require per-schema knowledge and
   break round-tripping; if analytics later wants that, it is a view over this,
   not a change to it.
-- **Array columns become native Parquet lists** — `tags`, `query_policies` as
-  `list<string>`. Better for analytics than a JSON string, and still lossless.
-  This is also the one place the two backends already differ (`text[]` vs a
-  JSON array in TEXT), so the exporter reads them through `DbParams.ReadTextArray`
-  and writes one canonical form.
+- **Array columns become JSON strings** — `tags`, `query_policies`. §2.2 is the
+  binding decision here; the earlier text in this section called for native
+  `list<string>` and was wrong, because native lists need repetition levels and
+  dropping those is what kept the encoder small enough to hand-write at all.
+  Consistent with `payload` / `acl` / `relationships`, and still queryable in
+  DuckDB via `json_extract`. This is also the one place the two backends already
+  differ (`text[]` vs a JSON array in TEXT), so the exporter writes one
+  canonical form regardless of driver.
+
+- **Attachments store `media_sha256` and `media_size`, never the bytes.** The
+  blob lives at `blobs/<sha256[0:2]>/<sha256>` and the name IS the checksum, so
+  corruption is detectable by rehashing rather than by trusting a size field.
+  A restore verifies every blob against its own name and FAILS the row if it
+  disagrees — an attachment silently restored with wrong or empty bytes is
+  undetectable afterwards, because the bytes are opaque and nothing downstream
+  checks them.
+
+  Export memory is bounded at ONE blob: the listing selects `length(media)` but
+  not the bytes, and each blob is fetched by uuid, hashed, written and released
+  before the next. The cost is one query per attachment that has media;
+  attachments without media skip it, which is why the size is selected.
+
+- **The global tables carry `space_name` as a column.** `spaces`, `users`,
+  `roles` and `permissions` are written flat at `<table>/part-00000.parquet`
+  with no `space_name=` directory (§4.1), so there is no partition key to
+  collide with. Users, roles and permissions all live in the management space,
+  and spaces span every space by definition — partitioning either would produce
+  a single directory or one per row.
+
+- **`users` carries the Argon2 password hash.** Without it a restore leaves
+  every user unable to log in, which is the line between a backup and a content
+  archive. The consequence is that an export directory is credential material
+  and needs the handling a database dump gets: restricted permissions, and
+  encryption if it leaves the host. The CLI prints this at export time.
+
+  This DIVERGES from the zip export, where `User.Password` is `[JsonIgnore]`
+  and therefore silently absent.
+
+- **`space_name` is NOT a column** in `entries`. It is the Hive partition key in the
+  directory name, and a Hive partition column lives in the path, not in the
+  file. Writing both makes every partition-inferring reader — DuckDB, Spark,
+  pyarrow — fail outright with `Field space_name has incompatible types: string
+  vs dictionary`, which defeats the compatibility §4.1 is asking for. The value
+  is carried in the manifest and restored from there.
+
+  Found by the cross-reader test, not by review: the files were valid Parquet
+  and read fine individually. Only reading the export the way a consumer
+  actually would — as a partitioned dataset — surfaced it.
 - **Timestamps as Parquet TIMESTAMP (micros, UTC)**, not strings.
+
+  **Known limit — microsecond precision.** Parquet `TIMESTAMP_MICROS` stores 6
+  decimal places; .NET `DateTime` stores 7 (100 ns ticks). On PostgreSQL this
+  is invisible: its `timestamp` column is already microsecond, so a value is
+  rounded before it ever reaches the file, and the round trip is exact. SQLite
+  keeps the full tick, so a restored timestamp there can differ from the
+  original by up to 999 ns.
+
+  Accepted deliberately rather than worked around. The alternatives were a
+  parallel raw-ticks column (two sources of truth to keep in agreement) or
+  `TIMESTAMP_NANOS` via `LogicalType` (drops the legacy `ConvertedType`
+  annotation that every reader understands, and needs encoder and decoder work).
+  Neither is worth it for a difference no consumer of these timestamps depends
+  on. Tests compare at microsecond granularity for this reason, which still
+  catches the failure that matters — a row re-stamped at restore time is off by
+  milliseconds at least.
 
 Row group target ~50–100k rows. That is the unit of both column projection and
 writer memory, so it is what bounds the export's footprint.
@@ -355,15 +440,61 @@ re-shipping a boundary row is free; missing one is silent corruption. Given
 that asymmetry, bias every ambiguity toward overlap — including taking the
 watermark from the *start* of the previous export rather than its end.
 
-**This needs an index that does not exist.** `entries` has indexes on
+**IMPLEMENTED** — `dmart export <space> --parquet --since <previous-export-dir>`.
+
+`--since` takes a DIRECTORY, not a timestamp: the watermark that makes two runs
+overlap correctly is recorded in the previous run's manifest, and asking an
+operator to retype it is asking them to get it wrong.
+
+Three clock traps were found building this, all of the same shape — dmart
+stores timestamps LOCAL-NAIVE in `timestamp without time zone` columns, so any
+value compared against them must be in the same clock:
+
+1. The watermark was stamped `DateTime.UtcNow`. On a host AHEAD of UTC that
+   makes every increment a full export (wasteful, safe); on a host BEHIND UTC
+   it silently skips every row changed inside the offset. Now `TimeUtils.Now()`.
+2. `deletions.deleted_at` relied on the column's `NOW()` default, which the
+   DATABASE SERVER evaluates in ITS timezone. On a UTC server with a +03 host
+   the tombstones landed three hours behind everything else and an incremental
+   scan saw none of them. Now bound explicitly, as `histories` already does.
+3. The manifest mixed a local-naive `watermark` with a UTC `created_at`, making
+   the pair incomparable. Both are now local-naive.
+
+**Selection cannot use `Query.FromDate`**, which filters on `created_at`. An
+entry EDITED since the last run still has its original `created_at`, so
+reusing it would miss exactly the rows an increment exists to carry.
+`EntryRepository.ListForSpaceUpdatedSincePagedAsync` scans `updated_at` instead.
+
+**An increment only sees writers that maintain `updated_at`.** `UpsertAsync`
+honours whatever the caller passes and only defaults when it is unset, so a
+writer that preserves an old stamp is invisible to increments.
+
+**Incremental refuses an actor.** It selects straight from the repositories,
+bypassing the row-level ACL gate a full export applies; returning rows the
+actor cannot see would be worse than refusing.
+
+**This needs an index that does not exist.** `entries` had indexes on
 `space_name`, `subpath`, `owner_shortname`, `resource_type` and four GIN
-indexes, but **none on `updated_at`**. An incremental scan seq-scans today.
-Adding `idx_entries_updated_at` (and the same on `attachments`) is a
-prerequisite, not an optimization.
+indexes, but **none on `updated_at`**. Added as a prerequisite, not an
+optimization: `idx_entries_updated_at`, `idx_attachments_updated_at`, and
+`idx_histories_timestamp` (the append-only equivalent — `idx_histories_lookup`
+leads with `space_name` and cannot serve a scan keyed on time alone).
 
 ### 5.2 Deletions — a tombstone table
 
-*Decision taken: tombstone table (§6).*
+*Decision taken: tombstone table (§6). **IMPLEMENTED** — see
+`DataAdapters/Sql/Tombstones.cs` and `TombstoneTests`.*
+
+The shipped table differs from the sketch below in one way: it carries
+`table_name`, so one table serves entries, attachments, histories, spaces,
+users, roles and permissions rather than needing seven. `locks` is deliberately
+excluded — transient coordination state, not replicated content.
+
+Every content-removing path is covered: single entry and attachment deletes,
+the folder-subtree cascade, the space cascade, the by-owner cascade inside
+`ForceDeleteAsync`, and the user/role/permission deletes. The insert runs over
+the SAME PREDICATE as the delete it accompanies, so the two cannot disagree
+about what a cascade took.
 
 A row deleted since the last run is simply absent, and absence is
 indistinguishable from unchanged. Without tombstones an incremental consumer

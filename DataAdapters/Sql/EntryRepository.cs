@@ -372,16 +372,80 @@ public sealed class EntryRepository(IDbConnectionFactory db)
 
     public async Task<bool> DeleteAsync(string spaceName, string subpath, string shortname, ResourceType type, CancellationToken ct = default)
     {
+        const string predicate =
+            "space_name = $1 AND subpath = $2 AND shortname = $3 AND resource_type = $4";
+
+        void Bind(DbCommand c)
+        {
+            DbParams.Add(c, spaceName);
+            DbParams.Add(c, subpath);
+            DbParams.Add(c, shortname);
+            DbParams.Add(c, JsonbHelpers.EnumMember(type));
+        }
+
         await using var conn = await db.OpenAsync(ct);
-        await using var cmd = conn.Command("""
-            DELETE FROM entries
-            WHERE space_name = $1 AND subpath = $2 AND shortname = $3 AND resource_type = $4
+        // One transaction so the tombstone and the delete cannot be separated
+        // by a crash — §5.2's first rule, and the one whose failure is
+        // invisible: the row is gone and nothing records that it went.
+        await using var tx = await conn.BeginTransactionAsync(ct);
+
+        // Before the delete: this reads the row the delete removes.
+        await Tombstones.RecordAsync(conn, tx, "entries", predicate, Bind, hasResourceType: true, ct);
+
+        await using var cmd = conn.Command($"DELETE FROM entries WHERE {predicate}", tx);
+        Bind(cmd);
+        var deleted = await cmd.ExecuteNonQueryAsync(ct) > 0;
+
+        await tx.CommitAsync(ct);
+        return deleted;
+    }
+
+    /// <summary>
+    /// Pages every entry in a space whose <c>updated_at</c> is at or after
+    /// <paramref name="since"/> — the incremental export's selection (§5.1).
+    /// </summary>
+    /// <remarks>
+    /// A separate method rather than <see cref="Models.Api.Query.FromDate"/>,
+    /// which filters on `created_at`. An entry EDITED since the last run still
+    /// has its original created_at, so reusing FromDate would silently miss
+    /// exactly the rows an increment exists to carry.
+    ///
+    /// The bound is INCLUSIVE and deliberately overlaps the previous run (§5.1):
+    /// the import upserts, so re-shipping a boundary row is free, while missing
+    /// one is silent corruption. Bias every ambiguity toward overlap.
+    ///
+    /// Index: idx_entries_updated_at. Ordered by uuid because paging needs a
+    /// TOTAL order and updated_at collides freely — a bulk edit stamps many
+    /// rows identically.
+    /// </remarks>
+    /// <param name="subpath">
+    /// When set and not "/", restricts to that subpath AND its subtree. The
+    /// trailing-slash guard matters: without it "/docs" also matches
+    /// "/docs_old", which would silently widen a scoped export.
+    /// </param>
+    public async Task<List<Entry>> ListForSpaceUpdatedSincePagedAsync(
+        string spaceName, DateTime since, int limit, int offset,
+        string? subpath = null, CancellationToken ct = default)
+    {
+        var scoped = !string.IsNullOrEmpty(subpath) && subpath != "/";
+        await using var conn = await db.OpenAsync(ct);
+        await using var cmd = conn.Command($"""
+            {SelectAllColumns}
+            WHERE space_name = $1 AND updated_at >= $2
+            {(scoped ? "AND (subpath = $5 OR subpath LIKE $5 || '/%')" : "")}
+            ORDER BY uuid
+            LIMIT $3 OFFSET $4
             """);
         DbParams.Add(cmd, spaceName);
-        DbParams.Add(cmd, subpath);
-        DbParams.Add(cmd, shortname);
-        DbParams.Add(cmd, JsonbHelpers.EnumMember(type));
-        return await cmd.ExecuteNonQueryAsync(ct) > 0;
+        DbParams.Add(cmd, since);
+        DbParams.Add(cmd, limit);
+        DbParams.Add(cmd, offset);
+        if (scoped) DbParams.Add(cmd, subpath!);
+
+        var rows = new List<Entry>();
+        await using var r = await cmd.ExecuteReaderAsync(ct);
+        while (await r.ReadAsync(ct)) rows.Add(Hydrate(r));
+        return rows;
     }
 
     // Batched existence probe used by EntryService.ValidateRelationshipsAsync.
@@ -615,13 +679,35 @@ public sealed class EntryRepository(IDbConnectionFactory db)
             DbParams.Add(cmd, folderPath);
         }
 
-        var histories   = await RunAsync("histories",   subtreeWithFolderRow, BindSubtree);
-        var locks       = await RunAsync("locks",        subtreeWithFolderRow, BindSubtree);
-        var attachments = await RunAsync("attachments",  attachmentsPredicate, cmd =>
+        void BindAttachments(DbCommand cmd)
         {
             DbParams.Add(cmd, spaceName);
             DbParams.Add(cmd, folderPath);
-        });
+        }
+
+        // Tombstones BEFORE the deletes, in this same transaction, over the
+        // SAME predicates (§5.2). Deriving the removed rows separately would
+        // let the two disagree about what a cascade actually took, which is the
+        // failure this whole mechanism exists to prevent — and it would be
+        // invisible, because the rows are gone either way.
+        //
+        // `locks` is deliberately absent: a lock is transient coordination
+        // state, not replicated content, so a consumer has nothing to reconcile.
+        //
+        // A dryRun tombstones nothing, because it deletes nothing.
+        if (!dryRun)
+        {
+            await Tombstones.RecordAsync(conn, tx, "attachments", attachmentsPredicate,
+                BindAttachments, hasResourceType: true, ct);
+            await Tombstones.RecordAsync(conn, tx, "histories", subtreeWithFolderRow,
+                BindSubtree, hasResourceType: false, ct);
+            await Tombstones.RecordAsync(conn, tx, "entries", entriesPredicate,
+                BindSubtree, hasResourceType: true, ct);
+        }
+
+        var histories   = await RunAsync("histories",   subtreeWithFolderRow, BindSubtree);
+        var locks       = await RunAsync("locks",        subtreeWithFolderRow, BindSubtree);
+        var attachments = await RunAsync("attachments",  attachmentsPredicate, BindAttachments);
         var entries     = await RunAsync("entries",      entriesPredicate, BindSubtree);
 
         if (tx is not null) await tx.CommitAsync(ct);

@@ -350,6 +350,36 @@ public static class SqliteSchema
     );
 
     -- ============================================================
+    -- DELETIONS  (tombstones — see docs/parquet-export-design.md §5.2)
+    -- ============================================================
+    -- See SqlSchema for why these are written in code rather than by a trigger.
+    -- INTEGER PRIMARY KEY is SQLite's rowid alias, which is its BIGSERIAL.
+    CREATE TABLE IF NOT EXISTS deletions (
+        id             INTEGER PRIMARY KEY AUTOINCREMENT,
+        table_name     TEXT NOT NULL,
+        space_name     TEXT NOT NULL,
+        subpath        TEXT NOT NULL,
+        shortname      TEXT NOT NULL,
+        resource_type  TEXT NOT NULL DEFAULT '',
+        deleted_at     TEXT NOT NULL DEFAULT {NowExpr}
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_deletions_deleted_at ON deletions (deleted_at);
+
+    -- ============================================================
+    -- INCREMENTAL SCAN INDEXES  (§5.1)
+    -- ============================================================
+    -- An incremental export selects `updated_at >= watermark` per table. None
+    -- of these columns was indexed, so that scan was a seq scan on every table
+    -- it touched — a prerequisite for the feature, not an optimization.
+    CREATE INDEX IF NOT EXISTS idx_entries_updated_at ON entries (updated_at);
+    CREATE INDEX IF NOT EXISTS idx_attachments_updated_at ON attachments (updated_at);
+    -- histories is append-only, so its `timestamp` is the equivalent column.
+    -- idx_histories_lookup leads with space_name and cannot serve a scan keyed
+    -- on time alone.
+    CREATE INDEX IF NOT EXISTS idx_histories_timestamp ON histories (timestamp);
+
+    -- ============================================================
     -- SESSIONS
     -- ============================================================
     CREATE TABLE IF NOT EXISTS sessions (

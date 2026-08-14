@@ -578,10 +578,129 @@ switch (subcommand)
         var spaceName = serverArgs.FirstOrDefault(a => !a.StartsWith('-'));
         var outputIdx = Array.IndexOf(serverArgs, "--output");
         var output = outputIdx >= 0 && outputIdx + 1 < serverArgs.Length ? serverArgs[outputIdx + 1] : null;
-        if (string.IsNullOrEmpty(spaceName))
+        var asParquet = serverArgs.Contains("--parquet");
+        var allSpaces = serverArgs.Contains("--all");
+
+        // --subpath scopes to a folder AND its subtree within the space.
+        var subpathIdx = Array.IndexOf(serverArgs, "--subpath");
+        var scopeSubpath = subpathIdx >= 0 && subpathIdx + 1 < serverArgs.Length
+            ? serverArgs[subpathIdx + 1]
+            : "/";
+
+        if (string.IsNullOrEmpty(spaceName) && !allSpaces)
         {
-            Console.Error.WriteLine("Usage: dmart export <space_name> [--output <path|dir|.>]");
+            Console.Error.WriteLine(
+                "Usage: dmart export <space_name> [--parquet] [--subpath <path>] "
+                + "[--since <previous-export-dir>] [--output <path|dir|.>]");
+            Console.Error.WriteLine(
+                "       dmart export --all --parquet [--output <dir>] [--no-verify]   (full backup)");
             Environment.ExitCode = 1;
+            return;
+        }
+        if (allSpaces && !asParquet)
+        {
+            // The zip path has no multi-space form, and silently exporting one
+            // space when the operator asked for all of them is the kind of
+            // partial backup that is only discovered at restore.
+            Console.Error.WriteLine("--all requires --parquet");
+            Environment.ExitCode = 1;
+            return;
+        }
+
+        // --parquet writes the columnar layout (docs/parquet-export-design.md)
+        // instead of the zip: a DIRECTORY, because the format's whole point is
+        // that a reader can project one column or one space without unpacking
+        // everything. Entries only for now; the remaining tables and the blob
+        // store are not wired yet, so this is not yet a full backup and says so.
+        if (asParquet)
+        {
+            var outDir = Path.GetFullPath(
+                string.IsNullOrEmpty(output)
+                    ? (allSpaces ? "dmart-backup" : $"{spaceName}-parquet")
+                    : output);
+
+            // --since <previous-export-dir> chains an increment off a previous
+            // run. A DIRECTORY rather than a timestamp on purpose: the
+            // watermark that makes the two runs overlap correctly is recorded
+            // in that run's manifest, and asking an operator to retype it is
+            // asking them to get it wrong. §5.1.
+            DateTime? since = null;
+            var sinceIdx = Array.IndexOf(serverArgs, "--since");
+            if (sinceIdx >= 0)
+            {
+                if (sinceIdx + 1 >= serverArgs.Length)
+                {
+                    Console.Error.WriteLine("--since needs the path of a previous export directory");
+                    Environment.ExitCode = 1;
+                    return;
+                }
+                var previous = serverArgs[sinceIdx + 1];
+                try { since = ParquetArchiveService.WatermarkOf(previous); }
+                catch (Exception ex)
+                {
+                    Console.Error.WriteLine($"cannot read a watermark from '{previous}': {ex.Message}");
+                    Environment.ExitCode = 1;
+                    return;
+                }
+            }
+
+            var (ps, pdb) = CliBootstrap.BuildFactoryOrExit(dotenvPath, dotenvValues);
+            var parquet = CliBootstrap.BuildParquetArchiveService(ps, pdb);
+
+            // Same reasoning as the zip path below: a failed export must not
+            // leave behind something that looks like a backup.
+            try
+            {
+                var manifest = allSpaces
+                    ? await parquet.ExportAllAsync(
+                        outDir, actor: null, since, verify: !serverArgs.Contains("--no-verify"))
+                    : await parquet.ExportAsync(outDir, spaceName!, scopeSubpath, actor: null, since);
+                // Per table. The aggregate alone reads as an entry count and is
+                // not one — most of it is users, roles and permissions.
+                foreach (var t in manifest.Tables)
+                    Console.WriteLine($"  {t.Name,-12} {t.RowCount} rows");
+                var scope = allSpaces
+                    ? $"{manifest.Spaces?.Count ?? 0} spaces"
+                    : $"'{spaceName}'" + (scopeSubpath == "/" ? "" : $" at {scopeSubpath}");
+                Console.WriteLine(
+                    $"Exported {manifest.RowsIn("entries")} entries from {scope} "
+                    + $"({manifest.RowCount} rows total) to {outDir}");
+                if (manifest.BlobCount > 0)
+                    Console.WriteLine(
+                        $"  blobs        {manifest.BlobCount} distinct ({manifest.BlobBytes} bytes) "
+                        + "— identical media is stored once");
+                // Every table is covered now; what remains is INCREMENTAL
+                // selection (§5), which needs a tombstone table before a
+                // consumer can tell a deleted row from an unchanged one.
+                if (allSpaces && !serverArgs.Contains("--no-verify"))
+                    Console.WriteLine(
+                        "Verified: every file re-read and every blob rehashed against its own name.");
+                if (since is { } from)
+                    Console.WriteLine(
+                        $"Incremental since {from:o} — apply on top of the run it follows, "
+                        + "in order. deletions/ lists rows to REMOVE.");
+                else if (allSpaces)
+                    Console.WriteLine("Full backup: every space, plus users, roles and permissions.");
+                else if (manifest.Tables.Any(t => t.Name == "users"))
+                    Console.WriteLine("Note: full export of this space, including global tables.");
+                else
+                    Console.WriteLine(
+                        "Note: CONTENT ONLY — no users, roles or permissions. This restores into an "
+                        + "existing system, it is not a standalone backup. Use --all for that.");
+                // Not a footnote. The users table holds Argon2 hashes, which is
+                // what lets a restore recover logins; it also means this
+                // directory is credential material and must be treated like a
+                // database dump rather than a content archive.
+                if (manifest.Tables.Any(t => t.Name == "users"))
+                    Console.WriteLine(
+                        "WARNING: users/part-00000.parquet contains password hashes. "
+                        + "Protect this directory like a database dump.");
+            }
+            catch
+            {
+                try { Directory.Delete(outDir, recursive: true); } catch { /* best effort */ }
+                throw;
+            }
             return;
         }
 
@@ -630,7 +749,7 @@ switch (subcommand)
         try
         {
             await using (var fileStream = File.Create(outputPath))
-                await exportService.ExportToAsync(fileStream, spaceName, "/", actor: null);
+                await exportService.ExportToAsync(fileStream, spaceName!, "/", actor: null);
         }
         catch
         {
@@ -659,6 +778,37 @@ switch (subcommand)
         // -r the import is idempotent — pre-existing rows are skipped and
         // the operator sees them counted as `skipped` in the summary.
         var replace = serverArgs.Any(a => a is "-r" or "--replace");
+
+        // --parquet restores the columnar layout `dmart export --parquet`
+        // produced. Deliberately a separate branch rather than sniffing the
+        // directory: guessing the format of a restore source and getting it
+        // wrong is not a mistake worth being clever about.
+        if (serverArgs.Contains("--parquet"))
+        {
+            if (string.IsNullOrEmpty(targetPath))
+            {
+                Bail("Usage: dmart import <export-directory> --parquet [-r]");
+                return;
+            }
+
+            var (qs, qdb) = CliBootstrap.BuildFactoryOrExit(dotenvPath, dotenvValues);
+            var archive = CliBootstrap.BuildParquetArchiveService(qs, qdb);
+            var result = await archive.ImportAsync(targetPath, replace);
+
+            // Per table, not one aggregate: "imported 900" across five tables
+            // does not tell an operator whether the users landed.
+            foreach (var t in result.Tables)
+                Console.WriteLine(
+                    $"  {t.Table,-12} imported {t.Imported}, skipped {t.Skipped}, failed {t.Failed}");
+            Console.WriteLine(
+                $"Total: imported {result.Imported}, skipped {result.Skipped}, "
+                + $"failed {result.Failed} of {result.Total} rows from {targetPath}");
+            // A restore that lost rows must not exit 0: a backup pipeline reads
+            // the exit code, not the wording.
+            if (result.Failed > 0) Environment.ExitCode = 1;
+            return;
+        }
+
         // --fast bypasses FK constraints AND user-defined triggers for the
         // entire import by setting session_replication_role='replica' on a
         // single shared session. Trades safety for speed; only safe when
@@ -1996,6 +2146,7 @@ builder.Services.AddSingleton<LockService>();
 builder.Services.AddSingleton<ShortLinkService>();
 builder.Services.AddSingleton<CsvService>();
 builder.Services.AddSingleton<ImportExportService>();
+builder.Services.AddSingleton<ParquetArchiveService>();
 builder.Services.AddSingleton<QrService>();
 builder.Services.AddSingleton<WsConnectionManager>();
 

@@ -467,9 +467,17 @@ public sealed class UserRepository(IDbConnectionFactory db, AuthzCacheRefresher 
     public async Task DeleteAsync(string shortname, CancellationToken ct = default)
     {
         await using var conn = await db.OpenAsync(ct);
-        await using var cmd = conn.Command("DELETE FROM users WHERE shortname = $1");
+        // Tombstone in the same transaction as the delete (§5.2). A consumer
+        // that never learns a user was removed keeps an account that can still
+        // be referenced by everything it owned.
+        await using var tx = await conn.BeginTransactionAsync(ct);
+        await Tombstones.RecordAsync(conn, tx, "users", "shortname = $1",
+            c => DbParams.Add(c, shortname), hasResourceType: false, ct);
+
+        await using var cmd = conn.Command("DELETE FROM users WHERE shortname = $1", tx);
         DbParams.Add(cmd, shortname);
         await cmd.ExecuteNonQueryAsync(ct);
+        await tx.CommitAsync(ct);
         await refresher.RefreshAsync(ct);
     }
 
@@ -656,6 +664,20 @@ public sealed class UserRepository(IDbConnectionFactory db, AuthzCacheRefresher 
             """);
 
         // 3. DATA objects the user owns are DELETED: their attachments + entries.
+        //
+        // Tombstoned first, in this same transaction, over the same predicate
+        // (§5.2). This path removes CONTENT — potentially a great deal of it —
+        // and it is the least obvious place to look for it, because the caller
+        // asked to delete a user rather than any content. A consumer that never
+        // learns those rows went keeps them forever.
+        void BindOwner(DbCommand c) => DbParams.Add(c, shortname);
+        await Tombstones.RecordAsync(conn, tx, "attachments", "owner_shortname = $1",
+            BindOwner, hasResourceType: true, ct);
+        await Tombstones.RecordAsync(conn, tx, "entries", "owner_shortname = $1",
+            BindOwner, hasResourceType: true, ct);
+        await Tombstones.RecordAsync(conn, tx, "users", "shortname = $1",
+            BindOwner, hasResourceType: false, ct);
+
         var attachments = await DeleteCountAsync("DELETE FROM attachments WHERE owner_shortname = $1");
         var entries = await DeleteCountAsync("DELETE FROM entries     WHERE owner_shortname = $1");
 

@@ -161,6 +161,33 @@ internal static class CliBootstrap
             nlog.CreateLogger<ImportExportService>());
     }
 
+    // The Parquet archiver needs most of the graph the zip one does, now that
+    // it writes spaces, users, roles and permissions alongside entries.
+    public static ParquetArchiveService BuildParquetArchiveService(
+        DmartSettings s, IDbConnectionFactory db)
+    {
+        var nlog = LoggerFactory.Create(b => b
+            .SetMinimumLevel(LogLevel.Information)
+            .AddProvider(new StderrLoggerProvider(LogLevel.Information)));
+        var refresher = new AuthzCacheRefresher();
+        var userRepo = new UserRepository(db, refresher, new SessionTokenHasher(s));
+        var dialect = db is SqliteConnectionFactory
+            ? (Dmart.QueryGrammar.ISqlDialect)Dmart.QueryGrammar.SqliteSqlDialect.Instance
+            : Dmart.QueryGrammar.PostgresSqlDialect.Instance;
+        var accessRepo = new AccessRepository(db, dialect, refresher, userRepo);
+        return new ParquetArchiveService(
+            db,
+            new EntryRepository(db),
+            new AttachmentRepository(db, dialect),
+            new HistoryRepository(db, dialect),
+            new SpaceRepository(db),
+            userRepo,
+            accessRepo,
+            new PermissionService(userRepo, accessRepo, refresher),
+            Options.Create(s),
+            nlog.CreateLogger<ParquetArchiveService>());
+    }
+
     // Logger for bootstrap-time work that happens before the service graph
     // exists (schema creation). Same stderr provider the import uses, so the
     // two are visually consistent in one CLI run.

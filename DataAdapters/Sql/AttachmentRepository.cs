@@ -57,6 +57,66 @@ public sealed class AttachmentRepository(IDbConnectionFactory db, ISqlDialect di
         string spaceName, string parentSubpath, string parentShortname, CancellationToken ct = default)
         => ListForParentAsync(spaceName, parentSubpath, parentShortname, includeMedia: true, ct);
 
+    /// <summary>
+    /// Pages every attachment in a space, metadata only, plus the SIZE of each
+    /// media blob.
+    /// </summary>
+    /// <remarks>
+    /// For the Parquet export, which is space-wide rather than per-parent. It
+    /// deliberately does NOT select the bytes: an export streams blobs one at a
+    /// time through <see cref="GetMediaAsync"/>, so peak memory is one blob
+    /// rather than a page of them. Media is where the gigabytes are, and a page
+    /// of 5 MB attachments would otherwise be resident all at once.
+    ///
+    /// The size comes back so the exporter can skip the media fetch entirely
+    /// for attachments that have none, which is most of them.
+    ///
+    /// `length(media)` rather than `octet_length`: on PostgreSQL bytea the two
+    /// are the same function, and SQLite has only the former. Ordering is by
+    /// uuid because paging needs a TOTAL order — the same trap
+    /// ImportExportService.ForEachMatchAsync documents.
+    ///
+    /// Index: scans by `space_name`, served by idx_attachments_space_name.
+    /// </remarks>
+    /// <param name="since">
+    /// When set, only rows with <c>updated_at &gt;= since</c> — the incremental
+    /// selection (§5.1). Inclusive, so it overlaps the previous run: an upsert
+    /// makes a re-shipped row free, while a missed one is silent corruption.
+    /// Index: idx_attachments_updated_at.
+    /// </param>
+    public async Task<List<(Attachment Attachment, long MediaSize)>> ListForSpacePagedAsync(
+        string spaceName, int limit, int offset, DateTime? since = null,
+        string? subpath = null, CancellationToken ct = default)
+    {
+        await using var conn = await db.OpenAsync(ct);
+        var sinceClause = since is null ? "" : "AND updated_at >= $4";
+        // An attachment's subpath is "<parent subpath>/<parent shortname>", so
+        // the folder's own attachments sit AT the scope and everything deeper
+        // sits under it — the same predicate the folder cascade uses.
+        var scoped = !string.IsNullOrEmpty(subpath) && subpath != "/";
+        var scopeParam = since is null ? "$4" : "$5";
+        var scopeClause = scoped ? $"AND (subpath = {scopeParam} OR subpath LIKE {scopeParam} || '/%')" : "";
+        await using var cmd = conn.Command($"""
+            {SelectColumnsNoMedia.Replace("FROM attachments", "").TrimEnd()},
+                   COALESCE(length(media), 0) AS media_size
+            FROM attachments
+            WHERE space_name = $1 {sinceClause} {scopeClause}
+            ORDER BY uuid
+            LIMIT $2 OFFSET $3
+            """);
+        DbParams.Add(cmd, spaceName);
+        DbParams.Add(cmd, limit);
+        DbParams.Add(cmd, offset);
+        if (since is not null) DbParams.Add(cmd, since.Value);
+        if (scoped) DbParams.Add(cmd, subpath!);
+
+        var result = new List<(Attachment, long)>();
+        await using var r = await cmd.ExecuteReaderAsync(ct);
+        while (await r.ReadAsync(ct))
+            result.Add((Hydrate(r), r.IsDBNull(21) ? 0L : Convert.ToInt64(r.GetValue(21))));
+        return result;
+    }
+
     private async Task<List<Attachment>> ListForParentAsync(
         string spaceName, string parentSubpath, string parentShortname, bool includeMedia, CancellationToken ct)
     {
@@ -247,9 +307,19 @@ public sealed class AttachmentRepository(IDbConnectionFactory db, ISqlDialect di
     public async Task DeleteAsync(Guid uuid, CancellationToken ct = default)
     {
         await using var conn = await db.OpenAsync(ct);
-        await using var cmd = conn.Command("DELETE FROM attachments WHERE uuid = $1");
+        // Tombstone and delete share one transaction so a crash cannot separate
+        // them, leaving a row gone with nothing recording that it went (§5.2).
+        // The tombstone runs FIRST because it reads the row being removed.
+        await using var tx = await conn.BeginTransactionAsync(ct);
+
+        await Tombstones.RecordAsync(conn, tx, "attachments", "uuid = $1",
+            c => DbParams.Add(c, uuid), hasResourceType: true, ct);
+
+        await using var cmd = conn.Command("DELETE FROM attachments WHERE uuid = $1", tx);
         DbParams.Add(cmd, uuid);
         await cmd.ExecuteNonQueryAsync(ct);
+
+        await tx.CommitAsync(ct);
     }
 
     // Bulk-delete every attachment whose subpath sits at or under `prefix`.
@@ -261,15 +331,31 @@ public sealed class AttachmentRepository(IDbConnectionFactory db, ISqlDialect di
     // siblings (`/products` vs `/products_old`).
     public async Task<int> DeleteUnderSubpathAsync(string spaceName, string prefix, CancellationToken ct = default)
     {
-        await using var conn = await db.OpenAsync(ct);
-        await using var cmd = conn.Command("""
-            DELETE FROM attachments
-            WHERE space_name = $1
+        const string predicate = """
+            space_name = $1
               AND (subpath = $2 OR subpath LIKE $2 || '/%')
-            """);
-        DbParams.Add(cmd, spaceName);
-        DbParams.Add(cmd, prefix);
-        return await cmd.ExecuteNonQueryAsync(ct);
+            """;
+
+        void Bind(DbCommand c)
+        {
+            DbParams.Add(c, spaceName);
+            DbParams.Add(c, prefix);
+        }
+
+        await using var conn = await db.OpenAsync(ct);
+        await using var tx = await conn.BeginTransactionAsync(ct);
+
+        // Over the SAME predicate as the delete, so the tombstones and the
+        // removal cannot disagree about which attachments a cascade took.
+        await Tombstones.RecordAsync(conn, tx, "attachments", predicate,
+            Bind, hasResourceType: true, ct);
+
+        await using var cmd = conn.Command($"DELETE FROM attachments WHERE {predicate}", tx);
+        Bind(cmd);
+        var deleted = await cmd.ExecuteNonQueryAsync(ct);
+
+        await tx.CommitAsync(ct);
+        return deleted;
     }
 
     // Count (don't delete) every attachment at or under `prefix` — the dryrun

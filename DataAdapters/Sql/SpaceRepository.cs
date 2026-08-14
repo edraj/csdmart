@@ -187,6 +187,27 @@ public sealed class SpaceRepository(IDbConnectionFactory db)
                 : await cmd.ExecuteNonQueryAsync(ct);
         }
 
+        // Tombstones first, over the same single-column predicate the deletes
+        // use, in this same transaction (§5.2). A space delete removes an
+        // entire space's replicated content in one statement; without these a
+        // consumer keeps every row of it forever, with nothing to reconcile
+        // against.
+        //
+        // `locks` is deliberately absent: transient coordination state, not
+        // replicated content.
+        if (!dryRun)
+        {
+            void BindShortname(DbCommand c) => DbParams.Add(c, shortname);
+            await Tombstones.RecordAsync(conn, tx, "attachments", "space_name = $1",
+                BindShortname, hasResourceType: true, ct);
+            await Tombstones.RecordAsync(conn, tx, "histories", "space_name = $1",
+                BindShortname, hasResourceType: false, ct);
+            await Tombstones.RecordAsync(conn, tx, "entries", "space_name = $1",
+                BindShortname, hasResourceType: true, ct);
+            await Tombstones.RecordAsync(conn, tx, "spaces", "shortname = $1",
+                BindShortname, hasResourceType: false, ct);
+        }
+
         var histories   = await Run("histories",   "space_name");
         var locks       = await Run("locks",        "space_name");
         var attachments = await Run("attachments",  "space_name");
