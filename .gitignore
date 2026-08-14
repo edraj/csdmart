@@ -58,3 +58,7 @@ admin_scripts/docker/dmart-binary
 dmart.Tests/TestResults/
 .codex
 dotnet-tools.json
+
+# Claude Code writes settings atomically via transient temp files; two were
+# committed accidentally by a `git add -A`.
+.claude/*.tmp.*
