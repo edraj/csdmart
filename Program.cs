@@ -591,7 +591,7 @@ switch (subcommand)
         {
             Console.Error.WriteLine(
                 "Usage: dmart export <space_name> [--parquet] [--subpath <path>] "
-                + "[--since <previous-export-dir>] [--output <path|dir|.>]");
+                + "[--since <previous-export-dir>] [--output <path|dir|.>] [--gc-blobs [--dry-run]]");
             Console.Error.WriteLine(
                 "       dmart export --all --parquet [--output <dir>] [--no-verify]   (full backup)");
             Environment.ExitCode = 1;
@@ -672,6 +672,20 @@ switch (subcommand)
                 // Every table is covered now; what remains is INCREMENTAL
                 // selection (§5), which needs a tombstone table before a
                 // consumer can tell a deleted row from an unchanged one.
+                // --gc-blobs runs after the export, when the reference set is
+                // known. Blobs are content-addressed and never overwritten, so
+                // a job pointed at a fixed --output keeps every version of
+                // every attachment it has ever exported while the parquet files
+                // are replaced each run.
+                if (serverArgs.Contains("--gc-blobs"))
+                {
+                    var dryRun = serverArgs.Contains("--dry-run");
+                    var gc = ParquetArchiveService.CollectGarbageBlobs(outDir, dryRun);
+                    Console.WriteLine(dryRun
+                        ? $"  blobs        would remove {gc.Removed} unreferenced ({gc.Freed} bytes), keep {gc.Kept}"
+                        : $"  blobs        removed {gc.Removed} unreferenced ({gc.Freed} bytes), kept {gc.Kept}");
+                }
+
                 if (allSpaces && !serverArgs.Contains("--no-verify"))
                     Console.WriteLine(
                         "Verified: every file re-read and every blob rehashed against its own name.");

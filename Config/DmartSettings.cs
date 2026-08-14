@@ -452,6 +452,26 @@ public sealed class DmartSettings
     // carries a jq_filter expression. Python default (backend/utils/settings.py).
     public int JqTimeout { get; set; } = 2;
 
+    // ---- Parquet archive tuning (docs/parquet-export-design.md §4.2) ----
+    //
+    // These were test-only statics with no operator surface. The defaults are
+    // the right answer for almost everyone; they are exposed because the ONE
+    // situation that needs them — a machine where a 50,000-row group will not
+    // fit in memory, or a driver whose parameter cap is lower than expected —
+    // is precisely the situation where recompiling is not an option.
+
+    /// <summary>Rows per Parquet row group. The unit of writer memory (§4.2).</summary>
+    public int ParquetRowGroupRows { get; set; } = 50_000;
+
+    /// <summary>Attachments fetched per page. Metadata only — media streams one blob at a time.</summary>
+    public int ParquetAttachmentPageSize { get; set; } = 500;
+
+    /// <summary>History rows fetched per page.</summary>
+    public int ParquetHistoryPageSize { get; set; } = 10_000;
+
+    /// <summary>Rows per bulk COPY batch on restore.</summary>
+    public int ParquetBulkBatchSize { get; set; } = 10_000;
+
     // Logging format: "text" (default console) or "json" (structured JSON lines).
     // Python uses pythonjsonlogger → .ljson.log files. Set to "json" for
     // production deployments where logs are consumed by ELK/Loki/CloudWatch.

@@ -1,3 +1,4 @@
+using System.Data.Common;
 using System.Text.Json;
 using System.Text.Json.Serialization;
 using Dmart.DataAdapters.Parquet;
@@ -58,7 +59,8 @@ public sealed class ParquetArchiveService(
     /// rows; exercising it at the real size would need 50,000 entries.
     /// Test-only, not thread-safe, and nothing in the request path writes it.
     /// </remarks>
-    internal static int RowGroupRows { get; set; } = 50_000;
+    internal static int? RowGroupRowsOverride { get; set; }
+    private int RowGroupRows => RowGroupRowsOverride ?? settingsOpt.Value.ParquetRowGroupRows;
 
     public const int FormatVersion = 1;
 
@@ -159,17 +161,72 @@ public sealed class ParquetArchiveService(
         string outputDirectory, CancellationToken ct) =>
     [
         await WriteGlobalAsync(outputDirectory, "spaces", SpaceParquetTable.Schema,
-            await spaces.ListAsync(ct), SpaceParquetTable.BuildPages, ct),
+            await spaces.ListAsync(ct), SpaceParquetTable.BuildPages, RowGroupRows, ct),
         await WriteGlobalAsync(outputDirectory, "users", UserParquetTable.Schema,
             await CollectAsync<User>("/users", q => users.QueryAsync(q, ct)),
-            UserParquetTable.BuildPages, ct),
+            UserParquetTable.BuildPages, RowGroupRows, ct),
         await WriteGlobalAsync(outputDirectory, "roles", RoleParquetTable.Schema,
             await CollectAsync<Role>("/roles", q => access.QueryRolesAsync(q, ct)),
-            RoleParquetTable.BuildPages, ct),
+            RoleParquetTable.BuildPages, RowGroupRows, ct),
         await WriteGlobalAsync(outputDirectory, "permissions", PermissionParquetTable.Schema,
             await CollectAsync<Permission>("/permissions", q => access.QueryPermissionsAsync(q, ct)),
-            PermissionParquetTable.BuildPages, ct),
+            PermissionParquetTable.BuildPages, RowGroupRows, ct),
     ];
+
+    /// <summary>
+    /// Deletes blobs no attachment row references. Returns what it removed.
+    /// </summary>
+    /// <remarks>
+    /// Blobs are content-addressed and written only if absent, so nothing ever
+    /// overwrites or removes one. Export repeatedly into the SAME directory —
+    /// which a nightly job pointed at a fixed path does — and the blob store
+    /// keeps every version of every attachment ever exported, while the parquet
+    /// files are replaced each run. That grows without bound and the growth is
+    /// invisible, because the manifest only counts what the LAST run wrote.
+    ///
+    /// Safety: the reference set is built from the archive's own attachment
+    /// rows, so a blob is deleted only when nothing in THIS archive names it.
+    /// Refuses to run when the attachments table is absent from the manifest,
+    /// because "no attachments table" and "no attachments" would otherwise look
+    /// the same and delete the entire blob store.
+    /// </remarks>
+    public static BlobGcResult CollectGarbageBlobs(
+        string exportDirectory, bool dryRun = false, CancellationToken ct = default)
+    {
+        var manifest = ReadManifest(exportDirectory);
+        if (!manifest.Tables.Any(t => t.Name == "attachments"))
+            throw new InvalidDataException(
+                "this archive has no attachments table, so the set of referenced blobs is unknown — "
+                + "refusing to collect, because that is indistinguishable from 'no blobs are used'");
+
+        var referenced = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        foreach (var row in ReadAttachmentRows(exportDirectory))
+            if (row.MediaSha256 is { } sha) referenced.Add(sha);
+
+        var root = Path.Combine(exportDirectory, BlobStore.DirectoryName);
+        if (!Directory.Exists(root)) return new BlobGcResult(0, 0, 0);
+
+        int kept = 0, removed = 0;
+        long freed = 0;
+        foreach (var file in Directory.EnumerateFiles(root, "*", SearchOption.AllDirectories))
+        {
+            ct.ThrowIfCancellationRequested();
+            var name = Path.GetFileName(file);
+
+            // A half-written temp file from an interrupted export is garbage by
+            // definition — it is not named for its own hash, so nothing can
+            // reference it.
+            var orphaned = name.Contains(".tmp-", StringComparison.Ordinal) || !referenced.Contains(name);
+            if (!orphaned) { kept++; continue; }
+
+            var size = new FileInfo(file).Length;
+            if (!dryRun) File.Delete(file);
+            removed++;
+            freed += size;
+        }
+
+        return new BlobGcResult(kept, removed, freed);
+    }
 
     /// <summary>
     /// Re-reads every file and every blob an export wrote, verifying blob
@@ -366,7 +423,10 @@ public sealed class ParquetArchiveService(
         // anything absent from it is deleted by construction; writing a
         // deletions file there would invite a consumer to apply deletes twice.
         if (since is { } deletionsFloor)
+        {
             tables.Add(await WriteDeletionsAsync(outputDirectory, spaceName, deletionsFloor, ct));
+            await WarnIfWatermarkPredatesTombstonesAsync(deletionsFloor, ct);
+        }
 
         // The global tables — spaces, users, roles, permissions.
         //
@@ -385,19 +445,19 @@ public sealed class ParquetArchiveService(
         if (includeGlobal)
         {
             tables.Add(await WriteGlobalAsync(outputDirectory, "spaces", SpaceParquetTable.Schema,
-                await spaces.ListAsync(ct), SpaceParquetTable.BuildPages, ct));
+                await spaces.ListAsync(ct), SpaceParquetTable.BuildPages, RowGroupRows, ct));
 
             tables.Add(await WriteGlobalAsync(outputDirectory, "users", UserParquetTable.Schema,
                 await CollectAsync<User>("/users", q => users.QueryAsync(q, ct)),
-                UserParquetTable.BuildPages, ct));
+                UserParquetTable.BuildPages, RowGroupRows, ct));
 
             tables.Add(await WriteGlobalAsync(outputDirectory, "roles", RoleParquetTable.Schema,
                 await CollectAsync<Role>("/roles", q => access.QueryRolesAsync(q, ct)),
-                RoleParquetTable.BuildPages, ct));
+                RoleParquetTable.BuildPages, RowGroupRows, ct));
 
             tables.Add(await WriteGlobalAsync(outputDirectory, "permissions", PermissionParquetTable.Schema,
                 await CollectAsync<Permission>("/permissions", q => access.QueryPermissionsAsync(q, ct)),
-                PermissionParquetTable.BuildPages, ct));
+                PermissionParquetTable.BuildPages, RowGroupRows, ct));
         }
 
         return await WriteManifestAsync(
@@ -465,6 +525,35 @@ public sealed class ParquetArchiveService(
         return new ParquetTableManifest("histories", [relative], rows);
     }
 
+    // §5.2's last rule, made checkable: an increment can only carry deletions
+    // that were RECORDED, and nothing was recorded before the retention floor.
+    //
+    // This warns only when it is CERTAIN — the watermark strictly predates the
+    // floor — rather than on the ambiguous "no old tombstones exist", which is
+    // equally consistent with nothing having been deleted. A warning that fires
+    // on healthy exports is one operators learn to ignore, and this is the one
+    // they cannot afford to.
+    private async Task WarnIfWatermarkPredatesTombstonesAsync(DateTime since, CancellationToken ct)
+    {
+        await using var conn = await db.OpenAsync(ct);
+        var floor = await Tombstones.ReadRetentionFloorAsync(conn, ct);
+
+        if (floor is null)
+        {
+            log.LogWarning(
+                "parquet export: no tombstone retention floor recorded — this archive cannot "
+                + "attest that deletions since {Since:o} were captured", since);
+            return;
+        }
+
+        if (since < floor)
+            log.LogWarning(
+                "parquet export: DELETIONS MAY HAVE BEEN LOST. The watermark {Since:o} predates "
+                + "the tombstone retention floor {Floor:o}, so deletions in that window were never "
+                + "recorded. Take a FULL export to resynchronise; an increment cannot close this gap.",
+                since, floor.Value);
+    }
+
     // Writes deletions/part-00000.parquet — the record of what an increment
     // must REMOVE, as opposed to what it must upsert.
     private async Task<ParquetTableManifest> WriteDeletionsAsync(
@@ -498,13 +587,15 @@ public sealed class ParquetArchiveService(
     }
 
     /// <summary>History rows fetched per page.</summary>
-    internal static int HistoryPageSize { get; set; } = 10_000;
+    internal static int? HistoryPageSizeOverride { get; set; }
+    private int HistoryPageSize => HistoryPageSizeOverride ?? settingsOpt.Value.ParquetHistoryPageSize;
 
     /// <summary>
     /// Attachments per page. Metadata only — the bytes are fetched one blob at
     /// a time — so this bounds row-buffer memory, not blob memory.
     /// </summary>
-    internal static int AttachmentPageSize { get; set; } = 500;
+    internal static int? AttachmentPageSizeOverride { get; set; }
+    private int AttachmentPageSize => AttachmentPageSizeOverride ?? settingsOpt.Value.ParquetAttachmentPageSize;
 
     // Writes attachments/space_name=<s>/part-00000.parquet plus the blob store.
     //
@@ -613,6 +704,7 @@ public sealed class ParquetArchiveService(
         IReadOnlyList<ParquetFileWriter.ColumnSpec> schema,
         List<T> rows,
         Func<IReadOnlyList<T>, IReadOnlyList<ParquetFileWriter.ColumnPage>> build,
+        int rowGroupRows,
         CancellationToken ct)
     {
         var relative = Path.Combine(table, "part-00000.parquet");
@@ -627,9 +719,9 @@ public sealed class ParquetArchiveService(
             writer.Start(file);
             // Row groups still apply: a large table is chunked rather than
             // written as one enormous group.
-            for (var offset = 0; offset < rows.Count; offset += RowGroupRows)
+            for (var offset = 0; offset < rows.Count; offset += rowGroupRows)
             {
-                var slice = rows.GetRange(offset, Math.Min(RowGroupRows, rows.Count - offset));
+                var slice = rows.GetRange(offset, Math.Min(rowGroupRows, rows.Count - offset));
                 writer.WriteRowGroup(build(slice), slice.Count);
             }
             writer.Finish();
@@ -686,22 +778,23 @@ public sealed class ParquetArchiveService(
         // leaves dangling references depending on the driver.
         var (si, sk, sf) = await RestoreGlobalAsync(
             exportDirectory, "spaces", SpaceParquetTable.FromTable,
-            s => spaces.GetAsync(s.Shortname, ct), s => spaces.UpsertAsync(s, ct),
+            (s, c) => spaces.GetAsync(s.Shortname, c, ct), (s, c) => spaces.UpsertAsync(s, c, ct),
             replaceExisting, ct);
 
         var (ri, rk, rf) = await RestoreGlobalAsync(
             exportDirectory, "roles", RoleParquetTable.FromTable,
-            r => access.GetRoleAsync(r.Shortname, ct), r => access.UpsertRoleAsync(r, ct),
+            (r, c) => access.GetRoleAsync(r.Shortname, c, ct), (r, c) => access.UpsertRoleAsync(r, c, ct),
             replaceExisting, ct);
 
         var (pi, pk, pf) = await RestoreGlobalAsync(
             exportDirectory, "permissions", PermissionParquetTable.FromTable,
-            p => access.GetPermissionAsync(p.Shortname, ct), p => access.UpsertPermissionAsync(p, ct),
+            (p, c) => access.GetPermissionAsync(p.Shortname, c, ct),
+            (p, c) => access.UpsertPermissionAsync(p, c, ct),
             replaceExisting, ct);
 
         var (ui, uk, uf) = await RestoreGlobalAsync(
             exportDirectory, "users", UserParquetTable.FromTable,
-            u => users.GetByShortnameAsync(u.Shortname, ct), u => users.UpsertAsync(u, ct),
+            (u, c) => users.GetByShortnameAsync(u.Shortname, c, ct), (u, c) => users.UpsertAsync(u, c, ct),
             replaceExisting, ct);
 
         var perTable = new List<ParquetTableResult>
@@ -877,7 +970,8 @@ public sealed class ParquetArchiveService(
     internal static bool ForcePerRowRestore { get; set; }
 
     /// <summary>Rows per bulk COPY batch. Bounds the scratch table and the replay unit.</summary>
-    internal static int BulkBatchSize { get; set; } = ImportExportService.DefaultBatchSize;
+    internal static int? BulkBatchSizeOverride { get; set; }
+    private int BulkBatchSize => BulkBatchSizeOverride ?? settingsOpt.Value.ParquetBulkBatchSize;
 
     private async Task<(int Imported, int Skipped, int Failed)> RestoreEntriesPerRowAsync(
         List<Entry> rows, bool replaceExisting, CancellationToken ct)
@@ -1011,20 +1105,41 @@ public sealed class ParquetArchiveService(
     private async Task<(int Imported, int Skipped, int Failed)> RestoreGlobalAsync<T>(
         string exportDirectory, string table,
         Func<ParquetFileReader.ParquetTable, List<T>> fromTable,
-        Func<T, Task<T?>> get, Func<T, Task> upsert,
+        Func<T, DbConnection, Task<T?>> get, Func<T, DbConnection, Task> upsert,
         bool replaceExisting, CancellationToken ct)
         where T : class
     {
         var rows = ReadTable(exportDirectory, table, fromTable);
         int imported = 0, skipped = 0, failed = 0;
+        if (rows.Count == 0) return (0, 0, 0);
+
+        // ONE connection for the whole table rather than one per row, which the
+        // parameterless repository overloads would each open.
+        //
+        // Honest note on why this is NOT the speed fix: it was expected to be,
+        // and measurement said otherwise — 5.86s to 5.75s on a 5k-row restore.
+        // Npgsql pools connections, so opening one per row was already cheap.
+        // The real cost is one round trip per statement (~1.7ms), and only
+        // batching would remove it.
+        //
+        // Kept anyway because reusing a connection across a loop of writes is
+        // the right shape, not because it is faster.
+        //
+        // Batching users specifically is deliberately NOT done here: their
+        // upsert carries `password = COALESCE(EXCLUDED.password,
+        // users.password)`, and a hand-written multi-row path would have to
+        // reproduce that exactly or silently wipe every credential it restored.
+        // At ~1.7ms per row this is seconds on a realistic install; that trade
+        // is not worth a fifth bulk path today.
+        await using var conn = await db.OpenAsync(ct);
 
         foreach (var row in rows)
         {
             ct.ThrowIfCancellationRequested();
             try
             {
-                if (!replaceExisting && await get(row) is not null) { skipped++; continue; }
-                await upsert(row);
+                if (!replaceExisting && await get(row, conn) is not null) { skipped++; continue; }
+                await upsert(row, conn);
                 imported++;
             }
             catch (Exception ex)
@@ -1087,7 +1202,8 @@ public sealed class ParquetArchiveService(
         return result;
     }
 
-    private static ParquetExportManifest ReadManifest(string exportDirectory)
+    /// <summary>Reads an export's manifest, rejecting a format version this build cannot read.</summary>
+    public static ParquetExportManifest ReadManifest(string exportDirectory)
     {
         var manifestPath = Path.Combine(exportDirectory, "manifest.json");
         if (!File.Exists(manifestPath))
@@ -1226,6 +1342,9 @@ public sealed record ParquetExportManifest(
 /// Per-table breakdown. The aggregate alone is close to useless on a restore:
 /// "imported 900" across five tables does not say whether the users landed.
 /// </param>
+/// <param name="Freed">Bytes reclaimed, or that would be by a real run.</param>
+public sealed record BlobGcResult(int Kept, int Removed, long Freed);
+
 public sealed record ParquetImportResult(
     int Imported, int Skipped, int Failed, int Total,
     IReadOnlyList<ParquetTableResult> Tables)

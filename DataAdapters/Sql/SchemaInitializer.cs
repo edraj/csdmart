@@ -54,6 +54,19 @@ public sealed class SchemaInitializer(
                     // continues without surfacing the failure to the operator.
                     cmd.CommandTimeout = 0;
                     await cmd.ExecuteNonQueryAsync(ct);
+
+                    // Seed the tombstone retention floor once, with a BOUND
+                    // local timestamp. A DEFAULT NOW() would be evaluated by
+                    // the server in its own timezone, which is exactly how
+                    // deleted_at ended up hours adrift (§5.1).
+                    await using (var floor = new NpgsqlCommand(
+                        "INSERT INTO deletion_retention (id, floor_at) VALUES (1, $1) "
+                        + "ON CONFLICT (id) DO NOTHING", conn))
+                    {
+                        floor.Parameters.AddWithValue(Utils.TimeUtils.Now());
+                        await floor.ExecuteNonQueryAsync(ct);
+                    }
+
                     log.LogInformation("dmart schema ready");
                     // If the `hstore` extension was just created by CreateAll,
                     // connections opened BEFORE this point cached the server's
