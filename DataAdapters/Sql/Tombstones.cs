@@ -118,23 +118,4 @@ internal static class Tombstones
         return rows;
     }
 
-    /// <summary>Records a single known row, for deletes that already have its identity.</summary>
-    public static async Task RecordOneAsync(
-        DbConnection conn, DbTransaction? tx, string table, string spaceName, string subpath,
-        string shortname, string resourceType, CancellationToken ct)
-    {
-        await using var cmd = conn.CreateCommand();
-        cmd.Transaction = tx;
-        DbParams.Add(cmd, table);
-        DbParams.Add(cmd, spaceName);
-        DbParams.Add(cmd, subpath);
-        DbParams.Add(cmd, shortname);
-        DbParams.Add(cmd, resourceType);
-        var stamp = DbParams.Add(cmd, Utils.TimeUtils.Now());
-        cmd.CommandText = $"""
-            INSERT INTO deletions (table_name, space_name, subpath, shortname, resource_type, deleted_at)
-            VALUES ($1, $2, $3, $4, $5, {stamp})
-            """;
-        await cmd.ExecuteNonQueryAsync(ct);
-    }
 }
