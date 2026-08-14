@@ -57,6 +57,50 @@ public sealed class AttachmentRepository(IDbConnectionFactory db, ISqlDialect di
         string spaceName, string parentSubpath, string parentShortname, CancellationToken ct = default)
         => ListForParentAsync(spaceName, parentSubpath, parentShortname, includeMedia: true, ct);
 
+    /// <summary>
+    /// Pages every attachment in a space, metadata only, plus the SIZE of each
+    /// media blob.
+    /// </summary>
+    /// <remarks>
+    /// For the Parquet export, which is space-wide rather than per-parent. It
+    /// deliberately does NOT select the bytes: an export streams blobs one at a
+    /// time through <see cref="GetMediaAsync"/>, so peak memory is one blob
+    /// rather than a page of them. Media is where the gigabytes are, and a page
+    /// of 5 MB attachments would otherwise be resident all at once.
+    ///
+    /// The size comes back so the exporter can skip the media fetch entirely
+    /// for attachments that have none, which is most of them.
+    ///
+    /// `length(media)` rather than `octet_length`: on PostgreSQL bytea the two
+    /// are the same function, and SQLite has only the former. Ordering is by
+    /// uuid because paging needs a TOTAL order — the same trap
+    /// ImportExportService.ForEachMatchAsync documents.
+    ///
+    /// Index: scans by `space_name`, served by idx_attachments_space_name.
+    /// </remarks>
+    public async Task<List<(Attachment Attachment, long MediaSize)>> ListForSpacePagedAsync(
+        string spaceName, int limit, int offset, CancellationToken ct = default)
+    {
+        await using var conn = await db.OpenAsync(ct);
+        await using var cmd = conn.Command($"""
+            {SelectColumnsNoMedia.Replace("FROM attachments", "").TrimEnd()},
+                   COALESCE(length(media), 0) AS media_size
+            FROM attachments
+            WHERE space_name = $1
+            ORDER BY uuid
+            LIMIT $2 OFFSET $3
+            """);
+        DbParams.Add(cmd, spaceName);
+        DbParams.Add(cmd, limit);
+        DbParams.Add(cmd, offset);
+
+        var result = new List<(Attachment, long)>();
+        await using var r = await cmd.ExecuteReaderAsync(ct);
+        while (await r.ReadAsync(ct))
+            result.Add((Hydrate(r), r.IsDBNull(21) ? 0L : Convert.ToInt64(r.GetValue(21))));
+        return result;
+    }
+
     private async Task<List<Attachment>> ListForParentAsync(
         string spaceName, string parentSubpath, string parentShortname, bool includeMedia, CancellationToken ct)
     {

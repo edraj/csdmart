@@ -612,9 +612,11 @@ switch (subcommand)
                 Console.WriteLine(
                     $"Exported {manifest.RowsIn("entries")} entries from '{spaceName}' "
                     + $"({manifest.RowCount} rows total) to {outDir}");
-                Console.WriteLine(
-                    "Note: entries, spaces, users, roles and permissions — attachments, "
-                    + "history and blobs are not yet included.");
+                if (manifest.BlobCount > 0)
+                    Console.WriteLine(
+                        $"  blobs        {manifest.BlobCount} distinct ({manifest.BlobBytes} bytes) "
+                        + "— identical media is stored once");
+                Console.WriteLine("Note: history is not yet included.");
                 // Not a footnote. The users table holds Argon2 hashes, which is
                 // what lets a restore recover logins; it also means this
                 // directory is credential material and must be treated like a

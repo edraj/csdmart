@@ -206,6 +206,157 @@ public class ParquetExportTests : IClassFixture<DmartFactory>, IDisposable
         });
     }
 
+    // ---- attachments and blobs ----
+
+    // Media bytes live in blobs/<sha[0:2]>/<sha>, not in the row group (§4.3),
+    // and the row keeps the content address instead.
+    [FactIfPg]
+    public async Task Attachment_Media_Goes_To_The_Blob_Store_Not_The_Row_Group()
+    {
+        await WithSpaceAsync(1, async (svc, space, shortnames) =>
+        {
+            var media = System.Text.Encoding.UTF8.GetBytes("The quick brown fox jumps over the lazy dog");
+            await AddAttachmentAsync(space, shortnames[0], "att1", media);
+
+            var dir = NewDir();
+            var manifest = await svc.ExportAsync(dir, space, "/", actor: null);
+
+            manifest.RowsIn("attachments").ShouldBe(1);
+            manifest.BlobCount.ShouldBe(1);
+            manifest.BlobBytes.ShouldBe(media.Length);
+
+            // The published sha256 of that pangram — a value from outside this
+            // codebase, so a wrong hashing step (encoding, casing, truncation)
+            // shows up here rather than agreeing with itself.
+            const string sha = "d7a8fbb307d7809469ca9abcb0082e4f8d5651e46d3cdb762d02d0bf37c9e592";
+            File.Exists(Path.Combine(dir, "blobs", "d7", sha))
+                .ShouldBeTrue("the blob must be stored under its own sha256");
+
+            File.ReadAllBytes(Path.Combine(dir, "blobs", "d7", sha)).ShouldBe(media);
+        });
+    }
+
+    // The dedup lever: the same bytes attached twice are stored ONCE. This is
+    // what makes increments cheap, so it is worth asserting rather than
+    // assuming.
+    [FactIfPg]
+    public async Task Identical_Media_Is_Stored_Once()
+    {
+        await WithSpaceAsync(2, async (svc, space, shortnames) =>
+        {
+            var media = System.Text.Encoding.UTF8.GetBytes("shared attachment content");
+            await AddAttachmentAsync(space, shortnames[0], "a", media);
+            await AddAttachmentAsync(space, shortnames[1], "b", media);
+
+            var dir = NewDir();
+            var manifest = await svc.ExportAsync(dir, space, "/", actor: null);
+
+            manifest.RowsIn("attachments").ShouldBe(2, "both attachment ROWS are exported");
+            manifest.BlobCount.ShouldBe(1, "but the identical bytes are stored once");
+
+            Directory.EnumerateFiles(Path.Combine(dir, "blobs"), "*", SearchOption.AllDirectories)
+                     .Count().ShouldBe(1);
+        });
+    }
+
+    [FactIfPg]
+    public async Task Attachments_Restore_With_Their_Media_Intact()
+    {
+        await WithSpaceAsync(1, async (svc, space, shortnames) =>
+        {
+            var media = System.Text.Encoding.UTF8.GetBytes("restore me byte for byte");
+            await AddAttachmentAsync(space, shortnames[0], "att1", media);
+
+            var dir = NewDir();
+            await svc.ExportAsync(dir, space, "/", actor: null);
+
+            var repo = _factory.Services.GetRequiredService<AttachmentRepository>();
+            await DeleteAttachmentAsync(space, shortnames[0], "att1");
+
+            var result = await svc.ImportAsync(dir);
+            result.For("attachments").Imported.ShouldBe(1);
+            result.For("attachments").Failed.ShouldBe(0);
+
+            var back = await repo.GetAsync(space, $"/{shortnames[0]}", "att1");
+            back.ShouldNotBeNull();
+            back.Media.ShouldBe(media, "media must survive the blob round trip byte for byte");
+        });
+    }
+
+    // A corrupted blob must fail loudly. An attachment restored with silently
+    // empty or wrong bytes is undetectable afterwards — nothing downstream
+    // checks them — so this is the one place a hard failure is the safe outcome.
+    [FactIfPg]
+    public async Task A_Corrupted_Blob_Fails_The_Restore_Rather_Than_Restoring_Garbage()
+    {
+        await WithSpaceAsync(1, async (svc, space, shortnames) =>
+        {
+            await AddAttachmentAsync(space, shortnames[0], "att1",
+                System.Text.Encoding.UTF8.GetBytes("original content"));
+
+            var dir = NewDir();
+            await svc.ExportAsync(dir, space, "/", actor: null);
+
+            var blob = Directory.EnumerateFiles(Path.Combine(dir, "blobs"), "*", SearchOption.AllDirectories).Single();
+            await File.WriteAllTextAsync(blob, "tampered");   // name no longer matches contents
+
+            var repo = _factory.Services.GetRequiredService<AttachmentRepository>();
+            await DeleteAttachmentAsync(space, shortnames[0], "att1");
+
+            var result = await svc.ImportAsync(dir);
+            result.For("attachments").Failed.ShouldBe(1, "a blob that does not hash to its name must not restore");
+            result.For("attachments").Imported.ShouldBe(0);
+        });
+    }
+
+    // An attachment with no media at all is a real case, and must not be
+    // confused with one whose blob is missing.
+    [FactIfPg]
+    public async Task An_Attachment_Without_Media_Round_Trips()
+    {
+        await WithSpaceAsync(1, async (svc, space, shortnames) =>
+        {
+            await AddAttachmentAsync(space, shortnames[0], "nomedia", media: null);
+
+            var dir = NewDir();
+            var manifest = await svc.ExportAsync(dir, space, "/", actor: null);
+            manifest.RowsIn("attachments").ShouldBe(1);
+            manifest.BlobCount.ShouldBe(0, "no media means no blob");
+
+            var repo = _factory.Services.GetRequiredService<AttachmentRepository>();
+            await DeleteAttachmentAsync(space, shortnames[0], "nomedia");
+
+            var result = await svc.ImportAsync(dir);
+            result.For("attachments").Imported.ShouldBe(1);
+            (await repo.GetAsync(space, $"/{shortnames[0]}", "nomedia"))!.Media.ShouldBeNull();
+        });
+    }
+
+    // Deletes by uuid, which is the only key AttachmentRepository.DeleteAsync
+    // accepts — so the row has to be looked up first.
+    private async Task DeleteAttachmentAsync(string space, string parent, string shortname)
+    {
+        var repo = _factory.Services.GetRequiredService<AttachmentRepository>();
+        var existing = await repo.GetAsync(space, $"/{parent}", shortname);
+        if (existing is not null) await repo.DeleteAsync(Guid.Parse(existing.Uuid));
+    }
+
+    private async Task AddAttachmentAsync(string space, string parent, string shortname, byte[]? media)
+    {
+        var repo = _factory.Services.GetRequiredService<AttachmentRepository>();
+        await repo.UpsertAsync(new Attachment
+        {
+            Uuid = Guid.NewGuid().ToString(),
+            Shortname = shortname,
+            SpaceName = space,
+            Subpath = $"/{parent}",          // attachments hang off "<parent subpath>/<parent shortname>"
+            ResourceType = ResourceType.Media,
+            IsActive = true,
+            OwnerShortname = "dmart",
+            Media = media,
+        });
+    }
+
     // ---- global tables ----
 
     // Entries alone give you content in a system nobody can log into. These are
@@ -219,7 +370,7 @@ public class ParquetExportTests : IClassFixture<DmartFactory>, IDisposable
             var manifest = await svc.ExportAsync(dir, space, "/", actor: null);
 
             manifest.Tables.Select(t => t.Name).ShouldBe(
-                ["entries", "spaces", "users", "roles", "permissions"], ignoreOrder: true);
+                ["entries", "attachments", "spaces", "users", "roles", "permissions"], ignoreOrder: true);
 
             foreach (var table in new[] { "spaces", "users", "roles", "permissions" })
                 File.Exists(Path.Combine(dir, table, "part-00000.parquet"))

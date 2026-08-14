@@ -324,6 +324,19 @@ Mirror the SQL columns, one Parquet table per SQL table, with three rules:
   differ (`text[]` vs a JSON array in TEXT), so the exporter writes one
   canonical form regardless of driver.
 
+- **Attachments store `media_sha256` and `media_size`, never the bytes.** The
+  blob lives at `blobs/<sha256[0:2]>/<sha256>` and the name IS the checksum, so
+  corruption is detectable by rehashing rather than by trusting a size field.
+  A restore verifies every blob against its own name and FAILS the row if it
+  disagrees — an attachment silently restored with wrong or empty bytes is
+  undetectable afterwards, because the bytes are opaque and nothing downstream
+  checks them.
+
+  Export memory is bounded at ONE blob: the listing selects `length(media)` but
+  not the bytes, and each blob is fetched by uuid, hashed, written and released
+  before the next. The cost is one query per attachment that has media;
+  attachments without media skip it, which is why the size is selected.
+
 - **The global tables carry `space_name` as a column.** `spaces`, `users`,
   `roles` and `permissions` are written flat at `<table>/part-00000.parquet`
   with no `space_name=` directory (§4.1), so there is no partition key to

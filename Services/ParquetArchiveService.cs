@@ -24,10 +24,10 @@ namespace Dmart.Services;
 // unstable-sort traps ImportExportService.ForEachMatchAsync documents apply
 // identically here, and a second copy would drift.
 //
-// Covers a FULL export of entries, spaces, users, roles and permissions.
-// Attachments (with their media blobs, §4.3), histories, and the incremental
-// watermark (§5) are not wired yet; the manifest records enough for them to be
-// added without changing what is already written.
+// Covers a FULL export of entries, attachments (with their media blobs, §4.3),
+// spaces, users, roles and permissions. Histories and the incremental watermark
+// (§5) are not wired yet; the manifest records enough for them to be added
+// without changing what is already written.
 //
 // The users table carries the Argon2 PASSWORD HASH, so an export directory is
 // credential material and needs the handling a database dump gets. That is a
@@ -35,6 +35,7 @@ namespace Dmart.Services;
 // cannot restore a login.
 public sealed class ParquetArchiveService(
     EntryRepository entries,
+    AttachmentRepository attachments,
     SpaceRepository spaces,
     UserRepository users,
     AccessRepository access,
@@ -101,7 +102,7 @@ public sealed class ParquetArchiveService(
         {
             policies = await perms.BuildUserQueryPoliciesAsync(actor, spaceName, subpath, ct);
             if (policies.Count == 0)
-                return await WriteManifestAsync(outputDirectory, spaceName, watermark, [], 0, ct);
+                return await WriteManifestAsync(outputDirectory, spaceName, watermark, [], 0, 0, 0, ct);
         }
 
         Directory.CreateDirectory(outputDirectory);
@@ -169,6 +170,10 @@ public sealed class ParquetArchiveService(
             new("entries", [relativePath], rowCount),
         };
 
+        var (attachmentTable, blobCount, blobBytes) =
+            await WriteAttachmentsAsync(outputDirectory, spaceName, ct);
+        tables.Add(attachmentTable);
+
         // The global tables. Without them a restore gives you content in a
         // system nobody can log into, with no ACL and no space definitions —
         // which is the difference between a backup and a table dump.
@@ -194,7 +199,97 @@ public sealed class ParquetArchiveService(
 
         return await WriteManifestAsync(
             outputDirectory, spaceName, watermark, tables,
-            tables.Sum(t => t.RowCount), ct);
+            tables.Sum(t => t.RowCount), blobCount, blobBytes, ct);
+    }
+
+    /// <summary>
+    /// Attachments per page. Metadata only — the bytes are fetched one blob at
+    /// a time — so this bounds row-buffer memory, not blob memory.
+    /// </summary>
+    internal static int AttachmentPageSize { get; set; } = 500;
+
+    // Writes attachments/space_name=<s>/part-00000.parquet plus the blob store.
+    //
+    // The shape here is dictated by memory. Media is where the gigabytes are,
+    // so the listing deliberately does NOT select bytes; each blob is fetched
+    // by uuid, hashed, written, and released before the next one. Peak media
+    // residency is ONE blob regardless of how large the space is, which is the
+    // property that makes a multi-GB export possible at all.
+    //
+    // The cost is a query per attachment that HAS media. Attachments without
+    // media skip it entirely, which is why the listing returns the size.
+    private async Task<(ParquetTableManifest Table, int Blobs, long BlobBytes)> WriteAttachmentsAsync(
+        string outputDirectory, string spaceName, CancellationToken ct)
+    {
+        var relative = Path.Combine("attachments", $"space_name={spaceName}", "part-00000.parquet");
+        var absolute = Path.Combine(outputDirectory, relative);
+        Directory.CreateDirectory(Path.GetDirectoryName(absolute)!);
+
+        long rows = 0;
+        var blobs = 0;
+        long blobBytes = 0;
+        // Distinct hashes seen, so the dedup saving is REPORTED rather than
+        // merely happening — an operator comparing export size to database size
+        // otherwise has no way to explain the difference.
+        var distinctBlobs = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        var buffer = new List<AttachmentParquetTable.Row>(Math.Min(RowGroupRows, 1024));
+
+        await using (var file = new FileStream(
+            absolute, FileMode.Create, FileAccess.Write, FileShare.None,
+            bufferSize: 64 * 1024, FileOptions.SequentialScan))
+        {
+            var writer = new ParquetFileWriter(AttachmentParquetTable.Schema);
+            writer.Start(file);
+
+            var offset = 0;
+            while (true)
+            {
+                ct.ThrowIfCancellationRequested();
+                var page = await attachments.ListForSpacePagedAsync(
+                    spaceName, AttachmentPageSize, offset, ct);
+                if (page.Count == 0) break;
+
+                foreach (var (attachment, mediaSize) in page)
+                {
+                    string? sha = null;
+                    if (mediaSize > 0)
+                    {
+                        var (bytes, _) = await attachments.GetMediaAsync(Guid.Parse(attachment.Uuid), ct);
+                        if (bytes is not null)
+                        {
+                            sha = BlobStore.Write(outputDirectory, bytes);
+                            if (distinctBlobs.Add(sha)) { blobs++; blobBytes += bytes.Length; }
+                        }
+                    }
+
+                    buffer.Add(new AttachmentParquetTable.Row(attachment, sha, mediaSize));
+                    if (buffer.Count >= RowGroupRows)
+                    {
+                        writer.WriteRowGroup(AttachmentParquetTable.BuildPages(buffer), buffer.Count);
+                        rows += buffer.Count;
+                        buffer.Clear();
+                    }
+                }
+
+                offset += page.Count;
+                if (page.Count < AttachmentPageSize) break;
+            }
+
+            if (buffer.Count > 0)
+            {
+                writer.WriteRowGroup(AttachmentParquetTable.BuildPages(buffer), buffer.Count);
+                rows += buffer.Count;
+            }
+
+            writer.Finish();
+        }
+
+        if (rows > 0)
+            log.LogInformation(
+                "parquet export: {Rows} attachments, {Blobs} distinct blobs ({Bytes} bytes)",
+                rows, blobs, blobBytes);
+
+        return (new ParquetTableManifest("attachments", [relative], rows), blobs, blobBytes);
     }
 
     // Pages a management-space listing into memory. These tables are small by
@@ -248,11 +343,13 @@ public sealed class ParquetArchiveService(
 
     private static async Task<ParquetExportManifest> WriteManifestAsync(
         string directory, string spaceName, DateTime watermark,
-        List<ParquetTableManifest> tables, long rowCount, CancellationToken ct)
+        List<ParquetTableManifest> tables, long rowCount,
+        int blobCount, long blobBytes, CancellationToken ct)
     {
         Directory.CreateDirectory(directory);
         var manifest = new ParquetExportManifest(
-            FormatVersion, DateTime.UtcNow, watermark, spaceName, tables, rowCount);
+            FormatVersion, DateTime.UtcNow, watermark, spaceName, tables, rowCount,
+            blobCount, blobBytes);
 
         await File.WriteAllTextAsync(
             Path.Combine(directory, "manifest.json"),
@@ -349,6 +446,13 @@ public sealed class ParquetArchiveService(
         skipped += entriesSkipped;
         failed += entriesFailed;
 
+        // Attachments come AFTER entries: an attachment's subpath is
+        // "<parent subpath>/<parent shortname>", so restoring one before its
+        // parent leaves it pointing at nothing.
+        var (ai, ak, af) = await RestoreAttachmentsAsync(exportDirectory, replaceExisting, ct);
+        imported += ai; skipped += ak; failed += af;
+        perTable.Add(new ParquetTableResult("attachments", ai, ak, af));
+
         log.LogInformation(
             "parquet import: {Imported} imported, {Skipped} skipped, {Failed} failed from {Path}",
             imported, skipped, failed, exportDirectory);
@@ -356,6 +460,57 @@ public sealed class ParquetArchiveService(
         perTable.Add(new ParquetTableResult("entries", entriesImported, entriesSkipped, entriesFailed));
         return new ParquetImportResult(
             imported, skipped, failed, imported + skipped + failed, perTable);
+    }
+
+    // Restores attachments and rehydrates their media from the blob store.
+    //
+    // A row whose media_sha256 names a blob that is missing or corrupt FAILS
+    // rather than restoring without its bytes. An attachment silently restored
+    // empty is undetectable afterwards — the bytes are opaque and nothing
+    // downstream checks them — so the loud failure is the safer outcome.
+    private async Task<(int Imported, int Skipped, int Failed)> RestoreAttachmentsAsync(
+        string exportDirectory, bool replaceExisting, CancellationToken ct)
+    {
+        var manifest = ReadManifest(exportDirectory);
+        var rows = ReadTable(exportDirectory, "attachments",
+            t => AttachmentParquetTable.FromTable(t, manifest.SpaceName));
+
+        int imported = 0, skipped = 0, failed = 0;
+        foreach (var row in rows)
+        {
+            ct.ThrowIfCancellationRequested();
+            try
+            {
+                if (!replaceExisting)
+                {
+                    var existing = await attachments.GetAsync(
+                        row.Attachment.SpaceName, row.Attachment.Subpath, row.Attachment.Shortname, ct);
+                    if (existing is not null) { skipped++; continue; }
+                }
+
+                // Read verifies the blob against its own name, so a truncated
+                // file throws here rather than becoming attachment media.
+                var media = row.MediaSha256 is { } sha
+                    ? BlobStore.Read(exportDirectory, sha)
+                    : null;
+
+                await attachments.UpsertAsync(row.Attachment with { Media = media }, ct);
+                imported++;
+            }
+            catch (Exception ex)
+            {
+                failed++;
+                log.LogWarning(ex, "parquet import: failed to restore attachment {Space}{Subpath}/{Shortname}",
+                    row.Attachment.SpaceName, row.Attachment.Subpath, row.Attachment.Shortname);
+            }
+        }
+
+        if (rows.Count > 0)
+            log.LogInformation(
+                "parquet import: attachments — {Imported} imported, {Skipped} skipped, {Failed} failed",
+                imported, skipped, failed);
+
+        return (imported, skipped, failed);
     }
 
     // Restores one global table. Same skip/replace rule as entries, and the
@@ -476,7 +631,9 @@ public sealed record ParquetExportManifest(
     [property: JsonPropertyName("watermark")] DateTime Watermark,
     [property: JsonPropertyName("space_name")] string SpaceName,
     [property: JsonPropertyName("tables")] List<ParquetTableManifest> Tables,
-    [property: JsonPropertyName("row_count")] long RowCount)
+    [property: JsonPropertyName("row_count")] long RowCount,
+    [property: JsonPropertyName("blob_count")] int BlobCount = 0,
+    [property: JsonPropertyName("blob_bytes")] long BlobBytes = 0)
 {
     /// <summary>
     /// Rows written for one table. <see cref="RowCount"/> is the total across
