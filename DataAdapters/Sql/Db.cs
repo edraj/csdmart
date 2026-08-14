@@ -479,10 +479,67 @@ public sealed class Db(IOptions<DmartSettings> settings) : IDbConnectionFactory
         || (!string.IsNullOrEmpty(s.DatabaseHost) && s.DatabaseHost != "localhost")
         || s.DatabasePort != 5432;
 
+    /// <summary>
+    /// The host's IANA timezone id, or null if it cannot be resolved.
+    /// </summary>
+    /// <remarks>
+    /// Linux reports IANA ids directly; Windows reports its own, which .NET can
+    /// translate. If neither works the caller leaves the session timezone
+    /// alone — an unresolvable zone must not stop the app connecting.
+    /// </remarks>
+    private static string? HostIanaTimeZone()
+    {
+        var id = TimeZoneInfo.Local.Id;
+        if (id.Contains('/', StringComparison.Ordinal)) return id;   // already IANA
+        return TimeZoneInfo.TryConvertWindowsIdToIanaId(id, out var iana) ? iana : null;
+    }
+
+    /// <summary>
+    /// Pins the PostgreSQL session timezone to the APP HOST's zone.
+    /// </summary>
+    /// <remarks>
+    /// dmart stores naive timestamps — `timestamp without time zone`, a bare
+    /// wall-clock reading with no offset attached. Two code paths write them:
+    /// <c>TimeUtils.Now()</c> reads the APP HOST's clock, while SQL <c>NOW()</c>
+    /// is rendered in the DATABASE SESSION's timezone. When those zones differ —
+    /// a UTC database with a non-UTC host, which is the common production shape
+    /// — the same instant is recorded as two different wall clocks in the same
+    /// column, and nothing in a naive timestamp reveals which clock produced it.
+    ///
+    /// The observable damage: an incremental export selects
+    /// `updated_at &gt;= watermark` against a host-clock watermark, so a row
+    /// stamped by a `NOW()` path (folder move, rename) lands hours in the past
+    /// and is silently skipped — permanently, because the next watermark is
+    /// later still. Session-expiry comparisons of a stored timestamp against
+    /// `NOW()` are off by the same offset.
+    ///
+    /// Setting the session timezone makes `NOW()` agree with the host clock by
+    /// construction, which is what the naive convention always assumed and
+    /// never enforced. No SQL changes anywhere.
+    ///
+    /// An explicit `Timezone=` in the operator's own connection string is left
+    /// untouched — that is the escape hatch, and someone who set it meant it.
+    ///
+    /// NOTE: this corrects NEW writes. Rows already stamped through a `NOW()`
+    /// path keep their offset, and no migration here can safely guess which
+    /// ones those were.
+    /// </remarks>
+    private static string ApplyHostTimezone(string connectionString)
+    {
+        var csb = new NpgsqlConnectionStringBuilder(connectionString);
+        if (!string.IsNullOrEmpty(csb.Timezone)) return connectionString;
+
+        var zone = HostIanaTimeZone();
+        if (zone is null) return connectionString;
+
+        csb.Timezone = zone;
+        return csb.ConnectionString;
+    }
+
     private static string? BuildConnectionString(DmartSettings s)
     {
         if (!string.IsNullOrEmpty(s.PostgresConnection))
-            return s.PostgresConnection;
+            return ApplyHostTimezone(s.PostgresConnection);
 
         if (!HasExplicitPostgresConfig(s)) return null;
 
@@ -509,6 +566,10 @@ public sealed class Db(IOptions<DmartSettings> settings) : IDbConnectionFactory
             csb.KeepAlive = s.DatabaseKeepalive;
             csb.TcpKeepAlive = true;
         }
+        // See ApplyHostTimezone: NOW() and TimeUtils.Now() must read the same
+        // clock, or naive timestamps written by different paths are hours apart.
+        var zone = HostIanaTimeZone();
+        if (zone is not null) csb.Timezone = zone;
         return csb.ConnectionString;
     }
 
