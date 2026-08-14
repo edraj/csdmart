@@ -184,7 +184,9 @@
       "Bash(DMART_TEST_PG_CONN=\"Host=127.0.0.1;Port=55432;Username=dmart;Password=scratchpw;Database=dmarttest\" DMART_TEST_PWD=Test1234 dotnet test dmart.Tests/dmart.Tests.csproj --nologo --filter \"FullyQualifiedName~TombstoneTests\")",
       "Bash(DMART_TEST_PG_CONN=\"Host=127.0.0.1;Port=55432;Username=dmart;Password=scratchpw;Database=dmarttest\" DMART_TEST_PWD=Test1234 dotnet test dmart.Tests/dmart.Tests.csproj --nologo --filter \"FullyQualifiedName~ParquetExportTests|FullyQualifiedName~TombstoneTests\")",
       "Bash(DMART_BENCH=1 DMART_TEST_PG_CONN=\"Host=127.0.0.1;Port=55432;Username=dmart;Password=scratchpw;Database=dmarttest\" DMART_TEST_PWD=Test1234 dotnet test dmart.Tests/dmart.Tests.csproj --nologo --filter \"FullyQualifiedName~BulkRestoreBenchmark\" --logger \"console;verbosity=detailed\")",
-      "Bash(git -c credential.helper='!gh auth git-credential' push https://github.com/edraj/csdmart.git feat/parquet-bulk-import)"
+      "Bash(git -c credential.helper='!gh auth git-credential' push https://github.com/edraj/csdmart.git feat/parquet-bulk-import)",
+      "Bash(DMART_TEST_PG_CONN=\"Host=127.0.0.1;Port=55432;Username=dmart;Password=scratchpw;Database=dmarttest\" DMART_TEST_PWD=Test1234 dotnet test dmart.Tests/dmart.Tests.csproj --nologo --filter \"FullyQualifiedName~Import\")",
+      "Bash(git -c credential.helper='!gh auth git-credential' push https://github.com/edraj/csdmart.git feat/parquet-bulk-attachments-history)"
     ],
     "deny": [
       "Bash(sudo:*)",

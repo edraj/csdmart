@@ -119,6 +119,75 @@ public sealed class HistoryRepository(IDbConnectionFactory db, ISqlDialect diale
     /// later export could legitimately correct. ON CONFLICT DO NOTHING also
     /// makes this race-free and halves the queries versus check-then-insert.
     /// </remarks>
+    /// <summary>
+    /// Restores many history rows in batched multi-row INSERTs. Returns how
+    /// many were newly inserted; the rest were already present.
+    /// </summary>
+    /// <remarks>
+    /// A multi-row INSERT rather than a COPY session, deliberately. History is
+    /// append-only with `ON CONFLICT (uuid) DO NOTHING` and no dependent
+    /// merge, so it needs none of the scratch-table machinery entries and
+    /// attachments require — and unlike COPY, this works on SQLITE TOO, which
+    /// otherwise has no bulk path at all.
+    ///
+    /// Batched at <see cref="RestoreBatchRows"/> rows because both drivers cap
+    /// bound parameters: PostgreSQL at 65535, SQLite lower still. Nine columns
+    /// per row means a large restore would blow that cap in a single statement
+    /// — and it would do so only on big archives, which is the worst time to
+    /// discover it.
+    /// </remarks>
+    [SuppressMessage("Security", "CA2100",
+        Justification = "Audited: the VALUES list is assembled from generated placeholder names only; every caller-supplied value binds through DbCommand.Parameters.")]
+    public async Task<int> RestoreManyAsync(
+        IReadOnlyList<HistoryRow> rows, CancellationToken ct = default)
+    {
+        if (rows.Count == 0) return 0;
+
+        var inserted = 0;
+        await using var conn = await db.OpenAsync(ct);
+
+        for (var offset = 0; offset < rows.Count; offset += RestoreBatchRows)
+        {
+            ct.ThrowIfCancellationRequested();
+            var take = Math.Min(RestoreBatchRows, rows.Count - offset);
+
+            await using var cmd = conn.CreateCommand();
+            var values = new System.Text.StringBuilder();
+            for (var i = 0; i < take; i++)
+            {
+                var r = rows[offset + i];
+                var headers = DbParams.Add(cmd, JsonbHelpers.ToJsonb(r.RequestHeaders) ?? "{}", SqlValueKind.Json);
+                var diff = DbParams.Add(cmd, JsonbHelpers.ToJsonb(r.Diff) ?? "{}", SqlValueKind.Json);
+                var owner = DbParams.Add(cmd, (object?)r.OwnerShortname ?? DBNull.Value);
+                var checksum = DbParams.Add(cmd, (object?)r.LastChecksumHistory ?? DBNull.Value);
+                var space = DbParams.Add(cmd, r.SpaceName);
+                var subpath = DbParams.Add(cmd, r.Subpath);
+                var shortname = DbParams.Add(cmd, r.Shortname);
+                var uuid = DbParams.Add(cmd, Guid.Parse(r.Uuid));
+                var stamp = DbParams.Add(cmd, r.Timestamp);
+
+                if (i > 0) values.Append(',');
+                values.Append($"({uuid},{headers},{diff},{stamp},{owner},{checksum},{space},{subpath},{shortname})");
+            }
+
+            // The VALUES list is built from PLACEHOLDER NAMES only; every value
+            // binds through DbCommand.Parameters.
+            cmd.CommandText = $"""
+                INSERT INTO histories (uuid, request_headers, diff, timestamp,
+                                       owner_shortname, last_checksum_history,
+                                       space_name, subpath, shortname)
+                VALUES {values}
+                ON CONFLICT (uuid) DO NOTHING
+                """;
+            inserted += await cmd.ExecuteNonQueryAsync(ct);
+        }
+
+        return inserted;
+    }
+
+    /// <summary>Rows per multi-row INSERT. Bounded by each driver's parameter cap.</summary>
+    internal static int RestoreBatchRows { get; set; } = 500;
+
     public async Task<bool> RestoreAsync(HistoryRow row, CancellationToken ct = default)
     {
         await using var conn = await db.OpenAsync(ct);

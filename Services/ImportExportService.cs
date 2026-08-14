@@ -1835,12 +1835,22 @@ public sealed class ImportExportService(
             label, affected, results.EntriesInserted, results.Processed, results.TotalToProcess, results.ProgressPct());
     }
 
-    private async Task FlushAttachmentsAsync(
-        Db.FastImportSession session, string label, List<Attachment> batch,
-        bool preserveExisting, ImportStats results, CancellationToken ct)
+    /// <summary>
+    /// One bulk COPY + merge of attachments, with the per-row replay fallback.
+    /// The mirror of <see cref="BulkUpsertEntriesAsync"/>.
+    /// </summary>
+    /// <remarks>
+    /// Internal for the Parquet importer. `media` is in AttachmentCopyColumns,
+    /// so blob bytes ride this path rather than needing a separate pass.
+    /// </remarks>
+    internal async Task<(int Affected, int Skipped, List<Dictionary<string, object>> Failures)>
+        BulkUpsertAttachmentsAsync(
+            Db.FastImportSession session, string label, List<Attachment> batch,
+            bool preserveExisting, CancellationToken ct)
     {
         var count = batch.Count;
         int affected, skipped;
+        var failures = new List<Dictionary<string, object>>();
         try
         {
             (affected, skipped) = await session.RunBatchAsync(
@@ -1849,15 +1859,26 @@ public sealed class ImportExportService(
                 static (a, b) => (a.Affected + b.Affected, a.Skipped + b.Skipped),
                 log, ct);
         }
+        // See BulkUpsertEntriesAsync — same per-row isolation fallback, and the
+        // same reason it is not engaged under --fast.
         catch (PostgresException ex) when (!session.BypassConstraints && IsIntegrityViolation(ex))
         {
-            // See FlushEntriesAsync — same per-row isolation fallback.
             log.LogWarning(
                 "import[{Label}]: attachment batch of {Count} hit integrity violation {State} ({Constraint}); replaying row-by-row to isolate the offender(s)",
                 label, count, ex.SqlState, ex.ConstraintName ?? "?");
             await session.ResetTransactionAsync(ct);
-            (affected, skipped) = await ReplayAttachmentsPerRowAsync(batch, preserveExisting, results, ct);
+            (affected, skipped) = await ReplayAttachmentsPerRowAsync(batch, preserveExisting, failures, ct);
         }
+        return (affected, skipped, failures);
+    }
+
+    private async Task FlushAttachmentsAsync(
+        Db.FastImportSession session, string label, List<Attachment> batch,
+        bool preserveExisting, ImportStats results, CancellationToken ct)
+    {
+        var (affected, skipped, failures) =
+            await BulkUpsertAttachmentsAsync(session, label, batch, preserveExisting, ct);
+        foreach (var f in failures) results.AddFailure(f);
         results.AddAttachments(affected);
         if (preserveExisting) results.AddSkipped(skipped);
         // See FlushEntriesAsync — the caller counts progress per consumed item.
@@ -1911,7 +1932,8 @@ public sealed class ImportExportService(
     }
 
     private async Task<(int Affected, int Skipped)> ReplayAttachmentsPerRowAsync(
-        List<Attachment> batch, bool preserveExisting, ImportStats results, CancellationToken ct)
+        List<Attachment> batch, bool preserveExisting,
+        List<Dictionary<string, object>> failures, CancellationToken ct)
     {
         int affected = 0, skipped = 0;
         foreach (var a in batch)
@@ -1931,7 +1953,7 @@ public sealed class ImportExportService(
             {
                 log.LogWarning(ex, "import attachment failed at {Space}{Subpath}/{Shortname}",
                     a.SpaceName, a.Subpath, a.Shortname);
-                results.AddFailure(new()
+                failures.Add(new()
                 {
                     ["path"] = $"{a.SpaceName}{a.Subpath}/{a.Shortname}",
                     ["kind"] = "attachment",
