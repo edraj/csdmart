@@ -1,0 +1,192 @@
+using Dmart.DataAdapters.Parquet;
+using Dmart.DataAdapters.Sql;
+using Dmart.Models.Core;
+using Microsoft.Extensions.Logging;
+
+namespace Dmart.Services;
+
+/// <param name="Problems">
+/// Capped — a wholly failed restore would otherwise produce one string per row
+/// and bury the reason in its own output.
+/// </param>
+public sealed record RestoreVerification(
+    int Checked, int Missing, int Mismatched, IReadOnlyList<string> Problems)
+{
+    public bool Ok => Missing == 0 && Mismatched == 0;
+}
+
+// Verifies that the DATABASE matches an archive after a restore.
+//
+// ParquetArchiveService.VerifyAsync checks that an archive is readable — that
+// what was written can be read back. This is the other half, and the one an
+// operator actually cares about: did the restore land?
+//
+// WHAT IS DELIBERATELY NOT COMPARED
+//
+// `query_policies` is REGENERATED on write — the bulk COPY path recomputes it
+// because COPY writes the column verbatim, and UpsertAsync recomputes it too.
+// A restored row can therefore hold different policies from the archived one
+// entirely legitimately, for instance when the archive predates a change to how
+// policies are derived. Comparing it would report a mismatch on a CORRECT
+// restore, and a verifier that cries wolf is one people stop running.
+//
+// Media is compared by SHA256 recomputed from the database bytes, not by
+// length: length survives a byte-for-byte substitution, and media is exactly
+// the payload nothing downstream would ever notice was wrong.
+public sealed class ParquetRestoreVerifier(
+    EntryRepository entries,
+    AttachmentRepository attachments,
+    HistoryRepository histories,
+    ILogger<ParquetRestoreVerifier> log)
+{
+    /// <summary>Problems recorded before the list stops growing.</summary>
+    public const int MaxProblems = 50;
+
+    private const int PageSize = 5_000;
+
+    public async Task<RestoreVerification> VerifyAsync(
+        string exportDirectory, CancellationToken ct = default)
+    {
+        var problems = new List<string>();
+        int checkedRows = 0, missing = 0, mismatched = 0;
+
+        void Report(string message)
+        {
+            if (problems.Count < MaxProblems) problems.Add(message);
+        }
+
+        // ---- entries ----
+        var archivedEntries = ParquetArchiveService.ReadEntries(exportDirectory);
+        foreach (var group in archivedEntries.GroupBy(e => e.SpaceName))
+        {
+            ct.ThrowIfCancellationRequested();
+            var live = await ReadLiveEntriesAsync(group.Key, ct);
+
+            foreach (var archived in group)
+            {
+                checkedRows++;
+                if (!live.TryGetValue(Key(archived.Subpath, archived.Shortname), out var actual))
+                {
+                    missing++;
+                    Report($"entry missing: {archived.SpaceName}{archived.Subpath}/{archived.Shortname}");
+                    continue;
+                }
+
+                var diff = CompareEntry(archived, actual);
+                if (diff is not null)
+                {
+                    mismatched++;
+                    Report($"entry differs: {archived.SpaceName}{archived.Subpath}/{archived.Shortname} - {diff}");
+                }
+            }
+        }
+
+        // ---- attachments (metadata + media hash) ----
+        foreach (var row in ParquetArchiveService.ReadAttachmentRows(exportDirectory))
+        {
+            ct.ThrowIfCancellationRequested();
+            checkedRows++;
+
+            var actual = await attachments.GetAsync(
+                row.Attachment.SpaceName, row.Attachment.Subpath, row.Attachment.Shortname, ct);
+            if (actual is null)
+            {
+                missing++;
+                Report($"attachment missing: {row.Attachment.SpaceName}{row.Attachment.Subpath}/{row.Attachment.Shortname}");
+                continue;
+            }
+
+            var (bytes, _) = await attachments.GetMediaAsync(Guid.Parse(actual.Uuid), ct);
+            var actualSha = bytes is null
+                ? null
+                : Convert.ToHexStringLower(System.Security.Cryptography.SHA256.HashData(bytes));
+
+            if (!string.Equals(actualSha, row.MediaSha256, StringComparison.OrdinalIgnoreCase))
+            {
+                mismatched++;
+                Report($"attachment media differs: {row.Attachment.SpaceName}{row.Attachment.Subpath}/"
+                     + $"{row.Attachment.Shortname} - archive {row.MediaSha256 ?? "(none)"}, "
+                     + $"database {actualSha ?? "(none)"}");
+            }
+        }
+
+        // ---- histories (existence by uuid; append-only and immutable) ----
+        foreach (var group in ParquetArchiveService.ReadHistoryRows(exportDirectory).GroupBy(h => h.SpaceName))
+        {
+            ct.ThrowIfCancellationRequested();
+            var liveUuids = await ReadLiveHistoryUuidsAsync(group.Key, ct);
+            foreach (var archived in group)
+            {
+                checkedRows++;
+                if (liveUuids.Contains(archived.Uuid)) continue;
+                missing++;
+                Report($"history row missing: {archived.Uuid} ({archived.SpaceName}{archived.Subpath}/{archived.Shortname})");
+            }
+        }
+
+        var result = new RestoreVerification(checkedRows, missing, mismatched, problems);
+        if (result.Ok)
+            log.LogInformation("restore verify: {Checked} rows match the archive", checkedRows);
+        else
+            log.LogError("restore verify: {Missing} missing, {Mismatched} differing of {Checked} checked",
+                missing, mismatched, checkedRows);
+        return result;
+    }
+
+    private static string Key(string subpath, string shortname) => subpath + " " + shortname;
+
+    private async Task<Dictionary<string, Entry>> ReadLiveEntriesAsync(string space, CancellationToken ct)
+    {
+        // Paged bulk read rather than one GetAsync per archived row: verifying a
+        // restore of 100k entries would otherwise be 100k round trips.
+        var map = new Dictionary<string, Entry>(StringComparer.Ordinal);
+        var offset = 0;
+        while (true)
+        {
+            var page = await entries.ListForSpaceUpdatedSincePagedAsync(
+                space, DateTime.MinValue, PageSize, offset, null, ct);
+            if (page.Count == 0) break;
+            foreach (var e in page) map[Key(e.Subpath, e.Shortname)] = e;
+            offset += page.Count;
+            if (page.Count < PageSize) break;
+        }
+        return map;
+    }
+
+    private async Task<HashSet<string>> ReadLiveHistoryUuidsAsync(string space, CancellationToken ct)
+    {
+        var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        var offset = 0;
+        while (true)
+        {
+            var page = await histories.ListForSpacePagedAsync(space, PageSize, offset, null, null, ct);
+            if (page.Count == 0) break;
+            foreach (var h in page) seen.Add(h.Uuid);
+            offset += page.Count;
+            if (page.Count < PageSize) break;
+        }
+        return seen;
+    }
+
+    // Returns a description of the first field that differs, or null.
+    //
+    // query_policies is absent on purpose — see the class comment.
+    private static string? CompareEntry(Entry archived, Entry actual)
+    {
+        if (archived.Uuid != actual.Uuid) return $"uuid {archived.Uuid} vs {actual.Uuid}";
+        if (archived.ResourceType != actual.ResourceType)
+            return $"resource_type {archived.ResourceType} vs {actual.ResourceType}";
+        if (archived.IsActive != actual.IsActive) return "is_active";
+        if (archived.OwnerShortname != actual.OwnerShortname) return "owner_shortname";
+        if (archived.Slug != actual.Slug) return "slug";
+        if (archived.State != actual.State) return "state";
+        if (archived.IsOpen != actual.IsOpen) return "is_open";
+        if (!archived.Tags.SequenceEqual(actual.Tags)) return "tags";
+        // Compared at MICROSECOND granularity: Parquet TIMESTAMP_MICROS holds 6
+        // decimal places and .NET DateTime holds 7, so an exact comparison would
+        // flag every row of a correct restore on SQLite.
+        if (archived.CreatedAt.Ticks / 10 != actual.CreatedAt.Ticks / 10) return "created_at";
+        if (archived.UpdatedAt.Ticks / 10 != actual.UpdatedAt.Ticks / 10) return "updated_at";
+        return null;
+    }
+}

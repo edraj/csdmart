@@ -754,9 +754,7 @@ public sealed class ParquetArchiveService(
     private async Task<(int Imported, int Skipped, int Failed)> RestoreHistoriesAsync(
         string exportDirectory, CancellationToken ct)
     {
-        var manifest = ReadManifest(exportDirectory);
-        var rows = ReadPartitionedTable(exportDirectory, "histories",
-            (t, space) => HistoryParquetTable.FromTable(t, space), manifest.SpaceName);
+        var rows = ReadHistoryRows(exportDirectory);
 
         int imported = 0, skipped = 0, failed = 0;
 
@@ -922,9 +920,7 @@ public sealed class ParquetArchiveService(
     private async Task<(int Imported, int Skipped, int Failed)> RestoreAttachmentsAsync(
         string exportDirectory, bool replaceExisting, CancellationToken ct)
     {
-        var manifest = ReadManifest(exportDirectory);
-        var rows = ReadPartitionedTable(exportDirectory, "attachments",
-            (t, space) => AttachmentParquetTable.FromTable(t, space), manifest.SpaceName);
+        var rows = ReadAttachmentRows(exportDirectory);
 
         // Rehydrate media BEFORE the write, whichever path takes it. BlobStore
         // verifies each blob against its own name, so a truncated file throws
@@ -1140,6 +1136,22 @@ public sealed class ParquetArchiveService(
             if (segment.StartsWith("space_name=", StringComparison.Ordinal))
                 return segment["space_name=".Length..];
         return fallback;
+    }
+
+    /// <summary>Reads the attachment rows an export wrote, with their blob addresses.</summary>
+    internal static List<AttachmentParquetTable.Row> ReadAttachmentRows(string exportDirectory)
+    {
+        var manifest = ReadManifest(exportDirectory);
+        return ReadPartitionedTable(exportDirectory, "attachments",
+            (t, space) => AttachmentParquetTable.FromTable(t, space), manifest.SpaceName);
+    }
+
+    /// <summary>Reads the history rows an export wrote.</summary>
+    public static List<HistoryRow> ReadHistoryRows(string exportDirectory)
+    {
+        var manifest = ReadManifest(exportDirectory);
+        return ReadPartitionedTable(exportDirectory, "histories",
+            (t, space) => HistoryParquetTable.FromTable(t, space), manifest.SpaceName);
     }
 
     /// <summary>Reads back the entries an export wrote, in file order.</summary>
