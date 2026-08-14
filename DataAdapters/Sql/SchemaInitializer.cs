@@ -54,6 +54,7 @@ public sealed class SchemaInitializer(
                     // continues without surfacing the failure to the operator.
                     cmd.CommandTimeout = 0;
                     await cmd.ExecuteNonQueryAsync(ct);
+
                     log.LogInformation("dmart schema ready");
                     // If the `hstore` extension was just created by CreateAll,
                     // connections opened BEFORE this point cached the server's
@@ -63,6 +64,25 @@ public sealed class SchemaInitializer(
                     // current connection's types and clear the pool so every
                     // subsequent connection re-fetches the type map.
                     await conn.ReloadTypesAsync(ct);
+
+                    // Seed the tombstone retention floor once, with a BOUND
+                    // local timestamp. A DEFAULT NOW() would be evaluated by
+                    // the server in ITS timezone, which is how deleted_at ended
+                    // up hours adrift (§5.1).
+                    //
+                    // Placed AFTER ReloadTypesAsync deliberately. This is a
+                    // PARAMETERISED command, so it makes Npgsql resolve type
+                    // info on this connection; running it before the reload did
+                    // exactly what the comment above warns about, and surfaced
+                    // in CI as an unrelated read failing with DataTypeName
+                    // '-.-' — an OID the connection could no longer resolve.
+                    await using (var floor = new NpgsqlCommand(
+                        "INSERT INTO deletion_retention (id, floor_at) VALUES (1, $1) "
+                        + "ON CONFLICT (id) DO NOTHING", conn))
+                    {
+                        floor.Parameters.AddWithValue(Utils.TimeUtils.Now());
+                        await floor.ExecuteNonQueryAsync(ct);
+                    }
 
                     // Concurrent index builds run as separate commands so
                     // they're not wrapped in the implicit transaction that

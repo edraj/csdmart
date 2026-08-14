@@ -54,6 +54,17 @@ public sealed class SqliteSchemaInitializer(
             {
                 await ExecAsync(conn, SqliteSchema.CreateAll, token);
                 await PatchColumnsAsync(conn, log, token);
+
+                // See SchemaInitializer — bound, not a DEFAULT, for the same
+                // clock reason.
+                await using (var floor = conn.CreateCommand())
+                {
+                    floor.CommandText =
+                        "INSERT INTO deletion_retention (id, floor_at) VALUES (1, $1) "
+                        + "ON CONFLICT (id) DO NOTHING";
+                    DbParams.Add(floor, Utils.TimeUtils.Now());
+                    await floor.ExecuteNonQueryAsync(token);
+                }
                 await tx.CommitAsync(token);
             }
             catch

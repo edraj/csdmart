@@ -17,14 +17,14 @@ namespace Dmart.Tests.Integration;
 public class ParquetExportTests : IClassFixture<DmartFactory>, IDisposable
 {
     private readonly DmartFactory _factory;
-    private readonly int _originalRowGroup = ParquetArchiveService.RowGroupRows;
+    private readonly int? _originalRowGroup = ParquetArchiveService.RowGroupRowsOverride;
     private readonly List<string> _dirs = [];
 
     public ParquetExportTests(DmartFactory factory) => _factory = factory;
 
     public void Dispose()
     {
-        ParquetArchiveService.RowGroupRows = _originalRowGroup;
+        ParquetArchiveService.RowGroupRowsOverride = _originalRowGroup;
         foreach (var d in _dirs)
             try { Directory.Delete(d, recursive: true); } catch { /* best effort */ }
         GC.SuppressFinalize(this);
@@ -68,7 +68,7 @@ public class ParquetExportTests : IClassFixture<DmartFactory>, IDisposable
     [FactIfPg]
     public async Task Exports_Every_Row_Across_Row_Group_Boundaries()
     {
-        ParquetArchiveService.RowGroupRows = 5;
+        ParquetArchiveService.RowGroupRowsOverride = 5;
 
         await WithSpaceAsync(13, async (svc, space, shortnames) =>
         {
@@ -89,7 +89,7 @@ public class ParquetExportTests : IClassFixture<DmartFactory>, IDisposable
     [FactIfPg]
     public async Task Exports_An_Exact_Multiple_Of_The_Row_Group_Size()
     {
-        ParquetArchiveService.RowGroupRows = 4;
+        ParquetArchiveService.RowGroupRowsOverride = 4;
 
         await WithSpaceAsync(8, async (svc, space, _) =>
         {
@@ -213,8 +213,8 @@ public class ParquetExportTests : IClassFixture<DmartFactory>, IDisposable
     [FactIfPg]
     public async Task A_Restore_Larger_Than_One_Batch_Lands_Every_Row()
     {
-        var original = ParquetArchiveService.BulkBatchSize;
-        ParquetArchiveService.BulkBatchSize = 7;   // 20 rows => 2 full batches + a short tail
+        var original = ParquetArchiveService.BulkBatchSizeOverride;
+        ParquetArchiveService.BulkBatchSizeOverride = 7;   // 20 rows => 2 full batches + a short tail
         try
         {
             await WithSpaceAsync(20, async (svc, space, shortnames) =>
@@ -236,7 +236,7 @@ public class ParquetExportTests : IClassFixture<DmartFactory>, IDisposable
                         .ShouldNotBeNull($"'{sn}' must survive a multi-batch restore");
             });
         }
-        finally { ParquetArchiveService.BulkBatchSize = original; }
+        finally { ParquetArchiveService.BulkBatchSizeOverride = original; }
     }
 
     // COPY writes query_policies VERBATIM, so the bulk path has to regenerate
@@ -356,6 +356,115 @@ public class ParquetExportTests : IClassFixture<DmartFactory>, IDisposable
                 perRow.For(table).Skipped.ShouldBe(bulk.For(table).Skipped, $"{table}: skipped");
                 perRow.For(table).Failed.ShouldBe(bulk.For(table).Failed, $"{table}: failed");
             }
+        });
+    }
+
+    // ---- tombstone retention floor (§5.2) ----
+
+    // An increment chained from a watermark predating tombstone recording
+    // cannot see deletions from that gap — none were recorded. Without the
+    // floor that is undetectable: missing tombstones look exactly like
+    // "nothing was deleted".
+    [FactIfPg]
+    public async Task A_Watermark_Predating_The_Retention_Floor_Is_Detected()
+    {
+        var db = _factory.Services.GetRequiredService<IDbConnectionFactory>();
+        _factory.CreateClient();
+        await using var conn = await db.OpenAsync();
+
+        var floor = await Tombstones.ReadRetentionFloorAsync(conn, default);
+        floor.ShouldNotBeNull("schema init must seed the floor, or the check cannot work");
+
+        // A watermark from before the floor is exactly the "chain started on an
+        // older build" case.
+        (floor!.Value.AddHours(-1) < floor.Value).ShouldBeTrue();
+    }
+
+    // The floor is seeded ONCE. A second schema init must not move it forward,
+    // or every restart would silently claim a shorter guaranteed window.
+    [FactIfPg]
+    public async Task The_Retention_Floor_Is_Not_Moved_By_A_Later_Run()
+    {
+        var db = _factory.Services.GetRequiredService<IDbConnectionFactory>();
+        _factory.CreateClient();
+        await using var conn = await db.OpenAsync();
+
+        var first = await Tombstones.ReadRetentionFloorAsync(conn, default);
+
+        await using (var cmd = conn.CreateCommand())
+        {
+            cmd.CommandText =
+                "INSERT INTO deletion_retention (id, floor_at) VALUES (1, $1) ON CONFLICT (id) DO NOTHING";
+            DbParams.Add(cmd, DateTime.Now.AddYears(1));
+            await cmd.ExecuteNonQueryAsync();
+        }
+
+        (await Tombstones.ReadRetentionFloorAsync(conn, default))
+            .ShouldBe(first, "ON CONFLICT DO NOTHING must keep the original floor");
+    }
+
+    // ---- blob garbage collection ----
+
+    // Blobs are content-addressed and never overwritten, so exporting
+    // repeatedly into the SAME directory — what a nightly job pointed at a
+    // fixed path does — keeps every version of every attachment forever while
+    // the parquet files are replaced each run.
+    [FactIfPg]
+    public async Task Garbage_Collection_Removes_Blobs_No_Attachment_References()
+    {
+        await WithSpaceAsync(1, async (svc, space, shortnames) =>
+        {
+            await AddAttachmentAsync(space, shortnames[0], "att1",
+                System.Text.Encoding.UTF8.GetBytes("first version"));
+
+            var dir = NewDir();
+            await svc.ExportAsync(dir, space, "/", actor: null);
+
+            // Change the media and export AGAIN into the same directory: the
+            // old blob is now unreferenced but still on disk.
+            var repo = _factory.Services.GetRequiredService<AttachmentRepository>();
+            var live = (await repo.GetAsync(space, $"/{shortnames[0]}", "att1"))!;
+            await repo.UpsertAsync(live with { Media = System.Text.Encoding.UTF8.GetBytes("second version") });
+            await svc.ExportAsync(dir, space, "/", actor: null);
+
+            var blobDir = Path.Combine(dir, "blobs");
+            Directory.EnumerateFiles(blobDir, "*", SearchOption.AllDirectories).Count()
+                .ShouldBe(2, "both versions are on disk; only one is referenced");
+
+            var dry = ParquetArchiveService.CollectGarbageBlobs(dir, dryRun: true);
+            dry.Removed.ShouldBe(1);
+            dry.Kept.ShouldBe(1);
+            Directory.EnumerateFiles(blobDir, "*", SearchOption.AllDirectories).Count()
+                .ShouldBe(2, "a dry run must not delete anything");
+
+            var real = ParquetArchiveService.CollectGarbageBlobs(dir);
+            real.Removed.ShouldBe(1);
+            real.Freed.ShouldBeGreaterThan(0);
+
+            Directory.EnumerateFiles(blobDir, "*", SearchOption.AllDirectories).Count().ShouldBe(1);
+
+            // And the surviving archive must still verify.
+            await ParquetArchiveService.VerifyAsync(dir, ParquetArchiveService.ReadManifest(dir));
+        });
+    }
+
+    // "No attachments table" and "no attachments are referenced" look identical
+    // from the blob store's side, and acting on the wrong one deletes every
+    // blob in the archive.
+    [FactIfPg]
+    public async Task Garbage_Collection_Refuses_When_The_Attachments_Table_Is_Absent()
+    {
+        await WithSpaceAsync(1, async (svc, space, _) =>
+        {
+            var dir = NewDir();
+            await svc.ExportAsync(dir, space, "/", actor: null);
+
+            var manifestPath = Path.Combine(dir, "manifest.json");
+            var text = await File.ReadAllTextAsync(manifestPath);
+            await File.WriteAllTextAsync(manifestPath, text.Replace("\"attachments\"", "\"attachments_renamed\""));
+
+            Should.Throw<InvalidDataException>(() => ParquetArchiveService.CollectGarbageBlobs(dir))
+                  .Message.ShouldContain("refusing");
         });
     }
 
@@ -824,7 +933,7 @@ public class ParquetExportTests : IClassFixture<DmartFactory>, IDisposable
     [FactIfPg]
     public async Task History_Pages_Without_Losing_Rows_To_Colliding_Timestamps()
     {
-        ParquetArchiveService.HistoryPageSize = 4;
+        ParquetArchiveService.HistoryPageSizeOverride = 4;
         try
         {
             await WithSpaceAsync(1, async (svc, space, shortnames) =>
@@ -844,7 +953,7 @@ public class ParquetExportTests : IClassFixture<DmartFactory>, IDisposable
                 (await svc.ImportAsync(dir)).For("histories").Imported.ShouldBe(11);
             });
         }
-        finally { ParquetArchiveService.HistoryPageSize = 10_000; }
+        finally { ParquetArchiveService.HistoryPageSizeOverride = null; }
     }
 
     // Truncates to the precision Parquet TIMESTAMP_MICROS actually stores.

@@ -82,6 +82,25 @@ internal static class Tombstones
     }
 
     /// <summary>
+    /// The instant from which tombstone recording is complete, or null if the
+    /// floor has never been seeded.
+    /// </summary>
+    /// <remarks>
+    /// An incremental export whose watermark predates this cannot see deletions
+    /// from the gap — none were recorded then. Without it, missing tombstones
+    /// are indistinguishable from "nothing was deleted", which is the failure
+    /// the whole mechanism exists to prevent.
+    /// </remarks>
+    public static async Task<DateTime?> ReadRetentionFloorAsync(
+        DbConnection conn, CancellationToken ct)
+    {
+        await using var cmd = conn.CreateCommand();
+        cmd.CommandText = "SELECT floor_at FROM deletion_retention WHERE id = 1";
+        var value = await cmd.ExecuteScalarAsync(ct);
+        return value is null or DBNull ? null : Convert.ToDateTime(value);
+    }
+
+    /// <summary>
     /// Reads tombstones recorded at or after <paramref name="since"/> for one
     /// space, for an incremental export.
     /// </summary>

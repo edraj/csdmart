@@ -30,7 +30,23 @@ public sealed class DmartSqlAdapterConformanceTests : IClassFixture<DmartFactory
     private readonly DmartFactory _factory;
     public DmartSqlAdapterConformanceTests(DmartFactory factory) => _factory = factory;
 
-    private static DmartSqlAdapter MakeAdapter() => new(new DmartDb(DmartFactory.PgConn!));
+    // Built from the SAME effective connection string the app uses, not the raw
+    // env var.
+    //
+    // Npgsql keys its data sources by connection string, and each data source
+    // loads the server's type catalog once. dmart's schema creates CUSTOM ENUM
+    // types (`usertype`, `language`), so a data source that connected before
+    // schema init cannot resolve their OIDs — reads fail with
+    // "DataTypeName '-.-'". The app handles this by calling ReloadTypesAsync
+    // after CreateAll; sharing its connection string is what lets the adapter
+    // inherit that reload.
+    //
+    // Previously this happened to work because the two strings were identical.
+    // Pinning the session timezone made them differ, which split the data
+    // sources and surfaced the dependency — on a FRESH database only, since an
+    // existing one already has the enums.
+    private static DmartSqlAdapter MakeAdapter() =>
+        new(new DmartDb(Dmart.DataAdapters.Sql.Db.ApplyHostTimezone(DmartFactory.PgConn!)));
 
     // Owned by the bootstrap admin ("dmart") so the entries.owner_shortname
     // FK resolves without seeding a user.

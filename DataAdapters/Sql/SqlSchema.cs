@@ -342,6 +342,24 @@ public static class SqlSchema
     -- Serves the incremental scan `WHERE deleted_at >= watermark`.
     CREATE INDEX IF NOT EXISTS idx_deletions_deleted_at ON deletions (deleted_at);
 
+    -- The instant from which tombstone recording is COMPLETE (§5.2).
+    --
+    -- An incremental export whose watermark predates this floor cannot see
+    -- deletions from the gap, because none were recorded then — the usual cause
+    -- being a chain started before this build. Without the floor that gap is
+    -- undetectable: missing tombstones look exactly like "nothing was deleted".
+    --
+    -- Seeded from CODE with a bound local timestamp, not by a DEFAULT: the
+    -- server evaluates NOW() in ITS timezone, which is the same trap that put
+    -- deleted_at hours out (§5.1).
+    --
+    -- A pruning job MUST raise this floor to the oldest tombstone it keeps.
+    -- Nothing prunes today; the coupling is the point of recording it.
+    CREATE TABLE IF NOT EXISTS deletion_retention (
+        id INTEGER PRIMARY KEY CHECK (id = 1),
+        floor_at  TIMESTAMP NOT NULL
+    );
+
     -- ============================================================
     -- INCREMENTAL SCAN INDEXES  (§5.1)
     -- ============================================================
