@@ -45,7 +45,7 @@ public class ParquetExportTests : IClassFixture<DmartFactory>, IDisposable
             var dir = NewDir();
             var manifest = await svc.ExportAsync(dir, space, "/", actor: null);
 
-            manifest.RowCount.ShouldBe(5);
+            manifest.RowsIn("entries").ShouldBe(5);
             manifest.SpaceName.ShouldBe(space);
             File.Exists(Path.Combine(dir, "manifest.json")).ShouldBeTrue();
 
@@ -75,7 +75,7 @@ public class ParquetExportTests : IClassFixture<DmartFactory>, IDisposable
             var dir = NewDir();
             var manifest = await svc.ExportAsync(dir, space, "/", actor: null);
 
-            manifest.RowCount.ShouldBe(13, "the tail row group must be flushed too");
+            manifest.RowsIn("entries").ShouldBe(13, "the tail row group must be flushed too");
 
             var back = ParquetArchiveService.ReadEntries(dir);
             back.Count.ShouldBe(13);
@@ -96,7 +96,7 @@ public class ParquetExportTests : IClassFixture<DmartFactory>, IDisposable
             var dir = NewDir();
             var manifest = await svc.ExportAsync(dir, space, "/", actor: null);
 
-            manifest.RowCount.ShouldBe(8);
+            manifest.RowsIn("entries").ShouldBe(8);
             ParquetArchiveService.ReadEntries(dir).Count.ShouldBe(8);
         });
     }
@@ -112,7 +112,7 @@ public class ParquetExportTests : IClassFixture<DmartFactory>, IDisposable
             var dir = NewDir();
             var manifest = await svc.ExportAsync(dir, space, "/", actor: null);
 
-            manifest.RowCount.ShouldBe(0);
+            manifest.RowsIn("entries").ShouldBe(0);
             ParquetArchiveService.ReadEntries(dir).ShouldBeEmpty();
         });
     }
@@ -202,7 +202,77 @@ public class ParquetExportTests : IClassFixture<DmartFactory>, IDisposable
         {
             var dir = NewDir();
             var manifest = await svc.ExportAsync(dir, QueryFor(space) with { Limit = 6 }, actor: null);
-            manifest.RowCount.ShouldBe(6, "an explicit limit must cap the export");
+            manifest.RowsIn("entries").ShouldBe(6, "an explicit limit must cap the export");
+        });
+    }
+
+    // ---- global tables ----
+
+    // Entries alone give you content in a system nobody can log into. These are
+    // what make the export a backup rather than a table dump.
+    [FactIfPg]
+    public async Task Exports_The_Global_Tables_Alongside_Entries()
+    {
+        await WithSpaceAsync(2, async (svc, space, _) =>
+        {
+            var dir = NewDir();
+            var manifest = await svc.ExportAsync(dir, space, "/", actor: null);
+
+            manifest.Tables.Select(t => t.Name).ShouldBe(
+                ["entries", "spaces", "users", "roles", "permissions"], ignoreOrder: true);
+
+            foreach (var table in new[] { "spaces", "users", "roles", "permissions" })
+                File.Exists(Path.Combine(dir, table, "part-00000.parquet"))
+                    .ShouldBeTrue($"{table} must be written");
+
+            // The space just created must be in there, or the export is not a
+            // snapshot of the system it claims to describe.
+            manifest.RowsIn("spaces").ShouldBeGreaterThan(0);
+        });
+    }
+
+    // The password hash is the difference between a restore that recovers
+    // logins and one that forces every user to reset. It is included
+    // deliberately, and that makes the export directory credential material.
+    [FactIfPg]
+    public async Task Users_Export_Carries_The_Password_Hash()
+    {
+        await WithSpaceAsync(1, async (svc, space, _) =>
+        {
+            var dir = NewDir();
+            await svc.ExportAsync(dir, space, "/", actor: null);
+
+            if (!Unit.Parquet.PyArrow.Available) return;
+
+            var table = Unit.Parquet.PyArrow.ReadTable(Path.Combine(dir, "users", "part-00000.parquet"));
+            var hashes = table.GetProperty("password").EnumerateArray()
+                .Where(x => x.ValueKind != System.Text.Json.JsonValueKind.Null)
+                .Select(x => x.GetString()!)
+                .ToList();
+
+            hashes.ShouldNotBeEmpty("the seeded dmart user has a hash; an empty column means it was dropped");
+            hashes.ShouldAllBe(h => h.StartsWith("$argon2"),
+                "a hash that is not Argon2 means the wrong column was read");
+        });
+    }
+
+    // Restoring users whose roles do not exist yet trips foreign keys or leaves
+    // dangling references, so spaces/roles/permissions must land before users
+    // and entries. This asserts the whole set restores together, which is the
+    // observable consequence of getting that order right.
+    [FactIfPg]
+    public async Task Global_Tables_Restore_Without_Reference_Errors()
+    {
+        await WithSpaceAsync(2, async (svc, space, _) =>
+        {
+            var dir = NewDir();
+            await svc.ExportAsync(dir, space, "/", actor: null);
+
+            var result = await svc.ImportAsync(dir, replaceExisting: true);
+
+            result.Failed.ShouldBe(0, "a reference error would show up here as a failed row");
+            result.For("users").Imported.ShouldBeGreaterThan(0, "users must restore");
+            result.For("spaces").Imported.ShouldBeGreaterThan(0, "spaces must restore");
         });
     }
 
@@ -225,8 +295,8 @@ public class ParquetExportTests : IClassFixture<DmartFactory>, IDisposable
 
             var result = await svc.ImportAsync(dir);
 
-            result.Imported.ShouldBe(6);
-            result.Skipped.ShouldBe(0);
+            result.For("entries").Imported.ShouldBe(6);
+            result.For("entries").Skipped.ShouldBe(0);
             result.Failed.ShouldBe(0);
             result.Total.ShouldBe(result.Imported + result.Skipped + result.Failed);
 
@@ -249,10 +319,10 @@ public class ParquetExportTests : IClassFixture<DmartFactory>, IDisposable
             await svc.ExportAsync(dir, space, "/", actor: null);
 
             var first = await svc.ImportAsync(dir);
-            first.Skipped.ShouldBe(4, "the rows are still there, so all four are skipped");
+            first.For("entries").Skipped.ShouldBe(4, "the rows are still there, so all four are skipped");
 
             var second = await svc.ImportAsync(dir);
-            second.Skipped.ShouldBe(4);
+            second.For("entries").Skipped.ShouldBe(4);
             second.Failed.ShouldBe(0);
         });
     }
@@ -274,8 +344,8 @@ public class ParquetExportTests : IClassFixture<DmartFactory>, IDisposable
             await entries.UpsertAsync(live with { Slug = "changed-after-export" });
 
             var result = await svc.ImportAsync(dir, replaceExisting: true);
-            result.Imported.ShouldBe(2);
-            result.Skipped.ShouldBe(0);
+            result.For("entries").Imported.ShouldBe(2);
+            result.For("entries").Skipped.ShouldBe(0);
 
             (await entries.GetAsync(space, "/", target, ResourceType.Content))!
                 .Slug.ShouldNotBe("changed-after-export", "the archive's value must win under -r");

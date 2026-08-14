@@ -6,6 +6,8 @@ using Dmart.Models.Api;
 using Dmart.Models.Core;
 using Dmart.Models.Enums;
 using Microsoft.Extensions.Logging;
+using Microsoft.Extensions.Options;
+using Dmart.Config;
 
 namespace Dmart.Services;
 
@@ -22,15 +24,26 @@ namespace Dmart.Services;
 // unstable-sort traps ImportExportService.ForEachMatchAsync documents apply
 // identically here, and a second copy would drift.
 //
-// This increment covers the `entries` table of a FULL export. Attachments,
-// histories, spaces/users/roles/permissions, blob sharding (§4.3) and the
-// incremental watermark (§5) are not wired yet; the manifest records enough for
-// them to be added without changing what is already written.
+// Covers a FULL export of entries, spaces, users, roles and permissions.
+// Attachments (with their media blobs, §4.3), histories, and the incremental
+// watermark (§5) are not wired yet; the manifest records enough for them to be
+// added without changing what is already written.
+//
+// The users table carries the Argon2 PASSWORD HASH, so an export directory is
+// credential material and needs the handling a database dump gets. That is a
+// deliberate divergence from the zip export, which omits it and therefore
+// cannot restore a login.
 public sealed class ParquetArchiveService(
     EntryRepository entries,
+    SpaceRepository spaces,
+    UserRepository users,
+    AccessRepository access,
     PermissionService perms,
+    IOptions<DmartSettings> settingsOpt,
     ILogger<ParquetArchiveService> log)
 {
+    private string MgmtSpace => settingsOpt.Value.ManagementSpace;
+
     /// <summary>
     /// Rows per row group — §4.2's target, and the unit of writer memory. Only
     /// this many entries are resident at once, which is what keeps a multi-GB
@@ -151,10 +164,86 @@ public sealed class ParquetArchiveService(
             "parquet export: {Rows} entries from {Space}{Subpath} to {Path}",
             rowCount, spaceName, subpath, outputDirectory);
 
+        var tables = new List<ParquetTableManifest>
+        {
+            new("entries", [relativePath], rowCount),
+        };
+
+        // The global tables. Without them a restore gives you content in a
+        // system nobody can log into, with no ACL and no space definitions —
+        // which is the difference between a backup and a table dump.
+        //
+        // Not Hive-partitioned: §4.1 puts them at `<table>/part-00000.parquet`
+        // with no `space_name=` directory, so unlike entries they DO carry
+        // space_name as a column. Users, roles and permissions all live in the
+        // management space; spaces span every space by definition.
+        tables.Add(await WriteGlobalAsync(outputDirectory, "spaces", SpaceParquetTable.Schema,
+            await spaces.ListAsync(ct), SpaceParquetTable.BuildPages, ct));
+
+        tables.Add(await WriteGlobalAsync(outputDirectory, "users", UserParquetTable.Schema,
+            await CollectAsync<User>("/users", q => users.QueryAsync(q, ct)),
+            UserParquetTable.BuildPages, ct));
+
+        tables.Add(await WriteGlobalAsync(outputDirectory, "roles", RoleParquetTable.Schema,
+            await CollectAsync<Role>("/roles", q => access.QueryRolesAsync(q, ct)),
+            RoleParquetTable.BuildPages, ct));
+
+        tables.Add(await WriteGlobalAsync(outputDirectory, "permissions", PermissionParquetTable.Schema,
+            await CollectAsync<Permission>("/permissions", q => access.QueryPermissionsAsync(q, ct)),
+            PermissionParquetTable.BuildPages, ct));
+
         return await WriteManifestAsync(
-            outputDirectory, spaceName, watermark,
-            [new ParquetTableManifest("entries", [relativePath], rowCount)],
-            rowCount, ct);
+            outputDirectory, spaceName, watermark, tables,
+            tables.Sum(t => t.RowCount), ct);
+    }
+
+    // Pages a management-space listing into memory. These tables are small by
+    // nature — users, roles and permissions are administrative, not content —
+    // so unlike entries they are not streamed. If an installation ever has
+    // enough users for that to matter, this is the line to change.
+    private Task<List<T>> CollectAsync<T>(string subpath, Func<Query, Task<List<T>>> fetch)
+    {
+        var q = new Query
+        {
+            Type = QueryType.Search, SpaceName = MgmtSpace, Subpath = subpath,
+            FilterSchemaNames = new(), Limit = 0, RetrieveJsonPayload = true,
+        };
+        var collected = new List<T>();
+        return ImportExportService
+            .ForEachMatchAsync(q, fetch, row => { collected.Add(row); return Task.CompletedTask; },
+                               CancellationToken.None)
+            .ContinueWith(_ => collected, TaskScheduler.Default);
+    }
+
+    private static async Task<ParquetTableManifest> WriteGlobalAsync<T>(
+        string outputDirectory, string table,
+        IReadOnlyList<ParquetFileWriter.ColumnSpec> schema,
+        List<T> rows,
+        Func<IReadOnlyList<T>, IReadOnlyList<ParquetFileWriter.ColumnPage>> build,
+        CancellationToken ct)
+    {
+        var relative = Path.Combine(table, "part-00000.parquet");
+        var absolute = Path.Combine(outputDirectory, relative);
+        Directory.CreateDirectory(Path.GetDirectoryName(absolute)!);
+
+        await using (var file = new FileStream(
+            absolute, FileMode.Create, FileAccess.Write, FileShare.None,
+            bufferSize: 64 * 1024, FileOptions.SequentialScan))
+        {
+            var writer = new ParquetFileWriter(schema);
+            writer.Start(file);
+            // Row groups still apply: a large table is chunked rather than
+            // written as one enormous group.
+            for (var offset = 0; offset < rows.Count; offset += RowGroupRows)
+            {
+                var slice = rows.GetRange(offset, Math.Min(RowGroupRows, rows.Count - offset));
+                writer.WriteRowGroup(build(slice), slice.Count);
+            }
+            writer.Finish();
+        }
+
+        ct.ThrowIfCancellationRequested();
+        return new ParquetTableManifest(table, [relative], rows.Count);
     }
 
     private static async Task<ParquetExportManifest> WriteManifestAsync(
@@ -192,9 +281,44 @@ public sealed class ParquetArchiveService(
     public async Task<ParquetImportResult> ImportAsync(
         string exportDirectory, bool replaceExisting = false, CancellationToken ct = default)
     {
-        var rows = ReadEntries(exportDirectory);
-        int imported = 0, skipped = 0, failed = 0;
+        // Order matters. Spaces, roles and permissions come before users and
+        // entries because those reference them: restoring a user whose roles do
+        // not exist yet, or an entry in an absent space, trips foreign keys or
+        // leaves dangling references depending on the driver.
+        var (si, sk, sf) = await RestoreGlobalAsync(
+            exportDirectory, "spaces", SpaceParquetTable.FromTable,
+            s => spaces.GetAsync(s.Shortname, ct), s => spaces.UpsertAsync(s, ct),
+            replaceExisting, ct);
 
+        var (ri, rk, rf) = await RestoreGlobalAsync(
+            exportDirectory, "roles", RoleParquetTable.FromTable,
+            r => access.GetRoleAsync(r.Shortname, ct), r => access.UpsertRoleAsync(r, ct),
+            replaceExisting, ct);
+
+        var (pi, pk, pf) = await RestoreGlobalAsync(
+            exportDirectory, "permissions", PermissionParquetTable.FromTable,
+            p => access.GetPermissionAsync(p.Shortname, ct), p => access.UpsertPermissionAsync(p, ct),
+            replaceExisting, ct);
+
+        var (ui, uk, uf) = await RestoreGlobalAsync(
+            exportDirectory, "users", UserParquetTable.FromTable,
+            u => users.GetByShortnameAsync(u.Shortname, ct), u => users.UpsertAsync(u, ct),
+            replaceExisting, ct);
+
+        var perTable = new List<ParquetTableResult>
+        {
+            new("spaces", si, sk, sf),
+            new("roles", ri, rk, rf),
+            new("permissions", pi, pk, pf),
+            new("users", ui, uk, uf),
+        };
+
+        var rows = ReadEntries(exportDirectory);
+        int imported = si + ri + pi + ui,
+            skipped = sk + rk + pk + uk,
+            failed = sf + rf + pf + uf;
+
+        int entriesImported = 0, entriesSkipped = 0, entriesFailed = 0;
         foreach (var entry in rows)
         {
             ct.ThrowIfCancellationRequested();
@@ -204,36 +328,97 @@ public sealed class ParquetArchiveService(
                 {
                     var existing = await entries.GetAsync(
                         entry.SpaceName, entry.Subpath, entry.Shortname, entry.ResourceType, ct);
-                    if (existing is not null) { skipped++; continue; }
+                    if (existing is not null) { entriesSkipped++; continue; }
                 }
 
                 await entries.UpsertAsync(entry, ct);
-                imported++;
+                entriesImported++;
             }
             catch (Exception ex)
             {
                 // One bad row must not abandon the rest of a restore, but it
                 // must be counted — a summary that says "imported 900" out of
                 // 1000 with no failure count reads as success.
-                failed++;
+                entriesFailed++;
                 log.LogWarning(ex, "parquet import: failed to restore {Space}{Subpath}/{Shortname}",
                     entry.SpaceName, entry.Subpath, entry.Shortname);
             }
         }
 
+        imported += entriesImported;
+        skipped += entriesSkipped;
+        failed += entriesFailed;
+
         log.LogInformation(
             "parquet import: {Imported} imported, {Skipped} skipped, {Failed} failed from {Path}",
             imported, skipped, failed, exportDirectory);
 
-        return new ParquetImportResult(imported, skipped, failed, rows.Count);
+        perTable.Add(new ParquetTableResult("entries", entriesImported, entriesSkipped, entriesFailed));
+        return new ParquetImportResult(
+            imported, skipped, failed, imported + skipped + failed, perTable);
     }
 
-    /// <summary>Reads back the entries an export wrote, in file order.</summary>
-    /// <remarks>
-    /// The restore half. Kept here rather than in the reader so the reader stays
-    /// a format concern and this stays a dmart one.
-    /// </remarks>
-    public static List<Entry> ReadEntries(string exportDirectory)
+    // Restores one global table. Same skip/replace rule as entries, and the
+    // same "a bad row is counted, not fatal" rule — a restore that abandons the
+    // remaining users because one of them failed is worse than a partial one
+    // that says so.
+    private async Task<(int Imported, int Skipped, int Failed)> RestoreGlobalAsync<T>(
+        string exportDirectory, string table,
+        Func<ParquetFileReader.ParquetTable, List<T>> fromTable,
+        Func<T, Task<T?>> get, Func<T, Task> upsert,
+        bool replaceExisting, CancellationToken ct)
+        where T : class
+    {
+        var rows = ReadTable(exportDirectory, table, fromTable);
+        int imported = 0, skipped = 0, failed = 0;
+
+        foreach (var row in rows)
+        {
+            ct.ThrowIfCancellationRequested();
+            try
+            {
+                if (!replaceExisting && await get(row) is not null) { skipped++; continue; }
+                await upsert(row);
+                imported++;
+            }
+            catch (Exception ex)
+            {
+                failed++;
+                log.LogWarning(ex, "parquet import: failed to restore a row of {Table}", table);
+            }
+        }
+
+        if (rows.Count > 0)
+            log.LogInformation("parquet import: {Table} — {Imported} imported, {Skipped} skipped, {Failed} failed",
+                table, imported, skipped, failed);
+
+        return (imported, skipped, failed);
+    }
+
+    // A table absent from the manifest yields no rows rather than throwing:
+    // archives written by an earlier build genuinely do not have these files,
+    // and refusing to restore entries because there is no users table would be
+    // worse than restoring what is there.
+    private static List<T> ReadTable<T>(
+        string exportDirectory, string table,
+        Func<ParquetFileReader.ParquetTable, List<T>> fromTable)
+    {
+        var manifest = ReadManifest(exportDirectory);
+        var entry = manifest.Tables.FirstOrDefault(t => t.Name == table);
+        if (entry is null) return [];
+
+        var result = new List<T>();
+        foreach (var relative in entry.Files)
+            result.AddRange(fromTable(ParquetFileReader.ReadFile(Path.Combine(exportDirectory, relative))));
+
+        if (result.Count != entry.RowCount)
+            throw new InvalidDataException(
+                $"manifest claims {entry.RowCount} rows in '{table}' but the files hold {result.Count}");
+
+        return result;
+    }
+
+    private static ParquetExportManifest ReadManifest(string exportDirectory)
     {
         var manifestPath = Path.Combine(exportDirectory, "manifest.json");
         if (!File.Exists(manifestPath))
@@ -250,6 +435,17 @@ public sealed class ParquetArchiveService(
             throw new NotSupportedException(
                 $"export declares format version {manifest.FormatVersion}; this build understands {FormatVersion}");
 
+        return manifest;
+    }
+
+    /// <summary>Reads back the entries an export wrote, in file order.</summary>
+    /// <remarks>
+    /// The restore half. Kept here rather than in the reader so the reader stays
+    /// a format concern and this stays a dmart one.
+    /// </remarks>
+    public static List<Entry> ReadEntries(string exportDirectory)
+    {
+        var manifest = ReadManifest(exportDirectory);
         var table = manifest.Tables.FirstOrDefault(t => t.Name == "entries");
         if (table is null) return [];
 
@@ -280,13 +476,35 @@ public sealed record ParquetExportManifest(
     [property: JsonPropertyName("watermark")] DateTime Watermark,
     [property: JsonPropertyName("space_name")] string SpaceName,
     [property: JsonPropertyName("tables")] List<ParquetTableManifest> Tables,
-    [property: JsonPropertyName("row_count")] long RowCount);
+    [property: JsonPropertyName("row_count")] long RowCount)
+{
+    /// <summary>
+    /// Rows written for one table. <see cref="RowCount"/> is the total across
+    /// ALL tables, so a caller asking "how many entries?" must ask by name —
+    /// reading the aggregate instead silently counts users and roles too.
+    /// </summary>
+    public long RowsIn(string table) =>
+        Tables.FirstOrDefault(t => t.Name == table)?.RowCount ?? 0;
+}
 
 /// <param name="Total">
-/// Rows read from the archive. Imported + Skipped + Failed must equal it — a
-/// restore summary that does not add up is hiding a row.
+/// Rows read from the archive across every table. Imported + Skipped + Failed
+/// must equal it — a restore summary that does not add up is hiding a row.
 /// </param>
-public sealed record ParquetImportResult(int Imported, int Skipped, int Failed, int Total);
+/// <param name="Tables">
+/// Per-table breakdown. The aggregate alone is close to useless on a restore:
+/// "imported 900" across five tables does not say whether the users landed.
+/// </param>
+public sealed record ParquetImportResult(
+    int Imported, int Skipped, int Failed, int Total,
+    IReadOnlyList<ParquetTableResult> Tables)
+{
+    /// <summary>Result for one table, or an all-zero row if it was absent.</summary>
+    public ParquetTableResult For(string table) =>
+        Tables.FirstOrDefault(t => t.Table == table) ?? new ParquetTableResult(table, 0, 0, 0);
+}
+
+public sealed record ParquetTableResult(string Table, int Imported, int Skipped, int Failed);
 
 public sealed record ParquetTableManifest(
     [property: JsonPropertyName("name")] string Name,

@@ -605,10 +605,23 @@ switch (subcommand)
             try
             {
                 var manifest = await parquet.ExportAsync(outDir, spaceName, "/", actor: null);
+                // Per table. The aggregate alone reads as an entry count and is
+                // not one — most of it is users, roles and permissions.
+                foreach (var t in manifest.Tables)
+                    Console.WriteLine($"  {t.Name,-12} {t.RowCount} rows");
                 Console.WriteLine(
-                    $"Exported {manifest.RowCount} entries from '{spaceName}' to {outDir}");
+                    $"Exported {manifest.RowsIn("entries")} entries from '{spaceName}' "
+                    + $"({manifest.RowCount} rows total) to {outDir}");
                 Console.WriteLine(
-                    "Note: entries only — attachments, history and blobs are not yet included.");
+                    "Note: entries, spaces, users, roles and permissions — attachments, "
+                    + "history and blobs are not yet included.");
+                // Not a footnote. The users table holds Argon2 hashes, which is
+                // what lets a restore recover logins; it also means this
+                // directory is credential material and must be treated like a
+                // database dump rather than a content archive.
+                Console.WriteLine(
+                    "WARNING: users/part-00000.parquet contains password hashes. "
+                    + "Protect this directory like a database dump.");
             }
             catch
             {
@@ -709,9 +722,14 @@ switch (subcommand)
             var archive = CliBootstrap.BuildParquetArchiveService(qs, qdb);
             var result = await archive.ImportAsync(targetPath, replace);
 
+            // Per table, not one aggregate: "imported 900" across five tables
+            // does not tell an operator whether the users landed.
+            foreach (var t in result.Tables)
+                Console.WriteLine(
+                    $"  {t.Table,-12} imported {t.Imported}, skipped {t.Skipped}, failed {t.Failed}");
             Console.WriteLine(
-                $"Imported {result.Imported}, skipped {result.Skipped}, failed {result.Failed} "
-                + $"of {result.Total} entries from {targetPath}");
+                $"Total: imported {result.Imported}, skipped {result.Skipped}, "
+                + $"failed {result.Failed} of {result.Total} rows from {targetPath}");
             // A restore that lost rows must not exit 0: a backup pipeline reads
             // the exit code, not the wording.
             if (result.Failed > 0) Environment.ExitCode = 1;

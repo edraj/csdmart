@@ -324,7 +324,23 @@ Mirror the SQL columns, one Parquet table per SQL table, with three rules:
   differ (`text[]` vs a JSON array in TEXT), so the exporter writes one
   canonical form regardless of driver.
 
-- **`space_name` is NOT a column.** It is the Hive partition key in the
+- **The global tables carry `space_name` as a column.** `spaces`, `users`,
+  `roles` and `permissions` are written flat at `<table>/part-00000.parquet`
+  with no `space_name=` directory (§4.1), so there is no partition key to
+  collide with. Users, roles and permissions all live in the management space,
+  and spaces span every space by definition — partitioning either would produce
+  a single directory or one per row.
+
+- **`users` carries the Argon2 password hash.** Without it a restore leaves
+  every user unable to log in, which is the line between a backup and a content
+  archive. The consequence is that an export directory is credential material
+  and needs the handling a database dump gets: restricted permissions, and
+  encryption if it leaves the host. The CLI prints this at export time.
+
+  This DIVERGES from the zip export, where `User.Password` is `[JsonIgnore]`
+  and therefore silently absent.
+
+- **`space_name` is NOT a column** in `entries`. It is the Hive partition key in the
   directory name, and a Hive partition column lives in the path, not in the
   file. Writing both makes every partition-inferring reader — DuckDB, Spark,
   pyarrow — fail outright with `Field space_name has incompatible types: string

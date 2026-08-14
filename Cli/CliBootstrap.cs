@@ -161,8 +161,8 @@ internal static class CliBootstrap
             nlog.CreateLogger<ImportExportService>());
     }
 
-    // The Parquet exporter needs far less of the graph than the zip one: it
-    // reads entries and applies the ACL gate, and nothing else.
+    // The Parquet archiver needs most of the graph the zip one does, now that
+    // it writes spaces, users, roles and permissions alongside entries.
     public static ParquetArchiveService BuildParquetArchiveService(
         DmartSettings s, IDbConnectionFactory db)
     {
@@ -177,7 +177,11 @@ internal static class CliBootstrap
         var accessRepo = new AccessRepository(db, dialect, refresher, userRepo);
         return new ParquetArchiveService(
             new EntryRepository(db),
+            new SpaceRepository(db),
+            userRepo,
+            accessRepo,
             new PermissionService(userRepo, accessRepo, refresher),
+            Options.Create(s),
             nlog.CreateLogger<ParquetArchiveService>());
     }
 
