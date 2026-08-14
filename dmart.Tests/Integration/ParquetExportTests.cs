@@ -319,6 +319,15 @@ public class ParquetExportTests : IClassFixture<DmartFactory>, IDisposable
     {
         await WithSpaceAsync(12, async (svc, space, shortnames) =>
         {
+            // Attachments and history too, so the comparison covers all three
+            // tables that now have a bulk path rather than only entries.
+            await AddAttachmentAsync(space, shortnames[0], "att1",
+                System.Text.Encoding.UTF8.GetBytes("media for the comparison"));
+            var histories = _factory.Services.GetRequiredService<HistoryRepository>();
+            for (var i = 0; i < 5; i++)
+                await histories.AppendAsync(space, "/", shortnames[0], "dave", null,
+                    new Dictionary<string, object> { ["n"] = i });
+
             var dir = NewDir();
             await svc.ExportAsync(dir, space, "/", actor: null);
 
@@ -328,6 +337,8 @@ public class ParquetExportTests : IClassFixture<DmartFactory>, IDisposable
             {
                 foreach (var sn in shortnames)
                     await entries.DeleteAsync(space, "/", sn, ResourceType.Content);
+                await DeleteAttachmentAsync(space, shortnames[0], "att1");
+                await WipeHistoryAsync(space);
             }
 
             await WipeAsync();
@@ -339,9 +350,12 @@ public class ParquetExportTests : IClassFixture<DmartFactory>, IDisposable
             try { perRow = await svc.ImportAsync(dir); }
             finally { ParquetArchiveService.ForcePerRowRestore = false; }
 
-            perRow.For("entries").Imported.ShouldBe(bulk.For("entries").Imported);
-            perRow.For("entries").Skipped.ShouldBe(bulk.For("entries").Skipped);
-            perRow.For("entries").Failed.ShouldBe(bulk.For("entries").Failed);
+            foreach (var table in new[] { "entries", "attachments", "histories" })
+            {
+                perRow.For(table).Imported.ShouldBe(bulk.For(table).Imported, $"{table}: imported");
+                perRow.For(table).Skipped.ShouldBe(bulk.For(table).Skipped, $"{table}: skipped");
+                perRow.For(table).Failed.ShouldBe(bulk.For(table).Failed, $"{table}: failed");
+            }
         });
     }
 

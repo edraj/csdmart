@@ -49,6 +49,13 @@ public class BulkRestoreBenchmark : IClassFixture<DmartFactory>
                     IsActive = true, OwnerShortname = "dmart",
                 });
 
+            // History is usually the LARGEST table — one row per change,
+            // forever — so it is the one whose restore speed matters most.
+            var histories = sp.GetRequiredService<HistoryRepository>();
+            for (var i = 0; i < N; i++)
+                await histories.AppendAsync(space, "/", "e000000", "dmart", null,
+                    new Dictionary<string, object> { ["n"] = i });
+
             await svc.ExportAsync(dir, space, "/", actor: null);
 
             async Task WipeAsync()
@@ -58,6 +65,10 @@ public class BulkRestoreBenchmark : IClassFixture<DmartFactory>
                 DbParams.Add(cmd, space);
                 cmd.CommandText = "DELETE FROM entries WHERE space_name = $1";
                 await cmd.ExecuteNonQueryAsync();
+                await using var h = conn.CreateCommand();
+                DbParams.Add(h, space);
+                h.CommandText = "DELETE FROM histories WHERE space_name = $1";
+                await h.ExecuteNonQueryAsync();
             }
 
             await WipeAsync();
@@ -73,8 +84,10 @@ public class BulkRestoreBenchmark : IClassFixture<DmartFactory>
             sw.Stop();
             var perRowMs = sw.ElapsedMilliseconds;
 
-            _out.WriteLine($"rows={bulk.For("entries").Imported}  bulk={bulkMs}ms  per-row={perRowMs}ms  "
-                         + $"speedup={(double)perRowMs / Math.Max(1, bulkMs):F1}x");
+            _out.WriteLine(
+                $"entries={bulk.For("entries").Imported} histories={bulk.For("histories").Imported}  "
+                + $"bulk={bulkMs}ms  per-row={perRowMs}ms  "
+                + $"speedup={(double)perRowMs / Math.Max(1, bulkMs):F1}x");
         }
         finally
         {

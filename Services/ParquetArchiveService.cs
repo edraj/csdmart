@@ -759,6 +759,29 @@ public sealed class ParquetArchiveService(
             (t, space) => HistoryParquetTable.FromTable(t, space), manifest.SpaceName);
 
         int imported = 0, skipped = 0, failed = 0;
+
+        // Batched multi-row INSERT, on BOTH drivers. History is append-only
+        // with ON CONFLICT DO NOTHING and no dependent merge, so it needs none
+        // of the COPY scratch-table machinery — and this way SQLite gets a bulk
+        // path too, which it does not for entries or attachments.
+        if (!ForcePerRowRestore)
+        {
+            try
+            {
+                imported = await histories.RestoreManyAsync(rows, ct);
+                skipped = rows.Count - imported;
+                return (imported, skipped, 0);
+            }
+            catch (Exception ex)
+            {
+                // One malformed row fails its whole batch, so fall back to
+                // per-row to isolate it rather than losing the batch. Same
+                // reasoning as the entry/attachment replay.
+                log.LogWarning(ex,
+                    "parquet import: batched history insert failed; replaying row-by-row to isolate");
+            }
+        }
+
         foreach (var row in rows)
         {
             ct.ThrowIfCancellationRequested();
@@ -903,33 +926,77 @@ public sealed class ParquetArchiveService(
         var rows = ReadPartitionedTable(exportDirectory, "attachments",
             (t, space) => AttachmentParquetTable.FromTable(t, space), manifest.SpaceName);
 
+        // Rehydrate media BEFORE the write, whichever path takes it. BlobStore
+        // verifies each blob against its own name, so a truncated file throws
+        // here rather than becoming attachment media — the check is the same on
+        // both paths, and it is the reason a bad blob fails its row.
+        var hydrated = new List<Attachment>(rows.Count);
         int imported = 0, skipped = 0, failed = 0;
         foreach (var row in rows)
         {
             ct.ThrowIfCancellationRequested();
             try
             {
-                if (!replaceExisting)
-                {
-                    var existing = await attachments.GetAsync(
-                        row.Attachment.SpaceName, row.Attachment.Subpath, row.Attachment.Shortname, ct);
-                    if (existing is not null) { skipped++; continue; }
-                }
-
-                // Read verifies the blob against its own name, so a truncated
-                // file throws here rather than becoming attachment media.
-                var media = row.MediaSha256 is { } sha
-                    ? BlobStore.Read(exportDirectory, sha)
-                    : null;
-
-                await attachments.UpsertAsync(row.Attachment with { Media = media }, ct);
-                imported++;
+                var media = row.MediaSha256 is { } sha ? BlobStore.Read(exportDirectory, sha) : null;
+                hydrated.Add(row.Attachment with { Media = media });
             }
             catch (Exception ex)
             {
                 failed++;
-                log.LogWarning(ex, "parquet import: failed to restore attachment {Space}{Subpath}/{Shortname}",
+                log.LogWarning(ex, "parquet import: blob missing or corrupt for {Space}{Subpath}/{Shortname}",
                     row.Attachment.SpaceName, row.Attachment.Subpath, row.Attachment.Shortname);
+            }
+        }
+
+        if (db is Db bulk && importExport is not null && !ForcePerRowRestore)
+        {
+            var session = await bulk.BeginBatchImportSessionAsync(ct);
+            try
+            {
+                await session.InitConnectionAsync(
+                    ImportExportService.CreateImportScratchTablesAsync, ct);
+
+                for (var offset = 0; offset < hydrated.Count; offset += BulkBatchSize)
+                {
+                    ct.ThrowIfCancellationRequested();
+                    var batch = hydrated.GetRange(offset, Math.Min(BulkBatchSize, hydrated.Count - offset));
+                    var (affected, wasSkipped, failures) = await importExport.BulkUpsertAttachmentsAsync(
+                        session, "parquet-restore", batch, preserveExisting: !replaceExisting, ct);
+
+                    imported += affected;
+                    skipped += wasSkipped;
+                    failed += failures.Count;
+                    foreach (var f in failures)
+                        log.LogWarning("parquet import: attachment failed — {Path}: {Error}",
+                            f.GetValueOrDefault("path"), f.GetValueOrDefault("error"));
+                }
+                session.MarkSuccess();
+            }
+            finally { await session.DisposeAsync(); }
+        }
+        else
+        {
+            foreach (var attachment in hydrated)
+            {
+                ct.ThrowIfCancellationRequested();
+                try
+                {
+                    if (!replaceExisting)
+                    {
+                        var existing = await attachments.GetAsync(
+                            attachment.SpaceName, attachment.Subpath, attachment.Shortname, ct);
+                        if (existing is not null) { skipped++; continue; }
+                    }
+
+                    await attachments.UpsertAsync(attachment, ct);
+                    imported++;
+                }
+                catch (Exception ex)
+                {
+                    failed++;
+                    log.LogWarning(ex, "parquet import: failed to restore attachment {Space}{Subpath}/{Shortname}",
+                        attachment.SpaceName, attachment.Subpath, attachment.Shortname);
+                }
             }
         }
 
