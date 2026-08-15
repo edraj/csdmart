@@ -320,7 +320,12 @@ blob is rehashed against its own name. It roughly doubles read I/O, which is
 the right trade — a backup nobody has read is one you are guessing about.
 `--no-verify` opts out.
 
-A restore is `dmart import <dir> --parquet [-r] [--verify] [--drop-indexes]`.
+A restore is `dmart import <dir> --parquet [-r] [--no-verify] [--drop-indexes]`.
+It is **verified by default**, symmetric with `export --all`: the restore is
+re-read against the archive row by row. `--no-verify` opts out. The earlier
+asymmetry — export verified unless you opted out, restore verified only if you
+opted in — put the weaker default on the more dangerous operation. `--verify`
+is still accepted so existing scripts keep working.
 `--drop-indexes` drops the secondary indexes on `entries`/`attachments` for the
 duration of the load and rebuilds them afterwards, which is the same lever the
 zip importer offers, and it is a **large-restore** lever only: measured on a

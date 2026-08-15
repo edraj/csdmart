@@ -64,11 +64,11 @@ I=$(ms_restore bz users "BACKEND_ENV=$W/bz.env $BIN import $W/z/s.zip -r")
 row "zip / JSON (1 space)" "$E" "$I" "$(sz "$W/z/s.zip")"
 
 E=$(ms "rm -rf $W/pq; BACKEND_ENV=$CONF $BIN export $SPACE --parquet --output $W/pq")
-I=$(ms_restore bp users "BACKEND_ENV=$W/bp.env $BIN import $W/pq --parquet -r")
+I=$(ms_restore bp users "BACKEND_ENV=$W/bp.env $BIN import $W/pq --parquet -r --no-verify")
 row "Parquet zstd-3 (1 space)" "$E" "$I" "$(sz "$W/pq")"
 
 E=$(ms "rm -rf $W/all; BACKEND_ENV=$CONF $BIN export --all --parquet --no-verify --output $W/all")
-I=$(ms_restore ba users "BACKEND_ENV=$W/ba.env $BIN import $W/all --parquet -r")
+I=$(ms_restore ba users "BACKEND_ENV=$W/ba.env $BIN import $W/all --parquet -r --no-verify")
 row "Parquet zstd-3 (--all)" "$E" "$I" "$(sz "$W/all")"
 
 # ---------------------------------------------------------------- pg_dump

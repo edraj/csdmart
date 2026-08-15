@@ -139,9 +139,18 @@ bootstrap pq $((BASE_PORT + 2))
 # skipped and the archive's versions never land — which verification then
 # correctly reports as 4 differing entries. Restoring a backup over a
 # freshly-initialised system is what -r is for.
-run pq "$WORK/pqimp.out" import "$WORK/full" --parquet -r --verify
+# NO --verify flag: verification is the DEFAULT now, symmetric with
+# `export --all`. Passing it would prove nothing about the default, which is
+# what an operator actually gets.
+run pq "$WORK/pqimp.out" import "$WORK/full" --parquet -r
 grep -q 'match the archive' "$WORK/pqimp.out" \
   || { cat "$WORK/pqimp.out"; die "restore verification did not report a match"; }
+
+# The opt-out must still work: a restore that cannot be skipped would make
+# --no-verify a lie and double the I/O of every large recovery.
+run pq "$WORK/pqnoverify.out" import "$WORK/full" --parquet -r --no-verify
+grep -q 'match the archive' "$WORK/pqnoverify.out" \
+  && { cat "$WORK/pqnoverify.out"; die "--no-verify still verified"; }
 
 run pq "$WORK/pqcheck.out" export "$SPACE" --parquet --output "$WORK/pqcheck"
 P_E=$(count_of "$WORK/pqcheck.out" entries)

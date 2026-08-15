@@ -825,7 +825,10 @@ switch (subcommand)
         {
             if (string.IsNullOrEmpty(targetPath))
             {
-                Bail("Usage: dmart import <export-directory> --parquet [-r] [--verify]\n"
+                Bail("Usage: dmart import <export-directory> --parquet [-r] [--no-verify]\n"
+                     + "       The restore is VERIFIED against the archive by default; --no-verify\n"
+                     + "       skips that (roughly halves the read I/O, and leaves you trusting\n"
+                     + "       row counts alone).\n"
                      + "       --drop-indexes  drop the GIN indexes for the load and rebuild them\n"
                      + "                       after. PostgreSQL only, and only worth it on LARGE\n"
                      + "                       restores (it costs a few percent below ~200k rows).\n"
@@ -853,10 +856,17 @@ switch (subcommand)
             // the exit code, not the wording.
             if (result.Failed > 0) Environment.ExitCode = 1;
 
-            // --verify answers the question the counts above cannot: does the
-            // DATABASE now match the archive? Counts come from the writer's own
-            // bookkeeping; this re-reads both sides.
-            if (serverArgs.Contains("--verify"))
+            // Verification answers the question the counts above cannot: does
+            // the DATABASE now match the archive? Counts come from the writer's
+            // own bookkeeping; this re-reads both sides.
+            //
+            // ON BY DEFAULT, matching `export --all`. The asymmetry it replaces
+            // — export verified unless you said --no-verify, restore verified
+            // only if you said --verify — put the weaker default on the more
+            // dangerous operation. An unverified backup is a guess; an
+            // unverified RESTORE is a guess you are about to run a business on.
+            // --verify is still accepted so existing scripts keep working.
+            if (!serverArgs.Contains("--no-verify"))
             {
                 var verifier = CliBootstrap.BuildParquetRestoreVerifier(qs, qdb);
                 var check = await verifier.VerifyAsync(targetPath);
