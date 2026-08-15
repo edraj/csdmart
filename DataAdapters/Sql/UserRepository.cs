@@ -177,15 +177,14 @@ public sealed class UserRepository(IDbConnectionFactory db, AuthzCacheRefresher 
         }
     }
 
-    public async Task UpsertAsync(User u, DbConnection conn, CancellationToken ct = default)
-    {
-        // Populate query_policies deterministically on every write so the
-        // row-level ACL filter (QueryHelper.AppendAclFilter) can match
-        // patterns against it. See EntryRepository.UpsertAsync for the
-        // full rationale — same pattern, same invariant.
-        u = u with { QueryPolicies = Utils.QueryPolicies.Generate(u) };
-
-        await using var cmd = conn.Command("""
+    // The users INSERT, in ONE definition shared by the single-row upsert and
+    // the batch restore. The clause that matters is
+    //     password = COALESCE(EXCLUDED.password, users.password)
+    // which preserves a stored hash when the incoming row carries none — the
+    // case every pre-Parquet archive hits, because the zip export omits
+    // passwords entirely. Sharing the text is what stops a second path from
+    // quietly dropping it.
+    private const string UserInsertColumns = """
             INSERT INTO users (uuid, shortname, space_name, subpath, is_active, slug,
                                displayname, description, tags, created_at, updated_at,
                                owner_shortname, owner_group_shortname, payload,
@@ -195,8 +194,9 @@ public sealed class UserRepository(IDbConnectionFactory db, AuthzCacheRefresher 
                                is_email_verified, is_msisdn_verified, force_password_change,
                                device_id, google_id, facebook_id, apple_id, social_avatar_url,
                                attempt_count, last_login, notes, query_policies)
-            VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,
-                    {ENUM_CASTS},$24,$25,$26,$27,$28,$29,$30,$31,$32,$33,$34,$35,$36,$37,$38)
+        """;
+
+    private const string UserConflictClause = """
             ON CONFLICT (shortname) DO UPDATE SET
                 space_name = EXCLUDED.space_name,
                 subpath = EXCLUDED.subpath,
@@ -236,55 +236,160 @@ public sealed class UserRepository(IDbConnectionFactory db, AuthzCacheRefresher 
                 last_login = EXCLUDED.last_login,
                 notes = EXCLUDED.notes,
                 query_policies = EXCLUDED.query_policies
-            """);
+        """;
 
-        DbParams.Add(cmd, Guid.Parse(u.Uuid));
-        DbParams.Add(cmd, u.Shortname);
-        DbParams.Add(cmd, u.SpaceName);
-        DbParams.Add(cmd, u.Subpath);
-        DbParams.Add(cmd, u.IsActive);
-        DbParams.Add(cmd, (object?)u.Slug ?? DBNull.Value);
-        AddJsonb(cmd, JsonbHelpers.ToJsonb(u.Displayname));
-        AddJsonb(cmd, JsonbHelpers.ToJsonb(u.Description));
-        AddJsonbNotNull(cmd, JsonbHelpers.ToJsonbList(u.Tags));   // tags is NOT NULL
-        DbParams.Add(cmd, u.CreatedAt == default ? TimeUtils.Now() : u.CreatedAt);
-        DbParams.Add(cmd, TimeUtils.Now());
-        DbParams.Add(cmd, u.OwnerShortname);
-        DbParams.Add(cmd, (object?)u.OwnerGroupShortname ?? DBNull.Value);
-        AddJsonb(cmd, JsonbHelpers.ToJsonb(u.Payload));
-        DbParams.Add(cmd, (object?)u.LastChecksumHistory ?? DBNull.Value);
-        DbParams.Add(cmd, JsonbHelpers.EnumMember(u.ResourceType));
-        DbParams.Add(cmd, (object?)u.Password ?? DBNull.Value);
-        AddJsonbNotNull(cmd, JsonbHelpers.ToJsonbList(u.Roles));   // roles is NOT NULL
-        AddJsonbNotNull(cmd, JsonbHelpers.ToJsonbList(u.Groups));  // groups is NOT NULL
-        AddJsonb(cmd, JsonbHelpers.ToJsonb(u.Acl));
-        AddJsonb(cmd, JsonbHelpers.ToJsonb(u.Relationships));
-        // PG enum values: usertype='web'/'mobile'/'bot', language='ar'/'en'/'ku'/'fr'/'tr'.
-        // Both match the C# enum member names lowercased (UserType.Web→"web", Language.En→"en").
-        DbParams.Add(cmd, JsonbHelpers.EnumNameLower(u.Type));
-        DbParams.Add(cmd, JsonbHelpers.EnumNameLower(u.Language));
-        DbParams.Add(cmd, NullIfEmptyIdentifier(u.Email));
-        DbParams.Add(cmd, NullIfEmptyIdentifier(u.Msisdn));
-        DbParams.Add(cmd, u.LockedToDevice);
-        DbParams.Add(cmd, u.IsEmailVerified);
-        DbParams.Add(cmd, u.IsMsisdnVerified);
-        DbParams.Add(cmd, u.ForcePasswordChange);
-        DbParams.Add(cmd, (object?)u.DeviceId ?? DBNull.Value);
-        DbParams.Add(cmd, (object?)u.GoogleId ?? DBNull.Value);
-        DbParams.Add(cmd, (object?)u.FacebookId ?? DBNull.Value);
-        DbParams.Add(cmd, (object?)u.AppleId ?? DBNull.Value);
-        DbParams.Add(cmd, (object?)u.SocialAvatarUrl ?? DBNull.Value);
-#pragma warning disable CA1508 // Analyzer limitation: int? boxed via (object?) cast IS null when source is null; the ?? is load-bearing.
-        DbParams.Add(cmd, (object?)u.AttemptCount ?? DBNull.Value);
-#pragma warning restore CA1508
-        AddJsonb(cmd, JsonbHelpers.ToJsonb(u.LastLogin));
-        DbParams.Add(cmd, (object?)u.Notes ?? DBNull.Value);
-        DbParams.Add(cmd, u.QueryPolicies.ToArray(), SqlValueKind.TextArray);
+    public async Task UpsertAsync(User u, DbConnection conn, CancellationToken ct = default)
+    {
+        // Populate query_policies deterministically on every write so the
+        // row-level ACL filter (QueryHelper.AppendAclFilter) can match
+        // patterns against it. See EntryRepository.UpsertAsync for the
+        // full rationale — same pattern, same invariant.
+        u = u with { QueryPolicies = Utils.QueryPolicies.Generate(u) };
+
+        await using var cmd = conn.CreateCommand();
+        var tuple = BindUserRow(cmd, u);
+        cmd.CommandText = $"{UserInsertColumns}\nVALUES {tuple}\n{UserConflictClause}";
 
         await cmd.ExecuteNonQueryAsync(ct);
         // user.roles may have changed → clear the in-memory permission cache.
         await refresher.RefreshAsync(ct);
     }
+
+    /// <summary>
+    /// Binds one user's 38 columns and returns the VALUES tuple that reads them.
+    /// </summary>
+    /// <remarks>
+    /// The single-row upsert and the batch restore both call this, so there is
+    /// exactly ONE definition of how a user row is bound. That matters more
+    /// here than anywhere else in the schema: the conflict clause carries
+    /// <c>password = COALESCE(EXCLUDED.password, users.password)</c>, and a
+    /// second hand-written binding that drifted from this one could feed a NULL
+    /// password into a path that wrote it straight through — silently disabling
+    /// every account it claimed to restore.
+    ///
+    /// Placeholders are taken from what DbParams.Add returns rather than
+    /// hardcoded as $1..$38, which is what lets the same binding serve row N of
+    /// a multi-row INSERT.
+    /// </remarks>
+    private static string BindUserRow(DbCommand cmd, User u)
+    {
+        var p = new string[38];
+        var i = 0;
+        p[i++] = DbParams.Add(cmd, Guid.Parse(u.Uuid));
+        p[i++] = DbParams.Add(cmd, u.Shortname);
+        p[i++] = DbParams.Add(cmd, u.SpaceName);
+        p[i++] = DbParams.Add(cmd, u.Subpath);
+        p[i++] = DbParams.Add(cmd, u.IsActive);
+        p[i++] = DbParams.Add(cmd, (object?)u.Slug ?? DBNull.Value);
+        p[i++] = AddJsonb(cmd, JsonbHelpers.ToJsonb(u.Displayname));
+        p[i++] = AddJsonb(cmd, JsonbHelpers.ToJsonb(u.Description));
+        p[i++] = AddJsonbNotNull(cmd, JsonbHelpers.ToJsonbList(u.Tags));   // tags is NOT NULL
+        p[i++] = DbParams.Add(cmd, u.CreatedAt == default ? TimeUtils.Now() : u.CreatedAt);
+        // updated_at is stamped NOW, not carried from the model — existing
+        // behaviour, preserved deliberately so the batch path is not a
+        // behavioural change smuggled in alongside a performance one.
+        p[i++] = DbParams.Add(cmd, TimeUtils.Now());
+        p[i++] = DbParams.Add(cmd, u.OwnerShortname);
+        p[i++] = DbParams.Add(cmd, (object?)u.OwnerGroupShortname ?? DBNull.Value);
+        p[i++] = AddJsonb(cmd, JsonbHelpers.ToJsonb(u.Payload));
+        p[i++] = DbParams.Add(cmd, (object?)u.LastChecksumHistory ?? DBNull.Value);
+        p[i++] = DbParams.Add(cmd, JsonbHelpers.EnumMember(u.ResourceType));
+        p[i++] = DbParams.Add(cmd, (object?)u.Password ?? DBNull.Value);
+        p[i++] = AddJsonbNotNull(cmd, JsonbHelpers.ToJsonbList(u.Roles));   // roles is NOT NULL
+        p[i++] = AddJsonbNotNull(cmd, JsonbHelpers.ToJsonbList(u.Groups));  // groups is NOT NULL
+        p[i++] = AddJsonb(cmd, JsonbHelpers.ToJsonb(u.Acl));
+        p[i++] = AddJsonb(cmd, JsonbHelpers.ToJsonb(u.Relationships));
+        // PG enum values: usertype='web'/'mobile'/'bot', language='ar'/'en'/'ku'/'fr'/'tr'.
+        // Both match the C# enum member names lowercased (UserType.Web→"web", Language.En→"en").
+        p[i++] = DbParams.Add(cmd, JsonbHelpers.EnumNameLower(u.Type));
+        p[i++] = DbParams.Add(cmd, JsonbHelpers.EnumNameLower(u.Language));
+        p[i++] = DbParams.Add(cmd, NullIfEmptyIdentifier(u.Email));
+        p[i++] = DbParams.Add(cmd, NullIfEmptyIdentifier(u.Msisdn));
+        p[i++] = DbParams.Add(cmd, u.LockedToDevice);
+        p[i++] = DbParams.Add(cmd, u.IsEmailVerified);
+        p[i++] = DbParams.Add(cmd, u.IsMsisdnVerified);
+        p[i++] = DbParams.Add(cmd, u.ForcePasswordChange);
+        p[i++] = DbParams.Add(cmd, (object?)u.DeviceId ?? DBNull.Value);
+        p[i++] = DbParams.Add(cmd, (object?)u.GoogleId ?? DBNull.Value);
+        p[i++] = DbParams.Add(cmd, (object?)u.FacebookId ?? DBNull.Value);
+        p[i++] = DbParams.Add(cmd, (object?)u.AppleId ?? DBNull.Value);
+        p[i++] = DbParams.Add(cmd, (object?)u.SocialAvatarUrl ?? DBNull.Value);
+#pragma warning disable CA1508 // Analyzer limitation: int? boxed via (object?) cast IS null when source is null; the ?? is load-bearing.
+        p[i++] = DbParams.Add(cmd, (object?)u.AttemptCount ?? DBNull.Value);
+#pragma warning restore CA1508
+        p[i++] = AddJsonb(cmd, JsonbHelpers.ToJsonb(u.LastLogin));
+        p[i++] = DbParams.Add(cmd, (object?)u.Notes ?? DBNull.Value);
+        p[i++] = DbParams.Add(cmd, u.QueryPolicies.ToArray(), SqlValueKind.TextArray);
+
+        // `type` and `language` are PostgreSQL ENUMs and need the cast; SQLite
+        // stores them as TEXT, where the cast is a syntax error. Same rule as
+        // EnumCasts, applied to this row's own placeholders.
+        if (cmd is not Microsoft.Data.Sqlite.SqliteCommand)
+        {
+            p[21] += "::usertype";
+            p[22] += "::language";
+        }
+
+        return "(" + string.Join(",", p) + ")";
+    }
+
+    /// <summary>
+    /// Upserts many users in batched multi-row INSERTs. Returns rows affected.
+    /// </summary>
+    /// <remarks>
+    /// Built from the SAME <see cref="UserInsertColumns"/>,
+    /// <see cref="UserConflictClause"/> and row binding the single-row upsert
+    /// uses, so the password-preserving COALESCE cannot be lost here — that is
+    /// the whole reason this shares rather than restates.
+    ///
+    /// Batched at <see cref="RestoreBatchRows"/> because users are 38 columns
+    /// wide and both drivers cap bound parameters: PostgreSQL at 65535, SQLite
+    /// lower. 200 rows is 7,600 parameters, comfortably inside both — and the
+    /// limit would otherwise only be hit on a LARGE restore, which is the worst
+    /// time to discover it.
+    ///
+    /// One refresh at the end rather than per row: the cache invalidation is
+    /// in-memory and idempotent, so doing it once is both cheaper and no less
+    /// correct.
+    /// </remarks>
+    [SuppressMessage("Security", "CA2100",
+        Justification = "Audited: SQL is assembled from const literals plus generated placeholder names; every caller-supplied value binds through DbCommand.Parameters.")]
+    public async Task<int> UpsertManyAsync(
+        IReadOnlyList<User> users, CancellationToken ct = default)
+    {
+        if (users.Count == 0) return 0;
+
+        var affected = 0;
+        await using var conn = await db.OpenAsync(ct);
+
+        for (var offset = 0; offset < users.Count; offset += RestoreBatchRows)
+        {
+            ct.ThrowIfCancellationRequested();
+            var take = Math.Min(RestoreBatchRows, users.Count - offset);
+
+            await using var cmd = conn.CreateCommand();
+            var tuples = new string[take];
+            for (var i = 0; i < take; i++)
+            {
+                // query_policies is regenerated per row exactly as the
+                // single-row path does — it is derived state, and a restore
+                // that carried stale policies forward would leave rows
+                // invisible to ACL-filtered reads.
+                var u = users[offset + i];
+                tuples[i] = BindUserRow(cmd, u with { QueryPolicies = Utils.QueryPolicies.Generate(u) });
+            }
+
+            cmd.CommandText =
+                $"{UserInsertColumns}\nVALUES {string.Join(",", tuples)}\n{UserConflictClause}";
+            affected += await cmd.ExecuteNonQueryAsync(ct);
+        }
+
+        await refresher.RefreshAsync(ct);
+        return affected;
+    }
+
+    /// <summary>Users per multi-row INSERT. Bounded by each driver's parameter cap.</summary>
+    internal static int RestoreBatchRows { get; set; } = 200;
 
     // True when the backend can report whether an upsert inserted or updated.
     // PostgreSQL exposes it through the xmax system column; SQLite has no
@@ -1065,15 +1170,13 @@ public sealed class UserRepository(IDbConnectionFactory db, AuthzCacheRefresher 
         await cmd.ExecuteNonQueryAsync(ct);
     }
 
-    private static void AddJsonb(DbCommand cmd, string? json)
-    {
-        DbParams.Add(cmd, (object?)json ?? DBNull.Value, SqlValueKind.Json);
-    }
+    // Return the placeholder so callers building a VALUES tuple can use it;
+    // callers that rely on positional $n simply ignore it.
+    private static string AddJsonb(DbCommand cmd, string? json)
+        => DbParams.Add(cmd, (object?)json ?? DBNull.Value, SqlValueKind.Json);
 
-    private static void AddJsonbNotNull(DbCommand cmd, string json)
-    {
-        DbParams.Add(cmd, json, SqlValueKind.Json);
-    }
+    private static string AddJsonbNotNull(DbCommand cmd, string json)
+        => DbParams.Add(cmd, json, SqlValueKind.Json);
 
     private static User Hydrate(DbDataReader r)
     {

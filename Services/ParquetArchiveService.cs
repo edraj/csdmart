@@ -792,10 +792,7 @@ public sealed class ParquetArchiveService(
             (p, c) => access.UpsertPermissionAsync(p, c, ct),
             replaceExisting, ct);
 
-        var (ui, uk, uf) = await RestoreGlobalAsync(
-            exportDirectory, "users", UserParquetTable.FromTable,
-            (u, c) => users.GetByShortnameAsync(u.Shortname, c, ct), (u, c) => users.UpsertAsync(u, c, ct),
-            replaceExisting, ct);
+        var (ui, uk, uf) = await RestoreUsersAsync(exportDirectory, replaceExisting, ct);
 
         var perTable = new List<ParquetTableResult>
         {
@@ -1096,6 +1093,68 @@ public sealed class ParquetArchiveService(
                 imported, skipped, failed);
 
         return (imported, skipped, failed);
+    }
+
+    // Users get a batched multi-row INSERT rather than one statement per row.
+    // They are the only global table large enough for the difference to matter
+    // — thousands of rows against tens for roles and permissions.
+    //
+    // It reuses UserRepository.UpsertManyAsync, which shares its SQL with the
+    // single-row upsert, so `password = COALESCE(EXCLUDED.password,
+    // users.password)` comes along. That clause is what stops a restore from
+    // NULLing a stored hash when the archive carries none — the case every
+    // pre-Parquet archive hits, since the zip export omits passwords.
+    private async Task<(int Imported, int Skipped, int Failed)> RestoreUsersAsync(
+        string exportDirectory, bool replaceExisting, CancellationToken ct)
+    {
+        var rows = ReadTable(exportDirectory, "users", UserParquetTable.FromTable);
+        if (rows.Count == 0) return (0, 0, 0);
+
+        var toWrite = rows;
+        var skipped = 0;
+
+        if (!replaceExisting)
+        {
+            // Existing rows are filtered out BEFORE the batch, because
+            // ON CONFLICT DO UPDATE would otherwise overwrite them — the batch
+            // has no per-row "skip" the way the sequential path did.
+            await using var conn = await db.OpenAsync(ct);
+            var keep = new List<User>(rows.Count);
+            foreach (var u in rows)
+            {
+                ct.ThrowIfCancellationRequested();
+                if (await users.GetByShortnameAsync(u.Shortname, conn, ct) is not null) { skipped++; continue; }
+                keep.Add(u);
+            }
+            toWrite = keep;
+        }
+
+        try
+        {
+            var affected = await users.UpsertManyAsync(toWrite, ct);
+            log.LogInformation(
+                "parquet import: users — {Imported} imported, {Skipped} skipped", affected, skipped);
+            return (affected, skipped, 0);
+        }
+        catch (Exception ex)
+        {
+            // A batch fails whole, so fall back to per-row to isolate the
+            // offender rather than losing every user in it.
+            log.LogWarning(ex, "parquet import: batched user insert failed; replaying row-by-row");
+            int imported = 0, failed = 0;
+            await using var conn = await db.OpenAsync(ct);
+            foreach (var u in toWrite)
+            {
+                ct.ThrowIfCancellationRequested();
+                try { await users.UpsertAsync(u, conn, ct); imported++; }
+                catch (Exception rowEx)
+                {
+                    failed++;
+                    log.LogWarning(rowEx, "parquet import: failed to restore user {Shortname}", u.Shortname);
+                }
+            }
+            return (imported, skipped, failed);
+        }
     }
 
     // Restores one global table. Same skip/replace rule as entries, and the
