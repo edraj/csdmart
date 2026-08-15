@@ -462,3 +462,22 @@ jobs:
           kill $SERVER_PID 2>/dev/null || true
           wait $SERVER_PID 2>/dev/null || true
           exit $CURL_RC
+
+      - name: Backup/restore round trip (native binary)
+        # Everything this covers was verified by hand once and could regress
+        # silently: that BOTH export formats survive a full cycle, that
+        # attachment MEDIA BYTES survive it, and that a full Parquet backup
+        # restores into a genuinely empty system.
+        #
+        # It restores into FRESH databases rather than wiping and re-importing,
+        # because that is the actual disaster-recovery shape — and it needs no
+        # SQL access, so it runs on SQLite with no service container.
+        #
+        # Ports are keyed per runner like the smoke above: this job runs
+        # concurrently with the matrix legs on the same host. The base is kept
+        # clear of 5432, which the script's third port would otherwise hit.
+        run: |
+          RUNNER_DIGITS=$(printf '%s' "${RUNNER_NAME:-local}" | tr -cd '0-9' | tail -c 3)
+          RT_PORT=$(( 5600 + (10#${RUNNER_DIGITS:-0} % 50) * 4 ))
+          echo "round-trip base port: $RT_PORT"
+          ./.github/scripts/backup-round-trip.sh bin/Release/net10.0/linux-x64/publish "$RT_PORT"

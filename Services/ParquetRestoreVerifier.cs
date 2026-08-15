@@ -173,7 +173,27 @@ public sealed class ParquetRestoreVerifier(
     // query_policies is absent on purpose — see the class comment.
     private static string? CompareEntry(Entry archived, Entry actual)
     {
-        if (archived.Uuid != actual.Uuid) return $"uuid {archived.Uuid} vs {actual.Uuid}";
+        // WHAT IS COMPARED, AND WHY THE REST IS NOT.
+        //
+        // A field is only verifiable if a restore can actually make it match.
+        // Two classes cannot, and comparing either reports a correct restore as
+        // broken:
+        //
+        //   * fields the upsert DOES NOT OVERWRITE — `uuid` and `created_at`.
+        //     Entries upsert on (shortname, space_name, subpath), and the
+        //     conflict clause deliberately omits both: they are stable identity
+        //     a restore preserves rather than rewrites. Restoring over a row
+        //     that already exists therefore keeps the EXISTING values.
+        //
+        //   * fields the write path REGENERATES rather than copies —
+        //     `query_policies`, recomputed on every write.
+        //
+        // Both were found the same way: restoring a full backup over a
+        // freshly-bootstrapped system, whose own startup had already created
+        // the management folders. Verification reported four differing entries
+        // on a restore that was completely correct — first on uuid, then on
+        // created_at. Everything still compared below IS in the conflict
+        // clause, so a mismatch there is a real one.
         if (archived.ResourceType != actual.ResourceType)
             return $"resource_type {archived.ResourceType} vs {actual.ResourceType}";
         if (archived.IsActive != actual.IsActive) return "is_active";
@@ -182,10 +202,11 @@ public sealed class ParquetRestoreVerifier(
         if (archived.State != actual.State) return "state";
         if (archived.IsOpen != actual.IsOpen) return "is_open";
         if (!archived.Tags.SequenceEqual(actual.Tags)) return "tags";
+        // updated_at only — created_at is in the not-overwritten class above.
+        //
         // Compared at MICROSECOND granularity: Parquet TIMESTAMP_MICROS holds 6
         // decimal places and .NET DateTime holds 7, so an exact comparison would
         // flag every row of a correct restore on SQLite.
-        if (archived.CreatedAt.Ticks / 10 != actual.CreatedAt.Ticks / 10) return "created_at";
         if (archived.UpdatedAt.Ticks / 10 != actual.UpdatedAt.Ticks / 10) return "updated_at";
         return null;
     }
