@@ -500,6 +500,103 @@ public class ParquetExportTests : IClassFixture<DmartFactory>, IDisposable
         writer.Write(fs, Dmart.DataAdapters.Parquet.UserParquetTable.BuildPages(rows), rows.Count);
     }
 
+    // ---- raw vs hydrated export ----
+
+    // The export reads JSON columns as RAW strings and writes them straight
+    // through, instead of parsing them into C# objects and serialising them
+    // back. The two paths must agree.
+    //
+    // Compared by what RESTORES, not byte-for-byte: PostgreSQL normalises jsonb
+    // on write (key order, whitespace), so the raw text legitimately differs
+    // from what serialising an object emits. Equal objects after a round trip
+    // is the property a backup actually needs.
+    [FactIfPg]
+    public async Task Raw_And_Hydrated_Exports_Restore_Identically()
+    {
+        await WithSpaceAsync(0, async (svc, space, _) =>
+        {
+            var entries = _factory.Services.GetRequiredService<EntryRepository>();
+
+            // Every JSON-bearing column populated, plus a row with them all
+            // null — the two shapes most likely to diverge between the paths.
+            await entries.UpsertAsync(new Entry
+            {
+                Uuid = Guid.NewGuid().ToString(), Shortname = "rich",
+                SpaceName = space, Subpath = "/", ResourceType = ResourceType.Ticket,
+                IsActive = true, OwnerShortname = "dmart", Slug = "s",
+                Displayname = new Translation { En = "Hello", Ar = "مرحبا" },
+                Description = new Translation { En = "Described" },
+                Tags = ["alpha", "beta"],
+                Acl = [new AclEntry { UserShortname = "alice", AllowedActions = ["view"] }],
+                Payload = new Payload
+                {
+                    ContentType = ContentType.Json,
+                    SchemaShortname = "post",
+                    Body = System.Text.Json.JsonDocument
+                        .Parse("""{"title":"Hi","nested":{"deep":[1,2,3]}}""").RootElement,
+                },
+                Relationships = [new Dictionary<string, object> { ["k"] = "v" }],
+                State = "open", IsOpen = true, WorkflowShortname = "wf",
+                Collaborators = new() { ["reviewer"] = "bob" },
+                ResolutionReason = "done",
+            });
+            await entries.UpsertAsync(new Entry
+            {
+                Uuid = Guid.NewGuid().ToString(), Shortname = "bare",
+                SpaceName = space, Subpath = "/", ResourceType = ResourceType.Content,
+                IsActive = false, OwnerShortname = "dmart",
+            });
+
+            // actor: null takes the raw path; an actor forces the hydrated one.
+            var rawDir = NewDir();
+            await svc.ExportAsync(rawDir, space, "/", actor: null);
+
+            var hydratedDir = NewDir();
+            await svc.ExportAsync(hydratedDir, space, "/", actor: "dmart");
+
+            var fromRaw = ParquetArchiveService.ReadEntries(rawDir)
+                .OrderBy(e => e.Shortname, StringComparer.Ordinal).ToList();
+            var fromHydrated = ParquetArchiveService.ReadEntries(hydratedDir)
+                .OrderBy(e => e.Shortname, StringComparer.Ordinal).ToList();
+
+            fromRaw.Count.ShouldBe(fromHydrated.Count);
+            fromRaw.Count.ShouldBe(2);
+
+            for (var i = 0; i < fromRaw.Count; i++)
+            {
+                var a = fromRaw[i];
+                var b = fromHydrated[i];
+                a.Shortname.ShouldBe(b.Shortname);
+                a.Uuid.ShouldBe(b.Uuid);
+                a.IsActive.ShouldBe(b.IsActive);
+                a.ResourceType.ShouldBe(b.ResourceType);
+                a.Slug.ShouldBe(b.Slug);
+                a.Tags.ShouldBe(b.Tags);
+                a.State.ShouldBe(b.State);
+                a.IsOpen.ShouldBe(b.IsOpen);
+                a.ResolutionReason.ShouldBe(b.ResolutionReason);
+                a.WorkflowShortname.ShouldBe(b.WorkflowShortname);
+                (a.Displayname?.En).ShouldBe(b.Displayname?.En);
+                (a.Displayname?.Ar).ShouldBe(b.Displayname?.Ar);
+                (a.Description?.En).ShouldBe(b.Description?.En);
+                // Written without ?. chaining into ShouldBe: the null-conditional
+                // changes the static type and Shouldly picks the wrong overload.
+                (a.Payload?.ContentType).ShouldBe(b.Payload?.ContentType);
+                (a.Payload?.SchemaShortname).ShouldBe(b.Payload?.SchemaShortname);
+                (a.Acl?.Count).ShouldBe(b.Acl?.Count);
+                (a.Acl?.FirstOrDefault()?.UserShortname).ShouldBe(b.Acl?.FirstOrDefault()?.UserShortname);
+                (a.Relationships?.Count).ShouldBe(b.Relationships?.Count);
+                (a.Collaborators?.Count).ShouldBe(b.Collaborators?.Count);
+
+                // The nested structure is the real test of an opaque JSON
+                // column surviving a path that never parsed it.
+                if (a.Payload?.Body is { } body)
+                    body.GetProperty("nested").GetProperty("deep").EnumerateArray()
+                        .Select(x => x.GetInt32()).ShouldBe([1, 2, 3]);
+            }
+        });
+    }
+
     // ---- verification of the global tables ----
 
     // The verifier used to check entries, attachments and history only — so it

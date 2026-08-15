@@ -448,6 +448,87 @@ public sealed class EntryRepository(IDbConnectionFactory db)
         return rows;
     }
 
+    /// <summary>
+    /// One entry, with its JSON columns left as the RAW strings the database
+    /// returned. For the export path only.
+    /// </summary>
+    /// <remarks>
+    /// The export stores these columns as opaque JSON strings (design §2.2), so
+    /// hydrating them into Payload/Translation/AclEntry objects and serialising
+    /// them straight back is pure loss — measured at roughly 610ms of the 663ms
+    /// a 21,843-entry Parquet export took, against 52ms for the database to
+    /// emit the same rows through COPY.
+    ///
+    /// `query_policies` is the one exception: it is a text[] on PostgreSQL, not
+    /// JSON, so it still has to be converted. It is an array of short strings
+    /// and cheap.
+    /// </remarks>
+    internal sealed record EntryExportRow(
+        string Uuid, string Shortname, string SpaceName, string Subpath, bool IsActive,
+        string? Slug, string? Displayname, string? Description, string? Tags,
+        DateTime CreatedAt, DateTime UpdatedAt, string OwnerShortname, string? OwnerGroupShortname,
+        string? Acl, string? Payload, string? Relationships, string? LastChecksumHistory,
+        string ResourceType, string? State, bool? IsOpen, string? Reporter,
+        string? WorkflowShortname, string? Collaborators, string? ResolutionReason,
+        List<string>? QueryPolicies);
+
+    /// <summary>
+    /// Pages entries for EXPORT, without parsing their JSON columns.
+    /// </summary>
+    /// <remarks>
+    /// Same ordering discipline as every other export pager: uuid, because it
+    /// is unique and paging without a total order silently skips or repeats
+    /// rows. `since` is inclusive and drives the incremental scan (§5.1); null
+    /// exports everything. Index: idx_entries_updated_at when `since` is set,
+    /// otherwise the space_name index.
+    /// </remarks>
+    internal async Task<List<EntryExportRow>> ListForExportPagedAsync(
+        string spaceName, DateTime? since, string? subpath, int limit, int offset,
+        CancellationToken ct = default)
+    {
+        var scoped = !string.IsNullOrEmpty(subpath) && subpath != "/";
+        await using var conn = await db.OpenAsync(ct);
+        await using var cmd = conn.Command($"""
+            {SelectAllColumns}
+            WHERE space_name = $1
+            {(since is null ? "" : "AND updated_at >= $4")}
+            {(scoped ? $"AND (subpath = ${(since is null ? 4 : 5)} OR subpath LIKE ${(since is null ? 4 : 5)} || '/%')" : "")}
+            ORDER BY uuid
+            LIMIT $2 OFFSET $3
+            """);
+        DbParams.Add(cmd, spaceName);
+        DbParams.Add(cmd, limit);
+        DbParams.Add(cmd, offset);
+        if (since is not null) DbParams.Add(cmd, since.Value);
+        if (scoped) DbParams.Add(cmd, subpath!);
+
+        var rows = new List<EntryExportRow>();
+        await using var r = await cmd.ExecuteReaderAsync(ct);
+        while (await r.ReadAsync(ct))
+            rows.Add(new EntryExportRow(
+                r.GetGuid(0).ToString(),
+                r.GetString(1), r.GetString(2), r.GetString(3), r.GetBoolean(4),
+                r.IsDBNull(5) ? null : r.GetString(5),
+                r.IsDBNull(6) ? null : r.GetString(6),
+                r.IsDBNull(7) ? null : r.GetString(7),
+                r.IsDBNull(8) ? null : r.GetString(8),
+                r.GetDateTime(9), r.GetDateTime(10), r.GetString(11),
+                r.IsDBNull(12) ? null : r.GetString(12),
+                r.IsDBNull(13) ? null : r.GetString(13),
+                r.IsDBNull(14) ? null : r.GetString(14),
+                r.IsDBNull(15) ? null : r.GetString(15),
+                r.IsDBNull(16) ? null : r.GetString(16),
+                r.GetString(17),
+                r.IsDBNull(18) ? null : r.GetString(18),
+                r.IsDBNull(19) ? null : r.GetBoolean(19),
+                r.IsDBNull(20) ? null : r.GetString(20),
+                r.IsDBNull(21) ? null : r.GetString(21),
+                r.IsDBNull(22) ? null : r.GetString(22),
+                r.IsDBNull(23) ? null : r.GetString(23),
+                DbParams.ReadTextArray(r.IsDBNull(24) ? null : r.GetValue(24))));
+        return rows;
+    }
+
     // Batched existence probe used by EntryService.ValidateRelationshipsAsync.
     // Returns the set of (space, subpath, shortname) tuples present in
     // `entries`. Type is intentionally NOT part of the key — the entries

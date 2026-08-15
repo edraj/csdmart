@@ -98,6 +98,53 @@ internal static class EntryParquetTable
         Pq.NullableStr(rows, e => Pq.Json(e.QueryPolicies, DmartJsonContext.Default.ListString)),
     ];
 
+    /// <summary>
+    /// Builds pages from RAW database rows, passing JSON columns straight
+    /// through instead of parsing and re-serialising them.
+    /// </summary>
+    /// <remarks>
+    /// Produces the same COLUMNS as the Entry overload, and semantically the
+    /// same values, but not necessarily byte-identical JSON: PostgreSQL
+    /// normalises jsonb on write (key order, whitespace), so the raw text can
+    /// differ from what serialising a C# object would emit. Both deserialise to
+    /// the same objects on restore, which is the property that matters — and
+    /// there is a test asserting exactly that rather than leaving it to
+    /// inspection.
+    ///
+    /// Tags is REQUIRED and never null in the archive: a null column becomes
+    /// "[]" so "no tags" and "unknown" do not collapse on restore.
+    /// </remarks>
+    public static IReadOnlyList<ParquetFileWriter.ColumnPage> BuildPages(
+        IReadOnlyList<EntryRepository.EntryExportRow> rows) =>
+    [
+        Pq.Str(rows, e => e.Shortname),
+        Pq.Str(rows, e => e.Subpath),
+        Pq.Str(rows, e => e.Uuid),
+        Pq.Bool(rows, e => e.IsActive),
+        Pq.NullableStr(rows, e => e.Slug),
+        Pq.NullableStr(rows, e => e.Displayname),
+        Pq.NullableStr(rows, e => e.Description),
+        Pq.Str(rows, e => e.Tags ?? "[]"),
+        Pq.Ts(rows, e => e.CreatedAt),
+        Pq.Ts(rows, e => e.UpdatedAt),
+        Pq.Str(rows, e => e.OwnerShortname),
+        Pq.NullableStr(rows, e => e.OwnerGroupShortname),
+        Pq.NullableStr(rows, e => e.Acl),
+        Pq.NullableStr(rows, e => e.Payload),
+        Pq.NullableStr(rows, e => e.Relationships),
+        Pq.NullableStr(rows, e => e.LastChecksumHistory),
+        Pq.Str(rows, e => e.ResourceType),
+        Pq.NullableStr(rows, e => e.State),
+        Pq.NullableBool(rows, e => e.IsOpen),
+        Pq.NullableStr(rows, e => e.Reporter),
+        Pq.NullableStr(rows, e => e.WorkflowShortname),
+        Pq.NullableStr(rows, e => e.Collaborators),
+        Pq.NullableStr(rows, e => e.ResolutionReason),
+        Pq.NullableStr(rows, e => e.QueryPolicies is null
+            ? null
+            : Pq.JsonAlways(e.QueryPolicies, DmartJsonContext.Default.ListString)),
+    ];
+
     /// <summary>Rebuilds entries from a table produced by <see cref="BuildPages"/>.</summary>
     /// <param name="spaceName">
     /// The partition this file belongs to. Not stored in the file — see the

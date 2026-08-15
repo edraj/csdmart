@@ -17,8 +17,8 @@ Reproduce with `bench/backup-formats.sh <publish-dir> <config.env> [runs]`.
 | Method | Scope | Export | Import | Archive |
 |---|---|---:|---:|---:|
 | zip / JSON | 1 space | 4010 ms | 3861 ms | 19 MB |
-| **Parquet** | 1 space | 663 ms | 1639 ms | **2.0 MB** |
-| **Parquet `--all`** | all spaces + users/roles/perms | 741 ms | 2246 ms | **2.7 MB** |
+| **Parquet** | 1 space | **349 ms** | 1639 ms | **2.0 MB** |
+| **Parquet `--all`** | all spaces + users/roles/perms | 442 ms | 2246 ms | **2.7 MB** |
 | pg_dump `-Fc` (binary + zlib) | whole DB | 139 ms | 1076 ms | 3.6 MB |
 | pg_dump `-Fp` (SQL text) | whole DB | 109 ms | 1072 ms | 33 MB |
 | **`COPY … BINARY`** | dmart tables | **97 ms** | **680 ms** | 28 MB |
@@ -84,30 +84,36 @@ rests on what it can do, not on how small or fast it is:
 If none of those matter to you, `COPY BINARY | zstd` or `pg_dump -Fc` is the
 faster and equally small choice for same-version PostgreSQL recovery.
 
-## Where the export time actually goes
+## Where the export time goes — and what fixing half of it bought
 
-Not in the Parquet encoder. The database emits the same rows an order of
-magnitude faster than dmart can export them:
+The database emits the same rows far faster than dmart can export them:
 
 | | Time | Output |
 |---|---:|---:|
 | `COPY (SELECT * FROM entries WHERE space_name='personal') TO STDOUT` | **52 ms** | 19 MB |
-| dmart Parquet export, same 21,843 rows | 663 ms | 2.0 MB |
+| dmart Parquet export, hydrated (original) | 663 ms | 2.0 MB |
+| dmart Parquet export, **raw JSON passthrough** | **349 ms** | 2.0 MB |
 
-So roughly **610 of those 663 ms are dmart's pipeline**, not encoding. The
-encoder is nowhere near its limit either: 2.0 MB in 663 ms is ~3 MB/s, where
-zstd level 3 runs at hundreds of MB/s.
+The original export parsed every `jsonb` column into a C# object
+(`Payload`, `Translation`, `AclEntry`…) and immediately serialised it back to a
+JSON string — for a format that stores those columns opaquely (§2.2). Pure
+loss. The export now reads them as the raw strings the driver already returns
+and writes them straight through.
 
-The difference is what dmart does that `COPY` does not — page rows through the
-repository, hydrate each into a C# object (parsing every `jsonb` column into
-`Payload`, `Translation`, `AclEntry`…), then **re-serialise those columns back
-to JSON strings** for the opaque-string representation §2.2 chose. `COPY` ships
-the bytes the heap already holds.
+**1.9× faster, byte-identical archive.**
 
-**The format is not the cost; the object model is.** Anyone wanting this export
-to approach `COPY` speed should attack the hydrate-then-reserialise round trip
-for JSON columns — pure loss for an export that stores them opaquely anyway —
-not the Parquet writer.
+Worth recording precisely because the prediction was wrong: this report
+previously estimated ~610 ms of the 663 ms was that round trip. Removing it
+saved **314 ms**, so it was roughly HALF the overhead. The remaining ~300 ms
+above the `COPY` floor is paging round trips, ADO.NET reads, and the Parquet
+encoding itself.
+
+The raw path is used only when there is **no actor**. An ACL-filtered export
+still goes through the Query pipeline, because that is where the policy
+predicate lives, and skipping it to go faster would hand a caller rows it
+cannot see. A test asserts both paths restore to identical objects — compared
+by what restores rather than byte-for-byte, since PostgreSQL normalises `jsonb`
+key order on write and the raw text legitimately differs.
 
 ## The comparison the timings do not make
 
@@ -138,6 +144,116 @@ zip restore cannot recover logins.
 disaster recovery where minutes matter; `parquet --all` for portable, verifiable
 backups and anything incremental; `zip` only where the on-disk JSON layout is
 the requirement.
+
+## PostgreSQL-native commands, in full
+
+Every option measured above, as runnable commands. `$PG` stands for
+`-h HOST -p PORT -U USER`; set `PGPASSWORD` or use `~/.pggass`.
+
+### pg_dump — custom format (binary, compressed, restores selectively)
+
+```bash
+# Backup. -Fc is binary AND zlib-compressed; -Z0..9 tunes it (default 6).
+pg_dump $PG -d dmart -Fc -f dmart.pgc
+
+# Faster and smaller than the default zlib, on PostgreSQL 16+:
+pg_dump $PG -d dmart -Fc -Z zstd:3 -f dmart.pgc
+
+# Restore into an empty database.
+createdb $PG dmart_restored
+pg_restore $PG -d dmart_restored --no-owner dmart.pgc
+
+# Parallel restore — the single biggest win on a large database.
+pg_restore $PG -d dmart_restored --no-owner -j 8 dmart.pgc
+```
+
+### pg_dump — directory format (parallel dump AND parallel restore)
+
+```bash
+# -Fd is the only format pg_dump can write in parallel.
+pg_dump $PG -d dmart -Fd -j 8 -Z zstd:3 -f dmart.dumpdir
+pg_restore $PG -d dmart_restored --no-owner -j 8 dmart.dumpdir
+```
+
+### pg_dump — plain SQL text, compressed externally
+
+```bash
+pg_dump $PG -d dmart -Fp | zstd -3 -T0 > dmart.sql.zst    # fastest useful ratio
+pg_dump $PG -d dmart -Fp | gzip -6     > dmart.sql.gz     # widest compatibility
+
+# Restore (psql reads SQL; pg_restore cannot read -Fp output).
+zstd -dc dmart.sql.zst | psql $PG -d dmart_restored
+```
+
+### COPY … BINARY — per table, fastest, least portable
+
+```bash
+TABLES="users spaces roles permissions entries attachments histories"
+
+# Dump. Client-side (TO STDOUT) so no superuser and no server-side file access.
+for t in $TABLES; do
+  psql $PG -d dmart -c "COPY $t TO STDOUT WITH (FORMAT BINARY)" \
+    | zstd -3 -T0 > "$t.bin.zst"
+done
+
+# Restore. The target needs the SCHEMA first — COPY carries data only.
+dmart migrate                     # or: pg_dump $PG -d dmart -s | psql $PG -d dmart_restored
+for t in $TABLES; do              # order matters: users before anything owning rows
+  zstd -dc "$t.bin.zst" \
+    | psql $PG -d dmart_restored -c "COPY $t FROM STDIN WITH (FORMAT BINARY)"
+done
+```
+
+**Two warnings on `COPY … BINARY`.** Its format is bound to the exact column
+list and types of the source table, so *any* schema change between dump and
+load makes it unloadable — it is a fast transfer, not an archive. And the load
+order above is not cosmetic: `owner_shortname` is a foreign key into `users`,
+so users must land first or every content row fails.
+
+### COPY … CSV — portable, human-readable, slower
+
+```bash
+psql $PG -d dmart -c "\copy entries TO 'entries.csv' WITH (FORMAT CSV, HEADER)"
+psql $PG -d dmart_restored -c "\copy entries FROM 'entries.csv' WITH (FORMAT CSV, HEADER)"
+```
+
+### Physical backup — the whole cluster, point-in-time capable
+
+```bash
+# Not comparable to anything above: copies the data directory, not rows.
+# Restores the entire cluster at once, and supports PITR with WAL archiving.
+pg_basebackup $PG -D /backup/base -Ft -z -Xs -P
+```
+
+### Speed levers that matter more than the format
+
+```bash
+# Parallelism, on both ends (-Fd or -Fc only):
+pg_dump ... -Fd -j "$(nproc)"        pg_restore ... -j "$(nproc)"
+
+# Skip index and constraint rebuilds during load, then build them once:
+pg_restore ... --section=pre-data --section=data
+pg_restore ... --section=post-data -j 8
+
+# Data only, into a schema that already exists:
+pg_dump $PG -d dmart --data-only -Fc -f data.pgc
+```
+
+Index rebuilding usually dominates a large restore. `-j` and deferring
+`post-data` are worth more than any choice of compression codec — measured on
+the same database as everything above:
+
+| Command | Time | Size |
+|---|---:|---:|
+| `pg_dump -Fc` (default zlib) | 139 ms | 3.6 MB |
+| `pg_dump -Fc -Z zstd:3` | 138 ms | 3.4 MB |
+| `pg_dump -Fd -j 8 -Z zstd:3` | **99 ms** | 3.4 MB |
+| `pg_restore` (serial) | 1076 ms | |
+| **`pg_restore -j 8`** | **553 ms** | |
+
+**`-j 8` nearly halves the restore** — a bigger win than any codec choice here,
+and the one flag most worth adding to an existing backup script. Verified by
+restoring and counting rows (22,096 entries), not just by timing the command.
 
 ## Caveats
 
