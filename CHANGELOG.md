@@ -7,6 +7,16 @@
   same thing — an audit row recording no change — so leaving them behind meant
   the cleanup only half-worked. The count is still broken out separately.
 
+- Parquet export reads entries through a streaming `COPY` on PostgreSQL instead
+  of walking the table with `LIMIT/OFFSET`. **2.6x faster on 218,430 entries**
+  (4034 ms to 1571 ms); no measurable change at 21,843, where three pages leave
+  nothing to win. `OFFSET` makes PostgreSQL scan and discard everything before
+  it, so the paged reader is quadratic in table size while the streamed one is
+  linear — the gap widens as the install grows. Guarded by a column-type check
+  against the live catalog; on a mismatch it falls back to the paged reader with
+  a warning rather than failing, because a schema change should make an export
+  slower, not impossible.
+
 ## v1.2.1 — 2026-08-15
 
 A patch release: one new maintenance command, and the RPM build repaired.

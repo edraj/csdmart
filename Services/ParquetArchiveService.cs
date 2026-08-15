@@ -382,24 +382,61 @@ public sealed class ParquetArchiveService(
                 // created_at, so an increment built on it would miss exactly the
                 // rows it exists to carry.
                 var remaining = clientQuery.Limit > 0 ? clientQuery.Limit : int.MaxValue;
-                var offset = 0;
-                while (remaining > 0)
+
+                // STREAMED path: one binary COPY instead of a LIMIT/OFFSET walk.
+                // PostgreSQL only, and only when the whole space is wanted —
+                // a client Limit is a different question from "back this up".
+                //
+                // The guard is a TYPE check, not a column-list check: the COPY
+                // names its columns, so added or reordered columns cannot shift
+                // the stream, but a column changing type would change the binary
+                // representation while the names still line up. On mismatch this
+                // FALLS BACK rather than failing — a schema change should make an
+                // export slower, never impossible.
+                var streamed = false;
+                if (db is Db && remaining == int.MaxValue)
                 {
-                    ct.ThrowIfCancellationRequested();
-                    var take = Math.Min(ImportExportService.ExportPageSize, remaining);
-                    var page = await entries.ListForExportPagedAsync(
-                        spaceName, since, subpath, take, offset, ct);
-                    if (page.Count == 0) break;
-
-                    foreach (var row in page)
+                    var mismatch = await entries.ExportSchemaMismatchAsync(ct);
+                    if (mismatch is null)
                     {
-                        raw.Add(row);
-                        if (raw.Count >= RowGroupRows) FlushRaw();
+                        await foreach (var row in entries.StreamForExportAsync(
+                                           spaceName, since, subpath, ct))
+                        {
+                            raw.Add(row);
+                            if (raw.Count >= RowGroupRows) FlushRaw();
+                        }
+                        streamed = true;
                     }
+                    else
+                    {
+                        log.LogWarning(
+                            "parquet export: falling back to the paged reader — {Mismatch}. "
+                            + "The export is correct, just slower; the COPY reader's column "
+                            + "types need updating to match the schema.", mismatch);
+                    }
+                }
 
-                    offset += page.Count;
-                    remaining -= page.Count;
-                    if (page.Count < take) break;
+                if (!streamed)
+                {
+                    var offset = 0;
+                    while (remaining > 0)
+                    {
+                        ct.ThrowIfCancellationRequested();
+                        var take = Math.Min(ImportExportService.ExportPageSize, remaining);
+                        var page = await entries.ListForExportPagedAsync(
+                            spaceName, since, subpath, take, offset, ct);
+                        if (page.Count == 0) break;
+
+                        foreach (var row in page)
+                        {
+                            raw.Add(row);
+                            if (raw.Count >= RowGroupRows) FlushRaw();
+                        }
+
+                        offset += page.Count;
+                        remaining -= page.Count;
+                        if (page.Count < take) break;
+                    }
                 }
                 if (raw.Count > 0) FlushRaw();
             }

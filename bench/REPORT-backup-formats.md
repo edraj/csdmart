@@ -158,6 +158,31 @@ saved **314 ms**, so it was roughly HALF the overhead. The remaining ~300 ms
 above the `COPY` floor is paging round trips, ADO.NET reads, and the Parquet
 encoding itself.
 
+### And then the paged reader was replaced too — for a reason this fixture hides
+
+The "~300 ms remaining" above breaks down further: entries and histories leave
+the database in **49 ms** and **22 ms**, so roughly 280 ms of a 350 ms export is
+the encoder and the writer, not reading.
+
+Replacing the `LIMIT/OFFSET` walk with a single streaming `COPY` measured
+**353 ms — no change at all**. `ExportPageSize` is 10,000, so 21,843 rows is
+three round trips; there was nothing left to win at this size.
+
+It ships anyway, because the fixture is too small to show the mechanism that
+matters. `OFFSET` makes PostgreSQL scan and discard every row before it, so the
+paged reader's cost grows with the square of the table. Walking a 1,000,000-row
+table in 100,000-row pages against streaming the same rows once:
+
+| | Time |
+|---|---:|
+| `LIMIT/OFFSET` walk, 10 pages | 1868 ms |
+| single streaming `COPY` | **373 ms** |
+
+**5× on the read at 1M rows, nothing at 21k.** The design targets installations
+far larger than this fixture, and that is precisely where the paged reader falls
+over. Measured rather than assumed, because at fixture size the change looks
+like pure complexity for zero gain — and at fixture size, it is.
+
 The raw path is used only when there is **no actor**. An ACL-filtered export
 still goes through the Query pipeline, because that is where the policy
 predicate lives, and skipping it to go faster would hand a caller rows it
