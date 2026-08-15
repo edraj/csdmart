@@ -37,6 +37,9 @@ public sealed class ParquetRestoreVerifier(
     EntryRepository entries,
     AttachmentRepository attachments,
     HistoryRepository histories,
+    SpaceRepository spaces,
+    UserRepository users,
+    AccessRepository access,
     ILogger<ParquetRestoreVerifier> log)
 {
     /// <summary>Problems recorded before the list stops growing.</summary>
@@ -121,6 +124,125 @@ public sealed class ParquetRestoreVerifier(
                 if (liveUuids.Contains(archived.Uuid)) continue;
                 missing++;
                 Report($"history row missing: {archived.Uuid} ({archived.SpaceName}{archived.Subpath}/{archived.Shortname})");
+            }
+        }
+
+        // ---- global tables ----
+        //
+        // These carry the accounts and the ACL, so "did the restore land?" is
+        // least answerable without them — and the users table is the one whose
+        // silent failure disables logins.
+        //
+        // NOTE on what is NOT compared here, beyond uuid/created_at/
+        // query_policies: `updated_at` is stamped TimeUtils.Now() on write for
+        // ALL FOUR of these tables, unlike entries which honour the model's
+        // value. Comparing it would fail every row of a correct restore.
+        foreach (var archived in ParquetArchiveService.ReadSpaces(exportDirectory))
+        {
+            ct.ThrowIfCancellationRequested();
+            checkedRows++;
+            var actual = await spaces.GetAsync(archived.Shortname, ct);
+            if (actual is null)
+            {
+                missing++;
+                Report($"space missing: {archived.Shortname}");
+                continue;
+            }
+            if (archived.IsActive != actual.IsActive
+                || archived.OwnerShortname != actual.OwnerShortname
+                || archived.Slug != actual.Slug
+                || archived.PrimaryWebsite != actual.PrimaryWebsite
+                || archived.IndexingEnabled != actual.IndexingEnabled)
+            {
+                mismatched++;
+                Report($"space differs: {archived.Shortname}");
+            }
+        }
+
+        foreach (var archived in ParquetArchiveService.ReadUsers(exportDirectory))
+        {
+            ct.ThrowIfCancellationRequested();
+            checkedRows++;
+            var actual = await users.GetByShortnameAsync(archived.Shortname, ct);
+            if (actual is null)
+            {
+                missing++;
+                Report($"user missing: {archived.Shortname}");
+                continue;
+            }
+
+            // The PASSWORD check is the point of verifying users at all: a
+            // restore that lands the row but drops the hash disables the
+            // account, and nothing else would notice.
+            //
+            // Only checked when the ARCHIVE carries one. A null archived
+            // password legitimately leaves the stored hash in place — that is
+            // what `password = COALESCE(EXCLUDED.password, users.password)`
+            // guarantees, and every pre-Parquet archive has nulls because the
+            // zip export omits the column.
+            if (archived.Password is not null && archived.Password != actual.Password)
+            {
+                mismatched++;
+                Report($"user password differs: {archived.Shortname} — the archived hash was not restored");
+                continue;
+            }
+
+            if (archived.IsActive != actual.IsActive
+                || archived.Email != actual.Email
+                || archived.Msisdn != actual.Msisdn
+                || archived.Type != actual.Type
+                || archived.Language != actual.Language
+                || !archived.Roles.OrderBy(r => r, StringComparer.Ordinal)
+                       .SequenceEqual(actual.Roles.OrderBy(r => r, StringComparer.Ordinal))
+                || !archived.Groups.OrderBy(g => g, StringComparer.Ordinal)
+                       .SequenceEqual(actual.Groups.OrderBy(g => g, StringComparer.Ordinal)))
+            {
+                mismatched++;
+                Report($"user differs: {archived.Shortname}");
+            }
+        }
+
+        foreach (var archived in ParquetArchiveService.ReadRoles(exportDirectory))
+        {
+            ct.ThrowIfCancellationRequested();
+            checkedRows++;
+            var actual = await access.GetRoleAsync(archived.Shortname, ct);
+            if (actual is null)
+            {
+                missing++;
+                Report($"role missing: {archived.Shortname}");
+                continue;
+            }
+            // Permissions are what a role GRANTS, so a role restored without
+            // them is an authorisation hole that looks like a success.
+            if (archived.IsActive != actual.IsActive
+                || !archived.Permissions.OrderBy(x => x, StringComparer.Ordinal)
+                       .SequenceEqual(actual.Permissions.OrderBy(x => x, StringComparer.Ordinal)))
+            {
+                mismatched++;
+                Report($"role differs: {archived.Shortname}");
+            }
+        }
+
+        foreach (var archived in ParquetArchiveService.ReadPermissions(exportDirectory))
+        {
+            ct.ThrowIfCancellationRequested();
+            checkedRows++;
+            var actual = await access.GetPermissionAsync(archived.Shortname, ct);
+            if (actual is null)
+            {
+                missing++;
+                Report($"permission missing: {archived.Shortname}");
+                continue;
+            }
+            if (archived.IsActive != actual.IsActive
+                || !archived.Actions.OrderBy(x => x, StringComparer.Ordinal)
+                       .SequenceEqual(actual.Actions.OrderBy(x => x, StringComparer.Ordinal))
+                || !archived.ResourceTypes.OrderBy(x => x, StringComparer.Ordinal)
+                       .SequenceEqual(actual.ResourceTypes.OrderBy(x => x, StringComparer.Ordinal)))
+            {
+                mismatched++;
+                Report($"permission differs: {archived.Shortname}");
             }
         }
 

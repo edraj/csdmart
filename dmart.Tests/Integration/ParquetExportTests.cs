@@ -500,6 +500,145 @@ public class ParquetExportTests : IClassFixture<DmartFactory>, IDisposable
         writer.Write(fs, Dmart.DataAdapters.Parquet.UserParquetTable.BuildPages(rows), rows.Count);
     }
 
+    // ---- verification of the global tables ----
+
+    // The verifier used to check entries, attachments and history only — so it
+    // could not answer the question with the most at stake: did the USERS
+    // restore? A user row that lands without its hash disables the account, and
+    // nothing downstream notices.
+    [FactIfPg]
+    public async Task Verification_Detects_A_User_Whose_Hash_Was_Not_Restored()
+    {
+        var svc = _factory.Services.GetRequiredService<ParquetArchiveService>();
+        var users = _factory.Services.GetRequiredService<UserRepository>();
+        _factory.CreateClient();
+
+        var shortname = "vfy" + Guid.NewGuid().ToString("N")[..6];
+        await users.UpsertAsync(new User
+        {
+            Uuid = Guid.NewGuid().ToString(), Shortname = shortname,
+            SpaceName = "management", Subpath = "/users",
+            IsActive = true, OwnerShortname = "dmart",
+            Password = "$argon2id$v=19$m=65536$archived$hash",
+        });
+
+        try
+        {
+            var dir = NewDir();
+            await svc.ExportAllAsync(dir, verify: false);
+
+            // Simulate a restore that dropped the hash: the archive holds one,
+            // the database does not.
+            var live = (await users.GetByShortnameAsync(shortname))!;
+            await users.UpsertAsync(live with { Password = "$argon2id$v=19$m=65536$different$hash" });
+
+            var check = await Verifier().VerifyAsync(dir);
+
+            check.Ok.ShouldBeFalse();
+            check.Problems.ShouldContain(p => p.Contains("password differs", StringComparison.Ordinal)
+                                           && p.Contains(shortname, StringComparison.Ordinal));
+        }
+        finally { try { await users.DeleteAsync(shortname); } catch { } }
+    }
+
+    // A NULL archived password must NOT be reported as a mismatch: the restore
+    // deliberately leaves the stored hash alone, so flagging it would fail a
+    // correct restore of every pre-Parquet archive.
+    [FactIfPg]
+    public async Task Verification_Ignores_A_Null_Archived_Password()
+    {
+        var svc = _factory.Services.GetRequiredService<ParquetArchiveService>();
+        var users = _factory.Services.GetRequiredService<UserRepository>();
+        _factory.CreateClient();
+
+        var shortname = "vfyn" + Guid.NewGuid().ToString("N")[..6];
+        await users.UpsertAsync(new User
+        {
+            Uuid = Guid.NewGuid().ToString(), Shortname = shortname,
+            SpaceName = "management", Subpath = "/users",
+            IsActive = true, OwnerShortname = "dmart",
+            Password = "$argon2id$v=19$m=65536$stored$hash",
+        });
+
+        try
+        {
+            var dir = NewDir();
+            await svc.ExportAllAsync(dir, verify: false);
+
+            var rows = ReadUsersFromArchive(dir);
+            var idx = rows.FindIndex(u => u.Shortname == shortname);
+            rows[idx] = rows[idx] with { Password = null };
+            RewriteUsersFile(dir, rows);
+
+            var check = await Verifier().VerifyAsync(dir);
+
+            check.Problems.ShouldNotContain(p => p.Contains(shortname, StringComparison.Ordinal),
+                "a null archived password is preserved by COALESCE, not a mismatch");
+        }
+        finally { try { await users.DeleteAsync(shortname); } catch { } }
+    }
+
+    // A role restored without its permissions is an authorisation hole that
+    // looks like a successful restore.
+    [FactIfPg]
+    public async Task Verification_Detects_A_Role_Missing_Its_Permissions()
+    {
+        var svc = _factory.Services.GetRequiredService<ParquetArchiveService>();
+        var access = _factory.Services.GetRequiredService<AccessRepository>();
+        _factory.CreateClient();
+
+        var shortname = "vrole" + Guid.NewGuid().ToString("N")[..6];
+        await access.UpsertRoleAsync(new Role
+        {
+            Uuid = Guid.NewGuid().ToString(), Shortname = shortname,
+            SpaceName = "management", Subpath = "/roles",
+            IsActive = true, OwnerShortname = "dmart",
+            Permissions = ["perm_a", "perm_b"],
+        });
+
+        try
+        {
+            var dir = NewDir();
+            await svc.ExportAllAsync(dir, verify: false);
+
+            var live = (await access.GetRoleAsync(shortname))!;
+            await access.UpsertRoleAsync(live with { Permissions = [] });
+
+            var check = await Verifier().VerifyAsync(dir);
+
+            check.Ok.ShouldBeFalse();
+            check.Problems.ShouldContain(p => p.Contains("role differs", StringComparison.Ordinal)
+                                           && p.Contains(shortname, StringComparison.Ordinal));
+        }
+        finally { try { await access.DeleteRoleAsync(shortname); } catch { } }
+    }
+
+    // A deleted global row must be reported as missing, not merely as differing.
+    [FactIfPg]
+    public async Task Verification_Detects_A_Deleted_User()
+    {
+        var svc = _factory.Services.GetRequiredService<ParquetArchiveService>();
+        var users = _factory.Services.GetRequiredService<UserRepository>();
+        _factory.CreateClient();
+
+        var shortname = "vdel" + Guid.NewGuid().ToString("N")[..6];
+        await users.UpsertAsync(new User
+        {
+            Uuid = Guid.NewGuid().ToString(), Shortname = shortname,
+            SpaceName = "management", Subpath = "/users",
+            IsActive = true, OwnerShortname = "dmart",
+        });
+
+        var dir = NewDir();
+        await svc.ExportAllAsync(dir, verify: false);
+        await users.DeleteAsync(shortname);
+
+        var check = await Verifier().VerifyAsync(dir);
+        check.Missing.ShouldBeGreaterThan(0);
+        check.Problems.ShouldContain(p => p.Contains("user missing", StringComparison.Ordinal)
+                                       && p.Contains(shortname, StringComparison.Ordinal));
+    }
+
     // ---- tombstone retention floor (§5.2) ----
 
     // An increment chained from a watermark predating tombstone recording

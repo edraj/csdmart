@@ -1321,6 +1321,22 @@ public sealed class ParquetArchiveService(
             (t, space) => AttachmentParquetTable.FromTable(t, space), manifest.SpaceName);
     }
 
+    /// <summary>Reads the users an export wrote, hashes included.</summary>
+    public static List<User> ReadUsers(string exportDirectory) =>
+        ReadTable(exportDirectory, "users", UserParquetTable.FromTable);
+
+    /// <summary>Reads the spaces an export wrote.</summary>
+    public static List<Space> ReadSpaces(string exportDirectory) =>
+        ReadTable(exportDirectory, "spaces", SpaceParquetTable.FromTable);
+
+    /// <summary>Reads the roles an export wrote.</summary>
+    public static List<Role> ReadRoles(string exportDirectory) =>
+        ReadTable(exportDirectory, "roles", RoleParquetTable.FromTable);
+
+    /// <summary>Reads the permissions an export wrote.</summary>
+    public static List<Permission> ReadPermissions(string exportDirectory) =>
+        ReadTable(exportDirectory, "permissions", PermissionParquetTable.FromTable);
+
     /// <summary>Reads the history rows an export wrote.</summary>
     public static List<HistoryRow> ReadHistoryRows(string exportDirectory)
     {

@@ -200,10 +200,15 @@ internal static class CliBootstrap
         var dialect = db is SqliteConnectionFactory
             ? (Dmart.QueryGrammar.ISqlDialect)Dmart.QueryGrammar.SqliteSqlDialect.Instance
             : Dmart.QueryGrammar.PostgresSqlDialect.Instance;
+        var refresher = new AuthzCacheRefresher();
+        var userRepo = new UserRepository(db, refresher, new SessionTokenHasher(s));
         return new ParquetRestoreVerifier(
             new EntryRepository(db),
             new AttachmentRepository(db, dialect),
             new HistoryRepository(db, dialect),
+            new SpaceRepository(db),
+            userRepo,
+            new AccessRepository(db, dialect, refresher, userRepo),
             nlog.CreateLogger<ParquetRestoreVerifier>());
     }
 
