@@ -817,13 +817,21 @@ switch (subcommand)
         {
             if (string.IsNullOrEmpty(targetPath))
             {
-                Bail("Usage: dmart import <export-directory> --parquet [-r] [--verify]");
+                Bail("Usage: dmart import <export-directory> --parquet [-r] [--verify]\n"
+                     + "       --drop-indexes  drop the GIN indexes for the load and rebuild them\n"
+                     + "                       after. PostgreSQL only, and only worth it on LARGE\n"
+                     + "                       restores (it costs a few percent below ~200k rows).\n"
+                     + "                       Those indexes are missing while it runs, so use a\n"
+                     + "                       maintenance window.");
                 return;
             }
 
             var (qs, qdb) = CliBootstrap.BuildFactoryOrExit(dotenvPath, dotenvValues);
             var archive = CliBootstrap.BuildParquetArchiveService(qs, qdb);
-            var result = await archive.ImportAsync(targetPath, replace);
+            // --drop-indexes trades query availability during the restore for
+            // load speed, exactly as it does for the zip importer.
+            var result = await archive.ImportAsync(
+                targetPath, replace, serverArgs.Contains("--drop-indexes"));
 
             // Per table, not one aggregate: "imported 900" across five tables
             // does not tell an operator whether the users landed.

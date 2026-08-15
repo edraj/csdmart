@@ -1688,4 +1688,69 @@ public class ParquetExportTests : IClassFixture<DmartFactory>, IDisposable
         }
         finally { try { await spaces.DeleteAsync(space); } catch { } }
     }
+
+    // --drop-indexes on the Parquet restore.
+    //
+    // The property that matters is not "it was faster" — it is that the
+    // indexes are ALL BACK when the call returns. An import that leaves the
+    // GIN indexes dropped is a database that silently sequential-scans every
+    // query afterwards, with nothing in the schema saying why.
+    [FactIfPg]
+    public async Task DropIndexes_Rebuilds_Every_Index_It_Dropped()
+    {
+        await WithSpaceAsync(5, async (svc, space, shortnames) =>
+        {
+            var dir = NewDir();
+            await svc.ExportAsync(dir, space, "/", actor: null);
+
+            var before = await GinIndexNamesAsync();
+            before.ShouldNotBeEmpty(
+                "the fixture has no GIN indexes, so this test would pass vacuously");
+
+            var result = await svc.ImportAsync(dir, replaceExisting: true, dropIndexes: true);
+            result.Failed.ShouldBe(0);
+            result.For("entries").Imported.ShouldBe(shortnames.Count);
+
+            (await GinIndexNamesAsync()).ShouldBe(before);
+        });
+    }
+
+    // The rebuild is in a finally, and this is the case that proves it: a
+    // restore that throws part-way must still hand the database back intact.
+    [FactIfPg]
+    public async Task DropIndexes_Rebuilds_Even_When_The_Import_Throws()
+    {
+        var svc = _factory.Services.GetRequiredService<ParquetArchiveService>();
+        _factory.CreateClient();
+
+        var before = await GinIndexNamesAsync();
+        before.ShouldNotBeEmpty();
+
+        var missing = NewDir();  // never created — the import cannot read it
+        await Should.ThrowAsync<Exception>(
+            svc.ImportAsync(missing, replaceExisting: true, dropIndexes: true));
+
+        (await GinIndexNamesAsync()).ShouldBe(before);
+    }
+
+    private async Task<List<string>> GinIndexNamesAsync()
+    {
+        var db = _factory.Services.GetRequiredService<Db>();
+        await using var conn = await db.OpenAsync();
+        await using var cmd = conn.CreateCommand();
+        cmd.CommandText = """
+            SELECT i.indexname FROM pg_indexes i
+            JOIN pg_class c ON c.relname = i.indexname
+                           AND c.relnamespace = i.schemaname::regnamespace
+            JOIN pg_am   am ON am.oid = c.relam
+            WHERE i.schemaname = 'public'
+              AND i.tablename IN ('entries', 'attachments')
+              AND am.amname = 'gin'
+            ORDER BY i.indexname
+            """;
+        var names = new List<string>();
+        await using var r = await cmd.ExecuteReaderAsync();
+        while (await r.ReadAsync()) names.Add(r.GetString(0));
+        return names;
+    }
 }

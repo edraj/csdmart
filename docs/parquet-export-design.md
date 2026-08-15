@@ -320,6 +320,19 @@ blob is rehashed against its own name. It roughly doubles read I/O, which is
 the right trade — a backup nobody has read is one you are guessing about.
 `--no-verify` opts out.
 
+A restore is `dmart import <dir> --parquet [-r] [--verify] [--drop-indexes]`.
+`--drop-indexes` drops the secondary indexes on `entries`/`attachments` for the
+duration of the load and rebuilds them afterwards, which is the same lever the
+zip importer offers, and it is a **large-restore** lever only: measured on a
+21,843-entry restore it cost 3% (1632 ms vs 1578 ms), because the one-off GIN
+rebuild dominates a small table. The crossover is around 200k rows (~1.2x);
+at 4M rows load-then-rebuild came out ~5.6x ahead. Those indexes are also
+**missing while it runs**, so it belongs in a maintenance window, and it is
+PostgreSQL-only (ignored, with a warning, on SQLite). Unlike the zip importer
+this path keeps **no checkpoint**: a hard kill between the drop and the rebuild
+leaves them gone with no durable record, so the rebuild SQL is logged *before*
+the drop and an operator can replay it from the log.
+
 `space_name=<s>` is Hive-style partitioning — what DuckDB and Spark expect
 (`read_parquet('entries/**/*.parquet', hive_partitioning=true)`) and also the
 natural unit for a per-space restore. A restore takes each file's space from
