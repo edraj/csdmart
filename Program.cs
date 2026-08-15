@@ -760,10 +760,11 @@ switch (subcommand)
         //
         // A failed export leaves a partial .zip that looks like a backup, so
         // remove it. Better no file than a file that lies.
+        int exportFailures;
         try
         {
             await using (var fileStream = File.Create(outputPath))
-                await exportService.ExportToAsync(fileStream, spaceName!, "/", actor: null);
+                exportFailures = await exportService.ExportToAsync(fileStream, spaceName!, "/", actor: null);
         }
         catch
         {
@@ -771,6 +772,21 @@ switch (subcommand)
             throw;
         }
         Console.WriteLine($"Exported space '{spaceName}' to {outputPath}");
+
+        // A per-entry failure costs that entry's metadata, its attachments AND
+        // its history, and the archive is still a readable zip — so without
+        // this an incomplete backup is indistinguishable from a complete one
+        // until someone tries to restore it. A pipeline reads the exit code.
+        if (exportFailures > 0)
+        {
+            var subject = exportFailures == 1
+                ? "1 entry is MISSING from the archive, along with its attachments and history"
+                : $"{exportFailures} entries are MISSING from the archive, along with their "
+                  + "attachments and history";
+            Console.Error.WriteLine(
+                $"WARNING: {subject} — see the warnings above. This archive is INCOMPLETE.");
+            Environment.ExitCode = 1;
+        }
         return;
     }
 

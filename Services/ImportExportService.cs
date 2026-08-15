@@ -110,7 +110,7 @@ public sealed class ImportExportService(
         }, actor, ct);
 
     /// <summary>Space/subpath convenience form of <see cref="ExportToAsync"/>.</summary>
-    public Task ExportToAsync(
+    public Task<int> ExportToAsync(
         Stream destination, string spaceName, string? subpath, string? actor, CancellationToken ct = default)
         => ExportToAsync(destination, new Query
         {
@@ -135,11 +135,16 @@ public sealed class ImportExportService(
     /// writes sequentially and emits data descriptors when it cannot rewind to
     /// patch sizes into local headers.
     /// </remarks>
-    public async Task ExportToAsync(
+    /// <returns>
+    /// How many entries FAILED to emit. Non-zero means the archive is
+    /// incomplete — it is still a valid zip, and still restores, just with less
+    /// in it than the source had.
+    /// </returns>
+    public async Task<int> ExportToAsync(
         Stream destination, Query clientQuery, string? actor, CancellationToken ct = default)
     {
         using var zip = new ZipArchive(destination, ZipArchiveMode.Create, leaveOpen: true);
-        await ExportInternalAsync(zip, clientQuery, actor, ct);
+        return await ExportInternalAsync(zip, clientQuery, actor, ct);
     }
 
     /// <summary>
@@ -195,8 +200,10 @@ public sealed class ImportExportService(
         }
     }
 
-    private async Task ExportInternalAsync(ZipArchive zip, Query clientQuery, string? actor, CancellationToken ct)
+    /// <summary>Writes the archive. Returns how many entries FAILED to emit.</summary>
+    private async Task<int> ExportInternalAsync(ZipArchive zip, Query clientQuery, string? actor, CancellationToken ct)
     {
+        var failed = 0;
         var spaceName = clientQuery.SpaceName;
         var subpath = string.IsNullOrEmpty(clientQuery.Subpath) ? "/" : clientQuery.Subpath;
 
@@ -206,7 +213,7 @@ public sealed class ImportExportService(
         if (actor is not null)
         {
             policies = await perms.BuildUserQueryPoliciesAsync(actor, spaceName, subpath, ct);
-            if (policies.Count == 0) return; // empty archive
+            if (policies.Count == 0) return 0; // empty archive
         }
 
         // 1. Space meta under `{space}/.dm/meta.space.json`.
@@ -249,11 +256,19 @@ public sealed class ImportExportService(
                 try { await WriteEntryAsync(zip, entry, spaceName, ct); }
                 catch (Exception ex)
                 {
+                    // Counted, not just logged. One bad row costs that entry's
+                    // metadata, its attachments AND its history — and before
+                    // this the archive still reported success, so a partial
+                    // backup was indistinguishable from a complete one until
+                    // someone tried to restore it.
+                    failed++;
                     log.LogWarning(ex, "export: failed to emit entry {Space}/{Subpath}/{Shortname}",
                         entry.SpaceName, entry.Subpath, entry.Shortname);
                 }
             },
             ct);
+
+        return failed;
     }
 
     // Walk EVERY row a query matches, a page at a time.
@@ -555,7 +570,15 @@ public sealed class ImportExportService(
         };
         List<HistoryRecord> rows;
         try { rows = await histories.QueryHistoryAsync(q, ct); }
-        catch (Exception ex) { log.LogWarning(ex, "history export skipped"); return; }
+        catch (Exception ex)
+        {
+            // Rethrow so the caller counts this entry as failed. Silently
+            // dropping an entry's audit trail while its content exports fine
+            // produces an archive that looks complete and is not.
+            log.LogWarning(ex, "history export failed for {Space}{Subpath}/{Shortname}",
+                parent.SpaceName, parent.Subpath, parent.Shortname);
+            throw;
+        }
         if (rows.Count == 0) return;
 
         // Deliberately still bounded, unlike every other export query. Paging
