@@ -1,5 +1,14 @@
 # Changelog
 
+## Unreleased
+
+- `dmart prune-empty-histories [--space <name>] [--dry-run]` — deletes history
+  rows whose diff is an empty object. Those are audit records that nothing
+  changed, written before the empty-diff append was fixed; no current writer
+  produces them. Deletes are tombstoned, so incremental Parquet consumers learn
+  the rows are gone instead of silently keeping them. Rows with a NULL diff are
+  a different, older shape and are reported rather than removed.
+
 ## v1.2.0 — 2026-08-15
 
 Two large pieces of work land here: **SQLite as a second database backend**,

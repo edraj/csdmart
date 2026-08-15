@@ -76,7 +76,6 @@ done
 
 # Config sample
 install -D -m 0644 config.env.sample %{buildroot}/usr/share/dmart/config.env.sample
-/usr/share/dmart/config.env.packaged
 # The packaged default seeded into /etc on first install — SQLite-backed, so a
 # fresh install serves without standing up a database server. The sample above
 # stays the full annotated key reference.

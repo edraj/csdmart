@@ -572,7 +572,8 @@ Four things this must get right, all of them easy to get wrong:
    ideally asserted at export time ("oldest retained tombstone is newer than
    your watermark — deletions may have been lost").
 
-**Pruning — `dmart prune-tombstones --older-than <days> [--dry-run]`.**
+**Pruning — `dmart prune-tombstones --older-than <days> [--dry-run]`**
+(operator guide: [maintenance.md](./maintenance.md)).
 `deletions` is append-only; nothing removed rows before this command existed.
 The prune deletes tombstones older than the cutoff **and raises `floor_at` to
 that same cutoff, in one transaction**. That pairing is the whole point:
