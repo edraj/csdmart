@@ -148,7 +148,44 @@ the requirement.
 ## PostgreSQL-native commands, in full
 
 Every option measured above, as runnable commands. `$PG` stands for
-`-h HOST -p PORT -U USER`; set `PGPASSWORD` or use `~/.pggass`.
+`-h HOST -p PORT -U USER`; set `PGPASSWORD` or use `~/.pgpass`.
+
+Everything here was executed against the benchmark database before being
+written down, **except the `pg_basebackup` restore** — that one stops and
+replaces a running cluster, so it is transcribed from the PostgreSQL manual and
+has not been run. Treat it as a checklist to verify on a throwaway cluster, not
+as tested copy-paste.
+
+### dmart's own formats
+
+```bash
+# --- Parquet: one space, or a subfolder of one ---
+dmart export myspace --parquet --output myspace-backup
+dmart export myspace --parquet --subpath /docs --output docs-backup
+dmart import myspace-backup --parquet -r --verify     # -r overwrites; --verify re-reads both sides
+
+# --- Parquet: full backup, verified on write ---
+dmart export --all --parquet --output nightly
+dmart import nightly --parquet -r --verify
+
+# --- Parquet: incremental, chained off a previous run ---
+#     --since takes the previous export DIRECTORY, not a timestamp: the
+#     watermark that makes the two runs overlap lives in its manifest.
+dmart export myspace --parquet --since nightly --output nightly-inc
+dmart import nightly-inc --parquet -r            # apply increments in order
+
+# --- Parquet: reclaim blobs a fixed --output has accumulated ---
+dmart export myspace --parquet --output nightly --gc-blobs --dry-run
+dmart export myspace --parquet --output nightly --gc-blobs
+
+# --- zip / JSON: one space, on-disk dmart layout ---
+dmart export myspace --output myspace.zip
+dmart import myspace.zip -r
+```
+
+A restore into an EMPTY system needs `--all`: a scoped export carries content
+only, and its rows reference users that must already exist. The CLI says so
+after every scoped export rather than letting it surface at restore time.
 
 ### pg_dump — custom format (binary, compressed, restores selectively)
 
@@ -172,6 +209,8 @@ pg_restore $PG -d dmart_restored --no-owner -j 8 dmart.pgc
 ```bash
 # -Fd is the only format pg_dump can write in parallel.
 pg_dump $PG -d dmart -Fd -j 8 -Z zstd:3 -f dmart.dumpdir
+
+createdb $PG dmart_restored
 pg_restore $PG -d dmart_restored --no-owner -j 8 dmart.dumpdir
 ```
 
@@ -181,8 +220,15 @@ pg_restore $PG -d dmart_restored --no-owner -j 8 dmart.dumpdir
 pg_dump $PG -d dmart -Fp | zstd -3 -T0 > dmart.sql.zst    # fastest useful ratio
 pg_dump $PG -d dmart -Fp | gzip -6     > dmart.sql.gz     # widest compatibility
 
-# Restore (psql reads SQL; pg_restore cannot read -Fp output).
-zstd -dc dmart.sql.zst | psql $PG -d dmart_restored
+# Restore. psql reads SQL; pg_restore CANNOT read -Fp output, and there is no
+# parallelism here — the file is replayed statement by statement.
+createdb $PG dmart_restored
+zstd -dc dmart.sql.zst | psql $PG -d dmart_restored      # for the .zst above
+gzip -dc dmart.sql.gz  | psql $PG -d dmart_restored      # for the .gz above
+
+# -v ON_ERROR_STOP=1 is worth adding: without it psql prints errors and keeps
+# going, so a half-restored database exits 0.
+zstd -dc dmart.sql.zst | psql $PG -v ON_ERROR_STOP=1 -d dmart_restored
 ```
 
 ### COPY … BINARY — per table, fastest, least portable
@@ -197,6 +243,7 @@ for t in $TABLES; do
 done
 
 # Restore. The target needs the SCHEMA first — COPY carries data only.
+createdb $PG dmart_restored
 dmart migrate                     # or: pg_dump $PG -d dmart -s | psql $PG -d dmart_restored
 for t in $TABLES; do              # order matters: users before anything owning rows
   zstd -dc "$t.bin.zst" \
@@ -220,10 +267,43 @@ psql $PG -d dmart_restored -c "\copy entries FROM 'entries.csv' WITH (FORMAT CSV
 ### Physical backup — the whole cluster, point-in-time capable
 
 ```bash
-# Not comparable to anything above: copies the data directory, not rows.
-# Restores the entire cluster at once, and supports PITR with WAL archiving.
+# Not comparable to anything above: copies the DATA DIRECTORY, not rows. It
+# restores the entire cluster at once — every database, every role — and it is
+# the only option here that supports point-in-time recovery.
 pg_basebackup $PG -D /backup/base -Ft -z -Xs -P
 ```
+
+Restoring one is a **server-level** operation, not a client command:
+
+```bash
+# 1. Stop the server. Restoring into a running cluster corrupts it.
+sudo systemctl stop postgresql
+
+# 2. Move the old data directory aside — do NOT delete it until the restore
+#    is verified. $PGDATA is e.g. /var/lib/pgsql/18/data.
+sudo mv "$PGDATA" "$PGDATA.old"
+sudo -u postgres mkdir -p "$PGDATA" && sudo chmod 700 "$PGDATA"
+
+# 3. Unpack. -Ft -z produces base.tar.gz plus one tar per extra tablespace.
+sudo -u postgres tar -xzf /backup/base/base.tar.gz -C "$PGDATA"
+
+# 4. For POINT-IN-TIME recovery only: replay archived WAL up to a target.
+#    Needs archive_mode/archive_command to have been configured BEFORE the
+#    backup — a base backup alone cannot do PITR.
+sudo -u postgres tee -a "$PGDATA/postgresql.auto.conf" <<'CONF'
+restore_command = 'cp /backup/wal/%f %p'
+recovery_target_time = '2026-08-15 03:00:00'
+CONF
+sudo -u postgres touch "$PGDATA/recovery.signal"
+
+# 5. Start, and watch it come out of recovery before trusting it.
+sudo systemctl start postgresql
+sudo -u postgres psql -c "SELECT pg_is_in_recovery();"   # expect false when done
+```
+
+Version-locked in a way none of the others are: a base backup restores only to
+the **same PostgreSQL major version** on a compatible platform, because it is
+the on-disk format, not a logical dump.
 
 ### Speed levers that matter more than the format
 
