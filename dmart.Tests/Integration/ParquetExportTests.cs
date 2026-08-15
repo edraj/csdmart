@@ -749,7 +749,7 @@ public class ParquetExportTests : IClassFixture<DmartFactory>, IDisposable
         _factory.CreateClient();
         await using var conn = await db.OpenAsync();
 
-        var floor = await Tombstones.ReadRetentionFloorAsync(conn, default);
+        var floor = await Tombstones.ReadRetentionFloorAsync(conn, null, default);
         floor.ShouldNotBeNull("schema init must seed the floor, or the check cannot work");
 
         // A watermark from before the floor is exactly the "chain started on an
@@ -766,7 +766,7 @@ public class ParquetExportTests : IClassFixture<DmartFactory>, IDisposable
         _factory.CreateClient();
         await using var conn = await db.OpenAsync();
 
-        var first = await Tombstones.ReadRetentionFloorAsync(conn, default);
+        var first = await Tombstones.ReadRetentionFloorAsync(conn, null, default);
 
         await using (var cmd = conn.CreateCommand())
         {
@@ -776,8 +776,166 @@ public class ParquetExportTests : IClassFixture<DmartFactory>, IDisposable
             await cmd.ExecuteNonQueryAsync();
         }
 
-        (await Tombstones.ReadRetentionFloorAsync(conn, default))
+        (await Tombstones.ReadRetentionFloorAsync(conn, null, default))
             .ShouldBe(first, "ON CONFLICT DO NOTHING must keep the original floor");
+    }
+
+    // ---- tombstone pruning ----
+
+    // The prune deletes rows AND raises the floor. The floor move is the part
+    // worth testing: without it the table keeps claiming completeness for a
+    // window whose tombstones are gone, and the next increment reads zero
+    // deletions and reports success — the exact silent drift §5.2 exists to
+    // prevent.
+    [FactIfPg]
+    public async Task Pruning_Tombstones_Raises_The_Retention_Floor()
+    {
+        var svc = _factory.Services.GetRequiredService<ParquetArchiveService>();
+        var dbf = _factory.Services.GetRequiredService<IDbConnectionFactory>();
+        _factory.CreateClient();
+
+        var space = "pqtomb_" + Guid.NewGuid().ToString("N")[..8];
+        await using (var conn = await dbf.OpenAsync())
+        {
+            // Schema init seeds the floor at FIRST RUN, so on a fresh database
+            // it is already newer than any sane cutoff and the prune would
+            // rightly leave it alone. Age it first: this test is about a
+            // long-lived system, which is the only kind that needs pruning.
+            await using (var seed = conn.CreateCommand())
+            {
+                DbParams.Add(seed, Dmart.Utils.TimeUtils.Now().AddDays(-200));
+                seed.CommandText = "UPDATE deletion_retention SET floor_at = $1 WHERE id = 1";
+                await seed.ExecuteNonQueryAsync();
+            }
+
+            // An OLD tombstone (beyond the window) and a RECENT one.
+            foreach (var (sn, at) in new[]
+                     { ("old", Dmart.Utils.TimeUtils.Now().AddDays(-90)), ("recent", Dmart.Utils.TimeUtils.Now().AddDays(-1)) })
+            {
+                await using var cmd = conn.CreateCommand();
+                DbParams.Add(cmd, space); DbParams.Add(cmd, sn); DbParams.Add(cmd, at);
+                cmd.CommandText =
+                    "INSERT INTO deletions (table_name, space_name, subpath, shortname, "
+                    + "resource_type, deleted_at) VALUES ('entries', $1, '/', $2, 'content', $3)";
+                await cmd.ExecuteNonQueryAsync();
+            }
+        }
+
+        var result = await svc.PruneTombstonesAsync(TimeSpan.FromDays(30));
+
+        result.Removed.ShouldBeGreaterThanOrEqualTo(1);
+        result.FloorAfter.ShouldNotBeNull();
+        // Microsecond tolerance: both engines store timestamps at µs precision
+        // while .NET ticks are 100ns, so the value read back is the cutoff
+        // truncated — not a different instant.
+        result.FloorAfter!.Value.ShouldBe(result.Cutoff, TimeSpan.FromMilliseconds(1));
+
+        await using (var conn = await dbf.OpenAsync())
+        {
+            // The old one is gone; the recent one — still inside the window an
+            // increment may need — survives.
+            (await CountTombstonesAsync(conn, space, "old")).ShouldBe(0);
+            (await CountTombstonesAsync(conn, space, "recent")).ShouldBe(1);
+        }
+    }
+
+    // A prune cannot un-know deletions, so a cutoff EARLIER than the current
+    // floor must leave it alone. Moving it backwards would claim a completeness
+    // this database never had.
+    [FactIfPg]
+    public async Task Pruning_To_An_Older_Cutoff_Does_Not_Lower_The_Floor()
+    {
+        var svc = _factory.Services.GetRequiredService<ParquetArchiveService>();
+        _factory.CreateClient();
+
+        var dbf = _factory.Services.GetRequiredService<IDbConnectionFactory>();
+        await using (var conn = await dbf.OpenAsync())
+        await using (var seed = conn.CreateCommand())
+        {
+            DbParams.Add(seed, Dmart.Utils.TimeUtils.Now().AddDays(-200));
+            seed.CommandText = "UPDATE deletion_retention SET floor_at = $1 WHERE id = 1";
+            await seed.ExecuteNonQueryAsync();
+        }
+
+        var first = await svc.PruneTombstonesAsync(TimeSpan.FromDays(30));
+        var second = await svc.PruneTombstonesAsync(TimeSpan.FromDays(3650));
+
+        second.Cutoff.ShouldBeLessThan(first.Cutoff);
+        second.FloorAfter!.Value.ShouldBe(first.FloorAfter!.Value, TimeSpan.FromMilliseconds(1));
+    }
+
+    // A dry run reports and changes nothing — including the floor, which is the
+    // easy half to get wrong.
+    [FactIfPg]
+    public async Task A_Dry_Run_Prune_Changes_Nothing()
+    {
+        var svc = _factory.Services.GetRequiredService<ParquetArchiveService>();
+        var dbf = _factory.Services.GetRequiredService<IDbConnectionFactory>();
+        _factory.CreateClient();
+
+        var space = "pqdry_" + Guid.NewGuid().ToString("N")[..8];
+        await using (var conn = await dbf.OpenAsync())
+        {
+            await using var cmd = conn.CreateCommand();
+            DbParams.Add(cmd, space); DbParams.Add(cmd, Dmart.Utils.TimeUtils.Now().AddDays(-90));
+            cmd.CommandText =
+                "INSERT INTO deletions (table_name, space_name, subpath, shortname, "
+                + "resource_type, deleted_at) VALUES ('entries', $1, '/', 'old', 'content', $2)";
+            await cmd.ExecuteNonQueryAsync();
+        }
+
+        var result = await svc.PruneTombstonesAsync(TimeSpan.FromDays(30), dryRun: true);
+
+        result.DryRun.ShouldBeTrue();
+        result.Removed.ShouldBeGreaterThanOrEqualTo(1);
+        result.FloorAfter.ShouldBe(result.FloorBefore);
+        await using (var conn = await dbf.OpenAsync())
+            (await CountTombstonesAsync(conn, space, "old")).ShouldBe(1);
+    }
+
+    // Zero or negative retention would prune to now-or-later, discarding every
+    // tombstone including ones no increment has carried yet.
+    [FactIfPg]
+    public async Task A_Non_Positive_Retention_Is_Refused()
+    {
+        var svc = _factory.Services.GetRequiredService<ParquetArchiveService>();
+        _factory.CreateClient();
+        await Should.ThrowAsync<ArgumentOutOfRangeException>(
+            svc.PruneTombstonesAsync(TimeSpan.Zero));
+    }
+
+    // `dmart migrate` creates deletion_retention but does NOT seed the row —
+    // only a server start does. On such a database an UPDATE matches nothing,
+    // so a prune would leave the floor unknown right after making it knowable.
+    // Found by running the CLI against a migrated database, not by a unit test.
+    [FactIfPg]
+    public async Task Pruning_Establishes_The_Floor_When_The_Row_Is_Missing()
+    {
+        var svc = _factory.Services.GetRequiredService<ParquetArchiveService>();
+        var dbf = _factory.Services.GetRequiredService<IDbConnectionFactory>();
+        _factory.CreateClient();
+
+        await using (var conn = await dbf.OpenAsync())
+        await using (var del = conn.CreateCommand())
+        {
+            del.CommandText = "DELETE FROM deletion_retention WHERE id = 1";
+            await del.ExecuteNonQueryAsync();
+        }
+
+        var result = await svc.PruneTombstonesAsync(TimeSpan.FromDays(30));
+
+        result.FloorBefore.ShouldBeNull("precondition: the row was removed");
+        result.FloorAfter.ShouldNotBeNull("a prune must leave the floor KNOWN");
+        result.FloorAfter!.Value.ShouldBe(result.Cutoff, TimeSpan.FromMilliseconds(1));
+    }
+
+    private static async Task<int> CountTombstonesAsync(
+        System.Data.Common.DbConnection conn, string space, string shortname)
+    {
+        await using var cmd = conn.CreateCommand();
+        DbParams.Add(cmd, space); DbParams.Add(cmd, shortname);
+        cmd.CommandText = "SELECT COUNT(*) FROM deletions WHERE space_name = $1 AND shortname = $2";
+        return Convert.ToInt32(await cmd.ExecuteScalarAsync());
     }
 
     // ---- blob garbage collection ----

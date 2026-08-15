@@ -543,6 +543,19 @@ Four things this must get right, all of them easy to get wrong:
    ideally asserted at export time ("oldest retained tombstone is newer than
    your watermark — deletions may have been lost").
 
+**Pruning — `dmart prune-tombstones --older-than <days> [--dry-run]`.**
+`deletions` is append-only; nothing removed rows before this command existed.
+The prune deletes tombstones older than the cutoff **and raises `floor_at` to
+that same cutoff, in one transaction**. That pairing is the whole point:
+deleting tombstones destroys the ability to answer "what was deleted since X"
+for any X inside the pruned window, and moving the floor is what turns a
+silent wrong answer into the warning above. The floor only ever moves forward,
+so a cutoff older than the current floor leaves it alone.
+
+The window is a REQUIRED argument with no default. It is coupled to your
+incremental cadence by rule 4, and only the operator knows that cadence — a
+default here would be a guess whose failure mode is silent data drift.
+
 Both backends need it, so the DDL goes in `SqlSchema.cs` **and**
 `SqliteSchema.cs`.
 

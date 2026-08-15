@@ -548,6 +548,60 @@ public sealed class ParquetArchiveService(
         return new ParquetTableManifest("histories", [relative], rows);
     }
 
+    /// <summary>
+    /// Deletes tombstones older than <paramref name="retention"/>, raising the
+    /// retention floor to the same cutoff.
+    /// </summary>
+    /// <remarks>
+    /// The floor move is the whole reason this is not just a DELETE. Pruning
+    /// tombstones destroys the ability to answer "what was deleted since X"
+    /// for any X inside the pruned window; raising the floor is what turns
+    /// that from a silent wrong answer into a warning on the next increment.
+    ///
+    /// RETENTION MUST EXCEED THE INCREMENT CADENCE (§5.2 rule 4). Pruning to a
+    /// cutoff newer than the last increment discards deletions that increment
+    /// still needed, so the caller picks the window and lives with it — there
+    /// is no safe default this could apply on its own.
+    /// </remarks>
+    public async Task<TombstonePruneResult> PruneTombstonesAsync(
+        TimeSpan retention, bool dryRun = false, CancellationToken ct = default)
+    {
+        if (retention <= TimeSpan.Zero)
+            throw new ArgumentOutOfRangeException(
+                nameof(retention),
+                "retention must be positive — pruning to now or later would discard every "
+                + "tombstone, including deletions no increment has carried yet");
+
+        var cutoff = TimeUtils.Now() - retention;
+        await using var conn = await db.OpenAsync(ct);
+        var floorBefore = await Tombstones.ReadRetentionFloorAsync(conn, null, ct);
+
+        if (dryRun)
+        {
+            await using var count = conn.CreateCommand();
+            DbParams.Add(count, cutoff);
+            count.CommandText = "SELECT COUNT(*) FROM deletions WHERE deleted_at < $1";
+            var n = Convert.ToInt32(await count.ExecuteScalarAsync(ct));
+            log.LogInformation(
+                "tombstone prune (dry run): {Count} row(s) older than {Cutoff:o} would be removed "
+                + "and the retention floor raised from {Floor:o}",
+                n, cutoff, floorBefore);
+            return new TombstonePruneResult(n, cutoff, floorBefore, floorBefore, DryRun: true);
+        }
+
+        // One transaction: the delete and the floor move are a single fact
+        // about what this database can still attest to.
+        await using var tx = await conn.BeginTransactionAsync(ct);
+        var removed = await Tombstones.PruneAsync(conn, tx, cutoff, ct);
+        var floorAfter = await Tombstones.ReadRetentionFloorAsync(conn, tx, ct);
+        await tx.CommitAsync(ct);
+
+        log.LogInformation(
+            "tombstone prune: removed {Count} row(s) older than {Cutoff:o}; retention floor now {Floor:o}",
+            removed, cutoff, floorAfter);
+        return new TombstonePruneResult(removed, cutoff, floorBefore, floorAfter, DryRun: false);
+    }
+
     // §5.2's last rule, made checkable: an increment can only carry deletions
     // that were RECORDED, and nothing was recorded before the retention floor.
     //
@@ -559,7 +613,7 @@ public sealed class ParquetArchiveService(
     private async Task WarnIfWatermarkPredatesTombstonesAsync(DateTime since, CancellationToken ct)
     {
         await using var conn = await db.OpenAsync(ct);
-        var floor = await Tombstones.ReadRetentionFloorAsync(conn, ct);
+        var floor = await Tombstones.ReadRetentionFloorAsync(conn, null, ct);
 
         if (floor is null)
         {
@@ -1508,6 +1562,10 @@ public sealed record ParquetExportManifest(
 /// </param>
 /// <param name="Freed">Bytes reclaimed, or that would be by a real run.</param>
 public sealed record BlobGcResult(int Kept, int Removed, long Freed);
+
+/// <summary>What a tombstone prune removed, and where it left the floor.</summary>
+public sealed record TombstonePruneResult(
+    int Removed, DateTime Cutoff, DateTime? FloorBefore, DateTime? FloorAfter, bool DryRun);
 
 public sealed record ParquetImportResult(
     int Imported, int Skipped, int Failed, int Total,

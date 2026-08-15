@@ -212,6 +212,14 @@ switch (subcommand)
               serve          Start the HTTP server
                              Options: --cxb-config <path>
               migrate        Create/update the PG schema (idempotent; no server)
+              prune-tombstones
+                             Delete tombstones older than a window and raise the
+                             retention floor to match, bounding the growth of the
+                             append-only `deletions` table.
+                             Usage: dmart prune-tombstones --older-than <days>
+                                                           [--dry-run]
+                             Choose a window LONGER than your incremental export
+                             interval — see docs/parquet-export-design.md §5.2.
               version        Print version and build info
               settings       Print effective settings as JSON
               passwd         Set password for a user. Shortname can be passed
@@ -1366,6 +1374,49 @@ switch (subcommand)
         //   dmart cli s <script_file>           # Script mode
         var exitCode = await Dmart.Cli.CliRunner.RunAsync(serverArgs);
         Environment.ExitCode = exitCode;
+        return;
+    }
+
+    case "prune-tombstones":
+    {
+        // Bounds the growth of the `deletions` table, which is append-only:
+        // every content-removing delete writes a row and nothing removed them
+        // before this command existed.
+        //
+        // The retention window is REQUIRED rather than defaulted. §5.2 rule 4
+        // couples it to the incremental export cadence — pruning to a cutoff
+        // newer than the last increment discards deletions that increment
+        // still needed — and only the operator knows that cadence. A default
+        // here would be a guess with silent data-drift as its failure mode.
+        var olderIdx = Array.IndexOf(serverArgs, "--older-than");
+        var daysArg = olderIdx >= 0 && olderIdx + 1 < serverArgs.Length
+            ? serverArgs[olderIdx + 1] : null;
+        if (!int.TryParse(daysArg, out var days) || days <= 0)
+        {
+            Console.Error.WriteLine(
+                "Usage: dmart prune-tombstones --older-than <days> [--dry-run]\n"
+                + "  Deletes tombstones older than <days> and raises the retention floor\n"
+                + "  to match, so a later incremental export whose watermark falls inside\n"
+                + "  the pruned window WARNS instead of silently reading zero deletions.\n"
+                + "  Choose a window LONGER than your incremental export interval.");
+            Environment.ExitCode = 1;
+            return;
+        }
+
+        var (ps, pdb) = CliBootstrap.BuildFactoryOrExit(dotenvPath, dotenvValues);
+        var parchive = CliBootstrap.BuildParquetArchiveService(ps, pdb);
+        var pruned = await parchive.PruneTombstonesAsync(
+            TimeSpan.FromDays(days), serverArgs.Contains("--dry-run"));
+
+        Console.WriteLine(pruned.DryRun
+            ? $"Dry run: {pruned.Removed} tombstone(s) older than {pruned.Cutoff:o} would be removed"
+            : $"Removed {pruned.Removed} tombstone(s) older than {pruned.Cutoff:o}");
+        Console.WriteLine(
+            $"Retention floor: {pruned.FloorBefore:o} -> {pruned.FloorAfter:o}");
+        if (!pruned.DryRun)
+            Console.WriteLine(
+                "Incremental exports with a watermark before the new floor can no longer "
+                + "account for deletions; take a full export to resynchronise those.");
         return;
     }
 

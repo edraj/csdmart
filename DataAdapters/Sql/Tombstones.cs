@@ -29,8 +29,10 @@ namespace Dmart.DataAdapters.Sql;
 //      the two cannot disagree about what was removed.
 //
 //   4. Retention must exceed the increment cadence. Pruning tombstones older
-//      than the gap between runs silently loses deletes. Nothing here prunes;
-//      that is deliberate, and the coupling is documented in §5.2.
+//      than the gap between runs silently loses deletes. PruneAsync therefore
+//      raises the retention floor to whatever it pruned to, in the same
+//      transaction, so a watermark inside the pruned window WARNS instead of
+//      reading zero deletions and reporting success. §5.2.
 //
 // Ordering note: the INSERT ... SELECT must run BEFORE the DELETE, because it
 // reads the rows the DELETE is about to remove.
@@ -92,12 +94,68 @@ internal static class Tombstones
     /// the whole mechanism exists to prevent.
     /// </remarks>
     public static async Task<DateTime?> ReadRetentionFloorAsync(
-        DbConnection conn, CancellationToken ct)
+        DbConnection conn, DbTransaction? tx, CancellationToken ct)
     {
         await using var cmd = conn.CreateCommand();
+        cmd.Transaction = tx;
         cmd.CommandText = "SELECT floor_at FROM deletion_retention WHERE id = 1";
         var value = await cmd.ExecuteScalarAsync(ct);
         return value is null or DBNull ? null : Convert.ToDateTime(value);
+    }
+
+    /// <summary>
+    /// Deletes tombstones older than <paramref name="cutoff"/> and raises the
+    /// retention floor to it. Returns how many rows were removed.
+    /// </summary>
+    /// <remarks>
+    /// THE TWO HALVES ARE ONE OPERATION, and the transaction is the point.
+    ///
+    /// `floor_at` is the instant from which tombstone recording is COMPLETE.
+    /// Deleting rows below a cutoff without raising the floor to match leaves
+    /// the table claiming a completeness it no longer has: an increment whose
+    /// watermark lands in the pruned window would read zero deletions and
+    /// report success, which is precisely the silent drift §5.2 exists to
+    /// prevent. Raising the floor makes that same increment WARN instead.
+    ///
+    /// So the floor only ever moves FORWARD — a prune cannot un-know deletions,
+    /// and a cutoff earlier than the current floor leaves it untouched.
+    /// </remarks>
+    public static async Task<int> PruneAsync(
+        DbConnection conn, DbTransaction? tx, DateTime cutoff, CancellationToken ct)
+    {
+        int removed;
+        await using (var del = conn.CreateCommand())
+        {
+            del.Transaction = tx;
+            DbParams.Add(del, cutoff);
+            del.CommandText = "DELETE FROM deletions WHERE deleted_at < $1";
+            removed = await del.ExecuteNonQueryAsync(ct);
+        }
+
+        // Read-then-write rather than a MAX() inside the UPDATE: SQLite keeps
+        // floor_at as TEXT and PostgreSQL as timestamp, so an in-SQL max would
+        // compare a bound DateTime against a text column on one engine and not
+        // the other. The caller's transaction makes the pair atomic, which is
+        // what actually matters.
+        var current = await ReadRetentionFloorAsync(conn, tx, ct);
+        if (current is not null && current >= cutoff)
+            return removed;
+
+        await using (var floor = conn.CreateCommand())
+        {
+            floor.Transaction = tx;
+            DbParams.Add(floor, cutoff);
+            // UPSERT, not UPDATE. `dmart migrate` creates the table but does
+            // NOT seed the row — only a server start does — so on a
+            // migrate-only database an UPDATE matches nothing and silently
+            // leaves the floor unknown after a prune that just made it
+            // knowable. Caught by running the CLI against a migrated database.
+            floor.CommandText =
+                "INSERT INTO deletion_retention (id, floor_at) VALUES (1, $1) "
+                + "ON CONFLICT (id) DO UPDATE SET floor_at = $1";
+            await floor.ExecuteNonQueryAsync(ct);
+        }
+        return removed;
     }
 
     /// <summary>
