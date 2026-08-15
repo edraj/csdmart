@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## v1.2.0 — 2026-08-15
 
 Two large pieces of work land here: **SQLite as a second database backend**,
 and **Parquet as a backup/restore format**. Everything else is fixes and
