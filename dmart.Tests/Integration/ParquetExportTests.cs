@@ -359,6 +359,147 @@ public class ParquetExportTests : IClassFixture<DmartFactory>, IDisposable
         });
     }
 
+    // ---- user restore and the password hash ----
+
+    // THE credential-safety test. An archive whose `password` is NULL must not
+    // overwrite a stored hash — that is what
+    // `password = COALESCE(EXCLUDED.password, users.password)` protects, and a
+    // bulk path that dropped the clause would silently disable every account it
+    // claimed to restore, reporting success.
+    //
+    // NULL passwords are not hypothetical: the ZIP export omits the column
+    // entirely, so every pre-Parquet archive carries them.
+    [FactIfPg]
+    public async Task Restoring_A_User_Without_A_Password_Keeps_The_Stored_Hash()
+    {
+        var svc = _factory.Services.GetRequiredService<ParquetArchiveService>();
+        var users = _factory.Services.GetRequiredService<UserRepository>();
+        _factory.CreateClient();
+
+        var shortname = "pwkeep" + Guid.NewGuid().ToString("N")[..6];
+        await users.UpsertAsync(new User
+        {
+            Uuid = Guid.NewGuid().ToString(), Shortname = shortname,
+            SpaceName = "management", Subpath = "/users",
+            IsActive = true, OwnerShortname = "dmart",
+            Password = "$argon2id$v=19$m=65536,t=3,p=4$deadbeefdeadbeef$abc123",
+        });
+
+        var before = (await users.GetByShortnameAsync(shortname))!.Password;
+        before.ShouldNotBeNull();
+
+        try
+        {
+            var dir = NewDir();
+            await svc.ExportAllAsync(dir, verify: false);
+
+            // Blank the password in the archive — what an older archive looks like.
+            var rows = ReadUsersFromArchive(dir);
+            var idx = rows.FindIndex(u => u.Shortname == shortname);
+            idx.ShouldBeGreaterThanOrEqualTo(0);
+            rows[idx] = rows[idx] with { Password = null };
+            RewriteUsersFile(dir, rows);
+
+            await svc.ImportAsync(dir, replaceExisting: true);
+
+            (await users.GetByShortnameAsync(shortname))!.Password
+                .ShouldBe(before, "a NULL password in the archive must not wipe the stored hash");
+        }
+        finally { try { await users.DeleteAsync(shortname); } catch { } }
+    }
+
+    // A real hash in the archive MUST be restored, or the previous test could
+    // be satisfied by a path that simply never writes passwords at all.
+    [FactIfPg]
+    public async Task Restoring_A_User_With_A_Password_Writes_It()
+    {
+        var svc = _factory.Services.GetRequiredService<ParquetArchiveService>();
+        var users = _factory.Services.GetRequiredService<UserRepository>();
+        _factory.CreateClient();
+
+        var shortname = "pwset" + Guid.NewGuid().ToString("N")[..6];
+        const string archived = "$argon2id$v=19$m=65536,t=3,p=4$0123456789abcdef$restored";
+        await users.UpsertAsync(new User
+        {
+            Uuid = Guid.NewGuid().ToString(), Shortname = shortname,
+            SpaceName = "management", Subpath = "/users",
+            IsActive = true, OwnerShortname = "dmart", Password = archived,
+        });
+
+        try
+        {
+            var dir = NewDir();
+            await svc.ExportAllAsync(dir, verify: false);
+
+            // Change the live hash; the archive still holds the original.
+            var live = (await users.GetByShortnameAsync(shortname))!;
+            await users.UpsertAsync(live with { Password = "$argon2id$changed$since$backup" });
+
+            await svc.ImportAsync(dir, replaceExisting: true);
+
+            (await users.GetByShortnameAsync(shortname))!.Password
+                .ShouldBe(archived, "the archive's hash must win on a replacing restore");
+        }
+        finally { try { await users.DeleteAsync(shortname); } catch { } }
+    }
+
+    // The batch is capped by the driver's bound-parameter limit, so a restore
+    // spanning several batches must still land every user.
+    [FactIfPg]
+    public async Task A_User_Restore_Spanning_Batches_Lands_Every_Row()
+    {
+        var original = UserRepository.RestoreBatchRows;
+        UserRepository.RestoreBatchRows = 3;
+        try
+        {
+            var svc = _factory.Services.GetRequiredService<ParquetArchiveService>();
+            var users = _factory.Services.GetRequiredService<UserRepository>();
+            _factory.CreateClient();
+
+            var made = new List<string>();
+            for (var i = 0; i < 10; i++)
+            {
+                var sn = $"batch{i}_" + Guid.NewGuid().ToString("N")[..6];
+                made.Add(sn);
+                await users.UpsertAsync(new User
+                {
+                    Uuid = Guid.NewGuid().ToString(), Shortname = sn,
+                    SpaceName = "management", Subpath = "/users",
+                    IsActive = true, OwnerShortname = "dmart",
+                });
+            }
+
+            try
+            {
+                var dir = NewDir();
+                await svc.ExportAllAsync(dir, verify: false);
+                var result = await svc.ImportAsync(dir, replaceExisting: true);
+
+                result.For("users").Failed.ShouldBe(0);
+                foreach (var sn in made)
+                    (await users.GetByShortnameAsync(sn)).ShouldNotBeNull($"'{sn}' must survive a batched restore");
+            }
+            finally
+            {
+                foreach (var sn in made) { try { await users.DeleteAsync(sn); } catch { } }
+            }
+        }
+        finally { UserRepository.RestoreBatchRows = original; }
+    }
+
+    private static List<User> ReadUsersFromArchive(string dir) =>
+        Dmart.DataAdapters.Parquet.UserParquetTable.FromTable(
+            Dmart.DataAdapters.Parquet.ParquetFileReader.ReadFile(
+            Path.Combine(dir, "users", "part-00000.parquet")));
+
+    private static void RewriteUsersFile(string dir, List<User> rows)
+    {
+        var writer = new Dmart.DataAdapters.Parquet.ParquetFileWriter(
+            Dmart.DataAdapters.Parquet.UserParquetTable.Schema);
+        using var fs = File.Create(Path.Combine(dir, "users", "part-00000.parquet"));
+        writer.Write(fs, Dmart.DataAdapters.Parquet.UserParquetTable.BuildPages(rows), rows.Count);
+    }
+
     // ---- tombstone retention floor (§5.2) ----
 
     // An increment chained from a watermark predating tombstone recording
