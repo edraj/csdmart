@@ -481,3 +481,49 @@ jobs:
           RT_PORT=$(( 5600 + (10#${RUNNER_DIGITS:-0} % 50) * 4 ))
           echo "round-trip base port: $RT_PORT"
           ./.github/scripts/backup-round-trip.sh bin/Release/net10.0/linux-x64/publish "$RT_PORT"
+
+  rpm-build:
+    name: RPM build
+    runs-on: self-hosted
+    # Packaging was only ever built by release.yml, so a broken spec could sit
+    # on master for a whole release cycle and fail at tag time — which is
+    # exactly what happened to v1.2.0: TWO bugs shipped together (a %files line
+    # stranded in %install, and libe_sqlite3.so never staged into the source
+    # tarball), and both RPM jobs of the release failed.
+    #
+    # A parse check would NOT have caught either: `rpmspec -P` reports the spec
+    # as valid, because the stray line only fails when the shell EXECUTES
+    # %install, and the missing library only fails at %files time. Catching
+    # this class needs a real rpmbuild, so that is what this does.
+    #
+    # Fedora natively, and deliberately NOT EL9: the EL9 leg builds in a podman
+    # container, which is the slow half, and it exercises the same spec and the
+    # same staging step. Both v1.2.0 bugs reproduce here. EL9 stays release-only.
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Build the Fedora RPM
+        # VERSION is pinned rather than derived. checkout@v6 fetches depth 1, so
+        # `git describe` has no tags to read and build-rpm.sh would silently
+        # fall back to 0.1.0 — a version this job would then appear to have
+        # chosen. This job validates that the packaging BUILDS; the version it
+        # carries is irrelevant, so say so instead of depending on tag depth.
+        run: VERSION=0.0.0 ./dist/build-rpm.sh
+
+      - name: Assert the RPM carries what it must
+        # The build succeeding is not the whole property. %files lists
+        # libe_sqlite3.so unconditionally and on purpose — a package missing it
+        # silently loses the SQLite driver — so check the payload, not just the
+        # exit code.
+        run: |
+          set -e
+          RPM=$(ls dist/out/*.fc*.x86_64.rpm 2>/dev/null | head -1)
+          test -n "$RPM" || { echo "no Fedora RPM produced"; exit 1; }
+          echo "built: $RPM"
+          for f in /usr/bin/dmart /usr/lib64/libe_sqlite3.so \
+                   /usr/share/dmart/config.env.packaged \
+                   /usr/share/dmart/config.env.sample; do
+            rpm -qlp "$RPM" | grep -qx "$f" \
+              || { echo "MISSING from the RPM: $f"; rpm -qlp "$RPM"; exit 1; }
+          done
+          echo "payload OK"

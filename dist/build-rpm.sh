@@ -235,6 +235,12 @@ mkdir -p "$TARDIR/plugins"
 
 # Binary (version info baked in via InformationalVersion)
 cp bin/dmart "$TARDIR/"
+# The SQLite native library, alongside the binary. %files lists it
+# UNCONDITIONALLY and deliberately — the comment there says a package missing
+# it silently loses the SQLite driver, which is worth failing the build over.
+# Not staging it here is what turns that intended guard into a build failure:
+# "File not found: .../usr/lib64/libe_sqlite3.so" at %files time.
+cp bin/libe_sqlite3.so "$TARDIR/"
 
 # Plugin configs
 cp -r plugins/*/ "$TARDIR/plugins/"
