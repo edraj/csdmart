@@ -1,13 +1,47 @@
 # Changelog
 
-## Unreleased
+## v1.2.1 — 2026-08-15
 
-- `dmart prune-empty-histories [--space <name>] [--dry-run]` — deletes history
-  rows whose diff is an empty object. Those are audit records that nothing
-  changed, written before the empty-diff append was fixed; no current writer
-  produces them. Deletes are tombstoned, so incremental Parquet consumers learn
-  the rows are gone instead of silently keeping them. Rows with a NULL diff are
-  a different, older shape and are reported rather than removed.
+A patch release: one new maintenance command, and the RPM build repaired.
+
+### New
+
+- **`dmart prune-empty-histories [--space <name>] [--dry-run]`** — deletes
+  history rows whose `diff` is an empty object. Those are audit records that
+  nothing changed, written before the empty-diff append was fixed in 1.2.0; no
+  current writer produces them. Run it **once** after upgrading.
+
+  Deletes are **tombstoned**, so an incremental Parquet consumer learns the rows
+  are gone rather than silently keeping them — which means a large prune writes
+  as many rows into `deletions` as it removes, and `prune-tombstones` drains
+  those once your increments have caught up. Rows with a NULL diff are a
+  different, older shape and are **reported rather than removed**.
+
+- **`docs/maintenance.md`** — operator guide for both prune commands, including
+  the one thing neither of them says on its own: nothing runs them for you.
+  There is no scheduler and no background service; they do what you ask, when
+  you ask.
+
+### Fixed
+
+- **The RPM build.** Two bugs, both introduced with the 1.2.0 SQLite packaging
+  work, failed the RHEL 9 and Fedora jobs of the 1.2.0 release build:
+  a `%files` entry stranded inside `%install` (so rpm's shell tried to *execute*
+  a path), and `libe_sqlite3.so` never staged into the source tarball while
+  `%files` lists it unconditionally.
+
+  **The RPMs published on the v1.2.0 release are not affected** — they were
+  built with these fixes applied and attached by hand, and their binaries report
+  `v1.2.0-0-g832bbbe`. This release makes the build work from a clean checkout
+  again.
+
+### CI
+
+- CI now **builds the Fedora RPM** on every push and asserts its payload. Both
+  1.2.0 packaging bugs were invisible to CI because RPMs were only ever built by
+  the release workflow, so a broken spec could sit on master for a whole release
+  cycle. A parse check would not have caught either — `rpmspec -P` reports the
+  spec as valid — so the job does a real `rpmbuild`.
 
 ## v1.2.0 — 2026-08-15
 
