@@ -212,6 +212,14 @@ switch (subcommand)
               serve          Start the HTTP server
                              Options: --cxb-config <path>
               migrate        Create/update the PG schema (idempotent; no server)
+              prune-tombstones
+                             Delete tombstones older than a window and raise the
+                             retention floor to match, bounding the growth of the
+                             append-only `deletions` table.
+                             Usage: dmart prune-tombstones --older-than <days>
+                                                           [--dry-run]
+                             Choose a window LONGER than your incremental export
+                             interval — see docs/parquet-export-design.md §5.2.
               version        Print version and build info
               settings       Print effective settings as JSON
               passwd         Set password for a user. Shortname can be passed
@@ -817,7 +825,10 @@ switch (subcommand)
         {
             if (string.IsNullOrEmpty(targetPath))
             {
-                Bail("Usage: dmart import <export-directory> --parquet [-r] [--verify]\n"
+                Bail("Usage: dmart import <export-directory> --parquet [-r] [--no-verify]\n"
+                     + "       The restore is VERIFIED against the archive by default; --no-verify\n"
+                     + "       skips that (roughly halves the read I/O, and leaves you trusting\n"
+                     + "       row counts alone).\n"
                      + "       --drop-indexes  drop the GIN indexes for the load and rebuild them\n"
                      + "                       after. PostgreSQL only, and only worth it on LARGE\n"
                      + "                       restores (it costs a few percent below ~200k rows).\n"
@@ -845,10 +856,17 @@ switch (subcommand)
             // the exit code, not the wording.
             if (result.Failed > 0) Environment.ExitCode = 1;
 
-            // --verify answers the question the counts above cannot: does the
-            // DATABASE now match the archive? Counts come from the writer's own
-            // bookkeeping; this re-reads both sides.
-            if (serverArgs.Contains("--verify"))
+            // Verification answers the question the counts above cannot: does
+            // the DATABASE now match the archive? Counts come from the writer's
+            // own bookkeeping; this re-reads both sides.
+            //
+            // ON BY DEFAULT, matching `export --all`. The asymmetry it replaces
+            // — export verified unless you said --no-verify, restore verified
+            // only if you said --verify — put the weaker default on the more
+            // dangerous operation. An unverified backup is a guess; an
+            // unverified RESTORE is a guess you are about to run a business on.
+            // --verify is still accepted so existing scripts keep working.
+            if (!serverArgs.Contains("--no-verify"))
             {
                 var verifier = CliBootstrap.BuildParquetRestoreVerifier(qs, qdb);
                 var check = await verifier.VerifyAsync(targetPath);
@@ -1366,6 +1384,49 @@ switch (subcommand)
         //   dmart cli s <script_file>           # Script mode
         var exitCode = await Dmart.Cli.CliRunner.RunAsync(serverArgs);
         Environment.ExitCode = exitCode;
+        return;
+    }
+
+    case "prune-tombstones":
+    {
+        // Bounds the growth of the `deletions` table, which is append-only:
+        // every content-removing delete writes a row and nothing removed them
+        // before this command existed.
+        //
+        // The retention window is REQUIRED rather than defaulted. §5.2 rule 4
+        // couples it to the incremental export cadence — pruning to a cutoff
+        // newer than the last increment discards deletions that increment
+        // still needed — and only the operator knows that cadence. A default
+        // here would be a guess with silent data-drift as its failure mode.
+        var olderIdx = Array.IndexOf(serverArgs, "--older-than");
+        var daysArg = olderIdx >= 0 && olderIdx + 1 < serverArgs.Length
+            ? serverArgs[olderIdx + 1] : null;
+        if (!int.TryParse(daysArg, out var days) || days <= 0)
+        {
+            Console.Error.WriteLine(
+                "Usage: dmart prune-tombstones --older-than <days> [--dry-run]\n"
+                + "  Deletes tombstones older than <days> and raises the retention floor\n"
+                + "  to match, so a later incremental export whose watermark falls inside\n"
+                + "  the pruned window WARNS instead of silently reading zero deletions.\n"
+                + "  Choose a window LONGER than your incremental export interval.");
+            Environment.ExitCode = 1;
+            return;
+        }
+
+        var (ps, pdb) = CliBootstrap.BuildFactoryOrExit(dotenvPath, dotenvValues);
+        var parchive = CliBootstrap.BuildParquetArchiveService(ps, pdb);
+        var pruned = await parchive.PruneTombstonesAsync(
+            TimeSpan.FromDays(days), serverArgs.Contains("--dry-run"));
+
+        Console.WriteLine(pruned.DryRun
+            ? $"Dry run: {pruned.Removed} tombstone(s) older than {pruned.Cutoff:o} would be removed"
+            : $"Removed {pruned.Removed} tombstone(s) older than {pruned.Cutoff:o}");
+        Console.WriteLine(
+            $"Retention floor: {pruned.FloorBefore:o} -> {pruned.FloorAfter:o}");
+        if (!pruned.DryRun)
+            Console.WriteLine(
+                "Incremental exports with a watermark before the new floor can no longer "
+                + "account for deletions; take a full export to resynchronise those.");
         return;
     }
 

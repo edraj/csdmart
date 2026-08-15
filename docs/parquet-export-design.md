@@ -320,7 +320,12 @@ blob is rehashed against its own name. It roughly doubles read I/O, which is
 the right trade — a backup nobody has read is one you are guessing about.
 `--no-verify` opts out.
 
-A restore is `dmart import <dir> --parquet [-r] [--verify] [--drop-indexes]`.
+A restore is `dmart import <dir> --parquet [-r] [--no-verify] [--drop-indexes]`.
+It is **verified by default**, symmetric with `export --all`: the restore is
+re-read against the archive row by row. `--no-verify` opts out. The earlier
+asymmetry — export verified unless you opted out, restore verified only if you
+opted in — put the weaker default on the more dangerous operation. `--verify`
+is still accepted so existing scripts keep working.
 `--drop-indexes` drops the secondary indexes on `entries`/`attachments` for the
 duration of the load and rebuilds them afterwards, which is the same lever the
 zip importer offers, and it is a **large-restore** lever only: measured on a
@@ -441,6 +446,14 @@ media is where the gigabytes are.
 It also deduplicates within a single export: the same file attached to twenty
 entries is stored once.
 
+**It also closes a hole the zip export has.** Zip follows Python and names an
+attachment's media file after `payload.body`; an attachment carrying bytes with
+no such filename exports its metadata and **not** its bytes. That behaviour is
+deliberate and unchanged — but it is now logged as a warning rather than passing
+silently, because an archive that looks complete and is not is the worst shape
+this can take. Content-addressing removes the dependency entirely: the blob is
+named by its own hash, so Parquet captures that same attachment.
+
 ## 5. Incremental
 
 ### 5.1 Watermark
@@ -472,6 +485,22 @@ value compared against them must be in the same clock:
    scan saw none of them. Now bound explicitly, as `histories` already does.
 3. The manifest mixed a local-naive `watermark` with a UTC `created_at`, making
    the pair incomparable. Both are now local-naive.
+
+**Rows written before those fixes carry the old clock, and no migration can
+repair them.** `updated_at` is `DEFAULT NOW()`, evaluated by the DATABASE
+SERVER in its own timezone, and writers that leave the field unset took that
+default. Until the session timezone was pinned to the app host's, a UTC server
+under a +03 host stamped those rows three hours behind every host-local
+watermark — so an increment can read them as older than they are and skip
+them. The original offset is not recoverable from the data: a stamp three
+hours low is indistinguishable from a row that really was written three hours
+earlier, so there is nothing for a migration to correct.
+
+The operational consequence is narrow and worth stating plainly. **Do not
+chain an increment across the upgrade boundary.** After upgrading to a build
+with the timezone pin, take ONE FULL export and start the chain from it.
+Increments taken entirely after that point are unaffected, because every row
+they see was stamped by the pinned session.
 
 **Selection cannot use `Query.FromDate`**, which filters on `created_at`. An
 entry EDITED since the last run still has its original `created_at`, so
@@ -542,6 +571,19 @@ Four things this must get right, all of them easy to get wrong:
    pipeline cadence are coupled, and that coupling should be documented and
    ideally asserted at export time ("oldest retained tombstone is newer than
    your watermark — deletions may have been lost").
+
+**Pruning — `dmart prune-tombstones --older-than <days> [--dry-run]`.**
+`deletions` is append-only; nothing removed rows before this command existed.
+The prune deletes tombstones older than the cutoff **and raises `floor_at` to
+that same cutoff, in one transaction**. That pairing is the whole point:
+deleting tombstones destroys the ability to answer "what was deleted since X"
+for any X inside the pruned window, and moving the floor is what turns a
+silent wrong answer into the warning above. The floor only ever moves forward,
+so a cutoff older than the current floor leaves it alone.
+
+The window is a REQUIRED argument with no default. It is coupled to your
+incremental cadence by rule 4, and only the operator knows that cadence — a
+default here would be a guess whose failure mode is silent data drift.
 
 Both backends need it, so the DDL goes in `SqlSchema.cs` **and**
 `SqliteSchema.cs`.

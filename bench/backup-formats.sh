@@ -146,6 +146,11 @@ printf '%-34s %8sms %12s\n' "export  COPY BINARY (dmart tbls)" "$T" "$(human "$(
 # measures an UPDATE of every row rather than the insert being compared.
 printf '%s\n' "----------------------------------------------------------------"
 
+# --no-verify on the Parquet restores: verification became the DEFAULT when the
+# import gained parity with `export --all`, and it re-reads both sides. Leaving
+# it on would time a restore PLUS a full verification pass against pg_restore
+# doing neither, which is not the comparison this table claims to make.
+#
 # best_of, but re-creating the target database before every timed run.
 best_restore() {
   local label="$1" db="$2" prep="$3"; shift 3
@@ -173,11 +178,11 @@ T=$(best_restore "zip import" bench_zip prep env BACKEND_ENV="$ZIPENV" "$BIN" im
 printf '%-34s %8sms %12s\n' "import  zip      (1 space)" "$T" ""
 
 PQENV=$(env_for bench_pq)
-T=$(best_restore "parquet import" bench_pq prep env BACKEND_ENV="$PQENV" "$BIN" import "$WORK/pq" --parquet -r)
+T=$(best_restore "parquet import" bench_pq prep env BACKEND_ENV="$PQENV" "$BIN" import "$WORK/pq" --parquet -r --no-verify)
 printf '%-34s %8sms %12s\n' "import  parquet  (1 space)" "$T" ""
 
 ALLENV=$(env_for bench_all)
-T=$(best_restore "parquet --all import" bench_all prep env BACKEND_ENV="$ALLENV" "$BIN" import "$WORK/all" --parquet -r)
+T=$(best_restore "parquet --all import" bench_all prep env BACKEND_ENV="$ALLENV" "$BIN" import "$WORK/all" --parquet -r --no-verify)
 printf '%-34s %8sms %12s\n' "import  parquet  (--all)" "$T" ""
 
 # No prep: the dump carries its own schema, and pre-creating it would make

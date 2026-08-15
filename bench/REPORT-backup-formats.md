@@ -212,11 +212,11 @@ as tested copy-paste.
 # --- Parquet: one space, or a subfolder of one ---
 dmart export myspace --parquet --output myspace-backup
 dmart export myspace --parquet --subpath /docs --output docs-backup
-dmart import myspace-backup --parquet -r --verify     # -r overwrites; --verify re-reads both sides
+dmart import myspace-backup --parquet -r             # -r overwrites; verified by default
 
 # --- Parquet: full backup, verified on write ---
 dmart export --all --parquet --output nightly
-dmart import nightly --parquet -r --verify
+dmart import nightly --parquet -r
 
 # --- Parquet: incremental, chained off a previous run ---
 #     --since takes the previous export DIRECTORY, not a timestamp: the
