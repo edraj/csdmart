@@ -19,7 +19,7 @@ Reproduce with `bench/backup-formats.sh <publish-dir> <config.env> [runs]`.
 | **export** zip (1 space) | 4115 ms | 19 MB |
 | **export** parquet (1 space) | **674 ms** | **2.0 MB** |
 | **export** parquet (`--all`) | 757 ms | 2.7 MB |
-| **export** pg_dump (whole DB) | **141 ms** | 3.6 MB |
+| **export** pg_dump `-Fc` (whole DB) | **141 ms** | 3.6 MB |
 | **import** zip (1 space) | 3620 ms | |
 | **import** parquet (1 space) | **1632 ms** | |
 | **import** parquet (`--all`) | 2075 ms | |
@@ -46,6 +46,51 @@ writing its own pages out through a path with no object model in it: no JSON
 serialisation, no row hydration into C# objects, no per-entry file. 141 ms
 against 674 ms is roughly the cost of dmart's export doing semantic work that
 `COPY TO` does not.
+
+## Parquet vs pg_dump is NOT binary-vs-text
+
+The table above uses `pg_dump -Fc`, which is **binary and zlib-compressed** —
+not the SQL text most people picture. Measured across formats, whole database:
+
+| pg_dump format | Time | Size |
+|---|---:|---:|
+| plain SQL text (`-Fp`) | 108 ms | **33 MB** |
+| plain SQL + `gzip -6` | 182 ms | 3.7 MB |
+| custom binary+zlib (`-Fc`) | 138 ms | 3.6 MB |
+| **parquet `--all`** | 757 ms | **2.7 MB** |
+
+**On size, Parquet wins against every pg_dump format** — 12× smaller than plain
+SQL, and still ~25% smaller than the compressed binary one, while covering a
+subset of the same database. Columnar layout plus zstd beats row-oriented
+compression, exactly as the shape suggests.
+
+**On time, pg_dump wins regardless of its format**, which is the tell: 108 ms
+for 33 MB of text and 138 ms for 3.6 MB of compressed binary means the encoding
+is not what separates them.
+
+### Where the time actually goes
+
+The database can emit the same rows far faster than dmart can export them:
+
+| | Time | Output |
+|---|---:|---:|
+| `COPY (SELECT * FROM entries WHERE space_name='personal') TO STDOUT` | **52 ms** | 19 MB |
+| dmart parquet export, same 21,843 rows | 674 ms | 2.0 MB |
+
+So roughly **620 of those 674 ms are dmart's pipeline, not Parquet encoding**.
+The encoder is nowhere near the limit either — 2.0 MB in 674 ms is ~3 MB/s,
+while zstd level 3 runs at hundreds of MB/s.
+
+The gap is what dmart does that `COPY` does not: page the rows through the
+repository, hydrate each one into a C# object (parsing every `jsonb` column
+into `Payload`, `Translation`, `AclEntry`…), then **re-serialise those columns
+back to JSON strings** for the opaque-string representation §2.2 chose. `COPY`
+ships the bytes the heap already holds.
+
+That is the honest summary: **the format is not the cost — the object model
+is.** Anyone wanting dmart's export to approach `pg_dump` speed should look at
+avoiding the hydrate-then-reserialise round trip for JSON columns, not at the
+Parquet writer.
 
 ## Choosing between them — the times are not the deciding factor
 
