@@ -486,6 +486,22 @@ value compared against them must be in the same clock:
 3. The manifest mixed a local-naive `watermark` with a UTC `created_at`, making
    the pair incomparable. Both are now local-naive.
 
+**Rows written before those fixes carry the old clock, and no migration can
+repair them.** `updated_at` is `DEFAULT NOW()`, evaluated by the DATABASE
+SERVER in its own timezone, and writers that leave the field unset took that
+default. Until the session timezone was pinned to the app host's, a UTC server
+under a +03 host stamped those rows three hours behind every host-local
+watermark — so an increment can read them as older than they are and skip
+them. The original offset is not recoverable from the data: a stamp three
+hours low is indistinguishable from a row that really was written three hours
+earlier, so there is nothing for a migration to correct.
+
+The operational consequence is narrow and worth stating plainly. **Do not
+chain an increment across the upgrade boundary.** After upgrading to a build
+with the timezone pin, take ONE FULL export and start the chain from it.
+Increments taken entirely after that point are unaffected, because every row
+they see was stamped by the pinned session.
+
 **Selection cannot use `Query.FromDate`**, which filters on `created_at`. An
 entry EDITED since the last run still has its original `created_at`, so
 reusing it would miss exactly the rows an increment exists to carry.
