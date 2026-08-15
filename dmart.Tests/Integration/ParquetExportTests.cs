@@ -1691,11 +1691,16 @@ public class ParquetExportTests : IClassFixture<DmartFactory>, IDisposable
 
     // --drop-indexes on the Parquet restore.
     //
+    // FactIfPostgresOnly, NOT FactIfPg: the latter asks whether PostgreSQL is
+    // REACHABLE, and CI's SQLite job has it configured while wiring the app to
+    // SQLite — so these ran there and died on Db.OpenAsync. GIN indexes have no
+    // SQLite equivalent, which is exactly what this attribute is for.
+    //
     // The property that matters is not "it was faster" — it is that the
     // indexes are ALL BACK when the call returns. An import that leaves the
     // GIN indexes dropped is a database that silently sequential-scans every
     // query afterwards, with nothing in the schema saying why.
-    [FactIfPg]
+    [FactIfPostgresOnly]
     public async Task DropIndexes_Rebuilds_Every_Index_It_Dropped()
     {
         await WithSpaceAsync(5, async (svc, space, shortnames) =>
@@ -1717,7 +1722,7 @@ public class ParquetExportTests : IClassFixture<DmartFactory>, IDisposable
 
     // The rebuild is in a finally, and this is the case that proves it: a
     // restore that throws part-way must still hand the database back intact.
-    [FactIfPg]
+    [FactIfPostgresOnly]
     public async Task DropIndexes_Rebuilds_Even_When_The_Import_Throws()
     {
         var svc = _factory.Services.GetRequiredService<ParquetArchiveService>();
