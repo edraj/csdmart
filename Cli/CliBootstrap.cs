@@ -161,6 +161,16 @@ internal static class CliBootstrap
             nlog.CreateLogger<ImportExportService>());
     }
 
+    // Just the history table — `prune-empty-histories` needs nothing else.
+    //
+    // The dialect follows the FACTORY, not the config key, for the same reason
+    // the graph above does: whatever the repository was handed is what it must
+    // emit for.
+    public static HistoryRepository BuildHistoryRepository(IDbConnectionFactory db)
+        => new(db, db is SqliteConnectionFactory
+            ? (Dmart.QueryGrammar.ISqlDialect)Dmart.QueryGrammar.SqliteSqlDialect.Instance
+            : Dmart.QueryGrammar.PostgresSqlDialect.Instance);
+
     // The Parquet archiver needs most of the graph the zip one does, now that
     // it writes spaces, users, roles and permissions alongside entries.
     public static ParquetArchiveService BuildParquetArchiveService(

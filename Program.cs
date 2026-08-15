@@ -212,6 +212,13 @@ switch (subcommand)
               serve          Start the HTTP server
                              Options: --cxb-config <path>
               migrate        Create/update the PG schema (idempotent; no server)
+              prune-empty-histories
+                             Delete history rows whose diff is an empty object —
+                             audit records that nothing changed, written before
+                             the empty-diff append was fixed. Deletes are
+                             tombstoned so incremental exports stay consistent.
+                             Usage: dmart prune-empty-histories [--space <name>]
+                                                                [--dry-run]
               prune-tombstones
                              Delete tombstones older than a window and raise the
                              retention floor to match, bounding the growth of the
@@ -1384,6 +1391,38 @@ switch (subcommand)
         //   dmart cli s <script_file>           # Script mode
         var exitCode = await Dmart.Cli.CliRunner.RunAsync(serverArgs);
         Environment.ExitCode = exitCode;
+        return;
+    }
+
+    case "prune-empty-histories":
+    {
+        // Cleanup for rows written before 5ce715b, when an entry update that
+        // changed nothing still appended a history row with an empty diff —
+        // an audit record that nothing happened.
+        //
+        // Deletes are TOMBSTONED, so an incremental Parquet consumer learns
+        // these rows are gone rather than keeping them forever. That means a
+        // large prune writes as many tombstones as it removes histories;
+        // `prune-tombstones` clears those once your increments have caught up.
+        var spaceIdx = Array.IndexOf(serverArgs, "--space");
+        var pruneSpace = spaceIdx >= 0 && spaceIdx + 1 < serverArgs.Length
+            ? serverArgs[spaceIdx + 1] : null;
+
+        var (hs, hdb) = CliBootstrap.BuildFactoryOrExit(dotenvPath, dotenvValues);
+        var histories = CliBootstrap.BuildHistoryRepository(hdb);
+        var res = await histories.PruneEmptyDiffAsync(
+            pruneSpace, serverArgs.Contains("--dry-run"));
+
+        var scope = pruneSpace is null ? "all spaces" : $"space '{pruneSpace}'";
+        Console.WriteLine(res.DryRun
+            ? $"Dry run: {res.Removed} empty-diff history row(s) in {scope} would be deleted"
+            : $"Deleted {res.Removed} empty-diff history row(s) in {scope}");
+        // Reported rather than swept up: a null diff is an older shape this bug
+        // never produced, so removing it would be a different decision.
+        if (res.NullDiffLeft > 0)
+            Console.WriteLine(
+                $"Left alone: {res.NullDiffLeft} row(s) with a NULL diff — a different, older "
+                + "shape than the empty object this removes.");
         return;
     }
 

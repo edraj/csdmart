@@ -342,7 +342,81 @@ public sealed class HistoryRepository(IDbConnectionFactory db, ISqlDialect diale
         DbParams.BindAll(cmd, args);
         return (int)DbParams.ReadCount(await cmd.ExecuteScalarAsync(ct));
     }
+
+    // ---- maintenance: empty-diff rows -------------------------------------
+    //
+    // Until 5ce715b, an entry update that changed NOTHING still appended a
+    // history row: the caller passed a null diff and AppendAsync coerced it to
+    // the literal `{}` (both JSON columns are written NOT NULL by convention).
+    // The result is audit rows recording that nothing happened.
+    //
+    // Deleting them is safe because NO current writer produces `{}`:
+    //   * the entry-update path is now guarded (5ce715b);
+    //   * the user/space/group/role/permission/attachment update paths in
+    //     RequestHandler each carry their own `if (diff.Count > 0)` guard;
+    //   * lock actions always write {lock_type: ...} and moves always write
+    //     shortname/subpath — never empty;
+    //   * entry CREATE appends no history row at all.
+    // The only remaining source is an import replaying an archive that still
+    // contains them, so this is safe to re-run after one.
+    //
+    // `diff IS NULL` is deliberately NOT matched. The column is nullable and a
+    // null there is an older, different shape that this bug never produced; it
+    // is counted and reported rather than swept up with rows we can account for.
+
+    /// <summary>
+    /// Deletes history rows whose diff is an empty object, optionally within
+    /// one space. Returns what was removed and how many null-diff rows were
+    /// left alone.
+    /// </summary>
+    /// <remarks>
+    /// TOMBSTONED, like every other content-removing delete (§5.2 rules 1 and
+    /// 3): `histories` is one of the seven replicated tables, so an incremental
+    /// consumer holding these rows must learn they are gone — deleting them
+    /// silently is the drift tombstones exist to prevent. The tombstone INSERT
+    /// runs over the SAME predicate as the DELETE, inside the same transaction,
+    /// so the two cannot disagree about what was removed.
+    /// </remarks>
+    public async Task<EmptyHistoryPruneResult> PruneEmptyDiffAsync(
+        string? spaceName = null, bool dryRun = false, CancellationToken ct = default)
+    {
+        // AsText bridges the engines: jsonb needs ::text on PostgreSQL, while
+        // SQLite already stores the column as TEXT.
+        var emptyDiff = $"{dialect.AsText("diff")} = '{{}}'";
+        var scoped = spaceName is not null;
+        var predicate = scoped ? $"{emptyDiff} AND space_name = $1" : emptyDiff;
+
+        await using var conn = await db.OpenAsync(ct);
+
+        await using var count = conn.Command($"SELECT COUNT(*) FROM histories WHERE {predicate}");
+        if (scoped) DbParams.Add(count, spaceName!);
+        var n = (int)DbParams.ReadCount(await count.ExecuteScalarAsync(ct));
+
+        await using var nulls = conn.Command(
+            "SELECT COUNT(*) FROM histories WHERE diff IS NULL" + (scoped ? " AND space_name = $1" : ""));
+        if (scoped) DbParams.Add(nulls, spaceName!);
+        var nullCount = (int)DbParams.ReadCount(await nulls.ExecuteScalarAsync(ct));
+
+        if (dryRun || n == 0)
+            return new EmptyHistoryPruneResult(n, nullCount, dryRun);
+
+        await using var tx = await conn.BeginTransactionAsync(ct);
+        await Tombstones.RecordAsync(conn, tx, "histories", predicate,
+            c => { if (scoped) DbParams.Add(c, spaceName!); }, hasResourceType: false, ct);
+
+        await using (var del = conn.Command($"DELETE FROM histories WHERE {predicate}", tx))
+        {
+            if (scoped) DbParams.Add(del, spaceName!);
+            await del.ExecuteNonQueryAsync(ct);
+        }
+        await tx.CommitAsync(ct);
+
+        return new EmptyHistoryPruneResult(n, nullCount, DryRun: false);
+    }
 }
+
+/// <summary>What an empty-diff history prune removed, and what it left.</summary>
+public sealed record EmptyHistoryPruneResult(int Removed, int NullDiffLeft, bool DryRun);
 
 public sealed record HistoryEntry(Guid Uuid, string? Actor, string? Diff, DateTime Timestamp);
 
