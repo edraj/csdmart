@@ -28,33 +28,61 @@ Row counts were verified equal after every restore — 22,096 entries /
 40,000 histories for the single space. Without that check these would be
 timings of unequal work.
 
-## Reading this table
+## Compressing the PostgreSQL formats — and a claim of mine that did not survive
 
-**Parquet is the smallest by a wide margin** — 2.7 MB against 3.6 MB for
-compressed-binary `pg_dump`, 28 MB for raw binary `COPY`, and 33 MB for SQL
-text. Columnar layout plus zstd beats row-oriented compression exactly as the
-shape predicts, and it does so while `pg_dump` is also compressed.
+The table above compares Parquet (zstd level 3, per column) against an
+UNCOMPRESSED `COPY` and a zlib `pg_dump`. That is not a fair fight. Applying the
+same codec to the PostgreSQL formats, whole database:
 
-**`COPY … BINARY` is the floor in both directions** — 97 ms out, 680 ms in.
-It is the engine reading and writing its own on-the-wire representation: no
-archive container, no schema, no compression, no object model. Nothing built on
-top of the database can beat it, which makes it the right yardstick for what
-everything else is paying.
+| Method | Time | Size |
+|---|---:|---:|
+| `COPY … BINARY` raw | 94 ms | 28 MB |
+| `COPY … BINARY` \| `gzip -6` | 145 ms | 2.7 MB |
+| **`COPY … BINARY` \| `zstd -3`** | **109 ms** | **2.2 MB** |
+| `pg_dump -Fp` raw | 107 ms | 33 MB |
+| `pg_dump -Fp` \| `gzip -6` | 184 ms | 3.7 MB |
+| `pg_dump -Fp` \| `zstd -3` | 122 ms | 3.4 MB |
+| `pg_dump -Fc` (zlib, built in) | 139 ms | 3.6 MB |
+| Parquet `--all` (zstd-3, columnar) | 741 ms | 2.7 MB |
 
-**The archive format barely matters on restore.** `pg_restore` from compressed
-binary (1076 ms) and `psql` replaying 33 MB of SQL text (1072 ms) land within
-4 ms of each other. Both are dominated by the same INSERT/COPY work, not by
-parsing the archive.
+**Compression is nearly free with zstd**: +15 ms on `COPY BINARY` for a 12.7×
+reduction, +15 ms on SQL text for 9.7×. gzip costs 3–5× more time for a worse
+ratio.
 
-**Parquet costs ~7× the floor on export and ~3× on import**, and buys a 10×
-smaller archive, portability to SQLite, readability in DuckDB/Spark, per-space
-and per-folder scope, increments, and verification on both write and restore.
-Whether that trade is worth it depends on whether those matter to you — the
-millisecond columns cannot answer that.
+**`COPY BINARY | zstd -3` is both smaller AND ~7× faster than Parquet here.**
+So "Parquet is the smallest by a wide margin" — which an earlier version of this
+report claimed — is false once the alternatives are compressed with the same
+codec. It was only true against uncompressed and zlib baselines.
 
-**zip is dominated by Parquet on every axis** — 6× slower out, 2.4× slower in,
-9.5× larger. Its remaining argument is that the on-disk JSON layout is itself
-the deliverable.
+### Was that an artefact of the fixture?
+
+Partly, and it was worth checking: every one of the 20,000 generated rows
+contains the SAME lorem ipsum block, which flatters whole-stream compression —
+a single zstd window can dedupe across rows in a way per-column chunks cannot.
+
+Re-run on 20,000 entries whose payloads are random md5 text, so nothing dedupes:
+
+| Method | Time | Size |
+|---|---:|---:|
+| Parquet (1 space) | 428 ms | **2.0 MB** |
+| `COPY … BINARY` \| `zstd -3` | **43 ms** | 2.1 MB |
+
+Essentially **tied on size**, still an order of magnitude apart on time.
+
+**Conclusion: Parquet has no meaningful size advantage over zstd-compressed
+row-oriented output at this scale, and is far slower to produce.** Its case
+rests on what it can do, not on how small or fast it is:
+
+- restores to **SQLite**, which no PostgreSQL-native format can
+- readable by **DuckDB/Spark** without dmart or a database
+- **column projection** — read `updated_at` for every row without decompressing
+  `payload`, which a single compressed stream fundamentally cannot offer
+- **per-space and per-folder** scope
+- **incremental** with tombstones
+- **verified** on write and on restore
+
+If none of those matter to you, `COPY BINARY | zstd` or `pg_dump -Fc` is the
+faster and equally small choice for same-version PostgreSQL recovery.
 
 ## Where the export time actually goes
 
