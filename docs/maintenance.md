@@ -19,7 +19,8 @@ Both take `--dry-run`, and both are safe to re-run.
 dmart prune-empty-histories [--space <name>] [--dry-run]
 ```
 
-Deletes history rows whose `diff` is an empty object (`{}`).
+Deletes history rows that record no change — `diff` is either an empty object
+(`{}`) or NULL.
 
 ### Why they exist
 
@@ -53,16 +54,17 @@ writer creates these rows. Re-run only after importing an old archive.
 If you schedule it anyway (cron, systemd timer), that is harmless — it exits
 cleanly with nothing to do — but see the tombstone coupling below.
 
-### Rows with a NULL diff are left alone
+### NULL diffs go too, and are counted separately
 
-The column is nullable, and a null there is an older, different shape than the
-empty object this bug produced. Removing it would be a separate decision, so
-those rows are **counted and reported** rather than silently swept up:
+The column is nullable, and a NULL predates the `{}` convention — but it carries
+exactly the same information: an audit row recording that nothing changed.
+Leaving those behind would mean the cleanup only half-worked, so both shapes are
+removed. The count is broken out because which shape your install carries tells
+you how old those rows are:
 
 ```
-Deleted 412 empty-diff history row(s) in all spaces
-Left alone: 7 row(s) with a NULL diff — a different, older shape than the
-empty object this removes.
+Deleted 419 no-change history row(s) in all spaces
+  of which 7 had a NULL diff (an older shape, same meaning)
 ```
 
 ### It writes tombstones

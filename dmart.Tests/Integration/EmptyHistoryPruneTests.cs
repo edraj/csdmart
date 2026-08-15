@@ -41,22 +41,46 @@ public class EmptyHistoryPruneTests : IClassFixture<DmartFactory>
         finally { await CleanupAsync(space); }
     }
 
-    // A NULL diff is a different, older shape than the empty object this bug
-    // produced. Sweeping it up would be a separate decision, so it is reported
-    // and left in place.
+    // A NULL diff predates the `{}` convention but carries the same
+    // information — an audit row recording no change — so it goes too. It is
+    // still counted separately, because which shape an install carries says
+    // how old its rows are.
     [FactIfPg]
-    public async Task Leaves_Null_Diff_Rows_Alone_And_Reports_Them()
+    public async Task Removes_Null_Diff_Rows_And_Counts_Them_Separately()
     {
         var (histories, dbf, space) = await SeedAsync(withNullDiff: true);
         try
         {
             var result = await histories.PruneEmptyDiffAsync(space);
 
-            result.Removed.ShouldBe(2);
-            result.NullDiffLeft.ShouldBe(1);
+            result.Removed.ShouldBe(3, "two empty objects and one NULL");
+            result.NullDiffs.ShouldBe(1);
 
             await using var conn = await dbf.OpenAsync();
-            (await CountAsync(conn, space, "diff IS NULL")).ShouldBe(1);
+            (await CountAsync(conn, space, "diff IS NULL")).ShouldBe(0);
+            // The row with a real diff is still untouched — the point of the
+            // whole exercise.
+            (await CountAsync(conn, space, $"{EmptyDiff(raw: true)} LIKE '%displayname%'")).ShouldBe(1);
+        }
+        finally { await CleanupAsync(space); }
+    }
+
+    // A NULL diff must be tombstoned like any other removal, or the widened
+    // predicate would quietly reintroduce the drift the tombstones prevent.
+    [FactIfPg]
+    public async Task Null_Diff_Removals_Are_Tombstoned_Too()
+    {
+        var (histories, dbf, space) = await SeedAsync(withNullDiff: true);
+        try
+        {
+            await histories.PruneEmptyDiffAsync(space);
+
+            await using var conn = await dbf.OpenAsync();
+            await using var cmd = conn.Command(
+                "SELECT COUNT(*) FROM deletions WHERE space_name = $1 AND table_name = 'histories'");
+            DbParams.Add(cmd, space);
+            Convert.ToInt32(await cmd.ExecuteScalarAsync())
+                .ShouldBe(3, "the NULL-diff row needs a tombstone as much as the others");
         }
         finally { await CleanupAsync(space); }
     }

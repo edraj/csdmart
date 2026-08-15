@@ -213,10 +213,10 @@ switch (subcommand)
                              Options: --cxb-config <path>
               migrate        Create/update the PG schema (idempotent; no server)
               prune-empty-histories
-                             Delete history rows whose diff is an empty object —
-                             audit records that nothing changed, written before
-                             the empty-diff append was fixed. Deletes are
-                             tombstoned so incremental exports stay consistent.
+                             Delete history rows that record no change — diff
+                             `{}` or NULL — written before the empty-diff append
+                             was fixed. Deletes are tombstoned so incremental
+                             exports stay consistent.
                              Usage: dmart prune-empty-histories [--space <name>]
                                                                 [--dry-run]
               prune-tombstones
@@ -1400,6 +1400,9 @@ switch (subcommand)
         // changed nothing still appended a history row with an empty diff —
         // an audit record that nothing happened.
         //
+        // Both shapes of "no recorded change" go: the literal `{}` this bug
+        // wrote, and a NULL from rows predating that convention.
+        //
         // Deletes are TOMBSTONED, so an incremental Parquet consumer learns
         // these rows are gone rather than keeping them forever. That means a
         // large prune writes as many tombstones as it removes histories;
@@ -1415,14 +1418,13 @@ switch (subcommand)
 
         var scope = pruneSpace is null ? "all spaces" : $"space '{pruneSpace}'";
         Console.WriteLine(res.DryRun
-            ? $"Dry run: {res.Removed} empty-diff history row(s) in {scope} would be deleted"
-            : $"Deleted {res.Removed} empty-diff history row(s) in {scope}");
-        // Reported rather than swept up: a null diff is an older shape this bug
-        // never produced, so removing it would be a different decision.
-        if (res.NullDiffLeft > 0)
+            ? $"Dry run: {res.Removed} no-change history row(s) in {scope} would be deleted"
+            : $"Deleted {res.Removed} no-change history row(s) in {scope}");
+        // Broken out because a null diff predates the `{}` convention: seeing it
+        // tells an operator how old the rows they just removed were.
+        if (res.NullDiffs > 0)
             Console.WriteLine(
-                $"Left alone: {res.NullDiffLeft} row(s) with a NULL diff — a different, older "
-                + "shape than the empty object this removes.");
+                $"  of which {res.NullDiffs} had a NULL diff (an older shape, same meaning)");
         return;
     }
 
