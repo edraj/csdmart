@@ -6,6 +6,7 @@ using Dmart.DataAdapters.Sql;
 using Dmart.Models.Api;
 using Dmart.Models.Core;
 using Dmart.Models.Enums;
+using Npgsql;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
 using Dmart.Config;
@@ -791,8 +792,74 @@ public sealed class ParquetArchiveService(
     /// Stated rather than hidden, because "restore is slow" is a real property
     /// of this build.
     /// </remarks>
+    /// <param name="dropIndexes">
+    /// Drop the secondary indexes on entries/attachments for the duration of
+    /// the restore and rebuild them at the end. PostgreSQL only.
+    /// </param>
     public async Task<ParquetImportResult> ImportAsync(
-        string exportDirectory, bool replaceExisting = false, CancellationToken ct = default)
+        string exportDirectory, bool replaceExisting = false, bool dropIndexes = false,
+        CancellationToken ct = default)
+    {
+        // Index drop/rebuild bracket. Rebuilding is in a finally, because a
+        // database left without its indexes is a worse outcome than a failed
+        // restore: queries silently degrade to sequential scans and nothing
+        // says why.
+        //
+        // Unlike the zip importer this has NO CHECKPOINT, so a hard kill
+        // between the drop and the rebuild leaves them gone with no durable
+        // record. The recovery SQL is therefore logged BEFORE the drop — a
+        // crash still leaves the rebuild statements in the log, which is the
+        // best a path without a checkpoint can do, and the operator is told so.
+        List<ImportCheckpointStore.DroppedIndex> dropped = [];
+        if (dropIndexes)
+        {
+            if (db is not Db)
+            {
+                log.LogWarning(
+                    "parquet import: --drop-indexes is PostgreSQL-only and was ignored");
+            }
+            else
+            {
+                await using var dropConn = (NpgsqlConnection)await db.OpenAsync(ct);
+                dropped = await ImportBulkIndexes.DiscoverAsync(dropConn, ct);
+                if (dropped.Count == 0)
+                {
+                    log.LogInformation("parquet import: --drop-indexes found nothing droppable");
+                }
+                else
+                {
+                    log.LogWarning(
+                        "parquet import: dropping {Count} index(es) for the restore. If this run is "
+                        + "KILLED before it finishes, rebuild them by hand with:\n{Sql}",
+                        dropped.Count, ImportBulkIndexes.RecoverySql(dropped));
+                    await ImportBulkIndexes.DropAsync(dropConn, dropped, log, ct);
+                }
+            }
+        }
+
+        try
+        {
+            return await ImportCoreAsync(exportDirectory, replaceExisting, ct);
+        }
+        finally
+        {
+            if (dropped.Count > 0)
+            {
+                await using var restoreConn = (NpgsqlConnection)await db.OpenAsync(ct);
+                var stillBroken = await ImportBulkIndexes.RestoreAsync(restoreConn, dropped, log, ct);
+                if (stillBroken.Count > 0)
+                    log.LogError(
+                        "parquet import: {Count} index(es) could NOT be rebuilt — the database is "
+                        + "running without them. Rebuild manually:\n{Sql}",
+                        stillBroken.Count, ImportBulkIndexes.RecoverySql(dropped));
+                else
+                    log.LogInformation("parquet import: rebuilt {Count} index(es)", dropped.Count);
+            }
+        }
+    }
+
+    private async Task<ParquetImportResult> ImportCoreAsync(
+        string exportDirectory, bool replaceExisting, CancellationToken ct)
     {
         // Order matters. Spaces, roles and permissions come before users and
         // entries because those reference them: restoring a user whose roles do
