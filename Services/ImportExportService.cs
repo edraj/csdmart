@@ -550,6 +550,20 @@ public sealed class ImportExportService(
                 // else: Python's fallthrough — skip media write when we don't
                 // have a filename to use. No `{att_sn}.bin` fallback per user
                 // request.
+                //
+                // But say so. Dropping bytes from a backup is the kind of loss
+                // that must not be silent: the zip still carries the
+                // attachment's metadata, so the archive LOOKS complete and the
+                // gap only surfaces when someone restores and opens the file.
+                // This is also where zip and Parquet diverge — the Parquet
+                // export stores media by content hash and needs no filename, so
+                // the same attachment survives there.
+                else if (att.Media is { Length: > 0 })
+                    log.LogWarning(
+                        "zip export: attachment {Space}{Subpath}/{Shortname} has {Bytes} bytes of "
+                        + "media but no payload.body filename to store it under — the METADATA is "
+                        + "exported and the BYTES are not. Use --parquet to capture it.",
+                        att.SpaceName, att.Subpath, att.Shortname, att.Media.Length);
             }
             // Attachment meta path: `attachments.{rt}/meta.{att_sn}.json`
             // (Python convention — NOT the same shape as entry metas).

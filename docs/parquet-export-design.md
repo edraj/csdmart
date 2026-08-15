@@ -441,6 +441,14 @@ media is where the gigabytes are.
 It also deduplicates within a single export: the same file attached to twenty
 entries is stored once.
 
+**It also closes a hole the zip export has.** Zip follows Python and names an
+attachment's media file after `payload.body`; an attachment carrying bytes with
+no such filename exports its metadata and **not** its bytes. That behaviour is
+deliberate and unchanged — but it is now logged as a warning rather than passing
+silently, because an archive that looks complete and is not is the worst shape
+this can take. Content-addressing removes the dependency entirely: the blob is
+named by its own hash, so Parquet captures that same attachment.
+
 ## 5. Incremental
 
 ### 5.1 Watermark

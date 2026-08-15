@@ -5,7 +5,9 @@ using Dmart.Models.Api;
 using Dmart.Models.Core;
 using Dmart.Models.Enums;
 using Dmart.Services;
+using Microsoft.AspNetCore.Hosting;
 using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.Logging;
 using Shouldly;
 using Xunit;
 
@@ -293,6 +295,107 @@ public class ImportExportRoundTripTests : IClassFixture<DmartFactory>
     // null, the media branch never fired, and every export silently produced a
     // zip full of attachment meta with no files behind it. Nothing caught that,
     // because no test had ever asserted the bytes survive.
+    // The other half of the media story, and the one that loses data.
+    //
+    // Zip names media by payload.body, following Python. An attachment holding
+    // bytes with no such filename therefore exports its METADATA and not its
+    // BYTES — deliberate, and NOT changed here. What is unacceptable is that it
+    // was silent: the archive looks complete and the gap only shows up when
+    // someone restores and opens the file. So the skip must be logged, and this
+    // pins both halves — no file, and a warning naming the attachment.
+    //
+    // Parquet does not have this hole: it stores media by content hash and
+    // needs no filename. That divergence is documented, not accidental.
+    [FactIfImportSupported]
+    public async Task Export_Warns_When_Attachment_Media_Has_No_Filename_To_Store_It_Under()
+    {
+        var capture = new CaptureLoggerProvider();
+        using var derived = _factory.WithWebHostBuilder(b => b.ConfigureLogging(l =>
+        {
+            l.AddProvider(capture);
+            l.SetMinimumLevel(LogLevel.Information);
+        }));
+        var sp = derived.Services;
+        var io = sp.GetRequiredService<ImportExportService>();
+        var entryRepo = sp.GetRequiredService<EntryRepository>();
+        var spaceRepo = sp.GetRequiredService<SpaceRepository>();
+        var attachRepo = sp.GetRequiredService<AttachmentRepository>();
+
+        var spaceName = "iexnofn_" + Guid.NewGuid().ToString("N")[..6];
+        const string parentShortname = "doc";
+        var mediaBytes = new byte[] { 1, 2, 3, 4, 5, 6, 7, 8 };
+
+        await spaceRepo.UpsertAsync(new Space
+        {
+            Uuid = Guid.NewGuid().ToString(), Shortname = spaceName,
+            SpaceName = spaceName, Subpath = "/", OwnerShortname = "dmart",
+            IsActive = true, Languages = new() { Language.En },
+            CreatedAt = DateTime.UtcNow, UpdatedAt = DateTime.UtcNow,
+        });
+        await entryRepo.UpsertAsync(MakeContent(spaceName, "/", parentShortname, new { title = "no filename" }));
+        await attachRepo.UpsertAsync(new Attachment
+        {
+            Uuid = Guid.NewGuid().ToString(), Shortname = "att1",
+            SpaceName = spaceName, Subpath = $"/{parentShortname}",
+            ResourceType = ResourceType.Media, IsActive = true, OwnerShortname = "dmart",
+            CreatedAt = DateTime.UtcNow, UpdatedAt = DateTime.UtcNow,
+            Media = mediaBytes,
+            // Bytes present, no filename to write them under — the case.
+            Payload = new Payload { ContentType = ContentType.ImagePng, Body = null },
+        });
+
+        try
+        {
+            var q = new Query
+            {
+                Type = QueryType.Search, SpaceName = spaceName, Subpath = "/",
+                FilterSchemaNames = new(), Limit = 10_000, RetrieveJsonPayload = true,
+            };
+            await using var exported = await io.ExportAsync(q, actor: null);
+            using var ms = new MemoryStream();
+            await exported.CopyToAsync(ms);
+            ms.Position = 0;
+            using var read = new ZipArchive(ms, ZipArchiveMode.Read, leaveOpen: true);
+
+            // Metadata present...
+            read.Entries.ShouldContain(
+                e => e.FullName.EndsWith("attachments.media/meta.att1.json"),
+                "the attachment metadata should still be exported");
+            // ...bytes absent. Pins the deliberate behaviour so a future change
+            // to it is a decision, not a surprise.
+            read.Entries.Count(e => e.FullName.Contains("attachments.media/")
+                                    && !e.FullName.Contains("meta."))
+                .ShouldBe(0, "no filename means no media file — Python's fallthrough");
+
+            capture.Entries.ShouldContain(
+                e => e.Level == LogLevel.Warning && e.Message.Contains("att1")
+                     && e.Message.Contains("media"),
+                customMessage: "dropping backup bytes must not be silent");
+        }
+        finally
+        {
+            try { await spaceRepo.DeleteAsync(spaceName); } catch { }
+        }
+    }
+
+    private sealed class CaptureLoggerProvider : ILoggerProvider
+    {
+        public sealed record Entry(string Category, LogLevel Level, string Message);
+        public System.Collections.Concurrent.ConcurrentQueue<Entry> Entries { get; } = new();
+        public ILogger CreateLogger(string categoryName) => new CaptureLogger(categoryName, Entries);
+        public void Dispose() { }
+
+        private sealed class CaptureLogger(
+            string category, System.Collections.Concurrent.ConcurrentQueue<Entry> sink) : ILogger
+        {
+            public IDisposable? BeginScope<TState>(TState state) where TState : notnull => null;
+            public bool IsEnabled(LogLevel logLevel) => true;
+            public void Log<TState>(LogLevel logLevel, EventId eventId, TState state,
+                Exception? exception, Func<TState, Exception?, string> formatter) =>
+                sink.Enqueue(new Entry(category, logLevel, formatter(state, exception)));
+        }
+    }
+
     [FactIfImportSupported]
     public async Task Export_Writes_Attachment_Media_Bytes_Into_The_Zip()
     {
