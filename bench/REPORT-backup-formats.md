@@ -28,6 +28,56 @@ Row counts were verified equal after every restore — 22,096 entries /
 40,000 histories for the single space. Without that check these would be
 timings of unequal work.
 
+## Full matrix — every option, one run
+
+`bench/backup-matrix.sh`. Best of 2; every restore into a freshly created
+database. Sizes are what you would **store**, so uncompressed variants show
+their real size rather than being quietly piped through a compressor.
+
+| Option | Export | Import | Stored size |
+|---|---:|---:|---:|
+| zip / JSON (1 space) | 4078 ms | 3762 ms | 19.0 MB |
+| **Parquet zstd-3 (1 space)** | 361 ms | 1621 ms | **2.0 MB** |
+| **Parquet zstd-3 (`--all`)** | 436 ms | 2125 ms | 2.7 MB |
+| pg_dump `-Fc` (zlib) | 137 ms | 1068 ms | 3.6 MB |
+| pg_dump `-Fc` + `pg_restore -j8` | – | 513 ms | 3.6 MB |
+| pg_dump `-Fc -Z zstd:3` + `-j8` | 114 ms | 507 ms | 3.4 MB |
+| **pg_dump `-Fd -j8 -Z zstd:3` + `-j8`** | **75 ms** | **496 ms** | 3.4 MB |
+| pg_dump `-Fp` (plain SQL) | 118 ms | 1110 ms | 32.3 MB |
+| pg_dump `-Fp \| zstd -3` | 117 ms | 1109 ms | 3.4 MB |
+| pg_dump `-Fp \| gzip -6` | 184 ms | 1158 ms | 3.7 MB |
+| `COPY BINARY` (raw) | 92 ms | 679 ms | 27.3 MB |
+| **`COPY BINARY \| zstd -3`** | 114 ms | 690 ms | **2.2 MB** |
+| `COPY BINARY \| gzip -6` | 149 ms | 716 ms | 2.7 MB |
+| `COPY CSV \| zstd -3` | 134 ms | 727 ms | 2.6 MB |
+
+Scope reminder: the first two rows are **one space**; everything below covers
+the **whole database** (Parquet `--all` covers every space plus users, roles
+and permissions; `pg_dump` and `COPY` also include tables dmart's export omits).
+
+### What stands out
+
+**`pg_dump -Fd -j8 -Z zstd:3` is the fastest whole-database option in both
+directions** — 75 ms out, 496 ms in, 3.4 MB. Parallelism is the lever:
+`pg_restore -j8` halves the serial restore (1068 → 513 ms) at every compression
+setting, which is a larger win than any codec choice in this table.
+
+**zstd is effectively free; gzip is not.** On `COPY BINARY`, zstd costs 22 ms
+and shrinks 27.3 MB to 2.2 MB. gzip costs 57 ms for a worse 2.7 MB. On plain
+SQL, zstd costs nothing measurable (117 vs 118 ms) for a 9.5× reduction. There
+is no reason to reach for gzip here beyond compatibility with something old.
+
+**`COPY BINARY | zstd` remains the smallest whole-database option at 2.2 MB** —
+smaller than Parquet `--all` (2.7 MB), while exporting 3.8× faster. Parquet's
+2.0 MB is a *single space*, so it is not directly comparable.
+
+**Import costs more than export everywhere**, by 4–10×. Every restore is doing
+index maintenance and constraint checking that no export pays. That is also why
+`-j` matters so much more on the way in.
+
+**dmart's own paths remain the slowest**, and the zip path is dominated on every
+axis by Parquet: 11× slower to export, 2.3× slower to import, 9.5× larger.
+
 ## Compressing the PostgreSQL formats — and a claim of mine that did not survive
 
 The table above compares Parquet (zstd level 3, per column) against an
