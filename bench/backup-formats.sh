@@ -40,6 +40,10 @@ export PGPASSWORD; PGPASSWORD=$(get DATABASE_PASSWORD)
 
 SPACE="${BENCH_SPACE:-personal}"
 
+# Load order matters: owner_shortname is a foreign key into users, so users
+# must land first. Attachments and histories reference entries by path.
+COPY_TABLES="users spaces roles permissions entries attachments histories"
+
 # Best of N. A single timing on a shared host measures whatever else the host
 # was doing; the minimum is the closest thing to the cost of the work itself.
 best_of() {
@@ -109,8 +113,27 @@ printf '%-34s %8sms %12s\n' "export  parquet  (1 space)" "$T" "$(human "$(size_o
 T=$(best_of "parquet --all" env BACKEND_ENV="$CONF" "$BIN" export --all --parquet --no-verify --output "$WORK/all")
 printf '%-34s %8sms %12s\n' "export  parquet  (--all)" "$T" "$(human "$(size_of "$WORK/all")")"
 
-T=$(best_of "pg_dump" pg_dump -h "$PGHOST" -p "$PGPORT" -U "$PGUSER" -d "$PGDB" -Fc -f "$WORK/dump.pgc")
-printf '%-34s %8sms %12s\n' "export  pg_dump  (whole DB)" "$T" "$(human "$(size_of "$WORK/dump.pgc")")"
+T=$(best_of "pg_dump -Fc" pg_dump -h "$PGHOST" -p "$PGPORT" -U "$PGUSER" -d "$PGDB" -Fc -f "$WORK/dump.pgc")
+printf '%-34s %8sms %12s\n' "export  pg_dump -Fc (whole DB)" "$T" "$(human "$(size_of "$WORK/dump.pgc")")"
+
+T=$(best_of "pg_dump -Fp" pg_dump -h "$PGHOST" -p "$PGPORT" -U "$PGUSER" -d "$PGDB" -Fp -f "$WORK/dump.sql")
+printf '%-34s %8sms %12s\n' "export  pg_dump -Fp (whole DB)" "$T" "$(human "$(size_of "$WORK/dump.sql")")"
+
+# PostgreSQL's own BINARY COPY, per table. No archive container, no schema, no
+# compression — the rawest the engine offers, and therefore the floor any
+# format-level comparison should be read against.
+#
+# Streamed through the CLIENT (TO STDOUT) rather than server-side COPY TO file,
+# which would need superuser and would write inside the database container.
+copy_out() {
+  rm -rf "$WORK/copybin"; mkdir -p "$WORK/copybin"
+  for t in $COPY_TABLES; do
+    psql -h "$PGHOST" -p "$PGPORT" -U "$PGUSER" -d "$PGDB" -q \
+      -c "COPY $t TO STDOUT WITH (FORMAT BINARY)" > "$WORK/copybin/$t.bin"
+  done
+}
+T=$(best_of "COPY BINARY out" copy_out)
+printf '%-34s %8sms %12s\n' "export  COPY BINARY (dmart tbls)" "$T" "$(human "$(size_of "$WORK/copybin")")"
 
 # ------------------------------------------------------------------- imports
 #
@@ -129,7 +152,10 @@ best_restore() {
   local best=999999 t start end
   for _ in $(seq 1 "$RUNS"); do
     fresh_db "$db"
-    [ "$prep" = "prep" ] && prepare_target "$db" "$(env_for "$db")"
+    case "$prep" in
+      prep)   prepare_target "$db" "$(env_for "$db")" ;;
+      schema) BACKEND_ENV="$(env_for "$db")" "$BIN" migrate >/dev/null 2>&1 || true ;;
+    esac
     start=$(date +%s%N)
     "$@" >"$WORK/last.out" 2>&1 || { tail -5 "$WORK/last.out"; echo "FAILED: $label" >&2; return 1; }
     end=$(date +%s%N)
@@ -157,12 +183,32 @@ printf '%-34s %8sms %12s\n' "import  parquet  (--all)" "$T" ""
 # No prep: the dump carries its own schema, and pre-creating it would make
 # pg_restore fight objects that already exist.
 T=$(best_restore "pg_restore" bench_dump none pg_restore -h "$PGHOST" -p "$PGPORT" -U "$PGUSER" -d bench_dump --no-owner "$WORK/dump.pgc")
-printf '%-34s %8sms %12s\n' "restore pg_restore (whole DB)" "$T" ""
+printf '%-34s %8sms %12s\n' "import  pg_restore  (-Fc)" "$T" ""
+
+psql_restore() {
+  psql -h "$PGHOST" -p "$PGPORT" -U "$PGUSER" -d bench_sql -q -f "$WORK/dump.sql"
+}
+T=$(best_restore "psql -f" bench_sql none psql_restore)
+printf '%-34s %8sms %12s\n' "import  psql -f     (-Fp SQL)" "$T" ""
+
+# COPY BINARY back in, into a schema-only target. This is the floor for a
+# restore: no parsing, no planning per row, just the engine reading its own
+# on-the-wire representation.
+copy_in() {
+  for t in $COPY_TABLES; do
+    psql -h "$PGHOST" -p "$PGPORT" -U "$PGUSER" -d bench_copy -q \
+      -c "COPY $t FROM STDIN WITH (FORMAT BINARY)" < "$WORK/copybin/$t.bin"
+  done
+}
+T=$(best_restore "COPY BINARY in" bench_copy schema copy_in)
+printf '%-34s %8sms %12s\n' "import  COPY BINARY (dmart tbls)" "$T" ""
 
 printf '%s\n' "----------------------------------------------------------------"
 psql -h "$PGHOST" -p "$PGPORT" -U "$PGUSER" -d postgres -q \
   -c "DROP DATABASE IF EXISTS bench_zip WITH (FORCE);" \
   -c "DROP DATABASE IF EXISTS bench_pq WITH (FORCE);" \
   -c "DROP DATABASE IF EXISTS bench_all WITH (FORCE);" \
-  -c "DROP DATABASE IF EXISTS bench_dump WITH (FORCE);" >/dev/null
+  -c "DROP DATABASE IF EXISTS bench_dump WITH (FORCE);" \
+  -c "DROP DATABASE IF EXISTS bench_sql WITH (FORCE);" \
+  -c "DROP DATABASE IF EXISTS bench_copy WITH (FORCE);" >/dev/null
 printf 'best of %s runs\n' "$RUNS"
