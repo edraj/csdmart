@@ -194,6 +194,46 @@ The lesson worth keeping: at benchmark size this change looks like pure
 complexity for zero gain, and the only reason it is in the tree is that
 someone measured it at a size the benchmark does not cover.
 
+### Then histories and attachments, where the win is much larger
+
+`entries` was the least valuable of the three tables to convert.
+
+**Histories** carried the paging cost AND the hydrate-then-reserialise round
+trip that the raw-JSON change removed for entries: the paged reader parsed
+`request_headers` and `diff` into dictionaries, which the writer immediately
+serialised back for a format that stores them opaquely. Histories usually
+outnumber entries — 40,000 against 21,843 here — so this is the larger win on a
+full backup, and unlike entries it pays at ANY size:
+
+| `personal` (21,843 entries + 40,000 histories) | Time |
+|---|---:|
+| paged | 350 ms |
+| entries streamed only | 353 ms |
+| **entries + histories streamed** | **304 ms** |
+
+**Attachments** were the worst of the three, and the measurement is not close.
+60,000 attachments with no media at all, so this isolates the reader:
+
+| 60,000 attachments | Time |
+|---|---:|
+| paged | 4131 ms |
+| **streamed** | **258 ms** |
+
+**16x.** Attachments pay both costs at once — quadratic paging over a smaller
+page size, and a full `Attachment` object built per row purely to be serialised
+back.
+
+What the streamed attachment path does NOT change: media bytes are still
+fetched one row at a time. Streaming them inline would hold every blob in
+memory at once, which is exactly what the per-row fetch prevents. Blob-heavy
+spaces stay dominated by blob fetches, by design.
+
+**Archive text vs archive data.** The paged attachment reader emitted C# key
+order; the streamed one emits PostgreSQL's `jsonb` normalisation. The text
+differs, the data does not — both archives restore to byte-identical rows,
+verified by importing each into a fresh database and diffing all 60,000. Same
+property the raw-JSON change established for entries.
+
 The raw path is used only when there is **no actor**. An ACL-filtered export
 still goes through the Query pipeline, because that is where the policy
 predicate lives, and skipping it to go faster would hand a caller rows it

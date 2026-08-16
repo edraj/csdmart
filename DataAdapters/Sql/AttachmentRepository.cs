@@ -1,5 +1,7 @@
 using System.Data.Common;
 using Dmart.QueryGrammar;
+using Npgsql;
+using NpgsqlTypes;
 using Dmart.Models.Core;
 
 namespace Dmart.DataAdapters.Sql;
@@ -36,6 +38,128 @@ public sealed class AttachmentRepository(IDbConnectionFactory db, ISqlDialect di
                last_checksum_history, resource_type, NULL AS media, body, state
         FROM attachments
         """;
+
+    // ---- COPY-based export reader (PostgreSQL only) -----------------------
+    //
+    // Same shape as the entries and histories readers: one streaming COPY
+    // instead of a LIMIT/OFFSET walk, with the JSON columns left as the raw
+    // strings the archive stores rather than parsed into objects and
+    // serialised straight back.
+    //
+    // WHAT THIS DOES NOT CHANGE: media bytes are still fetched one attachment
+    // at a time by the caller. Streaming them inline would pull every blob
+    // into memory at once, which is exactly what the per-row fetch exists to
+    // avoid — on a media-heavy space that is the difference between a bounded
+    // export and an OOM. So this speeds up the METADATA read; blob-heavy
+    // installs stay dominated by the blob fetches, by design.
+    //
+    // `media` is deliberately absent from the column list; only its LENGTH is
+    // selected, which the server computes without shipping the bytes.
+
+    private static readonly (string Column, string PgType)[] ExportColumns =
+    [
+        ("uuid", "uuid"), ("shortname", "text"), ("subpath", "text"),
+        ("is_active", "boolean"), ("slug", "text"),
+        ("displayname", "jsonb"), ("description", "jsonb"), ("tags", "jsonb"),
+        ("created_at", "timestamp without time zone"),
+        ("updated_at", "timestamp without time zone"),
+        ("owner_shortname", "text"), ("owner_group_shortname", "text"),
+        ("acl", "jsonb"), ("payload", "jsonb"), ("relationships", "jsonb"),
+        ("last_checksum_history", "text"), ("resource_type", "text"),
+        ("body", "text"), ("state", "text"), ("media", "bytea"),
+    ];
+
+    /// <summary>
+    /// Null when the COPY reader's expected column types still match the live
+    /// schema; otherwise the first mismatch. A mismatch means fall back.
+    /// </summary>
+    internal async Task<string?> ExportSchemaMismatchAsync(CancellationToken ct = default)
+    {
+        await using var conn = await db.OpenAsync(ct);
+        await using var cmd = conn.Command("""
+            SELECT column_name, data_type
+            FROM information_schema.columns
+            WHERE table_schema = 'public' AND table_name = 'attachments'
+            """);
+        var actual = new Dictionary<string, string>(StringComparer.Ordinal);
+        await using (var r = await cmd.ExecuteReaderAsync(ct))
+            while (await r.ReadAsync(ct))
+                actual[r.GetString(0)] = r.GetString(1);
+
+        foreach (var (col, expected) in ExportColumns)
+        {
+            if (!actual.TryGetValue(col, out var got))
+                return $"attachments.{col} is missing";
+            if (!string.Equals(got, expected, StringComparison.OrdinalIgnoreCase))
+                return $"attachments.{col} is {got}, the COPY reader expects {expected}";
+        }
+        return null;
+    }
+
+    /// <summary>
+    /// Streams attachment metadata for one space through a binary COPY. Media
+    /// BYTES are not included — only their length, so the caller still fetches
+    /// blobs one at a time and memory stays bounded.
+    /// </summary>
+    internal async IAsyncEnumerable<AttachmentExportRow> StreamForExportAsync(
+        string spaceName, DateTime? since, string? subpath,
+        [System.Runtime.CompilerServices.EnumeratorCancellation] CancellationToken ct = default)
+    {
+        var scoped = !string.IsNullOrEmpty(subpath) && subpath != "/";
+        await using var conn = (NpgsqlConnection)await db.OpenAsync(ct);
+
+        var filters = $"space_name = {QuoteLiteral(spaceName)}";
+        if (since is not null)
+            filters += $" AND updated_at >= '{since.Value:yyyy-MM-dd HH:mm:ss.ffffff}'::timestamp";
+        if (scoped)
+            filters += $" AND (subpath = {QuoteLiteral(subpath!)} "
+                     + $"OR subpath LIKE {QuoteLiteral(subpath! + "/%")})";
+
+        // Every column except media, then media's LENGTH — computed server-side.
+        var cols = string.Join(", ", ExportColumns
+            .Where(c => c.Column != "media").Select(c => c.Column));
+        var sql = $"COPY (SELECT {cols}, COALESCE(length(media), 0) AS media_size "
+                + $"FROM attachments WHERE {filters} ORDER BY uuid) TO STDOUT (FORMAT BINARY)";
+
+        await using var reader = await conn.BeginBinaryExportAsync(sql, ct);
+        while (await reader.StartRowAsync(ct) != -1)
+        {
+            yield return new AttachmentExportRow(
+                (await reader.ReadAsync<Guid>(NpgsqlDbType.Uuid, ct)).ToString(),
+                await reader.ReadAsync<string>(NpgsqlDbType.Text, ct),
+                await reader.ReadAsync<string>(NpgsqlDbType.Text, ct),
+                await reader.ReadAsync<bool>(NpgsqlDbType.Boolean, ct),
+                await ReadNullableAsync(reader, NpgsqlDbType.Text, ct),
+                await ReadNullableAsync(reader, NpgsqlDbType.Jsonb, ct),
+                await ReadNullableAsync(reader, NpgsqlDbType.Jsonb, ct),
+                await ReadNullableAsync(reader, NpgsqlDbType.Jsonb, ct),
+                await reader.ReadAsync<DateTime>(NpgsqlDbType.Timestamp, ct),
+                await reader.ReadAsync<DateTime>(NpgsqlDbType.Timestamp, ct),
+                await reader.ReadAsync<string>(NpgsqlDbType.Text, ct),
+                await ReadNullableAsync(reader, NpgsqlDbType.Text, ct),
+                await ReadNullableAsync(reader, NpgsqlDbType.Jsonb, ct),
+                await ReadNullableAsync(reader, NpgsqlDbType.Jsonb, ct),
+                await ReadNullableAsync(reader, NpgsqlDbType.Jsonb, ct),
+                await ReadNullableAsync(reader, NpgsqlDbType.Text, ct),
+                await reader.ReadAsync<string>(NpgsqlDbType.Text, ct),
+                await ReadNullableAsync(reader, NpgsqlDbType.Text, ct),
+                await ReadNullableAsync(reader, NpgsqlDbType.Text, ct),
+                await reader.ReadAsync<int>(NpgsqlDbType.Integer, ct));
+        }
+    }
+
+    private static async Task<string?> ReadNullableAsync(
+        NpgsqlBinaryExporter reader, NpgsqlDbType type, CancellationToken ct)
+    {
+        if (!reader.IsNull) return await reader.ReadAsync<string>(type, ct);
+        await reader.SkipAsync(ct);
+        return null;
+    }
+
+    // PostgreSQL's own literal escaping, for the COPY statement only — it
+    // cannot take parameters. Everything else in this file binds.
+    private static string QuoteLiteral(string value)
+        => "'" + value.Replace("'", "''", StringComparison.Ordinal) + "'";
 
     // Metadata-only listing — `media` comes back null. This is what every
     // rendering path wants (AttachmentMapper drops the bytes anyway), so it
@@ -417,3 +541,15 @@ public sealed class AttachmentRepository(IDbConnectionFactory db, ISqlDialect di
         };
     }
 }
+
+/// <summary>
+/// Attachment metadata as the archive stores it — JSON columns stay raw
+/// strings, and MediaSize is the blob's LENGTH rather than its bytes.
+/// </summary>
+public sealed record AttachmentExportRow(
+    string Uuid, string Shortname, string Subpath, bool IsActive, string? Slug,
+    string? Displayname, string? Description, string? Tags,
+    DateTime CreatedAt, DateTime UpdatedAt, string OwnerShortname,
+    string? OwnerGroupShortname, string? Acl, string? Payload, string? Relationships,
+    string? LastChecksumHistory, string ResourceType, string? Body, string? State,
+    long MediaSize);

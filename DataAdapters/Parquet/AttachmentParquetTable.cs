@@ -82,6 +82,46 @@ internal static class AttachmentParquetTable
         Pq.NullableStr(rows, r => r.Attachment.State),
     ];
 
+    /// <summary>A streamed row plus the blob hash the caller computed for it.</summary>
+    internal sealed record RawRow(
+        Dmart.DataAdapters.Sql.AttachmentExportRow Row, string? MediaSha256);
+
+    /// <summary>
+    /// Same columns from the raw export rows — JSON stays the string the
+    /// database returned instead of an object parsed and serialised back.
+    /// </summary>
+    /// <remarks>
+    /// author_locator is written as null, matching the Attachment overload:
+    /// the column does not exist in the table, so the paged reader never
+    /// populates it either.
+    /// </remarks>
+    public static IReadOnlyList<ParquetFileWriter.ColumnPage> BuildPages(
+        IReadOnlyList<RawRow> rows) =>
+    [
+        Pq.Str(rows, r => r.Row.Shortname),
+        Pq.Str(rows, r => r.Row.Subpath),
+        Pq.Str(rows, r => r.Row.Uuid),
+        Pq.Bool(rows, r => r.Row.IsActive),
+        Pq.NullableStr(rows, r => r.Row.Slug),
+        Pq.NullableStr(rows, r => r.Row.Displayname),
+        Pq.NullableStr(rows, r => r.Row.Description),
+        Pq.Str(rows, r => r.Row.Tags ?? "[]"),
+        Pq.Ts(rows, r => r.Row.CreatedAt),
+        Pq.Ts(rows, r => r.Row.UpdatedAt),
+        Pq.Str(rows, r => r.Row.OwnerShortname),
+        Pq.NullableStr(rows, r => r.Row.OwnerGroupShortname),
+        Pq.NullableStr(rows, r => r.Row.Acl),
+        Pq.NullableStr(rows, r => r.Row.Payload),
+        Pq.NullableStr(rows, r => r.Row.Relationships),
+        Pq.NullableStr(rows, r => r.Row.LastChecksumHistory),
+        Pq.Str(rows, r => r.Row.ResourceType),
+        Pq.NullableStr(rows, _ => null),
+        Pq.NullableStr(rows, r => r.MediaSha256),
+        Pq.NullableInt(rows, r => r.MediaSha256 is null ? null : (int)r.Row.MediaSize),
+        Pq.NullableStr(rows, r => r.Row.Body),
+        Pq.NullableStr(rows, r => r.Row.State),
+    ];
+
     /// <param name="spaceName">From the manifest — the Hive partition key.</param>
     /// <remarks>
     /// Attachment.Media is left NULL here. The caller rehydrates it from the

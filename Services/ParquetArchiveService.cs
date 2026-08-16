@@ -547,33 +547,71 @@ public sealed class ParquetArchiveService(
             var writer = new ParquetFileWriter(HistoryParquetTable.Schema);
             writer.Start(file);
 
-            var offset = 0;
-            while (true)
+            // Raw buffer for the streamed path — JSON columns stay the strings
+            // the database returned, instead of being parsed into dictionaries
+            // and serialised straight back for a format that stores them
+            // opaquely. Same reasoning as the entries raw path.
+            var raw = new List<HistoryExportRow>(Math.Min(RowGroupRows, 1024));
+            void FlushRaw()
             {
-                ct.ThrowIfCancellationRequested();
-                var page = await histories.ListForSpacePagedAsync(
-                    spaceName, HistoryPageSize, offset, since, subpath, ct);
-                if (page.Count == 0) break;
-
-                foreach (var row in page)
-                {
-                    buffer.Add(row);
-                    if (buffer.Count >= RowGroupRows)
-                    {
-                        writer.WriteRowGroup(HistoryParquetTable.BuildPages(buffer), buffer.Count);
-                        rows += buffer.Count;
-                        buffer.Clear();
-                    }
-                }
-
-                offset += page.Count;
-                if (page.Count < HistoryPageSize) break;
+                writer.WriteRowGroup(HistoryParquetTable.BuildPages(raw), raw.Count);
+                rows += raw.Count;
+                raw.Clear();
             }
 
-            if (buffer.Count > 0)
+            var streamed = false;
+            if (db is Db)
             {
-                writer.WriteRowGroup(HistoryParquetTable.BuildPages(buffer), buffer.Count);
-                rows += buffer.Count;
+                var mismatch = await histories.ExportSchemaMismatchAsync(ct);
+                if (mismatch is null)
+                {
+                    await foreach (var row in histories.StreamForExportAsync(
+                                       spaceName, since, subpath, ct))
+                    {
+                        raw.Add(row);
+                        if (raw.Count >= RowGroupRows) FlushRaw();
+                    }
+                    if (raw.Count > 0) FlushRaw();
+                    streamed = true;
+                }
+                else
+                {
+                    log.LogWarning(
+                        "parquet export: falling back to the paged history reader — {Mismatch}. "
+                        + "The export is correct, just slower.", mismatch);
+                }
+            }
+
+            if (!streamed)
+            {
+                var offset = 0;
+                while (true)
+                {
+                    ct.ThrowIfCancellationRequested();
+                    var page = await histories.ListForSpacePagedAsync(
+                        spaceName, HistoryPageSize, offset, since, subpath, ct);
+                    if (page.Count == 0) break;
+
+                    foreach (var row in page)
+                    {
+                        buffer.Add(row);
+                        if (buffer.Count >= RowGroupRows)
+                        {
+                            writer.WriteRowGroup(HistoryParquetTable.BuildPages(buffer), buffer.Count);
+                            rows += buffer.Count;
+                            buffer.Clear();
+                        }
+                    }
+
+                    offset += page.Count;
+                    if (page.Count < HistoryPageSize) break;
+                }
+
+                if (buffer.Count > 0)
+                {
+                    writer.WriteRowGroup(HistoryParquetTable.BuildPages(buffer), buffer.Count);
+                    rows += buffer.Count;
+                }
             }
 
             writer.Finish();
@@ -744,44 +782,93 @@ public sealed class ParquetArchiveService(
             var writer = new ParquetFileWriter(AttachmentParquetTable.Schema);
             writer.Start(file);
 
-            var offset = 0;
-            while (true)
+            var raw = new List<AttachmentParquetTable.RawRow>(Math.Min(RowGroupRows, 1024));
+            void FlushRaw()
             {
-                ct.ThrowIfCancellationRequested();
-                var page = await attachments.ListForSpacePagedAsync(
-                    spaceName, AttachmentPageSize, offset, since, subpath, ct);
-                if (page.Count == 0) break;
+                writer.WriteRowGroup(AttachmentParquetTable.BuildPages(raw), raw.Count);
+                rows += raw.Count;
+                raw.Clear();
+            }
 
-                foreach (var (attachment, mediaSize) in page)
+            // Media BYTES are still fetched one row at a time, on both paths.
+            // Streaming them inline would pull every blob into memory at once —
+            // the per-row fetch is what keeps a media-heavy export bounded. So
+            // this speeds up the metadata read, and blob-heavy spaces stay
+            // dominated by the blob fetches.
+            var streamed = false;
+            if (db is Db)
+            {
+                var mismatch = await attachments.ExportSchemaMismatchAsync(ct);
+                if (mismatch is null)
                 {
-                    string? sha = null;
-                    if (mediaSize > 0)
+                    await foreach (var row in attachments.StreamForExportAsync(
+                                       spaceName, since, subpath, ct))
                     {
-                        var (bytes, _) = await attachments.GetMediaAsync(Guid.Parse(attachment.Uuid), ct);
-                        if (bytes is not null)
+                        string? sha = null;
+                        if (row.MediaSize > 0)
                         {
-                            sha = BlobStore.Write(outputDirectory, bytes);
-                            if (distinctBlobs.Add(sha)) { blobs++; blobBytes += bytes.Length; }
+                            var (bytes, _) = await attachments.GetMediaAsync(Guid.Parse(row.Uuid), ct);
+                            if (bytes is not null)
+                            {
+                                sha = BlobStore.Write(outputDirectory, bytes);
+                                if (distinctBlobs.Add(sha)) { blobs++; blobBytes += bytes.Length; }
+                            }
+                        }
+                        raw.Add(new AttachmentParquetTable.RawRow(row, sha));
+                        if (raw.Count >= RowGroupRows) FlushRaw();
+                    }
+                    if (raw.Count > 0) FlushRaw();
+                    streamed = true;
+                }
+                else
+                {
+                    log.LogWarning(
+                        "parquet export: falling back to the paged attachment reader — {Mismatch}. "
+                        + "The export is correct, just slower.", mismatch);
+                }
+            }
+
+            if (!streamed)
+            {
+                var offset = 0;
+                while (true)
+                {
+                    ct.ThrowIfCancellationRequested();
+                    var page = await attachments.ListForSpacePagedAsync(
+                        spaceName, AttachmentPageSize, offset, since, subpath, ct);
+                    if (page.Count == 0) break;
+
+                    foreach (var (attachment, mediaSize) in page)
+                    {
+                        string? sha = null;
+                        if (mediaSize > 0)
+                        {
+                            var (bytes, _) = await attachments.GetMediaAsync(Guid.Parse(attachment.Uuid), ct);
+                            if (bytes is not null)
+                            {
+                                sha = BlobStore.Write(outputDirectory, bytes);
+                                if (distinctBlobs.Add(sha)) { blobs++; blobBytes += bytes.Length; }
+                            }
+                        }
+
+                        buffer.Add(new AttachmentParquetTable.Row(attachment, sha, mediaSize));
+                        if (buffer.Count >= RowGroupRows)
+                        {
+                            writer.WriteRowGroup(AttachmentParquetTable.BuildPages(buffer), buffer.Count);
+                            rows += buffer.Count;
+                            buffer.Clear();
                         }
                     }
 
-                    buffer.Add(new AttachmentParquetTable.Row(attachment, sha, mediaSize));
-                    if (buffer.Count >= RowGroupRows)
-                    {
-                        writer.WriteRowGroup(AttachmentParquetTable.BuildPages(buffer), buffer.Count);
-                        rows += buffer.Count;
-                        buffer.Clear();
-                    }
+                    offset += page.Count;
+                    if (page.Count < AttachmentPageSize) break;
                 }
 
-                offset += page.Count;
-                if (page.Count < AttachmentPageSize) break;
-            }
-
-            if (buffer.Count > 0)
-            {
-                writer.WriteRowGroup(AttachmentParquetTable.BuildPages(buffer), buffer.Count);
-                rows += buffer.Count;
+                if (buffer.Count > 0)
+                {
+                    writer.WriteRowGroup(AttachmentParquetTable.BuildPages(buffer), buffer.Count);
+                    rows += buffer.Count;
+                }
             }
 
             writer.Finish();
