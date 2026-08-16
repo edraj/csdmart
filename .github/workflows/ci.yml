@@ -559,12 +559,57 @@ jobs:
     # only proves a package extracted. So this job serves the image and waits
     # for /health/ready rather than trusting a successful build.
     steps:
+      # Full history so the packaging-scope diff below has a base to compare
+      # against; checkout's default depth of 1 has none.
       - uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+
+      # This job is a fifth against three self-hosted runners, so it does not
+      # run on every PR. It runs when the change could plausibly break the
+      # IMAGE — packaging inputs — and unconditionally on pushes to master, so
+      # every merge still validates the container even if the PR that caused it
+      # touched only C#.
+      #
+      # WHAT THIS TRADES AWAY, stated rather than discovered later: a pure C#
+      # change that breaks the container only under MUSL would now be caught at
+      # the master push rather than on the PR. aot-publish already smoke-tests
+      # the glibc native binary on SQLite, so the uncovered case is
+      # musl-specific runtime breakage on a feature branch — one merge late,
+      # not one release late, which is the gap this job exists to close.
+      - name: Is this change in packaging scope?
+        id: scope
+        run: |
+          if [ "${{ github.event_name }}" = "push" ]; then
+            echo "run=true" >> "$GITHUB_OUTPUT"
+            echo "push to master — running unconditionally"
+            exit 0
+          fi
+          BASE="${{ github.event.pull_request.base.sha }}"
+          if [ -z "$BASE" ] || ! git cat-file -e "$BASE" 2>/dev/null; then
+            # No usable base to diff against: run rather than skip. A filter
+            # that fails open on uncertainty costs runner time; one that fails
+            # closed silently stops testing.
+            echo "run=true" >> "$GITHUB_OUTPUT"
+            echo "no usable base sha — running to be safe"
+            exit 0
+          fi
+          CHANGED=$(git diff --name-only "$BASE"...HEAD)
+          echo "$CHANGED" | sed 's/^/  /'
+          if echo "$CHANGED" | grep -qE '^(admin_scripts/docker/|dist/build-apk\.sh|dist/apk/|dist/dmart\.(service|bash|fish)|build-ui\.sh|\.github/workflows/ci\.yml)'; then
+            echo "run=true" >> "$GITHUB_OUTPUT"
+            echo "packaging inputs changed — running"
+          else
+            echo "run=false" >> "$GITHUB_OUTPUT"
+            echo "no packaging inputs changed — skipping the image build"
+          fi
 
       - name: Podman preflight (self-heal stale state after host reboot)
+        if: steps.scope.outputs.run == 'true'
         uses: ./.github/actions/podman-preflight
 
       - name: Build the Alpine package
+        if: steps.scope.outputs.run == 'true' 
         # build-apk.sh builds the UI itself when cxb/catalog dists are absent,
         # so this is self-contained. VERSION is pinned for the same reason the
         # RPM job pins it: checkout@v6 is depth 1, so `git describe` has no tags
@@ -572,12 +617,14 @@ jobs:
         run: VERSION=0.0.0 ./dist/build-apk.sh --arch x86_64
 
       - name: Build the container image from it
+        if: steps.scope.outputs.run == 'true'
         run: |
           podman build -t dmart-ci:test \
             -f admin_scripts/docker/Dockerfile \
             --build-arg DMART_VERSION=0.0.0 .
 
       - name: Serve from the image and wait for readiness
+        if: steps.scope.outputs.run == 'true' 
         # The property under test. `podman build` succeeding says the apk
         # extracted; it says nothing about whether the binary in it runs, finds
         # libe_sqlite3.so, or can open a database.
