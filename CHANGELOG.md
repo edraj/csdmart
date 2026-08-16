@@ -1,6 +1,15 @@
 # Changelog
 
-## Unreleased
+## v1.2.2 — 2026-08-16
+
+A performance release for the Parquet export, plus one cleanup-command change.
+
+**Note for anyone comparing archives across this upgrade:** attachment archive
+bytes differ from earlier releases. The streamed reader emits PostgreSQL's JSON
+key order where the old one emitted C#'s, so the same attachment produces
+different — equivalent — text. Verified by importing both archives into fresh
+databases and diffing all 60,000 restored rows: identical. Only a byte-level
+comparison of the archives themselves will notice.
 
 - Parquet export now streams **histories and attachments** through `COPY` as
   well as entries, and stops parsing their JSON columns into objects only to
