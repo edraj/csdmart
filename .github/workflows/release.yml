@@ -617,11 +617,16 @@ jobs:
   build-container:
     name: Build & Push Container Image
     runs-on: self-hosted
-    needs: build-ui-tarballs
+    # The APK, not the UI tarballs: the image INSTALLS the Alpine package now
+    # rather than compiling dmart a second time, and that package already
+    # carries the SPAs. This serialises the two jobs where they used to run in
+    # parallel, which is still the better trade — the container step drops from
+    # a full musl AOT compile (~5 min) to an `apk add`, freeing a runner from a
+    # pool of three for most of a wave.
+    needs: build-apk-x86_64
     steps:
       # fetch-depth: 0 — need tag history so `git describe --tags` below
-      # produces a proper version label for the baked-in InformationalVersion.
-      # .dockerignore excludes .git/, so we compute it out here and pass in.
+      # produces a proper version label for the image LABELs.
       - uses: actions/checkout@v6
         with:
           fetch-depth: 0
@@ -629,18 +634,11 @@ jobs:
       - name: Podman preflight (self-heal stale state after host reboot)
         uses: ./.github/actions/podman-preflight
 
-      - name: Download UI tarballs
+      - name: Download the Alpine package
         uses: actions/download-artifact@v7
         with:
-          name: ui-tarballs
+          name: alpine-apk-x86_64
           path: dist/out
-
-      - name: Extract UI dists
-        run: |
-          V="${GITHUB_REF_NAME#v}"; V="${V:-0.1.0}"
-          mkdir -p cxb/dist/client catalog/dist/client
-          tar -xzf "dist/out/cxb-${V}.tar.gz"     -C cxb/dist/client
-          tar -xzf "dist/out/catalog-${V}.tar.gz" -C catalog/dist/client
 
       # Reclaim podman storage WITHOUT wiping base images or the long-lived
       # el9 builder container. `podman system prune -af` would also blow
@@ -682,21 +680,39 @@ jobs:
 
       - name: Build all-in-one container image
         run: |
-          # Pass git metadata explicitly — .dockerignore excludes .git/, so
-          # the csproj can't derive these inside the build stage. --long
-          # forces "<tag>-<n>-g<sha>" so the SHA stays in `dmart -v` even
-          # for builds cut exactly on a tag.
-          GIT_DESCRIBE=$(git describe --tags --always --long)
-          GIT_DATE=$(git show --pretty=format:%cs -q HEAD)
+          # No GIT_* build args any more. They existed so the compile stage
+          # could bake InformationalVersion into the binary; the binary now
+          # arrives prebuilt in the .apk with that already baked in, and
+          # `dmart --version` reports it from there.
           podman build \
             -t ghcr.io/${{ github.repository }}:${{ steps.version.outputs.version }} \
             -t ghcr.io/${{ github.repository }}:latest \
             -f admin_scripts/docker/Dockerfile \
             --build-arg DMART_VERSION=${{ steps.version.outputs.version }} \
-            --build-arg GIT_DESCRIBE="${GIT_DESCRIBE}" \
-            --build-arg GIT_BRANCH="${GITHUB_REF_NAME}" \
-            --build-arg GIT_DATE="${GIT_DATE}" \
             .
+
+      # The image is the package: prove the installed binary runs and serves
+      # before pushing it. This used to be implicit in the build succeeding —
+      # a compile that linked was some evidence. An `apk add` that succeeds is
+      # not, so the check has to be explicit now.
+      - name: Smoke the image before pushing
+        run: |
+          set -e
+          IMG=ghcr.io/${{ github.repository }}:${{ steps.version.outputs.version }}
+          podman run --rm "$IMG" dmart --version
+          podman rm -f dmart-relsmoke 2>/dev/null || true
+          RUNNER_DIGITS=$(printf '%s' "${RUNNER_NAME:-local}" | tr -cd '0-9' | tail -c 3)
+          PORT=$(( 18100 + 10#${RUNNER_DIGITS:-0} % 50 ))
+          podman run -d --name dmart-relsmoke -p "$PORT":8000 "$IMG"
+          ready=0
+          for _ in $(seq 1 60); do
+            if curl -sf "http://127.0.0.1:$PORT/health/ready" >/dev/null 2>&1; then ready=1; break; fi
+            sleep 1
+          done
+          podman logs dmart-relsmoke 2>&1 | tail -20
+          podman rm -f dmart-relsmoke 2>/dev/null || true
+          [ "$ready" = "1" ] || { echo "image never became ready"; exit 1; }
+          echo "image serves on SQLite"
 
       - name: Push container image
         run: |
