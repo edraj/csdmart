@@ -1,6 +1,11 @@
 # Changelog
 
-## Unreleased
+## v1.2.3 — 2026-08-16
+
+Packaging and CI only — no changes to dmart itself. The container image is
+rebuilt on a different base, so it is worth taking.
+
+### Container
 
 - The container image now **installs the Alpine package** instead of compiling
   dmart in a `dotnet/sdk:10.0-alpine` stage. That stage was a second
@@ -14,6 +19,20 @@
   It was `alpine:edge` — a rolling pre-release whose musl can drift ahead of
   the compiler's — with no recorded reason. `Dockerfile.runtime` is pinned to
   the same base.
+
+  **If you run the image:** the base moved from a rolling pre-release
+  (`3.25.0_alpha`) to Alpine 3.24, so the OS packages inside it change version
+  accordingly. dmart itself is byte-identical to 1.2.2 — same binary, same
+  behaviour.
+
+### CI
+
+- CI now **builds the container image and serves it**, on packaging changes and
+  on every push to master. The image was previously built only by the release
+  workflow, so a broken Dockerfile or package layout reached a tag before
+  anyone saw it. Serving it matters more than building it: with
+  `libe_sqlite3.so` removed from the image, `podman build` still succeeds and
+  only the readiness check catches it.
 
 ## v1.2.2 — 2026-08-16
 
