@@ -546,3 +546,116 @@ jobs:
             done
           done
           echo "payload OK for both targets"
+
+  container-build:
+    name: Container build
+    runs-on: self-hosted
+    # The container image was only ever built by release.yml, so a broken
+    # Dockerfile, entrypoint or APK layout reached a tag before anyone saw it —
+    # the same gap that let two RPM bugs ship in v1.2.0.
+    #
+    # It matters more since the image stopped compiling dmart and started
+    # INSTALLING the .apk: the build step no longer proves the binary works, it
+    # only proves a package extracted. So this job serves the image and waits
+    # for /health/ready rather than trusting a successful build.
+    steps:
+      # Full history so the packaging-scope diff below has a base to compare
+      # against; checkout's default depth of 1 has none.
+      - uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+
+      # This job is a fifth against three self-hosted runners, so it does not
+      # run on every PR. It runs when the change could plausibly break the
+      # IMAGE — packaging inputs — and unconditionally on pushes to master, so
+      # every merge still validates the container even if the PR that caused it
+      # touched only C#.
+      #
+      # WHAT THIS TRADES AWAY, stated rather than discovered later: a pure C#
+      # change that breaks the container only under MUSL would now be caught at
+      # the master push rather than on the PR. aot-publish already smoke-tests
+      # the glibc native binary on SQLite, so the uncovered case is
+      # musl-specific runtime breakage on a feature branch — one merge late,
+      # not one release late, which is the gap this job exists to close.
+      - name: Is this change in packaging scope?
+        id: scope
+        run: |
+          if [ "${{ github.event_name }}" = "push" ]; then
+            echo "run=true" >> "$GITHUB_OUTPUT"
+            echo "push to master — running unconditionally"
+            exit 0
+          fi
+          BASE="${{ github.event.pull_request.base.sha }}"
+          if [ -z "$BASE" ] || ! git cat-file -e "$BASE" 2>/dev/null; then
+            # No usable base to diff against: run rather than skip. A filter
+            # that fails open on uncertainty costs runner time; one that fails
+            # closed silently stops testing.
+            echo "run=true" >> "$GITHUB_OUTPUT"
+            echo "no usable base sha — running to be safe"
+            exit 0
+          fi
+          CHANGED=$(git diff --name-only "$BASE"...HEAD)
+          echo "$CHANGED" | sed 's/^/  /'
+          if echo "$CHANGED" | grep -qE '^(admin_scripts/docker/|dist/build-apk\.sh|dist/apk/|dist/dmart\.(service|bash|fish)|build-ui\.sh|\.github/workflows/ci\.yml)'; then
+            echo "run=true" >> "$GITHUB_OUTPUT"
+            echo "packaging inputs changed — running"
+          else
+            echo "run=false" >> "$GITHUB_OUTPUT"
+            echo "no packaging inputs changed — skipping the image build"
+          fi
+
+      - name: Podman preflight (self-heal stale state after host reboot)
+        if: steps.scope.outputs.run == 'true'
+        uses: ./.github/actions/podman-preflight
+
+      - name: Build the Alpine package
+        if: steps.scope.outputs.run == 'true' 
+        # build-apk.sh builds the UI itself when cxb/catalog dists are absent,
+        # so this is self-contained. VERSION is pinned for the same reason the
+        # RPM job pins it: checkout@v6 is depth 1, so `git describe` has no tags
+        # and the script would quietly fall back to 0.1.0.
+        run: VERSION=0.0.0 ./dist/build-apk.sh --arch x86_64
+
+      - name: Build the container image from it
+        if: steps.scope.outputs.run == 'true'
+        run: |
+          podman build -t dmart-ci:test \
+            -f admin_scripts/docker/Dockerfile \
+            --build-arg DMART_VERSION=0.0.0 .
+
+      - name: Serve from the image and wait for readiness
+        if: steps.scope.outputs.run == 'true' 
+        # The property under test. `podman build` succeeding says the apk
+        # extracted; it says nothing about whether the binary in it runs, finds
+        # libe_sqlite3.so, or can open a database.
+        run: |
+          set -e
+          podman run --rm dmart-ci:test dmart --version
+          # Per-runner port: this job runs concurrently with the test matrix on
+          # the same host, same keying as the other jobs use.
+          RUNNER_DIGITS=$(printf '%s' "${RUNNER_NAME:-local}" | tr -cd '0-9' | tail -c 3)
+          PORT=$(( 18200 + 10#${RUNNER_DIGITS:-0} % 50 ))
+          echo "container smoke port: $PORT"
+          podman rm -f dmart-cismoke 2>/dev/null || true
+          podman run -d --name dmart-cismoke -p "$PORT":8000 dmart-ci:test
+          ready=0
+          for _ in $(seq 1 90); do
+            if curl -sf "http://127.0.0.1:$PORT/health/ready" >/dev/null 2>&1; then ready=1; break; fi
+            sleep 1
+          done
+          if [ "$ready" != "1" ]; then
+            echo "--- container never became ready; logs follow ---"
+            podman logs dmart-cismoke 2>&1 | tail -40
+            podman rm -f dmart-cismoke 2>/dev/null || true
+            exit 1
+          fi
+          # The SPAs ship inside the APK now rather than being copied in, so a
+          # packaging change that drops them would otherwise pass unnoticed.
+          curl -sf -o /dev/null "http://127.0.0.1:$PORT/cxb/" \
+            || { echo "cxb SPA not served"; podman rm -f dmart-cismoke; exit 1; }
+          podman rm -f dmart-cismoke 2>/dev/null || true
+          echo "image serves, and carries the SPAs"
+
+      - name: Clean up the test image
+        if: always()
+        run: podman rmi -f dmart-ci:test 2>/dev/null || true
