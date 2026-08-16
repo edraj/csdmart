@@ -496,11 +496,19 @@ jobs:
     # %install, and the missing library only fails at %files time. Catching
     # this class needs a real rpmbuild, so that is what this does.
     #
-    # Fedora natively, and deliberately NOT EL9: the EL9 leg builds in a podman
-    # container, which is the slow half, and it exercises the same spec and the
-    # same staging step. Both v1.2.0 bugs reproduce here. EL9 stays release-only.
+    # Both targets. Fedora builds natively; EL9 builds inside a podman container
+    # against the same spec and the same staging step.
+    #
+    # EL9 is NOT redundant even though both v1.2.0 bugs reproduce on Fedora. The
+    # EL9 leg is the one that exercises the container path — a stale or broken
+    # builder image, a podman-storage problem, or an EL9-only packaging
+    # difference reaches a tag otherwise, and that is precisely the class of
+    # failure this job exists to move off the release.
     steps:
       - uses: actions/checkout@v6
+
+      - name: Podman preflight (self-heal stale state after host reboot)
+        uses: ./.github/actions/podman-preflight
 
       - name: Build the Fedora RPM
         # VERSION is pinned rather than derived. checkout@v6 fetches depth 1, so
@@ -510,6 +518,15 @@ jobs:
         # carries is irrelevant, so say so instead of depending on tag depth.
         run: VERSION=0.0.0 ./dist/build-rpm.sh
 
+      - name: Build the EL9 RPM
+        # Same script, container path. `podman rm -f` first for the same reason
+        # release.yml does it: build-rpm.sh KEEPS the builder container between
+        # runs to avoid reinstalling the SDK, and a container left half-built by
+        # an interrupted run would otherwise be reused.
+        run: |
+          podman rm -f dmart-el9-builder 2>/dev/null || true
+          VERSION=0.0.0 ./dist/build-rpm.sh el9
+
       - name: Assert the RPM carries what it must
         # The build succeeding is not the whole property. %files lists
         # libe_sqlite3.so unconditionally and on purpose — a package missing it
@@ -517,13 +534,15 @@ jobs:
         # exit code.
         run: |
           set -e
-          RPM=$(ls dist/out/*.fc*.x86_64.rpm 2>/dev/null | head -1)
-          test -n "$RPM" || { echo "no Fedora RPM produced"; exit 1; }
-          echo "built: $RPM"
-          for f in /usr/bin/dmart /usr/lib64/libe_sqlite3.so \
-                   /usr/share/dmart/config.env.packaged \
-                   /usr/share/dmart/config.env.sample; do
-            rpm -qlp "$RPM" | grep -qx "$f" \
-              || { echo "MISSING from the RPM: $f"; rpm -qlp "$RPM"; exit 1; }
+          for tag in fc el9; do
+            RPM=$(ls dist/out/*."$tag"*.x86_64.rpm 2>/dev/null | grep -v '\.src\.rpm$' | head -1)
+            test -n "$RPM" || { echo "no $tag RPM produced"; ls -la dist/out || true; exit 1; }
+            echo "checking: $RPM"
+            for f in /usr/bin/dmart /usr/lib64/libe_sqlite3.so \
+                     /usr/share/dmart/config.env.packaged \
+                     /usr/share/dmart/config.env.sample; do
+              rpm -qlp "$RPM" | grep -qx "$f" \
+                || { echo "MISSING from $RPM: $f"; rpm -qlp "$RPM"; exit 1; }
+            done
           done
-          echo "payload OK"
+          echo "payload OK for both targets"

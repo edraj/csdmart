@@ -360,14 +360,15 @@ public sealed class HistoryRepository(IDbConnectionFactory db, ISqlDialect diale
     // The only remaining source is an import replaying an archive that still
     // contains them, so this is safe to re-run after one.
     //
-    // `diff IS NULL` is deliberately NOT matched. The column is nullable and a
-    // null there is an older, different shape that this bug never produced; it
-    // is counted and reported rather than swept up with rows we can account for.
+    // `diff IS NULL` is matched too. The column is nullable and a null predates
+    // the `{}` convention, but it carries exactly the same information — an
+    // audit row recording no change — so leaving it behind would mean the
+    // cleanup only half-worked. Both are counted separately so the output still
+    // says which shape it found.
 
     /// <summary>
-    /// Deletes history rows whose diff is an empty object, optionally within
-    /// one space. Returns what was removed and how many null-diff rows were
-    /// left alone.
+    /// Deletes history rows that record no change — diff `{}` or NULL —
+    /// optionally within one space.
     /// </summary>
     /// <remarks>
     /// TOMBSTONED, like every other content-removing delete (§5.2 rules 1 and
@@ -380,9 +381,10 @@ public sealed class HistoryRepository(IDbConnectionFactory db, ISqlDialect diale
     public async Task<EmptyHistoryPruneResult> PruneEmptyDiffAsync(
         string? spaceName = null, bool dryRun = false, CancellationToken ct = default)
     {
-        // AsText bridges the engines: jsonb needs ::text on PostgreSQL, while
-        // SQLite already stores the column as TEXT.
-        var emptyDiff = $"{dialect.AsText("diff")} = '{{}}'";
+        // Both shapes of "no recorded change": the literal `{}` this bug wrote,
+        // and a NULL from older rows. AsText bridges the engines — jsonb needs
+        // ::text on PostgreSQL, while SQLite already stores the column as TEXT.
+        var emptyDiff = $"({dialect.AsText("diff")} = '{{}}' OR diff IS NULL)";
         var scoped = spaceName is not null;
         var predicate = scoped ? $"{emptyDiff} AND space_name = $1" : emptyDiff;
 
@@ -392,6 +394,8 @@ public sealed class HistoryRepository(IDbConnectionFactory db, ISqlDialect diale
         if (scoped) DbParams.Add(count, spaceName!);
         var n = (int)DbParams.ReadCount(await count.ExecuteScalarAsync(ct));
 
+        // Reported separately so the operator can see which shape was there —
+        // an install with null diffs predates the `{}` convention entirely.
         await using var nulls = conn.Command(
             "SELECT COUNT(*) FROM histories WHERE diff IS NULL" + (scoped ? " AND space_name = $1" : ""));
         if (scoped) DbParams.Add(nulls, spaceName!);
@@ -415,8 +419,13 @@ public sealed class HistoryRepository(IDbConnectionFactory db, ISqlDialect diale
     }
 }
 
-/// <summary>What an empty-diff history prune removed, and what it left.</summary>
-public sealed record EmptyHistoryPruneResult(int Removed, int NullDiffLeft, bool DryRun);
+/// <summary>
+/// What an empty-diff history prune removed. <paramref name="NullDiffs"/> is
+/// the subset of <paramref name="Removed"/> that had a NULL diff rather than an
+/// empty object — the same meaning, an older shape, reported so the operator
+/// can see which one their install carried.
+/// </summary>
+public sealed record EmptyHistoryPruneResult(int Removed, int NullDiffs, bool DryRun);
 
 public sealed record HistoryEntry(Guid Uuid, string? Actor, string? Diff, DateTime Timestamp);
 

@@ -1,5 +1,12 @@
 # Changelog
 
+## Unreleased
+
+- `prune-empty-histories` now **deletes** rows with a NULL diff instead of
+  reporting and skipping them. A NULL predates the `{}` convention but means the
+  same thing — an audit row recording no change — so leaving them behind meant
+  the cleanup only half-worked. The count is still broken out separately.
+
 ## v1.2.1 — 2026-08-15
 
 A patch release: one new maintenance command, and the RPM build repaired.
