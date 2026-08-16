@@ -4,11 +4,31 @@
 dmart, AOT-compiled, storing its index in SQLite. It publishes to
 `ghcr.io/edraj/csdmart`.
 
+The image **installs the Alpine package**; it does not compile dmart. So the
+`.apk` has to exist first:
+
 ```
+./build-ui.sh                                    # the APK bakes the SPAs in
+VERSION=1.2.3 ./dist/build-apk.sh --arch x86_64  # writes dist/out/*.apk
 podman build -t dmart -f admin_scripts/docker/Dockerfile .
 podman run --name dmart -p 8000:8000 -d dmart
 podman exec -it dmart dmart passwd dmart     # admin ships passwordless
 ```
+
+It used to compile the binary in a `dotnet/sdk:10.0-alpine` stage — a second
+`linux-musl-x64` AOT build of exactly what the APK job already produces, which
+cost ~5 minutes of a shared 3-runner pool on every release. Installing the
+package instead means the image ships the same artifact an Alpine user gets, so
+it doubles as a test of that package: the release job now smoke-runs the image
+before pushing it, because an `apk add` succeeding proves less than a compile
+that linked.
+
+**The base is pinned to `alpine:3.24`, matching the build side.**
+`dist/build-apk.sh` compiles inside `mcr.microsoft.com/dotnet/sdk:10.0-alpine`,
+which is Alpine 3.24 with musl 1.2.6; running that binary on the same Alpine
+release is the only way to know the musl it was linked against is the musl it
+gets. This was `alpine:edge` with no recorded reason — a rolling pre-release
+(3.25.0_alpha) whose musl can drift ahead of the compiler's.
 
 `./admin_scripts/docker/notes.sh` is the developer loop: it builds the musl
 binary in a persistent builder container and assembles

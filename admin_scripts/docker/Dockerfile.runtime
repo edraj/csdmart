@@ -12,7 +12,11 @@
 # This image does not compile, but the name stays consistent across both.
 ARG DMART_VERSION=0.0.0-local
 
-FROM alpine:edge
+# Same pin as Dockerfile, and for the same reason: dmart is compiled against
+# the musl in mcr.microsoft.com/dotnet/sdk:10.0-alpine (Alpine 3.24, musl
+# 1.2.6), so the runtime base has to be that Alpine release rather than a
+# rolling pre-release whose musl can drift ahead of it.
+FROM alpine:3.24
 
 # No icu-libs: dmart is built with InvariantGlobalization=true (no ICU
 # dependency). tzdata STAYS — TimeZoneInfo reads OS tzdata, not ICU.

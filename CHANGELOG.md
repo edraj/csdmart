@@ -1,5 +1,20 @@
 # Changelog
 
+## Unreleased
+
+- The container image now **installs the Alpine package** instead of compiling
+  dmart in a `dotnet/sdk:10.0-alpine` stage. That stage was a second
+  `linux-musl-x64` AOT build of exactly what the APK job already produces —
+  ~5 minutes of a shared 3-runner pool on every release, for a byte-identical
+  binary. The image now ships the same artifact an Alpine user installs, so it
+  doubles as a test of that package, and the release job smoke-runs it before
+  pushing.
+- The container base is pinned to **`alpine:3.24`**, matching the Alpine the
+  binary is compiled against (`dotnet/sdk:10.0-alpine` is 3.24 / musl 1.2.6).
+  It was `alpine:edge` — a rolling pre-release whose musl can drift ahead of
+  the compiler's — with no recorded reason. `Dockerfile.runtime` is pinned to
+  the same base.
+
 ## v1.2.2 — 2026-08-16
 
 A performance release for the Parquet export, plus one cleanup-command change.
