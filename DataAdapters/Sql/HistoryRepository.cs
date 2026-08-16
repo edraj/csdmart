@@ -343,6 +343,116 @@ public sealed class HistoryRepository(IDbConnectionFactory db, ISqlDialect diale
         return (int)DbParams.ReadCount(await cmd.ExecuteScalarAsync(ct));
     }
 
+    // ---- COPY-based export reader (PostgreSQL only) -----------------------
+    //
+    // Histories carry BOTH problems entries had, and this fixes both at once:
+    //
+    //   1. LIMIT/OFFSET paging, which makes PostgreSQL scan and discard every
+    //      row before the offset — quadratic in table size.
+    //   2. The hydrate-then-reserialise round trip PR #174 removed for entries
+    //      but not here: ListForSpacePagedAsync parses request_headers and diff
+    //      into Dictionary<string, object>, and HistoryParquetTable immediately
+    //      serialises them back to JSON strings for an archive that stores them
+    //      opaquely. Pure loss.
+    //
+    // Histories usually OUTNUMBER entries — the benchmark space has 40,000 to
+    // 21,843 — so this is the larger of the two wins on a full backup.
+    //
+    // Same guard as the entries reader: the COPY names its columns in a SELECT,
+    // so added or reordered columns cannot shift the stream, but a column
+    // changing TYPE would. ExportColumns is checked against the live catalog
+    // and falls back to the paged reader on a mismatch.
+
+    private static readonly (string Column, string PgType)[] ExportColumns =
+    [
+        ("uuid", "uuid"), ("subpath", "text"), ("shortname", "text"),
+        ("timestamp", "timestamp without time zone"),
+        ("owner_shortname", "text"),
+        ("request_headers", "jsonb"), ("diff", "jsonb"),
+        ("last_checksum_history", "text"),
+    ];
+
+    /// <summary>
+    /// Null when the COPY reader's expected column types still match the live
+    /// schema; otherwise a description of the first mismatch. A mismatch means
+    /// fall back, not fail.
+    /// </summary>
+    internal async Task<string?> ExportSchemaMismatchAsync(CancellationToken ct = default)
+    {
+        await using var conn = await db.OpenAsync(ct);
+        await using var cmd = conn.Command("""
+            SELECT column_name, data_type
+            FROM information_schema.columns
+            WHERE table_schema = 'public' AND table_name = 'histories'
+            """);
+        var actual = new Dictionary<string, string>(StringComparer.Ordinal);
+        await using (var r = await cmd.ExecuteReaderAsync(ct))
+            while (await r.ReadAsync(ct))
+                actual[r.GetString(0)] = r.GetString(1);
+
+        foreach (var (col, expected) in ExportColumns)
+        {
+            if (!actual.TryGetValue(col, out var got))
+                return $"histories.{col} is missing";
+            if (!string.Equals(got, expected, StringComparison.OrdinalIgnoreCase))
+                return $"histories.{col} is {got}, the COPY reader expects {expected}";
+        }
+        return null;
+    }
+
+    /// <summary>
+    /// Streams history rows for one space through a binary COPY, with the JSON
+    /// columns left as the raw strings the archive stores.
+    /// </summary>
+    internal async IAsyncEnumerable<HistoryExportRow> StreamForExportAsync(
+        string spaceName, DateTime? since, string? subpath,
+        [System.Runtime.CompilerServices.EnumeratorCancellation] CancellationToken ct = default)
+    {
+        var scoped = !string.IsNullOrEmpty(subpath) && subpath != "/";
+        await using var conn = (NpgsqlConnection)await db.OpenAsync(ct);
+
+        // COPY takes no parameters, so values are inlined. Caller-supplied
+        // strings go through PostgreSQL's own literal escaping; `since` is a
+        // DateTime formatted to ISO-8601 and cannot carry a quote.
+        var filters = $"space_name = {QuoteLiteral(spaceName)}";
+        if (since is not null)
+            filters += $" AND timestamp >= '{since.Value:yyyy-MM-dd HH:mm:ss.ffffff}'::timestamp";
+        if (scoped)
+            filters += $" AND (subpath = {QuoteLiteral(subpath!)} "
+                     + $"OR subpath LIKE {QuoteLiteral(subpath! + "/%")})";
+
+        var cols = string.Join(", ", ExportColumns.Select(c => c.Column));
+        var sql = $"COPY (SELECT {cols} FROM histories WHERE {filters} ORDER BY uuid) "
+                + "TO STDOUT (FORMAT BINARY)";
+
+        await using var reader = await conn.BeginBinaryExportAsync(sql, ct);
+        while (await reader.StartRowAsync(ct) != -1)
+        {
+            yield return new HistoryExportRow(
+                (await reader.ReadAsync<Guid>(NpgsqlDbType.Uuid, ct)).ToString(),
+                await reader.ReadAsync<string>(NpgsqlDbType.Text, ct),
+                await reader.ReadAsync<string>(NpgsqlDbType.Text, ct),
+                await reader.ReadAsync<DateTime>(NpgsqlDbType.Timestamp, ct),
+                await ReadNullableAsync(reader, NpgsqlDbType.Text, ct),
+                await ReadNullableAsync(reader, NpgsqlDbType.Jsonb, ct),
+                await ReadNullableAsync(reader, NpgsqlDbType.Jsonb, ct),
+                await ReadNullableAsync(reader, NpgsqlDbType.Text, ct));
+        }
+    }
+
+    private static async Task<string?> ReadNullableAsync(
+        NpgsqlBinaryExporter reader, NpgsqlDbType type, CancellationToken ct)
+    {
+        if (!reader.IsNull) return await reader.ReadAsync<string>(type, ct);
+        await reader.SkipAsync(ct);
+        return null;
+    }
+
+    // PostgreSQL's own literal escaping, for the COPY statement only — it
+    // cannot take parameters. Everything else in this file binds.
+    private static string QuoteLiteral(string value)
+        => "'" + value.Replace("'", "''", StringComparison.Ordinal) + "'";
+
     // ---- maintenance: empty-diff rows -------------------------------------
     //
     // Until 5ce715b, an entry update that changed NOTHING still appended a
@@ -425,6 +535,15 @@ public sealed class HistoryRepository(IDbConnectionFactory db, ISqlDialect diale
 /// empty object — the same meaning, an older shape, reported so the operator
 /// can see which one their install carried.
 /// </summary>
+/// <summary>
+/// A history row as the archive stores it: the JSON columns stay raw strings
+/// rather than being parsed into dictionaries and serialised straight back.
+/// </summary>
+public sealed record HistoryExportRow(
+    string Uuid, string Subpath, string Shortname, DateTime Timestamp,
+    string? OwnerShortname, string? RequestHeaders, string? Diff,
+    string? LastChecksumHistory);
+
 public sealed record EmptyHistoryPruneResult(int Removed, int NullDiffs, bool DryRun);
 
 public sealed record HistoryEntry(Guid Uuid, string? Actor, string? Diff, DateTime Timestamp);

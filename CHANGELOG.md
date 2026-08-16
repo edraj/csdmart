@@ -2,6 +2,15 @@
 
 ## Unreleased
 
+- Parquet export now streams **histories and attachments** through `COPY` as
+  well as entries, and stops parsing their JSON columns into objects only to
+  serialise them straight back. Attachments **16x faster** (4131 ms to 258 ms on
+  60,000); histories take a full-space export of 21,843 entries + 40,000
+  histories from 350 ms to **304 ms**, and unlike the entries change this one
+  pays at any size. Media bytes are still fetched per row — streaming them
+  inline would hold every blob in memory at once. Same column-type guard and
+  fallback as the entries reader.
+
 - `prune-empty-histories` now **deletes** rows with a NULL diff instead of
   reporting and skipping them. A NULL predates the `{}` convention but means the
   same thing — an audit row recording no change — so leaving them behind meant

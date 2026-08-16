@@ -47,6 +47,29 @@ internal static class HistoryParquetTable
         Pq.NullableStr(rows, h => h.LastChecksumHistory),
     ];
 
+    /// <summary>
+    /// Same columns from the raw export rows — the JSON stays the string the
+    /// database returned instead of a dictionary parsed and serialised back.
+    /// </summary>
+    /// <remarks>
+    /// request_headers and diff are NOT NULL with a "{}" default in dmart's
+    /// schema, so a null here becomes "{}" rather than a null column: writing
+    /// null would restore as a NOT NULL violation. Same rule the HistoryRow
+    /// overload applies, for the same reason.
+    /// </remarks>
+    public static IReadOnlyList<ParquetFileWriter.ColumnPage> BuildPages(
+        IReadOnlyList<Dmart.DataAdapters.Sql.HistoryExportRow> rows) =>
+    [
+        Pq.Str(rows, h => h.Uuid),
+        Pq.Str(rows, h => h.Subpath),
+        Pq.Str(rows, h => h.Shortname),
+        Pq.Ts(rows, h => h.Timestamp),
+        Pq.NullableStr(rows, h => h.OwnerShortname),
+        Pq.Str(rows, h => h.RequestHeaders ?? "{}"),
+        Pq.Str(rows, h => h.Diff ?? "{}"),
+        Pq.NullableStr(rows, h => h.LastChecksumHistory),
+    ];
+
     /// <param name="spaceName">From the manifest — the Hive partition key.</param>
     public static List<HistoryRow> FromTable(ParquetFileReader.ParquetTable t, string spaceName)
     {

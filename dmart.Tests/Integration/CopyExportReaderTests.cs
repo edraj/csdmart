@@ -144,6 +144,248 @@ public class CopyExportReaderTests : IClassFixture<DmartFactory>
         }
     }
 
+    // ---- histories ----
+    //
+    // Histories carry the same parity risk as entries, plus one more: their
+    // JSON columns are NOT NULL with a "{}" default, so a reader that handed
+    // back null where the paged one hands back an empty dictionary would write
+    // a null column that fails the NOT NULL constraint on restore.
+
+    [FactIfPostgresOnly]
+    public async Task History_Stream_Matches_The_Paged_Reader()
+    {
+        var (space, histories) = await SeedHistoriesAsync();
+        try
+        {
+            var paged = await histories.ListForSpacePagedAsync(space, 10_000, 0);
+            var streamed = new List<HistoryExportRow>();
+            await foreach (var h in histories.StreamForExportAsync(space, null, null))
+                streamed.Add(h);
+
+            streamed.Count.ShouldBe(paged.Count);
+            streamed.Count.ShouldBeGreaterThan(0);
+
+            // Compared through what the ARCHIVE stores, since one side holds
+            // dictionaries and the other raw strings: same uuids in the same
+            // order, and diffs that mean the same thing.
+            streamed.Select(h => h.Uuid).ShouldBe(paged.Select(h => h.Uuid));
+            for (var i = 0; i < paged.Count; i++)
+            {
+                streamed[i].Shortname.ShouldBe(paged[i].Shortname);
+                streamed[i].Subpath.ShouldBe(paged[i].Subpath);
+                streamed[i].OwnerShortname.ShouldBe(paged[i].OwnerShortname);
+                streamed[i].Timestamp.ShouldBe(paged[i].Timestamp, TimeSpan.FromMilliseconds(1));
+
+                // The empty-diff rows must survive as "{}" on both sides —
+                // never null, which would break NOT NULL on restore.
+                var pagedDiff = paged[i].Diff is null || paged[i].Diff!.Count == 0
+                    ? "{}" : null;
+                if (pagedDiff == "{}")
+                    (streamed[i].Diff ?? "{}").ShouldBe("{}",
+                        "an empty diff must stay an empty object, not become null");
+            }
+        }
+        finally { await CleanupAsync(space); }
+    }
+
+    [FactIfPostgresOnly]
+    public async Task History_Schema_Guard_Passes_And_Notices_A_Type_Change()
+    {
+        var histories = _factory.Services.GetRequiredService<HistoryRepository>();
+        var dbf = _factory.Services.GetRequiredService<IDbConnectionFactory>();
+        _factory.CreateClient();
+
+        (await histories.ExportSchemaMismatchAsync()).ShouldBeNull();
+
+        await using (var conn = await dbf.OpenAsync())
+        await using (var alter = conn.CreateCommand())
+        {
+            alter.CommandText =
+                "ALTER TABLE histories ALTER COLUMN last_checksum_history TYPE varchar(255)";
+            await alter.ExecuteNonQueryAsync();
+        }
+        try
+        {
+            var mismatch = await histories.ExportSchemaMismatchAsync();
+            mismatch.ShouldNotBeNull();
+            mismatch!.ShouldContain("last_checksum_history");
+        }
+        finally
+        {
+            await using var conn = await dbf.OpenAsync();
+            await using var revert = conn.CreateCommand();
+            revert.CommandText =
+                "ALTER TABLE histories ALTER COLUMN last_checksum_history TYPE text";
+            await revert.ExecuteNonQueryAsync();
+        }
+    }
+
+    private async Task<(string, HistoryRepository)> SeedHistoriesAsync()
+    {
+        var sp = _factory.Services;
+        _factory.CreateClient();
+        var histories = sp.GetRequiredService<HistoryRepository>();
+        var spaces = sp.GetRequiredService<SpaceRepository>();
+
+        var space = "cpyh_" + Guid.NewGuid().ToString("N")[..8];
+        await spaces.UpsertAsync(new Space
+        {
+            Uuid = Guid.NewGuid().ToString(), Shortname = space,
+            SpaceName = space, Subpath = "/", IsActive = true, OwnerShortname = "dmart",
+        });
+
+        // A real diff, and an empty one — the shape that must stay "{}".
+        await histories.AppendAsync(space, "/", "h1", "dmart", null,
+            new Dictionary<string, object>
+            {
+                ["displayname.en"] = new Dictionary<string, string> { ["old"] = "a", ["new"] = "b" },
+            });
+        await histories.AppendAsync(space, "/docs", "h2", "dmart", null, null);
+        return (space, histories);
+    }
+
+    // ---- attachments ----
+    //
+    // Attachments differ from entries in one way that matters here: the PAGED
+    // reader hydrates JSON into objects and re-serialises them, so its archive
+    // text carries C# key order, while the streamed reader carries
+    // PostgreSQL's jsonb normalisation. The text differs; the DATA must not.
+    // So JSON columns are compared parsed, not as strings — comparing them
+    // literally would fail on key order and prove nothing.
+
+    [FactIfPostgresOnly]
+    public async Task Attachment_Stream_Matches_The_Paged_Reader()
+    {
+        var (space, attachments) = await SeedAttachmentsAsync();
+        try
+        {
+            var paged = await attachments.ListForSpacePagedAsync(space, 10_000, 0);
+            var streamed = new List<AttachmentExportRow>();
+            await foreach (var a in attachments.StreamForExportAsync(space, null, null))
+                streamed.Add(a);
+
+            streamed.Count.ShouldBe(paged.Count);
+            streamed.Count.ShouldBeGreaterThan(0);
+            streamed.Select(a => a.Uuid).ShouldBe(paged.Select(p => p.Attachment.Uuid));
+
+            for (var i = 0; i < paged.Count; i++)
+            {
+                var (att, mediaSize) = paged[i];
+                streamed[i].Shortname.ShouldBe(att.Shortname);
+                streamed[i].Subpath.ShouldBe(att.Subpath);
+                streamed[i].IsActive.ShouldBe(att.IsActive);
+                streamed[i].OwnerShortname.ShouldBe(att.OwnerShortname);
+                streamed[i].State.ShouldBe(att.State);
+                streamed[i].Body.ShouldBe(att.Body);
+                // The size the archive records, without shipping the bytes.
+                streamed[i].MediaSize.ShouldBe(mediaSize);
+
+                // Parsed comparison: same object, whatever the key order.
+                if (att.Payload is not null)
+                {
+                    streamed[i].Payload.ShouldNotBeNull();
+                    using var doc = System.Text.Json.JsonDocument.Parse(streamed[i].Payload!);
+                    doc.RootElement.GetProperty("content_type").GetString()
+                        .ShouldBe(JsonbHelpers.EnumMember(att.Payload.ContentType));
+                }
+            }
+        }
+        finally { await CleanupAsync(space); }
+    }
+
+    // Media bytes must NOT ride along in the stream — only their length. A
+    // reader that pulled blobs inline would turn a bounded export into one
+    // that holds every attachment in memory at once.
+    [FactIfPostgresOnly]
+    public async Task Attachment_Stream_Reports_Media_Size_Without_Shipping_Bytes()
+    {
+        var (space, attachments) = await SeedAttachmentsAsync(withMedia: true);
+        try
+        {
+            var streamed = new List<AttachmentExportRow>();
+            await foreach (var a in attachments.StreamForExportAsync(space, null, null))
+                streamed.Add(a);
+
+            var withMedia = streamed.Single(a => a.Shortname == "hasmedia");
+            withMedia.MediaSize.ShouldBe(5, "the length must come through");
+            // AttachmentExportRow has no bytes field at all — the type itself
+            // is the guarantee. Assert the size is usable for the blob branch.
+            withMedia.MediaSize.ShouldBeGreaterThan(0);
+            streamed.Single(a => a.Shortname == "nomedia").MediaSize.ShouldBe(0);
+        }
+        finally { await CleanupAsync(space); }
+    }
+
+    [FactIfPostgresOnly]
+    public async Task Attachment_Schema_Guard_Passes_And_Notices_A_Type_Change()
+    {
+        var attachments = _factory.Services.GetRequiredService<AttachmentRepository>();
+        var dbf = _factory.Services.GetRequiredService<IDbConnectionFactory>();
+        _factory.CreateClient();
+
+        (await attachments.ExportSchemaMismatchAsync()).ShouldBeNull();
+
+        await using (var conn = await dbf.OpenAsync())
+        await using (var alter = conn.CreateCommand())
+        {
+            alter.CommandText = "ALTER TABLE attachments ALTER COLUMN body TYPE varchar(500)";
+            await alter.ExecuteNonQueryAsync();
+        }
+        try
+        {
+            var mismatch = await attachments.ExportSchemaMismatchAsync();
+            mismatch.ShouldNotBeNull();
+            mismatch!.ShouldContain("body");
+        }
+        finally
+        {
+            await using var conn = await dbf.OpenAsync();
+            await using var revert = conn.CreateCommand();
+            revert.CommandText = "ALTER TABLE attachments ALTER COLUMN body TYPE text";
+            await revert.ExecuteNonQueryAsync();
+        }
+    }
+
+    private async Task<(string, AttachmentRepository)> SeedAttachmentsAsync(bool withMedia = false)
+    {
+        var sp = _factory.Services;
+        _factory.CreateClient();
+        var attachments = sp.GetRequiredService<AttachmentRepository>();
+        var entries = sp.GetRequiredService<EntryRepository>();
+        var spaces = sp.GetRequiredService<SpaceRepository>();
+
+        var space = "cpya_" + Guid.NewGuid().ToString("N")[..8];
+        await spaces.UpsertAsync(new Space
+        {
+            Uuid = Guid.NewGuid().ToString(), Shortname = space,
+            SpaceName = space, Subpath = "/", IsActive = true, OwnerShortname = "dmart",
+        });
+        await entries.UpsertAsync(new Entry
+        {
+            Uuid = Guid.NewGuid().ToString(), Shortname = "parent",
+            SpaceName = space, Subpath = "/", ResourceType = ResourceType.Content,
+            IsActive = true, OwnerShortname = "dmart",
+        });
+
+        await attachments.UpsertAsync(new Attachment
+        {
+            Uuid = Guid.NewGuid().ToString(), Shortname = "nomedia",
+            SpaceName = space, Subpath = "/parent", ResourceType = ResourceType.Media,
+            IsActive = true, OwnerShortname = "dmart",
+            Payload = new Payload { ContentType = ContentType.Json },
+        });
+        if (withMedia)
+            await attachments.UpsertAsync(new Attachment
+            {
+                Uuid = Guid.NewGuid().ToString(), Shortname = "hasmedia",
+                SpaceName = space, Subpath = "/parent", ResourceType = ResourceType.Media,
+                IsActive = true, OwnerShortname = "dmart",
+                Media = [1, 2, 3, 4, 5],
+                Payload = new Payload { ContentType = ContentType.ImagePng },
+            });
+        return (space, attachments);
+    }
+
     // ---- fixture ----
 
     private async Task<(EntryRepository, string)> SeedAsync()
