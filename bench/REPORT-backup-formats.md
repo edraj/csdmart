@@ -158,6 +158,42 @@ saved **314 ms**, so it was roughly HALF the overhead. The remaining ~300 ms
 above the `COPY` floor is paging round trips, ADO.NET reads, and the Parquet
 encoding itself.
 
+### And then the paged reader was replaced too — for a reason this fixture hides
+
+The "~300 ms remaining" above breaks down further: entries and histories leave
+the database in **49 ms** and **22 ms**, so roughly 280 ms of a 350 ms export is
+the encoder and the writer, not reading.
+
+Replacing the `LIMIT/OFFSET` walk with a single streaming `COPY` measured
+**353 ms — no change at all**. `ExportPageSize` is 10,000, so 21,843 rows is
+three round trips; there was nothing left to win at this size.
+
+The fixture is simply too small to show the mechanism. `OFFSET` makes
+PostgreSQL scan and discard every row before it, so the paged reader's cost
+grows with the square of the table — and at 21,843 rows with 10,000-row pages
+there are only three pages, so there is nothing to see.
+
+Re-run END TO END on 218,430 entries (the same space copied ten times, real
+payloads), best of three:
+
+| | Time |
+|---|---:|
+| paged reader | 4034 ms |
+| **streaming `COPY`** | **1571 ms** |
+
+**2.6× faster, 2463 ms saved on a 10× fixture** — and the gap widens from there,
+because the paged side is quadratic while the streamed side is linear. DuckDB
+confirms both exports carry the same 218,430 rows with zero differing in either
+direction.
+
+For reference, the same mechanism isolated at SQL level on a synthetic
+1,000,000-row table — `LIMIT/OFFSET` in 100,000-row pages against one `COPY` —
+is 1868 ms versus 373 ms. That is the read alone, not an export.
+
+The lesson worth keeping: at benchmark size this change looks like pure
+complexity for zero gain, and the only reason it is in the tree is that
+someone measured it at a size the benchmark does not cover.
+
 The raw path is used only when there is **no actor**. An ACL-filtered export
 still goes through the Query pipeline, because that is where the policy
 predicate lives, and skipping it to go faster would hand a caller rows it

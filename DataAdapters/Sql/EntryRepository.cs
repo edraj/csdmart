@@ -6,8 +6,12 @@ using Dmart.Models.Core;
 using Dmart.Models.Enums;
 using Dmart.Models.Json;
 using Dmart.QueryGrammar;
+using Npgsql;
+using NpgsqlTypes;
 
 namespace Dmart.DataAdapters.Sql;
+
+
 
 // Maps the `entries` table column-for-column to the C# Entry record. No `doc` jsonb
 // fast-path; every column is read and written explicitly so dmart Python and dmart C#
@@ -528,6 +532,154 @@ public sealed class EntryRepository(IDbConnectionFactory db)
                 DbParams.ReadTextArray(r.IsDBNull(24) ? null : r.GetValue(24))));
         return rows;
     }
+
+    // ---- COPY-based export reader (PostgreSQL only) -----------------------
+    //
+    // Same rows as ListForExportPagedAsync, read through
+    // `COPY (SELECT …) TO STDOUT (FORMAT BINARY)` instead of paged SELECTs.
+    //
+    // Why: the benchmark (bench/REPORT-backup-formats.md) put roughly half the
+    // Parquet export time in dmart's read pipeline rather than the encoder. The
+    // paged path issues one round trip per page, materialises a List per page,
+    // and re-reads the same rows through the generic reader. COPY streams the
+    // whole table once, in the server's own wire format, with no LIMIT/OFFSET
+    // re-scan per page.
+    //
+    // WHY THE USUAL COPY-BINARY BRITTLENESS DOES NOT APPLY: the fragile form is
+    // `COPY <table> TO STDOUT BINARY`, whose layout follows the table's physical
+    // column order. This names its columns in a SELECT, so added, dropped or
+    // reordered columns cannot shift the stream. What WOULD break it is a named
+    // column changing TYPE — text becoming jsonb, say — because that changes the
+    // binary representation while the column list still matches. ExportColumns
+    // below is checked against the live catalog before the stream is trusted.
+
+    /// <summary>Column list and PostgreSQL type of every field the export reads,
+    /// in stream order. The guard compares this against the live catalog.</summary>
+    private static readonly (string Column, string PgType)[] ExportColumns =
+    [
+        ("uuid", "uuid"), ("shortname", "text"), ("space_name", "text"),
+        ("subpath", "text"), ("is_active", "boolean"), ("slug", "text"),
+        ("displayname", "jsonb"), ("description", "jsonb"), ("tags", "jsonb"),
+        ("created_at", "timestamp without time zone"),
+        ("updated_at", "timestamp without time zone"),
+        ("owner_shortname", "text"), ("owner_group_shortname", "text"),
+        ("acl", "jsonb"), ("payload", "jsonb"), ("relationships", "jsonb"),
+        ("last_checksum_history", "text"), ("resource_type", "text"),
+        ("state", "text"), ("is_open", "boolean"), ("reporter", "jsonb"),
+        ("workflow_shortname", "text"), ("collaborators", "jsonb"),
+        ("resolution_reason", "text"), ("query_policies", "ARRAY"),
+    ];
+
+    /// <summary>
+    /// True when every column the COPY reader decodes still has the type it
+    /// expects. A false here means fall back to the paged reader, NOT fail:
+    /// a schema change should slow an export down, never break it.
+    /// </summary>
+    internal async Task<string?> ExportSchemaMismatchAsync(CancellationToken ct = default)
+    {
+        await using var conn = await db.OpenAsync(ct);
+        await using var cmd = conn.Command("""
+            SELECT column_name, data_type
+            FROM information_schema.columns
+            WHERE table_schema = 'public' AND table_name = 'entries'
+            """);
+        var actual = new Dictionary<string, string>(StringComparer.Ordinal);
+        await using (var r = await cmd.ExecuteReaderAsync(ct))
+            while (await r.ReadAsync(ct))
+                actual[r.GetString(0)] = r.GetString(1);
+
+        foreach (var (col, expected) in ExportColumns)
+        {
+            if (!actual.TryGetValue(col, out var got))
+                return $"entries.{col} is missing";
+            if (!string.Equals(got, expected, StringComparison.OrdinalIgnoreCase))
+                return $"entries.{col} is {got}, the COPY reader expects {expected}";
+        }
+        return null;
+    }
+
+    /// <summary>
+    /// Streams export rows for one space through a binary COPY. Same filters,
+    /// same column order and same values as <see cref="ListForExportPagedAsync"/>.
+    /// </summary>
+    internal async IAsyncEnumerable<EntryExportRow> StreamForExportAsync(
+        string spaceName, DateTime? since, string? subpath,
+        [System.Runtime.CompilerServices.EnumeratorCancellation] CancellationToken ct = default)
+    {
+        var scoped = !string.IsNullOrEmpty(subpath) && subpath != "/";
+        await using var conn = (NpgsqlConnection)await db.OpenAsync(ct);
+
+        // COPY takes no parameters, so every value is inlined — and therefore
+        // every value must be one this code produced or has quoted. spaceName
+        // and subpath are caller-supplied, so they go through QuoteLiteral,
+        // which is PostgreSQL's own escaping. `since` is a DateTime formatted
+        // to ISO-8601, which cannot carry a quote at all.
+        var filters = $"space_name = {QuoteLiteral(spaceName)}";
+        if (since is not null)
+            filters += $" AND updated_at >= '{since.Value:yyyy-MM-dd HH:mm:ss.ffffff}'::timestamp";
+        if (scoped)
+            filters += $" AND (subpath = {QuoteLiteral(subpath!)} "
+                     + $"OR subpath LIKE {QuoteLiteral(subpath! + "/%")})";
+
+        var cols = string.Join(", ", ExportColumns.Select(c => c.Column));
+        var sql = $"COPY (SELECT {cols} FROM entries WHERE {filters} ORDER BY uuid) "
+                + "TO STDOUT (FORMAT BINARY)";
+
+        await using var reader = await conn.BeginBinaryExportAsync(sql, ct);
+        while (await reader.StartRowAsync(ct) != -1)
+        {
+            yield return new EntryExportRow(
+                (await reader.ReadAsync<Guid>(NpgsqlDbType.Uuid, ct)).ToString(),
+                await reader.ReadAsync<string>(NpgsqlDbType.Text, ct),
+                await reader.ReadAsync<string>(NpgsqlDbType.Text, ct),
+                await reader.ReadAsync<string>(NpgsqlDbType.Text, ct),
+                await reader.ReadAsync<bool>(NpgsqlDbType.Boolean, ct),
+                await ReadNullableAsync(reader, NpgsqlDbType.Text, ct),
+                await ReadNullableAsync(reader, NpgsqlDbType.Jsonb, ct),
+                await ReadNullableAsync(reader, NpgsqlDbType.Jsonb, ct),
+                await ReadNullableAsync(reader, NpgsqlDbType.Jsonb, ct),
+                await reader.ReadAsync<DateTime>(NpgsqlDbType.Timestamp, ct),
+                await reader.ReadAsync<DateTime>(NpgsqlDbType.Timestamp, ct),
+                await reader.ReadAsync<string>(NpgsqlDbType.Text, ct),
+                await ReadNullableAsync(reader, NpgsqlDbType.Text, ct),
+                await ReadNullableAsync(reader, NpgsqlDbType.Jsonb, ct),
+                await ReadNullableAsync(reader, NpgsqlDbType.Jsonb, ct),
+                await ReadNullableAsync(reader, NpgsqlDbType.Jsonb, ct),
+                await ReadNullableAsync(reader, NpgsqlDbType.Text, ct),
+                await reader.ReadAsync<string>(NpgsqlDbType.Text, ct),
+                await ReadNullableAsync(reader, NpgsqlDbType.Text, ct),
+                reader.IsNull ? await SkipNullBoolAsync(reader, ct)
+                              : await reader.ReadAsync<bool>(NpgsqlDbType.Boolean, ct),
+                await ReadNullableAsync(reader, NpgsqlDbType.Jsonb, ct),
+                await ReadNullableAsync(reader, NpgsqlDbType.Text, ct),
+                await ReadNullableAsync(reader, NpgsqlDbType.Jsonb, ct),
+                await ReadNullableAsync(reader, NpgsqlDbType.Text, ct),
+                // query_policies is TEXT[] NOT NULL DEFAULT '{}' — never null,
+                // so it reads unconditionally.
+                [.. await reader.ReadAsync<string[]>(
+                    NpgsqlDbType.Array | NpgsqlDbType.Text, ct)]);
+        }
+    }
+
+    private static async Task<string?> ReadNullableAsync(
+        NpgsqlBinaryExporter reader, NpgsqlDbType type, CancellationToken ct)
+    {
+        if (!reader.IsNull) return await reader.ReadAsync<string>(type, ct);
+        await reader.SkipAsync(ct);
+        return null;
+    }
+
+    private static async Task<bool?> SkipNullBoolAsync(
+        NpgsqlBinaryExporter reader, CancellationToken ct)
+    {
+        await reader.SkipAsync(ct);
+        return null;
+    }
+
+    // PostgreSQL's own literal escaping. Used ONLY for the COPY statement,
+    // which cannot take parameters; everything else in this file binds.
+    private static string QuoteLiteral(string value)
+        => "'" + value.Replace("'", "''", StringComparison.Ordinal) + "'";
 
     // Batched existence probe used by EntryService.ValidateRelationshipsAsync.
     // Returns the set of (space, subpath, shortname) tuples present in
