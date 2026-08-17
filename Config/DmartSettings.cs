@@ -285,6 +285,13 @@ public sealed class DmartSettings
     //     owned (spaces, roles, groups, permissions, other users) are reassigned
     //     to the "dmart" sentinel instead of being deleted. Histories are never
     //     deleted in either mode. See UserRepository.ForceDeleteAsync.
+    //
+    // ORTHOGONAL TO `force`. This picks soft-vs-hard; force answers "yes, I
+    // know this user owns records and I want them gone too". In hard mode a
+    // record-owning user is still refused without it — the guard that predates
+    // soft delete, kept because dropping it here would silently turn a refusal
+    // into a cascade for any client that relied on it. Soft mode ignores force,
+    // having nothing to guard.
     public string UserDeletionMode { get; set; } = "soft";
 
     // True when UserDeletionMode resolves to "hard" (case-insensitive); false

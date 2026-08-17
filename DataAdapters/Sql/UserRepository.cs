@@ -484,7 +484,8 @@ public sealed class UserRepository(IDbConnectionFactory db, AuthzCacheRefresher 
                                attempt_count, last_login, notes, query_policies,
                                is_deleted, deleted_at)
             VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,
-                    {ENUM_CASTS},$24,$25,$26,$27,$28,$29,$30,$31,$32,$33,$34,$35,$36,$37,$38)
+                    {ENUM_CASTS},$24,$25,$26,$27,$28,$29,$30,$31,$32,$33,$34,$35,$36,$37,$38,
+                    $39,$40)
             ON CONFLICT (shortname) DO UPDATE SET
                 space_name = EXCLUDED.space_name,
                 subpath = EXCLUDED.subpath,
@@ -569,6 +570,10 @@ public sealed class UserRepository(IDbConnectionFactory db, AuthzCacheRefresher 
         AddJsonb(cmd, JsonbHelpers.ToJsonb(u.LastLogin));
         DbParams.Add(cmd, (object?)u.Notes ?? DBNull.Value);
         DbParams.Add(cmd, u.QueryPolicies.ToArray(), SqlValueKind.TextArray);
+        // $39/$40 — bound for the INSERT; the ON CONFLICT clause pins both to
+        // the existing row, so this path cannot resurrect either.
+        DbParams.Add(cmd, u.IsDeleted);
+        DbParams.Add(cmd, (object?)u.DeletedAt ?? DBNull.Value);
 
         bool inserted;
         if (ReturnsInsertedFlag(conn))

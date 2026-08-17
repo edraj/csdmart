@@ -115,7 +115,11 @@ public static class ProfileHandler
             if (actor is null)
                 return Response.Fail(InternalErrorCode.NOT_AUTHENTICATED, "login required", ErrorTypes.Auth);
             // Self-delete: the target and the action-maker are the same account.
-            var result = await svc.DeleteUserAsync(actor, actor, dryRun: false, ct);
+            // force: true — self-delete has no flag to pass one, and refusing
+            // to let someone delete their own account because they created
+            // records would make the endpoint useless to exactly the users who
+            // have one.
+            var result = await svc.DeleteUserAsync(actor, actor, dryRun: false, force: true, ct);
             return result.IsOk
                 ? Response.Ok()
                 : Response.Fail(result.ErrorCode, result.ErrorMessage!, result.ErrorType ?? ErrorTypes.Request);

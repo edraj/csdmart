@@ -1122,8 +1122,18 @@ public sealed class UserService(
     // per-request choice. `actor` is who performed it — it owns the soft-delete
     // audit history row, which is the record of who did it. dryRun only means
     // anything in hard mode (it projects the cascade); a soft dryRun is a no-op.
+    /// <param name="force">
+    /// Permission to take everything the user owns, in HARD mode only. Without
+    /// it, deleting a user who has created records is refused — the guard that
+    /// existed before soft delete did, kept because the mode and this flag
+    /// answer different questions: the mode picks soft-vs-hard, force says "yes,
+    /// I know this user owns records". Ignored in soft mode, which touches
+    /// nothing the user owns, and by self-delete, which has no way to pass it
+    /// and whose owner has already asked.
+    /// </param>
     public async Task<Result<DeleteReport>> DeleteUserAsync(
-        string shortname, string actor, bool dryRun = false, CancellationToken ct = default)
+        string shortname, string actor, bool dryRun = false, bool force = true,
+        CancellationToken ct = default)
     {
         if (!settings.Value.IsHardUserDeletion)
         {
@@ -1145,6 +1155,11 @@ public sealed class UserService(
 
             return Result<DeleteReport>.Ok(DeleteReport.Empty);
         }
+
+        if (!force && !dryRun && await users.OwnsAnyRecordsAsync(shortname, ct))
+            return Result<DeleteReport>.Fail(InternalErrorCode.CANNT_DELETE,
+                $"user '{shortname}' has created records; pass force=true to delete the user "
+                + "and everything they own", ErrorTypes.Request);
 
         // Never let a hard delete wipe the management space, even if this user
         // owns it — it holds all users/roles/permissions. The guard also applies

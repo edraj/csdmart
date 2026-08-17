@@ -95,6 +95,12 @@ public static class SqliteSchema
         query_policies          TEXT NOT NULL DEFAULT '[]'
                                 CHECK (json_array_length(query_policies) > 0),
 
+        -- Soft delete. INTEGER because SQLite has no boolean type; the reader
+        -- goes through GetBoolean, which maps 0/1. deleted_at is TEXT for the
+        -- same reason every other timestamp in this schema is.
+        is_deleted              INTEGER NOT NULL DEFAULT 0,
+        deleted_at              TEXT,
+
         UNIQUE (shortname, space_name, subpath)
     );
 
@@ -560,6 +566,8 @@ public static class SqliteSchema
         ("users", "notes", "TEXT"),
         ("users", "locked_to_device", "INTEGER NOT NULL DEFAULT 0"),
         ("users", "last_checksum_history", "TEXT"),
+        ("users", "is_deleted", "INTEGER NOT NULL DEFAULT 0"),
+        ("users", "deleted_at", "TEXT"),
         ("roles", "last_checksum_history", "TEXT"),
         ("roles", "grantable_by", "TEXT"),
         ("permissions", "last_checksum_history", "TEXT"),

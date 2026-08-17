@@ -1183,10 +1183,14 @@ public static class RequestHandler
                 if (await DenyDeleteAsync(userLocator, PermissionService.FromUser(existing), "user") is { } denied)
                     return denied;
 
-                // Admin-delete follows the exact same soft/hard rule as self-delete
+                // Admin-delete follows the same soft/hard rule as self-delete
                 // (POST /user/profile/delete) — one config value, no per-request
-                // force flag. See UserService.DeleteUserAsync for what each mode does.
-                var delResult = await userSvc.DeleteUserAsync(rec.Shortname, actor, dryRun, ct);
+                // choice of MODE. See UserService.DeleteUserAsync for each mode.
+                //
+                // `force` is still passed, and deliberately. It is orthogonal to
+                // the mode: the mode decides soft-vs-hard, force answers "yes, I
+                // know this user owns records and I want them gone too".
+                var delResult = await userSvc.DeleteUserAsync(rec.Shortname, actor, dryRun, force, ct);
                 return delResult.IsOk
                     ? Ok(delResult.Value!)
                     : (Response.Fail(delResult.ErrorCode, delResult.ErrorMessage!,
