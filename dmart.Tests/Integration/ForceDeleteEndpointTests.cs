@@ -191,6 +191,66 @@ public sealed class ForceDeleteEndpointTests : IClassFixture<DmartFactory>
         await admin.Cleanup();
     }
 
+    // Soft delete must end the ACCOUNT, not reserve the NAME forever.
+    //
+    // Without this, a soft-deleted shortname was permanently unusable: create
+    // was refused because the row still exists, update was refused because
+    // deleted is a dead end, and there was no third door. A system account like
+    // `anonymous` could be deleted once and never restored — which is how the
+    // E2E smoke found it, by deleting and recreating exactly that user.
+    [FactIfPg]
+    public async Task Create_Resurrects_A_Soft_Deleted_Shortname()
+    {
+        var admin = await _factory.CreateLoggedInUserAsync();
+        var users = _factory.Services.GetRequiredService<Dmart.DataAdapters.Sql.UserRepository>();
+        var sn = $"res{Guid.NewGuid():N}"[..12];
+
+        async Task<HttpResponseMessage> Create() =>
+            await admin.Client.PostAsJsonAsync("/managed/request", new Request
+            {
+                RequestType = RequestType.Create, SpaceName = "management",
+                Records = new()
+                {
+                    new Record
+                    {
+                        ResourceType = ResourceType.User, Subpath = "/users", Shortname = sn,
+                        Attributes = new()
+                        {
+                            ["is_active"] = true, ["type"] = "web", ["language"] = "en",
+                        },
+                    },
+                },
+            }, DmartJsonContext.Default.Request);
+
+        try
+        {
+            (await Create()).StatusCode.ShouldBe(HttpStatusCode.OK);
+
+            var del = await admin.Client.PostAsJsonAsync("/managed/request",
+                Del("management", ResourceType.User, "/users", sn, force: true),
+                DmartJsonContext.Default.Request);
+            del.StatusCode.ShouldBe(HttpStatusCode.OK);
+            (await users.GetByShortnameAsync(sn))!.IsDeleted.ShouldBeTrue();
+
+            // The whole point: the name is available again.
+            var again = await Create();
+            var body = JsonSerializer.Deserialize(
+                await again.Content.ReadAsStringAsync(), DmartJsonContext.Default.Response)!;
+            body.Status.ShouldBe(Status.Success);
+
+            var revived = await users.GetByShortnameAsync(sn);
+            revived.ShouldNotBeNull();
+            revived!.IsDeleted.ShouldBeFalse("the flags must be cleared, not just bypassed");
+            revived.DeletedAt.ShouldBeNull();
+            revived.IsUsable.ShouldBeTrue();
+        }
+        finally
+        {
+            try { await users.DeleteAsync(sn); } catch { }
+            await admin.Cleanup();
+        }
+    }
+
     // The guard that predates soft delete, kept rather than dropped with the
     // mode switch: in HARD mode a user who owns records is not deleted unless
     // the caller says force. Without this the mode config alone would silently

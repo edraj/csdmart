@@ -1253,6 +1253,29 @@ public sealed class UserRepository(IDbConnectionFactory db, AuthzCacheRefresher 
     }
 
     /// <summary>
+    /// Clears the soft-delete flags so the shortname can be used again.
+    /// </summary>
+    /// <remarks>
+    /// THE ONLY WAY BACK, and deliberately narrow. Both upsert paths pin
+    /// is_deleted/deleted_at to the existing row precisely so an ordinary write
+    /// cannot resurrect an account by accident; this is the one explicit door,
+    /// called only from the CREATE path, where the caller is asking for a new
+    /// account under that name rather than editing the deleted one.
+    ///
+    /// It clears the flags only. Every other column is then written by the
+    /// create that follows, so nothing survives from the deleted account except
+    /// the shortname itself — which is the point.
+    /// </remarks>
+    public async Task ClearSoftDeleteAsync(string shortname, CancellationToken ct = default)
+    {
+        await using var conn = await db.OpenAsync(ct);
+        await using var cmd = conn.Command(
+            "UPDATE users SET is_deleted = false, deleted_at = NULL WHERE shortname = $1");
+        DbParams.Add(cmd, shortname);
+        await cmd.ExecuteNonQueryAsync(ct);
+    }
+
+    /// <summary>
     /// Marks a user deleted and clears the fields that identify them. The row
     /// stays so `owner_shortname` foreign keys keep resolving; nothing the user
     /// owns is touched.

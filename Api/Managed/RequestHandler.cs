@@ -505,9 +505,29 @@ public static class RequestHandler
             return (Response.Fail(InternalErrorCode.INVALID_DATA, msisdnErr, ErrorTypes.Request), rec);
 
         var existing = await users.GetByShortnameAsync(rec.Shortname, ct);
-        if (existing is not null)
+        if (existing is not null && !existing.IsDeleted)
             return (Response.Fail(InternalErrorCode.SHORTNAME_ALREADY_EXIST,
                 $"user {rec.Shortname} already exists", ErrorTypes.Request), rec);
+
+        // CREATE over a soft-deleted shortname RESURRECTS it, and this is the
+        // only door that does.
+        //
+        // Soft delete keeps the row so foreign keys resolve, which means the
+        // shortname is still taken: create was refused because the row exists,
+        // and update was refused because deleted is a dead end. Between them
+        // the name was burned forever — a system account like `anonymous`
+        // could be deleted once and never restored. That is not "the account
+        // is gone", it is "the name is gone", and only the second was intended.
+        //
+        // A create is the right door because it is EXPLICIT and carries a full
+        // set of attributes: the caller is asking for a new account under that
+        // name, not editing the deleted one. The ON CONFLICT clauses stay as
+        // they are, so no incidental write can still resurrect anything.
+        if (existing is not null && existing.IsDeleted)
+        {
+            await users.ClearSoftDeleteAsync(rec.Shortname, ct);
+            existing = null;
+        }
 
         // Python parity: api/managed/utils.py::serve_request_create runs
         // validate_uniqueness for every resource type. The C# port previously
