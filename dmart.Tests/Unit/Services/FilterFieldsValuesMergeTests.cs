@@ -117,6 +117,53 @@ public class FilterFieldsValuesMergeTests
         result.ShouldBeSameAs(q);
     }
 
+    [Fact]
+    public void Dedupe_KeepsRepeatedOrKeyword()
+    {
+        // REGRESSION: dedupe used to drop ANY repeated whitespace token. The
+        // second `or` in a three-branch union went with it, and
+        // `A or B or C` silently became `(A or B) AND C` — a union turned into
+        // an intersection, for every managed query whose actor has any
+        // permission (the merge runs on all of them).
+        var q = BaseQuery(search: "@a:1 or @b:2 or @c:3");
+        var result = QueryService.DedupeSearchTokens(q);
+        result.Search.ShouldBe("@a:1 or @b:2 or @c:3");
+    }
+
+    [Fact]
+    public void Dedupe_KeepsRepeatedAndKeyword()
+    {
+        var q = BaseQuery(search: "@a:1 and @b:2 and @c:3");
+        QueryService.DedupeSearchTokens(q).Search.ShouldBe("@a:1 and @b:2 and @c:3");
+    }
+
+    [Fact]
+    public void Dedupe_KeepsRepeatedFreeTextTerms()
+    {
+        // Free text is positional too — `foo or foo` is a legitimate (if
+        // redundant) expression and must not collapse into a bare `foo or`.
+        var q = BaseQuery(search: "foo or foo");
+        QueryService.DedupeSearchTokens(q).Search.ShouldBe("foo or foo");
+    }
+
+    [Fact]
+    public void Dedupe_StillCollapsesRepeatedSelectors()
+    {
+        // The behaviour the function exists for is unchanged: an identical
+        // `@field:value` token twice is idempotent, so one copy is dropped.
+        var q = BaseQuery(search: "@status:open or @kind:bug @status:open");
+        QueryService.DedupeSearchTokens(q).Search.ShouldBe("@status:open or @kind:bug");
+    }
+
+    [Fact]
+    public void Dedupe_TreatsParenBearingTokens_AsDistinct()
+    {
+        // `(@a:1` and `@a:1` are different strings, so neither is dropped —
+        // collapsing them would silently unbalance the caller's grouping.
+        var q = BaseQuery(search: "(@a:1 or @b:2) @a:1");
+        QueryService.DedupeSearchTokens(q).Search.ShouldBe("(@a:1 or @b:2) @a:1");
+    }
+
     // ── ExtractFilterFieldsValues ──────────────────────────────────────
 
     [Fact]

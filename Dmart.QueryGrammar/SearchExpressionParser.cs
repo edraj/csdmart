@@ -883,7 +883,15 @@ public static class SearchExpressionParser
                 : $"({typeofGuard} AND {exists2})";
         }
 
-        var compOp = data.ComparisonOperator;
+        // `-@arr[]:v` is negated by the NOT EXISTS wrapper below, so the
+        // per-element predicate must stay POSITIVE. Emitting `!=` here as well
+        // double-negates into "EVERY element equals v" — the opposite of the
+        // documented "the array does not contain v" (docs/query-search.md).
+        // `@arr[]:!v` (bang, no `-@`) has no wrapper negation, so it keeps the
+        // `!=` predicate: "some element differs from v".
+        var compOp = data.Negative && data.ComparisonOperator == "!"
+            ? null
+            : data.ComparisonOperator;
         var conditions = new List<string>();
         foreach (var value in data.Values)
         {
@@ -898,7 +906,7 @@ public static class SearchExpressionParser
                     ? $"({ctx.Dialect.JsonTypeIs(elementJsonb, JsonKind.Number)} AND {ctx.Dialect.AsNumber(elementJsonb)} {sqlOp} {ctx.Dialect.NumberParam(pNum)})"
                     : $"{ctx.Dialect.ColumnAsNumber(elementText)} {sqlOp} {ctx.Dialect.NumberParam(pNum)}";
             }
-            else if (data.Negative || compOp == "!")
+            else if (compOp == "!")
             {
                 var p = ctx.Add(value);
                 predicate = $"{elementText} != {p}";

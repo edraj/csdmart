@@ -1690,12 +1690,24 @@ public sealed class QueryService(
         return DedupeSearchTokens(q with { Search = newSearch });
     }
 
-    // Tokenises q.Search on plain ASCII space and dedupes — good enough
-    // for the @field:value tokens dmart's permission FFV strings actually
-    // produce, none of which contain whitespace. RediSearch's quoted
-    // alternative — `@field:"hello world"` — would split incorrectly here,
-    // but that shape is not generated anywhere in the FFV path; if it ever
-    // is, this function needs a quote-aware tokenizer.
+    // Tokenises q.Search on plain ASCII space and drops repeated SELECTORS —
+    // the `@field:value` shape dmart's permission FFV strings produce, none of
+    // which contain whitespace. Repeating a selector is idempotent (the parser
+    // accumulates same-field values), so collapsing them only shortens the
+    // expression.
+    //
+    // Only selectors are eligible. Every other token — the `or` / `and`
+    // keywords, bare parens, free-text terms — is structural or positional,
+    // and dropping a repeat CHANGES THE PARSE. Deduping `or` was the sharp
+    // edge: `A or B ... or C` lost its second `or` and silently became
+    // `(A or B) AND C`, turning a union into an intersection. Any predicate
+    // written twice in one expression (`@a:1 ... @a:1`) is likewise left
+    // alone once it carries a paren, because `(@a:1` and `@a:1` are already
+    // distinct strings and treating them as equal would be guesswork.
+    //
+    // RediSearch's quoted alternative — `@field:"hello world"` — still splits
+    // incorrectly here, but that shape is not generated anywhere in the FFV
+    // path; if it ever is, this function needs a quote-aware tokenizer.
     internal static Query DedupeSearchTokens(Query q)
     {
         if (string.IsNullOrEmpty(q.Search)) return q;
@@ -1703,7 +1715,10 @@ public sealed class QueryService(
         var seen = new HashSet<string>(StringComparer.Ordinal);
         var deduped = new List<string>(parts.Length);
         foreach (var p in parts)
-            if (seen.Add(p)) deduped.Add(p);
+        {
+            var isSelector = p.StartsWith('@') || p.StartsWith("-@", StringComparison.Ordinal);
+            if (!isSelector || seen.Add(p)) deduped.Add(p);
+        }
         if (deduped.Count == parts.Length) return q;
         return q with { Search = string.Join(' ', deduped) };
     }
