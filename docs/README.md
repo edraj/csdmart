@@ -17,6 +17,7 @@ install/run/CLI — this folder goes into the **how** and **why**.
 | …drive dmart from the command line (REPL, scripts, JSON pipelines) | [cli.md](./cli.md) |
 | …run or extend the test suite (xUnit + curl.sh) | [testing.md](./testing.md) |
 | …build, run, or upgrade the container image | [container.md](./container.md) |
+| …build one binary that runs on any Linux, with no runtime dependencies | [static-binary.md](./static-binary.md) |
 | …export/import at gigabyte scale, or run an incremental pipeline | [parquet-export-design.md](./parquet-export-design.md) |
 | …stop `histories` / `deletions` growing without bound | [maintenance.md](./maintenance.md) |
 | …decide whether to adopt the official MCP SDK | [mcp-sdk-2-spike.md](./mcp-sdk-2-spike.md) |

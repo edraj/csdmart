@@ -236,6 +236,32 @@
     <PackageReference Include="ZstdSharp.Port" Version="0.8.8" />
   </ItemGroup>
 
+  <!-- Fully static Linux binary — opt-in, only when publishing with
+       -p:StaticExecutable=true; a normal publish is unaffected.
+       Full recipe and caveats: docs/static-binary.md
+
+       SQLitePCLRaw reaches libe_sqlite3.so through dlopen, and a musl
+       static-pie has no working dlopen, so the SQLite symbols have to be bound
+       at link time instead. DirectPInvoke makes ILC emit direct references to
+       the sqlite3_* entry points rather than a runtime library load, and
+       NativeLibrary hands the linker an archive that defines them.
+
+       The archive is NOT the one from SQLitePCLRaw.lib.e_sqlite3 — that
+       package ships a .a for browser-wasm only, every other RID gets a .so —
+       so it comes from the build image instead (`apk add sqlite-static` on
+       Alpine). Override SqliteStaticLib to point somewhere else.
+
+       StaticOpenSslLinking=true does the equivalent job for the crypto shim,
+       building it from source with the dlopen path compiled out. -->
+  <PropertyGroup Condition="'$(StaticExecutable)' == 'true' and '$(SqliteStaticLib)' == ''">
+    <SqliteStaticLib>/usr/lib/libsqlite3.a</SqliteStaticLib>
+  </PropertyGroup>
+
+  <ItemGroup Condition="'$(StaticExecutable)' == 'true'">
+    <DirectPInvoke Include="e_sqlite3" />
+    <NativeLibrary Include="$(SqliteStaticLib)" />
+  </ItemGroup>
+
   <ItemGroup>
     <_ContentIncludedByDefault Remove="catalog\babel.config.json" />
     <_ContentIncludedByDefault Remove="catalog\dist\client\config.json" />
