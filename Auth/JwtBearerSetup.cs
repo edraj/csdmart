@@ -136,7 +136,7 @@ public static class JwtBearerSetup
                         }
 
                         var user = await users.GetByShortnameAsync(actor, ctx.HttpContext.RequestAborted);
-                        if (user is null || !user.IsActive)
+                        if (user is null || !user.IsUsable)
                         {
                             ctx.Fail(new SecurityTokenException("user is inactive"));
                             return;

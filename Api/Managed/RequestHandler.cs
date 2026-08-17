@@ -27,6 +27,7 @@ public static class RequestHandler
     public static void Map(RouteGroupBuilder g) =>
         g.MapPost("/request",
             async Task<Response> (HttpRequest httpReq, EntryService entries, UserRepository users,
+                                  UserService userSvc,
                                   AccessRepository access, SpaceRepository spaces,
                                   AttachmentRepository attachments,
                                   Plugins.PluginManager plugins, PermissionService perms,
@@ -174,7 +175,7 @@ public static class RequestHandler
                                     r => r.Response.Error?.Code == InternalErrorCode.SHORTNAME_ALREADY_EXIST),
                             RequestType.Delete =>
                                 await DispatchDeleteAsync(rec, req.SpaceName, actor, managementSpace, req.Force, req.DryRun,
-                                    entries, users, access, spaces, attachments, perms, ct),
+                                    entries, users, userSvc, access, spaces, attachments, perms, ct),
                             RequestType.Move =>
                                 await DispatchMoveAsync(rec, req.SpaceName, actor, entries, ct),
                             // Python: Assign sets collaborators on an entry.
@@ -504,9 +505,29 @@ public static class RequestHandler
             return (Response.Fail(InternalErrorCode.INVALID_DATA, msisdnErr, ErrorTypes.Request), rec);
 
         var existing = await users.GetByShortnameAsync(rec.Shortname, ct);
-        if (existing is not null)
+        if (existing is not null && !existing.IsDeleted)
             return (Response.Fail(InternalErrorCode.SHORTNAME_ALREADY_EXIST,
                 $"user {rec.Shortname} already exists", ErrorTypes.Request), rec);
+
+        // CREATE over a soft-deleted shortname RESURRECTS it, and this is the
+        // only door that does.
+        //
+        // Soft delete keeps the row so foreign keys resolve, which means the
+        // shortname is still taken: create was refused because the row exists,
+        // and update was refused because deleted is a dead end. Between them
+        // the name was burned forever — a system account like `anonymous`
+        // could be deleted once and never restored. That is not "the account
+        // is gone", it is "the name is gone", and only the second was intended.
+        //
+        // A create is the right door because it is EXPLICIT and carries a full
+        // set of attributes: the caller is asking for a new account under that
+        // name, not editing the deleted one. The ON CONFLICT clauses stay as
+        // they are, so no incidental write can still resurrect anything.
+        if (existing is not null && existing.IsDeleted)
+        {
+            await users.ClearSoftDeleteAsync(rec.Shortname, ct);
+            existing = null;
+        }
 
         // Python parity: api/managed/utils.py::serve_request_create runs
         // validate_uniqueness for every resource type. The C# port previously
@@ -791,6 +812,9 @@ public static class RequestHandler
                 var existing = await users.GetByShortnameAsync(rec.Shortname, ct);
                 if (existing is null)
                     return (Response.Fail(InternalErrorCode.SHORTNAME_DOES_NOT_EXIST, "user not found", ErrorTypes.Request), rec, null);
+                // Deleted is a dead end — no edits, ever, not even from an admin.
+                if (existing.IsDeleted)
+                    return (Response.Fail(InternalErrorCode.NOT_ALLOWED, "account has been deleted", ErrorTypes.Request), rec, null);
                 var attrs = rec.Attributes ?? new();
                 var userLocator = new Locator(ResourceType.User, existing.SpaceName, existing.Subpath, existing.Shortname);
                 if (!await perms.CanUpdateAsync(actor, userLocator, PermissionService.FromUser(existing), attrs, ct))
@@ -1149,7 +1173,7 @@ public static class RequestHandler
 
     private static async Task<(Response Response, Record UpdatedRecord)> DispatchDeleteAsync(
         Record rec, string space, string actor, string managementSpace, bool force, bool dryRun,
-        EntryService entries, UserRepository users, AccessRepository access,
+        EntryService entries, UserRepository users, UserService userSvc, AccessRepository access,
         SpaceRepository spaces, AttachmentRepository attachments,
         PermissionService perms, CancellationToken ct)
     {
@@ -1179,27 +1203,18 @@ public static class RequestHandler
                 if (await DenyDeleteAsync(userLocator, PermissionService.FromUser(existing), "user") is { } denied)
                     return denied;
 
-                // A plain (non-force, non-dryrun) user delete only succeeds if the user
-                // owns nothing; it removes just the user row (not an entry → empty
-                // report). A dryrun ignores force and projects the full cascade instead.
-                if (!force && !dryRun)
-                {
-                    if (await users.OwnsAnyRecordsAsync(rec.Shortname, ct))
-                        return (Response.Fail(InternalErrorCode.CANNT_DELETE,
-                            $"user '{rec.Shortname}' has created records; pass force=true to delete the user and everything they own",
-                            ErrorTypes.Request), rec);
-                    await users.DeleteAsync(rec.Shortname, ct);
-                    return Ok(DeleteReport.Empty);
-                }
-
-                // Never let a force-delete wipe the management space, even if this user
-                // owns it — it holds all users/roles/permissions. The guard also applies
-                // to a dryrun projection: an impossible delete shouldn't report a count.
-                if (await users.OwnsSpaceAsync(rec.Shortname, managementSpace, ct))
-                    return (Response.Fail(InternalErrorCode.CANNT_DELETE,
-                        $"cannot force-delete user '{rec.Shortname}': they own the management space '{managementSpace}'",
-                        ErrorTypes.Request), rec);
-                return Ok(await users.ForceDeleteAsync(rec.Shortname, dryRun, ct));
+                // Admin-delete follows the same soft/hard rule as self-delete
+                // (POST /user/profile/delete) — one config value, no per-request
+                // choice of MODE. See UserService.DeleteUserAsync for each mode.
+                //
+                // `force` is still passed, and deliberately. It is orthogonal to
+                // the mode: the mode decides soft-vs-hard, force answers "yes, I
+                // know this user owns records and I want them gone too".
+                var delResult = await userSvc.DeleteUserAsync(rec.Shortname, actor, dryRun, force, ct);
+                return delResult.IsOk
+                    ? Ok(delResult.Value!)
+                    : (Response.Fail(delResult.ErrorCode, delResult.ErrorMessage!,
+                        delResult.ErrorType ?? ErrorTypes.Request), rec);
             }
             case ResourceType.Space:
             {

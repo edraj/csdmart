@@ -473,10 +473,20 @@ public sealed class UserService(
     // only on the verify-otp / registration flow — not on login. Callers that
     // still want the "verified" distinction live outside this helper.
     private static Result<(string Access, string Refresh, User User)>? RejectIfNotActive(User user)
-        => user.IsActive
+    {
+        // A soft-deleted account gets the generic credential failure a
+        // non-existent identifier gets — never "locked" (which implies
+        // recoverable) — so it's indistinguishable from one that never existed.
+        if (user.IsDeleted)
+            return Result<(string, string, User)>.Fail(
+                InternalErrorCode.INVALID_USERNAME_AND_PASS, "Invalid username or password", ErrorTypes.Auth);
+        // Deactivated / attempt-locked → Python parity USER_ACCOUNT_LOCKED so
+        // the cxb login UI can show "your account is locked".
+        return user.IsActive
             ? null
             : Result<(string, string, User)>.Fail(
                 InternalErrorCode.USER_ACCOUNT_LOCKED, "Account has been locked.", ErrorTypes.Auth);
+    }
 
     // Channel-specific verification gate applied to BOTH login methods
     // (password + OTP): a login via email requires is_email_verified, via
@@ -562,8 +572,9 @@ public sealed class UserService(
             }
             return true; // attempt-locked, cool-down still in effect (or no anchor set)
         }
-        // Not attempt-locked → a manually deactivated account is still locked.
-        return !user.IsActive;
+        // Not attempt-locked → a manually deactivated OR soft-deleted account is
+        // still locked.
+        return !user.IsUsable;
     }
 
     // Public wrapper around the private failed-attempt counter so out-of-class
@@ -843,6 +854,10 @@ public sealed class UserService(
         if (user is null)
             return Result<User>.Fail(
                 InternalErrorCode.SHORTNAME_DOES_NOT_EXIST, "user missing", ErrorTypes.Db);
+        // Deleted is a dead end — no edits, ever, by anyone.
+        if (user.IsDeleted)
+            return Result<User>.Fail(
+                InternalErrorCode.NOT_ALLOWED, "account has been deleted", ErrorTypes.Request);
 
         // Reject patches targeting protected payload-body fields. Python
         // (api/user/router.py:623-633) walks `attributes.payload.body.<field>`
@@ -1101,11 +1116,60 @@ public sealed class UserService(
         return Result<User>.Ok(updated);
     }
 
-    public async Task DeleteAsync(string shortname, CancellationToken ct = default)
+    // Single delete path for both self-delete (POST /user/profile/delete) and
+    // admin-delete (via /managed/request, where the caller has already run
+    // CanDeleteAsync). Mode is a global config value (UserDeletionMode), not a
+    // per-request choice. `actor` is who performed it — it owns the soft-delete
+    // audit history row, which is the record of who did it. dryRun only means
+    // anything in hard mode (it projects the cascade); a soft dryRun is a no-op.
+    /// <param name="force">
+    /// Permission to take everything the user owns, in HARD mode only. Without
+    /// it, deleting a user who has created records is refused — the guard that
+    /// existed before soft delete did, kept because the mode and this flag
+    /// answer different questions: the mode picks soft-vs-hard, force says "yes,
+    /// I know this user owns records". Ignored in soft mode, which touches
+    /// nothing the user owns, and by self-delete, which has no way to pass it
+    /// and whose owner has already asked.
+    /// </param>
+    public async Task<Result<DeleteReport>> DeleteUserAsync(
+        string shortname, string actor, bool dryRun = false, bool force = true,
+        CancellationToken ct = default)
     {
-        // Python: remove all sessions before deleting user.
-        await users.DeleteAllSessionsAsync(shortname, ct);
-        await users.DeleteAsync(shortname, ct);
+        if (!settings.Value.IsHardUserDeletion)
+        {
+            if (dryRun) return Result<DeleteReport>.Ok(DeleteReport.Empty);
+
+            // Snapshot before SoftDeleteAsync nulls email/msisdn, for the audit
+            // diff. No row → nothing to delete (idempotent).
+            var before = await users.GetByShortnameAsync(shortname, ct);
+            if (before is null) return Result<DeleteReport>.Ok(DeleteReport.Empty);
+
+            await users.SoftDeleteAsync(shortname, ct);
+
+            // Audit row owned by `actor`; ComputeUserDiff records
+            // is_deleted:{false→true} and email/msisdn:{old→null}. Non-
+            // transactional with SoftDeleteAsync, matching UpdateProfileAsync.
+            var after = before with { Email = null, Msisdn = null, IsDeleted = true };
+            var diff = HistoryDiffUtil.ComputeUserDiff(before, after);
+            await history.AppendAsync(MgmtSpace, "/users", shortname, actor, null, diff, ct);
+
+            return Result<DeleteReport>.Ok(DeleteReport.Empty);
+        }
+
+        if (!force && !dryRun && await users.OwnsAnyRecordsAsync(shortname, ct))
+            return Result<DeleteReport>.Fail(InternalErrorCode.CANNT_DELETE,
+                $"user '{shortname}' has created records; pass force=true to delete the user "
+                + "and everything they own", ErrorTypes.Request);
+
+        // Never let a hard delete wipe the management space, even if this user
+        // owns it — it holds all users/roles/permissions. The guard also applies
+        // to a dryrun projection: an impossible delete shouldn't report a count.
+        if (!dryRun && await users.OwnsSpaceAsync(shortname, MgmtSpace, ct))
+            return Result<DeleteReport>.Fail(InternalErrorCode.CANNT_DELETE,
+                $"cannot delete user '{shortname}': they own the management space '{MgmtSpace}'",
+                ErrorTypes.Request);
+
+        return Result<DeleteReport>.Ok(await users.ForceDeleteAsync(shortname, dryRun, ct));
     }
 
     public async Task LogoutAsync(string? shortname, string? token, CancellationToken ct = default)

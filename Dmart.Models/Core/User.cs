@@ -54,4 +54,16 @@ public sealed record User
     public string? Notes { get; init; }
     [JsonIgnore]
     public List<string> QueryPolicies { get; init; } = new();
+
+    // Soft-delete state. Irreversible once set — see UserService.DeleteUserAsync.
+    // A soft-deleted row keeps its shortname/uuid (so entries.owner_shortname etc.
+    // keep resolving) but has Email/Msisdn/Password cleared.
+    public bool IsDeleted { get; init; }
+    public DateTime? DeletedAt { get; init; }
+
+    // Single gate every auth/session check should read instead of IsActive alone:
+    // IsActive is also flipped by login lockout and admin deactivation, both of
+    // which are reversible — IsDeleted is not, and must never be masked by either.
+    [JsonIgnore]
+    public bool IsUsable => IsActive && !IsDeleted;
 }

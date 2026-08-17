@@ -273,6 +273,33 @@ public sealed class DmartSettings
     // DELETE /managed/lock. Mirrors Python's `lock_period`.
     public int LockPeriod { get; set; } = 300;
 
+    // Global mode for user account deletion — "soft" (default) or "hard", case-
+    // insensitive. Applies uniformly to self-delete (POST /user/profile/delete)
+    // and admin-delete (DELETE via /managed/request on a User resource); there is
+    // no per-request override.
+    //   * soft: irreversible. The row stays (so entries.owner_shortname etc. keep
+    //     resolving) but is marked deleted, with email/msisdn/password cleared.
+    //     Nothing the user owns is touched. See UserRepository.SoftDeleteAsync.
+    //   * hard: the row and everything the user personally owns (entries,
+    //     attachments, sessions, locks) are deleted; structural objects they
+    //     owned (spaces, roles, groups, permissions, other users) are reassigned
+    //     to the "dmart" sentinel instead of being deleted. Histories are never
+    //     deleted in either mode. See UserRepository.ForceDeleteAsync.
+    //
+    // ORTHOGONAL TO `force`. This picks soft-vs-hard; force answers "yes, I
+    // know this user owns records and I want them gone too". In hard mode a
+    // record-owning user is still refused without it — the guard that predates
+    // soft delete, kept because dropping it here would silently turn a refusal
+    // into a cascade for any client that relied on it. Soft mode ignores force,
+    // having nothing to guard.
+    public string UserDeletionMode { get; set; } = "soft";
+
+    // True when UserDeletionMode resolves to "hard" (case-insensitive); false
+    // (including for any unrecognized value) means soft. Centralizes the
+    // comparison so callers don't each re-implement the string check.
+    public bool IsHardUserDeletion
+        => string.Equals(UserDeletionMode, "hard", StringComparison.OrdinalIgnoreCase);
+
     public string MockOtpCode { get; set; } = "123456";
     public bool MockSmtpApi { get; set; }
     public bool MockSmppApi { get; set; }

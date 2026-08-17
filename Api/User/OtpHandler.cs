@@ -143,7 +143,7 @@ public static class OtpHandler
 
             // Anti-enumeration: missing user, or shortname lookup with no
             // msisdn to SMS, both return silent success.
-            if (user is null || !user.IsActive || string.IsNullOrEmpty(dest))
+            if (user is null || !user.IsUsable || string.IsNullOrEmpty(dest))
                 return Response.Ok();
 
             var s = settings.Value;
@@ -281,8 +281,11 @@ public static class OtpHandler
                     "password does not meet complexity rules", ErrorTypes.Request);
 
             // Account lockout pre-check — match /user/login's posture so a
-            // locked account can't be unlocked via the reset path either.
-            if (!user.IsActive)
+            // locked (or deleted) account can't be revived via the reset path.
+            // Deliberately IsUsable, not IsActive: a soft-deleted row can still
+            // have IsActive=true (deletion never touches it), so IsActive alone
+            // would let a password reset resurrect a deleted account.
+            if (!user.IsUsable)
                 return Response.Fail(InternalErrorCode.OTP_INVALID,
                     "code mismatch or expired", ErrorTypes.Auth);
 

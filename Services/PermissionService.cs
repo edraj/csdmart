@@ -117,7 +117,7 @@ public sealed class PermissionService(UserRepository users, AccessRepository acc
         // bucket we continue even when no "anonymous" row exists so the cache
         // entry records "no permissions" — avoids re-querying the users table
         // on every unauthenticated request.
-        if (!isAnonymous && (user is null || !user.IsActive))
+        if (!isAnonymous && (user is null || !user.IsUsable))
             return (user, new());
 
         var roleNames = new List<string>();
@@ -171,7 +171,7 @@ public sealed class PermissionService(UserRepository users, AccessRepository acc
         // Authenticated users must have a live row; anonymous is allowed to
         // resolve to no user (so "world" can still grant access even with no
         // anonymous user row in the DB).
-        if (actorShortname != AnonymousUser && (user is null || !user.IsActive)) return false;
+        if (actorShortname != AnonymousUser && (user is null || !user.IsUsable)) return false;
 
         // 1. Per-entry ACL: if the resource has an ACL entry naming this user with the
         //    requested action in their allowed_actions list, grant immediately.
@@ -246,7 +246,7 @@ public sealed class PermissionService(UserRepository users, AccessRepository acc
     {
         actorShortname ??= AnonymousUser;
         var (user, perms) = await ResolvePermissionsAsync(actorShortname, ct);
-        if (actorShortname != AnonymousUser && (user is null || !user.IsActive)) return false;
+        if (actorShortname != AnonymousUser && (user is null || !user.IsUsable)) return false;
 
         foreach (var p in perms)
         {
@@ -266,7 +266,7 @@ public sealed class PermissionService(UserRepository users, AccessRepository acc
         var result = new HashSet<string>(StringComparer.Ordinal);
         actorShortname ??= AnonymousUser;
         var (user, perms) = await ResolvePermissionsAsync(actorShortname, ct);
-        if (actorShortname != AnonymousUser && (user is null || !user.IsActive)) return result;
+        if (actorShortname != AnonymousUser && (user is null || !user.IsUsable)) return result;
 
         // If any permission carries __all_spaces__, every candidate is visible.
         var hasGlobal = perms.Any(p => p.IsActive && p.Subpaths.ContainsKey(AllSpacesMw));
@@ -324,7 +324,7 @@ public sealed class PermissionService(UserRepository users, AccessRepository acc
         if (string.IsNullOrEmpty(actorShortname) || actorShortname == AnonymousUser)
             return false;
         var (user, perms) = await ResolvePermissionsAsync(actorShortname, ct);
-        if (user is null || !user.IsActive) return false;
+        if (user is null || !user.IsUsable) return false;
         return perms.Any(p =>
             p.IsActive
             && p.Subpaths.TryGetValue(AllSpacesMw, out var subs)
@@ -401,7 +401,7 @@ public sealed class PermissionService(UserRepository users, AccessRepository acc
     {
         actorShortname ??= AnonymousUser;
         var (user, perms) = await ResolvePermissionsAsync(actorShortname, ct);
-        if (actorShortname != AnonymousUser && (user is null || !user.IsActive))
+        if (actorShortname != AnonymousUser && (user is null || !user.IsUsable))
             return new();
 
         // Python: user_groups = user.groups + [user_shortname]. When

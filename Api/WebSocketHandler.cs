@@ -86,7 +86,7 @@ public static class WebSocketHandler
             var wsSettings = ctx.RequestServices
                 .GetRequiredService<Microsoft.Extensions.Options.IOptions<Config.DmartSettings>>().Value;
             var wsUser = await wsUsers.GetByShortnameAsync(userShortname, ctx.RequestAborted);
-            if (wsUser is null || !wsUser.IsActive)
+            if (wsUser is null || !wsUser.IsUsable)
             {
                 ctx.Response.StatusCode = 401;
                 await ctx.Response.WriteAsync("Invalid token");
