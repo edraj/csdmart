@@ -74,6 +74,24 @@ exercises OpenSSL (TLS to PostgreSQL) and SQLite.
   static build: it hardcodes "the bundled SQLite build does not include dbstat"
   without probing, so per-table sizes stay refused even though they would now
   work.
-- **Not gated in CI.** Unlike the RPM, APK and container builds, nothing in
-  `ci.yml` or `release.yml` produces this artifact, so a change that breaks the
-  static publish will not be caught until someone runs the command above.
+## CI
+
+The `static-build` job in `ci.yml` builds this and asserts it stays standalone:
+zero `NEEDED` entries, no `libe_sqlite3`/`libssl.so`/`libcrypto.so` strings,
+then `dmart migrate` on SQLite to prove the linked engine actually opens a
+database.
+
+Those assertions are the point. A binary that quietly regained a dynamic
+dependency would still publish, and would still run **on the CI runner**, whose
+distro happens to have the libraries — the breakage only shows up on someone
+else's machine.
+
+Like `container-build`, it is scoped rather than run on every PR: it triggers
+on changes to any `.csproj`, `Directory.Build.*` or `ci.yml`, and
+unconditionally on pushes to master. A new NuGet package that reaches its
+native library through `dlopen` arrives via a `PackageReference`, so that
+filter catches the case that matters.
+
+`release.yml` does **not** build this artifact — it is not shipped today. If it
+ever is, add a version check alongside: statically linked OpenSSL and SQLite
+only get patched when this is rebuilt.
