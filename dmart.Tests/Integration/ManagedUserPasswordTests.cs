@@ -42,6 +42,21 @@ public sealed class ManagedUserPasswordTests : IClassFixture<DmartFactory>
         return (JsonSerializer.Deserialize(raw, DmartJsonContext.Default.Response), raw);
     }
 
+    // Drills into the aggregate failure envelope for the first failed record's
+    // error_code, which is where /managed/request puts the actual reason.
+    private static int? PerRecordErrorCode(string raw)
+    {
+        using var doc = JsonDocument.Parse(raw);
+        if (!doc.RootElement.TryGetProperty("error", out var err)
+            || !err.TryGetProperty("info", out var info)
+            || info.GetArrayLength() == 0
+            || !info[0].TryGetProperty("failed", out var failed)
+            || failed.GetArrayLength() == 0
+            || !failed[0].TryGetProperty("error_code", out var code))
+            return null;
+        return code.GetInt32();
+    }
+
     [FactIfPg]
     public async Task ManagedRequest_Create_User_With_Password_Is_Hashed_And_Verifiable()
     {
@@ -114,7 +129,12 @@ public sealed class ManagedUserPasswordTests : IClassFixture<DmartFactory>
                 CreateBody(shortname, "\"password\":\"weakpass\""));
 
             result!.Status.ShouldBe(Status.Failed, $"a weak password must be rejected; got: {raw}");
-            result.Error!.Code.ShouldBe(InternalErrorCode.INVALID_PASSWORD_RULES);
+            // Aggregate envelope: /managed/request always reports SOMETHING_WRONG at
+            // the top level and carries the real code at
+            // error.info[0].failed[0].error_code (same drill-down as
+            // AssignOwnershipTests / RolePermissionRequestTests).
+            PerRecordErrorCode(raw).ShouldBe(InternalErrorCode.INVALID_PASSWORD_RULES,
+                $"the per-record error_code must be INVALID_PASSWORD_RULES; got: {raw}");
             (await users.GetByShortnameAsync(shortname))
                 .ShouldBeNull("the user must not be persisted when the password is rejected");
         }

@@ -1,4 +1,5 @@
 using System.Text.Json;
+using Dmart.Auth;
 using Dmart.Config;
 using Dmart.DataAdapters.Sql;
 using Dmart.Models.Api;
@@ -35,6 +36,7 @@ public static class RequestHandler
                                   SchemaValidator schemas,
                                   HistoryRepository history,
                                   RegexPatternsConfig regexConfig,
+                                  PasswordHasher hasher,
                                   IOptions<DmartSettings> dmartSettings,
                                   HttpContext http, CancellationToken ct) =>
             {
@@ -170,7 +172,7 @@ public static class RequestHandler
                                     IsAutoShortname(rec.Shortname),
                                     () => DispatchCreateAsync(rec, req.SpaceName, actor,
                                         entries, users, access, spaces, attachments, perms, uniqueness, folderContent, schemas,
-                                        regexConfig, ct),
+                                        regexConfig, hasher, ct),
                                     r => r.Response.Error?.Code == InternalErrorCode.SHORTNAME_ALREADY_EXIST),
                             RequestType.Delete =>
                                 await DispatchDeleteAsync(rec, req.SpaceName, actor, managementSpace, req.Force, req.DryRun,
@@ -357,7 +359,8 @@ public static class RequestHandler
         SpaceRepository spaces, AttachmentRepository attachments,
         PermissionService perms,
         UniquenessValidator uniqueness, FolderContentValidator folderContent,
-        SchemaValidator schemas, RegexPatternsConfig regexConfig, CancellationToken ct)
+        SchemaValidator schemas, RegexPatternsConfig regexConfig, PasswordHasher hasher,
+        CancellationToken ct)
     {
         rec = ResolveAutoShortname(rec);
         // Gate non-entry branches here. The entry path runs through EntryService
@@ -432,7 +435,7 @@ public static class RequestHandler
         switch (rec.ResourceType)
         {
             case ResourceType.User:
-                return await CreateUserAsync(rec, space, actor, users, uniqueness, regexConfig, ct);
+                return await CreateUserAsync(rec, space, actor, users, uniqueness, regexConfig, hasher, ct);
             case ResourceType.Role:
                 return await CreateRoleAsync(rec, space, actor, access, uniqueness, ct);
             case ResourceType.Group:
@@ -473,27 +476,33 @@ public static class RequestHandler
             WithCreatedMetaAttributes(rec, saved.Uuid, saved.CreatedAt, saved.UpdatedAt, saved.OwnerShortname));
     }
 
-    // /managed/request must not set user passwords: those flow only through the
-    // user-driven paths (/user/create, the OTP password reset, /user/profile).
-    // Shared by the User create and update branches to reject — not silently
-    // drop — a password supplied on the generic CRUD path.
+    // /managed/request may set an INITIAL password when CREATING a user, but must
+    // never CHANGE one on update: an admin form that loaded the stored $argon2id
+    // hash would post it back and have it re-hashed, locking the user out. A
+    // rotation flows only through the OTP password-reset and /user/profile.
+    // Used by the User update branch to reject — not silently keep the old value.
     private const string PasswordNotAllowedMessage =
-        "password cannot be set via /managed/request; use /user/create, the OTP password-reset flow, or /user/profile";
+        "password cannot be changed via /managed/request; use the OTP password-reset flow or /user/profile";
 
     private static bool HasPasswordAttribute(Dictionary<string, object> attrs)
         => attrs.TryGetValue("password", out var p) && !string.IsNullOrEmpty(ConvertToString(p));
 
     private static async Task<(Response Response, Record UpdatedRecord)> CreateUserAsync(
         Record rec, string space, string actor, UserRepository users,
-        UniquenessValidator uniqueness, RegexPatternsConfig regexConfig, CancellationToken ct)
+        UniquenessValidator uniqueness, RegexPatternsConfig regexConfig, PasswordHasher hasher,
+        CancellationToken ct)
     {
         var attrs = rec.Attributes ?? new();
-        // Reject (rather than silently ignore) an attempt to set a password here
-        // so the caller isn't misled into thinking it took effect — passwords are
-        // only settable through the user-driven flows above.
-        if (HasPasswordAttribute(attrs))
-            return (Response.Fail(InternalErrorCode.INVALID_DATA,
-                PasswordNotAllowedMessage, ErrorTypes.Request), rec);
+        // An admin may provision an initial password here. It is optional: absent
+        // or empty leaves the account passwordless, exactly as before. A supplied
+        // one goes through the same PasswordRules every other password path uses,
+        // and this gate runs before the upsert so a rejected create persists
+        // nothing.
+        var passwordRaw = attrs.TryGetValue("password", out var pwObj) ? ConvertToString(pwObj) : null;
+        var hasPassword = !string.IsNullOrEmpty(passwordRaw);
+        if (hasPassword && !PasswordRules.IsValid(passwordRaw))
+            return (Response.Fail(InternalErrorCode.INVALID_PASSWORD_RULES,
+                "password does not meet the password rules", ErrorTypes.Request), rec);
         var emailErr = regexConfig.ValidateEmailFormat(
             attrs.TryGetValue("email", out var eAttr) ? ConvertToString(eAttr) : null);
         if (emailErr is not null)
@@ -540,7 +549,7 @@ public static class RequestHandler
             Payload = ParsePayloadFromAttrs(attrs),
             Email = attrs.TryGetValue("email", out var e) ? ConvertToString(e) : null,
             Msisdn = attrs.TryGetValue("msisdn", out var m) ? ConvertToString(m) : null,
-            Password = null,
+            Password = hasPassword ? hasher.Hash(passwordRaw!) : null,
             Roles = rolesList ?? new(),
             Groups = groupsList ?? new(),
             Type = ParseUserType(typeStr),
@@ -548,7 +557,12 @@ public static class RequestHandler
             IsActive = !attrs.TryGetValue("is_active", out var ia) || !IsExplicitlyFalse(ia),
             IsEmailVerified = attrs.TryGetValue("is_email_verified", out var iev) && IsTruthy(iev),
             IsMsisdnVerified = attrs.TryGetValue("is_msisdn_verified", out var imv) && IsTruthy(imv),
-            ForcePasswordChange = true,
+            // With no password there is no credential to keep, so the flag is
+            // forced on regardless of what the client asked for. With one, the
+            // admin decides: ticked for a temporary handover credential, absent
+            // for a real password.
+            ForcePasswordChange = !hasPassword
+                || (attrs.TryGetValue("force_password_change", out var fpc) && IsTruthy(fpc)),
             // Python accepts device_id / locked_to_device on user create; mirror
             // so mobile clients can set their device fingerprint in one call
             // instead of create + update.
@@ -561,6 +575,15 @@ public static class RequestHandler
         };
         await users.UpsertAsync(user, ct);
 
+        // The echoed record is built from the REQUEST attributes, so the supplied
+        // plaintext would ride back out in the response body. User.Password is
+        // [JsonIgnore], but this dictionary is not — drop it explicitly.
+        if (hasPassword)
+        {
+            var echoed = new Dictionary<string, object>(attrs);
+            echoed.Remove("password");
+            rec = rec with { Attributes = echoed };
+        }
         return (Response.Ok(),
             WithCreatedMetaAttributes(rec, user.Uuid, user.CreatedAt, user.UpdatedAt, user.OwnerShortname));
     }
@@ -795,8 +818,9 @@ public static class RequestHandler
                 var userLocator = new Locator(ResourceType.User, existing.SpaceName, existing.Subpath, existing.Shortname);
                 if (!await perms.CanUpdateAsync(actor, userLocator, PermissionService.FromUser(existing), attrs, ct))
                     return (Response.Fail(InternalErrorCode.NOT_ALLOWED, "not allowed to update user", ErrorTypes.Request), rec, null);
-                // Passwords are not settable through the managed CRUD path (see
-                // CreateUserAsync) — reject rather than silently keep the old one.
+                // Create may set an initial password (see CreateUserAsync), but
+                // update may not change one — reject rather than silently keep
+                // the old value.
                 if (HasPasswordAttribute(attrs))
                     return (Response.Fail(InternalErrorCode.INVALID_DATA,
                         PasswordNotAllowedMessage, ErrorTypes.Request), rec, null);
