@@ -201,6 +201,17 @@ public interface ISqlDialect
     /// </remarks>
     string ColumnAsNumber(string column);
 
+    /// <summary>
+    /// Compares a TEXT-typed array element against a numeric parameter without
+    /// letting a non-numeric element raise. Elements of a scalar array arrive
+    /// as text, so a bare <see cref="ColumnAsNumber"/> over them casts EVERY
+    /// element: on PostgreSQL <c>CAST('red' AS FLOAT)</c> aborts the whole
+    /// query. Implementations must keep the guard and the cast in one
+    /// expression that cannot be reordered — neither engine promises AND
+    /// short-circuits before the cast — so a CASE, not a conjunction.
+    /// </summary>
+    string SafeNumberCompare(string textExpr, string sqlOp, string numParam);
+
     /// <summary>Casts a whole COLUMN to a boolean for comparison.</summary>
     /// <remarks>
     /// Separate from <see cref="AsBoolean"/> only because PostgreSQL spells the
@@ -254,6 +265,14 @@ public interface ISqlDialect
         string jsonExpr, IReadOnlyList<string> elementPath);
 
     /// <summary>FROM-clause fragment iterating a string-array column's elements.</summary>
+    /// <remarks>
+    /// The alias is NOT usable as a value on its own, so always dereference it
+    /// through <see cref="ArrayElementRef"/> instead of interpolating it into a
+    /// predicate. PostgreSQL's <c>unnest</c> yields a column, so the bare alias
+    /// happens to work there — which is exactly why the mistake survives review
+    /// and only shows up on SQLite, whose <c>json_each</c> yields a TABLE and
+    /// fails at execution with "no such column".
+    /// </remarks>
     string ArrayElements(string column, string alias);
 
     /// <summary>References an element produced by <see cref="ArrayElements"/>.</summary>

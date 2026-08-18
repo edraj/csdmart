@@ -117,6 +117,79 @@ public class FilterFieldsValuesMergeTests
         result.ShouldBeSameAs(q);
     }
 
+    [Fact]
+    public void Dedupe_KeepsRepeatedOrKeyword()
+    {
+        // REGRESSION: dedupe used to drop ANY repeated whitespace token. The
+        // second `or` in a three-branch union went with it, and
+        // `A or B or C` silently became `(A or B) AND C` — a union turned into
+        // an intersection, for every managed query whose actor has any
+        // permission (the merge runs on all of them).
+        var q = BaseQuery(search: "@a:1 or @b:2 or @c:3");
+        var result = QueryService.DedupeSearchTokens(q);
+        result.Search.ShouldBe("@a:1 or @b:2 or @c:3");
+    }
+
+    [Fact]
+    public void Dedupe_KeepsRepeatedAndKeyword()
+    {
+        var q = BaseQuery(search: "@a:1 and @b:2 and @c:3");
+        QueryService.DedupeSearchTokens(q).Search.ShouldBe("@a:1 and @b:2 and @c:3");
+    }
+
+    [Fact]
+    public void Dedupe_KeepsRepeatedFreeTextTerms()
+    {
+        // Free text is positional too — `foo or foo` is a legitimate (if
+        // redundant) expression and must not collapse into a bare `foo or`.
+        var q = BaseQuery(search: "foo or foo");
+        QueryService.DedupeSearchTokens(q).Search.ShouldBe("foo or foo");
+    }
+
+    [Fact]
+    public void Dedupe_StillCollapsesRepeatedSelectors()
+    {
+        // The behaviour the function exists for: an identical `@field:value`
+        // token twice inside a single AND-run is idempotent, so one copy is
+        // dropped. No `or`, no parens — the only shape where that is provably
+        // parse-preserving.
+        var q = BaseQuery(search: "@status:open @kind:bug @status:open");
+        QueryService.DedupeSearchTokens(q).Search.ShouldBe("@status:open @kind:bug");
+    }
+
+    [Fact]
+    public void Dedupe_DoesNotCollapseAcrossOr_PermissionClauseSurvives()
+    {
+        // Regression: collapsing across an `or` MOVES a restriction instead of
+        // shortening it. With the injected permission token `@status:open`
+        // repeated after the `or`, dropping the repeat yields
+        // `@status:open or @kind:bug` — parsed as `(status=open) OR (kind=bug)`,
+        // so every `kind=bug` row escapes the status restriction entirely.
+        var q = BaseQuery(search: "@status:open or @kind:bug @status:open");
+        QueryService.DedupeSearchTokens(q).Search
+            .ShouldBe("@status:open or @kind:bug @status:open");
+    }
+
+    [Fact]
+    public void Dedupe_DoesNotCollapseTokensEndingInParen()
+    {
+        // `@x:9)` starts with `@`, so the selector test accepts it while the
+        // trailing paren makes it positional. Collapsing the repeat drops the
+        // second group's restriction and unbalances the grouping.
+        var q = BaseQuery(search: "(@a:1 or @x:9) (@b:2 or @x:9)");
+        QueryService.DedupeSearchTokens(q).Search
+            .ShouldBe("(@a:1 or @x:9) (@b:2 or @x:9)");
+    }
+
+    [Fact]
+    public void Dedupe_TreatsParenBearingTokens_AsDistinct()
+    {
+        // `(@a:1` and `@a:1` are different strings, so neither is dropped —
+        // collapsing them would silently unbalance the caller's grouping.
+        var q = BaseQuery(search: "(@a:1 or @b:2) @a:1");
+        QueryService.DedupeSearchTokens(q).Search.ShouldBe("(@a:1 or @b:2) @a:1");
+    }
+
     // ── ExtractFilterFieldsValues ──────────────────────────────────────
 
     [Fact]
@@ -248,7 +321,9 @@ public class FilterFieldsValuesMergeTests
         var result = QueryService.MergeFilterFieldsValues(
             q, new() { "acme:users:user:*" }, perms);
 
-        result.Search.ShouldStartWith("@displayname:alice ");
+        // The caller's search is wrapped so the permission clause cannot be
+        // stranded on one branch of a caller-supplied `or`.
+        result.Search.ShouldStartWith("(@displayname:alice) ");
         result.Search.ShouldContain("@status:active");
     }
 
@@ -308,20 +383,25 @@ public class FilterFieldsValuesMergeTests
     [Fact]
     public void Merge_DedupesAdjacentTokensInFinalSearch()
     {
-        // Caller-provided search already contains @space_name:acme; the
-        // merge appends the same token. The post-merge dedupe collapses it.
+        // Caller-provided search already contains @space_name:acme; the merge
+        // appends the same token. Dedupe no longer collapses it, because the
+        // caller's search is now a paren group and dedupe declines to touch
+        // any expression carrying parens — dropping a token across a group
+        // boundary moves a restriction rather than shortening it. Both copies
+        // survive: `(space=acme) AND (space=acme AND …)`, redundant but
+        // correct, and the caller's own token stays inside their group.
         var perms = Perms(("acme:users:user", "@status:active"));
         var q = BaseQuery(search: "@space_name:acme");
         var result = QueryService.MergeFilterFieldsValues(
             q, new() { "acme:users:user:*" }, perms);
 
         result.Search.ShouldNotBeNull();
-        // Exactly one occurrence after dedupe.
+        // Two occurrences: the caller's, inside their group, and the FFV's.
         var occurrences = 0;
         var idx = 0;
         while ((idx = result.Search!.IndexOf("@space_name:acme", idx, System.StringComparison.Ordinal)) >= 0)
         { occurrences++; idx += "@space_name:acme".Length; }
-        occurrences.ShouldBe(1);
+        occurrences.ShouldBe(2);
     }
 
     [Fact]

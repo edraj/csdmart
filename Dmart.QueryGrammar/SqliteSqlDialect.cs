@@ -194,6 +194,12 @@ public sealed class SqliteSqlDialect : ISqlDialect
 
     public string ColumnAsNumber(string column) => $"CAST({column} AS REAL)";
 
+    // SQLite's CAST never raises — a non-numeric element yields 0.0 — so the
+    // guard PostgreSQL needs would only change results, not prevent an error.
+    // Left as the plain cast so this dialect's emitted SQL is unchanged.
+    public string SafeNumberCompare(string textExpr, string sqlOp, string numParam)
+        => $"CAST({textExpr} AS REAL) {sqlOp} {numParam}";
+
     // A stored column is already 0/1, so it compares directly.
     public string ColumnAsBoolean(string column) => column;
 

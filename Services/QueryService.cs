@@ -1,3 +1,4 @@
+using System.Text;
 using System.Diagnostics.CodeAnalysis;
 using System.Text.Json;
 using Dmart.Config;
@@ -1683,27 +1684,112 @@ public sealed class QueryService(
             $"@resource_type:{string.Join("|", ffvResourceTypes)} " +
             string.Join(" ", ffvQuery);
 
+        // The caller's search is PARENTHESISED before the permission clause is
+        // appended. Concatenating it raw left two ways past the FFV, both
+        // because the permission tokens are ordinary selectors with no special
+        // standing in the grammar:
+        //
+        //   1. AND binds tighter than OR, so `@a:1 or @b:2` + FFV parsed as
+        //      `a=1 OR (b=2 AND <permissions>)` — the left branch escaped every
+        //      restriction, including space/subpath/resource_type.
+        //   2. Same-field accumulation is scoped to one AND-run, so a caller
+        //      alternation on the constrained field (`@dept:sales|ops`) merged
+        //      with the FFV's `@dept:sales` into `dept IN (sales, ops)` —
+        //      widening the page instead of narrowing it.
+        //
+        // Wrapping closes both: the group is evaluated first and then ANDed
+        // with the permission clause, so every branch is restricted and the
+        // caller's selectors cannot accumulate into the FFV's.
         var newSearch = string.IsNullOrEmpty(q.Search)
             ? permKeyQuery
-            : $"{q.Search} {permKeyQuery}";
+            : $"({BalanceParens(q.Search)}) {permKeyQuery}";
 
         return DedupeSearchTokens(q with { Search = newSearch });
     }
 
-    // Tokenises q.Search on plain ASCII space and dedupes — good enough
-    // for the @field:value tokens dmart's permission FFV strings actually
-    // produce, none of which contain whitespace. RediSearch's quoted
-    // alternative — `@field:"hello world"` — would split incorrectly here,
-    // but that shape is not generated anywhere in the FFV path; if it ever
-    // is, this function needs a quote-aware tokenizer.
+    // Makes a caller's search safe to wrap in parentheses.
+    //
+    // Wrapping alone is not enough: a stray ')' in the caller's expression
+    // closes the wrapper early and hands the escape straight back. With
+    // `@k:v) or @k:w` the wrap yields `(@k:v) or @k:w)` — the group ends at the
+    // caller's paren, the `or` is top-level again, and the permission clause
+    // lands on one branch only. The parser already discards an unmatched ')'
+    // as noise, so removing it here changes nothing the caller asked for while
+    // making the wrap hold. Unclosed '(' are completed for the same reason:
+    // an unterminated group would otherwise swallow the permission tokens.
+    //
+    // Not quote-aware, matching DedupeSearchTokens below: a paren inside a
+    // quoted value (`@field:"a (b)"`) is counted as structure. That shape is
+    // not generated anywhere in the FFV path; if it ever is, both functions
+    // need a real tokenizer.
+    internal static string BalanceParens(string search)
+    {
+        var sb = new StringBuilder(search.Length + 4);
+        var depth = 0;
+        foreach (var ch in search)
+        {
+            if (ch == ')')
+            {
+                if (depth == 0) continue;   // stray closer — drop it
+                depth--;
+            }
+            else if (ch == '(') depth++;
+            sb.Append(ch);
+        }
+        sb.Append(')', depth);              // complete any unclosed groups
+        return sb.ToString();
+    }
+
+    // Tokenises q.Search on plain ASCII space and drops repeated SELECTORS —
+    // the `@field:value` shape dmart's permission FFV strings produce, none of
+    // which contain whitespace. Repeating a selector is idempotent (the parser
+    // accumulates same-field values), so collapsing them only shortens the
+    // expression.
+    //
+    // Only selectors are eligible. Every other token — the `or` / `and`
+    // keywords, bare parens, free-text terms — is structural or positional,
+    // and dropping a repeat CHANGES THE PARSE. Deduping `or` was the sharp
+    // edge: `A or B ... or C` lost its second `or` and silently became
+    // `(A or B) AND C`, turning a union into an intersection. Any predicate
+    // written twice in one expression (`@a:1 ... @a:1`) is likewise left
+    // alone once it carries a paren, because `(@a:1` and `@a:1` are already
+    // distinct strings and treating them as equal would be guesswork.
+    //
+    // RediSearch's quoted alternative — `@field:"hello world"` — still splits
+    // incorrectly here, but that shape is not generated anywhere in the FFV
+    // path; if it ever is, this function needs a quote-aware tokenizer.
     internal static Query DedupeSearchTokens(Query q)
     {
         if (string.IsNullOrEmpty(q.Search)) return q;
         var parts = q.Search.Split(' ', StringSplitOptions.RemoveEmptyEntries);
+
+        // Bail out entirely on any boolean keyword or paren. Dedupe is only
+        // safe inside a single AND-run, where repeating a selector really is
+        // idempotent. The moment the expression carries an `or` or a group,
+        // tokens become scope-sensitive and dropping one MOVES a restriction
+        // rather than shortening it: with FFV `@payload.body.dept:sales` and
+        // caller search `@payload.body.dept:sales or @payload.body.k:w`, the
+        // injected permission token is collapsed as a duplicate and the right
+        // OR branch loses the department restriction — a permission bypass,
+        // not a cosmetic change. `and` is included because dropping a selector
+        // that follows one leaves a dangling keyword. Tokens ENDING in `)`
+        // matter too: `@x:9)` starts with `@` so it reads as a selector, and
+        // `(@a:1 or @x:9) (@b:2 or @x:9)` silently loses the second group's
+        // `@x:9`. Failing to dedupe costs nothing but a longer string.
+        foreach (var p in parts)
+        {
+            if (p.Contains('(') || p.Contains(')')) return q;
+            if (p.Equals("or", StringComparison.OrdinalIgnoreCase)
+                || p.Equals("and", StringComparison.OrdinalIgnoreCase)) return q;
+        }
+
         var seen = new HashSet<string>(StringComparer.Ordinal);
         var deduped = new List<string>(parts.Length);
         foreach (var p in parts)
-            if (seen.Add(p)) deduped.Add(p);
+        {
+            var isSelector = p.StartsWith('@') || p.StartsWith("-@", StringComparison.Ordinal);
+            if (!isSelector || seen.Add(p)) deduped.Add(p);
+        }
         if (deduped.Count == parts.Length) return q;
         return q with { Search = string.Join(' ', deduped) };
     }

@@ -859,9 +859,13 @@ public static class SearchExpressionParser
                 if (double.TryParse(v1, out var d1) && double.TryParse(v2, out var d2) && d1 > d2) (v1, v2) = (v2, v1);
                 var p1 = ctx.Add(v1);
                 var p2 = ctx.Add(v2);
+                // Same hazard as the scalar predicates below: without a
+                // subpath the elements are TEXT, so a bare cast over all of
+                // them aborts the query on PostgreSQL as soon as one is
+                // non-numeric. BETWEEN becomes two guarded comparisons.
                 string between = hasSubPath
                     ? $"{ctx.Dialect.JsonTypeIs(elementJsonb, JsonKind.Number)} AND {ctx.Dialect.AsNumber(elementJsonb)} BETWEEN {ctx.Dialect.NumberParam(p1)} AND {ctx.Dialect.NumberParam(p2)}"
-                    : $"{ctx.Dialect.ColumnAsNumber(elementText)} BETWEEN {ctx.Dialect.NumberParam(p1)} AND {ctx.Dialect.NumberParam(p2)}";
+                    : $"{ctx.Dialect.SafeNumberCompare(elementText, ">=", ctx.Dialect.NumberParam(p1))} AND {ctx.Dialect.SafeNumberCompare(elementText, "<=", ctx.Dialect.NumberParam(p2))}";
                 var exists = $"EXISTS (SELECT 1 FROM {iterator} WHERE {between})";
                 // Negation: absent/null fields are intentionally included so
                 // `-@items[].price:[100 200]` also matches rows that don't
@@ -883,7 +887,28 @@ public static class SearchExpressionParser
                 : $"({typeofGuard} AND {exists2})";
         }
 
-        var compOp = data.ComparisonOperator;
+        // `-@arr[]:v` is negated by the NOT EXISTS wrapper below, so the
+        // per-element predicate must stay POSITIVE. Emitting `!=` here as well
+        // double-negates into "EVERY element equals v" — the opposite of the
+        // documented "the array does not contain v" (docs/query.md).
+        // `@arr[]:!v` (bang, no `-@`) has no wrapper negation, so it keeps the
+        // `!=` predicate: "some element differs from v".
+        //
+        // Consequence worth naming: under `-@` the operator is DROPPED, not
+        // rejected, so `-@arr[]:!v` and `-@arr[]:>v` both emit the same SQL as
+        // `-@arr[]:v`. That is deliberate — every one of them means "the array
+        // does not contain v" — but it makes the operator inert rather than an
+        // error. ArrayNegation_* tests pin each shape so the equivalence is
+        // visible instead of accidental.
+        //
+        // Nulling compOp also re-routes negated NUMERIC values out of the
+        // `compOp is not null` branch and into the bare-equality one below,
+        // which is why that branch must use SafeNumberCompare: a scalar array
+        // yields TEXT elements, and casting every one of them aborts the query
+        // on PostgreSQL the moment a non-numeric element appears.
+        var compOp = data.Negative && data.ComparisonOperator == "!"
+            ? null
+            : data.ComparisonOperator;
         var conditions = new List<string>();
         foreach (var value in data.Values)
         {
@@ -896,9 +921,9 @@ public static class SearchExpressionParser
                 var pNum = ctx.Add(double.Parse(value, CultureInfo.InvariantCulture));
                 predicate = hasSubPath
                     ? $"({ctx.Dialect.JsonTypeIs(elementJsonb, JsonKind.Number)} AND {ctx.Dialect.AsNumber(elementJsonb)} {sqlOp} {ctx.Dialect.NumberParam(pNum)})"
-                    : $"{ctx.Dialect.ColumnAsNumber(elementText)} {sqlOp} {ctx.Dialect.NumberParam(pNum)}";
+                    : ctx.Dialect.SafeNumberCompare(elementText, sqlOp, ctx.Dialect.NumberParam(pNum));
             }
-            else if (data.Negative || compOp == "!")
+            else if (compOp == "!")
             {
                 var p = ctx.Add(value);
                 predicate = $"{elementText} != {p}";
@@ -914,7 +939,7 @@ public static class SearchExpressionParser
                 else
                 {
                     var pNum = ctx.Add(double.Parse(value, CultureInfo.InvariantCulture));
-                    predicate = $"{ctx.Dialect.ColumnAsNumber(elementText)} = {ctx.Dialect.NumberParam(pNum)}";
+                    predicate = ctx.Dialect.SafeNumberCompare(elementText, "=", ctx.Dialect.NumberParam(pNum));
                 }
             }
             else
@@ -1206,18 +1231,24 @@ public static class SearchExpressionParser
     {
         var negative = data.Negative || data.ComparisonOperator == "!";
         var conditions = new List<string>();
+        // The element is dereferenced through the dialect, not by interpolating
+        // the alias: PostgreSQL's unnest yields a column so `elem` is the value,
+        // while SQLite's json_each yields a TABLE whose value is `elem.value`.
+        // Emitting the bare alias made every `@query_policies:...` search fail
+        // on SQLite with `no such column: elem`.
+        var elemRef = ctx.Dialect.ArrayElementRef("elem");
         foreach (var value in data.Values)
         {
             string predicate;
             if (value.Contains('*'))
             {
                 var p = ctx.Add(value.Replace('*', '%'));
-                predicate = ctx.Dialect.ILike("elem", p, negated: false);
+                predicate = ctx.Dialect.ILike(elemRef, p, negated: false);
             }
             else
             {
                 var p = ctx.Add(value);
-                predicate = $"elem = {p}";
+                predicate = $"{elemRef} = {p}";
             }
             var exists = $"EXISTS (SELECT 1 FROM {ctx.Dialect.ArrayElements(column, "elem")} WHERE {predicate})";
             conditions.Add(negative ? $"NOT {exists}" : exists);

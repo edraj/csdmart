@@ -94,6 +94,43 @@ Type detection on values:
 Coverage: 50+ unit tests in `dmart.Tests/Unit/Services/QueryHelperTests.cs`
 pin the emitted SQL shape for every combination.
 
+### Array fields (`@arr[]:v`)
+
+`[]` iterates a JSON array and applies the predicate per element.
+
+| Pattern | Meaning |
+|---|---|
+| `@arr[]:v` | some element equals v |
+| `@arr[]:!v` | some element differs from v |
+| `-@arr[]:v` | the array does not contain v |
+| `@arr[].field:v` | some element's `field` equals v |
+| `-@arr[]:[min max]` | no element falls in the range |
+
+`-@` is applied once, by a `NOT EXISTS` wrapper around the per-element
+predicate, so the predicate itself stays positive. Emitting `!=` inside the
+wrapper as well would double-negate into "EVERY element equals v" — the
+opposite of the documented meaning.
+
+A consequence: under `-@` a value-level operator is **dropped**, not rejected.
+`-@arr[]:!v`, `-@arr[]:>v` and `-@arr[]:v` all mean "the array does not
+contain v" and emit identical SQL.
+
+Elements of a scalar array are read as text. A numeric query value is
+therefore compared through a guarded cast — a non-numeric element yields no
+match rather than aborting the query.
+
+### Same-field accumulation
+
+Repeating a selector for one field accumulates its values rather than
+replacing them: `@dept:sales @dept:ops` is `dept IN (sales, ops)`, not
+`dept = ops`. This is what makes an injected permission clause
+(`filter_fields_values`) compose with a caller's own search on the same
+field — and why the two widen rather than intersect.
+
+Accumulation is scoped to a single AND-run. Across an `or`, or between paren
+groups, each branch carries its own selectors and a clause in one branch does
+not restrict the other.
+
 ## sort_by
 
 Resolved by `QueryHelper.BuildOrderClauseBody`:
