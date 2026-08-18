@@ -1,5 +1,60 @@
 # Changelog
 
+## Unreleased
+
+### Security
+
+- **`filter_fields_values` now constrains every branch of a caller's search.**
+  The permission clause was concatenated onto the caller's expression as bare
+  tokens, giving it no special standing in the grammar. Because AND binds
+  tighter than OR, a caller-supplied `or` split the expression and left the
+  clause governing only the right-hand branch — `(k=v) OR (k=w AND dept=sales)`,
+  where the left side is reachable without satisfying the permission. A second
+  route needed no boolean keyword at all: an alternation on the constrained
+  field (`@dept:sales|ops`) accumulated into the permission's own selector,
+  yielding `dept IN (sales, ops)` and returning exactly the rows the restriction
+  existed to hide. The caller's search is now parenthesised before the clause is
+  appended, and unbalanced parens are normalised first so a stray `)` cannot
+  close the wrapper early. The query-policy gate is a separate clause and always
+  held, so this widened a row-level field restriction inside an
+  already-granted subpath rather than reaching ungranted rows.
+
+  One behaviour change worth knowing: negating the field a permission
+  constrains (`-@dept:sales` under an FFV of `@dept:sales`) now returns nothing
+  instead of every `sales` row. The two used to land in one leaf run where the
+  last sign won and the caller's negation was silently discarded.
+
+### Fixed
+
+- **`@query_policies:…` searches no longer fail on SQLite.** The text-array
+  predicate referenced the bare iteration alias, which resolves under
+  PostgreSQL's `unnest` (a column) but not SQLite's `json_each` (a table), so
+  every such search raised `no such column: elem`.
+- **Array searches with a numeric value no longer abort on a non-numeric
+  element.** Elements of a scalar array are text, and the cast was applied to
+  all of them, so `-@tags[]:100` over `["red","blue"]` failed the whole query on
+  PostgreSQL. Guarded for the equality, comparison and `BETWEEN` forms.
+- **Repeated selectors are no longer collapsed across `or` or paren groups.**
+  Deduplication is a cosmetic shortening, but across a boolean it moved a
+  restriction rather than shortening it, and could drop an injected permission
+  token outright.
+
+### New
+
+- **`MAX_PASSWORD_RECORDS_PER_REQUEST`** (default 50) bounds how many records in
+  one `/managed/request` may carry a password. Each costs an Argon2id hash at
+  m=100 MB, and the batch was otherwise unbounded. Records without a password
+  are not counted; `0` disables the check.
+- `/managed/request` accepts `password` when creating a user, validated against
+  the password rules and hashed with the shared hasher. The update path still
+  rejects it.
+
+### Documentation
+
+- `docs/query.md` documents array-field predicates (including that `-@` makes a
+  value-level operator inert) and same-field accumulation — the contracts the
+  query-search regression tests defend.
+
 ## v1.2.4 — 2026-08-17
 
 **User deletion is now soft by default.** Deleting a user no longer removes the
