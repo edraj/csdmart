@@ -318,9 +318,9 @@ cat > ~/.dmart/plugins/my_plugin/config.json << 'EOF'
   "type": "hook",
   "listen_time": "after",
   "filters": {
-    "subpaths": ["__ALL__"],
+    "subpaths": { "__all_spaces__": ["__all_subpaths__"] },
     "resource_types": ["content"],
-    "schema_shortnames": ["__ALL__"],
+    "schema_shortnames": [],
     "actions": ["create", "update", "delete"]
   }
 }

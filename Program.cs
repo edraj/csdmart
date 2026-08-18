@@ -2387,6 +2387,27 @@ Dmart.Plugins.Native.NativePluginCallbacks.Services = app.Services;
 Dmart.Plugins.Native.NativePluginLoader.WireSubprocessShutdown(
     app.Services.GetRequiredService<IHostApplicationLifetime>());
 
+// Replay plugin load failures through the real logging pipeline. The scan runs
+// during DI registration, before the logger exists, so its only outlet was one
+// stderr line per failure — easily lost in startup output, and dmart carried on
+// serving as though nothing were missing. Plugins are load-bearing here, so a
+// deployment that silently lost one must not look healthy. Logged at Error and
+// also reported by GET /info/plugins.
+{
+    var failures = Dmart.Plugins.Native.NativePluginLoader.LoadFailures;
+    if (failures.Count > 0)
+    {
+        var pluginLog = app.Services.GetRequiredService<ILoggerFactory>()
+            .CreateLogger("Dmart.Plugins.Native");
+        foreach (var f in failures)
+            pluginLog.LogError("PLUGIN_LOAD_FAILED: {Shortname}: {Reason}", f.Shortname, f.Reason);
+        pluginLog.LogError(
+            "PLUGIN_LOAD_SUMMARY: {FailedCount} plugin(s) failed to load and are NOT active: {Names}. "
+            + "See GET /info/plugins.",
+            failures.Count, string.Join(", ", failures.Select(f => f.Shortname)));
+    }
+}
+
 // Drain the Npgsql connection pool on graceful shutdown so SIGTERM doesn't
 // leave orphan backends attached to the dmart DB. Without this the next
 // `dropdb` (CI rerun, local dev iteration) is blocked by stale sessions
