@@ -25,6 +25,13 @@ namespace Dmart.Api.Managed;
 //     Schema/Ticket/...)
 public static class RequestHandler
 {
+    // Ceiling on how many records in one /managed/request may carry a password.
+    // Each one costs an Argon2id hash (m=100 MB, t=3, p=8), so this bounds the
+    // endpoint at roughly 7s of CPU and keeps the 100 MB working set from being
+    // re-entered hundreds of times. Batches without passwords are unbounded, as
+    // before. Promote to DmartSettings if a deployment needs a different figure.
+    internal const int MaxPasswordRecordsPerRequest = 50;
+
     public static void Map(RouteGroupBuilder g) =>
         g.MapPost("/request",
             async Task<Response> (HttpRequest httpReq, EntryService entries, UserRepository users,
@@ -75,9 +82,23 @@ public static class RequestHandler
                         $"invalid space_name: '{req.SpaceName}' fails {Utils.RequestRegex.SpaceNamePattern}",
                         ErrorTypes.Request);
 
+                // Argon2id is deliberately expensive — m=100 MB, t=3, p=8, so
+                // ~0.1-0.2s and a 100 MB allocation per hash. `records` has no
+                // length limit, so without this an authorized bulk-provisioning
+                // call carrying a few hundred password-bearing records occupies
+                // a request thread for tens of seconds and allocates 100 MB over
+                // and over. Counted before dispatch so a rejected batch costs
+                // nothing. Only records that actually carry a password count;
+                // a large batch without passwords is unaffected.
+                int passwordRecords = 0;
+
                 for (int i = 0; i < req.Records.Count; i++)
                 {
                     var rec = req.Records[i];
+                    if (rec.Attributes is not null
+                        && rec.Attributes.Keys.Any(k =>
+                            string.Equals(k, "password", StringComparison.OrdinalIgnoreCase)))
+                        passwordRecords++;
                     if (!Utils.RequestRegex.IsValidShortname(rec.Shortname))
                         return Response.Fail(InternalErrorCode.INVALID_DATA,
                             $"invalid shortname at records[{i}]: '{rec.Shortname}' fails {Utils.RequestRegex.ShortnamePattern}",
@@ -87,6 +108,12 @@ public static class RequestHandler
                             $"invalid subpath at records[{i}]: '{rec.Subpath}' fails {Utils.RequestRegex.SubpathPattern}",
                             ErrorTypes.Request);
                 }
+
+                if (passwordRecords > MaxPasswordRecordsPerRequest)
+                    return Response.Fail(InternalErrorCode.INVALID_DATA,
+                        $"too many records carrying a password: {passwordRecords} exceeds the "
+                        + $"limit of {MaxPasswordRecordsPerRequest} per request; split the batch",
+                        ErrorTypes.Request);
 
                 var actor = http.ActorOrAnonymous();
                 var managementSpace = dmartSettings.Value.ManagementSpace;

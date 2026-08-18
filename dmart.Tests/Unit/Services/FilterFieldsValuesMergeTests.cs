@@ -149,10 +149,36 @@ public class FilterFieldsValuesMergeTests
     [Fact]
     public void Dedupe_StillCollapsesRepeatedSelectors()
     {
-        // The behaviour the function exists for is unchanged: an identical
-        // `@field:value` token twice is idempotent, so one copy is dropped.
+        // The behaviour the function exists for: an identical `@field:value`
+        // token twice inside a single AND-run is idempotent, so one copy is
+        // dropped. No `or`, no parens — the only shape where that is provably
+        // parse-preserving.
+        var q = BaseQuery(search: "@status:open @kind:bug @status:open");
+        QueryService.DedupeSearchTokens(q).Search.ShouldBe("@status:open @kind:bug");
+    }
+
+    [Fact]
+    public void Dedupe_DoesNotCollapseAcrossOr_PermissionClauseSurvives()
+    {
+        // Regression: collapsing across an `or` MOVES a restriction instead of
+        // shortening it. With the injected permission token `@status:open`
+        // repeated after the `or`, dropping the repeat yields
+        // `@status:open or @kind:bug` — parsed as `(status=open) OR (kind=bug)`,
+        // so every `kind=bug` row escapes the status restriction entirely.
         var q = BaseQuery(search: "@status:open or @kind:bug @status:open");
-        QueryService.DedupeSearchTokens(q).Search.ShouldBe("@status:open or @kind:bug");
+        QueryService.DedupeSearchTokens(q).Search
+            .ShouldBe("@status:open or @kind:bug @status:open");
+    }
+
+    [Fact]
+    public void Dedupe_DoesNotCollapseTokensEndingInParen()
+    {
+        // `@x:9)` starts with `@`, so the selector test accepts it while the
+        // trailing paren makes it positional. Collapsing the repeat drops the
+        // second group's restriction and unbalances the grouping.
+        var q = BaseQuery(search: "(@a:1 or @x:9) (@b:2 or @x:9)");
+        QueryService.DedupeSearchTokens(q).Search
+            .ShouldBe("(@a:1 or @x:9) (@b:2 or @x:9)");
     }
 
     [Fact]

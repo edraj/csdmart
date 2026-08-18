@@ -240,7 +240,7 @@ public class SearchPermissionCompositionTests
     {
         // ⚠ CHARACTERIZATION TEST — pins a KNOWN, UNFIXED weakness so the
         // suite flags the day it changes. Tracked as High in
-        // PR_SECURITY_AUDIT.md ("filter_fields_values ACL clause is
+        // the FFV composition gap ("filter_fields_values ACL clause is
         // string-concatenated after the caller's search, so a trailing `or`
         // neutralizes it").
         //

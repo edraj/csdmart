@@ -1002,7 +1002,7 @@ public class SearchExpressionParserTests
     // ══════════════════════════════════════════════════════════════════════
     // FEATURE / PREDICATE MATRIX
     // ══════════════════════════════════════════════════════════════════════
-    // Everything below walks docs/query-search.md end to end: every column
+    // Everything below walks docs/query.md end to end: every column
     // CATEGORY (scalar text, boolean, timestamp, jsonb-array, text-array,
     // user-meta, payload path, payload array) crossed with every VALUE FORM
     // (plain, quoted, boolean, numeric, existence, glob, alternation, range,
@@ -1107,7 +1107,7 @@ public class SearchExpressionParserTests
         // ComparisonRegex only accepts an operator when the remainder parses
         // as a number (or the operator is `!`). `>abc` is therefore the
         // literal value ">abc", not a comparison — documented in
-        // docs/query-search.md under "Comparison".
+        // docs/query.md under "Comparison".
         var parsed = SearchExpressionParser.Parse("@shortname:>abc", 0);
 
         parsed.Clauses[0].ShouldContain("shortname::text = @s_0");
@@ -1536,7 +1536,7 @@ public class SearchExpressionParserTests
     public void Array_Negation_Means_No_Matching_Element_Not_All_Elements_Differ()
     {
         // REGRESSION GUARD. `-@arr[]:v` is documented as "the array does not
-        // contain v" (docs/query-search.md). The wrapper already supplies the
+        // contain v" (docs/query.md). The wrapper already supplies the
         // negation via NOT EXISTS, so the per-element predicate must stay
         // POSITIVE (`e = v`). Emitting `e != v` inside NOT EXISTS
         // double-negates into "EVERY element equals v" — which matched only
@@ -1549,6 +1549,37 @@ public class SearchExpressionParserTests
         combined.ShouldNotContain("WHERE e != @s_0");
         // Rows with no array at all pass the negated filter.
         combined.ShouldContain("payload::jsonb->'body'->'tags' IS NULL");
+    }
+
+    [Fact]
+    public void Array_Negation_Makes_A_Value_Operator_Inert_Not_An_Error()
+    {
+        // Under `-@` the value-level operator is DROPPED. `-@arr[]:!v`,
+        // `-@arr[]:>v` and `-@arr[]:v` all mean "the array does not contain v"
+        // and must emit byte-identical SQL. Pinned because the operator is
+        // silently ignored rather than rejected: without this, a caller
+        // writing `-@tags[]:!archived` and expecting something else would get
+        // no signal, and a future change could diverge the three unnoticed.
+        var plain = Sql("-@payload.body.tags[]:archived");
+
+        Sql("-@payload.body.tags[]:!archived").ShouldBe(plain);
+        Sql("-@payload.body.tags[]:>archived").ShouldBe(plain);
+    }
+
+    [Fact]
+    public void Array_Negation_With_A_Numeric_Value_Does_Not_Cast_Every_Element()
+    {
+        // A scalar array yields TEXT elements. Casting all of them —
+        // `CAST(e AS FLOAT)` — aborts the whole query on PostgreSQL as soon as
+        // one element is non-numeric, so `-@tags[]:100` over ["red","blue"]
+        // would 500 rather than match. The guard has to sit in the same
+        // expression as the cast (CASE, not AND) because PostgreSQL may
+        // reorder AND operands and evaluate the cast first.
+        var combined = Sql("-@payload.body.tags[]:100");
+
+        combined.ShouldNotContain("CAST(e AS FLOAT) = @s_0");
+        combined.ShouldContain("CASE WHEN e ~ ");
+        combined.ShouldContain("THEN CAST(e AS FLOAT) = ");
     }
 
     [Fact]

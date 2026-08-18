@@ -886,9 +886,22 @@ public static class SearchExpressionParser
         // `-@arr[]:v` is negated by the NOT EXISTS wrapper below, so the
         // per-element predicate must stay POSITIVE. Emitting `!=` here as well
         // double-negates into "EVERY element equals v" — the opposite of the
-        // documented "the array does not contain v" (docs/query-search.md).
+        // documented "the array does not contain v" (docs/query.md).
         // `@arr[]:!v` (bang, no `-@`) has no wrapper negation, so it keeps the
         // `!=` predicate: "some element differs from v".
+        //
+        // Consequence worth naming: under `-@` the operator is DROPPED, not
+        // rejected, so `-@arr[]:!v` and `-@arr[]:>v` both emit the same SQL as
+        // `-@arr[]:v`. That is deliberate — every one of them means "the array
+        // does not contain v" — but it makes the operator inert rather than an
+        // error. ArrayNegation_* tests pin each shape so the equivalence is
+        // visible instead of accidental.
+        //
+        // Nulling compOp also re-routes negated NUMERIC values out of the
+        // `compOp is not null` branch and into the bare-equality one below,
+        // which is why that branch must use SafeNumberCompare: a scalar array
+        // yields TEXT elements, and casting every one of them aborts the query
+        // on PostgreSQL the moment a non-numeric element appears.
         var compOp = data.Negative && data.ComparisonOperator == "!"
             ? null
             : data.ComparisonOperator;
@@ -904,7 +917,7 @@ public static class SearchExpressionParser
                 var pNum = ctx.Add(double.Parse(value, CultureInfo.InvariantCulture));
                 predicate = hasSubPath
                     ? $"({ctx.Dialect.JsonTypeIs(elementJsonb, JsonKind.Number)} AND {ctx.Dialect.AsNumber(elementJsonb)} {sqlOp} {ctx.Dialect.NumberParam(pNum)})"
-                    : $"{ctx.Dialect.ColumnAsNumber(elementText)} {sqlOp} {ctx.Dialect.NumberParam(pNum)}";
+                    : ctx.Dialect.SafeNumberCompare(elementText, sqlOp, ctx.Dialect.NumberParam(pNum));
             }
             else if (compOp == "!")
             {
@@ -922,7 +935,7 @@ public static class SearchExpressionParser
                 else
                 {
                     var pNum = ctx.Add(double.Parse(value, CultureInfo.InvariantCulture));
-                    predicate = $"{ctx.Dialect.ColumnAsNumber(elementText)} = {ctx.Dialect.NumberParam(pNum)}";
+                    predicate = ctx.Dialect.SafeNumberCompare(elementText, "=", ctx.Dialect.NumberParam(pNum));
                 }
             }
             else

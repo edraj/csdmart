@@ -427,7 +427,7 @@ public class QuerySearchPermissionsTests : IClassFixture<DmartFactory>
             // Negating the very field the FFV constrains neither empties the
             // page nor widens it. Both tokens land in one leaf run on the same
             // field with opposite signs, and "last sign wins"
-            // (docs/query-search.md § Same-field accumulation) — the FFV is
+            // (docs/query.md § Same-field accumulation) — the FFV is
             // appended last, so its positive form survives and the caller's
             // negation is discarded. Restriction intact.
             (await SearchAs(c, f, f.User, "-@payload.body.dept:sales")).ShouldBe(Set(SalesA, SalesB));
@@ -440,7 +440,7 @@ public class QuerySearchPermissionsTests : IClassFixture<DmartFactory>
     {
         // ⚠ CHARACTERIZATION TEST — second, distinct route past the FFV, same
         // root cause as the `or` case (textual merge into one expression;
-        // PR_SECURITY_AUDIT.md High). This one needs no boolean keyword at
+        // a known FFV composition gap). This one needs no boolean keyword at
         // all, only a `|` on the constrained field, which makes it the easier
         // of the two to hit by accident.
         //
@@ -498,7 +498,7 @@ public class QuerySearchPermissionsTests : IClassFixture<DmartFactory>
     public async Task KnownGap_Or_Keyword_In_The_Caller_Search_Escapes_The_Ffv()
     {
         // ⚠ CHARACTERIZATION TEST — pins a KNOWN, UNFIXED weakness (High in
-        // PR_SECURITY_AUDIT.md) so the suite flags the day it is fixed.
+        // the FFV composition gap) so the suite flags the day it is fixed.
         //
         // MergeFilterFieldsValues appends the permission clause as bare tokens
         // after the caller's search. AND binds tighter than OR, so a caller

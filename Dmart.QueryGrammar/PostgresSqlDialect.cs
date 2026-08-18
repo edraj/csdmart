@@ -150,6 +150,13 @@ public sealed class PostgresSqlDialect : ISqlDialect
 
     public string ColumnAsNumber(string column) => $"CAST({column} AS FLOAT)";
 
+    // CASE rather than `~ ... AND CAST(...)`: PostgreSQL is free to reorder the
+    // operands of AND, so the cast can be evaluated on a non-numeric element
+    // before the guard rejects it. CASE fixes the order.
+    public string SafeNumberCompare(string textExpr, string sqlOp, string numParam)
+        => $"CASE WHEN {textExpr} ~ '^[+-]?([0-9]+([.][0-9]*)?|[.][0-9]+)([eE][+-]?[0-9]+)?$' "
+         + $"THEN CAST({textExpr} AS FLOAT) {sqlOp} {numParam} ELSE false END";
+
     public string AsBoolean(string expr) => $"({expr})::boolean";
 
     public string ColumnAsBoolean(string column) => $"CAST({column} AS BOOLEAN)";

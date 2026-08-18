@@ -21,7 +21,7 @@ namespace Dmart.Tests.Integration;
 // negation, a three-valued-logic hole, a BETWEEN with reversed bounds). Those
 // only show up as a wrong row set, which is what these tests assert.
 //
-// Coverage map (docs/query-search.md):
+// Coverage map (docs/query.md):
 //   value forms    plain · quoted · boolean · numeric · existence · glob ·
 //                  alternation · range · comparison · null
 //   column kinds   scalar text · boolean · timestamp · jsonb array ·
@@ -442,7 +442,7 @@ public class QuerySearchFeatureMatrixTests : IClassFixture<DmartFactory>
     [FactIfPg]
     public async Task Search_Filters_Search_Aggregation_Counters_And_Tags_Query_Types()
     {
-        // docs/query-search.md lists which `type`s consult `search`. Subpath is
+        // docs/query.md lists which `type`s consult `search`. Subpath is
         // covered by every case above; these are the remaining ones whose row
         // pool the same expression has to narrow.
         var (query, entries, spaces) = Resolve();

@@ -1712,6 +1712,27 @@ public sealed class QueryService(
     {
         if (string.IsNullOrEmpty(q.Search)) return q;
         var parts = q.Search.Split(' ', StringSplitOptions.RemoveEmptyEntries);
+
+        // Bail out entirely on any boolean keyword or paren. Dedupe is only
+        // safe inside a single AND-run, where repeating a selector really is
+        // idempotent. The moment the expression carries an `or` or a group,
+        // tokens become scope-sensitive and dropping one MOVES a restriction
+        // rather than shortening it: with FFV `@payload.body.dept:sales` and
+        // caller search `@payload.body.dept:sales or @payload.body.k:w`, the
+        // injected permission token is collapsed as a duplicate and the right
+        // OR branch loses the department restriction — a permission bypass,
+        // not a cosmetic change. `and` is included because dropping a selector
+        // that follows one leaves a dangling keyword. Tokens ENDING in `)`
+        // matter too: `@x:9)` starts with `@` so it reads as a selector, and
+        // `(@a:1 or @x:9) (@b:2 or @x:9)` silently loses the second group's
+        // `@x:9`. Failing to dedupe costs nothing but a longer string.
+        foreach (var p in parts)
+        {
+            if (p.Contains('(') || p.Contains(')')) return q;
+            if (p.Equals("or", StringComparison.OrdinalIgnoreCase)
+                || p.Equals("and", StringComparison.OrdinalIgnoreCase)) return q;
+        }
+
         var seen = new HashSet<string>(StringComparer.Ordinal);
         var deduped = new List<string>(parts.Length);
         foreach (var p in parts)

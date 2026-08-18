@@ -201,6 +201,17 @@ public interface ISqlDialect
     /// </remarks>
     string ColumnAsNumber(string column);
 
+    /// <summary>
+    /// Compares a TEXT-typed array element against a numeric parameter without
+    /// letting a non-numeric element raise. Elements of a scalar array arrive
+    /// as text, so a bare <see cref="ColumnAsNumber"/> over them casts EVERY
+    /// element: on PostgreSQL <c>CAST('red' AS FLOAT)</c> aborts the whole
+    /// query. Implementations must keep the guard and the cast in one
+    /// expression that cannot be reordered — neither engine promises AND
+    /// short-circuits before the cast — so a CASE, not a conjunction.
+    /// </summary>
+    string SafeNumberCompare(string textExpr, string sqlOp, string numParam);
+
     /// <summary>Casts a whole COLUMN to a boolean for comparison.</summary>
     /// <remarks>
     /// Separate from <see cref="AsBoolean"/> only because PostgreSQL spells the
