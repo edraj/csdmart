@@ -111,6 +111,45 @@ public sealed class SqliteDialectExecutionTests : IAsyncLifetime
     };
 
     [Fact]
+    public async Task Search_On_QueryPolicies_Dereferences_The_Element_And_Executes()
+    {
+        // REGRESSION GUARD. `query_policies` is the only TextArrayColumn, and
+        // BuildTextArraySql used to interpolate the bare iteration alias into
+        // the predicate (`WHERE elem = ?`). PostgreSQL's `unnest` yields a
+        // COLUMN so that works there; SQLite's `json_each` yields a TABLE whose
+        // element is `elem.value`, so every `@query_policies:...` search died at
+        // execution with `no such column: elem`. String-only assertions would
+        // have passed — the SQL is syntactically valid — so this runs it.
+        await AddEntryAsync("a", "/x", "content", "{}", "[]", """["sp:/x:content"]""");
+        await AddEntryAsync("b", "/x", "content", "{}", "[]", """["other:/y:content"]""");
+
+        var args = new List<NpgsqlParameter>();
+        var where = QueryHelper.BuildWhereClause(
+            Q() with { Search = "@query_policies:sp:/x:content" },
+            args, SqliteSqlDialect.Instance, "entries");
+
+        where.ShouldContain("elem.value");
+        where.ShouldNotContain("WHERE elem =");
+        (await RunAsync(where, args)).ShouldBe(new[] { "a" });
+    }
+
+    [Fact]
+    public async Task Search_On_QueryPolicies_Wildcard_Executes()
+    {
+        // The glob branch takes the ILike path, which had the same bare-alias
+        // bug and the same "valid SQL, wrong column" failure mode.
+        await AddEntryAsync("a", "/x", "content", "{}", "[]", """["sp:/x:content"]""");
+        await AddEntryAsync("b", "/x", "content", "{}", "[]", """["other:/y:content"]""");
+
+        var args = new List<NpgsqlParameter>();
+        var where = QueryHelper.BuildWhereClause(
+            Q() with { Search = "@query_policies:sp:*" },
+            args, SqliteSqlDialect.Instance, "entries");
+
+        (await RunAsync(where, args)).ShouldBe(new[] { "a" });
+    }
+
+    [Fact]
     public async Task FilterTypes_ExpandsToInList_AndMatches()
     {
         await AddEntryAsync("a", "/x", "content", "{}", "[]", """["sp:/x:content"]""");

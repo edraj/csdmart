@@ -1227,18 +1227,24 @@ public static class SearchExpressionParser
     {
         var negative = data.Negative || data.ComparisonOperator == "!";
         var conditions = new List<string>();
+        // The element is dereferenced through the dialect, not by interpolating
+        // the alias: PostgreSQL's unnest yields a column so `elem` is the value,
+        // while SQLite's json_each yields a TABLE whose value is `elem.value`.
+        // Emitting the bare alias made every `@query_policies:...` search fail
+        // on SQLite with `no such column: elem`.
+        var elemRef = ctx.Dialect.ArrayElementRef("elem");
         foreach (var value in data.Values)
         {
             string predicate;
             if (value.Contains('*'))
             {
                 var p = ctx.Add(value.Replace('*', '%'));
-                predicate = ctx.Dialect.ILike("elem", p, negated: false);
+                predicate = ctx.Dialect.ILike(elemRef, p, negated: false);
             }
             else
             {
                 var p = ctx.Add(value);
-                predicate = $"elem = {p}";
+                predicate = $"{elemRef} = {p}";
             }
             var exists = $"EXISTS (SELECT 1 FROM {ctx.Dialect.ArrayElements(column, "elem")} WHERE {predicate})";
             conditions.Add(negative ? $"NOT {exists}" : exists);
