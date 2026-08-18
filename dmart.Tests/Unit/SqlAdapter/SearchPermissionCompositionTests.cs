@@ -189,7 +189,7 @@ public class SearchPermissionCompositionTests
         // top-level join must be AND so neither side can be satisfied alone.
         var sql = MergedSql("@payload.body.k:v");
 
-        sql.ShouldContain(" AND space_name::text = ");
+        sql.ShouldContain(" AND (space_name::text = ");
         sql.ShouldContain(" AND subpath::text = ");
         sql.ShouldContain(" AND resource_type::text = ");
         TopLevelOr(sql).OrIndex.ShouldBe(-1);
@@ -218,7 +218,7 @@ public class SearchPermissionCompositionTests
         // `or` keyword (see the known-gap test below).
         var sql = MergedSql("@payload.body.k:v|w");
 
-        sql.ShouldContain(" AND space_name::text = ");
+        sql.ShouldContain(" AND (space_name::text = ");
         Occurrences(sql, " OR ").ShouldBeGreaterThan(0);   // the alternation itself
         TopLevelOr(sql).OrIndex.ShouldBe(-1);              // but no top-level split
     }
@@ -236,47 +236,67 @@ public class SearchPermissionCompositionTests
     }
 
     [Fact]
-    public void KnownGap_Or_Keyword_In_Caller_Search_Escapes_The_Ffv_Clause()
+    public void Or_Keyword_In_Caller_Search_No_Longer_Escapes_The_Ffv_Clause()
     {
-        // ⚠ CHARACTERIZATION TEST — pins a KNOWN, UNFIXED weakness so the
-        // suite flags the day it changes. Tracked as High in
-        // the FFV composition gap ("filter_fields_values ACL clause is
-        // string-concatenated after the caller's search, so a trailing `or`
-        // neutralizes it").
+        // REGRESSION GUARD — was a characterization test for a High-severity
+        // gap, inverted once MergeFilterFieldsValues began parenthesising the
+        // caller's search.
         //
-        // MergeFilterFieldsValues appends the permission clause as bare
-        // tokens: "<caller search> @space_name:… @subpath:… <ffv>". Since AND
-        // binds tighter than OR, a caller-supplied `or` splits the expression
-        // and the permission clause lands on the RIGHT branch only:
+        // The permission clause is appended as bare tokens, and AND binds
+        // tighter than OR, so concatenating raw let a caller-supplied `or`
+        // split the expression and strand the permission clause on the RIGHT
+        // branch only:
         //
         //     (k=v)  OR  (k=w AND space=acme AND … AND dept=sales)
         //      ^^^^^ reachable without satisfying the permission clause
         //
-        // The primary ACL (query_policies / acl / owner) is a SEPARATE SQL
-        // clause and still applies, so this widens a row-level field
-        // restriction rather than opening a whole space. The fix noted in the
-        // audit is to parse the two expressions separately and AND the
-        // emitted clauses, at which point this test should be inverted.
-        var (peeled, orIdx) = TopLevelOr(MergedSql("@payload.body.k:v or @payload.body.k:w"));
+        // Wrapping the caller's search makes the OR a nested operand instead:
+        //
+        //     ((k=v) OR (k=w))  AND  (space=acme AND … AND dept=sales)
+        var sql = MergedSql("@payload.body.k:v or @payload.body.k:w");
+        var (peeled, orIdx) = TopLevelOr(sql);
 
-        orIdx.ShouldBeGreaterThan(0, "expected a top-level OR split");
-        // Documenting the gap: the left OR branch carries no permission clause.
-        peeled[..orIdx].ShouldNotContain("space_name::text");
-        // The right branch does carry it — the clause is not lost, just
-        // scoped to one operand.
-        peeled[orIdx..].ShouldContain("space_name::text");
+        // No top-level split: the OR is inside the left operand of an AND.
+        orIdx.ShouldBe(-1);
+        // The permission clause is present exactly once, governing everything.
+        sql.ShouldContain("space_name::text");
+        peeled.ShouldContain(" AND (space_name::text = ");
     }
 
     [Fact]
-    public void KnownGap_Stray_Close_Paren_Also_Splits_The_Ffv_Clause()
+    public void Stray_Close_Paren_No_Longer_Splits_The_Ffv_Clause()
     {
-        // Same root cause reached a second way: a stray ')' is skipped as
-        // noise but the following `or` still splits at top level. Listed so a
-        // paren-wrapping fix that only handles the balanced case is not
-        // mistaken for a complete one.
+        // REGRESSION GUARD — the half-fix detector. Wrapping the caller's
+        // search is not enough on its own: a stray ')' closes the wrapper
+        // early, so `(@k:v) or @k:w)` puts the `or` back at top level and the
+        // permission clause back on one branch. BalanceParens drops the
+        // unmatched closer first — the parser discarded it as noise anyway —
+        // so the group survives and the AND holds.
         var sql = MergedSql("@payload.body.k:v) or @payload.body.k:w");
 
-        TopLevelOr(sql).OrIndex.ShouldBeGreaterThan(0);
+        TopLevelOr(sql).OrIndex.ShouldBe(-1);
+        sql.ShouldContain(" AND (space_name::text = ");
+    }
+
+    [Fact]
+    public void Unclosed_Open_Paren_Does_Not_Swallow_The_Ffv_Clause()
+    {
+        // The mirror case: an unterminated group would otherwise extend to the
+        // end of the expression and take the permission tokens inside it,
+        // where a caller `or` could still reach around them.
+        var sql = MergedSql("(@payload.body.k:v or @payload.body.k:w");
+
+        TopLevelOr(sql).OrIndex.ShouldBe(-1);
+        sql.ShouldContain(" AND (space_name::text = ");
+    }
+
+    [Fact]
+    public void BalanceParens_Drops_Stray_Closers_And_Completes_Open_Groups()
+    {
+        QueryService.BalanceParens("@k:v) or @k:w").ShouldBe("@k:v or @k:w");
+        QueryService.BalanceParens("(@k:v or @k:w").ShouldBe("(@k:v or @k:w)");
+        QueryService.BalanceParens("(@a:1) (@b:2)").ShouldBe("(@a:1) (@b:2)");
+        QueryService.BalanceParens(")))").ShouldBe("");
     }
 
     [Fact]

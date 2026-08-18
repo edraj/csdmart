@@ -859,9 +859,13 @@ public static class SearchExpressionParser
                 if (double.TryParse(v1, out var d1) && double.TryParse(v2, out var d2) && d1 > d2) (v1, v2) = (v2, v1);
                 var p1 = ctx.Add(v1);
                 var p2 = ctx.Add(v2);
+                // Same hazard as the scalar predicates below: without a
+                // subpath the elements are TEXT, so a bare cast over all of
+                // them aborts the query on PostgreSQL as soon as one is
+                // non-numeric. BETWEEN becomes two guarded comparisons.
                 string between = hasSubPath
                     ? $"{ctx.Dialect.JsonTypeIs(elementJsonb, JsonKind.Number)} AND {ctx.Dialect.AsNumber(elementJsonb)} BETWEEN {ctx.Dialect.NumberParam(p1)} AND {ctx.Dialect.NumberParam(p2)}"
-                    : $"{ctx.Dialect.ColumnAsNumber(elementText)} BETWEEN {ctx.Dialect.NumberParam(p1)} AND {ctx.Dialect.NumberParam(p2)}";
+                    : $"{ctx.Dialect.SafeNumberCompare(elementText, ">=", ctx.Dialect.NumberParam(p1))} AND {ctx.Dialect.SafeNumberCompare(elementText, "<=", ctx.Dialect.NumberParam(p2))}";
                 var exists = $"EXISTS (SELECT 1 FROM {iterator} WHERE {between})";
                 // Negation: absent/null fields are intentionally included so
                 // `-@items[].price:[100 200]` also matches rows that don't

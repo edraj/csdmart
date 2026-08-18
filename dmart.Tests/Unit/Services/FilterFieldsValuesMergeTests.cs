@@ -321,7 +321,9 @@ public class FilterFieldsValuesMergeTests
         var result = QueryService.MergeFilterFieldsValues(
             q, new() { "acme:users:user:*" }, perms);
 
-        result.Search.ShouldStartWith("@displayname:alice ");
+        // The caller's search is wrapped so the permission clause cannot be
+        // stranded on one branch of a caller-supplied `or`.
+        result.Search.ShouldStartWith("(@displayname:alice) ");
         result.Search.ShouldContain("@status:active");
     }
 
@@ -381,20 +383,25 @@ public class FilterFieldsValuesMergeTests
     [Fact]
     public void Merge_DedupesAdjacentTokensInFinalSearch()
     {
-        // Caller-provided search already contains @space_name:acme; the
-        // merge appends the same token. The post-merge dedupe collapses it.
+        // Caller-provided search already contains @space_name:acme; the merge
+        // appends the same token. Dedupe no longer collapses it, because the
+        // caller's search is now a paren group and dedupe declines to touch
+        // any expression carrying parens — dropping a token across a group
+        // boundary moves a restriction rather than shortening it. Both copies
+        // survive: `(space=acme) AND (space=acme AND …)`, redundant but
+        // correct, and the caller's own token stays inside their group.
         var perms = Perms(("acme:users:user", "@status:active"));
         var q = BaseQuery(search: "@space_name:acme");
         var result = QueryService.MergeFilterFieldsValues(
             q, new() { "acme:users:user:*" }, perms);
 
         result.Search.ShouldNotBeNull();
-        // Exactly one occurrence after dedupe.
+        // Two occurrences: the caller's, inside their group, and the FFV's.
         var occurrences = 0;
         var idx = 0;
         while ((idx = result.Search!.IndexOf("@space_name:acme", idx, System.StringComparison.Ordinal)) >= 0)
         { occurrences++; idx += "@space_name:acme".Length; }
-        occurrences.ShouldBe(1);
+        occurrences.ShouldBe(2);
     }
 
     [Fact]

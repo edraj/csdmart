@@ -424,44 +424,47 @@ public class QuerySearchPermissionsTests : IClassFixture<DmartFactory>
             (await SearchAs(c, f, f.User, "@shortname:*")).ShouldBe(Set(SalesA, SalesB));
             (await SearchAs(c, f, f.User, "-@payload.body.region:apac")).ShouldBe(Set(SalesA));
 
-            // Negating the very field the FFV constrains neither empties the
-            // page nor widens it. Both tokens land in one leaf run on the same
-            // field with opposite signs, and "last sign wins"
-            // (docs/query.md § Same-field accumulation) — the FFV is
-            // appended last, so its positive form survives and the caller's
-            // negation is discarded. Restriction intact.
-            (await SearchAs(c, f, f.User, "-@payload.body.dept:sales")).ShouldBe(Set(SalesA, SalesB));
+            // Negating the very field the FFV constrains is now an honest
+            // empty intersection rather than a silent override. Both tokens
+            // used to land in ONE leaf run on the same field with opposite
+            // signs, where "last sign wins" — the FFV is appended last, so its
+            // positive form survived and the caller's negation was discarded,
+            // handing back every sales row to someone who asked for non-sales.
+            // With the caller's search parenthesised the two are separate
+            // operands: `(NOT dept=sales) AND (dept=sales)`. Empty is the
+            // correct answer — the caller wants what the permission forbids —
+            // and it is strictly narrower than before, so no exposure either way.
+            (await SearchAs(c, f, f.User, "-@payload.body.dept:sales")).ShouldBeEmpty();
         }
         finally { await CleanupAsync(c, f); }
     }
 
     [FactIfPg]
-    public async Task KnownGap_Alternation_On_The_Ffv_Field_Widens_The_Page()
+    public async Task Alternation_On_The_Ffv_Field_No_Longer_Widens_The_Page()
     {
-        // ⚠ CHARACTERIZATION TEST — second, distinct route past the FFV, same
-        // root cause as the `or` case (textual merge into one expression;
-        // a known FFV composition gap). This one needs no boolean keyword at
-        // all, only a `|` on the constrained field, which makes it the easier
-        // of the two to hit by accident.
+        // REGRESSION GUARD — was a characterization test for a second, distinct
+        // route past the FFV, needing no boolean keyword at all, only a `|` on
+        // the constrained field, which made it the easier of the two to hit by
+        // accident.
         //
         // Mechanism: caller `@dept:sales|ops` parses as one selector with
-        // Operation=OR. The appended FFV `@dept:sales` is the SAME field with
-        // the SAME sign, so ParseSearchString ACCUMULATES its value into the
-        // existing selector rather than AND-ing a second predicate — and the
-        // accumulated selector keeps the caller's OR. The emitted predicate is
-        // `dept IN (sales, ops, sales)`, so the ops rows the FFV was meant to
-        // hide come back.
+        // Operation=OR. When the FFV `@dept:sales` was appended as a bare
+        // token it was the SAME field with the SAME sign, so the parser
+        // ACCUMULATED its value into the caller's selector rather than AND-ing
+        // a second predicate, and the accumulated selector kept the caller's
+        // OR: `dept IN (sales, ops, sales)`, bringing back exactly the ops
+        // rows the FFV existed to hide.
         //
-        // A fix that only parenthesises the caller's search would NOT close
-        // this: accumulation happens per leaf run, and `(@dept:sales|ops)
-        // @dept:sales` still yields two separate AND-ed selectors only because
-        // of the paren — worth verifying explicitly when the fix lands.
+        // Parenthesising the caller's search does close this. Accumulation is
+        // scoped to one AND-run, so `(@dept:sales|ops) @dept:sales` puts the
+        // caller's selector in its own group and AND's the FFV's onto it:
+        // `(dept IN (sales, ops)) AND (dept = sales)`.
         var c = Resolve();
         var f = await SeedAsync(c, filterFieldsValues: "@payload.body.dept:sales");
         try
         {
-            var leaked = await SearchAs(c, f, f.User, "@payload.body.dept:sales|ops");
-            leaked.ShouldBe(Set(SalesA, SalesB, OpsA, OpsB));
+            (await SearchAs(c, f, f.User, "@payload.body.dept:sales|ops"))
+                .ShouldBe(Set(SalesA, SalesB));
 
             // The grant boundary still holds: an ungranted user gets nothing
             // from the same expression.
@@ -495,20 +498,15 @@ public class QuerySearchPermissionsTests : IClassFixture<DmartFactory>
     }
 
     [FactIfPg]
-    public async Task KnownGap_Or_Keyword_In_The_Caller_Search_Escapes_The_Ffv()
+    public async Task Or_Keyword_In_The_Caller_Search_No_Longer_Escapes_The_Ffv()
     {
-        // ⚠ CHARACTERIZATION TEST — pins a KNOWN, UNFIXED weakness (High in
-        // the FFV composition gap) so the suite flags the day it is fixed.
-        //
-        // MergeFilterFieldsValues appends the permission clause as bare tokens
-        // after the caller's search. AND binds tighter than OR, so a caller
-        // `or` splits the expression and the permission clause constrains only
-        // the right-hand branch — the left branch is evaluated without it.
-        //
-        // Scope of the exposure: the query-policy gate is a SEPARATE SQL clause
-        // and still holds, so this widens a row-level FIELD restriction inside
-        // an already-granted subpath. It does not reach rows the actor has no
-        // grant for — the assertion below pins both halves of that.
+        // REGRESSION GUARD — was a characterization test for a High-severity
+        // gap. MergeFilterFieldsValues appended the permission clause as bare
+        // tokens after the caller's search, and AND binds tighter than OR, so a
+        // caller `or` split the expression and the permission clause
+        // constrained only the right-hand branch; the left was evaluated
+        // without it. Wrapping the caller's search makes the OR a nested
+        // operand of a top-level AND, so every branch is restricted.
         var c = Resolve();
         var f = await SeedAsync(c, filterFieldsValues: "@payload.body.dept:sales");
         try
@@ -516,15 +514,16 @@ public class QuerySearchPermissionsTests : IClassFixture<DmartFactory>
             // Honest form: only sales rows.
             (await SearchAs(c, f, f.User, "@payload.body.region:emea")).ShouldBe(Set(SalesA));
 
-            // With an `or`, the ops row leaks past the dept restriction.
-            var leaked = await SearchAs(c, f, f.User,
+            // The `or` no longer lets the ops rows past the dept restriction.
+            var result = await SearchAs(c, f, f.User,
                 "@payload.body.dept:ops or @payload.body.dept:sales");
-            leaked.ShouldContain(OpsA, "documenting the known FFV bypass");
-            leaked.ShouldContain(OpsB);
+            result.ShouldNotContain(OpsA);
+            result.ShouldNotContain(OpsB);
+            result.ShouldBe(Set(SalesA, SalesB));
 
-            // Boundary that DOES hold: the leak stops at the grant. Re-run the
-            // same shape against a user whose role was never attached — the
-            // query-policy gate returns nothing regardless of the `or`.
+            // The grant boundary held before the fix and still holds: the same
+            // shape against a user whose role was never attached returns
+            // nothing, because the query-policy gate is a separate clause.
             var ungranted = await SeedAsync(c, grantRoleToUser: false);
             try
             {

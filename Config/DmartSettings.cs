@@ -19,6 +19,15 @@ public sealed class DmartSettings
     // the same thing in Python dmart and csdmart.
     public int JwtAccessExpires { get; set; } = 30 * 86400;
     public int JwtRefreshDays { get; set; } = 30;
+
+    // Ceiling on how many records in one /managed/request may carry a
+    // password. Each costs an Argon2id hash (m=100 MB, t=3, p=8, ~0.1-0.2s and
+    // a 100 MB allocation), and `records` is otherwise unbounded, so a single
+    // authorized bulk-provisioning call could hold a request thread for tens of
+    // seconds. 50 puts the ceiling around 7s. Records without a password are
+    // not counted, so ordinary bulk writes are unaffected. Set to 0 to disable
+    // the check.
+    public int MaxPasswordRecordsPerRequest { get; set; } = 50;
     // Strict token_use enforcement. When true, a JWT lacking the token_use
     // claim is rejected wherever a specific use is required (bearer auth,
     // WebSocket auth, the OAuth refresh grant). Default false: claimless

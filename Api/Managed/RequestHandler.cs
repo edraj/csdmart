@@ -25,13 +25,6 @@ namespace Dmart.Api.Managed;
 //     Schema/Ticket/...)
 public static class RequestHandler
 {
-    // Ceiling on how many records in one /managed/request may carry a password.
-    // Each one costs an Argon2id hash (m=100 MB, t=3, p=8), so this bounds the
-    // endpoint at roughly 7s of CPU and keeps the 100 MB working set from being
-    // re-entered hundreds of times. Batches without passwords are unbounded, as
-    // before. Promote to DmartSettings if a deployment needs a different figure.
-    internal const int MaxPasswordRecordsPerRequest = 50;
-
     public static void Map(RouteGroupBuilder g) =>
         g.MapPost("/request",
             async Task<Response> (HttpRequest httpReq, EntryService entries, UserRepository users,
@@ -109,10 +102,11 @@ public static class RequestHandler
                             ErrorTypes.Request);
                 }
 
-                if (passwordRecords > MaxPasswordRecordsPerRequest)
+                var maxPasswordRecords = dmartSettings.Value.MaxPasswordRecordsPerRequest;
+                if (maxPasswordRecords > 0 && passwordRecords > maxPasswordRecords)
                     return Response.Fail(InternalErrorCode.INVALID_DATA,
                         $"too many records carrying a password: {passwordRecords} exceeds the "
-                        + $"limit of {MaxPasswordRecordsPerRequest} per request; split the batch",
+                        + $"limit of {maxPasswordRecords} per request; split the batch",
                         ErrorTypes.Request);
 
                 var actor = http.ActorOrAnonymous();
