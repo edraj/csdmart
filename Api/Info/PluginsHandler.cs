@@ -2,6 +2,8 @@ using Dmart.Models.Api;
 using Dmart.Models.Enums;
 using Dmart.Plugins;
 
+using Dmart.Plugins.Native;
+
 namespace Dmart.Api.Info;
 
 // GET /info/plugins — rich per-plugin listing (shortname, version, type).
@@ -34,7 +36,31 @@ public static class PluginsHandler
                     {
                         ["version"] = p.Version,
                         ["type"] = p.Type,
+                        ["status"] = "active",
                     },
                 })
+                // Plugins that were found but failed to load are listed too,
+                // with status=failed. Without them the endpoint answers "here
+                // is what is running" when the operator is asking "is what I
+                // installed running" — and a plugin that silently vanished
+                // looks identical to one that was never installed.
+                .Concat(NativePluginLoader.LoadFailures
+                    .Select(f => new Record
+                    {
+                        ResourceType = ResourceType.PluginWrapper,
+                        Shortname = f.Shortname,
+                        Subpath = "/",
+                        // version/type are carried even though they are
+                        // unknown: existing consumers iterate this list and
+                        // read both, so a failed plugin must not change the
+                        // record shape out from under them.
+                        Attributes = new Dictionary<string, object>
+                        {
+                            ["version"] = "unknown",
+                            ["type"] = "unknown",
+                            ["status"] = "failed",
+                            ["reason"] = f.Reason,
+                        },
+                    }))
                 .ToList()));
 }

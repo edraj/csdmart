@@ -34,6 +34,16 @@
   element.** Elements of a scalar array are text, and the cast was applied to
   all of them, so `-@tags[]:100` over `["red","blue"]` failed the whole query on
   PostgreSQL. Guarded for the equality, comparison and `BETWEEN` forms.
+- **A plugin that fails to load is now visible.** The scan runs before the
+  logger exists, so a failure produced one line on stderr and startup carried
+  on — a deployment that lost a plugin looked completely healthy, and the only
+  symptom was behaviour that quietly stopped happening. Failures are now
+  replayed through the logging pipeline at Error with a summary line, and
+  reported by `GET /info/plugins` as records with `status: "failed"` and a
+  `reason`. The silent case is covered too: a plugin directory holding a
+  `config.json` but no binary (missing or misnamed) used to be skipped without
+  a word.
+
 - **Repeated selectors are no longer collapsed across `or` or paren groups.**
   Deduplication is a cosmetic shortening, but across a boolean it moved a
   restriction rather than shortening it, and could drop an injected permission
@@ -51,6 +61,13 @@
 
 ### Documentation
 
+- The native-plugin `config.json` example in `README.md`, `docs/plugins-and-mcp.md`
+  and `docs/contributing.md` was unusable. `"subpaths": ["__ALL__"]` is the
+  legacy flat form, which dmart rejects at load with a migration error, and
+  `"schema_shortnames": ["__ALL__"]` is matched as a literal schema name — so
+  even after fixing the first, the plugin would load and never fire. Both now
+  match the shipped samples: a `{ "__all_spaces__": ["__all_subpaths__"] }`
+  dict, and an empty list to mean every schema.
 - `docs/query.md` documents array-field predicates (including that `-@` makes a
   value-level operator inert) and same-field accumulation — the contracts the
   query-search regression tests defend.
