@@ -30,6 +30,11 @@ public sealed record User
     public string? Password { get; init; }    // hashed — never serialized to API responses
     public List<string> Roles { get; init; } = new();
     public List<string> Groups { get; init; } = new();
+    // Project-specific extension: roles within the CCP-agent domain (e.g.
+    // "super_admin"), orthogonal to the general-purpose Roles list above.
+    // Embedded as its own JWT claim by JwtIssuer so CCP-agent middleware can
+    // authorize without a separate profile lookup.
+    public List<string> CcpAgentRoles { get; init; } = new();
     public List<AclEntry>? Acl { get; init; }
     public List<Dictionary<string, object>>? Relationships { get; init; }
     public UserType Type { get; init; } = UserType.Web;

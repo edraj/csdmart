@@ -20,8 +20,9 @@ public sealed class JwtIssuer(IOptions<DmartSettings> settings)
     private readonly DmartSettings _s = settings.Value;
 
     public string IssueAccess(string subject, IEnumerable<string>? roles = null,
-        UserType userType = UserType.Web)
-        => Sign(subject, roles, userType, TimeSpan.FromSeconds(_s.JwtAccessExpires), tokenUse: "access");
+        UserType userType = UserType.Web, IEnumerable<string>? ccpAgentRoles = null)
+        => Sign(subject, roles, userType, TimeSpan.FromSeconds(_s.JwtAccessExpires), tokenUse: "access",
+                ccpAgentRoles: ccpAgentRoles);
 
     public string IssueRefresh(string subject, UserType userType = UserType.Web,
         long? originalIatUnix = null)
@@ -29,7 +30,8 @@ public sealed class JwtIssuer(IOptions<DmartSettings> settings)
                 originalIatUnix: originalIatUnix);
 
     private string Sign(string subject, IEnumerable<string>? roles,
-        UserType userType, TimeSpan lifetime, string tokenUse, long? originalIatUnix = null)
+        UserType userType, TimeSpan lifetime, string tokenUse, long? originalIatUnix = null,
+        IEnumerable<string>? ccpAgentRoles = null)
     {
         var now = DateTimeOffset.UtcNow;
         // If the caller preserved an original iat from a prior refresh, anchor
@@ -58,6 +60,15 @@ public sealed class JwtIssuer(IOptions<DmartSettings> settings)
             {
                 writer.WriteStartArray("roles");
                 foreach (var r in roles) writer.WriteStringValue(r);
+                writer.WriteEndArray();
+            }
+            // Project-specific extension (see User.CcpAgentRoles) — a separate
+            // claim so CCP-agent middleware can authorize off the token alone,
+            // without a round-trip to fetch the user's profile.
+            if (ccpAgentRoles is not null)
+            {
+                writer.WriteStartArray("ccp_agent_roles");
+                foreach (var r in ccpAgentRoles) writer.WriteStringValue(r);
                 writer.WriteEndArray();
             }
             // Python-compatible claims (for cross-service interop)

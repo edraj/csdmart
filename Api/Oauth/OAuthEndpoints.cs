@@ -282,7 +282,8 @@ public static class OAuthEndpoints
         if (user is null)
             return OAuthError(400, "invalid_grant", "user no longer exists");
 
-        var access = jwt.IssueAccess(user.Shortname, user.Roles, user.Type);
+        var access = jwt.IssueAccess(user.Shortname, user.Roles, user.Type,
+            ccpAgentRoles: user.CcpAgentRoles);
         var refresh = jwt.IssueRefresh(user.Shortname, user.Type);
 
         // The new strict JwtBearerSetup.OnTokenValidated requires a matching
@@ -344,7 +345,8 @@ public static class OAuthEndpoints
                 return OAuthError(400, "invalid_grant", "session exceeded maximum lifetime");
         }
 
-        var access = jwt.IssueAccess(user.Shortname, user.Roles, user.Type);
+        var access = jwt.IssueAccess(user.Shortname, user.Roles, user.Type,
+            ccpAgentRoles: user.CcpAgentRoles);
         var newRefresh = jwt.IssueRefresh(user.Shortname, user.Type, originalIat);
 
         if (user.Type != UserType.Bot)

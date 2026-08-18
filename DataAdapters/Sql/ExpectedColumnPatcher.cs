@@ -21,6 +21,7 @@ internal static class ExpectedColumnPatcher
             ("locked_to_device", "BOOLEAN NOT NULL DEFAULT FALSE"),
             ("last_checksum_history", "TEXT"),
             ("query_policies", "TEXT[] NOT NULL DEFAULT '{}'"),
+            ("ccp_agent_roles", "JSONB"),
         ],
         ["roles"] =
         [

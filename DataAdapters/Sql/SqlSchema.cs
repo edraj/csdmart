@@ -67,6 +67,7 @@ public static class SqlSchema
         password                TEXT,
         roles                   JSONB,
         groups                  JSONB,
+        ccp_agent_roles         JSONB,
         acl                     JSONB,
         relationships           JSONB,
         type                    usertype NOT NULL DEFAULT 'web',

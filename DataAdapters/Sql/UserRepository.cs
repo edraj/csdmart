@@ -18,7 +18,8 @@ public sealed class UserRepository(Db db, AuthzCacheRefresher refresher, Session
                type::text, language::text, email, msisdn, locked_to_device,
                is_email_verified, is_msisdn_verified, force_password_change,
                device_id, google_id, facebook_id, apple_id, social_avatar_url,
-               attempt_count, last_login, notes, query_policies, last_failed_login
+               attempt_count, last_login, notes, query_policies, last_failed_login,
+               ccp_agent_roles
         FROM users
         """;
 
@@ -165,9 +166,9 @@ public sealed class UserRepository(Db db, AuthzCacheRefresher refresher, Session
                                type, language, email, msisdn, locked_to_device,
                                is_email_verified, is_msisdn_verified, force_password_change,
                                device_id, google_id, facebook_id, apple_id, social_avatar_url,
-                               attempt_count, last_login, notes, query_policies)
+                               attempt_count, last_login, notes, query_policies, ccp_agent_roles)
             VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,
-                    $22::usertype,$23::language,$24,$25,$26,$27,$28,$29,$30,$31,$32,$33,$34,$35,$36,$37,$38)
+                    $22::usertype,$23::language,$24,$25,$26,$27,$28,$29,$30,$31,$32,$33,$34,$35,$36,$37,$38,$39)
             ON CONFLICT (shortname) DO UPDATE SET
                 space_name = EXCLUDED.space_name,
                 subpath = EXCLUDED.subpath,
@@ -206,7 +207,8 @@ public sealed class UserRepository(Db db, AuthzCacheRefresher refresher, Session
                 attempt_count = EXCLUDED.attempt_count,
                 last_login = EXCLUDED.last_login,
                 notes = EXCLUDED.notes,
-                query_policies = EXCLUDED.query_policies
+                query_policies = EXCLUDED.query_policies,
+                ccp_agent_roles = EXCLUDED.ccp_agent_roles
             """, conn);
 
         cmd.Parameters.Add(new() { Value = Guid.Parse(u.Uuid) });
@@ -255,6 +257,7 @@ public sealed class UserRepository(Db db, AuthzCacheRefresher refresher, Session
             Value = u.QueryPolicies.ToArray(),
             NpgsqlDbType = NpgsqlDbType.Array | NpgsqlDbType.Text,
         });
+        AddJsonbNotNull(cmd, JsonbHelpers.ToJsonbList(u.CcpAgentRoles));
 
         await cmd.ExecuteNonQueryAsync(ct);
         // user.roles may have changed → clear the in-memory permission cache.
@@ -327,9 +330,9 @@ public sealed class UserRepository(Db db, AuthzCacheRefresher refresher, Session
                                type, language, email, msisdn, locked_to_device,
                                is_email_verified, is_msisdn_verified, force_password_change,
                                device_id, google_id, facebook_id, apple_id, social_avatar_url,
-                               attempt_count, last_login, notes, query_policies)
+                               attempt_count, last_login, notes, query_policies, ccp_agent_roles)
             VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,
-                    $22::usertype,$23::language,$24,$25,$26,$27,$28,$29,$30,$31,$32,$33,$34,$35,$36,$37,$38)
+                    $22::usertype,$23::language,$24,$25,$26,$27,$28,$29,$30,$31,$32,$33,$34,$35,$36,$37,$38,$39)
             ON CONFLICT (shortname) DO UPDATE SET
                 space_name = EXCLUDED.space_name,
                 subpath = EXCLUDED.subpath,
@@ -364,7 +367,8 @@ public sealed class UserRepository(Db db, AuthzCacheRefresher refresher, Session
                 attempt_count = EXCLUDED.attempt_count,
                 last_login = EXCLUDED.last_login,
                 notes = EXCLUDED.notes,
-                query_policies = EXCLUDED.query_policies
+                query_policies = EXCLUDED.query_policies,
+                ccp_agent_roles = EXCLUDED.ccp_agent_roles
             RETURNING (xmax = 0) AS inserted
             """, conn, tx);
 
@@ -412,6 +416,7 @@ public sealed class UserRepository(Db db, AuthzCacheRefresher refresher, Session
             Value = u.QueryPolicies.ToArray(),
             NpgsqlDbType = NpgsqlDbType.Array | NpgsqlDbType.Text,
         });
+        AddJsonbNotNull(cmd, JsonbHelpers.ToJsonbList(u.CcpAgentRoles));
 
         var raw = await cmd.ExecuteScalarAsync(ct);
         var inserted = raw is bool flag && flag;
@@ -1017,6 +1022,7 @@ public sealed class UserRepository(Db db, AuthzCacheRefresher refresher, Session
             Notes = r.IsDBNull(36) ? null : r.GetString(36),
             QueryPolicies = r.IsDBNull(37) ? new() : ((string[])r.GetValue(37)).ToList(),
             LastFailedLogin = r.IsDBNull(38) ? null : r.GetDateTime(38),
+            CcpAgentRoles = JsonbHelpers.FromListString(r.IsDBNull(39) ? null : r.GetString(39)) ?? new(),
         };
     }
 

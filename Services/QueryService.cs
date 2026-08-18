@@ -1910,6 +1910,7 @@ internal static class UserMapper
             // User-specific (password deliberately excluded — Python strips it)
             ["roles"] = u.Roles,
             ["groups"] = u.Groups,
+            ["ccp_agent_roles"] = u.CcpAgentRoles,
             ["type"] = JsonbHelpers.EnumMember(u.Type),
             ["language"] = JsonbHelpers.EnumMember(u.Language),
             ["email"] = u.Email,

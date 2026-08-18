@@ -240,7 +240,8 @@ public sealed class UserService(
         if (!string.IsNullOrEmpty(msisdn)) await otp.DeleteAsync(msisdn, ct);
 
         // Auto-login (Python: process_user_login at the end of create_user).
-        var access = jwt.IssueAccess(user.Shortname, user.Roles, user.Type);
+        var access = jwt.IssueAccess(user.Shortname, user.Roles, user.Type,
+            ccpAgentRoles: user.CcpAgentRoles);
         var refresh = jwt.IssueRefresh(user.Shortname, user.Type);
         await users.CreateSessionAsync(user.Shortname, access, null, ct);
 
@@ -663,7 +664,8 @@ public sealed class UserService(
             updatedUser = updatedUser with { UpdatedAt = TimeUtils.Now() };
         }
 
-        var access = jwt.IssueAccess(updatedUser.Shortname, updatedUser.Roles, updatedUser.Type);
+        var access = jwt.IssueAccess(updatedUser.Shortname, updatedUser.Roles, updatedUser.Type,
+            ccpAgentRoles: updatedUser.CcpAgentRoles);
         var refresh = jwt.IssueRefresh(updatedUser.Shortname, updatedUser.Type);
 
         // Create session row (Python: db.set_user_session). If the client

@@ -972,8 +972,7 @@ switch (subcommand)
                   "description": "dmart unified data platform",
                   "default_language": "en",
                   "languages": { "ar": "العربية", "en": "English" },
-                  "backend": "http://localhost:5099",
-                  "websocket": "ws://localhost:5099/ws"
+                  "backend": ""
                 }
 
                 """.Replace("                ", ""));
@@ -2282,7 +2281,7 @@ app.MapGet("/docs", () => Results.Content("""
     <div id="swagger-ui"></div>
     <script src="https://unpkg.com/swagger-ui-dist@5.18.2/swagger-ui-bundle.js"></script>
     <script>
-        SwaggerUIBundle({ url: 'openapi.json', dom_id: '#swagger-ui' });
+        SwaggerUIBundle({ url: '/docs/openapi.json', dom_id: '#swagger-ui' });
     </script>
 </body>
 </html>

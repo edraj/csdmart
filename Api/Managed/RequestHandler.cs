@@ -520,6 +520,7 @@ public static class RequestHandler
 
         var rolesList = ExtractStringList(attrs, "roles");
         var groupsList = ExtractStringList(attrs, "groups");
+        var ccpAgentRolesList = ExtractStringList(attrs, "ccp_agent_roles");
         var languageStr = attrs.TryGetValue("language", out var lObj) ? ConvertToString(lObj) : null;
         var typeStr = attrs.TryGetValue("type", out var tObj) ? ConvertToString(tObj) : null;
         var user = new Dmart.Models.Core.User
@@ -543,12 +544,16 @@ public static class RequestHandler
             Password = null,
             Roles = rolesList ?? new(),
             Groups = groupsList ?? new(),
+            CcpAgentRoles = ccpAgentRolesList ?? new(),
             Type = ParseUserType(typeStr),
             Language = ParseLanguage(languageStr),
             IsActive = !attrs.TryGetValue("is_active", out var ia) || !IsExplicitlyFalse(ia),
             IsEmailVerified = attrs.TryGetValue("is_email_verified", out var iev) && IsTruthy(iev),
             IsMsisdnVerified = attrs.TryGetValue("is_msisdn_verified", out var imv) && IsTruthy(imv),
-            ForcePasswordChange = true,
+            // Defaults to true (force a change on an admin-created account
+            // with no known password) unless the caller explicitly opts out,
+            // same "default true, explicit false wins" convention as IsActive.
+            ForcePasswordChange = !attrs.TryGetValue("force_password_change", out var fpc) || !IsExplicitlyFalse(fpc),
             // Python accepts device_id / locked_to_device on user create; mirror
             // so mobile clients can set their device fingerprint in one call
             // instead of create + update.
@@ -842,6 +847,7 @@ public static class RequestHandler
                     Password = existing.Password,
                     Roles = ExtractStringList(attrs, "roles") ?? existing.Roles,
                     Groups = ExtractStringList(attrs, "groups") ?? existing.Groups,
+                    CcpAgentRoles = ExtractStringList(attrs, "ccp_agent_roles") ?? existing.CcpAgentRoles,
                     Tags = ExtractStringList(attrs, "tags") ?? existing.Tags,
                     Slug = attrs.TryGetValue("slug", out var sl) ? ConvertToString(sl) : existing.Slug,
                     Displayname = attrs.TryGetValue("displayname", out var dn) ? ParseTranslation(dn) : existing.Displayname,
