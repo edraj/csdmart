@@ -325,10 +325,10 @@ public static class OAuthEndpoints
         var user = await users.GetByShortnameAsync(shortname, ct);
         if (user is null)
             return OAuthError(400, "invalid_grant", "user no longer exists");
-        // Re-check IsActive on every refresh. Without this, deactivating a
-        // compromised account doesn't cut off its refresh tokens — they keep
-        // minting fresh access tokens until the refresh JWT's own expiry.
-        if (!user.IsActive)
+        // Re-check usability on every refresh. Without this, deactivating (or
+        // deleting) a compromised account doesn't cut off its refresh tokens —
+        // they keep minting fresh access tokens until the refresh JWT's own expiry.
+        if (!user.IsUsable)
             return OAuthError(400, "invalid_grant", "user is no longer active");
 
         // Enforce absolute session lifetime. The incoming refresh carries the

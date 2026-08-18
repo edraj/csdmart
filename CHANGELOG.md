@@ -1,5 +1,54 @@
 # Changelog
 
+## v1.2.4 — 2026-08-17
+
+**User deletion is now soft by default.** Deleting a user no longer removes the
+row: it stays so foreign keys keep resolving, marked deleted, with email,
+msisdn and password cleared. Nothing the user owns is touched.
+
+### New
+
+- **`USER_DELETION_MODE`** — `"soft"` (default) or `"hard"`, applied uniformly
+  to self-delete (`POST /user/profile/delete`) and admin delete. Hard mode is
+  the previous behaviour: the row and everything the user personally owns go,
+  and structural objects they owned (spaces, roles, groups, permissions, other
+  users) are reassigned to the `dmart` sentinel. Histories are never deleted in
+  either mode.
+- Two columns on `users`: `is_deleted` and `deleted_at`. Added automatically on
+  upgrade for both backends.
+
+### Behaviour
+
+- **A deleted account cannot log in, refresh, or be edited.** The check is
+  `IsUsable` (`is_active && !is_deleted`), applied at JWT validation, WebSocket
+  upgrade, OAuth refresh, OTP request and password-reset-confirm. `is_active`
+  alone would have let a password reset revive a deleted account, since soft
+  delete does not touch it.
+- **Login is anti-enumerating**: a deleted account gets the generic "invalid
+  username or password", never "account locked" — which would imply
+  recoverable, and would confirm the account existed.
+- **Creating a user with a soft-deleted shortname resurrects the name.** Soft
+  delete ends the ACCOUNT, not the NAME. Without this the shortname was
+  unusable forever — create refused it as taken, update refused it as deleted —
+  which would have stranded system accounts like `anonymous`. The create writes
+  every other column, so nothing survives from the deleted account but the
+  name.
+- **`force` still applies in hard mode.** Deleting a user who has created
+  records is refused unless `force=true`, exactly as before this release. The
+  mode picks soft-vs-hard; `force` answers "yes, I know this user owns records".
+  Soft mode ignores it, having nothing to guard.
+- **Soft delete writes one history row**, recording who did it and what changed
+  (`is_deleted` false→true, `email` old→null). Hard delete still writes none —
+  there the row is genuinely gone.
+
+### Upgrade note
+
+Deleting a user is **irreversible**. Nothing sets `is_deleted` back to false
+except creating a new account under the same shortname; both upsert paths pin
+the flag to its existing value precisely so an unrelated write cannot revive an
+account by accident. If you want the old destructive behaviour, set
+`USER_DELETION_MODE="hard"`.
+
 ## v1.2.3 — 2026-08-16
 
 Packaging and CI only — no changes to dmart itself. The container image is

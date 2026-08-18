@@ -20,7 +20,8 @@ public sealed class UserRepository(IDbConnectionFactory db, AuthzCacheRefresher 
                {TYPE_COLS}, email, msisdn, locked_to_device,
                is_email_verified, is_msisdn_verified, force_password_change,
                device_id, google_id, facebook_id, apple_id, social_avatar_url,
-               attempt_count, last_login, notes, query_policies, last_failed_login
+               attempt_count, last_login, notes, query_policies, last_failed_login,
+               is_deleted, deleted_at
         FROM users
         """;
 
@@ -193,7 +194,8 @@ public sealed class UserRepository(IDbConnectionFactory db, AuthzCacheRefresher 
                                type, language, email, msisdn, locked_to_device,
                                is_email_verified, is_msisdn_verified, force_password_change,
                                device_id, google_id, facebook_id, apple_id, social_avatar_url,
-                               attempt_count, last_login, notes, query_policies)
+                               attempt_count, last_login, notes, query_policies,
+                               is_deleted, deleted_at)
         """;
 
     private const string UserConflictClause = """
@@ -235,7 +237,14 @@ public sealed class UserRepository(IDbConnectionFactory db, AuthzCacheRefresher 
                 attempt_count = EXCLUDED.attempt_count,
                 last_login = EXCLUDED.last_login,
                 notes = EXCLUDED.notes,
-                query_policies = EXCLUDED.query_policies
+                query_policies = EXCLUDED.query_policies,
+                -- NEVER from EXCLUDED. Soft-delete state changes only via
+                -- SoftDeleteAsync or a hard delete; every other writer (profile
+                -- update, admin update, OAuth provisioning) must leave a
+                -- deleted row deleted rather than resurrecting it as a side
+                -- effect of an unrelated field change.
+                is_deleted = users.is_deleted,
+                deleted_at = users.deleted_at
         """;
 
     public async Task UpsertAsync(User u, DbConnection conn, CancellationToken ct = default)
@@ -273,7 +282,7 @@ public sealed class UserRepository(IDbConnectionFactory db, AuthzCacheRefresher 
     /// </remarks>
     private static string BindUserRow(DbCommand cmd, User u)
     {
-        var p = new string[38];
+        var p = new string[40];
         var i = 0;
         p[i++] = DbParams.Add(cmd, Guid.Parse(u.Uuid));
         p[i++] = DbParams.Add(cmd, u.Shortname);
@@ -320,6 +329,10 @@ public sealed class UserRepository(IDbConnectionFactory db, AuthzCacheRefresher 
         p[i++] = AddJsonb(cmd, JsonbHelpers.ToJsonb(u.LastLogin));
         p[i++] = DbParams.Add(cmd, (object?)u.Notes ?? DBNull.Value);
         p[i++] = DbParams.Add(cmd, u.QueryPolicies.ToArray(), SqlValueKind.TextArray);
+        // Bound so INSERT works on a fresh row; the ON CONFLICT clause pins
+        // both to the EXISTING values, so an upsert can never resurrect.
+        p[i++] = DbParams.Add(cmd, u.IsDeleted);
+        p[i++] = DbParams.Add(cmd, (object?)u.DeletedAt ?? DBNull.Value);
 
         // `type` and `language` are PostgreSQL ENUMs and need the cast; SQLite
         // stores them as TEXT, where the cast is a syntax error. Same rule as
@@ -468,9 +481,11 @@ public sealed class UserRepository(IDbConnectionFactory db, AuthzCacheRefresher 
                                type, language, email, msisdn, locked_to_device,
                                is_email_verified, is_msisdn_verified, force_password_change,
                                device_id, google_id, facebook_id, apple_id, social_avatar_url,
-                               attempt_count, last_login, notes, query_policies)
+                               attempt_count, last_login, notes, query_policies,
+                               is_deleted, deleted_at)
             VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,
-                    {ENUM_CASTS},$24,$25,$26,$27,$28,$29,$30,$31,$32,$33,$34,$35,$36,$37,$38)
+                    {ENUM_CASTS},$24,$25,$26,$27,$28,$29,$30,$31,$32,$33,$34,$35,$36,$37,$38,
+                    $39,$40)
             ON CONFLICT (shortname) DO UPDATE SET
                 space_name = EXCLUDED.space_name,
                 subpath = EXCLUDED.subpath,
@@ -505,7 +520,14 @@ public sealed class UserRepository(IDbConnectionFactory db, AuthzCacheRefresher 
                 attempt_count = EXCLUDED.attempt_count,
                 last_login = EXCLUDED.last_login,
                 notes = EXCLUDED.notes,
-                query_policies = EXCLUDED.query_policies
+                query_policies = EXCLUDED.query_policies,
+                -- NEVER from EXCLUDED. Soft-delete state changes only via
+                -- SoftDeleteAsync or a hard delete; every other writer (profile
+                -- update, admin update, OAuth provisioning) must leave a
+                -- deleted row deleted rather than resurrecting it as a side
+                -- effect of an unrelated field change.
+                is_deleted = users.is_deleted,
+                deleted_at = users.deleted_at
             """ + (ReturnsInsertedFlag(conn) ? "\n            RETURNING (xmax = 0) AS inserted" : ""), tx);
 
         DbParams.Add(cmd, Guid.Parse(u.Uuid));
@@ -548,6 +570,10 @@ public sealed class UserRepository(IDbConnectionFactory db, AuthzCacheRefresher 
         AddJsonb(cmd, JsonbHelpers.ToJsonb(u.LastLogin));
         DbParams.Add(cmd, (object?)u.Notes ?? DBNull.Value);
         DbParams.Add(cmd, u.QueryPolicies.ToArray(), SqlValueKind.TextArray);
+        // $39/$40 — bound for the INSERT; the ON CONFLICT clause pins both to
+        // the existing row, so this path cannot resurrect either.
+        DbParams.Add(cmd, u.IsDeleted);
+        DbParams.Add(cmd, (object?)u.DeletedAt ?? DBNull.Value);
 
         bool inserted;
         if (ReturnsInsertedFlag(conn))
@@ -1221,7 +1247,81 @@ public sealed class UserRepository(IDbConnectionFactory db, AuthzCacheRefresher 
             Notes = r.IsDBNull(36) ? null : r.GetString(36),
             QueryPolicies = DbParams.ReadTextArray(r.IsDBNull(37) ? null : r.GetValue(37)),
             LastFailedLogin = r.IsDBNull(38) ? null : r.GetDateTime(38),
+            IsDeleted = !r.IsDBNull(39) && r.GetBoolean(39),
+            DeletedAt = r.IsDBNull(40) ? null : r.GetDateTime(40),
         };
+    }
+
+    /// <summary>
+    /// Clears the soft-delete flags so the shortname can be used again.
+    /// </summary>
+    /// <remarks>
+    /// THE ONLY WAY BACK, and deliberately narrow. Both upsert paths pin
+    /// is_deleted/deleted_at to the existing row precisely so an ordinary write
+    /// cannot resurrect an account by accident; this is the one explicit door,
+    /// called only from the CREATE path, where the caller is asking for a new
+    /// account under that name rather than editing the deleted one.
+    ///
+    /// It clears the flags only. Every other column is then written by the
+    /// create that follows, so nothing survives from the deleted account except
+    /// the shortname itself — which is the point.
+    /// </remarks>
+    public async Task ClearSoftDeleteAsync(string shortname, CancellationToken ct = default)
+    {
+        await using var conn = await db.OpenAsync(ct);
+        await using var cmd = conn.Command(
+            "UPDATE users SET is_deleted = false, deleted_at = NULL WHERE shortname = $1");
+        DbParams.Add(cmd, shortname);
+        await cmd.ExecuteNonQueryAsync(ct);
+    }
+
+    /// <summary>
+    /// Marks a user deleted and clears the fields that identify them. The row
+    /// stays so `owner_shortname` foreign keys keep resolving; nothing the user
+    /// owns is touched.
+    /// </summary>
+    /// <remarks>
+    /// IRREVERSIBLE. Nothing sets is_deleted back to false — the ON CONFLICT
+    /// clauses on both upsert paths pin it to the existing value precisely so
+    /// an unrelated write cannot.
+    ///
+    /// deleted_at is BOUND, not NOW(). The column default would be evaluated by
+    /// the database server in ITS timezone, while everything dmart writes is
+    /// host-local wall clock — the same trap that put tombstones three hours
+    /// adrift (docs/parquet-export-design.md §5.1).
+    ///
+    /// Sessions go in the same transaction: a soft-deleted account with a live
+    /// session would keep serving requests until the JWT expired, and the
+    /// per-request IsUsable check is a second line of defence, not the first.
+    /// </remarks>
+    public async Task SoftDeleteAsync(string shortname, CancellationToken ct = default)
+    {
+        await using var conn = await db.OpenAsync(ct);
+        await using var tx = await conn.BeginTransactionAsync(ct);
+
+        await using (var cmd = conn.Command("""
+            UPDATE users SET
+                is_deleted = true,
+                deleted_at = $2,
+                email = NULL,
+                msisdn = NULL,
+                password = NULL
+            WHERE shortname = $1
+            """, tx))
+        {
+            DbParams.Add(cmd, shortname);
+            DbParams.Add(cmd, TimeUtils.Now());
+            await cmd.ExecuteNonQueryAsync(ct);
+        }
+
+        await using (var cmd = conn.Command("DELETE FROM sessions WHERE shortname = $1", tx))
+        {
+            DbParams.Add(cmd, shortname);
+            await cmd.ExecuteNonQueryAsync(ct);
+        }
+
+        await tx.CommitAsync(ct);
+        await refresher.RefreshAsync(ct);
     }
 
     // Reads a string column, returning null for both DB NULL and empty strings.

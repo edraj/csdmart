@@ -180,13 +180,23 @@ public sealed class ManagedRequestHistoryTests : IClassFixture<DmartFactory>
         }
     }
 
+    // SOFT delete — now the default — DOES append a history row, and the
+    // original reasoning for the opposite is the reason why.
+    //
+    // This test used to assert no row, because "deletes don't have a meaningful
+    // {old, new} (the row is going away), and a delete-side audit row pointing
+    // at a resource that no longer exists clutters the history query". Both
+    // halves of that are hard-delete reasoning. Under soft delete the row does
+    // NOT go away — it stays, marked deleted — so the diff is meaningful
+    // (is_deleted false→true, email old→null) and points at a row that still
+    // exists. An irreversible state change with no record of who made it is
+    // the worse outcome for an audit trail.
+    //
+    // The hard-mode case keeps the original property, and has its own test
+    // below.
     [FactIfPg]
-    public async Task User_Delete_Does_Not_Append_History_Row()
+    public async Task User_Soft_Delete_Appends_One_History_Row()
     {
-        // Delete itself MUST NOT add a row to histories: deletes don't have
-        // a meaningful {old, new} (the row is going away), and a delete-side
-        // audit row pointing at a resource that no longer exists clutters
-        // /managed/query?type=history with dangling entries.
         var caller = await AuthedCaller();
         var client = caller.Client;
         var users = _factory.Services.GetRequiredService<UserRepository>();
@@ -215,9 +225,12 @@ public sealed class ManagedRequestHistoryTests : IClassFixture<DmartFactory>
             var deleteResp = await client.PostAsJsonAsync("/managed/request", deleteReq, DmartJsonContext.Default.Request);
             deleteResp.StatusCode.ShouldBe(HttpStatusCode.OK);
 
-            // Still empty: delete contributed nothing.
-            (await QueryHistory(qsvc, "management", "/users", sn))
-                .Records!.Count.ShouldBe(0);
+            // Exactly one row, recording the deletion.
+            var after = await QueryHistory(qsvc, "management", "/users", sn);
+            after.Records!.Count.ShouldBe(1);
+            // And it says what changed, not just that something did.
+            var diff = after.Records[0].Attributes!["diff"].ToString();
+            diff.ShouldContain("is_deleted");
         }
         finally
         {
@@ -271,9 +284,17 @@ public sealed class ManagedRequestHistoryTests : IClassFixture<DmartFactory>
             var deleteResp = await client.PostAsJsonAsync("/managed/request", deleteReq, DmartJsonContext.Default.Request);
             deleteResp.StatusCode.ShouldBe(HttpStatusCode.OK);
 
-            // Pre-existing row survives.
-            (await QueryHistory(qsvc, "management", "/users", sn))
-                .Records!.Count.ShouldBe(1);
+            // Pre-existing row survives — which is what this test is for. The
+            // count is 2 now rather than 1 because soft delete appends its own
+            // audit row; the property under test is that the UPDATE's row is
+            // still there afterwards, so assert that directly instead of
+            // inferring it from a total.
+            var afterDelete = await QueryHistory(qsvc, "management", "/users", sn);
+            afterDelete.Records!.Count.ShouldBe(2);
+            afterDelete.Records.ShouldContain(
+                r => r.Attributes!["diff"].ToString()!.Contains("email")
+                     && !r.Attributes!["diff"].ToString()!.Contains("is_deleted"),
+                "the update's history row must survive the delete");
         }
         finally
         {
