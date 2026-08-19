@@ -116,6 +116,16 @@ jobs:
         run: echo "version=$(cat dist/LOCKFILE_SDK)" >> "$GITHUB_OUTPUT"
 
       - uses: actions/setup-dotnet@26b0ec14cb23fa6904739307f278c14f94c95bf1 # v5.4.0
+        env:
+          # Install into an empty directory rather than the image's shared
+          # /usr/share/dotnet. Asking for an exact dotnet-version only controls
+          # what gets INSTALLED, not what gets SELECTED: global.json says
+          # rollForward: latestFeature, so the muxer picks the highest feature
+          # band present, and the runner image already ships its own .NET 10
+          # SDK. Requesting 10.0.110 next to a preinstalled 10.0.4xx therefore
+          # runs 10.0.4xx — and the lock files would look like they had
+          # drifted. An isolated root leaves exactly one SDK to select.
+          DOTNET_INSTALL_DIR: ${{ runner.temp }}/dotnet-lockfile-sdk
         with:
           # Exact, not 10.0.x: the SDK pins ILCompiler/ILLink.Tasks inside the
           # lock file, so the drift check is only meaningful on the version
