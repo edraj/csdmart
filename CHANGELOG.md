@@ -2,6 +2,17 @@
 
 ## Unreleased
 
+### Fixed
+
+- **The query-search feature-matrix timestamp test no longer fails on non-UTC
+  machines under the SQLite driver.** The fixture stamped rows with
+  `DateTime.UtcNow` while dmart's timestamps are naive LOCAL wall clock
+  (`TimeUtils.Now()`); SQLite's lexicographic text comparison exposed the
+  offset, while PostgreSQL masked it through the session-timezone coercion.
+  Test-only fix, plus new regression pins (`SqliteTimestampRangeTests`) that
+  hold the SQLite timestamp storage format, the epoch-ms bound expression,
+  and the server binding path together.
+
 ### Performance
 
 - **`@tags:` / `@roles:` / `@groups:` searches are now index-served.** The
