@@ -9,8 +9,13 @@ namespace Dmart.DataAdapters.Sql;
 
 [System.Diagnostics.CodeAnalysis.SuppressMessage("Security", "CA2100",
     Justification = "Audited: CommandText is assembled from compile-time SQL, dialect-produced fragments and $N placeholders only. Every caller-supplied value is bound through DbParams, never concatenated.")]
-public sealed class UserRepository(IDbConnectionFactory db, AuthzCacheRefresher refresher, SessionTokenHasher tokenHasher)
+public sealed class UserRepository(
+    IDbConnectionFactory db, AuthzCacheRefresher refresher, SessionTokenHasher tokenHasher,
+    Dmart.Auth.AuthReadCache? authCache = null)
 {
+    // Best-effort local eviction of the opt-in auth micro-cache (see
+    // AuthReadCache). Null in tests that construct the repository directly.
+    private void EvictAuth(string shortname) => authCache?.Evict(shortname);
     private const string SelectAllColumns = """
         SELECT uuid, shortname, space_name, subpath, is_active, slug,
                displayname, description, tags, created_at, updated_at,
@@ -262,6 +267,7 @@ public sealed class UserRepository(IDbConnectionFactory db, AuthzCacheRefresher 
         await cmd.ExecuteNonQueryAsync(ct);
         // user.roles may have changed → clear the in-memory permission cache.
         await refresher.RefreshAsync(ct);
+        EvictAuth(u.Shortname);
     }
 
     /// <summary>
@@ -398,6 +404,7 @@ public sealed class UserRepository(IDbConnectionFactory db, AuthzCacheRefresher 
         }
 
         await refresher.RefreshAsync(ct);
+        authCache?.EvictAll();
         return affected;
     }
 
@@ -592,6 +599,7 @@ public sealed class UserRepository(IDbConnectionFactory db, AuthzCacheRefresher 
         await tx.CommitAsync(ct);
         // user.roles may have changed → clear the in-memory permission cache.
         await refresher.RefreshAsync(ct);
+        EvictAuth(u.Shortname);
         return (prior, inserted);
     }
 
@@ -610,6 +618,7 @@ public sealed class UserRepository(IDbConnectionFactory db, AuthzCacheRefresher 
         await cmd.ExecuteNonQueryAsync(ct);
         await tx.CommitAsync(ct);
         await refresher.RefreshAsync(ct);
+        EvictAuth(shortname);
     }
 
     // True if the user owns any row that FK-references users(shortname): entries,
@@ -675,7 +684,11 @@ public sealed class UserRepository(IDbConnectionFactory db, AuthzCacheRefresher 
     public async Task<DeleteReport> ForceDeleteAsync(string shortname, bool dryRun = false, CancellationToken ct = default)
     {
         var report = await db.ExecuteWithRetryAsync(c => ForceDeleteOnceAsync(shortname, dryRun, c), ct);
-        if (!dryRun) await refresher.RefreshAsync(ct);
+        if (!dryRun)
+        {
+            await refresher.RefreshAsync(ct);
+            EvictAuth(shortname);
+        }
         return report;
     }
 
@@ -1140,6 +1153,7 @@ public sealed class UserRepository(IDbConnectionFactory db, AuthzCacheRefresher 
         DbParams.Add(cmd, shortname);
         DbParams.Add(cmd, tokenHash);
         await cmd.ExecuteNonQueryAsync(ct);
+        EvictAuth(shortname);
     }
 
     // ----- query support (used by QueryService for management/users) -----
@@ -1165,6 +1179,7 @@ public sealed class UserRepository(IDbConnectionFactory db, AuthzCacheRefresher 
         await using var cmd = conn.Command("DELETE FROM sessions WHERE shortname = $1");
         DbParams.Add(cmd, shortname);
         await cmd.ExecuteNonQueryAsync(ct);
+        EvictAuth(shortname);
     }
 
     // Count active session rows for a user. Useful in tests that verify
@@ -1194,6 +1209,7 @@ public sealed class UserRepository(IDbConnectionFactory db, AuthzCacheRefresher 
         DbParams.Add(cmd, shortname);
         DbParams.Add(cmd, keep);
         await cmd.ExecuteNonQueryAsync(ct);
+        EvictAuth(shortname);
     }
 
     // Return the placeholder so callers building a VALUES tuple can use it;
@@ -1273,6 +1289,7 @@ public sealed class UserRepository(IDbConnectionFactory db, AuthzCacheRefresher 
             "UPDATE users SET is_deleted = false, deleted_at = NULL WHERE shortname = $1");
         DbParams.Add(cmd, shortname);
         await cmd.ExecuteNonQueryAsync(ct);
+        EvictAuth(shortname);
     }
 
     /// <summary>
@@ -1322,6 +1339,7 @@ public sealed class UserRepository(IDbConnectionFactory db, AuthzCacheRefresher 
 
         await tx.CommitAsync(ct);
         await refresher.RefreshAsync(ct);
+        EvictAuth(shortname);
     }
 
     // Reads a string column, returning null for both DB NULL and empty strings.

@@ -245,6 +245,17 @@ public interface ISqlDialect
     string JsonContains(string jsonExpr, string placeholder);
 
     /// <summary>
+    /// True when <see cref="JsonContains"/> of a one-element JSON ARRAY
+    /// literal matches ONLY array values — PostgreSQL <c>@&gt;</c> semantics,
+    /// where an object or scalar can never contain an array. Lets the parser
+    /// emit a bare, index-servable containment for @tags/@roles/@groups.
+    /// False for dialects whose containment emulation is looser (SQLite's
+    /// json_tree walk also matches an object/scalar holding the value), which
+    /// keep the original guarded emission so their behavior doesn't shift.
+    /// </summary>
+    bool JsonArrayContainmentIsExact { get; }
+
+    /// <summary>
     /// Iterates a JSON array, yielding the FROM fragment plus expressions for
     /// each element as JSON and as text.
     /// </summary>

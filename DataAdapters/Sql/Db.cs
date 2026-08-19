@@ -560,6 +560,7 @@ public sealed class Db(IOptions<DmartSettings> settings) : IDbConnectionFactory
             MaxPoolSize = s.DatabasePoolSize + s.DatabaseMaxOverflow,
             Timeout = s.DatabasePoolTimeout,
             ConnectionIdleLifetime = s.DatabasePoolRecycle,
+            MaxAutoPrepare = Math.Max(0, s.DatabaseMaxAutoPrepare),
         };
         // Protocol keepalive (an idle-time SELECT 1) keeps NAT/firewall flow
         // state warm and surfaces a dead peer quickly; TcpKeepAlive adds the

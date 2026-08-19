@@ -335,6 +335,16 @@ public sealed class UniquenessValidator(
             log.LogDebug(ex, "uniqueness: parent folder load failed for {Space}/{Subpath}", entry.SpaceName, entry.Subpath);
             folder = null;
         }
+        return await ValidateWithFolderAsync(entry, action, existing, folder, ct);
+    }
+
+    // Preloaded-parent path: the caller already fetched the parent folder and
+    // shares it with FolderContentValidator, saving one identical SELECT per
+    // write. `folder` null (no parent / not found / load failed upstream) is an
+    // allow, exactly as on the self-loading path above.
+    public async Task<Result<bool>> ValidateWithFolderAsync(
+        Entry entry, ActionType action, Entry? existing, Entry? folder, CancellationToken ct = default)
+    {
         if (folder?.Payload?.Body is not JsonElement body
             || body.ValueKind != JsonValueKind.Object
             || !body.TryGetProperty("unique_fields", out var uniqueFields)

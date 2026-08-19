@@ -116,9 +116,25 @@ public sealed class PostgresSqlDialect : ISqlDialect
     public string AnyOf(string columnExpr, IReadOnlyList<string> values, SqlBinder bind)
         => $"{columnExpr} = ANY({bind(values.ToArray(), SqlValueKind.TextArray)})";
 
-    // ?| is "does this jsonb value contain any of these top-level keys/elements".
+    // "Does this jsonb array contain any of these elements" — emitted as an OR
+    // of @> containments rather than the terser `?|`. The two are equivalent
+    // for arrays of strings, but only @> is in jsonb_path_ops' operator class:
+    // `tags ?| $1` sequential-scanned past idx_entries_tags_gin on every
+    // filter_tags query, while each @> arm here is a GIN bitmap probe and the
+    // OR becomes a BitmapOr. (For a non-array jsonb value the semantics differ
+    // in our favor: ?| matched top-level KEYS of an object, @> matches nothing
+    // — tags/roles/groups are arrays by construction, so key-matching an
+    // object was an accident, not a behavior.)
     public string JsonArrayContainsAny(string column, IReadOnlyList<string> values, SqlBinder bind)
-        => $"{column} ?| {bind(values.ToArray(), SqlValueKind.TextArray)}";
+        => "(" + string.Join(" OR ",
+               values.Select(v => $"{column} @> {bind(ToJsonArrayLiteral(v), SqlValueKind.Json)}"))
+             + ")";
+
+    private static string ToJsonArrayLiteral(string value)
+    {
+        var escaped = value.Replace("\\", "\\\\").Replace("\"", "\\\"");
+        return $"[\"{escaped}\"]";
+    }
 
     public string ArrayAnyLike(string column, IReadOnlyList<string> patterns, SqlBinder bind)
     {
@@ -166,6 +182,10 @@ public sealed class PostgresSqlDialect : ISqlDialect
 
     public string JsonContains(string jsonExpr, string placeholder)
         => $"{jsonExpr} @> {placeholder}";
+
+    // @> of an array literal is TRUE only for array values — the guarantee
+    // that lets @tags/@roles/@groups compile to a single GIN-served predicate.
+    public bool JsonArrayContainmentIsExact => true;
 
     // Two different set-returning functions on purpose, matching the pre-seam
     // SQL: the _text variant yields SQL text directly (so a bare element

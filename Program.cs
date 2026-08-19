@@ -2198,8 +2198,16 @@ builder.Services.AddSingleton<Dmart.QueryGrammar.ISqlDialect>(sp => UsesSqlite(s
     ? Dmart.QueryGrammar.SqliteSqlDialect.Instance
     : Dmart.QueryGrammar.PostgresSqlDialect.Instance);
 builder.Services.AddSingleton<AuthzCacheRefresher>();
+// Opt-in (AUTH_CACHE_TTL) micro-cache for the per-request auth lookups;
+// registered unconditionally so JwtBearerSetup can always resolve it —
+// disabled it is a no-op.
+builder.Services.AddSingleton<Dmart.Auth.AuthReadCache>();
 builder.Services.AddSingleton<EntryRepository>();
-builder.Services.AddSingleton<UserRepository>();
+builder.Services.AddSingleton<UserRepository>(sp => new UserRepository(
+    sp.GetRequiredService<IDbConnectionFactory>(),
+    sp.GetRequiredService<AuthzCacheRefresher>(),
+    sp.GetRequiredService<SessionTokenHasher>(),
+    sp.GetRequiredService<Dmart.Auth.AuthReadCache>()));
 builder.Services.AddSingleton<AccessRepository>();
 builder.Services.AddSingleton<AttachmentRepository>();
 builder.Services.AddSingleton<HistoryRepository>();

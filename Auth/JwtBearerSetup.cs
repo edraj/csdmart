@@ -135,7 +135,17 @@ public static class JwtBearerSetup
                             return;
                         }
 
-                        var user = await users.GetByShortnameAsync(actor, ctx.HttpContext.RequestAborted);
+                        // AUTH_CACHE_TTL > 0 short-circuits the two per-request
+                        // DB statements below for repeat actors; disabled (the
+                        // default) it is a pair of dictionary misses.
+                        var authCache = ctx.HttpContext.RequestServices
+                            .GetRequiredService<AuthReadCache>();
+
+                        if (!authCache.TryGetUser(actor, out var user))
+                        {
+                            user = await users.GetByShortnameAsync(actor, ctx.HttpContext.RequestAborted);
+                            authCache.SetUser(actor, user);
+                        }
                         if (user is null || !user.IsUsable)
                         {
                             ctx.Fail(new SecurityTokenException("user is inactive"));
@@ -147,10 +157,19 @@ public static class JwtBearerSetup
                         // exist and be active.
                         if (user.Type == UserType.Bot) return;
 
-                        var liveSession = settings.SessionInactivityTtl > 0
-                            ? await users.TouchSessionAsync(
-                                actor, raw, settings.SessionInactivityTtl, ctx.HttpContext.RequestAborted)
-                            : await users.IsSessionValidAsync(actor, raw, ctx.HttpContext.RequestAborted);
+                        bool liveSession;
+                        if (settings.SessionInactivityTtl > 0)
+                        {
+                            // Touch writes a per-request timestamp — inactivity
+                            // expiry depends on it, so this path never caches.
+                            liveSession = await users.TouchSessionAsync(
+                                actor, raw, settings.SessionInactivityTtl, ctx.HttpContext.RequestAborted);
+                        }
+                        else if (!authCache.TryGetSession(actor, raw, out liveSession))
+                        {
+                            liveSession = await users.IsSessionValidAsync(actor, raw, ctx.HttpContext.RequestAborted);
+                            authCache.SetSession(actor, raw, liveSession);
+                        }
                         if (!liveSession)
                             ctx.Fail(new SecurityTokenException("session expired or revoked"));
                     },
