@@ -78,6 +78,16 @@ sudo systemctl enable --now dmart
 
 Download the RPM from the [latest release](https://github.com/edraj/csdmart/releases).
 
+Every release asset is checksummed, signed with cosign (keyless, recorded in
+Rekor) and carries SLSA build provenance. Before deploying, verify it:
+
+```
+./scripts/verify-release.sh --tag v1.2.6
+```
+
+See [docs/VERIFYING-RELEASES.md](docs/VERIFYING-RELEASES.md) — including a plain
+account of what the chain proves and what it does not.
+
 ### From source
 
 ```
