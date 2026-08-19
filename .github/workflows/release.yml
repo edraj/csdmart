@@ -1055,7 +1055,14 @@ jobs:
           VERSION="${GITHUB_REF_NAME#v}"
           echo "version=${VERSION:-0.1.0}" >> "$GITHUB_OUTPUT"
 
+      # Publishing steps are gated on the release event. A workflow_dispatch
+      # run is a test — and until now it pushed :latest anyway, which on a
+      # branch ref means `VERSION` resolves to the branch NAME and every
+      # `podman pull ghcr.io/edraj/csdmart:latest` downstream would silently
+      # start serving a branch build. The build and the smoke test below still
+      # run on a dispatch, so the coverage is unchanged; only publication stops.
       - name: Login to GitHub Container Registry
+        if: github.event_name == 'release'
         run: |
           echo "${{ secrets.GITHUB_TOKEN }}" | podman login ghcr.io -u "${{ github.actor }}" --password-stdin
 
@@ -1096,11 +1103,13 @@ jobs:
           echo "image serves on SQLite"
 
       - name: Push container image
+        if: github.event_name == 'release'
         run: |
           podman push ghcr.io/${{ github.repository }}:${{ steps.version.outputs.version }}
           podman push ghcr.io/${{ github.repository }}:latest
 
       - name: Print image info
+        if: github.event_name == 'release'
         run: |
           echo "Pushed:"
           echo "  ghcr.io/${{ github.repository }}:${{ steps.version.outputs.version }}"
