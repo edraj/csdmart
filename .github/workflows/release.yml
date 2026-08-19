@@ -97,17 +97,17 @@ jobs:
           # rollForward: latestFeature, so the muxer picks the highest feature
           # band present, and the runner image already ships its own .NET 10
           # SDK. Requesting 10.0.110 next to a preinstalled 10.0.4xx therefore
-          # runs 10.0.4xx — and the lock files would look like they had
-          # drifted. An isolated root leaves exactly one SDK to select.
+          # runs 10.0.4xx — and the graph would look like it had drifted. An
+          # isolated root leaves exactly one SDK to select.
           DOTNET_INSTALL_DIR: ${{ runner.temp }}/dotnet-lockfile-sdk
         with:
-          # Exact, not 10.0.x: the SDK pins ILCompiler/ILLink.Tasks inside the
-          # lock file, so the drift check is only meaningful on the version
-          # that wrote it.
+          # Exact, not 10.0.x: the SDK stamps its own ILCompiler/ILLink.Tasks
+          # versions and content hashes into the recorded graph, so the drift
+          # check is only meaningful on the version that wrote it.
           dotnet-version: ${{ steps.sdk.outputs.version }}
 
-      - name: Lock files match the restore graph
-        run: ./dist/check-lockfiles.sh
+      - name: Recorded dependency graph matches a fresh restore
+        run: ./dist/check-dependency-graph.sh
 
       - name: Generate one SBOM per shipped runtime identifier
         run: |
