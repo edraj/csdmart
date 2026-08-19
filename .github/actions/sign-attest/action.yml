@@ -50,6 +50,13 @@ runs:
   steps:
     - name: Install cosign
       uses: sigstore/cosign-installer@6f9f17788090df1f26f669e9d70d6ae9567deba6 # v4.1.2
+      with:
+        # Pin the cosign binary too, not just the action that installs it.
+        # v4.1.2 of the action installs cosign v3 by default, and v3 flipped
+        # sign-blob to the new Sigstore bundle format — which silently ignores
+        # --output-signature/--output-certificate and then fails outright with
+        # no --bundle. The action version alone does not pin that behaviour.
+        cosign-release: 'v3.0.6'
 
     - name: Resolve subjects
       id: resolve
@@ -113,12 +120,27 @@ runs:
           # for a short-lived Fulcio certificate, signs, and the certificate
           # plus signature go into Rekor. The certificate's SAN records the
           # workflow ref, which is what verification pins against.
+          #
+          # --new-bundle-format=false is load-bearing, not habit. cosign v3
+          # defaults it to true, and in that mode the two --output-* flags are
+          # accepted, warned about, and then ignored. Detached .sig + .pem is
+          # what verifies on cosign v2 as well as v3, and downstream operators
+          # do not all run the same major.
+          #
+          # --bundle additionally writes the old-style bundle: signature,
+          # certificate and Rekor entry in one file, from this same signing
+          # operation (one transparency-log entry, not two). It is what makes
+          # verification possible without reaching Rekor at verify time, which
+          # the air-gapped path in docs/VERIFYING-RELEASES.md depends on.
           cosign sign-blob --yes \
+            --new-bundle-format=false \
             --output-signature "$f.sig" \
             --output-certificate "$f.pem" \
+            --bundle "$f.cosign-bundle.json" \
             "$f" 2>&1 | tee /tmp/cosign-out
           test -s "$f.sig" || { echo "::error::empty signature for $f"; exit 1; }
           test -s "$f.pem" || { echo "::error::empty certificate for $f"; exit 1; }
+          test -s "$f.cosign-bundle.json" || { echo "::error::empty bundle for $f"; exit 1; }
           idx=$(grep -oE 'index: [0-9]+' /tmp/cosign-out | head -1 | awk '{print $2}')
           echo "| \`$(basename "$f")\` | ${idx:-n/a} |" >> "$GITHUB_STEP_SUMMARY"
         done < "${RUNNER_TEMP//\\//}/sign-attest-signlist"
@@ -151,7 +173,7 @@ runs:
         fi
         FILES=()
         while IFS= read -r f; do
-          FILES+=("$f" "$f.sig" "$f.pem")
+          FILES+=("$f" "$f.sig" "$f.pem" "$f.cosign-bundle.json")
         done < "${RUNNER_TEMP//\\//}/sign-attest-signlist"
         # The subjects themselves are uploaded by the calling job's own upload
         # step; --clobber makes re-uploading them here harmless and means the

@@ -1134,6 +1134,9 @@ jobs:
       id-token: write
     steps:
       - uses: sigstore/cosign-installer@6f9f17788090df1f26f669e9d70d6ae9567deba6 # v4.1.2
+        with:
+          # See .github/actions/sign-attest/action.yml.
+          cosign-release: 'v3.0.6'
 
       - name: Download every asset on the release
         env:
@@ -1160,10 +1163,13 @@ jobs:
         run: |
           set -euo pipefail
           cosign sign-blob --yes \
+            --new-bundle-format=false \
             --output-signature SHA256SUMS-all.sig \
             --output-certificate SHA256SUMS-all.pem \
+            --bundle SHA256SUMS-all.cosign-bundle.json \
             SHA256SUMS-all
-          test -s SHA256SUMS-all.sig && test -s SHA256SUMS-all.pem
+          test -s SHA256SUMS-all.sig && test -s SHA256SUMS-all.pem \
+            && test -s SHA256SUMS-all.cosign-bundle.json
 
       - name: Attach the manifest
         env:
@@ -1171,4 +1177,5 @@ jobs:
         working-directory: assets
         run: |
           gh release upload "$GITHUB_REF_NAME" \
-            SHA256SUMS-all SHA256SUMS-all.sig SHA256SUMS-all.pem --clobber
+            SHA256SUMS-all SHA256SUMS-all.sig SHA256SUMS-all.pem \
+            SHA256SUMS-all.cosign-bundle.json --clobber

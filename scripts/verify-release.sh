@@ -58,9 +58,9 @@ usage() {
 	  --keep             keep the work directory on success
 	  --commit <sha>     additionally require the provenance to name this commit
 	  --require-hosted   fail any artifact built on a self-hosted runner
-	  --offline          verify attestations from the bundled .jsonl assets
-	                     instead of the GitHub API (still needs Sigstore's
-	                     trusted root unless GH_TRUSTED_ROOT points at one)
+	  --offline          verify signatures from the .cosign-bundle.json assets and
+	                     attestations from the .attestation.jsonl assets, rather
+	                     than reaching Rekor and the GitHub API
 	  --workflows "a b"  workflow files allowed to have signed (default: $WORKFLOWS_DEFAULT)
 	  -h, --help         this text
 	EOF
@@ -194,7 +194,7 @@ declare -a CONTENT=()
 for f in *; do
 	[ -f "$f" ] || continue
 	case "$f" in
-		*.sig|*.pem|*.attestation.jsonl|SHA256SUMS|SHA256SUMS-*) continue ;;
+		*.sig|*.pem|*.cosign-bundle.json|*.attestation.jsonl|SHA256SUMS|SHA256SUMS-*) continue ;;
 	esac
 	CONTENT+=("$f")
 done
@@ -239,10 +239,23 @@ verify_sig() {
 		bad "$f: no signature material (.sig/.pem missing) — nothing vouches for this asset"
 		return
 	fi
-	local -a args=(
-		verify-blob
-		--certificate "$f.pem"
-		--signature "$f.sig"
+	if [ ! -f "$f.cosign-bundle.json" ]; then
+		note "$f: no .cosign-bundle.json — signature still verifies, but only with network access to Rekor"
+	fi
+	local -a args=(verify-blob)
+	if [ "$OFFLINE" -eq 1 ]; then
+		# The bundle carries the signature, the certificate AND the Rekor
+		# entry, so verification needs no network. The detached pair does not:
+		# cosign checks the transparency log at verify time.
+		if [ ! -f "$f.cosign-bundle.json" ]; then
+			bad "$f: --offline requested but $f.cosign-bundle.json is not on the release"
+			return
+		fi
+		args+=(--bundle "$f.cosign-bundle.json")
+	else
+		args+=(--certificate "$f.pem" --signature "$f.sig")
+	fi
+	args+=(
 		--certificate-identity-regexp "$IDENTITY_RE"
 		--certificate-oidc-issuer "$ISSUER"
 	)
