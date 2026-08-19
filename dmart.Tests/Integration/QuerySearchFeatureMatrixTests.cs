@@ -6,6 +6,7 @@ using Dmart.Models.Api;
 using Dmart.Models.Core;
 using Dmart.Models.Enums;
 using Dmart.Services;
+using Dmart.Utils;
 using Microsoft.Extensions.DependencyInjection;
 using Shouldly;
 using Xunit;
@@ -86,8 +87,8 @@ public class QuerySearchFeatureMatrixTests : IClassFixture<DmartFactory>
             OwnerShortname = "dmart",
             IsActive = true,
             Languages = new() { Language.En },
-            CreatedAt = DateTime.UtcNow,
-            UpdatedAt = DateTime.UtcNow,
+            CreatedAt = TimeUtils.Now(),
+            UpdatedAt = TimeUtils.Now(),
         });
 
         await Seed(entries, spaceName, Alpha, isActive: true, slug: "slug_alpha",
@@ -139,8 +140,14 @@ public class QuerySearchFeatureMatrixTests : IClassFixture<DmartFactory>
             Slug = slug,
             Tags = tags,
             OwnerShortname = "dmart",
-            CreatedAt = DateTime.UtcNow,
-            UpdatedAt = DateTime.UtcNow,
+            // TimeUtils.Now(), NOT DateTime.UtcNow: dmart timestamps are naive
+            // LOCAL wall clock end to end (see TimeUtils). A UTC stamp here is
+            // off by the host's UTC offset; PostgreSQL happens to mask that
+            // through the timestamp↔timestamptz session-timezone coercion, but
+            // SQLite's lexicographic text comparison exposes it — the
+            // @created_at:[ms ms] assertions failed on any non-UTC machine.
+            CreatedAt = TimeUtils.Now(),
+            UpdatedAt = TimeUtils.Now(),
             Payload = new Payload
             {
                 ContentType = ContentType.Json,
