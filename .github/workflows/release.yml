@@ -29,8 +29,7 @@ jobs:
       - name: Set version
         id: version
         run: |
-          VERSION="${GITHUB_REF_NAME#v}"
-          echo "version=${VERSION:-0.1.0}" >> "$GITHUB_OUTPUT"
+          echo "version=$(dist/release-version.sh)" >> "$GITHUB_OUTPUT"
 
       - name: Package tarballs
         run: |
@@ -112,7 +111,7 @@ jobs:
       - name: Generate one SBOM per shipped runtime identifier
         run: |
           set -euo pipefail
-          V="${GITHUB_REF_NAME#v}"; V="${V:-0.1.0}"
+          V="$(dist/release-version.sh)"
           for RID in linux-x64 linux-musl-x64 linux-musl-arm64 win-x64 osx-arm64; do
             ./dist/sbom.sh --rid "$RID" --version "$V" --out sboms
           done
@@ -146,8 +145,7 @@ jobs:
       - name: Set version
         id: version
         run: |
-          VERSION="${GITHUB_REF_NAME#v}"
-          echo "version=${VERSION:-0.1.0}" >> "$GITHUB_OUTPUT"
+          echo "version=$(dist/release-version.sh)" >> "$GITHUB_OUTPUT"
 
       # Pack the four NuGet-shippable SDKs. MSBuild resolves the
       # ProjectReferences so Dmart.Client.nupkg and Dmart.SqlAdapter.nupkg
@@ -231,7 +229,7 @@ jobs:
 
       - name: Extract UI dists
         run: |
-          V="${GITHUB_REF_NAME#v}"; V="${V:-0.1.0}"
+          V="$(dist/release-version.sh)"
           mkdir -p cxb/dist/client catalog/dist/client
           tar -xzf "dist/out/cxb-${V}.tar.gz"     -C cxb/dist/client
           tar -xzf "dist/out/catalog-${V}.tar.gz" -C catalog/dist/client
@@ -241,8 +239,7 @@ jobs:
           pkill -f 'dmart serve' 2>/dev/null || true
           sleep 1
           rm -rf bin obj dist/out
-          VERSION="${GITHUB_REF_NAME#v}"
-          VERSION="${VERSION:-0.1.0}"
+          VERSION="$(dist/release-version.sh)"
           VERSION="$VERSION" ./dist/build-rpm.sh srpm
 
       - name: Fetch the SBOMs built from this tag
@@ -258,7 +255,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          V="${GITHUB_REF_NAME#v}"; V="${V:-0.1.0}"
+          V="$(dist/release-version.sh)"
           ART=$(find dist/out -maxdepth 1 -name '*.src.rpm' 2>/dev/null | sort | head -1)
           if [ -z "$ART" ]; then
             echo "::error::no artifact matched dist/out/*.src.rpm — nothing to sign"
@@ -316,7 +313,7 @@ jobs:
 
       - name: Extract UI dists
         run: |
-          V="${GITHUB_REF_NAME#v}"; V="${V:-0.1.0}"
+          V="$(dist/release-version.sh)"
           mkdir -p cxb/dist/client catalog/dist/client
           tar -xzf "dist/out/cxb-${V}.tar.gz"     -C cxb/dist/client
           tar -xzf "dist/out/catalog-${V}.tar.gz" -C catalog/dist/client
@@ -326,8 +323,7 @@ jobs:
           pkill -f 'dmart serve' 2>/dev/null || true
           sleep 1
           rm -rf bin obj dist/out
-          VERSION="${GITHUB_REF_NAME#v}"
-          VERSION="${VERSION:-0.1.0}"
+          VERSION="$(dist/release-version.sh)"
           VERSION="$VERSION" ./dist/build-rpm.sh
 
       - name: Fetch the SBOMs built from this tag
@@ -343,7 +339,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          V="${GITHUB_REF_NAME#v}"; V="${V:-0.1.0}"
+          V="$(dist/release-version.sh)"
           ART=$(find dist/out -maxdepth 1 -name '*fc*.x86_64.rpm' 2>/dev/null | sort | head -1)
           if [ -z "$ART" ]; then
             echo "::error::no artifact matched dist/out/*fc*.x86_64.rpm — nothing to sign"
@@ -401,7 +397,7 @@ jobs:
 
       - name: Extract UI dists
         run: |
-          V="${GITHUB_REF_NAME#v}"; V="${V:-0.1.0}"
+          V="$(dist/release-version.sh)"
           mkdir -p cxb/dist/client catalog/dist/client
           tar -xzf "dist/out/cxb-${V}.tar.gz"     -C cxb/dist/client
           tar -xzf "dist/out/catalog-${V}.tar.gz" -C catalog/dist/client
@@ -426,8 +422,7 @@ jobs:
           rm -rf dist/out
           # Remove stale builder container from previous runs
           podman rm -f dmart-el9-builder 2>/dev/null || true
-          VERSION="${GITHUB_REF_NAME#v}"
-          VERSION="${VERSION:-0.1.0}"
+          VERSION="$(dist/release-version.sh)"
           VERSION="$VERSION" ./dist/build-rpm.sh el9
 
       - name: Fetch the SBOMs built from this tag
@@ -443,7 +438,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          V="${GITHUB_REF_NAME#v}"; V="${V:-0.1.0}"
+          V="$(dist/release-version.sh)"
           ART=$(find dist/out -maxdepth 1 -name '*el9*.x86_64.rpm' 2>/dev/null | sort | head -1)
           if [ -z "$ART" ]; then
             echo "::error::no artifact matched dist/out/*el9*.x86_64.rpm — nothing to sign"
@@ -505,7 +500,7 @@ jobs:
 
       - name: Extract UI dists
         run: |
-          V="${GITHUB_REF_NAME#v}"; V="${V:-0.1.0}"
+          V="$(dist/release-version.sh)"
           mkdir -p cxb/dist/client catalog/dist/client
           tar -xzf "dist/out/cxb-${V}.tar.gz"     -C cxb/dist/client
           tar -xzf "dist/out/catalog-${V}.tar.gz" -C catalog/dist/client
@@ -515,8 +510,7 @@ jobs:
           pkill -f 'dmart serve' 2>/dev/null || true
           sleep 1
           rm -rf dist/out/*.deb
-          VERSION="${GITHUB_REF_NAME#v}"
-          VERSION="${VERSION:-0.1.0}"
+          VERSION="$(dist/release-version.sh)"
           VERSION="$VERSION" ./dist/build-deb.sh
 
       - name: Fetch the SBOMs built from this tag
@@ -532,7 +526,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          V="${GITHUB_REF_NAME#v}"; V="${V:-0.1.0}"
+          V="$(dist/release-version.sh)"
           ART=$(find dist/out -maxdepth 1 -name 'dmart_*_amd64.deb' 2>/dev/null | sort | head -1)
           if [ -z "$ART" ]; then
             echo "::error::no artifact matched dist/out/dmart_*_amd64.deb — nothing to sign"
@@ -593,7 +587,7 @@ jobs:
       - name: Extract UI dists
         shell: bash
         run: |
-          V="${GITHUB_REF_NAME#v}"; V="${V:-0.1.0}"
+          V="$(dist/release-version.sh)"
           mkdir -p cxb/dist/client catalog/dist/client
           tar -xzf "dist/out/cxb-${V}.tar.gz"     -C cxb/dist/client
           tar -xzf "dist/out/catalog-${V}.tar.gz" -C catalog/dist/client
@@ -610,8 +604,7 @@ jobs:
         id: version
         shell: bash
         run: |
-          VERSION="${GITHUB_REF_NAME#v}"
-          echo "version=${VERSION:-0.1.0}" >> "$GITHUB_OUTPUT"
+          echo "version=$(dist/release-version.sh)" >> "$GITHUB_OUTPUT"
 
       - name: Publish AOT win-x64
         shell: pwsh
@@ -655,7 +648,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          V="${GITHUB_REF_NAME#v}"; V="${V:-0.1.0}"
+          V="$(dist/release-version.sh)"
           ART=$(find dist/out -maxdepth 1 -name '*-win-x64.zip' 2>/dev/null | sort | head -1)
           if [ -z "$ART" ]; then
             echo "::error::no artifact matched dist/out/*-win-x64.zip — nothing to sign"
@@ -719,7 +712,7 @@ jobs:
 
       - name: Extract UI dists
         run: |
-          V="${GITHUB_REF_NAME#v}"; V="${V:-0.1.0}"
+          V="$(dist/release-version.sh)"
           mkdir -p cxb/dist/client catalog/dist/client
           tar -xzf "dist/out/cxb-${V}.tar.gz"     -C cxb/dist/client
           tar -xzf "dist/out/catalog-${V}.tar.gz" -C catalog/dist/client
@@ -735,8 +728,7 @@ jobs:
       - name: Set version
         id: version
         run: |
-          VERSION="${GITHUB_REF_NAME#v}"
-          echo "version=${VERSION:-0.1.0}" >> "$GITHUB_OUTPUT"
+          echo "version=$(dist/release-version.sh)" >> "$GITHUB_OUTPUT"
 
       - name: Publish AOT osx-arm64
         # build.sh's --rid flag drives the publish. UI dists are already
@@ -778,7 +770,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          V="${GITHUB_REF_NAME#v}"; V="${V:-0.1.0}"
+          V="$(dist/release-version.sh)"
           ART=$(find dist/out -maxdepth 1 -name '*-osx-arm64.zip' 2>/dev/null | sort | head -1)
           if [ -z "$ART" ]; then
             echo "::error::no artifact matched dist/out/*-osx-arm64.zip — nothing to sign"
@@ -839,7 +831,7 @@ jobs:
 
       - name: Extract UI dists
         run: |
-          V="${GITHUB_REF_NAME#v}"; V="${V:-0.1.0}"
+          V="$(dist/release-version.sh)"
           mkdir -p cxb/dist/client catalog/dist/client
           tar -xzf "dist/out/cxb-${V}.tar.gz"     -C cxb/dist/client
           tar -xzf "dist/out/catalog-${V}.tar.gz" -C catalog/dist/client
@@ -849,8 +841,7 @@ jobs:
           pkill -f 'dmart serve' 2>/dev/null || true
           sleep 1
           rm -rf dist/out/*.apk
-          VERSION="${GITHUB_REF_NAME#v}"
-          VERSION="${VERSION:-0.1.0}"
+          VERSION="$(dist/release-version.sh)"
           VERSION="$VERSION" ./dist/build-apk.sh --arch x86_64
 
       - name: Fetch the SBOMs built from this tag
@@ -866,7 +857,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          V="${GITHUB_REF_NAME#v}"; V="${V:-0.1.0}"
+          V="$(dist/release-version.sh)"
           ART=$(find dist/out -maxdepth 1 -name 'dmart-*-x86_64.apk' 2>/dev/null | sort | head -1)
           if [ -z "$ART" ]; then
             echo "::error::no artifact matched dist/out/dmart-*-x86_64.apk — nothing to sign"
@@ -925,7 +916,7 @@ jobs:
 
       - name: Extract UI dists
         run: |
-          V="${GITHUB_REF_NAME#v}"; V="${V:-0.1.0}"
+          V="$(dist/release-version.sh)"
           mkdir -p cxb/dist/client catalog/dist/client
           tar -xzf "dist/out/cxb-${V}.tar.gz"     -C cxb/dist/client
           tar -xzf "dist/out/catalog-${V}.tar.gz" -C catalog/dist/client
@@ -940,8 +931,7 @@ jobs:
         # ever moves to a self-hosted runner, add the preflight — the action
         # no-ops on hosted runners, so adding it is never wrong.
         run: |
-          VERSION="${GITHUB_REF_NAME#v}"
-          VERSION="${VERSION:-0.1.0}"
+          VERSION="$(dist/release-version.sh)"
           CONTAINER_ENGINE=docker VERSION="$VERSION" \
             ./dist/build-apk.sh --arch aarch64
 
@@ -958,7 +948,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          V="${GITHUB_REF_NAME#v}"; V="${V:-0.1.0}"
+          V="$(dist/release-version.sh)"
           ART=$(find dist/out -maxdepth 1 -name 'dmart-*-aarch64.apk' 2>/dev/null | sort | head -1)
           if [ -z "$ART" ]; then
             echo "::error::no artifact matched dist/out/dmart-*-aarch64.apk — nothing to sign"
@@ -1040,8 +1030,7 @@ jobs:
           podman image prune -f || true
           # Delete superseded versioned images of this repo, keep :latest
           # and the incoming version. Safe because the push step tags both.
-          KEEP_VER="${GITHUB_REF_NAME#v}"
-          KEEP_VER="${KEEP_VER:-0.1.0}"
+          KEEP_VER="$(dist/release-version.sh)"
           podman image ls --format '{{.Repository}}:{{.Tag}}' \
             | grep '^ghcr.io/${{ github.repository }}:' \
             | grep -v ':latest$' \
@@ -1052,8 +1041,7 @@ jobs:
       - name: Set version
         id: version
         run: |
-          VERSION="${GITHUB_REF_NAME#v}"
-          echo "version=${VERSION:-0.1.0}" >> "$GITHUB_OUTPUT"
+          echo "version=$(dist/release-version.sh)" >> "$GITHUB_OUTPUT"
 
       # Publishing steps are gated on the release event. A workflow_dispatch
       # run is a test — and until now it pushed :latest anyway, which on a
