@@ -79,9 +79,74 @@ jobs:
           path: ui-dists/*.tar.gz
           if-no-files-found: error
 
+  sbom:
+    name: CycloneDX SBOMs + lock-file drift check
+    # Its own job, on a pristine checkout. The SBOM has to be generated from a
+    # tree nothing has restored into yet: the AOT build runs inside an
+    # AlmaLinux container whose SDK differs from the one the lock files were
+    # written with, and a restore there rewrites packages.lock.json in the
+    # workspace. Doing this here means the drift check compares the committed
+    # graph against a clean restore, and the SBOM is generated from that same
+    # verified graph.
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+        with:
+          fetch-depth: 0
+
+      - name: Version
+        id: v
+        run: |
+          set -euo pipefail
+          if [ "${GITHUB_REF_TYPE}" = "tag" ]; then
+            VERSION="${GITHUB_REF_NAME#v}"
+          else
+            VERSION="0.0.0-dev.$(git rev-parse --short HEAD)"
+          fi
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+
+      # Single source of truth for "the SDK the lock files were written with".
+      # Bumping dist/LOCKFILE_SDK and regenerating the lock files is one
+      # deliberate change; nothing here has to be edited alongside it.
+      - name: Resolve the lock-file SDK
+        id: sdk
+        run: echo "version=$(cat dist/LOCKFILE_SDK)" >> "$GITHUB_OUTPUT"
+
+      - uses: actions/setup-dotnet@26b0ec14cb23fa6904739307f278c14f94c95bf1 # v5.4.0
+        with:
+          # Exact, not 10.0.x: the SDK pins ILCompiler/ILLink.Tasks inside the
+          # lock file, so the drift check is only meaningful on the version
+          # that wrote it.
+          dotnet-version: ${{ steps.sdk.outputs.version }}
+
+      - name: Lock files match the restore graph
+        run: ./dist/check-lockfiles.sh
+
+      # Named for the tarball each one describes, so verify-release.sh can pair
+      # them without knowing anything about RIDs.
+      - name: Generate the SBOMs
+        env:
+          VERSION: ${{ steps.v.outputs.version }}
+        run: |
+          set -euo pipefail
+          for RID in linux-x64 linux-arm64; do
+            ./dist/sbom.sh --rid "$RID" --version "$VERSION" --out sboms \
+              --filename "dmart-${VERSION}-${RID}.tar.gz.cdx.json"
+          done
+          ls -l sboms
+
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: sboms
+          path: sboms/*.cdx.json
+          if-no-files-found: error
+
   build:
     name: ${{ matrix.rid }}
-    needs: ui
+    needs: [ui, sbom]
     runs-on: ${{ matrix.runner }}
     timeout-minutes: 60
     permissions:
@@ -262,27 +327,29 @@ jobs:
           rm -rf "$STAGE"
           ls -lh "dist/out/${NAME}.tar.gz"
           echo "tarball=dist/out/${NAME}.tar.gz" >> "$GITHUB_OUTPUT"
-          echo "sbom=dist/out/${NAME}.tar.gz.cdx.json" >> "$GITHUB_OUTPUT"
 
       # The SBOM is generated from a restore for this RID, on this runner, in
       # this run — not assembled by hand and not carried over from another job.
-      - uses: actions/setup-dotnet@26b0ec14cb23fa6904739307f278c14f94c95bf1 # v5.4.0
+      - name: Collect the SBOM built for this target
+        uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7.0.0
         with:
-          dotnet-version: '10.0.x'
+          name: sboms
+          path: sboms
 
-      - name: CycloneDX SBOM (${{ matrix.rid }})
+      - name: Place the SBOM beside the tarball it describes
         env:
           RID: ${{ matrix.rid }}
           VERSION: ${{ steps.src.outputs.version }}
         run: |
-          ./dist/sbom.sh --rid "$RID" --version "$VERSION" --out dist/out \
-            --filename "dmart-${VERSION}-${RID}.tar.gz.cdx.json"
+          set -euo pipefail
+          cp "sboms/dmart-${VERSION}-${RID}.tar.gz.cdx.json" dist/out/
+          ls -l "dist/out/dmart-${VERSION}-${RID}.tar.gz.cdx.json"
 
       - name: Sign and attest
         uses: ./.github/actions/sign-attest
         with:
           subjects: ${{ steps.pack.outputs.tarball }}
-          sbom: ${{ steps.pack.outputs.sbom }}
+          sbom: dist/out/dmart-${{ steps.src.outputs.version }}-${{ matrix.rid }}.tar.gz.cdx.json
           github-token: ${{ github.token }}
           # The release does not exist yet at tag-push time — the publish job
           # below waits for it and uploads everything together.

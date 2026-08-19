@@ -321,9 +321,39 @@ fi
 If the scenario depends on optional components (a plugin, CXB), use the
 `_route_absent` helper to skip gracefully on 404/422+code 230.
 
+## Add or change a NuGet dependency
+
+Every project carries a committed `packages.lock.json`, so a dependency change
+is two edits, not one:
+
+```sh
+# 1. Edit the PackageReference in the csproj as usual, then:
+./dist/check-lockfiles.sh     # regenerates and reports the drift
+git add '*packages.lock.json'
+```
+
+`check-lockfiles.sh` fails if the committed lock files disagree with what a
+restore resolves — that diff is the point. It is what turns "a transitive
+dependency changed" from something you find out about in a later SBOM into
+something a reviewer sees in the pull request. CI runs the same script in the
+`lockfiles` job.
+
+**It must run on the exact SDK named in `dist/LOCKFILE_SDK`.** The .NET SDK
+writes its own bundled `Microsoft.DotNet.ILCompiler` and
+`Microsoft.NET.ILLink.Tasks` versions into the lock file, so a different SDK —
+even one patch apart — reports drift that is not yours. The script checks this
+and refuses to run on the wrong version rather than producing a misleading
+diff. If you are deliberately moving to a newer SDK, update
+`dist/LOCKFILE_SDK`, regenerate, and say so in the PR: it changes what every
+CI and release job installs.
+
+This is also why `RestoreLockedMode` is not switched on globally — see the
+comment in `Directory.Build.props`.
+
 ## Checklist before PR
 
 - [ ] `dotnet build -c Release -nologo` succeeds with 0 warnings.
+- [ ] `./dist/check-lockfiles.sh` is clean (or the lock file changes are committed).
 - [ ] `./build.sh --aot` succeeds (AOT publish). 0 warnings.
 - [ ] `dotnet test dmart.Tests/ -c Release` — all green, new tests added.
 - [ ] `./curl.sh` — all green against a fresh server.

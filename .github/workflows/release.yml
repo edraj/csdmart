@@ -82,9 +82,22 @@ jobs:
         with:
           fetch-depth: 0
 
+      # Single source of truth for "the SDK the lock files were written with".
+      # Bumping dist/LOCKFILE_SDK and regenerating the lock files is one
+      # deliberate change; nothing here has to be edited alongside it.
+      - name: Resolve the lock-file SDK
+        id: sdk
+        run: echo "version=$(cat dist/LOCKFILE_SDK)" >> "$GITHUB_OUTPUT"
+
       - uses: actions/setup-dotnet@26b0ec14cb23fa6904739307f278c14f94c95bf1 # v5.4.0
         with:
-          dotnet-version: '10.0.x'
+          # Exact, not 10.0.x: the SDK pins ILCompiler/ILLink.Tasks inside the
+          # lock file, so the drift check is only meaningful on the version
+          # that wrote it.
+          dotnet-version: ${{ steps.sdk.outputs.version }}
+
+      - name: Lock files match the restore graph
+        run: ./dist/check-lockfiles.sh
 
       - name: Generate one SBOM per shipped runtime identifier
         run: |

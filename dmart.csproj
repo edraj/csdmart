@@ -5,6 +5,17 @@
     <Nullable>enable</Nullable>
     <ImplicitUsings>enable</ImplicitUsings>
     <PublishAot>true</PublishAot>
+    <!-- Every RID this project is ever published for, listed so that ONE
+         restore resolves all of them into packages.lock.json.
+         A restore REPLACES the RID section of the lock file rather than
+         extending it, so without this list the file would be rewritten by
+         every AOT publish (git churn on an artifact whose whole point is to
+         be stable), and a locked restore would fail for every RID except the
+         one restored last. The only RID-specific packages here are the
+         SQLitePCLRaw native bundles, so resolving all six costs a few hundred
+         KB; the ILCompiler and runtime packs are injected by the SDK at
+         publish time and never enter this graph. -->
+    <RuntimeIdentifiers>linux-x64;linux-arm64;linux-musl-x64;linux-musl-arm64;win-x64;osx-arm64</RuntimeIdentifiers>
     <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
     <PublishSelfContained>true</PublishSelfContained>
     <!-- Required for ManifestEmbeddedFileProvider to enumerate embedded CXB assets -->

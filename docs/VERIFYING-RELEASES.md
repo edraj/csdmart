@@ -120,6 +120,15 @@ satisfy a tag verification.
 SBOM lists the NuGet dependency graph — direct and transitive — resolved by the
 actual `dotnet restore` for that target, read from `project.assets.json`.
 
+The graph the SBOM reports is itself pinned in git. Every project carries a
+committed `packages.lock.json` covering the transitive graph for all six
+runtime identifiers, and the job that generates the SBOMs first runs
+`dist/check-lockfiles.sh` on a pristine checkout with the SDK pinned to
+`dist/LOCKFILE_SDK`. If the committed graph and a fresh restore disagree, the
+release fails before an SBOM is produced. So an SBOM on a release describes a
+dependency set that was reviewed in a pull request, not whatever NuGet happened
+to resolve that minute.
+
 One honest detail about the SBOMs: today they are **identical across targets**
 apart from metadata. Every `PackageReference` in this project is RID-agnostic,
 and the parts that genuinely differ per target (the ILCompiler and runtime
@@ -198,6 +207,21 @@ is "built by our CI on infrastructure we operate", which is weaker than "built
 on infrastructure neither we nor an attacker can quietly modify". If your policy
 requires the stronger claim, deploy the linux tarball and run
 `verify-release.sh --require-hosted`.
+
+**The lock file pins dependencies, not the toolchain.** `packages.lock.json`
+fixes the NuGet graph. It does not fix the compiler: this repository builds on
+several .NET SDKs at once — AlmaLinux 9 ships 10.0.111, the
+`mcr.microsoft.com/dotnet/sdk:10.0` images behind the `.deb` and the APKs ship
+10.0.400, and `global.json` pins only the floor (a 10.0.1xx-or-later release
+SDK, never a preview and never .NET 11). Stricter is not currently possible:
+the SDK writes its own bundled `ILCompiler` and `ILLink.Tasks` versions into
+the lock file, so `RestoreLockedMode` cannot be enabled across builders that
+ship different SDKs, and a single exact `rollForward: disable` pin would break
+every packaging container. What that means concretely: two artifacts in the
+same release were compiled by different SDK patch levels. Their *shipped*
+dependency graphs are identical — the differing packages are build-time tooling
+that never enters the SBOM — but if your threat model includes the compiler,
+this is the seam.
 
 **Tags move; commits do not.** A tag can be deleted and re-pointed at a
 different commit. Provenance records the commit, so pin *that*:
@@ -282,6 +306,10 @@ all.
 |---|---|---|---|
 | `release-verifiable.yml` | `push` of a `v*` tag | GitHub-hosted (`ubuntu-24.04`, `ubuntu-24.04-arm`) | linux-x64 / linux-arm64 tarballs, their SBOMs, `SHA256SUMS`; waits for the release to be created, then uploads |
 | `release.yml` | `release: created` | mostly self-hosted | RPMs, `.deb`, APKs, Windows/macOS zips, SPA tarballs, NuGet packages, `SHA256SUMS-all`, container image |
+
+Both first run `dist/check-lockfiles.sh` on a clean checkout with the SDK from
+`dist/LOCKFILE_SDK`, so a release cannot be built from a dependency graph that
+is not the one committed to git.
 
 Both sign and attest **inside the job that built the artifact**, never in a
 central job afterwards — see the comment at the top of

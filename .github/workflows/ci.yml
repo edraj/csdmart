@@ -10,6 +10,38 @@ permissions:
   contents: read
 
 jobs:
+  lockfiles:
+    name: packages.lock.json in sync
+    # Hosted, with the SDK pinned to the exact version the lock files were
+    # written by. This is the only place lock-file enforcement can live: the
+    # SDK writes its own ILCompiler/ILLink.Tasks versions into the lock file,
+    # so RestoreLockedMode cannot be turned on across builders that ship
+    # different SDKs (AlmaLinux 9 has 10.0.111, the dotnet/sdk:10.0 images
+    # have 10.0.400). See Directory.Build.props.
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+      # Single source of truth for "the SDK the lock files were written with".
+      # Bumping dist/LOCKFILE_SDK and regenerating the lock files is one
+      # deliberate change; nothing here has to be edited alongside it.
+      - name: Resolve the lock-file SDK
+        id: sdk
+        run: echo "version=$(cat dist/LOCKFILE_SDK)" >> "$GITHUB_OUTPUT"
+
+      - uses: actions/setup-dotnet@26b0ec14cb23fa6904739307f278c14f94c95bf1 # v5.4.0
+        with:
+          # Exact, not 10.0.x: the SDK pins ILCompiler/ILLink.Tasks inside the
+          # lock file, so the drift check is only meaningful on the version
+          # that wrote it.
+          dotnet-version: ${{ steps.sdk.outputs.version }}
+
+      - name: Lock files match the restore graph
+        run: ./dist/check-lockfiles.sh
+
+
   build-and-test-matrix:
     runs-on: self-hosted
 
@@ -36,7 +68,7 @@ jobs:
     name: build-and-test (${{ matrix.driver }})
 
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
 
       - name: Lint workflows and composite actions
         # release.yml is only ever exercised when a tag is cut, so a mistake in
@@ -331,7 +363,7 @@ jobs:
 
       - name: Upload test results
         if: always()
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           # Per-driver name: upload-artifact rejects a duplicate name, so a
           # shared one would fail the second leg to finish.
@@ -390,7 +422,7 @@ jobs:
     # other.
 
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
 
       - name: Native AOT publish
         # This used to live only in release.yml, deliberately — the reasoning
@@ -505,7 +537,7 @@ jobs:
     # difference reaches a tag otherwise, and that is precisely the class of
     # failure this job exists to move off the release.
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
 
       - name: Podman preflight (self-heal stale state after host reboot)
         uses: ./.github/actions/podman-preflight
@@ -561,7 +593,7 @@ jobs:
     steps:
       # Full history so the packaging-scope diff below has a base to compare
       # against; checkout's default depth of 1 has none.
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
         with:
           fetch-depth: 0
 

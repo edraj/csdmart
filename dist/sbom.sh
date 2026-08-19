@@ -71,6 +71,7 @@ fi
 
 mkdir -p "$OUT"
 
+
 echo "== CycloneDX SBOM: rid=$RID version=$VERSION -> $OUT/$FILENAME"
 # -rs  recurse into ProjectReferences (Dmart.Models, Dmart.QueryGrammar)
 # -t   exclude test projects
