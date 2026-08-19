@@ -368,11 +368,17 @@ jobs:
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: linux-${{ matrix.rid }}
+          # Signature material is matched by extension rather than by
+          # subject: the SBOM is signed too, and enumerating "*.tar.gz.sig,
+          # *.tar.gz.pem" quietly left *.cdx.json.sig behind on the runner.
+          # The release then carried an SBOM that nothing vouched for, which
+          # verify-release.sh correctly refused — in the fork, which is where
+          # that was supposed to happen.
           path: |
             dist/out/*.tar.gz
-            dist/out/*.tar.gz.sig
-            dist/out/*.tar.gz.pem
             dist/out/*.cdx.json
+            dist/out/*.sig
+            dist/out/*.pem
           if-no-files-found: error
 
   publish:
