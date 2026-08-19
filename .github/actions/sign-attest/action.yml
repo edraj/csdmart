@@ -138,7 +138,6 @@ runs:
             --new-bundle-format=false \
             --output-signature "$f.sig" \
             --output-certificate "$f.pem" \
-            --bundle "$f.cosign-bundle.json" \
             "$f" 2>&1 | tee /tmp/cosign-out
           test -s "$f.sig" || { echo "::error::empty signature for $f"; exit 1; }
           test -s "$f.pem" || { echo "::error::empty certificate for $f"; exit 1; }

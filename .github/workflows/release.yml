@@ -1166,10 +1166,8 @@ jobs:
             --new-bundle-format=false \
             --output-signature SHA256SUMS-all.sig \
             --output-certificate SHA256SUMS-all.pem \
-            --bundle SHA256SUMS-all.cosign-bundle.json \
             SHA256SUMS-all
-          test -s SHA256SUMS-all.sig && test -s SHA256SUMS-all.pem \
-            && test -s SHA256SUMS-all.cosign-bundle.json
+          test -s SHA256SUMS-all.sig && test -s SHA256SUMS-all.pem
 
       - name: Attach the manifest
         env:
@@ -1177,5 +1175,4 @@ jobs:
         working-directory: assets
         run: |
           gh release upload "$GITHUB_REF_NAME" \
-            SHA256SUMS-all SHA256SUMS-all.sig SHA256SUMS-all.pem \
-            SHA256SUMS-all.cosign-bundle.json --clobber
+            SHA256SUMS-all SHA256SUMS-all.sig SHA256SUMS-all.pem --clobber

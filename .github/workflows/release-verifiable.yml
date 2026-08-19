@@ -419,10 +419,8 @@ jobs:
             --new-bundle-format=false \
             --output-signature SHA256SUMS.sig \
             --output-certificate SHA256SUMS.pem \
-            --bundle SHA256SUMS.cosign-bundle.json \
             SHA256SUMS
-          test -s SHA256SUMS.sig && test -s SHA256SUMS.pem \
-            && test -s SHA256SUMS.cosign-bundle.json
+          test -s SHA256SUMS.sig && test -s SHA256SUMS.pem
 
       # Attestations live in GitHub's API. Attaching the bundles as release
       # assets too means verification does not require an authenticated API
