@@ -17,6 +17,8 @@
 #
 # When it fails, the fix is to restore locally with that same SDK and commit
 # the resulting diff — the diff IS the review artefact.
+#
+# Exit codes:  0 in sync   1 drift found   2 cannot check (wrong SDK, dirty tree)
 set -euo pipefail
 
 cd "$(dirname "$0")/.."
@@ -32,8 +34,13 @@ if [ "$ACTUAL_SDK" != "$EXPECTED_SDK" ]; then
 fi
 
 if ! git diff --quiet -- '*packages.lock.json'; then
-	echo "check-lockfiles: lock files are already modified in the working tree;" >&2
-	echo "                 commit or stash them before running the check." >&2
+	echo "check-lockfiles: packages.lock.json files are already modified in the" >&2
+	echo "                 working tree, so there is nothing to compare against." >&2
+	echo >&2
+	echo "  If a previous run of this script regenerated them, that diff IS the" >&2
+	echo "  dependency change — review and commit it:" >&2
+	echo "      git diff -- '*packages.lock.json'" >&2
+	echo "  Otherwise stash the changes and re-run to check the committed state." >&2
 	exit 2
 fi
 
