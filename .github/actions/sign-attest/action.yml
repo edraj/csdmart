@@ -127,11 +127,13 @@ runs:
           # what verifies on cosign v2 as well as v3, and downstream operators
           # do not all run the same major.
           #
-          # --bundle additionally writes the old-style bundle: signature,
-          # certificate and Rekor entry in one file, from this same signing
-          # operation (one transparency-log entry, not two). It is what makes
-          # verification possible without reaching Rekor at verify time, which
-          # the air-gapped path in docs/VERIFYING-RELEASES.md depends on.
+          # No --bundle here, deliberately: when it is supplied, cosign v3
+          # writes the bundle INSTEAD of the detached pair, not in addition to
+          # it. Getting both would take a second signing call and therefore a
+          # second Rekor entry for the same bytes. A bundle would make
+          # verification possible without reaching the transparency log; that
+          # is a real gap, and docs/VERIFYING-RELEASES.md states it rather than
+          # pretending otherwise.
           cosign sign-blob --yes \
             --new-bundle-format=false \
             --output-signature "$f.sig" \
@@ -140,7 +142,6 @@ runs:
             "$f" 2>&1 | tee /tmp/cosign-out
           test -s "$f.sig" || { echo "::error::empty signature for $f"; exit 1; }
           test -s "$f.pem" || { echo "::error::empty certificate for $f"; exit 1; }
-          test -s "$f.cosign-bundle.json" || { echo "::error::empty bundle for $f"; exit 1; }
           idx=$(grep -oE 'index: [0-9]+' /tmp/cosign-out | head -1 | awk '{print $2}')
           echo "| \`$(basename "$f")\` | ${idx:-n/a} |" >> "$GITHUB_STEP_SUMMARY"
         done < "${RUNNER_TEMP//\\//}/sign-attest-signlist"
@@ -173,7 +174,7 @@ runs:
         fi
         FILES=()
         while IFS= read -r f; do
-          FILES+=("$f" "$f.sig" "$f.pem" "$f.cosign-bundle.json")
+          FILES+=("$f" "$f.sig" "$f.pem")
         done < "${RUNNER_TEMP//\\//}/sign-attest-signlist"
         # The subjects themselves are uploaded by the calling job's own upload
         # step; --clobber makes re-uploading them here harmless and means the

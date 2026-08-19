@@ -74,7 +74,6 @@ Useful flags:
 | `Dmart.*.nupkg` / `.snupkg` | The client/model SDK packages, same versions as on nuget.org. |
 | `<asset>.sig` | Detached cosign signature over that asset. |
 | `<asset>.pem` | The short-lived Fulcio certificate the signature was made with. Its SubjectAlternativeName is the workflow that signed. |
-| `<asset>.cosign-bundle.json` | The same signature and certificate plus the Rekor entry, in one file. Verifying from this needs no network; verifying from the `.sig`/`.pem` pair contacts the transparency log. |
 | `<asset>.cdx.json` | CycloneDX SBOM for that artifact's NuGet dependency graph. |
 | `<asset>.attestation.jsonl` | The SLSA provenance bundle, attached so verification can run without calling GitHub's API. |
 | `SHA256SUMS` | Checksums of the linux tarballs and their signature material, written by `release-verifiable.yml` at tag time. |
@@ -267,8 +266,6 @@ ISSUER=https://token.actions.githubusercontent.com
 sha256sum -c SHA256SUMS
 
 # Signature: identity pinned to an exact workflow, repo, tag and issuer.
-# Add --bundle "$FILE.cosign-bundle.json" in place of --certificate/--signature
-# to verify without contacting Rekor.
 cosign verify-blob \
   --certificate      "$FILE.pem" \
   --signature        "$FILE.sig" \
@@ -302,12 +299,20 @@ Copy the release assets in, then:
 ./scripts/verify-release.sh --tag v1.2.6 --dir ./assets --no-download --offline
 ```
 
-`--offline` verifies signatures from each `<asset>.cosign-bundle.json` (which
-carries the Rekor entry, so cosign does not reach the transparency log) and
-attestations from each `<asset>.attestation.jsonl` instead of GitHub's API.
-Sigstore's trusted root is still needed for the certificate chain; supply one
-with `gh attestation verify --custom-trusted-root` if the host has no network at
-all.
+`--offline` verifies attestations from each `<asset>.attestation.jsonl` instead
+of calling GitHub's API. Sigstore's trusted root is still needed for the
+certificate chain; supply one with `gh attestation verify
+--custom-trusted-root` if the host has no network at all.
+
+**Signature verification is not fully offline.** `cosign verify-blob` checks the
+Rekor entry for a detached `.sig`/`.pem` pair, which means reaching the
+transparency log. A Sigstore bundle would remove that, but cosign v3 writes the
+bundle *instead of* the detached pair rather than alongside it, and producing
+both would mean signing twice and logging the same artifact to Rekor twice. We
+chose the detached pair, because it is what verifies on cosign v2 as well as
+v3, and downstream operators do not all run the same major. If a genuinely
+air-gapped signature check matters to you, say so — it is a change we can make,
+not a limitation of the design.
 
 ---
 
