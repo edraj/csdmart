@@ -25,7 +25,16 @@
 # release still verifies that its SBOM describes the graph in git — without any
 # of it reaching a builder.
 #
-# Exit codes:  0 in sync   1 drift found   2 cannot check (wrong SDK)
+# The SDK's OWN packages are stripped from the record. Microsoft.DotNet.
+# ILCompiler and Microsoft.NET.ILLink.Tasks arrive with the SDK, not from this
+# project, and the same version resolves to different BYTES depending on where
+# the SDK came from: a Fedora or AlmaLinux dotnet serves them out of a local
+# library-packs folder, a Microsoft tarball out of nuget.org. Recording them
+# would mean the file only ever matched the machine that wrote it. They are
+# build tooling, they never ship, and they never appear in the SBOM — so what
+# is left is exactly the set of packages that does.
+#
+# Exit codes:  0 in sync   1 drift found   2 cannot check
 set -euo pipefail
 
 cd "$(dirname "$0")/.."
@@ -34,30 +43,49 @@ OUT="dist/deps"
 
 EXPECTED_SDK="$(cat dist/LOCKFILE_SDK)"
 ACTUAL_SDK="$(dotnet --version)"
-if [ "$ACTUAL_SDK" != "$EXPECTED_SDK" ]; then
-	echo "check-dependency-graph: SDK is $ACTUAL_SDK, but the recorded graph was" >&2
-	echo "        written by $EXPECTED_SDK (dist/LOCKFILE_SDK). The SDK stamps its" >&2
-	echo "        own ILCompiler/ILLink.Tasks versions and hashes into the graph," >&2
-	echo "        so any other version reports drift that is not yours." >&2
-	echo "        CI pins this with actions/setup-dotnet and DOTNET_INSTALL_DIR." >&2
+command -v jq >/dev/null 2>&1 || {
+	echo "check-dependency-graph: jq is required (it strips the SDK's own" >&2
+	echo "        packages out of the record)." >&2
 	exit 2
+}
+
+# A warning, not a failure. With the SDK's own packages stripped, the record is
+# portable across SDKs, so a contributor on a distro dotnet can still run this.
+# CI pins the SDK anyway (actions/setup-dotnet + DOTNET_INSTALL_DIR), which is
+# what keeps the checked-in file deterministic.
+if [ "$ACTUAL_SDK" != "$EXPECTED_SDK" ]; then
+	echo "check-dependency-graph: note — SDK is $ACTUAL_SDK, the record was" >&2
+	echo "        written by $EXPECTED_SDK (dist/LOCKFILE_SDK). That should not" >&2
+	echo "        matter; if you see drift you did not cause, it might." >&2
 fi
 
-# Any packages.lock.json left lying around WOULD be consumed by a later local
-# restore — the very thing that breaks distro builds. Clean before and after.
-cleanup() {
-	find . -name packages.lock.json -not -path './bin/*' -not -path '*/obj/*' -delete 2>/dev/null || true
-}
-trap cleanup EXIT
-cleanup
+# Restore in a pristine copy of the tracked tree rather than in place.
+# Two reasons, both learned the hard way:
+#   * A leftover obj/ from an earlier RID-specific publish changes what restore
+#     writes into the graph, so the same commit could record differently on two
+#     machines. CI always has a clean checkout; a developer never does.
+#   * Generating packages.lock.json files in the working tree is exactly the
+#     thing that breaks distro builds if one is left behind.
+# `git ls-files` gives the tracked files AS THEY ARE in the worktree, so an
+# uncommitted csproj edit — the usual reason to run this — is still what gets
+# measured. bin/ and obj/ are gitignored and therefore excluded.
+WORK="$(mktemp -d "${TMPDIR:-/tmp}/dmart-depgraph.XXXXXX")"
+trap 'rm -rf "$WORK"' EXIT
+git ls-files -z | while IFS= read -r -d '' f; do
+	mkdir -p "$WORK/$(dirname "$f")"
+	cp "$f" "$WORK/$f"
+done
 
-echo "== restoring with SDK $ACTUAL_SDK"
+echo "== restoring with SDK $ACTUAL_SDK in $WORK"
 LOCK=-p:RestorePackagesWithLockFile=true
-dotnet restore dmart.slnx $LOCK --nologo
-# Not in the solution, but they are shipped SDK samples and their dependencies
-# are worth the same scrutiny.
-dotnet restore custom_plugins_sdk/sample_hook/sample_hook.csproj $LOCK --nologo
-dotnet restore custom_plugins_sdk/sample_api/sample_api.csproj $LOCK --nologo
+(
+	cd "$WORK"
+	dotnet restore dmart.slnx $LOCK --nologo
+	# Not in the solution, but they are shipped SDK samples and their
+	# dependencies deserve the same scrutiny.
+	dotnet restore custom_plugins_sdk/sample_hook/sample_hook.csproj $LOCK --nologo
+	dotnet restore custom_plugins_sdk/sample_api/sample_api.csproj $LOCK --nologo
+)
 
 mkdir -p "$OUT"
 rm -f "$OUT"/*.lock.json
@@ -69,8 +97,13 @@ while IFS= read -r f; do
 	else
 		slug="$(printf '%s' "$dir" | tr '/' '_')"
 	fi
-	cp "$f" "$OUT/$slug.lock.json"
-done < <(find . -name packages.lock.json -not -path './bin/*' -not -path '*/obj/*' | sort)
+	# Strip the SDK's own packages (see the header) and normalise key order so
+	# the file is a function of the graph, not of restore's iteration order.
+	jq -S '.dependencies |= with_entries(
+	         .value |= with_entries(
+	           select(.key | test("^(Microsoft\\.DotNet\\.ILCompiler|Microsoft\\.NET\\.ILLink\\.Tasks|runtime\\..*\\.Microsoft\\.DotNet\\.ILCompiler)$") | not)))' \
+	   "$WORK/$f" > "$OUT/$slug.lock.json"
+done < <(cd "$WORK" && find . -name packages.lock.json | sort)
 
 COUNT=$(find "$OUT" -name '*.lock.json' | wc -l)
 if [ "$COUNT" -lt 6 ]; then
@@ -80,7 +113,10 @@ if [ "$COUNT" -lt 6 ]; then
 fi
 echo "== recorded $COUNT project graphs under $OUT"
 
-if git diff --quiet -- "$OUT"; then
+# `git status --porcelain`, not `git diff`: a diff only sees files git already
+# tracks, so a graph recorded for a NEW project would be untracked and the
+# check would pass while saying nothing about it.
+if [ -z "$(git status --porcelain -- "$OUT")" ]; then
 	echo "== dependency graph is unchanged"
 	exit 0
 fi
@@ -90,7 +126,7 @@ echo "check-dependency-graph: the recorded dependency graph does not match this"
 echo "        restore. A package changed — which is exactly what this file" >&2
 echo "        exists to make visible. Diff:" >&2
 echo >&2
-git --no-pager diff --stat -- "$OUT" >&2
+git --no-pager status --short -- "$OUT" >&2
 git --no-pager diff -- "$OUT" | head -80 >&2
 echo >&2
 echo "Fix: if the change is intended, commit $OUT — that diff is the review." >&2
