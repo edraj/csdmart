@@ -306,13 +306,18 @@ certificate chain; supply one with `gh attestation verify
 
 **Signature verification is not fully offline.** `cosign verify-blob` checks the
 Rekor entry for a detached `.sig`/`.pem` pair, which means reaching the
-transparency log. A Sigstore bundle would remove that, but cosign v3 writes the
-bundle *instead of* the detached pair rather than alongside it, and producing
-both would mean signing twice and logging the same artifact to Rekor twice. We
-chose the detached pair, because it is what verifies on cosign v2 as well as
-v3, and downstream operators do not all run the same major. If a genuinely
-air-gapped signature check matters to you, say so — it is a change we can make,
-not a limitation of the design.
+transparency log.
+
+The detached pair is what we publish, and the reason is worth knowing if you
+are auditing this: **releases are signed with cosign v2.** cosign v3 routes
+keyless signing through a TUF signing config and in that mode will only emit a
+Sigstore bundle — a detached signature is no longer expressible. A bundle would
+carry the Rekor entry with it and make verification fully offline, but it would
+also change the published asset shape, so it is a deliberate future change
+rather than something to slip in. Verification is unaffected either way:
+cosign v3's `verify-blob` accepts a v2-signed detached pair, and the release
+workflow proves that on every run by signing with v2 and then verifying its own
+release with v3.
 
 ---
 

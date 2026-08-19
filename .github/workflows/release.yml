@@ -1135,8 +1135,9 @@ jobs:
     steps:
       - uses: sigstore/cosign-installer@6f9f17788090df1f26f669e9d70d6ae9567deba6 # v4.1.2
         with:
-          # See .github/actions/sign-attest/action.yml.
-          cosign-release: 'v3.0.6'
+          # v2, deliberately — cosign v3 keyless cannot emit a detached
+          # signature. See .github/actions/sign-attest/action.yml.
+          cosign-release: 'v2.6.1'
 
       - name: Download every asset on the release
         env:

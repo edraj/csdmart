@@ -51,12 +51,23 @@ runs:
     - name: Install cosign
       uses: sigstore/cosign-installer@6f9f17788090df1f26f669e9d70d6ae9567deba6 # v4.1.2
       with:
-        # Pin the cosign binary too, not just the action that installs it.
-        # v4.1.2 of the action installs cosign v3 by default, and v3 flipped
-        # sign-blob to the new Sigstore bundle format — which silently ignores
-        # --output-signature/--output-certificate and then fails outright with
-        # no --bundle. The action version alone does not pin that behaviour.
-        cosign-release: 'v3.0.6'
+        # Pin the cosign binary, not just the action that installs it — and pin
+        # it to v2, deliberately.
+        #
+        # cosign v3 routes keyless signing through a TUF-provided signing
+        # config, and in that mode refuses to emit a detached signature at all:
+        #   must provide --new-bundle-format or --bundle where applicable
+        #   with --signing-config or --use-signing-config
+        # Its only output is a Sigstore bundle. v2 writes the detached
+        # .sig + .pem pair this release chain publishes, and cosign v3's
+        # verify-blob still accepts that pair — so pinning the SIGNER to v2
+        # constrains us, not the operators verifying us, who may run either
+        # major.
+        #
+        # Migrating to bundles is a real future task, not a hypothetical: v2
+        # will not be supported forever. It changes the published asset shape,
+        # so it belongs in its own change with its own fork test.
+        cosign-release: 'v2.6.1'
 
     - name: Resolve subjects
       id: resolve
@@ -121,11 +132,10 @@ runs:
           # plus signature go into Rekor. The certificate's SAN records the
           # workflow ref, which is what verification pins against.
           #
-          # --new-bundle-format=false is load-bearing, not habit. cosign v3
-          # defaults it to true, and in that mode the two --output-* flags are
-          # accepted, warned about, and then ignored. Detached .sig + .pem is
-          # what verifies on cosign v2 as well as v3, and downstream operators
-          # do not all run the same major.
+          # --new-bundle-format=false is explicit rather than relying on v2's
+          # default, so that a future cosign bump cannot quietly change what
+          # this publishes: under the new format the two --output-* flags are
+          # accepted, warned about, and then ignored.
           #
           # No --bundle here, deliberately: when it is supplied, cosign v3
           # writes the bundle INSTEAD of the detached pair, not in addition to

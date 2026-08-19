@@ -395,9 +395,9 @@ jobs:
 
       - uses: sigstore/cosign-installer@6f9f17788090df1f26f669e9d70d6ae9567deba6 # v4.1.2
         with:
-          # See .github/actions/sign-attest/action.yml — the action version
-          # does not pin cosign's output format; the cosign version does.
-          cosign-release: 'v3.0.6'
+          # v2, deliberately — cosign v3 keyless cannot emit a detached
+          # signature. See .github/actions/sign-attest/action.yml.
+          cosign-release: 'v2.6.1'
 
       - name: SHA256SUMS over everything this workflow produced
         working-directory: dist/out
@@ -523,8 +523,10 @@ jobs:
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
       - uses: sigstore/cosign-installer@6f9f17788090df1f26f669e9d70d6ae9567deba6 # v4.1.2
         with:
-          # See .github/actions/sign-attest/action.yml — the action version
-          # does not pin cosign's output format; the cosign version does.
+          # v3 here, on purpose, while everything above signs with v2. The
+          # docs tell operators a detached .sig/.pem pair verifies on either
+          # cosign major; this is the only thing that actually proves it, and
+          # it proves it on every release rather than once in a fork.
           cosign-release: 'v3.0.6'
       - name: scripts/verify-release.sh
         env:
