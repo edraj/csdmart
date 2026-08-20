@@ -10,6 +10,49 @@ permissions:
   contents: read
 
 jobs:
+  dependency-graph:
+    name: dependency graph in sync
+    # Hosted, with the SDK pinned to the exact version that recorded the graph.
+    # This is the only place the check can live. A committed packages.lock.json
+    # would have been the obvious mechanism and does not work here: distro .NET
+    # builds resolve the SDK-injected ILCompiler/ILLink.Tasks from a local
+    # library-packs folder whose content hashes differ from nuget.org's
+    # (NU1403), and their versions follow the SDK, which differs across our
+    # builders (NU1004). dist/check-dependency-graph.sh explains both.
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+      # Single source of truth for "the SDK the lock files were written with".
+      # Bumping dist/LOCKFILE_SDK and regenerating the lock files is one
+      # deliberate change; nothing here has to be edited alongside it.
+      - name: Resolve the lock-file SDK
+        id: sdk
+        run: echo "version=$(cat dist/LOCKFILE_SDK)" >> "$GITHUB_OUTPUT"
+
+      - uses: actions/setup-dotnet@26b0ec14cb23fa6904739307f278c14f94c95bf1 # v5.4.0
+        env:
+          # Install into an empty directory rather than the image's shared
+          # /usr/share/dotnet. Asking for an exact dotnet-version only controls
+          # what gets INSTALLED, not what gets SELECTED: global.json says
+          # rollForward: latestFeature, so the muxer picks the highest feature
+          # band present, and the runner image already ships its own .NET 10
+          # SDK. Requesting 10.0.110 next to a preinstalled 10.0.4xx therefore
+          # runs 10.0.4xx — and the graph would look like it had drifted. An
+          # isolated root leaves exactly one SDK to select.
+          DOTNET_INSTALL_DIR: ${{ runner.temp }}/dotnet-lockfile-sdk
+        with:
+          # Exact, not 10.0.x: the SDK stamps its own ILCompiler/ILLink.Tasks
+          # versions and content hashes into the recorded graph, so the drift
+          # check is only meaningful on the version that wrote it.
+          dotnet-version: ${{ steps.sdk.outputs.version }}
+
+      - name: Recorded dependency graph matches a fresh restore
+        run: ./dist/check-dependency-graph.sh
+
+
   build-and-test-matrix:
     runs-on: self-hosted
 
@@ -36,7 +79,7 @@ jobs:
     name: build-and-test (${{ matrix.driver }})
 
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
 
       - name: Lint workflows and composite actions
         # release.yml is only ever exercised when a tag is cut, so a mistake in
@@ -331,7 +374,7 @@ jobs:
 
       - name: Upload test results
         if: always()
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           # Per-driver name: upload-artifact rejects a duplicate name, so a
           # shared one would fail the second leg to finish.
@@ -390,7 +433,7 @@ jobs:
     # other.
 
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
 
       - name: Native AOT publish
         # This used to live only in release.yml, deliberately — the reasoning
@@ -505,7 +548,7 @@ jobs:
     # difference reaches a tag otherwise, and that is precisely the class of
     # failure this job exists to move off the release.
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
 
       - name: Podman preflight (self-heal stale state after host reboot)
         uses: ./.github/actions/podman-preflight
@@ -561,7 +604,7 @@ jobs:
     steps:
       # Full history so the packaging-scope diff below has a base to compare
       # against; checkout's default depth of 1 has none.
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
         with:
           fetch-depth: 0
 

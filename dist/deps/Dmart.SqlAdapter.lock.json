@@ -1,0 +1,91 @@
+{
+  "dependencies": {
+    "net10.0": {
+      "Microsoft.Extensions.DependencyInjection.Abstractions": {
+        "contentHash": "L3AdmZ1WOK4XXT5YFPEwyt0ep6l8lGIPs7F5OOBZc77Zqeo01Of7XXICy47628sdVl0v/owxYJTe86DTgFwKCA==",
+        "resolved": "10.0.0",
+        "type": "Transitive"
+      },
+      "Microsoft.Extensions.Logging.Abstractions": {
+        "contentHash": "FU/IfjDfwaMuKr414SSQNTIti/69bHEMb+QKrskRb26oVqpx3lNFXMjs/RC9ZUuhBhcwDM2BwOgoMw+PZ+beqQ==",
+        "dependencies": {
+          "Microsoft.Extensions.DependencyInjection.Abstractions": "10.0.0"
+        },
+        "resolved": "10.0.0",
+        "type": "Transitive"
+      },
+      "Npgsql": {
+        "contentHash": "q5RfBI+wywJSFUNDE1L4ZbHEHCFTblo8Uf6A6oe4feOUFYiUQXyAf9GBh5qEZpvJaHiEbpBPkQumjEhXCJxdrg==",
+        "dependencies": {
+          "Microsoft.Extensions.Logging.Abstractions": "10.0.0"
+        },
+        "requested": "[10.0.2, )",
+        "resolved": "10.0.2",
+        "type": "Direct"
+      },
+      "dmart.models": {
+        "type": "Project"
+      },
+      "dmart.querygrammar": {
+        "type": "Project"
+      }
+    },
+    "net8.0": {
+      "Microsoft.Extensions.DependencyInjection.Abstractions": {
+        "contentHash": "cjWrLkJXK0rs4zofsK4bSdg+jhDLTaxrkXu4gS6Y7MAlCvRyNNgwY/lJi5RDlQOnSZweHqoyvgvbdvQsRIW+hg==",
+        "resolved": "8.0.0",
+        "type": "Transitive"
+      },
+      "Microsoft.Extensions.Logging.Abstractions": {
+        "contentHash": "arDBqTgFCyS0EvRV7O3MZturChstm50OJ0y9bDJvAcmEPJm0FFpFyjU/JLYyStNGGey081DvnQYlncNX5SJJGA==",
+        "dependencies": {
+          "Microsoft.Extensions.DependencyInjection.Abstractions": "8.0.0"
+        },
+        "resolved": "8.0.0",
+        "type": "Transitive"
+      },
+      "Npgsql": {
+        "contentHash": "q5RfBI+wywJSFUNDE1L4ZbHEHCFTblo8Uf6A6oe4feOUFYiUQXyAf9GBh5qEZpvJaHiEbpBPkQumjEhXCJxdrg==",
+        "dependencies": {
+          "Microsoft.Extensions.Logging.Abstractions": "8.0.0",
+          "System.Diagnostics.DiagnosticSource": "9.0.11"
+        },
+        "requested": "[10.0.2, )",
+        "resolved": "10.0.2",
+        "type": "Direct"
+      },
+      "System.Diagnostics.DiagnosticSource": {
+        "contentHash": "/QzMFklOm8Ak//YB0I2kR+ByxUndT63ucrRWQm0xZsuLExJWrVDeGKtYZDuBackd9dThbwMdOotIEc4c4KwJiw==",
+        "resolved": "9.0.11",
+        "type": "Transitive"
+      },
+      "System.IO.Pipelines": {
+        "contentHash": "NfGnevAV0r2gqtZWxa/7uCm3MNRYz1o4WRHhFahgBq46LuG2eaLwXIlPgtgaRUvf9CCrGFnuzN47MOzJUH1HKg==",
+        "resolved": "9.0.11",
+        "type": "Transitive"
+      },
+      "System.Text.Encodings.Web": {
+        "contentHash": "l5L3Ov+pyD0dfK2bv6IMU2KPEyaaWnix6U0/YhgkNBGEOAgVTVlvh5ZyXWuuRlCtLnOziz+VtM5HFeqLlH2AbA==",
+        "resolved": "9.0.11",
+        "type": "Transitive"
+      },
+      "System.Text.Json": {
+        "contentHash": "DGToqSFbBSU6pMSbZuJ+7jDvLa73rvpcYdGFqZIB3FKdCVlEAbrBJrl9PuCT6E0QbdhXjPwqalYc5lxjUqMQzw==",
+        "dependencies": {
+          "System.IO.Pipelines": "9.0.11",
+          "System.Text.Encodings.Web": "9.0.11"
+        },
+        "requested": "[9.0.11, )",
+        "resolved": "9.0.11",
+        "type": "Direct"
+      },
+      "dmart.models": {
+        "type": "Project"
+      },
+      "dmart.querygrammar": {
+        "type": "Project"
+      }
+    }
+  },
+  "version": 1
+}

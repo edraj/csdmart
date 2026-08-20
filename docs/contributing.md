@@ -321,9 +321,53 @@ fi
 If the scenario depends on optional components (a plugin, CXB), use the
 `_route_absent` helper to skip gracefully on 404/422+code 230.
 
+## Add or change a NuGet dependency
+
+The full resolved graph — direct and transitive, with content hashes — is
+recorded in git under `dist/deps/`, so a dependency change is two edits:
+
+```sh
+# 1. Edit the PackageReference in the csproj as usual, then:
+./dist/check-dependency-graph.sh     # re-records and reports the drift
+git add dist/deps
+```
+
+The script fails if the recorded graph disagrees with a fresh restore. That
+diff is the point: it turns "a transitive dependency changed" from something
+you discover in a later SBOM into something a reviewer sees in the pull
+request. CI runs the same script in the `dependency-graph` job, and both
+release workflows run it before generating any SBOM.
+
+**It must run on the exact SDK named in `dist/LOCKFILE_SDK`.** The SDK stamps
+its own bundled `Microsoft.DotNet.ILCompiler` and `Microsoft.NET.ILLink.Tasks`
+versions — and their content hashes — into the graph, so a different SDK, even
+one patch apart, reports drift that is not yours. The script refuses to run on
+the wrong version rather than producing a misleading diff. If you are
+deliberately moving to a newer SDK, update `dist/LOCKFILE_SDK`, re-record, and
+say so in the PR.
+
+### Why these are not committed `packages.lock.json` files
+
+Because a lock file is a build input, and this repo's builders cannot agree on
+one. `packages.lock.json` is gitignored, and both failures below were observed
+in CI, not theorised:
+
+- **NU1403** — a lock file stores content hashes. Distro .NET installations
+  (the Fedora self-hosted runners, the AlmaLinux 9 container) resolve the
+  SDK-injected ILCompiler/ILLink.Tasks from a local `library-packs` folder
+  whose hashes differ from nuget.org's, so hash validation fails on *every*
+  restore there, not only in locked mode.
+- **NU1004** — the versions of those same packages follow the SDK. AlmaLinux 9
+  ships 10.0.111; the `dotnet/sdk:10.0` images behind the `.deb` and the APKs
+  ship 10.0.400.
+
+Keeping the graph under `dist/deps/`, where MSBuild never reads it, gives the
+review and release guarantees without any of it reaching a builder.
+
 ## Checklist before PR
 
 - [ ] `dotnet build -c Release -nologo` succeeds with 0 warnings.
+- [ ] `./dist/check-dependency-graph.sh` is clean (or `dist/deps` changes are committed).
 - [ ] `./build.sh --aot` succeeds (AOT publish). 0 warnings.
 - [ ] `dotnet test dmart.Tests/ -c Release` — all green, new tests added.
 - [ ] `./curl.sh` — all green against a fresh server.
