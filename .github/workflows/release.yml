@@ -108,13 +108,28 @@ jobs:
       - name: Recorded dependency graph matches a fresh restore
         run: ./dist/check-dependency-graph.sh
 
+      # Node for dist/frontend-sbom.sh: the embedded cxb/catalog SPAs' npm trees
+      # are resolved with npm; syft is installed by the script itself.
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: '22'
+
+      - name: Enable Corepack (yarn for the frontend SBOM)
+        run: corepack enable
+
       - name: Generate one SBOM per shipped runtime identifier
         run: |
           set -euo pipefail
           V="$(dist/release-version.sh)"
+          mkdir -p sboms
+          # The embedded Svelte frontends are RID-independent, so build their
+          # runtime-npm SBOM once and merge it into every per-RID document.
+          ./dist/frontend-sbom.sh --version "$V" --out sboms/frontends.cdx.json
           for RID in linux-x64 linux-musl-x64 linux-musl-arm64 win-x64 osx-arm64; do
-            ./dist/sbom.sh --rid "$RID" --version "$V" --out sboms
+            ./dist/sbom.sh --rid "$RID" --version "$V" --out sboms \
+              --frontend sboms/frontends.cdx.json
           done
+          rm -f sboms/frontends.cdx.json   # intermediate, not a per-RID artifact
           ls -l sboms
 
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
