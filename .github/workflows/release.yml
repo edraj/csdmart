@@ -114,6 +114,9 @@ jobs:
         with:
           node-version: '22'
 
+      - name: Enable Corepack (yarn for the frontend SBOM)
+        run: corepack enable
+
       - name: Generate one SBOM per shipped runtime identifier
         run: |
           set -euo pipefail

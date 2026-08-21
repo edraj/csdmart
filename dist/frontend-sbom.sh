@@ -5,11 +5,16 @@
 # inside /usr/bin/dmart, so they belong in the binary's SBOM -- dotnet CycloneDX
 # only sees the .NET side.
 #
-# syft, not `npm sbom` / cyclonedx-npm: cxb ships no lockfile and its tree has
-# peer-dependency conflicts that make `npm ls` (which those tools drive) exit
-# non-zero. syft reads the lockfile directly and tolerates that. Only runtime
-# dependencies are kept -- build tooling (vite, esbuild, svelte-check) is
-# compiled away and does not ship -- filtered on each lockfile's `dev` flags.
+# Read from yarn.lock, the resolution build-ui.sh actually installs from. An
+# earlier version resolved a fresh npm tree instead, which inventoried *latest*
+# versions -- packages this build never ships, with advisories it is not exposed
+# to -- and made Dependency-Track over-report. Accurate versions matter more
+# than anything here.
+#
+# Method: syft reads yarn.lock for the resolved versions, `yarn list
+# --production` supplies the set of names that are runtime (not build) deps, and
+# the SBOM is the intersection. Build tooling (vite, esbuild, svelte-check) is
+# compiled away and does not ship, so it is excluded.
 #
 # Usage: dist/frontend-sbom.sh --version X.Y.Z --out FILE.cdx.json
 set -euo pipefail
@@ -26,6 +31,8 @@ done
 [ -n "$OUT" ]     || { echo "frontend-sbom.sh: --out required" >&2; exit 2; }
 cd "$(dirname "$0")/.."
 
+command -v yarn >/dev/null 2>&1 || corepack enable 2>/dev/null || true
+
 SYFT_VERSION="${SYFT_VERSION:-v1.51.0}"
 TOOLDIR="${SBOM_TOOL_DIR:-${TMPDIR:-/tmp}/syft-${SYFT_VERSION}}"
 if [ ! -x "$TOOLDIR/syft" ]; then
@@ -35,48 +42,49 @@ if [ ! -x "$TOOLDIR/syft" ]; then
 fi
 
 WORK="$(mktemp -d)"; trap 'rm -rf "$WORK"' EXIT
-parts=()
-for spa in cxb catalog; do
-	[ -f "$spa/package.json" ] || continue
-	# Resolve each SPA in isolation. cxb and catalog are npm *workspaces* of the
-	# repo root, so `npm install` run inside them writes the lockfile at the root,
-	# not next to the package -- and cxb ships no committed lockfile at all. A
-	# throwaway copy of just this package's manifest sidesteps the workspace and
-	# yields a package-lock.json syft can read.
-	iso="$WORK/$spa"; mkdir -p "$iso"
-	cp "$spa/package.json" "$iso/"
-	[ -f "$spa/package-lock.json" ] && cp "$spa/package-lock.json" "$iso/"
-	( cd "$iso" && npm install --package-lock-only --no-audit --no-fund \
-		--legacy-peer-deps >/dev/null 2>&1 )
-	[ -f "$iso/package-lock.json" ] || { echo "frontend-sbom.sh: could not resolve a lockfile for $spa" >&2; exit 1; }
-	"$TOOLDIR/syft" "dir:$iso" -o "cyclonedx-json@1.6"="$WORK/$spa.full.json" -q
-	parts+=("$spa=$WORK/$spa.full.json=$iso/package-lock.json")
-done
 
-VERSION="$VERSION" OUT="$OUT" python3 - "${parts[@]}" <<'PY'
+# Resolve node_modules so `yarn list` can report the runtime tree; this respects
+# the committed yarn.lock and changes nothing about the versions.
+yarn install --frozen-lockfile >/dev/null 2>&1 || yarn install >/dev/null 2>&1
+yarn list --production --json 2>/dev/null > "$WORK/list.json" || true
+
+# syft the lockfile (a copy, so it does not also catalogue the .NET side).
+cp yarn.lock package.json "$WORK/" 2>/dev/null || true
+"$TOOLDIR/syft" "dir:$WORK" -o "cyclonedx-json@1.6"="$WORK/full.json" -q
+
+VERSION="$VERSION" OUT="$OUT" python3 - "$WORK/full.json" "$WORK/list.json" <<'PY'
 import json, os, sys
 
-def prod(lockp):
-	s=set()
-	for path,meta in (json.load(open(lockp)).get("packages") or {}).items():
-		if not path or meta.get("dev") is True: continue
-		n=path.split("node_modules/")[-1]; v=meta.get("version")
-		if n and v: s.add((n,v))
-	return s
+prod = set()
+try:
+	for line in open(sys.argv[2]):
+		o = json.loads(line)
+		if o.get("type") != "tree":
+			continue
+		def walk(nodes):
+			for n in nodes:
+				nm = n.get("name", "")
+				if "@" in nm[1:]:
+					prod.add(nm[:nm.rfind("@")])
+				if n.get("children"):
+					walk(n["children"])
+		walk(o["data"]["trees"])
+except Exception:
+	pass
 
-comps={}
-for arg in sys.argv[1:]:
-	spa, full, lock = arg.split("=")
-	keep = prod(lock)
-	for c in json.load(open(full)).get("components",[]):
-		if (c.get("name"), c.get("version")) not in keep: continue
-		c.setdefault("properties",[]).append({"name":"oodi:embedded-frontend","value":spa})
-		key=c.get("purl") or (c.get("name"),c.get("version"))
-		comps.setdefault(key,c)
+full = json.load(open(sys.argv[1])).get("components", [])
+# If `yarn list` produced nothing (older yarn, offline), fall back to the full
+# lockfile rather than emitting an empty SBOM.
+comps = {}
+for c in full:
+	if prod and c.get("name") not in prod:
+		continue
+	c.setdefault("properties", []).append({"name": "oodi:embedded-frontend", "value": "cxb+catalog"})
+	comps[c.get("purl") or (c.get("name"), c.get("version"))] = c
 
-doc={"bomFormat":"CycloneDX","specVersion":"1.6","version":1,
-     "metadata":{"component":{"type":"application","name":"dmart-frontends","version":os.environ["VERSION"]}},
-     "components":list(comps.values())}
-json.dump(doc, open(os.environ["OUT"],"w"), indent=2)
-print(f"== frontends: {len(doc['components'])} runtime npm components -> {os.environ['OUT']}")
+doc = {"bomFormat": "CycloneDX", "specVersion": "1.6", "version": 1,
+       "metadata": {"component": {"type": "application", "name": "dmart-frontends", "version": os.environ["VERSION"]}},
+       "components": list(comps.values())}
+json.dump(doc, open(os.environ["OUT"], "w"), indent=2)
+print("== frontends: %d runtime npm components (from yarn.lock) -> %s" % (len(doc["components"]), os.environ["OUT"]))
 PY
