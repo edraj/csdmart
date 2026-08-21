@@ -32,6 +32,7 @@ RID=""
 VERSION=""
 OUT=""
 FILENAME=""
+FRONTEND=""
 
 while [ $# -gt 0 ]; do
 	case "$1" in
@@ -39,6 +40,7 @@ while [ $# -gt 0 ]; do
 		--version)   VERSION="$2"; shift 2 ;;
 		--out)       OUT="$2"; shift 2 ;;
 		--filename)  FILENAME="$2"; shift 2 ;;
+		--frontend)  FRONTEND="$2"; shift 2 ;;
 		-h|--help)
 			awk 'NR>1 && /^#/ {sub(/^# ?/, ""); print; next} NR>1 {exit}' "$0"
 			exit 0 ;;
@@ -99,3 +101,31 @@ if [ "${COMPONENTS:-0}" -lt 5 ]; then
 	exit 1
 fi
 echo "== $FILENAME: $COMPONENTS components"
+
+# Merge the embedded Svelte frontends (cxb, catalog). dmart compiles their built
+# SPAs into the AOT binary via ManifestEmbeddedFileProvider, so their npm
+# dependencies ship inside /usr/bin/dmart; a .NET-only SBOM understates what is
+# deployed. The frontend document is produced once by dist/frontend-sbom.sh.
+if [ -n "$FRONTEND" ]; then
+	[ -r "$FRONTEND" ] || { echo "sbom.sh: --frontend $FRONTEND not readable" >&2; exit 1; }
+	python3 - "$OUT/$FILENAME" "$FRONTEND" <<'PY'
+import json, sys
+base = json.load(open(sys.argv[1]))
+front = json.load(open(sys.argv[2]))
+seen = {c.get("purl") or (c.get("name"), c.get("version")) for c in base.get("components", [])}
+added = 0
+for c in front.get("components", []):
+    k = c.get("purl") or (c.get("name"), c.get("version"))
+    if k not in seen:
+        base.setdefault("components", []).append(c)
+        seen.add(k)
+        added += 1
+# A merged dependency graph would reference bom-refs from the other document
+# that no longer resolve; Dependency-Track rejects a dangling ref, so drop it.
+base.pop("dependencies", None)
+json.dump(base, open(sys.argv[1], "w"), indent=2)
+print("== merged %d frontend components into %s" % (added, sys.argv[1].split("/")[-1]))
+PY
+	COMPONENTS=$(grep -c '"purl"' "$OUT/$FILENAME" || true)
+	echo "== $FILENAME: $COMPONENTS components (server + frontends)"
+fi
