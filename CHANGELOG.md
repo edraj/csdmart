@@ -12,6 +12,10 @@
   Test-only fix, plus new regression pins (`SqliteTimestampRangeTests`) that
   hold the SQLite timestamp storage format, the epoch-ms bound expression,
   and the server binding path together.
+- **An empty `filter_tags` set emits a safe constant-false predicate.** The
+  PostgreSQL containment seam produced an empty `()` for a zero-length value
+  list (a syntax error); the sole caller guards on a non-empty set, but the
+  seam now returns `FALSE`, matching the SQLite dialect which already did.
 
 ### Performance
 
@@ -47,6 +51,24 @@
 - **`JsonbHelpers.EnumMember` no longer reflects per call** — the
   `[EnumMember]` map is built once per enum type; the helper runs several
   times on every request.
+
+## v1.2.6 — 2026-08-22
+
+### Security
+
+- **Frontend dependency advisories cleared.** `yarn audit --groups dependencies`
+  flagged esbuild (<0.25.0, GHSA-67mh-4wv8-2f99) and @tootallnate/once (<2.0.1)
+  in the embedded cxb/catalog SPAs; both are pinned forward via `resolutions`.
+  The audit is now clean and both SPAs still build.
+
+### Changed
+
+- **The published SBOM now covers the embedded frontends.** dmart compiles the
+  cxb and catalog Svelte SPAs into the AOT binary, so their npm dependencies
+  ship inside the executable. `dist/frontend-sbom.sh` reads them from `yarn.lock`
+  (the resolution the build installs from) and merges them into every per-RID
+  CycloneDX document — the SBOM went from the .NET graph alone to the full
+  server-plus-frontend inventory.
 
 ## v1.2.5 — 2026-08-18
 

@@ -5,16 +5,21 @@ on:
   release:
     types: [created]
 
-permissions:
-  contents: write
-  packages: write
+# Nothing at workflow level. Each job opens only the scopes it needs — the
+# supply-chain jobs need id-token/attestations write, and a blanket grant here
+# would hand those to every job in the file, including ones that only build.
+permissions: {}
 
 jobs:
   build-ui-tarballs:
     name: Build UI tarballs (cxb + catalog)
     runs-on: self-hosted
+    permissions:
+      contents: write       # upload assets to the release
+      id-token: write       # OIDC token for cosign + attestations
+      attestations: write   # store the attestation against this repo
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
         with:
           fetch-depth: 0
 
@@ -24,8 +29,7 @@ jobs:
       - name: Set version
         id: version
         run: |
-          VERSION="${GITHUB_REF_NAME#v}"
-          echo "version=${VERSION:-0.1.0}" >> "$GITHUB_OUTPUT"
+          echo "version=$(dist/release-version.sh)" >> "$GITHUB_OUTPUT"
 
       - name: Package tarballs
         run: |
@@ -37,6 +41,16 @@ jobs:
           tar -czf "dist/out/catalog-${V}.tar.gz" -C catalog/dist/client .
           ls -lh dist/out/*.tar.gz
 
+      - name: Sign and attest the UI bundles
+        uses: ./.github/actions/sign-attest
+        with:
+          subjects: |
+            dist/out/cxb-*.tar.gz
+            dist/out/catalog-*.tar.gz
+          github-token: ${{ github.token }}
+          upload-to-release: ${{ github.event_name == 'release' }}
+          tag: ${{ github.ref_name }}
+
       - name: Upload UI tarballs to release
         if: github.event_name == 'release'
         env:
@@ -45,29 +59,108 @@ jobs:
           gh release upload "$GITHUB_REF_NAME" \
             dist/out/cxb-*.tar.gz dist/out/catalog-*.tar.gz --clobber
 
-      - uses: actions/upload-artifact@v7
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: ui-tarballs
           path: dist/out/*.tar.gz
 
+  sboms:
+    name: CycloneDX SBOMs (one per target)
+    # Hosted, and only one job for every target. A CycloneDX SBOM is a
+    # restore-graph document: it depends on the tagged source and a .NET SDK,
+    # not on the target's OS or CPU. Generating them all here keeps `dotnet`
+    # off the self-hosted packaging runners — those build inside containers and
+    # have no SDK of their own — while still producing the graph the packages
+    # were actually built from, in this run, from this commit.
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+        with:
+          fetch-depth: 0
+
+      # Single source of truth for "the SDK the lock files were written with".
+      # Bumping dist/LOCKFILE_SDK and regenerating the lock files is one
+      # deliberate change; nothing here has to be edited alongside it.
+      - name: Resolve the lock-file SDK
+        id: sdk
+        run: echo "version=$(cat dist/LOCKFILE_SDK)" >> "$GITHUB_OUTPUT"
+
+      - uses: actions/setup-dotnet@26b0ec14cb23fa6904739307f278c14f94c95bf1 # v5.4.0
+        env:
+          # Install into an empty directory rather than the image's shared
+          # /usr/share/dotnet. Asking for an exact dotnet-version only controls
+          # what gets INSTALLED, not what gets SELECTED: global.json says
+          # rollForward: latestFeature, so the muxer picks the highest feature
+          # band present, and the runner image already ships its own .NET 10
+          # SDK. Requesting 10.0.110 next to a preinstalled 10.0.4xx therefore
+          # runs 10.0.4xx — and the graph would look like it had drifted. An
+          # isolated root leaves exactly one SDK to select.
+          DOTNET_INSTALL_DIR: ${{ runner.temp }}/dotnet-lockfile-sdk
+        with:
+          # Exact, not 10.0.x: the SDK stamps its own ILCompiler/ILLink.Tasks
+          # versions and content hashes into the recorded graph, so the drift
+          # check is only meaningful on the version that wrote it.
+          dotnet-version: ${{ steps.sdk.outputs.version }}
+
+      - name: Recorded dependency graph matches a fresh restore
+        run: ./dist/check-dependency-graph.sh
+
+      # Node for dist/frontend-sbom.sh: the embedded cxb/catalog SPAs' npm trees
+      # are resolved with npm; syft is installed by the script itself.
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: '22'
+
+      - name: Enable Corepack (yarn for the frontend SBOM)
+        run: corepack enable
+
+      - name: Generate one SBOM per shipped runtime identifier
+        run: |
+          set -euo pipefail
+          V="$(dist/release-version.sh)"
+          mkdir -p sboms
+          # The embedded Svelte frontends are RID-independent, so build their
+          # runtime-npm SBOM once and merge it into every per-RID document.
+          ./dist/frontend-sbom.sh --version "$V" --out sboms/frontends.cdx.json
+          for RID in linux-x64 linux-musl-x64 linux-musl-arm64 win-x64 osx-arm64; do
+            ./dist/sbom.sh --rid "$RID" --version "$V" --out sboms \
+              --frontend sboms/frontends.cdx.json
+          done
+          rm -f sboms/frontends.cdx.json   # intermediate, not a per-RID artifact
+          ls -l sboms
+
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: sboms
+          path: sboms/*.cdx.json
+          if-no-files-found: error
+
   publish-nuget:
     name: Publish Dmart.Models + Dmart.QueryGrammar + Dmart.Client + Dmart.SqlAdapter to NuGet
     runs-on: self-hosted
+    permissions:
+      contents: write       # upload assets to the release
+      id-token: write       # OIDC token for cosign + attestations
+      attestations: write   # store the attestation against this repo
+      # No packages: write — the nuget.org push authenticates with
+      # NUGET_API_KEY, not GITHUB_TOKEN.
     # Bubble the secret up to job-level env so the step-level `if:`
     # expression can read it (env.X is resolved at the step evaluator,
     # secrets.X is not).
     env:
       NUGET_API_KEY: ${{ secrets.NUGET_API_KEY }}
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
         with:
           fetch-depth: 0
 
       - name: Set version
         id: version
         run: |
-          VERSION="${GITHUB_REF_NAME#v}"
-          echo "version=${VERSION:-0.1.0}" >> "$GITHUB_OUTPUT"
+          echo "version=$(dist/release-version.sh)" >> "$GITHUB_OUTPUT"
 
       # Pack the four NuGet-shippable SDKs. MSBuild resolves the
       # ProjectReferences so Dmart.Client.nupkg and Dmart.SqlAdapter.nupkg
@@ -94,6 +187,16 @@ jobs:
             -c Release -p:Version="$V" --nologo -o dist/out/nuget
           ls -lh dist/out/nuget/
 
+      - name: Sign and attest the NuGet packages
+        uses: ./.github/actions/sign-attest
+        with:
+          subjects: |
+            dist/out/nuget/*.nupkg
+            dist/out/nuget/*.snupkg
+          github-token: ${{ github.token }}
+          upload-to-release: ${{ github.event_name == 'release' }}
+          tag: ${{ github.ref_name }}
+
       - name: Upload .nupkg files to release
         if: github.event_name == 'release'
         env:
@@ -115,7 +218,7 @@ jobs:
             --source https://api.nuget.org/v3/index.json \
             --skip-duplicate
 
-      - uses: actions/upload-artifact@v7
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: nuget-packages
           path: dist/out/nuget/*
@@ -123,21 +226,25 @@ jobs:
   build-srpm:
     name: Build Source RPM
     runs-on: self-hosted
-    needs: build-ui-tarballs
+    permissions:
+      contents: write       # upload assets to the release
+      id-token: write       # OIDC token for cosign + attestations
+      attestations: write   # store the attestation against this repo
+    needs: [build-ui-tarballs, sboms]
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
         with:
           fetch-depth: 0
 
       - name: Download UI tarballs
-        uses: actions/download-artifact@v7
+        uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7.0.0
         with:
           name: ui-tarballs
           path: dist/out
 
       - name: Extract UI dists
         run: |
-          V="${GITHUB_REF_NAME#v}"; V="${V:-0.1.0}"
+          V="$(dist/release-version.sh)"
           mkdir -p cxb/dist/client catalog/dist/client
           tar -xzf "dist/out/cxb-${V}.tar.gz"     -C cxb/dist/client
           tar -xzf "dist/out/catalog-${V}.tar.gz" -C catalog/dist/client
@@ -147,9 +254,40 @@ jobs:
           pkill -f 'dmart serve' 2>/dev/null || true
           sleep 1
           rm -rf bin obj dist/out
-          VERSION="${GITHUB_REF_NAME#v}"
-          VERSION="${VERSION:-0.1.0}"
+          VERSION="$(dist/release-version.sh)"
           VERSION="$VERSION" ./dist/build-rpm.sh srpm
+
+      - name: Fetch the SBOMs built from this tag
+        uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7.0.0
+        with:
+          name: sboms
+          path: sboms
+
+      # Named after the artifact it describes, so scripts/verify-release.sh can
+      # pair the two without knowing anything about RIDs or packaging layouts.
+      - name: Pair the SBOM with the artifact
+        id: signing
+        shell: bash
+        run: |
+          set -euo pipefail
+          V="$(dist/release-version.sh)"
+          ART=$(find dist/out -maxdepth 1 -name '*.src.rpm' 2>/dev/null | sort | head -1)
+          if [ -z "$ART" ]; then
+            echo "::error::no artifact matched dist/out/*.src.rpm — nothing to sign"
+            exit 1
+          fi
+          cp "sboms/dmart-${V}-linux-x64.cdx.json" "${ART}.cdx.json"
+          echo "artifact=$ART" >> "$GITHUB_OUTPUT"
+          echo "sbom=${ART}.cdx.json" >> "$GITHUB_OUTPUT"
+
+      - name: Sign and attest
+        uses: ./.github/actions/sign-attest
+        with:
+          subjects: ${{ steps.signing.outputs.artifact }}
+          sbom: ${{ steps.signing.outputs.sbom }}
+          github-token: ${{ github.token }}
+          upload-to-release: ${{ github.event_name == 'release' }}
+          tag: ${{ github.ref_name }}
 
       - name: Upload SRPM to release
         if: github.event_name == 'release'
@@ -161,7 +299,7 @@ jobs:
             gh release upload "$GITHUB_REF_NAME" "$SRPM" --clobber
           fi
 
-      - uses: actions/upload-artifact@v7
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: srpm
           path: dist/out/*.src.rpm
@@ -169,9 +307,13 @@ jobs:
   build-fedora-rpm:
     name: Build Fedora RPM
     runs-on: self-hosted
-    needs: build-ui-tarballs
+    permissions:
+      contents: write       # upload assets to the release
+      id-token: write       # OIDC token for cosign + attestations
+      attestations: write   # store the attestation against this repo
+    needs: [build-ui-tarballs, sboms]
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
         with:
           fetch-depth: 0
 
@@ -179,14 +321,14 @@ jobs:
         uses: ./.github/actions/podman-preflight
 
       - name: Download UI tarballs
-        uses: actions/download-artifact@v7
+        uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7.0.0
         with:
           name: ui-tarballs
           path: dist/out
 
       - name: Extract UI dists
         run: |
-          V="${GITHUB_REF_NAME#v}"; V="${V:-0.1.0}"
+          V="$(dist/release-version.sh)"
           mkdir -p cxb/dist/client catalog/dist/client
           tar -xzf "dist/out/cxb-${V}.tar.gz"     -C cxb/dist/client
           tar -xzf "dist/out/catalog-${V}.tar.gz" -C catalog/dist/client
@@ -196,9 +338,40 @@ jobs:
           pkill -f 'dmart serve' 2>/dev/null || true
           sleep 1
           rm -rf bin obj dist/out
-          VERSION="${GITHUB_REF_NAME#v}"
-          VERSION="${VERSION:-0.1.0}"
+          VERSION="$(dist/release-version.sh)"
           VERSION="$VERSION" ./dist/build-rpm.sh
+
+      - name: Fetch the SBOMs built from this tag
+        uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7.0.0
+        with:
+          name: sboms
+          path: sboms
+
+      # Named after the artifact it describes, so scripts/verify-release.sh can
+      # pair the two without knowing anything about RIDs or packaging layouts.
+      - name: Pair the SBOM with the artifact
+        id: signing
+        shell: bash
+        run: |
+          set -euo pipefail
+          V="$(dist/release-version.sh)"
+          ART=$(find dist/out -maxdepth 1 -name '*fc*.x86_64.rpm' 2>/dev/null | sort | head -1)
+          if [ -z "$ART" ]; then
+            echo "::error::no artifact matched dist/out/*fc*.x86_64.rpm — nothing to sign"
+            exit 1
+          fi
+          cp "sboms/dmart-${V}-linux-x64.cdx.json" "${ART}.cdx.json"
+          echo "artifact=$ART" >> "$GITHUB_OUTPUT"
+          echo "sbom=${ART}.cdx.json" >> "$GITHUB_OUTPUT"
+
+      - name: Sign and attest
+        uses: ./.github/actions/sign-attest
+        with:
+          subjects: ${{ steps.signing.outputs.artifact }}
+          sbom: ${{ steps.signing.outputs.sbom }}
+          github-token: ${{ github.token }}
+          upload-to-release: ${{ github.event_name == 'release' }}
+          tag: ${{ github.ref_name }}
 
       - name: Upload Fedora RPM to release
         if: github.event_name == 'release'
@@ -210,7 +383,7 @@ jobs:
             gh release upload "$GITHUB_REF_NAME" "$RPM" --clobber
           fi
 
-      - uses: actions/upload-artifact@v7
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: fedora-rpm
           path: dist/out/*.x86_64.rpm
@@ -218,9 +391,13 @@ jobs:
   build-el9-rpm:
     name: Build RHEL 9 RPM
     runs-on: self-hosted
-    needs: build-ui-tarballs
+    permissions:
+      contents: write       # upload assets to the release
+      id-token: write       # OIDC token for cosign + attestations
+      attestations: write   # store the attestation against this repo
+    needs: [build-ui-tarballs, sboms]
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
         with:
           fetch-depth: 0
 
@@ -228,14 +405,14 @@ jobs:
         uses: ./.github/actions/podman-preflight
 
       - name: Download UI tarballs
-        uses: actions/download-artifact@v7
+        uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7.0.0
         with:
           name: ui-tarballs
           path: dist/out
 
       - name: Extract UI dists
         run: |
-          V="${GITHUB_REF_NAME#v}"; V="${V:-0.1.0}"
+          V="$(dist/release-version.sh)"
           mkdir -p cxb/dist/client catalog/dist/client
           tar -xzf "dist/out/cxb-${V}.tar.gz"     -C cxb/dist/client
           tar -xzf "dist/out/catalog-${V}.tar.gz" -C catalog/dist/client
@@ -260,9 +437,40 @@ jobs:
           rm -rf dist/out
           # Remove stale builder container from previous runs
           podman rm -f dmart-el9-builder 2>/dev/null || true
-          VERSION="${GITHUB_REF_NAME#v}"
-          VERSION="${VERSION:-0.1.0}"
+          VERSION="$(dist/release-version.sh)"
           VERSION="$VERSION" ./dist/build-rpm.sh el9
+
+      - name: Fetch the SBOMs built from this tag
+        uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7.0.0
+        with:
+          name: sboms
+          path: sboms
+
+      # Named after the artifact it describes, so scripts/verify-release.sh can
+      # pair the two without knowing anything about RIDs or packaging layouts.
+      - name: Pair the SBOM with the artifact
+        id: signing
+        shell: bash
+        run: |
+          set -euo pipefail
+          V="$(dist/release-version.sh)"
+          ART=$(find dist/out -maxdepth 1 -name '*el9*.x86_64.rpm' 2>/dev/null | sort | head -1)
+          if [ -z "$ART" ]; then
+            echo "::error::no artifact matched dist/out/*el9*.x86_64.rpm — nothing to sign"
+            exit 1
+          fi
+          cp "sboms/dmart-${V}-linux-x64.cdx.json" "${ART}.cdx.json"
+          echo "artifact=$ART" >> "$GITHUB_OUTPUT"
+          echo "sbom=${ART}.cdx.json" >> "$GITHUB_OUTPUT"
+
+      - name: Sign and attest
+        uses: ./.github/actions/sign-attest
+        with:
+          subjects: ${{ steps.signing.outputs.artifact }}
+          sbom: ${{ steps.signing.outputs.sbom }}
+          github-token: ${{ github.token }}
+          upload-to-release: ${{ github.event_name == 'release' }}
+          tag: ${{ github.ref_name }}
 
       - name: Upload EL9 RPM to release
         if: github.event_name == 'release'
@@ -274,7 +482,7 @@ jobs:
             gh release upload "$GITHUB_REF_NAME" "$RPM" --clobber
           fi
 
-      - uses: actions/upload-artifact@v7
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: el9-rpm
           path: dist/out/*.x86_64.rpm
@@ -286,9 +494,13 @@ jobs:
     # podman, so the runner's distro doesn't matter. Same shape as
     # build-fedora-rpm / build-el9-rpm — container-built linux package.
     runs-on: self-hosted
-    needs: build-ui-tarballs
+    permissions:
+      contents: write       # upload assets to the release
+      id-token: write       # OIDC token for cosign + attestations
+      attestations: write   # store the attestation against this repo
+    needs: [build-ui-tarballs, sboms]
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
         with:
           fetch-depth: 0
 
@@ -296,14 +508,14 @@ jobs:
         uses: ./.github/actions/podman-preflight
 
       - name: Download UI tarballs
-        uses: actions/download-artifact@v7
+        uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7.0.0
         with:
           name: ui-tarballs
           path: dist/out
 
       - name: Extract UI dists
         run: |
-          V="${GITHUB_REF_NAME#v}"; V="${V:-0.1.0}"
+          V="$(dist/release-version.sh)"
           mkdir -p cxb/dist/client catalog/dist/client
           tar -xzf "dist/out/cxb-${V}.tar.gz"     -C cxb/dist/client
           tar -xzf "dist/out/catalog-${V}.tar.gz" -C catalog/dist/client
@@ -313,9 +525,40 @@ jobs:
           pkill -f 'dmart serve' 2>/dev/null || true
           sleep 1
           rm -rf dist/out/*.deb
-          VERSION="${GITHUB_REF_NAME#v}"
-          VERSION="${VERSION:-0.1.0}"
+          VERSION="$(dist/release-version.sh)"
           VERSION="$VERSION" ./dist/build-deb.sh
+
+      - name: Fetch the SBOMs built from this tag
+        uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7.0.0
+        with:
+          name: sboms
+          path: sboms
+
+      # Named after the artifact it describes, so scripts/verify-release.sh can
+      # pair the two without knowing anything about RIDs or packaging layouts.
+      - name: Pair the SBOM with the artifact
+        id: signing
+        shell: bash
+        run: |
+          set -euo pipefail
+          V="$(dist/release-version.sh)"
+          ART=$(find dist/out -maxdepth 1 -name 'dmart_*_amd64.deb' 2>/dev/null | sort | head -1)
+          if [ -z "$ART" ]; then
+            echo "::error::no artifact matched dist/out/dmart_*_amd64.deb — nothing to sign"
+            exit 1
+          fi
+          cp "sboms/dmart-${V}-linux-x64.cdx.json" "${ART}.cdx.json"
+          echo "artifact=$ART" >> "$GITHUB_OUTPUT"
+          echo "sbom=${ART}.cdx.json" >> "$GITHUB_OUTPUT"
+
+      - name: Sign and attest
+        uses: ./.github/actions/sign-attest
+        with:
+          subjects: ${{ steps.signing.outputs.artifact }}
+          sbom: ${{ steps.signing.outputs.sbom }}
+          github-token: ${{ github.token }}
+          upload-to-release: ${{ github.event_name == 'release' }}
+          tag: ${{ github.ref_name }}
 
       - name: Upload .deb to release
         if: github.event_name == 'release'
@@ -327,7 +570,7 @@ jobs:
             gh release upload "$GITHUB_REF_NAME" "$DEB" --clobber
           fi
 
-      - uses: actions/upload-artifact@v7
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: debian-deb-amd64
           path: dist/out/dmart_*_amd64.deb
@@ -335,19 +578,23 @@ jobs:
   build-windows:
     name: Build Windows (win-x64 AOT)
     runs-on: windows-latest
-    needs: build-ui-tarballs
+    permissions:
+      contents: write       # upload assets to the release
+      id-token: write       # OIDC token for cosign + attestations
+      attestations: write   # store the attestation against this repo
+    needs: [build-ui-tarballs, sboms]
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
         with:
           fetch-depth: 0
 
       - name: Setup .NET 10
-        uses: actions/setup-dotnet@v5
+        uses: actions/setup-dotnet@26b0ec14cb23fa6904739307f278c14f94c95bf1 # v5.4.0
         with:
           dotnet-version: '10.0.x'
 
       - name: Download UI tarballs
-        uses: actions/download-artifact@v7
+        uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7.0.0
         with:
           name: ui-tarballs
           path: dist/out
@@ -355,13 +602,13 @@ jobs:
       - name: Extract UI dists
         shell: bash
         run: |
-          V="${GITHUB_REF_NAME#v}"; V="${V:-0.1.0}"
+          V="$(dist/release-version.sh)"
           mkdir -p cxb/dist/client catalog/dist/client
           tar -xzf "dist/out/cxb-${V}.tar.gz"     -C cxb/dist/client
           tar -xzf "dist/out/catalog-${V}.tar.gz" -C catalog/dist/client
 
       - name: Cache NuGet packages
-        uses: actions/cache@v4
+        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
         with:
           path: ~/.nuget/packages
           key: ${{ runner.os }}-nuget-${{ hashFiles('**/*.csproj', '**/Directory.Packages.props', '**/Directory.Build.props') }}
@@ -372,8 +619,7 @@ jobs:
         id: version
         shell: bash
         run: |
-          VERSION="${GITHUB_REF_NAME#v}"
-          echo "version=${VERSION:-0.1.0}" >> "$GITHUB_OUTPUT"
+          echo "version=$(dist/release-version.sh)" >> "$GITHUB_OUTPUT"
 
       - name: Publish AOT win-x64
         shell: pwsh
@@ -404,6 +650,38 @@ jobs:
           Compress-Archive -Path "$pub/*" -DestinationPath $zip -Force
           Get-ChildItem $zip | Format-List FullName,Length
 
+      - name: Fetch the SBOMs built from this tag
+        uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7.0.0
+        with:
+          name: sboms
+          path: sboms
+
+      # Named after the artifact it describes, so scripts/verify-release.sh can
+      # pair the two without knowing anything about RIDs or packaging layouts.
+      - name: Pair the SBOM with the artifact
+        id: signing
+        shell: bash
+        run: |
+          set -euo pipefail
+          V="$(dist/release-version.sh)"
+          ART=$(find dist/out -maxdepth 1 -name '*-win-x64.zip' 2>/dev/null | sort | head -1)
+          if [ -z "$ART" ]; then
+            echo "::error::no artifact matched dist/out/*-win-x64.zip — nothing to sign"
+            exit 1
+          fi
+          cp "sboms/dmart-${V}-win-x64.cdx.json" "${ART}.cdx.json"
+          echo "artifact=$ART" >> "$GITHUB_OUTPUT"
+          echo "sbom=${ART}.cdx.json" >> "$GITHUB_OUTPUT"
+
+      - name: Sign and attest
+        uses: ./.github/actions/sign-attest
+        with:
+          subjects: ${{ steps.signing.outputs.artifact }}
+          sbom: ${{ steps.signing.outputs.sbom }}
+          github-token: ${{ github.token }}
+          upload-to-release: ${{ github.event_name == 'release' }}
+          tag: ${{ github.ref_name }}
+
       - name: Upload Windows zip to release
         if: github.event_name == 'release'
         shell: pwsh
@@ -413,7 +691,7 @@ jobs:
           $zip = Get-ChildItem dist/out/*-win-x64.zip | Select-Object -First 1 -ExpandProperty FullName
           if ($zip) { gh release upload "$env:GITHUB_REF_NAME" "$zip" --clobber }
 
-      - uses: actions/upload-artifact@v7
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: windows-zip
           path: dist/out/*-win-x64.zip
@@ -426,32 +704,36 @@ jobs:
     # arm64 macOS host. Public repos get macOS minutes for free; private
     # repos are billed at 10x the Linux rate, so think before flipping.
     runs-on: macos-14
-    needs: build-ui-tarballs
+    permissions:
+      contents: write       # upload assets to the release
+      id-token: write       # OIDC token for cosign + attestations
+      attestations: write   # store the attestation against this repo
+    needs: [build-ui-tarballs, sboms]
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
         with:
           fetch-depth: 0
 
       - name: Setup .NET 10
-        uses: actions/setup-dotnet@v5
+        uses: actions/setup-dotnet@26b0ec14cb23fa6904739307f278c14f94c95bf1 # v5.4.0
         with:
           dotnet-version: '10.0.x'
 
       - name: Download UI tarballs
-        uses: actions/download-artifact@v7
+        uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7.0.0
         with:
           name: ui-tarballs
           path: dist/out
 
       - name: Extract UI dists
         run: |
-          V="${GITHUB_REF_NAME#v}"; V="${V:-0.1.0}"
+          V="$(dist/release-version.sh)"
           mkdir -p cxb/dist/client catalog/dist/client
           tar -xzf "dist/out/cxb-${V}.tar.gz"     -C cxb/dist/client
           tar -xzf "dist/out/catalog-${V}.tar.gz" -C catalog/dist/client
 
       - name: Cache NuGet packages
-        uses: actions/cache@v4
+        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
         with:
           path: ~/.nuget/packages
           key: ${{ runner.os }}-nuget-${{ hashFiles('**/*.csproj', '**/Directory.Packages.props', '**/Directory.Build.props') }}
@@ -461,8 +743,7 @@ jobs:
       - name: Set version
         id: version
         run: |
-          VERSION="${GITHUB_REF_NAME#v}"
-          echo "version=${VERSION:-0.1.0}" >> "$GITHUB_OUTPUT"
+          echo "version=$(dist/release-version.sh)" >> "$GITHUB_OUTPUT"
 
       - name: Publish AOT osx-arm64
         # build.sh's --rid flag drives the publish. UI dists are already
@@ -491,6 +772,38 @@ jobs:
           (cd bin/Release/net10.0/osx-arm64/publish && zip -9 -r "$OLDPWD/$ZIP" .)
           ls -lh "$ZIP"
 
+      - name: Fetch the SBOMs built from this tag
+        uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7.0.0
+        with:
+          name: sboms
+          path: sboms
+
+      # Named after the artifact it describes, so scripts/verify-release.sh can
+      # pair the two without knowing anything about RIDs or packaging layouts.
+      - name: Pair the SBOM with the artifact
+        id: signing
+        shell: bash
+        run: |
+          set -euo pipefail
+          V="$(dist/release-version.sh)"
+          ART=$(find dist/out -maxdepth 1 -name '*-osx-arm64.zip' 2>/dev/null | sort | head -1)
+          if [ -z "$ART" ]; then
+            echo "::error::no artifact matched dist/out/*-osx-arm64.zip — nothing to sign"
+            exit 1
+          fi
+          cp "sboms/dmart-${V}-osx-arm64.cdx.json" "${ART}.cdx.json"
+          echo "artifact=$ART" >> "$GITHUB_OUTPUT"
+          echo "sbom=${ART}.cdx.json" >> "$GITHUB_OUTPUT"
+
+      - name: Sign and attest
+        uses: ./.github/actions/sign-attest
+        with:
+          subjects: ${{ steps.signing.outputs.artifact }}
+          sbom: ${{ steps.signing.outputs.sbom }}
+          github-token: ${{ github.token }}
+          upload-to-release: ${{ github.event_name == 'release' }}
+          tag: ${{ github.ref_name }}
+
       - name: Upload macOS zip to release
         if: github.event_name == 'release'
         env:
@@ -501,7 +814,7 @@ jobs:
             gh release upload "$GITHUB_REF_NAME" "$ZIP" --clobber
           fi
 
-      - uses: actions/upload-artifact@v7
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: macos-arm64-zip
           path: dist/out/*-osx-arm64.zip
@@ -512,9 +825,13 @@ jobs:
     # build script spins up will resolve to amd64 automatically, no
     # --platform flag, no QEMU. Same shape as fedora-rpm / el9-rpm.
     runs-on: self-hosted
-    needs: build-ui-tarballs
+    permissions:
+      contents: write       # upload assets to the release
+      id-token: write       # OIDC token for cosign + attestations
+      attestations: write   # store the attestation against this repo
+    needs: [build-ui-tarballs, sboms]
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
         with:
           fetch-depth: 0
 
@@ -522,14 +839,14 @@ jobs:
         uses: ./.github/actions/podman-preflight
 
       - name: Download UI tarballs
-        uses: actions/download-artifact@v7
+        uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7.0.0
         with:
           name: ui-tarballs
           path: dist/out
 
       - name: Extract UI dists
         run: |
-          V="${GITHUB_REF_NAME#v}"; V="${V:-0.1.0}"
+          V="$(dist/release-version.sh)"
           mkdir -p cxb/dist/client catalog/dist/client
           tar -xzf "dist/out/cxb-${V}.tar.gz"     -C cxb/dist/client
           tar -xzf "dist/out/catalog-${V}.tar.gz" -C catalog/dist/client
@@ -539,9 +856,40 @@ jobs:
           pkill -f 'dmart serve' 2>/dev/null || true
           sleep 1
           rm -rf dist/out/*.apk
-          VERSION="${GITHUB_REF_NAME#v}"
-          VERSION="${VERSION:-0.1.0}"
+          VERSION="$(dist/release-version.sh)"
           VERSION="$VERSION" ./dist/build-apk.sh --arch x86_64
+
+      - name: Fetch the SBOMs built from this tag
+        uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7.0.0
+        with:
+          name: sboms
+          path: sboms
+
+      # Named after the artifact it describes, so scripts/verify-release.sh can
+      # pair the two without knowing anything about RIDs or packaging layouts.
+      - name: Pair the SBOM with the artifact
+        id: signing
+        shell: bash
+        run: |
+          set -euo pipefail
+          V="$(dist/release-version.sh)"
+          ART=$(find dist/out -maxdepth 1 -name 'dmart-*-x86_64.apk' 2>/dev/null | sort | head -1)
+          if [ -z "$ART" ]; then
+            echo "::error::no artifact matched dist/out/dmart-*-x86_64.apk — nothing to sign"
+            exit 1
+          fi
+          cp "sboms/dmart-${V}-linux-musl-x64.cdx.json" "${ART}.cdx.json"
+          echo "artifact=$ART" >> "$GITHUB_OUTPUT"
+          echo "sbom=${ART}.cdx.json" >> "$GITHUB_OUTPUT"
+
+      - name: Sign and attest
+        uses: ./.github/actions/sign-attest
+        with:
+          subjects: ${{ steps.signing.outputs.artifact }}
+          sbom: ${{ steps.signing.outputs.sbom }}
+          github-token: ${{ github.token }}
+          upload-to-release: ${{ github.event_name == 'release' }}
+          tag: ${{ github.ref_name }}
 
       - name: Upload APK to release
         if: github.event_name == 'release'
@@ -553,7 +901,7 @@ jobs:
             gh release upload "$GITHUB_REF_NAME" "$APK" --clobber
           fi
 
-      - uses: actions/upload-artifact@v7
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: alpine-apk-x86_64
           path: dist/out/dmart-*-x86_64.apk
@@ -565,21 +913,25 @@ jobs:
     # x86_64 job, different host arch — the Alpine container picks
     # the arm64 manifest variant automatically. No QEMU emulation.
     runs-on: ubuntu-24.04-arm
-    needs: build-ui-tarballs
+    permissions:
+      contents: write       # upload assets to the release
+      id-token: write       # OIDC token for cosign + attestations
+      attestations: write   # store the attestation against this repo
+    needs: [build-ui-tarballs, sboms]
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
         with:
           fetch-depth: 0
 
       - name: Download UI tarballs
-        uses: actions/download-artifact@v7
+        uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7.0.0
         with:
           name: ui-tarballs
           path: dist/out
 
       - name: Extract UI dists
         run: |
-          V="${GITHUB_REF_NAME#v}"; V="${V:-0.1.0}"
+          V="$(dist/release-version.sh)"
           mkdir -p cxb/dist/client catalog/dist/client
           tar -xzf "dist/out/cxb-${V}.tar.gz"     -C cxb/dist/client
           tar -xzf "dist/out/catalog-${V}.tar.gz" -C catalog/dist/client
@@ -594,10 +946,41 @@ jobs:
         # ever moves to a self-hosted runner, add the preflight — the action
         # no-ops on hosted runners, so adding it is never wrong.
         run: |
-          VERSION="${GITHUB_REF_NAME#v}"
-          VERSION="${VERSION:-0.1.0}"
+          VERSION="$(dist/release-version.sh)"
           CONTAINER_ENGINE=docker VERSION="$VERSION" \
             ./dist/build-apk.sh --arch aarch64
+
+      - name: Fetch the SBOMs built from this tag
+        uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7.0.0
+        with:
+          name: sboms
+          path: sboms
+
+      # Named after the artifact it describes, so scripts/verify-release.sh can
+      # pair the two without knowing anything about RIDs or packaging layouts.
+      - name: Pair the SBOM with the artifact
+        id: signing
+        shell: bash
+        run: |
+          set -euo pipefail
+          V="$(dist/release-version.sh)"
+          ART=$(find dist/out -maxdepth 1 -name 'dmart-*-aarch64.apk' 2>/dev/null | sort | head -1)
+          if [ -z "$ART" ]; then
+            echo "::error::no artifact matched dist/out/dmart-*-aarch64.apk — nothing to sign"
+            exit 1
+          fi
+          cp "sboms/dmart-${V}-linux-musl-arm64.cdx.json" "${ART}.cdx.json"
+          echo "artifact=$ART" >> "$GITHUB_OUTPUT"
+          echo "sbom=${ART}.cdx.json" >> "$GITHUB_OUTPUT"
+
+      - name: Sign and attest
+        uses: ./.github/actions/sign-attest
+        with:
+          subjects: ${{ steps.signing.outputs.artifact }}
+          sbom: ${{ steps.signing.outputs.sbom }}
+          github-token: ${{ github.token }}
+          upload-to-release: ${{ github.event_name == 'release' }}
+          tag: ${{ github.ref_name }}
 
       - name: Upload APK to release
         if: github.event_name == 'release'
@@ -609,7 +992,7 @@ jobs:
             gh release upload "$GITHUB_REF_NAME" "$APK" --clobber
           fi
 
-      - uses: actions/upload-artifact@v7
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: alpine-apk-aarch64
           path: dist/out/dmart-*-aarch64.apk
@@ -617,6 +1000,9 @@ jobs:
   build-container:
     name: Build & Push Container Image
     runs-on: self-hosted
+    permissions:
+      contents: read
+      packages: write       # push to ghcr.io
     # The APK, not the UI tarballs: the image INSTALLS the Alpine package now
     # rather than compiling dmart a second time, and that package already
     # carries the SPAs. This serialises the two jobs where they used to run in
@@ -627,7 +1013,7 @@ jobs:
     steps:
       # fetch-depth: 0 — need tag history so `git describe --tags` below
       # produces a proper version label for the image LABELs.
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
         with:
           fetch-depth: 0
 
@@ -635,7 +1021,7 @@ jobs:
         uses: ./.github/actions/podman-preflight
 
       - name: Download the Alpine package
-        uses: actions/download-artifact@v7
+        uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7.0.0
         with:
           name: alpine-apk-x86_64
           path: dist/out
@@ -659,8 +1045,7 @@ jobs:
           podman image prune -f || true
           # Delete superseded versioned images of this repo, keep :latest
           # and the incoming version. Safe because the push step tags both.
-          KEEP_VER="${GITHUB_REF_NAME#v}"
-          KEEP_VER="${KEEP_VER:-0.1.0}"
+          KEEP_VER="$(dist/release-version.sh)"
           podman image ls --format '{{.Repository}}:{{.Tag}}' \
             | grep '^ghcr.io/${{ github.repository }}:' \
             | grep -v ':latest$' \
@@ -671,10 +1056,16 @@ jobs:
       - name: Set version
         id: version
         run: |
-          VERSION="${GITHUB_REF_NAME#v}"
-          echo "version=${VERSION:-0.1.0}" >> "$GITHUB_OUTPUT"
+          echo "version=$(dist/release-version.sh)" >> "$GITHUB_OUTPUT"
 
+      # Publishing steps are gated on the release event. A workflow_dispatch
+      # run is a test — and until now it pushed :latest anyway, which on a
+      # branch ref means `VERSION` resolves to the branch NAME and every
+      # `podman pull ghcr.io/edraj/csdmart:latest` downstream would silently
+      # start serving a branch build. The build and the smoke test below still
+      # run on a dispatch, so the coverage is unchanged; only publication stops.
       - name: Login to GitHub Container Registry
+        if: github.event_name == 'release'
         run: |
           echo "${{ secrets.GITHUB_TOKEN }}" | podman login ghcr.io -u "${{ github.actor }}" --password-stdin
 
@@ -715,11 +1106,13 @@ jobs:
           echo "image serves on SQLite"
 
       - name: Push container image
+        if: github.event_name == 'release'
         run: |
           podman push ghcr.io/${{ github.repository }}:${{ steps.version.outputs.version }}
           podman push ghcr.io/${{ github.repository }}:latest
 
       - name: Print image info
+        if: github.event_name == 'release'
         run: |
           echo "Pushed:"
           echo "  ghcr.io/${{ github.repository }}:${{ steps.version.outputs.version }}"
@@ -727,3 +1120,76 @@ jobs:
           echo ""
           echo "Run with:"
           echo "  podman run --name dmart -p 8000:8000 -d -it ghcr.io/${{ github.repository }}:${{ steps.version.outputs.version }}"
+
+  checksums:
+    name: SHA256SUMS-all (signed)
+    # Runs last and reads the release itself rather than this workflow's
+    # artifacts, so the manifest describes what an operator will actually
+    # download — including the linux tarballs and signature material that
+    # release-verifiable.yml attached at tag time.
+    needs:
+      - build-ui-tarballs
+      - publish-nuget
+      - build-srpm
+      - build-fedora-rpm
+      - build-el9-rpm
+      - build-deb-amd64
+      - build-windows
+      - build-macos-arm64
+      - build-apk-x86_64
+      - build-apk-aarch64
+    if: github.event_name == 'release'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    permissions:
+      contents: write
+      id-token: write
+    steps:
+      - uses: sigstore/cosign-installer@6f9f17788090df1f26f669e9d70d6ae9567deba6 # v4.1.2
+        with:
+          # v2, deliberately — cosign v3 keyless cannot emit a detached
+          # signature. See .github/actions/sign-attest/action.yml.
+          cosign-release: 'v2.6.1'
+
+      - name: Download every asset on the release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          # This job has no checkout, so gh has no repo to infer from and
+          # `gh release download` dies with "fatal: not a git repository".
+          # GH_REPO tells it which repo to talk to without a working tree.
+          GH_REPO: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          mkdir -p assets
+          gh release download "$GITHUB_REF_NAME" --dir assets --clobber
+          ls -l assets
+
+      - name: SHA256SUMS-all
+        working-directory: assets
+        run: |
+          set -euo pipefail
+          # Excludes the manifests themselves; a manifest cannot list its own
+          # digest, and SHA256SUMS (from release-verifiable.yml) is listed here
+          # so the two manifests cross-cover each other.
+          find . -maxdepth 1 -type f ! -name 'SHA256SUMS-all*' -printf '%P\n' \
+            | sort | xargs sha256sum > SHA256SUMS-all
+          wc -l < SHA256SUMS-all
+
+      - name: Sign SHA256SUMS-all (keyless, GitHub OIDC)
+        working-directory: assets
+        run: |
+          set -euo pipefail
+          cosign sign-blob --yes \
+            --new-bundle-format=false \
+            --output-signature SHA256SUMS-all.sig \
+            --output-certificate SHA256SUMS-all.pem \
+            SHA256SUMS-all
+          test -s SHA256SUMS-all.sig && test -s SHA256SUMS-all.pem
+
+      - name: Attach the manifest
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        working-directory: assets
+        run: |
+          gh release upload "$GITHUB_REF_NAME" \
+            SHA256SUMS-all SHA256SUMS-all.sig SHA256SUMS-all.pem --clobber
