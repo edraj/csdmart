@@ -1154,6 +1154,10 @@ jobs:
       - name: Download every asset on the release
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          # This job has no checkout, so gh has no repo to infer from and
+          # `gh release download` dies with "fatal: not a git repository".
+          # GH_REPO tells it which repo to talk to without a working tree.
+          GH_REPO: ${{ github.repository }}
         run: |
           set -euo pipefail
           mkdir -p assets
