@@ -1,5 +1,23 @@
 # Changelog
 
+## v1.2.6 — 2026-08-22
+
+### Security
+
+- **Frontend dependency advisories cleared.** `yarn audit --groups dependencies`
+  flagged esbuild (<0.25.0, GHSA-67mh-4wv8-2f99) and @tootallnate/once (<2.0.1)
+  in the embedded cxb/catalog SPAs; both are pinned forward via `resolutions`.
+  The audit is now clean and both SPAs still build.
+
+### Changed
+
+- **The published SBOM now covers the embedded frontends.** dmart compiles the
+  cxb and catalog Svelte SPAs into the AOT binary, so their npm dependencies
+  ship inside the executable. `dist/frontend-sbom.sh` reads them from `yarn.lock`
+  (the resolution the build installs from) and merges them into every per-RID
+  CycloneDX document — the SBOM went from the .NET graph alone to the full
+  server-plus-frontend inventory.
+
 ## v1.2.5 — 2026-08-18
 
 ### Security
