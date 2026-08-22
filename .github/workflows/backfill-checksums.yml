@@ -1,0 +1,75 @@
+name: Backfill SHA256SUMS-all
+
+# One-off, manual. Regenerates and attaches the aggregate signed SHA256SUMS-all
+# manifest to an EXISTING release whose original run missed it: v1.2.7's release
+# hit the gh "not a git repository" bug in the checksums job's upload step
+# (fixed for future releases in #199). This mirrors the `checksums` job in
+# release.yml but targets a tag chosen at dispatch time instead of firing on the
+# release event, so no artifacts are rebuilt and no tag is moved. Safe to delete
+# once the backfill is done.
+
+on:
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Release tag to (re)attach SHA256SUMS-all to"
+        required: true
+        default: v1.2.7
+
+permissions: {}
+
+jobs:
+  backfill:
+    name: Backfill SHA256SUMS-all (signed)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    permissions:
+      contents: write
+      id-token: write
+    steps:
+      - uses: sigstore/cosign-installer@6f9f17788090df1f26f669e9d70d6ae9567deba6 # v4.1.2
+        with:
+          # v2, deliberately — cosign v3 keyless cannot emit a detached
+          # signature (same as release.yml).
+          cosign-release: 'v2.6.1'
+
+      - name: Download every asset on the release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          mkdir -p assets
+          gh release download "${{ inputs.tag }}" --dir assets --clobber
+          ls -l assets
+
+      - name: SHA256SUMS-all
+        working-directory: assets
+        run: |
+          set -euo pipefail
+          # Excludes the manifests themselves; a manifest cannot list its own
+          # digest, and SHA256SUMS (from release-verifiable.yml) is listed here
+          # so the two manifests cross-cover each other.
+          find . -maxdepth 1 -type f ! -name 'SHA256SUMS-all*' -printf '%P\n' \
+            | sort | xargs sha256sum > SHA256SUMS-all
+          wc -l < SHA256SUMS-all
+
+      - name: Sign SHA256SUMS-all (keyless, GitHub OIDC)
+        working-directory: assets
+        run: |
+          set -euo pipefail
+          cosign sign-blob --yes \
+            --new-bundle-format=false \
+            --output-signature SHA256SUMS-all.sig \
+            --output-certificate SHA256SUMS-all.pem \
+            SHA256SUMS-all
+          test -s SHA256SUMS-all.sig && test -s SHA256SUMS-all.pem
+
+      - name: Attach the manifest
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_REPO: ${{ github.repository }}
+        working-directory: assets
+        run: |
+          gh release upload "${{ inputs.tag }}" \
+            SHA256SUMS-all SHA256SUMS-all.sig SHA256SUMS-all.pem --clobber
