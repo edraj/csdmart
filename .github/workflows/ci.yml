@@ -540,41 +540,69 @@ jobs:
     # this class needs a real rpmbuild, so that is what this does.
     #
     # Both targets. Fedora builds natively; EL9 builds inside a podman container
-    # against the same spec and the same staging step.
-    #
-    # EL9 is NOT redundant even though both v1.2.0 bugs reproduce on Fedora. The
-    # EL9 leg is the one that exercises the container path — a stale or broken
-    # builder image, a podman-storage problem, or an EL9-only packaging
-    # difference reaches a tag otherwise, and that is precisely the class of
-    # failure this job exists to move off the release.
+    # against the same spec and the same staging step. EL9 is NOT redundant: it
+    # is the leg that exercises the container path.
     steps:
+      # Full history so the packaging-scope diff below has a base to compare
+      # against; checkout's default depth of 1 has none.
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+        with:
+          fetch-depth: 0
+
+      # Building both RPMs is expensive on the self-hosted pool, and a change
+      # that cannot touch packaging cannot break it. So run only when a
+      # packaging input changed, and unconditionally on pushes to master so
+      # every merge still validates the spec even if the PR that caused it
+      # touched only C#. Fails OPEN on an unusable base — a filter that silently
+      # stops testing is worse than one that occasionally costs a run. This is
+      # the same gate container-build already uses for the image.
+      - name: Is this change in packaging scope?
+        id: scope
+        run: |
+          if [ "${{ github.event_name }}" = "push" ]; then
+            echo "run=true" >> "$GITHUB_OUTPUT"
+            echo "push to master — running unconditionally"
+            exit 0
+          fi
+          BASE="${{ github.event.pull_request.base.sha }}"
+          if [ -z "$BASE" ] || ! git cat-file -e "$BASE" 2>/dev/null; then
+            echo "run=true" >> "$GITHUB_OUTPUT"
+            echo "no usable base sha — running to be safe"
+            exit 0
+          fi
+          CHANGED=$(git diff --name-only "$BASE"...HEAD)
+          echo "$CHANGED" | sed 's/^/  /'
+          if echo "$CHANGED" | grep -qE '^(dist/dmart\.spec|dist/build-rpm\.sh|dist/dmart\.(service|bash|fish)|dist/config\.env\.packaged|config\.env\.sample|\.github/workflows/ci\.yml)'; then
+            echo "run=true" >> "$GITHUB_OUTPUT"
+            echo "packaging inputs changed — running"
+          else
+            echo "run=false" >> "$GITHUB_OUTPUT"
+            echo "no packaging inputs changed — skipping the RPM build"
+          fi
 
       - name: Podman preflight (self-heal stale state after host reboot)
+        if: steps.scope.outputs.run == 'true'
         uses: ./.github/actions/podman-preflight
 
       - name: Build the Fedora RPM
-        # VERSION is pinned rather than derived. checkout@v6 fetches depth 1, so
-        # `git describe` has no tags to read and build-rpm.sh would silently
-        # fall back to 0.1.0 — a version this job would then appear to have
-        # chosen. This job validates that the packaging BUILDS; the version it
-        # carries is irrelevant, so say so instead of depending on tag depth.
+        if: steps.scope.outputs.run == 'true'
+        # VERSION is pinned rather than derived: checkout is depth 1 for tags,
+        # and this job validates that packaging BUILDS, not what version it says.
         run: VERSION=0.0.0 ./dist/build-rpm.sh
 
       - name: Build the EL9 RPM
-        # Same script, container path. `podman rm -f` first for the same reason
-        # release.yml does it: build-rpm.sh KEEPS the builder container between
-        # runs to avoid reinstalling the SDK, and a container left half-built by
-        # an interrupted run would otherwise be reused.
+        if: steps.scope.outputs.run == 'true'
+        # Same script, container path. `podman rm -f` first because build-rpm.sh
+        # keeps the builder container between runs.
         run: |
           podman rm -f dmart-el9-builder 2>/dev/null || true
           VERSION=0.0.0 ./dist/build-rpm.sh el9
 
       - name: Assert the RPM carries what it must
+        if: steps.scope.outputs.run == 'true'
         # The build succeeding is not the whole property. %files lists
-        # libe_sqlite3.so unconditionally and on purpose — a package missing it
-        # silently loses the SQLite driver — so check the payload, not just the
-        # exit code.
+        # libe_sqlite3.so unconditionally — a package missing it silently loses
+        # the SQLite driver — so check the payload, not just the exit code.
         run: |
           set -e
           for tag in fc el9; do
