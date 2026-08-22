@@ -224,6 +224,12 @@ public sealed class SqliteSqlDialect : ISqlDialect
     // miss any entry whose tags do not happen to start with "x": wrong results,
     // silently. Object members still require their key to match, so a value
     // found under a different property is not a match.
+    // The json_tree emulation below is looser than PostgreSQL @> for
+    // non-array values (a scalar or object holding the probed value also
+    // matches), so the parser must keep the jsonb_typeof-guarded emission
+    // for @tags/@roles/@groups here — see ISqlDialect.JsonArrayContainmentIsExact.
+    public bool JsonArrayContainmentIsExact => false;
+
     public string JsonContains(string jsonExpr, string placeholder)
         => $"(SELECT count(*) = 0 FROM json_tree({placeholder}) AS probe "
          + $"WHERE probe.atom IS NOT NULL "

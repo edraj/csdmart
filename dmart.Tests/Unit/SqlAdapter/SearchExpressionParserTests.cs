@@ -118,13 +118,18 @@ public class SearchExpressionParserTests
     }
 
     [Fact]
-    public void Jsonb_Array_Column_Tags_Uses_Containment_And_Object_Fallback()
+    public void Jsonb_Array_Column_Tags_Uses_Bare_Containment()
     {
+        // Positive @tags is a single bare @> so the jsonb_path_ops GIN index
+        // serves it (2026-08 query-level optimization). The old
+        // jsonb_typeof-guard + object-ILIKE fallback forced a seq scan and the
+        // guard was semantically inert (only an array can contain an array).
         var parsed = SearchExpressionParser.Parse("@tags:hot", 0);
 
         var combined = string.Join(" ", parsed.Clauses);
-        combined.ShouldContain("jsonb_typeof(tags) = 'array'");
         combined.ShouldContain("tags @>");
+        combined.ShouldNotContain("jsonb_typeof(tags)");
+        combined.ShouldNotContain("ILIKE");
     }
 
     [Fact]
@@ -969,8 +974,8 @@ public class SearchExpressionParserTests
         var combined = string.Join(" ", parsed.Clauses);
         Occurrences(combined, "tags @>").ShouldBe(2);
         combined.ShouldContain(" AND ");
-        // Each tags value binds two params (text + jsonb-array literal).
-        parsed.Parameters.Count.ShouldBe(4);
+        // Each positive tags value binds one param (the jsonb-array literal).
+        parsed.Parameters.Count.ShouldBe(2);
     }
 
     [Fact]
@@ -983,7 +988,7 @@ public class SearchExpressionParserTests
         var combined = string.Join(" ", parsed.Clauses);
         combined.ShouldContain(" OR ");
         Occurrences(combined, "tags @>").ShouldBe(2);
-        parsed.Parameters.Count.ShouldBe(4);
+        parsed.Parameters.Count.ShouldBe(2);
     }
 
     [Fact]
@@ -1208,22 +1213,25 @@ public class SearchExpressionParserTests
     [InlineData("tags")]
     [InlineData("roles")]
     [InlineData("groups")]
-    public void Jsonb_Array_Column_Uses_Containment_With_Object_Fallback(string column)
+    public void Jsonb_Array_Column_Uses_Bare_Containment(string column)
     {
+        // Positive selectors emit ONE bare @> per value so the
+        // jsonb_path_ops GIN indexes serve them. The old emission wrapped the
+        // containment in a jsonb_typeof guard OR'd with an object-ILIKE
+        // fallback; the fallback arm was unindexable, which forced a
+        // sequential scan on every @tags/@roles/@groups search. The guard was
+        // inert (only a jsonb array can contain a jsonb array) and the
+        // object fallback matched a shape the models never write.
         var parsed = SearchExpressionParser.Parse($"@{column}:admin", 0);
         var combined = string.Join(" ", parsed.Clauses);
 
-        combined.ShouldContain($"jsonb_typeof({column}) = 'array'");
-        combined.ShouldContain($"{column} @> CAST(@s_1 AS jsonb)");
-        // Fallback for rows where the column holds an object instead of an
-        // array — substring match on the rendered text.
-        combined.ShouldContain($"jsonb_typeof({column}) = 'object'");
-        // Two params per value: the raw string (object fallback) and the
-        // one-element JSON array literal (containment).
-        parsed.Parameters.Count.ShouldBe(2);
-        parsed.Parameters[0].Value.ShouldBe("admin");
-        parsed.Parameters[1].Value.ShouldBe("[\"admin\"]");
-        parsed.Parameters[1].Kind.ShouldBe(SqlValueKind.Json);
+        combined.ShouldContain($"{column} @> CAST(@s_0 AS jsonb)");
+        combined.ShouldNotContain("jsonb_typeof");
+        combined.ShouldNotContain("ILIKE");
+        // One param per value: the one-element JSON array literal.
+        parsed.Parameters.Count.ShouldBe(1);
+        parsed.Parameters[0].Value.ShouldBe("[\"admin\"]");
+        parsed.Parameters[0].Kind.ShouldBe(SqlValueKind.Json);
     }
 
     [Theory]
@@ -1256,7 +1264,7 @@ public class SearchExpressionParserTests
         var parsed = SearchExpressionParser.Parse("@groups:editors|writers", 0);
 
         string.Join(" ", parsed.Clauses).ShouldContain(" OR ");
-        parsed.Parameters.Count.ShouldBe(4);
+        parsed.Parameters.Count.ShouldBe(2);
     }
 
     // ── TEXT[] column (query_policies) ────────────────────────────────────
@@ -1686,7 +1694,10 @@ public class SearchExpressionParserTests
         combined.ShouldContain("$2");
         combined.ShouldNotContain("@s_");
         parsed.Parameters.All(p => p.Name is null).ShouldBeTrue();
-        parsed.Parameters.Count.ShouldBe(3);
+        // shortname binds one param; positive @tags binds one (the jsonb-array
+        // literal — the object-fallback's second param is gone, see
+        // Jsonb_Array_Column_Uses_Bare_Containment).
+        parsed.Parameters.Count.ShouldBe(2);
     }
 
     [Fact]

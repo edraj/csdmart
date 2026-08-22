@@ -1202,21 +1202,42 @@ public static class SearchExpressionParser
         var conditions = new List<string>();
         foreach (var value in data.Values)
         {
-            var pVal = ctx.Add(value);
-            var pJson = ctx.Add(ToJsonArray(value), SqlValueKind.Json);
-            // CAST(... AS jsonb) is functionally redundant — the param is
-            // already typed Jsonb — but kept verbatim from the server's
-            // pre-extraction emit so logged SQL stays byte-identical and
-            // tests that inspect emitted text (e.g. Spec_Roles_Array_Search)
-            // continue to assert against a stable shape.
             if (data.Negative)
             {
+                var pVal = ctx.Add(value);
+                var pJson = ctx.Add(ToJsonArray(value), SqlValueKind.Json);
+                // CAST(... AS jsonb) is functionally redundant — the param is
+                // already typed Jsonb — but kept verbatim from the server's
+                // pre-extraction emit so logged SQL stays byte-identical and
+                // tests that inspect emitted text (e.g. Spec_Roles_Array_Search)
+                // continue to assert against a stable shape.
                 conditions.Add(
                     $"(({ctx.Dialect.JsonTypeIs(column, JsonKind.Array)} AND NOT ({ctx.Dialect.JsonContains(column, ctx.Dialect.JsonParam(pJson))})) OR " +
                     BuildObjectContains(column, pVal, negated: true, ctx) + "))");
             }
+            else if (ctx.Dialect.JsonArrayContainmentIsExact)
+            {
+                var pJson = ctx.Add(ToJsonArray(value), SqlValueKind.Json);
+                // Bare containment, no jsonb_typeof guard and no object-ILIKE
+                // fallback: `col @> '["x"]'` is already TRUE only for arrays
+                // that contain "x" (objects and scalars can never contain a
+                // bare array), so the guard was semantically inert — but the
+                // OR'd ILIKE arm it came with forced a sequential scan, since
+                // PostgreSQL can BitmapOr only when EVERY arm is indexable.
+                // A single @> is served straight from the jsonb_path_ops GIN
+                // indexes (idx_entries_tags_gin, idx_users_roles_gin, ...).
+                // Negation keeps the old shape: NOT-containment can't use an
+                // index anyway, and its missing/object-typed semantics are
+                // subtler (see the 3VL notes above).
+                conditions.Add(ctx.Dialect.JsonContains(column, ctx.Dialect.JsonParam(pJson)));
+            }
             else
             {
+                // Dialects whose containment emulation is looser than @>
+                // (SQLite) keep the original guarded emission verbatim, so
+                // their matching behavior doesn't shift underneath users.
+                var pVal = ctx.Add(value);
+                var pJson = ctx.Add(ToJsonArray(value), SqlValueKind.Json);
                 conditions.Add(
                     $"(({ctx.Dialect.JsonTypeIs(column, JsonKind.Array)} AND {ctx.Dialect.JsonContains(column, ctx.Dialect.JsonParam(pJson))}) OR " +
                     BuildObjectContains(column, pVal, negated: false, ctx) + "))");

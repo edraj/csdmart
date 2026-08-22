@@ -50,11 +50,27 @@ public sealed class FolderContentValidator(
     public async Task<Result<bool>> ValidateAsync(Entry entry, CancellationToken ct = default)
     {
         var body = await LoadFolderBodyAsync(entry.SpaceName, entry.Subpath, ct);
+        return ValidateWithFolderBody(entry, body);
+    }
+
+    // Preloaded-parent path: the caller already fetched the parent folder and
+    // shares it between this validator and UniquenessValidator, saving one
+    // identical SELECT per write. `parentFolder` null means "no parent folder /
+    // not found" — an allow, exactly as on the self-loading path.
+    public Result<bool> Validate(Entry entry, Entry? parentFolder)
+        => ValidateWithFolderBody(entry, FolderBody(parentFolder));
+
+    private Result<bool> ValidateWithFolderBody(Entry entry, JsonElement? body)
+    {
         if (body is null) return Result<bool>.Ok(true);
         return Gate(
             Check(entry.ResourceType, entry.Payload?.SchemaShortname, entry.WorkflowShortname, body.Value),
             entry.SpaceName, entry.Subpath);
     }
+
+    private static JsonElement? FolderBody(Entry? folder)
+        => folder?.Payload?.Body is JsonElement body && body.ValueKind == JsonValueKind.Object
+            ? body : null;
 
     // Raw-attrs path (RequestHandler non-entry create handlers). `shortname` is
     // accepted for call-site symmetry with UniquenessValidator.ValidateRawAsync.

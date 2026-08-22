@@ -416,11 +416,16 @@ public static class SqlSchema
     -- ============================================================
     -- PERFORMANCE INDEXES (mirrors create_tables.py)
     -- ============================================================
-    CREATE INDEX IF NOT EXISTS idx_entries_space_name        ON entries (space_name);
+    -- Composite (space_name, subpath) indexes for entries/attachments are
+    -- built in ConcurrentIndexes (below), NOT here: on an upgrade against a
+    -- production-size entries table, a plain CREATE INDEX inside this
+    -- transactional batch blocks writes for the whole build. The old
+    -- single-column space_name indexes they replace are dropped there too,
+    -- guarded on the replacement existing and being valid. idx_entries_subpath
+    -- stays — subpath-without-space lookups can't use the composite.
     CREATE INDEX IF NOT EXISTS idx_entries_subpath           ON entries (subpath);
     CREATE INDEX IF NOT EXISTS idx_entries_owner_shortname   ON entries (owner_shortname);
     CREATE INDEX IF NOT EXISTS idx_entries_resource_type     ON entries (resource_type);
-    CREATE INDEX IF NOT EXISTS idx_attachments_space_name    ON attachments (space_name);
     CREATE INDEX IF NOT EXISTS idx_attachments_subpath       ON attachments (subpath);
     CREATE INDEX IF NOT EXISTS idx_attachments_owner_shortname ON attachments (owner_shortname);
     CREATE INDEX IF NOT EXISTS idx_users_owner_shortname     ON users (owner_shortname);
@@ -782,5 +787,50 @@ public static class SqlSchema
         // attempt_count on this table).
         "CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_users_payload_gin " +
             "ON users USING GIN (payload jsonb_path_ops)",
+
+        // Composite (space_name, subpath): every query's WHERE leads with
+        // exactly this pair (BuildWhereClause), so one composite probe
+        // replaces a BitmapAnd of two single-column scans, gives the planner
+        // a candidate set to intersect with the GIN bitmaps, and serves
+        // COUNT(*) listing totals as an index-only scan. CONCURRENTLY for
+        // the same reason as the trigram index above: entries can be huge on
+        // upgrade, and a blocking build would freeze writes.
+        "CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_entries_space_subpath " +
+            "ON entries (space_name, subpath)",
+        "CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_attachments_space_subpath " +
+            "ON attachments (space_name, subpath)",
+
+        // Retire the single-column space_name indexes the composites replace
+        // (their leading column serves space_name-only scans; one less index
+        // maintained per INSERT). Guarded on the replacement existing AND
+        // being valid: SchemaInitializer logs-and-continues on a failed
+        // CONCURRENTLY build, so an unguarded drop could leave a table with
+        // neither index. Scoped to current_schema() like the other probes.
+        // A DROP INDEX takes a brief ACCESS EXCLUSIVE lock — momentary, not
+        // build-length.
+        """
+        DO $$ BEGIN
+            IF EXISTS (SELECT 1 FROM pg_index i
+                       JOIN pg_class c ON c.oid = i.indexrelid
+                       JOIN pg_namespace n ON n.oid = c.relnamespace
+                       WHERE n.nspname = current_schema()
+                         AND c.relname = 'idx_entries_space_subpath'
+                         AND i.indisvalid) THEN
+                DROP INDEX IF EXISTS idx_entries_space_name;
+            END IF;
+        END $$
+        """,
+        """
+        DO $$ BEGIN
+            IF EXISTS (SELECT 1 FROM pg_index i
+                       JOIN pg_class c ON c.oid = i.indexrelid
+                       JOIN pg_namespace n ON n.oid = c.relnamespace
+                       WHERE n.nspname = current_schema()
+                         AND c.relname = 'idx_attachments_space_subpath'
+                         AND i.indisvalid) THEN
+                DROP INDEX IF EXISTS idx_attachments_space_name;
+            END IF;
+        END $$
+        """,
     };
 }

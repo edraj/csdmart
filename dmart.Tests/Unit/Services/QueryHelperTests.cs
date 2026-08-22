@@ -176,16 +176,18 @@ public class QueryHelperTests
     public void Search_Roles_Uses_JsonbContainment()
     {
         var where = BuildSearch("@roles:admin");
-        where.ShouldContain("@>");
-        where.ShouldContain("jsonb_typeof(roles)");
+        where.ShouldContain("roles @>");
+        // Bare containment — no typeof guard / ILIKE fallback (they defeated
+        // the GIN index; see SearchExpressionParser.BuildJsonbArraySql).
+        where.ShouldNotContain("jsonb_typeof(roles)");
     }
 
     [Fact]
     public void Search_Tags_Uses_JsonbContainment()
     {
         var where = BuildSearch("@tags:important");
-        where.ShouldContain("@>");
-        where.ShouldContain("jsonb_typeof(tags)");
+        where.ShouldContain("tags @>");
+        where.ShouldNotContain("jsonb_typeof(tags)");
     }
 
     [Fact]
@@ -490,8 +492,7 @@ public class QueryHelperTests
     public void Spec_Roles_Array_Search()
     {
         var where = BuildSearch("@roles:super_admin");
-        where.ShouldContain("@>");
-        where.ShouldContain("jsonb_typeof(roles)");
+        where.ShouldContain("roles @>");
         where.ShouldContain("CAST($"); // JSON param is in parameter
     }
 
@@ -624,7 +625,7 @@ public class QueryHelperTests
         where.ShouldContain(" OR ");
         // Group 1 has is_active AND roles
         where.ShouldContain("CAST(is_active AS BOOLEAN)");
-        where.ShouldContain("jsonb_typeof(roles)");
+        where.ShouldContain("roles @>");
         // Group 2 has payload condition
         where.ShouldContain("payload::jsonb");
     }

@@ -1,5 +1,57 @@
 # Changelog
 
+## Unreleased
+
+### Fixed
+
+- **The query-search feature-matrix timestamp test no longer fails on non-UTC
+  machines under the SQLite driver.** The fixture stamped rows with
+  `DateTime.UtcNow` while dmart's timestamps are naive LOCAL wall clock
+  (`TimeUtils.Now()`); SQLite's lexicographic text comparison exposed the
+  offset, while PostgreSQL masked it through the session-timezone coercion.
+  Test-only fix, plus new regression pins (`SqliteTimestampRangeTests`) that
+  hold the SQLite timestamp storage format, the epoch-ms bound expression,
+  and the server binding path together.
+- **An empty `filter_tags` set emits a safe constant-false predicate.** The
+  PostgreSQL containment seam produced an empty `()` for a zero-length value
+  list (a syntax error); the sole caller guards on a non-empty set, but the
+  seam now returns `FALSE`, matching the SQLite dialect which already did.
+
+### Performance
+
+- **`@tags:` / `@roles:` / `@groups:` searches are now index-served.** The
+  positive emission used to OR the containment with a `jsonb_typeof`-guarded
+  object-ILIKE fallback; PostgreSQL can only BitmapOr an OR whose every arm is
+  indexable, so the fallback arm forced a **sequential scan** on each such
+  search. Positives now emit one bare `col @> '["x"]'::jsonb`, served straight
+  from the existing `jsonb_path_ops` GIN indexes. Semantics note: a row whose
+  tags/roles/groups column holds a JSON *object* (a shape the models never
+  write) no longer substring-matches. Negated selectors keep the old emission
+  (NOT-containment can't use an index anyway).
+- **`filter_tags` no longer sequential-scans.** It compiled to `tags ?| $1`,
+  but `?|` is not in the `jsonb_path_ops` operator class, so
+  `idx_entries_tags_gin` never served it. It now compiles to
+  `(tags @> '["a"]' OR tags @> '["b"]')` — equivalent for arrays of strings —
+  which the GIN index serves as a BitmapOr.
+- **Composite `(space_name, subpath)` indexes** on `entries` and `attachments`
+  replace the single-column `space_name` indexes (whose leading-column role
+  the composites cover). Every query's WHERE leads with exactly this pair.
+- **Npgsql automatic statement preparation** (`DATABASE_MAX_AUTO_PREPARE`,
+  default 200): the hot statements were parsed and planned by PostgreSQL from
+  scratch on every execution.
+- **Creates issue three fewer SQL statements.** The duplicate-shortname probe
+  went typed-then-untyped, and the typed leg always misses on a create; it is
+  now a single untyped lookup. The parent folder consulted by the uniqueness
+  gate and the folder-content gate was loaded twice, identically, on two
+  connections; it is now loaded once and shared.
+- **Opt-in auth read cache** (`AUTH_CACHE_TTL`, default 0 = off): caches the
+  per-request user row + session-validity pair for the configured seconds.
+  Off, behavior is unchanged. On, single-node revocations still take effect
+  immediately (writes evict), and other replicas converge within the TTL.
+- **`JsonbHelpers.EnumMember` no longer reflects per call** — the
+  `[EnumMember]` map is built once per enum type; the helper runs several
+  times on every request.
+
 ## v1.2.6 — 2026-08-22
 
 ### Security

@@ -89,6 +89,23 @@ public sealed class DmartSettings
     // where the connection sat idle for minutes between batches while the
     // filesystem walk read the next slice. 0 disables (Npgsql default).
     public int DatabaseKeepalive { get; set; } = 30;
+    // Npgsql automatic server-side statement preparation: the N most-reused
+    // statements per connection are PREPAREd, so PostgreSQL skips parse +
+    // plan on every subsequent execution. dmart's hot statements (the entry
+    // page/count SELECTs, the 25-column INSERT ... ON CONFLICT, the per-request
+    // auth lookups) are re-planned from scratch on every execution without
+    // this. 0 disables (Npgsql's own default). Applied only to the
+    // component-built connection string — an explicit POSTGRES_CONNECTION
+    // keeps whatever the operator wrote, as with every other knob.
+    public int DatabaseMaxAutoPrepare { get; set; } = 200;
+    // Seconds to cache the per-request auth lookups (user row + session
+    // validity) in memory. 0 (default) = disabled: every request hits the
+    // database twice before reaching its handler, exactly as before. When
+    // set, a revoked session / deactivated user can keep working for at most
+    // this many seconds on nodes other than the one that processed the
+    // revocation (the processing node evicts immediately). Keep it small —
+    // 1-5s captures most of the win at high request rates.
+    public int AuthCacheTtl { get; set; }
 
     // AdminPassword is read ONLY by AdminBootstrap when the dmart admin row
     // is being created for the first time (or exists but has no password

@@ -52,4 +52,19 @@ public sealed record Locator
         if (string.IsNullOrEmpty(s) || s == "/") return "/";
         return "/" + s.Trim('/');
     }
+
+    // Splits a subpath into the locator of the folder that owns it:
+    // "a/b/c" → ("/a/b", "c"), "items" → ("/", "items"), "/" → ("/", "").
+    // Canonical home for the helper UniquenessValidator and
+    // FolderContentValidator used to duplicate privately; EntryService uses it
+    // to load the parent folder ONCE per write and share it with both.
+    public static (string ParentSubpath, string FolderShortname) SplitParentFolder(string? subpath)
+    {
+        var s = (subpath ?? "").Trim();
+        while (s.StartsWith('/')) s = s[1..];
+        if (s.Length == 0) return ("/", "");
+        var ix = s.LastIndexOf('/');
+        if (ix < 0) return ("/", s);
+        return ("/" + s[..ix], s[(ix + 1)..]);
+    }
 }
