@@ -1189,6 +1189,11 @@ jobs:
       - name: Attach the manifest
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          # Same reason as the download step: this job has no checkout and the
+          # upload runs from working-directory `assets`, so gh has no repo to
+          # infer and `gh release upload` dies with "fatal: not a git
+          # repository". GH_REPO points it at the repo without a working tree.
+          GH_REPO: ${{ github.repository }}
         working-directory: assets
         run: |
           gh release upload "$GITHUB_REF_NAME" \
