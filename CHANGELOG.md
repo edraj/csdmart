@@ -1,9 +1,13 @@
 # Changelog
 
-## Unreleased
+## v1.2.7 — 2026-08-22
 
 ### Fixed
 
+- **The release's aggregate `SHA256SUMS-all` job can find the release again.**
+  Its "download every asset" step ran `gh release download` with no repository
+  context and failed on v1.2.6; the step now passes `GH_REPO`, so the signed
+  aggregate checksum manifest is produced with the rest of the artifacts.
 - **The query-search feature-matrix timestamp test no longer fails on non-UTC
   machines under the SQLite driver.** The fixture stamped rows with
   `DateTime.UtcNow` while dmart's timestamps are naive LOCAL wall clock
