@@ -146,7 +146,21 @@ public sealed class PostgresSqlDialect : ISqlDialect
     public string ArrayAnyLike(string column, IReadOnlyList<string> patterns, SqlBinder bind)
     {
         var tests = patterns.Select(p => $"qp LIKE {bind(p, SqlValueKind.Inferred)} ESCAPE '\\'");
-        return $"EXISTS (SELECT 1 FROM unnest({column}) AS qp WHERE {string.Join(" OR ", tests)})";
+        var body = string.Join(" OR ", tests);
+
+        // A redundant prefix guard, when every pattern starts with the same
+        // literal text. Implied by the OR-chain — anything matching one of the
+        // patterns matches the shared prefix too — so this cannot change which
+        // rows are visible, which matters because this predicate IS the row
+        // level access control. What it changes is cost: an element matching
+        // nothing is rejected on one comparison instead of one per policy.
+        // A real user carries ~30 near-identical policies and most rows match
+        // none of them. See LikePatternPrefix.
+        var guard = LikePatternPrefix.Common(patterns);
+        if (guard is not null)
+            body = $"qp LIKE {bind(guard, SqlValueKind.Inferred)} ESCAPE '\\' AND ({body})";
+
+        return $"EXISTS (SELECT 1 FROM unnest({column}) AS qp WHERE {body})";
     }
 
     public string AclGrants(string aclColumn, string userPlaceholder, string action)

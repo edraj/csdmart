@@ -156,6 +156,12 @@ public class SqlEmissionGoldenTests
             ("user-no-policies", "alice", "entries", null),
             ("user-with-policies", "alice", "entries", new() { "myspace:/posts:*", "other:/x:content" }),
             ("policy-metachars", "alice", "entries", new() { @"sp:/a_b:100%\x", "sp:/*" }),
+            // The production shape: sibling policies differing only in the
+            // resource-type segment. This is what the prefix guard is for, so
+            // the guarded emission needs to be in the snapshot — without a
+            // case like this the transform is invisible here.
+            ("sibling-policies", "alice", "entries",
+                new() { "mbb:/users:user:*", "mbb:/users:group:*", "mbb:/users:data_asset:*" }),
             ("skipped-attachments", "alice", "attachments", new() { "a:*" }),
             ("skipped-histories", "alice", "histories", new() { "a:*" }),
             ("table-users", "alice", "users", new() { "management:/users:*" }),

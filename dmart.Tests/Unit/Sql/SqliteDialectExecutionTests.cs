@@ -249,6 +249,83 @@ public sealed class SqliteDialectExecutionTests : IAsyncLifetime
         (await RunAsync(sql.ToString(), args)).ShouldBe(new[] { "literal" });
     }
 
+    // The prefix guard added in front of the policy OR-chain is an optimisation
+    // inside the ACCESS CONTROL predicate, so the only property that matters is
+    // that it never excludes anything the policies admit. Asserting emitted
+    // text would not show that; this evaluates real LIKE, with the escaping and
+    // case sensitivity the dialect actually runs under, over inputs chosen to
+    // break a naive prefix scan — escape pairs straddling the split point, a
+    // pattern that is itself a prefix of another, a dangling backslash.
+    [Fact]
+    public async Task AclPolicyGuard_NeverNarrowsWhatAPolicySetGrants()
+    {
+        string[][] policySets =
+        [
+            // Production shape: siblings differing only in the type segment.
+            ["mbb:/users:user:%", "mbb:/users:group:%", @"mbb:/users:data\_asset:%"],
+            // The split point falls inside an escape pair, which must never
+            // be broken in half.
+            [@"sp:/a\_b:%", @"sp:/a\_c:%"],
+            [@"a\%b:%", @"a\%c:%"],
+            [@"a\\b:%", @"a\\c:%"],
+            // One pattern is a strict prefix of the other, so the guard this
+            // would produce IS "x:%" — Common declines and the chain stands.
+            ["x:%", "x:y:%"],
+            // Dangling backslash: not a valid escape, so it cannot be literal.
+            [@"ab\", "abc"],
+            // Nothing shared at all.
+            ["abc:%", "xyz:%"],
+        ];
+
+        string[] candidates =
+        [
+            "mbb:/users:user:1", "mbb:/users:group:g", "mbb:/users:data_asset:9",
+            "mbb:/users:dataXasset:9", "mbb:/usersXuser:1", "mbb:/users:",
+            "sp:/a_b:z", "sp:/aXb:z", "sp:/a_c:z",
+            "a%b:1", "aXb:1", @"a\b:1", @"a\\b:1",
+            "x:y:z", "x:1", "ab", "abc", @"ab\", "", "%", "_",
+        ];
+
+        await using var conn = await _factory.OpenAsync();
+
+        var guarded = 0;
+        foreach (var patterns in policySets)
+        {
+            var guard = LikePatternPrefix.Common(patterns);
+            if (guard is null) continue;
+            guarded++;
+            foreach (var candidate in candidates)
+            {
+                var matchedAPolicy = false;
+                foreach (var pattern in patterns)
+                    matchedAPolicy |= await LikeAsync(conn, candidate, pattern);
+
+                if (!matchedAPolicy) continue;
+
+                (await LikeAsync(conn, candidate, guard)).ShouldBeTrue(
+                    $"guard '{guard}' excluded '{candidate}', which the policy set grants");
+            }
+        }
+
+        // Guard against the test passing because nothing was ever guarded.
+        guarded.ShouldBe(5);
+    }
+
+    private static async Task<bool> LikeAsync(DbConnection conn, string value, string pattern)
+    {
+        await using var cmd = conn.CreateCommand();
+        cmd.CommandText = @"SELECT CASE WHEN $v LIKE $p ESCAPE '\' THEN 1 ELSE 0 END";
+        foreach (var (name, val) in new[] { ("$v", value), ("$p", pattern) })
+        {
+            var prm = cmd.CreateParameter();
+            prm.ParameterName = name;
+            prm.Value = val;
+            cmd.Parameters.Add(prm);
+        }
+        return Convert.ToInt32(await cmd.ExecuteScalarAsync(),
+            System.Globalization.CultureInfo.InvariantCulture) == 1;
+    }
+
     [Fact]
     public async Task AclPolicyWildcard_ExpandsStar()
     {

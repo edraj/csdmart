@@ -138,7 +138,18 @@ public sealed class SqliteSqlDialect : ISqlDialect
     public string ArrayAnyLike(string column, IReadOnlyList<string> patterns, SqlBinder bind)
     {
         var tests = patterns.Select(p => $"qp.value LIKE {bind(p, SqlValueKind.Inferred)} ESCAPE '\\'");
-        return $"EXISTS (SELECT 1 FROM json_each({column}) AS qp WHERE {string.Join(" OR ", tests)})";
+        var body = string.Join(" OR ", tests);
+
+        // Same redundant prefix guard as the PostgreSQL dialect, for the same
+        // reason and with the same proof: implied by the OR-chain, so it cannot
+        // change what the user can see. Kept in step deliberately — the two
+        // backends granting different access for the same policy set is the
+        // failure this whole seam exists to prevent.
+        var guard = LikePatternPrefix.Common(patterns);
+        if (guard is not null)
+            body = $"qp.value LIKE {bind(guard, SqlValueKind.Inferred)} ESCAPE '\\' AND ({body})";
+
+        return $"EXISTS (SELECT 1 FROM json_each({column}) AS qp WHERE {body})";
     }
 
     public string AclGrants(string aclColumn, string userPlaceholder, string action)

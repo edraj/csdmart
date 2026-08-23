@@ -93,6 +93,14 @@ SQL: AND (owner_shortname = $1 OR EXISTS (SELECT 1 FROM unnest(query_policies) A
   P2: name=<positional> type=<inferred> value="sp:/a\_b:100\%\\x"
   P3: name=<positional> type=<inferred> value="sp:/%"
 
+## acl: sibling-policies
+SQL: AND (owner_shortname = $1 OR EXISTS (SELECT 1 FROM unnest(query_policies) AS qp WHERE qp LIKE $5 ESCAPE '\' AND (qp LIKE $2 ESCAPE '\' OR qp LIKE $3 ESCAPE '\' OR qp LIKE $4 ESCAPE '\')) OR EXISTS (SELECT 1 FROM jsonb_array_elements(CASE WHEN jsonb_typeof(acl::jsonb) = 'array' THEN acl::jsonb ELSE '[]'::jsonb END) AS elem WHERE elem->>'user_shortname' = $1 AND (elem->'allowed_actions') ? 'query')) 
+  P1: name=<positional> type=<inferred> value="alice"
+  P2: name=<positional> type=<inferred> value="mbb:/users:user:%"
+  P3: name=<positional> type=<inferred> value="mbb:/users:group:%"
+  P4: name=<positional> type=<inferred> value="mbb:/users:data\_asset:%"
+  P5: name=<positional> type=<inferred> value="mbb:/users:%"
+
 ## acl: skipped-attachments
 SQL: <empty>
 

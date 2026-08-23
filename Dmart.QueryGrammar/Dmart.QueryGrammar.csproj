@@ -47,4 +47,13 @@
     <None Include="README.md" Pack="true" PackagePath="\" />
   </ItemGroup>
 
+  <ItemGroup>
+    <!-- Expose `internal` LikePatternPrefix to the dmart test project. Its
+         correctness is what keeps the access-control prefix guard from
+         narrowing a policy, so it needs direct unit tests without becoming
+         part of this package's public surface. Same arrangement as
+         Dmart.SqlAdapter. -->
+    <InternalsVisibleTo Include="dmart.Tests" />
+  </ItemGroup>
+
 </Project>
