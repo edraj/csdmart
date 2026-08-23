@@ -5,7 +5,8 @@ name: Security Gate
 # Canonical copy: reusable_assets/ci-security (templates/security.yml). Update it
 # there and re-run its deploy script to roll changes to every repo.
 #
-# Gates: Gitleaks (secrets) · Trivy fs (dependency CVEs, fixable) · Semgrep (SAST).
+# Gates: Gitleaks (secrets) · Trivy fs (dependency CVEs, fixable — source tree
+# lockfiles plus the recorded NuGet graph) · Semgrep (SAST).
 # Misconfig scanning is deliberately off — see TRIVY_SCANNERS below.
 # All run every time; the job fails once if any found blocking issues.
 
@@ -88,6 +89,34 @@ jobs:
             || { echo "::error::trivy extract failed"; echo 1 > .cigate/rc; exit 1; }
           UNFIXED=""
           if [ "$IGNORE_UNFIXED" = "true" ]; then UNFIXED="--ignore-unfixed"; fi
+
+          # trivy detects NuGet by the filename `packages.lock.json`. This repo
+          # keeps that exact content as dist/deps/<slug>.lock.json instead, so
+          # without this every .NET dependency is invisible to the scanner —
+          # `Number of language-specific files num=2`, i.e. the JS lockfiles only.
+          # Materialise the graph under the name trivy expects.
+          #
+          # Deliberately OUTSIDE the worktree: a packages.lock.json in the tree is
+          # precisely what breaks this repo's distro builders (NU1403/NU1004, see
+          # dist/deps/README.md), and a self-hosted runner can carry a workspace
+          # into a later job.
+          NUGET_DIR="$(mktemp -d)"   # 0700, unique: /tmp is shared on these runners
+          graphs=0
+          for f in dist/deps/*.lock.json; do
+            [ -e "$f" ] || break
+            slug="$(basename "$f" .lock.json)"
+            mkdir -p "$NUGET_DIR/$slug"
+            cp "$f" "$NUGET_DIR/$slug/packages.lock.json"
+            graphs=$((graphs + 1))
+          done
+          echo "materialised $graphs recorded project graphs for NuGet scanning"
+          if [ "$graphs" -eq 0 ]; then
+            # Scanning nothing and reporting 0 is the exact failure this step
+            # exists to fix, so an empty dist/deps is a gate failure, not a pass.
+            echo "::error::no dist/deps/*.lock.json found — the .NET dependency graph is not being scanned"
+            echo 1 > .cigate/rc
+          fi
+
           echo "::group::trivy fs"
           rc=0
           .cigate/bin/trivy fs --scanners "$TRIVY_SCANNERS" --severity "$SEVERITY" $UNFIXED \
@@ -97,16 +126,31 @@ jobs:
             --skip-dirs "$TRIVY_SKIP_DIRS" \
             --no-progress --skip-db-update . 2>/dev/null || true
           echo "::endgroup::"
+
+          echo "::group::trivy fs (NuGet, from dist/deps)"
+          rcn=0
+          .cigate/bin/trivy fs --scanners "$TRIVY_SCANNERS" --severity "$SEVERITY" $UNFIXED \
+            --format json --output .cigate/out/trivy-nuget.json --exit-code 1 \
+            --skip-db-update --no-progress "$NUGET_DIR" || rcn=$?
+          .cigate/bin/trivy fs --scanners "$TRIVY_SCANNERS" --severity "$SEVERITY" $UNFIXED \
+            --skip-db-update --no-progress "$NUGET_DIR" 2>/dev/null || true
+          echo "::endgroup::"
+          rm -rf "$NUGET_DIR"
+
           # --exit-code 1 collides with trivy's own exit 1 (e.g. a rate-limited
-          # vuln-DB pull from ghcr.io). Same report-file test as gitleaks.
-          if [ "$rc" -ne 0 ]; then
-            if python3 -c "import json;json.load(open('.cigate/out/trivy.json'))" 2>/dev/null; then
-              echo "::error::Trivy found ${SEVERITY} dependency vulnerabilities"
+          # vuln-DB pull from ghcr.io). Same report-file test as gitleaks: a run
+          # that produced a parseable report really did scan.
+          verdict() {   # $1=rc  $2=report  $3=what was scanned
+            if [ "$1" -eq 0 ]; then return 0; fi
+            if python3 -c "import json;json.load(open('$2'))" 2>/dev/null; then
+              echo "::error::Trivy found ${SEVERITY} dependency vulnerabilities in the $3"
             else
-              echo "::error::Trivy failed to run (exit ${rc}) — no valid report; tool error, not a finding"
+              echo "::error::Trivy failed to run on the $3 (exit $1) — no valid report; tool error, not a finding"
             fi
             echo 1 > .cigate/rc
-          fi
+          }
+          verdict "$rc"  .cigate/out/trivy.json       "source tree"
+          verdict "$rcn" .cigate/out/trivy-nuget.json "recorded NuGet graph"
           exit 0
 
       - name: Semgrep (SAST)
@@ -141,16 +185,19 @@ jobs:
         run: |
           py() { python3 -c "$1" 2>/dev/null || echo "?"; }
           GL=$(py "import json;print(len(json.load(open('.cigate/out/gitleaks.json'))))")
-          TV=$(py "import json;d=json.load(open('.cigate/out/trivy.json'));print(sum(len(r.get('Vulnerabilities') or [])+len(r.get('Misconfigurations') or []) for r in (d.get('Results') or [])))")
+          tv() { py "import json;d=json.load(open('$1'));print(sum(len(r.get('Vulnerabilities') or [])+len(r.get('Misconfigurations') or []) for r in (d.get('Results') or [])))"; }
+          TV=$(tv .cigate/out/trivy.json)
+          TN=$(tv .cigate/out/trivy-nuget.json)
           SG=$(py "import json;print(len(json.load(open('.cigate/out/semgrep.json')).get('results',[])))")
-          echo "Findings — secrets:${GL} deps:${TV} sast:${SG}"
+          echo "Findings — secrets:${GL} deps:${TV} nuget:${TN} sast:${SG}"
           if [ -n "${GITHUB_STEP_SUMMARY:-}" ]; then
             {
               echo "## Security Gate"
               echo "| Gate | Tool | Findings |"
               echo "|------|------|----------|"
               echo "| Secrets | Gitleaks | ${GL} |"
-              echo "| Dependencies (${SEVERITY}) | Trivy | ${TV} |"
+              echo "| Dependencies — source tree (${SEVERITY}) | Trivy | ${TV} |"
+              echo "| Dependencies — NuGet (${SEVERITY}) | Trivy | ${TN} |"
               echo "| SAST (ERROR) | Semgrep | ${SG} |"
             } >> "$GITHUB_STEP_SUMMARY"
           fi
