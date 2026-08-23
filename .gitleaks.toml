@@ -1,14 +1,17 @@
 # gitleaks config for dmart. Extends the default ruleset; allowlists known false
 # positives (CI test env, docs, unit-test fixtures, seed data). No real secret is
 # stored in the repo — runtime secrets come from the environment.
+# Paths are anchored: gitleaks matches these regexes as unanchored substrings,
+# so a bare `README\.md$` would exempt all 11 READMEs in the tree, not the root one.
 [extend]
 useDefault = true
 
 [allowlist]
 description = "Placeholder / test / seed / doc values, not real secrets"
 paths = [
-  '''\.github/scripts/backup-round-trip\.sh$''',   # CI round-trip test env (ci-round-trip-secret)
-  '''README\.md$''',                                # doc placeholder JWT_SECRET
-  '''dmart\.Tests/.*''',                            # unit tests (fake Apple P8 key, etc.)
-  '''seed/.*''',                                     # seed fixtures (hashed default-user password)
+  '''^(\./)?\.cigate/''',                                 # scanner binaries this job downloads, not repo content
+  '''^(\./)?\.github/scripts/backup-round-trip\.sh$''',   # CI round-trip test env (ci-round-trip-secret)
+  '''^(\./)?README\.md$''',                               # doc placeholder JWT_SECRET
+  '''^(\./)?dmart\.Tests/''',                             # unit tests (fake Apple P8 key, etc.)
+  '''^(\./)?seed/''',                                     # seed fixtures (hashed default-user password)
 ]
