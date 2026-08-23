@@ -9,6 +9,22 @@ on:
 permissions:
   contents: read
 
+# Only the newest run for a given ref does useful work. Without this, every
+# push starts a full CI run and the superseded ones keep their runners: this
+# repo has THREE self-hosted runners and a CI run costs ~26 runner-minutes
+# (build-and-test sqlite 8.6, postgresql 8.2, aot-publish 6.2), so the ceiling
+# is about 7 runs an hour. One afternoon logged 18 runs across 6 branches —
+# six of them on a single branch where only the last mattered — and PRs sat
+# queued behind work for commits that no longer existed.
+#
+# cancel-in-progress is conditional, NOT plain `true`. A push to master must
+# run to completion: that run is the record for a commit that has already
+# landed, and cancelling it leaves a merged commit with no verdict. Only
+# pull_request runs are superseded by their own next push.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
 jobs:
   dependency-graph:
     name: dependency graph in sync
