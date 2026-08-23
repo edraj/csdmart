@@ -126,9 +126,16 @@ public sealed class PostgresSqlDialect : ISqlDialect
     // — tags/roles/groups are arrays by construction, so key-matching an
     // object was an accident, not a behavior.)
     public string JsonArrayContainsAny(string column, IReadOnlyList<string> values, SqlBinder bind)
-        => "(" + string.Join(" OR ",
+    {
+        // Empty set contains nothing — emit a constant-false predicate rather
+        // than an empty "()" (a syntax error). The sole caller guards on
+        // Count > 0 today; this keeps the seam safe for any future one, and
+        // mirrors SqliteSqlDialect, which already returns "0" here.
+        if (values.Count == 0) return "FALSE";
+        return "(" + string.Join(" OR ",
                values.Select(v => $"{column} @> {bind(ToJsonArrayLiteral(v), SqlValueKind.Json)}"))
              + ")";
+    }
 
     private static string ToJsonArrayLiteral(string value)
     {

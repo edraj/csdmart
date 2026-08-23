@@ -1,0 +1,67 @@
+{
+  "dependencies": {
+    ".NETStandard,Version=v2.1": {
+      "Microsoft.Bcl.AsyncInterfaces": {
+        "contentHash": "3Nxnq7dVqHhEJkvcyLGzKraHzXLixUhjz8tC2LLdTo02hufeaOPbtO77xA5svFzYgL+hI7pixbWPxQJ+6BM+8A==",
+        "resolved": "9.0.11",
+        "type": "Transitive"
+      },
+      "System.IO.Pipelines": {
+        "contentHash": "NfGnevAV0r2gqtZWxa/7uCm3MNRYz1o4WRHhFahgBq46LuG2eaLwXIlPgtgaRUvf9CCrGFnuzN47MOzJUH1HKg==",
+        "resolved": "9.0.11",
+        "type": "Transitive"
+      },
+      "System.Net.Http.Json": {
+        "contentHash": "Ztki0TWd+RCkur3Q47t05x7/dAKOXbW5OWveL9PoEoeReHuC0upR9p+HVEl7DzkwavUrox+u2bzkPEdx5rx5Jw==",
+        "dependencies": {
+          "System.Text.Json": "9.0.11"
+        },
+        "requested": "[9.0.11, )",
+        "resolved": "9.0.11",
+        "type": "Direct"
+      },
+      "System.Runtime.CompilerServices.Unsafe": {
+        "contentHash": "/iUeP3tq1S0XdNNoMz5C9twLSrM/TH+qElHkXWaPvuNOt+99G75NrV0OS2EqHx5wMN7popYjpc8oTjC1y16DLg==",
+        "resolved": "6.0.0",
+        "type": "Transitive"
+      },
+      "System.Text.Encodings.Web": {
+        "contentHash": "l5L3Ov+pyD0dfK2bv6IMU2KPEyaaWnix6U0/YhgkNBGEOAgVTVlvh5ZyXWuuRlCtLnOziz+VtM5HFeqLlH2AbA==",
+        "dependencies": {
+          "System.Runtime.CompilerServices.Unsafe": "6.0.0"
+        },
+        "resolved": "9.0.11",
+        "type": "Transitive"
+      },
+      "System.Text.Json": {
+        "contentHash": "DGToqSFbBSU6pMSbZuJ+7jDvLa73rvpcYdGFqZIB3FKdCVlEAbrBJrl9PuCT6E0QbdhXjPwqalYc5lxjUqMQzw==",
+        "dependencies": {
+          "Microsoft.Bcl.AsyncInterfaces": "9.0.11",
+          "System.IO.Pipelines": "9.0.11",
+          "System.Runtime.CompilerServices.Unsafe": "6.0.0",
+          "System.Text.Encodings.Web": "9.0.11"
+        },
+        "requested": "[9.0.11, )",
+        "resolved": "9.0.11",
+        "type": "Direct"
+      },
+      "dmart.models": {
+        "dependencies": {
+          "System.Text.Json": "[9.0.11, )"
+        },
+        "type": "Project"
+      }
+    },
+    "net10.0": {
+      "dmart.models": {
+        "type": "Project"
+      }
+    },
+    "net8.0": {
+      "dmart.models": {
+        "type": "Project"
+      }
+    }
+  },
+  "version": 1
+}
