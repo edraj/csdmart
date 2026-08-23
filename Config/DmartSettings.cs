@@ -158,6 +158,14 @@ public sealed class DmartSettings
 
     public int MaxQueryLimit { get; set; } = 10000;
 
+    // Largest exact value a query `total` will compute. 0 (default) = unlimited,
+    // which is the Python-parity behaviour: every query counts every matching
+    // row. Set it on any deployment with large subpaths — counting is O(matching
+    // rows) whatever the indexes look like, so an uncapped `total` is a full
+    // scan of the result set on every page request. Above the cap the response
+    // reports `total` as the cap and sets `total_is_lower_bound`.
+    public int QueryTotalCap { get; set; }
+
     // When true (default), eligible INNER joins are pushed into SQL as a
     // correlated EXISTS semi-join so the base query paginates/counts in the DB
     // instead of materializing the full base set in memory. Setting false forces

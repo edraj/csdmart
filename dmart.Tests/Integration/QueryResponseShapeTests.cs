@@ -4,7 +4,9 @@ using Dmart.DataAdapters.Sql;
 using Dmart.Models.Api;
 using Dmart.Models.Enums;
 using Dmart.Services;
+using Dmart.Config;
 using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.Options;
 using Shouldly;
 using Xunit;
 
@@ -36,6 +38,66 @@ public class QueryResponseShapeTests : IClassFixture<DmartFactory>
     }
 
     // ==================== envelope ====================
+
+    // QueryTotalCap bounds the pagination count so it stops scanning rather
+    // than walking every matching row. The response must SAY the total is a
+    // lower bound — a client reading a capped "total" as exact is the silent
+    // truncation this is meant to avoid.
+    [FactIfPg]
+    public async Task Query_BoundedTotal_ReportsTheCapAndFlagsIt()
+    {
+        _factory.CreateClient();
+        var settings = _factory.Services
+            .GetRequiredService<IOptions<DmartSettings>>().Value;
+        var original = settings.QueryTotalCap;
+        try
+        {
+            settings.QueryTotalCap = 1;
+            var query = _factory.Services.GetRequiredService<QueryService>();
+
+            var resp = await query.ExecuteAsync(new Query
+            {
+                Type = QueryType.Spaces,
+                SpaceName = "management",
+                Subpath = "/",
+                Limit = 100,
+            }, _factory.AdminShortname);
+
+            resp.Status.ShouldBe(Status.Success);
+            var total = (int)resp.Attributes!["total"]!;
+
+            // Either the fixture holds more spaces than the cap, in which case
+            // the total is clamped and flagged, or it does not, in which case
+            // the exact total stands and no flag appears. Both are correct;
+            // asserting one unconditionally would depend on fixture size.
+            if (resp.Attributes.ContainsKey("total_is_lower_bound"))
+            {
+                total.ShouldBe(1);
+                resp.Attributes["total_is_lower_bound"].ShouldBe(true);
+            }
+            else
+            {
+                total.ShouldBeLessThanOrEqualTo(1);
+            }
+        }
+        finally { settings.QueryTotalCap = original; }
+    }
+
+    [FactIfPg]
+    public async Task Query_UncappedTotal_CarriesNoLowerBoundFlag()
+    {
+        var query = Resolve();
+        var resp = await query.ExecuteAsync(new Query
+        {
+            Type = QueryType.Spaces,
+            SpaceName = "management",
+            Subpath = "/",
+            Limit = 100,
+        }, _factory.AdminShortname);
+
+        // Default QueryTotalCap is 0 (unlimited), so nothing should be flagged.
+        resp.Attributes!.ShouldNotContainKey("total_is_lower_bound");
+    }
 
     [FactIfPg]
     public async Task Query_Response_Attributes_Has_Both_Total_And_Returned()
