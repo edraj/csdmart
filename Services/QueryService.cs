@@ -137,9 +137,16 @@ public sealed class QueryService(
 
         // For the re-paginated path, fetch the full base set (offset 0, capped)
         // and skip the base COUNT — `total` is recomputed post-join below.
+        // Bound the pagination count. Counting is O(matching rows) regardless
+        // of indexes, so an uncapped `total` re-scans the whole result set on
+        // every page request — on production that was 2.59M rows and ~2.4s per
+        // request. Above the cap the count stops early and `total` is reported
+        // as a lower bound below. 0 (the default) keeps the exact-count,
+        // Python-parity behaviour.
+        var totalCap = settings.Value.QueryTotalCap;
         var dispatchQuery = repaginateAfterJoin
-            ? q with { Limit = baseCap, Offset = 0, RetrieveTotal = false }
-            : q;
+            ? q with { Limit = baseCap, Offset = 0, RetrieveTotal = false, TotalCap = totalCap }
+            : q with { TotalCap = totalCap };
 
         var response = dispatchQuery.Type switch
         {
@@ -153,6 +160,21 @@ public sealed class QueryService(
             QueryType.Events => await QueryEventsAsync(dispatchQuery, actor, ct),
             _ => await DispatchTableQuery(dispatchQuery, actor, ct),
         };
+
+        // No silent caps: a bounded count reports the cap, not the real total, so
+        // say so rather than letting a client read "10000" as exact. Keyed on
+        // the cap+1 sentinel RunCountAsync returns to mean "at least cap".
+        if (totalCap > 0 && response.Attributes is { } countAttrs
+            && countAttrs.TryGetValue("total", out var totalObj)
+            && totalObj is int t && t > totalCap)
+        {
+            var bounded = new Dictionary<string, object>(countAttrs, StringComparer.Ordinal)
+            {
+                ["total"] = totalCap,
+                ["total_is_lower_bound"] = true,
+            };
+            response = response with { Attributes = bounded };
+        }
 
         // Python parity: client-side joins run against the materialized result
         // list. Mirror of dmart_plain/backend/data_adapters/sql/adapter.py:

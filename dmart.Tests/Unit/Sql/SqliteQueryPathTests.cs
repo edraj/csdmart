@@ -94,4 +94,66 @@ public sealed class SqliteQueryPathTests : IAsyncLifetime
             new Dmart.Auth.SessionTokenHasher(new DmartSettings { JwtSecret = new string('k', 48) }));
         (await repo.CountQueryAsync(Q("/users"), CancellationToken.None)).ShouldBe(1);
     }
+
+    // TotalCap bounds the pagination count so it stops scanning instead of
+    // walking every matching row. The contract RunCountAsync exposes is the
+    // cap+1 sentinel: at most cap+1, where cap+1 means "at least cap".
+    [Theory]
+    [InlineData(0, 6)]    // unlimited — exact, unchanged behaviour
+    [InlineData(10, 6)]   // cap above the row count — still exact
+    [InlineData(6, 6)]    // cap exactly on the row count — exact, no sentinel
+    [InlineData(2, 3)]    // cap below — stops at cap+1
+    [InlineData(1, 2)]
+    public async Task CountQuery_HonoursTotalCap(int cap, int expected)
+    {
+        await SeedUsersAsync(5);   // plus the one from InitializeAsync = 6
+        var repo = new UserRepository(_factory, new AuthzCacheRefresher(),
+            new Dmart.Auth.SessionTokenHasher(new DmartSettings { JwtSecret = new string('k', 48) }));
+
+        var total = await repo.CountQueryAsync(
+            Q("/users") with { TotalCap = cap }, CancellationToken.None);
+
+        total.ShouldBe(expected);
+    }
+
+    // The cap must be applied AFTER the ACL predicate. Capping the raw scan
+    // first would count rows the actor cannot see, which would leak the size of
+    // a collection through a pagination total.
+    [Fact]
+    public async Task CountQuery_AppliesTheCapAfterAclFiltering()
+    {
+        await SeedUsersAsync(5);
+        var repo = new UserRepository(_factory, new AuthzCacheRefresher(),
+            new Dmart.Auth.SessionTokenHasher(new DmartSettings { JwtSecret = new string('k', 48) }));
+
+        // "stranger" owns nothing here and holds a policy matching nothing, so
+        // every row is filtered out — a cap of 2 must still report 0, not 2.
+        var total = await repo.CountQueryAsync(
+            Q("/users") with { TotalCap = 2 }, "stranger",
+            new List<string> { "nothing:matches:%" }, CancellationToken.None);
+
+        total.ShouldBe(0);
+    }
+
+    private async Task SeedUsersAsync(int count)
+    {
+        await using var conn = await _factory.OpenAsync();
+        for (var i = 0; i < count; i++)
+        {
+            await using var cmd = conn.CreateCommand();
+            cmd.CommandText = """
+                INSERT INTO users (uuid, shortname, space_name, subpath, owner_shortname, query_policies)
+                VALUES ($u, $s, 'management', '/users', 'owner', '["management:/users:*"]')
+                """;
+            foreach (var (n, v) in new[]
+                     { ("$u", $"00000000-0000-0000-0000-0000000000{i:d2}"), ("$s", $"user{i}") })
+            {
+                var prm = cmd.CreateParameter();
+                prm.ParameterName = n;
+                prm.Value = v;
+                cmd.Parameters.Add(prm);
+            }
+            await cmd.ExecuteNonQueryAsync();
+        }
+    }
 }
