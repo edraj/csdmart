@@ -72,6 +72,11 @@ runs:
     - name: Resolve subjects
       id: resolve
       shell: bash
+      # Pass inputs through env, not ${{ }} interpolation inside the script, so a
+      # value can never break out into the shell (GitHub Actions script injection).
+      env:
+        INPUT_SUBJECTS: ${{ inputs.subjects }}
+        INPUT_SBOM: ${{ inputs.sbom }}
       run: |
         set -euo pipefail
         # RUNNER_TEMP is a backslash path on Windows runners; git-bash handles
@@ -90,7 +95,7 @@ runs:
             exit 1
           fi
           printf '%s\n' "$matches" >> "$SUBJECTS"
-        done <<< "${{ inputs.subjects }}"
+        done <<< "$INPUT_SUBJECTS"
         sort -u -o "$SUBJECTS" "$SUBJECTS"
 
         # The SBOM is signed alongside its subject but is NOT itself an
@@ -100,10 +105,10 @@ runs:
         # on a release as a failure — no exceptions, no "this one is only
         # metadata" carve-outs to reason about later.
         cp "$SUBJECTS" "$SIGNLIST"
-        if [ -n "${{ inputs.sbom }}" ]; then
-          test -f "${{ inputs.sbom }}" || {
-            echo "::error::sign-attest: sbom '${{ inputs.sbom }}' does not exist"; exit 1; }
-          echo "${{ inputs.sbom }}" >> "$SIGNLIST"
+        if [ -n "$INPUT_SBOM" ]; then
+          test -f "$INPUT_SBOM" || {
+            echo "::error::sign-attest: sbom '$INPUT_SBOM' does not exist"; exit 1; }
+          echo "$INPUT_SBOM" >> "$SIGNLIST"
         fi
 
         echo "attestation subjects:"; sed 's/^/  /' "$SUBJECTS"
