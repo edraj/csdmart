@@ -31,8 +31,14 @@
 # the SDK came from: a Fedora or AlmaLinux dotnet serves them out of a local
 # library-packs folder, a Microsoft tarball out of nuget.org. Recording them
 # would mean the file only ever matched the machine that wrote it. They are
-# build tooling, they never ship, and they never appear in the SBOM — so what
-# is left is exactly the set of packages that does.
+# build tooling and they never ship, so what is left here is the set of
+# packages that does.
+#
+# (An earlier version of this comment also claimed they never appear in the
+# SBOM. That is not true: v1.2.7's published SBOM lists
+# runtime.linux-x64.Microsoft.DotNet.ILCompiler 10.0.10. What the SBOM was
+# missing is the opposite thing — the runtime packs that DO ship, compiled
+# into the AOT binary. dist/sbom.sh adds those now.)
 #
 # Exit codes:  0 in sync   1 drift found   2 cannot check
 set -euo pipefail

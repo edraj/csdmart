@@ -454,6 +454,19 @@ jobs:
         # IL2027 / IL3050 fails this step rather than being printed and passed.
         run: dotnet publish dmart.csproj -r linux-x64 -c Release -p:PublishAot=true --nologo
 
+      - name: Runtime CVE scan
+        # The runtime is compiled INTO the AOT binary and ships inside
+        # /usr/bin/dmart, so a CVE in it is not something a user can patch by
+        # updating their distro's .NET — it takes a rebuild and a re-release.
+        # It is also invisible to the security gate: the runtime pack is
+        # SDK-injected, not a PackageReference, so it appears in neither
+        # dist/deps/*.lock.json nor the CycloneDX SBOM. The deps.json this
+        # publish just wrote is the only artifact that records it.
+        #
+        # v1.2.7 shipped runtime 10.0.10 — CVE-2026-62901 (HIGH),
+        # CVE-2026-62899, CVE-2026-62909 — and nothing was looking.
+        run: ./dist/scan-runtime-cves.sh bin/Release/net10.0/linux-x64
+
       - name: Smoke the native binary on SQLite
         # The point of the job. The publish above proves it LINKS; this proves
         # the linked binary can actually load libe_sqlite3.so and serve — which

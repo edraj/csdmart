@@ -102,6 +102,75 @@ if [ "${COMPONENTS:-0}" -lt 5 ]; then
 fi
 echo "== $FILENAME: $COMPONENTS components"
 
+# The runtime packs are NOT in the restore graph the CycloneDX tool reads: the
+# SDK injects them through FrameworkReference, so project.assets.json never
+# names them. But this project publishes self-contained with PublishAot, which
+# means Microsoft.NETCore.App.Runtime.<rid> and
+# Microsoft.AspNetCore.App.Runtime.<rid> are compiled INTO the binary and ship
+# inside it.
+#
+# An SBOM that omits them understates the largest thing being deployed — and,
+# because a self-contained runtime cannot be patched independently of the
+# binary, the component a consumer most needs to see. v1.2.7's SBOM listed 467
+# components and neither of these, while the binary it described carried
+# runtime 10.0.10 and three CVEs.
+#
+# Ask MSBuild rather than assuming the version follows the SDK:
+# ProcessFrameworkReferences resolves the exact packs for this RID, and needs
+# no restore to do it.
+echo "== resolving runtime packs for $RID"
+RPJSON="$(mktemp)"
+dotnet msbuild dmart.csproj \
+	-p:RuntimeIdentifier="$RID" -p:SelfContained=true \
+	-t:ProcessFrameworkReferences -getItem:RuntimePack -nologo > "$RPJSON" || {
+	echo "sbom.sh: could not resolve the runtime packs for $RID. Rather than" >&2
+	echo "         publish an SBOM that silently omits the runtime shipping" >&2
+	echo "         inside the binary, this is a failure." >&2
+	exit 1
+}
+python3 - "$OUT/$FILENAME" "$RPJSON" <<'RUNTIMEPACKS'
+import json, sys
+
+doc_path, packs_path = sys.argv[1], sys.argv[2]
+doc = json.load(open(doc_path))
+packs = json.load(open(packs_path)).get("Items", {}).get("RuntimePack", [])
+
+# No packs means the resolution silently did nothing, which would produce
+# exactly the incomplete SBOM this block exists to prevent.
+if not packs:
+    sys.exit("sbom.sh: MSBuild resolved no runtime packs; refusing to write an "
+             "SBOM that omits the runtime.")
+
+seen = {c.get("purl") for c in doc.get("components", [])}
+added = []
+for p in packs:
+    name, ver = p.get("NuGetPackageId"), p.get("NuGetPackageVersion")
+    if not name or not ver:
+        sys.exit("sbom.sh: runtime pack with no id/version: %r" % (p,))
+    purl = "pkg:nuget/%s@%s" % (name, ver)
+    if purl in seen:
+        continue
+    doc.setdefault("components", []).append({
+        "type": "library",
+        "bom-ref": purl,
+        "name": name,
+        "version": ver,
+        "purl": purl,
+        "scope": "required",
+        "description": ".NET runtime pack compiled into the self-contained AOT "
+                       "binary; it ships inside the executable and cannot be "
+                       "patched separately from it.",
+    })
+    seen.add(purl)
+    added.append("%s %s" % (name, ver))
+
+json.dump(doc, open(doc_path, "w"), indent=2)
+print("== added %d runtime pack component(s): %s" % (len(added), "; ".join(added)))
+RUNTIMEPACKS
+rm -f "$RPJSON"
+COMPONENTS=$(grep -c '"purl"' "$OUT/$FILENAME" || true)
+echo "== $FILENAME: $COMPONENTS components (server + runtime)"
+
 # Merge the embedded Svelte frontends (cxb, catalog). dmart compiles their built
 # SPAs into the AOT binary via ManifestEmbeddedFileProvider, so their npm
 # dependencies ship inside /usr/bin/dmart; a .NET-only SBOM understates what is
