@@ -23,8 +23,32 @@
 # runtime pack version follows the SDK, it is not something this repo pins
 # directly.
 #
+# TWO WAYS TO ASK, and the second is the one that matters:
+#
+#   * a build tree — reads the runtimepack entry out of *.deps.json. Cheap, but
+#     it only describes what THAT build produced.
+#   * a finished binary (--binary) — reads the runtime version compiled into the
+#     executable itself. This is what the user actually runs.
+#
+# The distinction is not academic. Every shipped artifact here is built by a
+# different toolchain: the Fedora RPM by rpmbuild against the runner's system
+# SDK, the EL9 RPM inside a PERSISTENT podman container whose writable layer
+# keeps whatever SDK it was created with, the release tarballs in a throwaway
+# AlmaLinux container off `dnf install dotnet-sdk-10.0`, Windows/macOS off a
+# floating setup-dotnet. Scanning the CI build tree says nothing about any of
+# them, and a green check that does not describe the artifact is worse than no
+# check — it is a false negative on a shipped vulnerability.
+#
+# So: scan the artifact. `strings` on a self-contained AOT binary yields exactly
+# one `<version>-servicing.<build>+<sha>` marker, which is the runtime that was
+# compiled in. That version is turned into a minimal deps.json and handed to
+# trivy, so the verdict still comes from a real CVE database rather than a
+# hand-maintained floor.
+#
 # Usage:
 #   dist/scan-runtime-cves.sh bin/Release/net10.0/linux-x64
+#   dist/scan-runtime-cves.sh --binary dist/out/dmart
+#   dist/scan-runtime-cves.sh --binary --rid linux-arm64 path/to/dmart
 #   dist/scan-runtime-cves.sh --severity CRITICAL path/to/dir-or-deps.json
 #
 # Exit codes:  0 clean   1 vulnerabilities found   2 cannot check
@@ -32,10 +56,14 @@ set -euo pipefail
 
 TRIVY_VERSION="${TRIVY_VERSION:-0.74.0}"
 SEVERITY="${SEVERITY:-HIGH,CRITICAL}"
+BINARY_MODE=0
+RID="${RID:-linux-x64}"
 TARGETS=()
 
 while [ $# -gt 0 ]; do
 	case "$1" in
+		--binary) BINARY_MODE=1; shift ;;
+		--rid) RID="$2"; shift 2 ;;
 		--severity) SEVERITY="$2"; shift 2 ;;
 		-h|--help)
 			awk 'NR>1 && /^#/ {sub(/^# ?/, ""); print; next} NR>1 {exit}' "$0"
@@ -50,6 +78,57 @@ done
 	echo "        (try --help)" >&2
 	exit 2
 }
+
+# Binary mode: pull the runtime out of the executable and describe it in the
+# shape trivy's dotnet-core analyzer reads. Everything downstream is identical,
+# so a binary and a build tree get judged by the same CVE data.
+if [ "$BINARY_MODE" -eq 1 ]; then
+	command -v strings >/dev/null 2>&1 || {
+		echo "scan-runtime-cves.sh: needs \`strings\` (binutils) to read a binary" >&2
+		exit 2
+	}
+	SYNTH="$(mktemp -d)"
+	synthesised=0
+	for t in "${TARGETS[@]}"; do
+		[ -f "$t" ] || { echo "scan-runtime-cves.sh: $t is not a file" >&2; exit 2; }
+		# A self-contained AOT binary carries exactly one of these. More than one
+		# means the assumption broke; refuse rather than pick.
+		# `|| true`: the script runs under `set -euo pipefail`, so a grep that
+		# matches nothing would abort here — and abort means exit 1, which this
+		# script defines as "vulnerabilities found". A file with no marker must
+		# report "cannot check" (2), never a finding.
+		vers="$(strings -a "$t" 2>/dev/null \
+			| grep -oE '[0-9]+\.[0-9]+\.[0-9]+-servicing' \
+			| sed 's/-servicing//' | sort -u || true)"
+		count="$(printf '%s\n' "$vers" | grep -c . || true)"
+		if [ "$count" -ne 1 ]; then
+			echo "scan-runtime-cves.sh: found $count runtime version markers in $t" >&2
+			echo "        (expected exactly 1). Either it is not a self-contained" >&2
+			echo "        AOT binary, or the marker format changed. Refusing to" >&2
+			echo "        guess — an unscanned runtime must not read as clean." >&2
+			exit 2
+		fi
+		echo "== $t: runtime $vers ($RID)"
+		mkdir -p "$SYNTH/$(basename "$t")"
+		cat > "$SYNTH/$(basename "$t")/synthetic.deps.json" <<JSON
+{
+  "runtimeTarget": { "name": ".NETCoreApp,Version=v10.0/$RID" },
+  "targets": { ".NETCoreApp,Version=v10.0/$RID": {} },
+  "libraries": {
+    "runtimepack.Microsoft.NETCore.App.Runtime.$RID/$vers": {
+      "type": "runtimepack", "serviceable": false, "sha512": ""
+    },
+    "runtimepack.Microsoft.AspNetCore.App.Runtime.$RID/$vers": {
+      "type": "runtimepack", "serviceable": false, "sha512": ""
+    }
+  }
+}
+JSON
+		synthesised=$((synthesised + 1))
+	done
+	[ "$synthesised" -gt 0 ] || { echo "scan-runtime-cves.sh: no binaries given" >&2; exit 2; }
+	TARGETS=("$SYNTH")
+fi
 
 # Refuse to "pass" on an empty scan. A deps.json that is not there means the
 # build layout moved, and reporting 0 findings for a tree we never read is the
