@@ -47,10 +47,14 @@ jobs:
           mkdir -p .cigate/bin .cigate/out
           echo "0" > .cigate/rc
 
+      # !cancelled() on all three: a setup failure (download/install) still fails
+      # its own step, but must not skip the remaining gates. The whole point of
+      # the gate is that one bad scanner does not hide the other two.
       - name: Gitleaks (secrets)
+        if: ${{ !cancelled() }}
         run: |
           GLT=$(mktemp)   # unique path: the self-hosted runner shares /tmp across users
-          curl -sSL "https://github.com/gitleaks/gitleaks/releases/download/v${GITLEAKS_VERSION}/gitleaks_${GITLEAKS_VERSION}_linux_x64.tar.gz" -o "$GLT" \
+          curl -fsSL "https://github.com/gitleaks/gitleaks/releases/download/v${GITLEAKS_VERSION}/gitleaks_${GITLEAKS_VERSION}_linux_x64.tar.gz" -o "$GLT" \
             || { echo "::error::gitleaks download failed"; echo 1 > .cigate/rc; exit 1; }
           tar xzf "$GLT" -C .cigate/bin gitleaks \
             || { echo "::error::gitleaks extract failed"; echo 1 > .cigate/rc; exit 1; }
@@ -61,13 +65,24 @@ jobs:
           .cigate/bin/gitleaks detect --source . --no-git --redact \
             --report-format json --report-path .cigate/out/gitleaks.json || rc=$?
           echo "::endgroup::"
-          if [ "$rc" -ne 0 ]; then echo "::error::Gitleaks found committed secrets"; echo 1 > .cigate/rc; fi
+          # gitleaks exits 1 for leaks AND for its own errors (malformed
+          # .gitleaks.toml, bad --source). A run that produced a parseable report
+          # really did scan; anything else is a tool error. Both fail the gate.
+          if [ "$rc" -ne 0 ]; then
+            if python3 -c "import json;json.load(open('.cigate/out/gitleaks.json'))" 2>/dev/null; then
+              echo "::error::Gitleaks found committed secrets"
+            else
+              echo "::error::Gitleaks failed to run (exit ${rc}) — no valid report; tool error, not a finding"
+            fi
+            echo 1 > .cigate/rc
+          fi
           exit 0
 
       - name: Trivy (dependency CVEs)
+        if: ${{ !cancelled() }}
         run: |
           TVT=$(mktemp)   # unique path: the self-hosted runner shares /tmp across users
-          curl -sSL "https://github.com/aquasecurity/trivy/releases/download/v${TRIVY_VERSION}/trivy_${TRIVY_VERSION}_Linux-64bit.tar.gz" -o "$TVT" \
+          curl -fsSL "https://github.com/aquasecurity/trivy/releases/download/v${TRIVY_VERSION}/trivy_${TRIVY_VERSION}_Linux-64bit.tar.gz" -o "$TVT" \
             || { echo "::error::trivy download failed"; echo 1 > .cigate/rc; exit 1; }
           tar xzf "$TVT" -C .cigate/bin trivy \
             || { echo "::error::trivy extract failed"; echo 1 > .cigate/rc; exit 1; }
@@ -82,10 +97,20 @@ jobs:
             --skip-dirs "$TRIVY_SKIP_DIRS" \
             --no-progress --skip-db-update . 2>/dev/null || true
           echo "::endgroup::"
-          if [ "$rc" -ne 0 ]; then echo "::error::Trivy found ${SEVERITY} dependency vulnerabilities"; echo 1 > .cigate/rc; fi
+          # --exit-code 1 collides with trivy's own exit 1 (e.g. a rate-limited
+          # vuln-DB pull from ghcr.io). Same report-file test as gitleaks.
+          if [ "$rc" -ne 0 ]; then
+            if python3 -c "import json;json.load(open('.cigate/out/trivy.json'))" 2>/dev/null; then
+              echo "::error::Trivy found ${SEVERITY} dependency vulnerabilities"
+            else
+              echo "::error::Trivy failed to run (exit ${rc}) — no valid report; tool error, not a finding"
+            fi
+            echo 1 > .cigate/rc
+          fi
           exit 0
 
       - name: Semgrep (SAST)
+        if: ${{ !cancelled() }}
         run: |
           python3 -m pip install --quiet --user "semgrep==${SEMGREP_VERSION}" \
             || { echo "::error::semgrep install failed"; echo 1 > .cigate/rc; exit 1; }
@@ -112,7 +137,7 @@ jobs:
           exit 0
 
       - name: Summary
-        if: ${{ always() }}
+        if: ${{ !cancelled() }}
         run: |
           py() { python3 -c "$1" 2>/dev/null || echo "?"; }
           GL=$(py "import json;print(len(json.load(open('.cigate/out/gitleaks.json'))))")
@@ -131,7 +156,7 @@ jobs:
           fi
 
       - name: Gate result
-        if: ${{ always() }}
+        if: ${{ !cancelled() }}
         run: |
           rc=$(cat .cigate/rc 2>/dev/null || echo 1)
           if [ "$rc" != "0" ]; then
