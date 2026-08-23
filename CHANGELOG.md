@@ -1,5 +1,62 @@
 # Changelog
 
+## v1.2.8 — 2026-08-23
+
+### Performance
+
+- **A query's `total` no longer counts every matching row.** `total` is a
+  pagination count and counting is O(matching rows) whatever the indexes look
+  like. On a production instance one subpath holds 2,589,782 rows, and every
+  page request re-counted all of them: an Index Scan over 2.59M entries with a
+  heap visit each, 558,866 buffer hits (~4.4 GB), 2,435 ms warm — and far worse
+  under concurrency, where it produced a p50 of 17s and thousands of client
+  cancellations in an hour.
+
+  With the new `QueryTotalCap` setting above 0, the count is emitted as
+  `SELECT COUNT(*) FROM (SELECT 1 FROM t WHERE <filters> LIMIT cap+1) c`, so the
+  scan stops as soon as `cap+1` rows qualify. Measured on that same production
+  table: **2,435 ms → 29 ms, 558,866 → 10,006 buffers.**
+
+  `QueryTotalCap` defaults to **0 (unlimited)**, which is byte-identical to the
+  previous behaviour and preserves Python parity — a deployment must opt in.
+  Above the cap the response reports `total` as the cap AND sets
+  `total_is_lower_bound`, because a client reading a clamped total as exact is
+  the failure this would otherwise introduce. The `LIMIT` is applied after the
+  ACL predicate, so a cap can never count rows the actor cannot see.
+
+### Security / CI
+
+- **The self-hosted security gate now actually runs all three scanners.** Steps
+  execute under `bash -e`, so a non-zero exit from gitleaks/trivy/semgrep
+  aborted the step at the scanner invocation: the `rc=$?` capture that followed
+  was dead code, the remaining scanners were skipped, and the gate's own result
+  step never reported. Scanner status is now captured with `|| rc=$?`, and the
+  gate result runs even after a failed scanner.
+
+- **`.gitleaks.toml` allowlist paths are anchored.** gitleaks matches path
+  regexes as unanchored substrings, so `README\.md$` exempted all eleven READMEs
+  in the tree rather than the intended root one, and `dmart.Tests/` and `seed/`
+  matched at any nesting depth. A credential pasted into a nested README would
+  have passed the gate silently.
+
+- **The .NET dependency graph is scanned for CVEs.** trivy detects NuGet by the
+  filename `packages.lock.json`; this repository deliberately keeps that content
+  as `dist/deps/<slug>.lock.json`, outside the build, so trivy walked past every
+  .NET dependency and reported only the JavaScript lockfiles. 93 NuGet packages
+  across five projects had never been checked against a vulnerability database.
+  The gate now materialises the recorded graph under the expected name — outside
+  the worktree, since a `packages.lock.json` in the tree is what breaks the
+  distro builders — and scans it. No findings today.
+
+- **trivy no longer scans its own binaries.** The gate downloads gitleaks and
+  trivy into `.cigate/`, which was neither gitignored nor skipped, so trivy's
+  gobinary analyzer reported their embedded Go stdlib CVEs — fixable ones, which
+  `--ignore-unfixed` does not suppress.
+
+- **Semgrep is version-pinned**, and its exit codes are distinguished: 1 means
+  findings, ≥2 means the scanner itself failed. Both fail the gate, but a
+  crashed scanner is no longer reported as "found security issues".
+
 ## v1.2.7 — 2026-08-22
 
 ### Fixed
