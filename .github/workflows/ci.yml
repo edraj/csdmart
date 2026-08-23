@@ -430,7 +430,14 @@ jobs:
   # "not failed" to some gates, which is exactly the silent pass to avoid.
   build-and-test:
     name: build-and-test
-    runs-on: self-hosted
+    # Hosted, NOT self-hosted. This job is the single required status check,
+    # and all it does is read needs.build-and-test-matrix.result and echo it —
+    # about six seconds, touching nothing on the builder. Pinned to the
+    # self-hosted pool it competed with 8-10 minute build jobs for one of three
+    # runners and lost the race to every newer run, so merges waited twenty
+    # minutes on an `echo`. `if: always()` made it worse: cancelled runs still
+    # queued one. A hosted runner starts in seconds and costs the pool nothing.
+    runs-on: ubuntu-24.04
     needs: [build-and-test-matrix]
     if: always()
     steps:
