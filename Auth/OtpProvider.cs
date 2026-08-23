@@ -54,7 +54,7 @@ public sealed class OtpProvider(
             // Wrap the localized template in the same HTML shell Python uses,
             // so "Your OTP code is 123456" / "رمز التحقق…" both render bold.
             var html = $"<p>{System.Net.WebUtility.HtmlEncode(body)}</p>";
-            var sent = await smtp.SendEmailAsync(destination, "OTP", html, ct);
+            var sent = await smtp.SendEmailAsync(destination, RenderSubject(language), html, ct);
             if (sent) return;
         }
 
@@ -84,6 +84,18 @@ public sealed class OtpProvider(
             .Replace("{code}", code, StringComparison.Ordinal)
             .Replace("{otp_ttl}", ttlMinutes, StringComparison.Ordinal);
     }
+
+    // Email subject counterpart to RenderMessage. Resolves `otp_email_subject`
+    // through the same LanguageLoader path so the subject is served in the
+    // recipient's language and stays operator-overridable at
+    // ~/.dmart/languages/<locale>.json without a rebuild. Falls back to the
+    // historical "OTP" literal — a blank subject is spam-filter bait, so a
+    // deployment with no language files must still get a usable one.
+    //
+    // No {code} substitution: putting the OTP in the subject line leaks it to
+    // lock-screen notification previews and mail-server logs.
+    internal string RenderSubject(Language language)
+        => languages.Get(language, "otp_email_subject") ?? "OTP";
 
     // Lightweight email heuristic — good enough for dispatch routing; the OTP
     // flow validates the full address format upstream when the user registered.
