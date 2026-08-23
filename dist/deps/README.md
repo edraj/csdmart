@@ -26,3 +26,12 @@ Regenerate and check with `../check-dependency-graph.sh`. It runs on every pull
 request (`dependency graph in sync`) and in both release workflows before any
 SBOM is generated — so an SBOM on a release describes a dependency set that was
 reviewed here.
+
+The security gate also reads these files. Trivy detects NuGet by the filename
+`packages.lock.json`, so the gate copies each one to that name in a temporary
+directory **outside the worktree** and scans it there — never into the tree,
+for the NU1403/NU1004 reasons above. Without that step trivy walks straight
+past every .NET dependency and reports only the JavaScript lockfiles, so if
+this directory is renamed, restructured or emptied, `.github/workflows/
+security.yml` needs the same change. An empty `dist/deps` fails the gate rather
+than silently scanning nothing.
