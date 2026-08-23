@@ -11,6 +11,7 @@
     getSpaceTags,
   } from "@/lib/dmart_services";
   import { buildFieldFilterClause } from "@/lib/searchFilters";
+  import { pruneEmptyFormValues } from "@/lib/formUtils";
   import {
     parseValueByType,
     getFieldType,
@@ -709,7 +710,10 @@
         attributes.payload = {
           content_type: ContentType.json,
           schema_shortname: selectedCreateSchemaShortname,
-          body: createSchemaFormData || {},
+          // Only send the inputs the user actually filled — the schema form
+          // pre-initializes every property ('' / null / [] / {}).
+          body:
+            pruneEmptyFormValues($state.snapshot(createSchemaFormData)) ?? {},
         };
       }
 

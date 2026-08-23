@@ -56,6 +56,49 @@ export function getDefaultValueForProperty(property: SchemaProperty): any {
 }
 
 /**
+ * Recursively strip empty inputs from schema-form data before it is sent
+ * to the server. The dynamic schema form pre-initializes every property
+ * ('' / null / [] / {}), and those untouched placeholders must not end up
+ * in the payload body.
+ *
+ * Empty means: null/undefined, blank or whitespace-only strings, NaN
+ * (an empty number input), and arrays/objects left with nothing after
+ * their own members are pruned. Booleans and 0 are real values and kept.
+ *
+ * @param value - Form value (usually the whole form-data object)
+ * @returns The pruned value, or undefined when nothing remains
+ */
+export function pruneEmptyFormValues(value: any): any {
+    if (value === null || value === undefined) return undefined;
+
+    if (typeof value === 'string') {
+        return value.trim() === '' ? undefined : value;
+    }
+
+    if (typeof value === 'number') {
+        return Number.isNaN(value) ? undefined : value;
+    }
+
+    if (Array.isArray(value)) {
+        const pruned = value
+            .map((item) => pruneEmptyFormValues(item))
+            .filter((item) => item !== undefined);
+        return pruned.length === 0 ? undefined : pruned;
+    }
+
+    if (typeof value === 'object') {
+        const pruned: Record<string, any> = {};
+        for (const key of Object.keys(value)) {
+            const cleaned = pruneEmptyFormValues(value[key]);
+            if (cleaned !== undefined) pruned[key] = cleaned;
+        }
+        return Object.keys(pruned).length === 0 ? undefined : pruned;
+    }
+
+    return value;
+}
+
+/**
  * Create a new array item based on schema definition
  * @param itemSchema - Schema definition for array items
  * @returns New item object initialized with default values
