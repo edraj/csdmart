@@ -434,6 +434,47 @@ public static class SqlSchema
     -- Parity index: groups (PR #94) was added without its owner index.
     CREATE INDEX IF NOT EXISTS idx_groups_owner_shortname    ON groups (owner_shortname);
 
+    -- ============================================================
+    -- EXTENDED STATISTICS: (space_name, subpath) correlation
+    -- ============================================================
+    -- Every query's WHERE leads with this pair, and PostgreSQL estimates the
+    -- pair by multiplying two independent selectivities. They are not
+    -- independent: a subpath belongs to exactly one space, so '/orders' occurs
+    -- only inside 'purchase'. The planner therefore divides by the space count
+    -- a second time and lands far low.
+    --
+    -- Measured on a 22.7M-row production instance, before and after:
+    --
+    --   purchase/orders   375,397 -> 2,560,137   (actual 2,589,782)  6.9x -> 1.1%
+    --   galleon/users   8,618,498 -> 10,184,247  (actual 10,053,947) 14% -> 1.3%
+    --   mbb/users          90,390 -> 103,471     (actual 124,870)    28% -> 17%
+    --
+    -- This is not a counting feature; it is plan quality. A 6.9x underestimate
+    -- on the largest table shapes join order, scan choice and memory sizing for
+    -- every query that touches it. The estimated cost of the purchase/orders
+    -- probe moved 8,504 -> 57,249, which is the planner finally being told the
+    -- truth about what that folder costs.
+    --
+    -- Small folders stay noisy (mbb/users is still 17% out). These are sampled
+    -- statistics, never a substitute for COUNT(*).
+    --
+    -- Instant and idempotent: a catalog row, no table scan, and
+    -- ShareUpdateExclusiveLock — the same level ANALYZE and VACUUM take, which
+    -- does not conflict with SELECT or INSERT/UPDATE/DELETE.
+    --
+    -- NOT followed by an ANALYZE here, deliberately. Schema init runs on every
+    -- service start and ANALYZE has no IF NOT EXISTS, so an ANALYZE in this
+    -- path would re-sample the largest table in the system on every restart.
+    -- A fresh install has empty tables and picks the statistics up naturally;
+    -- an UPGRADE against a populated table gets the benefit at the next
+    -- autovacuum ANALYZE, or immediately if the operator runs:
+    --
+    --     ANALYZE entries; ANALYZE attachments;
+    CREATE STATISTICS IF NOT EXISTS entries_space_subpath_stx
+        (ndistinct, dependencies, mcv) ON space_name, subpath FROM entries;
+    CREATE STATISTICS IF NOT EXISTS attachments_space_subpath_stx
+        (ndistinct, dependencies, mcv) ON space_name, subpath FROM attachments;
+
     -- Roles, groups, and permissions are fetched and deleted by shortname ALONE
     -- (get/delete never pass space_name/subpath), so a shortname MUST be globally
     -- unique. The per-table composite UNIQUE(shortname,space,subpath) is too weak:
