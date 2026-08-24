@@ -477,6 +477,23 @@ jobs:
         # IL2027 / IL3050 fails this step rather than being printed and passed.
         run: dotnet publish dmart.csproj -r linux-x64 -c Release -p:PublishAot=true --nologo
 
+      - name: Runtime CVE scan
+        # The runtime is compiled INTO the AOT binary and ships inside
+        # /usr/bin/dmart, so a CVE in it is not something a user can patch by
+        # updating their distro's .NET — it takes a rebuild and a re-release.
+        # It is also invisible to the security gate: the runtime pack is
+        # SDK-injected, not a PackageReference, so it appears in neither
+        # dist/deps/*.lock.json nor the CycloneDX SBOM. The deps.json this
+        # publish just wrote is the only artifact that records it.
+        #
+        # v1.2.7 shipped runtime 10.0.10 — CVE-2026-62901 (HIGH),
+        # CVE-2026-62899, CVE-2026-62909 — and nothing was looking.
+        # The BINARY, not the build tree. The tree describes what this job
+        # compiled; the binary is what a user runs. Same thing here, but
+        # keeping every runtime check artifact-shaped is what stops a green
+        # tick from describing a toolchain instead of a release.
+        run: ./dist/scan-runtime-cves.sh --binary bin/Release/net10.0/linux-x64/publish/dmart
+
       - name: Smoke the native binary on SQLite
         # The point of the job. The publish above proves it LINKS; this proves
         # the linked binary can actually load libe_sqlite3.so and serve — which
@@ -640,6 +657,31 @@ jobs:
             done
           done
           echo "payload OK for both targets"
+
+      - name: Runtime CVE scan of the packaged binaries
+        # THE artifact check. Each RPM is built by a different toolchain: the
+        # Fedora one by rpmbuild against the runner's system SDK, the EL9 one
+        # inside a PERSISTENT podman container whose writable layer keeps
+        # whatever SDK it was created with. Neither is an SDK any workflow
+        # pins, so the only honest place to ask "what runtime ships?" is the
+        # RPM itself — scanning a build tree would describe the toolchain and
+        # green-tick a vulnerable package.
+        #
+        # The runtime is compiled into the self-contained AOT binary, so a CVE
+        # here cannot be patched by a user updating their distro .NET.
+        run: |
+          set -e
+          EXTRACT="$(mktemp -d)"
+          for tag in fc el9; do
+            RPM=$(ls dist/out/*."$tag"*.x86_64.rpm 2>/dev/null | grep -v '\.src\.rpm$' | head -1)
+            test -n "$RPM" || { echo "no $tag RPM to scan"; exit 1; }
+            ABS="$(readlink -f "$RPM")"
+            mkdir -p "$EXTRACT/$tag"
+            ( cd "$EXTRACT/$tag" && rpm2cpio "$ABS" | cpio -idm --quiet )
+            echo "::group::runtime CVE scan — $tag"
+            ./dist/scan-runtime-cves.sh --binary "$EXTRACT/$tag/usr/bin/dmart"
+            echo "::endgroup::"
+          done
 
   container-build:
     name: Container build

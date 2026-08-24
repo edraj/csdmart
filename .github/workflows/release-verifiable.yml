@@ -271,6 +271,24 @@ jobs:
           # user and would fail on it.
           sudo chown -R "$(id -u):$(id -g)" bin obj 2>/dev/null || true
 
+      - name: Runtime CVE scan
+        env:
+          RID: ${{ matrix.rid }}
+        # Gating the RELEASE on this, not just CI, because this build does not
+        # use dist/LOCKFILE_SDK at all: the container installs AlmaLinux's
+        # dotnet-sdk-10.0, so the runtime compiled into the tarball is whatever
+        # that package happens to carry. Bumping the pin does not control it,
+        # and the deps.json read here is the only record of which runtime
+        # actually went in. It ships inside the binary, so a user cannot patch
+        # it — see dist/scan-runtime-cves.sh.
+        # The produced binary, not the build tree: this tarball is built in a
+        # throwaway AlmaLinux container off `dnf install dotnet-sdk-10.0`, so
+        # the runtime that ends up inside it is whatever that package carried
+        # on the day. Only the artifact can answer what shipped.
+        run: |
+          ./dist/scan-runtime-cves.sh --binary --rid "$RID" \
+            "bin/Release/net10.0/${RID}/publish/dmart"
+
       - name: Prove the binary runs and reports the tagged version
         env:
           RID: ${{ matrix.rid }}
