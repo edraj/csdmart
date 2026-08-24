@@ -1,5 +1,78 @@
 # Changelog
 
+## v1.2.9 — 2026-08-24
+
+### Security
+
+- **The .NET runtime compiled into the binary is now checked for CVEs, in the
+  shipped artifact.** dmart publishes self-contained with `PublishAot`, so the
+  runtime lives inside `/usr/bin/dmart` and a user cannot patch it by updating
+  their distro's .NET. It was also invisible to every existing check: the
+  runtime pack is SDK-injected rather than a `PackageReference`, so it appeared
+  in neither `dist/deps/*.lock.json` nor the CycloneDX SBOM.
+
+  **v1.2.7 and v1.2.8 shipped runtime 10.0.10**, carrying CVE-2026-62901
+  (HIGH, denial of service) plus CVE-2026-62899 and CVE-2026-62909. **v1.2.9 is
+  the first release built on runtime 10.0.11**, where all three are fixed.
+
+  The check reads the runtime version out of the finished binary — the AOT
+  publish, the binaries inside both the Fedora and EL9 RPMs, and each release
+  tarball — and refuses to pass if it cannot determine one. Scanning the build
+  tree instead would have described the toolchain rather than the artifact:
+  every artifact here is produced by a different SDK (the runner's own for the
+  Fedora RPM, a container's for EL9 and the tarballs, a floating one for
+  Windows and macOS), and none of them is `dist/LOCKFILE_SDK`.
+
+- **CycloneDX SBOMs now list the runtime packs.** `Microsoft.NETCore.App.Runtime.<rid>`
+  and `Microsoft.AspNetCore.App.Runtime.<rid>` are compiled into the binary and
+  ship inside it, but were absent from every SBOM — v1.2.7's listed 467
+  components and neither of them. The versions come from MSBuild rather than
+  being assumed to follow the SDK, and generation now fails rather than emit an
+  SBOM that omits the runtime.
+
+- **The EL9 builder container no longer freezes its toolchain.** It installed
+  the SDK once, at creation, and never looked again — a builder created
+  2026-08-15 was still on `dotnet-sdk 10.0.110` in late August, so every EL9
+  RPM built in between shipped the vulnerable runtime. The SDK is now refreshed
+  when an existing container is reused.
+
+### Performance
+
+- **The planner is told that `space_name` and `subpath` correlate.** Every
+  query's `WHERE` leads with the pair, and PostgreSQL was estimating it as two
+  independent selectivities — but a subpath belongs to exactly one space, so
+  `/orders` occurs only inside `purchase`. Measured on a 22.7M-row instance,
+  `purchase/orders` was estimated at 375,397 rows against an actual 2,589,782:
+  **6.9x low**. With extended statistics it estimates 2,560,137, an error of
+  1.1%.
+
+  This is plan quality, not counting. A 6.9x underestimate on the largest table
+  shapes join order, scan choice and memory sizing for every query that touches
+  it. Upgrades pick it up at the next autovacuum `ANALYZE`, or immediately with
+  `ANALYZE entries; ANALYZE attachments;`.
+
+### Documentation
+
+- **`QUERY_TOTAL_CAP` is documented in `config.env.sample`.** The setting that
+  bounds a pagination count shipped in v1.2.8 without a line in any sample an
+  operator would read. Both sample configs are now pinned against
+  `DmartSettings` by tests, because an unrecognised key there is not a soft
+  failure: dmart exits on it, so a stale key in the sample hands an operator a
+  file that refuses to boot, and one in the packaged config breaks a fresh
+  install.
+
+### CI
+
+- **Superseded pull-request runs are cancelled instead of queueing.** Neither
+  workflow declared a concurrency group, so every push started a full run and
+  the obsolete ones kept their runners. Pushes to `master` still run to
+  completion — that run is the record for a commit that has already landed.
+
+- **The one required status check moved to a hosted runner.** `build-and-test`
+  reads a `needs` result and echoes it — about six seconds — but was pinned to
+  the self-hosted pool, where it queued behind 8-10 minute build jobs and lost
+  the race to every newer run. Merges were waiting twenty minutes on an `echo`.
+
 ## v1.2.8 — 2026-08-23
 
 ### Performance
