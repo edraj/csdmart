@@ -1,5 +1,6 @@
 {
     "otp_message": "کۆدی پشتڕاستکردنەوەکەت {code} ە",
+    "otp_email_subject": "کۆدی پشتڕاستکردنەوە",
     "rejected": "مرفوض",
     "pending": "قيد الانتظار",
     "cancelled": "ألغيت",

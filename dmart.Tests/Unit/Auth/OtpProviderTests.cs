@@ -3,6 +3,7 @@ using Dmart.Auth;
 using Dmart.Config;
 using Dmart.Models.Enums;
 using Dmart.Services;
+using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Logging.Abstractions;
 using Microsoft.Extensions.Options;
 using Shouldly;
@@ -148,6 +149,84 @@ public class OtpProviderTests
         // instead of a literal "{code}" or empty string.
         var otp = BuildWithLoadedLanguages();
         otp.RenderMessage(Language.Fr, "424242").ShouldBe("Your OTP code is 424242");
+    }
+
+    // ---- RenderSubject / email subject localization ----
+    //
+    // The email subject used to be the hardcoded literal "OTP" at the
+    // SendEmailAsync call site, so operators had no way to brand it or serve
+    // it per the recipient's language. It now resolves `otp_email_subject`
+    // through the same LanguageLoader path as the body, which makes it
+    // overridable at ~/.dmart/languages/<locale>.json (strategy 3).
+
+    [Fact]
+    public void RenderSubject_English_Uses_Loaded_Template()
+    {
+        var otp = BuildWithLoadedLanguages();
+        otp.RenderSubject(Language.En).ShouldBe("Your Verification Code");
+    }
+
+    [Fact]
+    public void RenderSubject_Arabic_Uses_Loaded_Template()
+    {
+        var otp = BuildWithLoadedLanguages();
+        otp.RenderSubject(Language.Ar).ShouldBe("\u0631\u0645\u0632 \u0627\u0644\u062a\u062d\u0642\u0642");
+    }
+
+    [Fact]
+    public void RenderSubject_Kurdish_Uses_Loaded_Template()
+    {
+        var otp = BuildWithLoadedLanguages();
+        otp.RenderSubject(Language.Ku).ShouldBe("\u06a9\u06c6\u062f\u06cc \u067e\u0634\u062a\u0695\u0627\u0633\u062a\u06a9\u0631\u062f\u0646\u06d5\u0648\u06d5");
+    }
+
+    [Fact]
+    public void RenderSubject_Falls_Back_To_Literal_When_Languages_Empty()
+    {
+        // Same contract as RenderMessage: a misconfigured deployment must
+        // still send a subject line, not an empty one (blank subjects are
+        // spam-filter bait).
+        var otp = Build(new DmartSettings());
+        otp.RenderSubject(Language.Ar).ShouldBe("OTP");
+    }
+
+    [Fact]
+    public void RenderSubject_Falls_Back_To_English_When_Locale_Lacks_Key()
+    {
+        // Fr/Tr locale files don't ship otp_email_subject — LanguageLoader.Get
+        // falls back to the English entry rather than returning null.
+        var otp = BuildWithLoadedLanguages();
+        otp.RenderSubject(Language.Fr).ShouldBe("Your Verification Code");
+    }
+
+    // Pins the wiring, not just the renderer: SendAsync must hand the
+    // localized subject to SmtpSender rather than the old "OTP" literal.
+    // MOCK_SMTP_API short-circuits delivery and logs "<to>: <subject>", so a
+    // capturing logger observes the subject without a live SMTP gateway.
+    [Fact]
+    public async Task SendAsync_Email_Passes_Localized_Subject_To_Smtp()
+    {
+        var s = new DmartSettings { MockSmtpApi = true };
+        var opts = Options.Create(s);
+        var smtpLog = new CapturingLogger<SmtpSender>();
+        var sms = new SmsSender(new NoOpHttpClientFactory(), opts, NullLogger<SmsSender>.Instance);
+        var smtp = new SmtpSender(opts, smtpLog);
+        var languages = new LanguageLoader(NullLogger<LanguageLoader>.Instance);
+        languages.Load();
+        var otp = new OtpProvider(opts, sms, smtp, languages, NullLogger<OtpProvider>.Instance);
+
+        await otp.SendAsync("a@b.co", "123456", Language.Ar);
+
+        smtpLog.Messages.ShouldContain(m => m.Contains("\u0631\u0645\u0632 \u0627\u0644\u062a\u062d\u0642\u0642", StringComparison.Ordinal));
+    }
+
+    private sealed class CapturingLogger<T> : ILogger<T>
+    {
+        public List<string> Messages { get; } = [];
+        public IDisposable? BeginScope<TState>(TState state) where TState : notnull => null;
+        public bool IsEnabled(LogLevel logLevel) => true;
+        public void Log<TState>(LogLevel logLevel, EventId eventId, TState state, Exception? exception,
+            Func<TState, Exception?, string> formatter) => Messages.Add(formatter(state, exception));
     }
 
     private sealed class NoOpHttpClientFactory : IHttpClientFactory

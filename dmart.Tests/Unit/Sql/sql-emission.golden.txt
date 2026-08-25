@@ -78,17 +78,29 @@ SQL: space_name = $3
 SQL: <empty>
 
 ## acl: user-no-policies
-SQL: AND (owner_shortname = $1 OR EXISTS (SELECT 1 FROM jsonb_array_elements(CASE WHEN jsonb_typeof(acl::jsonb) = 'array' THEN acl::jsonb ELSE '[]'::jsonb END) AS elem WHERE elem->>'user_shortname' = $1 AND (elem->'allowed_actions') ? 'query')) 
+SQL: AND (owner_shortname = $1 OR acl @> jsonb_build_array(jsonb_build_object('user_shortname', $1, 'allowed_actions', jsonb_build_array('query')))) 
   P1: name=<positional> type=<inferred> value="alice"
 
 ## acl: user-with-policies
-SQL: AND (owner_shortname = $1 OR EXISTS (SELECT 1 FROM unnest(query_policies) AS qp WHERE qp LIKE $2 ESCAPE '\' OR qp LIKE $3 ESCAPE '\') OR EXISTS (SELECT 1 FROM jsonb_array_elements(CASE WHEN jsonb_typeof(acl::jsonb) = 'array' THEN acl::jsonb ELSE '[]'::jsonb END) AS elem WHERE elem->>'user_shortname' = $1 AND (elem->'allowed_actions') ? 'query')) 
+SQL: AND (owner_shortname = $1 OR EXISTS (SELECT 1 FROM unnest(query_policies) AS qp WHERE qp LIKE $2 ESCAPE '\' OR qp LIKE $3 ESCAPE '\') OR acl @> jsonb_build_array(jsonb_build_object('user_shortname', $1, 'allowed_actions', jsonb_build_array('query')))) 
   P1: name=<positional> type=<inferred> value="alice"
   P2: name=<positional> type=<inferred> value="myspace:/posts:%"
   P3: name=<positional> type=<inferred> value="other:/x:content"
 
+## acl: user-with-expandable-policies
+SQL: AND (owner_shortname = $1 OR query_policies && ARRAY[$2, $3]::text[] OR acl @> jsonb_build_array(jsonb_build_object('user_shortname', $1, 'allowed_actions', jsonb_build_array('query')))) 
+  P1: name=<positional> type=<inferred> value="alice"
+  P2: name=<positional> type=<inferred> value="myspace:posts:content:true"
+  P3: name=<positional> type=<inferred> value="myspace:posts:content:false"
+
+## acl: user-with-mixed-policies
+SQL: AND (owner_shortname = $1 OR (query_policies && ARRAY[$2]::text[] OR EXISTS (SELECT 1 FROM unnest(query_policies) AS qp WHERE qp LIKE $3 ESCAPE '\')) OR acl @> jsonb_build_array(jsonb_build_object('user_shortname', $1, 'allowed_actions', jsonb_build_array('query')))) 
+  P1: name=<positional> type=<inferred> value="alice"
+  P2: name=<positional> type=<inferred> value="myspace:posts:content:true:alice"
+  P3: name=<positional> type=<inferred> value="%:legacy:content:true:bob"
+
 ## acl: policy-metachars
-SQL: AND (owner_shortname = $1 OR EXISTS (SELECT 1 FROM unnest(query_policies) AS qp WHERE qp LIKE $2 ESCAPE '\' OR qp LIKE $3 ESCAPE '\') OR EXISTS (SELECT 1 FROM jsonb_array_elements(CASE WHEN jsonb_typeof(acl::jsonb) = 'array' THEN acl::jsonb ELSE '[]'::jsonb END) AS elem WHERE elem->>'user_shortname' = $1 AND (elem->'allowed_actions') ? 'query')) 
+SQL: AND (owner_shortname = $1 OR EXISTS (SELECT 1 FROM unnest(query_policies) AS qp WHERE qp LIKE $2 ESCAPE '\' OR qp LIKE $3 ESCAPE '\') OR acl @> jsonb_build_array(jsonb_build_object('user_shortname', $1, 'allowed_actions', jsonb_build_array('query')))) 
   P1: name=<positional> type=<inferred> value="alice"
   P2: name=<positional> type=<inferred> value="sp:/a\_b:100\%\\x"
   P3: name=<positional> type=<inferred> value="sp:/%"
@@ -100,19 +112,19 @@ SQL: <empty>
 SQL: <empty>
 
 ## acl: table-users
-SQL: AND (owner_shortname = $1 OR EXISTS (SELECT 1 FROM unnest(query_policies) AS qp WHERE qp LIKE $2 ESCAPE '\') OR EXISTS (SELECT 1 FROM jsonb_array_elements(CASE WHEN jsonb_typeof(acl::jsonb) = 'array' THEN acl::jsonb ELSE '[]'::jsonb END) AS elem WHERE elem->>'user_shortname' = $1 AND (elem->'allowed_actions') ? 'query')) 
+SQL: AND (owner_shortname = $1 OR EXISTS (SELECT 1 FROM unnest(query_policies) AS qp WHERE qp LIKE $2 ESCAPE '\') OR acl @> jsonb_build_array(jsonb_build_object('user_shortname', $1, 'allowed_actions', jsonb_build_array('query')))) 
   P1: name=<positional> type=<inferred> value="alice"
   P2: name=<positional> type=<inferred> value="management:/users:%"
 
 ## semijoin: single-inner
-SQL: AND EXISTS (SELECT 1 FROM entries r WHERE space_name = $1 AND (subpath = $2 OR subpath LIKE $2 || '/%') AND (owner_shortname = $3 OR EXISTS (SELECT 1 FROM unnest(query_policies) AS qp WHERE qp LIKE $4 ESCAPE '\') OR EXISTS (SELECT 1 FROM jsonb_array_elements(CASE WHEN jsonb_typeof(acl::jsonb) = 'array' THEN acl::jsonb ELSE '[]'::jsonb END) AS elem WHERE elem->>'user_shortname' = $3 AND (elem->'allowed_actions') ? 'query')) AND r.subpath = entries.shortname ) 
+SQL: AND EXISTS (SELECT 1 FROM entries r WHERE space_name = $1 AND (subpath = $2 OR subpath LIKE $2 || '/%') AND (owner_shortname = $3 OR EXISTS (SELECT 1 FROM unnest(query_policies) AS qp WHERE qp LIKE $4 ESCAPE '\') OR acl @> jsonb_build_array(jsonb_build_object('user_shortname', $3, 'allowed_actions', jsonb_build_array('query')))) AND r.subpath = entries.shortname ) 
   P1: name=<positional> type=<inferred> value="rspace"
   P2: name=<positional> type=<inferred> value="/right"
   P3: name=<positional> type=<inferred> value="alice"
   P4: name=<positional> type=<inferred> value="rspace:/right:%"
 
 ## semijoin: two-inner-with-search
-SQL: AND EXISTS (SELECT 1 FROM entries r WHERE space_name = $1 AND (subpath = $2 OR subpath LIKE $2 || '/%') AND (owner_shortname = $3 OR EXISTS (SELECT 1 FROM jsonb_array_elements(CASE WHEN jsonb_typeof(acl::jsonb) = 'array' THEN acl::jsonb ELSE '[]'::jsonb END) AS elem WHERE elem->>'user_shortname' = $3 AND (elem->'allowed_actions') ? 'query')) AND r.uuid = entries.uuid ) AND EXISTS (SELECT 1 FROM entries r WHERE space_name = $4 AND (subpath = $5 OR subpath LIKE $5 || '/%') AND ((CAST(is_active AS BOOLEAN) = $6)) AND (owner_shortname = $7 OR EXISTS (SELECT 1 FROM unnest(query_policies) AS qp WHERE qp LIKE $8 ESCAPE '\') OR EXISTS (SELECT 1 FROM jsonb_array_elements(CASE WHEN jsonb_typeof(acl::jsonb) = 'array' THEN acl::jsonb ELSE '[]'::jsonb END) AS elem WHERE elem->>'user_shortname' = $7 AND (elem->'allowed_actions') ? 'query')) AND r.shortname = entries.shortname AND r.subpath = entries.subpath ) 
+SQL: AND EXISTS (SELECT 1 FROM entries r WHERE space_name = $1 AND (subpath = $2 OR subpath LIKE $2 || '/%') AND (owner_shortname = $3 OR acl @> jsonb_build_array(jsonb_build_object('user_shortname', $3, 'allowed_actions', jsonb_build_array('query')))) AND r.uuid = entries.uuid ) AND EXISTS (SELECT 1 FROM entries r WHERE space_name = $4 AND (subpath = $5 OR subpath LIKE $5 || '/%') AND ((CAST(is_active AS BOOLEAN) = $6)) AND (owner_shortname = $7 OR EXISTS (SELECT 1 FROM unnest(query_policies) AS qp WHERE qp LIKE $8 ESCAPE '\') OR acl @> jsonb_build_array(jsonb_build_object('user_shortname', $7, 'allowed_actions', jsonb_build_array('query')))) AND r.shortname = entries.shortname AND r.subpath = entries.subpath ) 
   P1: name=<positional> type=<inferred> value="a"
   P2: name=<positional> type=<inferred> value="/one"
   P3: name=<positional> type=<inferred> value="bob"
@@ -744,7 +756,7 @@ SQL: SELECT resource_type AS resource_type, payload::jsonb->'body'->>'category' 
   P3: name=<positional> type=<inferred> value=0
 
 ## aggregation: with-acl
-SQL: SELECT resource_type AS resource_type, COUNT(*) AS count FROM entries WHERE space_name = $1  AND (owner_shortname = $2 OR EXISTS (SELECT 1 FROM unnest(query_policies) AS qp WHERE qp LIKE $3 ESCAPE '\') OR EXISTS (SELECT 1 FROM jsonb_array_elements(CASE WHEN jsonb_typeof(acl::jsonb) = 'array' THEN acl::jsonb ELSE '[]'::jsonb END) AS elem WHERE elem->>'user_shortname' = $2 AND (elem->'allowed_actions') ? 'query')) GROUP BY resource_type LIMIT $4 OFFSET $5
+SQL: SELECT resource_type AS resource_type, COUNT(*) AS count FROM entries WHERE space_name = $1  AND (owner_shortname = $2 OR EXISTS (SELECT 1 FROM unnest(query_policies) AS qp WHERE qp LIKE $3 ESCAPE '\') OR acl @> jsonb_build_array(jsonb_build_object('user_shortname', $2, 'allowed_actions', jsonb_build_array('query')))) GROUP BY resource_type LIMIT $4 OFFSET $5
   P1: name=<positional> type=<inferred> value="s"
   P2: name=<positional> type=<inferred> value="alice"
   P3: name=<positional> type=<inferred> value="s:/%"

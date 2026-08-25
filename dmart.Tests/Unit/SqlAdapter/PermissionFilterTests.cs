@@ -7,8 +7,9 @@ using Xunit;
 namespace Dmart.Tests.Unit.SqlAdapter;
 
 // Pure-string tests for the ACL filter — no DB. Verifies skip-list behaviour,
-// no-op cases, the owner / ACL-EXISTS shape, and that LIKE-special chars
-// inside query-policy patterns are escaped under `ESCAPE '\'`.
+// no-op cases, the owner / ACL-containment shape, that enumerable policies
+// reach the indexable `&&` test, and that LIKE-special chars are still escaped
+// under `ESCAPE '\'` on the patterns that fall back.
 public class PermissionFilterTests
 {
     [Theory]
@@ -50,12 +51,40 @@ public class PermissionFilterTests
         var emitted = sql.ToString();
         emitted.ShouldContain("AND (");
         emitted.ShouldContain("owner_shortname = @perm_actor");
-        emitted.ShouldContain("jsonb_array_elements");
-        emitted.ShouldContain("'allowed_actions') ? 'query'");
+        // Containment, not a jsonb_array_elements subplan — idx_entries_acl_gin
+        // can only serve the former.
+        emitted.ShouldContain("acl @> jsonb_build_array(jsonb_build_object(");
+        emitted.ShouldContain("'user_shortname', @perm_actor");
+        emitted.ShouldContain("'allowed_actions', jsonb_build_array('query')");
+        emitted.ShouldNotContain("jsonb_array_elements");
         // One @perm_actor only; no policy params.
         pars.Count.ShouldBe(1);
         pars[0].ParameterName.ShouldBe("@perm_actor");
         pars[0].Value.ShouldBe("alice");
+    }
+
+    [Fact]
+    public void Append_Emits_Array_Overlap_For_Enumerable_Policies()
+    {
+        var sql = new StringBuilder("space_name = @space");
+        var pars = new List<NpgsqlParameter>();
+
+        PermissionFilter.Append(sql, pars, "alice", "entries",
+            new List<string> { "myspace:foo:content:true:*", "myspace:bar:content:*" });
+
+        var emitted = sql.ToString();
+        emitted.ShouldContain("query_policies && ARRAY[");
+        emitted.ShouldNotContain("unnest(query_policies)");
+        // "…:true:*" → one token, "…:content:*" → true + false.
+        emitted.ShouldContain("@perm_qp0");
+        emitted.ShouldContain("@perm_qp2");
+        pars.Select(x => x.Value).ShouldBe(new object[]
+        {
+            "alice",
+            "myspace:foo:content:true",
+            "myspace:bar:content:true",
+            "myspace:bar:content:false",
+        });
     }
 
     [Fact]
@@ -64,16 +93,34 @@ public class PermissionFilterTests
         var sql = new StringBuilder("space_name = @space");
         var pars = new List<NpgsqlParameter>();
 
+        // A '*' in the space segment is not enumerable, so these keep the
+        // original per-row LIKE test rather than being narrowed to a guess.
         PermissionFilter.Append(sql, pars, "alice", "entries",
-            new List<string> { "myspace:foo:*:*:*", "myspace:bar:*:*:*" });
+            new List<string> { "*:foo:content:true:bob", "*:bar:content:true:bob" });
 
         var emitted = sql.ToString();
         emitted.ShouldContain("unnest(query_policies)");
-        emitted.ShouldContain("@perm_qp0");
-        emitted.ShouldContain("@perm_qp1");
+        emitted.ShouldNotContain("query_policies && ARRAY[");
+        emitted.ShouldContain("@perm_qplike0");
+        emitted.ShouldContain("@perm_qplike1");
         emitted.ShouldContain("ESCAPE '\\'");
         // 1 actor + 2 policies.
         pars.Count.ShouldBe(3);
+    }
+
+    [Fact]
+    public void Append_Combines_Both_Tests_When_Policies_Are_Mixed()
+    {
+        var sql = new StringBuilder("space_name = @space");
+        var pars = new List<NpgsqlParameter>();
+
+        PermissionFilter.Append(sql, pars, "alice", "entries",
+            new List<string> { "myspace:foo:content:true:*", "*:bar:content:true:bob" });
+
+        var emitted = sql.ToString();
+        emitted.ShouldContain("query_policies && ARRAY[@perm_qp0]::text[]");
+        emitted.ShouldContain("unnest(query_policies)");
+        emitted.ShouldContain("@perm_qplike0");
     }
 
     [Fact]
@@ -84,11 +131,13 @@ public class PermissionFilterTests
 
         // Pattern that contains every metachar we care about: % and _ must
         // become \% and \_ ; * must expand to %; \ must escape itself first.
+        // The partial '*' in the resource-type segment keeps this on the LIKE
+        // path, which is where escaping applies.
         PermissionFilter.Append(sql, pars, "alice", "entries",
             new List<string> { @"my%space:bar_baz:*\thing:*:*" });
 
         // Find the policy parameter (after @perm_actor).
-        var policyParam = pars.Single(p => p.ParameterName == "@perm_qp0");
+        var policyParam = pars.Single(p => p.ParameterName == "@perm_qplike0");
         var pattern = (string)policyParam.Value!;
 
         // Order: \ escaped first, then % and _, then * → %.

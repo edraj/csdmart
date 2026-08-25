@@ -517,7 +517,9 @@ public sealed partial class DmartSqlAdapter : IDmartData
         // server's QueryHelper.AppendAclFilter.
         if (_engine is not null && actor is not null)
         {
-            PermissionFilter.Append(whereClause, pars, actor, "entries", policies);
+            PermissionFilter.Append(whereClause, pars, actor, "entries", policies,
+                query.SpaceName, subpath,
+                query.FilterTypes?.Select(EnumWire).ToList());
         }
 
         var whereClauseStr = whereClause.ToString();

@@ -360,20 +360,84 @@ public class QueryHelperTests
         QueryHelper.AppendAclFilter(sql, args, "alice", "entries", null);
         var result = sql.ToString();
         result.ShouldContain("owner_shortname =");
-        result.ShouldContain("jsonb_array_elements");
+        // Containment so idx_entries_acl_gin can serve it.
+        result.ShouldContain("acl @> jsonb_build_array(jsonb_build_object(");
         result.ShouldContain("'query'");
+        result.ShouldNotContain("jsonb_array_elements");
     }
 
     [Fact]
-    public void AclFilter_With_QueryPolicies_Adds_LIKE_Patterns()
+    public void AclFilter_With_QueryPolicies_Emits_Array_Overlap()
     {
         var sql = new System.Text.StringBuilder("WHERE space_name = $1 ");
         var args = new List<NpgsqlParameter> { new() { Value = "test" } };
         var policies = new List<string> { "test:api:content:true:*", "test:api:content:*" };
         QueryHelper.AppendAclFilter(sql, args, "alice", "entries", policies);
         var result = sql.ToString();
+        result.ShouldContain("query_policies && ARRAY[");
+        result.ShouldNotContain("unnest(query_policies)");
+        // "…:true:*" and "…:content:*" share the ":true" token, which is deduped.
+        args.Skip(1).Select(a => a.Value).ShouldBe(new object[]
+        {
+            "alice", "test:api:content:true", "test:api:content:false",
+        });
+    }
+
+    [Fact]
+    public void AclFilter_Keeps_LIKE_For_Unenumerable_Policies()
+    {
+        var sql = new System.Text.StringBuilder("WHERE space_name = $1 ");
+        var args = new List<NpgsqlParameter> { new() { Value = "test" } };
+        var policies = new List<string> { "*:api:content:true:bob" };
+        QueryHelper.AppendAclFilter(sql, args, "alice", "entries", policies);
+        var result = sql.ToString();
         result.ShouldContain("unnest(query_policies)");
         result.ShouldContain("LIKE");
+        result.ShouldNotContain("query_policies && ARRAY[");
+    }
+
+    [Fact]
+    public void AclFilter_Is_Skipped_When_Policies_Cover_The_Whole_Scope()
+    {
+        var sql = new System.Text.StringBuilder("WHERE space_name = $1 ");
+        var args = new List<NpgsqlParameter> { new() { Value = "test" } };
+        var scope = new Query { Type = QueryType.Search, SpaceName = "test", Subpath = "/api" };
+
+        // Unconditioned policy over an ancestor subpath: the predicate would
+        // match every row the query can reach, so it is not emitted at all.
+        QueryHelper.AppendAclFilter(sql, args, "alice", "entries",
+            new List<string> { "test::*:*" }, scope);
+
+        sql.ToString().ShouldBe("WHERE space_name = $1 ");
+        args.Count.ShouldBe(1);
+    }
+
+    [Fact]
+    public void AclFilter_Is_Still_Emitted_For_Conditioned_Policies()
+    {
+        var sql = new System.Text.StringBuilder("WHERE space_name = $1 ");
+        var args = new List<NpgsqlParameter> { new() { Value = "test" } };
+        var scope = new Query { Type = QueryType.Search, SpaceName = "test", Subpath = "/api" };
+
+        // ":true:*" excludes inactive rows — not a tautology.
+        QueryHelper.AppendAclFilter(sql, args, "alice", "entries",
+            new List<string> { "test:api:content:true:*" }, scope);
+
+        sql.ToString().ShouldContain("owner_shortname =");
+        sql.ToString().ShouldContain("query_policies && ARRAY[");
+    }
+
+    [Fact]
+    public void AclFilter_Is_Still_Emitted_When_No_Scope_Is_Supplied()
+    {
+        var sql = new System.Text.StringBuilder("WHERE space_name = $1 ");
+        var args = new List<NpgsqlParameter> { new() { Value = "test" } };
+
+        // Callers that cannot describe their scope keep the filter.
+        QueryHelper.AppendAclFilter(sql, args, "alice", "entries",
+            new List<string> { "test::*:*" });
+
+        sql.ToString().ShouldContain("owner_shortname =");
     }
 
     [Fact]

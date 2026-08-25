@@ -155,6 +155,13 @@ public class SqlEmissionGoldenTests
             ("no-user", null, "entries", null),
             ("user-no-policies", "alice", "entries", null),
             ("user-with-policies", "alice", "entries", new() { "myspace:/posts:*", "other:/x:content" }),
+            // Policy shapes BuildUserQueryPolicies actually emits: enumerable,
+            // so they reach the indexable `&&` test.
+            ("user-with-expandable-policies", "alice", "entries",
+                new() { "myspace:posts:content:true:*", "myspace:posts:content:*" }),
+            // Mixed: one enumerable, one that keeps LIKE.
+            ("user-with-mixed-policies", "alice", "entries",
+                new() { "myspace:posts:content:true:alice", "*:legacy:content:true:bob" }),
             ("policy-metachars", "alice", "entries", new() { @"sp:/a_b:100%\x", "sp:/*" }),
             ("skipped-attachments", "alice", "attachments", new() { "a:*" }),
             ("skipped-histories", "alice", "histories", new() { "a:*" }),
