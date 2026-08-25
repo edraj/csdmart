@@ -141,6 +141,17 @@ public sealed class SqliteSqlDialect : ISqlDialect
         return $"EXISTS (SELECT 1 FROM json_each({column}) AS qp WHERE {string.Join(" OR ", tests)})";
     }
 
+    // Equality counterpart of ArrayAnyLike. SQLite has no array-overlap
+    // operator and no GIN, so this is IN over the same json_each expansion —
+    // it exists for result parity with PostgreSQL's `&&`, not for speed.
+    public string ArrayOverlapAny(string column, IReadOnlyList<string> values, SqlBinder bind)
+    {
+        if (values.Count == 0) return "0";
+        var placeholders = values.Select(v => bind(v, SqlValueKind.Inferred));
+        return $"EXISTS (SELECT 1 FROM json_each({column}) AS qp "
+             + $"WHERE qp.value IN ({string.Join(", ", placeholders)}))";
+    }
+
     public string AclGrants(string aclColumn, string userPlaceholder, string action)
         => $"EXISTS (SELECT 1 FROM json_each(CASE WHEN json_valid({aclColumn}) "
          + $"AND json_type({aclColumn}) = 'array' THEN {aclColumn} ELSE '[]' END) AS elem "

@@ -658,7 +658,7 @@ public sealed class QueryService(
             FROM entries, {tagFrom}
             WHERE {where}
             """);
-        QueryHelper.AppendAclFilter(sql, args, effectiveActor, "entries", policies, dialect);
+        QueryHelper.AppendAclFilter(sql, args, effectiveActor, "entries", policies, dialect, q);
         sql.Append($"GROUP BY {tagText} ORDER BY cnt DESC");
         // Apply limit/offset on the aggregated result.
         args.Add(new() { Value = Math.Max(1, q.Limit) });

@@ -113,6 +113,19 @@ public interface ISqlDialect
     string ArrayAnyLike(string column, IReadOnlyList<string> patterns, SqlBinder bind);
 
     /// <summary>
+    /// True when the string-array column shares at least one element with
+    /// <paramref name="values"/> (PostgreSQL <c>&amp;&amp;</c>).
+    /// </summary>
+    /// <remarks>
+    /// The indexable form of the row-level ACL policy test. Callers get here
+    /// via <see cref="QueryPolicyExpansion"/>, which turns wildcard policy
+    /// patterns into the exact strings a row can carry; patterns it cannot
+    /// expand stay on <see cref="ArrayAnyLike"/>. Matching is by equality, so
+    /// no escaping applies and both backends compare case-sensitively.
+    /// </remarks>
+    string ArrayOverlapAny(string column, IReadOnlyList<string> values, SqlBinder bind);
+
+    /// <summary>
     /// True when the ACL JSON array holds an entry granting
     /// <paramref name="action"/> to the bound user.
     /// </summary>

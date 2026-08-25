@@ -201,19 +201,31 @@ public static class QueryHelper
 
     public static void AppendAclFilter(
         System.Text.StringBuilder sql, List<NpgsqlParameter> args,
-        string? userShortname, string tableName, List<string>? queryPolicies)
-        => AppendAclFilter(sql, args, userShortname, tableName, queryPolicies, PostgresSqlDialect.Instance);
+        string? userShortname, string tableName, List<string>? queryPolicies,
+        Query? scope = null)
+        => AppendAclFilter(sql, args, userShortname, tableName, queryPolicies,
+            PostgresSqlDialect.Instance, scope);
 
     public static void AppendAclFilter(
         System.Text.StringBuilder sql, List<NpgsqlParameter> args,
         string? userShortname, string tableName, List<string>? queryPolicies,
-        ISqlDialect dialect)
+        ISqlDialect dialect, Query? scope = null)
     {
         var bind = Binder(args);
         // Python skips ACL for attachments, histories, and spaces.
         if (tableName is "attachments" or "histories") return;
 
         if (string.IsNullOrEmpty(userShortname)) return;
+
+        // Skip the predicate entirely when the actor's policies already cover
+        // every row the query can reach — it would be a tautology, and on a
+        // large space an expensive one. Only offered for `entries`, whose
+        // non-empty query_policies CHECK constraint the other tables lack.
+        if (tableName == "entries" && scope is not null
+            && QueryPolicyExpansion.CoversScope(
+                queryPolicies, scope.SpaceName, scope.Subpath,
+                scope.FilterTypes?.Select(JsonbHelpers.EnumMember).ToList()))
+            return;
 
         args.Add(new() { Value = userShortname });
         var userParam = args.Count;
@@ -225,27 +237,30 @@ public static class QueryHelper
             dialect.AclGrants("acl", $"${userParam}", "query"),
         };
 
-        // Add query_policies LIKE patterns if the user has any.
+        // Add the query_policies row test if the user has any policies.
         if (queryPolicies is { Count: > 0 })
         {
-            // Build LIKE patterns from the dmart wildcard ('*' → '%').
-            // Order matters: escape backslash FIRST (otherwise the replacements
-            // below introduce new backslashes that get double-escaped), then
-            // the LIKE metacharacters %, _, finally expand '*'.
+            // Policies whose wildcards can be enumerated become an exact-set
+            // overlap, which GIN can serve; the rest keep the old LIKE test.
+            // See QueryPolicyExpansion for why that is loss-free.
             //
-            // Both dialects consume these patterns identically, and both match
-            // case-SENSITIVELY — PostgreSQL because that is LIKE's default,
-            // SQLite because SqliteConnectionFactory sets
-            // PRAGMA case_sensitive_like=ON. That equivalence is what keeps the
-            // two backends from granting different access for the same policy.
-            var patterns = queryPolicies
-                .Select(p => p
-                    .Replace("\\", "\\\\")
-                    .Replace("%", "\\%")
-                    .Replace("_", "\\_")
-                    .Replace("*", "%"))
-                .ToList();
-            conditions.Insert(1, dialect.ArrayAnyLike("query_policies", patterns, bind));
+            // Both branches match case-SENSITIVELY — PostgreSQL because that is
+            // LIKE's (and `=`'s) default, SQLite because SqliteConnectionFactory
+            // sets PRAGMA case_sensitive_like=ON. That equivalence is what keeps
+            // the two backends from granting different access for the same policy.
+            var expansion = QueryPolicyExpansion.Expand(queryPolicies);
+            var tests = new List<string>();
+            if (expansion.ExactTokens.Count > 0)
+                tests.Add(dialect.ArrayOverlapAny("query_policies", expansion.ExactTokens, bind));
+            if (expansion.LikePatterns.Count > 0)
+            {
+                var patterns = expansion.LikePatterns
+                    .Select(QueryPolicyExpansion.ToLikePattern)
+                    .ToList();
+                tests.Add(dialect.ArrayAnyLike("query_policies", patterns, bind));
+            }
+            if (tests.Count > 0)
+                conditions.Insert(1, tests.Count == 1 ? tests[0] : $"({string.Join(" OR ", tests)})");
         }
 
         sql.Append($"AND ({string.Join(" OR ", conditions)}) ");
@@ -318,7 +333,8 @@ public static class QueryHelper
             // Right-side ACL — MANDATORY. Bare owner_shortname/acl/query_policies
             // bind to `r`. Without this a base row could survive on a right row
             // the caller can't query.
-            AppendAclFilter(sql, args, spec.Actor, "entries", spec.RightQueryPolicies, dialect);
+            AppendAclFilter(sql, args, spec.Actor, "entries", spec.RightQueryPolicies, dialect,
+                spec.RightQuery);
             foreach (var (leftExpr, rightExpr) in spec.Correlations)
                 sql.Append($"AND {rightExpr} = {leftExpr} ");
             sql.Append(") ");
@@ -469,7 +485,7 @@ public static class QueryHelper
 
         // Apply ACL filtering if user info provided.
         if (userShortname is not null && tableName is not null)
-            AppendAclFilter(sql, args, userShortname, tableName, queryPolicies, dialect);
+            AppendAclFilter(sql, args, userShortname, tableName, queryPolicies, dialect, q);
 
         // Inject INNER-join EXISTS semi-joins (filter base by existence of a
         // matching right row) so LIMIT/OFFSET below page the post-filter set.
@@ -508,7 +524,7 @@ public static class QueryHelper
         // so COUNT(*) is scoped to rows the actor can actually see. Skipped
         // for attachments/histories inside AppendAclFilter (Python parity).
         if (userShortname is not null)
-            AppendAclFilter(sqlBuilder, args, userShortname, tableName, queryPolicies, dialect);
+            AppendAclFilter(sqlBuilder, args, userShortname, tableName, queryPolicies, dialect, q);
 
         if (semiJoins is { Count: > 0 })
             AppendInnerSemiJoins(sqlBuilder, args, semiJoins, dialect);
@@ -583,7 +599,7 @@ public static class QueryHelper
             $"SELECT {string.Join(", ", selectParts)} FROM {tableName} WHERE {where} ");
 
         if (userShortname is not null)
-            AppendAclFilter(sql, args, userShortname, tableName, queryPolicies, dialect);
+            AppendAclFilter(sql, args, userShortname, tableName, queryPolicies, dialect, q);
 
         // GROUP BY
         if (groupBy.Count > 0)

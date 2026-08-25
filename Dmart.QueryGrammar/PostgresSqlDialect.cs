@@ -149,11 +149,26 @@ public sealed class PostgresSqlDialect : ISqlDialect
         return $"EXISTS (SELECT 1 FROM unnest({column}) AS qp WHERE {string.Join(" OR ", tests)})";
     }
 
+    // Array overlap, which GIN on a text[] column can serve — unlike the
+    // unnest+LIKE above, which is a per-row subplan and leaves
+    // idx_entries_query_policies_gin unused.
+    public string ArrayOverlapAny(string column, IReadOnlyList<string> values, SqlBinder bind)
+    {
+        if (values.Count == 0) return "FALSE";
+        var placeholders = values.Select(v => bind(v, SqlValueKind.Inferred));
+        return $"{column} && ARRAY[{string.Join(", ", placeholders)}]::text[]";
+    }
+
+    // jsonb containment rather than jsonb_array_elements + ->>, so
+    // idx_entries_acl_gin (jsonb_path_ops) can serve it. Equivalent for the
+    // array-of-Acl shape the column holds: containment requires an element
+    // object with that user_shortname whose allowed_actions array includes the
+    // action. A NULL acl yields NULL (not true), and a non-array acl yields
+    // false, which is what the CASE guard used to arrange explicitly.
     public string AclGrants(string aclColumn, string userPlaceholder, string action)
-        => $"EXISTS (SELECT 1 FROM jsonb_array_elements(CASE WHEN jsonb_typeof({aclColumn}::jsonb) = 'array' "
-         + $"THEN {aclColumn}::jsonb ELSE '[]'::jsonb END) AS elem "
-         + $"WHERE elem->>'user_shortname' = {userPlaceholder} "
-         + $"AND (elem->'allowed_actions') ? '{Escape(action)}')";
+        => $"{aclColumn} @> jsonb_build_array(jsonb_build_object("
+         + $"'user_shortname', {userPlaceholder}, "
+         + $"'allowed_actions', jsonb_build_array('{Escape(action)}')))";
 
     // Unchanged from the pre-seam emission: a plain ILIKE over the serialized
     // document, which idx_entries_payload_trgm accelerates when present and
