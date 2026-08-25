@@ -166,6 +166,26 @@ public sealed class DmartSettings
     // reports `total` as the cap and sets `total_is_lower_bound`.
     public int QueryTotalCap { get; set; }
 
+    // What a query means when it omits `retrieve_total` entirely.
+    //
+    // `Query.RetrieveTotal` is `bool?` on purpose and carries three states:
+    // an explicit `false` always skips the count, an explicit `true` always
+    // performs it, and *absent* resolves to this setting. True (the default)
+    // is the Python-parity behaviour — Python's retrieve_total defaults to
+    // true, so a request that never mentions the field gets a count.
+    //
+    // Set false on a deployment whose clients do not use `total`. Counting is
+    // O(matching rows) and dominates the request: measured on a 2M-row folder
+    // at 100 concurrent, dropping the count moved the same endpoint from 36.5
+    // to 10458 req/s. QueryTotalCap bounds that cost; this removes it.
+    //
+    // CAUTION: when the count is skipped, `total` is reported as **-1**, not 0
+    // and not absent. A client that renders `total` without checking will show
+    // -1 rather than an empty result. Flip this only once you know your
+    // clients either send `retrieve_total: true` where they need a count, or
+    // ignore `total` entirely.
+    public bool RetrieveTotalDefault { get; set; } = true;
+
     // When true (default), eligible INNER joins are pushed into SQL as a
     // correlated EXISTS semi-join so the base query paginates/counts in the DB
     // instead of materializing the full base set in memory. Setting false forces

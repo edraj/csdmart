@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { resolveTotal } from "@shared/query-total";
     import { onMount, type ComponentProps } from "svelte";
     import { Card, Spinner } from "flowbite-svelte";
     import {
@@ -52,7 +53,7 @@
                 subpath: by_subpath ? resource_type : "/",
                 search: by_subpath ? "" : `@resource_type:${resource_type}`,
             } as any);
-            return resp?.attributes?.total || 0;
+            return resolveTotal(resp?.attributes?.total);
         } catch (e) {
             console.error(
                 `Failed to fetch count for ${space}/${resource_type}`,

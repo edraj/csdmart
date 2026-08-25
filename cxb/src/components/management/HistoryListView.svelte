@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { resolveTotal } from "@shared/query-total";
     import {Dmart, QueryType, SortyType, type ApiResponseRecord} from "@edraj/tsdmart";
     import {ListPlaceholder, Modal, Table} from "flowbite-svelte";
     import {onMount} from "svelte";
@@ -30,7 +31,7 @@
       });
       records = response?.records || [];
       // Fix for total_count error
-      totalItems = response?.attributes?.total || records.length;
+      totalItems = resolveTotal(response?.attributes?.total, records.length);
     } catch (error) {
       console.error('Failed to fetch history:', error);
     } finally {

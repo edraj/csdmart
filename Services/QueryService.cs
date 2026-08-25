@@ -69,6 +69,19 @@ public sealed class QueryService(
         return await perms.BuildUserQueryPoliciesAsync(actor, q.SpaceName, q.Subpath ?? "/", ct);
     }
 
+    // Resolve the tri-state `retrieve_total` against the deployment default.
+    //
+    // null  -> RetrieveTotalDefault (true by default: Python parity)
+    // true  -> count
+    // false -> skip, and `total` is reported as -1
+    //
+    // Every skip path in this class goes through here, so the meaning of an
+    // omitted field is decided in exactly one place. Note the internal
+    // repaginate-after-join path sets RetrieveTotal = false explicitly, which
+    // stays a skip regardless of the setting — that is deliberate, it is not a
+    // caller preference but a "this dispatch does not need a count".
+    private bool SkipTotal(Query q) => !(q.RetrieveTotal ?? settings.Value.RetrieveTotalDefault);
+
     public async Task<Response> ExecuteAsync(Query q, string? actor, CancellationToken ct = default)
     {
         // Clamp limit: default to 100, cap at MaxQueryLimit.
@@ -329,7 +342,7 @@ public sealed class QueryService(
         var pageTask = actor is not null
             ? users.QueryAsync(q, actor, policies, ct)
             : users.QueryAsync(q, ct);
-        var totalTask = q.RetrieveTotal == false
+        var totalTask = SkipTotal(q)
             ? Task.FromResult(-1)
             : (actor is not null
                 ? users.CountQueryAsync(q, actor, policies, ct)
@@ -355,7 +368,7 @@ public sealed class QueryService(
         var pageTask = actor is not null
             ? access.QueryRolesAsync(q, actor, policies, ct)
             : access.QueryRolesAsync(q, ct);
-        var totalTask = q.RetrieveTotal == false
+        var totalTask = SkipTotal(q)
             ? Task.FromResult(-1)
             : (actor is not null
                 ? access.CountRolesQueryAsync(q, actor, policies, ct)
@@ -381,7 +394,7 @@ public sealed class QueryService(
         var pageTask = actor is not null
             ? access.QueryGroupsAsync(q, actor, policies, ct)
             : access.QueryGroupsAsync(q, ct);
-        var totalTask = q.RetrieveTotal == false
+        var totalTask = SkipTotal(q)
             ? Task.FromResult(-1)
             : (actor is not null
                 ? access.CountGroupsQueryAsync(q, actor, policies, ct)
@@ -407,7 +420,7 @@ public sealed class QueryService(
         var pageTask = actor is not null
             ? access.QueryPermissionsAsync(q, actor, policies, ct)
             : access.QueryPermissionsAsync(q, ct);
-        var totalTask = q.RetrieveTotal == false
+        var totalTask = SkipTotal(q)
             ? Task.FromResult(-1)
             : (actor is not null
                 ? access.CountPermissionsQueryAsync(q, actor, policies, ct)
@@ -430,7 +443,7 @@ public sealed class QueryService(
             return EmptyQueryResponse();
 
         var pageTask = attachments.QueryAsync(q, ct);
-        var totalTask = q.RetrieveTotal == false
+        var totalTask = SkipTotal(q)
             ? Task.FromResult(-1)
             : attachments.CountQueryAsync(q, ct);
         await Task.WhenAll(pageTask, totalTask);
@@ -454,7 +467,7 @@ public sealed class QueryService(
             return EmptyQueryResponse();
 
         var pageTask = history.QueryHistoryAsync(q, ct);
-        var totalTask = q.RetrieveTotal == false
+        var totalTask = SkipTotal(q)
             ? Task.FromResult(-1)
             : history.CountHistoryQueryAsync(q, ct);
         await Task.WhenAll(pageTask, totalTask);
@@ -542,7 +555,7 @@ public sealed class QueryService(
         var page = matches.Skip(q.Offset).Take(q.Limit).Select(t => t.Rec).ToList();
         return Response.Ok(page, new()
         {
-            ["total"] = q.RetrieveTotal == false ? -1 : total,
+            ["total"] = SkipTotal(q) ? -1 : total,
             ["returned"] = page.Count,
         });
     }
@@ -745,7 +758,7 @@ public sealed class QueryService(
 
         var effectiveActor = actor ?? PermissionService.AnonymousUser;
         var pageTask = entries.QueryAsync(q, effectiveActor, policies, semiJoins, ct);
-        var totalTask = q.RetrieveTotal == false
+        var totalTask = SkipTotal(q)
             ? Task.FromResult(-1)
             : entries.CountQueryAsync(q, effectiveActor, policies, semiJoins, ct);
         await Task.WhenAll(pageTask, totalTask);

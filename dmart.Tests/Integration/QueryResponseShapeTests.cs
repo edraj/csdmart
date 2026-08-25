@@ -83,6 +83,83 @@ public class QueryResponseShapeTests : IClassFixture<DmartFactory>
         finally { settings.QueryTotalCap = original; }
     }
 
+    // RetrieveTotalDefault decides what an OMITTED retrieve_total means. The
+    // three states must stay distinguishable: explicit false always skips,
+    // explicit true always counts, and only null follows the setting. Getting
+    // this wrong in either direction is silent — a client that never mentions
+    // the field either pays for a count it does not want, or receives -1 where
+    // it expected a number.
+    [FactIfPg]
+    public async Task Query_OmittedRetrieveTotal_FollowsTheConfiguredDefault()
+    {
+        _factory.CreateClient();
+        var settings = _factory.Services
+            .GetRequiredService<IOptions<DmartSettings>>().Value;
+        var original = settings.RetrieveTotalDefault;
+        try
+        {
+            var query = _factory.Services.GetRequiredService<QueryService>();
+            // Deliberately NOT QueryType.Spaces: that path counts in memory and
+            // ignores retrieve_total altogether, so it cannot exercise this.
+            Query Omitted() => new()
+            {
+                Type = QueryType.Subpath,
+                SpaceName = "management",
+                Subpath = "/users",
+                Limit = 100,
+                // RetrieveTotal deliberately not set — this is the case under test.
+            };
+
+            settings.RetrieveTotalDefault = true;
+            var counted = await query.ExecuteAsync(Omitted(), _factory.AdminShortname);
+            counted.Status.ShouldBe(Status.Success);
+            ((int)counted.Attributes!["total"]!).ShouldBeGreaterThanOrEqualTo(0,
+                "with the default true, an omitted retrieve_total must still count");
+
+            settings.RetrieveTotalDefault = false;
+            var skipped = await query.ExecuteAsync(Omitted(), _factory.AdminShortname);
+            skipped.Status.ShouldBe(Status.Success);
+            ((int)skipped.Attributes!["total"]!).ShouldBe(-1,
+                "with the default false, an omitted retrieve_total must skip the count");
+        }
+        finally { settings.RetrieveTotalDefault = original; }
+    }
+
+    // The setting must not be able to override an explicit choice, in either
+    // direction — otherwise a caller cannot get a total on a deployment that
+    // defaults to skipping.
+    [FactIfPg]
+    public async Task Query_ExplicitRetrieveTotal_IgnoresTheConfiguredDefault()
+    {
+        _factory.CreateClient();
+        var settings = _factory.Services
+            .GetRequiredService<IOptions<DmartSettings>>().Value;
+        var original = settings.RetrieveTotalDefault;
+        try
+        {
+            var query = _factory.Services.GetRequiredService<QueryService>();
+            Query With(bool? rt) => new()
+            {
+                Type = QueryType.Subpath,
+                SpaceName = "management",
+                Subpath = "/users",
+                Limit = 100,
+                RetrieveTotal = rt,
+            };
+
+            // Explicit true survives a false default.
+            settings.RetrieveTotalDefault = false;
+            var forced = await query.ExecuteAsync(With(true), _factory.AdminShortname);
+            ((int)forced.Attributes!["total"]!).ShouldBeGreaterThanOrEqualTo(0);
+
+            // Explicit false survives a true default.
+            settings.RetrieveTotalDefault = true;
+            var suppressed = await query.ExecuteAsync(With(false), _factory.AdminShortname);
+            ((int)suppressed.Attributes!["total"]!).ShouldBe(-1);
+        }
+        finally { settings.RetrieveTotalDefault = original; }
+    }
+
     [FactIfPg]
     public async Task Query_UncappedTotal_CarriesNoLowerBoundFlag()
     {

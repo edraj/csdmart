@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { resolveTotal } from "@shared/query-total";
   import { goto, params } from "@roxi/routify";
   import { can, permissions } from "@/stores/permissions";
   import { visibleColumns } from "@/lib/access-fields";
@@ -458,7 +459,7 @@
 
       if (response && response.records) {
         $allContents = response.records;
-        totalItemsCount = response.attributes?.total || response.records.length;
+        totalItemsCount = resolveTotal(response.attributes?.total, response.records.length);
         totalPages = Math.ceil(totalItemsCount / itemsPerPage) || 1;
 
         applyFilters();
