@@ -115,9 +115,11 @@ dmart export <space>       Export space to zip
 dmart import <file.zip>    Import from zip
 dmart fix_query_policies   Backfill empty query_policies columns
 dmart update_query_policies
-                           Recompute query_policies for every entry and
-                           write back rows whose stored value drifted
-                           (Python parity for update_query_policies.py)
+                           Recompute query_policies and write back rows whose
+                           stored value drifted; the only command that repairs
+                           a stale non-empty array. Entries-only unless
+                           --all-tables (Python parity for
+                           update_query_policies.py)
 dmart cli                  Interactive REPL client
 dmart cli c <space> "ls"   Single CLI command
 dmart cli s script.txt     Batch script

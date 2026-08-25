@@ -124,8 +124,23 @@ public static class QueryPolicies
             // "any owner" policy ("{key}:true:*") is rewritten to by
             // QueryPolicyExpansion, so a row missing it would be invisible to
             // that policy under the indexable filter. It used to be replaced by
-            // the owner_group-scoped form below when the row had a group; rows
-            // written before this change need `dmart update_query_policies`.
+            // the owner_group-scoped form below when the row had a group.
+            //
+            // MIGRATION IS MANDATORY, and the failure mode is access LOSS, not
+            // degraded matching: "{key}:true:*" expands to exactly "{key}:true"
+            // and "{key}:*" to "{key}:true"/"{key}:false". Neither ever matches
+            // the owner- or group-scoped literal, so a non-owner caller whose
+            // permission is wildcarded sees ZERO rows for any row written
+            // before this change — it does not fall back to matching through
+            // the owner-scoped literal.
+            //
+            // Repair every affected table with:
+            //     dmart update_query_policies --all-tables
+            // fix_query_policies is NOT sufficient: it heals only rows whose
+            // array is empty, and these rows have a stale non-empty one.
+            // Rows are unreadable to wildcarded policies until that finishes,
+            // so on a large `entries` table run it in the same maintenance
+            // window as the deploy rather than after it.
             policies.Add($"{spaceName}:{stripped}:{resourceType}:{isActiveLiteral}");
             // Owner-group-scoped, matched by a group member's own policy list.
             if (ownerGroupShortname is not null)

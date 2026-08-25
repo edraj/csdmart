@@ -123,7 +123,25 @@ public interface ISqlDialect
     /// expand stay on <see cref="ArrayAnyLike"/>. Matching is by equality, so
     /// no escaping applies and both backends compare case-sensitively.
     /// </remarks>
-    string ArrayOverlapAny(string column, IReadOnlyList<string> values, SqlBinder bind);
+    string ArrayOverlapAny(string column, IReadOnlyList<string> values, SqlBinder bind)
+    {
+        // Default implementation so this member stays additive: Dmart.QueryGrammar
+        // is a published package, and a new abstract member would break every
+        // third-party ISqlDialect at compile time. Falls back to the LIKE form
+        // every dialect already implements — same rows, just not indexable. A
+        // backend that can serve an array overlap from an index overrides this;
+        // both in-tree dialects do.
+        //
+        // The values are already-expanded exact tokens, so they are escaped to
+        // match themselves literally. Deliberately NOT QueryPolicyExpansion
+        // .ToLikePattern: that maps '*' to '%', and widening a policy token here
+        // would grant access the overriding dialects refuse.
+        if (values.Count == 0) return "FALSE";
+        var patterns = new List<string>(values.Count);
+        foreach (var v in values)
+            patterns.Add(QueryPolicyExpansion.ToLiteralLikePattern(v));
+        return ArrayAnyLike(column, patterns, bind);
+    }
 
     /// <summary>
     /// True when the ACL JSON array holds an entry granting

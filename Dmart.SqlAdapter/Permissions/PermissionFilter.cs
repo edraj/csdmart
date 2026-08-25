@@ -40,6 +40,26 @@ public static class PermissionFilter
     /// <c>attachments</c> and <c>histories</c> bypass the filter entirely,
     /// mirroring the server.
     /// </remarks>
+    /// <summary>
+    /// Binary-compatible overload carrying the pre-scope-argument signature.
+    /// </summary>
+    /// <remarks>
+    /// Dmart.SqlAdapter is a published package, and C# bakes optional-argument
+    /// values into the *caller's* IL. An assembly compiled against the old
+    /// five-parameter Append therefore emits a call to a five-parameter method
+    /// and throws MissingMethodException against the widened one, even though
+    /// the source still compiles. This overload keeps that call site resolving.
+    /// It forwards with no scope, which disables only the tautology skip — an
+    /// optimisation — so the emitted predicate is unchanged.
+    /// </remarks>
+    public static void Append(
+        StringBuilder sql,
+        List<NpgsqlParameter> parameters,
+        string? actor,
+        string tableName,
+        List<string>? queryPolicies)
+        => Append(sql, parameters, actor, tableName, queryPolicies, null, null, null);
+
     public static void Append(
         StringBuilder sql,
         List<NpgsqlParameter> parameters,

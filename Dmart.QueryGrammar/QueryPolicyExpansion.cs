@@ -247,4 +247,21 @@ public static class QueryPolicyExpansion
             .Replace("%", "\\%", StringComparison.Ordinal)
             .Replace("_", "\\_", StringComparison.Ordinal)
             .Replace("*", "%", StringComparison.Ordinal);
+
+    /// <summary>
+    /// Escapes an already-expanded token so a LIKE test matches it literally.
+    /// </summary>
+    /// <remarks>
+    /// The sibling of <see cref="ToLikePattern"/>, and deliberately missing its
+    /// final line: '*' stays '*'. These strings are the exact policies a row can
+    /// carry, produced by <see cref="Expand"/>, and are consumed by
+    /// ISqlDialect.ArrayOverlapAny, whose contract is equality. Mapping '*' to
+    /// '%' here would let a token widen back into a wildcard and grant access
+    /// the overriding dialects' equality test refuses.
+    /// </remarks>
+    public static string ToLiteralLikePattern(string token)
+        => token
+            .Replace("\\", "\\\\", StringComparison.Ordinal)
+            .Replace("%", "\\%", StringComparison.Ordinal)
+            .Replace("_", "\\_", StringComparison.Ordinal);
 }
