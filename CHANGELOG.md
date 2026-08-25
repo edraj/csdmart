@@ -1,5 +1,159 @@
 # Changelog
 
+## v1.3.0 — 2026-08-25
+
+### Migration required
+
+- **Run `dmart update_query_policies --all-tables` as part of this upgrade.**
+  Skipping it causes **access loss**, not degraded matching.
+
+  `QueryPolicies.Generate` now emits the owner-unscoped literal
+  (`{space}:{subpath}:{resource_type}:{is_active}`) unconditionally. It
+  previously *replaced* that literal with an owner-group-scoped one whenever a
+  row had an `owner_group_shortname`, so rows written before this release do
+  not carry it.
+
+  That matters because the new indexable filter rewrites a wildcarded
+  permission into the exact strings a row can carry: `{key}:true:*` becomes
+  exactly `{key}:true`, and `{key}:*` becomes `{key}:true` / `{key}:false`.
+  Neither ever matches an owner- or group-scoped literal. So a caller whose
+  permission carries an `is_active` condition, or no conditions at all, sees
+  **zero** rows where they previously saw the group's — until the rows are
+  rewritten.
+
+  The command covers all six tables that carry `query_policies`: `entries`,
+  `users`, `roles`, `groups`, `permissions`, `spaces`. `fix_query_policies` is
+  **not** sufficient — it heals rows whose array is *empty*, and these rows
+  have a stale non-empty one.
+
+  **How long it takes.** Measured on a 2,000,000-row table in the worst case,
+  where every row needs rewriting: **71 seconds**. The command pages by keyset
+  over the `(shortname, space_name, subpath)` unique index, so cost is linear
+  in rows — scale that figure by your row count rather than assuming it
+  degrades. It is idempotent: a second pass updates 0 rows and returns in
+  seconds, so it is safe to re-run if interrupted.
+
+  That figure comes from a 24-core machine with PostgreSQL tuned so the table
+  was fully cached (`shared_buffers=8GB`). **Rehearse against a copy of your
+  own data before the maintenance window** — write throughput, not read cost,
+  is what dominates here, and yours will differ.
+
+  Rows are unreadable to wildcarded permissions until it finishes, so run it in
+  the same maintenance window as the deploy, not after it.
+
+### Performance
+
+- **The read-time ACL filter is now indexable.** The two row tests in the
+  visibility predicate were written in forms no index can serve — `unnest` +
+  `LIKE` over `query_policies`, and `jsonb_array_elements` + `->>` over `acl`,
+  both per-row subplans — so `idx_entries_query_policies_gin` and
+  `idx_entries_acl_gin` were never used and every branch of the `OR` forced a
+  sequential scan. They are now `&&` array overlap and `@>` jsonb containment,
+  which the planner can combine under a `BitmapOr`.
+
+  A caller's wildcard policies are expanded into the exact strings a row can
+  carry. Anything that does not fit one of the three enumerable shapes is
+  **not** guessed at and keeps the original `LIKE` test — narrowing a policy
+  silently would deny access that should be granted.
+
+  Measured end to end on a 2M-row folder, tuned PostgreSQL, 100 concurrent
+  callers: **14.0 → 36.5 req/s**, mean **6773 → 2668 ms**, p99 **10006 → 4582
+  ms**. Single request: **833 → 111 ms**.
+
+  Two things worth knowing about where that gain comes from. It is **entirely
+  in `COUNT(*)`** — with `retrieve_total` false both the old and new code serve
+  ~10,400 req/s, identical within noise. And it is CPU work avoided rather than
+  I/O: raising `shared_buffers` from 128 MB to 8 GB, enough to cache the whole
+  table, moved the ratio by less than a factor of two.
+
+- **The ACL predicate is skipped entirely when it is a tautology** — when the
+  caller's permissions already cover every row the query can reach, the
+  predicate can only cost a scan. `entries` only.
+
+- **Planner statistics for `(space_name, subpath)`** ship in the schema
+  (`entries_space_subpath_stx`, and the equivalent on `attachments`).
+  PostgreSQL assumed the two columns were independent and multiplied their
+  marginal selectivities; on a real instance that under-estimated one folder by
+  **6.9x**, which was shaping every plan on the largest table.
+
+### Added
+
+- **`RETRIEVE_TOTAL_DEFAULT`** decides what a query means when it omits
+  `retrieve_total` entirely. The field is tri-state: an explicit `false` always
+  skips the count, an explicit `true` always performs it, and *absent* now
+  resolves to this setting. Defaults to `true`, which is the existing
+  Python-parity behaviour, so nothing changes unless you set it.
+
+  Counting is what the request costs: on the same 2M-row folder at 100
+  concurrent, the endpoint served 36.5 req/s with the count and **10458 req/s**
+  without it. `QUERY_TOTAL_CAP` bounds that work; this removes it for callers
+  that never asked.
+
+  **Before setting it false:** when the count is skipped, `total` is reported
+  as **-1** — not 0, and not absent. Set it only once your clients either send
+  `retrieve_total: true` where they need a count, or ignore `total` entirely.
+
+- **`dmart update_query_policies --all-tables`** widens the recompute from
+  `entries` to every table carrying `query_policies`. The default scope stays
+  `entries` for Python parity.
+
+- **OTP emails carry a localized subject.** `otp_email_subject` resolves
+  through the same `LanguageLoader` path as the message body, so it is served
+  in the recipient's language and stays operator-overridable at
+  `~/.dmart/languages/<locale>.json` without a rebuild. English, Arabic and
+  Kurdish ship. The code is deliberately **not** substituted into the subject —
+  that would leak it to lock-screen notification previews and mail-server logs.
+
+### Fixed
+
+- **`groups` was reachable by no backfill command.** Six tables carry
+  `query_policies`; `fix_query_policies` listed five, omitting `groups`, and
+  `update_query_policies` was `entries`-only. A `groups` row with an owner
+  group therefore had no path to gain the literal the new filter needs. Both
+  commands now cover it.
+
+- **`ISqlDialect.ArrayOverlapAny` has a default implementation.**
+  `Dmart.QueryGrammar` is a published package, so adding it as a bare abstract
+  member would have broken every third-party dialect at compile time. The
+  default delegates to `ArrayAnyLike` — same rows, not indexable; both in-tree
+  dialects override it.
+
+- **`PermissionFilter.Append` keeps a five-parameter overload.** Adding
+  optional parameters to a published API is source-compatible but not
+  binary-compatible: C# bakes optional-argument values into the *caller's* IL,
+  so an assembly built against the old signature would throw
+  `MissingMethodException` while still compiling from source.
+
+- **`update_query_policies` no longer degrades quadratically.** It paged with
+  `LIMIT/OFFSET` ordered by `(space_name, subpath, shortname)`, which matches no
+  index — so every batch sorted the whole table to disk and discarded
+  everything before the offset, at 1575 ms per 1000 rows. Because both the
+  per-batch cost and the batch count scaled with table size, a 23M-row table
+  projected to roughly two days. It now pages by keyset over the
+  `(shortname, space_name, subpath)` unique index every affected table already
+  carries: **0.216 ms per batch, and 71 s for the same 2M-row migration that
+  previously projected to ~22 minutes.** This matters because the migration
+  above is not optional.
+
+- **The skipped-count sentinel no longer reaches page arithmetic in cxb or
+  catalog.** Every read of `total` used an idiom that misses `-1` — `?? 0` does
+  not catch it because it is not nullish, and `|| records.length` does not
+  because `-1` is truthy — so it flowed into pagers that rendered "1 of 0
+  pages". All 12 read sites now go through `ui-shared/query-total.ts`.
+
+- **Empty form values are pruned before create in catalog**, so a schema-driven
+  form no longer submits blank strings and empty objects the server then
+  rejects.
+
+### Known issues
+
+- **`ORDER BY updated_at DESC LIMIT n` still defeats the ACL indexes when the
+  predicate is selective** ([#213](https://github.com/edraj/csdmart/issues/213)).
+  The planner drives the page fetch from `idx_entries_updated_at` and applies
+  the visibility predicate as a filter, walking the whole table. Measured at
+  1512 ms against 0.069 ms for the same predicate when the indexes are used.
+  This release does not address it; the gains above are in `COUNT(*)`.
+
 ## v1.2.9 — 2026-08-24
 
 ### Security
