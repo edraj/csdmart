@@ -659,6 +659,20 @@ jobs:
           echo "payload OK for both targets"
 
       - name: Runtime CVE scan of the packaged binaries
+        # Guarded like every other step after the gate. Without this the job
+        # fails on any PR that does NOT touch packaging: the gate correctly
+        # skips the two builds, this step then finds no RPM and exits 1 with
+        # "no fc RPM to scan". It went unnoticed because the gate (#201) and
+        # this scan (#206) landed a day apart and every PR in between happened
+        # to touch a packaging path — the first one that did not, #216, was
+        # blocked by it.
+        #
+        # The scan must keep hard-failing on a MISSING artifact when it is
+        # supposed to have run, so the guard goes on the step rather than
+        # softening the `test -n "$RPM"` inside it: "no RPM because we skipped
+        # the build" and "no RPM because the build silently produced nothing"
+        # must not collapse into the same pass.
+        if: steps.scope.outputs.run == 'true'
         # THE artifact check. Each RPM is built by a different toolchain: the
         # Fedora one by rpmbuild against the runner's system SDK, the EL9 one
         # inside a PERSISTENT podman container whose writable layer keeps
