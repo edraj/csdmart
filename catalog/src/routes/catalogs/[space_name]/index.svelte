@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { resolveTotal } from "@shared/query-total";
   import { onMount } from "svelte";
   import { sanitizeHtml } from "@/lib/utils/sanitize";
   import { goto, params } from "@roxi/routify";
@@ -123,7 +124,7 @@
           getCurrentScope(),
         );
       }
-      totalItemsCount = response?.attributes?.total || 0;
+      totalItemsCount = resolveTotal(response?.attributes?.total);
 
       if (!response || !response.records) {
         if (reset) {

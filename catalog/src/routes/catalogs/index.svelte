@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { resolveTotal } from "@shared/query-total";
   import { onMount } from "svelte";
   import {
     getSpaceContents,
@@ -87,12 +88,12 @@
 
           return {
             spaceName: space.shortname,
-            total: data.attributes.total,
+            total: resolveTotal(data.attributes.total),
           };
         }),
       ]);
 
-      totalUsers = usersResponse?.attributes?.total ?? 0;
+      totalUsers = resolveTotal(usersResponse?.attributes?.total);
       spaceStats = statsArr;
       totalSpaceItems = statsArr.reduce((sum: any, stat: any) => sum + stat.total, 0);
     } catch (err) {

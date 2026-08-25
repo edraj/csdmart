@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { resolveTotal } from "@shared/query-total";
     import {onDestroy} from "svelte";
     import { sanitizeHtml } from "@/lib/utils/sanitize";
     import {goto, params} from "@roxi/routify";
@@ -255,7 +256,7 @@
         mergeSearch(searchQuery.trim(), buildHideFoldersSearch(spaceHideFolders))
       );
 
-      totalItemsCount = response?.attributes?.total || 0;
+      totalItemsCount = resolveTotal(response?.attributes?.total);
 
       if (response && response.records) {
         const newItems = await Promise.all(

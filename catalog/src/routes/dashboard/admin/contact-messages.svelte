@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { resolveTotal } from "@shared/query-total";
   import { onMount } from "svelte";
   import { _ } from "../../../i18n";
   import { locale } from "@/i18n";
@@ -60,7 +61,7 @@
       const response = await fetchContactMessages();
       if (response && response.status === "success") {
         messages = response.records || [];
-        totalMessages = (response.attributes as any)?.total || 0;
+        totalMessages = resolveTotal((response.attributes as any)?.total);
 
         await autoMarkAttachmentMessages();
       } else {

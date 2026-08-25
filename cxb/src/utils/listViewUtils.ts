@@ -1,3 +1,4 @@
+import { resolveTotal } from "@shared/query-total";
 import {_, locale} from "@/i18n";
 import {Dmart, QueryType, SortyType} from "@edraj/tsdmart";
 import {getSpaces} from "@/lib/dmart_services";
@@ -242,7 +243,7 @@ export async function fetchPageRecords(params: {
     }
 
     return {
-        total: resp.attributes.total,
+        total: resolveTotal(resp.attributes.total),
         records: resp.records
     };
 }
