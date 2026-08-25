@@ -50,6 +50,44 @@ public class QueryPolicyMigrationSurfaceTests
             + "fix_query_policies / update_query_policies --all-tables lists");
     }
 
+    // update_query_policies pages with a KEYSET cursor over
+    // (shortname, space_name, subpath), resuming each batch from the last row
+    // of the previous one. That is only correct if the tuple is UNIQUE per
+    // table: a duplicate makes `> (a, b, c)` skip every row sharing the tuple,
+    // and the migration silently under-migrates rather than failing.
+    //
+    // It also has to be an actual index, not just a constraint on paper —
+    // without one the scan cannot walk in that order and the command reverts
+    // to sorting the whole table per batch, which is the quadratic behaviour
+    // the keyset form exists to remove.
+    [Fact]
+    public void Every_Backfilled_Table_Has_The_Unique_Key_The_Keyset_Cursor_Needs()
+    {
+        var ddl = SqlSchema.CreateAll;
+        foreach (var table in ExpectedPolicyTables)
+        {
+            var m = Regex.Match(
+                ddl,
+                @"CREATE TABLE(?:\s+IF NOT EXISTS)?\s+""?" + table + @"""?\s*\((?<body>.*?)\n\s*\);",
+                RegexOptions.Singleline);
+            m.Success.ShouldBeTrue($"no CREATE TABLE found for '{table}'");
+
+            // Accept either ordering of the column list inside UNIQUE (...):
+            // what matters is that the three columns together are unique.
+            var unique = Regex.Matches(m.Groups["body"].Value, @"UNIQUE\s*\(([^)]*)\)")
+                .Select(u => u.Groups[1].Value
+                    .Split(',')
+                    .Select(c => c.Trim().Trim('"'))
+                    .OrderBy(c => c, StringComparer.Ordinal)
+                    .ToArray())
+                .Any(cols => cols.SequenceEqual(new[] { "shortname", "space_name", "subpath" }));
+
+            unique.ShouldBeTrue(
+                $"'{table}' has no UNIQUE (shortname, space_name, subpath) — "
+                + "update_query_policies' keyset cursor would skip rows sharing a duplicate tuple");
+        }
+    }
+
     [Fact]
     public void ArrayOverlapAny_Is_Not_Abstract_So_ThirdParty_Dialects_Still_Compile()
     {
