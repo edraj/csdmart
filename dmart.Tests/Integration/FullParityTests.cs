@@ -523,12 +523,12 @@ public class FullParityTests : IClassFixture<DmartFactory>
     [FactIfPg]
     public async Task Create_User_With_Valid_Email_Otp_Succeeds()
     {
-        // Pre-store an OTP against the email, then /user/create peeks it
-        // (Python parity — verify_user doesn't consume).
+        // Pre-issue a register-purpose OTP against the email, then
+        // /user/create verifies and consumes it.
         var otpRepo = _factory.Services.GetRequiredService<OtpRepository>();
         var email = "otpok_" + Guid.NewGuid().ToString("N")[..6] + "@example.test";
         var code = "654321";
-        await otpRepo.StoreAsync(email, code, DateTime.UtcNow.AddMinutes(5));
+        await otpRepo.IssueAsync(email, OtpPurpose.Register, code, DateTime.UtcNow.AddMinutes(5));
 
         var client = _factory.CreateClient();
         // No shortname on the wire: /user/create allocates it server-side.

@@ -115,12 +115,12 @@ public sealed class FailedAttemptLockoutTests : IClassFixture<DmartFactory>
         var (shortname, _) = await CreateUserAsync(password: "CorrectPassword1", msisdn: msisdn);
         try
         {
-            // Seed a valid OTP under the msisdn key (shortname-identifier path
-            // resolves dest = user.Msisdn). VerifyAndConsumeAsync will accept
-            // and delete it, then the password check fails.
+            // Seed a valid login-purpose OTP at the msisdn (shortname-identifier
+            // path resolves dest = user.Msisdn). VerifyAndConsumeAsync will
+            // accept and consume it, then the password check fails.
             var otpRepo = _factory.Services.GetRequiredService<OtpRepository>();
             const string otp = "123456";
-            await otpRepo.StoreAsync(msisdn, otp, DateTime.UtcNow.AddMinutes(5));
+            await otpRepo.IssueAsync(msisdn, Dmart.Models.Api.OtpPurpose.Login, otp, DateTime.UtcNow.AddMinutes(5));
 
             await SetAttemptCountAsync(shortname, max - 1);
 

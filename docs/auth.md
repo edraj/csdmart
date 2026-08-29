@@ -6,7 +6,18 @@ Two login paths, all landing on the same `sessions` row + signed JWT:
 
 1. **Password** (`POST /user/login` with shortname/email/msisdn + password).
 2. **OTP** (`POST /user/login` with an identifier + `otp`, pre-requested via
-   `POST /user/otp-request`).
+   `POST /user/otp-request` with `purpose: "login"`).
+
+`POST /user/otp-request` is the single OTP issuing API: the `purpose` field
+(`login` | `reset` | `verify-contact`) selects what the code is redeemable
+for — codes never cross purposes. Every well-formed request answers 200 Ok
+(anti-enumeration); the resend cooldown (`ALLOW_OTP_RESEND_AFTER`) and the
+per-destination daily cap (`MAX_OTP_REQUESTS_PER_DAY`) are silent no-ops.
+Password resets confirm via `POST /user/password-reset-confirm`; contact
+confirmation/change happens on `POST /user/profile` (`email`+`email_otp` to
+confirm the stored contact, `new_email`+`email_otp` to change it — msisdn
+equivalents likewise). Every OTP verification is single-use (consumed on
+success) and capped at `MAX_OTP_VERIFY_ATTEMPTS` wrong guesses per code.
 
 Plus three OAuth callbacks (Google / Facebook / Apple) for web + mobile flows.
 

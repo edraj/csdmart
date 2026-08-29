@@ -1,5 +1,4 @@
 using System.Net.Http.Json;
-using Dmart.Auth;
 using Dmart.DataAdapters.Sql;
 using Dmart.Models.Api;
 using Dmart.Models.Core;
@@ -14,98 +13,228 @@ using Xunit;
 namespace Dmart.Tests.Integration;
 
 // Gate rules for POST /user/otp-request:
-//   * A JWT-bearing caller may always request an OTP (e.g. a logged-in user
-//     verifying/changing a contact) — UNLESS that account is locked, in which
-//     case issuance is refused just like login.
-//   * An anonymous caller (no JWT) is gated by is_registrable: registration
-//     disabled → no self-service reason to mint an OTP, regardless of whether
-//     the supplied identifier maps to an existing user.
+//   * `purpose` must be one of the four defined values; anything else is
+//     the only rejection the endpoint surfaces.
+//   * Every well-formed request answers 200 Ok — locked accounts, disabled
+//     registration and unknown users are all silent no-ops. Whether a code
+//     was minted is asserted here through the repository, not the wire.
+//   * One gate rule per purpose: login/reset are open to anonymous callers
+//     but require an existing usable user; register is anonymous-allowed
+//     only while is_registrable is on and the requested channel is enabled;
+//     verify-contact requires a JWT.
 public sealed class OtpRequestGateTests : IClassFixture<DmartFactory>
 {
     private readonly DmartFactory _factory;
     public OtpRequestGateTests(DmartFactory factory) => _factory = factory;
 
     [FactIfPg]
-    public async Task Anonymous_Blocked_When_Not_Registrable_Even_If_User_Exists()
+    public async Task Missing_Or_Unknown_Purpose_Is_Rejected()
     {
-        // is_registrable=false, no JWT. The msisdn maps to an EXISTING user, so
-        // the old `user is null && !IsRegistrable` gate would have let this
-        // through; the JWT-based gate must block it.
+        var client = _factory.CreateClient();
+
+        var noPurpose = await client.PostAsJsonAsync("/user/otp-request",
+            new SendOTPRequest(Msisdn: "9647811223344", Email: null),
+            DmartJsonContext.Default.SendOTPRequest);
+        var noPurposeBody = await noPurpose.Content.ReadFromJsonAsync(DmartJsonContext.Default.Response);
+        noPurposeBody!.Status.ShouldBe(Status.Failed);
+        noPurposeBody.Error!.Code.ShouldBe(InternalErrorCode.INVALID_DATA);
+
+        var badPurpose = await client.PostAsJsonAsync("/user/otp-request",
+            new SendOTPRequest(Msisdn: "9647811223344", Email: null, Purpose: "banana"),
+            DmartJsonContext.Default.SendOTPRequest);
+        var badPurposeBody = await badPurpose.Content.ReadFromJsonAsync(DmartJsonContext.Default.Response);
+        badPurposeBody!.Status.ShouldBe(Status.Failed);
+        badPurposeBody.Error!.Code.ShouldBe(InternalErrorCode.INVALID_DATA);
+    }
+
+    [FactIfPg]
+    public async Task Anonymous_VerifyContact_Always_Silently_NoOps()
+    {
+        // verify-contact is JWT-only (it serves the authenticated profile
+        // confirm/change flows). Anonymous callers get the same 200 Ok as
+        // everyone, with nothing minted — even on a registrable deployment.
+        var msisdn = NewMsisdn();
+        var resp = await _factory.CreateClient().PostAsJsonAsync("/user/otp-request",
+            new SendOTPRequest(Msisdn: msisdn, Email: null, Purpose: OtpPurpose.VerifyContact),
+            DmartJsonContext.Default.SendOTPRequest);
+        var body = await resp.Content.ReadFromJsonAsync(DmartJsonContext.Default.Response);
+        body!.Status.ShouldBe(Status.Success);
+
+        (await Repo().GetCreatedSinceAsync(msisdn, OtpPurpose.VerifyContact))
+            .ShouldBeNull("verify-contact requires a JWT — anonymous must mint nothing");
+    }
+
+    [FactIfPg]
+    public async Task Anonymous_Register_Silently_NoOps_When_Not_Registrable()
+    {
+        // is_registrable=false, no JWT: the wire answer is indistinguishable
+        // from a successful issue, but no code may be minted.
         var factory = NotRegistrable();
-        var msisdn = $"+9647{Random.Shared.Next(10_000_000, 99_999_999)}";
-        var shortname = await SeedUserAsync(factory, msisdn: msisdn);
+        var msisdn = NewMsisdn();
+        var resp = await factory.CreateClient().PostAsJsonAsync("/user/otp-request",
+            new SendOTPRequest(Msisdn: msisdn, Email: null, Purpose: OtpPurpose.Register),
+            DmartJsonContext.Default.SendOTPRequest);
+        var body = await resp.Content.ReadFromJsonAsync(DmartJsonContext.Default.Response);
+        body!.Status.ShouldBe(Status.Success);
+
+        (await Repo().GetCreatedSinceAsync(msisdn, OtpPurpose.Register))
+            .ShouldBeNull("no code may be minted when self-registration is off");
+    }
+
+    [FactIfPg]
+    public async Task Anonymous_Register_Mints_When_Registrable()
+    {
+        // is_registrable=true (default), no JWT, brand-new msisdn → a code is
+        // minted at the (destination, register) row.
+        var msisdn = NewMsisdn();
+        var resp = await _factory.CreateClient().PostAsJsonAsync("/user/otp-request",
+            new SendOTPRequest(Msisdn: msisdn, Email: null, Purpose: OtpPurpose.Register),
+            DmartJsonContext.Default.SendOTPRequest);
+        var body = await resp.Content.ReadFromJsonAsync(DmartJsonContext.Default.Response);
+        body!.Status.ShouldBe(Status.Success);
+
+        (await Repo().GetCreatedSinceAsync(msisdn, OtpPurpose.Register))
+            .ShouldNotBeNull("an OTP must be stored at the destination");
+    }
+
+    [FactIfPg]
+    public async Task Purpose_Switch_Does_Not_Bypass_Cooldown()
+    {
+        // The resend cooldown anchors on the destination across ALL purposes:
+        // after a register code is minted, an immediate login request for the
+        // same msisdn must mint nothing — otherwise cycling purposes turns
+        // the 60s cadence into one code per purpose, back-to-back.
+        var msisdn = NewMsisdn();
+        var shortname = await SeedUserAsync(_factory, msisdn: msisdn);
         try
         {
-            var resp = await factory.CreateClient().PostAsJsonAsync("/user/otp-request",
-                new SendOTPRequest(Msisdn: msisdn, Email: null),
+            var client = _factory.CreateClient();
+            var first = await client.PostAsJsonAsync("/user/otp-request",
+                new SendOTPRequest(Msisdn: msisdn, Email: null, Purpose: OtpPurpose.Register),
                 DmartJsonContext.Default.SendOTPRequest);
-            var body = await resp.Content.ReadFromJsonAsync(DmartJsonContext.Default.Response);
-            body!.Status.ShouldBe(Status.Failed);
-            body.Error!.Code.ShouldBe(InternalErrorCode.USERNAME_NOT_EXIST);
+            (await first.Content.ReadFromJsonAsync(DmartJsonContext.Default.Response))!
+                .Status.ShouldBe(Status.Success);
+            (await Repo().GetCreatedSinceAsync(msisdn, OtpPurpose.Register)).ShouldNotBeNull();
+
+            var second = await client.PostAsJsonAsync("/user/otp-request",
+                new SendOTPRequest(Msisdn: msisdn, Email: null, Purpose: OtpPurpose.Login),
+                DmartJsonContext.Default.SendOTPRequest);
+            (await second.Content.ReadFromJsonAsync(DmartJsonContext.Default.Response))!
+                .Status.ShouldBe(Status.Success);
+
+            (await Repo().GetCreatedSinceAsync(msisdn, OtpPurpose.Login))
+                .ShouldBeNull("the register issue anchors the cooldown — no login code inside the window");
         }
         finally { await DeleteUserAsync(shortname); }
     }
 
     [FactIfPg]
-    public async Task Anonymous_Allowed_When_Registrable()
+    public async Task Register_Over_Disabled_Channel_Silently_NoOps()
     {
-        // is_registrable=true (default), no JWT, brand-new msisdn → allowed and
-        // an OTP is minted at the destination.
-        var msisdn = $"+9647{Random.Shared.Next(10_000_000, 99_999_999)}";
-        var resp = await _factory.CreateClient().PostAsJsonAsync("/user/otp-request",
-            new SendOTPRequest(Msisdn: msisdn, Email: null),
+        // Registration open, but the msisdn channel disabled: a register OTP
+        // over SMS must not be minted (mirrors /user/create's channel gate —
+        // without this, a code could be issued for a channel registration
+        // would then reject).
+        var factory = _factory.WithWebHostBuilder(b => b.ConfigureServices(svcs =>
+            svcs.Configure<Dmart.Config.DmartSettings>(s =>
+                s.RegistrationEnabledChannels = "email")));
+        var msisdn = NewMsisdn();
+        var resp = await factory.CreateClient().PostAsJsonAsync("/user/otp-request",
+            new SendOTPRequest(Msisdn: msisdn, Email: null, Purpose: OtpPurpose.Register),
             DmartJsonContext.Default.SendOTPRequest);
         var body = await resp.Content.ReadFromJsonAsync(DmartJsonContext.Default.Response);
         body!.Status.ShouldBe(Status.Success);
 
-        var otpRepo = _factory.Services.GetRequiredService<OtpRepository>();
-        (await otpRepo.PeekStoredHashAsync(msisdn)).ShouldNotBeNull("an OTP must be stored at the destination");
+        (await Repo().GetCreatedSinceAsync(msisdn, OtpPurpose.Register))
+            .ShouldBeNull("no code may be minted over a disabled registration channel");
     }
 
     [FactIfPg]
-    public async Task Jwt_Allowed_Even_When_Not_Registrable()
+    public async Task Anonymous_Login_Purpose_Stays_Open_When_Not_Registrable()
     {
-        // is_registrable=false but the caller presents a valid JWT → allowed.
-        // Old gate blocked this (user lookup by the new msisdn is null AND
-        // !IsRegistrable) without ever consulting the JWT.
+        // Login is a pre-auth flow: is_registrable must not gate it. The
+        // msisdn maps to an existing user, so a login code is minted.
+        var factory = NotRegistrable();
+        var msisdn = NewMsisdn();
+        var shortname = await SeedUserAsync(factory, msisdn: msisdn);
+        try
+        {
+            var resp = await factory.CreateClient().PostAsJsonAsync("/user/otp-request",
+                new SendOTPRequest(Msisdn: msisdn, Email: null, Purpose: OtpPurpose.Login),
+                DmartJsonContext.Default.SendOTPRequest);
+            var body = await resp.Content.ReadFromJsonAsync(DmartJsonContext.Default.Response);
+            body!.Status.ShouldBe(Status.Success);
+
+            (await Repo().GetCreatedSinceAsync(msisdn, OtpPurpose.Login)).ShouldNotBeNull();
+        }
+        finally { await DeleteUserAsync(shortname); }
+    }
+
+    [FactIfPg]
+    public async Task Login_Purpose_For_Unknown_User_Silently_NoOps()
+    {
+        // Anti-enumeration: an unknown msisdn answers the same 200 Ok, with
+        // nothing minted.
+        var msisdn = NewMsisdn();
+        var resp = await _factory.CreateClient().PostAsJsonAsync("/user/otp-request",
+            new SendOTPRequest(Msisdn: msisdn, Email: null, Purpose: OtpPurpose.Login),
+            DmartJsonContext.Default.SendOTPRequest);
+        var body = await resp.Content.ReadFromJsonAsync(DmartJsonContext.Default.Response);
+        body!.Status.ShouldBe(Status.Success);
+
+        (await Repo().GetCreatedSinceAsync(msisdn, OtpPurpose.Login)).ShouldBeNull();
+    }
+
+    [FactIfPg]
+    public async Task Jwt_VerifyContact_Mints_Even_When_Not_Registrable()
+    {
+        // is_registrable=false but the caller presents a valid JWT → a
+        // logged-in user may still verify/change a contact.
         var factory = NotRegistrable();
         var user = await _factory.CreateLoggedInUserAsync(factory);
         try
         {
-            var msisdn = $"+9647{Random.Shared.Next(10_000_000, 99_999_999)}";
+            var msisdn = NewMsisdn();
             var resp = await user.Client.PostAsJsonAsync("/user/otp-request",
-                new SendOTPRequest(Msisdn: msisdn, Email: null),
+                new SendOTPRequest(Msisdn: msisdn, Email: null, Purpose: OtpPurpose.VerifyContact),
                 DmartJsonContext.Default.SendOTPRequest);
             var body = await resp.Content.ReadFromJsonAsync(DmartJsonContext.Default.Response);
             body!.Status.ShouldBe(Status.Success);
+
+            (await Repo().GetCreatedSinceAsync(msisdn, OtpPurpose.VerifyContact)).ShouldNotBeNull();
         }
         finally { await user.Cleanup(); }
     }
 
     [FactIfPg]
-    public async Task Jwt_Blocked_When_User_Is_Locked()
+    public async Task Jwt_Locked_Account_Silently_NoOps()
     {
-        // A locked account must not mint an OTP even with a valid JWT. The lock
-        // is the attempt-counter lock with is_active=true (a deactivated account
-        // can't present a valid JWT — JwtBearerSetup rejects !IsActive), and the
-        // session is left intact so the bearer token still validates.
+        // A locked account must not mint an OTP even with a valid JWT: same
+        // 200 Ok, nothing minted. The lock is the attempt-counter lock with
+        // is_active=true (a deactivated account can't present a valid JWT),
+        // and the session is left intact so the bearer token still validates.
         var user = await _factory.CreateLoggedInUserAsync();
         try
         {
             await SetAttemptCountAsync(user.Shortname, MaxAttempts());
 
-            var msisdn = $"+9647{Random.Shared.Next(10_000_000, 99_999_999)}";
+            var msisdn = NewMsisdn();
             var resp = await user.Client.PostAsJsonAsync("/user/otp-request",
-                new SendOTPRequest(Msisdn: msisdn, Email: null),
+                new SendOTPRequest(Msisdn: msisdn, Email: null, Purpose: OtpPurpose.VerifyContact),
                 DmartJsonContext.Default.SendOTPRequest);
             var body = await resp.Content.ReadFromJsonAsync(DmartJsonContext.Default.Response);
-            body!.Status.ShouldBe(Status.Failed);
-            body.Error!.Code.ShouldBe(InternalErrorCode.USER_ACCOUNT_LOCKED);
+            body!.Status.ShouldBe(Status.Success);
+
+            (await Repo().GetCreatedSinceAsync(msisdn, OtpPurpose.VerifyContact)).ShouldBeNull();
         }
         finally { await user.Cleanup(); }
     }
 
     // ---- helpers ----
+
+    private static string NewMsisdn() => $"9647{Random.Shared.Next(100_000_000, 999_999_999)}";
+
+    private OtpRepository Repo() => _factory.Services.GetRequiredService<OtpRepository>();
 
     private WebApplicationFactory<Program> NotRegistrable() =>
         _factory.WithWebHostBuilder(b => b.ConfigureServices(svcs =>

@@ -50,8 +50,11 @@ public sealed class FailedResponseFilter : IEndpointFilter
         InternalErrorCode.ALREADY_EXIST_SPACE_NAME => 409,
         InternalErrorCode.DATA_SHOULD_BE_UNIQUE => 409,
 
-        // Forbidden — HTTP 403 (Python parity: /user/otp-request resend cooldown;
-        // /user/profile password change missing old_password).
+        // Forbidden — HTTP 403 (/user/profile password change missing
+        // old_password). OTP_RESEND_BLOCKED is no longer emitted — the
+        // unified /user/otp-request answers the cooldown with a silent 200 —
+        // but the mapping stays so the code keeps its Python-parity status
+        // if anything reintroduces it.
         InternalErrorCode.OTP_RESEND_BLOCKED => 403,
         InternalErrorCode.PASSWORD_RESET_ERROR => 403,
 

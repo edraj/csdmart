@@ -2411,6 +2411,7 @@ builder.Services.AddSingleton<Dmart.Auth.OAuth.OAuthUserResolver>();
 builder.Services.AddSingleton<Dmart.Auth.OAuthCodeStore>();
 builder.Services.AddSingleton<Dmart.Auth.OAuthClientStore>();
 builder.Services.AddHostedService<Dmart.Auth.OAuthStoreSweeper>();
+builder.Services.AddHostedService<Dmart.Services.OtpHistorySweeper>();
 builder.Services.AddDmartAuth(builder.Configuration);
 
 // Plugins

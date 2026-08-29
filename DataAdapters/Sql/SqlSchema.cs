@@ -9,10 +9,11 @@ namespace Dmart.DataAdapters.Sql;
 //     are JSONB — not PostgreSQL ARRAY. Only `query_policies` is TEXT[].
 //   * `displayname` and `description` are JSONB carrying Translation objects.
 //   * `payload` is JSONB carrying a Payload object.
-//   * `OTP.value` uses HSTORE — requires the `hstore` extension.
+//   * The `hstore` extension is kept for Python-dmart compatibility; no C#
+//     table uses it.
 //   * `users.type` and `users.language` use PostgreSQL ENUM types `usertype` and
 //     `language`. We pre-create them so dmart Python can hot-swap.
-//   * Histories, Locks, Sessions, URLShorts, OTP, UserPermissionsCache
+//   * Histories, Locks, Sessions, URLShorts, OTPs, UserPermissionsCache
 //     do NOT inherit from Metas — they're flat tables.
 public static class SqlSchema
 {
@@ -397,13 +398,33 @@ public static class SqlSchema
     );
 
     -- ============================================================
-    -- OTP  (uses hstore)
+    -- OTPS  (one row per issued code; doubles as request history)
+    --
+    -- (identifier, purpose) is not unique — only the latest non-consumed
+    -- row for a pair is redeemable; issuing supersedes any live predecessor.
+    -- consumed_at is the tombstone; status records why a row died
+    -- (consumed/superseded). attempts is bumped on wrong guesses; a row at
+    -- MaxOtpVerifyAttempts stays in place, dead. OtpHistorySweeper purges
+    -- rows past OtpHistoryRetentionDays.
     -- ============================================================
-    CREATE TABLE IF NOT EXISTS otp (
-        key       TEXT PRIMARY KEY,
-        value     hstore NOT NULL,
-        timestamp TIMESTAMP NOT NULL DEFAULT NOW()
+    CREATE TABLE IF NOT EXISTS otps (
+        id          BIGSERIAL PRIMARY KEY,
+        identifier  TEXT NOT NULL,
+        purpose     TEXT NOT NULL,
+        code_hash   TEXT NOT NULL,
+        created_at  TIMESTAMP NOT NULL DEFAULT NOW(),
+        expires_at  TIMESTAMP NOT NULL,
+        attempts    INT NOT NULL DEFAULT 0,
+        consumed_at TIMESTAMP,
+        status      TEXT
     );
+    -- Active-row lookup + resend cooldown (latest per identifier+purpose).
+    CREATE INDEX IF NOT EXISTS idx_otps_ident_purpose_created
+        ON otps (identifier, purpose, created_at DESC);
+    -- Per-day request count across all purposes.
+    CREATE INDEX IF NOT EXISTS idx_otps_ident_created
+        ON otps (identifier, created_at);
+    DROP TABLE IF EXISTS otp;
 
     -- ============================================================
     -- USERPERMISSIONSCACHE  (resolved permissions per user)

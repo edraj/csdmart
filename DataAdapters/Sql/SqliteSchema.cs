@@ -425,13 +425,29 @@ public static class SqliteSchema
     );
 
     -- ============================================================
-    -- OTP   (PostgreSQL uses hstore; here the two-key dictionary is JSON)
+    -- OTPS  (append-only: active codes AND request history in one table)
+    --
+    -- Mirrors the PostgreSQL table in SqlSchema.cs — see the design note
+    -- there. Timestamps are SqliteValues.TimestampFormat TEXT, so string
+    -- comparison and chronological comparison agree (expiry filters and the
+    -- per-day window run as plain `>` against the B-tree index).
     -- ============================================================
-    CREATE TABLE IF NOT EXISTS otp (
-        key       TEXT PRIMARY KEY,
-        value     TEXT NOT NULL,
-        timestamp TEXT NOT NULL DEFAULT {NowExpr}
+    CREATE TABLE IF NOT EXISTS otps (
+        id          INTEGER PRIMARY KEY AUTOINCREMENT,
+        identifier  TEXT NOT NULL,
+        purpose     TEXT NOT NULL,
+        code_hash   TEXT NOT NULL,
+        created_at  TEXT NOT NULL DEFAULT {NowExpr},
+        expires_at  TEXT NOT NULL,
+        attempts    INTEGER NOT NULL DEFAULT 0,
+        consumed_at TEXT,
+        status      TEXT
     );
+    CREATE INDEX IF NOT EXISTS idx_otps_ident_purpose_created
+        ON otps (identifier, purpose, created_at DESC);
+    CREATE INDEX IF NOT EXISTS idx_otps_ident_created
+        ON otps (identifier, created_at);
+    DROP TABLE IF EXISTS otp;
 
     -- ============================================================
     -- USERPERMISSIONSCACHE

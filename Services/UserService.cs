@@ -129,20 +129,19 @@ public sealed class UserService(
             return Result<(User, string, string)>.Fail(
                 InternalErrorCode.SHORTNAME_ALREADY_EXIST, "already exists", ErrorTypes.Create);
 
-        // OTP verification (Python uses verify_user = peek; OTP is NOT consumed
-        // so a subsequent /otp-confirm can still use it). Skipped entirely when
-        // is_otp_for_create_required=false — both channels are then treated as
-        // verified by fiat, mirroring Python's `is_valid_otp = True` branch.
+        // Capped verify-and-consume at the register purpose — the code is
+        // spent on first use, so a failure after this point (uniqueness
+        // check, schema rejection) requires a fresh OTP. Skipped entirely
+        // when is_otp_for_create_required=false, in which case both channels
+        // are treated as verified.
         var emailVerified = false;
         var msisdnVerified = false;
         if (!string.IsNullOrEmpty(msisdn))
         {
             if (s.IsOtpForCreateRequired)
             {
-                // Peek-verify (no consume): codes are stored hashed, so we hand
-                // the candidate to the repo and it compares hashes — we can't
-                // fetch the plaintext to compare ourselves anymore.
-                if (!await otp.VerifyPeekAsync(msisdn, msisdnOtp ?? "", ct))
+                if (!await otp.VerifyAndConsumeAsync(msisdn, OtpPurpose.Register,
+                        msisdnOtp ?? "", s.MaxOtpVerifyAttempts, ct))
                     return Result<(User, string, string)>.Fail(
                         InternalErrorCode.SESSION, "Invalid MSISDN OTP", ErrorTypes.Create);
             }
@@ -152,7 +151,8 @@ public sealed class UserService(
         {
             if (s.IsOtpForCreateRequired)
             {
-                if (!await otp.VerifyPeekAsync(email, emailOtp ?? "", ct))
+                if (!await otp.VerifyAndConsumeAsync(email, OtpPurpose.Register,
+                        emailOtp ?? "", s.MaxOtpVerifyAttempts, ct))
                     return Result<(User, string, string)>.Fail(
                         InternalErrorCode.SESSION, "Invalid Email OTP", ErrorTypes.Create);
             }
@@ -230,14 +230,6 @@ public sealed class UserService(
             UpdatedAt = TimeUtils.Now(),
         };
         await users.UpsertAsync(user, ct);
-
-        // Consume the OTP(s) used to verify this registration now that the
-        // account exists, so a still-valid code can't be replayed afterwards
-        // (e.g. against /user/otp-confirm). Only the supplied channels are
-        // cleared; DeleteAsync is a no-op when nothing was stored (e.g. when
-        // is_otp_for_create_required=false).
-        if (!string.IsNullOrEmpty(email)) await otp.DeleteAsync(email, ct);
-        if (!string.IsNullOrEmpty(msisdn)) await otp.DeleteAsync(msisdn, ct);
 
         // Auto-login (Python: process_user_login at the end of create_user).
         var access = jwt.IssueAccess(user.Shortname, user.Roles, user.Type);
@@ -419,16 +411,17 @@ public sealed class UserService(
         user = unlockedUser; // possibly auto-unlocked after the cool-down
         if (RejectIfNotActive(user) is { } inactiveReject) return inactiveReject;
 
-        // Validate OTP code.
-        // Python parity: key is derived from the REQUEST identifier, not the
-        // user record. When the caller sent `shortname`, Python falls back to
-        // `user.msisdn` because /otp-request-login writes to msisdn for the
-        // shortname path — same scheme here.
+        // Validate OTP code. The destination is derived from the REQUEST
+        // identifier, not the user record — a shortname identifier falls
+        // back to `user.msisdn` since /otp-request writes login codes there
+        // for the shortname path. Verified at the login purpose, capped by
+        // MaxOtpVerifyAttempts.
         var dest = !string.IsNullOrEmpty(req.Shortname)
             ? user.Msisdn
             : (req.Msisdn ?? req.Email?.ToLowerInvariant());
         if (string.IsNullOrEmpty(dest) || string.IsNullOrEmpty(req.Otp)
-            || !await otp.VerifyAndConsumeAsync(dest, req.Otp, ct))
+            || !await otp.VerifyAndConsumeAsync(dest, OtpPurpose.Login, req.Otp,
+                    settings.Value.MaxOtpVerifyAttempts, ct))
         {
             // Wrong OTP counts as a failed login attempt. Keeps the lock-out
             // promise intact — without this, an attacker who guessed a valid
@@ -952,61 +945,99 @@ public sealed class UserService(
         // meaningless once they've picked one); otherwise it carries through unchanged.
         var resolvedForcePasswordChange = newPasswordHash is not null ? false : user.ForcePasswordChange;
 
-        // Email change: Python parity (router.py:688-739).
-        //   * patched email != stored email  → email_otp REQUIRED
-        //   * email_otp must match users:otp:otps/<email> (peek, not consume —
-        //     matches Python's verify_user which calls db.get_otp)
-        //   * new email must not collide with another user (validate_uniqueness)
-        //   * on success: lowercase, replace, flip is_email_verified=true
-        // When the posted email is the same as the stored value, we silently
-        // no-op (matches Python: the `!=` guard short-circuits the OTP check).
+        // Email confirm/change:
+        //   * `new_email` + `email_otp` → change to a new address. OTP must
+        //     be issued to the new address (verify-contact purpose);
+        //     uniqueness-checked; on success: lowercase, replace, flip
+        //     is_email_verified=true.
+        //   * `email` (== stored) + `email_otp` → confirm the address already
+        //     on the row: consumes the code at the stored address and flips
+        //     is_email_verified.
+        //   * `email` (== stored) alone → no-op.
+        //   * `email` != stored → rejected; use `new_email` to change it.
+        // All OTP checks are capped verify-and-consume.
         string? resolvedEmail = user.Email;
         bool resolvedIsEmailVerified = user.IsEmailVerified;
+        var rawNewEmail = Str(patch, "new_email", null);
         var rawEmail = Str(patch, "email", null);
-        if (!string.IsNullOrEmpty(rawEmail))
+        if (!string.IsNullOrEmpty(rawNewEmail))
         {
-            var newEmail = rawEmail.ToLowerInvariant();
-            if (!string.Equals(newEmail, user.Email, StringComparison.Ordinal))
+            var newEmail = rawNewEmail.ToLowerInvariant();
+            if (regexConfig.ValidateEmailFormat(newEmail) is { } emailFormatError)
+                return Result<User>.Fail(InternalErrorCode.INVALID_DATA, emailFormatError, ErrorTypes.Request);
+            var emailOtp = Str(patch, "email_otp", null);
+            if (string.IsNullOrEmpty(emailOtp))
+                return Result<User>.Fail(InternalErrorCode.SESSION,
+                    "Email OTP is required to update your email", ErrorTypes.Create);
+            if (!await otp.VerifyAndConsumeAsync(newEmail, OtpPurpose.VerifyContact,
+                    emailOtp, settings.Value.MaxOtpVerifyAttempts, ct))
+                return Result<User>.Fail(InternalErrorCode.SESSION,
+                    "Invalid Email OTP", ErrorTypes.Create);
+            var collision = await users.GetByEmailAsync(newEmail, ct);
+            if (collision is not null && !string.Equals(collision.Shortname, user.Shortname, StringComparison.Ordinal))
+                return Result<User>.Fail(InternalErrorCode.DATA_SHOULD_BE_UNIQUE,
+                    $"Entry properties should be unique: @email:{newEmail} ", ErrorTypes.Request);
+            resolvedEmail = newEmail;
+            resolvedIsEmailVerified = true;
+        }
+        else if (!string.IsNullOrEmpty(rawEmail))
+        {
+            var suppliedEmail = rawEmail.ToLowerInvariant();
+            if (!string.Equals(suppliedEmail, user.Email, StringComparison.Ordinal))
+                return Result<User>.Fail(InternalErrorCode.INVALID_DATA,
+                    "email does not match the stored address; use new_email to change it",
+                    ErrorTypes.Request);
+            var emailOtp = Str(patch, "email_otp", null);
+            if (!string.IsNullOrEmpty(emailOtp))
             {
-                if (regexConfig.ValidateEmailFormat(newEmail) is { } emailFormatError)
-                    return Result<User>.Fail(InternalErrorCode.INVALID_DATA, emailFormatError, ErrorTypes.Request);
-                var emailOtp = Str(patch, "email_otp", null);
-                if (string.IsNullOrEmpty(emailOtp))
-                    return Result<User>.Fail(InternalErrorCode.SESSION,
-                        "Email OTP is required to update your email", ErrorTypes.Create);
-                if (!await otp.VerifyPeekAsync(newEmail, emailOtp, ct))
+                if (!await otp.VerifyAndConsumeAsync(suppliedEmail, OtpPurpose.VerifyContact,
+                        emailOtp, settings.Value.MaxOtpVerifyAttempts, ct))
                     return Result<User>.Fail(InternalErrorCode.SESSION,
                         "Invalid Email OTP", ErrorTypes.Create);
-                var collision = await users.GetByEmailAsync(newEmail, ct);
-                if (collision is not null && !string.Equals(collision.Shortname, user.Shortname, StringComparison.Ordinal))
-                    return Result<User>.Fail(InternalErrorCode.DATA_SHOULD_BE_UNIQUE,
-                        $"Entry properties should be unique: @email:{newEmail} ", ErrorTypes.Request);
-                resolvedEmail = newEmail;
+                // Flags never regress: confirming only ever sets the flag.
                 resolvedIsEmailVerified = true;
             }
         }
 
-        // Msisdn change: Python parity (router.py:699-754). Same gating as email.
+        // Msisdn confirm/change — same gating as email.
         string? resolvedMsisdn = user.Msisdn;
         bool resolvedIsMsisdnVerified = user.IsMsisdnVerified;
-        var newMsisdn = Str(patch, "msisdn", null);
-        if (!string.IsNullOrEmpty(newMsisdn) && !string.Equals(newMsisdn, user.Msisdn, StringComparison.Ordinal))
+        var rawNewMsisdn = Str(patch, "new_msisdn", null);
+        var rawMsisdn = Str(patch, "msisdn", null);
+        if (!string.IsNullOrEmpty(rawNewMsisdn))
         {
-            if (regexConfig.ValidateMsisdnFormat(newMsisdn) is { } msisdnFormatError)
+            if (regexConfig.ValidateMsisdnFormat(rawNewMsisdn) is { } msisdnFormatError)
                 return Result<User>.Fail(InternalErrorCode.INVALID_DATA, msisdnFormatError, ErrorTypes.Request);
             var msisdnOtp = Str(patch, "msisdn_otp", null);
             if (string.IsNullOrEmpty(msisdnOtp))
                 return Result<User>.Fail(InternalErrorCode.SESSION,
                     "MSISDN OTP is required to update your msisdn", ErrorTypes.Create);
-            if (!await otp.VerifyPeekAsync(newMsisdn, msisdnOtp, ct))
+            if (!await otp.VerifyAndConsumeAsync(rawNewMsisdn, OtpPurpose.VerifyContact,
+                    msisdnOtp, settings.Value.MaxOtpVerifyAttempts, ct))
                 return Result<User>.Fail(InternalErrorCode.SESSION,
                     "Invalid MSISDN OTP", ErrorTypes.Create);
-            var collision = await users.GetByMsisdnAsync(newMsisdn, ct);
+            var collision = await users.GetByMsisdnAsync(rawNewMsisdn, ct);
             if (collision is not null && !string.Equals(collision.Shortname, user.Shortname, StringComparison.Ordinal))
                 return Result<User>.Fail(InternalErrorCode.DATA_SHOULD_BE_UNIQUE,
-                    $"Entry properties should be unique: @msisdn:{newMsisdn} ", ErrorTypes.Request);
-            resolvedMsisdn = newMsisdn;
+                    $"Entry properties should be unique: @msisdn:{rawNewMsisdn} ", ErrorTypes.Request);
+            resolvedMsisdn = rawNewMsisdn;
             resolvedIsMsisdnVerified = true;
+        }
+        else if (!string.IsNullOrEmpty(rawMsisdn))
+        {
+            if (!string.Equals(rawMsisdn, user.Msisdn, StringComparison.Ordinal))
+                return Result<User>.Fail(InternalErrorCode.INVALID_DATA,
+                    "msisdn does not match the stored number; use new_msisdn to change it",
+                    ErrorTypes.Request);
+            var msisdnOtp = Str(patch, "msisdn_otp", null);
+            if (!string.IsNullOrEmpty(msisdnOtp))
+            {
+                if (!await otp.VerifyAndConsumeAsync(rawMsisdn, OtpPurpose.VerifyContact,
+                        msisdnOtp, settings.Value.MaxOtpVerifyAttempts, ct))
+                    return Result<User>.Fail(InternalErrorCode.SESSION,
+                        "Invalid MSISDN OTP", ErrorTypes.Create);
+                resolvedIsMsisdnVerified = true;
+            }
         }
 
         // Python parity: deep-merge patch.payload.body into user.payload.body

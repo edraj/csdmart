@@ -1,223 +1,204 @@
-using System.Data.Common;
 using Dmart.Auth;
-using Dmart.QueryGrammar;
-using Microsoft.Data.Sqlite;
 
 namespace Dmart.DataAdapters.Sql;
 
-// dmart's `otp` table uses HSTORE for the `value` column on PostgreSQL (not
-// JSONB). SQLite has no hstore, so the same key->string map is stored as a JSON
-// object in TEXT; DbParams handles both directions, and every read here goes
-// through DbParams.ReadMap so the two providers' different CLR shapes —
-// IDictionary from Npgsql, string from SQLite — converge before use.
+// OTP store over the `otps` table — one row per issued code; rows persist as
+// request history after consumption.
 //
-// HSTORE is a key→string map; we store the code, the destination, and an expires_at
-// ISO timestamp so the application layer can enforce TTL.
+// Invariants:
+//   * At most one redeemable code per (identifier, purpose): IssueAsync marks
+//     any prior live row `superseded`, and verification reads only the
+//     latest non-consumed row.
+//   * Consumption is a guarded UPDATE (`... WHERE id = ? AND consumed_at IS
+//     NULL`) — atomic, no transaction needed.
+//   * Wrong guesses bump `attempts` in place; a row at the cap stays in place,
+//     dead.
 //
-// The `code` field is never the raw 6-digit OTP — it's a keyed HMAC (OtpHasher),
-// so a DB read can't surface a live, replayable credential within its TTL. The
-// hash is deterministic, so verification stays a single SELECT + fixed-time
-// compare (no per-row KDF on the auth hot path).
+// `code_hash` is a keyed HMAC (OtpHasher), never the raw code.
 [System.Diagnostics.CodeAnalysis.SuppressMessage("Security", "CA2100",
-    Justification = "Audited: CommandText is assembled from compile-time SQL, dialect-produced fragments and $N placeholders only. Every caller-supplied value is bound through DbParams, never concatenated.")]
+    Justification = "Audited: CommandText is assembled from compile-time SQL and $N placeholders only. Every caller-supplied value is bound through DbParams, never concatenated.")]
 public sealed class OtpRepository(IDbConnectionFactory db, OtpHasher hasher)
 {
-    public async Task StoreAsync(string key, string code, DateTime expiresAt, CancellationToken ct = default)
+    private const string StatusConsumed = "consumed";
+    private const string StatusSuperseded = "superseded";
+
+    // Issues a new code for (identifier, purpose): supersedes any live
+    // predecessor, then inserts. Only the latest issued code stays redeemable.
+    public async Task IssueAsync(string identifier, string purpose, string code,
+        DateTime expiresAt, CancellationToken ct = default)
     {
-        var hstore = new Dictionary<string, string?>
-        {
-            ["code"] = hasher.Hash(code),
-            ["expires_at"] = expiresAt.ToString("O"),
-        };
         await using var conn = await db.OpenAsync(ct);
-        await using var cmd = conn.CreateCommand();
-        var k = DbParams.Add(cmd, key);
-        var v = DbParams.Add(cmd, hstore, SqlValueKind.KeyValueMap);
-        // Timestamp bound rather than NOW(): SQLite has no NOW(), and
-        // CURRENT_TIMESTAMP is UTC with second resolution, which would not match
-        // the local wall-clock format this column stores.
-        var t = DbParams.Add(cmd, TimeUtils.Now());
-        cmd.CommandText = $"""
-            INSERT INTO otp (key, value, timestamp)
-            VALUES ({k}, {v}, {t})
-            ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value, timestamp = {t}
+
+        await using (var sup = conn.CreateCommand())
+        {
+            var now = DbParams.Add(sup, TimeUtils.Now());
+            var st = DbParams.Add(sup, StatusSuperseded);
+            var i = DbParams.Add(sup, identifier);
+            var p = DbParams.Add(sup, purpose);
+            sup.CommandText = $"""
+                UPDATE otps SET consumed_at = {now}, status = {st}
+                WHERE identifier = {i} AND purpose = {p} AND consumed_at IS NULL
+                """;
+            await sup.ExecuteNonQueryAsync(ct);
+        }
+
+        await using var ins = conn.CreateCommand();
+        var pi = DbParams.Add(ins, identifier);
+        var pp = DbParams.Add(ins, purpose);
+        var ph = DbParams.Add(ins, hasher.Hash(code));
+        // Timestamps bound rather than NOW(): SQLite has no NOW(), and
+        // CURRENT_TIMESTAMP is UTC with second resolution, which would not
+        // match the local wall-clock format these columns store.
+        var pc = DbParams.Add(ins, TimeUtils.Now());
+        var pe = DbParams.Add(ins, expiresAt);
+        ins.CommandText = $"""
+            INSERT INTO otps (identifier, purpose, code_hash, created_at, expires_at, attempts)
+            VALUES ({pi}, {pp}, {ph}, {pc}, {pe}, 0)
             """;
-        await cmd.ExecuteNonQueryAsync(ct);
+        await ins.ExecuteNonQueryAsync(ct);
     }
 
-    // Seconds elapsed since the OTP row at `key` was last written. Null when
-    // no row exists. Mirrors Python's `otp_created_since` — used by
-    // /user/otp-request to enforce the resend cooldown.
-    public async Task<int?> GetCreatedSinceAsync(string key, CancellationToken ct = default)
+    // Seconds since the newest code was issued for (identifier, purpose),
+    // regardless of its state. Null when no row exists.
+    public Task<int?> GetCreatedSinceAsync(string identifier, string purpose,
+        CancellationToken ct = default)
+        => CreatedSinceCoreAsync(identifier, purpose, ct);
+
+    // Seconds since the newest code was issued to `identifier` under any
+    // purpose. Backs the resend cooldown, which applies per destination
+    // across all purposes.
+    public Task<int?> GetCreatedSinceAnyPurposeAsync(string identifier,
+        CancellationToken ct = default)
+        => CreatedSinceCoreAsync(identifier, purpose: null, ct);
+
+    private async Task<int?> CreatedSinceCoreAsync(string identifier, string? purpose,
+        CancellationToken ct)
     {
         await using var conn = await db.OpenAsync(ct);
         await using var cmd = conn.CreateCommand();
-        // SQLite reads the stored timestamp and subtracts here rather than using
-        // julianday(): that returns a float day count, and the round trip loses
-        // resolution — a 60-second gap measures as 59, which would let a resend
-        // through a second early. PostgreSQL keeps its server-side EXTRACT.
-        if (cmd is SqliteCommand)
-        {
-            var k = DbParams.Add(cmd, key);
-            cmd.CommandText = $"SELECT timestamp FROM otp WHERE key = {k}";
-            var stamp = await cmd.ExecuteScalarAsync(ct);
-            if (stamp is null or DBNull) return null;
-            if (!SqliteValues.TryToDateTime(stamp as string, out var written)) return null;
-            var elapsed = (TimeUtils.Now() - written).TotalSeconds;
-            return (int)Math.Max(0, elapsed);
-        }
-        var pk = DbParams.Add(cmd, key);
-        cmd.CommandText = $"SELECT EXTRACT(EPOCH FROM (NOW() - timestamp))::int FROM otp WHERE key = {pk}";
+        var i = DbParams.Add(cmd, identifier);
+        cmd.CommandText = purpose is null
+            ? $"SELECT MAX(created_at) FROM otps WHERE identifier = {i}"
+            : $"SELECT MAX(created_at) FROM otps WHERE identifier = {i} AND purpose = {DbParams.Add(cmd, purpose)}";
         var raw = await cmd.ExecuteScalarAsync(ct);
-        if (raw is null || raw is DBNull) return null;
+        if (ReadTimestamp(raw) is not { } written) return null;
+        // App-side subtraction on both providers: SQLite's julianday() round
+        // trip loses resolution (a 60-second gap measures as 59, letting a
+        // resend through a second early), and one code path beats two.
+        var elapsed = (TimeUtils.Now() - written).TotalSeconds;
+        return (int)Math.Max(0, elapsed);
+    }
+
+    // Codes issued to `identifier` across all purposes since `cutoff`.
+    // Backs MaxOtpRequestsPerDay.
+    public async Task<int> CountIssuedSinceAsync(string identifier, DateTime cutoff,
+        CancellationToken ct = default)
+    {
+        await using var conn = await db.OpenAsync(ct);
+        await using var cmd = conn.CreateCommand();
+        var i = DbParams.Add(cmd, identifier);
+        var c = DbParams.Add(cmd, cutoff);
+        // The `>` works on both providers: PostgreSQL compares TIMESTAMPs,
+        // SQLite compares fixed-width SqliteValues text, which sorts
+        // chronologically by construction.
+        cmd.CommandText = $"""
+            SELECT COUNT(*) FROM otps WHERE identifier = {i} AND created_at > {c}
+            """;
+        var raw = await cmd.ExecuteScalarAsync(ct);
         return Convert.ToInt32(raw, System.Globalization.CultureInfo.InvariantCulture);
     }
 
-    // Peek-verify: true when a non-expired OTP at `key` hashes to the same value
-    // as `candidate`, WITHOUT consuming it (Python parity: verify_user calls
-    // db.get_otp, which doesn't delete). Used by /user/create and the
-    // /user/profile email/msisdn change so a failed attempt leaves the OTP usable
-    // for another try within its TTL. Because codes are stored hashed, callers
-    // can no longer fetch the plaintext to compare — they hand us the candidate
-    // and we compare hashes here.
-    public async Task<bool> VerifyPeekAsync(string key, string candidate, CancellationToken ct = default)
-    {
-        var stored = await PeekStoredHashAsync(key, ct);
-        if (stored is null) return false;
-        var expected = hasher.Hash(candidate);
-        // Fixed-time compare over the hex hashes (both fixed 64-char ASCII, so
-        // the length precondition always holds). The keyed hash already strips
-        // any per-digit timing signal; this keeps the compare uniform.
-        return System.Security.Cryptography.CryptographicOperations.FixedTimeEquals(
-            System.Text.Encoding.UTF8.GetBytes(stored),
-            System.Text.Encoding.UTF8.GetBytes(expected));
-    }
-
-    // Returns the stored (hashed) OTP value at `key`, or null when no row exists
-    // or it has expired. This is the keyed HMAC, NOT a usable code — exposed for
-    // existence/freshness assertions and never compared against a plaintext code.
-    // Callers validating a code use VerifyPeekAsync; this only answers "is there
-    // a live OTP here?" (and, since the hash is deterministic, "is it unchanged?").
-    public async Task<string?> PeekStoredHashAsync(string key, CancellationToken ct = default)
-    {
-        await using var conn = await db.OpenAsync(ct);
-        await using var cmd = conn.CreateCommand();
-        var k = DbParams.Add(cmd, key);
-        cmd.CommandText = $"SELECT value FROM otp WHERE key = {k}";
-        var raw = await cmd.ExecuteScalarAsync(ct);
-        if (DbParams.ReadMap(raw) is not { } dict) return null;
-        if (!dict.TryGetValue("code", out var code)) return null;
-        if (dict.TryGetValue("expires_at", out var expRaw)
-            && DateTime.TryParse(expRaw, out var exp) && exp < TimeUtils.Now()) return null;
-        return code;
-    }
-
-    // Unconditional delete of the OTP row at `key`. Used by /user/create to
-    // consume the registration OTP once the account is persisted, so a stored
-    // code can't be replayed (e.g. via /user/otp-confirm) after the user
-    // exists. A no-op when no row is present.
-    public async Task DeleteAsync(string key, CancellationToken ct = default)
-    {
-        await using var conn = await db.OpenAsync(ct);
-        await using var cmd = conn.CreateCommand();
-        var k = DbParams.Add(cmd, key);
-        cmd.CommandText = $"DELETE FROM otp WHERE key = {k}";
-        await cmd.ExecuteNonQueryAsync(ct);
-    }
-
-    public Task<bool> VerifyAndConsumeAsync(string key, string code, CancellationToken ct = default)
-        => VerifyAndConsumeAsync(key, code, maxAttempts: 0, ct);
-
-    // maxAttempts > 0 caps wrong guesses against a single stored code: each
-    // mismatch bumps an "attempts" counter in the HSTORE value, and once it
-    // reaches the cap the row is deleted so the code can never be redeemed —
-    // even by a later correct guess. This closes the brute-force window on
-    // anonymous OTP verification that per-IP rate limiting alone can't (a
-    // distributed attacker spreads guesses across IPs). maxAttempts == 0
-    // preserves the original uncapped behavior.
+    // Verifies `code` against the latest live row for (identifier, purpose)
+    // and consumes it on success. Returns false for: no row, expired,
+    // attempts exhausted, hash mismatch, lost consume race.
     //
-    // Deliberate server-side divergence from Python dmart; the wire response is
-    // unchanged (an exhausted code looks identical to an expired one).
-    public async Task<bool> VerifyAndConsumeAsync(
-        string key, string code, int maxAttempts, CancellationToken ct = default)
+    // maxAttempts > 0 caps wrong guesses against a single stored code;
+    // maxAttempts == 0 disables the cap.
+    public async Task<bool> VerifyAndConsumeAsync(string identifier, string purpose,
+        string code, int maxAttempts, CancellationToken ct = default)
     {
         await using var conn = await db.OpenAsync(ct);
-        await using var tx = await conn.BeginTransactionAsync(ct);
-        try
+
+        // Read the candidate row completely BEFORE issuing any follow-up
+        // command: Npgsql runs one command per connection, so the increment /
+        // consume below can only start once this reader is disposed.
+        long id;
+        string storedHash;
+        DateTime? expiresAt;
+        int attempts;
         {
-            await using (var cmd = conn.CreateCommand())
-            {
-                cmd.Transaction = tx;
-                var k = DbParams.Add(cmd, key);
-                cmd.CommandText = $"SELECT value FROM otp WHERE key = {k}";
-                var raw = await cmd.ExecuteScalarAsync(ct);
-                if (DbParams.ReadMap(raw) is not { } dict) return false;
-                if (!dict.TryGetValue("code", out var stored) || stored is null) return false;
-                if (dict.TryGetValue("expires_at", out var expRaw)
-                    && DateTime.TryParse(expRaw, out var exp) && exp < TimeUtils.Now()) return false;
-                // `stored` is the keyed HMAC of the real code, never the plaintext;
-                // hash the supplied guess the same way and compare in fixed time.
-                // Both sides are fixed-width hex, so the length check is constant.
-                var storedBytes = System.Text.Encoding.UTF8.GetBytes(stored);
-                var inputBytes = System.Text.Encoding.UTF8.GetBytes(hasher.Hash(code));
-                var matches = storedBytes.Length == inputBytes.Length
-                    && System.Security.Cryptography.CryptographicOperations.FixedTimeEquals(storedBytes, inputBytes);
-                if (!matches)
-                {
-                    await RecordFailedAttemptAsync(conn, tx, key, dict, maxAttempts, ct);
-                    await tx.CommitAsync(ct);
-                    return false;
-                }
-            }
-            await using var del = conn.CreateCommand();
-            del.Transaction = tx;
-            var dk = DbParams.Add(del, key);
-            del.CommandText = $"DELETE FROM otp WHERE key = {dk}";
-            await del.ExecuteNonQueryAsync(ct);
-            await tx.CommitAsync(ct);
-            return true;
+            await using var cmd = conn.CreateCommand();
+            var i = DbParams.Add(cmd, identifier);
+            var p = DbParams.Add(cmd, purpose);
+            cmd.CommandText = $"""
+                SELECT id, code_hash, expires_at, attempts FROM otps
+                WHERE identifier = {i} AND purpose = {p} AND consumed_at IS NULL
+                ORDER BY created_at DESC LIMIT 1
+                """;
+            await using var reader = await cmd.ExecuteReaderAsync(ct);
+            if (!await reader.ReadAsync(ct)) return false;
+
+            id = Convert.ToInt64(reader.GetValue(0), System.Globalization.CultureInfo.InvariantCulture);
+            storedHash = reader.GetString(1);
+            expiresAt = ReadTimestamp(reader.GetValue(2));
+            attempts = Convert.ToInt32(reader.GetValue(3), System.Globalization.CultureInfo.InvariantCulture);
         }
-        catch
+
+        if (expiresAt is null || expiresAt < TimeUtils.Now()) return false;
+        if (maxAttempts > 0 && attempts >= maxAttempts) return false;
+
+        // `storedHash` is the keyed HMAC of the real code, never the
+        // plaintext; hash the supplied guess the same way and compare in
+        // fixed time. Both sides are fixed-width hex, so the length check
+        // is constant.
+        var storedBytes = System.Text.Encoding.UTF8.GetBytes(storedHash);
+        var inputBytes = System.Text.Encoding.UTF8.GetBytes(hasher.Hash(code));
+        var matches = storedBytes.Length == inputBytes.Length
+            && System.Security.Cryptography.CryptographicOperations.FixedTimeEquals(storedBytes, inputBytes);
+        if (!matches)
         {
-            await tx.RollbackAsync(ct);
-            throw;
+            // In-place increment — a read-modify-write of the whole row
+            // would race with a concurrent attempt and lose an increment.
+            await using var upd = conn.CreateCommand();
+            var uid = DbParams.Add(upd, id);
+            upd.CommandText = $"UPDATE otps SET attempts = attempts + 1 WHERE id = {uid}";
+            await upd.ExecuteNonQueryAsync(ct);
+            return false;
         }
+
+        // Guarded consume: the `consumed_at IS NULL` predicate makes two
+        // racing correct guesses resolve to exactly one winner — the loser's
+        // UPDATE affects zero rows and reports failure.
+        await using var con = conn.CreateCommand();
+        var now = DbParams.Add(con, TimeUtils.Now());
+        var st = DbParams.Add(con, StatusConsumed);
+        var cid = DbParams.Add(con, id);
+        con.CommandText = $"""
+            UPDATE otps SET consumed_at = {now}, status = {st}
+            WHERE id = {cid} AND consumed_at IS NULL
+            """;
+        return await con.ExecuteNonQueryAsync(ct) == 1;
     }
 
-    // On a wrong guess, either bump the attempts counter or, once the cap is
-    // reached, delete the row so the code is permanently spent. No-op when
-    // capping is disabled (maxAttempts <= 0).
-    private static async Task RecordFailedAttemptAsync(
-        DbConnection conn, DbTransaction tx, string key,
-        IDictionary<string, string?> dict, int maxAttempts, CancellationToken ct)
+    // Purge rows older than `cutoff` — called by OtpHistorySweeper on the
+    // OtpHistoryRetentionDays schedule. Retention must exceed 24h or the
+    // per-day issue cap loses the rows it counts.
+    public async Task<int> PurgeOlderThanAsync(DateTime cutoff, CancellationToken ct = default)
     {
-        if (maxAttempts <= 0) return;
-
-        var attempts = dict.TryGetValue("attempts", out var a)
-            && int.TryParse(a, System.Globalization.CultureInfo.InvariantCulture, out var n) ? n + 1 : 1;
-
-        if (attempts >= maxAttempts)
-        {
-            await using var del = conn.CreateCommand();
-            del.Transaction = tx;
-            var dk = DbParams.Add(del, key);
-            del.CommandText = $"DELETE FROM otp WHERE key = {dk}";
-            await del.ExecuteNonQueryAsync(ct);
-            return;
-        }
-
-        // Merge/overwrite just the one key, leaving code and expires_at intact.
-        // PostgreSQL concatenates a single-pair hstore; SQLite's json_set does
-        // the same to a JSON object. Both are in-place partial updates — a
-        // read-modify-write of the whole map would race with a concurrent
-        // attempt and lose one of the increments.
-        await using var upd = conn.CreateCommand();
-        upd.Transaction = tx;
-        var k = DbParams.Add(upd, key);
-        var v = DbParams.Add(upd, attempts.ToString(System.Globalization.CultureInfo.InvariantCulture));
-        upd.CommandText = upd is SqliteCommand
-            ? $"UPDATE otp SET value = json_set(value, '$.attempts', {v}) WHERE key = {k}"
-            : $"UPDATE otp SET value = value || hstore('attempts', {v}) WHERE key = {k}";
-        await upd.ExecuteNonQueryAsync(ct);
+        await using var conn = await db.OpenAsync(ct);
+        await using var cmd = conn.CreateCommand();
+        var c = DbParams.Add(cmd, cutoff);
+        cmd.CommandText = $"DELETE FROM otps WHERE created_at < {c}";
+        return await cmd.ExecuteNonQueryAsync(ct);
     }
+
+    // Timestamp columns come back as DateTime from Npgsql and as
+    // SqliteValues-formatted TEXT from SQLite; converge before use.
+    private static DateTime? ReadTimestamp(object? raw) => raw switch
+    {
+        null or DBNull => null,
+        DateTime dt => dt,
+        string s => SqliteValues.TryToDateTime(s, out var parsed) ? parsed : null,
+        _ => null,
+    };
 }

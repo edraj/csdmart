@@ -32,20 +32,8 @@ internal static class OpenApiExamples
 
         [typeof(SendOTPRequest)] = JsonNode.Parse("""
             {
+              "purpose": "login",
               "msisdn": "9647811223344"
-            }
-            """)!,
-
-        [typeof(ConfirmOTPRequest)] = JsonNode.Parse("""
-            {
-              "code": "123456",
-              "msisdn": "9647811223344"
-            }
-            """)!,
-
-        [typeof(PasswordResetRequest)] = JsonNode.Parse("""
-            {
-              "shortname": "alibaba"
             }
             """)!,
 
