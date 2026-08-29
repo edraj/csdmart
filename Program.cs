@@ -212,6 +212,25 @@ switch (subcommand)
               serve          Start the HTTP server
                              Options: --cxb-config <path>
               migrate        Create/update the PG schema (idempotent; no server)
+              client-schema-migrate
+                             Apply a directory of dmart schema definitions to the
+                             database, so a client repo can keep its schemas in
+                             version control and replay them locally. Writes go
+                             through EntryService, so they pay for permissions,
+                             schema validation and history like an API call.
+                             Usage: dmart client-schema-migrate -p=<path>
+                                                         [--clean|--deep-clean]
+                                                         [--seed] [--seed-count=N]
+                                                         [--dry-run]
+                                                         [--actor <shortname>]
+                             <path> holds one .json file per schema, each with
+                             {shortname, space, subpath, schema}. Each file yields a
+                             schema entry, the folder named by `subpath` (ancestors
+                             included), and — with --seed — sample content inside it.
+                             --clean deletes db schemas absent from disk (scoped to
+                             the spaces the files declare); --deep-clean also drops
+                             their folders and content; --seed fills empty folders
+                             with sample records and repairs non-conformant ones.
               prune-empty-histories
                              Delete history rows that record no change — diff
                              `{}` or NULL — written before the empty-diff append
@@ -808,6 +827,96 @@ switch (subcommand)
                 $"WARNING: {subject} — see the warnings above. This archive is INCOMPLETE.");
             Environment.ExitCode = 1;
         }
+        return;
+    }
+
+    case "client-schema-migrate":
+    case "client_schema_migrate":
+    {
+        // Replays a client repo's <dir>/schemas + <dir>/folders into the
+        // database. See Cli/SchemaMigrateCommand.cs for the layout and the
+        // rules; this block is argument parsing only.
+        //
+        // -p=<path> is the documented spelling; `-p <path>` and a bare
+        // positional path are accepted too, because all three are what people
+        // actually type and rejecting two of them buys nothing.
+        string? dbPath = null;
+        for (var i = 0; i < serverArgs.Length; i++)
+        {
+            var a = serverArgs[i];
+            if (a.StartsWith("-p=", StringComparison.Ordinal)) dbPath = a[3..];
+            else if (a.StartsWith("--path=", StringComparison.Ordinal)) dbPath = a[7..];
+            else if (a is "-p" or "--path" && i + 1 < serverArgs.Length) dbPath = serverArgs[++i];
+            else if (!a.StartsWith('-') && dbPath is null) dbPath = a;
+        }
+
+        if (string.IsNullOrWhiteSpace(dbPath))
+        {
+            Console.Error.WriteLine(
+                "Usage: dmart client-schema-migrate -p=<database-path> [--clean|--deep-clean] [--seed]\n" +
+                "                            [--seed-count=N] [--dry-run] [--actor <shortname>]\n" +
+                "\n" +
+                "  <database-path> holds one .json file per schema, each combining the schema\n" +
+                "  with the folder that will contain its content:\n" +
+                "\n" +
+                "    {\n" +
+                "      \"shortname\": \"plan\",      the schema's shortname\n" +
+                "      \"space\":     \"public\",    holds the schema, folder and content\n" +
+                "      \"subpath\":   \"plans\",     the folder; \"plans/addons\" means folder\n" +
+                "                                 `addons` at subpath \"/plans\"\n" +
+                "      \"schema\":    { ... }       the JSON Schema definition\n" +
+                "    }\n" +
+                "\n" +
+                "  Each file creates/updates its schema, then ensures its folder exists with\n" +
+                "  content_schema_shortnames[0] = <shortname> (missing ancestor folders are\n" +
+                "  created too). A folder that already exists bound to a DIFFERENT schema is\n" +
+                "  reported and that file is skipped.\n" +
+                "\n" +
+                "  --clean       delete database schemas that have no file on disk. Scoped to\n" +
+                "                the spaces the manifests declare; meta_schema and\n" +
+                "                folder_rendering are never deleted.\n" +
+                "  --deep-clean  --clean, plus the folders pointing at each deleted schema and\n" +
+                "                the content inside them.\n" +
+                "  --seed        fill each empty folder with sample records generated from its\n" +
+                "                schema, and repair any non-conformant existing ones.\n" +
+                "  --seed-count  records generated per empty folder (default 10).\n" +
+                "  --dry-run     report what would change; write nothing.");
+            Environment.ExitCode = 1;
+            return;
+        }
+
+        var deepClean = serverArgs.Contains("--deep-clean") || serverArgs.Contains("--deep_clean");
+        var seedCount = 10;
+        var seedCountArg = serverArgs.FirstOrDefault(a => a.StartsWith("--seed-count=", StringComparison.Ordinal));
+        if (seedCountArg is not null
+            && (!int.TryParse(seedCountArg["--seed-count=".Length..], out seedCount) || seedCount is < 0 or > 10_000))
+        {
+            Console.Error.WriteLine("--seed-count must be an integer in [0, 10000]");
+            Environment.ExitCode = 1;
+            return;
+        }
+
+        // Defaults to the shortname AdminBootstrap seeds; overridable for
+        // deployments that drive migrations from a different super admin.
+        var actor = "dmart";
+        var actorIx = Array.IndexOf(serverArgs, "--actor");
+        if (actorIx >= 0 && actorIx + 1 < serverArgs.Length) actor = serverArgs[actorIx + 1];
+
+        var (smSettings, smDb) = CliBootstrap.BuildFactoryOrExit(dotenvPath, dotenvValues,
+            "Error: Database not configured. Set DATABASE_* in config.env.");
+
+        Environment.ExitCode = await SchemaMigrateCommand.RunAsync(
+            new SchemaMigrateCommand.Options(
+                Path: Path.GetFullPath(dbPath),
+                // --deep-clean implies --clean: it is the same sweep with a
+                // wider blast radius, and requiring both would be a trap.
+                Clean: deepClean || serverArgs.Contains("--clean"),
+                DeepClean: deepClean,
+                Seed: serverArgs.Contains("--seed"),
+                SeedCount: seedCount,
+                DryRun: serverArgs.Contains("--dry-run"),
+                Actor: actor),
+            smSettings, smDb);
         return;
     }
 

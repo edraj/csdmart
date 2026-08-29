@@ -1,10 +1,34 @@
 using Dmart.Auth;
 using Dmart.Config;
 using Dmart.DataAdapters.Sql;
+using Dmart.Plugins;
 using Dmart.Services;
 using Microsoft.Extensions.Options;
 
 namespace Dmart.Cli;
+
+/// <summary>
+/// The service graph a CLI command needs to write through the application
+/// layer instead of around it.
+/// </summary>
+/// <param name="Entries2">
+/// EntryService — every create/update/delete goes here, so the write pays for
+/// permissions, schema validation, folder policy, uniqueness, hooks, history
+/// and query_policies exactly as an HTTP caller's would.
+/// </param>
+/// <param name="Entries">
+/// EntryRepository — READS only. Reading has no application logic to respect,
+/// and routing list queries through QueryService would need a second graph
+/// (and an ACL pass) for no benefit to a super-admin CLI run.
+/// </param>
+/// <param name="Permissions">
+/// Used to verify up front that the actor is an effective super admin, so a
+/// missing prerequisite is one clear error rather than a run of failed writes.
+/// </param>
+internal sealed record CliServices(
+    EntryService Entries2,
+    EntryRepository Entries,
+    PermissionService Permissions);
 
 // Shared bootstrap for CLI subcommands that need a configured Db (passwd,
 // check, export, import, migrate, fix_query_policies). Each of those used to
@@ -159,6 +183,65 @@ internal static class CliBootstrap
             db,
             Options.Create(s),
             nlog.CreateLogger<ImportExportService>());
+    }
+
+    // The write path a CLI command needs when it must behave like an API
+    // caller rather than like an importer: EntryService applies permissions,
+    // schema validation, folder content policy, uniqueness, history and
+    // query_policies to every create/update/delete. `client-schema-migrate`
+    // uses it for exactly that reason.
+    //
+    // Entries (the repository) rides along for READS, which have no
+    // application logic to respect and would otherwise need a second graph.
+    //
+    // PluginManager is built with EMPTY plugin lists: LoadAsync is never
+    // called, so DispatchBefore/After find no hooks and return immediately.
+    // A CLI process has no plugin directory contract to honour and no HTTP
+    // context for the hooks that assume one — same null-plugin wiring
+    // BuildImportExportService documents.
+    //
+    // LIFECYCLE: ephemeral, single-invocation object graph. See the note on
+    // BuildImportExportService — do not call this from long-running code.
+    public static CliServices BuildEntryService(DmartSettings s, IDbConnectionFactory db)
+    {
+        var nlog = LoggerFactory.Create(b => b
+            .SetMinimumLevel(LogLevel.Warning)
+            .AddProvider(new StderrLoggerProvider(LogLevel.Warning)));
+        var opts = Options.Create(s);
+        var dialect = db is SqliteConnectionFactory
+            ? (Dmart.QueryGrammar.ISqlDialect)Dmart.QueryGrammar.SqliteSqlDialect.Instance
+            : Dmart.QueryGrammar.PostgresSqlDialect.Instance;
+
+        var refresher = new AuthzCacheRefresher();
+        var entryRepo = new EntryRepository(db);
+        var userRepo = new UserRepository(db, refresher, new SessionTokenHasher(s));
+        var accessRepo = new AccessRepository(db, dialect, refresher, userRepo);
+        var attachmentRepo = new AttachmentRepository(db, dialect);
+        var historyRepo = new HistoryRepository(db, dialect);
+        var lockRepo = new LockRepository(db, dialect);
+        var perms = new PermissionService(userRepo, accessRepo, refresher);
+
+        var plugins = new PluginManager(
+            [], [],
+            new SpaceEventLogger(opts, nlog.CreateLogger<SpaceEventLogger>()),
+            nlog.CreateLogger<PluginManager>());
+
+        var entryService = new EntryService(
+            entryRepo,
+            attachmentRepo,
+            historyRepo,
+            perms,
+            plugins,
+            new SchemaValidator(entryRepo, nlog.CreateLogger<SchemaValidator>()),
+            new WorkflowEngine(entryRepo, nlog.CreateLogger<WorkflowEngine>()),
+            lockRepo,
+            opts,
+            nlog.CreateLogger<EntryService>(),
+            new UniquenessValidator(entryRepo, userRepo, accessRepo, attachmentRepo,
+                nlog.CreateLogger<UniquenessValidator>()),
+            new FolderContentValidator(entryRepo, nlog.CreateLogger<FolderContentValidator>(), opts));
+
+        return new CliServices(entryService, entryRepo, perms);
     }
 
     // Just the history table — `prune-empty-histories` needs nothing else.
