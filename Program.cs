@@ -161,6 +161,455 @@ static async Task<int> BulkUpdatePoliciesAsync(
     return await cmd.ExecuteNonQueryAsync();
 }
 
+// Ensures the reserved "anonymous" user, "world" role, and "world" permission
+// rows exist — the structural rows PermissionService's anonymous-access path
+// depends on (see Services/PermissionService.cs: AnonymousUser/WorldPermission).
+// Called from `migrate` so a fresh database gets public-read support without
+// requiring `serve` to have run first. Create-if-missing only, like the
+// `logged_in` role in AdminBootstrap: an operator may deliberately deactivate
+// "anonymous" or narrow the "world" permission's scope, and a repair pass
+// would silently undo that on every migrate run.
+//
+// Self-owned (OwnerShortname = "anonymous" throughout) rather than owned by
+// "dmart" — owner_shortname carries a FOREIGN KEY to users(shortname), and
+// `migrate` runs standalone; the "dmart" admin user is only guaranteed to
+// exist once AdminBootstrap has run during `serve`.
+static async Task EnsureAnonymousWorldAsync(IDbConnectionFactory db, DmartSettings settings, bool quiet)
+{
+    const string MgmtSpace = "management";
+    const string AnonShortname = "anonymous";
+    const string WorldShortname = "world";
+
+    var refresher = new AuthzCacheRefresher();
+    var users = new UserRepository(db, refresher, new SessionTokenHasher(settings));
+    var dialect = db is SqliteConnectionFactory
+        ? (Dmart.QueryGrammar.ISqlDialect)Dmart.QueryGrammar.SqliteSqlDialect.Instance
+        : Dmart.QueryGrammar.PostgresSqlDialect.Instance;
+    var access = new AccessRepository(db, dialect, refresher, users);
+
+    if (await users.GetByShortnameAsync(AnonShortname) is null)
+    {
+        await users.UpsertAsync(new User
+        {
+            Uuid = Guid.NewGuid().ToString(),
+            Shortname = AnonShortname,
+            SpaceName = MgmtSpace,
+            Subpath = "/users",
+            OwnerShortname = AnonShortname,
+            Roles = new() { WorldShortname },
+            Type = UserType.Web,
+            Language = Language.Ar,
+            IsActive = false,
+            IsEmailVerified = false,
+            IsMsisdnVerified = false,
+            ForcePasswordChange = true,
+            LockedToDevice = false,
+            CreatedAt = Dmart.Utils.TimeUtils.Now(),
+            UpdatedAt = Dmart.Utils.TimeUtils.Now(),
+        });
+        if (!quiet) Console.WriteLine("  created \"anonymous\" user");
+    }
+
+    // Anonymous's only role. PermissionService appends the "world" permission
+    // unconditionally once the anonymous user has ANY role (ResolvePermissionsAsync),
+    // regardless of what's in the role's own Permissions list — attaching
+    // "world" here just keeps the role legible to an operator reading it back.
+    if (await access.GetRoleAsync(WorldShortname) is null)
+    {
+        await access.UpsertRoleAsync(new Role
+        {
+            Uuid = Guid.NewGuid().ToString(),
+            Shortname = WorldShortname,
+            SpaceName = MgmtSpace,
+            Subpath = "/roles",
+            OwnerShortname = AnonShortname,
+            Permissions = new() { WorldShortname },
+            IsActive = true,
+            CreatedAt = Dmart.Utils.TimeUtils.Now(),
+            UpdatedAt = Dmart.Utils.TimeUtils.Now(),
+        });
+        if (!quiet) Console.WriteLine("  created \"world\" role");
+    }
+
+    // Read-only (query/view), scoped to the "public" space, gated on the
+    // target row being active.
+    if (await access.GetPermissionAsync(WorldShortname) is null)
+    {
+        await access.UpsertPermissionAsync(new Permission
+        {
+            Uuid = Guid.NewGuid().ToString(),
+            Shortname = WorldShortname,
+            SpaceName = MgmtSpace,
+            Subpath = "/permissions",
+            OwnerShortname = AnonShortname,
+            IsActive = true,
+            Subpaths = new() { ["public"] = new() { PermissionService.AllSubpathsMw } },
+            ResourceTypes = new()
+            {
+                "content", "media", "schema", "user", "folder", "group",
+                "history", "role", "comment", "permission", "json",
+            },
+            Actions = new() { "query", "view" },
+            Conditions = new() { "is_active" },
+            CreatedAt = Dmart.Utils.TimeUtils.Now(),
+            UpdatedAt = Dmart.Utils.TimeUtils.Now(),
+        });
+        if (!quiet) Console.WriteLine("  created \"world\" permission");
+    }
+}
+
+// JSON Schema draft-07 meta-schema — the body of the "meta_schema" entry.
+// Every schema entry (content_type = schema) validates its own body against
+// this. Verbatim copy of the canonical draft-07 meta-schema as shipped by
+// dmart's Python reference seed data.
+static string MetaSchemaBodyJson() => """
+    {
+        "$id": "http://json-schema.org/draft-07/schema#",
+        "type": ["object", "boolean"],
+        "title": "Core schema meta-schema",
+        "$schema": "http://json-schema.org/draft-07/schema#",
+        "default": true,
+        "properties": {
+            "if": { "$ref": "#", "title": "", "description": "" },
+            "$id": { "type": "string", "format": "uri-reference", "title": "", "description": "" },
+            "not": { "$ref": "#", "title": "", "description": "" },
+            "$ref": { "type": "string", "format": "uri-reference", "title": "", "description": "" },
+            "else": { "$ref": "#", "title": "", "description": "" },
+            "enum": {
+                "type": "array",
+                "items": { "type": "object", "additionalProperties": false },
+                "minItems": 1,
+                "uniqueItems": true,
+                "title": "",
+                "description": ""
+            },
+            "then": { "$ref": "#", "title": "", "description": "" },
+            "type": {
+                "anyOf": [
+                    { "$ref": "#/definitions/simpleTypes" },
+                    {
+                        "type": "array",
+                        "items": { "$ref": "#/definitions/simpleTypes", "additionalProperties": false },
+                        "minItems": 1,
+                        "uniqueItems": true
+                    }
+                ],
+                "title": "",
+                "description": ""
+            },
+            "allOf": { "$ref": "#/definitions/schemaArray", "title": "", "description": "" },
+            "anyOf": { "$ref": "#/definitions/schemaArray", "title": "", "description": "" },
+            "items": {
+                "anyOf": [ { "$ref": "#" }, { "$ref": "#/definitions/schemaArray" } ],
+                "default": true,
+                "title": "",
+                "description": ""
+            },
+            "oneOf": { "$ref": "#/definitions/schemaArray", "title": "", "description": "" },
+            "title": { "type": "string", "title": "", "description": "" },
+            "format": { "type": "string", "title": "", "description": "" },
+            "$schema": { "type": "string", "format": "uri", "title": "", "description": "" },
+            "maximum": { "type": "number", "title": "", "description": "" },
+            "minimum": { "type": "number", "title": "", "description": "" },
+            "pattern": { "type": "string", "format": "regex", "title": "", "description": "" },
+            "$comment": { "type": "string", "title": "", "description": "" },
+            "contains": { "$ref": "#", "title": "", "description": "" },
+            "examples": {
+                "type": "array",
+                "items": { "type": "object", "additionalProperties": false },
+                "title": "",
+                "description": ""
+            },
+            "maxItems": { "$ref": "#/definitions/nonNegativeInteger", "title": "", "description": "" },
+            "minItems": { "$ref": "#/definitions/nonNegativeIntegerDefault0", "title": "", "description": "" },
+            "readOnly": { "type": "boolean", "default": false, "title": "", "description": "" },
+            "required": { "$ref": "#/definitions/stringArray", "title": "", "description": "" },
+            "maxLength": { "$ref": "#/definitions/nonNegativeInteger", "title": "", "description": "" },
+            "minLength": { "$ref": "#/definitions/nonNegativeIntegerDefault0", "title": "", "description": "" },
+            "multipleOf": { "type": "number", "exclusiveMinimum": 0, "title": "", "description": "" },
+            "properties": {
+                "0": { "0": "o", "1": "b", "2": "j", "3": "e", "4": "c", "5": "t", "name": "type", "title": "", "description": "" },
+                "1": { "name": "additionalProperties", "$ref": "#", "title": "", "description": "" },
+                "title": "",
+                "description": ""
+            },
+            "definitions": {
+                "type": "object",
+                "additionalProperties": { "$ref": "#" },
+                "title": "",
+                "description": ""
+            },
+            "description": { "type": "string", "title": "", "description": "" },
+            "uniqueItems": { "type": "boolean", "default": false, "title": "", "description": "" },
+            "dependencies": {
+                "type": "object",
+                "additionalProperties": {
+                    "anyOf": [ { "$ref": "#" }, { "$ref": "#/definitions/stringArray" } ]
+                },
+                "title": "",
+                "description": ""
+            },
+            "maxProperties": { "$ref": "#/definitions/nonNegativeInteger", "title": "", "description": "" },
+            "minProperties": { "$ref": "#/definitions/nonNegativeIntegerDefault0", "title": "", "description": "" },
+            "propertyNames": { "$ref": "#", "title": "", "description": "" },
+            "additionalItems": { "$ref": "#", "title": "", "description": "" },
+            "contentEncoding": { "type": "string", "title": "", "description": "" },
+            "contentMediaType": { "type": "string", "title": "", "description": "" },
+            "exclusiveMaximum": { "type": "number", "title": "", "description": "" },
+            "exclusiveMinimum": { "type": "number", "title": "", "description": "" },
+            "patternProperties": {
+                "type": "object",
+                "propertyNames": { "format": "regex" },
+                "additionalProperties": { "$ref": "#" },
+                "title": "",
+                "description": ""
+            },
+            "additionalProperties": { "$ref": "#", "title": "", "description": "" }
+        },
+        "definitions": {
+            "schemaArray": {
+                "type": "array",
+                "items": { "$ref": "#", "additionalProperties": false },
+                "minItems": 1
+            },
+            "simpleTypes": {
+                "enum": ["array", "boolean", "integer", "null", "number", "object", "string"]
+            },
+            "stringArray": {
+                "type": "array",
+                "items": { "type": "string", "additionalProperties": false },
+                "uniqueItems": true
+            },
+            "nonNegativeInteger": { "type": "integer", "minimum": 0 },
+            "nonNegativeIntegerDefault0": {
+                "allOf": [ { "$ref": "#/definitions/nonNegativeInteger" }, { "default": 0 } ]
+            }
+        }
+    }
+    """;
+
+// Folder schema — the body of the "folder_rendering" entry. Validates every
+// folder entry's payload body across every space (SchemaValidator.cs always
+// resolves this one from the management space regardless of which space the
+// folder itself lives in).
+static string FolderRenderingBodyJson() => """
+    {
+        "type": "object",
+        "title": "Folder schema",
+        "required": ["index_attributes"],
+        "properties": {
+            "icon": { "type": "string", "title": "folder main icon", "description": "The icon displayed next to the folder" },
+            "query": {
+                "type": "object",
+                "properties": {
+                    "type": { "enum": ["subpath", "search"], "type": "string", "title": "", "description": "" },
+                    "search": { "type": "string", "title": "", "description": "" },
+                    "filter_types": {
+                        "type": "array",
+                        "items": { "type": "string", "additionalProperties": false },
+                        "title": "",
+                        "description": ""
+                    }
+                },
+                "title": "",
+                "description": ""
+            },
+            "filter": {
+                "type": "array",
+                "items": { "type": "object", "additionalProperties": false },
+                "title": "Additional filter options",
+                "description": ""
+            },
+            "stream": { "type": "boolean", "title": "Enable websocket stream", "description": "folder level websocket watch" },
+            "sort_by": { "type": "string", "title": "sort by", "description": "the field name to be used in ordering" },
+            "allow_csv": {
+                "type": "boolean",
+                "title": "flag to enable or disable CSV download button",
+                "description": "Allow the user to download csv of the displayed list"
+            },
+            "sort_type": {
+                "enum": ["ascending", "descending"],
+                "type": "string",
+                "title": "sort order",
+                "description": "the ordering of the sort asc/desc"
+            },
+            "use_media": {
+                "type": "boolean",
+                "title": "does the content inside this folder has a media or not",
+                "description": "does the content inside this folder has a media or not"
+            },
+            "allow_view": {
+                "type": "boolean",
+                "title": "flag to enable or disable resource view inside this folder",
+                "description": "flag to enable or disable resource view inside this folder"
+            },
+            "csv_columns": {
+                "type": "array",
+                "items": {
+                    "type": "object",
+                    "properties": {
+                        "key": { "type": "string", "title": "Key", "description": "" },
+                        "name": { "type": "string", "title": "Name", "description": "" }
+                    },
+                    "additionalProperties": false
+                },
+                "title": "CSV columns",
+                "description": "CSV columns title"
+            },
+            "icon_closed": { "type": "string", "title": "folder closed icon", "description": "The icon displayed next to the folder when closed" },
+            "icon_opened": { "type": "string", "title": "folder opened icon", "description": "The icon displayed next to the folder when opened" },
+            "allow_create": {
+                "type": "boolean",
+                "title": "flag to enable or disable resource creation inside this folder",
+                "description": "flag to enable or disable resource creation inside this folder"
+            },
+            "allow_delete": {
+                "type": "boolean",
+                "title": "flag to enable or disable resource delete inside this folder",
+                "description": "flag to enable or disable resource delete inside this folder"
+            },
+            "allow_update": {
+                "type": "boolean",
+                "title": "flag to enable or disable resource update inside this folder",
+                "description": "flag to enable or disable resource update inside this folder"
+            },
+            "unique_fields": {
+                "type": "array",
+                "items": {
+                    "type": "array",
+                    "items": { "type": "string", "title": "Field Name", "additionalProperties": false },
+                    "title": "Composite unique list",
+                    "additionalProperties": false
+                },
+                "title": "Unique Fields",
+                "description": "List of list of composite fields which should be unique accross the folder entries"
+            },
+            "append_subpath": { "type": "string", "title": "Append string to subpath", "description": "" },
+            "disable_filter": {
+                "type": "boolean",
+                "title": "Disable filter",
+                "description": "The search filter icon / functionality is disabled"
+            },
+            "search_columns": {
+                "type": "array",
+                "items": {
+                    "type": "object",
+                    "properties": {
+                        "key": { "type": "string", "title": "Key", "description": "" },
+                        "name": { "type": "string", "title": "Name", "description": "" }
+                    },
+                    "additionalProperties": false
+                },
+                "title": "Search columns",
+                "description": "Search columns title"
+            },
+            "expand_children": { "type": "boolean", "title": "Expand folders' children", "description": "If the folder should expand children" },
+            "shortname_title": { "type": "string", "title": "shortname field title", "description": "shortname field title" },
+            "allow_upload_csv": { "type": "boolean", "title": "flag to enable or disable CSV upload feature", "description": "Allow the user to upload  csv" },
+            "index_attributes": {
+                "type": "array",
+                "items": {
+                    "type": "object",
+                    "properties": {
+                        "key": { "type": "string", "title": "Key", "description": "" },
+                        "name": { "type": "string", "title": "Name", "description": "" }
+                    },
+                    "additionalProperties": false
+                },
+                "title": "index attributes",
+                "description": "the attributes from the schema that should be displayed in index page",
+                "uniqueItems": true
+            },
+            "workflow_shortnames": {
+                "type": "array",
+                "items": { "type": "string", "additionalProperties": false },
+                "title": "Workflow shortname",
+                "description": "workflow shortname field title"
+            },
+            "allow_create_category": {
+                "type": "boolean",
+                "title": "flag to enable or disable folder creation inside this folder",
+                "description": "flag to enable or disable folder creation inside this folder"
+            },
+            "content_resource_types": {
+                "type": "array",
+                "items": { "type": "string", "additionalProperties": false },
+                "title": "Resource types",
+                "description": "Resource types"
+            },
+            "content_schema_shortnames": {
+                "type": "array",
+                "items": { "type": "string", "additionalProperties": false },
+                "title": "schema shortname",
+                "description": "schema shortnames"
+            },
+            "enable_pdf_schema_shortnames": {
+                "type": "array",
+                "items": { "type": "string", "additionalProperties": false },
+                "title": "List of schema shortnames for which pdf icon is displayed",
+                "description": ""
+            }
+        },
+        "description": "Folder schema description"
+    }
+    """;
+
+// Ensures the two schema entries every deployment needs to validate its own
+// structural data: "meta_schema" (the JSON-schema meta-schema — validates
+// schema entries' own bodies) and "folder_rendering" (validates folder entry
+// bodies; SchemaValidator.cs hard-codes resolving it from the management
+// space — see the "folder_rendering is CENTRALIZED" comment there). Both
+// live at management/schema, matching FolderRenderingFixerTests' fixture and
+// AdminBootstrap's standard folder set. Create-if-missing only.
+static async Task EnsureBaseSchemasAsync(IDbConnectionFactory db, DmartSettings settings, bool quiet)
+{
+    const string MgmtSpace = "management";
+
+    var entries = new EntryRepository(db);
+    var users = new UserRepository(db, new AuthzCacheRefresher(), new SessionTokenHasher(settings));
+
+    // owner_shortname carries a FOREIGN KEY to users(shortname). Prefer "dmart"
+    // (matches the reference export) when it already exists; otherwise fall
+    // back to "anonymous", which EnsureAnonymousWorldAsync guarantees exists
+    // by the time this runs — migrate must not fail on a database `serve`
+    // has never bootstrapped an admin into.
+    var ownerShortname = await users.GetByShortnameAsync("dmart") is not null ? "dmart" : "anonymous";
+
+    async Task EnsureSchemaEntryAsync(string shortname, string bodyJson, string? schemaShortname)
+    {
+        if (await entries.GetAsync(MgmtSpace, "/schema", shortname, ResourceType.Schema) is not null) return;
+
+        var body = System.Text.Json.JsonDocument.Parse(bodyJson).RootElement.Clone();
+        var checksum = Convert.ToHexString(
+            System.Security.Cryptography.SHA256.HashData(
+                System.Text.Encoding.UTF8.GetBytes(bodyJson))).ToLowerInvariant();
+
+        await entries.UpsertAsync(new Entry
+        {
+            Uuid = Guid.NewGuid().ToString(),
+            Shortname = shortname,
+            SpaceName = MgmtSpace,
+            Subpath = "/schema",
+            ResourceType = ResourceType.Schema,
+            IsActive = true,
+            OwnerShortname = ownerShortname,
+            CreatedAt = Dmart.Utils.TimeUtils.Now(),
+            UpdatedAt = Dmart.Utils.TimeUtils.Now(),
+            Payload = new Payload
+            {
+                ContentType = ContentType.Json,
+                SchemaShortname = schemaShortname,
+                Checksum = checksum,
+                Body = body,
+            },
+        });
+        if (!quiet) Console.WriteLine($"  created \"{shortname}\" schema");
+    }
+
+    await EnsureSchemaEntryAsync("meta_schema", MetaSchemaBodyJson(), schemaShortname: null);
+    await EnsureSchemaEntryAsync("folder_rendering", FolderRenderingBodyJson(), schemaShortname: "meta_schema");
+}
+
 switch (subcommand)
 {
     case "version":
@@ -211,7 +660,10 @@ switch (subcommand)
             Subcommands:
               serve          Start the HTTP server
                              Options: --cxb-config <path>
-              migrate        Create/update the PG schema (idempotent; no server)
+              migrate        Create/update the PG schema (idempotent; no server).
+                             Also ensures the reserved "anonymous" user, "world"
+                             role, "world" permission, and the "meta_schema" /
+                             "folder_rendering" schema entries exist.
               prune-empty-histories
                              Delete history rows that record no change — diff
                              `{}` or NULL — written before the empty-diff append
@@ -1489,6 +1941,13 @@ switch (subcommand)
         // Idempotent — safe to re-run. Captures PG NOTICE messages so the
         // caller sees exactly what was created vs. skipped.
         //
+        // Also ensures the reserved "anonymous" user, "world" role, and
+        // "world" permission exist (see EnsureAnonymousWorldAsync below), and
+        // the "meta_schema" / "folder_rendering" schema entries every space
+        // needs to validate its own data (see EnsureBaseSchemasAsync below) —
+        // both create-if-missing only, so migrate never fights an operator's
+        // changes.
+        //
         // Options:
         //   -q, --quiet    Suppress per-statement output (show summary only)
         var quiet = serverArgs.Contains("-q") || serverArgs.Contains("--quiet");
@@ -1516,6 +1975,8 @@ switch (subcommand)
                 // and `dmart import` runs before a rebuild.
                 await SqliteSchemaInitializer.EnsureSchemaAsync(
                     sqliteFactory, Microsoft.Extensions.Logging.Abstractions.NullLogger.Instance);
+                await EnsureAnonymousWorldAsync(sqliteFactory, migrateSettings, quiet);
+                await EnsureBaseSchemasAsync(sqliteFactory, migrateSettings, quiet);
                 Console.WriteLine("dmart schema ready.");
                 return;
             }
@@ -1572,6 +2033,9 @@ switch (subcommand)
                 await ul.ExecuteNonQueryAsync();
             }
             Npgsql.NpgsqlConnection.ClearAllPools();
+
+            await EnsureAnonymousWorldAsync(dbInst, s, quiet);
+            await EnsureBaseSchemasAsync(dbInst, s, quiet);
         }
         catch (Exception ex)
         {
