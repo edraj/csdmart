@@ -683,18 +683,26 @@ public static class QueryHelper
         var reducerArgs = reducer.Args ?? new();
         var name = reducer.ReducerName.ToLowerInvariant();
 
+        // A dotted argument resolves to a JSON extraction; a bare one names a
+        // column. The dialect needs to know which, because a JSON extraction can
+        // arrive as text with the value's own type erased, while a column comes
+        // back natively typed and must be left alone.
+        var argIsJsonPath = false;
+
         string? ResolveArg(int index)
         {
             if (reducerArgs.Count <= index) return null;
             var arg = reducerArgs[index];
             if (arg.StartsWith('@')) arg = arg[1..];
-            return ResolveFieldExpr(arg, dialect);
+            var resolved = ResolveFieldExpr(arg, dialect);
+            if (index == 0) argIsJsonPath = resolved is not null && arg.Contains('.');
+            return resolved;
         }
 
         var fieldExpr = ResolveArg(0);
         var quantile = ParseQuantile(reducerArgs);
 
-        var expr = dialect.Reducer(name, fieldExpr, quantile);
+        var expr = dialect.Reducer(name, fieldExpr, quantile, argIsJsonPath);
         if (expr is not null) return expr;
 
         // The dialect produced nothing. Two very different reasons, and they

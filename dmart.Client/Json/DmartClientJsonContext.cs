@@ -12,7 +12,9 @@
 // Wire convention matches the server (SnakeCaseLower, omit-when-null).
 #if NET8_0_OR_GREATER
 
+using System;
 using System.Collections.Generic;
+using System.Text.Json;
 using System.Text.Json.Serialization;
 using Dmart.Models.Api;
 using Dmart.Models.Core;
@@ -42,11 +44,50 @@ namespace Dmart.Client.Json;
 // reset, etc.). Nullability annotations are erased at runtime, so the
 // canonical typeof() form is Dictionary<string, object>.
 [JsonSerializable(typeof(Dictionary<string, object>))]
+// Every CLR type an attribute bag can carry MUST be registered here.
+// Record.Attributes / Request.Attributes are Dictionary<string, object>, so
+// System.Text.Json resolves each value by its RUNTIME type; a type this context
+// doesn't know throws NotSupportedException at serialize time, before the request
+// is ever sent. The netstandard2.1 leg is reflection-based and never had the
+// problem, so a gap here only breaks modern (net8.0+) consumers — which is how
+// `decimal` money fields went unnoticed until an integrator hit them.
+//
+// The list below is the closed set of JSON-representable scalars plus the
+// collection shapes callers reach for. A consumer POCO still cannot go in an
+// attribute bag: hand it over as a JsonElement (JsonSerializer.SerializeToElement
+// against your own context), which is inherent to staying trim/AOT-safe.
 [JsonSerializable(typeof(string))]
 [JsonSerializable(typeof(bool))]
 [JsonSerializable(typeof(int))]
 [JsonSerializable(typeof(long))]
 [JsonSerializable(typeof(double))]
+[JsonSerializable(typeof(decimal))]
+[JsonSerializable(typeof(float))]
+[JsonSerializable(typeof(short))]
+[JsonSerializable(typeof(ushort))]
+[JsonSerializable(typeof(byte))]
+[JsonSerializable(typeof(sbyte))]
+[JsonSerializable(typeof(uint))]
+[JsonSerializable(typeof(ulong))]
+[JsonSerializable(typeof(Guid))]
+[JsonSerializable(typeof(DateTime))]
+[JsonSerializable(typeof(DateTimeOffset))]
+[JsonSerializable(typeof(JsonElement))]
+[JsonSerializable(typeof(object[]))]
+[JsonSerializable(typeof(int[]))]
+[JsonSerializable(typeof(long[]))]
+[JsonSerializable(typeof(double[]))]
+[JsonSerializable(typeof(decimal[]))]
+[JsonSerializable(typeof(bool[]))]
+[JsonSerializable(typeof(string[]))]
+[JsonSerializable(typeof(List<object>))]
+[JsonSerializable(typeof(List<int>))]
+[JsonSerializable(typeof(List<long>))]
+[JsonSerializable(typeof(List<double>))]
+[JsonSerializable(typeof(List<decimal>))]
+[JsonSerializable(typeof(List<bool>))]
+[JsonSerializable(typeof(List<string>))]
+[JsonSerializable(typeof(Dictionary<string, string>))]
 internal partial class DmartClientJsonContext : JsonSerializerContext;
 
 #endif

@@ -72,6 +72,8 @@ public sealed class PostgresSqlDialect : ISqlDialect
             field is null ? "COUNT(*)" : $"COUNT(DISTINCT {field})",
         "sum" or "total" => field is null ? null : $"SUM(({field})::numeric)",
         "avg" => field is null ? null : $"AVG(({field})::numeric)",
+        // Plain columns only — a JSON path arrives here as text and needs the
+        // numeric-aware form below. See the four-argument overload.
         "min" => field is null ? null : $"MIN({field})",
         "max" => field is null ? null : $"MAX({field})",
         "stddev" => field is null ? null : $"STDDEV(({field})::numeric)",
@@ -85,6 +87,41 @@ public sealed class PostgresSqlDialect : ISqlDialect
             : $"(ARRAY_AGG({field} ORDER BY RANDOM()))[1]",
         _ => null,
     };
+
+    // ->> hands back text, so MIN/MAX over a JSON path compared 9, 10 and 100 as
+    // strings and answered "10" for the minimum. The fix has to keep working for
+    // the fields min/max are legitimately used on — names, ISO-8601 timestamps —
+    // so an unconditional ::numeric cast is out: it would both reorder those and
+    // throw on the first non-numeric row.
+    //
+    // Two aggregates in one expression, picked apart by the same numeric regex
+    // the sort keys already use. The numeric one sees only rows that parse as a
+    // number, the text one only rows that do not, and COALESCE decides which
+    // half answers. Numbers therefore sort below text — the same convention
+    // jsonb's own ordering and SQLite's type ordering use, so the two drivers
+    // agree on mixed data instead of each inventing an answer.
+    //
+    // ::numeric, not the ::float the sort keys use: this comparison decides
+    // WHICH value is returned, and float ties any two integers past 2^53.
+    //
+    // Both aggregates stream — no ARRAY_AGG, so a group's memory cost stays flat
+    // rather than growing with its row count, which matters because min/max are
+    // core reducers and a group here can hold millions of rows.
+    private const string NumericText = @"^-?[0-9]+(\.[0-9]+)?$";
+
+    public string? Reducer(string name, string? field, string quantile, bool fieldIsJsonText)
+    {
+        if (field is null || !fieldIsJsonText) return Reducer(name, field, quantile);
+
+        return name switch
+        {
+            "min" => $"COALESCE(MIN(CASE WHEN ({field}) ~ '{NumericText}' THEN ({field})::numeric END)::text, "
+                   + $"MIN(CASE WHEN ({field}) !~ '{NumericText}' THEN ({field}) END))",
+            "max" => $"COALESCE(MAX(CASE WHEN ({field}) !~ '{NumericText}' THEN ({field}) END), "
+                   + $"MAX(CASE WHEN ({field}) ~ '{NumericText}' THEN ({field})::numeric END)::text)",
+            _ => Reducer(name, field, quantile),
+        };
+    }
 
     public string JsonTypeIs(string jsonExpr, JsonKind kind)
         => $"jsonb_typeof({jsonExpr}) = '{TypeName(kind)}'";
