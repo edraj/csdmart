@@ -290,6 +290,19 @@ public sealed class DmartSettings
     public string? UserCreateDefaultRole { get; set; }
     public string? UserCreateDefaultGroup { get; set; }
 
+    // When true, POST /user/login's OTP path creates an account instead of
+    // failing when the msisdn/email identifier matches no existing user:
+    // the login-purpose OTP is verified against the same gates /user/create
+    // uses (IsRegistrable + the identifier's registration channel enabled),
+    // and on success a new account is minted and logged in. Shortname
+    // identifiers are excluded — there is no contact to verify against for
+    // an account that doesn't exist yet. The new account never gets a
+    // password from this path (ForcePasswordChange=true, same as a
+    // contact-only self-registration); the user sets one afterward via
+    // /user/profile. Default false: /user/login's "no such user" failure
+    // is the only behavior a deployment gets unless it opts in.
+    public bool EnableOtpImplicitRegistration { get; set; }
+
     // Global TTL (seconds) for one-time passwords. OtpRepository enforces
     // this when verifying a code — entries older than OtpTokenTtl seconds
     // are treated as expired regardless of the per-endpoint "expires" value

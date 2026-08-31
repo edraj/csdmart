@@ -312,7 +312,7 @@ public sealed class UserService(
     }
 
     // Standard password-based login. Mirrors Python's login() PATH C (password).
-    public async Task<Result<(string Access, string Refresh, User User)>> LoginAsync(
+    public async Task<Result<(string Access, string Refresh, User User, bool Created)>> LoginAsync(
         UserLoginRequest req, Dictionary<string, string>? requestHeaders = null, CancellationToken ct = default)
     {
         var user = await ResolveUserAsync(req, ct);
@@ -322,7 +322,7 @@ public sealed class UserService(
             // matches the wrong-password response; this makes the timing match
             // too, so "no such user" isn't distinguishable from "bad password".
             _ = hasher.Verify(req.Password ?? string.Empty, DecoyHash);
-            return Result<(string, string, User)>.Fail(
+            return Result<(string, string, User, bool)>.Fail(
                 InternalErrorCode.INVALID_USERNAME_AND_PASS, "Invalid username or password", ErrorTypes.Auth);
         }
 
@@ -351,14 +351,14 @@ public sealed class UserService(
         {
             var locked = await HandleFailedLoginAttemptAsync(user, ct);
             return locked
-                ? Result<(string, string, User)>.Fail(
+                ? Result<(string, string, User, bool)>.Fail(
                     InternalErrorCode.USER_ACCOUNT_LOCKED,
                     "Account has been locked due to too many failed login attempts.", ErrorTypes.Auth)
                 // Python returns INVALID_USERNAME_AND_PASS(10) for BOTH "no
                 // user" and "wrong password" to avoid username enumeration.
                 // Previously C# surfaced PASSWORD_NOT_VALIDATED(13) here which
                 // lets callers tell the two apart — parity gap.
-                : Result<(string, string, User)>.Fail(
+                : Result<(string, string, User, bool)>.Fail(
                     InternalErrorCode.INVALID_USERNAME_AND_PASS, "Invalid username or password", ErrorTypes.Auth);
         }
 
@@ -366,7 +366,7 @@ public sealed class UserService(
         if (user.LockedToDevice && !string.IsNullOrEmpty(user.DeviceId)
             && (string.IsNullOrEmpty(req.DeviceId) || req.DeviceId != user.DeviceId))
         {
-            return Result<(string, string, User)>.Fail(
+            return Result<(string, string, User, bool)>.Fail(
                 InternalErrorCode.USER_ACCOUNT_LOCKED,
                 "This account is locked to a unique device !", ErrorTypes.Auth);
         }
@@ -376,7 +376,7 @@ public sealed class UserService(
         if (user.Type == UserType.Mobile && !string.IsNullOrEmpty(user.DeviceId)
             && !string.IsNullOrEmpty(req.DeviceId) && req.DeviceId != user.DeviceId)
         {
-            return Result<(string, string, User)>.Fail(
+            return Result<(string, string, User, bool)>.Fail(
                 InternalErrorCode.OTP_NEEDED, "New device detected, login with otp", "auth");
         }
 
@@ -385,7 +385,7 @@ public sealed class UserService(
     }
 
     // OTP-based login. Mirrors Python's login() PATH B (OTP).
-    public async Task<Result<(string Access, string Refresh, User User)>> LoginWithOtpAsync(
+    public async Task<Result<(string Access, string Refresh, User User, bool Created)>> LoginWithOtpAsync(
         UserLoginRequest req, Dictionary<string, string>? requestHeaders = null, CancellationToken ct = default)
     {
         // Python parity: OTP login must carry exactly one identifier.
@@ -393,18 +393,24 @@ public sealed class UserService(
                             + (req.Email is not null ? 1 : 0)
                             + (req.Msisdn is not null ? 1 : 0);
         if (identifierCount > 1)
-            return Result<(string, string, User)>.Fail(
+            return Result<(string, string, User, bool)>.Fail(
                 InternalErrorCode.OTP_ISSUE,
                 "Provide either msisdn, email or shortname, not both.", "auth");
         if (identifierCount == 0)
-            return Result<(string, string, User)>.Fail(
+            return Result<(string, string, User, bool)>.Fail(
                 InternalErrorCode.OTP_ISSUE,
                 "Either msisdn, email or shortname must be provided.", "auth");
 
         var user = await ResolveUserAsync(req, ct);
         if (user is null)
-            return Result<(string, string, User)>.Fail(
+        {
+            if (settings.Value.EnableOtpImplicitRegistration
+                && string.IsNullOrEmpty(req.Shortname) && !string.IsNullOrEmpty(req.Otp)
+                && await TryImplicitRegisterAsync(req, requestHeaders, ct) is { } created)
+                return created;
+            return Result<(string, string, User, bool)>.Fail(
                 InternalErrorCode.INVALID_USERNAME_AND_PASS, "Invalid username or password", ErrorTypes.Auth);
+        }
 
         var (attemptLocked, unlockedUser) = await RejectIfAttemptLockedAsync(user, ct);
         if (attemptLocked is { } al) return al;
@@ -429,10 +435,10 @@ public sealed class UserService(
             // tripping the threshold.
             var locked = await HandleFailedLoginAttemptAsync(user, ct);
             return locked
-                ? Result<(string, string, User)>.Fail(
+                ? Result<(string, string, User, bool)>.Fail(
                     InternalErrorCode.USER_ACCOUNT_LOCKED,
                     "Account has been locked due to too many failed login attempts.", ErrorTypes.Auth)
-                : Result<(string, string, User)>.Fail(
+                : Result<(string, string, User, bool)>.Fail(
                     InternalErrorCode.OTP_INVALID, "Wrong OTP", ErrorTypes.Auth);
         }
 
@@ -443,15 +449,103 @@ public sealed class UserService(
         {
             var locked = await HandleFailedLoginAttemptAsync(user, ct);
             return locked
-                ? Result<(string, string, User)>.Fail(
+                ? Result<(string, string, User, bool)>.Fail(
                     InternalErrorCode.USER_ACCOUNT_LOCKED,
                     "Account has been locked due to too many failed login attempts.", ErrorTypes.Auth)
-                : Result<(string, string, User)>.Fail(
+                : Result<(string, string, User, bool)>.Fail(
                     InternalErrorCode.PASSWORD_NOT_VALIDATED, "Invalid username or password", ErrorTypes.Auth);
         }
 
         if (RejectIfContactUnverified(user, req) is { } unverifiedReject) return unverifiedReject;
         return await ProcessLoginAsync(user, req, requestHeaders, ct);
+    }
+
+    // Implicit registration: a direct msisdn/email login-purpose OTP for an
+    // identifier with no matching user creates the account instead of
+    // failing, gated the same way /user/create is gated. Returns null (not a
+    // failure Result) when the OTP is invalid, an existing user raced the
+    // caller to the same contact, or a shortname couldn't be allocated — the
+    // caller falls through to the ordinary "no such user" failure either way.
+    // The account never gets a password from this path: Password stays
+    // null and ForcePasswordChange is always true, matching a contact-only
+    // self-registration; req.Password (if supplied) is ignored.
+    private async Task<Result<(string Access, string Refresh, User User, bool Created)>?> TryImplicitRegisterAsync(
+        UserLoginRequest req, Dictionary<string, string>? requestHeaders, CancellationToken ct)
+    {
+        var s = settings.Value;
+        var emailChannel = s.IsRegistrationChannelEnabled("email");
+        var msisdnChannel = s.IsRegistrationChannelEnabled("msisdn");
+        if (!s.IsRegistrable || (!emailChannel && !msisdnChannel)) return null;
+
+        string dest;
+        bool isEmail;
+        if (!string.IsNullOrEmpty(req.Email))
+        {
+            if (!emailChannel) return null;
+            dest = req.Email.ToLowerInvariant();
+            isEmail = true;
+        }
+        else if (!string.IsNullOrEmpty(req.Msisdn))
+        {
+            if (!msisdnChannel) return null;
+            dest = req.Msisdn;
+            isEmail = false;
+        }
+        else return null;
+
+        if (!await otp.VerifyAndConsumeAsync(dest, OtpPurpose.Login, req.Otp!, s.MaxOtpVerifyAttempts, ct))
+            return null;
+
+        // The OTP was minted before this call; a concurrent signup for the
+        // same contact between issue and redeem is possible, so check fresh
+        // rather than let UpsertAsync silently overwrite an existing row.
+        var existing = isEmail
+            ? await users.GetByEmailAsync(dest, ct)
+            : await users.GetByMsisdnAsync(dest, ct);
+        if (existing is not null) return null;
+
+        var shortname = await AllocateImplicitShortnameAsync(ct);
+        if (shortname is null) return null;
+
+        var user = new User
+        {
+            Uuid = Guid.NewGuid().ToString(),
+            Shortname = shortname,
+            SpaceName = MgmtSpace,
+            Subpath = "/users",
+            OwnerShortname = "dmart",
+            Email = isEmail ? dest : null,
+            Msisdn = isEmail ? null : dest,
+            Password = null,
+            ForcePasswordChange = true,
+            Language = Language.En,
+            Roles = DefaultAccessOrEmpty(s.UserCreateDefaultRole),
+            Groups = DefaultAccessOrEmpty(s.UserCreateDefaultGroup),
+            Type = UserType.Web,
+            IsActive = true,
+            IsEmailVerified = isEmail,
+            IsMsisdnVerified = !isEmail,
+            CreatedAt = TimeUtils.Now(),
+            UpdatedAt = TimeUtils.Now(),
+        };
+        await users.UpsertAsync(user, ct);
+
+        return await ProcessLoginAsync(user, req, requestHeaders, ct, created: true);
+    }
+
+    // Mints an unused 8-hex shortname, matching the "auto" shortname scheme
+    // self-registration uses (RequestHandler.ResolveAutoShortname). Null
+    // after exhausting attempts — astronomically unlikely at 32 bits of
+    // entropy per try.
+    private async Task<string?> AllocateImplicitShortnameAsync(CancellationToken ct)
+    {
+        for (var i = 0; i < 5; i++)
+        {
+            var candidate = Guid.NewGuid().ToString("N")[..8];
+            if (await users.GetByShortnameAsync(candidate, ct) is null)
+                return candidate;
+        }
+        return null;
     }
 
     // Shared inactive-user gate for LoginAsync / LoginWithOtpAsync.
@@ -465,19 +559,19 @@ public sealed class UserService(
     // (router.py:504-508). USER_ISNT_VERIFIED is a separate code Python uses
     // only on the verify-otp / registration flow — not on login. Callers that
     // still want the "verified" distinction live outside this helper.
-    private static Result<(string Access, string Refresh, User User)>? RejectIfNotActive(User user)
+    private static Result<(string Access, string Refresh, User User, bool Created)>? RejectIfNotActive(User user)
     {
         // A soft-deleted account gets the generic credential failure a
         // non-existent identifier gets — never "locked" (which implies
         // recoverable) — so it's indistinguishable from one that never existed.
         if (user.IsDeleted)
-            return Result<(string, string, User)>.Fail(
+            return Result<(string, string, User, bool)>.Fail(
                 InternalErrorCode.INVALID_USERNAME_AND_PASS, "Invalid username or password", ErrorTypes.Auth);
         // Deactivated / attempt-locked → Python parity USER_ACCOUNT_LOCKED so
         // the cxb login UI can show "your account is locked".
         return user.IsActive
             ? null
-            : Result<(string, string, User)>.Fail(
+            : Result<(string, string, User, bool)>.Fail(
                 InternalErrorCode.USER_ACCOUNT_LOCKED, "Account has been locked.", ErrorTypes.Auth);
     }
 
@@ -487,7 +581,7 @@ public sealed class UserService(
     // verification requirement (the identifier isn't a contact channel).
     // Callers invoke this AFTER the credential check succeeds so an
     // unauthenticated caller can't turn it into a verification oracle.
-    private static Result<(string Access, string Refresh, User User)>? RejectIfContactUnverified(
+    private static Result<(string Access, string Refresh, User User, bool Created)>? RejectIfContactUnverified(
         User user, UserLoginRequest req)
     {
         // Channel follows the same precedence ResolveUserAsync uses to pick the
@@ -495,10 +589,10 @@ public sealed class UserService(
         // verification requirement even if the body also echoes an email/msisdn.
         if (!string.IsNullOrEmpty(req.Shortname)) return null;
         if (!string.IsNullOrEmpty(req.Email) && !user.IsEmailVerified)
-            return Result<(string, string, User)>.Fail(
+            return Result<(string, string, User, bool)>.Fail(
                 InternalErrorCode.USER_ISNT_VERIFIED, "Email is not verified.", ErrorTypes.Auth);
         if (!string.IsNullOrEmpty(req.Msisdn) && !user.IsMsisdnVerified)
-            return Result<(string, string, User)>.Fail(
+            return Result<(string, string, User, bool)>.Fail(
                 InternalErrorCode.USER_ISNT_VERIFIED, "MSISDN is not verified.", ErrorTypes.Auth);
         return null;
     }
@@ -517,7 +611,7 @@ public sealed class UserService(
     // auto-unlocks — only a genuinely idle account does. Applies ONLY to the
     // attempt-counter lock; a manually-deactivated / never-verified account
     // (attempt_count < max) is left to RejectIfNotActive and never auto-unlocks.
-    private async Task<(Result<(string Access, string Refresh, User User)>? Rejection, User User)>
+    private async Task<(Result<(string Access, string Refresh, User User, bool Created)>? Rejection, User User)>
         RejectIfAttemptLockedAsync(User user, CancellationToken ct)
     {
         var maxAttempts = settings.Value.MaxFailedLoginAttempts;
@@ -537,7 +631,7 @@ public sealed class UserService(
         // window from ever elapsing) and reject. Message is kept identical to the
         // fresh-lock path (generic — no remaining-time leak, no message drift).
         await users.TouchLastFailedLoginAsync(user.Shortname, TimeUtils.Now(), ct);
-        return (Result<(string, string, User)>.Fail(
+        return (Result<(string, string, User, bool)>.Fail(
             InternalErrorCode.USER_ACCOUNT_LOCKED,
             "Account has been locked due to too many failed login attempts.",
             ErrorTypes.Auth), user);
@@ -604,9 +698,9 @@ public sealed class UserService(
     // Apple) resolve a User on their own, then need to issue session + JWT
     // through the same code path as password/OTP login. Keeping it
     // internal localizes exposure to the assembly while allowing reuse.
-    internal async Task<Result<(string Access, string Refresh, User User)>> ProcessLoginAsync(
+    internal async Task<Result<(string Access, string Refresh, User User, bool Created)>> ProcessLoginAsync(
         User user, UserLoginRequest req,
-        Dictionary<string, string>? requestHeaders, CancellationToken ct)
+        Dictionary<string, string>? requestHeaders, CancellationToken ct, bool created = false)
     {
         await users.ResetAttemptsAsync(user.Shortname, ct);
 
@@ -685,7 +779,7 @@ public sealed class UserService(
         await AppendLoginHistoryAsync(
             updatedUser.Shortname, previousLogin, loginTimestamp, requestHeaders, ct);
 
-        return Result<(string, string, User)>.Ok((access, refresh, updatedUser));
+        return Result<(string, string, User, bool)>.Ok((access, refresh, updatedUser, created));
     }
 
     // The previous login's timestamp, or null when the account has never logged

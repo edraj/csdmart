@@ -150,6 +150,74 @@ public sealed class OtpRequestGateTests : IClassFixture<DmartFactory>
     }
 
     [FactIfPg]
+    public async Task Login_Purpose_For_Unknown_User_Still_NoOps_When_ImplicitRegistration_Off()
+    {
+        // EnableOtpImplicitRegistration defaults to false — an unresolved
+        // msisdn at login purpose stays a silent no-op, same as today.
+        var msisdn = NewMsisdn();
+        var resp = await _factory.CreateClient().PostAsJsonAsync("/user/otp-request",
+            new SendOTPRequest(Msisdn: msisdn, Email: null, Purpose: OtpPurpose.Login),
+            DmartJsonContext.Default.SendOTPRequest);
+        (await resp.Content.ReadFromJsonAsync(DmartJsonContext.Default.Response))!
+            .Status.ShouldBe(Status.Success);
+
+        (await Repo().GetCreatedSinceAsync(msisdn, OtpPurpose.Login)).ShouldBeNull();
+    }
+
+    [FactIfPg]
+    public async Task Login_Purpose_For_Unknown_User_Mints_When_ImplicitRegistration_On()
+    {
+        // With the flag on, an unresolved msisdn/email at login purpose is
+        // gated like a register request instead of a flat no-op.
+        var factory = WithImplicitRegistration();
+        var msisdn = NewMsisdn();
+        var resp = await factory.CreateClient().PostAsJsonAsync("/user/otp-request",
+            new SendOTPRequest(Msisdn: msisdn, Email: null, Purpose: OtpPurpose.Login),
+            DmartJsonContext.Default.SendOTPRequest);
+        (await resp.Content.ReadFromJsonAsync(DmartJsonContext.Default.Response))!
+            .Status.ShouldBe(Status.Success);
+
+        (await Repo().GetCreatedSinceAsync(msisdn, OtpPurpose.Login)).ShouldNotBeNull();
+    }
+
+    [FactIfPg]
+    public async Task Login_Purpose_For_Unknown_User_Still_NoOps_When_Not_Registrable()
+    {
+        // Flag on, but registration itself is closed — the implicit path
+        // inherits /user/create's own gate rather than bypassing it.
+        var factory = _factory.WithWebHostBuilder(b => b.ConfigureServices(svcs =>
+            svcs.Configure<Dmart.Config.DmartSettings>(s =>
+            {
+                s.EnableOtpImplicitRegistration = true;
+                s.IsRegistrable = false;
+            })));
+        var msisdn = NewMsisdn();
+        var resp = await factory.CreateClient().PostAsJsonAsync("/user/otp-request",
+            new SendOTPRequest(Msisdn: msisdn, Email: null, Purpose: OtpPurpose.Login),
+            DmartJsonContext.Default.SendOTPRequest);
+        (await resp.Content.ReadFromJsonAsync(DmartJsonContext.Default.Response))!
+            .Status.ShouldBe(Status.Success);
+
+        (await Repo().GetCreatedSinceAsync(msisdn, OtpPurpose.Login)).ShouldBeNull();
+    }
+
+    [FactIfPg]
+    public async Task Login_Purpose_For_Unknown_Shortname_Stays_NoOp_Even_When_ImplicitRegistration_On()
+    {
+        // Shortname carries no contact to verify an OTP against for an
+        // account that doesn't exist — the flag can't change that.
+        var factory = WithImplicitRegistration();
+        var unknown = $"otpgate_missing_{Guid.NewGuid():N}"[..20];
+        var resp = await factory.CreateClient().PostAsJsonAsync("/user/otp-request",
+            new SendOTPRequest(Msisdn: null, Email: null, Shortname: unknown, Purpose: OtpPurpose.Login),
+            DmartJsonContext.Default.SendOTPRequest);
+        (await resp.Content.ReadFromJsonAsync(DmartJsonContext.Default.Response))!
+            .Status.ShouldBe(Status.Success);
+        // No destination exists for an unknown shortname, so nothing to
+        // assert against the repository beyond the 200 Ok above.
+    }
+
+    [FactIfPg]
     public async Task Anonymous_Login_Purpose_Stays_Open_When_Not_Registrable()
     {
         // Login is a pre-auth flow: is_registrable must not gate it. The
@@ -239,6 +307,10 @@ public sealed class OtpRequestGateTests : IClassFixture<DmartFactory>
     private WebApplicationFactory<Program> NotRegistrable() =>
         _factory.WithWebHostBuilder(b => b.ConfigureServices(svcs =>
             svcs.Configure<Dmart.Config.DmartSettings>(s => s.IsRegistrable = false)));
+
+    private WebApplicationFactory<Program> WithImplicitRegistration() =>
+        _factory.WithWebHostBuilder(b => b.ConfigureServices(svcs =>
+            svcs.Configure<Dmart.Config.DmartSettings>(s => s.EnableOtpImplicitRegistration = true)));
 
     private int MaxAttempts() =>
         _factory.Services.GetRequiredService<IOptions<Dmart.Config.DmartSettings>>()

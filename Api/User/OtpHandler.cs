@@ -69,7 +69,13 @@ public static class OtpHandler
             // Issuing gates — every rejection below is a silent Ok. One rule
             // per purpose:
             //   login / reset      → anonymous allowed; identifier must map
-            //                        to a usable account.
+            //                        to a usable account. Exception: with
+            //                        EnableOtpImplicitRegistration on, a
+            //                        direct msisdn/email login request with
+            //                        no matching user instead falls through
+            //                        to the registration gate below, so
+            //                        /user/login can create the account on
+            //                        redemption.
             //   register           → anonymous allowed only while
             //                        self-registration is open and the
             //                        requested channel is enabled; no user
@@ -91,20 +97,22 @@ public static class OtpHandler
                 return SilentOk("anonymous-verify-contact");
             }
 
-            if (purpose == OtpPurpose.Register)
+            // Mirrors /user/create's gates (UserService.CreateAsync):
+            // registration closed, no channels enabled, or the requested
+            // channel disabled. Also backs the implicit-registration case
+            // below (login purpose, no matching user).
+            string? RegistrationGateFailure()
             {
-                // Mirrors /user/create's gates (UserService.CreateAsync):
-                // registration closed, no channels enabled, or the requested
-                // channel disabled.
                 var emailChannel = s.IsRegistrationChannelEnabled("email");
                 var msisdnChannel = s.IsRegistrationChannelEnabled("msisdn");
-                if (!s.IsRegistrable || (!emailChannel && !msisdnChannel))
-                    return SilentOk("not-registrable");
-                if (!string.IsNullOrEmpty(req.Msisdn) && !msisdnChannel)
-                    return SilentOk("channel-disabled");
-                if (!string.IsNullOrEmpty(req.Email) && !emailChannel)
-                    return SilentOk("channel-disabled");
+                if (!s.IsRegistrable || (!emailChannel && !msisdnChannel)) return "not-registrable";
+                if (!string.IsNullOrEmpty(req.Msisdn) && !msisdnChannel) return "channel-disabled";
+                if (!string.IsNullOrEmpty(req.Email) && !emailChannel) return "channel-disabled";
+                return null;
             }
+
+            if (purpose == OtpPurpose.Register && RegistrationGateFailure() is { } registerFailure)
+                return SilentOk(registerFailure);
 
             // register and verify-contact address a contact directly; no
             // user row needs to exist.
@@ -140,9 +148,23 @@ public static class OtpHandler
             }
 
             // login and reset require an existing, usable account;
-            // register/verify-contact do not.
+            // register/verify-contact do not. Exception: when
+            // EnableOtpImplicitRegistration is on, a login-purpose request
+            // for a direct msisdn/email with no matching user falls through
+            // to the registration gate instead of a flat no-op, so
+            // /user/login can implicitly create the account on redemption.
+            // Shortname requests are unaffected — dest is null for an
+            // unresolved shortname (no contact to gate), so they still hit
+            // the no-destination branch below.
             if (!contactPurpose && (user is null || !user.IsUsable))
-                return SilentOk(user is null ? "unknown-user" : "unusable-account");
+            {
+                var implicitEligible = purpose == OtpPurpose.Login && user is null
+                    && s.EnableOtpImplicitRegistration && !string.IsNullOrEmpty(dest);
+                if (!implicitEligible)
+                    return SilentOk(user is null ? "unknown-user" : "unusable-account");
+                if (RegistrationGateFailure() is { } implicitFailure)
+                    return SilentOk(implicitFailure);
+            }
             if (string.IsNullOrEmpty(dest))
                 return SilentOk("no-destination");
 
