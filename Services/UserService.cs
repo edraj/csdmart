@@ -1077,7 +1077,23 @@ public sealed class UserService(
         else if (!string.IsNullOrEmpty(rawEmail))
         {
             var suppliedEmail = rawEmail.ToLowerInvariant();
-            if (!string.Equals(suppliedEmail, user.Email, StringComparison.Ordinal))
+            // OrdinalIgnoreCase, not Ordinal: `suppliedEmail` has been
+            // lowercased but `user.Email` is whatever case it was stored with —
+            // RequestHandler keeps the admin's spelling when provisioning,
+            // OAuthUserResolver keeps the provider's. An Ordinal compare is
+            // therefore ALWAYS false for a stored address carrying any
+            // uppercase, so its owner could never confirm the contact they
+            // already hold: posting their own address came back "email does not
+            // match the stored address", and `new_email` would have been a lie.
+            //
+            // Same defect the reset flow had — see OtpHandler.EmailDest. The
+            // OTP lookup below already uses the lowercased form, matching what
+            // /otp-request stored, so only this guard was wrong.
+            //
+            // The stored column is deliberately left as-is rather than
+            // normalised here: confirming a contact should not quietly rewrite
+            // it, and every lookup that matters is already case-insensitive.
+            if (!string.Equals(suppliedEmail, user.Email, StringComparison.OrdinalIgnoreCase))
                 return Result<User>.Fail(InternalErrorCode.INVALID_DATA,
                     "email does not match the stored address; use new_email to change it",
                     ErrorTypes.Request);
