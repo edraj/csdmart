@@ -1,6 +1,7 @@
 /**
  * Password reset — client half of the two-leg flow in Api/User/OtpHandler.cs
- * (POST /user/password-reset-request, POST /user/password-reset-confirm).
+ * (POST /user/otp-request with purpose=reset, then
+ * POST /user/password-reset-confirm).
  *
  * Shared by both frontends. catalog/ and cxb/ are yarn workspaces of the repo
  * root, so this file is reachable from both as "@shared/password-reset" (see
@@ -33,11 +34,14 @@ const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 
 // Mirror of RegexPatternsConfig.DefaultMsisdnPattern: optional leading '+',
 // then 6-15 digits (15 is the E.164 maximum). The upper bound matters.
-// /password-reset-request does no format validation of its own — unlike
-// /otp-request — so a number the server cannot match is answered with a silent
-// Ok(), and the caller would be parked on the OTP screen waiting for a code
-// that was never sent. Rejecting it in the field is the only place that
-// mismatch can be reported at all.
+//
+// Leg 1 is /user/otp-request now, which DOES validate the format server-side
+// — so unlike the old /password-reset-request, a malformed number comes back
+// as an error rather than a silent Ok(). Keeping the check here anyway: the
+// server's answer is deliberately uniform for everything else (unknown user,
+// cooldown, daily cap), so a field-level rejection is still the only feedback
+// a user gets that is specific to what they typed, and it happens before the
+// request spends one of their daily OTP slots.
 const MSISDN_RE = /^\+?\d{6,15}$/;
 
 /**
@@ -145,7 +149,15 @@ export interface ResetResponseBody {
  * below reads `e.response.data.error.code`.
  */
 export interface ResetTransport {
-  /** POST /user/password-reset-request */
+  /**
+   * POST /user/otp-request with `purpose: "reset"`.
+   *
+   * Not /user/password-reset-request — the per-purpose OTP routes were
+   * collapsed into one endpoint that requires an explicit purpose, and the
+   * old path no longer exists. The purpose is added here rather than in each
+   * app's transport because it names the FLOW, not the caller: an app that
+   * forgot it would get INVALID_DATA at leg 1 with nothing to say why.
+   */
   requestReset(body: Record<string, string>): Promise<unknown>;
   /** POST /user/password-reset-confirm, resolving to the response body. */
   confirmReset(body: Record<string, unknown>): Promise<ResetResponseBody | undefined>;
@@ -175,7 +187,7 @@ export function createPasswordResetClient(
 ): PasswordResetClient {
   return {
     async requestPasswordReset(id) {
-      await transport.requestReset(identifierBody(id));
+      await transport.requestReset({ ...identifierBody(id), purpose: "reset" });
     },
 
     async confirmPasswordReset(id, otp, password) {
