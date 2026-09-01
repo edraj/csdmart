@@ -206,22 +206,29 @@ public static class OtpHandler
             // that recovers an account, for 24 hours, with every response a
             // silent 200 so neither they nor the UI could tell why.
             //
-            // Reset therefore draws on its own budget. Flooding login can no
-            // longer close account recovery; the worst case rises from N
-            // messages a day to 2N, which is the price of the guarantee.
+            // So the budget splits in two, and the split cuts BOTH ways:
+            // `reset` counts only reset, and everything else counts everything
+            // EXCEPT reset. A one-directional reserve would have been theatre
+            // — giving reset its own bucket while still counting reset rows
+            // toward the shared one just moves the cheap attack from flooding
+            // login to flooding reset, which would then take login down with
+            // it. Two independent buckets means neither can close the other.
             //
-            // NOT a complete fix, and worth stating plainly: an attacker who
-            // targets `reset` directly can still exhaust the reset budget for
-            // a known destination. Closing that needs a per-CALLER dimension
-            // in the budget, which this endpoint has no identity for — the
-            // auth-by-ip limiter is the only caller signal, and it is
-            // defeated by distribution. What this does buy is that the cheap,
-            // obvious version of the attack no longer takes recovery with it.
+            // Worst case rises from N messages a day to 2N. That is the price.
+            //
+            // NOT a complete fix, and worth stating plainly: an attacker can
+            // still exhaust EITHER bucket for a destination they know, so a
+            // targeted reset flood still denies reset. Closing that needs a
+            // per-CALLER dimension the endpoint has no identity for — the
+            // auth-by-ip limiter is the only caller signal, and distribution
+            // defeats it. What this buys is that no single flood takes out
+            // both sign-in and account recovery at once.
             if (s.MaxOtpRequestsPerDay > 0)
             {
+                var isReset = purpose == OtpPurpose.Reset;
                 var issued = await repo.CountIssuedSinceAsync(
                     dest, TimeUtils.Now().AddHours(-24), ct,
-                    purpose == OtpPurpose.Reset ? OtpPurpose.Reset : null);
+                    OtpPurpose.Reset, invertPurpose: !isReset);
                 if (issued >= s.MaxOtpRequestsPerDay)
                     return SilentOk("daily-cap", LogLevel.Warning);
             }
@@ -324,7 +331,15 @@ public static class OtpHandler
             {
                 Password = hasher.Hash(req.Password),
                 ForcePasswordChange = false,
-                IsEmailVerified = dest == user.Email ? true : user.IsEmailVerified,
+                // OrdinalIgnoreCase for the email: `dest` is normalised (see
+                // EmailDest) while user.Email keeps its stored case, so an
+                // ordinal `==` is false for every mixed-case address. That
+                // would leave is_email_verified untouched on a SUCCESSFUL
+                // reset — and an unverified row is refused at /user/login by
+                // RejectIfContactUnverified, so the user would change their
+                // password and still be unable to sign in.
+                IsEmailVerified = string.Equals(dest, user.Email, StringComparison.OrdinalIgnoreCase)
+                    ? true : user.IsEmailVerified,
                 IsMsisdnVerified = dest == user.Msisdn ? true : user.IsMsisdnVerified,
                 UpdatedAt = TimeUtils.Now(),
             };

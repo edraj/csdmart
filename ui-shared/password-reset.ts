@@ -69,7 +69,8 @@ export const OTP_TTL_MINUTES = 5;
 
 /**
  * Resend cooldown in seconds, mirroring
- * DmartSettings.AllowPasswordResetResendAfter (default 60). Inside this window
+ * DmartSettings.AllowOtpResendAfter (default 60) — one cooldown per
+ * destination across every OTP purpose now, not a reset-specific one. Inside this window
  * the server silently no-ops a resend, so blocking the button locally is the
  * only feedback the user can get. Same config caveat as OTP_TTL_MINUTES.
  */

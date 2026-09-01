@@ -107,11 +107,13 @@ public sealed class OtpRepository(IDbConnectionFactory db, OtpHasher hasher)
 
     // Codes issued to `identifier` across all purposes since `cutoff`.
     // Backs MaxOtpRequestsPerDay.
-    // `purpose` null counts every purpose; non-null counts that one only.
-    // The narrowed form backs the reset reserve in OtpHandler — see the note
-    // there for why account recovery gets a budget of its own.
+    // `purpose` null counts every purpose. Non-null counts that one alone, or
+    // — with `invertPurpose` — everything except it. The two forms exist to
+    // split the daily budget into independent buckets: see the note in
+    // OtpHandler for why account recovery gets one of its own, and why the
+    // split has to cut BOTH ways to be worth anything.
     public async Task<int> CountIssuedSinceAsync(string identifier, DateTime cutoff,
-        CancellationToken ct = default, string? purpose = null)
+        CancellationToken ct = default, string? purpose = null, bool invertPurpose = false)
     {
         await using var conn = await db.OpenAsync(ct);
         await using var cmd = conn.CreateCommand();
@@ -119,7 +121,7 @@ public sealed class OtpRepository(IDbConnectionFactory db, OtpHasher hasher)
         var c = DbParams.Add(cmd, cutoff);
         var purposeClause = purpose is null
             ? ""
-            : $" AND purpose = {DbParams.Add(cmd, purpose)}";
+            : $" AND purpose {(invertPurpose ? "<>" : "=")} {DbParams.Add(cmd, purpose)}";
         // The `>` works on both providers: PostgreSQL compares TIMESTAMPs,
         // SQLite compares fixed-width SqliteValues text, which sorts
         // chronologically by construction.

@@ -130,11 +130,32 @@ public sealed class UserService(
                 InternalErrorCode.SHORTNAME_ALREADY_EXIST, "already exists", ErrorTypes.Create);
 
         // Capped verify-and-consume at the register purpose — the code is
-        // spent on first use, so a failure after this point (uniqueness
-        // check, schema rejection) requires a fresh OTP. Skipped entirely
+        // spent on first use, so a failure after this point requires a fresh
+        // OTP. Everything that CAN be checked first now is (see below), so
+        // what remains after this line is the uniqueness check, which is
+        // deliberately late for anti-enumeration reasons. Skipped entirely
         // when is_otp_for_create_required=false, in which case both channels
         // are treated as verified.
         var emailVerified = false;
+        var payload = ExtractPayload(attrs);
+        // Schema validation runs BEFORE the codes are redeemed. A payload that
+        // fails its schema is a plain client-side data error and entirely
+        // recoverable — but redeeming first meant the caller's still-valid
+        // code was already spent when the error came back, and re-requesting
+        // inside AllowOtpResendAfter returns a silent 200 Ok, so they would
+        // sit on the OTP screen watching a success response and no message
+        // arrive. Validation has no side effects, so it costs nothing to ask
+        // first. Same reasoning as TryImplicitRegisterAsync.
+        //
+        // Python parity (serve_request_create): validate payload.body against
+        // payload.schema_shortname before persisting. /user/create runs through
+        // this service, not EntryService, so without this gate the declared
+        // schema was never enforced on self-registration.
+        var payloadSchemaError = await schemas.ValidatePayloadAsync(MgmtSpace, ResourceType.User, payload, ct);
+        if (payloadSchemaError is not null)
+            return Result<(User, string, string)>.Fail(
+                InternalErrorCode.INVALID_DATA, payloadSchemaError, ErrorTypes.Request);
+
         var msisdnVerified = false;
         if (!string.IsNullOrEmpty(msisdn))
         {
@@ -188,17 +209,7 @@ public sealed class UserService(
         var language = ParseLanguage(ConvertToString(attrs.GetValueOrDefault("language")));
         var displayname = attrs.TryGetValue("displayname", out var dn) ? ParseTranslation(dn) : null;
         var description = attrs.TryGetValue("description", out var desc) ? ParseTranslation(desc) : null;
-        var payload = ExtractPayload(attrs);
         var tags = AttrHelper.ExtractTags(attrs);
-
-        // Python parity (serve_request_create): validate payload.body against
-        // payload.schema_shortname before persisting. /user/create runs through
-        // this service, not EntryService, so without this gate the declared
-        // schema was never enforced on self-registration.
-        var payloadSchemaError = await schemas.ValidatePayloadAsync(MgmtSpace, ResourceType.User, payload, ct);
-        if (payloadSchemaError is not null)
-            return Result<(User, string, string)>.Fail(
-                InternalErrorCode.INVALID_DATA, payloadSchemaError, ErrorTypes.Request);
 
         var user = new User
         {
@@ -1079,14 +1090,19 @@ public sealed class UserService(
             if (string.IsNullOrEmpty(emailOtp))
                 return Result<User>.Fail(InternalErrorCode.SESSION,
                     "Email OTP is required to update your email", ErrorTypes.Create);
-            if (!await otp.VerifyAndConsumeAsync(newEmail, OtpPurpose.VerifyContact,
-                    emailOtp, settings.Value.MaxOtpVerifyAttempts, ct))
-                return Result<User>.Fail(InternalErrorCode.SESSION,
-                    "Invalid Email OTP", ErrorTypes.Create);
+            // Collision checked BEFORE the code is redeemed. Losing the address
+            // to another account is a recoverable error the caller can act on,
+            // but consuming first spent their still-valid code on the way to
+            // telling them so — and a retry inside AllowOtpResendAfter answers
+            // a silent 200 with no message sent. The check has no side effects.
             var collision = await users.GetByEmailAsync(newEmail, ct);
             if (collision is not null && !string.Equals(collision.Shortname, user.Shortname, StringComparison.Ordinal))
                 return Result<User>.Fail(InternalErrorCode.DATA_SHOULD_BE_UNIQUE,
                     $"Entry properties should be unique: @email:{newEmail} ", ErrorTypes.Request);
+            if (!await otp.VerifyAndConsumeAsync(newEmail, OtpPurpose.VerifyContact,
+                    emailOtp, settings.Value.MaxOtpVerifyAttempts, ct))
+                return Result<User>.Fail(InternalErrorCode.SESSION,
+                    "Invalid Email OTP", ErrorTypes.Create);
             resolvedEmail = newEmail;
             resolvedIsEmailVerified = true;
         }
@@ -1138,14 +1154,15 @@ public sealed class UserService(
             if (string.IsNullOrEmpty(msisdnOtp))
                 return Result<User>.Fail(InternalErrorCode.SESSION,
                     "MSISDN OTP is required to update your msisdn", ErrorTypes.Create);
-            if (!await otp.VerifyAndConsumeAsync(rawNewMsisdn, OtpPurpose.VerifyContact,
-                    msisdnOtp, settings.Value.MaxOtpVerifyAttempts, ct))
-                return Result<User>.Fail(InternalErrorCode.SESSION,
-                    "Invalid MSISDN OTP", ErrorTypes.Create);
+            // Same ordering as the email branch above, for the same reason.
             var collision = await users.GetByMsisdnAsync(rawNewMsisdn, ct);
             if (collision is not null && !string.Equals(collision.Shortname, user.Shortname, StringComparison.Ordinal))
                 return Result<User>.Fail(InternalErrorCode.DATA_SHOULD_BE_UNIQUE,
                     $"Entry properties should be unique: @msisdn:{rawNewMsisdn} ", ErrorTypes.Request);
+            if (!await otp.VerifyAndConsumeAsync(rawNewMsisdn, OtpPurpose.VerifyContact,
+                    msisdnOtp, settings.Value.MaxOtpVerifyAttempts, ct))
+                return Result<User>.Fail(InternalErrorCode.SESSION,
+                    "Invalid MSISDN OTP", ErrorTypes.Create);
             resolvedMsisdn = rawNewMsisdn;
             resolvedIsMsisdnVerified = true;
         }

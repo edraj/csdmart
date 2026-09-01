@@ -63,6 +63,41 @@ public sealed class OtpRequestRecoveryTests : IClassFixture<DmartFactory>
         finally { await CleanupAsync(shortname, msisdn); }
     }
 
+    // The mirror image, and the reason the split has to cut both ways: a
+    // reserve that only protects reset would just move the cheap attack to
+    // flooding reset, which would then take sign-in down with it.
+    [FactIfPg]
+    public async Task Flooding_Reset_Requests_Cannot_Close_Sign_In()
+    {
+        const int cap = 2;
+        var host = _factory.WithWebHostBuilder(b => b.ConfigureServices(svcs =>
+            svcs.Configure<DmartSettings>(s =>
+            {
+                s.MaxOtpRequestsPerDay = cap;
+                s.AllowOtpResendAfter = 0;
+            })));
+
+        var msisdn = NewMsisdn();
+        var shortname = await SeedUserAsync(host, msisdn);
+        var repo = host.Services.GetRequiredService<OtpRepository>();
+        try
+        {
+            for (var i = 0; i < cap; i++)
+                (await RequestAsync(host, msisdn, OtpPurpose.Reset)).Status.ShouldBe(Status.Success);
+            (await CountAsync(repo, msisdn, OtpPurpose.Reset)).ShouldBe(cap);
+
+            // Reset is capped…
+            (await RequestAsync(host, msisdn, OtpPurpose.Reset)).Status.ShouldBe(Status.Success);
+            (await CountAsync(repo, msisdn, OtpPurpose.Reset)).ShouldBe(cap);
+
+            // …and sign-in is untouched by it.
+            (await RequestAsync(host, msisdn, OtpPurpose.Login)).Status.ShouldBe(Status.Success);
+            (await CountAsync(repo, msisdn, OtpPurpose.Login))
+                .ShouldBe(1, "a reset flood must not deny the victim a login code");
+        }
+        finally { await CleanupAsync(shortname, msisdn); }
+    }
+
     // Locking persists IsActive=false; only IsLockedAsync clears it once the
     // cool-down elapses. Reading IsUsable directly meant the account stayed
     // silently un-OTP-able forever after — and for a password-less user, whose

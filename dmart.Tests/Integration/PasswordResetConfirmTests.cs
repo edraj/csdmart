@@ -349,6 +349,16 @@ public sealed class PasswordResetConfirmTests : IClassFixture<DmartFactory>
             // Still usable: a reset that works must not have spent the
             // failed-attempt budget on the way.
             updated.IsActive.ShouldBeTrue();
+
+            // And the address the code was delivered to is now verified. This
+            // is a separate comparison from the one above and it broke the
+            // same way: `dest` is normalised while user.Email is not, so an
+            // ordinal `==` left the flag false on a SUCCESSFUL reset — after
+            // which /user/login refuses the account as unverified. Changing
+            // your password and then being unable to sign in is worse than the
+            // bug this test was written for.
+            updated.IsEmailVerified.ShouldBeTrue(
+                "a reset delivered to the stored address must verify it");
         }
         finally { await CleanupAsync(shortname, email, msisdn); }
     }
