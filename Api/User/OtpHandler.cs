@@ -131,7 +131,7 @@ public static class OtpHandler
                     // Prefer msisdn; reset falls back to email so the code
                     // still reaches a msisdn-less account.
                     dest = !string.IsNullOrEmpty(user.Msisdn) ? user.Msisdn
-                         : purpose == OtpPurpose.Reset ? user.Email
+                         : purpose == OtpPurpose.Reset ? EmailDest(user.Email)
                          : null;
                 }
             }
@@ -142,7 +142,7 @@ public static class OtpHandler
             }
             else
             {
-                var lower = req.Email!.ToLowerInvariant();
+                var lower = EmailDest(req.Email!)!;
                 user = await users.GetByEmailAsync(lower, ct);
                 dest = lower;
             }
@@ -217,7 +217,7 @@ public static class OtpHandler
             else if (!string.IsNullOrEmpty(req.Msisdn))
                 user = await users.GetByMsisdnAsync(req.Msisdn, ct);
             else
-                user = await users.GetByEmailAsync(req.Email!.ToLowerInvariant(), ct);
+                user = await users.GetByEmailAsync(EmailDest(req.Email!)!, ct);
 
             if (user is null)
                 return Response.Fail(InternalErrorCode.OTP_INVALID,
@@ -245,7 +245,7 @@ public static class OtpHandler
             {
                 if (!string.IsNullOrEmpty(user.Email)
                     && string.Equals(user.Email, req.Email, StringComparison.OrdinalIgnoreCase))
-                    dest = user.Email;
+                    dest = EmailDest(user.Email);
             }
             else if (!string.IsNullOrEmpty(user.Msisdn))
             {
@@ -254,7 +254,7 @@ public static class OtpHandler
             else if (!string.IsNullOrEmpty(req.Shortname)
                      && !string.IsNullOrEmpty(user.Email))
             {
-                dest = user.Email;
+                dest = EmailDest(user.Email);
             }
 
             if (string.IsNullOrEmpty(dest))
@@ -298,4 +298,25 @@ public static class OtpHandler
         // the caller's row; `new_email`/`new_msisdn` + the OTP changes to a
         // new one. See UserService.UpdateProfileAsync.
     }
+
+    // The otps table is keyed on (identifier, purpose) and looks the
+    // identifier up by exact equality, so the two halves of a flow have to
+    // spell an email destination the SAME way or they address different rows.
+    // That is not automatic here: the USER lookup is case-insensitive
+    // (UserRepository's EmailLookupWhere is `LOWER(email) = LOWER($1)`) and the
+    // stored column keeps whatever case it was written with — admin-provisioned
+    // rows keep the operator's spelling (RequestHandler), OAuth rows keep the
+    // provider's (OAuthUserResolver). So `Alice@Example.com` resolves to a user
+    // from either spelling while `user.Email` and a lowercased request value
+    // are two different identifiers.
+    //
+    // Issuing a reset lowercased its destination; confirming it looked the code
+    // up under the raw stored value. Every mixed-case address therefore got
+    // OTP_INVALID for a code that was correct — and because each attempt runs
+    // RecordFailedAttemptAsync, a user could lock themselves out of their own
+    // account trying to use a working code.
+    //
+    // One rule, applied wherever an email becomes a destination: lowercase.
+    // Msisdns are digits and need none of this.
+    private static string? EmailDest(string? email) => email?.ToLowerInvariant();
 }

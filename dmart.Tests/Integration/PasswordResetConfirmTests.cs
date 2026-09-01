@@ -303,11 +303,99 @@ public sealed class PasswordResetConfirmTests : IClassFixture<DmartFactory>
         await repo.IssueAsync(dest, OtpPurpose.Reset, code, DateTime.UtcNow.AddMinutes(5));
     }
 
-    private async Task<(string Shortname, string Email, string Msisdn)> CreateUserAsync(bool withMsisdn)
+    // A stored email that is not exactly lowercase must still be able to
+    // complete a reset. The user lookup is case-insensitive
+    // (`LOWER(email) = LOWER($1)`), so `Alice@Example.com` resolves from either
+    // spelling — but the otps table matches its identifier by exact equality.
+    // Issuing lowercased the destination while confirming looked it up under
+    // the raw stored value, so the two halves addressed different rows and
+    // every correct code came back OTP_INVALID.
+    //
+    // The failure was worse than a dead end: each confirm runs
+    // RecordFailedAttemptAsync, so a user retrying a code that was never wrong
+    // locks themselves out of their own account.
+    [FactIfPg]
+    public async Task Mixed_Case_Stored_Email_Can_Complete_A_Reset()
+    {
+        var (shortname, email, msisdn) = await CreateUserAsync(withMsisdn: false, mixedCaseEmail: true);
+        try
+        {
+            var client = _factory.CreateClient();
+            var requested = email.ToLowerInvariant();
+
+            var reqResp = await client.PostAsJsonAsync("/user/otp-request",
+                new SendOTPRequest(Msisdn: null, Email: requested, Shortname: null,
+                    Purpose: OtpPurpose.Reset),
+                DmartJsonContext.Default.SendOTPRequest);
+            reqResp.StatusCode.ShouldBe(HttpStatusCode.OK);
+
+            // Seed at the destination issuing actually used — the normalized
+            // one. If confirm resolves anywhere else it will not find this.
+            const string knownOtp = "135791";
+            await SeedResetOtpAsync(requested, knownOtp);
+
+            var confirmResp = await client.PostAsJsonAsync("/user/password-reset-confirm",
+                new PasswordResetConfirm(Shortname: null, Email: requested, Msisdn: null,
+                    Otp: knownOtp, Password: ValidPassword),
+                DmartJsonContext.Default.PasswordResetConfirm);
+
+            confirmResp.StatusCode.ShouldBe(HttpStatusCode.OK);
+
+            var users = _factory.Services.GetRequiredService<UserRepository>();
+            var hasher = _factory.Services.GetRequiredService<PasswordHasher>();
+            var updated = (await users.GetByShortnameAsync(shortname)).ShouldNotBeNull();
+            hasher.Verify(ValidPassword, updated.Password!).ShouldBeTrue();
+
+            // Still usable: a reset that works must not have spent the
+            // failed-attempt budget on the way.
+            updated.IsActive.ShouldBeTrue();
+        }
+        finally { await CleanupAsync(shortname, email, msisdn); }
+    }
+
+    // The same normalization has to hold ACROSS identifier forms, or a caller
+    // who requests by email and confirms by shortname (or the reverse) lands on
+    // a different otps row again. Both halves resolve an email destination the
+    // same way, so the flow is interchangeable.
+    [FactIfPg]
+    public async Task Reset_Requested_By_Email_Can_Be_Confirmed_By_Shortname()
+    {
+        var (shortname, email, msisdn) = await CreateUserAsync(withMsisdn: false, mixedCaseEmail: true);
+        try
+        {
+            var client = _factory.CreateClient();
+
+            var reqResp = await client.PostAsJsonAsync("/user/otp-request",
+                new SendOTPRequest(Msisdn: null, Email: email.ToLowerInvariant(), Shortname: null,
+                    Purpose: OtpPurpose.Reset),
+                DmartJsonContext.Default.SendOTPRequest);
+            reqResp.StatusCode.ShouldBe(HttpStatusCode.OK);
+
+            const string knownOtp = "864209";
+            await SeedResetOtpAsync(email.ToLowerInvariant(), knownOtp);
+
+            // No msisdn on this user, so the shortname path falls back to email.
+            var confirmResp = await client.PostAsJsonAsync("/user/password-reset-confirm",
+                new PasswordResetConfirm(Shortname: shortname, Email: null, Msisdn: null,
+                    Otp: knownOtp, Password: ValidPassword),
+                DmartJsonContext.Default.PasswordResetConfirm);
+
+            confirmResp.StatusCode.ShouldBe(HttpStatusCode.OK);
+        }
+        finally { await CleanupAsync(shortname, email, msisdn); }
+    }
+
+    private async Task<(string Shortname, string Email, string Msisdn)> CreateUserAsync(
+        bool withMsisdn, bool mixedCaseEmail = false)
     {
         var suffix = Guid.NewGuid().ToString("N")[..12];
         var shortname = $"pc_test_{suffix}";
-        var email = $"{shortname}@test.local";
+        // Stored verbatim, whatever case it arrives in — RequestHandler keeps
+        // the admin's spelling and OAuthUserResolver keeps the provider's, so
+        // a column that is not lowercase is an ordinary state, not a corruption.
+        var email = mixedCaseEmail
+            ? $"PC_Test_{suffix}@Test.Local"
+            : $"{shortname}@test.local";
         var msisdn = $"9647{Random.Shared.Next(100_000_000, 999_999_999)}";
 
         var users = _factory.Services.GetRequiredService<UserRepository>();
@@ -344,7 +432,14 @@ public sealed class PasswordResetConfirmTests : IClassFixture<DmartFactory>
             // Destinations are unique per test, so deleting by identifier
             // only touches our own rows (all purposes, all states).
             var idents = new List<string>();
-            if (!string.IsNullOrEmpty(email)) idents.Add(email);
+            if (!string.IsNullOrEmpty(email))
+            {
+                idents.Add(email);
+                // Destinations are stored lowercased; a mixed-case fixture
+                // leaves its row under the normalized spelling.
+                var lower = email.ToLowerInvariant();
+                if (!string.Equals(lower, email, StringComparison.Ordinal)) idents.Add(lower);
+            }
             if (!string.IsNullOrEmpty(msisdn)) idents.Add(msisdn);
             if (idents.Count == 0) return;
 
