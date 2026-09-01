@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## v1.3.2 — 2026-09-01
 
 ### Performance
 
