@@ -22,12 +22,20 @@ using Dmart.Models.Enums;
 
 namespace Dmart.Client.Json;
 
-// Same integer tolerance as DmartClient.DefaultJsonOptions — the two legs must
-// not disagree about what they can read, or a payload would parse on
-// netstandard2.1 and fail on net8.0+. See Json/IntegralNumberConverters.cs.
+// No DictionaryKeyPolicy — deliberately, and it must stay that way. A
+// dictionary here is DATA, not a shape with property names: attribute bags,
+// ad-hoc request bodies, and the Dictionary<string,string> registered below.
+// Their keys are chosen by the caller and by the space's own schema, so
+// rewriting them is silent corruption — a "myKey" attribute would arrive as
+// "my_key" and read back as a different field. The server's DmartJsonContext
+// sets no DictionaryKeyPolicy either; the two must agree or a value written
+// by this client cannot be found by the server that stored it.
+// The integer tolerance is registered on BOTH legs — here and on
+// DmartClient.DefaultJsonOptions. They must not disagree about what they can
+// read, or a payload would parse on netstandard2.1 and fail on net8.0+. See
+// Json/IntegralNumberConverters.cs.
 [JsonSourceGenerationOptions(
     PropertyNamingPolicy = JsonKnownNamingPolicy.SnakeCaseLower,
-    DictionaryKeyPolicy = JsonKnownNamingPolicy.SnakeCaseLower,
     DefaultIgnoreCondition = JsonIgnoreCondition.WhenWritingNull,
     Converters = new[] { typeof(IntegralInt32Converter), typeof(IntegralInt64Converter) })]
 [JsonSerializable(typeof(Response))]

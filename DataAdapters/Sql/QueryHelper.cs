@@ -77,7 +77,12 @@ public static class QueryHelper
         else if (!string.IsNullOrEmpty(q.Subpath) && q.Subpath != "/")
         {
             args.Add(new() { Value = q.Subpath });
-            sql.Append($"AND (subpath = ${args.Count} OR subpath LIKE ${args.Count} || '/%') ");
+            // SubpathScope, not a bare `LIKE $n || '/%'`: an unescaped prefix
+            // reads `_` as a wildcard and pulls in one-character siblings. See
+            // SubpathScope for why the ACL predicate used to hide that and no
+            // longer does.
+            sql.Append($"AND (subpath = ${args.Count} OR "
+                     + $"{SubpathScope.DescendantLike("subpath", $"${args.Count}")}) ");
         }
 
         if (q.FilterTypes is { Count: > 0 })
@@ -601,19 +606,26 @@ public static class QueryHelper
             selectParts.Add($"{expr} AS {SanitizeAlias(gb)}");
         }
 
-        // Aggregate functions (reducers)
+        // Aggregate functions (reducers). A dialect may ask for part of a
+        // reducer to live in the FROM clause; those fragments are collected
+        // here and spliced in below, after the table name and before WHERE.
+        var hoistAliases = new Dictionary<string, string>(StringComparer.Ordinal);
+        var hoists = new List<string>();
         foreach (var reducer in reducers)
         {
             var alias = !string.IsNullOrEmpty(reducer.Alias) ? SanitizeAlias(reducer.Alias) : SanitizeAlias(reducer.ReducerName);
-            var expr = BuildReducerExpression(reducer, dialect);
+            var expr = BuildReducerExpression(reducer, dialect, hoistAliases, hoists);
             if (expr is null) continue;
             selectParts.Add($"{expr} AS {alias}");
         }
 
         if (selectParts.Count == 0) return null;
 
+        // Every hoist is row-preserving (see ISqlDialect.ReducerSql.From), so
+        // this cannot change which rows WHERE and the ACL filter below see.
+        var hoistClause = hoists.Count == 0 ? "" : " " + string.Join(" ", hoists);
         var sql = new System.Text.StringBuilder(
-            $"SELECT {string.Join(", ", selectParts)} FROM {tableName} WHERE {where} ");
+            $"SELECT {string.Join(", ", selectParts)} FROM {tableName}{hoistClause} WHERE {where} ");
 
         if (userShortname is not null)
             AppendAclFilter(sql, args, userShortname, tableName, queryPolicies, dialect, q);
@@ -678,16 +690,20 @@ public static class QueryHelper
         return results;
     }
 
-    private static string? BuildReducerExpression(RedisReducer reducer, ISqlDialect dialect)
+    private static string? BuildReducerExpression(
+        RedisReducer reducer, ISqlDialect dialect,
+        Dictionary<string, string> hoistAliases, List<string> hoists)
     {
         var reducerArgs = reducer.Args ?? new();
         var name = reducer.ReducerName.ToLowerInvariant();
 
         // A dotted argument resolves to a JSON extraction; a bare one names a
-        // column. The dialect needs to know which, because a JSON extraction can
-        // arrive as text with the value's own type erased, while a column comes
-        // back natively typed and must be left alone.
-        var argIsJsonPath = false;
+        // column. The dialect gets BOTH forms of a dotted one — the text the
+        // reducer aggregates and the same path left as JSON — because a text
+        // extraction has the value's own type erased, and an ordering reducer
+        // needs that type back. A bare column stays null here: it is already
+        // natively typed and must be left alone.
+        string? fieldJson = null;
 
         string? ResolveArg(int index)
         {
@@ -695,15 +711,33 @@ public static class QueryHelper
             var arg = reducerArgs[index];
             if (arg.StartsWith('@')) arg = arg[1..];
             var resolved = ResolveFieldExpr(arg, dialect);
-            if (index == 0) argIsJsonPath = resolved is not null && arg.Contains('.');
+            if (index == 0 && resolved is not null)
+                fieldJson = ResolveFieldJsonExpr(arg, dialect);
             return resolved;
         }
 
         var fieldExpr = ResolveArg(0);
         var quantile = ParseQuantile(reducerArgs);
 
-        var expr = dialect.Reducer(name, fieldExpr, quantile, argIsJsonPath);
-        if (expr is not null) return expr;
+        // The dialect may want the extraction hoisted into the FROM clause
+        // rather than repeated inside the aggregate. Aliases are allocated here,
+        // not there, because dedup is a whole-query property: two reducers over
+        // the same path share one lateral, and the dialect only ever sees one
+        // reducer at a time.
+        var alias = hoistAliases.TryGetValue(fieldJson ?? "", out var existing)
+            ? existing
+            : $"hoist{hoistAliases.Count}";
+
+        var built = dialect.Reducer(name, fieldExpr, quantile, fieldJson, alias);
+        if (built is not null)
+        {
+            if (built.From is not null && existing is null && fieldJson is not null)
+            {
+                hoistAliases[fieldJson] = alias;
+                hoists.Add(built.From);
+            }
+            return built.Expression;
+        }
 
         // The dialect produced nothing. Two very different reasons, and they
         // must not be conflated — see UnsupportedReducerException.
@@ -748,6 +782,23 @@ public static class QueryHelper
         }
         if (!SafeColumnIdent.IsMatch(field)) return null;
         return field;
+    }
+
+    // The same resolution as ResolveFieldExpr, but stopping at -> rather than
+    // ->> so the value keeps its JSON type. Null for a bare column — there is no
+    // JSON value there, and a natively-typed column must be left alone.
+    private static string? ResolveFieldJsonExpr(string field, ISqlDialect dialect)
+    {
+        if (field.StartsWith("payload.", StringComparison.Ordinal))
+            return dialect.JsonValue("payload", field["payload.".Length..].Split('.'));
+        if (field.Contains('.'))
+        {
+            var dot = field.IndexOf('.');
+            var col = field[..dot];
+            if (!SafeColumnIdent.IsMatch(col)) return null;
+            return dialect.JsonValue(col, field[(dot + 1)..].Split('.'));
+        }
+        return null;
     }
 
     // Sanitize an alias for SQL (replace dots/at-signs with underscores).

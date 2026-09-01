@@ -56,35 +56,43 @@ public class QueryPolicyMigrationSurfaceTests
     // table: a duplicate makes `> (a, b, c)` skip every row sharing the tuple,
     // and the migration silently under-migrates rather than failing.
     //
-    // It also has to be an actual index, not just a constraint on paper —
-    // without one the scan cannot walk in that order and the command reverts
-    // to sorting the whole table per batch, which is the quadratic behaviour
-    // the keyset form exists to remove.
-    [Fact]
-    public void Every_Backfilled_Table_Has_The_Unique_Key_The_Keyset_Cursor_Needs()
+    // It also has to be an actual index in THAT COLUMN ORDER, not just three
+    // columns that happen to be unique together. The cursor's companion
+    // `ORDER BY shortname, space_name, subpath` (Program.cs) can only walk the
+    // index if the index leads with the same columns in the same sequence;
+    // UNIQUE (space_name, subpath, shortname) is an equally valid uniqueness
+    // constraint and would send every batch back to sorting the whole table —
+    // the quadratic behaviour the keyset form exists to remove. So the order is
+    // asserted as written, not sorted first.
+    //
+    // Both schemas: update_query_policies runs against SQLite too, and the two
+    // DDL files are maintained separately, so a constraint can drift in one
+    // without the other noticing.
+    [Theory]
+    [InlineData("postgresql")]
+    [InlineData("sqlite")]
+    public void Every_Backfilled_Table_Has_The_Unique_Key_The_Keyset_Cursor_Needs(string backend)
     {
-        var ddl = SqlSchema.CreateAll;
+        var ddl = backend == "sqlite" ? SqliteSchema.CreateAll : SqlSchema.CreateAll;
         foreach (var table in ExpectedPolicyTables)
         {
             var m = Regex.Match(
                 ddl,
                 @"CREATE TABLE(?:\s+IF NOT EXISTS)?\s+""?" + table + @"""?\s*\((?<body>.*?)\n\s*\);",
                 RegexOptions.Singleline);
-            m.Success.ShouldBeTrue($"no CREATE TABLE found for '{table}'");
+            m.Success.ShouldBeTrue($"no CREATE TABLE found for '{table}' in the {backend} schema");
 
-            // Accept either ordering of the column list inside UNIQUE (...):
-            // what matters is that the three columns together are unique.
             var unique = Regex.Matches(m.Groups["body"].Value, @"UNIQUE\s*\(([^)]*)\)")
                 .Select(u => u.Groups[1].Value
                     .Split(',')
                     .Select(c => c.Trim().Trim('"'))
-                    .OrderBy(c => c, StringComparer.Ordinal)
                     .ToArray())
                 .Any(cols => cols.SequenceEqual(new[] { "shortname", "space_name", "subpath" }));
 
             unique.ShouldBeTrue(
-                $"'{table}' has no UNIQUE (shortname, space_name, subpath) — "
-                + "update_query_policies' keyset cursor would skip rows sharing a duplicate tuple");
+                $"{backend}: '{table}' has no UNIQUE (shortname, space_name, subpath) in that "
+                + "order — update_query_policies' keyset cursor would skip rows sharing a "
+                + "duplicate tuple, and its ORDER BY could not walk the index");
         }
     }
 

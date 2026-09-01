@@ -76,6 +76,42 @@ public class AggregationMinMaxTests : IClassFixture<DmartFactory>
             (await ReduceAsync(query, space, "max", "@payload.body.at")).ShouldBe("2026-01-02T00:00:00");
         });
 
+    // ->> erases the JSON type, so a text sniff cannot tell the number 7 from
+    // the string "007". Casting a sniffed value to numeric in order to compare
+    // it also CANONICALISES it, and the canonical form of "007" is "7" — an
+    // answer no row holds. Zero-padded identifiers (SKUs, account codes, ISO
+    // 3166 numerics) are exactly that shape, and must come back byte-for-byte.
+    [FactIfPg]
+    public async Task Numeric_Looking_Strings_Keep_Their_Own_Spelling()
+        => await WithFieldAsync("code", new[] { "\"007\"", "\"010\"", "\"9\"" }, async (query, space) =>
+        {
+            (await ReduceAsync(query, space, "min", "@payload.body.code")).ShouldBe("007");
+            (await ReduceAsync(query, space, "max", "@payload.body.code")).ShouldBe("9");
+        });
+
+    // One field holding both types. Numbers order below text — SQLite's own
+    // type ordering, which its typed ->> gives min/max for free. PostgreSQL has
+    // to be told, and the point of telling it is that the two backends answer
+    // the same rather than each inventing an answer.
+    [FactIfPg]
+    public async Task Numbers_Order_Below_Text_When_A_Field_Holds_Both()
+        => await WithFieldAsync("code", new[] { "\"abc\"", "42", "\"7\"" }, async (query, space) =>
+        {
+            (await ReduceAsync(query, space, "min", "@payload.body.code")).ShouldBe("42");
+            (await ReduceAsync(query, space, "max", "@payload.body.code")).ShouldBe("abc");
+        });
+
+    // A JSON null is not a value to order. ->> handed back SQL NULL for it and
+    // the aggregate skipped the row; it has to keep skipping. Ranked alongside
+    // text it would sort below every real string and win every single min.
+    [FactIfPg]
+    public async Task Json_Nulls_Are_Skipped_Not_Ordered()
+        => await WithFieldAsync("code", new[] { "null", "\"b\"", "\"a\"" }, async (query, space) =>
+        {
+            (await ReduceAsync(query, space, "min", "@payload.body.code")).ShouldBe("a");
+            (await ReduceAsync(query, space, "max", "@payload.body.code")).ShouldBe("b");
+        });
+
     // A plain column is already natively typed, so it must be left alone —
     // wrapping it in a text-oriented comparison would both change the returned
     // type and fail outright on PostgreSQL, where `timestamp ~ text` has no

@@ -6,7 +6,7 @@ SQL: space_name = $1
   P1: name=<positional> type=<inferred> value="myspace"
 
 ## where: hierarchical-subpath
-SQL: space_name = $1 AND (subpath = $2 OR subpath LIKE $2 || '/%') 
+SQL: space_name = $1 AND (subpath = $2 OR subpath LIKE replace(replace(replace($2, '\', '\\'), '%', '\%'), '_', '\_') || '/%' ESCAPE '\') 
   P1: name=<positional> type=<inferred> value="myspace"
   P2: name=<positional> type=<inferred> value="/posts"
 
@@ -52,7 +52,7 @@ SQL: space_name = $1 AND created_at >= $2 AND created_at <= $3
   P3: name=<positional> type=<inferred> value=2026-06-07 08:09:10.0000000 (Kind=Unspecified)
 
 ## where: everything-at-once
-SQL: space_name = $1 AND (subpath = $2 OR subpath LIKE $2 || '/%') AND resource_type = ANY($3) AND shortname = ANY($4) AND (payload->>'schema_shortname') = ANY($5) AND (tags @> $6) AND (((payload::jsonb @> $7) OR (payload::jsonb @> $8))) AND created_at >= $9 
+SQL: space_name = $1 AND (subpath = $2 OR subpath LIKE replace(replace(replace($2, '\', '\\'), '%', '\%'), '_', '\_') || '/%' ESCAPE '\') AND resource_type = ANY($3) AND shortname = ANY($4) AND (payload->>'schema_shortname') = ANY($5) AND (tags @> $6) AND (((payload::jsonb @> $7) OR (payload::jsonb @> $8))) AND created_at >= $9 
   P1: name=<positional> type=<inferred> value="s"
   P2: name=<positional> type=<inferred> value="/deep/path"
   P3: name=<positional> type=<inferred> value=["ticket"]
@@ -64,7 +64,7 @@ SQL: space_name = $1 AND (subpath = $2 OR subpath LIKE $2 || '/%') AND resource_
   P9: name=<positional> type=<inferred> value=2026-01-01 00:00:00.0000000 (Kind=Unspecified)
 
 ## where: table-users
-SQL: space_name = $1 AND (subpath = $2 OR subpath LIKE $2 || '/%') 
+SQL: space_name = $1 AND (subpath = $2 OR subpath LIKE replace(replace(replace($2, '\', '\\'), '%', '\%'), '_', '\_') || '/%' ESCAPE '\') 
   P1: name=<positional> type=<inferred> value="management"
   P2: name=<positional> type=<inferred> value="/users"
 
@@ -117,14 +117,14 @@ SQL: AND (owner_shortname = $1 OR EXISTS (SELECT 1 FROM unnest(query_policies) A
   P2: name=<positional> type=<inferred> value="management:/users:%"
 
 ## semijoin: single-inner
-SQL: AND EXISTS (SELECT 1 FROM entries r WHERE space_name = $1 AND (subpath = $2 OR subpath LIKE $2 || '/%') AND (owner_shortname = $3 OR EXISTS (SELECT 1 FROM unnest(query_policies) AS qp WHERE qp LIKE $4 ESCAPE '\') OR acl @> jsonb_build_array(jsonb_build_object('user_shortname', $3, 'allowed_actions', jsonb_build_array('query')))) AND r.subpath = entries.shortname ) 
+SQL: AND EXISTS (SELECT 1 FROM entries r WHERE space_name = $1 AND (subpath = $2 OR subpath LIKE replace(replace(replace($2, '\', '\\'), '%', '\%'), '_', '\_') || '/%' ESCAPE '\') AND (owner_shortname = $3 OR EXISTS (SELECT 1 FROM unnest(query_policies) AS qp WHERE qp LIKE $4 ESCAPE '\') OR acl @> jsonb_build_array(jsonb_build_object('user_shortname', $3, 'allowed_actions', jsonb_build_array('query')))) AND r.subpath = entries.shortname ) 
   P1: name=<positional> type=<inferred> value="rspace"
   P2: name=<positional> type=<inferred> value="/right"
   P3: name=<positional> type=<inferred> value="alice"
   P4: name=<positional> type=<inferred> value="rspace:/right:%"
 
 ## semijoin: two-inner-with-search
-SQL: AND EXISTS (SELECT 1 FROM entries r WHERE space_name = $1 AND (subpath = $2 OR subpath LIKE $2 || '/%') AND (owner_shortname = $3 OR acl @> jsonb_build_array(jsonb_build_object('user_shortname', $3, 'allowed_actions', jsonb_build_array('query')))) AND r.uuid = entries.uuid ) AND EXISTS (SELECT 1 FROM entries r WHERE space_name = $4 AND (subpath = $5 OR subpath LIKE $5 || '/%') AND ((CAST(is_active AS BOOLEAN) = $6)) AND (owner_shortname = $7 OR EXISTS (SELECT 1 FROM unnest(query_policies) AS qp WHERE qp LIKE $8 ESCAPE '\') OR acl @> jsonb_build_array(jsonb_build_object('user_shortname', $7, 'allowed_actions', jsonb_build_array('query')))) AND r.shortname = entries.shortname AND r.subpath = entries.subpath ) 
+SQL: AND EXISTS (SELECT 1 FROM entries r WHERE space_name = $1 AND (subpath = $2 OR subpath LIKE replace(replace(replace($2, '\', '\\'), '%', '\%'), '_', '\_') || '/%' ESCAPE '\') AND (owner_shortname = $3 OR acl @> jsonb_build_array(jsonb_build_object('user_shortname', $3, 'allowed_actions', jsonb_build_array('query')))) AND r.uuid = entries.uuid ) AND EXISTS (SELECT 1 FROM entries r WHERE space_name = $4 AND (subpath = $5 OR subpath LIKE replace(replace(replace($5, '\', '\\'), '%', '\%'), '_', '\_') || '/%' ESCAPE '\') AND ((CAST(is_active AS BOOLEAN) = $6)) AND (owner_shortname = $7 OR EXISTS (SELECT 1 FROM unnest(query_policies) AS qp WHERE qp LIKE $8 ESCAPE '\') OR acl @> jsonb_build_array(jsonb_build_object('user_shortname', $7, 'allowed_actions', jsonb_build_array('query')))) AND r.shortname = entries.shortname AND r.subpath = entries.subpath ) 
   P1: name=<positional> type=<inferred> value="a"
   P2: name=<positional> type=<inferred> value="/one"
   P3: name=<positional> type=<inferred> value="bob"
@@ -690,7 +690,7 @@ SQL: SELECT AVG((payload::jsonb->'body'->>'amount')::numeric) AS avg FROM entrie
   P3: name=<positional> type=<inferred> value=0
 
 ## aggregation: min-max
-SQL: SELECT COALESCE(MIN(CASE WHEN (payload::jsonb->'body'->>'amount') ~ '^-?[0-9]+(\.[0-9]+)?$' THEN (payload::jsonb->'body'->>'amount')::numeric END)::text, MIN(CASE WHEN (payload::jsonb->'body'->>'amount') !~ '^-?[0-9]+(\.[0-9]+)?$' THEN (payload::jsonb->'body'->>'amount') END)) AS lo, COALESCE(MAX(CASE WHEN (payload::jsonb->'body'->>'amount') !~ '^-?[0-9]+(\.[0-9]+)?$' THEN (payload::jsonb->'body'->>'amount') END), MAX(CASE WHEN (payload::jsonb->'body'->>'amount') ~ '^-?[0-9]+(\.[0-9]+)?$' THEN (payload::jsonb->'body'->>'amount')::numeric END)::text) AS hi FROM entries WHERE space_name = $1  LIMIT $2 OFFSET $3
+SQL: SELECT COALESCE(MIN(CASE WHEN jsonb_typeof(hoist0.hoisted_json) = 'number' THEN (hoist0.hoisted_json #>> '{}')::numeric END)::text, MIN(CASE WHEN jsonb_typeof(hoist0.hoisted_json) <> 'number' THEN (hoist0.hoisted_json #>> '{}') END)) AS lo, COALESCE(MAX(CASE WHEN jsonb_typeof(hoist0.hoisted_json) <> 'number' THEN (hoist0.hoisted_json #>> '{}') END), MAX(CASE WHEN jsonb_typeof(hoist0.hoisted_json) = 'number' THEN (hoist0.hoisted_json #>> '{}')::numeric END)::text) AS hi FROM entries CROSS JOIN LATERAL (SELECT payload::jsonb->'body'->'amount' AS hoisted_json) hoist0 WHERE space_name = $1  LIMIT $2 OFFSET $3
   P1: name=<positional> type=<inferred> value="s"
   P2: name=<positional> type=<inferred> value=10
   P3: name=<positional> type=<inferred> value=0
@@ -757,6 +757,14 @@ SQL: SELECT resource_type AS resource_type, payload::jsonb->'body'->>'category' 
 
 ## aggregation: with-acl
 SQL: SELECT resource_type AS resource_type, COUNT(*) AS count FROM entries WHERE space_name = $1  AND (owner_shortname = $2 OR EXISTS (SELECT 1 FROM unnest(query_policies) AS qp WHERE qp LIKE $3 ESCAPE '\') OR acl @> jsonb_build_array(jsonb_build_object('user_shortname', $2, 'allowed_actions', jsonb_build_array('query')))) GROUP BY resource_type LIMIT $4 OFFSET $5
+  P1: name=<positional> type=<inferred> value="s"
+  P2: name=<positional> type=<inferred> value="alice"
+  P3: name=<positional> type=<inferred> value="s:/%"
+  P4: name=<positional> type=<inferred> value=10
+  P5: name=<positional> type=<inferred> value=0
+
+## aggregation: min-grouped-with-acl
+SQL: SELECT payload::jsonb->'body'->>'category' AS payload_body_category, COALESCE(MIN(CASE WHEN jsonb_typeof(hoist0.hoisted_json) = 'number' THEN (hoist0.hoisted_json #>> '{}')::numeric END)::text, MIN(CASE WHEN jsonb_typeof(hoist0.hoisted_json) <> 'number' THEN (hoist0.hoisted_json #>> '{}') END)) AS lo, COUNT(*) AS n FROM entries CROSS JOIN LATERAL (SELECT payload::jsonb->'body'->'amount' AS hoisted_json) hoist0 WHERE space_name = $1  AND (owner_shortname = $2 OR EXISTS (SELECT 1 FROM unnest(query_policies) AS qp WHERE qp LIKE $3 ESCAPE '\') OR acl @> jsonb_build_array(jsonb_build_object('user_shortname', $2, 'allowed_actions', jsonb_build_array('query')))) GROUP BY payload::jsonb->'body'->>'category' LIMIT $4 OFFSET $5
   P1: name=<positional> type=<inferred> value="s"
   P2: name=<positional> type=<inferred> value="alice"
   P3: name=<positional> type=<inferred> value="s:/%"

@@ -128,6 +128,11 @@ the set of types an attribute bag can carry is closed:
   `List<string>`/`List<int>`/`List<long>`/`List<double>`/`List<decimal>`/`List<bool>`,
   `Dictionary<string, object>`, `Dictionary<string, string>`
 
+Dictionary **keys** go on the wire exactly as you wrote them. The snake_case
+wire convention applies to model property names (`space_name`, `resource_type`),
+not to keys you choose: an attribute called `myKey` is stored and read back as
+`myKey`.
+
 Anything else — including your own POCOs — must be handed over as a
 `JsonElement`, serialized against **your** context so trimming and AOT stay
 sound:
@@ -142,7 +147,7 @@ Attributes = new Dictionary<string, object>
 **Reading numbers back.** The client hands you JSON numbers as `JsonElement`s
 and never reformats them: what the server sent is what you get, byte for byte.
 A field that reads back as `10240.0` was *stored* that way — Python renders
-every float like that (`json.dumps(10240.0)` → `"10240.0"`), as does .NET for a
+every float like that (`json.dumps(10240.0)` -> `"10240.0"`), as does .NET for a
 `decimal` carrying scale, so one field can arrive as `10240.0` while its integer
 siblings arrive clean.
 
@@ -159,7 +164,7 @@ JsonException: The JSON value could not be converted to System.Int32.
 Left alone, that makes the client stricter than the server it talks to. Two
 converters close the gap, accepting exactly what the schema calls an integer and
 nothing wider — a real fraction is still rejected, and comparison runs through
-`decimal` so values past 2⁵³ keep every digit:
+`decimal` so values past 2^53 keep every digit:
 
 ```csharp
 using Dmart.Client.Json;
@@ -184,9 +189,9 @@ var options = new JsonSerializerOptions
 var grant = entry.Payload!.Body!.Value.Deserialize<Grant>(options);
 ```
 
-`DmartClient.DefaultJsonOptions` already carries both, so the client's own types
-read the same way. Writing is unaffected: a round trip puts a plain integer back
-on the wire, never `10240.0`.
+`DmartClient.DefaultJsonOptions` and the source-gen context both carry them, so
+the client's own types read the same way on every target framework. Writing is
+unaffected: a round trip puts a plain integer back on the wire, never `10240.0`.
 
 ## Error handling
 

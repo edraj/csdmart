@@ -37,7 +37,16 @@ public sealed partial class DmartClient : IDisposable, IDmartData
     public static readonly JsonSerializerOptions DefaultJsonOptions = new()
     {
         PropertyNamingPolicy = JsonNamingPolicy.SnakeCaseLower,
-        DictionaryKeyPolicy = JsonNamingPolicy.SnakeCaseLower,
+        // No DictionaryKeyPolicy, for the reason spelled out in
+        // Json/DmartClientJsonContext.cs: a dictionary here is DATA, so its keys
+        // belong to the caller and the space's schema, and rewriting them is
+        // silent corruption. This object is the netstandard2.1 leg's serializer
+        // AND public API a caller can serialize a Record with, so leaving the
+        // policy on made the same client disagree with itself across targets —
+        // "myKey" verbatim from net8.0+, "my_key" from netstandard2.1 — and
+        // disagree with the server, whose DmartJsonContext sets none either.
+        // Every key the client itself writes is already snake_case, so dropping
+        // it changes nothing the SDK sends.
         DefaultIgnoreCondition = System.Text.Json.Serialization.JsonIgnoreCondition.WhenWritingNull,
         // dmart validates with JSON Schema, where "type": "integer" accepts
         // 10240.0. Without these the client would refuse to read a value the

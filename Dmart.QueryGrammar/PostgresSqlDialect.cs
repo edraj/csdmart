@@ -94,34 +94,100 @@ public sealed class PostgresSqlDialect : ISqlDialect
     // so an unconditional ::numeric cast is out: it would both reorder those and
     // throw on the first non-numeric row.
     //
-    // Two aggregates in one expression, picked apart by the same numeric regex
-    // the sort keys already use. The numeric one sees only rows that parse as a
-    // number, the text one only rows that do not, and COALESCE decides which
-    // half answers. Numbers therefore sort below text — the same convention
-    // jsonb's own ordering and SQLite's type ordering use, so the two drivers
-    // agree on mixed data instead of each inventing an answer.
+    // Two aggregates in one expression, one over the numeric rows and one over
+    // the rest, COALESCE deciding which half answers. Both stream — no
+    // ARRAY_AGG, so a group's memory cost stays flat rather than growing with
+    // its row count, which matters because min/max are core reducers and a
+    // group here can hold millions of rows.
+    //
+    // The split is by the value's ACTUAL JSON type, read off the jsonb form of
+    // the same path. Sniffing the extracted text with a numeric regex is
+    // cheaper to write and is wrong: ->> erases the difference between the
+    // number 7 and the string "007", so a field of zero-padded codes takes the
+    // numeric branch, and ::numeric::text canonicalises "007" to "7" — an
+    // answer no row in the group holds. jsonb_typeof cannot make that mistake.
+    //
+    // Numbers order below text on mixed data. That is SQLite's type ordering,
+    // which its typed ->> gives min/max there for free, and matching it is the
+    // point — the two backends must agree rather than each inventing an answer.
+    // It is NOT jsonb's own cross-type order, which ranks Number above String.
+    // Ordering the jsonb values directly would have inherited that anyway, and
+    // there is no min(jsonb)/max(jsonb) aggregate to do it with: jsonb has the
+    // comparison operators but PostgreSQL defines no extremum aggregate over
+    // them.
     //
     // ::numeric, not the ::float the sort keys use: this comparison decides
     // WHICH value is returned, and float ties any two integers past 2^53.
     //
-    // Both aggregates stream — no ARRAY_AGG, so a group's memory cost stays flat
-    // rather than growing with its row count, which matters because min/max are
-    // core reducers and a group here can hold millions of rows.
-    private const string NumericText = @"^-?[0-9]+(\.[0-9]+)?$";
-
-    public string? Reducer(string name, string? field, string quantile, bool fieldIsJsonText)
+    // Written out inline, this expression names the path four times — twice as
+    // jsonb for the type guard, twice as text for the value — and PostgreSQL
+    // walks it once per mention per row. The overload below hoists the walk
+    // into a lateral so it happens once; this form is what the hoist rewrites,
+    // and what a dialect that cannot hoist would emit.
+    public string? Reducer(string name, string? field, string quantile, string? fieldJson)
     {
-        if (field is null || !fieldIsJsonText) return Reducer(name, field, quantile);
+        if (field is null || fieldJson is null) return Reducer(name, field, quantile);
 
+        // COALESCE takes the first non-null half, and the numeric group sorts
+        // below the text one — so min asks the numeric half first, max the text.
         return name switch
         {
-            "min" => $"COALESCE(MIN(CASE WHEN ({field}) ~ '{NumericText}' THEN ({field})::numeric END)::text, "
-                   + $"MIN(CASE WHEN ({field}) !~ '{NumericText}' THEN ({field}) END))",
-            "max" => $"COALESCE(MAX(CASE WHEN ({field}) !~ '{NumericText}' THEN ({field}) END), "
-                   + $"MAX(CASE WHEN ({field}) ~ '{NumericText}' THEN ({field})::numeric END)::text)",
+            "min" => $"COALESCE({NumericHalf("MIN", field, fieldJson)}, {TextHalf("MIN", field, fieldJson)})",
+            "max" => $"COALESCE({TextHalf("MAX", field, fieldJson)}, {NumericHalf("MAX", field, fieldJson)})",
             _ => Reducer(name, field, quantile),
         };
     }
+
+    // A JSON null and an absent field both yield SQL NULL from ->>, so both
+    // stay out of either aggregate — the behaviour callers already had.
+    private static string NumericHalf(string aggregate, string text, string json)
+        => $"{aggregate}(CASE WHEN jsonb_typeof({json}) = 'number' THEN ({text})::numeric END)::text";
+
+    private static string TextHalf(string aggregate, string text, string json)
+        => $"{aggregate}(CASE WHEN jsonb_typeof({json}) <> 'number' THEN ({text}) END)";
+
+    // The four walks the comment above counts are all down the SAME jsonb path,
+    // and a CROSS JOIN LATERAL over a FROM-less SELECT is the one construct that
+    // computes something once per row and hands it to the SELECT list by name.
+    // It is row-preserving by construction: `SELECT <expr>` with no FROM yields
+    // exactly one row, NULL expression included, so it cannot filter or multiply
+    // the rows the aggregate sees.
+    //
+    // Only the path walk is hoisted, not the whole comparison. jsonb_typeof and
+    // `#>> '{}'` still appear twice each, but they now operate on a scalar the
+    // lateral already produced rather than re-descending payload::jsonb->'body'
+    // from the top.
+    //
+    // `#>> '{}'` on the hoisted value is exactly what `->>` gave before: text
+    // for a scalar, the JSON text for a container, and SQL NULL for both an
+    // absent key and a JSON null — the last being what keeps either aggregate
+    // from seeing a row it did not see before.
+    //
+    // Hoisting is declined for every other reducer. `SUM((field)::numeric)`
+    // mentions the path once, so a lateral would add a join to save nothing.
+    public ReducerSql? Reducer(
+        string name, string? field, string quantile, string? fieldJson, string alias)
+    {
+        if (fieldJson is null || field is null || name is not ("min" or "max"))
+            return Reducer(name, field, quantile, fieldJson) is { } plain
+                ? new ReducerSql(plain, null)
+                : null;
+
+        var json = $"{alias}.{HoistedColumn}";
+        var text = $"{json} #>> '{{}}'";
+        var expression = name == "min"
+            ? $"COALESCE({NumericHalf("MIN", text, json)}, {TextHalf("MIN", text, json)})"
+            : $"COALESCE({TextHalf("MAX", text, json)}, {NumericHalf("MAX", text, json)})";
+
+        return new ReducerSql(
+            expression,
+            $"CROSS JOIN LATERAL (SELECT {fieldJson} AS {HoistedColumn}) {alias}");
+    }
+
+    // Deliberately not a name any table in the schema carries a column of: the
+    // lateral's output joins the outer query's namespace, and an unqualified
+    // reference elsewhere in the statement would turn ambiguous if it collided.
+    private const string HoistedColumn = "hoisted_json";
 
     public string JsonTypeIs(string jsonExpr, JsonKind kind)
         => $"jsonb_typeof({jsonExpr}) = '{TypeName(kind)}'";

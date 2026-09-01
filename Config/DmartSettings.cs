@@ -174,6 +174,15 @@ public sealed class DmartSettings
     // is the Python-parity behaviour — Python's retrieve_total defaults to
     // true, so a request that never mentions the field gets a count.
     //
+    // /public/query is the one exception, and it is deliberate. Both forms
+    // resolve absent to FALSE before the query reaches QueryService
+    // (Api/Public/QueryHandler.cs), because anonymous traffic is read-heavy,
+    // rarely paginates on `total`, and would otherwise double the DB load of
+    // every public request. This setting cannot turn that back on: a public
+    // caller who needs a count sends `retrieve_total: true` explicitly on the
+    // POST form, and the GET form has no way to ask for one at all. So this
+    // setting governs /managed/query and the internal callers.
+    //
     // Set false on a deployment whose clients do not use `total`. Counting is
     // O(matching rows) and dominates the request: measured on a 2M-row folder
     // at 100 concurrent, dropping the count moved the same endpoint from 36.5

@@ -2,6 +2,25 @@
 
 ## Unreleased
 
+### Fixed
+
+- **The two serializer legs disagreed about dictionary keys.** v1.3.2 dropped
+  `DictionaryKeyPolicy` from `DmartClientJsonContext` because a dictionary here
+  is DATA — attribute bags and nested `Dictionary<string,string>` values, whose
+  keys belong to the caller and the space's schema — so snake-casing them is
+  silent corruption. `DmartClient.DefaultJsonOptions` kept the policy, and that
+  object is both the netstandard2.1 leg's serializer and public API a caller can
+  serialize a `Record` with. So the same client contradicted itself by target:
+  `"myKey"` shipped verbatim from net8.0+ and as `"my_key"` from netstandard2.1,
+  the second of which the server — which sets no `DictionaryKeyPolicy` either —
+  then stored under a name the caller could not read back.
+
+  The policy is gone from `DefaultJsonOptions` too. Property names still
+  snake_case: those are a fixed shape both ends agree on. Every key the client
+  itself writes was already snake_case, so nothing the SDK sends changes. A
+  caller who was relying on the netstandard leg to rewrite *their* keys was
+  relying on the corruption, and should snake_case them at the source.
+
 ### Added
 
 - **`Dmart.Client` can read the decimal-point spelling of an integer.** dmart
@@ -33,6 +52,90 @@
   that way — Python renders every float like that, as does .NET for a `decimal`
   carrying scale.
 
+  This supersedes the v1.3.0 guidance to model such a field as `decimal`/`double`:
+  that is right for a `"type": "number"` schema, but wrong when the schema says
+  `integer` — there the caller's `int` was correct and the reader was not.
+
+## v1.3.2 — 2026-09-01
+
+### Performance
+
+- **`min`/`max` over a JSON field walked the same jsonb path four times per
+  row.** Ordering by the value's real type (v1.3.1) means consulting both forms
+  of the path: a `jsonb_typeof` guard and a value, in each of two aggregates.
+  Written inline that is four descents through `payload::jsonb->'body'->…` for
+  every row in the group, where one would do.
+
+  The extraction is now hoisted into a `CROSS JOIN LATERAL` over a FROM-less
+  `SELECT`, which computes it once per row and hands it to the aggregates by
+  name. Two reducers over the same path share one lateral, so a `min` and a
+  `max` on the same field walk it once between them.
+
+  Row-preserving by construction — a `SELECT` with no `FROM` yields exactly one
+  row, NULL included — so nothing about which rows the aggregate sees changes.
+  Every other reducer mentions its field once and is left alone rather than
+  paying for a join that saves nothing.
+
+  **SQLite emits none of this and needs none of it**: its `->>` carries the
+  value's own type, so `min`/`max` there are a single `MIN(field)` already.
+  `ISqlDialect` gained a `Reducer` overload returning an optional FROM
+  fragment alongside the expression; it has a default implementation that
+  hoists nothing, so third-party dialects are unaffected.
+
+## v1.3.1 — 2026-09-01
+
+### Security
+
+- **A query could return entries from subpaths the caller has no permission
+  on.** The hierarchical subpath filter was built as
+  `subpath = $n OR subpath LIKE $n || '/%'` with the caller's subpath bound raw
+  and no `ESCAPE` clause. LIKE reads `_` as "any one character", so a query
+  scoped to `space/my_folder` also matched `space/myXfolder`, `space/my-folder`
+  and every other one-character sibling — and underscores in a folder name are
+  the house style, not an edge case.
+
+  It was invisible until v1.3.0 because the ACL predicate cleaned up after it:
+  an actor's policy IS escaped on its way to a LIKE pattern, so the
+  over-matched rows carried a `query_policies` token the actor's pattern did
+  not match and were dropped before anyone saw them. v1.3.0 added a tautology
+  skip that omits the ACL predicate when the actor's policies provably cover
+  the requested scope — correct in itself, but it removed the masking, and the
+  sibling rows started coming back to actors holding no permission on them.
+
+  Every site that builds a subpath prefix now escapes it (`\`, `%`, `_`) and
+  matches under `ESCAPE '\'`, via a new `SubpathScope` helper in
+  `Dmart.QueryGrammar` — twenty in all, not just the two on the query path:
+
+  | Component | Sites |
+  | --- | --- |
+  | `EntryRepository` | 10 — list, export, cascade-delete, move, count |
+  | `AttachmentRepository` | 4 |
+  | `HistoryRepository` | 4 |
+  | `QueryHelper` + `Dmart.SqlAdapter` | 2 — the read paths above |
+  | `SemanticSearchService` | 1 |
+
+  **Not all of them are reads, and that matters more, not less.**
+  `EntryRepository`'s folder cascade uses the predicate to DELETE and to MOVE
+  subtrees, and `AttachmentRepository.DeleteUnderSubpathAsync` to delete
+  attachments. An over-matching prefix there does not leak a row — it destroys
+  or relocates one belonging to a sibling folder. Those paths were never
+  masked by the ACL predicate, so unlike the read leak they were reachable
+  before v1.3.0 as well.
+
+  The escaping is emitted in SQL rather than applied to the bound value, so one
+  parameter still serves both halves of `subpath = $n OR <descendants>` and
+  every positional parameter after it stays where it was. The three sites that
+  inline the subpath as a SQL literal instead of binding it use a C#
+  counterpart with the same substitutions in the same order.
+  `SemanticSearchService` keeps its own bare prefix semantics (no `/`
+  separator); only its metacharacters are neutralised.
+
+  **Operators:** on v1.3.0, reads against a subpath with a sibling differing by
+  a single character at an underscore position should be treated as having been
+  unrestricted. Separately, on **any** version, a folder delete or move scoped
+  to such a subpath could have reached the sibling's rows. Subpaths without `_`
+  or `%` in their names were never affected by either.
+
 ### Fixed
 
 - **`Dmart.Client` could not put a `decimal` (or most other CLR scalars) in an
@@ -54,6 +157,17 @@
   modern consumers. The context now registers the closed set of JSON-representable
   scalars plus the common collection shapes. A consumer POCO still has to be
   handed over as a `JsonElement` — that is inherent to staying trim/AOT-safe.
+
+- **`Dmart.Client` rewrote dictionary keys on the way out.** The
+  source-generated context set `DictionaryKeyPolicy = SnakeCaseLower` alongside
+  the property policy, so every key the caller chose was snake_cased before it
+  left the process: an attribute stored as `myKey` arrived at the server as
+  `my_key`, and read back as nothing under the name it was written with. Nested
+  `Dictionary<string, string>` values had the same done to them. The server's
+  `DmartJsonContext` sets no `DictionaryKeyPolicy`, so the two sides disagreed
+  about the caller's own field names. The policy is gone; dictionary keys now go
+  on the wire verbatim. `PropertyNamingPolicy` is unchanged — model properties
+  are still snake_case, because those are a fixed shape both ends agree on.
 
 - **Aggregation results were rounded on the way out.** `QueryService` narrowed
   every aggregation cell to a type the server's source-gen context knew —
@@ -81,21 +195,73 @@
   silent. PostgreSQL's default collation also ignores punctuation, so negatives
   misordered against decimals too.
 
-  Both reducers now split the group with the same numeric regex the sort keys
-  already use — one aggregate over the rows that parse as a number, one over the
-  rows that do not, `COALESCE` picking which half answers. Numbers order
-  numerically, text keeps its lexicographic order (ISO-8601 timestamps depend on
-  it), and numbers sort below text on mixed data, matching both jsonb's own
-  ordering and SQLite's. The comparison uses `::numeric`, not the `::float` of
-  the sort keys, so integers past 2<sup>53</sup> cannot tie. Both aggregates
-  stream, so memory stays flat in group size.
+  Both reducers now split the group by the value's actual JSON type, read off
+  the jsonb form of the same path: one aggregate over the rows that really are
+  JSON numbers, one over the rest, `COALESCE` picking which half answers.
+  Numbers order numerically, text keeps its lexicographic order (ISO-8601
+  timestamps depend on it), and the comparison uses `::numeric`, not the
+  `::float` of the sort keys, so integers past 2<sup>53</sup> cannot tie. Both
+  aggregates stream, so memory stays flat in group size.
+
+  Reading the type rather than sniffing the extracted text is what makes it
+  safe on strings that merely look numeric. `->>` erases the difference between
+  the number `7` and the string `"007"`, so a regex sniff sends zero-padded
+  codes — SKUs, account numbers, ISO 3166 numerics — down the numeric branch,
+  where `::numeric::text` canonicalises `"007"` to `"7"`: an answer no row in
+  the group holds. `jsonb_typeof` cannot make that mistake.
+
+  On mixed data numbers order below text. That is **SQLite's** type ordering,
+  not jsonb's own — jsonb ranks Number *above* String — and matching SQLite is
+  the point, so the two backends answer the same instead of each inventing an
+  answer. JSON nulls and absent fields stay out of both aggregates, as `->>`
+  yielding SQL NULL already did.
 
   **SQLite was never affected** — its `->>` returns the JSON value's own SQL
   type, so it was already comparing numbers as numbers. `ISqlDialect` gained a
-  `Reducer` overload carrying whether the field is JSON-typed text; it has a
-  default implementation delegating to the existing three-argument member, so
-  third-party dialects are unaffected. Plain columns are untouched: they are
+  `Reducer` overload carrying the field's JSON form alongside its text form; it
+  has a default implementation delegating to the existing three-argument member,
+  so third-party dialects are unaffected. Plain columns are untouched: they are
   already natively typed, and `MIN(updated_at)` still returns a timestamp.
+
+- **A blank `otp_email_subject` override sent a blank Subject header.** The
+  fallback to the `"OTP"` literal was `?? "OTP"`, which only fires on a missing
+  key. An operator overlay at `~/.dmart/languages/<locale>.json` containing
+  `"otp_email_subject": ""` — the natural way to write "no subject" by hand —
+  went straight through to the mail server. Now guarded with
+  `IsNullOrWhiteSpace`, which is what the comment above it always claimed.
+
+- **`pruneEmptyFormValues` silently dropped `Date`, `File`, `Map` and `Set`.**
+  The recursive branch tested `typeof value === 'object'`, which is true of
+  every one of them, and `Object.keys()` on them is `[]` — so the function
+  returned `undefined` and the value vanished from the payload with no error.
+  Latent rather than live (today's schema forms only produce primitives, arrays
+  and plain objects), but the first file-upload or date-valued field would have
+  hit it. The branch now tests for a plain object by prototype.
+
+### Changed
+
+- **Wildcard policy expansion is capped at 256 exact tokens.** A policy with a
+  wildcard resource type enumerates all 30 resource types — doubled, for the
+  four-segment shape, across both `is_active` values — so a single
+  `space:subpath:*:*` is 60 bind parameters, and an actor inheriting one per
+  group multiplies that by their group count. Past the cap the remaining
+  policies keep the LIKE form they always had, which matches exactly the same
+  rows; only the spelling changes.
+
+### Internal
+
+- **The keyset-cursor index test now guards what its comment claims.** It
+  sorted each `UNIQUE (...)` column list before comparing, so
+  `UNIQUE (space_name, subpath, shortname)` would have passed while quietly
+  restoring the per-batch full-table sort that `update_query_policies`' keyset
+  cursor exists to avoid. The order is asserted as written, and both schemas
+  are checked — `update_query_policies` runs against SQLite too, and the two
+  DDL files are maintained separately.
+
+- **`RETRIEVE_TOTAL_DEFAULT` documents its one exception.** Both the setting's
+  comment and `config.env.sample` said an absent `retrieve_total` resolves to
+  the setting. `/public/query` rewrites it to `false` before the query reaches
+  `QueryService`, deliberately, so the setting never governed public traffic.
 
 ### Notes
 

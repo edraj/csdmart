@@ -33,6 +33,18 @@ public enum JsonKind
 }
 
 /// <summary>
+/// A reducer's SQL: the aggregate expression, plus an optional FROM-clause
+/// fragment the caller must splice in for it to resolve.
+/// </summary>
+/// <param name="Expression">Goes in the SELECT list.</param>
+/// <param name="From">
+/// Null for the ordinary case. When set, it is a join the caller appends
+/// directly after the table name, and it MUST be row-preserving — exactly one
+/// row in, one row out — or it would silently change what the aggregate counts.
+/// </param>
+public sealed record ReducerSql(string Expression, string? From);
+
+/// <summary>
 /// The parts of SQL generation that genuinely differ between PostgreSQL and
 /// SQLite.
 /// </summary>
@@ -216,30 +228,65 @@ public interface ISqlDialect
     string? Reducer(string name, string? field, string quantile);
 
     /// <summary>
-    /// As <see cref="Reducer(string, string?, string)"/>, but told whether
-    /// <paramref name="field"/> is a JSON extraction whose SQL type is text
-    /// rather than the value's own type.
+    /// As <see cref="Reducer(string, string?, string)"/>, but also handed the
+    /// same field as an untyped JSON value, when there is one.
     /// </summary>
     /// <remarks>
     /// Only ordering reducers care. A backend whose JSON extraction yields text
     /// (PostgreSQL <c>-&gt;&gt;</c>) compares 9, 10 and 100 as strings and
     /// answers "10" for the minimum; one whose extraction is typed (SQLite
-    /// <c>-&gt;&gt;</c>) compares them as numbers and needs no help. The flag
-    /// distinguishes the two rather than assuming either.
+    /// <c>-&gt;&gt;</c>) compares them as numbers and needs no help.
     ///
-    /// <paramref name="fieldIsJsonText"/> is false for a plain column, which is
-    /// already natively typed and MUST be left alone — on PostgreSQL a
-    /// text-oriented rewrite of <c>MIN(updated_at)</c> both changes the returned
-    /// type and fails outright, since <c>timestamp ~ text</c> has no operator.
+    /// <paramref name="fieldJson"/> is the JSON value at the same path with its
+    /// type intact (PostgreSQL <c>-&gt;</c>), which is strictly more than a
+    /// "this is JSON text" flag would carry: a dialect can then tell a JSON
+    /// NUMBER from a JSON STRING that merely looks numeric, and order each the
+    /// way its own engine would. A flag cannot — its only recourse is to sniff
+    /// the text, and a text sniff cannot tell 7 from "007".
+    ///
+    /// Null for a plain column, which is already natively typed and MUST be
+    /// left alone — on PostgreSQL a text-oriented rewrite of
+    /// <c>MIN(updated_at)</c> both changes the returned type and fails
+    /// outright, since <c>timestamp ~ text</c> has no operator. Null also when
+    /// the reducer took no argument.
     ///
     /// Default implementation so this member stays additive: Dmart.QueryGrammar
     /// is a published package, and a new abstract member would break every
-    /// third-party ISqlDialect at compile time. The default ignores the flag and
-    /// behaves exactly as before, which is correct for any dialect whose JSON
-    /// extraction is already typed.
+    /// third-party ISqlDialect at compile time. The default ignores the JSON
+    /// form and behaves exactly as before, which is correct for any dialect
+    /// whose JSON extraction is already typed.
     /// </remarks>
-    string? Reducer(string name, string? field, string quantile, bool fieldIsJsonText)
+    string? Reducer(string name, string? field, string quantile, string? fieldJson)
         => Reducer(name, field, quantile);
+
+    /// <summary>
+    /// As <see cref="Reducer(string, string?, string, string?)"/>, but the
+    /// dialect may hoist a repeated per-row extraction into the FROM clause
+    /// instead of repeating it inside the expression.
+    /// </summary>
+    /// <remarks>
+    /// Only a dialect that has to READ THE JSON TYPE needs this, and only
+    /// PostgreSQL does. Its <c>-&gt;&gt;</c> yields text with the value's type
+    /// erased, so an ordering reducer has to consult the <c>-&gt;</c> form as
+    /// well, and a scalar SQL expression has nowhere to put an intermediate:
+    /// each of the two aggregates needs its own type guard and its own value,
+    /// which is four walks down the same jsonb path per row. A dialect whose
+    /// extraction is already typed (SQLite) spells min/max as
+    /// <c>MIN(field)</c> — one mention — and has nothing to hoist.
+    ///
+    /// <paramref name="alias"/> is a caller-allocated, unique table alias the
+    /// fragment should bind its computed value under. The caller deduplicates:
+    /// two reducers over the same path are handed the same alias and the
+    /// fragment is spliced once.
+    ///
+    /// Default implementation delegates and hoists nothing, so a dialect that
+    /// does not override this — including every third-party one — keeps
+    /// working unchanged. Returning a null <see cref="ReducerSql.From"/> is
+    /// equally valid for a dialect that overrides it but declines to hoist a
+    /// particular reducer.
+    /// </remarks>
+    ReducerSql? Reducer(string name, string? field, string quantile, string? fieldJson, string alias)
+        => Reducer(name, field, quantile, fieldJson) is { } expr ? new ReducerSql(expr, null) : null;
 
     /// <summary>Casts an extracted JSON value to a number for comparison.</summary>
     string AsNumber(string expr);
