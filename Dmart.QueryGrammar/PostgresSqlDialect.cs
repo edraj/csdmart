@@ -119,11 +119,11 @@ public sealed class PostgresSqlDialect : ISqlDialect
     // ::numeric, not the ::float the sort keys use: this comparison decides
     // WHICH value is returned, and float ties any two integers past 2^53.
     //
-    // The path is read four times per row — twice as jsonb for the type test,
-    // twice as text for the value. Collapsing that to one would mean hoisting
-    // the extraction into a derived column (LATERAL on PostgreSQL), which
-    // SQLite cannot express and which the aggregation builder would have to
-    // thread through GROUP BY as well. Not worth it for a jsonb field read.
+    // Written out inline, this expression names the path four times — twice as
+    // jsonb for the type guard, twice as text for the value — and PostgreSQL
+    // walks it once per mention per row. The overload below hoists the walk
+    // into a lateral so it happens once; this form is what the hoist rewrites,
+    // and what a dialect that cannot hoist would emit.
     public string? Reducer(string name, string? field, string quantile, string? fieldJson)
     {
         if (field is null || fieldJson is null) return Reducer(name, field, quantile);
@@ -145,6 +145,49 @@ public sealed class PostgresSqlDialect : ISqlDialect
 
     private static string TextHalf(string aggregate, string text, string json)
         => $"{aggregate}(CASE WHEN jsonb_typeof({json}) <> 'number' THEN ({text}) END)";
+
+    // The four walks the comment above counts are all down the SAME jsonb path,
+    // and a CROSS JOIN LATERAL over a FROM-less SELECT is the one construct that
+    // computes something once per row and hands it to the SELECT list by name.
+    // It is row-preserving by construction: `SELECT <expr>` with no FROM yields
+    // exactly one row, NULL expression included, so it cannot filter or multiply
+    // the rows the aggregate sees.
+    //
+    // Only the path walk is hoisted, not the whole comparison. jsonb_typeof and
+    // `#>> '{}'` still appear twice each, but they now operate on a scalar the
+    // lateral already produced rather than re-descending payload::jsonb->'body'
+    // from the top.
+    //
+    // `#>> '{}'` on the hoisted value is exactly what `->>` gave before: text
+    // for a scalar, the JSON text for a container, and SQL NULL for both an
+    // absent key and a JSON null — the last being what keeps either aggregate
+    // from seeing a row it did not see before.
+    //
+    // Hoisting is declined for every other reducer. `SUM((field)::numeric)`
+    // mentions the path once, so a lateral would add a join to save nothing.
+    public ReducerSql? Reducer(
+        string name, string? field, string quantile, string? fieldJson, string alias)
+    {
+        if (fieldJson is null || field is null || name is not ("min" or "max"))
+            return Reducer(name, field, quantile, fieldJson) is { } plain
+                ? new ReducerSql(plain, null)
+                : null;
+
+        var json = $"{alias}.{HoistedColumn}";
+        var text = $"{json} #>> '{{}}'";
+        var expression = name == "min"
+            ? $"COALESCE({NumericHalf("MIN", text, json)}, {TextHalf("MIN", text, json)})"
+            : $"COALESCE({TextHalf("MAX", text, json)}, {NumericHalf("MAX", text, json)})";
+
+        return new ReducerSql(
+            expression,
+            $"CROSS JOIN LATERAL (SELECT {fieldJson} AS {HoistedColumn}) {alias}");
+    }
+
+    // Deliberately not a name any table in the schema carries a column of: the
+    // lateral's output joins the outer query's namespace, and an unqualified
+    // reference elsewhere in the statement would turn ambiguous if it collided.
+    private const string HoistedColumn = "hoisted_json";
 
     public string JsonTypeIs(string jsonExpr, JsonKind kind)
         => $"jsonb_typeof({jsonExpr}) = '{TypeName(kind)}'";
