@@ -1,5 +1,79 @@
 # Changelog
 
+## Unreleased
+
+### Security
+
+- **A query could return entries from subpaths the caller has no permission
+  on.** The hierarchical subpath filter was built as
+  `subpath = $n OR subpath LIKE $n || '/%'` with the caller's subpath bound raw
+  and no `ESCAPE` clause. LIKE reads `_` as "any one character", so a query
+  scoped to `space/my_folder` also matched `space/myXfolder`, `space/my-folder`
+  and every other one-character sibling — and underscores in a folder name are
+  the house style, not an edge case.
+
+  It was invisible until v1.3.0 because the ACL predicate cleaned up after it:
+  an actor's policy IS escaped on its way to a LIKE pattern, so the
+  over-matched rows carried a `query_policies` token the actor's pattern did
+  not match and were dropped before anyone saw them. v1.3.0 added a tautology
+  skip that omits the ACL predicate when the actor's policies provably cover
+  the requested scope — correct in itself, but it removed the masking, and the
+  sibling rows started coming back to actors holding no permission on them.
+
+  Both query paths now escape the bound prefix (`\`, `%`, `_`) and match under
+  `ESCAPE '\'`: `DataAdapters/Sql/QueryHelper.BuildWhereClause`, which the
+  count, aggregation and semi-join paths all share, and the packaged
+  `Dmart.SqlAdapter`. The escaping is emitted in SQL rather than applied to the
+  bound value so one parameter still serves both halves of the predicate,
+  leaving every positional parameter after it unmoved.
+
+  **Operators:** any deployment on v1.3.0 with sibling subpaths whose names
+  differ by a single character at an underscore position should treat reads
+  against those subpaths as having been unrestricted. Subpaths without `_` or
+  `%` in their names were never affected.
+
+### Fixed
+
+- **A blank `otp_email_subject` override sent a blank Subject header.** The
+  fallback to the `"OTP"` literal was `?? "OTP"`, which only fires on a missing
+  key. An operator overlay at `~/.dmart/languages/<locale>.json` containing
+  `"otp_email_subject": ""` — the natural way to write "no subject" by hand —
+  went straight through to the mail server. Now guarded with
+  `IsNullOrWhiteSpace`, which is what the comment above it always claimed.
+
+- **`pruneEmptyFormValues` silently dropped `Date`, `File`, `Map` and `Set`.**
+  The recursive branch tested `typeof value === 'object'`, which is true of
+  every one of them, and `Object.keys()` on them is `[]` — so the function
+  returned `undefined` and the value vanished from the payload with no error.
+  Latent rather than live (today's schema forms only produce primitives, arrays
+  and plain objects), but the first file-upload or date-valued field would have
+  hit it. The branch now tests for a plain object by prototype.
+
+### Changed
+
+- **Wildcard policy expansion is capped at 256 exact tokens.** A policy with a
+  wildcard resource type enumerates all 30 resource types — doubled, for the
+  four-segment shape, across both `is_active` values — so a single
+  `space:subpath:*:*` is 60 bind parameters, and an actor inheriting one per
+  group multiplies that by their group count. Past the cap the remaining
+  policies keep the LIKE form they always had, which matches exactly the same
+  rows; only the spelling changes.
+
+### Internal
+
+- **The keyset-cursor index test now guards what its comment claims.** It
+  sorted each `UNIQUE (...)` column list before comparing, so
+  `UNIQUE (space_name, subpath, shortname)` would have passed while quietly
+  restoring the per-batch full-table sort that `update_query_policies`' keyset
+  cursor exists to avoid. The order is asserted as written, and both schemas
+  are checked — `update_query_policies` runs against SQLite too, and the two
+  DDL files are maintained separately.
+
+- **`RETRIEVE_TOTAL_DEFAULT` documents its one exception.** Both the setting's
+  comment and `config.env.sample` said an absent `retrieve_total` resolves to
+  the setting. `/public/query` rewrites it to `false` before the query reaches
+  `QueryService`, deliberately, so the setting never governed public traffic.
+
 ## v1.3.0 — 2026-08-25
 
 ### Migration required

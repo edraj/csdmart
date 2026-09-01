@@ -77,7 +77,12 @@ public static class QueryHelper
         else if (!string.IsNullOrEmpty(q.Subpath) && q.Subpath != "/")
         {
             args.Add(new() { Value = q.Subpath });
-            sql.Append($"AND (subpath = ${args.Count} OR subpath LIKE ${args.Count} || '/%') ");
+            // SubpathScope, not a bare `LIKE $n || '/%'`: an unescaped prefix
+            // reads `_` as a wildcard and pulls in one-character siblings. See
+            // SubpathScope for why the ACL predicate used to hide that and no
+            // longer does.
+            sql.Append($"AND (subpath = ${args.Count} OR "
+                     + $"{SubpathScope.DescendantLike("subpath", $"${args.Count}")}) ");
         }
 
         if (q.FilterTypes is { Count: > 0 })

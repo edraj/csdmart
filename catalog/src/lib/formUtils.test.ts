@@ -36,6 +36,28 @@ describe("pruneEmptyFormValues", () => {
     expect(pruneEmptyFormValues({ tags: ["", null] })).toBeUndefined();
   });
 
+  // typeof is 'object' for these too, and Object.keys() on any of them is [],
+  // so walking them as plain objects returned undefined and dropped the value
+  // from the payload with no error. They are values, not containers of form
+  // fields, and must survive untouched.
+  it("keeps Date, File, Map and Set instead of walking them", () => {
+    const date = new Date("2026-01-02T03:04:05Z");
+    const map = new Map([["k", "v"]]);
+    const set = new Set(["a"]);
+    expect(pruneEmptyFormValues({ date, map, set })).toEqual({ date, map, set });
+  });
+
+  it("keeps a class instance whole", () => {
+    class Point {
+      constructor(
+        public x: number,
+        public y: number,
+      ) {}
+    }
+    const p = new Point(1, 2);
+    expect(pruneEmptyFormValues({ p })).toEqual({ p });
+  });
+
   it("prunes nested objects recursively", () => {
     expect(
       pruneEmptyFormValues({

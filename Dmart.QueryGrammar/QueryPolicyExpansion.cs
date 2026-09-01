@@ -66,6 +66,29 @@ public static class QueryPolicyExpansion
     public sealed record Expansion(IReadOnlyList<string> ExactTokens, IReadOnlyList<string> LikePatterns);
 
     /// <summary>
+    /// Ceiling on how many exact tokens one expansion may produce before the
+    /// remaining policies are left to LIKE.
+    /// </summary>
+    /// <remarks>
+    /// Expanding trades one LIKE pattern for N exact tokens, and N exact tokens
+    /// are N bind parameters. That is a good trade while N is small — the
+    /// overlap test is GIN-servable where the LIKE scan is not — and a bad one
+    /// once the parameter list starts driving the plan time it was meant to
+    /// save. A wildcard resource type alone enumerates all
+    /// <see cref="ResourceTypes"/> (doubled for the four-segment shape, which
+    /// spans both is_active values), so a single `space:subpath:*:*` is already
+    /// 60 tokens; an actor inheriting one such policy per group multiplies that
+    /// by their group count, and a user in 50 groups would emit 3000 bind
+    /// parameters. Still under PostgreSQL's 65535 cap, but well past the point
+    /// where the expansion pays for itself.
+    ///
+    /// Falling back is always SAFE, never merely cheaper: a policy left on the
+    /// LIKE path matches exactly the rows it always did. The cap only decides
+    /// which of two correct spellings each policy gets.
+    /// </remarks>
+    public const int MaxExactTokens = 256;
+
+    /// <summary>
     /// Expands <paramref name="policies"/>. The union of the two returned sets
     /// matches exactly the rows the original LIKE patterns matched.
     /// </summary>
@@ -78,7 +101,16 @@ public static class QueryPolicyExpansion
 
         foreach (var policy in policies)
         {
-            if (TryExpand(policy, out var tokens))
+            // Budget checked BEFORE the policy is expanded, and against its
+            // whole token count, so a policy is never split across the two
+            // forms — half a policy on each path would still be correct, but
+            // the two paths would then disagree about which rows each covers,
+            // which is not a property worth having to reason about. Counting
+            // pre-dedup can retire the budget slightly early; that only ever
+            // moves a policy to the (correct, slower) LIKE path.
+            if (exact.Count < MaxExactTokens
+                && TryExpand(policy, out var tokens)
+                && exact.Count + tokens.Count <= MaxExactTokens)
             {
                 foreach (var t in tokens)
                     if (seen.Add(t)) exact.Add(t);

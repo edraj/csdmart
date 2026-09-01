@@ -92,10 +92,19 @@ public sealed class OtpProvider(
     // historical "OTP" literal — a blank subject is spam-filter bait, so a
     // deployment with no language files must still get a usable one.
     //
+    // IsNullOrWhiteSpace, not `?? "OTP"`: the override path is a JSON file an
+    // operator edits by hand, where the natural way to say "I don't want a
+    // subject" is `"otp_email_subject": ""`, not omitting the key. A
+    // null-only guard sends that straight through as a blank Subject header —
+    // exactly the case the fallback exists to prevent.
+    //
     // No {code} substitution: putting the OTP in the subject line leaks it to
     // lock-screen notification previews and mail-server logs.
     internal string RenderSubject(Language language)
-        => languages.Get(language, "otp_email_subject") ?? "OTP";
+    {
+        var subject = languages.Get(language, "otp_email_subject");
+        return string.IsNullOrWhiteSpace(subject) ? "OTP" : subject;
+    }
 
     // Lightweight email heuristic — good enough for dispatch routing; the OTP
     // flow validates the full address format upstream when the user registered.

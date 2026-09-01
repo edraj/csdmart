@@ -56,6 +56,17 @@ export function getDefaultValueForProperty(property: SchemaProperty): any {
 }
 
 /**
+ * True only for `{}` literals and `Object.create(null)` bags — not for Date,
+ * File, Blob, Map, Set, or any class instance. Prototype comparison rather
+ * than a constructor-name check, so it survives minification.
+ */
+function isPlainObject(value: unknown): value is Record<string, any> {
+    if (value === null || typeof value !== 'object') return false;
+    const proto = Object.getPrototypeOf(value);
+    return proto === Object.prototype || proto === null;
+}
+
+/**
  * Recursively strip empty inputs from schema-form data before it is sent
  * to the server. The dynamic schema form pre-initializes every property
  * ('' / null / [] / {}), and those untouched placeholders must not end up
@@ -86,7 +97,14 @@ export function pruneEmptyFormValues(value: any): any {
         return pruned.length === 0 ? undefined : pruned;
     }
 
-    if (typeof value === 'object') {
+    // PLAIN objects only. `typeof x === 'object'` is also true of Date, File,
+    // Blob, Map and Set, and Object.keys() on any of them is [] — so walking
+    // them here would return undefined and silently drop the value from the
+    // payload, with no error anywhere. Today's schema forms only produce
+    // primitives, arrays and plain objects, so this is a guard rather than a
+    // live bug; the first file-upload or date-valued field added to a schema
+    // form is where it would have bitten.
+    if (isPlainObject(value)) {
         const pruned: Record<string, any> = {};
         for (const key of Object.keys(value)) {
             const cleaned = pruneEmptyFormValues(value[key]);
