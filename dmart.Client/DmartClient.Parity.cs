@@ -660,12 +660,23 @@ internal static class ResponseExtensions
     {
         if (resp.Attributes is null) return 0;
         if (!resp.Attributes.TryGetValue("total", out var raw)) return 0;
+        // `total` arrives as 3.0 whenever whatever produced it carried scale —
+        // the same decimal-point spelling IntegralNumberConverters exists to
+        // absorb. TryGetInt64 says false for it, and the `_ => 0` below then
+        // reports NO RESULTS rather than failing: a caller paging on `total`
+        // silently stops. So the decimal spelling is accepted here too, and a
+        // genuine fraction still falls through to 0 as before.
         return raw switch
         {
             int i => i,
             long l => (int)l,
             string s when int.TryParse(s, out var v) => v,
             JsonElement el when el.ValueKind == JsonValueKind.Number && el.TryGetInt64(out var v) => (int)v,
+            JsonElement el when el.ValueKind == JsonValueKind.Number
+                && el.TryGetDecimal(out var d) && decimal.Truncate(d) == d
+                && d >= int.MinValue && d <= int.MaxValue => (int)d,
+            decimal m when decimal.Truncate(m) == m && m >= int.MinValue && m <= int.MaxValue => (int)m,
+            double f when Math.Truncate(f) == f && f >= int.MinValue && f <= int.MaxValue => (int)f,
             _ => 0,
         };
     }

@@ -30,9 +30,14 @@ namespace Dmart.Client.Json;
 // "my_key" and read back as a different field. The server's DmartJsonContext
 // sets no DictionaryKeyPolicy either; the two must agree or a value written
 // by this client cannot be found by the server that stored it.
+// The integer tolerance is registered on BOTH legs — here and on
+// DmartClient.DefaultJsonOptions. They must not disagree about what they can
+// read, or a payload would parse on netstandard2.1 and fail on net8.0+. See
+// Json/IntegralNumberConverters.cs.
 [JsonSourceGenerationOptions(
     PropertyNamingPolicy = JsonKnownNamingPolicy.SnakeCaseLower,
-    DefaultIgnoreCondition = JsonIgnoreCondition.WhenWritingNull)]
+    DefaultIgnoreCondition = JsonIgnoreCondition.WhenWritingNull,
+    Converters = new[] { typeof(IntegralInt32Converter), typeof(IntegralInt64Converter) })]
 [JsonSerializable(typeof(Response))]
 [JsonSerializable(typeof(Request))]
 [JsonSerializable(typeof(Record))]

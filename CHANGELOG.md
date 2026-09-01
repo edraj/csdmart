@@ -1,5 +1,87 @@
 # Changelog
 
+## Unreleased
+
+### Breaking
+
+- **netstandard2.1 consumers: dictionary keys stop being snake_cased on the
+  way out, and data already stored under the rewritten names does not move.**
+  See the `DictionaryKeyPolicy` entry below for what changed and why. The part
+  that needs action: a netstandard2.1 caller who has been writing
+  `Attributes["myKey"]` against v1.3.x has that data on the server under
+  `my_key`. After this upgrade the same code writes `myKey`, so new writes and
+  old reads address different fields — with no error anywhere, the attribute
+  simply reads back empty.
+
+  Nothing in the client can detect this, because both spellings are valid
+  attribute names. If you are on the netstandard2.1 leg and have been writing
+  non-snake_case keys, migrate the stored entries (read under the old key,
+  write under the new) or keep snake_casing at the source. net8.0+ consumers
+  are unaffected: that leg was fixed in v1.3.2 and this only brings the other
+  leg into line.
+
+### Fixed
+
+- **The two serializer legs disagreed about dictionary keys.** v1.3.2 dropped
+  `DictionaryKeyPolicy` from `DmartClientJsonContext` because a dictionary here
+  is DATA — attribute bags and nested `Dictionary<string,string>` values, whose
+  keys belong to the caller and the space's schema — so snake-casing them is
+  silent corruption. `DmartClient.DefaultJsonOptions` kept the policy, and that
+  object is both the netstandard2.1 leg's serializer and public API a caller can
+  serialize a `Record` with. So the same client contradicted itself by target:
+  `"myKey"` shipped verbatim from net8.0+ and as `"my_key"` from netstandard2.1,
+  the second of which the server — which sets no `DictionaryKeyPolicy` either —
+  then stored under a name the caller could not read back.
+
+  The policy is gone from `DefaultJsonOptions` too. Property names still
+  snake_case: those are a fixed shape both ends agree on. Every key the client
+  itself writes was already snake_case, so nothing the SDK sends changes. A
+  caller who was relying on the netstandard leg to rewrite *their* keys was
+  relying on the corruption, and should snake_case them at the source.
+
+### Added
+
+- **`Dmart.Client` can read the decimal-point spelling of an integer.** dmart
+  validates payload bodies with JSON Schema, where `"type": "integer"` means "a
+  number with a zero fractional part" — `10240.0` satisfies it, so dmart accepts,
+  stores and returns that value for a field its own schema calls an integer.
+  System.Text.Json refuses to read it into an `int`, which left the client
+  **stricter than the server it talks to**: a caller whose model matched the
+  schema still got
+
+  ```
+  JsonException: The JSON value could not be converted to System.Int32.
+  ```
+
+  `IntegralInt32Converter` and `IntegralInt64Converter` (namespace
+  `Dmart.Client.Json`) close exactly that gap and nothing wider — a value with a
+  real fraction is still rejected, because the schema would reject it too, and
+  the comparison runs through `decimal` so integers past 2<sup>53</sup> keep
+  every digit. Use them per property via `[JsonConverter(...)]`, which needs no
+  options plumbing and stays trim/AOT-safe, or register them on your own
+  `JsonSerializerOptions` for a whole body; System.Text.Json wraps them for the
+  `int?`/`long?` forms automatically. `DmartClient.DefaultJsonOptions` and the
+  source-gen context both carry them, so the client's own types read the same way
+  on every target framework.
+
+  Writing is unchanged, and so is what the client hands you: payload bodies still
+  arrive byte-exact as `JsonElement`, `10240.0` included. The tolerance is in the
+  read, not a rewrite of the data. A field reading back as `10240.0` was *stored*
+  that way — Python renders every float like that, as does .NET for a `decimal`
+  carrying scale.
+
+  **This supersedes the consumer guidance published in v1.3.1**, which told
+  callers that such a field "gets a hard `JsonException: The JSON value could
+  not be converted to System.Int32`" and to "map it to `decimal`/`double` … or
+  normalise it at the producer". That is right for a `"type": "number"` schema
+  and wrong when the schema says `integer` — there the caller's `int` was
+  correct and the reader was not. With these converters registered, `int` and
+  `long` read the value directly and the workaround is no longer needed.
+
+  The server-side guarantee from the same release is untouched and still
+  holds: dmart does not reformat numbers anywhere in the stack, so a field
+  that reads back as `1000.0` was stored that way.
+
 ## v1.3.2 — 2026-09-01
 
 ### Performance

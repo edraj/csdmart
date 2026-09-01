@@ -1,5 +1,6 @@
 using System.Net;
 using System.Text;
+using System.Text.Json;
 using Dmart.Client;
 using Dmart.Models.Api;
 using Dmart.Models.Enums;
@@ -169,6 +170,47 @@ public class DmartClientAttributeTypeTests
         // The POCO properties around them still snake_case — this fix narrows
         // the policy to dictionary keys, it does not drop the wire convention.
         body.ShouldContain("\"space_name\":", Case.Sensitive, body);
+    }
+
+    // ...and the SAME invariant on the OTHER leg.
+    //
+    // The test above drives RequestAsync, which on net8.0+ routes through
+    // DmartClientJsonContext — so it only ever proved the source-gen leg. The
+    // netstandard2.1 leg serializes through the public DefaultJsonOptions, which
+    // still carried DictionaryKeyPolicy = SnakeCaseLower, so the two legs of the
+    // SAME client disagreed about the caller's own field names: "myKey" shipped
+    // verbatim from net8.0+ and as "my_key" from netstandard2.1.
+    //
+    // The test project only builds for net10.0, so the netstandard leg cannot be
+    // exercised end to end here. DefaultJsonOptions is public and identical on
+    // every target, though, so asserting against it directly pins exactly the
+    // thing that differed — and it is also the object a caller reaches for when
+    // they serialize a Record themselves, which makes the trap cross-TFM.
+    [Fact]
+    public void DefaultJsonOptions_Preserves_Dictionary_Keys_Too()
+    {
+        var record = new Dmart.Models.Api.Record
+        {
+            ResourceType = ResourceType.Content,
+            Shortname = "sn",
+            Subpath = "/",
+            Attributes = new Dictionary<string, object>
+            {
+                ["myKey"] = "v",
+                ["nested"] = new Dictionary<string, string> { ["innerKey"] = "w" },
+            },
+        };
+
+        var json = JsonSerializer.Serialize(record, DmartClient.DefaultJsonOptions);
+
+        json.ShouldContain("\"myKey\":", Case.Sensitive, json);
+        json.ShouldContain("\"innerKey\":", Case.Sensitive, json);
+        json.ShouldNotContain("my_key");
+        json.ShouldNotContain("inner_key");
+
+        // Property names are a fixed shape both ends agree on, so they keep the
+        // snake_case wire convention. Only DATA keys are left alone.
+        json.ShouldContain("\"resource_type\":", Case.Sensitive, json);
     }
 
     // The reported symptom, stated as an invariant: an integral CLR value must
