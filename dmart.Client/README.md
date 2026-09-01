@@ -128,6 +128,11 @@ the set of types an attribute bag can carry is closed:
   `List<string>`/`List<int>`/`List<long>`/`List<double>`/`List<decimal>`/`List<bool>`,
   `Dictionary<string, object>`, `Dictionary<string, string>`
 
+Dictionary **keys** go on the wire exactly as you wrote them. The snake_case
+wire convention applies to model property names (`space_name`, `resource_type`),
+not to keys you choose: an attribute called `myKey` is stored and read back as
+`myKey`.
+
 Anything else — including your own POCOs — must be handed over as a
 `JsonElement`, serialized against **your** context so trimming and AOT stay
 sound:

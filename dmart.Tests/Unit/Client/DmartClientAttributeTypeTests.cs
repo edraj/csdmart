@@ -118,6 +118,59 @@ public class DmartClientAttributeTypeTests
     public async Task Attribute_Bag_Carries_Common_Collections(string name, object value, string expected)
         => (await WireValueAsync(value)).ShouldStartWith(expected, Case.Sensitive, name);
 
+    // Dictionary keys are DATA and must reach the wire byte-for-byte.
+    //
+    // The context sets PropertyNamingPolicy = SnakeCaseLower for POCO property
+    // names, which is right — those are a fixed shape both ends agree on. A
+    // DictionaryKeyPolicy alongside it was not: it rewrote every attribute-bag
+    // key and every nested dictionary key on the way out, so a caller who
+    // stored "myKey" got "my_key" on the server and read back nothing under the
+    // name they wrote. The server's DmartJsonContext sets no DictionaryKeyPolicy,
+    // so the client silently disagreed with the server about the caller's own
+    // field names.
+    //
+    // Both levels are pinned: the attribute bag itself (Dictionary<string,object>)
+    // and a Dictionary<string,string> nested inside it. Every other case in this
+    // file uses single-letter keys, which snake_case leaves alone — which is
+    // exactly why nothing caught it.
+    [Fact]
+    public async Task Dictionary_Keys_Reach_The_Wire_Verbatim()
+    {
+        var handler = new RecordingHandler();
+        using var http = new HttpClient(handler);
+        using var client = new DmartClient("https://dmart.test", http);
+
+        await client.RequestAsync(new Request
+        {
+            RequestType = RequestType.Create,
+            SpaceName = "space",
+            Records = new List<Dmart.Models.Api.Record>
+            {
+                new()
+                {
+                    ResourceType = ResourceType.Content,
+                    Shortname = "sn",
+                    Subpath = "/",
+                    Attributes = new Dictionary<string, object>
+                    {
+                        ["myKey"] = "v",
+                        ["nested"] = new Dictionary<string, string> { ["innerKey"] = "w" },
+                    },
+                },
+            },
+        });
+
+        var body = handler.LastBody.ShouldNotBeNull();
+        body.ShouldContain("\"myKey\":", Case.Sensitive, body);
+        body.ShouldContain("\"innerKey\":", Case.Sensitive, body);
+        body.ShouldNotContain("my_key");
+        body.ShouldNotContain("inner_key");
+
+        // The POCO properties around them still snake_case — this fix narrows
+        // the policy to dictionary keys, it does not drop the wire convention.
+        body.ShouldContain("\"space_name\":", Case.Sensitive, body);
+    }
+
     // The reported symptom, stated as an invariant: an integral CLR value must
     // never reach the wire wearing a fractional tail, whatever numeric type the
     // caller happened to model it with. `decimal` is the one type that keeps

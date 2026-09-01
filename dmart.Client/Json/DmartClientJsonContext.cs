@@ -22,9 +22,16 @@ using Dmart.Models.Enums;
 
 namespace Dmart.Client.Json;
 
+// No DictionaryKeyPolicy — deliberately, and it must stay that way. A
+// dictionary here is DATA, not a shape with property names: attribute bags,
+// ad-hoc request bodies, and the Dictionary<string,string> registered below.
+// Their keys are chosen by the caller and by the space's own schema, so
+// rewriting them is silent corruption — a "myKey" attribute would arrive as
+// "my_key" and read back as a different field. The server's DmartJsonContext
+// sets no DictionaryKeyPolicy either; the two must agree or a value written
+// by this client cannot be found by the server that stored it.
 [JsonSourceGenerationOptions(
     PropertyNamingPolicy = JsonKnownNamingPolicy.SnakeCaseLower,
-    DictionaryKeyPolicy = JsonKnownNamingPolicy.SnakeCaseLower,
     DefaultIgnoreCondition = JsonIgnoreCondition.WhenWritingNull)]
 [JsonSerializable(typeof(Response))]
 [JsonSerializable(typeof(Request))]

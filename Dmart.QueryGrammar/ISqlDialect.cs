@@ -216,29 +216,35 @@ public interface ISqlDialect
     string? Reducer(string name, string? field, string quantile);
 
     /// <summary>
-    /// As <see cref="Reducer(string, string?, string)"/>, but told whether
-    /// <paramref name="field"/> is a JSON extraction whose SQL type is text
-    /// rather than the value's own type.
+    /// As <see cref="Reducer(string, string?, string)"/>, but also handed the
+    /// same field as an untyped JSON value, when there is one.
     /// </summary>
     /// <remarks>
     /// Only ordering reducers care. A backend whose JSON extraction yields text
     /// (PostgreSQL <c>-&gt;&gt;</c>) compares 9, 10 and 100 as strings and
     /// answers "10" for the minimum; one whose extraction is typed (SQLite
-    /// <c>-&gt;&gt;</c>) compares them as numbers and needs no help. The flag
-    /// distinguishes the two rather than assuming either.
+    /// <c>-&gt;&gt;</c>) compares them as numbers and needs no help.
     ///
-    /// <paramref name="fieldIsJsonText"/> is false for a plain column, which is
-    /// already natively typed and MUST be left alone — on PostgreSQL a
-    /// text-oriented rewrite of <c>MIN(updated_at)</c> both changes the returned
-    /// type and fails outright, since <c>timestamp ~ text</c> has no operator.
+    /// <paramref name="fieldJson"/> is the JSON value at the same path with its
+    /// type intact (PostgreSQL <c>-&gt;</c>), which is strictly more than a
+    /// "this is JSON text" flag would carry: a dialect can then tell a JSON
+    /// NUMBER from a JSON STRING that merely looks numeric, and order each the
+    /// way its own engine would. A flag cannot — its only recourse is to sniff
+    /// the text, and a text sniff cannot tell 7 from "007".
+    ///
+    /// Null for a plain column, which is already natively typed and MUST be
+    /// left alone — on PostgreSQL a text-oriented rewrite of
+    /// <c>MIN(updated_at)</c> both changes the returned type and fails
+    /// outright, since <c>timestamp ~ text</c> has no operator. Null also when
+    /// the reducer took no argument.
     ///
     /// Default implementation so this member stays additive: Dmart.QueryGrammar
     /// is a published package, and a new abstract member would break every
-    /// third-party ISqlDialect at compile time. The default ignores the flag and
-    /// behaves exactly as before, which is correct for any dialect whose JSON
-    /// extraction is already typed.
+    /// third-party ISqlDialect at compile time. The default ignores the JSON
+    /// form and behaves exactly as before, which is correct for any dialect
+    /// whose JSON extraction is already typed.
     /// </remarks>
-    string? Reducer(string name, string? field, string quantile, bool fieldIsJsonText)
+    string? Reducer(string name, string? field, string quantile, string? fieldJson)
         => Reducer(name, field, quantile);
 
     /// <summary>Casts an extracted JSON value to a number for comparison.</summary>

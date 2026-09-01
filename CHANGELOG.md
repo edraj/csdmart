@@ -24,6 +24,17 @@
   scalars plus the common collection shapes. A consumer POCO still has to be
   handed over as a `JsonElement` — that is inherent to staying trim/AOT-safe.
 
+- **`Dmart.Client` rewrote dictionary keys on the way out.** The
+  source-generated context set `DictionaryKeyPolicy = SnakeCaseLower` alongside
+  the property policy, so every key the caller chose was snake_cased before it
+  left the process: an attribute stored as `myKey` arrived at the server as
+  `my_key`, and read back as nothing under the name it was written with. Nested
+  `Dictionary<string, string>` values had the same done to them. The server's
+  `DmartJsonContext` sets no `DictionaryKeyPolicy`, so the two sides disagreed
+  about the caller's own field names. The policy is gone; dictionary keys now go
+  on the wire verbatim. `PropertyNamingPolicy` is unchanged — model properties
+  are still snake_case, because those are a fixed shape both ends agree on.
+
 - **Aggregation results were rounded on the way out.** `QueryService` narrowed
   every aggregation cell to a type the server's source-gen context knew —
   `long → int` and `decimal → double`. The same defect class as above, and both
@@ -50,20 +61,32 @@
   silent. PostgreSQL's default collation also ignores punctuation, so negatives
   misordered against decimals too.
 
-  Both reducers now split the group with the same numeric regex the sort keys
-  already use — one aggregate over the rows that parse as a number, one over the
-  rows that do not, `COALESCE` picking which half answers. Numbers order
-  numerically, text keeps its lexicographic order (ISO-8601 timestamps depend on
-  it), and numbers sort below text on mixed data, matching both jsonb's own
-  ordering and SQLite's. The comparison uses `::numeric`, not the `::float` of
-  the sort keys, so integers past 2<sup>53</sup> cannot tie. Both aggregates
-  stream, so memory stays flat in group size.
+  Both reducers now split the group by the value's actual JSON type, read off
+  the jsonb form of the same path: one aggregate over the rows that really are
+  JSON numbers, one over the rest, `COALESCE` picking which half answers.
+  Numbers order numerically, text keeps its lexicographic order (ISO-8601
+  timestamps depend on it), and the comparison uses `::numeric`, not the
+  `::float` of the sort keys, so integers past 2<sup>53</sup> cannot tie. Both
+  aggregates stream, so memory stays flat in group size.
+
+  Reading the type rather than sniffing the extracted text is what makes it
+  safe on strings that merely look numeric. `->>` erases the difference between
+  the number `7` and the string `"007"`, so a regex sniff sends zero-padded
+  codes — SKUs, account numbers, ISO 3166 numerics — down the numeric branch,
+  where `::numeric::text` canonicalises `"007"` to `"7"`: an answer no row in
+  the group holds. `jsonb_typeof` cannot make that mistake.
+
+  On mixed data numbers order below text. That is **SQLite's** type ordering,
+  not jsonb's own — jsonb ranks Number *above* String — and matching SQLite is
+  the point, so the two backends answer the same instead of each inventing an
+  answer. JSON nulls and absent fields stay out of both aggregates, as `->>`
+  yielding SQL NULL already did.
 
   **SQLite was never affected** — its `->>` returns the JSON value's own SQL
   type, so it was already comparing numbers as numbers. `ISqlDialect` gained a
-  `Reducer` overload carrying whether the field is JSON-typed text; it has a
-  default implementation delegating to the existing three-argument member, so
-  third-party dialects are unaffected. Plain columns are untouched: they are
+  `Reducer` overload carrying the field's JSON form alongside its text form; it
+  has a default implementation delegating to the existing three-argument member,
+  so third-party dialects are unaffected. Plain columns are untouched: they are
   already natively typed, and `MIN(updated_at)` still returns a timestamp.
 
 ### Notes
