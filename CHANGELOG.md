@@ -5,20 +5,43 @@
 ### Breaking
 
 - **netstandard2.1 consumers: dictionary keys stop being snake_cased on the
-  way out, and data already stored under the rewritten names does not move.**
-  See the `DictionaryKeyPolicy` entry below for what changed and why. The part
-  that needs action: a netstandard2.1 caller who has been writing
-  `Attributes["myKey"]` against v1.3.x has that data on the server under
-  `my_key`. After this upgrade the same code writes `myKey`, so new writes and
-  old reads address different fields — with no error anywhere, the attribute
-  simply reads back empty.
+  way out.** See the `DictionaryKeyPolicy` entry below for what changed. What
+  it means for you depends on whether the payload has a schema, and the two
+  cases are very different:
 
-  Nothing in the client can detect this, because both spellings are valid
-  attribute names. If you are on the netstandard2.1 leg and have been writing
-  non-snake_case keys, migrate the stored entries (read under the old key,
-  write under the new) or keep snake_casing at the source. net8.0+ consumers
-  are unaffected: that leg was fixed in v1.3.2 and this only brings the other
-  leg into line.
+  **With a `schema_shortname` — you get a loud, precise error.** The server
+  stores keys verbatim and the space's JSON Schema is the enforcement point, so
+  a body written as `endPoint` against a schema declaring `end_point` is
+  rejected on write:
+
+  ```
+  430 payload failed schema validation:
+      required: Required properties ["end_point"] are not present;
+      /endPoint: All values fail against the false schema
+  ```
+
+  Nothing is silently stored wrong. The fix is to spell the key the way the
+  schema declares it — which for dmart's own schemas is snake_case.
+
+  **Without a schema, and for attribute bags — keys round-trip verbatim.**
+  `{"myKey": "v"}` is stored and read back as `myKey`. So a netstandard2.1
+  caller who has been writing `Attributes["myKey"]` against v1.3.x has that
+  data on the server under `my_key`, and after this upgrade the same code
+  writes `myKey`. Here there is no schema to catch it: migrate the stored
+  entries (read under the old key, write under the new), or spell the key the
+  way you want it stored.
+
+  net8.0+ consumers are unaffected — that leg was fixed in v1.3.2 and this
+  brings the other into line.
+
+  **On the convention.** snake_case remains the convention for dmart payload
+  fields, and the shipped schemas follow it (`end_point`, `request_body`,
+  `schema_shortname`). It is a convention that schemas *declare* and validation
+  *enforces* per space — it was never a wire-level rewrite, and the server has
+  never performed one. The client used to, which meant it silently rewrote keys
+  the caller had chosen deliberately and could not turn off. Removing it makes
+  the client agree with the server; the schema keeps enforcing the convention,
+  and now says so out loud when a key does not match.
 
 ### Fixed
 
