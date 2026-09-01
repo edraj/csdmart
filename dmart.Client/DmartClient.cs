@@ -39,6 +39,16 @@ public sealed partial class DmartClient : IDisposable, IDmartData
         PropertyNamingPolicy = JsonNamingPolicy.SnakeCaseLower,
         DictionaryKeyPolicy = JsonNamingPolicy.SnakeCaseLower,
         DefaultIgnoreCondition = System.Text.Json.Serialization.JsonIgnoreCondition.WhenWritingNull,
+        // dmart validates with JSON Schema, where "type": "integer" accepts
+        // 10240.0. Without these the client would refuse to read a value the
+        // server accepts, stores and returns — stricter than its own backend.
+        // See Json/IntegralNumberConverters.cs; they are public so callers can
+        // register them for their own payload-body models too.
+        Converters =
+        {
+            new Json.IntegralInt32Converter(),
+            new Json.IntegralInt64Converter(),
+        },
     };
 
     public string BaseUrl { get; }

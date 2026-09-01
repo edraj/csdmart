@@ -22,10 +22,14 @@ using Dmart.Models.Enums;
 
 namespace Dmart.Client.Json;
 
+// Same integer tolerance as DmartClient.DefaultJsonOptions — the two legs must
+// not disagree about what they can read, or a payload would parse on
+// netstandard2.1 and fail on net8.0+. See Json/IntegralNumberConverters.cs.
 [JsonSourceGenerationOptions(
     PropertyNamingPolicy = JsonKnownNamingPolicy.SnakeCaseLower,
     DictionaryKeyPolicy = JsonKnownNamingPolicy.SnakeCaseLower,
-    DefaultIgnoreCondition = JsonIgnoreCondition.WhenWritingNull)]
+    DefaultIgnoreCondition = JsonIgnoreCondition.WhenWritingNull,
+    Converters = new[] { typeof(IntegralInt32Converter), typeof(IntegralInt64Converter) })]
 [JsonSerializable(typeof(Response))]
 [JsonSerializable(typeof(Request))]
 [JsonSerializable(typeof(Record))]
