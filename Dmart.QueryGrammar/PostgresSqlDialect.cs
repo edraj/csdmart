@@ -72,6 +72,8 @@ public sealed class PostgresSqlDialect : ISqlDialect
             field is null ? "COUNT(*)" : $"COUNT(DISTINCT {field})",
         "sum" or "total" => field is null ? null : $"SUM(({field})::numeric)",
         "avg" => field is null ? null : $"AVG(({field})::numeric)",
+        // Plain columns only — a JSON path arrives here as text and needs the
+        // numeric-aware form below. See the four-argument overload.
         "min" => field is null ? null : $"MIN({field})",
         "max" => field is null ? null : $"MAX({field})",
         "stddev" => field is null ? null : $"STDDEV(({field})::numeric)",
@@ -85,6 +87,64 @@ public sealed class PostgresSqlDialect : ISqlDialect
             : $"(ARRAY_AGG({field} ORDER BY RANDOM()))[1]",
         _ => null,
     };
+
+    // ->> hands back text, so MIN/MAX over a JSON path compared 9, 10 and 100 as
+    // strings and answered "10" for the minimum. The fix has to keep working for
+    // the fields min/max are legitimately used on — names, ISO-8601 timestamps —
+    // so an unconditional ::numeric cast is out: it would both reorder those and
+    // throw on the first non-numeric row.
+    //
+    // Two aggregates in one expression, one over the numeric rows and one over
+    // the rest, COALESCE deciding which half answers. Both stream — no
+    // ARRAY_AGG, so a group's memory cost stays flat rather than growing with
+    // its row count, which matters because min/max are core reducers and a
+    // group here can hold millions of rows.
+    //
+    // The split is by the value's ACTUAL JSON type, read off the jsonb form of
+    // the same path. Sniffing the extracted text with a numeric regex is
+    // cheaper to write and is wrong: ->> erases the difference between the
+    // number 7 and the string "007", so a field of zero-padded codes takes the
+    // numeric branch, and ::numeric::text canonicalises "007" to "7" — an
+    // answer no row in the group holds. jsonb_typeof cannot make that mistake.
+    //
+    // Numbers order below text on mixed data. That is SQLite's type ordering,
+    // which its typed ->> gives min/max there for free, and matching it is the
+    // point — the two backends must agree rather than each inventing an answer.
+    // It is NOT jsonb's own cross-type order, which ranks Number above String.
+    // Ordering the jsonb values directly would have inherited that anyway, and
+    // there is no min(jsonb)/max(jsonb) aggregate to do it with: jsonb has the
+    // comparison operators but PostgreSQL defines no extremum aggregate over
+    // them.
+    //
+    // ::numeric, not the ::float the sort keys use: this comparison decides
+    // WHICH value is returned, and float ties any two integers past 2^53.
+    //
+    // The path is read four times per row — twice as jsonb for the type test,
+    // twice as text for the value. Collapsing that to one would mean hoisting
+    // the extraction into a derived column (LATERAL on PostgreSQL), which
+    // SQLite cannot express and which the aggregation builder would have to
+    // thread through GROUP BY as well. Not worth it for a jsonb field read.
+    public string? Reducer(string name, string? field, string quantile, string? fieldJson)
+    {
+        if (field is null || fieldJson is null) return Reducer(name, field, quantile);
+
+        // COALESCE takes the first non-null half, and the numeric group sorts
+        // below the text one — so min asks the numeric half first, max the text.
+        return name switch
+        {
+            "min" => $"COALESCE({NumericHalf("MIN", field, fieldJson)}, {TextHalf("MIN", field, fieldJson)})",
+            "max" => $"COALESCE({TextHalf("MAX", field, fieldJson)}, {NumericHalf("MAX", field, fieldJson)})",
+            _ => Reducer(name, field, quantile),
+        };
+    }
+
+    // A JSON null and an absent field both yield SQL NULL from ->>, so both
+    // stay out of either aggregate — the behaviour callers already had.
+    private static string NumericHalf(string aggregate, string text, string json)
+        => $"{aggregate}(CASE WHEN jsonb_typeof({json}) = 'number' THEN ({text})::numeric END)::text";
+
+    private static string TextHalf(string aggregate, string text, string json)
+        => $"{aggregate}(CASE WHEN jsonb_typeof({json}) <> 'number' THEN ({text}) END)";
 
     public string JsonTypeIs(string jsonExpr, JsonKind kind)
         => $"jsonb_typeof({jsonExpr}) = '{TypeName(kind)}'";
