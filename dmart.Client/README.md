@@ -114,6 +114,46 @@ foreach (var record in resp.Records ?? [])
 await client.LogoutAsync();
 ```
 
+## Attribute bags and numbers
+
+`Record.Attributes`, `Request.Attributes` and `Response.Attributes` are
+`Dictionary<string, object>`, so values are resolved by their **runtime** type.
+On net8.0+ the client serializes through a source-generated context, which means
+the set of types an attribute bag can carry is closed:
+
+- every JSON scalar — `string`, `bool`, `int`, `long`, `double`, `decimal`,
+  `float`, `short`, `ushort`, `byte`, `sbyte`, `uint`, `ulong`, `Guid`,
+  `DateTime`, `DateTimeOffset`, `JsonElement`
+- the common collections — `object[]`, the primitive arrays, `List<object>`,
+  `List<string>`/`List<int>`/`List<long>`/`List<double>`/`List<decimal>`/`List<bool>`,
+  `Dictionary<string, object>`, `Dictionary<string, string>`
+
+Dictionary **keys** go on the wire exactly as you wrote them. The snake_case
+wire convention applies to model property names (`space_name`, `resource_type`),
+not to keys you choose: an attribute called `myKey` is stored and read back as
+`myKey`.
+
+Anything else — including your own POCOs — must be handed over as a
+`JsonElement`, serialized against **your** context so trimming and AOT stay
+sound:
+
+```csharp
+Attributes = new Dictionary<string, object>
+{
+    ["payload"] = JsonSerializer.SerializeToElement(myModel, MyContext.Default.MyModel),
+};
+```
+
+**Reading numbers back.** The client hands you JSON numbers as `JsonElement`s
+and never reformats them: an integer written is an integer read. A field that
+reads back as `1000.0` was *stored* that way. `decimal` is the only .NET type
+that preserves trailing-zero scale through System.Text.Json (`1000.0m`
+serializes as `"1000.0"`), so an integral field modelled as `decimal` upstream
+is what puts that form in the store. Mapping such a field onto `int` throws
+`JsonException: The JSON value could not be converted to System.Int32` — map it
+to `decimal`/`double` to match a `"type": "number"` schema, or normalise it
+where it is produced.
+
 ## Error handling
 
 Any non-success envelope (`status=failed`), non-2xx HTTP response with a

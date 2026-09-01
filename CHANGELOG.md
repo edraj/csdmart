@@ -34,6 +34,91 @@
 
 ### Fixed
 
+- **`Dmart.Client` could not put a `decimal` (or most other CLR scalars) in an
+  attribute bag.** `Record.Attributes` / `Request.Attributes` are
+  `Dictionary<string, object>`, so System.Text.Json resolves every value by its
+  *runtime* type. On net8.0+ the client routes bodies through the
+  source-generated `DmartClientJsonContext`, which only ever registered
+  `string`, `bool`, `int`, `long` and `double` — so a `decimal` money field, a
+  `float`, a `short`/`byte`/`uint`/`ulong`, a `Guid`, a `DateTimeOffset`, an
+  `int[]` or a `List<object>` all threw
+
+  ```
+  NotSupportedException: JsonTypeInfo metadata for type 'System.Decimal' was not
+  provided by TypeInfoResolver of type 'Dmart.Client.Json.DmartClientJsonContext'
+  ```
+
+  at serialize time, before the request left the process. The netstandard2.1 leg
+  is reflection-based and never had the problem, which is why this only ever bit
+  modern consumers. The context now registers the closed set of JSON-representable
+  scalars plus the common collection shapes. A consumer POCO still has to be
+  handed over as a `JsonElement` — that is inherent to staying trim/AOT-safe.
+
+- **`Dmart.Client` rewrote dictionary keys on the way out.** The
+  source-generated context set `DictionaryKeyPolicy = SnakeCaseLower` alongside
+  the property policy, so every key the caller chose was snake_cased before it
+  left the process: an attribute stored as `myKey` arrived at the server as
+  `my_key`, and read back as nothing under the name it was written with. Nested
+  `Dictionary<string, string>` values had the same done to them. The server's
+  `DmartJsonContext` sets no `DictionaryKeyPolicy`, so the two sides disagreed
+  about the caller's own field names. The policy is gone; dictionary keys now go
+  on the wire verbatim. `PropertyNamingPolicy` is unchanged — model properties
+  are still snake_case, because those are a fixed shape both ends agree on.
+
+- **Aggregation results were rounded on the way out.** `QueryService` narrowed
+  every aggregation cell to a type the server's source-gen context knew —
+  `long → int` and `decimal → double`. The same defect class as above, and both
+  casts lost data. PostgreSQL emits `SUM`/`AVG` over numeric as `numeric`, which
+  Npgsql hands back as `decimal`, so every money aggregate went through binary
+  floating point: a `SUM` of `12345678901234567.89` returned
+  `12345678901234568`, and `0.1 + 0.2` returned `0.30000000000000004`. The
+  `long → int` cast was pure loss — `long` was already registered, and the cast
+  silently wrapped any count past `int.MaxValue`. `DmartJsonContext` now
+  registers `decimal` (and the remaining scalars, matching the client), and the
+  casts are gone.
+
+  **Wire shape is unchanged.** `AVG(numeric)` arrives from PostgreSQL at scale 16
+  — the average of 10, 20, 30, 30 is literally `22.5000000000000000` — and
+  `decimal` carries trailing zeros through System.Text.Json where `double` does
+  not. Emitting it raw would have turned `22.5` into `22.5000000000000000`, so
+  the scale is normalised away without altering the value. Callers keep seeing
+  `22.5` and `90`; what changes is only that the value behind them is now exact.
+
+- **`min` and `max` compared JSON numbers as text on PostgreSQL.** A jsonb path
+  resolves through `->>`, which hands back text, so the two ordering reducers ran
+  a string comparison: over amounts 9, 10 and 100, `min` answered `"10"` and
+  `max` answered `"9"`. Wrong for any field whose values vary in digit count, and
+  silent. PostgreSQL's default collation also ignores punctuation, so negatives
+  misordered against decimals too.
+
+  Both reducers now split the group by the value's actual JSON type, read off
+  the jsonb form of the same path: one aggregate over the rows that really are
+  JSON numbers, one over the rest, `COALESCE` picking which half answers.
+  Numbers order numerically, text keeps its lexicographic order (ISO-8601
+  timestamps depend on it), and the comparison uses `::numeric`, not the
+  `::float` of the sort keys, so integers past 2<sup>53</sup> cannot tie. Both
+  aggregates stream, so memory stays flat in group size.
+
+  Reading the type rather than sniffing the extracted text is what makes it
+  safe on strings that merely look numeric. `->>` erases the difference between
+  the number `7` and the string `"007"`, so a regex sniff sends zero-padded
+  codes — SKUs, account numbers, ISO 3166 numerics — down the numeric branch,
+  where `::numeric::text` canonicalises `"007"` to `"7"`: an answer no row in
+  the group holds. `jsonb_typeof` cannot make that mistake.
+
+  On mixed data numbers order below text. That is **SQLite's** type ordering,
+  not jsonb's own — jsonb ranks Number *above* String — and matching SQLite is
+  the point, so the two backends answer the same instead of each inventing an
+  answer. JSON nulls and absent fields stay out of both aggregates, as `->>`
+  yielding SQL NULL already did.
+
+  **SQLite was never affected** — its `->>` returns the JSON value's own SQL
+  type, so it was already comparing numbers as numbers. `ISqlDialect` gained a
+  `Reducer` overload carrying the field's JSON form alongside its text form; it
+  has a default implementation delegating to the existing three-argument member,
+  so third-party dialects are unaffected. Plain columns are untouched: they are
+  already natively typed, and `MIN(updated_at)` still returns a timestamp.
+
 - **A blank `otp_email_subject` override sent a blank Subject header.** The
   fallback to the `"OTP"` literal was `?? "OTP"`, which only fires on a missing
   key. An operator overlay at `~/.dmart/languages/<locale>.json` containing
@@ -73,6 +158,22 @@
   comment and `config.env.sample` said an absent `retrieve_total` resolves to
   the setting. `/public/query` rewrites it to `false` before the query reaches
   `QueryService`, deliberately, so the setting never governed public traffic.
+
+||||||| f7d3625
+
+### Notes
+
+- **Numbers are not reformatted anywhere in the stack**, and
+  `NumberFidelityTests` now pins it: an integer written through
+  `/managed/request` comes back out of create, update *and* patch as the same
+  integer, exact past 2<sup>53</sup>. A field that reads back as `1000.0` was
+  *stored* that way — `decimal` is the only .NET type that keeps trailing-zero
+  scale through System.Text.Json (`1000.0m` serializes as `"1000.0"`), so a
+  producer modelling an integral field as `decimal` is what puts that form in the
+  store. Consumers mapping such a field onto `int` get a hard
+  `JsonException: The JSON value could not be converted to System.Int32`;
+  map it to `decimal`/`double` (matching a `"type": "number"` schema), or
+  normalise it at the producer.
 
 ## v1.3.0 — 2026-08-25
 

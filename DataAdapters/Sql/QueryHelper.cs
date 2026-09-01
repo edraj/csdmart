@@ -688,18 +688,29 @@ public static class QueryHelper
         var reducerArgs = reducer.Args ?? new();
         var name = reducer.ReducerName.ToLowerInvariant();
 
+        // A dotted argument resolves to a JSON extraction; a bare one names a
+        // column. The dialect gets BOTH forms of a dotted one — the text the
+        // reducer aggregates and the same path left as JSON — because a text
+        // extraction has the value's own type erased, and an ordering reducer
+        // needs that type back. A bare column stays null here: it is already
+        // natively typed and must be left alone.
+        string? fieldJson = null;
+
         string? ResolveArg(int index)
         {
             if (reducerArgs.Count <= index) return null;
             var arg = reducerArgs[index];
             if (arg.StartsWith('@')) arg = arg[1..];
-            return ResolveFieldExpr(arg, dialect);
+            var resolved = ResolveFieldExpr(arg, dialect);
+            if (index == 0 && resolved is not null)
+                fieldJson = ResolveFieldJsonExpr(arg, dialect);
+            return resolved;
         }
 
         var fieldExpr = ResolveArg(0);
         var quantile = ParseQuantile(reducerArgs);
 
-        var expr = dialect.Reducer(name, fieldExpr, quantile);
+        var expr = dialect.Reducer(name, fieldExpr, quantile, fieldJson);
         if (expr is not null) return expr;
 
         // The dialect produced nothing. Two very different reasons, and they
@@ -745,6 +756,23 @@ public static class QueryHelper
         }
         if (!SafeColumnIdent.IsMatch(field)) return null;
         return field;
+    }
+
+    // The same resolution as ResolveFieldExpr, but stopping at -> rather than
+    // ->> so the value keeps its JSON type. Null for a bare column — there is no
+    // JSON value there, and a natively-typed column must be left alone.
+    private static string? ResolveFieldJsonExpr(string field, ISqlDialect dialect)
+    {
+        if (field.StartsWith("payload.", StringComparison.Ordinal))
+            return dialect.JsonValue("payload", field["payload.".Length..].Split('.'));
+        if (field.Contains('.'))
+        {
+            var dot = field.IndexOf('.');
+            var col = field[..dot];
+            if (!SafeColumnIdent.IsMatch(col)) return null;
+            return dialect.JsonValue(col, field[(dot + 1)..].Split('.'));
+        }
+        return null;
     }
 
     // Sanitize an alias for SQL (replace dots/at-signs with underscores).

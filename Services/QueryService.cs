@@ -864,17 +864,9 @@ public sealed class QueryService(
         // in attributes. Python returns a single Record per group.
         var records = rows.Select(row =>
         {
-            // Convert numeric types to int/double to avoid JsonTypeInfo issues with source-gen
             var attrs = new Dictionary<string, object>(StringComparer.Ordinal);
             foreach (var kv in row)
-            {
-                attrs[kv.Key] = kv.Value switch
-                {
-                    long l => (int)l,
-                    decimal d => (double)d,
-                    _ => kv.Value,
-                };
-            }
+                attrs[kv.Key] = AggregationValue.ForWire(kv.Value);
             return new Record
             {
                 ResourceType = ResourceType.Content,
@@ -1862,6 +1854,31 @@ public sealed class QueryService(
 // Python's to_record() dumps every __dict__ key minus the "local props"
 // (uuid, resource_type, shortname, subpath). Then _set_query_final_results
 // deletes password (for users) and query_policies (for all). We mirror that.
+
+// Prepares a raw aggregation cell for the attributes bag.
+//
+// This used to narrow `long -> int` and `decimal -> double` to keep the values
+// inside the set of types DmartJsonContext knew how to serialize. Both were
+// lossy — a count past int.MaxValue wrapped, and PostgreSQL returns SUM/AVG
+// over numeric as `numeric` (decimal), so routing money through double dropped
+// the cents: 12345678901234567.89 came back as 12345678901234568. The context
+// now registers both types, so the values travel as themselves.
+internal static class AggregationValue
+{
+    // AVG(numeric) comes back from PostgreSQL at scale 16 — the average of
+    // 10, 20, 30, 30 is literally 22.5000000000000000. Unlike double, decimal
+    // carries that scale through System.Text.Json, so emitting it untouched
+    // would turn a long-standing `22.5` on the wire into `22.5000000000000000`.
+    // Dividing by one normalises the scale away without altering the value,
+    // which keeps the shape callers already parse while the value stays exact.
+    private const decimal ScaleNormaliser = 1.000000000000000000000000000000000m;
+
+    public static object ForWire(object value) => value switch
+    {
+        decimal d => d / ScaleNormaliser,
+        _ => value,
+    };
+}
 
 // Strip null-valued and empty-string entries from the attributes dictionary so the
 // JSON response doesn't contain "key": null or "key": "" for optional fields.
