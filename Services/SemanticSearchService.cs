@@ -4,6 +4,7 @@ using Dmart.DataAdapters.Sql;
 using Dmart.Models.Api;
 using Dmart.Models.Core;
 using Dmart.Models.Enums;
+using Dmart.QueryGrammar;
 using Npgsql;
 
 namespace Dmart.Services;
@@ -116,8 +117,17 @@ public sealed class SemanticSearchService(
         }
         if (!string.IsNullOrEmpty(subpath))
         {
-            sql += $" AND subpath LIKE ${parameters.Count + 1}";
-            parameters.Add(new() { Value = subpath == "/" ? "/%" : subpath.TrimEnd('/') + "%" });
+            // Escaped + ESCAPE: without it the `_` in a subpath like
+            // /my_folder is a LIKE wildcard and the filter reaches /myXfolder.
+            // This is a PREFIX match, not the hierarchical one SubpathScope
+            // emits — kept as-is, only the metacharacters are neutralised.
+            sql += $" AND subpath LIKE ${parameters.Count + 1}{SubpathScope.EscapeClause}";
+            parameters.Add(new()
+            {
+                Value = subpath == "/"
+                    ? "/%"
+                    : SubpathScope.EscapeLikeMetachars(subpath.TrimEnd('/')) + "%",
+            });
         }
         if (resourceTypes is { Count: > 0 })
         {

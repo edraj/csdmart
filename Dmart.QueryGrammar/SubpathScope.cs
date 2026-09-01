@@ -57,4 +57,19 @@ public static class SubpathScope
     /// </summary>
     public static string EscapedPrefix(string placeholder)
         => "replace(replace(replace(" + placeholder + @", '\', '\\'), '%', '\%'), '_', '\_')";
+
+    /// <summary>The escape character these predicates declare.</summary>
+    public const string EscapeClause = @" ESCAPE '\'";
+
+    /// <summary>
+    /// The C# counterpart of <see cref="EscapedPrefix"/>, for the handful of
+    /// call sites that inline the subpath as a SQL literal instead of binding
+    /// it. Same three replacements in the same order; the result still needs
+    /// <see cref="EscapeClause"/> on the LIKE that consumes it.
+    /// </summary>
+    public static string EscapeLikeMetachars(string value)
+        => value
+            .Replace(@"\", @"\\", StringComparison.Ordinal)
+            .Replace("%", @"\%", StringComparison.Ordinal)
+            .Replace("_", @"\_", StringComparison.Ordinal);
 }
