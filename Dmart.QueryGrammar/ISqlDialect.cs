@@ -33,6 +33,18 @@ public enum JsonKind
 }
 
 /// <summary>
+/// A reducer's SQL: the aggregate expression, plus an optional FROM-clause
+/// fragment the caller must splice in for it to resolve.
+/// </summary>
+/// <param name="Expression">Goes in the SELECT list.</param>
+/// <param name="From">
+/// Null for the ordinary case. When set, it is a join the caller appends
+/// directly after the table name, and it MUST be row-preserving — exactly one
+/// row in, one row out — or it would silently change what the aggregate counts.
+/// </param>
+public sealed record ReducerSql(string Expression, string? From);
+
+/// <summary>
 /// The parts of SQL generation that genuinely differ between PostgreSQL and
 /// SQLite.
 /// </summary>
@@ -246,6 +258,35 @@ public interface ISqlDialect
     /// </remarks>
     string? Reducer(string name, string? field, string quantile, string? fieldJson)
         => Reducer(name, field, quantile);
+
+    /// <summary>
+    /// As <see cref="Reducer(string, string?, string, string?)"/>, but the
+    /// dialect may hoist a repeated per-row extraction into the FROM clause
+    /// instead of repeating it inside the expression.
+    /// </summary>
+    /// <remarks>
+    /// Only a dialect that has to READ THE JSON TYPE needs this, and only
+    /// PostgreSQL does. Its <c>-&gt;&gt;</c> yields text with the value's type
+    /// erased, so an ordering reducer has to consult the <c>-&gt;</c> form as
+    /// well, and a scalar SQL expression has nowhere to put an intermediate:
+    /// each of the two aggregates needs its own type guard and its own value,
+    /// which is four walks down the same jsonb path per row. A dialect whose
+    /// extraction is already typed (SQLite) spells min/max as
+    /// <c>MIN(field)</c> — one mention — and has nothing to hoist.
+    ///
+    /// <paramref name="alias"/> is a caller-allocated, unique table alias the
+    /// fragment should bind its computed value under. The caller deduplicates:
+    /// two reducers over the same path are handed the same alias and the
+    /// fragment is spliced once.
+    ///
+    /// Default implementation delegates and hoists nothing, so a dialect that
+    /// does not override this — including every third-party one — keeps
+    /// working unchanged. Returning a null <see cref="ReducerSql.From"/> is
+    /// equally valid for a dialect that overrides it but declines to hoist a
+    /// particular reducer.
+    /// </remarks>
+    ReducerSql? Reducer(string name, string? field, string quantile, string? fieldJson, string alias)
+        => Reducer(name, field, quantile, fieldJson) is { } expr ? new ReducerSql(expr, null) : null;
 
     /// <summary>Casts an extracted JSON value to a number for comparison.</summary>
     string AsNumber(string expr);

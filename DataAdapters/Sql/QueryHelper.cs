@@ -606,19 +606,26 @@ public static class QueryHelper
             selectParts.Add($"{expr} AS {SanitizeAlias(gb)}");
         }
 
-        // Aggregate functions (reducers)
+        // Aggregate functions (reducers). A dialect may ask for part of a
+        // reducer to live in the FROM clause; those fragments are collected
+        // here and spliced in below, after the table name and before WHERE.
+        var hoistAliases = new Dictionary<string, string>(StringComparer.Ordinal);
+        var hoists = new List<string>();
         foreach (var reducer in reducers)
         {
             var alias = !string.IsNullOrEmpty(reducer.Alias) ? SanitizeAlias(reducer.Alias) : SanitizeAlias(reducer.ReducerName);
-            var expr = BuildReducerExpression(reducer, dialect);
+            var expr = BuildReducerExpression(reducer, dialect, hoistAliases, hoists);
             if (expr is null) continue;
             selectParts.Add($"{expr} AS {alias}");
         }
 
         if (selectParts.Count == 0) return null;
 
+        // Every hoist is row-preserving (see ISqlDialect.ReducerSql.From), so
+        // this cannot change which rows WHERE and the ACL filter below see.
+        var hoistClause = hoists.Count == 0 ? "" : " " + string.Join(" ", hoists);
         var sql = new System.Text.StringBuilder(
-            $"SELECT {string.Join(", ", selectParts)} FROM {tableName} WHERE {where} ");
+            $"SELECT {string.Join(", ", selectParts)} FROM {tableName}{hoistClause} WHERE {where} ");
 
         if (userShortname is not null)
             AppendAclFilter(sql, args, userShortname, tableName, queryPolicies, dialect, q);
@@ -683,7 +690,9 @@ public static class QueryHelper
         return results;
     }
 
-    private static string? BuildReducerExpression(RedisReducer reducer, ISqlDialect dialect)
+    private static string? BuildReducerExpression(
+        RedisReducer reducer, ISqlDialect dialect,
+        Dictionary<string, string> hoistAliases, List<string> hoists)
     {
         var reducerArgs = reducer.Args ?? new();
         var name = reducer.ReducerName.ToLowerInvariant();
@@ -710,8 +719,25 @@ public static class QueryHelper
         var fieldExpr = ResolveArg(0);
         var quantile = ParseQuantile(reducerArgs);
 
-        var expr = dialect.Reducer(name, fieldExpr, quantile, fieldJson);
-        if (expr is not null) return expr;
+        // The dialect may want the extraction hoisted into the FROM clause
+        // rather than repeated inside the aggregate. Aliases are allocated here,
+        // not there, because dedup is a whole-query property: two reducers over
+        // the same path share one lateral, and the dialect only ever sees one
+        // reducer at a time.
+        var alias = hoistAliases.TryGetValue(fieldJson ?? "", out var existing)
+            ? existing
+            : $"hoist{hoistAliases.Count}";
+
+        var built = dialect.Reducer(name, fieldExpr, quantile, fieldJson, alias);
+        if (built is not null)
+        {
+            if (built.From is not null && existing is null && fieldJson is not null)
+            {
+                hoistAliases[fieldJson] = alias;
+                hoists.Add(built.From);
+            }
+            return built.Expression;
+        }
 
         // The dialect produced nothing. Two very different reasons, and they
         // must not be conflated — see UnsupportedReducerException.

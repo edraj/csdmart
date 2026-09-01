@@ -374,6 +374,14 @@ public class SqlEmissionGoldenTests
             {
                 GroupBy = { "@resource_type" }, Reducers = { R("count", null) },
             }, "alice", new() { "s:/*" }),
+            // The hoisted min/max lateral against the two things it sits next to:
+            // a GROUP BY whose expressions still address `entries` directly, and
+            // the ACL predicate, which must stay inside the same WHERE.
+            ("min-grouped-with-acl", new()
+            {
+                GroupBy = { "@payload.body.category" },
+                Reducers = { R("min", "lo", "@payload.body.amount"), R("count", "n") },
+            }, "alice", new() { "s:/*" }),
             ("unknown-reducer-dropped", new() { Reducers = { R("not_a_reducer", null, "@x") } }, null, null),
         })
         {

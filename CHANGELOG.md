@@ -1,5 +1,31 @@
 # Changelog
 
+## Unreleased
+
+### Performance
+
+- **`min`/`max` over a JSON field walked the same jsonb path four times per
+  row.** Ordering by the value's real type (v1.3.1) means consulting both forms
+  of the path: a `jsonb_typeof` guard and a value, in each of two aggregates.
+  Written inline that is four descents through `payload::jsonb->'body'->…` for
+  every row in the group, where one would do.
+
+  The extraction is now hoisted into a `CROSS JOIN LATERAL` over a FROM-less
+  `SELECT`, which computes it once per row and hands it to the aggregates by
+  name. Two reducers over the same path share one lateral, so a `min` and a
+  `max` on the same field walk it once between them.
+
+  Row-preserving by construction — a `SELECT` with no `FROM` yields exactly one
+  row, NULL included — so nothing about which rows the aggregate sees changes.
+  Every other reducer mentions its field once and is left alone rather than
+  paying for a join that saves nothing.
+
+  **SQLite emits none of this and needs none of it**: its `->>` carries the
+  value's own type, so `min`/`max` there are a single `MIN(field)` already.
+  `ISqlDialect` gained a `Reducer` overload returning an optional FROM
+  fragment alongside the expression; it has a default implementation that
+  hoists nothing, so third-party dialects are unaffected.
+
 ## v1.3.1 — 2026-09-01
 
 ### Security

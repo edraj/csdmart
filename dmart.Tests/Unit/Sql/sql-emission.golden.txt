@@ -690,7 +690,7 @@ SQL: SELECT AVG((payload::jsonb->'body'->>'amount')::numeric) AS avg FROM entrie
   P3: name=<positional> type=<inferred> value=0
 
 ## aggregation: min-max
-SQL: SELECT COALESCE(MIN(CASE WHEN jsonb_typeof(payload::jsonb->'body'->'amount') = 'number' THEN (payload::jsonb->'body'->>'amount')::numeric END)::text, MIN(CASE WHEN jsonb_typeof(payload::jsonb->'body'->'amount') <> 'number' THEN (payload::jsonb->'body'->>'amount') END)) AS lo, COALESCE(MAX(CASE WHEN jsonb_typeof(payload::jsonb->'body'->'amount') <> 'number' THEN (payload::jsonb->'body'->>'amount') END), MAX(CASE WHEN jsonb_typeof(payload::jsonb->'body'->'amount') = 'number' THEN (payload::jsonb->'body'->>'amount')::numeric END)::text) AS hi FROM entries WHERE space_name = $1  LIMIT $2 OFFSET $3
+SQL: SELECT COALESCE(MIN(CASE WHEN jsonb_typeof(hoist0.hoisted_json) = 'number' THEN (hoist0.hoisted_json #>> '{}')::numeric END)::text, MIN(CASE WHEN jsonb_typeof(hoist0.hoisted_json) <> 'number' THEN (hoist0.hoisted_json #>> '{}') END)) AS lo, COALESCE(MAX(CASE WHEN jsonb_typeof(hoist0.hoisted_json) <> 'number' THEN (hoist0.hoisted_json #>> '{}') END), MAX(CASE WHEN jsonb_typeof(hoist0.hoisted_json) = 'number' THEN (hoist0.hoisted_json #>> '{}')::numeric END)::text) AS hi FROM entries CROSS JOIN LATERAL (SELECT payload::jsonb->'body'->'amount' AS hoisted_json) hoist0 WHERE space_name = $1  LIMIT $2 OFFSET $3
   P1: name=<positional> type=<inferred> value="s"
   P2: name=<positional> type=<inferred> value=10
   P3: name=<positional> type=<inferred> value=0
@@ -757,6 +757,14 @@ SQL: SELECT resource_type AS resource_type, payload::jsonb->'body'->>'category' 
 
 ## aggregation: with-acl
 SQL: SELECT resource_type AS resource_type, COUNT(*) AS count FROM entries WHERE space_name = $1  AND (owner_shortname = $2 OR EXISTS (SELECT 1 FROM unnest(query_policies) AS qp WHERE qp LIKE $3 ESCAPE '\') OR acl @> jsonb_build_array(jsonb_build_object('user_shortname', $2, 'allowed_actions', jsonb_build_array('query')))) GROUP BY resource_type LIMIT $4 OFFSET $5
+  P1: name=<positional> type=<inferred> value="s"
+  P2: name=<positional> type=<inferred> value="alice"
+  P3: name=<positional> type=<inferred> value="s:/%"
+  P4: name=<positional> type=<inferred> value=10
+  P5: name=<positional> type=<inferred> value=0
+
+## aggregation: min-grouped-with-acl
+SQL: SELECT payload::jsonb->'body'->>'category' AS payload_body_category, COALESCE(MIN(CASE WHEN jsonb_typeof(hoist0.hoisted_json) = 'number' THEN (hoist0.hoisted_json #>> '{}')::numeric END)::text, MIN(CASE WHEN jsonb_typeof(hoist0.hoisted_json) <> 'number' THEN (hoist0.hoisted_json #>> '{}') END)) AS lo, COUNT(*) AS n FROM entries CROSS JOIN LATERAL (SELECT payload::jsonb->'body'->'amount' AS hoisted_json) hoist0 WHERE space_name = $1  AND (owner_shortname = $2 OR EXISTS (SELECT 1 FROM unnest(query_policies) AS qp WHERE qp LIKE $3 ESCAPE '\') OR acl @> jsonb_build_array(jsonb_build_object('user_shortname', $2, 'allowed_actions', jsonb_build_array('query')))) GROUP BY payload::jsonb->'body'->>'category' LIMIT $4 OFFSET $5
   P1: name=<positional> type=<inferred> value="s"
   P2: name=<positional> type=<inferred> value="alice"
   P3: name=<positional> type=<inferred> value="s:/%"
