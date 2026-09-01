@@ -383,6 +383,66 @@ public class QueryPolicyExpansionTests
         });
     }
 
+    // ── The expansion budget ───────────────────────────────────────────────
+
+    // One wildcard policy is worth expanding; a hundred of them are not. An
+    // actor inheriting `space:subpath:*:*` per group emits 60 tokens each, so
+    // 50 groups would be 3000 bind parameters — under PostgreSQL's cap, but
+    // the plan time it buys back is the plan time it was meant to save.
+    [Fact]
+    public void Expansion_Stops_Enumerating_Past_The_Token_Budget()
+    {
+        var policies = Enumerable.Range(0, 50)
+            .Select(i => $"space{i}:/sub:*:*")
+            .ToList();
+
+        var expansion = QueryPolicyExpansion.Expand(policies);
+
+        expansion.ExactTokens.Count.ShouldBeLessThanOrEqualTo(QueryPolicyExpansion.MaxExactTokens);
+        // Whatever the budget refused is on the LIKE path, not dropped.
+        expansion.LikePatterns.Count.ShouldBeGreaterThan(0);
+        (expansion.ExactTokens.Count + expansion.LikePatterns.Count).ShouldBeGreaterThan(0);
+    }
+
+    // The budget changes the SPELLING, never the row set. Every policy still
+    // reaches one of the two paths, and no policy reaches both.
+    [Fact]
+    public void Every_Policy_Lands_On_Exactly_One_Path_Under_The_Budget()
+    {
+        var policies = Enumerable.Range(0, 50)
+            .Select(i => $"space{i}:/sub:*:*")
+            .ToList();
+
+        var expansion = QueryPolicyExpansion.Expand(policies);
+
+        // A policy either contributed its own tokens or was passed through
+        // verbatim to LIKE — the pass-through list is a subset of the input.
+        expansion.LikePatterns.ShouldBeSubsetOf(policies);
+
+        var expandedSpaces = expansion.ExactTokens
+            .Select(t => t.Split(':')[0]).Distinct().ToHashSet(StringComparer.Ordinal);
+        var likeSpaces = expansion.LikePatterns
+            .Select(t => t.Split(':')[0]).ToHashSet(StringComparer.Ordinal);
+        expandedSpaces.Overlaps(likeSpaces).ShouldBeFalse(
+            "a policy was split across both paths");
+        expandedSpaces.Union(likeSpaces).Count().ShouldBe(policies.Count);
+    }
+
+    // A realistic policy set stays fully expanded — the budget must not be so
+    // tight that it turns off the optimisation for ordinary actors.
+    [Fact]
+    public void An_Ordinary_Policy_Set_Is_Still_Fully_Expanded()
+    {
+        var policies = new List<string>
+        {
+            "myspace:/posts:*:*", "myspace:/comments:content:true:*", "other:/x:*:*",
+        };
+
+        var expansion = QueryPolicyExpansion.Expand(policies);
+
+        expansion.LikePatterns.ShouldBeEmpty();
+    }
+
     // SQL LIKE with ESCAPE '\', case-sensitive — what both dialects emit.
     private static Regex LikeToRegex(string pattern)
     {

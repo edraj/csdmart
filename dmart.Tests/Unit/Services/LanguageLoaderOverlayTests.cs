@@ -1,6 +1,9 @@
+using Dmart.Auth;
+using Dmart.Config;
 using Dmart.Models.Enums;
 using Dmart.Services;
 using Microsoft.Extensions.Logging.Abstractions;
+using Microsoft.Extensions.Options;
 using Shouldly;
 using Xunit;
 
@@ -52,6 +55,47 @@ public sealed class LanguageLoaderOverlayTests : IDisposable
 
         loader.Get(Language.En, "otp_message").ShouldBe("Custom code: {code}");
         loader.Get(Language.En, "rejected").ShouldBe("rejected");
+    }
+
+    // The subject fallback is not a null check. An operator who wants no
+    // subject line writes `"otp_email_subject": ""` — omitting the key is how
+    // you keep the default, not how you clear it — and a `?? "OTP"` guard hands
+    // that straight to the mail server as a blank Subject header, which is the
+    // spam-filter bait the fallback exists to prevent. Whitespace counts too:
+    // a header of one space is no better.
+    [Theory]
+    [InlineData("")]
+    [InlineData("   ")]
+    public void Blank_Otp_Subject_Overlay_Still_Renders_The_Literal(string blank)
+    {
+        File.WriteAllText(
+            Path.Combine(_tmpHome, ".dmart", "languages", "english.json"),
+            $$"""{ "otp_email_subject": "{{blank}}" }""");
+
+        var loader = new LanguageLoader(NullLogger<LanguageLoader>.Instance);
+        loader.Load();
+
+        // The overlay really did land — otherwise this test would pass for the
+        // wrong reason, on the embedded value.
+        loader.Get(Language.En, "otp_email_subject").ShouldBe(blank);
+
+        OtpFor(loader).RenderSubject(Language.En).ShouldBe("OTP");
+    }
+
+    private static OtpProvider OtpFor(LanguageLoader languages)
+    {
+        var opts = Options.Create(new DmartSettings());
+        return new OtpProvider(
+            opts,
+            new SmsSender(new NoOpHttpClientFactory(), opts, NullLogger<SmsSender>.Instance),
+            new SmtpSender(opts, NullLogger<SmtpSender>.Instance),
+            languages,
+            NullLogger<OtpProvider>.Instance);
+    }
+
+    private sealed class NoOpHttpClientFactory : System.Net.Http.IHttpClientFactory
+    {
+        public System.Net.Http.HttpClient CreateClient(string name) => new();
     }
 
     [Fact]

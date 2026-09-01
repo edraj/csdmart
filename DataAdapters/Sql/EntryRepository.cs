@@ -436,7 +436,7 @@ public sealed class EntryRepository(IDbConnectionFactory db)
         await using var cmd = conn.Command($"""
             {SelectAllColumns}
             WHERE space_name = $1 AND updated_at >= $2
-            {(scoped ? "AND (subpath = $5 OR subpath LIKE $5 || '/%')" : "")}
+            {(scoped ? $"AND (subpath = $5 OR {SubpathScope.DescendantLike("subpath", "$5")})" : "")}
             ORDER BY uuid
             LIMIT $3 OFFSET $4
             """);
@@ -496,7 +496,7 @@ public sealed class EntryRepository(IDbConnectionFactory db)
             {SelectAllColumns}
             WHERE space_name = $1
             {(since is null ? "" : "AND updated_at >= $4")}
-            {(scoped ? $"AND (subpath = ${(since is null ? 4 : 5)} OR subpath LIKE ${(since is null ? 4 : 5)} || '/%')" : "")}
+            {(scoped ? $"AND (subpath = ${(since is null ? 4 : 5)} OR {SubpathScope.DescendantLike("subpath", $"${(since is null ? 4 : 5)}")})" : "")}
             ORDER BY uuid
             LIMIT $2 OFFSET $3
             """);
@@ -619,7 +619,8 @@ public sealed class EntryRepository(IDbConnectionFactory db)
             filters += $" AND updated_at >= '{since.Value:yyyy-MM-dd HH:mm:ss.ffffff}'::timestamp";
         if (scoped)
             filters += $" AND (subpath = {QuoteLiteral(subpath!)} "
-                     + $"OR subpath LIKE {QuoteLiteral(subpath! + "/%")})";
+                     + $"OR subpath LIKE {QuoteLiteral(SubpathScope.EscapeLikeMetachars(subpath!) + "/%")}"
+                     + SubpathScope.EscapeClause + ")";
 
         var cols = string.Join(", ", ExportColumns.Select(c => c.Column));
         var sql = $"COPY (SELECT {cols} FROM entries WHERE {filters} ORDER BY uuid) "
@@ -836,7 +837,9 @@ public sealed class EntryRepository(IDbConnectionFactory db)
     // The `attachments` filter doesn't need that clause: attachment subpath
     // is always `{owner_subpath}/{owner_shortname}`, so `subpath = folderPath`
     // already catches attachments owned directly by the folder, and
-    // `subpath LIKE folderPath || '/%'` catches everything deeper.
+    // The SubpathScope descendant predicate catches everything deeper (the
+    // bare `LIKE folderPath || '/%'` would read a `_` in the folder name as a
+    // wildcard and take siblings down with it).
     //
     // When dryRun is true nothing is removed: each table's matching rows are COUNTed
     // instead of deleted (count(*) over a predicate returns exactly what a DELETE over
@@ -867,27 +870,27 @@ public sealed class EntryRepository(IDbConnectionFactory db)
         // histories / locks: subpath/shortname identify the entry the row is
         // about. Three predicates: (folder's own row) ∪ (direct children at
         // subpath=folderPath) ∪ (deeper descendants at subpath LIKE folderPath/%).
-        const string subtreeWithFolderRow = """
+        var subtreeWithFolderRow = $"""
             space_name = $1
               AND ((subpath = $2 AND shortname = $3)
                 OR  subpath = $4
-                OR  subpath LIKE $4 || '/%')
+                OR  {SubpathScope.DescendantLike("subpath", "$4")})
             """;
         // entries: explicit `resource_type = 'folder'` guard on the folder row
         // protects against an unlikely-but-defensive case where a non-folder entry
         // happens to share (subpath, shortname) with the folder we're deleting
         // (e.g. a content entry called "widgets" beside the folder "widgets").
-        const string entriesPredicate = """
+        var entriesPredicate = $"""
             space_name = $1
               AND ((subpath = $2 AND shortname = $3 AND resource_type = 'folder')
                 OR  subpath = $4
-                OR  subpath LIKE $4 || '/%')
+                OR  {SubpathScope.DescendantLike("subpath", "$4")})
             """;
         // attachments: subpath includes the owner's shortname, so the folder's own
         // attachments live at subpath = folderPath. No extra clause needed.
-        const string attachmentsPredicate = """
+        var attachmentsPredicate = $"""
             space_name = $1
-              AND (subpath = $2 OR subpath LIKE $2 || '/%')
+              AND (subpath = $2 OR {SubpathScope.DescendantLike("subpath", "$2")})
             """;
 
         // COUNT (dryRun) or DELETE the rows matching `where`, returning the affected /
@@ -1102,7 +1105,7 @@ public sealed class EntryRepository(IDbConnectionFactory db)
                        subpath = $4 || {SubpathTail(cmd, "subpath", "length($2) + 1")},
                        updated_at = {NowExpr(cmd)}
                  WHERE space_name = $1
-                   AND (subpath = $2 OR subpath LIKE $2 || '/%')
+                   AND (subpath = $2 OR {SubpathScope.DescendantLike("subpath", "$2")})
                 """;
             await cmd.ExecuteNonQueryAsync(ct);
         }
@@ -1116,11 +1119,11 @@ public sealed class EntryRepository(IDbConnectionFactory db)
         //    row for an entry long deleted could still occupy a destination
         //    key — purge those first so the unique (shortname, space_name,
         //    subpath) index can't abort the whole move.
-        await using (var cmd = conn.Command("""
+        await using (var cmd = conn.Command($"""
             DELETE FROM locks
              WHERE space_name = $1
                AND ((subpath = $2 AND shortname = $3)
-                    OR subpath = $4 OR subpath LIKE $4 || '/%')
+                    OR subpath = $4 OR {SubpathScope.DescendantLike("subpath", "$4")})
             """, tx))
         {
             DbParams.Add(cmd, to.SpaceName);
@@ -1153,7 +1156,7 @@ public sealed class EntryRepository(IDbConnectionFactory db)
                    SET space_name = $3,
                        subpath = $4 || {SubpathTail(cmd, "subpath", "length($2) + 1")}
                  WHERE space_name = $1
-                   AND (subpath = $2 OR subpath LIKE $2 || '/%')
+                   AND (subpath = $2 OR {SubpathScope.DescendantLike("subpath", "$2")})
                 """;
             DbParams.Add(cmd, to.SpaceName);
             DbParams.Add(cmd, newPrefix);
@@ -1277,7 +1280,7 @@ public sealed class EntryRepository(IDbConnectionFactory db)
         string spaceName, string folderPath, Guid cursor, int pageSize,
         CancellationToken ct)
     {
-        await using var cmd = conn.Command($"{SelectAllColumns} WHERE space_name = $1 AND (subpath = $2 OR subpath LIKE $2 || '/%') AND uuid > $3 ORDER BY uuid LIMIT $4", tx);
+        await using var cmd = conn.Command($"{SelectAllColumns} WHERE space_name = $1 AND (subpath = $2 OR {SubpathScope.DescendantLike("subpath", "$2")}) AND uuid > $3 ORDER BY uuid LIMIT $4", tx);
         DbParams.Add(cmd, spaceName);
         DbParams.Add(cmd, folderPath);
         DbParams.Add(cmd, cursor);
@@ -1323,9 +1326,9 @@ public sealed class EntryRepository(IDbConnectionFactory db)
     public async Task<long> CountAsync(string spaceName, string subpath, CancellationToken ct = default)
     {
         await using var conn = await db.OpenAsync(ct);
-        await using var cmd = conn.Command("""
+        await using var cmd = conn.Command($"""
             SELECT COUNT(*) FROM entries
-             WHERE space_name = $1 AND (subpath = $2 OR subpath LIKE $2 || '/%')
+             WHERE space_name = $1 AND (subpath = $2 OR {SubpathScope.DescendantLike("subpath", "$2")})
             """);
         DbParams.Add(cmd, spaceName);
         DbParams.Add(cmd, subpath);

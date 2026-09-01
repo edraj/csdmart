@@ -72,7 +72,9 @@ public sealed class HistoryRepository(IDbConnectionFactory db, ISqlDialect diale
         var sinceClause = since is null ? "" : "AND timestamp >= $4";
         var scoped = !string.IsNullOrEmpty(subpath) && subpath != "/";
         var scopeParam = since is null ? "$4" : "$5";
-        var scopeClause = scoped ? $"AND (subpath = {scopeParam} OR subpath LIKE {scopeParam} || '/%')" : "";
+        var scopeClause = scoped
+            ? $"AND (subpath = {scopeParam} OR {SubpathScope.DescendantLike("subpath", scopeParam)})"
+            : "";
         await using var cmd = conn.Command($"""
             SELECT uuid, request_headers, diff, timestamp, owner_shortname,
                    last_checksum_history, space_name, subpath, shortname
@@ -257,7 +259,8 @@ public sealed class HistoryRepository(IDbConnectionFactory db, ISqlDialect diale
         if (!string.IsNullOrEmpty(q.Subpath) && q.Subpath != "/")
         {
             args.Add(new() { Value = q.Subpath });
-            sql.Append($"AND (subpath = ${args.Count} OR subpath LIKE ${args.Count} || '/%') ");
+            sql.Append($"AND (subpath = ${args.Count} OR "
+                     + $"{SubpathScope.DescendantLike("subpath", $"${args.Count}")}) ");
         }
         if (q.FilterShortnames is { Count: > 0 })
         {
@@ -316,7 +319,8 @@ public sealed class HistoryRepository(IDbConnectionFactory db, ISqlDialect diale
         if (!string.IsNullOrEmpty(q.Subpath) && q.Subpath != "/")
         {
             args.Add(new() { Value = q.Subpath });
-            sql.Append($"AND (subpath = ${args.Count} OR subpath LIKE ${args.Count} || '/%') ");
+            sql.Append($"AND (subpath = ${args.Count} OR "
+                     + $"{SubpathScope.DescendantLike("subpath", $"${args.Count}")}) ");
         }
         if (q.FilterShortnames is { Count: > 0 })
         {
@@ -419,7 +423,8 @@ public sealed class HistoryRepository(IDbConnectionFactory db, ISqlDialect diale
             filters += $" AND timestamp >= '{since.Value:yyyy-MM-dd HH:mm:ss.ffffff}'::timestamp";
         if (scoped)
             filters += $" AND (subpath = {QuoteLiteral(subpath!)} "
-                     + $"OR subpath LIKE {QuoteLiteral(subpath! + "/%")})";
+                     + $"OR subpath LIKE {QuoteLiteral(SubpathScope.EscapeLikeMetachars(subpath!) + "/%")}"
+                     + SubpathScope.EscapeClause + ")";
 
         var cols = string.Join(", ", ExportColumns.Select(c => c.Column));
         var sql = $"COPY (SELECT {cols} FROM histories WHERE {filters} ORDER BY uuid) "

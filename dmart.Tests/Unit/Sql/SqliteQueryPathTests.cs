@@ -135,6 +135,69 @@ public sealed class SqliteQueryPathTests : IAsyncLifetime
         total.ShouldBe(0);
     }
 
+    // `subpath LIKE $n || '/%'` reads `_` as "any one character", so a query
+    // scoped to /my_folder also returned /myXfolder and /my-folder — different
+    // folders, which an actor may hold no permission on at all. The ACL
+    // predicate used to drop those rows on the way out (an actor's policy IS
+    // escaped before it becomes a LIKE pattern), so the over-match stayed
+    // invisible until a query could legitimately skip that predicate.
+    //
+    // Runs against SQLite for real, which is the half of the fix a golden file
+    // cannot check: `replace(...)` and `ESCAPE '\'` have to mean the same thing
+    // on both engines, or the two backends answer differently.
+    [Fact]
+    public async Task SubpathScope_DoesNotReachOneCharacterSiblings()
+    {
+        await InsertUserAsync("in_scope", "/my_folder");
+        await InsertUserAsync("in_scope_deep", "/my_folder/deep");
+        await InsertUserAsync("wildcard_sibling", "/myXfolder");
+        await InsertUserAsync("dash_sibling", "/my-folder/deep");
+
+        var repo = new UserRepository(_factory, new AuthzCacheRefresher(),
+            new Dmart.Auth.SessionTokenHasher(new DmartSettings { JwtSecret = new string('k', 48) }));
+        var rows = await repo.QueryAsync(Q("/my_folder"), CancellationToken.None);
+
+        // The folder itself and everything under it, and nothing else. The
+        // positive half matters as much as the negative: over-escaping would
+        // stop /my_folder from finding its own descendants.
+        rows.Select(r => r.Shortname).OrderBy(x => x, StringComparer.Ordinal)
+            .ShouldBe(new[] { "in_scope", "in_scope_deep" });
+    }
+
+    // A subpath that really does contain a LIKE metacharacter still finds its
+    // own children — the escape has to make `%` literal, not drop the row.
+    [Fact]
+    public async Task SubpathScope_HandlesAPercentInTheSubpathItself()
+    {
+        await InsertUserAsync("pct", "/a%b/deep");
+        await InsertUserAsync("not_pct", "/axxb/deep");
+
+        var repo = new UserRepository(_factory, new AuthzCacheRefresher(),
+            new Dmart.Auth.SessionTokenHasher(new DmartSettings { JwtSecret = new string('k', 48) }));
+        var rows = await repo.QueryAsync(Q("/a%b"), CancellationToken.None);
+
+        rows.Select(r => r.Shortname).ShouldBe(new[] { "pct" });
+    }
+
+    private async Task InsertUserAsync(string shortname, string subpath)
+    {
+        await using var conn = await _factory.OpenAsync();
+        await using var cmd = conn.CreateCommand();
+        cmd.CommandText = """
+            INSERT INTO users (uuid, shortname, space_name, subpath, owner_shortname, query_policies)
+            VALUES ($u, $s, 'management', $p, 'owner', '["management:/users:*"]')
+            """;
+        foreach (var (n, v) in new[]
+                 { ("$u", Guid.NewGuid().ToString()), ("$s", shortname), ("$p", subpath) })
+        {
+            var prm = cmd.CreateParameter();
+            prm.ParameterName = n;
+            prm.Value = v;
+            cmd.Parameters.Add(prm);
+        }
+        await cmd.ExecuteNonQueryAsync();
+    }
+
     private async Task SeedUsersAsync(int count)
     {
         await using var conn = await _factory.OpenAsync();

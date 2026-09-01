@@ -113,7 +113,8 @@ public sealed class AttachmentRepository(IDbConnectionFactory db, ISqlDialect di
             filters += $" AND updated_at >= '{since.Value:yyyy-MM-dd HH:mm:ss.ffffff}'::timestamp";
         if (scoped)
             filters += $" AND (subpath = {QuoteLiteral(subpath!)} "
-                     + $"OR subpath LIKE {QuoteLiteral(subpath! + "/%")})";
+                     + $"OR subpath LIKE {QuoteLiteral(SubpathScope.EscapeLikeMetachars(subpath!) + "/%")}"
+                     + SubpathScope.EscapeClause + ")";
 
         // Every column except media, then media's LENGTH — computed server-side.
         var cols = string.Join(", ", ExportColumns
@@ -219,7 +220,9 @@ public sealed class AttachmentRepository(IDbConnectionFactory db, ISqlDialect di
         // sits under it — the same predicate the folder cascade uses.
         var scoped = !string.IsNullOrEmpty(subpath) && subpath != "/";
         var scopeParam = since is null ? "$4" : "$5";
-        var scopeClause = scoped ? $"AND (subpath = {scopeParam} OR subpath LIKE {scopeParam} || '/%')" : "";
+        var scopeClause = scoped
+            ? $"AND (subpath = {scopeParam} OR {SubpathScope.DescendantLike("subpath", scopeParam)})"
+            : "";
         await using var cmd = conn.Command($"""
             {SelectColumnsNoMedia.Replace("FROM attachments", "").TrimEnd()},
                    COALESCE(length(media), 0) AS media_size
@@ -452,12 +455,14 @@ public sealed class AttachmentRepository(IDbConnectionFactory db, ISqlDialect di
     // parent's full path here. Matches Python adapter.py:2752-2757 +
     // 2770-2775 — same intent, but we use the precise prefix-with-slash
     // check instead of a raw `startswith` to avoid matching unrelated
-    // siblings (`/products` vs `/products_old`).
+    // siblings (`/products` vs `/products_old`) — note that the slash alone was
+    // not enough, since LIKE reads the `_` in `products_old` as a wildcard.
+    // SubpathScope escapes it.
     public async Task<int> DeleteUnderSubpathAsync(string spaceName, string prefix, CancellationToken ct = default)
     {
-        const string predicate = """
+        var predicate = $"""
             space_name = $1
-              AND (subpath = $2 OR subpath LIKE $2 || '/%')
+              AND (subpath = $2 OR {SubpathScope.DescendantLike("subpath", "$2")})
             """;
 
         void Bind(DbCommand c)
@@ -487,10 +492,10 @@ public sealed class AttachmentRepository(IDbConnectionFactory db, ISqlDialect di
     public async Task<long> CountUnderSubpathAsync(string spaceName, string prefix, CancellationToken ct = default)
     {
         await using var conn = await db.OpenAsync(ct);
-        await using var cmd = conn.Command("""
+        await using var cmd = conn.Command($"""
             SELECT count(*) FROM attachments
             WHERE space_name = $1
-              AND (subpath = $2 OR subpath LIKE $2 || '/%')
+              AND (subpath = $2 OR {SubpathScope.DescendantLike("subpath", "$2")})
             """);
         DbParams.Add(cmd, spaceName);
         DbParams.Add(cmd, prefix);
