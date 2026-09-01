@@ -140,14 +140,53 @@ Attributes = new Dictionary<string, object>
 ```
 
 **Reading numbers back.** The client hands you JSON numbers as `JsonElement`s
-and never reformats them: an integer written is an integer read. A field that
-reads back as `1000.0` was *stored* that way. `decimal` is the only .NET type
-that preserves trailing-zero scale through System.Text.Json (`1000.0m`
-serializes as `"1000.0"`), so an integral field modelled as `decimal` upstream
-is what puts that form in the store. Mapping such a field onto `int` throws
-`JsonException: The JSON value could not be converted to System.Int32` — map it
-to `decimal`/`double` to match a `"type": "number"` schema, or normalise it
-where it is produced.
+and never reformats them: what the server sent is what you get, byte for byte.
+A field that reads back as `10240.0` was *stored* that way — Python renders
+every float like that (`json.dumps(10240.0)` → `"10240.0"`), as does .NET for a
+`decimal` carrying scale, so one field can arrive as `10240.0` while its integer
+siblings arrive clean.
+
+That form is a problem for `int`, because **JSON Schema and System.Text.Json
+disagree about it**. dmart validates payload bodies with JSON Schema, where
+`"type": "integer"` means "a number with a zero fractional part" — so `10240.0`
+is a valid integer, and dmart accepts, stores and returns it. `JsonSerializer`
+refuses to read it into an `int`:
+
+```
+JsonException: The JSON value could not be converted to System.Int32.
+```
+
+Left alone, that makes the client stricter than the server it talks to. Two
+converters close the gap, accepting exactly what the schema calls an integer and
+nothing wider — a real fraction is still rejected, and comparison runs through
+`decimal` so values past 2⁵³ keep every digit:
+
+```csharp
+using Dmart.Client.Json;
+
+public sealed class Grant
+{
+    [JsonPropertyName("data")]
+    [JsonConverter(typeof(IntegralInt32Converter))]   // reads 10240.0 as 10240
+    public int Data { get; set; }
+}
+```
+
+The attribute form needs no options plumbing and stays trim/AOT-safe. For a
+whole body, register them instead — System.Text.Json wraps them for `int?` and
+`long?` automatically:
+
+```csharp
+var options = new JsonSerializerOptions
+{
+    Converters = { new IntegralInt32Converter(), new IntegralInt64Converter() },
+};
+var grant = entry.Payload!.Body!.Value.Deserialize<Grant>(options);
+```
+
+`DmartClient.DefaultJsonOptions` already carries both, so the client's own types
+read the same way. Writing is unaffected: a round trip puts a plain integer back
+on the wire, never `10240.0`.
 
 ## Error handling
 

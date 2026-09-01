@@ -2,6 +2,37 @@
 
 ## Unreleased
 
+### Added
+
+- **`Dmart.Client` can read the decimal-point spelling of an integer.** dmart
+  validates payload bodies with JSON Schema, where `"type": "integer"` means "a
+  number with a zero fractional part" — `10240.0` satisfies it, so dmart accepts,
+  stores and returns that value for a field its own schema calls an integer.
+  System.Text.Json refuses to read it into an `int`, which left the client
+  **stricter than the server it talks to**: a caller whose model matched the
+  schema still got
+
+  ```
+  JsonException: The JSON value could not be converted to System.Int32.
+  ```
+
+  `IntegralInt32Converter` and `IntegralInt64Converter` (namespace
+  `Dmart.Client.Json`) close exactly that gap and nothing wider — a value with a
+  real fraction is still rejected, because the schema would reject it too, and
+  the comparison runs through `decimal` so integers past 2<sup>53</sup> keep
+  every digit. Use them per property via `[JsonConverter(...)]`, which needs no
+  options plumbing and stays trim/AOT-safe, or register them on your own
+  `JsonSerializerOptions` for a whole body; System.Text.Json wraps them for the
+  `int?`/`long?` forms automatically. `DmartClient.DefaultJsonOptions` and the
+  source-gen context both carry them, so the client's own types read the same way
+  on every target framework.
+
+  Writing is unchanged, and so is what the client hands you: payload bodies still
+  arrive byte-exact as `JsonElement`, `10240.0` included. The tolerance is in the
+  read, not a rewrite of the data. A field reading back as `10240.0` was *stored*
+  that way — Python renders every float like that, as does .NET for a `decimal`
+  carrying scale.
+
 ### Fixed
 
 - **`Dmart.Client` could not put a `decimal` (or most other CLR scalars) in an
