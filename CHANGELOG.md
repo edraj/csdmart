@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## v1.3.1 — 2026-09-01
 
 ### Security
 
@@ -20,17 +20,39 @@
   the requested scope — correct in itself, but it removed the masking, and the
   sibling rows started coming back to actors holding no permission on them.
 
-  Both query paths now escape the bound prefix (`\`, `%`, `_`) and match under
-  `ESCAPE '\'`: `DataAdapters/Sql/QueryHelper.BuildWhereClause`, which the
-  count, aggregation and semi-join paths all share, and the packaged
-  `Dmart.SqlAdapter`. The escaping is emitted in SQL rather than applied to the
-  bound value so one parameter still serves both halves of the predicate,
-  leaving every positional parameter after it unmoved.
+  Every site that builds a subpath prefix now escapes it (`\`, `%`, `_`) and
+  matches under `ESCAPE '\'`, via a new `SubpathScope` helper in
+  `Dmart.QueryGrammar` — twenty in all, not just the two on the query path:
 
-  **Operators:** any deployment on v1.3.0 with sibling subpaths whose names
-  differ by a single character at an underscore position should treat reads
-  against those subpaths as having been unrestricted. Subpaths without `_` or
-  `%` in their names were never affected.
+  | Component | Sites |
+  | --- | --- |
+  | `EntryRepository` | 10 — list, export, cascade-delete, move, count |
+  | `AttachmentRepository` | 4 |
+  | `HistoryRepository` | 4 |
+  | `QueryHelper` + `Dmart.SqlAdapter` | 2 — the read paths above |
+  | `SemanticSearchService` | 1 |
+
+  **Not all of them are reads, and that matters more, not less.**
+  `EntryRepository`'s folder cascade uses the predicate to DELETE and to MOVE
+  subtrees, and `AttachmentRepository.DeleteUnderSubpathAsync` to delete
+  attachments. An over-matching prefix there does not leak a row — it destroys
+  or relocates one belonging to a sibling folder. Those paths were never
+  masked by the ACL predicate, so unlike the read leak they were reachable
+  before v1.3.0 as well.
+
+  The escaping is emitted in SQL rather than applied to the bound value, so one
+  parameter still serves both halves of `subpath = $n OR <descendants>` and
+  every positional parameter after it stays where it was. The three sites that
+  inline the subpath as a SQL literal instead of binding it use a C#
+  counterpart with the same substitutions in the same order.
+  `SemanticSearchService` keeps its own bare prefix semantics (no `/`
+  separator); only its metacharacters are neutralised.
+
+  **Operators:** on v1.3.0, reads against a subpath with a sibling differing by
+  a single character at an underscore position should be treated as having been
+  unrestricted. Separately, on **any** version, a folder delete or move scoped
+  to such a subpath could have reached the sibling's rows. Subpaths without `_`
+  or `%` in their names were never affected by either.
 
 ### Fixed
 
@@ -158,8 +180,6 @@
   comment and `config.env.sample` said an absent `retrieve_total` resolves to
   the setting. `/public/query` rewrites it to `false` before the query reaches
   `QueryService`, deliberately, so the setting never governed public traffic.
-
-||||||| f7d3625
 
 ### Notes
 
