@@ -168,4 +168,74 @@ public class IntegralNumberConverterTests
         booster.Price.ShouldBe(12750);
         booster.CatalogItemId.ShouldBe(530);
     }
+
+    // ---- review follow-ups -------------------------------------------------
+
+    // Registering a converter takes the type over completely, so anything the
+    // caller configured through NumberHandling is the converter's job to keep.
+    // The README tells callers to register these on their OWN options, where a
+    // NumberHandling set for some loose upstream API is exactly what they would
+    // silently lose.
+    [Fact]
+    public void AllowReadingFromString_Still_Works_With_The_Converters()
+    {
+        var options = new JsonSerializerOptions
+        {
+            NumberHandling = JsonNumberHandling.AllowReadingFromString,
+            Converters = { new IntegralInt32Converter(), new IntegralInt64Converter() },
+        };
+
+        JsonSerializer.Deserialize<int>("\"7\"", options).ShouldBe(7);
+        JsonSerializer.Deserialize<long>("\"9007199254740993\"", options).ShouldBe(9007199254740993L);
+    }
+
+    [Fact]
+    public void WriteAsString_Still_Works_With_The_Converters()
+    {
+        var options = new JsonSerializerOptions
+        {
+            NumberHandling = JsonNumberHandling.WriteAsString,
+            Converters = { new IntegralInt32Converter(), new IntegralInt64Converter() },
+        };
+
+        JsonSerializer.Serialize(7, options).ShouldBe("\"7\"");
+        JsonSerializer.Serialize(7L, options).ShouldBe("\"7\"");
+    }
+
+    // Without NumberHandling asking for it, a quoted number is still refused —
+    // the converter honours the setting, it does not invent leniency.
+    [Fact]
+    public void A_Quoted_Number_Is_Still_Rejected_By_Default()
+    {
+        Should.Throw<JsonException>(() =>
+            JsonSerializer.Deserialize<int>("\"7\"", WithConverters()));
+    }
+
+    // decimal rounds at 28-29 significant digits, so a fraction far enough down
+    // vanishes before decimal.Truncate(v) == v can see it. The file, the README
+    // and the CHANGELOG all promise a real fraction is refused; this is the
+    // value that quietly came back as 10240 instead.
+    [Fact]
+    public void A_Fraction_Below_Decimal_Precision_Is_Still_Rejected()
+    {
+        Should.Throw<JsonException>(() =>
+            JsonSerializer.Deserialize<int>("10240.00000000000000000000000000001", WithConverters()));
+
+        Should.Throw<JsonException>(() =>
+            JsonSerializer.Deserialize<long>("10240.00000000000000000000000000001", WithConverters()));
+    }
+
+    // The half that must not move: trailing zeros are still the accepted case.
+    [Fact]
+    public void Trailing_Zero_Fractions_Are_Still_Accepted()
+    {
+        JsonSerializer.Deserialize<int>("10240.0", WithConverters()).ShouldBe(10240);
+        JsonSerializer.Deserialize<int>("10240.00000000000000000000000000000", WithConverters()).ShouldBe(10240);
+        JsonSerializer.Deserialize<long>("10240.0", WithConverters()).ShouldBe(10240L);
+    }
+
+    private static JsonSerializerOptions WithConverters() => new()
+    {
+        Converters = { new IntegralInt32Converter(), new IntegralInt64Converter() },
+    };
 }

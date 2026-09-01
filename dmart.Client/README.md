@@ -163,8 +163,11 @@ JsonException: The JSON value could not be converted to System.Int32.
 
 Left alone, that makes the client stricter than the server it talks to. Two
 converters close the gap, accepting exactly what the schema calls an integer and
-nothing wider — a real fraction is still rejected, and comparison runs through
-`decimal` so values past 2^53 keep every digit:
+nothing wider — a real fraction is still rejected (checked against the raw token,
+so a fraction below `decimal`'s precision cannot round itself away), and
+comparison runs through `decimal` so values past 2^53 keep every digit. They
+respect whatever `JsonNumberHandling` you have set, so registering them does not
+quietly cancel `AllowReadingFromString` or `WriteAsString` for `int` and `long`:
 
 ```csharp
 using Dmart.Client.Json;

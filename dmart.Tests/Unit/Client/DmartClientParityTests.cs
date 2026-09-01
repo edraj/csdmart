@@ -425,4 +425,34 @@ public class DmartClientParityTests
 
     private static HttpResponseMessage Ok(string json) =>
         new(HttpStatusCode.OK) { Content = new StringContent(json, Encoding.UTF8, "application/json") };
+
+    // `total` comes back as 3.0 whenever whatever produced it carried scale —
+    // the same decimal-point spelling IntegralNumberConverters absorbs
+    // everywhere else. This read path used TryGetInt64, which says false for
+    // it, and the fallback reported 0. Not an exception: a caller paging on
+    // `total` was told there were NO results, which is the failure mode the
+    // converters exist to remove.
+    [Fact]
+    public async Task QueryEntriesAsync_Reads_A_Total_Written_With_A_Decimal_Point()
+    {
+        var (client, _) = Make(_ => Task.FromResult(Ok(
+            """{"status":"success","records":[],"attributes":{"total":3.0,"returned":0}}""")));
+
+        var (total, _) = await client.QueryEntriesAsync(
+            new Query { Type = QueryType.Search, SpaceName = "app", Subpath = "/" });
+
+        total.ShouldBe(3, "a total of 3.0 is three results, not none");
+    }
+
+    [Fact]
+    public async Task QueryEntriesAsync_Still_Reads_A_Plain_Integer_Total()
+    {
+        var (client, _) = Make(_ => Task.FromResult(Ok(
+            """{"status":"success","records":[],"attributes":{"total":3,"returned":0}}""")));
+
+        var (total, _) = await client.QueryEntriesAsync(
+            new Query { Type = QueryType.Search, SpaceName = "app", Subpath = "/" });
+
+        total.ShouldBe(3);
+    }
 }
