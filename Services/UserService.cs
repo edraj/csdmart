@@ -493,19 +493,35 @@ public sealed class UserService(
         }
         else return null;
 
+        // Both cheap checks run BEFORE the code is consumed. Every failure
+        // here returns null, which the caller reports as a generic
+        // INVALID_USERNAME_AND_PASS — so consuming first meant a user whose
+        // registration lost a race, or who hit an exhausted shortname space,
+        // had their still-valid code silently burned and had to wait out
+        // AllowOtpResendAfter and spend another slot from the daily cap to try
+        // again, with nothing to tell them why. Neither check has side
+        // effects: AllocateImplicitShortnameAsync only probes for an unused
+        // random name.
+        var taken = isEmail
+            ? await users.GetByEmailAsync(dest, ct)
+            : await users.GetByMsisdnAsync(dest, ct);
+        if (taken is not null) return null;
+
+        var shortname = await AllocateImplicitShortnameAsync(ct);
+        if (shortname is null) return null;
+
         if (!await otp.VerifyAndConsumeAsync(dest, OtpPurpose.Login, req.Otp!, s.MaxOtpVerifyAttempts, ct))
             return null;
 
-        // The OTP was minted before this call; a concurrent signup for the
-        // same contact between issue and redeem is possible, so check fresh
-        // rather than let UpsertAsync silently overwrite an existing row.
+        // Re-checked after the consume as well, and deliberately: the code was
+        // minted before this call, so a concurrent signup for the same contact
+        // can land in the window the verify itself opens. Checking only up
+        // front would trade a burned code for a silent overwrite, which is the
+        // worse of the two.
         var existing = isEmail
             ? await users.GetByEmailAsync(dest, ct)
             : await users.GetByMsisdnAsync(dest, ct);
         if (existing is not null) return null;
-
-        var shortname = await AllocateImplicitShortnameAsync(ct);
-        if (shortname is null) return null;
 
         var user = new User
         {

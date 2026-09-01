@@ -116,4 +116,41 @@ public class DotEnvStrictCheckTests
             DotEnv.ToConfigurationKey(snake).ShouldBe($"Dmart:{pascal}");
         }
     }
+
+    // A key that USED to be valid is not a typo. Failing hard on one means the
+    // upgrade that retires the setting also refuses to boot — turning a
+    // routine deploy into an outage nothing warned about. ALLOW_PASSWORD_RESET
+    // _RESEND_AFTER was documented until the per-purpose OTP routes were
+    // collapsed, so it is sitting in real config.env files now.
+    [Fact]
+    public void A_Retired_Key_Warns_Instead_Of_Blocking_Startup()
+    {
+        var keys = new Dictionary<string, string>(StringComparer.Ordinal)
+        {
+            ["ALLOW_PASSWORD_RESET_RESEND_AFTER"] = "60",
+        };
+
+        DotEnvStrictCheck.ValidateKeys("config.env", keys)
+            .ShouldBeEmpty("a retired key must not stop the server from starting");
+
+        var warnings = DotEnvStrictCheck.RetiredKeyWarnings("config.env", keys);
+        warnings.Count.ShouldBe(1);
+        warnings[0].ShouldContain("ALLOW_PASSWORD_RESET_RESEND_AFTER");
+        warnings[0].ShouldContain("ALLOW_OTP_RESEND_AFTER", Case.Sensitive,
+            "the warning has to name the replacement, or it is just noise");
+    }
+
+    // The retirement path must not become a way to smuggle typos past the
+    // check — that is the whole reason strict validation exists.
+    [Fact]
+    public void A_Genuine_Typo_Is_Still_Fatal()
+    {
+        var keys = new Dictionary<string, string>(StringComparer.Ordinal)
+        {
+            ["DATABAE_HOST"] = "127.0.0.1",
+        };
+
+        DotEnvStrictCheck.ValidateKeys("config.env", keys).Count.ShouldBe(1);
+        DotEnvStrictCheck.RetiredKeyWarnings("config.env", keys).ShouldBeEmpty();
+    }
 }

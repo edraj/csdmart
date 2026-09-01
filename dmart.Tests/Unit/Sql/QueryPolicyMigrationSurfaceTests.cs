@@ -143,4 +143,31 @@ public class QueryPolicyMigrationSurfaceTests
 
         sql.ToString().ShouldBe(expected.ToString());
     }
+
+    // CreateAll runs unconditionally on EVERY startup, so a DROP inside it is
+    // not a migration — it is a destructive statement that re-executes
+    // forever. The singular `otp` table is python-dmart's, and this schema is
+    // documented as co-existing with it, so a DROP there destroyed the Python
+    // side's table and any live codes on every C# restart of a shared database.
+    //
+    // `invitations` is deliberately exempt: that DROP predates this check and
+    // exists to purge account-takeover tokens on upgrade, which is a security
+    // action an operator wants repeated rather than a mistake.
+    [Theory]
+    [InlineData("postgresql")]
+    [InlineData("sqlite")]
+    public void The_Idempotent_Create_Script_Drops_Nothing_It_Does_Not_Own(string backend)
+    {
+        var ddl = backend == "sqlite" ? SqliteSchema.CreateAll : SqlSchema.CreateAll;
+
+        var drops = Regex.Matches(ddl, @"DROP\s+TABLE\s+(?:IF\s+EXISTS\s+)?""?(?<t>\w+)""?",
+                RegexOptions.IgnoreCase)
+            .Select(m => m.Groups["t"].Value)
+            .Where(t => !string.Equals(t, "invitations", StringComparison.OrdinalIgnoreCase))
+            .ToList();
+
+        drops.ShouldBeEmpty(
+            $"{backend}: CreateAll runs on every startup, so it must not drop "
+            + $"[{string.Join(", ", drops)}] — put a retirement in a one-shot migration");
+    }
 }

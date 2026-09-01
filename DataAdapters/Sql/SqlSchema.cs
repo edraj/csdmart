@@ -424,7 +424,14 @@ public static class SqlSchema
     -- Per-day request count across all purposes.
     CREATE INDEX IF NOT EXISTS idx_otps_ident_created
         ON otps (identifier, created_at);
-    DROP TABLE IF EXISTS otp;
+    -- The legacy singular `otp` table is deliberately NOT dropped here.
+    -- CreateAll runs unconditionally on every startup, so a DROP in it is not
+    -- a migration — it is a destructive statement that re-executes forever.
+    -- `otp` is the table python-dmart uses, and this schema is documented as
+    -- co-existing with it (see the hstore note above), so on a shared database
+    -- every C# restart would have destroyed the Python side's table along with
+    -- any codes live in it. Retiring it belongs in a one-shot migration that an
+    -- operator runs deliberately, not in the idempotent create script.
 
     -- ============================================================
     -- USERPERMISSIONSCACHE  (resolved permissions per user)

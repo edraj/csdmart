@@ -24,13 +24,26 @@ public sealed class OtpRepository(IDbConnectionFactory db, OtpHasher hasher)
 
     // Issues a new code for (identifier, purpose): supersedes any live
     // predecessor, then inserts. Only the latest issued code stays redeemable.
+    //
+    // One transaction, because that invariant is the whole point. As two
+    // independent statements, concurrent issues for the same pair can
+    // interleave supersede-insert-supersede-insert and leave TWO rows with
+    // consumed_at IS NULL. VerifyAndConsumeAsync only ever looks at the
+    // newest, so the older one is not redeemable — but it sits live until the
+    // sweeper reaches it, and the header above would be describing something
+    // the code does not actually guarantee. The resend cooldown makes the race
+    // rare, not impossible: the cooldown is checked in the handler, well
+    // before this call, so two requests that pass it together arrive here
+    // together.
     public async Task IssueAsync(string identifier, string purpose, string code,
         DateTime expiresAt, CancellationToken ct = default)
     {
         await using var conn = await db.OpenAsync(ct);
+        await using var tx = await conn.BeginTransactionAsync(ct);
 
         await using (var sup = conn.CreateCommand())
         {
+            sup.Transaction = tx;
             var now = DbParams.Add(sup, TimeUtils.Now());
             var st = DbParams.Add(sup, StatusSuperseded);
             var i = DbParams.Add(sup, identifier);
@@ -43,6 +56,7 @@ public sealed class OtpRepository(IDbConnectionFactory db, OtpHasher hasher)
         }
 
         await using var ins = conn.CreateCommand();
+        ins.Transaction = tx;
         var pi = DbParams.Add(ins, identifier);
         var pp = DbParams.Add(ins, purpose);
         var ph = DbParams.Add(ins, hasher.Hash(code));
@@ -56,6 +70,8 @@ public sealed class OtpRepository(IDbConnectionFactory db, OtpHasher hasher)
             VALUES ({pi}, {pp}, {ph}, {pc}, {pe}, 0)
             """;
         await ins.ExecuteNonQueryAsync(ct);
+
+        await tx.CommitAsync(ct);
     }
 
     // Seconds since the newest code was issued for (identifier, purpose),
@@ -91,18 +107,24 @@ public sealed class OtpRepository(IDbConnectionFactory db, OtpHasher hasher)
 
     // Codes issued to `identifier` across all purposes since `cutoff`.
     // Backs MaxOtpRequestsPerDay.
+    // `purpose` null counts every purpose; non-null counts that one only.
+    // The narrowed form backs the reset reserve in OtpHandler — see the note
+    // there for why account recovery gets a budget of its own.
     public async Task<int> CountIssuedSinceAsync(string identifier, DateTime cutoff,
-        CancellationToken ct = default)
+        CancellationToken ct = default, string? purpose = null)
     {
         await using var conn = await db.OpenAsync(ct);
         await using var cmd = conn.CreateCommand();
         var i = DbParams.Add(cmd, identifier);
         var c = DbParams.Add(cmd, cutoff);
+        var purposeClause = purpose is null
+            ? ""
+            : $" AND purpose = {DbParams.Add(cmd, purpose)}";
         // The `>` works on both providers: PostgreSQL compares TIMESTAMPs,
         // SQLite compares fixed-width SqliteValues text, which sorts
         // chronologically by construction.
         cmd.CommandText = $"""
-            SELECT COUNT(*) FROM otps WHERE identifier = {i} AND created_at > {c}
+            SELECT COUNT(*) FROM otps WHERE identifier = {i} AND created_at > {c}{purposeClause}
             """;
         var raw = await cmd.ExecuteScalarAsync(ct);
         return Convert.ToInt32(raw, System.Globalization.CultureInfo.InvariantCulture);

@@ -78,6 +78,8 @@ var (dotenvPath, dotenvValues) = DotEnv.Load();
 if (dotenvPath is not null)
 {
     var rawKeys = DotEnv.Parse(dotenvPath);
+    foreach (var warning in DotEnvStrictCheck.RetiredKeyWarnings(dotenvPath, rawKeys))
+        Console.Error.WriteLine($"Warning: {warning}");
     var keyErrors = DotEnvStrictCheck.ValidateKeys(dotenvPath, rawKeys);
     if (keyErrors.Count > 0)
     {

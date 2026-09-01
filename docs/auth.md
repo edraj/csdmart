@@ -9,8 +9,11 @@ Two login paths, all landing on the same `sessions` row + signed JWT:
    `POST /user/otp-request` with `purpose: "login"`).
 
 `POST /user/otp-request` is the single OTP issuing API: the `purpose` field
-(`login` | `reset` | `verify-contact`) selects what the code is redeemable
-for — codes never cross purposes. Every well-formed request answers 200 Ok
+(`login` | `reset` | `register` | `verify-contact`) selects what the code is
+redeemable for — codes never cross purposes. `register` is the one to use
+before `POST /user/create`: that endpoint accepts an `email_otp`/`msisdn_otp`
+minted at the register purpose and no other, so a code requested as `login`
+cannot complete a signup. Every well-formed request answers 200 Ok
 (anti-enumeration); the resend cooldown (`ALLOW_OTP_RESEND_AFTER`) and the
 per-destination daily cap (`MAX_OTP_REQUESTS_PER_DAY`) are silent no-ops.
 Password resets confirm via `POST /user/password-reset-confirm`; contact

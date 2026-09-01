@@ -23,6 +23,41 @@ public static class DotEnvStrictCheck
         "DMART_ENV",
     };
 
+    // Keys that USED to map to a DmartSettings property and no longer do.
+    //
+    // These are not typos and must not be treated as one. A key here was valid
+    // and documented in a previous release, so it is sitting in real
+    // config.env files right now — failing hard on it means the upgrade that
+    // removes the setting also refuses to boot, which turns a routine deploy
+    // into an outage the release notes did not predict. Warn, ignore the
+    // value, and let the operator clean it up on their own schedule.
+    //
+    // Entries here should be dropped again a release or two later, once
+    // deployments have had a chance to catch up.
+    private static readonly Dictionary<string, string> RetiredKeys = new(StringComparer.Ordinal)
+    {
+        // Folded into ALLOW_OTP_RESEND_AFTER when the per-purpose OTP routes
+        // were collapsed into /user/otp-request: the resend cooldown is now
+        // one value per destination across every purpose, so a reset-specific
+        // one no longer has anything to control.
+        ["ALLOW_PASSWORD_RESET_RESEND_AFTER"] = "use ALLOW_OTP_RESEND_AFTER, which now covers every OTP purpose",
+    };
+
+    /// <summary>
+    /// Retired keys found in the file, as human-readable warnings. Never
+    /// errors: see <see cref="RetiredKeys"/>.
+    /// </summary>
+    public static List<string> RetiredKeyWarnings(string configPath, IReadOnlyDictionary<string, string> rawKeys)
+    {
+        var warnings = new List<string>();
+        foreach (var key in rawKeys.Keys)
+        {
+            if (RetiredKeys.TryGetValue(key, out var advice))
+                warnings.Add($"'{key}' in {configPath} is no longer used — {advice}");
+        }
+        return warnings;
+    }
+
     /// <summary>
     /// Walks the key set parsed from config.env and returns a list of human
     /// readable error messages — one per unrecognized key. Empty list means
@@ -35,6 +70,7 @@ public static class DotEnvStrictCheck
         foreach (var key in rawKeys.Keys)
         {
             if (AllowedNonDmartKeys.Contains(key)) continue;
+            if (RetiredKeys.ContainsKey(key)) continue;   // warned, not fatal
             if (validKeys.Contains(key)) continue;
             errors.Add($"unknown config key '{key}' in {configPath}");
         }

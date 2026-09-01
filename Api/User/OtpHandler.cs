@@ -43,9 +43,17 @@ public static class OtpHandler
             var log = loggerFactory.CreateLogger(typeof(OtpHandler));
             Response SilentOk(string reason, LogLevel level = LogLevel.Information)
             {
+                // The destination is a phone number or an email address, and
+                // this line fires on EVERY no-op branch at Information — i.e.
+                // in production, for traffic an anonymous caller controls. So
+                // it goes in fingerprinted, not in clear: enough to correlate
+                // repeated requests to one destination while investigating,
+                // not enough to read the contact back out of the logs.
+                // OtpProvider keeps even its destination-plus-code line at
+                // Debug for the same reason.
                 log.Log(level,
                     "otp-request: silent no-op ({Reason}) purpose={Purpose} dest={Destination}",
-                    reason, req.Purpose, req.Msisdn ?? req.Email ?? req.Shortname);
+                    reason, req.Purpose, Fingerprint(req.Msisdn ?? req.Email ?? req.Shortname));
                 return Response.Ok();
             }
 
@@ -156,12 +164,24 @@ public static class OtpHandler
             // Shortname requests are unaffected — dest is null for an
             // unresolved shortname (no contact to gate), so they still hit
             // the no-destination branch below.
-            if (!contactPurpose && (user is null || !user.IsUsable))
+            // IsLockedAsync, not raw IsUsable. HandleFailedLoginAttemptAsync
+            // persists IsActive=false when an account locks, and only
+            // IsLockedAsync/RejectIfAttemptLockedAsync clear it once
+            // LockoutCooldownSeconds has elapsed. Reading IsUsable directly
+            // therefore keeps answering SilentOk("unusable-account") forever
+            // after the cool-down expired — and for an account whose only
+            // credential is an OTP (the password-less users this repo
+            // provisions), nothing else on any path would ever unlock it. The
+            // user asks for a code, gets 200, and no message ever arrives.
+            // The JWT branch above already uses this check.
+            var blocked = user is null || await userService.IsLockedAsync(user, ct);
+            if (!contactPurpose && blocked)
             {
                 var implicitEligible = purpose == OtpPurpose.Login && user is null
                     && s.EnableOtpImplicitRegistration && !string.IsNullOrEmpty(dest);
                 if (!implicitEligible)
-                    return SilentOk(user is null ? "unknown-user" : "unusable-account");
+                    return SilentOk(user is null ? "unknown-user"
+                        : !user.IsUsable ? "unusable-account" : "locked-account");
                 if (RegistrationGateFailure() is { } implicitFailure)
                     return SilentOk(implicitFailure);
             }
@@ -173,11 +193,35 @@ public static class OtpHandler
             if (since is int elapsed && elapsed < s.AllowOtpResendAfter)
                 return SilentOk("cooldown");
 
-            // Daily cap — per destination across all purposes.
+            // Daily cap — per destination, with a reserve for account
+            // recovery.
+            //
+            // The cap is keyed on the DESTINATION and nothing else, which is
+            // what makes it work as abuse control (it bounds what one contact
+            // can be made to receive, and what it can cost to send) and also
+            // what makes it an attack surface: the endpoint is anonymous, so
+            // anyone who knows a victim's msisdn can spend the whole daily
+            // budget on `login` requests. Counted across all purposes, that
+            // also denied `reset` — locking the victim out of the one flow
+            // that recovers an account, for 24 hours, with every response a
+            // silent 200 so neither they nor the UI could tell why.
+            //
+            // Reset therefore draws on its own budget. Flooding login can no
+            // longer close account recovery; the worst case rises from N
+            // messages a day to 2N, which is the price of the guarantee.
+            //
+            // NOT a complete fix, and worth stating plainly: an attacker who
+            // targets `reset` directly can still exhaust the reset budget for
+            // a known destination. Closing that needs a per-CALLER dimension
+            // in the budget, which this endpoint has no identity for — the
+            // auth-by-ip limiter is the only caller signal, and it is
+            // defeated by distribution. What this does buy is that the cheap,
+            // obvious version of the attack no longer takes recovery with it.
             if (s.MaxOtpRequestsPerDay > 0)
             {
                 var issued = await repo.CountIssuedSinceAsync(
-                    dest, TimeUtils.Now().AddHours(-24), ct);
+                    dest, TimeUtils.Now().AddHours(-24), ct,
+                    purpose == OtpPurpose.Reset ? OtpPurpose.Reset : null);
                 if (issued >= s.MaxOtpRequestsPerDay)
                     return SilentOk("daily-cap", LogLevel.Warning);
             }
@@ -319,4 +363,17 @@ public static class OtpHandler
     // One rule, applied wherever an email becomes a destination: lowercase.
     // Msisdns are digits and need none of this.
     private static string? EmailDest(string? email) => email?.ToLowerInvariant();
+
+    // A stable, non-reversible stand-in for a contact in log output. Truncated
+    // to 8 hex characters: enough to tell "the same destination again" from "a
+    // different one" while reading a log, short enough that it is not a
+    // convenient lookup key, and lowercased first so the two spellings of one
+    // address fingerprint alike.
+    private static string Fingerprint(string? destination)
+    {
+        if (string.IsNullOrEmpty(destination)) return "(none)";
+        var hash = System.Security.Cryptography.SHA256.HashData(
+            System.Text.Encoding.UTF8.GetBytes(destination.ToLowerInvariant()));
+        return Convert.ToHexString(hash.AsSpan(0, 4)).ToLowerInvariant();
+    }
 }

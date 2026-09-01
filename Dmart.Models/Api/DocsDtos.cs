@@ -28,11 +28,26 @@ public sealed record ValidatePasswordBody(string Password);
 
 // /user/profile — partial update. Every field optional; only the fields
 // you send get changed. `payload.body` is free-form per the user schema.
+//
+// Contact fields are not free-text edits and the four OTP-bearing ones below
+// are what makes them usable at all:
+//   * `email` must equal the address already on the row — sending a different
+//     one is rejected outright, so this shape alone cannot change a contact.
+//     Paired with `email_otp` it CONFIRMS the stored address
+//     (is_email_verified flips true); alone it is a no-op.
+//   * `new_email` + `email_otp` changes the address. The code must have been
+//     issued to the NEW address at the verify-contact purpose.
+// Msisdn works the same way. Omitting these from the published schema
+// documented a shape (`email` different from stored) that the handler refuses.
 public sealed record ProfileUpdateBody(
     string? Password = null,
     string? OldPassword = null,
     string? Email = null,
     string? Msisdn = null,
+    string? NewEmail = null,
+    string? NewMsisdn = null,
+    string? EmailOtp = null,
+    string? MsisdnOtp = null,
     Dictionary<string, string>? Displayname = null,
     Dictionary<string, string>? Description = null,
     string? Language = null,
