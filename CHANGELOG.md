@@ -1,5 +1,102 @@
 # Changelog
 
+## v1.4.0 — 2026-09-02
+
+### Breaking — the OTP endpoints are now one endpoint
+
+Three routes are gone. Any client that calls them gets a 422:
+
+| removed | use instead |
+| --- | --- |
+| `POST /user/otp-request-login` | `POST /user/otp-request` with `"purpose": "login"` |
+| `POST /user/password-reset-request` | `POST /user/otp-request` with `"purpose": "reset"` |
+| `POST /user/otp-confirm` | `POST /user/profile` — see *contact confirmation* below |
+
+`POST /user/otp-request` is now the single issuing API and **requires** an
+explicit `purpose`: `login`, `reset`, `register` or `verify-contact`. A request
+without one is refused with `INVALID_DATA "invalid purpose"`. Codes never cross
+purposes — one minted for `login` cannot complete a signup, and `/user/create`
+accepts only a code minted at `register`.
+
+**Contact confirmation and change moved to `POST /user/profile`.** Send `email`
+(matching the address already on your row) plus `email_otp` to confirm it, or
+`new_email` plus `email_otp` to change it. Msisdn works the same way. The OTP
+must have been issued at the `verify-contact` purpose, and for a change it must
+have been sent to the *new* address.
+
+**`ALLOW_PASSWORD_RESET_RESEND_AFTER` is retired.** `ALLOW_OTP_RESEND_AFTER` now
+covers every purpose. A `config.env` still carrying the old key **boots with a
+warning** rather than failing — a key that was documented last release is not a
+typo, and refusing to start would turn this upgrade into an unannounced outage.
+
+**The in-repo frontends (catalog, cxb) were updated in this release.** Any other
+client calling the removed routes needs the same treatment.
+
+### Added
+
+- **Abuse controls on issuing.** A resend cooldown (`ALLOW_OTP_RESEND_AFTER`)
+  and a daily cap (`MAX_OTP_REQUESTS_PER_DAY`, default 10), both per
+  destination. Each is split into two independent budgets — account recovery in
+  one, everything else in the other — so no single flood can close both sign-in
+  and password reset. Switching purpose *within* a budget is not a bypass.
+- **A verify-attempt cap.** `MAX_OTP_VERIFY_ATTEMPTS` wrong guesses per code,
+  after which the code is dead. Verification is single-use: a correct code is
+  consumed on success and cannot be replayed.
+- **Optional implicit registration.** With `ENABLE_OTP_IMPLICIT_REGISTRATION`,
+  a login-purpose request for an unknown msisdn or email creates the account on
+  redemption. Off by default.
+- **OTP history retention.** Consumed and expired rows are swept hourly by
+  `OtpHistorySweeper`, keeping `OTP_HISTORY_RETENTION_DAYS` (default 2).
+
+### Security
+
+- **Every OTP verify path is capped and consuming.** Previously some paths
+  verified without consuming, so a code could be replayed, and without an
+  attempt cap a 6-digit code could be brute-forced.
+- **An anonymous caller could deny a victim both sign-in and account recovery.**
+  `register` needs no token and no existing user, so one request a minute
+  against a known destination held the resend cooldown permanently open and
+  swallowed every login and reset as a silent 200. Both the cooldown and the
+  daily cap are now bucketed so one flood cannot close the other. A targeted
+  flood can still exhaust one bucket; closing that needs a per-caller identity
+  this endpoint does not have.
+- **Issuing honours the lockout cool-down.** It gated on the raw active flag,
+  which lockout clears only via `IsLockedAsync` — so a locked account stayed
+  silently un-OTP-able forever after its cool-down expired. For a password-less
+  account, whose only credential is the OTP, nothing would ever have unlocked it.
+- **Destinations are no longer logged in clear.** Phone numbers and email
+  addresses were written at Information on every silent no-op branch; they are
+  now an 8-character fingerprint.
+
+### Fixed
+
+- **Password reset was unrecoverable for a mixed-case stored email, and locked
+  the account.** Issuing stored the code under the lowercased address while
+  confirming looked it up under the raw stored value, so every *correct* code
+  returned `OTP_INVALID` — and each attempt counted toward the failed-attempt
+  lockout. Mixed-case rows are ordinary: admin provisioning and OAuth both store
+  the address as given.
+- **A user could not confirm the contact already on their row** if it carried
+  any uppercase — `/user/profile` compared a normalised input against the raw
+  column ordinally, so the check could never pass.
+- **`DROP TABLE IF EXISTS otp;` ran on every startup.** It sat in the idempotent
+  create script rather than a migration, and `otp` is the table python-dmart
+  uses — so on a shared database every C# restart destroyed it. The C# store is
+  the new `otps` table; the legacy one is left alone.
+- **A code was consumed before checks that could still fail**, in implicit
+  registration, `/user/create` schema validation, and both contact-change paths.
+  Each of those failures is recoverable, and each burned a valid code — after
+  which a retry inside the resend cooldown answered a silent 200 with nothing
+  sent.
+- **`IssueAsync` was not atomic.** Supersede and insert ran as two statements,
+  so concurrent issues could leave two redeemable codes despite the documented
+  invariant.
+
+### Migration
+
+None required. Live OTPs are invalidated by the store change — anyone
+mid-flow requests a new code.
+
 ## v1.3.3 — 2026-09-02
 
 ### Breaking
