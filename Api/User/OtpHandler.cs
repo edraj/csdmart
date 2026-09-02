@@ -22,10 +22,13 @@ public static class OtpHandler
         //     cap swallowed the send. Only malformed input (bad purpose,
         //     wrong identifier count, bad format) gets an error. A caller who
         //     resends inside the cooldown gets no feedback that it was a no-op.
-        //   * Resend cooldown: AllowOtpResendAfter per destination across all
-        //     purposes (switching purpose is not a bypass).
-        //   * Daily cap: MaxOtpRequestsPerDay per destination across all
-        //     purposes.
+        //   * Resend cooldown: AllowOtpResendAfter per destination, counted
+        //     in two independent budgets — `reset` in one, every other
+        //     purpose in the other. Switching purpose WITHIN a budget is not
+        //     a bypass; the split exists so an anonymous flood of one cannot
+        //     silence the other. See the note at the cooldown check.
+        //   * Daily cap: MaxOtpRequestsPerDay per destination, in the same
+        //     two budgets.
         //   * Rate limit: auth-by-ip.
         g.MapPost("/otp-request", async (SendOTPRequest req, OtpProvider otp, OtpRepository repo,
             UserRepository users, UserService userService, HttpContext http,
@@ -369,10 +372,99 @@ public static class OtpHandler
             return Response.Ok();
         }).RequireRateLimiting("auth-by-ip");
 
-        // Contact confirm/change lives on POST /user/profile — `email` +
-        // `email_otp` (or msisdn equivalents) confirms the address already on
-        // the caller's row; `new_email`/`new_msisdn` + the OTP changes to a
-        // new one. See UserService.UpdateProfileAsync.
+        // POST /user/verify-contact — prove control of an email or msisdn and
+        // make it yours, verified. One operation, whether the address is the
+        // one already on your row or a new one.
+        //
+        // Named for the outcome, like every other endpoint here (/user/login,
+        // /user/create, /user/password-reset-confirm) and unlike the
+        // `otp-confirm` it replaces, which was named for the token it consumes
+        // — a description that fits every OTP redemption in the system and so
+        // distinguished nothing.
+        //
+        // The caller does not declare whether this is a confirm or a change.
+        // Which one it is depends on state the SERVER already has, so making
+        // the client classify its own intent only creates a way to get it
+        // wrong. That is also why the request takes plain `email`/`msisdn`
+        // rather than the `new_email`/`new_msisdn` this used to need on
+        // /user/profile: there is no profile representation being echoed back
+        // here, so nothing to disambiguate against.
+        g.MapPost("/verify-contact", async (VerifyContactRequest req, OtpRepository repo,
+            UserRepository users, RegexPatternsConfig regexConfig, HttpContext http,
+            IOptions<DmartSettings> settings, CancellationToken ct) =>
+        {
+            // Authenticated, and checked before the store is touched: the only
+            // effect is on the caller's own row, so an anonymous call achieves
+            // nothing — but it would still spend attempts against a live code.
+            var actor = http.Actor();
+            if (actor is null)
+                return Response.Fail(InternalErrorCode.NOT_AUTHENTICATED,
+                    "login required", ErrorTypes.Auth);
+
+            var provided = (string.IsNullOrEmpty(req.Msisdn) ? 0 : 1)
+                         + (string.IsNullOrEmpty(req.Email) ? 0 : 1);
+            if (provided == 0)
+                return Response.Fail(InternalErrorCode.EMAIL_OR_MSISDN_REQUIRED,
+                    "One of these [email, msisdn] should be set!", "OTP");
+            if (provided > 1)
+                return Response.Fail(InternalErrorCode.INVALID_STANDALONE_DATA,
+                    "Too many input has been passed", "OTP");
+
+            var isEmail = !string.IsNullOrEmpty(req.Email);
+            if (isEmail && regexConfig.ValidateEmailFormat(req.Email!) is { } emailErr)
+                return Response.Fail(InternalErrorCode.INVALID_DATA, emailErr, ErrorTypes.Request);
+            if (!isEmail && regexConfig.ValidateMsisdnFormat(req.Msisdn!) is { } msisdnErr)
+                return Response.Fail(InternalErrorCode.INVALID_DATA, msisdnErr, ErrorTypes.Request);
+
+            // Normalised exactly as issuing normalised it, or the two halves
+            // address different otps rows for a mixed-case address.
+            var dest = isEmail ? EmailDest(req.Email)! : req.Msisdn!;
+
+            var user = await users.GetByShortnameAsync(actor, ct);
+            if (user is null)
+                return Response.Fail(InternalErrorCode.OTP_INVALID,
+                    "code mismatch or expired", ErrorTypes.Auth);
+
+            var current = isEmail ? EmailDest(user.Email) : user.Msisdn;
+            var isChange = !string.Equals(dest, current, StringComparison.Ordinal);
+
+            // Uniqueness, before the code is spent. Losing the address to
+            // another account is recoverable and the caller can act on it, but
+            // consuming first would burn a still-valid code on the way to
+            // saying so — and a retry inside AllowOtpResendAfter answers a
+            // silent 200 with nothing sent. Carried over from the profile path
+            // this replaces; a change without it could collide silently.
+            if (isChange)
+            {
+                var collision = isEmail
+                    ? await users.GetByEmailAsync(dest, ct)
+                    : await users.GetByMsisdnAsync(dest, ct);
+                if (collision is not null
+                    && !string.Equals(collision.Shortname, user.Shortname, StringComparison.Ordinal))
+                    return Response.Fail(InternalErrorCode.DATA_SHOULD_BE_UNIQUE,
+                        $"Entry properties should be unique: @{(isEmail ? "email" : "msisdn")}:{dest} ",
+                        ErrorTypes.Request);
+            }
+
+            if (!await repo.VerifyAndConsumeAsync(dest, OtpPurpose.VerifyContact,
+                    req.Code, settings.Value.MaxOtpVerifyAttempts, ct))
+                return Response.Fail(InternalErrorCode.OTP_INVALID,
+                    "code mismatch or expired", ErrorTypes.Auth);
+
+            // Flags never regress, and only the channel just proved is touched.
+            await users.UpsertAsync(user with
+            {
+                Email = isEmail ? dest : user.Email,
+                Msisdn = isEmail ? user.Msisdn : dest,
+                IsEmailVerified = isEmail || user.IsEmailVerified,
+                IsMsisdnVerified = !isEmail || user.IsMsisdnVerified,
+                UpdatedAt = TimeUtils.Now(),
+            }, ct);
+            return Response.Ok();
+        }).RequireRateLimiting("auth-by-ip");
+
+        // Contact verification is /user/verify-contact above, and only there.
+        // UserService.UpdateProfileAsync refuses every contact key by name.
     }
 
     // The otps table is keyed on (identifier, purpose) and looks the

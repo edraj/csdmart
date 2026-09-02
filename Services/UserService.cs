@@ -1066,122 +1066,36 @@ public sealed class UserService(
         // meaningless once they've picked one); otherwise it carries through unchanged.
         var resolvedForcePasswordChange = newPasswordHash is not null ? false : user.ForcePasswordChange;
 
-        // Email confirm/change:
-        //   * `new_email` + `email_otp` → change to a new address. OTP must
-        //     be issued to the new address (verify-contact purpose);
-        //     uniqueness-checked; on success: lowercase, replace, flip
-        //     is_email_verified=true.
-        //   * `email` (== stored) + `email_otp` → confirm the address already
-        //     on the row: consumes the code at the stored address and flips
-        //     is_email_verified.
-        //   * `email` (== stored) alone → no-op.
-        //   * `email` != stored → rejected; use `new_email` to change it.
-        // All OTP checks are capped verify-and-consume.
-        string? resolvedEmail = user.Email;
-        bool resolvedIsEmailVerified = user.IsEmailVerified;
-        var rawNewEmail = Str(patch, "new_email", null);
-        var rawEmail = Str(patch, "email", null);
-        if (!string.IsNullOrEmpty(rawNewEmail))
+        // Contacts are NOT settable here. `email`, `new_email`, `email_otp`
+        // and their msisdn twins used to live on this endpoint; they moved to
+        // POST /user/verify-contact, which owns every contact-plus-OTP
+        // operation — confirming the address you already have and changing to
+        // a new one are the same act from the caller's side, and both belong
+        // where the OTP is redeemed.
+        //
+        // Keeping them here forced the `new_` prefix: `email` is part of the
+        // profile REPRESENTATION, so a caller reading their profile, editing a
+        // display name and posting it back sends `email` unchanged. Had that
+        // meant "change my email", an ordinary round-trip would have demanded
+        // an OTP for a field nobody touched. A dedicated endpoint has no
+        // representation to echo, so `email` there is unambiguous and the
+        // prefix is gone with it.
+        //
+        // Silently ignoring a contact key would be worse than refusing it: a
+        // client still sending `new_email` would get a 200 and no change.
+        foreach (var contactKey in new[]
+                 { "email", "new_email", "email_otp", "msisdn", "new_msisdn", "msisdn_otp" })
         {
-            var newEmail = rawNewEmail.ToLowerInvariant();
-            if (regexConfig.ValidateEmailFormat(newEmail) is { } emailFormatError)
-                return Result<User>.Fail(InternalErrorCode.INVALID_DATA, emailFormatError, ErrorTypes.Request);
-            var emailOtp = Str(patch, "email_otp", null);
-            if (string.IsNullOrEmpty(emailOtp))
-                return Result<User>.Fail(InternalErrorCode.SESSION,
-                    "Email OTP is required to update your email", ErrorTypes.Create);
-            // Collision checked BEFORE the code is redeemed. Losing the address
-            // to another account is a recoverable error the caller can act on,
-            // but consuming first spent their still-valid code on the way to
-            // telling them so — and a retry inside AllowOtpResendAfter answers
-            // a silent 200 with no message sent. The check has no side effects.
-            var collision = await users.GetByEmailAsync(newEmail, ct);
-            if (collision is not null && !string.Equals(collision.Shortname, user.Shortname, StringComparison.Ordinal))
-                return Result<User>.Fail(InternalErrorCode.DATA_SHOULD_BE_UNIQUE,
-                    $"Entry properties should be unique: @email:{newEmail} ", ErrorTypes.Request);
-            if (!await otp.VerifyAndConsumeAsync(newEmail, OtpPurpose.VerifyContact,
-                    emailOtp, settings.Value.MaxOtpVerifyAttempts, ct))
-                return Result<User>.Fail(InternalErrorCode.SESSION,
-                    "Invalid Email OTP", ErrorTypes.Create);
-            resolvedEmail = newEmail;
-            resolvedIsEmailVerified = true;
-        }
-        else if (!string.IsNullOrEmpty(rawEmail))
-        {
-            var suppliedEmail = rawEmail.ToLowerInvariant();
-            // OrdinalIgnoreCase, not Ordinal: `suppliedEmail` has been
-            // lowercased but `user.Email` is whatever case it was stored with —
-            // RequestHandler keeps the admin's spelling when provisioning,
-            // OAuthUserResolver keeps the provider's. An Ordinal compare is
-            // therefore ALWAYS false for a stored address carrying any
-            // uppercase, so its owner could never confirm the contact they
-            // already hold: posting their own address came back "email does not
-            // match the stored address", and `new_email` would have been a lie.
-            //
-            // Same defect the reset flow had — see OtpHandler.EmailDest. The
-            // OTP lookup below already uses the lowercased form, matching what
-            // /otp-request stored, so only this guard was wrong.
-            //
-            // The stored column is deliberately left as-is rather than
-            // normalised here: confirming a contact should not quietly rewrite
-            // it, and every lookup that matters is already case-insensitive.
-            if (!string.Equals(suppliedEmail, user.Email, StringComparison.OrdinalIgnoreCase))
+            if (patch.ContainsKey(contactKey))
                 return Result<User>.Fail(InternalErrorCode.INVALID_DATA,
-                    "email does not match the stored address; use new_email to change it",
-                    ErrorTypes.Request);
-            var emailOtp = Str(patch, "email_otp", null);
-            if (!string.IsNullOrEmpty(emailOtp))
-            {
-                if (!await otp.VerifyAndConsumeAsync(suppliedEmail, OtpPurpose.VerifyContact,
-                        emailOtp, settings.Value.MaxOtpVerifyAttempts, ct))
-                    return Result<User>.Fail(InternalErrorCode.SESSION,
-                        "Invalid Email OTP", ErrorTypes.Create);
-                // Flags never regress: confirming only ever sets the flag.
-                resolvedIsEmailVerified = true;
-            }
+                    $"'{contactKey}' is not accepted here — use POST /user/verify-contact "
+                    + "with the contact and a verify-contact OTP", ErrorTypes.Request);
         }
 
-        // Msisdn confirm/change — same gating as email.
-        string? resolvedMsisdn = user.Msisdn;
-        bool resolvedIsMsisdnVerified = user.IsMsisdnVerified;
-        var rawNewMsisdn = Str(patch, "new_msisdn", null);
-        var rawMsisdn = Str(patch, "msisdn", null);
-        if (!string.IsNullOrEmpty(rawNewMsisdn))
-        {
-            if (regexConfig.ValidateMsisdnFormat(rawNewMsisdn) is { } msisdnFormatError)
-                return Result<User>.Fail(InternalErrorCode.INVALID_DATA, msisdnFormatError, ErrorTypes.Request);
-            var msisdnOtp = Str(patch, "msisdn_otp", null);
-            if (string.IsNullOrEmpty(msisdnOtp))
-                return Result<User>.Fail(InternalErrorCode.SESSION,
-                    "MSISDN OTP is required to update your msisdn", ErrorTypes.Create);
-            // Same ordering as the email branch above, for the same reason.
-            var collision = await users.GetByMsisdnAsync(rawNewMsisdn, ct);
-            if (collision is not null && !string.Equals(collision.Shortname, user.Shortname, StringComparison.Ordinal))
-                return Result<User>.Fail(InternalErrorCode.DATA_SHOULD_BE_UNIQUE,
-                    $"Entry properties should be unique: @msisdn:{rawNewMsisdn} ", ErrorTypes.Request);
-            if (!await otp.VerifyAndConsumeAsync(rawNewMsisdn, OtpPurpose.VerifyContact,
-                    msisdnOtp, settings.Value.MaxOtpVerifyAttempts, ct))
-                return Result<User>.Fail(InternalErrorCode.SESSION,
-                    "Invalid MSISDN OTP", ErrorTypes.Create);
-            resolvedMsisdn = rawNewMsisdn;
-            resolvedIsMsisdnVerified = true;
-        }
-        else if (!string.IsNullOrEmpty(rawMsisdn))
-        {
-            if (!string.Equals(rawMsisdn, user.Msisdn, StringComparison.Ordinal))
-                return Result<User>.Fail(InternalErrorCode.INVALID_DATA,
-                    "msisdn does not match the stored number; use new_msisdn to change it",
-                    ErrorTypes.Request);
-            var msisdnOtp = Str(patch, "msisdn_otp", null);
-            if (!string.IsNullOrEmpty(msisdnOtp))
-            {
-                if (!await otp.VerifyAndConsumeAsync(rawMsisdn, OtpPurpose.VerifyContact,
-                        msisdnOtp, settings.Value.MaxOtpVerifyAttempts, ct))
-                    return Result<User>.Fail(InternalErrorCode.SESSION,
-                        "Invalid MSISDN OTP", ErrorTypes.Create);
-                resolvedIsMsisdnVerified = true;
-            }
-        }
+        var resolvedEmail = user.Email;
+        var resolvedIsEmailVerified = user.IsEmailVerified;
+        var resolvedMsisdn = user.Msisdn;
+        var resolvedIsMsisdnVerified = user.IsMsisdnVerified;
 
         // Python parity: deep-merge patch.payload.body into user.payload.body
         // (creating a default Payload if the user had none), via the shared

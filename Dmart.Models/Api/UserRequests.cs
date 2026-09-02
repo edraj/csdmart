@@ -15,6 +15,29 @@ public sealed record UserLoginRequest(
 // a code issued for one purpose can never be redeemed under another (a
 // phished password-reset code must not double as a login credential), and
 // each (identifier, purpose) pair holds its own independent live code.
+/// <summary>
+/// Body of POST /user/verify-contact — proves the authenticated caller
+/// controls an email or msisdn, and makes it theirs, verified.
+/// </summary>
+/// <remarks>
+/// Plain `email`/`msisdn`, not the `new_email`/`new_msisdn` this needed while
+/// it lived on /user/profile. There the prefix was load-bearing: `email` is
+/// part of the profile representation, so a caller echoing it back on an
+/// unrelated edit would have looked like a change request. A dedicated
+/// endpoint has no representation to echo, so one field is unambiguous.
+///
+/// Whether this confirms the address already on the row or replaces it is
+/// decided by the server from state it already holds — the caller does not
+/// declare intent, because declaring it only creates a way to get it wrong.
+///
+/// The code must have been issued at the verify-contact purpose, to this
+/// address.
+/// </remarks>
+public sealed record VerifyContactRequest(
+    string Code,
+    string? Msisdn,
+    string? Email);
+
 public static class OtpPurpose
 {
     public const string Login = "login";

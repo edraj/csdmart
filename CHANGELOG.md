@@ -2,15 +2,14 @@
 
 ## v1.4.0 — 2026-09-02
 
-### Breaking — the OTP endpoints are now one endpoint
+### Breaking — the OTP issuing endpoints are now one endpoint
 
-Three routes are gone. Any client that calls them gets a 422:
+Two routes are gone. Any client that calls them gets a 422:
 
 | removed | use instead |
 | --- | --- |
 | `POST /user/otp-request-login` | `POST /user/otp-request` with `"purpose": "login"` |
 | `POST /user/password-reset-request` | `POST /user/otp-request` with `"purpose": "reset"` |
-| `POST /user/otp-confirm` | `POST /user/profile` — see *contact confirmation* below |
 
 `POST /user/otp-request` is now the single issuing API and **requires** an
 explicit `purpose`: `login`, `reset`, `register` or `verify-contact`. A request
@@ -18,11 +17,39 @@ without one is refused with `INVALID_DATA "invalid purpose"`. Codes never cross
 purposes — one minted for `login` cannot complete a signup, and `/user/create`
 accepts only a code minted at `register`.
 
-**Contact confirmation and change moved to `POST /user/profile`.** Send `email`
-(matching the address already on your row) plus `email_otp` to confirm it, or
-`new_email` plus `email_otp` to change it. Msisdn works the same way. The OTP
-must have been issued at the `verify-contact` purpose, and for a change it must
-have been sent to the *new* address.
+**`POST /user/otp-confirm` is replaced by `POST /user/verify-contact`**, which
+owns every contact-plus-OTP operation:
+
+```http
+POST /user/otp-request      {"purpose": "verify-contact", "email": "me@x.com"}
+POST /user/verify-contact   {"code": "123456", "email": "me@x.com"}
+```
+
+Authenticated. Prove control of an address and it becomes yours, verified —
+the *same* call whether it is the address already on your row or a new one.
+Which of the two it is comes from state the server already holds, so the caller
+does not declare intent. A new address is uniqueness-checked before the code is
+spent, and verified flags never regress.
+
+Renamed rather than kept: `otp-confirm` was named for the token it consumes,
+and *every* OTP redemption confirms an OTP — logging in, registering and
+resetting all do — so the name described the whole category while the handler
+served one member of it. Every other endpoint here is named for its outcome
+(`/user/login`, `/user/create`, `/user/password-reset-confirm`); this one now
+is too.
+
+**`POST /user/profile` no longer accepts contact fields.** `email`,
+`new_email`, `email_otp`, `msisdn`, `new_msisdn` and `msisdn_otp` are
+**refused by name**, with an error pointing at `/user/verify-contact` — not
+ignored, because a client still sending `new_email` would otherwise get a 200
+and no change. Everything else on the endpoint is unaffected.
+
+The `new_` prefix is gone with them. It was load-bearing only on
+`/user/profile`: `email` is part of the profile representation, so a caller
+reading their profile, editing a display name and posting it back sends `email`
+unchanged — and had that meant "change my email", an ordinary round-trip would
+have demanded an OTP for a field nobody touched. A dedicated endpoint has no
+representation to echo, so one unprefixed field is unambiguous.
 
 **`ALLOW_PASSWORD_RESET_RESEND_AFTER` is retired.** `ALLOW_OTP_RESEND_AFTER` now
 covers every purpose. A `config.env` still carrying the old key **boots with a
@@ -69,6 +96,12 @@ client calling the removed routes needs the same treatment.
   now an 8-character fingerprint.
 
 ### Fixed
+
+- **`DmartClient.ConfirmOtpAsync` sent the wrong body key** and could therefore
+  never succeed: it posted `otp` where the request record binds `code`, so the
+  server saw no code at all. Latent since the method was added; found while
+  reworking the endpoint it calls. It is now `VerifyContactAsync`, with the
+  correct key.
 
 - **Password reset was unrecoverable for a mixed-case stored email, and locked
   the account.** Issuing stored the code under the lowercased address while

@@ -86,6 +86,27 @@ public sealed partial class DmartClient
     // `email_otp` (or `msisdn` + `msisdn_otp`) to confirm the stored
     // contact, or `new_email`/`new_msisdn` + the OTP to change to a new one.
 
+    // POST /user/verify-contact — prove control of an email or msisdn and make
+    // it yours, verified. Same call whether the address is the one already on
+    // your row or a new one: the server decides which from state it already
+    // holds, so there is no `new_email` counterpart to get wrong.
+    //
+    // Requires a token, and the code must have been issued at the
+    // verify-contact purpose TO THIS ADDRESS.
+    //
+    // The body key is "code". The pre-1.4.0 ConfirmOtpAsync this replaces sent
+    // "otp", which the request record never bound to — so that method could
+    // only ever fail.
+    public async Task<Response> VerifyContactAsync(
+        string code, string? msisdn = null, string? email = null, CancellationToken ct = default)
+    {
+        var body = new Dictionary<string, object?> { ["code"] = code };
+        if (!string.IsNullOrEmpty(msisdn)) body["msisdn"] = msisdn;
+        if (!string.IsNullOrEmpty(email))  body["email"]  = email;
+        using var req = BuildRequest(HttpMethod.Post, "/user/verify-contact", Json(body));
+        return await SendEnvelopeAsync(req, ct).ConfigureAwait(false);
+    }
+
     // POST /user/validate_password — server-side password-policy check.
     public async Task<Response> ValidatePasswordAsync(string password, CancellationToken ct = default)
     {

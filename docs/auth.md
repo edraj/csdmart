@@ -17,9 +17,11 @@ cannot complete a signup. Every well-formed request answers 200 Ok
 (anti-enumeration); the resend cooldown (`ALLOW_OTP_RESEND_AFTER`) and the
 per-destination daily cap (`MAX_OTP_REQUESTS_PER_DAY`) are silent no-ops.
 Password resets confirm via `POST /user/password-reset-confirm`; contact
-confirmation/change happens on `POST /user/profile` (`email`+`email_otp` to
-confirm the stored contact, `new_email`+`email_otp` to change it — msisdn
-equivalents likewise). Every OTP verification is single-use (consumed on
+verification happens on `POST /user/verify-contact` (`code` plus `email` or
+`msisdn`). That one call both confirms an address already on the row and
+changes to a new one — the server tells which from the row it already has, so
+there is no separate "change" field to get wrong. `POST /user/profile` refuses
+contact keys outright and points here. Every OTP verification is single-use (consumed on
 success) and capped at `MAX_OTP_VERIFY_ATTEMPTS` wrong guesses per code.
 
 Plus three OAuth callbacks (Google / Facebook / Apple) for web + mobile flows.

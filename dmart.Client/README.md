@@ -34,6 +34,7 @@ backends by changing the constructor.
 | `GetProfileAsync`             | yes             | yes (`actor` is "self") |
 | `OtpRequestAsync` / `OtpRequestLoginAsync` | yes | n/a            |
 | `PasswordResetRequestAsync`   | yes             | n/a             |
+| `VerifyContactAsync`          | yes             | n/a             |
 | `ValidatePasswordAsync`      | yes             | n/a             |
 | `DeleteAccountAsync`          | yes             | n/a             |
 | `GoogleMobileLoginAsync` / `FacebookMobileLoginAsync` / `AppleMobileLoginAsync` | yes | n/a |
