@@ -188,8 +188,25 @@ public static class OtpHandler
             if (string.IsNullOrEmpty(dest))
                 return SilentOk("no-destination");
 
-            // Resend cooldown — per destination across all purposes.
-            var since = await repo.GetCreatedSinceAnyPurposeAsync(dest, ct);
+            // Resend cooldown — per destination, in the same two buckets the
+            // daily cap uses below.
+            //
+            // Across ALL purposes it was a denial-of-service with no account
+            // needed: `register` requires no JWT and no existing user, so one
+            // request every 59 seconds against a victim's msisdn — far under
+            // the auth-by-ip limiter — held the cooldown permanently open and
+            // silently swallowed every login and reset the victim asked for.
+            // Before the routes were unified, reset codes lived under their
+            // own key with their own cooldown, so login spam could not reach
+            // them; collapsing the endpoints removed that separation without
+            // replacing it.
+            //
+            // Splitting it the same way as the cap restores it: flooding one
+            // bucket cannot silence the other, so sign-in and account recovery
+            // can never both be closed by one attacker. Switching purpose
+            // WITHIN a bucket is still not a bypass, which is what the
+            // cross-purpose rule was there to prevent.
+            var since = await repo.GetCreatedSinceBucketAsync(dest, purpose, ct);
             if (since is int elapsed && elapsed < s.AllowOtpResendAfter)
                 return SilentOk("cooldown");
 

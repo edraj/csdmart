@@ -135,17 +135,39 @@ public sealed class SqliteOtpRepositoryTests : IAsyncLifetime
     }
 
     [Fact]
-    public async Task GetCreatedSinceAnyPurpose_SpansPurposes()
+    public async Task GetCreatedSinceBucket_SpansPurposesWithinABucket()
     {
-        // The resend-cooldown anchor is destination-wide: a login issue must
-        // anchor the cooldown a reset request checks, or switching purpose
-        // becomes a cooldown bypass (one code per purpose, back-to-back).
-        (await _repo.GetCreatedSinceAnyPurposeAsync("k7b")).ShouldBeNull();
+        // Within a bucket the anchor is shared, so switching purpose is not a
+        // cooldown bypass: a login issue must anchor the cooldown that a
+        // register request then checks.
+        (await _repo.GetCreatedSinceBucketAsync("k7b", Login)).ShouldBeNull();
 
         await _repo.IssueAsync("k7b", Login, "123456", Soon);
-        var since = await _repo.GetCreatedSinceAnyPurposeAsync("k7b");
-        since.ShouldNotBeNull();
-        since!.Value.ShouldBeInRange(0, 5);
+
+        var sinceLogin = await _repo.GetCreatedSinceBucketAsync("k7b", Login);
+        sinceLogin.ShouldNotBeNull();
+        sinceLogin!.Value.ShouldBeInRange(0, 5);
+
+        var sinceRegister = await _repo.GetCreatedSinceBucketAsync("k7b", OtpPurpose.Register);
+        sinceRegister.ShouldNotBeNull("register shares the sign-in bucket with login");
+    }
+
+    // The bucket boundary, which is the whole point. `register` needs no JWT
+    // and no existing user, so a destination-wide cooldown let an anonymous
+    // caller hold it open with one request a minute and silently swallow every
+    // password reset the victim asked for. Reset anchors on reset alone.
+    [Fact]
+    public async Task GetCreatedSinceBucket_Isolates_Reset_From_SignIn()
+    {
+        await _repo.IssueAsync("k7c", Login, "123456", Soon);
+
+        (await _repo.GetCreatedSinceBucketAsync("k7c", OtpPurpose.Reset))
+            .ShouldBeNull("a login issue must not start the reset cooldown");
+
+        await _repo.IssueAsync("k7c", OtpPurpose.Reset, "654321", Soon);
+
+        (await _repo.GetCreatedSinceBucketAsync("k7c", OtpPurpose.Reset))
+            .ShouldNotBeNull("a reset issue anchors the reset cooldown");
     }
 
     [Fact]

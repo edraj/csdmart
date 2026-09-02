@@ -98,6 +98,45 @@ public sealed class OtpRequestRecoveryTests : IClassFixture<DmartFactory>
         finally { await CleanupAsync(shortname, msisdn); }
     }
 
+    // The cooldown, not the cap. `register` needs no JWT and no existing user,
+    // so a destination-wide resend cooldown let an anonymous caller hold it
+    // open with one request a minute — under the auth-by-ip limiter — and
+    // every login and reset the victim asked for came back a silent 200 with
+    // nothing sent. Indefinitely, for as long as the attacker kept going.
+    [FactIfPg]
+    public async Task A_Register_Flood_Cannot_Hold_The_Reset_Cooldown_Open()
+    {
+        var host = _factory.WithWebHostBuilder(b => b.ConfigureServices(svcs =>
+            svcs.Configure<DmartSettings>(s =>
+            {
+                s.AllowOtpResendAfter = 600;   // long enough that any leak shows
+                s.MaxOtpRequestsPerDay = 0;    // isolate the cooldown from the cap
+                s.IsRegistrable = true;
+            })));
+
+        var msisdn = NewMsisdn();
+        var shortname = await SeedUserAsync(host, msisdn);
+        var repo = host.Services.GetRequiredService<OtpRepository>();
+        try
+        {
+            // The attacker, who needs no account and no token.
+            (await RequestAsync(host, msisdn, OtpPurpose.Register)).Status.ShouldBe(Status.Success);
+            (await CountAsync(repo, msisdn, OtpPurpose.Register)).ShouldBe(1);
+
+            // The victim, asking to recover their own account.
+            (await RequestAsync(host, msisdn, OtpPurpose.Reset)).Status.ShouldBe(Status.Success);
+            (await CountAsync(repo, msisdn, OtpPurpose.Reset)).ShouldBe(1,
+                "a register flood must not silence account recovery");
+
+            // And the cooldown still binds inside its own bucket — splitting it
+            // must not turn a second reset request into a free resend.
+            (await RequestAsync(host, msisdn, OtpPurpose.Reset)).Status.ShouldBe(Status.Success);
+            (await CountAsync(repo, msisdn, OtpPurpose.Reset)).ShouldBe(1,
+                "switching nothing at all is still a resend, and still capped");
+        }
+        finally { await CleanupAsync(shortname, msisdn); }
+    }
+
     // Locking persists IsActive=false; only IsLockedAsync clears it once the
     // cool-down elapses. Reading IsUsable directly meant the account stayed
     // silently un-OTP-able forever after — and for a password-less user, whose

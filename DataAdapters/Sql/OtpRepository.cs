@@ -1,4 +1,5 @@
 using Dmart.Auth;
+using Dmart.Models.Api;
 
 namespace Dmart.DataAdapters.Sql;
 
@@ -80,22 +81,25 @@ public sealed class OtpRepository(IDbConnectionFactory db, OtpHasher hasher)
         CancellationToken ct = default)
         => CreatedSinceCoreAsync(identifier, purpose, ct);
 
-    // Seconds since the newest code was issued to `identifier` under any
-    // purpose. Backs the resend cooldown, which applies per destination
-    // across all purposes.
-    public Task<int?> GetCreatedSinceAnyPurposeAsync(string identifier,
+    // Seconds since the newest code was issued to `identifier` within the same
+    // budget bucket as `purpose` — reset in one, everything else in the other.
+    // Backs the resend cooldown; see the note in OtpHandler for why recovery
+    // is bucketed separately from sign-in.
+    public Task<int?> GetCreatedSinceBucketAsync(string identifier, string purpose,
         CancellationToken ct = default)
-        => CreatedSinceCoreAsync(identifier, purpose: null, ct);
+        => CreatedSinceCoreAsync(identifier, OtpPurpose.Reset, ct,
+            invertPurpose: purpose != OtpPurpose.Reset);
 
     private async Task<int?> CreatedSinceCoreAsync(string identifier, string? purpose,
-        CancellationToken ct)
+        CancellationToken ct, bool invertPurpose = false)
     {
         await using var conn = await db.OpenAsync(ct);
         await using var cmd = conn.CreateCommand();
         var i = DbParams.Add(cmd, identifier);
         cmd.CommandText = purpose is null
             ? $"SELECT MAX(created_at) FROM otps WHERE identifier = {i}"
-            : $"SELECT MAX(created_at) FROM otps WHERE identifier = {i} AND purpose = {DbParams.Add(cmd, purpose)}";
+            : $"SELECT MAX(created_at) FROM otps WHERE identifier = {i} "
+              + $"AND purpose {(invertPurpose ? "<>" : "=")} {DbParams.Add(cmd, purpose)}";
         var raw = await cmd.ExecuteScalarAsync(ct);
         if (ReadTimestamp(raw) is not { } written) return null;
         // App-side subtraction on both providers: SQLite's julianday() round
