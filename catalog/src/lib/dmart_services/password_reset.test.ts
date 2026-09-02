@@ -9,7 +9,7 @@ import {
 // also constructs its transport, which reaches for catalog's tsdmart copy —
 // stubbed here because the SDK is not what these tests exercise.
 vi.mock("@edraj/tsdmart", () => ({
-  Dmart: { passwordResetRequest: vi.fn(), axiosDmartInstance: { post: vi.fn() } },
+  Dmart: { axiosDmartInstance: { post: vi.fn() } },
 }));
 import { resetErrorKey } from "./password_reset";
 
@@ -53,9 +53,10 @@ describe("detectIdentifier", () => {
     expect(detectIdentifier("12345")).toBeNull();
   });
 
-  // The server's msisdn pattern tops out at 15 digits (E.164), and
-  // /password-reset-request answers an unmatchable number with a silent Ok().
-  // Anything we let through past 15 would strand the user on the OTP screen.
+  // The server's msisdn pattern tops out at 15 digits (E.164). /otp-request
+  // does validate the format, but its answer is uniform for everything else,
+  // so rejecting here is what keeps a typo from silently spending one of the
+  // caller's daily OTP slots.
   it("accepts exactly 15 digits", () => {
     expect(detectIdentifier("+123456789012345")).toEqual({
       kind: "msisdn",
@@ -134,14 +135,22 @@ describe("requestPasswordReset", () => {
     requestReset.mockResolvedValue({ status: "success" });
   });
 
+  // "only" means no other IDENTIFIER — purpose rides along on every request,
+  // because /user/otp-request rejects a call without one.
   it("sends only the email field for an email identifier", async () => {
     await requestPasswordReset({ kind: "email", value: "a@b.co" });
-    expect(requestReset).toHaveBeenCalledWith({ email: "a@b.co" });
+    expect(requestReset).toHaveBeenCalledWith({
+      email: "a@b.co",
+      purpose: "reset",
+    });
   });
 
   it("sends only the msisdn field for an msisdn identifier", async () => {
     await requestPasswordReset({ kind: "msisdn", value: "+964770" });
-    expect(requestReset).toHaveBeenCalledWith({ msisdn: "+964770" });
+    expect(requestReset).toHaveBeenCalledWith({
+      msisdn: "+964770",
+      purpose: "reset",
+    });
   });
 
   it("propagates a transport failure", async () => {

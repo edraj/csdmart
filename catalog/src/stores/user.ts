@@ -4,7 +4,6 @@ import {
   Dmart,
   DmartScope,
   ResourceType,
-  type SendOTPRequest,
 } from "@edraj/tsdmart";
 import { authToken } from "@/stores/auth";
 import { getLocaleFromNavigator } from "svelte-i18n";
@@ -133,13 +132,24 @@ export async function loginBy(email: string, password: string) {
 
 export async function requestOtp(email: string): Promise<string> {
   throttleAuth();
-  const request: SendOTPRequest = { email: email };
   try {
-    const response = await Dmart.otpRequest(request);
-    if (response.status === "success") {
+    // Direct, not Dmart.otpRequest: /user/otp-request now REQUIRES a `purpose`
+    // and rejects a request without one, and the pinned SDK's SendOTPRequest
+    // has no such field — so the typed method cannot express a valid call.
+    // Same escape hatch password_reset.ts uses for the endpoints the SDK lacks.
+    //
+    // "register" specifically: /user/create only accepts an `email_otp` minted
+    // at the register purpose, and this is the registration flow's only caller.
+    const response = (
+      await Dmart.axiosDmartInstance.post("user/otp-request", {
+        email,
+        purpose: "register",
+      })
+    )?.data;
+    if (response?.status === "success") {
       return response.records?.[0]?.attributes?.request_id ?? "";
     } else {
-      throw new Error(response.error?.message || "OTP request failed");
+      throw new Error(response?.error?.message || "OTP request failed");
     }
   } catch (error: any) {
     if (error.response?.data?.error?.message) {

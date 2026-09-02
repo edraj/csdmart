@@ -299,25 +299,40 @@ public sealed class DmartSettings
     public string? UserCreateDefaultRole { get; set; }
     public string? UserCreateDefaultGroup { get; set; }
 
+    // When true, POST /user/login's OTP path creates an account instead of
+    // failing when the msisdn/email identifier matches no existing user:
+    // the login-purpose OTP is verified against the same gates /user/create
+    // uses (IsRegistrable + the identifier's registration channel enabled),
+    // and on success a new account is minted and logged in. Shortname
+    // identifiers are excluded — there is no contact to verify against for
+    // an account that doesn't exist yet. The new account never gets a
+    // password from this path (ForcePasswordChange=true, same as a
+    // contact-only self-registration); the user sets one afterward via
+    // /user/profile. Default false: /user/login's "no such user" failure
+    // is the only behavior a deployment gets unless it opts in.
+    public bool EnableOtpImplicitRegistration { get; set; }
+
     // Global TTL (seconds) for one-time passwords. OtpRepository enforces
     // this when verifying a code — entries older than OtpTokenTtl seconds
     // are treated as expired regardless of the per-endpoint "expires" value
     // that was stored at creation time. Mirrors Python's `otp_token_ttl`.
     public int OtpTokenTtl { get; set; } = 60 * 5;
 
-    // Minimum seconds between OTP re-sends for the same destination. Mirrors
-    // Python's `allow_otp_resend_after`. /user/otp-request returns
-    // OTP_RESEND_BLOCKED (HTTP 403) when a prior OTP was issued within this
-    // window. Default matches config.env.sample's ALLOW_OTP_RESEND_AFTER=60 —
-    // the previous in-code default of 1 silently gave any deployment that
-    // omits the key a one-second cooldown, i.e. effectively no throttle on
-    // OTP re-sends (SMS/email spend + OTP-rotation churn).
+    // Minimum seconds between OTP issues to the same destination, across all
+    // purposes. /user/otp-request silently returns Ok when a prior OTP was
+    // issued within this window. Default matches config.env.sample's
+    // ALLOW_OTP_RESEND_AFTER=60.
     public int AllowOtpResendAfter { get; set; } = 60;
 
-    // Minimum seconds between password-reset OTP re-sends for the same
-    // destination. Scoped to /user/password-reset-request so the reset flow's
-    // cadence can be tuned independently of generic /user/otp-request.
-    public int AllowPasswordResetResendAfter { get; set; } = 60;
+    // Maximum OTP issues per destination across all purposes in a rolling
+    // 24-hour window, counted from the otps history rows. Over-limit
+    // requests silently return Ok. 0 disables.
+    public int MaxOtpRequestsPerDay { get; set; } = 10;
+
+    // Days consumed/expired OTP rows are kept before the periodic sweeper
+    // purges them. Must be >= 1 (MaxOtpRequestsPerDay counts rows from the
+    // last 24h). Rows hold plaintext contact identifiers.
+    public int OtpHistoryRetentionDays { get; set; } = 2;
 
     // If > 0, sessions that haven't been touched for this many seconds are
     // rejected at JWT validation time (and the session row is deleted). 0

@@ -129,20 +129,40 @@ public sealed class UserService(
             return Result<(User, string, string)>.Fail(
                 InternalErrorCode.SHORTNAME_ALREADY_EXIST, "already exists", ErrorTypes.Create);
 
-        // OTP verification (Python uses verify_user = peek; OTP is NOT consumed
-        // so a subsequent /otp-confirm can still use it). Skipped entirely when
-        // is_otp_for_create_required=false — both channels are then treated as
-        // verified by fiat, mirroring Python's `is_valid_otp = True` branch.
+        // Capped verify-and-consume at the register purpose — the code is
+        // spent on first use, so a failure after this point requires a fresh
+        // OTP. Everything that CAN be checked first now is (see below), so
+        // what remains after this line is the uniqueness check, which is
+        // deliberately late for anti-enumeration reasons. Skipped entirely
+        // when is_otp_for_create_required=false, in which case both channels
+        // are treated as verified.
         var emailVerified = false;
+        var payload = ExtractPayload(attrs);
+        // Schema validation runs BEFORE the codes are redeemed. A payload that
+        // fails its schema is a plain client-side data error and entirely
+        // recoverable — but redeeming first meant the caller's still-valid
+        // code was already spent when the error came back, and re-requesting
+        // inside AllowOtpResendAfter returns a silent 200 Ok, so they would
+        // sit on the OTP screen watching a success response and no message
+        // arrive. Validation has no side effects, so it costs nothing to ask
+        // first. Same reasoning as TryImplicitRegisterAsync.
+        //
+        // Python parity (serve_request_create): validate payload.body against
+        // payload.schema_shortname before persisting. /user/create runs through
+        // this service, not EntryService, so without this gate the declared
+        // schema was never enforced on self-registration.
+        var payloadSchemaError = await schemas.ValidatePayloadAsync(MgmtSpace, ResourceType.User, payload, ct);
+        if (payloadSchemaError is not null)
+            return Result<(User, string, string)>.Fail(
+                InternalErrorCode.INVALID_DATA, payloadSchemaError, ErrorTypes.Request);
+
         var msisdnVerified = false;
         if (!string.IsNullOrEmpty(msisdn))
         {
             if (s.IsOtpForCreateRequired)
             {
-                // Peek-verify (no consume): codes are stored hashed, so we hand
-                // the candidate to the repo and it compares hashes — we can't
-                // fetch the plaintext to compare ourselves anymore.
-                if (!await otp.VerifyPeekAsync(msisdn, msisdnOtp ?? "", ct))
+                if (!await otp.VerifyAndConsumeAsync(msisdn, OtpPurpose.Register,
+                        msisdnOtp ?? "", s.MaxOtpVerifyAttempts, ct))
                     return Result<(User, string, string)>.Fail(
                         InternalErrorCode.SESSION, "Invalid MSISDN OTP", ErrorTypes.Create);
             }
@@ -152,7 +172,8 @@ public sealed class UserService(
         {
             if (s.IsOtpForCreateRequired)
             {
-                if (!await otp.VerifyPeekAsync(email, emailOtp ?? "", ct))
+                if (!await otp.VerifyAndConsumeAsync(email, OtpPurpose.Register,
+                        emailOtp ?? "", s.MaxOtpVerifyAttempts, ct))
                     return Result<(User, string, string)>.Fail(
                         InternalErrorCode.SESSION, "Invalid Email OTP", ErrorTypes.Create);
             }
@@ -188,17 +209,7 @@ public sealed class UserService(
         var language = ParseLanguage(ConvertToString(attrs.GetValueOrDefault("language")));
         var displayname = attrs.TryGetValue("displayname", out var dn) ? ParseTranslation(dn) : null;
         var description = attrs.TryGetValue("description", out var desc) ? ParseTranslation(desc) : null;
-        var payload = ExtractPayload(attrs);
         var tags = AttrHelper.ExtractTags(attrs);
-
-        // Python parity (serve_request_create): validate payload.body against
-        // payload.schema_shortname before persisting. /user/create runs through
-        // this service, not EntryService, so without this gate the declared
-        // schema was never enforced on self-registration.
-        var payloadSchemaError = await schemas.ValidatePayloadAsync(MgmtSpace, ResourceType.User, payload, ct);
-        if (payloadSchemaError is not null)
-            return Result<(User, string, string)>.Fail(
-                InternalErrorCode.INVALID_DATA, payloadSchemaError, ErrorTypes.Request);
 
         var user = new User
         {
@@ -230,14 +241,6 @@ public sealed class UserService(
             UpdatedAt = TimeUtils.Now(),
         };
         await users.UpsertAsync(user, ct);
-
-        // Consume the OTP(s) used to verify this registration now that the
-        // account exists, so a still-valid code can't be replayed afterwards
-        // (e.g. against /user/otp-confirm). Only the supplied channels are
-        // cleared; DeleteAsync is a no-op when nothing was stored (e.g. when
-        // is_otp_for_create_required=false).
-        if (!string.IsNullOrEmpty(email)) await otp.DeleteAsync(email, ct);
-        if (!string.IsNullOrEmpty(msisdn)) await otp.DeleteAsync(msisdn, ct);
 
         // Auto-login (Python: process_user_login at the end of create_user).
         var access = jwt.IssueAccess(user.Shortname, user.Roles, user.Type);
@@ -320,7 +323,7 @@ public sealed class UserService(
     }
 
     // Standard password-based login. Mirrors Python's login() PATH C (password).
-    public async Task<Result<(string Access, string Refresh, User User)>> LoginAsync(
+    public async Task<Result<(string Access, string Refresh, User User, bool Created)>> LoginAsync(
         UserLoginRequest req, Dictionary<string, string>? requestHeaders = null, CancellationToken ct = default)
     {
         var user = await ResolveUserAsync(req, ct);
@@ -330,7 +333,7 @@ public sealed class UserService(
             // matches the wrong-password response; this makes the timing match
             // too, so "no such user" isn't distinguishable from "bad password".
             _ = hasher.Verify(req.Password ?? string.Empty, DecoyHash);
-            return Result<(string, string, User)>.Fail(
+            return Result<(string, string, User, bool)>.Fail(
                 InternalErrorCode.INVALID_USERNAME_AND_PASS, "Invalid username or password", ErrorTypes.Auth);
         }
 
@@ -359,14 +362,14 @@ public sealed class UserService(
         {
             var locked = await HandleFailedLoginAttemptAsync(user, ct);
             return locked
-                ? Result<(string, string, User)>.Fail(
+                ? Result<(string, string, User, bool)>.Fail(
                     InternalErrorCode.USER_ACCOUNT_LOCKED,
                     "Account has been locked due to too many failed login attempts.", ErrorTypes.Auth)
                 // Python returns INVALID_USERNAME_AND_PASS(10) for BOTH "no
                 // user" and "wrong password" to avoid username enumeration.
                 // Previously C# surfaced PASSWORD_NOT_VALIDATED(13) here which
                 // lets callers tell the two apart — parity gap.
-                : Result<(string, string, User)>.Fail(
+                : Result<(string, string, User, bool)>.Fail(
                     InternalErrorCode.INVALID_USERNAME_AND_PASS, "Invalid username or password", ErrorTypes.Auth);
         }
 
@@ -374,7 +377,7 @@ public sealed class UserService(
         if (user.LockedToDevice && !string.IsNullOrEmpty(user.DeviceId)
             && (string.IsNullOrEmpty(req.DeviceId) || req.DeviceId != user.DeviceId))
         {
-            return Result<(string, string, User)>.Fail(
+            return Result<(string, string, User, bool)>.Fail(
                 InternalErrorCode.USER_ACCOUNT_LOCKED,
                 "This account is locked to a unique device !", ErrorTypes.Auth);
         }
@@ -384,7 +387,7 @@ public sealed class UserService(
         if (user.Type == UserType.Mobile && !string.IsNullOrEmpty(user.DeviceId)
             && !string.IsNullOrEmpty(req.DeviceId) && req.DeviceId != user.DeviceId)
         {
-            return Result<(string, string, User)>.Fail(
+            return Result<(string, string, User, bool)>.Fail(
                 InternalErrorCode.OTP_NEEDED, "New device detected, login with otp", "auth");
         }
 
@@ -393,7 +396,7 @@ public sealed class UserService(
     }
 
     // OTP-based login. Mirrors Python's login() PATH B (OTP).
-    public async Task<Result<(string Access, string Refresh, User User)>> LoginWithOtpAsync(
+    public async Task<Result<(string Access, string Refresh, User User, bool Created)>> LoginWithOtpAsync(
         UserLoginRequest req, Dictionary<string, string>? requestHeaders = null, CancellationToken ct = default)
     {
         // Python parity: OTP login must carry exactly one identifier.
@@ -401,34 +404,41 @@ public sealed class UserService(
                             + (req.Email is not null ? 1 : 0)
                             + (req.Msisdn is not null ? 1 : 0);
         if (identifierCount > 1)
-            return Result<(string, string, User)>.Fail(
+            return Result<(string, string, User, bool)>.Fail(
                 InternalErrorCode.OTP_ISSUE,
                 "Provide either msisdn, email or shortname, not both.", "auth");
         if (identifierCount == 0)
-            return Result<(string, string, User)>.Fail(
+            return Result<(string, string, User, bool)>.Fail(
                 InternalErrorCode.OTP_ISSUE,
                 "Either msisdn, email or shortname must be provided.", "auth");
 
         var user = await ResolveUserAsync(req, ct);
         if (user is null)
-            return Result<(string, string, User)>.Fail(
+        {
+            if (settings.Value.EnableOtpImplicitRegistration
+                && string.IsNullOrEmpty(req.Shortname) && !string.IsNullOrEmpty(req.Otp)
+                && await TryImplicitRegisterAsync(req, requestHeaders, ct) is { } created)
+                return created;
+            return Result<(string, string, User, bool)>.Fail(
                 InternalErrorCode.INVALID_USERNAME_AND_PASS, "Invalid username or password", ErrorTypes.Auth);
+        }
 
         var (attemptLocked, unlockedUser) = await RejectIfAttemptLockedAsync(user, ct);
         if (attemptLocked is { } al) return al;
         user = unlockedUser; // possibly auto-unlocked after the cool-down
         if (RejectIfNotActive(user) is { } inactiveReject) return inactiveReject;
 
-        // Validate OTP code.
-        // Python parity: key is derived from the REQUEST identifier, not the
-        // user record. When the caller sent `shortname`, Python falls back to
-        // `user.msisdn` because /otp-request-login writes to msisdn for the
-        // shortname path — same scheme here.
+        // Validate OTP code. The destination is derived from the REQUEST
+        // identifier, not the user record — a shortname identifier falls
+        // back to `user.msisdn` since /otp-request writes login codes there
+        // for the shortname path. Verified at the login purpose, capped by
+        // MaxOtpVerifyAttempts.
         var dest = !string.IsNullOrEmpty(req.Shortname)
             ? user.Msisdn
             : (req.Msisdn ?? req.Email?.ToLowerInvariant());
         if (string.IsNullOrEmpty(dest) || string.IsNullOrEmpty(req.Otp)
-            || !await otp.VerifyAndConsumeAsync(dest, req.Otp, ct))
+            || !await otp.VerifyAndConsumeAsync(dest, OtpPurpose.Login, req.Otp,
+                    settings.Value.MaxOtpVerifyAttempts, ct))
         {
             // Wrong OTP counts as a failed login attempt. Keeps the lock-out
             // promise intact — without this, an attacker who guessed a valid
@@ -436,10 +446,10 @@ public sealed class UserService(
             // tripping the threshold.
             var locked = await HandleFailedLoginAttemptAsync(user, ct);
             return locked
-                ? Result<(string, string, User)>.Fail(
+                ? Result<(string, string, User, bool)>.Fail(
                     InternalErrorCode.USER_ACCOUNT_LOCKED,
                     "Account has been locked due to too many failed login attempts.", ErrorTypes.Auth)
-                : Result<(string, string, User)>.Fail(
+                : Result<(string, string, User, bool)>.Fail(
                     InternalErrorCode.OTP_INVALID, "Wrong OTP", ErrorTypes.Auth);
         }
 
@@ -450,15 +460,119 @@ public sealed class UserService(
         {
             var locked = await HandleFailedLoginAttemptAsync(user, ct);
             return locked
-                ? Result<(string, string, User)>.Fail(
+                ? Result<(string, string, User, bool)>.Fail(
                     InternalErrorCode.USER_ACCOUNT_LOCKED,
                     "Account has been locked due to too many failed login attempts.", ErrorTypes.Auth)
-                : Result<(string, string, User)>.Fail(
+                : Result<(string, string, User, bool)>.Fail(
                     InternalErrorCode.PASSWORD_NOT_VALIDATED, "Invalid username or password", ErrorTypes.Auth);
         }
 
         if (RejectIfContactUnverified(user, req) is { } unverifiedReject) return unverifiedReject;
         return await ProcessLoginAsync(user, req, requestHeaders, ct);
+    }
+
+    // Implicit registration: a direct msisdn/email login-purpose OTP for an
+    // identifier with no matching user creates the account instead of
+    // failing, gated the same way /user/create is gated. Returns null (not a
+    // failure Result) when the OTP is invalid, an existing user raced the
+    // caller to the same contact, or a shortname couldn't be allocated — the
+    // caller falls through to the ordinary "no such user" failure either way.
+    // The account never gets a password from this path: Password stays
+    // null and ForcePasswordChange is always true, matching a contact-only
+    // self-registration; req.Password (if supplied) is ignored.
+    private async Task<Result<(string Access, string Refresh, User User, bool Created)>?> TryImplicitRegisterAsync(
+        UserLoginRequest req, Dictionary<string, string>? requestHeaders, CancellationToken ct)
+    {
+        var s = settings.Value;
+        var emailChannel = s.IsRegistrationChannelEnabled("email");
+        var msisdnChannel = s.IsRegistrationChannelEnabled("msisdn");
+        if (!s.IsRegistrable || (!emailChannel && !msisdnChannel)) return null;
+
+        string dest;
+        bool isEmail;
+        if (!string.IsNullOrEmpty(req.Email))
+        {
+            if (!emailChannel) return null;
+            dest = req.Email.ToLowerInvariant();
+            isEmail = true;
+        }
+        else if (!string.IsNullOrEmpty(req.Msisdn))
+        {
+            if (!msisdnChannel) return null;
+            dest = req.Msisdn;
+            isEmail = false;
+        }
+        else return null;
+
+        // Both cheap checks run BEFORE the code is consumed. Every failure
+        // here returns null, which the caller reports as a generic
+        // INVALID_USERNAME_AND_PASS — so consuming first meant a user whose
+        // registration lost a race, or who hit an exhausted shortname space,
+        // had their still-valid code silently burned and had to wait out
+        // AllowOtpResendAfter and spend another slot from the daily cap to try
+        // again, with nothing to tell them why. Neither check has side
+        // effects: AllocateImplicitShortnameAsync only probes for an unused
+        // random name.
+        var taken = isEmail
+            ? await users.GetByEmailAsync(dest, ct)
+            : await users.GetByMsisdnAsync(dest, ct);
+        if (taken is not null) return null;
+
+        var shortname = await AllocateImplicitShortnameAsync(ct);
+        if (shortname is null) return null;
+
+        if (!await otp.VerifyAndConsumeAsync(dest, OtpPurpose.Login, req.Otp!, s.MaxOtpVerifyAttempts, ct))
+            return null;
+
+        // Re-checked after the consume as well, and deliberately: the code was
+        // minted before this call, so a concurrent signup for the same contact
+        // can land in the window the verify itself opens. Checking only up
+        // front would trade a burned code for a silent overwrite, which is the
+        // worse of the two.
+        var existing = isEmail
+            ? await users.GetByEmailAsync(dest, ct)
+            : await users.GetByMsisdnAsync(dest, ct);
+        if (existing is not null) return null;
+
+        var user = new User
+        {
+            Uuid = Guid.NewGuid().ToString(),
+            Shortname = shortname,
+            SpaceName = MgmtSpace,
+            Subpath = "/users",
+            OwnerShortname = "dmart",
+            Email = isEmail ? dest : null,
+            Msisdn = isEmail ? null : dest,
+            Password = null,
+            ForcePasswordChange = true,
+            Language = Language.En,
+            Roles = DefaultAccessOrEmpty(s.UserCreateDefaultRole),
+            Groups = DefaultAccessOrEmpty(s.UserCreateDefaultGroup),
+            Type = UserType.Web,
+            IsActive = true,
+            IsEmailVerified = isEmail,
+            IsMsisdnVerified = !isEmail,
+            CreatedAt = TimeUtils.Now(),
+            UpdatedAt = TimeUtils.Now(),
+        };
+        await users.UpsertAsync(user, ct);
+
+        return await ProcessLoginAsync(user, req, requestHeaders, ct, created: true);
+    }
+
+    // Mints an unused 8-hex shortname, matching the "auto" shortname scheme
+    // self-registration uses (RequestHandler.ResolveAutoShortname). Null
+    // after exhausting attempts — astronomically unlikely at 32 bits of
+    // entropy per try.
+    private async Task<string?> AllocateImplicitShortnameAsync(CancellationToken ct)
+    {
+        for (var i = 0; i < 5; i++)
+        {
+            var candidate = Guid.NewGuid().ToString("N")[..8];
+            if (await users.GetByShortnameAsync(candidate, ct) is null)
+                return candidate;
+        }
+        return null;
     }
 
     // Shared inactive-user gate for LoginAsync / LoginWithOtpAsync.
@@ -472,19 +586,19 @@ public sealed class UserService(
     // (router.py:504-508). USER_ISNT_VERIFIED is a separate code Python uses
     // only on the verify-otp / registration flow — not on login. Callers that
     // still want the "verified" distinction live outside this helper.
-    private static Result<(string Access, string Refresh, User User)>? RejectIfNotActive(User user)
+    private static Result<(string Access, string Refresh, User User, bool Created)>? RejectIfNotActive(User user)
     {
         // A soft-deleted account gets the generic credential failure a
         // non-existent identifier gets — never "locked" (which implies
         // recoverable) — so it's indistinguishable from one that never existed.
         if (user.IsDeleted)
-            return Result<(string, string, User)>.Fail(
+            return Result<(string, string, User, bool)>.Fail(
                 InternalErrorCode.INVALID_USERNAME_AND_PASS, "Invalid username or password", ErrorTypes.Auth);
         // Deactivated / attempt-locked → Python parity USER_ACCOUNT_LOCKED so
         // the cxb login UI can show "your account is locked".
         return user.IsActive
             ? null
-            : Result<(string, string, User)>.Fail(
+            : Result<(string, string, User, bool)>.Fail(
                 InternalErrorCode.USER_ACCOUNT_LOCKED, "Account has been locked.", ErrorTypes.Auth);
     }
 
@@ -494,7 +608,7 @@ public sealed class UserService(
     // verification requirement (the identifier isn't a contact channel).
     // Callers invoke this AFTER the credential check succeeds so an
     // unauthenticated caller can't turn it into a verification oracle.
-    private static Result<(string Access, string Refresh, User User)>? RejectIfContactUnverified(
+    private static Result<(string Access, string Refresh, User User, bool Created)>? RejectIfContactUnverified(
         User user, UserLoginRequest req)
     {
         // Channel follows the same precedence ResolveUserAsync uses to pick the
@@ -502,10 +616,10 @@ public sealed class UserService(
         // verification requirement even if the body also echoes an email/msisdn.
         if (!string.IsNullOrEmpty(req.Shortname)) return null;
         if (!string.IsNullOrEmpty(req.Email) && !user.IsEmailVerified)
-            return Result<(string, string, User)>.Fail(
+            return Result<(string, string, User, bool)>.Fail(
                 InternalErrorCode.USER_ISNT_VERIFIED, "Email is not verified.", ErrorTypes.Auth);
         if (!string.IsNullOrEmpty(req.Msisdn) && !user.IsMsisdnVerified)
-            return Result<(string, string, User)>.Fail(
+            return Result<(string, string, User, bool)>.Fail(
                 InternalErrorCode.USER_ISNT_VERIFIED, "MSISDN is not verified.", ErrorTypes.Auth);
         return null;
     }
@@ -524,7 +638,7 @@ public sealed class UserService(
     // auto-unlocks — only a genuinely idle account does. Applies ONLY to the
     // attempt-counter lock; a manually-deactivated / never-verified account
     // (attempt_count < max) is left to RejectIfNotActive and never auto-unlocks.
-    private async Task<(Result<(string Access, string Refresh, User User)>? Rejection, User User)>
+    private async Task<(Result<(string Access, string Refresh, User User, bool Created)>? Rejection, User User)>
         RejectIfAttemptLockedAsync(User user, CancellationToken ct)
     {
         var maxAttempts = settings.Value.MaxFailedLoginAttempts;
@@ -544,7 +658,7 @@ public sealed class UserService(
         // window from ever elapsing) and reject. Message is kept identical to the
         // fresh-lock path (generic — no remaining-time leak, no message drift).
         await users.TouchLastFailedLoginAsync(user.Shortname, TimeUtils.Now(), ct);
-        return (Result<(string, string, User)>.Fail(
+        return (Result<(string, string, User, bool)>.Fail(
             InternalErrorCode.USER_ACCOUNT_LOCKED,
             "Account has been locked due to too many failed login attempts.",
             ErrorTypes.Auth), user);
@@ -611,9 +725,9 @@ public sealed class UserService(
     // Apple) resolve a User on their own, then need to issue session + JWT
     // through the same code path as password/OTP login. Keeping it
     // internal localizes exposure to the assembly while allowing reuse.
-    internal async Task<Result<(string Access, string Refresh, User User)>> ProcessLoginAsync(
+    internal async Task<Result<(string Access, string Refresh, User User, bool Created)>> ProcessLoginAsync(
         User user, UserLoginRequest req,
-        Dictionary<string, string>? requestHeaders, CancellationToken ct)
+        Dictionary<string, string>? requestHeaders, CancellationToken ct, bool created = false)
     {
         await users.ResetAttemptsAsync(user.Shortname, ct);
 
@@ -692,7 +806,7 @@ public sealed class UserService(
         await AppendLoginHistoryAsync(
             updatedUser.Shortname, previousLogin, loginTimestamp, requestHeaders, ct);
 
-        return Result<(string, string, User)>.Ok((access, refresh, updatedUser));
+        return Result<(string, string, User, bool)>.Ok((access, refresh, updatedUser, created));
     }
 
     // The previous login's timestamp, or null when the account has never logged
@@ -952,61 +1066,121 @@ public sealed class UserService(
         // meaningless once they've picked one); otherwise it carries through unchanged.
         var resolvedForcePasswordChange = newPasswordHash is not null ? false : user.ForcePasswordChange;
 
-        // Email change: Python parity (router.py:688-739).
-        //   * patched email != stored email  → email_otp REQUIRED
-        //   * email_otp must match users:otp:otps/<email> (peek, not consume —
-        //     matches Python's verify_user which calls db.get_otp)
-        //   * new email must not collide with another user (validate_uniqueness)
-        //   * on success: lowercase, replace, flip is_email_verified=true
-        // When the posted email is the same as the stored value, we silently
-        // no-op (matches Python: the `!=` guard short-circuits the OTP check).
+        // Email confirm/change:
+        //   * `new_email` + `email_otp` → change to a new address. OTP must
+        //     be issued to the new address (verify-contact purpose);
+        //     uniqueness-checked; on success: lowercase, replace, flip
+        //     is_email_verified=true.
+        //   * `email` (== stored) + `email_otp` → confirm the address already
+        //     on the row: consumes the code at the stored address and flips
+        //     is_email_verified.
+        //   * `email` (== stored) alone → no-op.
+        //   * `email` != stored → rejected; use `new_email` to change it.
+        // All OTP checks are capped verify-and-consume.
         string? resolvedEmail = user.Email;
         bool resolvedIsEmailVerified = user.IsEmailVerified;
+        var rawNewEmail = Str(patch, "new_email", null);
         var rawEmail = Str(patch, "email", null);
-        if (!string.IsNullOrEmpty(rawEmail))
+        if (!string.IsNullOrEmpty(rawNewEmail))
         {
-            var newEmail = rawEmail.ToLowerInvariant();
-            if (!string.Equals(newEmail, user.Email, StringComparison.Ordinal))
+            var newEmail = rawNewEmail.ToLowerInvariant();
+            if (regexConfig.ValidateEmailFormat(newEmail) is { } emailFormatError)
+                return Result<User>.Fail(InternalErrorCode.INVALID_DATA, emailFormatError, ErrorTypes.Request);
+            var emailOtp = Str(patch, "email_otp", null);
+            if (string.IsNullOrEmpty(emailOtp))
+                return Result<User>.Fail(InternalErrorCode.SESSION,
+                    "Email OTP is required to update your email", ErrorTypes.Create);
+            // Collision checked BEFORE the code is redeemed. Losing the address
+            // to another account is a recoverable error the caller can act on,
+            // but consuming first spent their still-valid code on the way to
+            // telling them so — and a retry inside AllowOtpResendAfter answers
+            // a silent 200 with no message sent. The check has no side effects.
+            var collision = await users.GetByEmailAsync(newEmail, ct);
+            if (collision is not null && !string.Equals(collision.Shortname, user.Shortname, StringComparison.Ordinal))
+                return Result<User>.Fail(InternalErrorCode.DATA_SHOULD_BE_UNIQUE,
+                    $"Entry properties should be unique: @email:{newEmail} ", ErrorTypes.Request);
+            if (!await otp.VerifyAndConsumeAsync(newEmail, OtpPurpose.VerifyContact,
+                    emailOtp, settings.Value.MaxOtpVerifyAttempts, ct))
+                return Result<User>.Fail(InternalErrorCode.SESSION,
+                    "Invalid Email OTP", ErrorTypes.Create);
+            resolvedEmail = newEmail;
+            resolvedIsEmailVerified = true;
+        }
+        else if (!string.IsNullOrEmpty(rawEmail))
+        {
+            var suppliedEmail = rawEmail.ToLowerInvariant();
+            // OrdinalIgnoreCase, not Ordinal: `suppliedEmail` has been
+            // lowercased but `user.Email` is whatever case it was stored with —
+            // RequestHandler keeps the admin's spelling when provisioning,
+            // OAuthUserResolver keeps the provider's. An Ordinal compare is
+            // therefore ALWAYS false for a stored address carrying any
+            // uppercase, so its owner could never confirm the contact they
+            // already hold: posting their own address came back "email does not
+            // match the stored address", and `new_email` would have been a lie.
+            //
+            // Same defect the reset flow had — see OtpHandler.EmailDest. The
+            // OTP lookup below already uses the lowercased form, matching what
+            // /otp-request stored, so only this guard was wrong.
+            //
+            // The stored column is deliberately left as-is rather than
+            // normalised here: confirming a contact should not quietly rewrite
+            // it, and every lookup that matters is already case-insensitive.
+            if (!string.Equals(suppliedEmail, user.Email, StringComparison.OrdinalIgnoreCase))
+                return Result<User>.Fail(InternalErrorCode.INVALID_DATA,
+                    "email does not match the stored address; use new_email to change it",
+                    ErrorTypes.Request);
+            var emailOtp = Str(patch, "email_otp", null);
+            if (!string.IsNullOrEmpty(emailOtp))
             {
-                if (regexConfig.ValidateEmailFormat(newEmail) is { } emailFormatError)
-                    return Result<User>.Fail(InternalErrorCode.INVALID_DATA, emailFormatError, ErrorTypes.Request);
-                var emailOtp = Str(patch, "email_otp", null);
-                if (string.IsNullOrEmpty(emailOtp))
-                    return Result<User>.Fail(InternalErrorCode.SESSION,
-                        "Email OTP is required to update your email", ErrorTypes.Create);
-                if (!await otp.VerifyPeekAsync(newEmail, emailOtp, ct))
+                if (!await otp.VerifyAndConsumeAsync(suppliedEmail, OtpPurpose.VerifyContact,
+                        emailOtp, settings.Value.MaxOtpVerifyAttempts, ct))
                     return Result<User>.Fail(InternalErrorCode.SESSION,
                         "Invalid Email OTP", ErrorTypes.Create);
-                var collision = await users.GetByEmailAsync(newEmail, ct);
-                if (collision is not null && !string.Equals(collision.Shortname, user.Shortname, StringComparison.Ordinal))
-                    return Result<User>.Fail(InternalErrorCode.DATA_SHOULD_BE_UNIQUE,
-                        $"Entry properties should be unique: @email:{newEmail} ", ErrorTypes.Request);
-                resolvedEmail = newEmail;
+                // Flags never regress: confirming only ever sets the flag.
                 resolvedIsEmailVerified = true;
             }
         }
 
-        // Msisdn change: Python parity (router.py:699-754). Same gating as email.
+        // Msisdn confirm/change — same gating as email.
         string? resolvedMsisdn = user.Msisdn;
         bool resolvedIsMsisdnVerified = user.IsMsisdnVerified;
-        var newMsisdn = Str(patch, "msisdn", null);
-        if (!string.IsNullOrEmpty(newMsisdn) && !string.Equals(newMsisdn, user.Msisdn, StringComparison.Ordinal))
+        var rawNewMsisdn = Str(patch, "new_msisdn", null);
+        var rawMsisdn = Str(patch, "msisdn", null);
+        if (!string.IsNullOrEmpty(rawNewMsisdn))
         {
-            if (regexConfig.ValidateMsisdnFormat(newMsisdn) is { } msisdnFormatError)
+            if (regexConfig.ValidateMsisdnFormat(rawNewMsisdn) is { } msisdnFormatError)
                 return Result<User>.Fail(InternalErrorCode.INVALID_DATA, msisdnFormatError, ErrorTypes.Request);
             var msisdnOtp = Str(patch, "msisdn_otp", null);
             if (string.IsNullOrEmpty(msisdnOtp))
                 return Result<User>.Fail(InternalErrorCode.SESSION,
                     "MSISDN OTP is required to update your msisdn", ErrorTypes.Create);
-            if (!await otp.VerifyPeekAsync(newMsisdn, msisdnOtp, ct))
-                return Result<User>.Fail(InternalErrorCode.SESSION,
-                    "Invalid MSISDN OTP", ErrorTypes.Create);
-            var collision = await users.GetByMsisdnAsync(newMsisdn, ct);
+            // Same ordering as the email branch above, for the same reason.
+            var collision = await users.GetByMsisdnAsync(rawNewMsisdn, ct);
             if (collision is not null && !string.Equals(collision.Shortname, user.Shortname, StringComparison.Ordinal))
                 return Result<User>.Fail(InternalErrorCode.DATA_SHOULD_BE_UNIQUE,
-                    $"Entry properties should be unique: @msisdn:{newMsisdn} ", ErrorTypes.Request);
-            resolvedMsisdn = newMsisdn;
+                    $"Entry properties should be unique: @msisdn:{rawNewMsisdn} ", ErrorTypes.Request);
+            if (!await otp.VerifyAndConsumeAsync(rawNewMsisdn, OtpPurpose.VerifyContact,
+                    msisdnOtp, settings.Value.MaxOtpVerifyAttempts, ct))
+                return Result<User>.Fail(InternalErrorCode.SESSION,
+                    "Invalid MSISDN OTP", ErrorTypes.Create);
+            resolvedMsisdn = rawNewMsisdn;
             resolvedIsMsisdnVerified = true;
+        }
+        else if (!string.IsNullOrEmpty(rawMsisdn))
+        {
+            if (!string.Equals(rawMsisdn, user.Msisdn, StringComparison.Ordinal))
+                return Result<User>.Fail(InternalErrorCode.INVALID_DATA,
+                    "msisdn does not match the stored number; use new_msisdn to change it",
+                    ErrorTypes.Request);
+            var msisdnOtp = Str(patch, "msisdn_otp", null);
+            if (!string.IsNullOrEmpty(msisdnOtp))
+            {
+                if (!await otp.VerifyAndConsumeAsync(rawMsisdn, OtpPurpose.VerifyContact,
+                        msisdnOtp, settings.Value.MaxOtpVerifyAttempts, ct))
+                    return Result<User>.Fail(InternalErrorCode.SESSION,
+                        "Invalid MSISDN OTP", ErrorTypes.Create);
+                resolvedIsMsisdnVerified = true;
+            }
         }
 
         // Python parity: deep-merge patch.payload.body into user.payload.body

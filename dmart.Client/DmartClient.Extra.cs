@@ -41,52 +41,50 @@ public sealed partial class DmartClient
         return await SendEnvelopeAsync(req, ct).ConfigureAwait(false);
     }
 
-    // POST /user/otp-request — send OTP for signup/verification.
-    // Provide exactly one of msisdn or email; Accept-Language optional.
+    // POST /user/otp-request. `purpose` is one of "login", "reset",
+    // "register" or "verify-contact" and selects what the code will be
+    // redeemable for. Provide exactly one of msisdn, email or shortname.
+    // The server always answers 200 Ok for a well-formed request, whether or
+    // not a code was actually sent. "verify-contact" requires an
+    // authenticated client; "register" works anonymously while
+    // self-registration is enabled.
     public async Task<Response> OtpRequestAsync(
-        string? msisdn = null, string? email = null, string? acceptLanguage = null, CancellationToken ct = default)
-        => await OtpRequestCoreAsync("/user/otp-request", msisdn, email, acceptLanguage, ct).ConfigureAwait(false);
-
-    // POST /user/otp-request-login — send OTP intended for the login flow.
-    public async Task<Response> OtpRequestLoginAsync(
-        string? msisdn = null, string? email = null, string? acceptLanguage = null, CancellationToken ct = default)
-        => await OtpRequestCoreAsync("/user/otp-request-login", msisdn, email, acceptLanguage, ct).ConfigureAwait(false);
-
-    private async Task<Response> OtpRequestCoreAsync(
-        string path, string? msisdn, string? email, string? acceptLanguage, CancellationToken ct)
+        string purpose, string? msisdn = null, string? email = null, string? shortname = null,
+        string? acceptLanguage = null, CancellationToken ct = default)
     {
-        var body = new Dictionary<string, object?>();
-        if (!string.IsNullOrEmpty(msisdn)) body["msisdn"] = msisdn;
-        if (!string.IsNullOrEmpty(email))  body["email"]  = email;
-        using var req = BuildRequest(HttpMethod.Post, path, Json(body));
+        var body = new Dictionary<string, object?> { ["purpose"] = purpose };
+        if (!string.IsNullOrEmpty(msisdn))    body["msisdn"]    = msisdn;
+        if (!string.IsNullOrEmpty(email))     body["email"]     = email;
+        if (!string.IsNullOrEmpty(shortname)) body["shortname"] = shortname;
+        using var req = BuildRequest(HttpMethod.Post, "/user/otp-request", Json(body));
         if (!string.IsNullOrEmpty(acceptLanguage))
             req.Headers.TryAddWithoutValidation("Accept-Language", acceptLanguage);
         return await SendEnvelopeAsync(req, ct).ConfigureAwait(false);
     }
 
-    // POST /user/password-reset-request — triggers the reset flow. Provide
-    // whichever identifier the user has (shortname, msisdn, or email).
-    public async Task<Response> PasswordResetRequestAsync(
-        string? shortname = null, string? msisdn = null, string? email = null, CancellationToken ct = default)
-    {
-        var body = new Dictionary<string, object?>();
-        if (!string.IsNullOrEmpty(shortname)) body["shortname"] = shortname;
-        if (!string.IsNullOrEmpty(msisdn))    body["msisdn"]    = msisdn;
-        if (!string.IsNullOrEmpty(email))     body["email"]     = email;
-        using var req = BuildRequest(HttpMethod.Post, "/user/password-reset-request", Json(body));
-        return await SendEnvelopeAsync(req, ct).ConfigureAwait(false);
-    }
+    // Convenience wrappers over OtpRequestAsync.
+    public Task<Response> OtpRequestLoginAsync(
+        string? msisdn = null, string? email = null, string? shortname = null,
+        string? acceptLanguage = null, CancellationToken ct = default)
+        => OtpRequestAsync("login", msisdn, email, shortname, acceptLanguage, ct);
 
-    // POST /user/otp-confirm — verify an OTP sent to msisdn or email.
-    public async Task<Response> ConfirmOtpAsync(
-        string otp, string? msisdn = null, string? email = null, CancellationToken ct = default)
-    {
-        var body = new Dictionary<string, object?> { ["otp"] = otp };
-        if (!string.IsNullOrEmpty(msisdn)) body["msisdn"] = msisdn;
-        if (!string.IsNullOrEmpty(email))  body["email"]  = email;
-        using var req = BuildRequest(HttpMethod.Post, "/user/otp-confirm", Json(body));
-        return await SendEnvelopeAsync(req, ct).ConfigureAwait(false);
-    }
+    public Task<Response> PasswordResetRequestAsync(
+        string? shortname = null, string? msisdn = null, string? email = null, CancellationToken ct = default)
+        => OtpRequestAsync("reset", msisdn, email, shortname, null, ct);
+
+    public Task<Response> OtpRequestRegisterAsync(
+        string? msisdn = null, string? email = null,
+        string? acceptLanguage = null, CancellationToken ct = default)
+        => OtpRequestAsync("register", msisdn, email, null, acceptLanguage, ct);
+
+    public Task<Response> OtpRequestVerifyContactAsync(
+        string? msisdn = null, string? email = null,
+        string? acceptLanguage = null, CancellationToken ct = default)
+        => OtpRequestAsync("verify-contact", msisdn, email, null, acceptLanguage, ct);
+
+    // Contact confirm/change: POST /user/profile — send `email` +
+    // `email_otp` (or `msisdn` + `msisdn_otp`) to confirm the stored
+    // contact, or `new_email`/`new_msisdn` + the OTP to change to a new one.
 
     // POST /user/validate_password — server-side password-policy check.
     public async Task<Response> ValidatePasswordAsync(string password, CancellationToken ct = default)

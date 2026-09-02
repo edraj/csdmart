@@ -11,28 +11,38 @@ public sealed record UserLoginRequest(
     string? DeviceId = null,
     string? FirebaseToken = null);
 
+// The closed set of OTP purposes. Purpose is part of an OTP's identity —
+// a code issued for one purpose can never be redeemed under another (a
+// phished password-reset code must not double as a login credential), and
+// each (identifier, purpose) pair holds its own independent live code.
+public static class OtpPurpose
+{
+    public const string Login = "login";
+    public const string Reset = "reset";
+    // Anonymous signup verification — gated by is_registrable + the enabled
+    // registration channels; consumed by /user/create.
+    public const string Register = "register";
+    // Authenticated profile confirm/change — JWT required; consumed by
+    // /user/profile.
+    public const string VerifyContact = "verify-contact";
+
+    public static bool IsValid(string? purpose)
+        => purpose is Login or Reset or Register or VerifyContact;
+}
+
+// POST /user/otp-request — the single OTP issuing API. Purpose selects what
+// the code will be redeemable for (see OtpPurpose); exactly one of
+// {Msisdn, Email, Shortname} identifies the destination/user.
 public sealed record SendOTPRequest(
     string? Msisdn,
     string? Email,
-    string? Shortname = null);
+    string? Shortname = null,
+    string? Purpose = null);
 
-public sealed record ConfirmOTPRequest(
-    string Code,
-    string? Msisdn,
-    string? Email);
-
-public sealed record PasswordResetRequest(
-    string? Shortname,
-    string? Email,
-    string? Msisdn);
-
-// POST /user/password-reset-confirm — completes the flow started by
-// /user/password-reset-request. Identifier is one of {Shortname, Email,
-// Msisdn} — same shape as PasswordResetRequest so the two halves resolve to
-// the same user (and the same `pwd-reset:{dest}` key) without heuristic
-// re-detection of identifier shape. Otp is the code delivered to the user;
-// Password is the new password (plaintext on the wire, hashed server-side
-// via PasswordHasher.Hash).
+// POST /user/password-reset-confirm. Identifier is one of {Shortname,
+// Email, Msisdn}, resolving to the same user as the /user/otp-request
+// purpose=reset call that issued Otp. Password is hashed server-side via
+// PasswordHasher.Hash.
 public sealed record PasswordResetConfirm(
     string? Shortname,
     string? Email,

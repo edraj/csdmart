@@ -6,26 +6,23 @@ using Dmart.Models.Core;
 using Dmart.Models.Enums;
 using Dmart.Models.Json;
 using Microsoft.Extensions.DependencyInjection;
-using NpgsqlTypes;
 using Shouldly;
 using Xunit;
 
 namespace Dmart.Tests.Integration;
 
-// /user/password-reset-request sends an OTP via the channel matching the
-// supplied identifier (msisdn/shortname → SMS, email → Email). The OTP body
-// renders from the `otp_message` language template, the same one /otp-request
-// uses. These tests assert the otp row that the handler writes, since
-// SmsSender/SmtpSender short-circuit silently in mock mode and have no
-// observable side effect on the wire.
+// Password-reset issuing goes through POST /user/otp-request with
+// purpose=reset. Routing: msisdn/shortname → SMS, email → Email,
+// shortname-only-no-msisdn → email fallback. These tests assert the otps
+// row the handler writes, since SmsSender/SmtpSender short-circuit silently
+// in mock mode, and the response is always 200 Ok regardless of outcome.
 public sealed class PasswordResetRequestTests : IClassFixture<DmartFactory>
 {
     private readonly DmartFactory _factory;
     public PasswordResetRequestTests(DmartFactory factory) => _factory = factory;
 
-    // Mirrors OtpHandler.ResetOtpPrefix — handler constant is private, so the
-    // tests duplicate the literal. Any drift breaks the assertions loudly.
-    private const string ResetPrefix = "pwd-reset:";
+    private static SendOTPRequest ResetReq(string? shortname = null, string? email = null, string? msisdn = null)
+        => new(Msisdn: msisdn, Email: email, Shortname: shortname, Purpose: OtpPurpose.Reset);
 
     [FactIfPg]
     public async Task ShortnameOnly_Sends_Otp_To_Users_Msisdn()
@@ -34,13 +31,12 @@ public sealed class PasswordResetRequestTests : IClassFixture<DmartFactory>
         try
         {
             var client = _factory.CreateClient();
-            var resp = await client.PostAsJsonAsync("/user/password-reset-request",
-                new PasswordResetRequest(shortname, null, null),
-                DmartJsonContext.Default.PasswordResetRequest);
+            var resp = await client.PostAsJsonAsync("/user/otp-request",
+                ResetReq(shortname: shortname), DmartJsonContext.Default.SendOTPRequest);
             resp.StatusCode.ShouldBe(HttpStatusCode.OK);
 
-            // OtpRepository.StoreAsync keys the row by the destination — assert
-            // a code was stored at the user's msisdn and not at their email.
+            // The row is keyed by (destination, reset) — assert a code was
+            // stored at the user's msisdn and not at their email.
             (await OtpExistsAsync(msisdn)).ShouldBeTrue();
             (await OtpExistsAsync(email)).ShouldBeFalse(
                 "user has msisdn — must not also send to email");
@@ -51,20 +47,17 @@ public sealed class PasswordResetRequestTests : IClassFixture<DmartFactory>
     [FactIfPg]
     public async Task ShortnameOnly_NoMsisdn_FallsBack_To_Email()
     {
-        // Csdmart-only behavior (intentional divergence from upstream Python's
-        // reset_password, which silently no-ops here): when the caller
-        // supplied only a shortname and the resolved user has no msisdn, the
-        // handler falls back to the email channel so the reset still
-        // reaches the user. The fallback is gated to shortname-only requests
-        // — direct-msisdn requests honor the channel the caller picked
-        // (covered by MsisdnDirect_NoFallback_To_Email).
+        // When the caller supplied only a shortname and the resolved user
+        // has no msisdn, the handler falls back to the email channel so the
+        // reset still reaches the user. The fallback is gated to
+        // shortname-only requests — direct-msisdn requests honor the channel
+        // the caller picked (covered by MsisdnDirect_NoFallback_To_Email).
         var (shortname, email, _) = await CreateUserAsync(withMsisdn: false);
         try
         {
             var client = _factory.CreateClient();
-            var resp = await client.PostAsJsonAsync("/user/password-reset-request",
-                new PasswordResetRequest(shortname, null, null),
-                DmartJsonContext.Default.PasswordResetRequest);
+            var resp = await client.PostAsJsonAsync("/user/otp-request",
+                ResetReq(shortname: shortname), DmartJsonContext.Default.SendOTPRequest);
             resp.StatusCode.ShouldBe(HttpStatusCode.OK);
 
             (await OtpExistsAsync(email)).ShouldBeTrue(
@@ -79,9 +72,8 @@ public sealed class PasswordResetRequestTests : IClassFixture<DmartFactory>
         // Anti-enumeration: should not leak whether the shortname exists.
         var unknown = $"definitely_not_a_user_{Guid.NewGuid():N}".Substring(0, 30);
         var client = _factory.CreateClient();
-        var resp = await client.PostAsJsonAsync("/user/password-reset-request",
-            new PasswordResetRequest(unknown, null, null),
-            DmartJsonContext.Default.PasswordResetRequest);
+        var resp = await client.PostAsJsonAsync("/user/otp-request",
+            ResetReq(shortname: unknown), DmartJsonContext.Default.SendOTPRequest);
         resp.StatusCode.ShouldBe(HttpStatusCode.OK);
         // No row should exist — the user never existed, so there's nothing
         // to send for. Status code being OK is the anti-enumeration check.
@@ -94,9 +86,8 @@ public sealed class PasswordResetRequestTests : IClassFixture<DmartFactory>
         try
         {
             var client = _factory.CreateClient();
-            var resp = await client.PostAsJsonAsync("/user/password-reset-request",
-                new PasswordResetRequest(null, email, null),
-                DmartJsonContext.Default.PasswordResetRequest);
+            var resp = await client.PostAsJsonAsync("/user/otp-request",
+                ResetReq(email: email), DmartJsonContext.Default.SendOTPRequest);
             resp.StatusCode.ShouldBe(HttpStatusCode.OK);
 
             (await OtpExistsAsync(email)).ShouldBeTrue();
@@ -111,9 +102,8 @@ public sealed class PasswordResetRequestTests : IClassFixture<DmartFactory>
         try
         {
             var client = _factory.CreateClient();
-            var resp = await client.PostAsJsonAsync("/user/password-reset-request",
-                new PasswordResetRequest(null, null, msisdn),
-                DmartJsonContext.Default.PasswordResetRequest);
+            var resp = await client.PostAsJsonAsync("/user/otp-request",
+                ResetReq(msisdn: msisdn), DmartJsonContext.Default.SendOTPRequest);
             resp.StatusCode.ShouldBe(HttpStatusCode.OK);
 
             (await OtpExistsAsync(msisdn)).ShouldBeTrue();
@@ -134,11 +124,10 @@ public sealed class PasswordResetRequestTests : IClassFixture<DmartFactory>
         var (shortname, email, _) = await CreateUserAsync(withMsisdn: false);
         try
         {
-            var ghostMsisdn = $"+99900000{Guid.NewGuid():N}".Substring(0, 14);
+            var ghostMsisdn = $"9647{Random.Shared.Next(100_000_000, 999_999_999)}";
             var client = _factory.CreateClient();
-            var resp = await client.PostAsJsonAsync("/user/password-reset-request",
-                new PasswordResetRequest(null, null, ghostMsisdn),
-                DmartJsonContext.Default.PasswordResetRequest);
+            var resp = await client.PostAsJsonAsync("/user/otp-request",
+                ResetReq(msisdn: ghostMsisdn), DmartJsonContext.Default.SendOTPRequest);
             resp.StatusCode.ShouldBe(HttpStatusCode.OK);
 
             (await OtpExistsAsync(ghostMsisdn)).ShouldBeFalse();
@@ -149,35 +138,31 @@ public sealed class PasswordResetRequestTests : IClassFixture<DmartFactory>
     }
 
     [FactIfPg]
-    public async Task EmailDirect_Mismatched_Email_Sends_Nothing()
+    public async Task Reset_And_Login_Rows_Are_Purpose_Isolated()
     {
-        // The email branch only sends when user.email matches the request's
-        // email value. A mismatched email must not leak.
+        // A reset issue must not create (or satisfy) a login-purpose row.
         var (shortname, email, _) = await CreateUserAsync(withMsisdn: false);
         try
         {
-            var stranger = $"someone_else_{Guid.NewGuid():N}@test.local".Substring(0, 40);
             var client = _factory.CreateClient();
-            var resp = await client.PostAsJsonAsync("/user/password-reset-request",
-                new PasswordResetRequest(null, stranger, null),
-                DmartJsonContext.Default.PasswordResetRequest);
+            var resp = await client.PostAsJsonAsync("/user/otp-request",
+                ResetReq(email: email), DmartJsonContext.Default.SendOTPRequest);
             resp.StatusCode.ShouldBe(HttpStatusCode.OK);
 
-            (await OtpExistsAsync(email)).ShouldBeFalse();
-            (await OtpExistsAsync(stranger)).ShouldBeFalse();
+            var repo = _factory.Services.GetRequiredService<OtpRepository>();
+            (await repo.GetCreatedSinceAsync(email, OtpPurpose.Reset)).ShouldNotBeNull();
+            (await repo.GetCreatedSinceAsync(email, OtpPurpose.Login)).ShouldBeNull(
+                "a reset issue must not be visible at the login purpose");
         }
         finally { await CleanupAsync(shortname, email, msisdn: null); }
     }
 
     // ---- helpers ----
 
-    // Reset OTPs are stored under the "pwd-reset:" prefix so they can't be
-    // consumed by /user/login's OTP path. Tests pass the bare destination;
-    // this helper prepends the prefix to match what the handler writes.
     private async Task<bool> OtpExistsAsync(string dest)
     {
         var repo = _factory.Services.GetRequiredService<OtpRepository>();
-        return await repo.PeekStoredHashAsync(ResetPrefix + dest) is not null;
+        return await repo.GetCreatedSinceAsync(dest, OtpPurpose.Reset) is not null;
     }
 
     private async Task<(string Shortname, string Email, string Msisdn)> CreateUserAsync(bool withMsisdn)
@@ -185,7 +170,7 @@ public sealed class PasswordResetRequestTests : IClassFixture<DmartFactory>
         var suffix = Guid.NewGuid().ToString("N")[..12];
         var shortname = $"pr_test_{suffix}";
         var email = $"{shortname}@test.local";
-        var msisdn = $"+9650000{suffix[..8]}";
+        var msisdn = $"9647{Random.Shared.Next(100_000_000, 999_999_999)}";
 
         var users = _factory.Services.GetRequiredService<UserRepository>();
         var user = new User
@@ -214,22 +199,20 @@ public sealed class PasswordResetRequestTests : IClassFixture<DmartFactory>
             var users = _factory.Services.GetRequiredService<UserRepository>();
             await users.DeleteAsync(shortname);
 
-            // Build the exact set of otp keys this test could have produced;
-            // delete those rows so back-to-back test runs start clean. Reset
-            // OTPs live under the "pwd-reset:" prefix.
-            var keys = new List<string>();
-            if (!string.IsNullOrEmpty(email)) keys.Add(ResetPrefix + email);
-            if (!string.IsNullOrEmpty(msisdn)) keys.Add(ResetPrefix + msisdn);
-            if (keys.Count == 0) return;
+            // Delete every otps row this test could have produced so
+            // back-to-back runs start clean (destinations are unique per
+            // test, so this only touches our own rows).
+            var idents = new List<string>();
+            if (!string.IsNullOrEmpty(email)) idents.Add(email);
+            if (!string.IsNullOrEmpty(msisdn)) idents.Add(msisdn);
+            if (idents.Count == 0) return;
 
             var db = _factory.Services.GetRequiredService<IDbConnectionFactory>();
             await using var conn = await db.OpenAsync();
-            // One DELETE per key rather than `= ANY($1)`: the array-parameter
-            // form is PostgreSQL-only, and this is a handful of test rows.
-            foreach (var key in keys)
+            foreach (var ident in idents)
             {
-                await using var cmd = conn.Command("DELETE FROM otp WHERE key = $1");
-                DbParams.Add(cmd, key);
+                await using var cmd = conn.Command("DELETE FROM otps WHERE identifier = $1");
+                DbParams.Add(cmd, ident);
                 await cmd.ExecuteNonQueryAsync();
             }
         }

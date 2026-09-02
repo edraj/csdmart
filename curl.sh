@@ -1245,7 +1245,14 @@ curl -s -H "$AUTH_HEADER" "$API_URL/managed/reload-security-data" > /dev/null 2>
 # Login as the limited user via OTP (#96: admin-provisioned users have no
 # password). Request a login OTP — the smoke server's mocked email channel
 # returns MOCK_OTP — then log in with it.
-curl -s -H "$CT" "$API_URL/user/otp-request-login" -d "{\"email\":\"$LUSER@example.local\"}" > /dev/null
+#
+# /user/otp-request with an explicit purpose, not the old
+# /user/otp-request-login: the per-purpose routes were collapsed into one
+# endpoint that REQUIRES `purpose` and rejects a missing one. The old path now
+# 404s, which silently yields an empty $LTOKEN and fails every limited-user
+# check from 66 on with "limited user login failed" rather than saying why.
+curl -s -H "$CT" "$API_URL/user/otp-request" \
+     -d "{\"purpose\":\"login\",\"email\":\"$LUSER@example.local\"}" > /dev/null
 LTOKEN=$(curl -s -H "$CT" "$API_URL/user/login" -d "{\"email\":\"$LUSER@example.local\",\"otp\":\"$MOCK_OTP\"}" | jq -r '.records[0].attributes.access_token // empty')
 LAUTH="Authorization: Bearer $LTOKEN"
 

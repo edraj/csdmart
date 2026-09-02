@@ -81,7 +81,7 @@ interface and inject either backend:
 `CreateUserAsync` (register), `UpdateUserAsync`, `CheckExistingAsync`,
 `DeleteAccountAsync`, all OTP / password-reset variants
 (`OtpRequestAsync`, `OtpRequestLoginAsync`, `PasswordResetRequestAsync`,
-`ConfirmOtpAsync`, `ValidatePasswordAsync`), and the
+`ValidatePasswordAsync`), and the
 social mobile-login wrappers (`GoogleMobileLoginAsync`,
 `FacebookMobileLoginAsync`, `AppleMobileLoginAsync`) all live on
 `Dmart.Client`. The SqlAdapter deliberately omits them because
