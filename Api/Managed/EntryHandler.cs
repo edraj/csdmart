@@ -61,7 +61,12 @@ public static class EntryHandler
 
                 var actor = http.Actor();
 
-                // Non-entry types: direct serialization.
+                // Non-entry types: direct serialization, plus `attachments`
+                // (see JsonWithAttachments). Their attachment lookup keys off
+                // the ROW's own space/subpath rather than the route's — these
+                // four resolve by shortname alone, so a caller can reach a user
+                // at .../management/__root__/x and the route subpath is not
+                // where the row actually lives.
                 switch (rt)
                 {
                     case ResourceType.Space:
@@ -71,7 +76,11 @@ public static class EntryHandler
                         var locator = new Locator(ResourceType.Space, s.SpaceName, s.Subpath, s.Shortname);
                         if (!await perms.CanReadAsync(actor, locator, PermissionService.FromSpace(s), ct))
                             return NotFoundMedia();
-                        return Results.Json(s, DmartJsonContext.Default.Space);
+                        var sAttachments = await BuildAttachmentsAsync(
+                            s.SpaceName, s.Subpath, s.Shortname,
+                            retrieve_attachments == true, attachmentRepo, perms, actor, ct);
+                        return JsonWithAttachments(
+                            JsonSerializer.Serialize(s, DmartJsonContext.Default.Space), sAttachments);
                     }
                     case ResourceType.User:
                     {
@@ -80,7 +89,11 @@ public static class EntryHandler
                         var locator = new Locator(ResourceType.User, u.SpaceName, u.Subpath, u.Shortname);
                         if (!await perms.CanReadAsync(actor, locator, PermissionService.FromUser(u), ct))
                             return NotFoundMedia();
-                        return Results.Json(u, DmartJsonContext.Default.User);
+                        var uAttachments = await BuildAttachmentsAsync(
+                            u.SpaceName, u.Subpath, u.Shortname,
+                            retrieve_attachments == true, attachmentRepo, perms, actor, ct);
+                        return JsonWithAttachments(
+                            JsonSerializer.Serialize(u, DmartJsonContext.Default.User), uAttachments);
                     }
                     case ResourceType.Role:
                     {
@@ -89,7 +102,11 @@ public static class EntryHandler
                         var locator = new Locator(ResourceType.Role, r.SpaceName, r.Subpath, r.Shortname);
                         if (!await perms.CanReadAsync(actor, locator, PermissionService.FromRole(r), ct))
                             return NotFoundMedia();
-                        return Results.Json(r, DmartJsonContext.Default.Role);
+                        var rAttachments = await BuildAttachmentsAsync(
+                            r.SpaceName, r.Subpath, r.Shortname,
+                            retrieve_attachments == true, attachmentRepo, perms, actor, ct);
+                        return JsonWithAttachments(
+                            JsonSerializer.Serialize(r, DmartJsonContext.Default.Role), rAttachments);
                     }
                     case ResourceType.Permission:
                     {
@@ -98,51 +115,19 @@ public static class EntryHandler
                         var locator = new Locator(ResourceType.Permission, p.SpaceName, p.Subpath, p.Shortname);
                         if (!await perms.CanReadAsync(actor, locator, PermissionService.FromPermission(p), ct))
                             return NotFoundMedia();
-                        return Results.Json(p, DmartJsonContext.Default.Permission);
+                        var pAttachments = await BuildAttachmentsAsync(
+                            p.SpaceName, p.Subpath, p.Shortname,
+                            retrieve_attachments == true, attachmentRepo, perms, actor, ct);
+                        return JsonWithAttachments(
+                            JsonSerializer.Serialize(p, DmartJsonContext.Default.Permission), pAttachments);
                     }
                 }
 
                 var entry = await svc.GetAsync(new Locator(rt, space, subpath, shortname), actor, ct);
                 if (entry is null) return NotFoundMedia();
 
-                // Build attachments grouped by resource_type. Each attachment
-                // keeps its `attributes` wrapper around the meta fields, to
-                // match Python's `get_entry_attachments` shape (adapter.py:
-                // 1342 — `attachment["attributes"] = {...}` — and the /entry
-                // handler's `return {**meta.model_dump(), "attachments":
-                // attachments}` composition at router.py:1003). Previously we
-                // spread the attributes at the record root, which made every
-                // attachment flat — clients parsing attachment.attributes.X
-                // got `undefined`.
-                var attNode = new JsonObject();
-                if (retrieve_attachments == true)
-                {
-                    var children = await attachmentRepo.ListForParentAsync(space, subpath, shortname, ct);
-                    // Readable-parent does not imply readable-children: comment and
-                    // json attachments carry their own ACL, and ToEntryRecord emits
-                    // `payload` AND `body` — so an unfiltered list hands over the
-                    // attachment's CONTENT, not just its metadata. Same gate, same
-                    // shape as Api/Managed/PayloadHandler.cs:55 (which refuses the
-                    // bytes) and Api/Public/EntryHandler.cs (the anonymous twin).
-                    var visible = new List<Attachment>(children.Count);
-                    foreach (var a in children)
-                    {
-                        var attachmentLocator = new Locator(a.ResourceType, a.SpaceName, a.Subpath, a.Shortname);
-                        if (await perms.CanReadAsync(actor, attachmentLocator,
-                                PermissionService.FromAttachment(a), ct))
-                            visible.Add(a);
-                    }
-                    foreach (var grp in visible.GroupBy(a => JsonbHelpers.EnumMember(a.ResourceType)))
-                    {
-                        var arr = new JsonArray();
-                        foreach (var rec in grp.Select(a => AttachmentMapper.ToEntryRecord(a)))
-                        {
-                            var recJson = JsonSerializer.Serialize(rec, DmartJsonContext.Default.Record);
-                            arr.Add(JsonNode.Parse(recJson));
-                        }
-                        attNode[grp.Key] = arr;
-                    }
-                }
+                var attNode = await BuildAttachmentsAsync(space, subpath, shortname,
+                    retrieve_attachments == true, attachmentRepo, perms, actor, ct);
 
                 var node = EntryToJsonNode.Convert(entry, retrieve_json_payload == true);
                 node["attachments"] = attNode;
@@ -173,6 +158,80 @@ public static class EntryHandler
             var entry = await svc.GetBySlugAsync(slug, http.ActorOrAnonymous(), ct);
             return entry is null ? Results.NotFound() : Results.Json(entry, DmartJsonContext.Default.Entry);
         });
+    }
+
+    // Attachments for one parent, grouped by resource_type. Each attachment
+    // keeps its `attributes` wrapper around the meta fields, matching Python's
+    // `get_entry_attachments` shape (adapter.py:1342 —
+    // `attachment["attributes"] = {...}`) and the /entry handler's
+    // `return {**meta.model_dump(), "attachments": attachments}` composition at
+    // router.py:1003. Spreading those attributes at the record root instead made
+    // every attachment flat, so clients parsing attachment.attributes.X got
+    // `undefined`.
+    //
+    // Not requested (or nothing readable) yields an empty object: callers always
+    // set an `attachments` key and JsonStripEmptiesMiddleware drops it on the way
+    // out when it is empty.
+    private static async Task<JsonObject> BuildAttachmentsAsync(
+        string space, string subpath, string shortname, bool retrieveAttachments,
+        AttachmentRepository attachmentRepo, PermissionService perms, string? actor,
+        CancellationToken ct)
+    {
+        var attNode = new JsonObject();
+        if (!retrieveAttachments) return attNode;
+
+        var children = await attachmentRepo.ListForParentAsync(space, subpath, shortname, ct);
+        // Readable-parent does not imply readable-children: comment and json
+        // attachments carry their own ACL, and ToEntryRecord emits `payload` AND
+        // `body` — so an unfiltered list hands over the attachment's CONTENT, not
+        // just its metadata. Same gate, same shape as
+        // Api/Managed/PayloadHandler.cs:55 (which refuses the bytes) and
+        // Api/Public/EntryHandler.cs (the anonymous twin).
+        var visible = new List<Attachment>(children.Count);
+        foreach (var a in children)
+        {
+            var attachmentLocator = new Locator(a.ResourceType, a.SpaceName, a.Subpath, a.Shortname);
+            if (await perms.CanReadAsync(actor, attachmentLocator,
+                    PermissionService.FromAttachment(a), ct))
+                visible.Add(a);
+        }
+        foreach (var grp in visible.GroupBy(a => JsonbHelpers.EnumMember(a.ResourceType)))
+        {
+            var arr = new JsonArray();
+            foreach (var rec in grp.Select(a => AttachmentMapper.ToEntryRecord(a)))
+            {
+                var recJson = JsonSerializer.Serialize(rec, DmartJsonContext.Default.Record);
+                arr.Add(JsonNode.Parse(recJson));
+            }
+            attNode[grp.Key] = arr;
+        }
+        return attNode;
+    }
+
+    // Hangs `attachments` off an already-serialized non-entry row (space, user,
+    // role, permission — each lives in its own table and is serialized straight
+    // from its source-gen type info rather than through EntryToJsonNode).
+    //
+    // Python's retrieve_entry_meta has no per-resource_type branch: it loads the
+    // meta for ANY resource class and always composes
+    // `{**meta, "attachments": ...}`. Returning a bare Results.Json for these four
+    // meant retrieve_attachments=true was silently ignored for exactly them, so
+    // cxb's EntryRenderer (which reads `entry.attachments` for every type) showed
+    // an empty Attachments tab on a user no matter what was attached.
+    //
+    // SYNCHRONOUS, and the callers await BuildAttachmentsAsync into a local first,
+    // on purpose: ASP.NET Core's RequestDelegateGenerator (the AOT route-delegate
+    // source generator) cannot infer a handler lambda's return type through a
+    // `return await <Task<IResult>>`. It emits a bare `Task<>` / `typeof()` into
+    // GeneratedRouteBuilderExtensions.g.cs and the build dies on CS7003
+    // "Unexpected use of an unbound generic name", with no diagnostic pointing
+    // back at this file. Keeping every `return` a direct IResult-typed call is
+    // what keeps that generator working.
+    private static IResult JsonWithAttachments(string rowJson, JsonObject attachments)
+    {
+        var node = JsonNode.Parse(rowJson)!.AsObject();
+        node["attachments"] = attachments;
+        return Results.Content(node.ToJsonString(DmartJsonContext.Default.Options), "application/json");
     }
 }
 

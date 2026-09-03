@@ -13,7 +13,9 @@ public static class ProfileHandler
         // GET /user/profile — Python returns records: [Record] with user
         // attributes. The tsdmart SDK reads data.records[0].attributes.
         g.MapGet("/profile", async (HttpContext http, UserService svc,
-            DataAdapters.Sql.AccessRepository access, CancellationToken ct) =>
+            DataAdapters.Sql.AccessRepository access,
+            DataAdapters.Sql.AttachmentRepository attachmentRepo,
+            PermissionService perms, CancellationToken ct) =>
         {
             var actor = http.Actor();
             if (actor is null)
@@ -46,12 +48,49 @@ public static class ProfileHandler
                 ["payload"] = user.Payload,
                 ["permissions"] = permissions,
             };
+            // Attachments on the caller's own user row, grouped by
+            // resource_type — same shape /managed/entry returns, so a client
+            // that already renders `record.attachments` needs no second call.
+            //
+            // Divergence from Python (api/user/router.py:589), which fetches
+            // only `filter_shortnames=["avatar"]`: we return every attachment,
+            // which is a superset — an avatar-only client still finds its
+            // avatar under the same key.
+            //
+            // Per-attachment read gate, matching Api/Managed/EntryHandler:
+            // owning the parent row does not make its children readable.
+            // comment/json attachments carry their own ACL and ToEntryRecord
+            // emits their `payload` AND `body`, so an unfiltered list would
+            // hand over content /managed/payload refuses.
+            var children = await attachmentRepo.ListForParentAsync(
+                user.SpaceName, user.Subpath, user.Shortname, ct);
+            var visible = new List<Dmart.Models.Core.Attachment>(children.Count);
+            foreach (var a in children)
+            {
+                var attachmentLocator = new Dmart.Models.Core.Locator(
+                    a.ResourceType, a.SpaceName, a.Subpath, a.Shortname);
+                if (await perms.CanReadAsync(actor, attachmentLocator,
+                        PermissionService.FromAttachment(a), ct))
+                    visible.Add(a);
+            }
+            // Left null when empty so DefaultIgnoreCondition.WhenWritingNull
+            // keeps the key off the wire entirely, rather than emitting `{}`
+            // for the strip middleware to clean up afterwards.
+            var attachments = visible.Count == 0
+                ? null
+                : visible
+                    .GroupBy(a => DataAdapters.Sql.JsonbHelpers.EnumMember(a.ResourceType))
+                    .ToDictionary(
+                        grp => grp.Key,
+                        grp => grp.Select(a => AttachmentMapper.ToEntryRecord(a)).ToList());
+
             var profileRecord = new Record
             {
                 ResourceType = Dmart.Models.Enums.ResourceType.User,
                 Shortname = user.Shortname,
                 Subpath = "/users",
                 Attributes = AttrHelper.StripNulls(attrs),
+                Attachments = attachments,
             };
             return Response.Ok(new[] { profileRecord });
         });
