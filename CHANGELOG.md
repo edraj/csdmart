@@ -1,6 +1,177 @@
 # Changelog
 
-## Unreleased
+## v1.4.0 — 2026-09-02
+
+### Breaking — the OTP issuing endpoints are now one endpoint
+
+Two routes are gone. Any client that calls them gets a 422:
+
+| removed | use instead |
+| --- | --- |
+| `POST /user/otp-request-login` | `POST /user/otp-request` with `"purpose": "login"` |
+| `POST /user/password-reset-request` | `POST /user/otp-request` with `"purpose": "reset"` |
+
+`POST /user/otp-request` is now the single issuing API and **requires** an
+explicit `purpose`: `login`, `reset`, `register` or `verify-contact`. A request
+without one is refused with `INVALID_DATA "invalid purpose"`. Codes never cross
+purposes — one minted for `login` cannot complete a signup, and `/user/create`
+accepts only a code minted at `register`.
+
+**`POST /user/otp-confirm` is replaced by `POST /user/verify-contact`**, which
+owns every contact-plus-OTP operation:
+
+```http
+POST /user/otp-request      {"purpose": "verify-contact", "email": "me@x.com"}
+POST /user/verify-contact   {"code": "123456", "email": "me@x.com"}
+```
+
+Authenticated. Prove control of an address and it becomes yours, verified —
+the *same* call whether it is the address already on your row or a new one.
+Which of the two it is comes from state the server already holds, so the caller
+does not declare intent. A new address is uniqueness-checked before the code is
+spent, and verified flags never regress.
+
+Renamed rather than kept: `otp-confirm` was named for the token it consumes,
+and *every* OTP redemption confirms an OTP — logging in, registering and
+resetting all do — so the name described the whole category while the handler
+served one member of it. Every other endpoint here is named for its outcome
+(`/user/login`, `/user/create`, `/user/password-reset-confirm`); this one now
+is too.
+
+**`POST /user/profile` no longer accepts contact fields.** `email`,
+`new_email`, `email_otp`, `msisdn`, `new_msisdn` and `msisdn_otp` are
+**refused by name**, with an error pointing at `/user/verify-contact` — not
+ignored, because a client still sending `new_email` would otherwise get a 200
+and no change. Everything else on the endpoint is unaffected.
+
+The `new_` prefix is gone with them. It was load-bearing only on
+`/user/profile`: `email` is part of the profile representation, so a caller
+reading their profile, editing a display name and posting it back sends `email`
+unchanged — and had that meant "change my email", an ordinary round-trip would
+have demanded an OTP for a field nobody touched. A dedicated endpoint has no
+representation to echo, so one unprefixed field is unambiguous.
+
+**`ALLOW_PASSWORD_RESET_RESEND_AFTER` is retired.** `ALLOW_OTP_RESEND_AFTER` now
+covers every purpose. A `config.env` still carrying the old key **boots with a
+warning** rather than failing — a key that was documented last release is not a
+typo, and refusing to start would turn this upgrade into an unannounced outage.
+
+**The in-repo frontends (catalog, cxb) were updated in this release.** Any other
+client calling the removed routes needs the same treatment.
+
+### Added
+
+- **Abuse controls on issuing.** A resend cooldown (`ALLOW_OTP_RESEND_AFTER`)
+  and a daily cap (`MAX_OTP_REQUESTS_PER_DAY`, default 10), both per
+  destination. Each is split into two independent budgets — account recovery in
+  one, everything else in the other — so no single flood can close both sign-in
+  and password reset. Switching purpose *within* a budget is not a bypass.
+- **A verify-attempt cap.** `MAX_OTP_VERIFY_ATTEMPTS` wrong guesses per code,
+  after which the code is dead. Verification is single-use: a correct code is
+  consumed on success and cannot be replayed.
+- **Optional implicit registration.** With `ENABLE_OTP_IMPLICIT_REGISTRATION`,
+  a login-purpose request for an unknown msisdn or email creates the account on
+  redemption. Off by default.
+- **OTP history retention.** Consumed and expired rows are swept hourly by
+  `OtpHistorySweeper`, keeping `OTP_HISTORY_RETENTION_DAYS` (default 2).
+
+### Security
+
+- **Every OTP verify path is capped and consuming.** Previously some paths
+  verified without consuming, so a code could be replayed, and without an
+  attempt cap a 6-digit code could be brute-forced.
+- **An anonymous caller could deny a victim both sign-in and account recovery.**
+  `register` needs no token and no existing user, so one request a minute
+  against a known destination held the resend cooldown permanently open and
+  swallowed every login and reset as a silent 200. Both the cooldown and the
+  daily cap are now bucketed so one flood cannot close the other. A targeted
+  flood can still exhaust one bucket; closing that needs a per-caller identity
+  this endpoint does not have.
+- **Issuing honours the lockout cool-down.** It gated on the raw active flag,
+  which lockout clears only via `IsLockedAsync` — so a locked account stayed
+  silently un-OTP-able forever after its cool-down expired. For a password-less
+  account, whose only credential is the OTP, nothing would ever have unlocked it.
+- **Destinations are no longer logged in clear.** Phone numbers and email
+  addresses were written at Information on every silent no-op branch; they are
+  now an 8-character fingerprint.
+
+### Fixed
+
+- **`DmartClient.ConfirmOtpAsync` sent the wrong body key** and could therefore
+  never succeed: it posted `otp` where the request record binds `code`, so the
+  server saw no code at all. Latent since the method was added; found while
+  reworking the endpoint it calls. It is now `VerifyContactAsync`, with the
+  correct key.
+
+- **Password reset was unrecoverable for a mixed-case stored email, and locked
+  the account.** Issuing stored the code under the lowercased address while
+  confirming looked it up under the raw stored value, so every *correct* code
+  returned `OTP_INVALID` — and each attempt counted toward the failed-attempt
+  lockout. Mixed-case rows are ordinary: admin provisioning and OAuth both store
+  the address as given.
+- **A user could not confirm the contact already on their row** if it carried
+  any uppercase — `/user/profile` compared a normalised input against the raw
+  column ordinally, so the check could never pass.
+- **`DROP TABLE IF EXISTS otp;` ran on every startup.** It sat in the idempotent
+  create script rather than a migration, and `otp` is the table python-dmart
+  uses — so on a shared database every C# restart destroyed it. The C# store is
+  the new `otps` table; the legacy one is left alone.
+- **A code was consumed before checks that could still fail**, in implicit
+  registration, `/user/create` schema validation, and both contact-change paths.
+  Each of those failures is recoverable, and each burned a valid code — after
+  which a retry inside the resend cooldown answered a silent 200 with nothing
+  sent.
+- **`IssueAsync` was not atomic.** Supersede and insert ran as two statements,
+  so concurrent issues could leave two redeemable codes despite the documented
+  invariant.
+
+### Migration
+
+None required. Live OTPs are invalidated by the store change — anyone
+mid-flow requests a new code.
+
+## v1.3.3 — 2026-09-02
+
+### Breaking
+
+- **netstandard2.1 consumers: dictionary keys stop being snake_cased on the
+  way out.** See the `DictionaryKeyPolicy` entry below for what changed. What
+  it means for you depends on whether the payload has a schema, and the two
+  cases are very different:
+
+  **With a `schema_shortname` — you get a loud, precise error.** The server
+  stores keys verbatim and the space's JSON Schema is the enforcement point, so
+  a body written as `endPoint` against a schema declaring `end_point` is
+  rejected on write:
+
+  ```
+  430 payload failed schema validation:
+      required: Required properties ["end_point"] are not present;
+      /endPoint: All values fail against the false schema
+  ```
+
+  Nothing is silently stored wrong. The fix is to spell the key the way the
+  schema declares it — which for dmart's own schemas is snake_case.
+
+  **Without a schema, and for attribute bags — keys round-trip verbatim.**
+  `{"myKey": "v"}` is stored and read back as `myKey`. So a netstandard2.1
+  caller who has been writing `Attributes["myKey"]` against v1.3.x has that
+  data on the server under `my_key`, and after this upgrade the same code
+  writes `myKey`. Here there is no schema to catch it: migrate the stored
+  entries (read under the old key, write under the new), or spell the key the
+  way you want it stored.
+
+  net8.0+ consumers are unaffected — that leg was fixed in v1.3.2 and this
+  brings the other into line.
+
+  **On the convention.** snake_case remains the convention for dmart payload
+  fields, and the shipped schemas follow it (`end_point`, `request_body`,
+  `schema_shortname`). It is a convention that schemas *declare* and validation
+  *enforces* per space — it was never a wire-level rewrite, and the server has
+  never performed one. The client used to, which meant it silently rewrote keys
+  the caller had chosen deliberately and could not turn off. Removing it makes
+  the client agree with the server; the schema keeps enforcing the convention,
+  and now says so out loud when a key does not match.
 
 ### Fixed
 
@@ -52,9 +223,17 @@
   that way — Python renders every float like that, as does .NET for a `decimal`
   carrying scale.
 
-  This supersedes the v1.3.0 guidance to model such a field as `decimal`/`double`:
-  that is right for a `"type": "number"` schema, but wrong when the schema says
-  `integer` — there the caller's `int` was correct and the reader was not.
+  **This supersedes the consumer guidance published in v1.3.1**, which told
+  callers that such a field "gets a hard `JsonException: The JSON value could
+  not be converted to System.Int32`" and to "map it to `decimal`/`double` … or
+  normalise it at the producer". That is right for a `"type": "number"` schema
+  and wrong when the schema says `integer` — there the caller's `int` was
+  correct and the reader was not. With these converters registered, `int` and
+  `long` read the value directly and the workaround is no longer needed.
+
+  The server-side guarantee from the same release is untouched and still
+  holds: dmart does not reformat numbers anywhere in the stack, so a field
+  that reads back as `1000.0` was stored that way.
 
 ## v1.3.2 — 2026-09-01
 

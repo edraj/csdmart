@@ -62,11 +62,11 @@ public sealed class LoginVerifiedGateTests : IClassFixture<DmartFactory>
             emailVerified: false, msisdnVerified: false, withMsisdn: true);
         try
         {
-            // Seed a valid login OTP at the bare msisdn key (the dest the
+            // Seed a valid login-purpose OTP at the msisdn (the dest the
             // msisdn-identifier OTP path resolves to).
             var otpRepo = _factory.Services.GetRequiredService<OtpRepository>();
             const string code = "123456";
-            await otpRepo.StoreAsync(msisdn!, code, DateTime.UtcNow.AddMinutes(5));
+            await otpRepo.IssueAsync(msisdn!, OtpPurpose.Login, code, DateTime.UtcNow.AddMinutes(5));
 
             var resp = await Login(new UserLoginRequest(null, null, msisdn, null, Otp: code));
             resp.StatusCode.ShouldBe(HttpStatusCode.Unauthorized);

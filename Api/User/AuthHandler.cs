@@ -42,7 +42,7 @@ public static class AuthHandler
             // (jwt_access_expires, default 30 days). The refresh JWT minted
             // by the service is discarded here for parity; MCP OAuth clients
             // that need refresh go through /oauth/token instead.
-            var (access, _, user) = result.Value;
+            var (access, _, user, created) = result.Value;
 
             // dmart sets an httponly cookie called auth_token in addition to returning
             // the token in the body. Browser clients rely on the cookie.
@@ -80,6 +80,12 @@ public static class AuthHandler
             };
             if (user.Displayname is not null)
                 loginRecord.Attributes["displayname"] = user.Displayname;
+            // Set only when EnableOtpImplicitRegistration created this
+            // account inline (TryImplicitRegisterAsync) — an ordinary login
+            // omits the field entirely rather than sending "created": false,
+            // so existing clients that don't know the field see no change.
+            if (created)
+                loginRecord.Attributes["created"] = true;
 
             return Results.Json(Response.Ok(new[] { loginRecord }),
                 DmartJsonContext.Default.Response);

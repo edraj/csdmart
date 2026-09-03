@@ -50,7 +50,7 @@ public static class SettingsSerializer
     // forgot to extend the list above: redact any STRING property whose name
     // reads like a credential. Restricted to strings on purpose — the numeric
     // and boolean settings that match these tokens (OtpTokenTtl,
-    // AllowPasswordResetResendAfter, JwtRequireTokenUse) are operational knobs,
+    // AllowOtpResendAfter, JwtRequireTokenUse) are operational knobs,
     // not secrets, and operators need to see their values.
     private static readonly string[] SecretNameTokens =
         ["Secret", "Password", "Key", "Token", "Credential"];

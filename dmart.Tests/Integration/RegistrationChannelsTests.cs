@@ -150,7 +150,7 @@ public sealed class RegistrationChannelsTests : IClassFixture<DmartFactory>
         // /otp-request sends to an arbitrary, unauthenticated destination —
         // format is validated before any lookup or OTP dispatch.
         var resp = await _factory.CreateClient().PostAsJsonAsync("/user/otp-request",
-            new SendOTPRequest(Msisdn: "+96478abc678", Email: null),
+            new SendOTPRequest(Msisdn: "+96478abc678", Email: null, Purpose: OtpPurpose.Register),
             DmartJsonContext.Default.SendOTPRequest);
         var body = await resp.Content.ReadFromJsonAsync(DmartJsonContext.Default.Response);
         body!.Status.ShouldBe(Status.Failed);
@@ -162,7 +162,7 @@ public sealed class RegistrationChannelsTests : IClassFixture<DmartFactory>
     public async Task OtpRequest_Malformed_Email_Rejected_Before_Dispatch()
     {
         var resp = await _factory.CreateClient().PostAsJsonAsync("/user/otp-request",
-            new SendOTPRequest(Msisdn: null, Email: "definitely not@an email"),
+            new SendOTPRequest(Msisdn: null, Email: "definitely not@an email", Purpose: OtpPurpose.Register),
             DmartJsonContext.Default.SendOTPRequest);
         var body = await resp.Content.ReadFromJsonAsync(DmartJsonContext.Default.Response);
         body!.Status.ShouldBe(Status.Failed);

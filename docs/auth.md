@@ -6,7 +6,23 @@ Two login paths, all landing on the same `sessions` row + signed JWT:
 
 1. **Password** (`POST /user/login` with shortname/email/msisdn + password).
 2. **OTP** (`POST /user/login` with an identifier + `otp`, pre-requested via
-   `POST /user/otp-request`).
+   `POST /user/otp-request` with `purpose: "login"`).
+
+`POST /user/otp-request` is the single OTP issuing API: the `purpose` field
+(`login` | `reset` | `register` | `verify-contact`) selects what the code is
+redeemable for — codes never cross purposes. `register` is the one to use
+before `POST /user/create`: that endpoint accepts an `email_otp`/`msisdn_otp`
+minted at the register purpose and no other, so a code requested as `login`
+cannot complete a signup. Every well-formed request answers 200 Ok
+(anti-enumeration); the resend cooldown (`ALLOW_OTP_RESEND_AFTER`) and the
+per-destination daily cap (`MAX_OTP_REQUESTS_PER_DAY`) are silent no-ops.
+Password resets confirm via `POST /user/password-reset-confirm`; contact
+verification happens on `POST /user/verify-contact` (`code` plus `email` or
+`msisdn`). That one call both confirms an address already on the row and
+changes to a new one — the server tells which from the row it already has, so
+there is no separate "change" field to get wrong. `POST /user/profile` refuses
+contact keys outright and points here. Every OTP verification is single-use (consumed on
+success) and capped at `MAX_OTP_VERIFY_ATTEMPTS` wrong guesses per code.
 
 Plus three OAuth callbacks (Google / Facebook / Apple) for web + mobile flows.
 

@@ -11,23 +11,55 @@ public static class OtpHandler
 {
     public static void Map(RouteGroupBuilder g)
     {
-        // All OTP endpoints share the "auth-by-ip" rate limit: they can trigger
-        // SMS/email sends or verify codes — both vectors attackers exploit to
-        // enumerate accounts or burn through OTP search space.
+        // ── The single OTP issuing API ─────────────────────────────────────
+        // `purpose` (login | reset | register | verify-contact) selects what
+        // the code will be redeemable for — it scopes the stored row and
+        // picks the per-purpose issuing gate below, never the response.
         //
-        // All endpoints also share a single TTL (settings.OtpTokenTtl, default
-        // 300s) — Python uses one global value rather than per-endpoint
-        // minutes.
-        // Python parity: SendOTPRequest.check_fields() requires exactly one of
-        // {shortname, msisdn, email}. Handler then looks up the user, enforces
-        // a per-destination resend cooldown (allow_otp_resend_after), and
-        // dispatches the OTP over SMS (msisdn) or email. Shortname-only
-        // requests currently no-op on the send side — matches get_otp_key()
-        // returning "" for shortname.
+        //   * Anti-enumeration: every well-formed request answers 200 Ok with
+        //     no body, whether the identifier resolves to a user or not,
+        //     whether the account is locked, whether a cooldown or the daily
+        //     cap swallowed the send. Only malformed input (bad purpose,
+        //     wrong identifier count, bad format) gets an error. A caller who
+        //     resends inside the cooldown gets no feedback that it was a no-op.
+        //   * Resend cooldown: AllowOtpResendAfter per destination, counted
+        //     in two independent budgets — `reset` in one, every other
+        //     purpose in the other. Switching purpose WITHIN a budget is not
+        //     a bypass; the split exists so an anonymous flood of one cannot
+        //     silence the other. See the note at the cooldown check.
+        //   * Daily cap: MaxOtpRequestsPerDay per destination, in the same
+        //     two budgets.
+        //   * Rate limit: auth-by-ip.
         g.MapPost("/otp-request", async (SendOTPRequest req, OtpProvider otp, OtpRepository repo,
             UserRepository users, UserService userService, HttpContext http,
-            RegexPatternsConfig regexConfig, IOptions<DmartSettings> settings, CancellationToken ct) =>
+            RegexPatternsConfig regexConfig, IOptions<DmartSettings> settings,
+            ILoggerFactory loggerFactory, CancellationToken ct) =>
         {
+            if (!OtpPurpose.IsValid(req.Purpose))
+                return Response.Fail(InternalErrorCode.INVALID_DATA,
+                    "invalid purpose", ErrorTypes.Request);
+
+            // Every silent-Ok branch logs its reason before answering — the
+            // wire response is uniform (anti-enumeration), so this is the
+            // only place a swallowed send is visible. daily-cap logs at
+            // Warning; everything else at Information.
+            var log = loggerFactory.CreateLogger(typeof(OtpHandler));
+            Response SilentOk(string reason, LogLevel level = LogLevel.Information)
+            {
+                // The destination is a phone number or an email address, and
+                // this line fires on EVERY no-op branch at Information — i.e.
+                // in production, for traffic an anonymous caller controls. So
+                // it goes in fingerprinted, not in clear: enough to correlate
+                // repeated requests to one destination while investigating,
+                // not enough to read the contact back out of the logs.
+                // OtpProvider keeps even its destination-plus-code line at
+                // Debug for the same reason.
+                log.Log(level,
+                    "otp-request: silent no-op ({Reason}) purpose={Purpose} dest={Destination}",
+                    reason, req.Purpose, Fingerprint(req.Msisdn ?? req.Email ?? req.Shortname));
+                return Response.Ok();
+            }
+
             var provided = (string.IsNullOrEmpty(req.Shortname) ? 0 : 1)
                          + (string.IsNullOrEmpty(req.Msisdn) ? 0 : 1)
                          + (string.IsNullOrEmpty(req.Email) ? 0 : 1);
@@ -42,92 +74,77 @@ public static class OtpHandler
             if (!string.IsNullOrEmpty(req.Email) && regexConfig.ValidateEmailFormat(req.Email) is { } emailFormatErr)
                 return Response.Fail(InternalErrorCode.INVALID_DATA, emailFormatErr, ErrorTypes.Request);
 
-            Models.Core.User? user;
-            string? dest = null;
-            if (!string.IsNullOrEmpty(req.Shortname))
-            {
-                user = await users.GetByShortnameAsync(req.Shortname, ct);
-            }
-            else if (!string.IsNullOrEmpty(req.Msisdn))
-            {
-                user = await users.GetByMsisdnAsync(req.Msisdn, ct);
-                dest = req.Msisdn;
-            }
-            else
-            {
-                var lower = req.Email!.ToLowerInvariant();
-                user = await users.GetByEmailAsync(lower, ct);
-                dest = lower;
-            }
-
             var s = settings.Value;
-            // OTP-request gate:
-            //   * A JWT-bearing caller may always request an OTP (e.g. a
-            //     logged-in user verifying/changing a contact) — UNLESS that
-            //     account is locked, in which case issuance is refused with the
-            //     same posture as /user/login.
-            //   * An anonymous caller (no JWT) is gated by is_registrable: when
-            //     self-registration is disabled there's no self-service reason
-            //     to mint an OTP, regardless of whether the supplied identifier
-            //     maps to an existing user (USERNAME_NOT_EXIST keeps that
-            //     response identical to the old not-found branch — no oracle).
+            var purpose = req.Purpose!;
+
+            // Issuing gates — every rejection below is a silent Ok. One rule
+            // per purpose:
+            //   login / reset      → anonymous allowed; identifier must map
+            //                        to a usable account. Exception: with
+            //                        EnableOtpImplicitRegistration on, a
+            //                        direct msisdn/email login request with
+            //                        no matching user instead falls through
+            //                        to the registration gate below, so
+            //                        /user/login can create the account on
+            //                        redemption.
+            //   register           → anonymous allowed only while
+            //                        self-registration is open and the
+            //                        requested channel is enabled; no user
+            //                        row required.
+            //   verify-contact     → JWT required; serves the authenticated
+            //                        profile confirm/change flows; no
+            //                        user-row requirement for the contact.
+            // A JWT caller with a locked account never gets a code, whatever
+            // the purpose.
             var actor = http.Actor();
             if (actor is not null)
             {
                 var jwtUser = await users.GetByShortnameAsync(actor, ct);
                 if (jwtUser is not null && await userService.IsLockedAsync(jwtUser, ct))
-                    return Response.Fail(InternalErrorCode.USER_ACCOUNT_LOCKED,
-                        "Account has been locked.", ErrorTypes.Auth);
+                    return SilentOk("locked-account");
             }
-            else if (!s.IsRegistrable)
+            else if (purpose == OtpPurpose.VerifyContact)
             {
-                return Response.Fail(InternalErrorCode.USERNAME_NOT_EXIST,
-                    "No user found with the provided information", ErrorTypes.Request);
+                return SilentOk("anonymous-verify-contact");
             }
 
-            if (dest is not null)
+            // Mirrors /user/create's gates (UserService.CreateAsync):
+            // registration closed, no channels enabled, or the requested
+            // channel disabled. Also backs the implicit-registration case
+            // below (login purpose, no matching user).
+            string? RegistrationGateFailure()
             {
-                var since = await repo.GetCreatedSinceAsync(dest, ct);
-                if (since is int elapsed && elapsed < s.AllowOtpResendAfter)
-                    return Response.Fail(InternalErrorCode.OTP_RESEND_BLOCKED,
-                        $"Resend OTP is allowed after {s.AllowOtpResendAfter - elapsed} seconds", ErrorTypes.Request);
-
-                var code = otp.Generate(dest);
-                var expiresAt = TimeUtils.Now().AddSeconds(s.OtpTokenTtl);
-                await repo.StoreAsync(dest, code, expiresAt, ct);
-                // Use the registered user's language when known; default to
-                // English for the registrable-anonymous path (no user yet).
-                await otp.SendAsync(dest, code, user?.Language ?? Models.Enums.Language.En, ct);
+                var emailChannel = s.IsRegistrationChannelEnabled("email");
+                var msisdnChannel = s.IsRegistrationChannelEnabled("msisdn");
+                if (!s.IsRegistrable || (!emailChannel && !msisdnChannel)) return "not-registrable";
+                if (!string.IsNullOrEmpty(req.Msisdn) && !msisdnChannel) return "channel-disabled";
+                if (!string.IsNullOrEmpty(req.Email) && !emailChannel) return "channel-disabled";
+                return null;
             }
 
-            return Response.Ok();
-        }).RequireRateLimiting("auth-by-ip");
+            if (purpose == OtpPurpose.Register && RegistrationGateFailure() is { } registerFailure)
+                return SilentOk(registerFailure);
 
-        // Python parity: accepts shortname/msisdn/email (exactly one), looks up
-        // the user, and sends an OTP for login. Key-scheme is the same as
-        // /otp-request so /user/login's OTP verification finds the code at the
-        // same destination key (Python: both endpoints call send_otp which
-        // writes to `users:otp:otps/{msisdn}` — no `login:` prefix).
-        //
-        // Anti-enumeration: when the user isn't found, Python still returns
-        // {status: success} so callers can't probe which identifiers exist.
-        g.MapPost("/otp-request-login", async (SendOTPRequest req, OtpProvider otp, OtpRepository repo,
-            UserRepository users, IOptions<DmartSettings> settings, CancellationToken ct) =>
-        {
-            var provided = (string.IsNullOrEmpty(req.Shortname) ? 0 : 1)
-                         + (string.IsNullOrEmpty(req.Msisdn) ? 0 : 1)
-                         + (string.IsNullOrEmpty(req.Email) ? 0 : 1);
-            if (provided != 1)
-                return Response.Fail(InternalErrorCode.OTP_ISSUE,
-                    "one of msisdn, email or shortname must be provided", "auth");
+            // register and verify-contact address a contact directly; no
+            // user row needs to exist.
+            var contactPurpose = purpose is OtpPurpose.Register or OtpPurpose.VerifyContact;
 
-            Models.Core.User? user;
-            string? dest;
+            // Resolve the user (when one exists) and the delivery destination.
+            Models.Core.User? user = null;
+            string? dest = null;
             if (!string.IsNullOrEmpty(req.Shortname))
             {
                 user = await users.GetByShortnameAsync(req.Shortname, ct);
-                // Shortname path: OTP is sent to the user's msisdn (Python parity).
-                dest = user?.Msisdn;
+                // register/verify-contact by shortname are silent no-ops —
+                // those purposes address a contact directly.
+                if (!contactPurpose && user is not null)
+                {
+                    // Prefer msisdn; reset falls back to email so the code
+                    // still reaches a msisdn-less account.
+                    dest = !string.IsNullOrEmpty(user.Msisdn) ? user.Msisdn
+                         : purpose == OtpPurpose.Reset ? EmailDest(user.Email)
+                         : null;
+                }
             }
             else if (!string.IsNullOrEmpty(req.Msisdn))
             {
@@ -136,120 +153,125 @@ public static class OtpHandler
             }
             else
             {
-                var lower = req.Email!.ToLowerInvariant();
+                var lower = EmailDest(req.Email!)!;
                 user = await users.GetByEmailAsync(lower, ct);
                 dest = lower;
             }
 
-            // Anti-enumeration: missing user, or shortname lookup with no
-            // msisdn to SMS, both return silent success.
-            if (user is null || !user.IsUsable || string.IsNullOrEmpty(dest))
-                return Response.Ok();
+            // login and reset require an existing, usable account;
+            // register/verify-contact do not. Exception: when
+            // EnableOtpImplicitRegistration is on, a login-purpose request
+            // for a direct msisdn/email with no matching user falls through
+            // to the registration gate instead of a flat no-op, so
+            // /user/login can implicitly create the account on redemption.
+            // Shortname requests are unaffected — dest is null for an
+            // unresolved shortname (no contact to gate), so they still hit
+            // the no-destination branch below.
+            // IsLockedAsync, not raw IsUsable. HandleFailedLoginAttemptAsync
+            // persists IsActive=false when an account locks, and only
+            // IsLockedAsync/RejectIfAttemptLockedAsync clear it once
+            // LockoutCooldownSeconds has elapsed. Reading IsUsable directly
+            // therefore keeps answering SilentOk("unusable-account") forever
+            // after the cool-down expired — and for an account whose only
+            // credential is an OTP (the password-less users this repo
+            // provisions), nothing else on any path would ever unlock it. The
+            // user asks for a code, gets 200, and no message ever arrives.
+            // The JWT branch above already uses this check.
+            var blocked = user is null || await userService.IsLockedAsync(user, ct);
+            if (!contactPurpose && blocked)
+            {
+                var implicitEligible = purpose == OtpPurpose.Login && user is null
+                    && s.EnableOtpImplicitRegistration && !string.IsNullOrEmpty(dest);
+                if (!implicitEligible)
+                    return SilentOk(user is null ? "unknown-user"
+                        : !user.IsUsable ? "unusable-account" : "locked-account");
+                if (RegistrationGateFailure() is { } implicitFailure)
+                    return SilentOk(implicitFailure);
+            }
+            if (string.IsNullOrEmpty(dest))
+                return SilentOk("no-destination");
 
-            var s = settings.Value;
+            // Resend cooldown — per destination, in the same two buckets the
+            // daily cap uses below.
+            //
+            // Across ALL purposes it was a denial-of-service with no account
+            // needed: `register` requires no JWT and no existing user, so one
+            // request every 59 seconds against a victim's msisdn — far under
+            // the auth-by-ip limiter — held the cooldown permanently open and
+            // silently swallowed every login and reset the victim asked for.
+            // Before the routes were unified, reset codes lived under their
+            // own key with their own cooldown, so login spam could not reach
+            // them; collapsing the endpoints removed that separation without
+            // replacing it.
+            //
+            // Splitting it the same way as the cap restores it: flooding one
+            // bucket cannot silence the other, so sign-in and account recovery
+            // can never both be closed by one attacker. Switching purpose
+            // WITHIN a bucket is still not a bypass, which is what the
+            // cross-purpose rule was there to prevent.
+            var since = await repo.GetCreatedSinceBucketAsync(dest, purpose, ct);
+            if (since is int elapsed && elapsed < s.AllowOtpResendAfter)
+                return SilentOk("cooldown");
+
+            // Daily cap — per destination, with a reserve for account
+            // recovery.
+            //
+            // The cap is keyed on the DESTINATION and nothing else, which is
+            // what makes it work as abuse control (it bounds what one contact
+            // can be made to receive, and what it can cost to send) and also
+            // what makes it an attack surface: the endpoint is anonymous, so
+            // anyone who knows a victim's msisdn can spend the whole daily
+            // budget on `login` requests. Counted across all purposes, that
+            // also denied `reset` — locking the victim out of the one flow
+            // that recovers an account, for 24 hours, with every response a
+            // silent 200 so neither they nor the UI could tell why.
+            //
+            // So the budget splits in two, and the split cuts BOTH ways:
+            // `reset` counts only reset, and everything else counts everything
+            // EXCEPT reset. A one-directional reserve would have been theatre
+            // — giving reset its own bucket while still counting reset rows
+            // toward the shared one just moves the cheap attack from flooding
+            // login to flooding reset, which would then take login down with
+            // it. Two independent buckets means neither can close the other.
+            //
+            // Worst case rises from N messages a day to 2N. That is the price.
+            //
+            // NOT a complete fix, and worth stating plainly: an attacker can
+            // still exhaust EITHER bucket for a destination they know, so a
+            // targeted reset flood still denies reset. Closing that needs a
+            // per-CALLER dimension the endpoint has no identity for — the
+            // auth-by-ip limiter is the only caller signal, and distribution
+            // defeats it. What this buys is that no single flood takes out
+            // both sign-in and account recovery at once.
+            if (s.MaxOtpRequestsPerDay > 0)
+            {
+                var isReset = purpose == OtpPurpose.Reset;
+                var issued = await repo.CountIssuedSinceAsync(
+                    dest, TimeUtils.Now().AddHours(-24), ct,
+                    OtpPurpose.Reset, invertPurpose: !isReset);
+                if (issued >= s.MaxOtpRequestsPerDay)
+                    return SilentOk("daily-cap", LogLevel.Warning);
+            }
+
             var code = otp.Generate(dest);
             var expiresAt = TimeUtils.Now().AddSeconds(s.OtpTokenTtl);
-            await repo.StoreAsync(dest, code, expiresAt, ct);
-            await otp.SendAsync(dest, code, user.Language, ct);
+            await repo.IssueAsync(dest, purpose, code, expiresAt, ct);
+            // Use the registered user's language when known; default to
+            // English for destinations with no user yet.
+            await otp.SendAsync(dest, code, user?.Language ?? Models.Enums.Language.En, ct);
+
             return Response.Ok();
         }).RequireRateLimiting("auth-by-ip");
 
-        g.MapPost("/password-reset-request", async (PasswordResetRequest req,
-            UserRepository users, OtpProvider otp, OtpRepository repo,
-            IOptions<DmartSettings> settings, CancellationToken ct) =>
-        {
-            Models.Core.User? user = null;
-            if (!string.IsNullOrEmpty(req.Shortname))
-                user = await users.GetByShortnameAsync(req.Shortname, ct);
-            else if (!string.IsNullOrEmpty(req.Msisdn))
-                user = await users.GetByMsisdnAsync(req.Msisdn, ct);
-            else if (!string.IsNullOrEmpty(req.Email))
-                user = await users.GetByEmailAsync(req.Email, ct);
-
-            // Anti-enumeration: response is identical whether the user exists
-            // or not. All silent-no-op branches below also fall through to Ok().
-            if (user is null) return Response.Ok();
-
-            // Pick the destination using these routing rules:
-            //   - Email-direct path: only when the request was email-only AND
-            //     the supplied email matches the user record (case-insensitive
-            //     equality guards against a mismatched email leaking through).
-            //   - Msisdn / shortname path: prefer the user's msisdn; the msisdn
-            //     equality check blocks an attacker probing whether a known
-            //     shortname belongs to a specific msisdn.
-            //   - Csdmart-only fallback: shortname-only request + user has no
-            //     msisdn → fall back to email so the reset still reaches them.
-            string? dest = null;
-            var emailDirect = string.IsNullOrEmpty(req.Shortname)
-                && string.IsNullOrEmpty(req.Msisdn)
-                && !string.IsNullOrEmpty(req.Email);
-            if (emailDirect)
-            {
-                if (!string.IsNullOrEmpty(user.Email)
-                    && string.Equals(user.Email, req.Email, StringComparison.OrdinalIgnoreCase))
-                    dest = user.Email;
-            }
-            else if (!string.IsNullOrEmpty(user.Msisdn)
-                     && (string.IsNullOrEmpty(req.Msisdn)
-                         || string.Equals(user.Msisdn, req.Msisdn, StringComparison.Ordinal)))
-            {
-                dest = user.Msisdn;
-            }
-            else if (!string.IsNullOrEmpty(req.Shortname)
-                     && string.IsNullOrEmpty(req.Msisdn)
-                     && !string.IsNullOrEmpty(user.Email))
-            {
-                dest = user.Email;
-            }
-
-            if (string.IsNullOrEmpty(dest)) return Response.Ok();
-
-            // Reset OTPs live under a dedicated key (pwd-reset:{dest}) so the
-            // login OTP path (which reads bare {dest}) can't consume them and
-            // turn a password-reset code into a login credential.
-            var s = settings.Value;
-            var key = ResetOtpKey(dest);
-
-            // Resend cooldown — scoped to the reset key, independent of the
-            // generic /otp-request cooldown. Anti-enumeration: return Ok
-            // silently when the cooldown is in effect so paired requests can't
-            // distinguish "known user, just-issued OTP" from "unknown user"
-            // (both observable as 200 Ok with no body). Trade-off: a
-            // legitimate user who triple-taps "Resend" gets no feedback that
-            // the second/third call was a no-op.
-            var since = await repo.GetCreatedSinceAsync(key, ct);
-            if (since is int elapsed && elapsed < s.AllowPasswordResetResendAfter)
-                return Response.Ok();
-
-            // OTP delivery: OtpProvider.SendAsync renders the body from the
-            // `otp_message` language template, so the reset message uses the
-            // same wording as /otp-request.
-            var code = otp.Generate(dest);
-            var expiresAt = TimeUtils.Now().AddSeconds(s.OtpTokenTtl);
-            await repo.StoreAsync(key, code, expiresAt, ct);
-            await otp.SendAsync(dest, code, user.Language, ct);
-
-            return Response.Ok();
-        }).RequireRateLimiting("auth-by-ip");
-
-        // Completes the reset flow started by /password-reset-request:
-        // verifies the OTP at the reset-scoped key, then writes the new
-        // password hash on the user row. Typed identifier fields (same shape
-        // as PasswordResetRequest) so the two halves resolve to the same user
-        // — and the same `pwd-reset:{dest}` key — without heuristic shape
-        // detection that could mis-route a numeric shortname.
-        //
-        // Uniform OTP_INVALID response for {unknown user, no dest, mismatch,
-        // expired} so the endpoint doesn't leak which leg failed. Wrong OTPs
-        // count against the same failed-attempt counter /user/login uses, so
-        // an attacker can't brute-force the 6-digit code within its TTL
-        // without tripping the account lockout.
+        // Verifies (and consumes) the reset-purpose OTP issued by
+        // /otp-request purpose=reset, then writes the new password hash.
+        // {unknown user, no dest, mismatch, expired} all return the same
+        // OTP_INVALID. Wrong OTPs count against the failed-attempt counter.
         g.MapPost("/password-reset-confirm", async (PasswordResetConfirm req,
             UserRepository users, OtpRepository repo, PasswordHasher hasher,
             UserService userService, IOptions<DmartSettings> settings, CancellationToken ct) =>
         {
-            // Exactly one of {Shortname, Email, Msisdn} — mirrors the shape
-            // rules /otp-request and /password-reset-request use.
+            // Exactly one of {Shortname, Email, Msisdn}.
             var provided = (string.IsNullOrEmpty(req.Shortname) ? 0 : 1)
                          + (string.IsNullOrEmpty(req.Msisdn) ? 0 : 1)
                          + (string.IsNullOrEmpty(req.Email) ? 0 : 1);
@@ -266,31 +288,26 @@ public static class OtpHandler
             else if (!string.IsNullOrEmpty(req.Msisdn))
                 user = await users.GetByMsisdnAsync(req.Msisdn, ct);
             else
-                user = await users.GetByEmailAsync(req.Email!.ToLowerInvariant(), ct);
+                user = await users.GetByEmailAsync(EmailDest(req.Email!)!, ct);
 
             if (user is null)
                 return Response.Fail(InternalErrorCode.OTP_INVALID,
                     "code mismatch or expired", ErrorTypes.Auth);
 
-            // Cheap-fails-first: validate password rules before the OTP probe.
-            // VerifyAndConsumeAsync only deletes on success, so the OTP isn't
-            // burned by this branch — but rejecting early avoids hashing work
-            // and keeps the failure-mode predictable.
+            // Validate password rules before the OTP probe — this branch
+            // never touches the stored code, so it can't burn it.
             if (!PasswordRules.IsValid(req.Password))
                 return Response.Fail(InternalErrorCode.INVALID_PASSWORD_RULES,
                     "password does not meet complexity rules", ErrorTypes.Request);
 
-            // Account lockout pre-check — match /user/login's posture so a
-            // locked (or deleted) account can't be revived via the reset path.
-            // Deliberately IsUsable, not IsActive: a soft-deleted row can still
-            // have IsActive=true (deletion never touches it), so IsActive alone
-            // would let a password reset resurrect a deleted account.
+            // IsUsable, not IsActive: a soft-deleted row can still have
+            // IsActive=true, so IsActive alone would let a reset resurrect a
+            // deleted account.
             if (!user.IsUsable)
                 return Response.Fail(InternalErrorCode.OTP_INVALID,
                     "code mismatch or expired", ErrorTypes.Auth);
 
-            // Determine the dest /password-reset-request would have used so
-            // we hit the same `pwd-reset:{dest}` key:
+            // Resolve the same (dest, reset) row the issuing call used:
             //   email-direct + match → user.Email
             //   msisdn-direct or shortname-with-msisdn → user.Msisdn
             //   shortname-only no msisdn → user.Email
@@ -299,7 +316,7 @@ public static class OtpHandler
             {
                 if (!string.IsNullOrEmpty(user.Email)
                     && string.Equals(user.Email, req.Email, StringComparison.OrdinalIgnoreCase))
-                    dest = user.Email;
+                    dest = EmailDest(user.Email);
             }
             else if (!string.IsNullOrEmpty(user.Msisdn))
             {
@@ -308,7 +325,7 @@ public static class OtpHandler
             else if (!string.IsNullOrEmpty(req.Shortname)
                      && !string.IsNullOrEmpty(user.Email))
             {
-                dest = user.Email;
+                dest = EmailDest(user.Email);
             }
 
             if (string.IsNullOrEmpty(dest))
@@ -316,13 +333,11 @@ public static class OtpHandler
                     "code mismatch or expired", ErrorTypes.Auth);
 
             var ok = await repo.VerifyAndConsumeAsync(
-                ResetOtpKey(dest), req.Otp, settings.Value.MaxOtpVerifyAttempts, ct);
+                dest, OtpPurpose.Reset, req.Otp, settings.Value.MaxOtpVerifyAttempts, ct);
             if (!ok)
             {
-                // Wrong OTP counts against the failed-attempt counter — same
-                // guarantee /user/login OTP path enforces. Without this, the
-                // 6-digit code (10^6 keyspace, 300s TTL) is brute-forceable
-                // by a distributed caller inside its own validity window.
+                // Wrong OTP counts against the failed-attempt counter, capping
+                // brute-force guesses within the code's TTL.
                 var locked = await userService.RecordFailedAttemptAsync(user, ct);
                 return locked
                     ? Response.Fail(InternalErrorCode.USER_ACCOUNT_LOCKED,
@@ -336,79 +351,153 @@ public static class OtpHandler
             {
                 Password = hasher.Hash(req.Password),
                 ForcePasswordChange = false,
-                IsEmailVerified = dest == user.Email ? true : user.IsEmailVerified,
+                // OrdinalIgnoreCase for the email: `dest` is normalised (see
+                // EmailDest) while user.Email keeps its stored case, so an
+                // ordinal `==` is false for every mixed-case address. That
+                // would leave is_email_verified untouched on a SUCCESSFUL
+                // reset — and an unverified row is refused at /user/login by
+                // RejectIfContactUnverified, so the user would change their
+                // password and still be unable to sign in.
+                IsEmailVerified = string.Equals(dest, user.Email, StringComparison.OrdinalIgnoreCase)
+                    ? true : user.IsEmailVerified,
                 IsMsisdnVerified = dest == user.Msisdn ? true : user.IsMsisdnVerified,
                 UpdatedAt = TimeUtils.Now(),
             };
             await users.UpsertAsync(updated, ct);
-            // Successful reset clears the failed-attempt counter — symmetric
-            // with the password-login success path (ProcessLoginAsync).
             await users.ResetAttemptsAsync(user.Shortname, ct);
-            // Same rule POST /user/profile applies when it rewrites the
-            // password (UserService.UpdateProfileAsync): evict every session.
-            // A reset is the victim's remedy after a compromise, so the token
-            // the attacker already holds must not survive it.
+            // A reset is the victim's remedy after a compromise, so a token
+            // an attacker already holds must not survive it.
             if (settings.Value.LogoutOnPwdChange)
                 await users.DeleteAllSessionsAsync(user.Shortname, ct);
             return Response.Ok();
         }).RequireRateLimiting("auth-by-ip");
 
-        // Python's otp-confirm verifies the OTP and then marks the email/msisdn
-        // as verified on the user row. We need the user context to do that.
-        g.MapPost("/otp-confirm", async (ConfirmOTPRequest req, OtpRepository repo,
-            UserRepository users, HttpContext http, IOptions<DmartSettings> settings,
-            CancellationToken ct) =>
+        // POST /user/verify-contact — prove control of an email or msisdn and
+        // make it yours, verified. One operation, whether the address is the
+        // one already on your row or a new one.
+        //
+        // Named for the outcome, like every other endpoint here (/user/login,
+        // /user/create, /user/password-reset-confirm) and unlike the
+        // `otp-confirm` it replaces, which was named for the token it consumes
+        // — a description that fits every OTP redemption in the system and so
+        // distinguished nothing.
+        //
+        // The caller does not declare whether this is a confirm or a change.
+        // Which one it is depends on state the SERVER already has, so making
+        // the client classify its own intent only creates a way to get it
+        // wrong. That is also why the request takes plain `email`/`msisdn`
+        // rather than the `new_email`/`new_msisdn` this used to need on
+        // /user/profile: there is no profile representation being echoed back
+        // here, so nothing to disambiguate against.
+        g.MapPost("/verify-contact", async (VerifyContactRequest req, OtpRepository repo,
+            UserRepository users, RegexPatternsConfig regexConfig, HttpContext http,
+            IOptions<DmartSettings> settings, CancellationToken ct) =>
         {
-            // Authenticated-only. The handler's only effect is flipping the
-            // caller's verified flags, so an anonymous call achieves nothing —
-            // yet it still reached VerifyAndConsumeAsync, which DELETES the
-            // OTP row at the bare {dest} key once MaxOtpVerifyAttempts wrong
-            // guesses land. That is the same key /user/login's OTP flow reads,
-            // so anyone who knew a victim's msisdn could wipe their
-            // just-issued code on demand. Demand an actor before we touch the
-            // OTP store at all.
+            // Authenticated, and checked before the store is touched: the only
+            // effect is on the caller's own row, so an anonymous call achieves
+            // nothing — but it would still spend attempts against a live code.
             var actor = http.Actor();
             if (actor is null)
                 return Response.Fail(InternalErrorCode.NOT_AUTHENTICATED,
                     "login required", ErrorTypes.Auth);
 
-            var dest = req.Msisdn ?? req.Email ?? "";
-            var ok = await repo.VerifyAndConsumeAsync(
-                dest, req.Code, settings.Value.MaxOtpVerifyAttempts, ct);
-            if (!ok)
+            var provided = (string.IsNullOrEmpty(req.Msisdn) ? 0 : 1)
+                         + (string.IsNullOrEmpty(req.Email) ? 0 : 1);
+            if (provided == 0)
+                return Response.Fail(InternalErrorCode.EMAIL_OR_MSISDN_REQUIRED,
+                    "One of these [email, msisdn] should be set!", "OTP");
+            if (provided > 1)
+                return Response.Fail(InternalErrorCode.INVALID_STANDALONE_DATA,
+                    "Too many input has been passed", "OTP");
+
+            var isEmail = !string.IsNullOrEmpty(req.Email);
+            if (isEmail && regexConfig.ValidateEmailFormat(req.Email!) is { } emailErr)
+                return Response.Fail(InternalErrorCode.INVALID_DATA, emailErr, ErrorTypes.Request);
+            if (!isEmail && regexConfig.ValidateMsisdnFormat(req.Msisdn!) is { } msisdnErr)
+                return Response.Fail(InternalErrorCode.INVALID_DATA, msisdnErr, ErrorTypes.Request);
+
+            // Normalised exactly as issuing normalised it, or the two halves
+            // address different otps rows for a mixed-case address.
+            var dest = isEmail ? EmailDest(req.Email)! : req.Msisdn!;
+
+            var user = await users.GetByShortnameAsync(actor, ct);
+            if (user is null)
                 return Response.Fail(InternalErrorCode.OTP_INVALID,
                     "code mismatch or expired", ErrorTypes.Auth);
 
-            var user = await users.GetByShortnameAsync(actor, ct);
-            if (user is not null)
+            var current = isEmail ? EmailDest(user.Email) : user.Msisdn;
+            var isChange = !string.Equals(dest, current, StringComparison.Ordinal);
+
+            // Uniqueness, before the code is spent. Losing the address to
+            // another account is recoverable and the caller can act on it, but
+            // consuming first would burn a still-valid code on the way to
+            // saying so — and a retry inside AllowOtpResendAfter answers a
+            // silent 200 with nothing sent. Carried over from the profile path
+            // this replaces; a change without it could collide silently.
+            if (isChange)
             {
-                // Only mark a contact verified when the OTP was delivered to
-                // the caller's OWN contact. Without the destination match,
-                // proving control of ANY address (the attacker's own mailbox,
-                // say) flipped the flag on whatever contact sits on the
-                // caller's row — a verification that proves nothing about
-                // that row. Flags never regress: a mismatch leaves the stored
-                // value alone rather than clearing it.
-                var emailMatch = !string.IsNullOrEmpty(req.Email)
-                    && !string.IsNullOrEmpty(user.Email)
-                    && string.Equals(req.Email, user.Email, StringComparison.OrdinalIgnoreCase);
-                var msisdnMatch = !string.IsNullOrEmpty(req.Msisdn)
-                    && !string.IsNullOrEmpty(user.Msisdn)
-                    && string.Equals(req.Msisdn, user.Msisdn, StringComparison.Ordinal);
-                var updated = user with
-                {
-                    IsEmailVerified = emailMatch || user.IsEmailVerified,
-                    IsMsisdnVerified = msisdnMatch || user.IsMsisdnVerified,
-                    UpdatedAt = TimeUtils.Now(),
-                };
-                await users.UpsertAsync(updated, ct);
+                var collision = isEmail
+                    ? await users.GetByEmailAsync(dest, ct)
+                    : await users.GetByMsisdnAsync(dest, ct);
+                if (collision is not null
+                    && !string.Equals(collision.Shortname, user.Shortname, StringComparison.Ordinal))
+                    return Response.Fail(InternalErrorCode.DATA_SHOULD_BE_UNIQUE,
+                        $"Entry properties should be unique: @{(isEmail ? "email" : "msisdn")}:{dest} ",
+                        ErrorTypes.Request);
             }
+
+            if (!await repo.VerifyAndConsumeAsync(dest, OtpPurpose.VerifyContact,
+                    req.Code, settings.Value.MaxOtpVerifyAttempts, ct))
+                return Response.Fail(InternalErrorCode.OTP_INVALID,
+                    "code mismatch or expired", ErrorTypes.Auth);
+
+            // Flags never regress, and only the channel just proved is touched.
+            await users.UpsertAsync(user with
+            {
+                Email = isEmail ? dest : user.Email,
+                Msisdn = isEmail ? user.Msisdn : dest,
+                IsEmailVerified = isEmail || user.IsEmailVerified,
+                IsMsisdnVerified = !isEmail || user.IsMsisdnVerified,
+                UpdatedAt = TimeUtils.Now(),
+            }, ct);
             return Response.Ok();
         }).RequireRateLimiting("auth-by-ip");
+
+        // Contact verification is /user/verify-contact above, and only there.
+        // UserService.UpdateProfileAsync refuses every contact key by name.
     }
 
-    // Reset OTPs are stored under a dedicated key prefix so the login OTP
-    // path (which reads bare {dest}) can't consume them as a login credential.
-    private const string ResetOtpPrefix = "pwd-reset:";
-    internal static string ResetOtpKey(string dest) => ResetOtpPrefix + dest;
+    // The otps table is keyed on (identifier, purpose) and looks the
+    // identifier up by exact equality, so the two halves of a flow have to
+    // spell an email destination the SAME way or they address different rows.
+    // That is not automatic here: the USER lookup is case-insensitive
+    // (UserRepository's EmailLookupWhere is `LOWER(email) = LOWER($1)`) and the
+    // stored column keeps whatever case it was written with — admin-provisioned
+    // rows keep the operator's spelling (RequestHandler), OAuth rows keep the
+    // provider's (OAuthUserResolver). So `Alice@Example.com` resolves to a user
+    // from either spelling while `user.Email` and a lowercased request value
+    // are two different identifiers.
+    //
+    // Issuing a reset lowercased its destination; confirming it looked the code
+    // up under the raw stored value. Every mixed-case address therefore got
+    // OTP_INVALID for a code that was correct — and because each attempt runs
+    // RecordFailedAttemptAsync, a user could lock themselves out of their own
+    // account trying to use a working code.
+    //
+    // One rule, applied wherever an email becomes a destination: lowercase.
+    // Msisdns are digits and need none of this.
+    private static string? EmailDest(string? email) => email?.ToLowerInvariant();
+
+    // A stable, non-reversible stand-in for a contact in log output. Truncated
+    // to 8 hex characters: enough to tell "the same destination again" from "a
+    // different one" while reading a log, short enough that it is not a
+    // convenient lookup key, and lowercased first so the two spellings of one
+    // address fingerprint alike.
+    private static string Fingerprint(string? destination)
+    {
+        if (string.IsNullOrEmpty(destination)) return "(none)";
+        var hash = System.Security.Cryptography.SHA256.HashData(
+            System.Text.Encoding.UTF8.GetBytes(destination.ToLowerInvariant()));
+        return Convert.ToHexString(hash.AsSpan(0, 4)).ToLowerInvariant();
+    }
 }

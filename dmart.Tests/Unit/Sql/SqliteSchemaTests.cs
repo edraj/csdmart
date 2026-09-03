@@ -83,7 +83,7 @@ public sealed class SqliteSchemaTests : IAsyncLifetime
         foreach (var table in new[]
         {
             "users", "roles", "groups", "permissions", "entries", "attachments",
-            "spaces", "histories", "locks", "sessions", "urlshorts", "otp",
+            "spaces", "histories", "locks", "sessions", "urlshorts", "otps",
             "userpermissionscache",
         })
         {
