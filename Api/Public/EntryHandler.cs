@@ -1,4 +1,3 @@
-using System.Text.Json;
 using Dmart.Api;
 using Dmart.Api.Managed;
 using Dmart.DataAdapters.Sql;
@@ -28,37 +27,19 @@ public static class EntryHandler
                 var entry = await svc.GetAsync(new Locator(rt, space, subpath, shortname), actor: null, ct);
                 if (entry is null) return Results.NotFound();
 
-                Dictionary<string, List<Record>> attachmentsDict = new();
-                if (retrieve_attachments == true)
-                {
-                    var children = await attachmentRepo.ListForParentAsync(space, subpath, shortname, ct);
-                    // A world-readable parent says nothing about its children:
-                    // comment/json attachments carry their own ACL. Without
-                    // this gate the public route hands an anonymous caller
-                    // restricted attachments that /managed/payload refuses.
-                    // Same check, same shape as Api/Managed/PayloadHandler.cs:55
-                    // — actor stays null because /public is anonymous by
-                    // definition (like svc.GetAsync above).
-                    var visible = new List<Attachment>(children.Count);
-                    foreach (var a in children)
-                    {
-                        var attachmentLocator = new Locator(a.ResourceType, a.SpaceName, a.Subpath, a.Shortname);
-                        if (await perms.CanReadAsync(actor: null, attachmentLocator,
-                                PermissionService.FromAttachment(a), ct))
-                            visible.Add(a);
-                    }
-                    if (visible.Count > 0)
-                    {
-                        attachmentsDict = visible
-                            .GroupBy(a => JsonbHelpers.EnumMember(a.ResourceType))
-                            .ToDictionary(
-                                grp => grp.Key,
-                                grp => grp.Select(a => AttachmentMapper.ToEntryRecord(a)).ToList());
-                    }
-                }
+                // Shared with the managed route rather than duplicated: this
+                // handler used to carry a byte-for-byte copy of the list →
+                // per-attachment CanReadAsync → group-by loop, and the only
+                // difference was the actor. A world-readable parent still says
+                // nothing about its children — comment/json attachments carry
+                // their own ACL — and `actor: null` is what makes the gate here
+                // the anonymous one, because /public is anonymous by definition
+                // (like svc.GetAsync above).
+                var attNode = await Dmart.Api.Managed.EntryHandler.BuildAttachmentsAsync(
+                    space, subpath, shortname, retrieve_attachments == true,
+                    attachmentRepo, perms, actor: null, ct);
 
                 var node = EntryToJsonNode.Convert(entry, retrieve_json_payload == true);
-                var attNode = JsonSerializer.SerializeToNode(attachmentsDict, DmartJsonContext.Default.DictionaryStringListRecord);
                 node["attachments"] = attNode;
                 return Results.Content(node.ToJsonString(DmartJsonContext.Default.Options), "application/json");
             });
