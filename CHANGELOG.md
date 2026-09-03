@@ -1,5 +1,54 @@
 # Changelog
 
+## Unreleased
+
+### Fixed
+
+**`POST /user/profile` accepts an unchanged `email`/`msisdn` again.** v1.4.0
+refused all six contact keys on presence alone. But `email` and `msisdn` are
+part of the profile *representation*: a client that reads its profile, edits a
+display name and posts the Record back sends them straight back unchanged, and
+that ordinary round-trip started failing with `INVALID_DATA` having changed
+nothing. They are now refused only when they name a *different* address than
+the row holds; an echo, or a null, is the no-op it always was. `new_email`,
+`new_msisdn`, `email_otp` and `msisdn_otp` are still refused by name. (#228)
+
+**`POST /user/verify-contact` no longer returns 500 when `code` is missing.**
+The field is non-nullable in the request record but nothing enforced that on
+the wire, so an omitted `code` reached the hasher as null — and did so
+precisely when a live code existed for the destination, i.e. right after
+`/otp-request`. Now a `MISSING_DATA` 400, refused before the store is touched
+so it cannot spend a verification attempt either. (#228)
+
+**Contact changes reach the audit history again.** `/user/verify-contact`
+wrote directly to the user row, skipping the diff the `/user/profile` path it
+replaced used to append — so a changed email was invisible to
+`/managed/query?type=history`. (#228)
+
+**Confirming a contact no longer rewrites its stored spelling.** An
+admin-provisioned or OAuth-sourced `Alice@Example.com` was silently lowercased
+the first time its owner confirmed it. The address is now written only on an
+actual change. (#228)
+
+**`GET /user/profile` returns the caller's avatar.** Attachments on the user's
+own row now come back under `attachments`, in the same shape `/managed/entry`
+returns, so a client that already renders `record.attachments` needs no second
+call. Avatar only, matching Python's `filter_shortnames=["avatar"]`. (#227)
+
+**`/managed/entry` honours `retrieve_attachments` for spaces, users, roles and
+permissions.** Those four returned a bare row and silently ignored the flag.
+(#227)
+
+### Security
+
+**`fast-uri` pinned past four HIGH CVEs** (CVE-2026-75899, CVE-2026-75931,
+CVE-2026-75975, CVE-2026-76172 — SSRF, host confusion via IDN, IPv6
+normalisation, URI parsing). It reached the frontend bundle transitively via
+`svelte-jsoneditor` → `ajv`. The declared range already permitted the fix; the
+lockfile was stale. Pinned through the root `resolutions` block, as with
+`vite` and `esbuild`. (#229)
+
+
 ## v1.4.0 — 2026-09-02
 
 ### Breaking — the OTP issuing endpoints are now one endpoint
@@ -38,14 +87,11 @@ served one member of it. Every other endpoint here is named for its outcome
 (`/user/login`, `/user/create`, `/user/password-reset-confirm`); this one now
 is too.
 
-**`POST /user/profile` no longer changes contacts.** `new_email`, `email_otp`,
-`new_msisdn` and `msisdn_otp` are **refused by name**, and `email`/`msisdn` are
-refused when they name a different address than the one on the row — both with
-an error pointing at `/user/verify-contact`, not ignored, because a client
-still sending `new_email` would otherwise get a 200 and no change. Sending
-`email`/`msisdn` unchanged (or null) stays the no-op it has always been, so the
-read-modify-write round-trip — GET the profile, edit a display name, POST the
-Record back — keeps working. Everything else on the endpoint is unaffected.
+**`POST /user/profile` no longer accepts contact fields.** `email`,
+`new_email`, `email_otp`, `msisdn`, `new_msisdn` and `msisdn_otp` are
+**refused by name**, with an error pointing at `/user/verify-contact` — not
+ignored, because a client still sending `new_email` would otherwise get a 200
+and no change. Everything else on the endpoint is unaffected.
 
 The `new_` prefix is gone with them. It was load-bearing only on
 `/user/profile`: `email` is part of the profile representation, so a caller
