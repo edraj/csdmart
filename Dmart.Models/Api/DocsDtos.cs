@@ -29,25 +29,19 @@ public sealed record ValidatePasswordBody(string Password);
 // /user/profile — partial update. Every field optional; only the fields
 // you send get changed. `payload.body` is free-form per the user schema.
 //
-// Contact fields are not free-text edits and the four OTP-bearing ones below
-// are what makes them usable at all:
-//   * `email` must equal the address already on the row — sending a different
-//     one is rejected outright, so this shape alone cannot change a contact.
-//     Paired with `email_otp` it CONFIRMS the stored address
-//     (is_email_verified flips true); alone it is a no-op.
-//   * `new_email` + `email_otp` changes the address. The code must have been
-//     issued to the NEW address at the verify-contact purpose.
-// Msisdn works the same way. Omitting these from the published schema
-// documented a shape (`email` different from stored) that the handler refuses.
+// Contacts are NOT here. `email`, `msisdn`, `new_email`, `new_msisdn`,
+// `email_otp` and `msisdn_otp` were fields on this body until they moved to
+// POST /user/verify-contact, which owns every contact-plus-OTP operation —
+// confirming the address you already have and changing to a new one are the
+// same act, and both belong where the OTP is redeemed. The handler now
+// refuses the four `new_*`/`*_otp` keys outright, so they are gone from the
+// schema too; `email` and `msisdn` are still tolerated on the wire when they
+// echo the stored address unchanged (a profile read-modify-write round-trip
+// sends them back), but they cannot CHANGE anything and so are not published
+// as settable fields.
 public sealed record ProfileUpdateBody(
     string? Password = null,
     string? OldPassword = null,
-    string? Email = null,
-    string? Msisdn = null,
-    string? NewEmail = null,
-    string? NewMsisdn = null,
-    string? EmailOtp = null,
-    string? MsisdnOtp = null,
     Dictionary<string, string>? Displayname = null,
     Dictionary<string, string>? Description = null,
     string? Language = null,

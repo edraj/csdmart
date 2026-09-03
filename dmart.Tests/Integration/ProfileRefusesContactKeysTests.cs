@@ -19,6 +19,12 @@ namespace Dmart.Tests.Integration;
 // the most to diagnose, because everything looks like it worked. The error
 // names the endpoint to use.
 //
+// `email` and `msisdn` are refused on VALUE rather than presence, because
+// unlike the other four they are part of the profile representation: a caller
+// who reads their profile, edits a display name and posts the Record back
+// sends the stored address straight back. That echo is a no-op, not a request
+// to change anything, and 400ing it would break the round-trip.
+//
 // The prefix went with them: `email` was ambiguous on this endpoint because it
 // is also part of the profile representation, so a caller echoing it back on
 // an unrelated edit had to be distinguishable from one asking for a change.
@@ -36,7 +42,7 @@ public class ProfileRefusesContactKeysTests : IClassFixture<DmartFactory>
     [InlineData("msisdn")]
     [InlineData("new_msisdn")]
     [InlineData("msisdn_otp")]
-    public async Task Every_Contact_Key_Is_Refused_By_Name(string key)
+    public async Task Every_Contact_Key_Is_Refused_When_It_Asks_For_A_Change(string key)
     {
         var (shortname, email) = await CreateUserAsync();
         try
@@ -51,6 +57,53 @@ public class ProfileRefusesContactKeysTests : IClassFixture<DmartFactory>
                 Case.Sensitive, "the error has to name the key the caller sent");
             result.ErrorMessage.ShouldContain("/user/verify-contact",
                 Case.Sensitive, "and where to go instead, or it is not actionable");
+        }
+        finally { await CleanupAsync(shortname, email); }
+    }
+
+    // The read-modify-write round-trip: `email` echoed back unchanged is not a
+    // contact change and must not fail the patch it rides along with. Case is
+    // irrelevant to that — the stored column keeps whatever spelling it was
+    // written with while lookups lower both sides.
+    [TheoryIfPg]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task An_Unchanged_Email_Rides_Along_With_An_Ordinary_Edit(bool upperCased)
+    {
+        var (shortname, email) = await CreateUserAsync();
+        try
+        {
+            var svc = _factory.Services.GetRequiredService<UserService>();
+            var users = _factory.Services.GetRequiredService<UserRepository>();
+
+            var result = await svc.UpdateProfileAsync(shortname, new Dictionary<string, object>
+            {
+                ["email"] = upperCased ? email.ToUpperInvariant() : email,
+                ["language"] = "ar",
+            });
+
+            result.IsOk.ShouldBeTrue(result.ErrorMessage);
+            var after = (await users.GetByShortnameAsync(shortname)).ShouldNotBeNull();
+            after.Language.ShouldBe(Language.Ar);
+            after.Email.ShouldBe(email, "an echo changes nothing, including the case");
+        }
+        finally { await CleanupAsync(shortname, email); }
+    }
+
+    // A null contact is the other shape a serialised profile can echo — it is
+    // just as much a non-request as the address itself.
+    [FactIfPg]
+    public async Task A_Null_Contact_Key_Is_Not_A_Change()
+    {
+        var (shortname, email) = await CreateUserAsync();
+        try
+        {
+            var svc = _factory.Services.GetRequiredService<UserService>();
+
+            var result = await svc.UpdateProfileAsync(shortname,
+                new Dictionary<string, object> { ["msisdn"] = null!, ["language"] = "ar" });
+
+            result.IsOk.ShouldBeTrue(result.ErrorMessage);
         }
         finally { await CleanupAsync(shortname, email); }
     }
