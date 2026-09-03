@@ -38,11 +38,14 @@ served one member of it. Every other endpoint here is named for its outcome
 (`/user/login`, `/user/create`, `/user/password-reset-confirm`); this one now
 is too.
 
-**`POST /user/profile` no longer accepts contact fields.** `email`,
-`new_email`, `email_otp`, `msisdn`, `new_msisdn` and `msisdn_otp` are
-**refused by name**, with an error pointing at `/user/verify-contact` — not
-ignored, because a client still sending `new_email` would otherwise get a 200
-and no change. Everything else on the endpoint is unaffected.
+**`POST /user/profile` no longer changes contacts.** `new_email`, `email_otp`,
+`new_msisdn` and `msisdn_otp` are **refused by name**, and `email`/`msisdn` are
+refused when they name a different address than the one on the row — both with
+an error pointing at `/user/verify-contact`, not ignored, because a client
+still sending `new_email` would otherwise get a 200 and no change. Sending
+`email`/`msisdn` unchanged (or null) stays the no-op it has always been, so the
+read-modify-write round-trip — GET the profile, edit a display name, POST the
+Record back — keeps working. Everything else on the endpoint is unaffected.
 
 The `new_` prefix is gone with them. It was load-bearing only on
 `/user/profile`: `email` is part of the profile representation, so a caller

@@ -24,8 +24,11 @@ public sealed partial class DmartClient
         return await SendEnvelopeAsync(req, ct).ConfigureAwait(false);
     }
 
-    // POST /user/profile — update current user profile (email/msisdn/language/
-    // displayname/description/payload/password).
+    // POST /user/profile — update current user profile (language/displayname/
+    // description/payload/password). NOT contacts: email and msisdn moved to
+    // POST /user/verify-contact (VerifyContactAsync below). A Record read back
+    // from the profile may still carry them unchanged — that round-trip is
+    // accepted — but a different address is refused here.
     public async Task<Response> UpdateUserAsync(Record record, CancellationToken ct = default)
     {
         using var req = BuildRequest(HttpMethod.Post, "/user/profile", Json(record));
@@ -81,10 +84,6 @@ public sealed partial class DmartClient
         string? msisdn = null, string? email = null,
         string? acceptLanguage = null, CancellationToken ct = default)
         => OtpRequestAsync("verify-contact", msisdn, email, null, acceptLanguage, ct);
-
-    // Contact confirm/change: POST /user/profile — send `email` +
-    // `email_otp` (or `msisdn` + `msisdn_otp`) to confirm the stored
-    // contact, or `new_email`/`new_msisdn` + the OTP to change to a new one.
 
     // POST /user/verify-contact — prove control of an email or msisdn and make
     // it yours, verified. Same call whether the address is the one already on

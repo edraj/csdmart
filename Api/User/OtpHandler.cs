@@ -390,8 +390,8 @@ public static class OtpHandler
         // /user/profile: there is no profile representation being echoed back
         // here, so nothing to disambiguate against.
         g.MapPost("/verify-contact", async (VerifyContactRequest req, OtpRepository repo,
-            UserRepository users, RegexPatternsConfig regexConfig, HttpContext http,
-            IOptions<DmartSettings> settings, CancellationToken ct) =>
+            UserRepository users, HistoryRepository history, RegexPatternsConfig regexConfig,
+            HttpContext http, IOptions<DmartSettings> settings, CancellationToken ct) =>
         {
             // Authenticated, and checked before the store is touched: the only
             // effect is on the caller's own row, so an anonymous call achieves
@@ -400,6 +400,17 @@ public static class OtpHandler
             if (actor is null)
                 return Response.Fail(InternalErrorCode.NOT_AUTHENTICATED,
                     "login required", ErrorTypes.Auth);
+
+            // `code` is a non-nullable positional parameter, but nothing
+            // enforces that on the wire: there is no AddValidation() in the
+            // pipeline and DmartJsonContext does not respect nullable
+            // annotations, so an omitted `code` binds to null and would reach
+            // OtpHasher.Hash as a null string. Checked here, with the other
+            // shape validation and before the store is touched, so a malformed
+            // request neither 500s nor spends an attempt on a live code.
+            if (string.IsNullOrWhiteSpace(req.Code))
+                return Response.Fail(InternalErrorCode.MISSING_DATA,
+                    "code is required", ErrorTypes.Request);
 
             var provided = (string.IsNullOrEmpty(req.Msisdn) ? 0 : 1)
                          + (string.IsNullOrEmpty(req.Email) ? 0 : 1);
@@ -452,14 +463,32 @@ public static class OtpHandler
                     "code mismatch or expired", ErrorTypes.Auth);
 
             // Flags never regress, and only the channel just proved is touched.
-            await users.UpsertAsync(user with
+            //
+            // The address itself is written only on a CHANGE. `dest` is the
+            // normalised form, so writing it unconditionally would quietly
+            // rewrite `Alice@Example.com` to lowercase the first time its owner
+            // confirmed it — losing an admin-provisioned or OAuth-sourced
+            // spelling. Confirming a contact should not restate it.
+            var updated = user with
             {
-                Email = isEmail ? dest : user.Email,
-                Msisdn = isEmail ? user.Msisdn : dest,
+                Email = isEmail && isChange ? dest : user.Email,
+                Msisdn = !isEmail && isChange ? dest : user.Msisdn,
                 IsEmailVerified = isEmail || user.IsEmailVerified,
                 IsMsisdnVerified = !isEmail || user.IsMsisdnVerified,
                 UpdatedAt = TimeUtils.Now(),
-            }, ct);
+            };
+            await users.UpsertAsync(updated, ct);
+
+            // Same audit trail the /user/profile path this replaced produced:
+            // HistoryDiffUtil covers email, msisdn and both verified flags, so
+            // a contact change or a first confirmation stays visible under
+            // /managed/query?type=history. Actor == target, as on every
+            // self-service path. Runs after the upsert, so a history-write
+            // failure cannot leave the verification itself un-applied.
+            var historyDiff = HistoryDiffUtil.ComputeUserDiff(user, updated);
+            if (historyDiff.Count > 0)
+                await history.AppendAsync(settings.Value.ManagementSpace, "/users",
+                    user.Shortname, user.Shortname, null, historyDiff, ct);
             return Response.Ok();
         }).RequireRateLimiting("auth-by-ip");
 

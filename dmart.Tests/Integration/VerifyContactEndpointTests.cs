@@ -1,25 +1,30 @@
 using System.Net.Http.Json;
+using System.Text;
+using System.Text.Json;
 using Dmart.DataAdapters.Sql;
 using Dmart.Models.Api;
 using Dmart.Models.Core;
 using Dmart.Models.Enums;
 using Dmart.Models.Json;
+using Dmart.Services;
 using Microsoft.Extensions.DependencyInjection;
 using Shouldly;
 using Xunit;
 
 namespace Dmart.Tests.Integration;
 
-// POST /user/verify-contact — confirms a contact the caller's row ALREADY carries.
+// POST /user/verify-contact — proves control of an email or msisdn and makes
+// it the caller's, verified. ONE operation for both shapes: the address may be
+// the one already on the row (a confirmation) or a new one (a change), and the
+// server decides which from state it already holds.
 //
-// Kept as its own route rather than folded into /user/profile: Python dmart
-// exposes otp-confirm and this port is defined against Python's surface, and
-// "POST a profile update" does not advertise "confirm my contact". The CHANGE
-// flow (new_email/new_msisdn) still lives on /user/profile, where the field
-// write belongs.
+// Kept as its own route rather than folded into /user/profile: "POST a profile
+// update" does not advertise "confirm my contact", and a profile body echoes
+// `email` back on any round-trip, which is what forced the `new_email` prefix
+// while this lived there. /user/profile now refuses a contact CHANGE outright.
 //
-// The three properties that make it safe are all pinned below, because each
-// was load-bearing in the original and easy to lose in a rewrite.
+// The properties that make it safe are pinned below, because each was
+// load-bearing in the original and easy to lose in a rewrite.
 public sealed class VerifyContactEndpointTests : IClassFixture<DmartFactory>
 {
     private readonly DmartFactory _factory;
@@ -61,15 +66,88 @@ public sealed class VerifyContactEndpointTests : IClassFixture<DmartFactory>
 
             (await resp.Content.ReadFromJsonAsync(DmartJsonContext.Default.Response))!
                 .Status.ShouldBe(Status.Success);
-            (await Users().GetByShortnameAsync(shortname))!.IsEmailVerified.ShouldBeTrue();
+            var after = (await Users().GetByShortnameAsync(shortname)).ShouldNotBeNull();
+            after.IsEmailVerified.ShouldBeTrue();
+            // A confirm proves control of the address; it does not restate it.
+            // Writing the normalised destination here would silently lowercase
+            // an admin-provisioned or OAuth-sourced spelling.
+            after.Email.ShouldBe(email, "confirming a contact must not rewrite its case");
         }
         finally { await CleanupAsync(shortname, email); }
     }
 
-    // Proving control of SOMEONE ELSE'S address must not verify the contact on
-    // your row — that verification would prove nothing about it. And the
-    // mismatch is rejected before the code is consumed, so a wrong request does
-    // not spend a code the caller still needs.
+    // `code` is non-nullable in the record but nothing enforces that on the
+    // wire, so an omitted one used to reach the hasher as null and 500 —
+    // precisely when a live code exists, i.e. right after /otp-request.
+    [FactIfPg]
+    public async Task A_Request_With_No_Code_Is_Refused_Not_Crashed()
+    {
+        var (shortname, email, client) = await LoggedInUserAsync();
+        try
+        {
+            await SeedAsync(email.ToLowerInvariant(), "303132");
+
+            using var content = new StringContent(
+                $"{{\"email\": \"{email.ToLowerInvariant()}\"}}",
+                Encoding.UTF8, "application/json");
+            var resp = await client.PostAsync("/user/verify-contact", content);
+            var body = await resp.Content.ReadFromJsonAsync(DmartJsonContext.Default.Response);
+
+            body!.Status.ShouldBe(Status.Failed);
+            body.Error!.Code.ShouldBe(InternalErrorCode.MISSING_DATA);
+            (await Repo().VerifyAndConsumeAsync(email.ToLowerInvariant(),
+                OtpPurpose.VerifyContact, "303132", 5))
+                .ShouldBeTrue("a malformed request must not spend an attempt");
+        }
+        finally { await CleanupAsync(shortname, email); }
+    }
+
+    // The write is an audit event like any other contact change: the path this
+    // endpoint replaced went through UpdateProfileAsync, which appended a diff,
+    // and /managed/query?type=history must not go blind on the move.
+    [FactIfPg]
+    public async Task A_Change_Is_Recorded_In_The_Users_History()
+    {
+        var (shortname, email, client) = await LoggedInUserAsync();
+        var fresh = $"hist_{Guid.NewGuid():N}"[..15] + "@test.local";
+        try
+        {
+            await SeedAsync(fresh, "333435");
+
+            var resp = await client.PostAsJsonAsync("/user/verify-contact",
+                new VerifyContactRequest("333435", Msisdn: null, Email: fresh),
+                DmartJsonContext.Default.VerifyContactRequest);
+            (await resp.Content.ReadFromJsonAsync(DmartJsonContext.Default.Response))!
+                .Status.ShouldBe(Status.Success);
+
+            var hist = await _factory.Services.GetRequiredService<QueryService>().ExecuteAsync(
+                new Query
+                {
+                    Type = QueryType.History,
+                    SpaceName = "management",
+                    Subpath = "/users",
+                    FilterShortnames = new() { shortname },
+                    Limit = 100,
+                }, _factory.AdminShortname);
+
+            hist.Status.ShouldBe(Status.Success);
+            hist.Records.ShouldNotBeNull();
+            var diff = hist.Records!
+                .Select(r => (JsonElement)r.Attributes!["diff"]!)
+                .FirstOrDefault(d => d.TryGetProperty("email", out _));
+            diff.ValueKind.ShouldBe(JsonValueKind.Object,
+                "the contact change must reach the user's history");
+            diff.GetProperty("email").GetProperty("old").GetString().ShouldBe(email);
+            diff.GetProperty("email").GetProperty("new").GetString().ShouldBe(fresh);
+            diff.GetProperty("is_email_verified").GetProperty("new").GetBoolean().ShouldBeTrue();
+        }
+        finally { await CleanupAsync(shortname, email); await CleanupAsync(null, fresh); }
+    }
+
+    // The CHANGE half: an address that is not the one on the row replaces it,
+    // and the same call verifies it. No separate endpoint, no `new_email` — the
+    // code was issued to this address at the verify-contact purpose, which is
+    // the whole proof either shape needs.
     [FactIfPg]
     public async Task A_New_Address_Replaces_The_Old_One_And_Is_Verified()
     {
