@@ -161,398 +161,460 @@ static async Task<int> BulkUpdatePoliciesAsync(
     return await cmd.ExecuteNonQueryAsync();
 }
 
-// Ensures the reserved "anonymous" user, "world" role, and "world" permission
-// rows exist — the structural rows PermissionService's anonymous-access path
-// depends on (see Services/PermissionService.cs: AnonymousUser/WorldPermission).
-// Called from `migrate` so a fresh database gets public-read support without
-// requiring `serve` to have run first. Create-if-missing only, like the
-// `logged_in` role in AdminBootstrap: an operator may deliberately deactivate
-// "anonymous" or narrow the "world" permission's scope, and a repair pass
-// would silently undo that on every migrate run.
+// Ensures the reserved "anonymous" user row exists. NOTHING ELSE.
 //
-// Self-owned (OwnerShortname = "anonymous" throughout) rather than owned by
-// "dmart" — owner_shortname carries a FOREIGN KEY to users(shortname), and
-// `migrate` runs standalone; the "dmart" admin user is only guaranteed to
-// exist once AdminBootstrap has run during `serve`.
-static async Task EnsureAnonymousWorldAsync(IDbConnectionFactory db, DmartSettings settings, bool quiet)
+// It is here for one reason: entries.owner_shortname carries a FOREIGN KEY to
+// users(shortname), and EnsureBaseSchemasAsync must be able to insert the two
+// base schemas into a database that `serve` has never bootstrapped an admin
+// into. Without a valid owner row the insert fails the constraint.
+//
+// DELIBERATELY ROLE-LESS, and that is the whole safety argument. An earlier
+// revision gave this row the "world" role and created a "world" role and
+// permission alongside it. That turns on the switch PermissionService
+// documents as an opt-in: ResolvePermissionsAsync only consults the world
+// permission when the anonymous user has at least one role
+// (`if (isAnonymous && roles.Count > 0)`, PermissionService.cs), and the
+// implicit `logged_in` role is explicitly NOT added for anonymous. So a
+// migrate that attached a role would have activated any world permission
+// already present in an existing deployment — a schema-migration command
+// silently changing the authorization posture. With no roles the row is inert:
+// world is never consulted, and public access stays exactly as opt-in as
+// before.
+//
+// The real "world" role and permission belong to `dmart seed`, which ships
+// them with their actual scope (four permissions on the role; subpaths keyed
+// by the `test` and `applications` spaces). Creating stubs here would shadow
+// them permanently, because `seed` and `import` skip existing rows without
+// --force/-r.
+//
+// Self-owned (OwnerShortname = "anonymous") for the same FK reason: the
+// "dmart" admin is only guaranteed to exist once AdminBootstrap has run.
+// Created INACTIVE — this is a structural placeholder, not a usable account.
+static async Task EnsureAnonymousUserAsync(IDbConnectionFactory db, DmartSettings settings, bool quiet)
 {
     const string MgmtSpace = "management";
     const string AnonShortname = "anonymous";
-    const string WorldShortname = "world";
 
-    var refresher = new AuthzCacheRefresher();
-    var users = new UserRepository(db, refresher, new SessionTokenHasher(settings));
-    var dialect = db is SqliteConnectionFactory
-        ? (Dmart.QueryGrammar.ISqlDialect)Dmart.QueryGrammar.SqliteSqlDialect.Instance
-        : Dmart.QueryGrammar.PostgresSqlDialect.Instance;
-    var access = new AccessRepository(db, dialect, refresher, users);
+    var users = new UserRepository(db, new AuthzCacheRefresher(), new SessionTokenHasher(settings));
 
-    if (await users.GetByShortnameAsync(AnonShortname) is null)
+    if (await users.GetByShortnameAsync(AnonShortname) is not null) return;
+
+    await users.UpsertAsync(new Dmart.Models.Core.User
     {
-        await users.UpsertAsync(new User
-        {
-            Uuid = Guid.NewGuid().ToString(),
-            Shortname = AnonShortname,
-            SpaceName = MgmtSpace,
-            Subpath = "/users",
-            OwnerShortname = AnonShortname,
-            Roles = new() { WorldShortname },
-            Type = UserType.Web,
-            Language = Language.Ar,
-            IsActive = false,
-            IsEmailVerified = false,
-            IsMsisdnVerified = false,
-            ForcePasswordChange = true,
-            LockedToDevice = false,
-            CreatedAt = Dmart.Utils.TimeUtils.Now(),
-            UpdatedAt = Dmart.Utils.TimeUtils.Now(),
-        });
-        if (!quiet) Console.WriteLine("  created \"anonymous\" user");
-    }
-
-    // Anonymous's only role. PermissionService appends the "world" permission
-    // unconditionally once the anonymous user has ANY role (ResolvePermissionsAsync),
-    // regardless of what's in the role's own Permissions list — attaching
-    // "world" here just keeps the role legible to an operator reading it back.
-    if (await access.GetRoleAsync(WorldShortname) is null)
-    {
-        await access.UpsertRoleAsync(new Role
-        {
-            Uuid = Guid.NewGuid().ToString(),
-            Shortname = WorldShortname,
-            SpaceName = MgmtSpace,
-            Subpath = "/roles",
-            OwnerShortname = AnonShortname,
-            Permissions = new() { WorldShortname },
-            IsActive = true,
-            CreatedAt = Dmart.Utils.TimeUtils.Now(),
-            UpdatedAt = Dmart.Utils.TimeUtils.Now(),
-        });
-        if (!quiet) Console.WriteLine("  created \"world\" role");
-    }
-
-    // Read-only (query/view), scoped to the "public" space, gated on the
-    // target row being active.
-    if (await access.GetPermissionAsync(WorldShortname) is null)
-    {
-        await access.UpsertPermissionAsync(new Permission
-        {
-            Uuid = Guid.NewGuid().ToString(),
-            Shortname = WorldShortname,
-            SpaceName = MgmtSpace,
-            Subpath = "/permissions",
-            OwnerShortname = AnonShortname,
-            IsActive = true,
-            Subpaths = new() { ["public"] = new() { PermissionService.AllSubpathsMw } },
-            ResourceTypes = new()
-            {
-                "content", "media", "schema", "user", "folder", "group",
-                "history", "role", "comment", "permission", "json",
-            },
-            Actions = new() { "query", "view" },
-            Conditions = new() { "is_active" },
-            CreatedAt = Dmart.Utils.TimeUtils.Now(),
-            UpdatedAt = Dmart.Utils.TimeUtils.Now(),
-        });
-        if (!quiet) Console.WriteLine("  created \"world\" permission");
-    }
+        Uuid = Guid.NewGuid().ToString(),
+        Shortname = AnonShortname,
+        SpaceName = MgmtSpace,
+        Subpath = "/users",
+        OwnerShortname = AnonShortname,
+        Roles = new(),
+        Groups = new(),
+        Type = UserType.Web,
+        Language = Language.Ar,
+        IsActive = false,
+        IsEmailVerified = false,
+        IsMsisdnVerified = false,
+        ForcePasswordChange = true,
+        LockedToDevice = false,
+        CreatedAt = Dmart.Utils.TimeUtils.Now(),
+        UpdatedAt = Dmart.Utils.TimeUtils.Now(),
+    });
+    if (!quiet) Console.WriteLine("  created \"anonymous\" user (role-less placeholder)");
 }
 
 // JSON Schema draft-07 meta-schema — the body of the "meta_schema" entry.
 // Every schema entry (content_type = schema) validates its own body against
-// this. Verbatim copy of the canonical draft-07 meta-schema as shipped by
-// dmart's Python reference seed data.
+// this.
+//
+// Copied VERBATIM from seed/spaces/management/schema/meta_schema.json, which
+// is the canonical copy this repo ships. Keep it that way: an earlier
+// hand-written version silently required every `enum` member to be an object
+// (canonical draft-07 has `items: true`), so a plain `"enum": ["a","b"]` in
+// any schema body would have been rejected.
 static string MetaSchemaBodyJson() => """
-    {
-        "$id": "http://json-schema.org/draft-07/schema#",
-        "type": ["object", "boolean"],
-        "title": "Core schema meta-schema",
-        "$schema": "http://json-schema.org/draft-07/schema#",
-        "default": true,
-        "properties": {
-            "if": { "$ref": "#", "title": "", "description": "" },
-            "$id": { "type": "string", "format": "uri-reference", "title": "", "description": "" },
-            "not": { "$ref": "#", "title": "", "description": "" },
-            "$ref": { "type": "string", "format": "uri-reference", "title": "", "description": "" },
-            "else": { "$ref": "#", "title": "", "description": "" },
-            "enum": {
-                "type": "array",
-                "items": { "type": "object", "additionalProperties": false },
-                "minItems": 1,
-                "uniqueItems": true,
-                "title": "",
-                "description": ""
-            },
-            "then": { "$ref": "#", "title": "", "description": "" },
+{
+      "$defs": {
+        "type_leaf": {
+          "type": "object",
+          "required": [
+            "type"
+          ],
+          "properties": {
             "type": {
-                "anyOf": [
-                    { "$ref": "#/definitions/simpleTypes" },
-                    {
-                        "type": "array",
-                        "items": { "$ref": "#/definitions/simpleTypes", "additionalProperties": false },
-                        "minItems": 1,
-                        "uniqueItems": true
-                    }
-                ],
-                "title": "",
-                "description": ""
+              "enum": [
+                "string",
+                "number",
+                "integer",
+                "boolean",
+                "array",
+                "null"
+              ],
+              "type": "string"
             },
-            "allOf": { "$ref": "#/definitions/schemaArray", "title": "", "description": "" },
-            "anyOf": { "$ref": "#/definitions/schemaArray", "title": "", "description": "" },
-            "items": {
-                "anyOf": [ { "$ref": "#" }, { "$ref": "#/definitions/schemaArray" } ],
-                "default": true,
-                "title": "",
-                "description": ""
+            "title": {
+              "type": "string",
+              "title": "",
+              "description": ""
             },
-            "oneOf": { "$ref": "#/definitions/schemaArray", "title": "", "description": "" },
-            "title": { "type": "string", "title": "", "description": "" },
-            "format": { "type": "string", "title": "", "description": "" },
-            "$schema": { "type": "string", "format": "uri", "title": "", "description": "" },
-            "maximum": { "type": "number", "title": "", "description": "" },
-            "minimum": { "type": "number", "title": "", "description": "" },
-            "pattern": { "type": "string", "format": "regex", "title": "", "description": "" },
-            "$comment": { "type": "string", "title": "", "description": "" },
-            "contains": { "$ref": "#", "title": "", "description": "" },
-            "examples": {
-                "type": "array",
-                "items": { "type": "object", "additionalProperties": false },
-                "title": "",
-                "description": ""
-            },
-            "maxItems": { "$ref": "#/definitions/nonNegativeInteger", "title": "", "description": "" },
-            "minItems": { "$ref": "#/definitions/nonNegativeIntegerDefault0", "title": "", "description": "" },
-            "readOnly": { "type": "boolean", "default": false, "title": "", "description": "" },
-            "required": { "$ref": "#/definitions/stringArray", "title": "", "description": "" },
-            "maxLength": { "$ref": "#/definitions/nonNegativeInteger", "title": "", "description": "" },
-            "minLength": { "$ref": "#/definitions/nonNegativeIntegerDefault0", "title": "", "description": "" },
-            "multipleOf": { "type": "number", "exclusiveMinimum": 0, "title": "", "description": "" },
-            "properties": {
-                "0": { "0": "o", "1": "b", "2": "j", "3": "e", "4": "c", "5": "t", "name": "type", "title": "", "description": "" },
-                "1": { "name": "additionalProperties", "$ref": "#", "title": "", "description": "" },
-                "title": "",
-                "description": ""
-            },
-            "definitions": {
-                "type": "object",
-                "additionalProperties": { "$ref": "#" },
-                "title": "",
-                "description": ""
-            },
-            "description": { "type": "string", "title": "", "description": "" },
-            "uniqueItems": { "type": "boolean", "default": false, "title": "", "description": "" },
-            "dependencies": {
-                "type": "object",
-                "additionalProperties": {
-                    "anyOf": [ { "$ref": "#" }, { "$ref": "#/definitions/stringArray" } ]
-                },
-                "title": "",
-                "description": ""
-            },
-            "maxProperties": { "$ref": "#/definitions/nonNegativeInteger", "title": "", "description": "" },
-            "minProperties": { "$ref": "#/definitions/nonNegativeIntegerDefault0", "title": "", "description": "" },
-            "propertyNames": { "$ref": "#", "title": "", "description": "" },
-            "additionalItems": { "$ref": "#", "title": "", "description": "" },
-            "contentEncoding": { "type": "string", "title": "", "description": "" },
-            "contentMediaType": { "type": "string", "title": "", "description": "" },
-            "exclusiveMaximum": { "type": "number", "title": "", "description": "" },
-            "exclusiveMinimum": { "type": "number", "title": "", "description": "" },
-            "patternProperties": {
-                "type": "object",
-                "propertyNames": { "format": "regex" },
-                "additionalProperties": { "$ref": "#" },
-                "title": "",
-                "description": ""
-            },
-            "additionalProperties": { "$ref": "#", "title": "", "description": "" }
-        },
-        "definitions": {
-            "schemaArray": {
-                "type": "array",
-                "items": { "$ref": "#", "additionalProperties": false },
-                "minItems": 1
-            },
-            "simpleTypes": {
-                "enum": ["array", "boolean", "integer", "null", "number", "object", "string"]
-            },
-            "stringArray": {
-                "type": "array",
-                "items": { "type": "string", "additionalProperties": false },
-                "uniqueItems": true
-            },
-            "nonNegativeInteger": { "type": "integer", "minimum": 0 },
-            "nonNegativeIntegerDefault0": {
-                "allOf": [ { "$ref": "#/definitions/nonNegativeInteger" }, { "default": 0 } ]
+            "description": {
+              "type": "string",
+              "title": "",
+              "description": ""
             }
+          }
+        },
+        "type_object": {
+          "type": "object",
+          "required": [
+            "properties",
+            "type"
+          ],
+          "properties": {
+            "type": {
+              "enum": [
+                "object"
+              ],
+              "type": "string"
+            },
+            "title": {
+              "type": "string",
+              "title": "",
+              "description": ""
+            },
+            "properties": {
+              "0": {
+                "0": {
+                  "$ref": "#/$defs/type_object"
+                },
+                "1": {
+                  "$ref": "#/$defs/type_leaf"
+                },
+                "name": "oneOf",
+                "title": "",
+                "description": ""
+              },
+              "1": {
+                "0": {
+                  "$ref": "#/$defs/type_object"
+                },
+                "1": {
+                  "$ref": "#/$defs/type_leaf"
+                },
+                "name": "oneOf",
+                "title": "",
+                "description": ""
+              },
+              "2": {
+                "name": "title",
+                "title": "",
+                "description": ""
+              },
+              "3": {
+                "name": "description",
+                "title": "",
+                "description": ""
+              },
+              "title": "",
+              "description": ""
+            },
+            "description": {
+              "type": "string",
+              "title": "",
+              "description": ""
+            },
+            "additionalProperties": {
+              "type": "boolean",
+              "title": "",
+              "description": ""
+            }
+          }
         }
+      },
+      "oneOf": [
+        {
+          "$ref": "#/$defs/type_object"
+        },
+        {
+          "$ref": "#/$defs/type_leaf"
+        }
+      ]
     }
-    """;
+""";
 
 // Folder schema — the body of the "folder_rendering" entry. Validates every
 // folder entry's payload body across every space (SchemaValidator.cs always
 // resolves this one from the management space regardless of which space the
 // folder itself lives in).
 static string FolderRenderingBodyJson() => """
-    {
+{
+  "title": "Folder schema",
+  "description": "Canonical folder-body schema. CENTRALIZED: resolved from the management space for every space (SchemaValidator special-cases the shortname), and EXACT: additionalProperties is false at every level, so unknown or misspelled fields are rejected rather than silently ignored.",
+  "type": "object",
+  "additionalProperties": false,
+  "properties": {
+    "stream": {
+      "title": "Enable websocket stream",
+      "description": "folder level websocket watch",
+      "type": "boolean"
+    },
+    "disable_filter": {
+      "title": "Disable filter",
+      "description": "The search filter icon / functionality is disabled",
+      "type": "boolean"
+    },
+    "expand_children": {
+      "title": "Expand folders' children",
+      "description": "If the folder should expand children",
+      "type": "boolean"
+    },
+    "append_subpath": {
+      "title": "Append subpath",
+      "description": "Append string to the query subpath",
+      "type": "string"
+    },
+    "csv_columns": {
+      "title": "CSV columns",
+      "description": "CSV columns title",
+      "type": "array",
+      "items": {
         "type": "object",
-        "title": "Folder schema",
-        "required": ["index_attributes"],
+        "additionalProperties": false,
         "properties": {
-            "icon": { "type": "string", "title": "folder main icon", "description": "The icon displayed next to the folder" },
-            "query": {
-                "type": "object",
-                "properties": {
-                    "type": { "enum": ["subpath", "search"], "type": "string", "title": "", "description": "" },
-                    "search": { "type": "string", "title": "", "description": "" },
-                    "filter_types": {
-                        "type": "array",
-                        "items": { "type": "string", "additionalProperties": false },
-                        "title": "",
-                        "description": ""
-                    }
-                },
-                "title": "",
-                "description": ""
-            },
-            "filter": {
-                "type": "array",
-                "items": { "type": "object", "additionalProperties": false },
-                "title": "Additional filter options",
-                "description": ""
-            },
-            "stream": { "type": "boolean", "title": "Enable websocket stream", "description": "folder level websocket watch" },
-            "sort_by": { "type": "string", "title": "sort by", "description": "the field name to be used in ordering" },
-            "allow_csv": {
-                "type": "boolean",
-                "title": "flag to enable or disable CSV download button",
-                "description": "Allow the user to download csv of the displayed list"
-            },
-            "sort_type": {
-                "enum": ["ascending", "descending"],
-                "type": "string",
-                "title": "sort order",
-                "description": "the ordering of the sort asc/desc"
-            },
-            "use_media": {
-                "type": "boolean",
-                "title": "does the content inside this folder has a media or not",
-                "description": "does the content inside this folder has a media or not"
-            },
-            "allow_view": {
-                "type": "boolean",
-                "title": "flag to enable or disable resource view inside this folder",
-                "description": "flag to enable or disable resource view inside this folder"
-            },
-            "csv_columns": {
-                "type": "array",
-                "items": {
-                    "type": "object",
-                    "properties": {
-                        "key": { "type": "string", "title": "Key", "description": "" },
-                        "name": { "type": "string", "title": "Name", "description": "" }
-                    },
-                    "additionalProperties": false
-                },
-                "title": "CSV columns",
-                "description": "CSV columns title"
-            },
-            "icon_closed": { "type": "string", "title": "folder closed icon", "description": "The icon displayed next to the folder when closed" },
-            "icon_opened": { "type": "string", "title": "folder opened icon", "description": "The icon displayed next to the folder when opened" },
-            "allow_create": {
-                "type": "boolean",
-                "title": "flag to enable or disable resource creation inside this folder",
-                "description": "flag to enable or disable resource creation inside this folder"
-            },
-            "allow_delete": {
-                "type": "boolean",
-                "title": "flag to enable or disable resource delete inside this folder",
-                "description": "flag to enable or disable resource delete inside this folder"
-            },
-            "allow_update": {
-                "type": "boolean",
-                "title": "flag to enable or disable resource update inside this folder",
-                "description": "flag to enable or disable resource update inside this folder"
-            },
-            "unique_fields": {
-                "type": "array",
-                "items": {
-                    "type": "array",
-                    "items": { "type": "string", "title": "Field Name", "additionalProperties": false },
-                    "title": "Composite unique list",
-                    "additionalProperties": false
-                },
-                "title": "Unique Fields",
-                "description": "List of list of composite fields which should be unique accross the folder entries"
-            },
-            "append_subpath": { "type": "string", "title": "Append string to subpath", "description": "" },
-            "disable_filter": {
-                "type": "boolean",
-                "title": "Disable filter",
-                "description": "The search filter icon / functionality is disabled"
-            },
-            "search_columns": {
-                "type": "array",
-                "items": {
-                    "type": "object",
-                    "properties": {
-                        "key": { "type": "string", "title": "Key", "description": "" },
-                        "name": { "type": "string", "title": "Name", "description": "" }
-                    },
-                    "additionalProperties": false
-                },
-                "title": "Search columns",
-                "description": "Search columns title"
-            },
-            "expand_children": { "type": "boolean", "title": "Expand folders' children", "description": "If the folder should expand children" },
-            "shortname_title": { "type": "string", "title": "shortname field title", "description": "shortname field title" },
-            "allow_upload_csv": { "type": "boolean", "title": "flag to enable or disable CSV upload feature", "description": "Allow the user to upload  csv" },
-            "index_attributes": {
-                "type": "array",
-                "items": {
-                    "type": "object",
-                    "properties": {
-                        "key": { "type": "string", "title": "Key", "description": "" },
-                        "name": { "type": "string", "title": "Name", "description": "" }
-                    },
-                    "additionalProperties": false
-                },
-                "title": "index attributes",
-                "description": "the attributes from the schema that should be displayed in index page",
-                "uniqueItems": true
-            },
-            "workflow_shortnames": {
-                "type": "array",
-                "items": { "type": "string", "additionalProperties": false },
-                "title": "Workflow shortname",
-                "description": "workflow shortname field title"
-            },
-            "allow_create_category": {
-                "type": "boolean",
-                "title": "flag to enable or disable folder creation inside this folder",
-                "description": "flag to enable or disable folder creation inside this folder"
-            },
-            "content_resource_types": {
-                "type": "array",
-                "items": { "type": "string", "additionalProperties": false },
-                "title": "Resource types",
-                "description": "Resource types"
-            },
-            "content_schema_shortnames": {
-                "type": "array",
-                "items": { "type": "string", "additionalProperties": false },
-                "title": "schema shortname",
-                "description": "schema shortnames"
-            },
-            "enable_pdf_schema_shortnames": {
-                "type": "array",
-                "items": { "type": "string", "additionalProperties": false },
-                "title": "List of schema shortnames for which pdf icon is displayed",
-                "description": ""
-            }
+          "key": {
+            "title": "Key",
+            "type": "string"
+          },
+          "name": {
+            "title": "Name",
+            "type": "string"
+          }
+        }
+      }
+    },
+    "search_columns": {
+      "title": "Search columns",
+      "description": "Search columns title",
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "key": {
+            "title": "Key",
+            "type": "string"
+          },
+          "name": {
+            "title": "Name",
+            "type": "string"
+          }
+        }
+      }
+    },
+    "enable_pdf_schema_shortnames": {
+      "title": "List of schema shortnames for which pdf icon is displayed",
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "workflow_shortnames": {
+      "title": "Workflow shortnames",
+      "description": "Tickets created in this folder must declare one of these workflows",
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "shortname_title": {
+      "title": "shortname field title",
+      "description": "shortname field title",
+      "type": "string"
+    },
+    "query": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "type": {
+          "type": "string",
+          "enum": [
+            "subpath",
+            "search"
+          ]
         },
-        "description": "Folder schema description"
+        "search": {
+          "type": "string"
+        },
+        "filter_types": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        }
+      }
+    },
+    "icon": {
+      "title": "folder main icon",
+      "description": "The icon displayed next to the folder",
+      "type": "string"
+    },
+    "icon_opened": {
+      "title": "folder opened icon",
+      "description": "The icon displayed next to the folder when opened",
+      "type": "string"
+    },
+    "icon_closed": {
+      "title": "folder closed icon",
+      "description": "The icon displayed next to the folder when closed",
+      "type": "string"
+    },
+    "sort_by": {
+      "title": "sort by",
+      "description": "the field name to be used in ordering",
+      "type": "string"
+    },
+    "sort_type": {
+      "title": "sort order",
+      "description": "the ordering of the sort asc/desc",
+      "type": "string",
+      "enum": [
+        "ascending",
+        "descending"
+      ]
+    },
+    "content_resource_types": {
+      "title": "Resource types",
+      "description": "Resources created in this folder must be one of these types",
+      "type": "array",
+      "items": {
+        "type": "string",
+        "enum": [
+          "user",
+          "group",
+          "folder",
+          "schema",
+          "content",
+          "log",
+          "acl",
+          "comment",
+          "media",
+          "data_asset",
+          "locator",
+          "relationship",
+          "alteration",
+          "history",
+          "space",
+          "permission",
+          "role",
+          "ticket",
+          "json",
+          "lock",
+          "post",
+          "reaction",
+          "reply",
+          "share",
+          "plugin_wrapper",
+          "notification",
+          "csv",
+          "jsonl",
+          "sqlite",
+          "parquet"
+        ]
+      }
+    },
+    "content_schema_shortnames": {
+      "title": "schema shortname",
+      "description": "Entries created in this folder that declare a schema must use one of these",
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "filter": {
+      "title": "Additional filter options",
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {}
+      }
+    },
+    "index_attributes": {
+      "title": "index attributes",
+      "description": "the attributes from the schema that should be displayed in index page",
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "key": {
+            "title": "Key",
+            "type": "string"
+          },
+          "name": {
+            "title": "Name",
+            "type": "string"
+          }
+        }
+      },
+      "uniqueItems": true
+    },
+    "unique_fields": {
+      "title": "Unique Fields",
+      "description": "List of list of composite fields which should be unique accross the folder entries",
+      "type": "array",
+      "items": {
+        "title": "Composite unique list",
+        "type": "array",
+        "items": {
+          "title": "Field Name",
+          "type": "string"
+        }
+      }
+    },
+    "allow_view": {
+      "title": "flag to enable or disable resource view inside this folder",
+      "description": "flag to enable or disable resource view inside this folder",
+      "type": "boolean"
+    },
+    "allow_create": {
+      "title": "flag to enable or disable resource creation inside this folder",
+      "description": "flag to enable or disable resource creation inside this folder",
+      "type": "boolean"
+    },
+    "allow_create_category": {
+      "title": "flag to enable or disable folder creation inside this folder",
+      "description": "flag to enable or disable folder creation inside this folder",
+      "type": "boolean"
+    },
+    "allow_update": {
+      "title": "flag to enable or disable resource update inside this folder",
+      "description": "flag to enable or disable resource update inside this folder",
+      "type": "boolean"
+    },
+    "allow_delete": {
+      "title": "flag to enable or disable resource delete inside this folder",
+      "description": "flag to enable or disable resource delete inside this folder",
+      "type": "boolean"
+    },
+    "allow_csv": {
+      "title": "flag to enable or disable CSV download button",
+      "description": "Allow the user to download csv of the displayed list",
+      "type": "boolean"
+    },
+    "allow_upload_csv": {
+      "title": "flag to enable or disable CSV upload feature",
+      "description": "Allow the user to upload  csv",
+      "type": "boolean"
+    },
+    "use_media": {
+      "title": "does the content inside this folder has a media or not",
+      "description": "does the content inside this folder has a media or not",
+      "type": "boolean"
     }
-    """;
+  },
+  "required": [
+    "index_attributes"
+  ]
+}
+""";
 
 // Ensures the two schema entries every deployment needs to validate its own
 // structural data: "meta_schema" (the JSON-schema meta-schema — validates
@@ -570,19 +632,25 @@ static async Task EnsureBaseSchemasAsync(IDbConnectionFactory db, DmartSettings 
 
     // owner_shortname carries a FOREIGN KEY to users(shortname). Prefer "dmart"
     // (matches the reference export) when it already exists; otherwise fall
-    // back to "anonymous", which EnsureAnonymousWorldAsync guarantees exists
+    // back to "anonymous", which EnsureAnonymousUserAsync guarantees exists
     // by the time this runs — migrate must not fail on a database `serve`
     // has never bootstrapped an admin into.
     var ownerShortname = await users.GetByShortnameAsync("dmart") is not null ? "dmart" : "anonymous";
 
     async Task EnsureSchemaEntryAsync(string shortname, string bodyJson, string? schemaShortname)
     {
-        if (await entries.GetAsync(MgmtSpace, "/schema", shortname, ResourceType.Schema) is not null) return;
+        // Probe BOTH spellings. The rest of the codebase treats them as
+        // equivalent (SchemaValidator.cs, Cli/FolderRenderingFixer.cs), so
+        // checking only "/schema" would insert a SECOND copy on a deployment
+        // whose schemas live at "management/schemas" — and since
+        // GetCompiledAsync probes "/schema" first, that new copy would win
+        // over the operator's existing one.
+        if (await entries.GetAsync(MgmtSpace, "/schema", shortname, ResourceType.Schema) is not null
+            || await entries.GetAsync(MgmtSpace, "/schemas", shortname, ResourceType.Schema) is not null)
+            return;
 
         var body = System.Text.Json.JsonDocument.Parse(bodyJson).RootElement.Clone();
-        var checksum = Convert.ToHexString(
-            System.Security.Cryptography.SHA256.HashData(
-                System.Text.Encoding.UTF8.GetBytes(bodyJson))).ToLowerInvariant();
+        var checksum = Dmart.Utils.HashUtils.Sha256Hex(bodyJson);
 
         await entries.UpsertAsync(new Entry
         {
@@ -1941,12 +2009,17 @@ switch (subcommand)
         // Idempotent — safe to re-run. Captures PG NOTICE messages so the
         // caller sees exactly what was created vs. skipped.
         //
-        // Also ensures the reserved "anonymous" user, "world" role, and
-        // "world" permission exist (see EnsureAnonymousWorldAsync below), and
-        // the "meta_schema" / "folder_rendering" schema entries every space
-        // needs to validate its own data (see EnsureBaseSchemasAsync below) —
-        // both create-if-missing only, so migrate never fights an operator's
-        // changes.
+        // Also ensures the "meta_schema" / "folder_rendering" schema entries
+        // every space needs to validate its own data (see
+        // EnsureBaseSchemasAsync below), plus the role-less "anonymous" user
+        // row those entries need to satisfy the owner_shortname foreign key
+        // (see EnsureAnonymousUserAsync below). Create-if-missing only, so
+        // migrate never fights an operator's changes.
+        //
+        // It does NOT bootstrap authorization data. The "world" role and
+        // permission belong to `dmart seed`, which ships their real scope;
+        // creating stubs here would shadow them permanently, since seed and
+        // import skip existing rows without --force/-r.
         //
         // Options:
         //   -q, --quiet    Suppress per-statement output (show summary only)
@@ -1975,7 +2048,7 @@ switch (subcommand)
                 // and `dmart import` runs before a rebuild.
                 await SqliteSchemaInitializer.EnsureSchemaAsync(
                     sqliteFactory, Microsoft.Extensions.Logging.Abstractions.NullLogger.Instance);
-                await EnsureAnonymousWorldAsync(sqliteFactory, migrateSettings, quiet);
+                await EnsureAnonymousUserAsync(sqliteFactory, migrateSettings, quiet);
                 await EnsureBaseSchemasAsync(sqliteFactory, migrateSettings, quiet);
                 Console.WriteLine("dmart schema ready.");
                 return;
@@ -1985,6 +2058,10 @@ switch (subcommand)
         var (s, dbInst) = CliBootstrap.BuildOrExit(dotenvPath, dotenvValues,
             "Error: Database not configured. Set DATABASE_HOST/PORT/USERNAME/PASSWORD/NAME in config.env.");
 
+        // Held until after the base rows are seeded so the "dmart schema ready"
+        // line lands LAST — the `created "…"` lines belong under the migration
+        // that produced them, not after the summary that says it finished.
+        string migrateSummary = "dmart schema ready.";
         try
         {
             Console.WriteLine($"Migrating {CliBootstrap.DescribeStore(s, dbInst)} ...");
@@ -2025,7 +2102,7 @@ switch (subcommand)
                 // "skipped" when IF NOT EXISTS guards fired.
                 var skipped = notices.Count(n =>
                     n.Contains("already exists", StringComparison.OrdinalIgnoreCase));
-                Console.WriteLine($"dmart schema ready. {applied} dynamic column patches applied, {skipped} statements already-in-sync.");
+                migrateSummary = $"dmart schema ready. {applied} dynamic column patches applied, {skipped} statements already-in-sync.";
             }
             finally
             {
@@ -2033,9 +2110,6 @@ switch (subcommand)
                 await ul.ExecuteNonQueryAsync();
             }
             Npgsql.NpgsqlConnection.ClearAllPools();
-
-            await EnsureAnonymousWorldAsync(dbInst, s, quiet);
-            await EnsureBaseSchemasAsync(dbInst, s, quiet);
         }
         catch (Exception ex)
         {
@@ -2045,6 +2119,28 @@ switch (subcommand)
             Environment.ExitCode = 1;
             return;
         }
+
+        // Outside the migration try/catch on purpose. The schema migration has
+        // already COMMITTED by this point, so a failure seeding the base rows
+        // must not print "migration failed" — an operator reading that would
+        // reasonably conclude the migration did not apply and retry or roll
+        // back for nothing. Reported as its own step, with its own message.
+        try
+        {
+            await EnsureAnonymousUserAsync(dbInst, s, quiet);
+            await EnsureBaseSchemasAsync(dbInst, s, quiet);
+        }
+        catch (Exception ex)
+        {
+            Console.Error.WriteLine(
+                $"Error: schema migration succeeded, but seeding base rows failed: {ex.Message}");
+            if (ex.InnerException is not null)
+                Console.Error.WriteLine($"  {ex.InnerException.Message}");
+            Environment.ExitCode = 1;
+            return;
+        }
+
+        Console.WriteLine(migrateSummary);
         return;
     }
 
