@@ -8,6 +8,12 @@ namespace Dmart.Api.User;
 
 public static class ProfileHandler
 {
+    // The one attachment shortname /user/profile carries. Python pins the same
+    // literal (api/user/router.py:589, filter_shortnames=["avatar"]); it is a
+    // convention rather than a schema constraint, so it lives here as a name
+    // instead of being spelled inline at the filter.
+    private const string AvatarShortname = "avatar";
+
     public static void Map(RouteGroupBuilder g)
     {
         // GET /user/profile — Python returns records: [Record] with user
@@ -15,7 +21,7 @@ public static class ProfileHandler
         g.MapGet("/profile", async (HttpContext http, UserService svc,
             DataAdapters.Sql.AccessRepository access,
             DataAdapters.Sql.AttachmentRepository attachmentRepo,
-            PermissionService perms, CancellationToken ct) =>
+            CancellationToken ct) =>
         {
             var actor = http.Actor();
             if (actor is null)
@@ -48,37 +54,48 @@ public static class ProfileHandler
                 ["payload"] = user.Payload,
                 ["permissions"] = permissions,
             };
-            // Attachments on the caller's own user row, grouped by
-            // resource_type — same shape /managed/entry returns, so a client
-            // that already renders `record.attachments` needs no second call.
+            // The caller's avatar, grouped by resource_type — the same shape
+            // /managed/entry returns, so a client that already renders
+            // `record.attachments` needs no second call.
             //
-            // Divergence from Python (api/user/router.py:589), which fetches
-            // only `filter_shortnames=["avatar"]`: we return every attachment,
-            // which is a superset — an avatar-only client still finds its
-            // avatar under the same key.
+            // AVATAR ONLY, matching Python (api/user/router.py:589 fetches
+            // `filter_shortnames=["avatar"]`). Returning every attachment
+            // instead looked like a harmless superset and is not:
             //
-            // Per-attachment read gate, matching Api/Managed/EntryHandler:
-            // owning the parent row does not make its children readable.
-            // comment/json attachments carry their own ACL and ToEntryRecord
-            // emits their `payload` AND `body`, so an unfiltered list would
-            // hand over content /managed/payload refuses.
+            //   * `ListForParentAsync` orders `created_at DESC`, so the
+            //     conventional `attachments.media[0]` stops being the avatar
+            //     the moment the user has a NEWER media attachment — an
+            //     uploaded document, an ID scan. The profile then renders that
+            //     file as the user's picture.
+            //   * `AttachmentMapper.ToEntryRecord` emits each attachment's
+            //     `payload` AND `body`, and this endpoint has no
+            //     `retrieve_attachments` flag to opt out of. Every profile
+            //     read would ship the body of every json/comment attachment on
+            //     the row, unbounded, on the hottest authenticated route.
+            //
+            // NOT read-gated per attachment, unlike Api/Managed/EntryHandler.
+            // That gate is right there, where the parent may belong to someone
+            // else. Here the row IS the caller's, and this handler already
+            // returns their email, msisdn, payload and full permission map
+            // ungated — refusing them their own avatar while handing over
+            // their contact details does not hold together. It would also
+            // refuse in the ordinary case: PermissionService.CanAsync returns
+            // false outright when the actor holds no role permissions
+            // (PermissionService.cs — `if (perms.Count == 0) return false;`),
+            // and AdminBootstrap provisions the implicit `logged_in` role with
+            // an empty permission list, so a self-registered user would never
+            // see their own avatar.
             var children = await attachmentRepo.ListForParentAsync(
                 user.SpaceName, user.Subpath, user.Shortname, ct);
-            var visible = new List<Dmart.Models.Core.Attachment>(children.Count);
-            foreach (var a in children)
-            {
-                var attachmentLocator = new Dmart.Models.Core.Locator(
-                    a.ResourceType, a.SpaceName, a.Subpath, a.Shortname);
-                if (await perms.CanReadAsync(actor, attachmentLocator,
-                        PermissionService.FromAttachment(a), ct))
-                    visible.Add(a);
-            }
+            var avatars = children
+                .Where(a => string.Equals(a.Shortname, AvatarShortname, StringComparison.Ordinal))
+                .ToList();
             // Left null when empty so DefaultIgnoreCondition.WhenWritingNull
             // keeps the key off the wire entirely, rather than emitting `{}`
             // for the strip middleware to clean up afterwards.
-            var attachments = visible.Count == 0
+            var attachments = avatars.Count == 0
                 ? null
-                : visible
+                : avatars
                     .GroupBy(a => DataAdapters.Sql.JsonbHelpers.EnumMember(a.ResourceType))
                     .ToDictionary(
                         grp => grp.Key,
