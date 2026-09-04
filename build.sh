@@ -12,7 +12,17 @@ set -e
 #                     ships no static lib for non-wasm RIDs, so the SQLite
 #                     backend cannot be linked in). Ship both files together.
 #                     Right for release artifacts and CI / RPM packaging.
+#   --aot --static  — as --aot, but links SQLite and OpenSSL IN rather than
+#                     loading them at runtime, producing a musl static-pie with
+#                     zero NEEDED entries that runs on any x86-64 Linux.
+#                     Needs a musl toolchain (see docs/static-binary.md); the
+#                     RID must be a linux-musl-* one. No libe_sqlite3.so is
+#                     emitted or copied — that is the entire point.
 MODE="fast"
+# --static: link the native dependencies instead of dlopen-ing them. Off by
+# default because it needs a musl toolchain that an ordinary dev box does not
+# have, and because a normal publish is unaffected by it.
+STATIC="no"
 # Default RID is linux-x64; --rid overrides for cross-platform AOT publish
 # (osx-arm64 on Apple Silicon, win-x64 on Windows, etc.). NativeAOT cannot
 # cross-compile, so the host must match the requested RID's OS+arch.
@@ -28,6 +38,7 @@ while [ $# -gt 0 ]; do
   case "$1" in
     --aot|--full|--release) MODE="aot"; shift ;;
     --fast|--dev)           MODE="fast"; shift ;;
+    --static)               STATIC="yes"; shift ;;
     --rid)                  RID="$2"; shift 2 ;;
     --rid=*)                RID="${1#*=}"; shift ;;
     --print-version)        MODE="print-version"; shift ;;
@@ -38,6 +49,10 @@ Usage: $0 [--aot] [--rid <runtime-id>]
                     -> bin/dmart symlinks framework-dependent apphost
   --aot             full native AOT publish (~3-4m)
                     -> bin/dmart native binary + libe_sqlite3.so beside it
+  --static          with --aot: link SQLite and OpenSSL in, producing a musl
+                    static-pie with no runtime dependencies at all. Requires a
+                    musl toolchain and a linux-musl-* RID. See
+                    docs/static-binary.md
   --rid <runtime>   target runtime identifier for --aot publish
                     (default: linux-x64; e.g. osx-arm64, win-x64)
                     NativeAOT cannot cross-compile — host OS+arch must match
@@ -127,11 +142,27 @@ if [ "$MODE" = "aot" ]; then
     # by the --rid flag (default linux-x64) parsed at the top of this file.
     echo "RID:     $RID"
 
+    STATIC_ARGS=""
+    if [ "$STATIC" = "yes" ]; then
+        case "$RID" in
+          linux-musl-*) ;;
+          *)
+            echo "build.sh: --static needs a linux-musl-* RID, got '$RID'." >&2
+            echo "          A static-pie is a musl construct; glibc cannot link" >&2
+            echo "          one that actually runs. See docs/static-binary.md." >&2
+            exit 1 ;;
+        esac
+        echo "STATIC:  yes (static-pie, no runtime dependencies)"
+        STATIC_ARGS="-p:StaticExecutable=true -p:StaticOpenSslLinking=true"
+    fi
+
     # AOT publish the single binary (server + CLI client)
+    # shellcheck disable=SC2086  # STATIC_ARGS is deliberately word-split
     dotnet publish dmart.csproj -r "$RID" \
       -p:PublishAot=true \
       -p:StripSymbols=true \
       -p:InformationalVersion="$INFORMATIONAL_VERSION" \
+      $STATIC_ARGS \
       -c Release
 
     # Clean up dev-only files from publish output
@@ -152,7 +183,13 @@ if [ "$MODE" = "aot" ]; then
     # binary: without it, the process aborts the first time DATABASE_DRIVER=sqlite
     # touches the database, and the failure looks like a missing entry point
     # rather than a missing file.
-    if [ -f "$PUBLISH_DIR/libe_sqlite3.so" ]; then
+    # A static build has no sidecar to copy: SQLite is inside the binary. The
+    # block below would find nothing anyway, but skipping it keeps the "ship
+    # both files together" instruction from being printed for an artifact that
+    # is deliberately one file.
+    if [ "$STATIC" = "yes" ]; then
+        echo "static build: no libe_sqlite3 sidecar (linked in)"
+    elif [ -f "$PUBLISH_DIR/libe_sqlite3.so" ]; then
         cp "$PUBLISH_DIR/libe_sqlite3.so" bin/
     elif [ -f "$PUBLISH_DIR/e_sqlite3.dll" ]; then
         cp "$PUBLISH_DIR/e_sqlite3.dll" bin/

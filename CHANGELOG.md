@@ -2,6 +2,41 @@
 
 ## Unreleased
 
+### Added
+
+- **The fully static musl binary is now a release artifact.**
+  `dmart-<version>-linux-musl-x64.tar.gz` ships on every `v*` tag alongside the
+  glibc tarballs, with the same CycloneDX SBOM, keyless signature and SLSA
+  provenance attestation as the rest. SQLite and OpenSSL are bound at link
+  time, so it has zero `NEEDED` entries and runs on any x86-64 Linux regardless
+  of distro or glibc version — one file, with **no `libe_sqlite3.so`** beside
+  it.
+
+  It rides the existing build matrix rather than a job of its own, so it goes
+  through the same pin-to-the-tagged-commit check and the same signing path by
+  construction. A separate job would have meant a second copy of the logic that
+  guarantees nothing is signed that was not built from the tagged commit, and
+  that is not a thing to keep two copies of. The container image, toolchain
+  setup and build flags moved into matrix fields to make that possible.
+
+  Two assertions run before it is signed: `readelf -d` must report zero
+  `NEEDED` entries, and no `libe_sqlite3` / `libssl.so` / `libcrypto.so`
+  strings may survive. It then reports `--version` from inside **busybox**
+  rather than the Alpine image it was built in — proving it starts somewhere
+  with none of its build-time surroundings. `scripts/verify-release.sh`
+  requires the tarball, so a release that lost it fails verification instead of
+  passing with one artifact fewer.
+
+  `build.sh` gained `--static`, so the scripted build path is the one CI uses
+  rather than a `dotnet publish` line duplicated into a workflow. It refuses a
+  non-musl RID, since a static-pie is a musl construct that glibc cannot link
+  into something that actually runs.
+
+  **You own CVE patching for this artifact.** Statically linked OpenSSL and
+  SQLite get no distro updates, so an advisory in either becomes a
+  rebuild-and-reship. That is why the glibc tarballs still ship alongside it
+  rather than being replaced by it.
+
 ### Fixed
 
 - **The frontend SBOM listed 300+ things that do not ship.** It asked

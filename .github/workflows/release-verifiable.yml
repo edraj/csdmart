@@ -142,7 +142,7 @@ jobs:
           VERSION: ${{ steps.v.outputs.version }}
         run: |
           set -euo pipefail
-          for RID in linux-x64 linux-arm64; do
+          for RID in linux-x64 linux-arm64 linux-musl-x64; do
             ./dist/sbom.sh --rid "$RID" --version "$VERSION" --out sboms \
               --filename "dmart-${VERSION}-${RID}.tar.gz.cdx.json"
           done
@@ -172,10 +172,44 @@ jobs:
         include:
           - rid: linux-x64
             runner: ubuntu-24.04
+            image: docker.io/library/almalinux@sha256:d2515c769e7b73f95c4fde38c0a505336ff38f14990c0b7253b77060a049a743
+            shell: bash
+            setup: dnf install -y --setopt=install_weak_deps=False --nobest dotnet-sdk-10.0 clang zlib-devel
+            buildargs: ""
+            static: false
+            builtin: almalinux9-container (glibc 2.34 floor)
           # GitHub-hosted arm64, free on public repos. NativeAOT cannot
           # cross-compile, so this genuinely has to be an arm64 machine.
           - rid: linux-arm64
             runner: ubuntu-24.04-arm
+            image: docker.io/library/almalinux@sha256:d2515c769e7b73f95c4fde38c0a505336ff38f14990c0b7253b77060a049a743
+            shell: bash
+            setup: dnf install -y --setopt=install_weak_deps=False --nobest dotnet-sdk-10.0 clang zlib-devel
+            buildargs: ""
+            static: false
+            builtin: almalinux9-container (glibc 2.34 floor)
+          # The fully static musl binary (docs/static-binary.md): SQLite and
+          # OpenSSL are bound at LINK time, so it has no NEEDED entries and
+          # runs on any x86-64 Linux regardless of distro or glibc version.
+          #
+          # It rides this matrix rather than a job of its own so it goes
+          # through the same pin-to-tagged-commit, SBOM and sign-attest path as
+          # every other artifact. Duplicating those steps would have meant
+          # duplicating the logic that guarantees nothing is signed that was
+          # not built from the tagged commit, which is not a thing to keep two
+          # copies of.
+          #
+          # Alpine rather than AlmaLinux because static-pie is a musl
+          # construct; the SDK image already carries the SDK, so `setup` only
+          # adds the toolchain and the static archives to link against.
+          - rid: linux-musl-x64
+            runner: ubuntu-24.04
+            image: mcr.microsoft.com/dotnet/sdk:10.0-alpine@sha256:620e765fe18186c08399f7aa978f79f04b6bbf0ee1b3b8a91e2d5c9619e59da1
+            shell: sh
+            setup: apk add --no-cache clang lld build-base cmake zlib-static openssl-dev openssl-libs-static sqlite-dev sqlite-static
+            buildargs: "--static"
+            static: true
+            builtin: alpine-container (musl static-pie, no runtime deps)
     steps:
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
         with:
@@ -238,9 +272,11 @@ jobs:
       # Image pinned by digest for the same reason the actions are pinned by
       # SHA. Refresh deliberately with:
       #   skopeo inspect docker://docker.io/library/almalinux:9 | jq -r .Digest
-      - name: Native AOT publish (inside AlmaLinux 9 — glibc 2.34 floor)
+      - name: Native AOT publish (inside the target's own container)
         env:
           RID: ${{ matrix.rid }}
+          SETUP: ${{ matrix.setup }}
+          BUILDARGS: ${{ matrix.buildargs }}
           DMART_INFORMATIONAL_VERSION: ${{ steps.src.outputs.informational }}
         run: |
           set -euo pipefail
@@ -254,17 +290,21 @@ jobs:
             -e Deterministic=true \
             -e PublishRepositoryUrl=true \
             -e RID="$RID" \
-            docker.io/library/almalinux@sha256:d2515c769e7b73f95c4fde38c0a505336ff38f14990c0b7253b77060a049a743 \
-            bash -eux -c '
-              dnf install -y --setopt=install_weak_deps=False --nobest \
-                dotnet-sdk-10.0 clang zlib-devel
+            -e SETUP="$SETUP" \
+            -e BUILDARGS="$BUILDARGS" \
+            ${{ matrix.image }} \
+            ${{ matrix.shell }} -eux -c '
+              # Toolchain for this target, from the matrix. eval because it is
+              # one string carrying a whole package list.
+              eval "$SETUP"
               dotnet --version
               # build.sh is the one build path for every artifact this repo
               # ships. Going through it here keeps the release tarball and the
               # RPM/APK from drifting apart. It reads
               # DMART_INFORMATIONAL_VERSION instead of asking git, which is
               # what lets git stay outside the container.
-              sh ./build.sh --aot --rid "$RID"
+              # shellcheck disable=SC2086  # BUILDARGS is deliberately split
+              sh ./build.sh --aot $BUILDARGS --rid "$RID"
             '
           # The container runs as root and the workspace is a bind mount, so
           # everything it wrote is root-owned. Later steps run as the runner
@@ -289,21 +329,64 @@ jobs:
           ./dist/scan-runtime-cves.sh --binary --rid "$RID" \
             "bin/Release/net10.0/${RID}/publish/dmart"
 
-      - name: Prove the binary runs and reports the tagged version
+      # These assertions are the artifact's entire value proposition, and they
+      # are why a static build cannot simply be trusted to stay static: a
+      # binary that quietly regained a dynamic dependency would still publish,
+      # and would still run on this runner, whose distro has the libraries.
+      # Only somebody else's machine would find out. Mirrors the static-build
+      # job in ci.yml.
+      - name: Assert it is genuinely standalone
+        if: matrix.static
         env:
           RID: ${{ matrix.rid }}
         run: |
           set -euo pipefail
+          BIN="bin/Release/net10.0/${RID}/publish/dmart"
+          file "$BIN"
+          NEEDED=$(readelf -d "$BIN" 2>/dev/null | grep -c NEEDED || true)
+          if [ "$NEEDED" != "0" ]; then
+            echo "::error::binary has $NEEDED dynamic dependencies, expected 0"
+            readelf -d "$BIN" | grep NEEDED
+            exit 1
+          fi
+          DLOPEN=$(strings -a "$BIN" | grep -cE 'libe_sqlite3|libssl\.so|libcrypto\.so' || true)
+          if [ "$DLOPEN" != "0" ]; then
+            echo "::error::$DLOPEN dlopen target strings remain — something is still resolved at runtime"
+            strings -a "$BIN" | grep -E 'libe_sqlite3|libssl\.so|libcrypto\.so' | sort -u
+            exit 1
+          fi
+          echo "static-pie, 0 NEEDED, no dlopen targets"
+
+      - name: Prove the binary runs and reports the tagged version
+        env:
+          RID: ${{ matrix.rid }}
+          STATIC: ${{ matrix.static }}
+          IMAGE: ${{ matrix.image }}
+        run: |
+          set -euo pipefail
           PUB="bin/Release/net10.0/${RID}/publish"
           test -x "$PUB/dmart"
-          test -f "$PUB/libe_sqlite3.so"
-          # Same AlmaLinux image: proving it starts on the Ubuntu runner would
-          # prove nothing about the glibc floor we just went to trouble to set.
-          docker run --rm -v "$PWD":/src -w /src \
-            docker.io/library/almalinux@sha256:d2515c769e7b73f95c4fde38c0a505336ff38f14990c0b7253b77060a049a743 \
-            "/src/$PUB/dmart" --version
-          echo "glibc symbols required by the binary:"
-          objdump -T "$PUB/dmart" 2>/dev/null | grep -oE 'GLIBC_2\.[0-9]+' | sort -Vu || true
+          if [ "${STATIC}" = "true" ]; then
+            # A static binary's claim is that it needs NOTHING, so the honest
+            # test is the emptiest image available -- not the one it was built
+            # in, which would only prove it runs where its own toolchain lives.
+            test ! -f "$PUB/libe_sqlite3.so" \
+              || { echo "::error::static build emitted a libe_sqlite3.so sidecar"; exit 1; }
+            docker run --rm -v "$PWD":/src -w /src \
+              docker.io/library/busybox@sha256:73aaf090f3d85aa34ee199857f03fa3a95c8ede2ffd4cc2cdb5b94e566b11662 \
+              "/src/$PUB/dmart" --version
+            echo "no glibc symbols expected:"
+            objdump -T "$PUB/dmart" 2>/dev/null | grep -oE 'GLIBC_2\.[0-9]+' | sort -Vu || echo "  (none)"
+          else
+            test -f "$PUB/libe_sqlite3.so"
+            # Same AlmaLinux image: proving it starts on the Ubuntu runner would
+            # prove nothing about the glibc floor we just went to trouble to set.
+            docker run --rm -v "$PWD":/src -w /src \
+              "$IMAGE" \
+              "/src/$PUB/dmart" --version
+            echo "glibc symbols required by the binary:"
+            objdump -T "$PUB/dmart" 2>/dev/null | grep -oE 'GLIBC_2\.[0-9]+' | sort -Vu || true
+          fi
 
       - name: Assemble the release tarball
         id: pack
@@ -312,6 +395,8 @@ jobs:
           VERSION: ${{ steps.src.outputs.version }}
           COMMIT: ${{ steps.src.outputs.commit }}
           SOURCE_DATE_EPOCH: ${{ steps.src.outputs.epoch }}
+          STATIC: ${{ matrix.static }}
+          BUILTIN: ${{ matrix.builtin }}
         run: |
           set -euo pipefail
           PUB="bin/Release/net10.0/${RID}/publish"
@@ -319,12 +404,18 @@ jobs:
           STAGE="dist/out/${NAME}"
           rm -rf "$STAGE"; mkdir -p "$STAGE"
 
-          # dmart is NOT a single self-contained file: SQLitePCLRaw ships no
-          # static lib for glibc RIDs, so libe_sqlite3.so has to travel beside
-          # the executable or the process aborts the first time
-          # DATABASE_DRIVER=sqlite touches the database.
           cp "$PUB/dmart"            "$STAGE/"
-          cp "$PUB/libe_sqlite3.so"  "$STAGE/"
+          if [ "${STATIC}" = "true" ]; then
+            # One file, by design: SQLite is linked in, so there is no sidecar
+            # to ship and no way for the two to be separated in transit.
+            echo "static build: no libe_sqlite3 sidecar"
+          else
+            # dmart is NOT a single self-contained file here: SQLitePCLRaw
+            # ships no static lib for glibc RIDs, so libe_sqlite3.so has to
+            # travel beside the executable or the process aborts the first time
+            # DATABASE_DRIVER=sqlite touches the database.
+            cp "$PUB/libe_sqlite3.so"  "$STAGE/"
+          fi
           cp "$PUB/config.env.sample" "$STAGE/" 2>/dev/null || cp config.env.sample "$STAGE/"
           cp LICENSE "$STAGE/"
           # PluginManager scans {BaseDirectory}/plugins/<name>/config.json at
@@ -342,7 +433,7 @@ jobs:
           commit=${COMMIT}
           repository=${GITHUB_REPOSITORY}
           workflow_run=${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}
-          built_in=almalinux9-container (glibc 2.34 floor)
+          built_in=${BUILTIN}
           EOF
 
           # --sort/--owner/--group/--mtime and gzip -n keep the archive bytes a
