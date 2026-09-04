@@ -1,5 +1,38 @@
 # Changelog
 
+## Unreleased
+
+### Fixed
+
+- **The frontend half of the SBOM now carries licences.** `yarn.lock` records
+  only name, version and integrity — it has no licence field — so syft reading
+  it emitted 434 components with no licence at all, and every per-RID document
+  inherited that on merge. A reviewer could not tell an MIT dependency from a
+  revenue-gated commercial one, and Dependency-Track reported the whole tree as
+  unlicensed rather than flagging the single term that needs a decision.
+  `dist/frontend-sbom.sh` now resolves licences from the installed
+  `node_modules` tree, falling back to the npm registry for the optional
+  per-platform native binaries (`@esbuild/win32-*`, `lightningcss-*-msvc`,
+  `@tailwindcss/oxide-*`, `fsevents`) that never install on the build machine
+  and so can never be resolved locally. Coverage went 0/434 → 434/434; the
+  component set is unchanged.
+
+  Licences are encoded the way CycloneDX requires rather than pasted into one
+  field: SPDX identifiers as `license.id`, compound terms as an SPDX
+  `expression`, and anything unrecognised as `license.name`. `license.id` is a
+  schema enumeration, and an out-of-enum value fails the validation
+  `actions/attest-sbom` runs before signing — so an unknown string degrades to
+  a plain name rather than breaking a release. Non-SPDX licences are printed at
+  generation time as needing review, which is how `apexcharts` (dual-licensed,
+  free only under $2M annual revenue) becomes visible instead of silently
+  reading as unlicensed.
+
+  Generation fails if fewer than half the components resolve a licence. The two
+  sources fail independently, so losing either still clears the floor; losing
+  both is the case worth refusing, because an SBOM asserting 434 unlicensed
+  dependencies reads as a licence finding rather than the tooling failure it
+  is. `FRONTEND_SBOM_OFFLINE=1` skips the registry lookup for airgapped builds.
+
 ## v1.4.1 — 2026-09-04
 
 ### Fixed
