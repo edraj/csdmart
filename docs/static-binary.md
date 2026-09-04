@@ -74,6 +74,12 @@ exercises OpenSSL (TLS to PostgreSQL) and SQLite.
   static build: it hardcodes "the bundled SQLite build does not include dbstat"
   without probing, so per-table sizes stay refused even though they would now
   work.
+- **Plugins are unaffected.** This used to be the blocker for making static the
+  primary artifact: the missing `dlopen` that forces SQLite and OpenSSL to be
+  link-bound also ruled out `NativeLibrary.Load`, so in-process `.so` plugins
+  could not load at all. Those were removed — every plugin is now a subprocess
+  that dmart talks to over stdin/stdout, which a static binary spawns exactly
+  like a dynamic one. See `custom_plugins_sdk/README.md`.
 ## CI
 
 The `static-build` job in `ci.yml` builds this and asserts it stays standalone:

@@ -21,7 +21,10 @@ internal sealed class SubprocessHookPlugin(SubprocessPluginHost host, string plu
     {
         var eventJson = JsonSerializer.Serialize(e, DmartJsonContext.Default.Event);
         var request = $"{{\"type\":\"hook\",\"event\":{eventJson}}}";
-        var response = host.SendAndReceive(request);
+        // The event's user is the ambient actor for any callback the plugin
+        // makes while handling it, so a plugin `query` runs under that user's
+        // permissions rather than as the system.
+        var response = host.SendAndReceive(request, e.UserShortname);
 
         if (!string.IsNullOrEmpty(response))
         {

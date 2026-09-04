@@ -43,7 +43,7 @@
          StreamContent / ByteArrayContent passed to HttpClient (which owns
          them via HttpRequestMessage), PhysicalFileProvider held by the
          static file middleware for the app lifetime, WebSocket owned by
-         ASP.NET's WebSocketMiddleware, NativePluginHandle ownership
+         ASP.NET's WebSocketMiddleware, SubprocessPluginHost ownership
          transferred to the plugin manager. CA2000 doesn't see those
          transfers, so it produces only false positives here. Suppress
          with a per-site comment if a NEW genuine disposal bug shows up.

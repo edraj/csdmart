@@ -34,7 +34,7 @@ install/run/CLI — this folder goes into the **how** and **why**.
 - **`Models/`** — Flat records. `Api/` = wire DTOs, `Core/` = domain entities, `Enums/` = `[EnumMember]`-tagged enums, `Json/` = source-gen `DmartJsonContext`.
 - **`Auth/`** — Password hashing (Argon2id), JWT issuer, OAuth providers (Google/Facebook/Apple), JwtBearer setup, OTP provider, password rules.
 - **`Middleware/`** — Custom ASP.NET middleware (CXB SPA + static, request logging, response headers, WebSocket).
-- **`Plugins/`** — `PluginManager`, `IHookPlugin`/`IApiPlugin` interfaces, built-in plugins in `BuiltIn/`, native `.so` loader in `Native/`.
+- **`Plugins/`** — `PluginManager`, `IHookPlugin`/`IApiPlugin` interfaces, built-in plugins in `BuiltIn/`, external-plugin loader and callback bridge in `Native/`.
 - **`Config/`** — `DmartSettings`, strict dotenv validator, `SettingsSerializer` (redacts secrets for `/info/settings`).
 - **`Cli/`** — Interactive REPL + script runner for the `dmart cli` subcommand.
 - **`Utils/`** — `DotEnv` parser, `JsonbHelpers`, `LogSink`, correlation ID helpers.
