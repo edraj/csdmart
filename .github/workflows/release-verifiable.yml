@@ -455,18 +455,29 @@ jobs:
           # checked. For the static target that claim is "one binary, nothing
           # beside it"; publish/ still holds a libe_sqlite3.so that nothing
           # loads, and only this tells us it stayed out of the tarball.
+          # Listed ONCE into a variable, then matched. Piping tar into
+          # `grep -q` looks equivalent and is not: grep exits at the first
+          # match, tar takes SIGPIPE, and under `pipefail` the pipeline reports
+          # failure — so the check fires precisely when the file IS there. That
+          # is not hypothetical; it is what broke the glibc legs while leaving
+          # the static one green, because no-match lets grep read to EOF and
+          # tar exit cleanly.
+          LISTING=$(tar -tzf "dist/out/${NAME}.tar.gz")
           if [ "${STATIC}" = "true" ]; then
-            if tar -tzf "dist/out/${NAME}.tar.gz" | grep -q 'libe_sqlite3'; then
+            if printf '%s\n' "$LISTING" | grep -q 'libe_sqlite3'; then
               echo "::error::the static tarball carries a libe_sqlite3 sidecar"
-              tar -tzf "dist/out/${NAME}.tar.gz"
+              printf '%s\n' "$LISTING"
               exit 1
             fi
             echo "static tarball carries no sidecar:"
-            tar -tzf "dist/out/${NAME}.tar.gz"
           else
-            tar -tzf "dist/out/${NAME}.tar.gz" | grep -q 'libe_sqlite3\.so' \
-              || { echo "::error::the tarball is missing libe_sqlite3.so"; exit 1; }
+            if ! printf '%s\n' "$LISTING" | grep -q 'libe_sqlite3\.so'; then
+              echo "::error::the tarball is missing libe_sqlite3.so"
+              printf '%s\n' "$LISTING"
+              exit 1
+            fi
           fi
+          printf '%s\n' "$LISTING"
 
           ls -lh "dist/out/${NAME}.tar.gz"
           echo "tarball=dist/out/${NAME}.tar.gz" >> "$GITHUB_OUTPUT"
