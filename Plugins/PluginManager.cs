@@ -67,6 +67,14 @@ public sealed class PluginManager(
     public Task<bool> DrainAsync(TimeSpan timeout, CancellationToken ct = default)
         => _inflight.DrainAsync(timeout, ct);
 
+    // Same wait, without signalling shutdown, so it can be called repeatedly.
+    // internal because its one caller is the test harness: fire-and-forget
+    // after-hooks outlive the request that triggered them, and a test suite
+    // that shares one database needs them settled before the next case starts.
+    // Production has no reason to want this — see InFlightTracker.
+    internal Task<bool> WaitForIdleAsync(TimeSpan timeout, CancellationToken ct = default)
+        => _inflight.WaitForIdleAsync(timeout, ct);
+
     // Parallel registry carrying the resolved version + type per active plugin.
     // Populated alongside _activePlugins in Register(); exposed to /info/plugins.
     private readonly List<PluginInfo> _activePluginInfos = new();

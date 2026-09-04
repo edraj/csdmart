@@ -20,3 +20,9 @@ using Xunit;
 // the shared DB + static plugin state. (The existing per-collection definitions
 // are now redundant but harmless.)
 [assembly: CollectionBehavior(DisableTestParallelization = true)]
+
+// Serializing tests does not serialize their side effects: a concurrent plugin
+// after-hook is dispatched fire-and-forget and outlives the request. Applied at
+// assembly level so every test gets it without opting in — see
+// Integration/DrainPluginHooksAttribute.cs for what that was costing.
+[assembly: Dmart.Tests.Integration.DrainPluginHooks]
