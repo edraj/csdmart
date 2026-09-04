@@ -163,12 +163,19 @@ internal sealed class SubprocessApiPlugin : IApiPlugin, IPluginVersionSource
 internal sealed record NativeRoute(string Method, string Path);
 
 // JSON envelope sent to an API plugin as {"type":"request","request":{…}}.
+//
+// The defaulted properties are `set`, not `init`, and that is load-bearing: on
+// meeting an init-only property the source-generated deserializer assigns every
+// one of them from an args array, passing default(T) for anything the payload
+// omitted — so `= ""` and `= new()` would silently arrive as null. dmart only
+// ever builds this type in C#, so nothing is broken today, but a plugin SDK
+// that parses it back would hit exactly that.
 public sealed record NativeApiRequest
 {
-    public string Method { get; init; } = "";
-    public string Path { get; init; } = "";
-    public Dictionary<string, string> Query { get; init; } = new();
-    public Dictionary<string, string> Headers { get; init; } = new();
+    public string Method { get; set; } = "";
+    public string Path { get; set; } = "";
+    public Dictionary<string, string> Query { get; set; } = new();
+    public Dictionary<string, string> Headers { get; set; } = new();
     public string? Body { get; init; }
     public string? User { get; init; }
 }

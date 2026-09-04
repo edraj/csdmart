@@ -8,5 +8,6 @@
     "actions": ["create", "update", "delete", "move", "progress_ticket", "attach", "lock", "unlock"]
   },
   "type": "hook",
-  "listen_time": "after"
+  "listen_time": "after",
+  "concurrent": false
 }
