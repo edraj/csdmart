@@ -45,17 +45,34 @@ public class DbSizeInfoPluginTests : IClassFixture<DmartFactory>
             return;
         }
 
-        // SQLite: per-table is genuinely unavailable, so the honest answer is a
-        // failure that SAYS SO — not a success with whole-file bytes dressed up
-        // as one table's, and not a leaked internal message.
-        status.ShouldBe("failed", raw);
-        var error = attrs.GetProperty("error").GetString();
-        error.ShouldNotBeNull();
-        error!.ShouldContain("dbstat", customMessage: "the message must name what is missing");
-        error.ShouldNotContain("PostgresConnection",
-            customMessage: "an internal connection-setting name is not an explanation");
+        // SQLite answers one of two ways depending on how the SQLite it is
+        // linked against was compiled, so the test accepts both and pins what
+        // each must contain. The e_sqlite3 build SQLitePCLRaw ships has no
+        // dbstat; the static musl artifact links Alpine's SQLite, which has it.
+        // Asserting only one outcome would fail on whichever build CI is not
+        // running -- which is how the old hardcoded "unavailable" survived.
+        if (status == "success")
+        {
+            // dbstat is present: per-table rows, same shape as PostgreSQL.
+            var data = attrs.GetProperty("data").EnumerateArray().ToArray();
+            data.Length.ShouldBeGreaterThan(0, "dbstat answered, so some table must be listed");
+            data[0].GetProperty("table_name").GetString().ShouldNotBeNullOrEmpty();
+            data[0].GetProperty("pretty_size").GetString().ShouldNotBeNullOrEmpty();
+        }
+        else
+        {
+            // No dbstat: the honest answer is a failure that SAYS SO — not a
+            // success with whole-file bytes dressed up as one table's, and not
+            // a leaked internal message.
+            status.ShouldBe("failed", raw);
+            var error = attrs.GetProperty("error").GetString();
+            error.ShouldNotBeNull();
+            error!.ShouldContain("dbstat", customMessage: "the message must name what is missing");
+            error.ShouldNotContain("PostgresConnection",
+                customMessage: "an internal connection-setting name is not an explanation");
+        }
 
-        // The one size it can measure exactly is still reported, and the two
+        // Either way the whole-file size is reported, and the two
         // representations must agree — a pretty string that does not match its
         // own byte count is worse than no string.
         var bytes = attrs.GetProperty("database_size_bytes").GetInt64();
