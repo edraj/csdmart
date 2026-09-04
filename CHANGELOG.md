@@ -4,6 +4,45 @@
 
 ### Fixed
 
+- **Declared defaults across the wire model were silently discarded.** #234
+  fixed this for `PluginWrapper`; the same defect ran through most of the
+  model. On meeting an init-only property, the source-generated deserializer
+  abandons the parameterless constructor for
+  `ObjectWithParameterizedConstructorCreator`, which assigns every such
+  property from an args array and passes `default(T)` for whatever the payload
+  omitted. The initialisers ran and were immediately overwritten.
+
+  It only showed where the declared default differs from `default(T)`, which is
+  what kept it hidden — `Response.Status = Status.Success` looked correct
+  because `Success` is the enum's zero member. The same coincidence in reverse
+  is where it did real damage:
+
+  - `Space`, `Role`, `Group` and `Permission` deserialized with
+    `resource_type` **`user`**, because `ResourceType.User` is the zero member.
+  - A user parsed without an explicit language came back **Arabic**, not
+    English — `Language.Ar` is the zero member and `= Language.En` was dropped.
+  - Every `= new()` collection arrived as `null` and every `= ""` string as
+    `null`, which is what forced the `?? ""` coercions in
+    `SpaceRepository.UpsertAsync`.
+  - `Query.Limit` arrived as `0` rather than `10`, and
+    `Query.FilterSchemaNames` as `null` rather than `["meta"]`. `Query` is
+    deserialized straight from request bodies by `CsvHandler`,
+    `ImportExportHandler`, `ExecuteTaskHandler` and `AlterationHandler`.
+
+  The 67 properties that carry a default are now `set` rather than `init`,
+  which puts the generator back on the real constructor. Only those properties
+  changed: the rest stay init-only, and types never deserialized from JSON
+  (`DmartRole`, `DmartPermission`) were left alone. Types with `required`
+  members keep the parameterized creator, but it then carries only the required
+  members — which a payload must supply anyway — so the rest keep their
+  declared defaults.
+
+  `SpaceRepository`'s `?? ""` backstops stay. They no longer cover an omitted
+  field, but a payload that spells out `"icon": null` still lands a null in a
+  non-nullable string, because System.Text.Json does not enforce nullability at
+  runtime. `SeedSpaceMetaTests` previously asserted the broken shape and is now
+  inverted to pin the corrected one.
+
 - **The frontend half of the SBOM now carries licences.** `yarn.lock` records
   only name, version and integrity — it has no licence field — so syft reading
   it emitted 434 components with no licence at all, and every per-RID document

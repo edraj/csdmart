@@ -189,10 +189,10 @@ internal sealed class NativeApiPlugin : IApiPlugin, IPluginVersionSource
 // JSON envelope sent to a native API plugin's handle_request().
 public sealed record NativeApiRequest
 {
-    public string Method { get; init; } = "";
-    public string Path { get; init; } = "";
-    public Dictionary<string, string> Query { get; init; } = new();
-    public Dictionary<string, string> Headers { get; init; } = new();
+    public string Method { get; set; } = "";
+    public string Path { get; set; } = "";
+    public Dictionary<string, string> Query { get; set; } = new();
+    public Dictionary<string, string> Headers { get; set; } = new();
     public string? Body { get; init; }
     public string? User { get; init; }
 }

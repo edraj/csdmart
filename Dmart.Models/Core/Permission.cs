@@ -16,7 +16,7 @@ public sealed record Permission
     public string? Slug { get; init; }
     public Translation? Displayname { get; init; }
     public Translation? Description { get; init; }
-    public List<string> Tags { get; init; } = new();
+    public List<string> Tags { get; set; } = new();
     public DateTime CreatedAt { get; init; }
     public DateTime UpdatedAt { get; init; }
     public required string OwnerShortname { get; init; }
@@ -25,16 +25,16 @@ public sealed record Permission
     public Payload? Payload { get; init; }
     public List<Dictionary<string, object>>? Relationships { get; init; }
     public string? LastChecksumHistory { get; init; }
-    public ResourceType ResourceType { get; init; } = ResourceType.Permission;
+    public ResourceType ResourceType { get; set; } = ResourceType.Permission;
 
     // ----- Permissions-specific -----
-    public Dictionary<string, List<string>> Subpaths { get; init; } = new();
-    public List<string> ResourceTypes { get; init; } = new();
-    public List<string> Actions { get; init; } = new();
-    public List<string> Conditions { get; init; } = new();
+    public Dictionary<string, List<string>> Subpaths { get; set; } = new();
+    public List<string> ResourceTypes { get; set; } = new();
+    public List<string> Actions { get; set; } = new();
+    public List<string> Conditions { get; set; } = new();
     public List<string>? RestrictedFields { get; init; }
     public Dictionary<string, object>? AllowedFieldsValues { get; init; }
     public string? FilterFieldsValues { get; init; }
     [JsonIgnore]
-    public List<string> QueryPolicies { get; init; } = new();
+    public List<string> QueryPolicies { get; set; } = new();
 }
