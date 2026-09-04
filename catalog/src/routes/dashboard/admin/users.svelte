@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { resolveTotal } from "@shared/query-total";
   import { onMount } from "svelte";
   import { can, permissions } from "@/stores/permissions";
   import { visibleColumns } from "@/lib/access-fields";
@@ -183,7 +184,7 @@
           created_at: user.attributes?.created_at || "N/A",
         }));
 
-        totalUsers = usersResponse.attributes?.total || users.length;
+        totalUsers = resolveTotal(usersResponse.attributes?.total, users.length);
         totalPages = Math.ceil(totalUsers / itemsPerPage);
 
         filteredUsers = users;

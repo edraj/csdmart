@@ -26,7 +26,8 @@ namespace Dmart.Utils;
 //
 // The patterns walk the subpath tree from "/" outward, emitting at each level:
 //   - owner-scoped literal
-//   - owner-unscoped literal (or owner_group-scoped when a group is set)
+//   - owner-unscoped literal (always)
+//   - owner_group-scoped literal, when the row has an owner_group
 //   - a "__all_subpaths__ at level N" global form (skipped at root)
 public static class QueryPolicies
 {
@@ -119,10 +120,31 @@ public static class QueryPolicies
 
             // Literal + owner.
             policies.Add($"{spaceName}:{stripped}:{resourceType}:{isActiveLiteral}:{ownerShortname}");
-            // Owner-unscoped (or owner_group-scoped when a group is set).
-            policies.Add(ownerGroupShortname is null
-                ? $"{spaceName}:{stripped}:{resourceType}:{isActiveLiteral}"
-                : $"{spaceName}:{stripped}:{resourceType}:{isActiveLiteral}:{ownerGroupShortname}");
+            // Owner-unscoped. Emitted unconditionally — it is the token an
+            // "any owner" policy ("{key}:true:*") is rewritten to by
+            // QueryPolicyExpansion, so a row missing it would be invisible to
+            // that policy under the indexable filter. It used to be replaced by
+            // the owner_group-scoped form below when the row had a group.
+            //
+            // MIGRATION IS MANDATORY, and the failure mode is access LOSS, not
+            // degraded matching: "{key}:true:*" expands to exactly "{key}:true"
+            // and "{key}:*" to "{key}:true"/"{key}:false". Neither ever matches
+            // the owner- or group-scoped literal, so a non-owner caller whose
+            // permission is wildcarded sees ZERO rows for any row written
+            // before this change — it does not fall back to matching through
+            // the owner-scoped literal.
+            //
+            // Repair every affected table with:
+            //     dmart update_query_policies --all-tables
+            // fix_query_policies is NOT sufficient: it heals only rows whose
+            // array is empty, and these rows have a stale non-empty one.
+            // Rows are unreadable to wildcarded policies until that finishes,
+            // so on a large `entries` table run it in the same maintenance
+            // window as the deploy rather than after it.
+            policies.Add($"{spaceName}:{stripped}:{resourceType}:{isActiveLiteral}");
+            // Owner-group-scoped, matched by a group member's own policy list.
+            if (ownerGroupShortname is not null)
+                policies.Add($"{spaceName}:{stripped}:{resourceType}:{isActiveLiteral}:{ownerGroupShortname}");
 
             // Global form — replace a middle segment with __all_subpaths__ so
             // permissions that match the subtree (without naming the specific

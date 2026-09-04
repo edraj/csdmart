@@ -141,6 +141,17 @@ public sealed class SqliteSqlDialect : ISqlDialect
         return $"EXISTS (SELECT 1 FROM json_each({column}) AS qp WHERE {string.Join(" OR ", tests)})";
     }
 
+    // Equality counterpart of ArrayAnyLike. SQLite has no array-overlap
+    // operator and no GIN, so this is IN over the same json_each expansion —
+    // it exists for result parity with PostgreSQL's `&&`, not for speed.
+    public string ArrayOverlapAny(string column, IReadOnlyList<string> values, SqlBinder bind)
+    {
+        if (values.Count == 0) return "0";
+        var placeholders = values.Select(v => bind(v, SqlValueKind.Inferred));
+        return $"EXISTS (SELECT 1 FROM json_each({column}) AS qp "
+             + $"WHERE qp.value IN ({string.Join(", ", placeholders)}))";
+    }
+
     public string AclGrants(string aclColumn, string userPlaceholder, string action)
         => $"EXISTS (SELECT 1 FROM json_each(CASE WHEN json_valid({aclColumn}) "
          + $"AND json_type({aclColumn}) = 'array' THEN {aclColumn} ELSE '[]' END) AS elem "
@@ -194,6 +205,12 @@ public sealed class SqliteSqlDialect : ISqlDialect
 
     public string ColumnAsNumber(string column) => $"CAST({column} AS REAL)";
 
+    // SQLite's CAST never raises — a non-numeric element yields 0.0 — so the
+    // guard PostgreSQL needs would only change results, not prevent an error.
+    // Left as the plain cast so this dialect's emitted SQL is unchanged.
+    public string SafeNumberCompare(string textExpr, string sqlOp, string numParam)
+        => $"CAST({textExpr} AS REAL) {sqlOp} {numParam}";
+
     // A stored column is already 0/1, so it compares directly.
     public string ColumnAsBoolean(string column) => column;
 
@@ -218,6 +235,12 @@ public sealed class SqliteSqlDialect : ISqlDialect
     // miss any entry whose tags do not happen to start with "x": wrong results,
     // silently. Object members still require their key to match, so a value
     // found under a different property is not a match.
+    // The json_tree emulation below is looser than PostgreSQL @> for
+    // non-array values (a scalar or object holding the probed value also
+    // matches), so the parser must keep the jsonb_typeof-guarded emission
+    // for @tags/@roles/@groups here — see ISqlDialect.JsonArrayContainmentIsExact.
+    public bool JsonArrayContainmentIsExact => false;
+
     public string JsonContains(string jsonExpr, string placeholder)
         => $"(SELECT count(*) = 0 FROM json_tree({placeholder}) AS probe "
          + $"WHERE probe.atom IS NOT NULL "

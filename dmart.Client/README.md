@@ -33,7 +33,8 @@ backends by changing the constructor.
 | `CheckExistingAsync`          | yes             | n/a             |
 | `GetProfileAsync`             | yes             | yes (`actor` is "self") |
 | `OtpRequestAsync` / `OtpRequestLoginAsync` | yes | n/a            |
-| `PasswordResetRequestAsync` / `ConfirmOtpAsync` | yes | n/a       |
+| `PasswordResetRequestAsync`   | yes             | n/a             |
+| `VerifyContactAsync`          | yes             | n/a             |
 | `ValidatePasswordAsync`      | yes             | n/a             |
 | `DeleteAccountAsync`          | yes             | n/a             |
 | `GoogleMobileLoginAsync` / `FacebookMobileLoginAsync` / `AppleMobileLoginAsync` | yes | n/a |
@@ -113,6 +114,120 @@ foreach (var record in resp.Records ?? [])
 
 await client.LogoutAsync();
 ```
+
+## Attribute bags and numbers
+
+`Record.Attributes`, `Request.Attributes` and `Response.Attributes` are
+`Dictionary<string, object>`, so values are resolved by their **runtime** type.
+On net8.0+ the client serializes through a source-generated context, which means
+the set of types an attribute bag can carry is closed:
+
+- every JSON scalar — `string`, `bool`, `int`, `long`, `double`, `decimal`,
+  `float`, `short`, `ushort`, `byte`, `sbyte`, `uint`, `ulong`, `Guid`,
+  `DateTime`, `DateTimeOffset`, `JsonElement`
+- the common collections — `object[]`, the primitive arrays, `List<object>`,
+  `List<string>`/`List<int>`/`List<long>`/`List<double>`/`List<decimal>`/`List<bool>`,
+  `Dictionary<string, object>`, `Dictionary<string, string>`
+
+### Dictionary keys, and where snake_case is enforced
+
+Dictionary **keys** go on the wire exactly as you wrote them, on every target.
+The snake_case naming policy applies to model property names — `space_name`,
+`resource_type`, the fixed shape both ends agree on — and not to keys you
+choose. An attribute called `myKey` is sent, stored and read back as `myKey`.
+
+That does not make snake_case optional. It is the convention for dmart payload
+fields, and the shipped schemas follow it (`end_point`, `request_body`,
+`schema_shortname`). What matters is **where it is enforced**: in the space's
+JSON Schema, not in the serializer. The distinction is visible the moment the
+two disagree.
+
+**A payload with a `schema_shortname` is validated against that schema**, so a
+key the schema does not declare is rejected on write, by name:
+
+```
+430 payload failed schema validation:
+    required: Required properties ["end_point"] are not present;
+    /endPoint: All values fail against the false schema
+```
+
+Spell the key the way the schema declares it. For dmart's own schemas that is
+snake_case.
+
+**A payload with no schema, and every attribute bag, round-trips verbatim.**
+`{"myKey": "v"}` comes back as `myKey`. Nothing validates these, so the name you
+write is the name you get — which is exactly why the client does not rewrite
+them: a key it snake_cased on your behalf would be stored under a name you
+never chose and could not read back.
+
+> **Upgrading from v1.3.x on netstandard2.1?** That leg used to snake_case
+> dictionary keys, so data you wrote as `myKey` is stored under `my_key`. From
+> v1.3.3 it is written as `myKey`. Schema-backed payloads fail loudly if the
+> spelling is wrong; schema-less ones do not, so migrate those entries or spell
+> the key the way you want it stored. net8.0+ has behaved this way since v1.3.1.
+
+Anything else — including your own POCOs — must be handed over as a
+`JsonElement`, serialized against **your** context so trimming and AOT stay
+sound:
+
+```csharp
+Attributes = new Dictionary<string, object>
+{
+    ["payload"] = JsonSerializer.SerializeToElement(myModel, MyContext.Default.MyModel),
+};
+```
+
+**Reading numbers back.** The client hands you JSON numbers as `JsonElement`s
+and never reformats them: what the server sent is what you get, byte for byte.
+A field that reads back as `10240.0` was *stored* that way — Python renders
+every float like that (`json.dumps(10240.0)` -> `"10240.0"`), as does .NET for a
+`decimal` carrying scale, so one field can arrive as `10240.0` while its integer
+siblings arrive clean.
+
+That form is a problem for `int`, because **JSON Schema and System.Text.Json
+disagree about it**. dmart validates payload bodies with JSON Schema, where
+`"type": "integer"` means "a number with a zero fractional part" — so `10240.0`
+is a valid integer, and dmart accepts, stores and returns it. `JsonSerializer`
+refuses to read it into an `int`:
+
+```
+JsonException: The JSON value could not be converted to System.Int32.
+```
+
+Left alone, that makes the client stricter than the server it talks to. Two
+converters close the gap, accepting exactly what the schema calls an integer and
+nothing wider — a real fraction is still rejected (checked against the raw token,
+so a fraction below `decimal`'s precision cannot round itself away), and
+comparison runs through `decimal` so values past 2^53 keep every digit. They
+respect whatever `JsonNumberHandling` you have set, so registering them does not
+quietly cancel `AllowReadingFromString` or `WriteAsString` for `int` and `long`:
+
+```csharp
+using Dmart.Client.Json;
+
+public sealed class Grant
+{
+    [JsonPropertyName("data")]
+    [JsonConverter(typeof(IntegralInt32Converter))]   // reads 10240.0 as 10240
+    public int Data { get; set; }
+}
+```
+
+The attribute form needs no options plumbing and stays trim/AOT-safe. For a
+whole body, register them instead — System.Text.Json wraps them for `int?` and
+`long?` automatically:
+
+```csharp
+var options = new JsonSerializerOptions
+{
+    Converters = { new IntegralInt32Converter(), new IntegralInt64Converter() },
+};
+var grant = entry.Payload!.Body!.Value.Deserialize<Grant>(options);
+```
+
+`DmartClient.DefaultJsonOptions` and the source-gen context both carry them, so
+the client's own types read the same way on every target framework. Writing is
+unaffected: a round trip puts a plain integer back on the wire, never `10240.0`.
 
 ## Error handling
 

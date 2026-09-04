@@ -72,6 +72,8 @@ public sealed class PostgresSqlDialect : ISqlDialect
             field is null ? "COUNT(*)" : $"COUNT(DISTINCT {field})",
         "sum" or "total" => field is null ? null : $"SUM(({field})::numeric)",
         "avg" => field is null ? null : $"AVG(({field})::numeric)",
+        // Plain columns only — a JSON path arrives here as text and needs the
+        // numeric-aware form below. See the four-argument overload.
         "min" => field is null ? null : $"MIN({field})",
         "max" => field is null ? null : $"MAX({field})",
         "stddev" => field is null ? null : $"STDDEV(({field})::numeric)",
@@ -85,6 +87,107 @@ public sealed class PostgresSqlDialect : ISqlDialect
             : $"(ARRAY_AGG({field} ORDER BY RANDOM()))[1]",
         _ => null,
     };
+
+    // ->> hands back text, so MIN/MAX over a JSON path compared 9, 10 and 100 as
+    // strings and answered "10" for the minimum. The fix has to keep working for
+    // the fields min/max are legitimately used on — names, ISO-8601 timestamps —
+    // so an unconditional ::numeric cast is out: it would both reorder those and
+    // throw on the first non-numeric row.
+    //
+    // Two aggregates in one expression, one over the numeric rows and one over
+    // the rest, COALESCE deciding which half answers. Both stream — no
+    // ARRAY_AGG, so a group's memory cost stays flat rather than growing with
+    // its row count, which matters because min/max are core reducers and a
+    // group here can hold millions of rows.
+    //
+    // The split is by the value's ACTUAL JSON type, read off the jsonb form of
+    // the same path. Sniffing the extracted text with a numeric regex is
+    // cheaper to write and is wrong: ->> erases the difference between the
+    // number 7 and the string "007", so a field of zero-padded codes takes the
+    // numeric branch, and ::numeric::text canonicalises "007" to "7" — an
+    // answer no row in the group holds. jsonb_typeof cannot make that mistake.
+    //
+    // Numbers order below text on mixed data. That is SQLite's type ordering,
+    // which its typed ->> gives min/max there for free, and matching it is the
+    // point — the two backends must agree rather than each inventing an answer.
+    // It is NOT jsonb's own cross-type order, which ranks Number above String.
+    // Ordering the jsonb values directly would have inherited that anyway, and
+    // there is no min(jsonb)/max(jsonb) aggregate to do it with: jsonb has the
+    // comparison operators but PostgreSQL defines no extremum aggregate over
+    // them.
+    //
+    // ::numeric, not the ::float the sort keys use: this comparison decides
+    // WHICH value is returned, and float ties any two integers past 2^53.
+    //
+    // Written out inline, this expression names the path four times — twice as
+    // jsonb for the type guard, twice as text for the value — and PostgreSQL
+    // walks it once per mention per row. The overload below hoists the walk
+    // into a lateral so it happens once; this form is what the hoist rewrites,
+    // and what a dialect that cannot hoist would emit.
+    public string? Reducer(string name, string? field, string quantile, string? fieldJson)
+    {
+        if (field is null || fieldJson is null) return Reducer(name, field, quantile);
+
+        // COALESCE takes the first non-null half, and the numeric group sorts
+        // below the text one — so min asks the numeric half first, max the text.
+        return name switch
+        {
+            "min" => $"COALESCE({NumericHalf("MIN", field, fieldJson)}, {TextHalf("MIN", field, fieldJson)})",
+            "max" => $"COALESCE({TextHalf("MAX", field, fieldJson)}, {NumericHalf("MAX", field, fieldJson)})",
+            _ => Reducer(name, field, quantile),
+        };
+    }
+
+    // A JSON null and an absent field both yield SQL NULL from ->>, so both
+    // stay out of either aggregate — the behaviour callers already had.
+    private static string NumericHalf(string aggregate, string text, string json)
+        => $"{aggregate}(CASE WHEN jsonb_typeof({json}) = 'number' THEN ({text})::numeric END)::text";
+
+    private static string TextHalf(string aggregate, string text, string json)
+        => $"{aggregate}(CASE WHEN jsonb_typeof({json}) <> 'number' THEN ({text}) END)";
+
+    // The four walks the comment above counts are all down the SAME jsonb path,
+    // and a CROSS JOIN LATERAL over a FROM-less SELECT is the one construct that
+    // computes something once per row and hands it to the SELECT list by name.
+    // It is row-preserving by construction: `SELECT <expr>` with no FROM yields
+    // exactly one row, NULL expression included, so it cannot filter or multiply
+    // the rows the aggregate sees.
+    //
+    // Only the path walk is hoisted, not the whole comparison. jsonb_typeof and
+    // `#>> '{}'` still appear twice each, but they now operate on a scalar the
+    // lateral already produced rather than re-descending payload::jsonb->'body'
+    // from the top.
+    //
+    // `#>> '{}'` on the hoisted value is exactly what `->>` gave before: text
+    // for a scalar, the JSON text for a container, and SQL NULL for both an
+    // absent key and a JSON null — the last being what keeps either aggregate
+    // from seeing a row it did not see before.
+    //
+    // Hoisting is declined for every other reducer. `SUM((field)::numeric)`
+    // mentions the path once, so a lateral would add a join to save nothing.
+    public ReducerSql? Reducer(
+        string name, string? field, string quantile, string? fieldJson, string alias)
+    {
+        if (fieldJson is null || field is null || name is not ("min" or "max"))
+            return Reducer(name, field, quantile, fieldJson) is { } plain
+                ? new ReducerSql(plain, null)
+                : null;
+
+        var json = $"{alias}.{HoistedColumn}";
+        var text = $"{json} #>> '{{}}'";
+        var expression = name == "min"
+            ? $"COALESCE({NumericHalf("MIN", text, json)}, {TextHalf("MIN", text, json)})"
+            : $"COALESCE({TextHalf("MAX", text, json)}, {NumericHalf("MAX", text, json)})";
+
+        return new ReducerSql(
+            expression,
+            $"CROSS JOIN LATERAL (SELECT {fieldJson} AS {HoistedColumn}) {alias}");
+    }
+
+    // Deliberately not a name any table in the schema carries a column of: the
+    // lateral's output joins the outer query's namespace, and an unqualified
+    // reference elsewhere in the statement would turn ambiguous if it collided.
+    private const string HoistedColumn = "hoisted_json";
 
     public string JsonTypeIs(string jsonExpr, JsonKind kind)
         => $"jsonb_typeof({jsonExpr}) = '{TypeName(kind)}'";
@@ -116,9 +219,32 @@ public sealed class PostgresSqlDialect : ISqlDialect
     public string AnyOf(string columnExpr, IReadOnlyList<string> values, SqlBinder bind)
         => $"{columnExpr} = ANY({bind(values.ToArray(), SqlValueKind.TextArray)})";
 
-    // ?| is "does this jsonb value contain any of these top-level keys/elements".
+    // "Does this jsonb array contain any of these elements" — emitted as an OR
+    // of @> containments rather than the terser `?|`. The two are equivalent
+    // for arrays of strings, but only @> is in jsonb_path_ops' operator class:
+    // `tags ?| $1` sequential-scanned past idx_entries_tags_gin on every
+    // filter_tags query, while each @> arm here is a GIN bitmap probe and the
+    // OR becomes a BitmapOr. (For a non-array jsonb value the semantics differ
+    // in our favor: ?| matched top-level KEYS of an object, @> matches nothing
+    // — tags/roles/groups are arrays by construction, so key-matching an
+    // object was an accident, not a behavior.)
     public string JsonArrayContainsAny(string column, IReadOnlyList<string> values, SqlBinder bind)
-        => $"{column} ?| {bind(values.ToArray(), SqlValueKind.TextArray)}";
+    {
+        // Empty set contains nothing — emit a constant-false predicate rather
+        // than an empty "()" (a syntax error). The sole caller guards on
+        // Count > 0 today; this keeps the seam safe for any future one, and
+        // mirrors SqliteSqlDialect, which already returns "0" here.
+        if (values.Count == 0) return "FALSE";
+        return "(" + string.Join(" OR ",
+               values.Select(v => $"{column} @> {bind(ToJsonArrayLiteral(v), SqlValueKind.Json)}"))
+             + ")";
+    }
+
+    private static string ToJsonArrayLiteral(string value)
+    {
+        var escaped = value.Replace("\\", "\\\\").Replace("\"", "\\\"");
+        return $"[\"{escaped}\"]";
+    }
 
     public string ArrayAnyLike(string column, IReadOnlyList<string> patterns, SqlBinder bind)
     {
@@ -126,11 +252,26 @@ public sealed class PostgresSqlDialect : ISqlDialect
         return $"EXISTS (SELECT 1 FROM unnest({column}) AS qp WHERE {string.Join(" OR ", tests)})";
     }
 
+    // Array overlap, which GIN on a text[] column can serve — unlike the
+    // unnest+LIKE above, which is a per-row subplan and leaves
+    // idx_entries_query_policies_gin unused.
+    public string ArrayOverlapAny(string column, IReadOnlyList<string> values, SqlBinder bind)
+    {
+        if (values.Count == 0) return "FALSE";
+        var placeholders = values.Select(v => bind(v, SqlValueKind.Inferred));
+        return $"{column} && ARRAY[{string.Join(", ", placeholders)}]::text[]";
+    }
+
+    // jsonb containment rather than jsonb_array_elements + ->>, so
+    // idx_entries_acl_gin (jsonb_path_ops) can serve it. Equivalent for the
+    // array-of-Acl shape the column holds: containment requires an element
+    // object with that user_shortname whose allowed_actions array includes the
+    // action. A NULL acl yields NULL (not true), and a non-array acl yields
+    // false, which is what the CASE guard used to arrange explicitly.
     public string AclGrants(string aclColumn, string userPlaceholder, string action)
-        => $"EXISTS (SELECT 1 FROM jsonb_array_elements(CASE WHEN jsonb_typeof({aclColumn}::jsonb) = 'array' "
-         + $"THEN {aclColumn}::jsonb ELSE '[]'::jsonb END) AS elem "
-         + $"WHERE elem->>'user_shortname' = {userPlaceholder} "
-         + $"AND (elem->'allowed_actions') ? '{Escape(action)}')";
+        => $"{aclColumn} @> jsonb_build_array(jsonb_build_object("
+         + $"'user_shortname', {userPlaceholder}, "
+         + $"'allowed_actions', jsonb_build_array('{Escape(action)}')))";
 
     // Unchanged from the pre-seam emission: a plain ILIKE over the serialized
     // document, which idx_entries_payload_trgm accelerates when present and
@@ -150,6 +291,13 @@ public sealed class PostgresSqlDialect : ISqlDialect
 
     public string ColumnAsNumber(string column) => $"CAST({column} AS FLOAT)";
 
+    // CASE rather than `~ ... AND CAST(...)`: PostgreSQL is free to reorder the
+    // operands of AND, so the cast can be evaluated on a non-numeric element
+    // before the guard rejects it. CASE fixes the order.
+    public string SafeNumberCompare(string textExpr, string sqlOp, string numParam)
+        => $"CASE WHEN {textExpr} ~ '^[+-]?([0-9]+([.][0-9]*)?|[.][0-9]+)([eE][+-]?[0-9]+)?$' "
+         + $"THEN CAST({textExpr} AS FLOAT) {sqlOp} {numParam} ELSE false END";
+
     public string AsBoolean(string expr) => $"({expr})::boolean";
 
     public string ColumnAsBoolean(string column) => $"CAST({column} AS BOOLEAN)";
@@ -159,6 +307,10 @@ public sealed class PostgresSqlDialect : ISqlDialect
 
     public string JsonContains(string jsonExpr, string placeholder)
         => $"{jsonExpr} @> {placeholder}";
+
+    // @> of an array literal is TRUE only for array values — the guarantee
+    // that lets @tags/@roles/@groups compile to a single GIN-served predicate.
+    public bool JsonArrayContainmentIsExact => true;
 
     // Two different set-returning functions on purpose, matching the pre-seam
     // SQL: the _text variant yields SQL text directly (so a bare element

@@ -1,0 +1,561 @@
+# Verifiable linux binaries: build -> checksum -> sign -> attest -> publish.
+#
+# This workflow exists so that a downstream operator holding nothing but a
+# release URL can establish, before deploying, WHAT COMMIT a binary was built
+# from and THAT OUR CI BUILT IT. scripts/verify-release.sh is the consumer of
+# everything produced here; docs/VERIFYING-RELEASES.md states exactly what the
+# chain proves and what it does not.
+#
+# It is separate from release.yml rather than folded into it because the two
+# fire on different events and answer to different constraints:
+#   * release.yml runs on `release: created`, mostly on self-hosted runners,
+#     and produces the distro packages.
+#   * this one runs on the tag push, entirely on GitHub-hosted runners, and
+#     produces the two plain glibc tarballs. Keeping it hosted-only is the
+#     whole point: "built by our CI, not a workstation" is a weaker claim on a
+#     machine we own than on one we do not.
+name: Release (verifiable linux binaries)
+
+on:
+  push:
+    tags: ['v*']
+  # Dry run: builds, signs and attests without touching a release. Use this on
+  # a fork before ever tagging the real repo.
+  workflow_dispatch:
+
+# Nothing at workflow level. Every job below opens only the scopes it needs,
+# and only the two jobs that sign or publish get any write scope at all.
+permissions: {}
+
+concurrency:
+  group: release-verifiable-${{ github.ref }}
+  # Never cancel: a half-finished run can leave a release carrying artifacts
+  # whose signatures were never uploaded.
+  cancel-in-progress: false
+
+env:
+  DOTNET_CLI_TELEMETRY_OPTOUT: 1
+  DOTNET_NOLOGO: 1
+
+jobs:
+  ui:
+    name: UI bundles (cxb + catalog)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+        with:
+          fetch-depth: 0
+
+      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6.5.0
+        with:
+          node-version: 22
+
+      # build-ui.sh runs a plain `yarn install`, which is free to resolve
+      # something the lockfile does not name. Installing with
+      # --frozen-lockfile first makes the resolution the lockfile's, and
+      # fails loudly if yarn.lock is stale rather than quietly shipping a
+      # different dependency tree into the binary. The install inside
+      # build-ui.sh then finds everything already present.
+      - name: Install UI dependencies (locked)
+        run: yarn install --frozen-lockfile
+
+      - name: Build the SPAs
+        run: ./build-ui.sh
+
+      - name: Package the dists
+        run: |
+          set -euo pipefail
+          mkdir -p ui-dists
+          tar -czf ui-dists/cxb.tar.gz     -C cxb/dist/client     .
+          tar -czf ui-dists/catalog.tar.gz -C catalog/dist/client .
+          ls -lh ui-dists
+
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: ui-dists
+          path: ui-dists/*.tar.gz
+          if-no-files-found: error
+
+  sbom:
+    name: CycloneDX SBOMs + lock-file drift check
+    # Its own job, on a pristine checkout. The SBOM has to be generated from a
+    # tree nothing has restored into yet: the AOT build runs inside an
+    # AlmaLinux container whose SDK differs from the one the lock files were
+    # written with, and a restore there rewrites packages.lock.json in the
+    # workspace. Doing this here means the drift check compares the committed
+    # graph against a clean restore, and the SBOM is generated from that same
+    # verified graph.
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+        with:
+          fetch-depth: 0
+
+      - name: Version
+        id: v
+        run: |
+          set -euo pipefail
+          if [ "${GITHUB_REF_TYPE}" = "tag" ]; then
+            VERSION="${GITHUB_REF_NAME#v}"
+          else
+            VERSION="0.0.0-dev.$(git rev-parse --short HEAD)"
+          fi
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+
+      # Single source of truth for "the SDK the lock files were written with".
+      # Bumping dist/LOCKFILE_SDK and regenerating the lock files is one
+      # deliberate change; nothing here has to be edited alongside it.
+      - name: Resolve the lock-file SDK
+        id: sdk
+        run: echo "version=$(cat dist/LOCKFILE_SDK)" >> "$GITHUB_OUTPUT"
+
+      - uses: actions/setup-dotnet@26b0ec14cb23fa6904739307f278c14f94c95bf1 # v5.4.0
+        env:
+          # Install into an empty directory rather than the image's shared
+          # /usr/share/dotnet. Asking for an exact dotnet-version only controls
+          # what gets INSTALLED, not what gets SELECTED: global.json says
+          # rollForward: latestFeature, so the muxer picks the highest feature
+          # band present, and the runner image already ships its own .NET 10
+          # SDK. Requesting 10.0.110 next to a preinstalled 10.0.4xx therefore
+          # runs 10.0.4xx — and the graph would look like it had drifted. An
+          # isolated root leaves exactly one SDK to select.
+          DOTNET_INSTALL_DIR: ${{ runner.temp }}/dotnet-lockfile-sdk
+        with:
+          # Exact, not 10.0.x: the SDK stamps its own ILCompiler/ILLink.Tasks
+          # versions and content hashes into the recorded graph, so the drift
+          # check is only meaningful on the version that wrote it.
+          dotnet-version: ${{ steps.sdk.outputs.version }}
+
+      - name: Recorded dependency graph matches a fresh restore
+        run: ./dist/check-dependency-graph.sh
+
+      # Named for the tarball each one describes, so verify-release.sh can pair
+      # them without knowing anything about RIDs.
+      - name: Generate the SBOMs
+        env:
+          VERSION: ${{ steps.v.outputs.version }}
+        run: |
+          set -euo pipefail
+          for RID in linux-x64 linux-arm64; do
+            ./dist/sbom.sh --rid "$RID" --version "$VERSION" --out sboms \
+              --filename "dmart-${VERSION}-${RID}.tar.gz.cdx.json"
+          done
+          ls -l sboms
+
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: sboms
+          path: sboms/*.cdx.json
+          if-no-files-found: error
+
+  build:
+    name: ${{ matrix.rid }}
+    needs: [ui, sbom]
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 60
+    permissions:
+      contents: read
+      # Signing and attesting happen HERE, in the job that produced the bytes.
+      # See .github/actions/sign-attest/action.yml for why that placement is
+      # not an accident.
+      id-token: write
+      attestations: write
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - rid: linux-x64
+            runner: ubuntu-24.04
+          # GitHub-hosted arm64, free on public repos. NativeAOT cannot
+          # cross-compile, so this genuinely has to be an arm64 machine.
+          - rid: linux-arm64
+            runner: ubuntu-24.04-arm
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+        with:
+          fetch-depth: 0
+
+      # The constraint is that nothing gets signed that was not built from the
+      # tagged commit in this run. `actions/checkout` already lands on the
+      # pushed ref; this makes the commit that ends up in the provenance
+      # visible in the log, and refuses a tag that does not point at HEAD.
+      - name: Pin the build to the tagged commit
+        id: src
+        run: |
+          set -euo pipefail
+          SHA=$(git rev-parse HEAD)
+          if [ "${GITHUB_REF_TYPE}" = "tag" ]; then
+            TAG="${GITHUB_REF_NAME}"
+            TAG_SHA=$(git rev-list -n1 "$TAG")
+            if [ "$TAG_SHA" != "$SHA" ]; then
+              echo "::error::tag $TAG resolves to $TAG_SHA but the checkout is at $SHA"
+              exit 1
+            fi
+            VERSION="${TAG#v}"
+          else
+            # Dispatch runs are dry runs. Version them so they can never be
+            # mistaken for a release artifact.
+            VERSION="0.0.0-dev.$(git rev-parse --short HEAD)"
+          fi
+          {
+            echo "commit=$SHA"
+            echo "version=$VERSION"
+            echo "informational=$(git describe --tags --always --long) branch=${GITHUB_REF_NAME} date=$(git show -s --format=%ad --date=short)"
+            # Deterministic archive timestamps come from the commit, not the clock.
+            echo "epoch=$(git show -s --format=%ct HEAD)"
+          } >> "$GITHUB_OUTPUT"
+          echo "tag: ${GITHUB_REF_NAME} commit: $SHA version: $VERSION"
+
+      - uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7.0.0
+        with:
+          name: ui-dists
+          path: ui-dists
+
+      - name: Unpack the SPAs into the source tree
+        run: |
+          set -euo pipefail
+          mkdir -p cxb/dist/client catalog/dist/client
+          tar -xzf ui-dists/cxb.tar.gz     -C cxb/dist/client
+          tar -xzf ui-dists/catalog.tar.gz -C catalog/dist/client
+          test -f cxb/dist/client/index.html
+          test -f catalog/dist/client/index.html
+
+      # The AOT compile runs inside AlmaLinux 9, NOT on the Ubuntu runner.
+      #
+      # ILCompiler links against the build host's glibc, and ubuntu-24.04 is
+      # glibc 2.39. RHEL 9 — where these binaries are actually deployed — is
+      # 2.34, so a binary built on the runner directly would fail to start on
+      # every downstream box with a GLIBC_2.3x-not-found error. AlmaLinux 9 is
+      # ABI-equivalent to RHEL 9, so building there sets the floor at 2.34 and
+      # the result runs on EL9+ and on anything newer.
+      #
+      # Image pinned by digest for the same reason the actions are pinned by
+      # SHA. Refresh deliberately with:
+      #   skopeo inspect docker://docker.io/library/almalinux:9 | jq -r .Digest
+      - name: Native AOT publish (inside AlmaLinux 9 — glibc 2.34 floor)
+        env:
+          RID: ${{ matrix.rid }}
+          DMART_INFORMATIONAL_VERSION: ${{ steps.src.outputs.informational }}
+        run: |
+          set -euo pipefail
+          docker run --rm \
+            -v "$PWD":/src -w /src \
+            -e DMART_INFORMATIONAL_VERSION \
+            -e DOTNET_CLI_TELEMETRY_OPTOUT=1 \
+            -e DOTNET_NOLOGO=1 \
+            -e CI=true \
+            -e ContinuousIntegrationBuild=true \
+            -e Deterministic=true \
+            -e PublishRepositoryUrl=true \
+            -e RID="$RID" \
+            docker.io/library/almalinux@sha256:d2515c769e7b73f95c4fde38c0a505336ff38f14990c0b7253b77060a049a743 \
+            bash -eux -c '
+              dnf install -y --setopt=install_weak_deps=False --nobest \
+                dotnet-sdk-10.0 clang zlib-devel
+              dotnet --version
+              # build.sh is the one build path for every artifact this repo
+              # ships. Going through it here keeps the release tarball and the
+              # RPM/APK from drifting apart. It reads
+              # DMART_INFORMATIONAL_VERSION instead of asking git, which is
+              # what lets git stay outside the container.
+              sh ./build.sh --aot --rid "$RID"
+            '
+          # The container runs as root and the workspace is a bind mount, so
+          # everything it wrote is root-owned. Later steps run as the runner
+          # user and would fail on it.
+          sudo chown -R "$(id -u):$(id -g)" bin obj 2>/dev/null || true
+
+      - name: Runtime CVE scan
+        env:
+          RID: ${{ matrix.rid }}
+        # Gating the RELEASE on this, not just CI, because this build does not
+        # use dist/LOCKFILE_SDK at all: the container installs AlmaLinux's
+        # dotnet-sdk-10.0, so the runtime compiled into the tarball is whatever
+        # that package happens to carry. Bumping the pin does not control it,
+        # and the deps.json read here is the only record of which runtime
+        # actually went in. It ships inside the binary, so a user cannot patch
+        # it — see dist/scan-runtime-cves.sh.
+        # The produced binary, not the build tree: this tarball is built in a
+        # throwaway AlmaLinux container off `dnf install dotnet-sdk-10.0`, so
+        # the runtime that ends up inside it is whatever that package carried
+        # on the day. Only the artifact can answer what shipped.
+        run: |
+          ./dist/scan-runtime-cves.sh --binary --rid "$RID" \
+            "bin/Release/net10.0/${RID}/publish/dmart"
+
+      - name: Prove the binary runs and reports the tagged version
+        env:
+          RID: ${{ matrix.rid }}
+        run: |
+          set -euo pipefail
+          PUB="bin/Release/net10.0/${RID}/publish"
+          test -x "$PUB/dmart"
+          test -f "$PUB/libe_sqlite3.so"
+          # Same AlmaLinux image: proving it starts on the Ubuntu runner would
+          # prove nothing about the glibc floor we just went to trouble to set.
+          docker run --rm -v "$PWD":/src -w /src \
+            docker.io/library/almalinux@sha256:d2515c769e7b73f95c4fde38c0a505336ff38f14990c0b7253b77060a049a743 \
+            "/src/$PUB/dmart" --version
+          echo "glibc symbols required by the binary:"
+          objdump -T "$PUB/dmart" 2>/dev/null | grep -oE 'GLIBC_2\.[0-9]+' | sort -Vu || true
+
+      - name: Assemble the release tarball
+        id: pack
+        env:
+          RID: ${{ matrix.rid }}
+          VERSION: ${{ steps.src.outputs.version }}
+          COMMIT: ${{ steps.src.outputs.commit }}
+          SOURCE_DATE_EPOCH: ${{ steps.src.outputs.epoch }}
+        run: |
+          set -euo pipefail
+          PUB="bin/Release/net10.0/${RID}/publish"
+          NAME="dmart-${VERSION}-${RID}"
+          STAGE="dist/out/${NAME}"
+          rm -rf "$STAGE"; mkdir -p "$STAGE"
+
+          # dmart is NOT a single self-contained file: SQLitePCLRaw ships no
+          # static lib for glibc RIDs, so libe_sqlite3.so has to travel beside
+          # the executable or the process aborts the first time
+          # DATABASE_DRIVER=sqlite touches the database.
+          cp "$PUB/dmart"            "$STAGE/"
+          cp "$PUB/libe_sqlite3.so"  "$STAGE/"
+          cp "$PUB/config.env.sample" "$STAGE/" 2>/dev/null || cp config.env.sample "$STAGE/"
+          cp LICENSE "$STAGE/"
+          # PluginManager scans {BaseDirectory}/plugins/<name>/config.json at
+          # startup; without these the binary boots with no plugins.
+          if [ -d "$PUB/plugins" ]; then cp -r "$PUB/plugins" "$STAGE/plugins"; fi
+
+          # Dev-only leftovers build.sh already prunes, belt-and-suspenders.
+          rm -f "$STAGE"/*.pdb "$STAGE"/*.dbg "$STAGE"/*.deps.json \
+                "$STAGE"/*.Development.json "$STAGE"/*.staticwebassets* || true
+
+          cat > "$STAGE/BUILDINFO" <<EOF
+          name=dmart
+          version=${VERSION}
+          rid=${RID}
+          commit=${COMMIT}
+          repository=${GITHUB_REPOSITORY}
+          workflow_run=${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}
+          built_in=almalinux9-container (glibc 2.34 floor)
+          EOF
+
+          # --sort/--owner/--group/--mtime and gzip -n keep the archive bytes a
+          # function of its contents, not of when or where it was packed. This
+          # is NOT a reproducible build — the binary inside is not reproducible
+          # — it only removes tar/gzip as an extra source of variation.
+          tar --sort=name --owner=0 --group=0 --numeric-owner \
+              --mtime="@${SOURCE_DATE_EPOCH}" \
+              -cf - -C dist/out "$NAME" | gzip -n > "dist/out/${NAME}.tar.gz"
+          rm -rf "$STAGE"
+          ls -lh "dist/out/${NAME}.tar.gz"
+          echo "tarball=dist/out/${NAME}.tar.gz" >> "$GITHUB_OUTPUT"
+
+      # The SBOM is generated from a restore for this RID, on this runner, in
+      # this run — not assembled by hand and not carried over from another job.
+      - name: Collect the SBOM built for this target
+        uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7.0.0
+        with:
+          name: sboms
+          path: sboms
+
+      - name: Place the SBOM beside the tarball it describes
+        env:
+          RID: ${{ matrix.rid }}
+          VERSION: ${{ steps.src.outputs.version }}
+        run: |
+          set -euo pipefail
+          cp "sboms/dmart-${VERSION}-${RID}.tar.gz.cdx.json" dist/out/
+          ls -l "dist/out/dmart-${VERSION}-${RID}.tar.gz.cdx.json"
+
+      - name: Sign and attest
+        uses: ./.github/actions/sign-attest
+        with:
+          subjects: ${{ steps.pack.outputs.tarball }}
+          sbom: dist/out/dmart-${{ steps.src.outputs.version }}-${{ matrix.rid }}.tar.gz.cdx.json
+          github-token: ${{ github.token }}
+          # The release does not exist yet at tag-push time — the publish job
+          # below waits for it and uploads everything together.
+          upload-to-release: 'false'
+
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: linux-${{ matrix.rid }}
+          # Signature material is matched by extension rather than by
+          # subject: the SBOM is signed too, and enumerating "*.tar.gz.sig,
+          # *.tar.gz.pem" quietly left *.cdx.json.sig behind on the runner.
+          # The release then carried an SBOM that nothing vouched for, which
+          # verify-release.sh correctly refused — in the fork, which is where
+          # that was supposed to happen.
+          path: |
+            dist/out/*.tar.gz
+            dist/out/*.cdx.json
+            dist/out/*.sig
+            dist/out/*.pem
+          if-no-files-found: error
+
+  publish:
+    name: checksum, sign the manifest, publish
+    needs: build
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    permissions:
+      contents: write
+      id-token: write
+      attestations: read
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+
+      - uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7.0.0
+        with:
+          path: dist/out
+          pattern: linux-*
+          merge-multiple: true
+
+      - uses: sigstore/cosign-installer@6f9f17788090df1f26f669e9d70d6ae9567deba6 # v4.1.2
+        with:
+          # v2, deliberately — cosign v3 keyless cannot emit a detached
+          # signature. See .github/actions/sign-attest/action.yml.
+          cosign-release: 'v2.6.1'
+
+      - name: SHA256SUMS over everything this workflow produced
+        working-directory: dist/out
+        run: |
+          set -euo pipefail
+          ls -l
+          # One manifest covering the content assets AND their signature
+          # material, so an operator can detect a swapped .sig as readily as a
+          # swapped tarball.
+          find . -maxdepth 1 -type f ! -name 'SHA256SUMS*' -printf '%P\n' \
+            | sort | xargs sha256sum > SHA256SUMS
+          cat SHA256SUMS
+
+      - name: Sign SHA256SUMS (keyless, GitHub OIDC)
+        working-directory: dist/out
+        run: |
+          set -euo pipefail
+          cosign sign-blob --yes \
+            --new-bundle-format=false \
+            --output-signature SHA256SUMS.sig \
+            --output-certificate SHA256SUMS.pem \
+            SHA256SUMS
+          test -s SHA256SUMS.sig && test -s SHA256SUMS.pem
+
+      # Attestations live in GitHub's API. Attaching the bundles as release
+      # assets too means verification does not require an authenticated API
+      # call — `gh attestation verify --bundle` works from an air-gapped
+      # network with only the release assets in hand.
+      - name: Attach the attestation bundles
+        if: github.ref_type == 'tag'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        working-directory: dist/out
+        run: |
+          set -euo pipefail
+          for f in *.tar.gz; do
+            # Attestation indexing is not instant after the build job wrote it.
+            for attempt in 1 2 3 4 5 6; do
+              if gh attestation download "$f" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+                break
+              fi
+              if [ "$attempt" = "6" ]; then
+                echo "::error::no attestation found for $f after 6 attempts"
+                exit 1
+              fi
+              echo "attestation for $f not indexed yet (attempt $attempt); waiting"
+              sleep 20
+            done
+            digest=$(sha256sum "$f" | awk '{print $1}')
+            mv "sha256:${digest}.jsonl" "${f}.attestation.jsonl"
+            echo "bundled $(wc -l < "${f}.attestation.jsonl") attestation(s) for $f"
+          done
+
+      # The release is created by hand (or by whatever cuts it), and this
+      # workflow fires on the tag push that precedes it. Rather than creating
+      # the release itself — which would silently suppress release.yml, since
+      # a release created with GITHUB_TOKEN does not fire `release: created`
+      # and every RPM/deb/apk/container asset would quietly stop being built —
+      # this waits for the release to appear.
+      - name: Wait for the release to exist
+        if: github.ref_type == 'tag'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+          deadline=$(( SECONDS + 30 * 60 ))
+          until gh release view "$TAG" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; do
+            if [ "$SECONDS" -ge "$deadline" ]; then
+              echo "::error::release $TAG did not appear within 30 minutes. The"
+              echo "::error::signed artifacts are attached to this workflow run."
+              echo "::error::Create the release, then re-run this job to upload them."
+              exit 1
+            fi
+            echo "waiting for release $TAG to be created..."
+            sleep 30
+          done
+          echo "release $TAG found"
+
+      - name: Upload assets to the release
+        if: github.ref_type == 'tag'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ github.ref_name }}
+        working-directory: dist/out
+        run: |
+          set -euo pipefail
+          mapfile -t FILES < <(find . -maxdepth 1 -type f -printf '%P\n' | sort)
+          printf 'asset: %s\n' "${FILES[@]}"
+          gh release upload "$TAG" "${FILES[@]}" --repo "$GITHUB_REPOSITORY" --clobber
+
+      - name: Summary
+        working-directory: dist/out
+        run: |
+          {
+            echo "### Verifiable linux artifacts"
+            echo
+            echo '```'
+            cat SHA256SUMS
+            echo '```'
+            echo
+            echo "Verify with:"
+            echo
+            echo '```sh'
+            echo "./scripts/verify-release.sh --tag ${GITHUB_REF_NAME} --repo ${GITHUB_REPOSITORY}"
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+  # Verifying our own release the same way a downstream operator would is the
+  # only way to find out that the verification path is broken BEFORE they do.
+  # A signature that cannot be checked is worth nothing, and nothing else in
+  # this workflow would notice.
+  self-verify:
+    name: verify the published release as an outsider would
+    needs: publish
+    if: github.ref_type == 'tag'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    permissions:
+      contents: read
+      attestations: read
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+      - uses: sigstore/cosign-installer@6f9f17788090df1f26f669e9d70d6ae9567deba6 # v4.1.2
+        with:
+          # v3 here, on purpose, while everything above signs with v2. The
+          # docs tell operators a detached .sig/.pem pair verifies on either
+          # cosign major; this is the only thing that actually proves it, and
+          # it proves it on every release rather than once in a fork.
+          cosign-release: 'v3.0.6'
+      - name: scripts/verify-release.sh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          ./scripts/verify-release.sh \
+            --tag "${GITHUB_REF_NAME}" \
+            --repo "${GITHUB_REPOSITORY}"

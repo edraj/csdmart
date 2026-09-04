@@ -44,6 +44,23 @@ public sealed record Query
     // retrieve_total to true, so missing → null → interpreted as true by
     // QueryService. Only an explicit `retrieve_total: false` skips the count.
     public bool? RetrieveTotal { get; init; }
+
+    // Server-set, never from the wire (hence JsonIgnore): the largest exact
+    // `total` the count is allowed to compute. 0 means unlimited, which is the
+    // Python-parity behaviour and the default.
+    //
+    // WHY: `total` is a pagination count, and counting is O(matching rows) no
+    // matter what indexes exist. On the production instance one subpath holds
+    // 2.59M rows, and every page request re-counted all of them — 558,866
+    // buffer hits and ~2.4s warm, which under load became ~17s and a wall of
+    // client cancellations. Above the cap the count stops early and `total`
+    // is reported as a lower bound (see QueryService), which is the difference
+    // between scanning 2.59M rows and scanning cap+1 of them.
+    //
+    // QueryHelper.RunCountAsync returns cap+1 to mean "at least cap"; that
+    // sentinel is what QueryService keys the lower-bound flag off.
+    [System.Text.Json.Serialization.JsonIgnore]
+    public int TotalCap { get; init; }
     public bool ValidateSchema { get; init; } = true;
     public bool RetrieveLockStatus { get; init; }
     public string? JqFilter { get; init; }

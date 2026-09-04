@@ -41,8 +41,7 @@ namespace Dmart.Models.Json;
 [JsonSerializable(typeof(Status))]
 [JsonSerializable(typeof(UserLoginRequest))]
 [JsonSerializable(typeof(SendOTPRequest))]
-[JsonSerializable(typeof(ConfirmOTPRequest))]
-[JsonSerializable(typeof(PasswordResetRequest))]
+[JsonSerializable(typeof(VerifyContactRequest))]
 [JsonSerializable(typeof(PasswordResetConfirm))]
 [JsonSerializable(typeof(UserCreateBody))]
 [JsonSerializable(typeof(RegisterRequest))]
@@ -109,10 +108,25 @@ namespace Dmart.Models.Json;
 // and JSON payload-body fields that parse as Int64/bool under
 // Dictionary<string, object> (the access log serializes the request body
 // through the same source-gen path).
+//
+// Registering a type here is what lets a value reach the wire AS ITSELF. A gap
+// forces the alternative — narrowing the value to a type that IS registered —
+// and that is always lossy: QueryService used to cast aggregation cells
+// `long -> int` and `decimal -> double` for exactly this reason, wrapping large
+// counts and destroying the exactness of SUM/AVG over PostgreSQL `numeric`.
+// Prefer widening this list over narrowing a value. Kept in step with
+// dmart.Client/Json/DmartClientJsonContext.cs, which carries the same set.
 [JsonSerializable(typeof(double))]
 [JsonSerializable(typeof(float))]
 [JsonSerializable(typeof(long))]
 [JsonSerializable(typeof(int))]
+[JsonSerializable(typeof(decimal))]
+[JsonSerializable(typeof(short))]
+[JsonSerializable(typeof(ushort))]
+[JsonSerializable(typeof(byte))]
+[JsonSerializable(typeof(sbyte))]
+[JsonSerializable(typeof(uint))]
+[JsonSerializable(typeof(ulong))]
 [JsonSerializable(typeof(bool))]
 [JsonSerializable(typeof(string))]
 [JsonSerializable(typeof(DateTime))]

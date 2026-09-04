@@ -19,6 +19,15 @@ public sealed class DmartSettings
     // the same thing in Python dmart and csdmart.
     public int JwtAccessExpires { get; set; } = 30 * 86400;
     public int JwtRefreshDays { get; set; } = 30;
+
+    // Ceiling on how many records in one /managed/request may carry a
+    // password. Each costs an Argon2id hash (m=100 MB, t=3, p=8, ~0.1-0.2s and
+    // a 100 MB allocation), and `records` is otherwise unbounded, so a single
+    // authorized bulk-provisioning call could hold a request thread for tens of
+    // seconds. 50 puts the ceiling around 7s. Records without a password are
+    // not counted, so ordinary bulk writes are unaffected. Set to 0 to disable
+    // the check.
+    public int MaxPasswordRecordsPerRequest { get; set; } = 50;
     // Strict token_use enforcement. When true, a JWT lacking the token_use
     // claim is rejected wherever a specific use is required (bearer auth,
     // WebSocket auth, the OAuth refresh grant). Default false: claimless
@@ -80,6 +89,23 @@ public sealed class DmartSettings
     // where the connection sat idle for minutes between batches while the
     // filesystem walk read the next slice. 0 disables (Npgsql default).
     public int DatabaseKeepalive { get; set; } = 30;
+    // Npgsql automatic server-side statement preparation: the N most-reused
+    // statements per connection are PREPAREd, so PostgreSQL skips parse +
+    // plan on every subsequent execution. dmart's hot statements (the entry
+    // page/count SELECTs, the 25-column INSERT ... ON CONFLICT, the per-request
+    // auth lookups) are re-planned from scratch on every execution without
+    // this. 0 disables (Npgsql's own default). Applied only to the
+    // component-built connection string — an explicit POSTGRES_CONNECTION
+    // keeps whatever the operator wrote, as with every other knob.
+    public int DatabaseMaxAutoPrepare { get; set; } = 200;
+    // Seconds to cache the per-request auth lookups (user row + session
+    // validity) in memory. 0 (default) = disabled: every request hits the
+    // database twice before reaching its handler, exactly as before. When
+    // set, a revoked session / deactivated user can keep working for at most
+    // this many seconds on nodes other than the one that processed the
+    // revocation (the processing node evicts immediately). Keep it small —
+    // 1-5s captures most of the win at high request rates.
+    public int AuthCacheTtl { get; set; }
 
     // AdminPassword is read ONLY by AdminBootstrap when the dmart admin row
     // is being created for the first time (or exists but has no password
@@ -131,6 +157,43 @@ public sealed class DmartSettings
     public int LockoutCooldownSeconds { get; set; } = 900; // 15 minutes
 
     public int MaxQueryLimit { get; set; } = 10000;
+
+    // Largest exact value a query `total` will compute. 0 (default) = unlimited,
+    // which is the Python-parity behaviour: every query counts every matching
+    // row. Set it on any deployment with large subpaths — counting is O(matching
+    // rows) whatever the indexes look like, so an uncapped `total` is a full
+    // scan of the result set on every page request. Above the cap the response
+    // reports `total` as the cap and sets `total_is_lower_bound`.
+    public int QueryTotalCap { get; set; }
+
+    // What a query means when it omits `retrieve_total` entirely.
+    //
+    // `Query.RetrieveTotal` is `bool?` on purpose and carries three states:
+    // an explicit `false` always skips the count, an explicit `true` always
+    // performs it, and *absent* resolves to this setting. True (the default)
+    // is the Python-parity behaviour — Python's retrieve_total defaults to
+    // true, so a request that never mentions the field gets a count.
+    //
+    // /public/query is the one exception, and it is deliberate. Both forms
+    // resolve absent to FALSE before the query reaches QueryService
+    // (Api/Public/QueryHandler.cs), because anonymous traffic is read-heavy,
+    // rarely paginates on `total`, and would otherwise double the DB load of
+    // every public request. This setting cannot turn that back on: a public
+    // caller who needs a count sends `retrieve_total: true` explicitly on the
+    // POST form, and the GET form has no way to ask for one at all. So this
+    // setting governs /managed/query and the internal callers.
+    //
+    // Set false on a deployment whose clients do not use `total`. Counting is
+    // O(matching rows) and dominates the request: measured on a 2M-row folder
+    // at 100 concurrent, dropping the count moved the same endpoint from 36.5
+    // to 10458 req/s. QueryTotalCap bounds that cost; this removes it.
+    //
+    // CAUTION: when the count is skipped, `total` is reported as **-1**, not 0
+    // and not absent. A client that renders `total` without checking will show
+    // -1 rather than an empty result. Flip this only once you know your
+    // clients either send `retrieve_total: true` where they need a count, or
+    // ignore `total` entirely.
+    public bool RetrieveTotalDefault { get; set; } = true;
 
     // When true (default), eligible INNER joins are pushed into SQL as a
     // correlated EXISTS semi-join so the base query paginates/counts in the DB
@@ -236,25 +299,40 @@ public sealed class DmartSettings
     public string? UserCreateDefaultRole { get; set; }
     public string? UserCreateDefaultGroup { get; set; }
 
+    // When true, POST /user/login's OTP path creates an account instead of
+    // failing when the msisdn/email identifier matches no existing user:
+    // the login-purpose OTP is verified against the same gates /user/create
+    // uses (IsRegistrable + the identifier's registration channel enabled),
+    // and on success a new account is minted and logged in. Shortname
+    // identifiers are excluded — there is no contact to verify against for
+    // an account that doesn't exist yet. The new account never gets a
+    // password from this path (ForcePasswordChange=true, same as a
+    // contact-only self-registration); the user sets one afterward via
+    // /user/profile. Default false: /user/login's "no such user" failure
+    // is the only behavior a deployment gets unless it opts in.
+    public bool EnableOtpImplicitRegistration { get; set; }
+
     // Global TTL (seconds) for one-time passwords. OtpRepository enforces
     // this when verifying a code — entries older than OtpTokenTtl seconds
     // are treated as expired regardless of the per-endpoint "expires" value
     // that was stored at creation time. Mirrors Python's `otp_token_ttl`.
     public int OtpTokenTtl { get; set; } = 60 * 5;
 
-    // Minimum seconds between OTP re-sends for the same destination. Mirrors
-    // Python's `allow_otp_resend_after`. /user/otp-request returns
-    // OTP_RESEND_BLOCKED (HTTP 403) when a prior OTP was issued within this
-    // window. Default matches config.env.sample's ALLOW_OTP_RESEND_AFTER=60 —
-    // the previous in-code default of 1 silently gave any deployment that
-    // omits the key a one-second cooldown, i.e. effectively no throttle on
-    // OTP re-sends (SMS/email spend + OTP-rotation churn).
+    // Minimum seconds between OTP issues to the same destination, across all
+    // purposes. /user/otp-request silently returns Ok when a prior OTP was
+    // issued within this window. Default matches config.env.sample's
+    // ALLOW_OTP_RESEND_AFTER=60.
     public int AllowOtpResendAfter { get; set; } = 60;
 
-    // Minimum seconds between password-reset OTP re-sends for the same
-    // destination. Scoped to /user/password-reset-request so the reset flow's
-    // cadence can be tuned independently of generic /user/otp-request.
-    public int AllowPasswordResetResendAfter { get; set; } = 60;
+    // Maximum OTP issues per destination across all purposes in a rolling
+    // 24-hour window, counted from the otps history rows. Over-limit
+    // requests silently return Ok. 0 disables.
+    public int MaxOtpRequestsPerDay { get; set; } = 10;
+
+    // Days consumed/expired OTP rows are kept before the periodic sweeper
+    // purges them. Must be >= 1 (MaxOtpRequestsPerDay counts rows from the
+    // last 24h). Rows hold plaintext contact identifiers.
+    public int OtpHistoryRetentionDays { get; set; } = 2;
 
     // If > 0, sessions that haven't been touched for this many seconds are
     // rejected at JWT validation time (and the session row is deleted). 0

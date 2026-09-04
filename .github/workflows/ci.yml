@@ -9,7 +9,66 @@ on:
 permissions:
   contents: read
 
+# Only the newest run for a given ref does useful work. Without this, every
+# push starts a full CI run and the superseded ones keep their runners: this
+# repo has THREE self-hosted runners and a CI run costs ~26 runner-minutes
+# (build-and-test sqlite 8.6, postgresql 8.2, aot-publish 6.2), so the ceiling
+# is about 7 runs an hour. One afternoon logged 18 runs across 6 branches —
+# six of them on a single branch where only the last mattered — and PRs sat
+# queued behind work for commits that no longer existed.
+#
+# cancel-in-progress is conditional, NOT plain `true`. A push to master must
+# run to completion: that run is the record for a commit that has already
+# landed, and cancelling it leaves a merged commit with no verdict. Only
+# pull_request runs are superseded by their own next push.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
 jobs:
+  dependency-graph:
+    name: dependency graph in sync
+    # Hosted, with the SDK pinned to the exact version that recorded the graph.
+    # This is the only place the check can live. A committed packages.lock.json
+    # would have been the obvious mechanism and does not work here: distro .NET
+    # builds resolve the SDK-injected ILCompiler/ILLink.Tasks from a local
+    # library-packs folder whose content hashes differ from nuget.org's
+    # (NU1403), and their versions follow the SDK, which differs across our
+    # builders (NU1004). dist/check-dependency-graph.sh explains both.
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+      # Single source of truth for "the SDK the lock files were written with".
+      # Bumping dist/LOCKFILE_SDK and regenerating the lock files is one
+      # deliberate change; nothing here has to be edited alongside it.
+      - name: Resolve the lock-file SDK
+        id: sdk
+        run: echo "version=$(cat dist/LOCKFILE_SDK)" >> "$GITHUB_OUTPUT"
+
+      - uses: actions/setup-dotnet@26b0ec14cb23fa6904739307f278c14f94c95bf1 # v5.4.0
+        env:
+          # Install into an empty directory rather than the image's shared
+          # /usr/share/dotnet. Asking for an exact dotnet-version only controls
+          # what gets INSTALLED, not what gets SELECTED: global.json says
+          # rollForward: latestFeature, so the muxer picks the highest feature
+          # band present, and the runner image already ships its own .NET 10
+          # SDK. Requesting 10.0.110 next to a preinstalled 10.0.4xx therefore
+          # runs 10.0.4xx — and the graph would look like it had drifted. An
+          # isolated root leaves exactly one SDK to select.
+          DOTNET_INSTALL_DIR: ${{ runner.temp }}/dotnet-lockfile-sdk
+        with:
+          # Exact, not 10.0.x: the SDK stamps its own ILCompiler/ILLink.Tasks
+          # versions and content hashes into the recorded graph, so the drift
+          # check is only meaningful on the version that wrote it.
+          dotnet-version: ${{ steps.sdk.outputs.version }}
+
+      - name: Recorded dependency graph matches a fresh restore
+        run: ./dist/check-dependency-graph.sh
+
+
   build-and-test-matrix:
     runs-on: self-hosted
 
@@ -36,7 +95,7 @@ jobs:
     name: build-and-test (${{ matrix.driver }})
 
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
 
       - name: Lint workflows and composite actions
         # release.yml is only ever exercised when a tag is cut, so a mistake in
@@ -331,7 +390,7 @@ jobs:
 
       - name: Upload test results
         if: always()
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           # Per-driver name: upload-artifact rejects a duplicate name, so a
           # shared one would fail the second leg to finish.
@@ -371,7 +430,14 @@ jobs:
   # "not failed" to some gates, which is exactly the silent pass to avoid.
   build-and-test:
     name: build-and-test
-    runs-on: self-hosted
+    # Hosted, NOT self-hosted. This job is the single required status check,
+    # and all it does is read needs.build-and-test-matrix.result and echo it —
+    # about six seconds, touching nothing on the builder. Pinned to the
+    # self-hosted pool it competed with 8-10 minute build jobs for one of three
+    # runners and lost the race to every newer run, so merges waited twenty
+    # minutes on an `echo`. `if: always()` made it worse: cancelled runs still
+    # queued one. A hosted runner starts in seconds and costs the pool nothing.
+    runs-on: ubuntu-24.04
     needs: [build-and-test-matrix]
     if: always()
     steps:
@@ -390,7 +456,7 @@ jobs:
     # other.
 
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
 
       - name: Native AOT publish
         # This used to live only in release.yml, deliberately — the reasoning
@@ -410,6 +476,23 @@ jobs:
         # IlcTreatWarningsAsErrors is set in dmart.csproj, so any new IL2026 /
         # IL2027 / IL3050 fails this step rather than being printed and passed.
         run: dotnet publish dmart.csproj -r linux-x64 -c Release -p:PublishAot=true --nologo
+
+      - name: Runtime CVE scan
+        # The runtime is compiled INTO the AOT binary and ships inside
+        # /usr/bin/dmart, so a CVE in it is not something a user can patch by
+        # updating their distro's .NET — it takes a rebuild and a re-release.
+        # It is also invisible to the security gate: the runtime pack is
+        # SDK-injected, not a PackageReference, so it appears in neither
+        # dist/deps/*.lock.json nor the CycloneDX SBOM. The deps.json this
+        # publish just wrote is the only artifact that records it.
+        #
+        # v1.2.7 shipped runtime 10.0.10 — CVE-2026-62901 (HIGH),
+        # CVE-2026-62899, CVE-2026-62909 — and nothing was looking.
+        # The BINARY, not the build tree. The tree describes what this job
+        # compiled; the binary is what a user runs. Same thing here, but
+        # keeping every runtime check artifact-shaped is what stops a green
+        # tick from describing a toolchain instead of a release.
+        run: ./dist/scan-runtime-cves.sh --binary bin/Release/net10.0/linux-x64/publish/dmart
 
       - name: Smoke the native binary on SQLite
         # The point of the job. The publish above proves it LINKS; this proves
@@ -497,41 +580,69 @@ jobs:
     # this class needs a real rpmbuild, so that is what this does.
     #
     # Both targets. Fedora builds natively; EL9 builds inside a podman container
-    # against the same spec and the same staging step.
-    #
-    # EL9 is NOT redundant even though both v1.2.0 bugs reproduce on Fedora. The
-    # EL9 leg is the one that exercises the container path — a stale or broken
-    # builder image, a podman-storage problem, or an EL9-only packaging
-    # difference reaches a tag otherwise, and that is precisely the class of
-    # failure this job exists to move off the release.
+    # against the same spec and the same staging step. EL9 is NOT redundant: it
+    # is the leg that exercises the container path.
     steps:
-      - uses: actions/checkout@v6
+      # Full history so the packaging-scope diff below has a base to compare
+      # against; checkout's default depth of 1 has none.
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+        with:
+          fetch-depth: 0
+
+      # Building both RPMs is expensive on the self-hosted pool, and a change
+      # that cannot touch packaging cannot break it. So run only when a
+      # packaging input changed, and unconditionally on pushes to master so
+      # every merge still validates the spec even if the PR that caused it
+      # touched only C#. Fails OPEN on an unusable base — a filter that silently
+      # stops testing is worse than one that occasionally costs a run. This is
+      # the same gate container-build already uses for the image.
+      - name: Is this change in packaging scope?
+        id: scope
+        run: |
+          if [ "${{ github.event_name }}" = "push" ]; then
+            echo "run=true" >> "$GITHUB_OUTPUT"
+            echo "push to master — running unconditionally"
+            exit 0
+          fi
+          BASE="${{ github.event.pull_request.base.sha }}"
+          if [ -z "$BASE" ] || ! git cat-file -e "$BASE" 2>/dev/null; then
+            echo "run=true" >> "$GITHUB_OUTPUT"
+            echo "no usable base sha — running to be safe"
+            exit 0
+          fi
+          CHANGED=$(git diff --name-only "$BASE"...HEAD)
+          echo "$CHANGED" | sed 's/^/  /'
+          if echo "$CHANGED" | grep -qE '^(dist/dmart\.spec|dist/build-rpm\.sh|dist/dmart\.(service|bash|fish)|dist/config\.env\.packaged|config\.env\.sample|\.github/workflows/ci\.yml)'; then
+            echo "run=true" >> "$GITHUB_OUTPUT"
+            echo "packaging inputs changed — running"
+          else
+            echo "run=false" >> "$GITHUB_OUTPUT"
+            echo "no packaging inputs changed — skipping the RPM build"
+          fi
 
       - name: Podman preflight (self-heal stale state after host reboot)
+        if: steps.scope.outputs.run == 'true'
         uses: ./.github/actions/podman-preflight
 
       - name: Build the Fedora RPM
-        # VERSION is pinned rather than derived. checkout@v6 fetches depth 1, so
-        # `git describe` has no tags to read and build-rpm.sh would silently
-        # fall back to 0.1.0 — a version this job would then appear to have
-        # chosen. This job validates that the packaging BUILDS; the version it
-        # carries is irrelevant, so say so instead of depending on tag depth.
+        if: steps.scope.outputs.run == 'true'
+        # VERSION is pinned rather than derived: checkout is depth 1 for tags,
+        # and this job validates that packaging BUILDS, not what version it says.
         run: VERSION=0.0.0 ./dist/build-rpm.sh
 
       - name: Build the EL9 RPM
-        # Same script, container path. `podman rm -f` first for the same reason
-        # release.yml does it: build-rpm.sh KEEPS the builder container between
-        # runs to avoid reinstalling the SDK, and a container left half-built by
-        # an interrupted run would otherwise be reused.
+        if: steps.scope.outputs.run == 'true'
+        # Same script, container path. `podman rm -f` first because build-rpm.sh
+        # keeps the builder container between runs.
         run: |
           podman rm -f dmart-el9-builder 2>/dev/null || true
           VERSION=0.0.0 ./dist/build-rpm.sh el9
 
       - name: Assert the RPM carries what it must
+        if: steps.scope.outputs.run == 'true'
         # The build succeeding is not the whole property. %files lists
-        # libe_sqlite3.so unconditionally and on purpose — a package missing it
-        # silently loses the SQLite driver — so check the payload, not just the
-        # exit code.
+        # libe_sqlite3.so unconditionally — a package missing it silently loses
+        # the SQLite driver — so check the payload, not just the exit code.
         run: |
           set -e
           for tag in fc el9; do
@@ -547,6 +658,45 @@ jobs:
           done
           echo "payload OK for both targets"
 
+      - name: Runtime CVE scan of the packaged binaries
+        # Guarded like every other step after the gate. Without this the job
+        # fails on any PR that does NOT touch packaging: the gate correctly
+        # skips the two builds, this step then finds no RPM and exits 1 with
+        # "no fc RPM to scan". It went unnoticed because the gate (#201) and
+        # this scan (#206) landed a day apart and every PR in between happened
+        # to touch a packaging path — the first one that did not, #216, was
+        # blocked by it.
+        #
+        # The scan must keep hard-failing on a MISSING artifact when it is
+        # supposed to have run, so the guard goes on the step rather than
+        # softening the `test -n "$RPM"` inside it: "no RPM because we skipped
+        # the build" and "no RPM because the build silently produced nothing"
+        # must not collapse into the same pass.
+        if: steps.scope.outputs.run == 'true'
+        # THE artifact check. Each RPM is built by a different toolchain: the
+        # Fedora one by rpmbuild against the runner's system SDK, the EL9 one
+        # inside a PERSISTENT podman container whose writable layer keeps
+        # whatever SDK it was created with. Neither is an SDK any workflow
+        # pins, so the only honest place to ask "what runtime ships?" is the
+        # RPM itself — scanning a build tree would describe the toolchain and
+        # green-tick a vulnerable package.
+        #
+        # The runtime is compiled into the self-contained AOT binary, so a CVE
+        # here cannot be patched by a user updating their distro .NET.
+        run: |
+          set -e
+          EXTRACT="$(mktemp -d)"
+          for tag in fc el9; do
+            RPM=$(ls dist/out/*."$tag"*.x86_64.rpm 2>/dev/null | grep -v '\.src\.rpm$' | head -1)
+            test -n "$RPM" || { echo "no $tag RPM to scan"; exit 1; }
+            ABS="$(readlink -f "$RPM")"
+            mkdir -p "$EXTRACT/$tag"
+            ( cd "$EXTRACT/$tag" && rpm2cpio "$ABS" | cpio -idm --quiet )
+            echo "::group::runtime CVE scan — $tag"
+            ./dist/scan-runtime-cves.sh --binary "$EXTRACT/$tag/usr/bin/dmart"
+            echo "::endgroup::"
+          done
+
   container-build:
     name: Container build
     runs-on: self-hosted
@@ -561,7 +711,7 @@ jobs:
     steps:
       # Full history so the packaging-scope diff below has a base to compare
       # against; checkout's default depth of 1 has none.
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
         with:
           fetch-depth: 0
 

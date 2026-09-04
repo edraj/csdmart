@@ -78,6 +78,16 @@ sudo systemctl enable --now dmart
 
 Download the RPM from the [latest release](https://github.com/edraj/csdmart/releases).
 
+Every release asset is checksummed, signed with cosign (keyless, recorded in
+Rekor) and carries SLSA build provenance. Before deploying, verify it:
+
+```
+./scripts/verify-release.sh --tag v1.2.6
+```
+
+See [docs/VERIFYING-RELEASES.md](docs/VERIFYING-RELEASES.md) — including a plain
+account of what the chain proves and what it does not.
+
 ### From source
 
 ```
@@ -105,9 +115,11 @@ dmart export <space>       Export space to zip
 dmart import <file.zip>    Import from zip
 dmart fix_query_policies   Backfill empty query_policies columns
 dmart update_query_policies
-                           Recompute query_policies for every entry and
-                           write back rows whose stored value drifted
-                           (Python parity for update_query_policies.py)
+                           Recompute query_policies and write back rows whose
+                           stored value drifted; the only command that repairs
+                           a stale non-empty array. Entries-only unless
+                           --all-tables (Python parity for
+                           update_query_policies.py)
 dmart cli                  Interactive REPL client
 dmart cli c <space> "ls"   Single CLI command
 dmart cli s script.txt     Batch script
@@ -318,9 +330,9 @@ cat > ~/.dmart/plugins/my_plugin/config.json << 'EOF'
   "type": "hook",
   "listen_time": "after",
   "filters": {
-    "subpaths": ["__ALL__"],
+    "subpaths": { "__all_spaces__": ["__all_subpaths__"] },
     "resource_types": ["content"],
-    "schema_shortnames": ["__ALL__"],
+    "schema_shortnames": [],
     "actions": ["create", "update", "delete"]
   }
 }

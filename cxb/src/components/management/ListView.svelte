@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { resolveTotal } from "@shared/query-total";
     import {functionCreateDatatable, Pagination, RowsPerPage, Sort,} from "@/components/management/datatable";
     import {Dmart, DmartScope, type ApiResponseRecord, type QueryRequest, QueryType, SortyType,} from "@edraj/tsdmart";
     import cols from "@/utils/jsons/list_cols.json";
@@ -146,7 +147,7 @@
         query.type = QueryType.counters;
         query.retrieve_total = true;
         const resp = await Dmart.query(query, scope);
-        total = resp?.attributes?.total ?? 0;
+        total = resolveTotal(resp?.attributes?.total);
         objectDatatable.arrayRawData = [...objectDatatable.arrayRawData];
         setNumberOfPages();
     }
@@ -299,7 +300,7 @@
 
         old_search = $searchListView;
         if (delayTotalCount === false) {
-            total = resp?.attributes?.total ?? 0;
+            total = resolveTotal(resp?.attributes?.total);
         } else {
             total = -1;
         }

@@ -56,6 +56,67 @@ export function getDefaultValueForProperty(property: SchemaProperty): any {
 }
 
 /**
+ * True only for `{}` literals and `Object.create(null)` bags — not for Date,
+ * File, Blob, Map, Set, or any class instance. Prototype comparison rather
+ * than a constructor-name check, so it survives minification.
+ */
+function isPlainObject(value: unknown): value is Record<string, any> {
+    if (value === null || typeof value !== 'object') return false;
+    const proto = Object.getPrototypeOf(value);
+    return proto === Object.prototype || proto === null;
+}
+
+/**
+ * Recursively strip empty inputs from schema-form data before it is sent
+ * to the server. The dynamic schema form pre-initializes every property
+ * ('' / null / [] / {}), and those untouched placeholders must not end up
+ * in the payload body.
+ *
+ * Empty means: null/undefined, blank or whitespace-only strings, NaN
+ * (an empty number input), and arrays/objects left with nothing after
+ * their own members are pruned. Booleans and 0 are real values and kept.
+ *
+ * @param value - Form value (usually the whole form-data object)
+ * @returns The pruned value, or undefined when nothing remains
+ */
+export function pruneEmptyFormValues(value: any): any {
+    if (value === null || value === undefined) return undefined;
+
+    if (typeof value === 'string') {
+        return value.trim() === '' ? undefined : value;
+    }
+
+    if (typeof value === 'number') {
+        return Number.isNaN(value) ? undefined : value;
+    }
+
+    if (Array.isArray(value)) {
+        const pruned = value
+            .map((item) => pruneEmptyFormValues(item))
+            .filter((item) => item !== undefined);
+        return pruned.length === 0 ? undefined : pruned;
+    }
+
+    // PLAIN objects only. `typeof x === 'object'` is also true of Date, File,
+    // Blob, Map and Set, and Object.keys() on any of them is [] — so walking
+    // them here would return undefined and silently drop the value from the
+    // payload, with no error anywhere. Today's schema forms only produce
+    // primitives, arrays and plain objects, so this is a guard rather than a
+    // live bug; the first file-upload or date-valued field added to a schema
+    // form is where it would have bitten.
+    if (isPlainObject(value)) {
+        const pruned: Record<string, any> = {};
+        for (const key of Object.keys(value)) {
+            const cleaned = pruneEmptyFormValues(value[key]);
+            if (cleaned !== undefined) pruned[key] = cleaned;
+        }
+        return Object.keys(pruned).length === 0 ? undefined : pruned;
+    }
+
+    return value;
+}
+
+/**
  * Create a new array item based on schema definition
  * @param itemSchema - Schema definition for array items
  * @returns New item object initialized with default values

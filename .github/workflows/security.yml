@@ -1,0 +1,229 @@
+name: Security Gate
+
+# Self-hosted security gate — no SaaS, no cross-repo action dependency (this
+# act_runner only resolves github.com actions, so the gate is inlined).
+# Canonical copy: reusable_assets/ci-security (templates/security.yml). Update it
+# there and re-run its deploy script to roll changes to every repo.
+#
+# Gates: Gitleaks (secrets) · Trivy fs (dependency CVEs, fixable — source tree
+# lockfiles plus the recorded NuGet graph) · Semgrep (SAST).
+# Misconfig scanning is deliberately off — see TRIVY_SCANNERS below.
+# All run every time; the job fails once if any found blocking issues.
+
+on:
+  workflow_dispatch:
+  pull_request:
+    branches: [main, master]
+  push:
+    branches: [main, master]
+
+# Only the newest run for a given ref does useful work. Without this, every
+# push starts a full CI run and the superseded ones keep their runners: this
+# repo has THREE self-hosted runners and a CI run costs ~26 runner-minutes
+# (build-and-test sqlite 8.6, postgresql 8.2, aot-publish 6.2), so the ceiling
+# is about 7 runs an hour. One afternoon logged 18 runs across 6 branches —
+# six of them on a single branch where only the last mattered — and PRs sat
+# queued behind work for commits that no longer existed.
+#
+# cancel-in-progress is conditional, NOT plain `true`. A push to master must
+# run to completion: that run is the record for a commit that has already
+# landed, and cancelling it leaves a merged commit with no verdict. Only
+# pull_request runs are superseded by their own next push.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  security-gate:
+    name: Security Gate
+    runs-on: ubuntu-latest
+    env:
+      SEVERITY: "HIGH,CRITICAL"
+      # vuln only: misconfig is dominated by Dockerfile "runs as root" (DS-0002),
+      # which does not reflect our rootless-podman/non-root CI. Keep CVE gating.
+      TRIVY_SCANNERS: "vuln"
+      SEMGREP_CONFIG: "p/ci"
+      IGNORE_UNFIXED: "true"
+      # .cigate/bin holds the gitleaks/trivy binaries this job just downloaded;
+      # trivy's gobinary analyzer would otherwise report their embedded Go stdlib
+      # CVEs (fixable, so --ignore-unfixed will not hide them) and fail the gate
+      # on vulnerabilities that are not in this repo's code.
+      TRIVY_SKIP_DIRS: ".cigate"
+      GITLEAKS_VERSION: "8.21.2"
+      TRIVY_VERSION: "0.74.0"
+      # Pinned like the other two scanners: an unpinned `pip install --upgrade`
+      # is what jumped 1.38 -> 1.174 and broke the gate. Bump deliberately.
+      SEMGREP_VERSION: "1.174.0"
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Prepare
+        run: |
+          mkdir -p .cigate/bin .cigate/out
+          echo "0" > .cigate/rc
+
+      # !cancelled() on all three: a setup failure (download/install) still fails
+      # its own step, but must not skip the remaining gates. The whole point of
+      # the gate is that one bad scanner does not hide the other two.
+      - name: Gitleaks (secrets)
+        if: ${{ !cancelled() }}
+        run: |
+          GLT=$(mktemp)   # unique path: the self-hosted runner shares /tmp across users
+          curl -fsSL "https://github.com/gitleaks/gitleaks/releases/download/v${GITLEAKS_VERSION}/gitleaks_${GITLEAKS_VERSION}_linux_x64.tar.gz" -o "$GLT" \
+            || { echo "::error::gitleaks download failed"; echo 1 > .cigate/rc; exit 1; }
+          tar xzf "$GLT" -C .cigate/bin gitleaks \
+            || { echo "::error::gitleaks extract failed"; echo 1 > .cigate/rc; exit 1; }
+          echo "::group::gitleaks detect"
+          # `|| rc=$?`: steps run under `bash -e`, so a bare non-zero exit would
+          # abort the step here and skip the remaining gates and `Gate result`.
+          rc=0
+          .cigate/bin/gitleaks detect --source . --no-git --redact \
+            --report-format json --report-path .cigate/out/gitleaks.json || rc=$?
+          echo "::endgroup::"
+          # gitleaks exits 1 for leaks AND for its own errors (malformed
+          # .gitleaks.toml, bad --source). A run that produced a parseable report
+          # really did scan; anything else is a tool error. Both fail the gate.
+          if [ "$rc" -ne 0 ]; then
+            if python3 -c "import json;json.load(open('.cigate/out/gitleaks.json'))" 2>/dev/null; then
+              echo "::error::Gitleaks found committed secrets"
+            else
+              echo "::error::Gitleaks failed to run (exit ${rc}) — no valid report; tool error, not a finding"
+            fi
+            echo 1 > .cigate/rc
+          fi
+          exit 0
+
+      - name: Trivy (dependency CVEs)
+        if: ${{ !cancelled() }}
+        run: |
+          TVT=$(mktemp)   # unique path: the self-hosted runner shares /tmp across users
+          curl -fsSL "https://github.com/aquasecurity/trivy/releases/download/v${TRIVY_VERSION}/trivy_${TRIVY_VERSION}_Linux-64bit.tar.gz" -o "$TVT" \
+            || { echo "::error::trivy download failed"; echo 1 > .cigate/rc; exit 1; }
+          tar xzf "$TVT" -C .cigate/bin trivy \
+            || { echo "::error::trivy extract failed"; echo 1 > .cigate/rc; exit 1; }
+          UNFIXED=""
+          if [ "$IGNORE_UNFIXED" = "true" ]; then UNFIXED="--ignore-unfixed"; fi
+
+          # trivy detects NuGet by the filename `packages.lock.json`. This repo
+          # keeps that exact content as dist/deps/<slug>.lock.json instead, so
+          # without this every .NET dependency is invisible to the scanner —
+          # `Number of language-specific files num=2`, i.e. the JS lockfiles only.
+          # Materialise the graph under the name trivy expects.
+          #
+          # Deliberately OUTSIDE the worktree: a packages.lock.json in the tree is
+          # precisely what breaks this repo's distro builders (NU1403/NU1004, see
+          # dist/deps/README.md), and a self-hosted runner can carry a workspace
+          # into a later job.
+          NUGET_DIR="$(mktemp -d)"   # 0700, unique: /tmp is shared on these runners
+          graphs=0
+          for f in dist/deps/*.lock.json; do
+            [ -e "$f" ] || break
+            slug="$(basename "$f" .lock.json)"
+            mkdir -p "$NUGET_DIR/$slug"
+            cp "$f" "$NUGET_DIR/$slug/packages.lock.json"
+            graphs=$((graphs + 1))
+          done
+          echo "materialised $graphs recorded project graphs for NuGet scanning"
+          if [ "$graphs" -eq 0 ]; then
+            # Scanning nothing and reporting 0 is the exact failure this step
+            # exists to fix, so an empty dist/deps is a gate failure, not a pass.
+            echo "::error::no dist/deps/*.lock.json found — the .NET dependency graph is not being scanned"
+            echo 1 > .cigate/rc
+          fi
+
+          echo "::group::trivy fs"
+          rc=0
+          .cigate/bin/trivy fs --scanners "$TRIVY_SCANNERS" --severity "$SEVERITY" $UNFIXED \
+            --skip-dirs "$TRIVY_SKIP_DIRS" \
+            --format json --output .cigate/out/trivy.json --exit-code 1 --no-progress . || rc=$?
+          .cigate/bin/trivy fs --scanners "$TRIVY_SCANNERS" --severity "$SEVERITY" $UNFIXED \
+            --skip-dirs "$TRIVY_SKIP_DIRS" \
+            --no-progress --skip-db-update . 2>/dev/null || true
+          echo "::endgroup::"
+
+          echo "::group::trivy fs (NuGet, from dist/deps)"
+          rcn=0
+          .cigate/bin/trivy fs --scanners "$TRIVY_SCANNERS" --severity "$SEVERITY" $UNFIXED \
+            --format json --output .cigate/out/trivy-nuget.json --exit-code 1 \
+            --skip-db-update --no-progress "$NUGET_DIR" || rcn=$?
+          .cigate/bin/trivy fs --scanners "$TRIVY_SCANNERS" --severity "$SEVERITY" $UNFIXED \
+            --skip-db-update --no-progress "$NUGET_DIR" 2>/dev/null || true
+          echo "::endgroup::"
+          rm -rf "$NUGET_DIR"
+
+          # --exit-code 1 collides with trivy's own exit 1 (e.g. a rate-limited
+          # vuln-DB pull from ghcr.io). Same report-file test as gitleaks: a run
+          # that produced a parseable report really did scan.
+          verdict() {   # $1=rc  $2=report  $3=what was scanned
+            if [ "$1" -eq 0 ]; then return 0; fi
+            if python3 -c "import json;json.load(open('$2'))" 2>/dev/null; then
+              echo "::error::Trivy found ${SEVERITY} dependency vulnerabilities in the $3"
+            else
+              echo "::error::Trivy failed to run on the $3 (exit $1) — no valid report; tool error, not a finding"
+            fi
+            echo 1 > .cigate/rc
+          }
+          verdict "$rc"  .cigate/out/trivy.json       "source tree"
+          verdict "$rcn" .cigate/out/trivy-nuget.json "recorded NuGet graph"
+          exit 0
+
+      - name: Semgrep (SAST)
+        if: ${{ !cancelled() }}
+        run: |
+          python3 -m pip install --quiet --user "semgrep==${SEMGREP_VERSION}" \
+            || { echo "::error::semgrep install failed"; echo 1 > .cigate/rc; exit 1; }
+          # Use the semgrep binary: `python -m semgrep` hard-fails (exit 2) as of semgrep 1.38+.
+          # Ask pip where its user bin dir is rather than assuming ~/.local/bin,
+          # which is wrong when PYTHONUSERBASE is set.
+          export PATH="$(python3 -m site --user-base)/bin:$PATH"
+          command -v semgrep >/dev/null \
+            || { echo "::error::semgrep installed but not on PATH"; echo 1 > .cigate/rc; exit 1; }
+          echo "::group::semgrep scan"
+          rc=0
+          semgrep scan --config "$SEMGREP_CONFIG" \
+            --error --severity ERROR --disable-version-check --metrics off \
+            --json --output .cigate/out/semgrep.json . || rc=$?
+          echo "::endgroup::"
+          # semgrep exits 1 for findings, >=2 for its own errors. Both fail the
+          # gate, but do not report a crashed scanner as "found security issues".
+          if [ "$rc" -eq 1 ]; then
+            echo "::error::Semgrep found security issues (ERROR severity)"; echo 1 > .cigate/rc
+          elif [ "$rc" -ne 0 ]; then
+            echo "::error::Semgrep failed to run (exit ${rc}) — this is a tool error, not a finding"
+            echo 1 > .cigate/rc
+          fi
+          exit 0
+
+      - name: Summary
+        if: ${{ !cancelled() }}
+        run: |
+          py() { python3 -c "$1" 2>/dev/null || echo "?"; }
+          GL=$(py "import json;print(len(json.load(open('.cigate/out/gitleaks.json'))))")
+          tv() { py "import json;d=json.load(open('$1'));print(sum(len(r.get('Vulnerabilities') or [])+len(r.get('Misconfigurations') or []) for r in (d.get('Results') or [])))"; }
+          TV=$(tv .cigate/out/trivy.json)
+          TN=$(tv .cigate/out/trivy-nuget.json)
+          SG=$(py "import json;print(len(json.load(open('.cigate/out/semgrep.json')).get('results',[])))")
+          echo "Findings — secrets:${GL} deps:${TV} nuget:${TN} sast:${SG}"
+          if [ -n "${GITHUB_STEP_SUMMARY:-}" ]; then
+            {
+              echo "## Security Gate"
+              echo "| Gate | Tool | Findings |"
+              echo "|------|------|----------|"
+              echo "| Secrets | Gitleaks | ${GL} |"
+              echo "| Dependencies — source tree (${SEVERITY}) | Trivy | ${TV} |"
+              echo "| Dependencies — NuGet (${SEVERITY}) | Trivy | ${TN} |"
+              echo "| SAST (ERROR) | Semgrep | ${SG} |"
+            } >> "$GITHUB_STEP_SUMMARY"
+          fi
+
+      - name: Gate result
+        if: ${{ !cancelled() }}
+        run: |
+          rc=$(cat .cigate/rc 2>/dev/null || echo 1)
+          if [ "$rc" != "0" ]; then
+            echo "❌ Security gate FAILED — expand the grouped logs above (secrets / deps / SAST)."
+            exit 1
+          fi
+          echo "✅ Security gate passed."

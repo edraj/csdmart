@@ -21,11 +21,40 @@ public static class NativePluginLoader
     // is gone when their next stdin write raises a broken-pipe.
     private static readonly List<SubprocessPluginHost> _hosts = new();
 
+    // Every plugin directory that failed to load, and why.
+    //
+    // The scan runs during DI registration, before the host — and therefore the
+    // logger — exists, so failures could only go to stderr. One line on stderr
+    // among a startup's worth of output is easy to miss, and dmart carried on
+    // as if nothing were wrong: a deployment that lost its plugins looked
+    // completely healthy. Collected here so Program.cs can log them through the
+    // real pipeline once it is up, and so /info/plugins can report them.
+    private static readonly List<PluginLoadFailure> _failures = new();
+
+    public static IReadOnlyList<PluginLoadFailure> LoadFailures => _failures;
+
+    private static void RecordFailure(
+        List<PluginLoadFailure> failures, string dirName, string reason)
+    {
+        failures.Add(new PluginLoadFailure(dirName, reason));
+        Console.Error.WriteLine($"NATIVE_PLUGIN_LOAD_FAILED: {dirName}: {reason}");
+    }
+
     public static void AddNativePlugins(this IServiceCollection services)
     {
         var customRoot = FindPluginsRoot();
         if (customRoot is null) return;
+        _failures.AddRange(ScanRoot(services, customRoot));
+    }
 
+    // Split from AddNativePlugins so the scan can be exercised against a
+    // temporary directory. FindPluginsRoot is hard-wired to $HOME/.dmart/plugins,
+    // and a test that moves $HOME to reach it would be far more fragile than the
+    // behaviour it is checking.
+    internal static List<PluginLoadFailure> ScanRoot(
+        IServiceCollection services, string customRoot)
+    {
+        var failures = new List<PluginLoadFailure>();
         foreach (var dir in Directory.EnumerateDirectories(customRoot))
         {
             var dirName = Path.GetFileName(dir);
@@ -36,20 +65,29 @@ public static class NativePluginLoader
             var execPath = FindExecutable(dir, dirName);
             if (execPath is not null)
             {
-                LoadSubprocessPlugin(services, execPath, dirName);
+                LoadSubprocessPlugin(services, execPath, dirName, failures);
                 continue;
             }
 
             var soPath = FindSharedLibrary(dir, dirName);
             if (soPath is not null)
             {
-                LoadNativePlugin(services, soPath, dirName);
+                LoadNativePlugin(services, soPath, dirName, failures);
                 continue;
             }
+
+            // config.json present but no executable and no .so. Previously the
+            // loop just fell through in silence, which is the easiest failure
+            // of all to ship: the operator wrote a config, the binary is
+            // missing or misnamed, and nothing anywhere says so.
+            RecordFailure(failures, dirName,
+                $"config.json present but no plugin binary found in {dir} "
+                + $"(looked for an executable or {dirName}.so)");
         }
+        return failures;
     }
 
-    private static void LoadSubprocessPlugin(IServiceCollection services, string execPath, string dirName)
+    private static void LoadSubprocessPlugin(IServiceCollection services, string execPath, string dirName, List<PluginLoadFailure> failures)
     {
         try
         {
@@ -84,17 +122,17 @@ public static class NativePluginLoader
             }
             else
             {
-                Console.Error.WriteLine($"SUBPROCESS_PLUGIN_ERROR: {shortname} unknown type '{typeStr}'");
+                RecordFailure(failures, dirName, $"unknown plugin type '{typeStr}'");
                 host.Dispose();
             }
         }
         catch (Exception ex)
         {
-            Console.Error.WriteLine($"SUBPROCESS_PLUGIN_LOAD_FAILED: {dirName}: {ex.Message}");
+            RecordFailure(failures, dirName, $"subprocess load failed: {ex.Message}");
         }
     }
 
-    private static void LoadNativePlugin(IServiceCollection services, string soPath, string dirName)
+    private static void LoadNativePlugin(IServiceCollection services, string soPath, string dirName, List<PluginLoadFailure> failures)
     {
         try
         {
@@ -153,7 +191,7 @@ public static class NativePluginLoader
         }
         catch (Exception ex)
         {
-            Console.Error.WriteLine($"NATIVE_PLUGIN_LOAD_FAILED: {dirName}: {ex.Message}");
+            RecordFailure(failures, dirName, $"in-process .so load failed: {ex.Message}");
         }
     }
 
@@ -283,3 +321,8 @@ public static class NativePluginLoader
         return routes;
     }
 }
+
+// A plugin directory that was found but could not be loaded. Surfaced by
+// /info/plugins and logged at startup so a missing plugin is visible rather
+// than inferred from behaviour that quietly stopped happening.
+public sealed record PluginLoadFailure(string Shortname, string Reason);

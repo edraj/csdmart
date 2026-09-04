@@ -21,6 +21,7 @@ install/run/CLI — this folder goes into the **how** and **why**.
 | …export/import at gigabyte scale, or run an incremental pipeline | [parquet-export-design.md](./parquet-export-design.md) |
 | …stop `histories` / `deletions` growing without bound | [maintenance.md](./maintenance.md) |
 | …decide whether to adopt the official MCP SDK | [mcp-sdk-2-spike.md](./mcp-sdk-2-spike.md) |
+| …verify a downloaded release before deploying it | [VERIFYING-RELEASES.md](./VERIFYING-RELEASES.md) |
 | …debug a live issue | [debugging.md](./debugging.md) |
 | …add a new endpoint, repository, service, or plugin | [contributing.md](./contributing.md) |
 

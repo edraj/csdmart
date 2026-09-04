@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { resolveTotal } from "@shared/query-total";
   import { goto, params } from "@roxi/routify";
   import { can, permissions } from "@/stores/permissions";
   import { visibleColumns } from "@/lib/access-fields";
@@ -11,6 +12,7 @@
     getSpaceTags,
   } from "@/lib/dmart_services";
   import { buildFieldFilterClause } from "@/lib/searchFilters";
+  import { pruneEmptyFormValues } from "@/lib/formUtils";
   import {
     parseValueByType,
     getFieldType,
@@ -457,7 +459,7 @@
 
       if (response && response.records) {
         $allContents = response.records;
-        totalItemsCount = response.attributes?.total || response.records.length;
+        totalItemsCount = resolveTotal(response.attributes?.total, response.records.length);
         totalPages = Math.ceil(totalItemsCount / itemsPerPage) || 1;
 
         applyFilters();
@@ -709,7 +711,10 @@
         attributes.payload = {
           content_type: ContentType.json,
           schema_shortname: selectedCreateSchemaShortname,
-          body: createSchemaFormData || {},
+          // Only send the inputs the user actually filled — the schema form
+          // pre-initializes every property ('' / null / [] / {}).
+          body:
+            pruneEmptyFormValues($state.snapshot(createSchemaFormData)) ?? {},
         };
       }
 

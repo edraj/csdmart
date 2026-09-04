@@ -28,11 +28,20 @@ public sealed record ValidatePasswordBody(string Password);
 
 // /user/profile — partial update. Every field optional; only the fields
 // you send get changed. `payload.body` is free-form per the user schema.
+//
+// Contacts are NOT here. `email`, `msisdn`, `new_email`, `new_msisdn`,
+// `email_otp` and `msisdn_otp` were fields on this body until they moved to
+// POST /user/verify-contact, which owns every contact-plus-OTP operation —
+// confirming the address you already have and changing to a new one are the
+// same act, and both belong where the OTP is redeemed. The handler now
+// refuses the four `new_*`/`*_otp` keys outright, so they are gone from the
+// schema too; `email` and `msisdn` are still tolerated on the wire when they
+// echo the stored address unchanged (a profile read-modify-write round-trip
+// sends them back), but they cannot CHANGE anything and so are not published
+// as settable fields.
 public sealed record ProfileUpdateBody(
     string? Password = null,
     string? OldPassword = null,
-    string? Email = null,
-    string? Msisdn = null,
     Dictionary<string, string>? Displayname = null,
     Dictionary<string, string>? Description = null,
     string? Language = null,

@@ -5,6 +5,7 @@ using Dmart.Models.Api;
 using Dmart.Models.Contracts;
 using Dmart.Models.Core;
 using Dmart.Models.Enums;
+using Dmart.QueryGrammar;
 using Dmart.SqlAdapter.Helpers;
 using Dmart.SqlAdapter.Permissions;
 using Npgsql;
@@ -448,9 +449,13 @@ public sealed partial class DmartSqlAdapter : IDmartData
         }
         else if (subpath != "/")
         {
-            where.Add("(subpath = @subpath OR subpath LIKE @subpath_prefix)");
+            // One parameter, and the descendant half escapes it: an unescaped
+            // `@subpath || '/%'` reads `_` as a wildcard, so a query on
+            // `space/my_folder` also returned `space/myXfolder`. That used to be
+            // masked by the ACL predicate, which the tautology skip below can
+            // now legitimately omit. See SubpathScope.
+            where.Add($"(subpath = @subpath OR {SubpathScope.DescendantLike("subpath", "@subpath")})");
             pars.Add(new("@subpath", subpath));
-            pars.Add(new("@subpath_prefix", subpath + "/%"));
         }
 
         if (query.FilterTypes is { Count: > 0 })
@@ -517,7 +522,9 @@ public sealed partial class DmartSqlAdapter : IDmartData
         // server's QueryHelper.AppendAclFilter.
         if (_engine is not null && actor is not null)
         {
-            PermissionFilter.Append(whereClause, pars, actor, "entries", policies);
+            PermissionFilter.Append(whereClause, pars, actor, "entries", policies,
+                query.SpaceName, subpath,
+                query.FilterTypes?.Select(EnumWire).ToList());
         }
 
         var whereClauseStr = whereClause.ToString();

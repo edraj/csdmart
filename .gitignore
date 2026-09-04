@@ -62,3 +62,12 @@ dotnet-tools.json
 # Claude Code writes settings atomically via transient temp files; two were
 # committed accidentally by a `git add -A`.
 .claude/*.tmp.*
+
+# packages.lock.json is deliberately NOT committed — see dist/deps/README.md.
+# The SDK writes its own ILCompiler/ILLink.Tasks versions AND content hashes
+# into a lock file, and distro .NET builds (Fedora, AlmaLinux) resolve those
+# from a local library-packs folder whose hashes differ from nuget.org's. A
+# committed lock file fails NU1403 on every one of those builders. The
+# reviewable dependency graph lives under dist/deps/ instead, where MSBuild
+# never reads it.
+packages.lock.json

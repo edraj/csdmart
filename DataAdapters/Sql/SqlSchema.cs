@@ -9,10 +9,11 @@ namespace Dmart.DataAdapters.Sql;
 //     are JSONB — not PostgreSQL ARRAY. Only `query_policies` is TEXT[].
 //   * `displayname` and `description` are JSONB carrying Translation objects.
 //   * `payload` is JSONB carrying a Payload object.
-//   * `OTP.value` uses HSTORE — requires the `hstore` extension.
+//   * The `hstore` extension is kept for Python-dmart compatibility; no C#
+//     table uses it.
 //   * `users.type` and `users.language` use PostgreSQL ENUM types `usertype` and
 //     `language`. We pre-create them so dmart Python can hot-swap.
-//   * Histories, Locks, Sessions, URLShorts, OTP, UserPermissionsCache
+//   * Histories, Locks, Sessions, URLShorts, OTPs, UserPermissionsCache
 //     do NOT inherit from Metas — they're flat tables.
 public static class SqlSchema
 {
@@ -397,13 +398,40 @@ public static class SqlSchema
     );
 
     -- ============================================================
-    -- OTP  (uses hstore)
+    -- OTPS  (one row per issued code; doubles as request history)
+    --
+    -- (identifier, purpose) is not unique — only the latest non-consumed
+    -- row for a pair is redeemable; issuing supersedes any live predecessor.
+    -- consumed_at is the tombstone; status records why a row died
+    -- (consumed/superseded). attempts is bumped on wrong guesses; a row at
+    -- MaxOtpVerifyAttempts stays in place, dead. OtpHistorySweeper purges
+    -- rows past OtpHistoryRetentionDays.
     -- ============================================================
-    CREATE TABLE IF NOT EXISTS otp (
-        key       TEXT PRIMARY KEY,
-        value     hstore NOT NULL,
-        timestamp TIMESTAMP NOT NULL DEFAULT NOW()
+    CREATE TABLE IF NOT EXISTS otps (
+        id          BIGSERIAL PRIMARY KEY,
+        identifier  TEXT NOT NULL,
+        purpose     TEXT NOT NULL,
+        code_hash   TEXT NOT NULL,
+        created_at  TIMESTAMP NOT NULL DEFAULT NOW(),
+        expires_at  TIMESTAMP NOT NULL,
+        attempts    INT NOT NULL DEFAULT 0,
+        consumed_at TIMESTAMP,
+        status      TEXT
     );
+    -- Active-row lookup + resend cooldown (latest per identifier+purpose).
+    CREATE INDEX IF NOT EXISTS idx_otps_ident_purpose_created
+        ON otps (identifier, purpose, created_at DESC);
+    -- Per-day request count across all purposes.
+    CREATE INDEX IF NOT EXISTS idx_otps_ident_created
+        ON otps (identifier, created_at);
+    -- The legacy singular `otp` table is deliberately NOT dropped here.
+    -- CreateAll runs unconditionally on every startup, so a DROP in it is not
+    -- a migration — it is a destructive statement that re-executes forever.
+    -- `otp` is the table python-dmart uses, and this schema is documented as
+    -- co-existing with it (see the hstore note above), so on a shared database
+    -- every C# restart would have destroyed the Python side's table along with
+    -- any codes live in it. Retiring it belongs in a one-shot migration that an
+    -- operator runs deliberately, not in the idempotent create script.
 
     -- ============================================================
     -- USERPERMISSIONSCACHE  (resolved permissions per user)
@@ -416,11 +444,16 @@ public static class SqlSchema
     -- ============================================================
     -- PERFORMANCE INDEXES (mirrors create_tables.py)
     -- ============================================================
-    CREATE INDEX IF NOT EXISTS idx_entries_space_name        ON entries (space_name);
+    -- Composite (space_name, subpath) indexes for entries/attachments are
+    -- built in ConcurrentIndexes (below), NOT here: on an upgrade against a
+    -- production-size entries table, a plain CREATE INDEX inside this
+    -- transactional batch blocks writes for the whole build. The old
+    -- single-column space_name indexes they replace are dropped there too,
+    -- guarded on the replacement existing and being valid. idx_entries_subpath
+    -- stays — subpath-without-space lookups can't use the composite.
     CREATE INDEX IF NOT EXISTS idx_entries_subpath           ON entries (subpath);
     CREATE INDEX IF NOT EXISTS idx_entries_owner_shortname   ON entries (owner_shortname);
     CREATE INDEX IF NOT EXISTS idx_entries_resource_type     ON entries (resource_type);
-    CREATE INDEX IF NOT EXISTS idx_attachments_space_name    ON attachments (space_name);
     CREATE INDEX IF NOT EXISTS idx_attachments_subpath       ON attachments (subpath);
     CREATE INDEX IF NOT EXISTS idx_attachments_owner_shortname ON attachments (owner_shortname);
     CREATE INDEX IF NOT EXISTS idx_users_owner_shortname     ON users (owner_shortname);
@@ -428,6 +461,47 @@ public static class SqlSchema
     CREATE INDEX IF NOT EXISTS idx_permissions_owner_shortname ON permissions (owner_shortname);
     -- Parity index: groups (PR #94) was added without its owner index.
     CREATE INDEX IF NOT EXISTS idx_groups_owner_shortname    ON groups (owner_shortname);
+
+    -- ============================================================
+    -- EXTENDED STATISTICS: (space_name, subpath) correlation
+    -- ============================================================
+    -- Every query's WHERE leads with this pair, and PostgreSQL estimates the
+    -- pair by multiplying two independent selectivities. They are not
+    -- independent: a subpath belongs to exactly one space, so '/orders' occurs
+    -- only inside 'purchase'. The planner therefore divides by the space count
+    -- a second time and lands far low.
+    --
+    -- Measured on a 22.7M-row production instance, before and after:
+    --
+    --   purchase/orders   375,397 -> 2,560,137   (actual 2,589,782)  6.9x -> 1.1%
+    --   galleon/users   8,618,498 -> 10,184,247  (actual 10,053,947) 14% -> 1.3%
+    --   mbb/users          90,390 -> 103,471     (actual 124,870)    28% -> 17%
+    --
+    -- This is not a counting feature; it is plan quality. A 6.9x underestimate
+    -- on the largest table shapes join order, scan choice and memory sizing for
+    -- every query that touches it. The estimated cost of the purchase/orders
+    -- probe moved 8,504 -> 57,249, which is the planner finally being told the
+    -- truth about what that folder costs.
+    --
+    -- Small folders stay noisy (mbb/users is still 17% out). These are sampled
+    -- statistics, never a substitute for COUNT(*).
+    --
+    -- Instant and idempotent: a catalog row, no table scan, and
+    -- ShareUpdateExclusiveLock — the same level ANALYZE and VACUUM take, which
+    -- does not conflict with SELECT or INSERT/UPDATE/DELETE.
+    --
+    -- NOT followed by an ANALYZE here, deliberately. Schema init runs on every
+    -- service start and ANALYZE has no IF NOT EXISTS, so an ANALYZE in this
+    -- path would re-sample the largest table in the system on every restart.
+    -- A fresh install has empty tables and picks the statistics up naturally;
+    -- an UPGRADE against a populated table gets the benefit at the next
+    -- autovacuum ANALYZE, or immediately if the operator runs:
+    --
+    --     ANALYZE entries; ANALYZE attachments;
+    CREATE STATISTICS IF NOT EXISTS entries_space_subpath_stx
+        (ndistinct, dependencies, mcv) ON space_name, subpath FROM entries;
+    CREATE STATISTICS IF NOT EXISTS attachments_space_subpath_stx
+        (ndistinct, dependencies, mcv) ON space_name, subpath FROM attachments;
 
     -- Roles, groups, and permissions are fetched and deleted by shortname ALONE
     -- (get/delete never pass space_name/subpath), so a shortname MUST be globally
@@ -782,5 +856,50 @@ public static class SqlSchema
         // attempt_count on this table).
         "CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_users_payload_gin " +
             "ON users USING GIN (payload jsonb_path_ops)",
+
+        // Composite (space_name, subpath): every query's WHERE leads with
+        // exactly this pair (BuildWhereClause), so one composite probe
+        // replaces a BitmapAnd of two single-column scans, gives the planner
+        // a candidate set to intersect with the GIN bitmaps, and serves
+        // COUNT(*) listing totals as an index-only scan. CONCURRENTLY for
+        // the same reason as the trigram index above: entries can be huge on
+        // upgrade, and a blocking build would freeze writes.
+        "CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_entries_space_subpath " +
+            "ON entries (space_name, subpath)",
+        "CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_attachments_space_subpath " +
+            "ON attachments (space_name, subpath)",
+
+        // Retire the single-column space_name indexes the composites replace
+        // (their leading column serves space_name-only scans; one less index
+        // maintained per INSERT). Guarded on the replacement existing AND
+        // being valid: SchemaInitializer logs-and-continues on a failed
+        // CONCURRENTLY build, so an unguarded drop could leave a table with
+        // neither index. Scoped to current_schema() like the other probes.
+        // A DROP INDEX takes a brief ACCESS EXCLUSIVE lock — momentary, not
+        // build-length.
+        """
+        DO $$ BEGIN
+            IF EXISTS (SELECT 1 FROM pg_index i
+                       JOIN pg_class c ON c.oid = i.indexrelid
+                       JOIN pg_namespace n ON n.oid = c.relnamespace
+                       WHERE n.nspname = current_schema()
+                         AND c.relname = 'idx_entries_space_subpath'
+                         AND i.indisvalid) THEN
+                DROP INDEX IF EXISTS idx_entries_space_name;
+            END IF;
+        END $$
+        """,
+        """
+        DO $$ BEGIN
+            IF EXISTS (SELECT 1 FROM pg_index i
+                       JOIN pg_class c ON c.oid = i.indexrelid
+                       JOIN pg_namespace n ON n.oid = c.relnamespace
+                       WHERE n.nspname = current_schema()
+                         AND c.relname = 'idx_attachments_space_subpath'
+                         AND i.indisvalid) THEN
+                DROP INDEX IF EXISTS idx_attachments_space_name;
+            END IF;
+        END $$
+        """,
     };
 }

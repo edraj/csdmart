@@ -1,3 +1,4 @@
+using System.Text;
 using System.Diagnostics.CodeAnalysis;
 using System.Text.Json;
 using Dmart.Config;
@@ -68,6 +69,19 @@ public sealed class QueryService(
         return await perms.BuildUserQueryPoliciesAsync(actor, q.SpaceName, q.Subpath ?? "/", ct);
     }
 
+    // Resolve the tri-state `retrieve_total` against the deployment default.
+    //
+    // null  -> RetrieveTotalDefault (true by default: Python parity)
+    // true  -> count
+    // false -> skip, and `total` is reported as -1
+    //
+    // Every skip path in this class goes through here, so the meaning of an
+    // omitted field is decided in exactly one place. Note the internal
+    // repaginate-after-join path sets RetrieveTotal = false explicitly, which
+    // stays a skip regardless of the setting — that is deliberate, it is not a
+    // caller preference but a "this dispatch does not need a count".
+    private bool SkipTotal(Query q) => !(q.RetrieveTotal ?? settings.Value.RetrieveTotalDefault);
+
     public async Task<Response> ExecuteAsync(Query q, string? actor, CancellationToken ct = default)
     {
         // Clamp limit: default to 100, cap at MaxQueryLimit.
@@ -136,9 +150,16 @@ public sealed class QueryService(
 
         // For the re-paginated path, fetch the full base set (offset 0, capped)
         // and skip the base COUNT — `total` is recomputed post-join below.
+        // Bound the pagination count. Counting is O(matching rows) regardless
+        // of indexes, so an uncapped `total` re-scans the whole result set on
+        // every page request — on production that was 2.59M rows and ~2.4s per
+        // request. Above the cap the count stops early and `total` is reported
+        // as a lower bound below. 0 (the default) keeps the exact-count,
+        // Python-parity behaviour.
+        var totalCap = settings.Value.QueryTotalCap;
         var dispatchQuery = repaginateAfterJoin
-            ? q with { Limit = baseCap, Offset = 0, RetrieveTotal = false }
-            : q;
+            ? q with { Limit = baseCap, Offset = 0, RetrieveTotal = false, TotalCap = totalCap }
+            : q with { TotalCap = totalCap };
 
         var response = dispatchQuery.Type switch
         {
@@ -152,6 +173,21 @@ public sealed class QueryService(
             QueryType.Events => await QueryEventsAsync(dispatchQuery, actor, ct),
             _ => await DispatchTableQuery(dispatchQuery, actor, ct),
         };
+
+        // No silent caps: a bounded count reports the cap, not the real total, so
+        // say so rather than letting a client read "10000" as exact. Keyed on
+        // the cap+1 sentinel RunCountAsync returns to mean "at least cap".
+        if (totalCap > 0 && response.Attributes is { } countAttrs
+            && countAttrs.TryGetValue("total", out var totalObj)
+            && totalObj is int t && t > totalCap)
+        {
+            var bounded = new Dictionary<string, object>(countAttrs, StringComparer.Ordinal)
+            {
+                ["total"] = totalCap,
+                ["total_is_lower_bound"] = true,
+            };
+            response = response with { Attributes = bounded };
+        }
 
         // Python parity: client-side joins run against the materialized result
         // list. Mirror of dmart_plain/backend/data_adapters/sql/adapter.py:
@@ -306,7 +342,7 @@ public sealed class QueryService(
         var pageTask = actor is not null
             ? users.QueryAsync(q, actor, policies, ct)
             : users.QueryAsync(q, ct);
-        var totalTask = q.RetrieveTotal == false
+        var totalTask = SkipTotal(q)
             ? Task.FromResult(-1)
             : (actor is not null
                 ? users.CountQueryAsync(q, actor, policies, ct)
@@ -332,7 +368,7 @@ public sealed class QueryService(
         var pageTask = actor is not null
             ? access.QueryRolesAsync(q, actor, policies, ct)
             : access.QueryRolesAsync(q, ct);
-        var totalTask = q.RetrieveTotal == false
+        var totalTask = SkipTotal(q)
             ? Task.FromResult(-1)
             : (actor is not null
                 ? access.CountRolesQueryAsync(q, actor, policies, ct)
@@ -358,7 +394,7 @@ public sealed class QueryService(
         var pageTask = actor is not null
             ? access.QueryGroupsAsync(q, actor, policies, ct)
             : access.QueryGroupsAsync(q, ct);
-        var totalTask = q.RetrieveTotal == false
+        var totalTask = SkipTotal(q)
             ? Task.FromResult(-1)
             : (actor is not null
                 ? access.CountGroupsQueryAsync(q, actor, policies, ct)
@@ -384,7 +420,7 @@ public sealed class QueryService(
         var pageTask = actor is not null
             ? access.QueryPermissionsAsync(q, actor, policies, ct)
             : access.QueryPermissionsAsync(q, ct);
-        var totalTask = q.RetrieveTotal == false
+        var totalTask = SkipTotal(q)
             ? Task.FromResult(-1)
             : (actor is not null
                 ? access.CountPermissionsQueryAsync(q, actor, policies, ct)
@@ -407,7 +443,7 @@ public sealed class QueryService(
             return EmptyQueryResponse();
 
         var pageTask = attachments.QueryAsync(q, ct);
-        var totalTask = q.RetrieveTotal == false
+        var totalTask = SkipTotal(q)
             ? Task.FromResult(-1)
             : attachments.CountQueryAsync(q, ct);
         await Task.WhenAll(pageTask, totalTask);
@@ -431,7 +467,7 @@ public sealed class QueryService(
             return EmptyQueryResponse();
 
         var pageTask = history.QueryHistoryAsync(q, ct);
-        var totalTask = q.RetrieveTotal == false
+        var totalTask = SkipTotal(q)
             ? Task.FromResult(-1)
             : history.CountHistoryQueryAsync(q, ct);
         await Task.WhenAll(pageTask, totalTask);
@@ -519,7 +555,7 @@ public sealed class QueryService(
         var page = matches.Skip(q.Offset).Take(q.Limit).Select(t => t.Rec).ToList();
         return Response.Ok(page, new()
         {
-            ["total"] = q.RetrieveTotal == false ? -1 : total,
+            ["total"] = SkipTotal(q) ? -1 : total,
             ["returned"] = page.Count,
         });
     }
@@ -657,7 +693,7 @@ public sealed class QueryService(
             FROM entries, {tagFrom}
             WHERE {where}
             """);
-        QueryHelper.AppendAclFilter(sql, args, effectiveActor, "entries", policies, dialect);
+        QueryHelper.AppendAclFilter(sql, args, effectiveActor, "entries", policies, dialect, q);
         sql.Append($"GROUP BY {tagText} ORDER BY cnt DESC");
         // Apply limit/offset on the aggregated result.
         args.Add(new() { Value = Math.Max(1, q.Limit) });
@@ -722,7 +758,7 @@ public sealed class QueryService(
 
         var effectiveActor = actor ?? PermissionService.AnonymousUser;
         var pageTask = entries.QueryAsync(q, effectiveActor, policies, semiJoins, ct);
-        var totalTask = q.RetrieveTotal == false
+        var totalTask = SkipTotal(q)
             ? Task.FromResult(-1)
             : entries.CountQueryAsync(q, effectiveActor, policies, semiJoins, ct);
         await Task.WhenAll(pageTask, totalTask);
@@ -828,17 +864,9 @@ public sealed class QueryService(
         // in attributes. Python returns a single Record per group.
         var records = rows.Select(row =>
         {
-            // Convert numeric types to int/double to avoid JsonTypeInfo issues with source-gen
             var attrs = new Dictionary<string, object>(StringComparer.Ordinal);
             foreach (var kv in row)
-            {
-                attrs[kv.Key] = kv.Value switch
-                {
-                    long l => (int)l,
-                    decimal d => (double)d,
-                    _ => kv.Value,
-                };
-            }
+                attrs[kv.Key] = AggregationValue.ForWire(kv.Value);
             return new Record
             {
                 ResourceType = ResourceType.Content,
@@ -1683,27 +1711,112 @@ public sealed class QueryService(
             $"@resource_type:{string.Join("|", ffvResourceTypes)} " +
             string.Join(" ", ffvQuery);
 
+        // The caller's search is PARENTHESISED before the permission clause is
+        // appended. Concatenating it raw left two ways past the FFV, both
+        // because the permission tokens are ordinary selectors with no special
+        // standing in the grammar:
+        //
+        //   1. AND binds tighter than OR, so `@a:1 or @b:2` + FFV parsed as
+        //      `a=1 OR (b=2 AND <permissions>)` — the left branch escaped every
+        //      restriction, including space/subpath/resource_type.
+        //   2. Same-field accumulation is scoped to one AND-run, so a caller
+        //      alternation on the constrained field (`@dept:sales|ops`) merged
+        //      with the FFV's `@dept:sales` into `dept IN (sales, ops)` —
+        //      widening the page instead of narrowing it.
+        //
+        // Wrapping closes both: the group is evaluated first and then ANDed
+        // with the permission clause, so every branch is restricted and the
+        // caller's selectors cannot accumulate into the FFV's.
         var newSearch = string.IsNullOrEmpty(q.Search)
             ? permKeyQuery
-            : $"{q.Search} {permKeyQuery}";
+            : $"({BalanceParens(q.Search)}) {permKeyQuery}";
 
         return DedupeSearchTokens(q with { Search = newSearch });
     }
 
-    // Tokenises q.Search on plain ASCII space and dedupes — good enough
-    // for the @field:value tokens dmart's permission FFV strings actually
-    // produce, none of which contain whitespace. RediSearch's quoted
-    // alternative — `@field:"hello world"` — would split incorrectly here,
-    // but that shape is not generated anywhere in the FFV path; if it ever
-    // is, this function needs a quote-aware tokenizer.
+    // Makes a caller's search safe to wrap in parentheses.
+    //
+    // Wrapping alone is not enough: a stray ')' in the caller's expression
+    // closes the wrapper early and hands the escape straight back. With
+    // `@k:v) or @k:w` the wrap yields `(@k:v) or @k:w)` — the group ends at the
+    // caller's paren, the `or` is top-level again, and the permission clause
+    // lands on one branch only. The parser already discards an unmatched ')'
+    // as noise, so removing it here changes nothing the caller asked for while
+    // making the wrap hold. Unclosed '(' are completed for the same reason:
+    // an unterminated group would otherwise swallow the permission tokens.
+    //
+    // Not quote-aware, matching DedupeSearchTokens below: a paren inside a
+    // quoted value (`@field:"a (b)"`) is counted as structure. That shape is
+    // not generated anywhere in the FFV path; if it ever is, both functions
+    // need a real tokenizer.
+    internal static string BalanceParens(string search)
+    {
+        var sb = new StringBuilder(search.Length + 4);
+        var depth = 0;
+        foreach (var ch in search)
+        {
+            if (ch == ')')
+            {
+                if (depth == 0) continue;   // stray closer — drop it
+                depth--;
+            }
+            else if (ch == '(') depth++;
+            sb.Append(ch);
+        }
+        sb.Append(')', depth);              // complete any unclosed groups
+        return sb.ToString();
+    }
+
+    // Tokenises q.Search on plain ASCII space and drops repeated SELECTORS —
+    // the `@field:value` shape dmart's permission FFV strings produce, none of
+    // which contain whitespace. Repeating a selector is idempotent (the parser
+    // accumulates same-field values), so collapsing them only shortens the
+    // expression.
+    //
+    // Only selectors are eligible. Every other token — the `or` / `and`
+    // keywords, bare parens, free-text terms — is structural or positional,
+    // and dropping a repeat CHANGES THE PARSE. Deduping `or` was the sharp
+    // edge: `A or B ... or C` lost its second `or` and silently became
+    // `(A or B) AND C`, turning a union into an intersection. Any predicate
+    // written twice in one expression (`@a:1 ... @a:1`) is likewise left
+    // alone once it carries a paren, because `(@a:1` and `@a:1` are already
+    // distinct strings and treating them as equal would be guesswork.
+    //
+    // RediSearch's quoted alternative — `@field:"hello world"` — still splits
+    // incorrectly here, but that shape is not generated anywhere in the FFV
+    // path; if it ever is, this function needs a quote-aware tokenizer.
     internal static Query DedupeSearchTokens(Query q)
     {
         if (string.IsNullOrEmpty(q.Search)) return q;
         var parts = q.Search.Split(' ', StringSplitOptions.RemoveEmptyEntries);
+
+        // Bail out entirely on any boolean keyword or paren. Dedupe is only
+        // safe inside a single AND-run, where repeating a selector really is
+        // idempotent. The moment the expression carries an `or` or a group,
+        // tokens become scope-sensitive and dropping one MOVES a restriction
+        // rather than shortening it: with FFV `@payload.body.dept:sales` and
+        // caller search `@payload.body.dept:sales or @payload.body.k:w`, the
+        // injected permission token is collapsed as a duplicate and the right
+        // OR branch loses the department restriction — a permission bypass,
+        // not a cosmetic change. `and` is included because dropping a selector
+        // that follows one leaves a dangling keyword. Tokens ENDING in `)`
+        // matter too: `@x:9)` starts with `@` so it reads as a selector, and
+        // `(@a:1 or @x:9) (@b:2 or @x:9)` silently loses the second group's
+        // `@x:9`. Failing to dedupe costs nothing but a longer string.
+        foreach (var p in parts)
+        {
+            if (p.Contains('(') || p.Contains(')')) return q;
+            if (p.Equals("or", StringComparison.OrdinalIgnoreCase)
+                || p.Equals("and", StringComparison.OrdinalIgnoreCase)) return q;
+        }
+
         var seen = new HashSet<string>(StringComparer.Ordinal);
         var deduped = new List<string>(parts.Length);
         foreach (var p in parts)
-            if (seen.Add(p)) deduped.Add(p);
+        {
+            var isSelector = p.StartsWith('@') || p.StartsWith("-@", StringComparison.Ordinal);
+            if (!isSelector || seen.Add(p)) deduped.Add(p);
+        }
         if (deduped.Count == parts.Length) return q;
         return q with { Search = string.Join(' ', deduped) };
     }
@@ -1741,6 +1854,31 @@ public sealed class QueryService(
 // Python's to_record() dumps every __dict__ key minus the "local props"
 // (uuid, resource_type, shortname, subpath). Then _set_query_final_results
 // deletes password (for users) and query_policies (for all). We mirror that.
+
+// Prepares a raw aggregation cell for the attributes bag.
+//
+// This used to narrow `long -> int` and `decimal -> double` to keep the values
+// inside the set of types DmartJsonContext knew how to serialize. Both were
+// lossy — a count past int.MaxValue wrapped, and PostgreSQL returns SUM/AVG
+// over numeric as `numeric` (decimal), so routing money through double dropped
+// the cents: 12345678901234567.89 came back as 12345678901234568. The context
+// now registers both types, so the values travel as themselves.
+internal static class AggregationValue
+{
+    // AVG(numeric) comes back from PostgreSQL at scale 16 — the average of
+    // 10, 20, 30, 30 is literally 22.5000000000000000. Unlike double, decimal
+    // carries that scale through System.Text.Json, so emitting it untouched
+    // would turn a long-standing `22.5` on the wire into `22.5000000000000000`.
+    // Dividing by one normalises the scale away without altering the value,
+    // which keeps the shape callers already parse while the value stays exact.
+    private const decimal ScaleNormaliser = 1.000000000000000000000000000000000m;
+
+    public static object ForWire(object value) => value switch
+    {
+        decimal d => d / ScaleNormaliser,
+        _ => value,
+    };
+}
 
 // Strip null-valued and empty-string entries from the attributes dictionary so the
 // JSON response doesn't contain "key": null or "key": "" for optional fields.

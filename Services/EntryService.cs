@@ -97,7 +97,11 @@ public sealed class EntryService(
         if (!await perms.CanCreateAsync(actor, locator, attrsForGate, ct))
             return Result<Entry>.Fail(InternalErrorCode.NOT_ALLOWED, "no create access", ErrorTypes.Auth);
 
-        var existing = await entries.GetAsync(entry.SpaceName, entry.Subpath, entry.Shortname, entry.ResourceType, ct);
+        // Untyped lookup on purpose: uniqueness is (shortname, space, subpath)
+        // regardless of resource_type, and the typed overload's probe ALWAYS
+        // misses on a create (the row doesn't exist yet), so it just paid an
+        // extra round trip before falling back to exactly this query.
+        var existing = await entries.GetAsync(entry.SpaceName, entry.Subpath, entry.Shortname, ct);
         if (existing is not null)
             return Result<Entry>.Fail(InternalErrorCode.SHORTNAME_ALREADY_EXIST, "entry exists", ErrorTypes.Db);
 
@@ -120,12 +124,17 @@ public sealed class EntryService(
         if (relError is not null)
             return Result<Entry>.Fail(InternalErrorCode.INVALID_DATA, relError, ErrorTypes.Request);
 
+        // Both folder-level gates below consult the same parent folder; load it
+        // ONCE and hand it to each — previously they issued the identical
+        // SELECT back to back on two separate connections.
+        var parentFolder = await LoadParentFolderAsync(entry.SpaceName, entry.Subpath, ct);
+
         // Folder-level compound-key uniqueness (Python parity:
         // adapter.py::validate_uniqueness). Runs before plugins so a
         // before-create hook can rely on the constraint having been checked.
         if (uniqueness is not null)
         {
-            var uniqRes = await uniqueness.ValidateAsync(entry, ActionType.Create, existing: null, ct);
+            var uniqRes = await uniqueness.ValidateWithFolderAsync(entry, ActionType.Create, existing: null, parentFolder, ct);
             if (!uniqRes.IsOk)
                 return Result<Entry>.Fail(uniqRes.ErrorCode, uniqRes.ErrorMessage!, uniqRes.ErrorType!);
         }
@@ -136,7 +145,7 @@ public sealed class EntryService(
         // request that already satisfies the folder's declared constraints.
         if (folderContent is not null)
         {
-            var fcRes = await folderContent.ValidateAsync(entry, ct);
+            var fcRes = folderContent.Validate(entry, parentFolder);
             if (!fcRes.IsOk)
                 return Result<Entry>.Fail(fcRes.ErrorCode, fcRes.ErrorMessage!, fcRes.ErrorType!);
         }
@@ -197,6 +206,33 @@ public sealed class EntryService(
     // per-field detail as Result.Info (see SchemaValidator.ToInfo).
     private Task<List<SchemaError>?> ValidatePayloadAsync(Entry entry, CancellationToken ct)
         => schemas.ValidatePayloadDetailedAsync(entry.SpaceName, entry.ResourceType, entry.Payload, ct);
+
+    // Loads the parent folder consulted by BOTH folder-level gates (uniqueness
+    // + folder-content policy) so a write pays for that read once instead of
+    // twice. Returns null when there is no parent (root-level entries), the
+    // folder doesn't exist, or the load fails — each an "allow" for the gates,
+    // matching their previous self-loading behavior. Uses the same typed-with-
+    // untyped-fallback GetAsync the validators used, so what the gates see is
+    // byte-identical to before.
+    private async Task<Entry?> LoadParentFolderAsync(string spaceName, string subpath, CancellationToken ct)
+    {
+        if (uniqueness is null && folderContent is null) return null;
+        var (parentSubpath, folderShortname) = Locator.SplitParentFolder(subpath);
+        if (folderShortname.Length == 0) return null;
+        try
+        {
+            return await entries.GetAsync(spaceName, parentSubpath, folderShortname, ResourceType.Folder, ct);
+        }
+        catch (Exception ex)
+        {
+            // WARN, not debug: the folder-content gate fails OPEN on a load
+            // failure, and operators should see when enforcement was waived
+            // by a DB hiccup (same rationale as the validator's own logging).
+            log.LogWarning(ex, "parent folder load failed for {Space}/{Subpath} — folder-level gates not applied",
+                spaceName, subpath);
+            return null;
+        }
+    }
 
     // Walks the relationships list and verifies each related_to locator
     // resolves to a row in `entries`. Returns null on success, a single-line
@@ -431,12 +467,15 @@ public sealed class EntryService(
         if (relError is not null)
             return Result<Entry>.Fail(InternalErrorCode.INVALID_DATA, relError, ErrorTypes.Request);
 
+        // Shared parent-folder read — same reasoning as CreateAsync.
+        var parentFolderU = await LoadParentFolderAsync(merged.SpaceName, merged.Subpath, ct);
+
         // Folder-level compound-key uniqueness — same as Create, but the
         // existing entry is excluded from the conflict set (matching
         // Python's adapter.py::validate_uniqueness behavior on update).
         if (uniqueness is not null)
         {
-            var uniqRes = await uniqueness.ValidateAsync(merged, ActionType.Update, existing, ct);
+            var uniqRes = await uniqueness.ValidateWithFolderAsync(merged, ActionType.Update, existing, parentFolderU, ct);
             if (!uniqRes.IsOk)
                 return Result<Entry>.Fail(uniqRes.ErrorCode, uniqRes.ErrorMessage!, uniqRes.ErrorType!);
         }
@@ -446,7 +485,7 @@ public sealed class EntryService(
         // against the parent folder's declared constraints.
         if (folderContent is not null)
         {
-            var fcRes = await folderContent.ValidateAsync(merged, ct);
+            var fcRes = folderContent.Validate(merged, parentFolderU);
             if (!fcRes.IsOk)
                 return Result<Entry>.Fail(fcRes.ErrorCode, fcRes.ErrorMessage!, fcRes.ErrorType!);
         }

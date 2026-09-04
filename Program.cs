@@ -78,6 +78,8 @@ var (dotenvPath, dotenvValues) = DotEnv.Load();
 if (dotenvPath is not null)
 {
     var rawKeys = DotEnv.Parse(dotenvPath);
+    foreach (var warning in DotEnvStrictCheck.RetiredKeyWarnings(dotenvPath, rawKeys))
+        Console.Error.WriteLine($"Warning: {warning}");
     var keyErrors = DotEnvStrictCheck.ValidateKeys(dotenvPath, rawKeys);
     if (keyErrors.Count > 0)
     {
@@ -98,7 +100,7 @@ if (dotenvPath is not null)
 // is responsible for chunking (Postgres caps prepared-statement parameters
 // at 65535; 4 params per row → cap well over our 1000-row chunk size).
 [System.Diagnostics.CodeAnalysis.SuppressMessage("Security", "CA2100",
-    Justification = "Audited: tableName is from a hardcoded set in each caller (entries/users/roles/permissions/spaces for fix_query_policies, 'entries' for update_query_policies). The dynamic VALUES list embeds only integer placeholder indices; all caller-supplied values flow through NpgsqlCommand.Parameters.")]
+    Justification = "Audited: tableName is from a hardcoded set in each caller (entries/users/roles/groups/permissions/spaces for fix_query_policies and for update_query_policies --all-tables, 'entries' otherwise). The dynamic VALUES list embeds only integer placeholder indices; all caller-supplied values flow through NpgsqlCommand.Parameters.")]
 static async Task<int> BulkUpdatePoliciesAsync(
     System.Data.Common.DbConnection conn,
     string tableName,
@@ -283,16 +285,22 @@ switch (subcommand)
                              --force     → overwrite existing files / upsert
                                            existing rows (default: skip both)
               fix_query_policies
-                             Backfill entries.query_policies for rows written
-                             before write-time population landed. Idempotent.
+                             Backfill query_policies for rows written before
+                             write-time population landed, across all six
+                             tables that carry the column. Heals EMPTY arrays
+                             only. Idempotent.
                              Args: [<space>] [--dry-run]
               update_query_policies
-                             Recompute query_policies for every entry and
-                             update rows whose stored value drifted (e.g.
-                             owner / is_active changed without going through
-                             the write path). Mirrors Python's
-                             update_query_policies.py.
+                             Recompute query_policies and update rows whose
+                             stored value drifted (e.g. owner / is_active
+                             changed without going through the write path, or
+                             a change to what QueryPolicies.Generate emits).
+                             Repairs stale non-empty arrays, which
+                             fix_query_policies cannot. Mirrors Python's
+                             update_query_policies.py; entries-only unless
+                             --all-tables is given.
                              Args: [--batch-size <N>] (default 1000)
+                                   [--all-tables]
               create-users-folders
                              Backfill personal/people/<shortname>/{notifications,
                              private,protected,public,inbox} for every user.
@@ -1582,8 +1590,15 @@ switch (subcommand)
     case "fix-query-policies":
     {
         // Backfill query_policies for rows written by code paths that
-        // predated write-time population. Covers all five tables with
-        // ACL-filterable rows: entries, users, roles, permissions, spaces.
+        // predated write-time population. Covers all six tables with
+        // ACL-filterable rows: entries, users, roles, groups, permissions,
+        // spaces — i.e. every table carrying a query_policies column, which is
+        // exactly the set AppendAclFilter does NOT skip (it skips attachments
+        // and histories, the two that have no such column).
+        //
+        // NOTE: this heals only rows whose array is EMPTY. A row with a stale
+        // but non-empty array is invisible to it by design — use
+        // `dmart update_query_policies --all-tables` for that.
         // Rows with an empty TEXT[] are invisible to AppendAclFilter (the
         // row-level ACL intersects the caller's policy list against the
         // row array via LIKE; empty never matches).
@@ -1618,7 +1633,7 @@ switch (subcommand)
         // owner_group_shortname. Only the `entries` table is special-cased
         // on resource_type = 'folder' to set entryShortname (the rest of
         // the tables' rows are never folders).
-        var tables = new[] { "entries", "users", "roles", "permissions", "spaces" };
+        var tables = new[] { "entries", "users", "roles", "groups", "permissions", "spaces" };
         var grandTotal = 0;
 
         foreach (var tableName in tables)
@@ -1793,21 +1808,32 @@ switch (subcommand)
     case "update_query_policies":
     case "update-query-policies":
     {
-        // Recompute query_policies for every row in `entries` and write the
-        // value back when it differs from what's stored. Mirrors Python's
-        // update_query_policies.py — same name, same scope (Entries only),
-        // same default batch size. Use this when a bulk in-place change
+        // Recompute query_policies for every row and write the value back when
+        // it differs from what's stored. Mirrors Python's
+        // update_query_policies.py — same name, same default scope (Entries
+        // only), same default batch size. Use this when a bulk in-place change
         // (e.g. an owner_shortname rename or an is_active toggle done via
         // direct SQL) leaves the materialized policies stale; the regular
         // /managed/request write path keeps them in sync going forward.
+        //
+        // --all-tables widens it to every table carrying query_policies:
+        // entries, users, roles, groups, permissions, spaces. That is the set
+        // AppendAclFilter reads, and it is wider than Python's, so it is opt-in
+        // rather than the default. It is REQUIRED after any change to what
+        // QueryPolicies.Generate emits, because:
+        //   * this is the only command that repairs a stale non-empty array
+        //     (fix_query_policies heals empty ones only), and
+        //   * `groups` is reachable through no other backfill path.
         //
         // Idempotent: rows whose recomputed policies match the stored array
         // are skipped without an UPDATE. Safe on a live DB; each UPDATE
         // touches only the query_policies column.
         var batchSize = 1000;
+        var allTables = false;
         for (var i = 0; i < serverArgs.Length; i++)
         {
-            if (serverArgs[i] == "--batch-size" && i + 1 < serverArgs.Length
+            if (serverArgs[i] is "--all-tables" or "--all") allTables = true;
+            else if (serverArgs[i] == "--batch-size" && i + 1 < serverArgs.Length
                 && int.TryParse(serverArgs[i + 1], out var b) && b > 0)
                 batchSize = b;
         }
@@ -1815,25 +1841,64 @@ switch (subcommand)
         var (s, dbInst) = CliBootstrap.BuildFactoryOrExit(dotenvPath, dotenvValues,
             "Error: Database not configured. Set DATABASE_* in config.env.");
 
-        Console.WriteLine($"Recomputing query_policies for entries in {CliBootstrap.DescribeStore(s, dbInst)} (batch={batchSize})...");
+        // Default scope stays `entries` for Python parity; --all-tables widens
+        // to every table carrying a query_policies column.
+        var updateTables = allTables
+            ? new[] { "entries", "users", "roles", "groups", "permissions", "spaces" }
+            : new[] { "entries" };
+
+        Console.WriteLine($"Recomputing query_policies for {string.Join(", ", updateTables)} in {CliBootstrap.DescribeStore(s, dbInst)} (batch={batchSize})...");
 
         await using var conn = await dbInst.OpenAsync();
 
         var updated = 0;
-        var offset = 0;
+        foreach (var updateTable in updateTables)
+        {
+        // Keyset pagination, NOT LIMIT/OFFSET.
+        //
+        // Every one of these tables carries a UNIQUE (shortname, space_name,
+        // subpath) index, so ordering by exactly those columns lets the scan
+        // walk the index and resume from the last row of the previous batch.
+        //
+        // The previous form ordered by (space_name, subpath, shortname), which
+        // matches no index. PostgreSQL therefore sorted the WHOLE table to disk
+        // on EVERY batch and discarded everything before the offset — so the
+        // per-batch cost grew with the table AND the batch count grew with the
+        // table, making the whole command quadratic. Measured on 2,000,000
+        // rows: 1575 ms per batch for the old form (external merge, ~90 MB
+        // spill per worker) against 0.216 ms for this one, whose cost does not
+        // grow as the scan advances.
+        //
+        // That mattered because this is now a REQUIRED migration step: the
+        // v1.3.0 query_policies change cannot be applied without it.
+        string? lastShortname = null, lastSpace = null, lastSubpath = null;
         while (true)
         {
-            // LIMIT before OFFSET: PostgreSQL accepts either order, SQLite
-            // only this one. Parameters follow the new order.
-            await using var sel = conn.Command("""
+            // Row-value comparison so the tuple is one index range seek rather
+            // than an OR-chain the planner has to unpick. Supported by both
+            // backends. $1 is always the limit; the cursor binds as $2..$4 only
+            // once there is a previous batch to resume from — the numbering is
+            // by bind order, not by position in the text.
+            var cursor = lastShortname is null
+                ? ""
+                : "WHERE (shortname, space_name, subpath) > ($2, $3, $4)\n                ";
+            var updateSelectSql = $"""
                 SELECT shortname, space_name, subpath, resource_type, is_active,
                        owner_shortname, owner_group_shortname, query_policies
-                FROM entries
-                ORDER BY space_name, subpath, shortname
-                LIMIT $1 OFFSET $2
-                """);
+                FROM {updateTable}
+                {cursor}ORDER BY shortname, space_name, subpath
+                LIMIT $1
+                """;
+#pragma warning disable CA2100 // Audited: composed of constants + `updateTable`, which iterates the hardcoded updateTables array; batchSize and the cursor bind as $1..$4.
+            await using var sel = conn.Command(updateSelectSql);
+#pragma warning restore CA2100
             DbParams.Add(sel, batchSize);
-            DbParams.Add(sel, offset);
+            if (lastShortname is not null)
+            {
+                DbParams.Add(sel, lastShortname);
+                DbParams.Add(sel, lastSpace!);
+                DbParams.Add(sel, lastSubpath!);
+            }
 
             var rows = new List<(string sn, string sp, string subp, string rt, bool act,
                 string own, string? og, string[] policies)>();
@@ -1849,7 +1914,7 @@ switch (subcommand)
                 }
             }
             if (rows.Count == 0) break;
-            Console.WriteLine($"Processing {rows.Count} entries...");
+            Console.WriteLine($"Processing {rows.Count} {updateTable} row(s)...");
 
             // Recompute per page in C# (same QueryPolicies.Generate call as
             // before), drop rows whose stored value already matches (preserves
@@ -1863,7 +1928,9 @@ switch (subcommand)
                 List<string> recomputed;
                 try
                 {
-                    var entryShortname = rt == "folder" ? sn : null;
+                    // Only entries.resource_type == 'folder' populates
+                    // entryShortname — same special case as fix_query_policies.
+                    var entryShortname = (updateTable == "entries" && rt == "folder") ? sn : null;
                     recomputed = Dmart.Utils.QueryPolicies.Generate(
                         spaceName: sp, subpath: subp, resourceType: rt,
                         isActive: act, ownerShortname: own ?? "dmart",
@@ -1871,7 +1938,7 @@ switch (subcommand)
                 }
                 catch (Exception ex)
                 {
-                    Console.WriteLine($"Error while computing query_policies for {sp}/{subp}/{sn}");
+                    Console.WriteLine($"Error while computing query_policies for {updateTable} {sp}/{subp}/{sn}");
                     Console.WriteLine($"| {ex.Message}\n");
                     continue;
                 }
@@ -1884,12 +1951,20 @@ switch (subcommand)
             for (var i = 0; i < differing.Count; i += CHUNK_SIZE)
             {
                 var len = Math.Min(CHUNK_SIZE, differing.Count - i);
-                updated += await BulkUpdatePoliciesAsync(conn, "entries", differing, i, len);
+                updated += await BulkUpdatePoliciesAsync(conn, updateTable, differing, i, len);
             }
-            offset += rows.Count;
+            // Advance the cursor to the last row read, so the next batch
+            // resumes from there rather than re-deriving position by offset.
+            var (lsn, lsp, lsubp, _, _, _, _, _) = rows[^1];
+            lastShortname = lsn; lastSpace = lsp; lastSubpath = lsubp;
+
+            // A short page means the table is exhausted; skip the extra
+            // round-trip that would otherwise be needed to discover it.
+            if (rows.Count < batchSize) break;
+        }
         }
 
-        Console.WriteLine($"Updated query_policies for {updated} entries.");
+        Console.WriteLine($"Updated query_policies for {updated} row(s).");
         return;
     }
 
@@ -2198,8 +2273,16 @@ builder.Services.AddSingleton<Dmart.QueryGrammar.ISqlDialect>(sp => UsesSqlite(s
     ? Dmart.QueryGrammar.SqliteSqlDialect.Instance
     : Dmart.QueryGrammar.PostgresSqlDialect.Instance);
 builder.Services.AddSingleton<AuthzCacheRefresher>();
+// Opt-in (AUTH_CACHE_TTL) micro-cache for the per-request auth lookups;
+// registered unconditionally so JwtBearerSetup can always resolve it —
+// disabled it is a no-op.
+builder.Services.AddSingleton<Dmart.Auth.AuthReadCache>();
 builder.Services.AddSingleton<EntryRepository>();
-builder.Services.AddSingleton<UserRepository>();
+builder.Services.AddSingleton<UserRepository>(sp => new UserRepository(
+    sp.GetRequiredService<IDbConnectionFactory>(),
+    sp.GetRequiredService<AuthzCacheRefresher>(),
+    sp.GetRequiredService<SessionTokenHasher>(),
+    sp.GetRequiredService<Dmart.Auth.AuthReadCache>()));
 builder.Services.AddSingleton<AccessRepository>();
 builder.Services.AddSingleton<AttachmentRepository>();
 builder.Services.AddSingleton<HistoryRepository>();
@@ -2330,6 +2413,7 @@ builder.Services.AddSingleton<Dmart.Auth.OAuth.OAuthUserResolver>();
 builder.Services.AddSingleton<Dmart.Auth.OAuthCodeStore>();
 builder.Services.AddSingleton<Dmart.Auth.OAuthClientStore>();
 builder.Services.AddHostedService<Dmart.Auth.OAuthStoreSweeper>();
+builder.Services.AddHostedService<Dmart.Services.OtpHistorySweeper>();
 builder.Services.AddDmartAuth(builder.Configuration);
 
 // Plugins
@@ -2386,6 +2470,27 @@ Dmart.Plugins.Native.NativePluginCallbacks.Services = app.Services;
 // that terminal Ctrl+C would otherwise elicit.
 Dmart.Plugins.Native.NativePluginLoader.WireSubprocessShutdown(
     app.Services.GetRequiredService<IHostApplicationLifetime>());
+
+// Replay plugin load failures through the real logging pipeline. The scan runs
+// during DI registration, before the logger exists, so its only outlet was one
+// stderr line per failure — easily lost in startup output, and dmart carried on
+// serving as though nothing were missing. Plugins are load-bearing here, so a
+// deployment that silently lost one must not look healthy. Logged at Error and
+// also reported by GET /info/plugins.
+{
+    var failures = Dmart.Plugins.Native.NativePluginLoader.LoadFailures;
+    if (failures.Count > 0)
+    {
+        var pluginLog = app.Services.GetRequiredService<ILoggerFactory>()
+            .CreateLogger("Dmart.Plugins.Native");
+        foreach (var f in failures)
+            pluginLog.LogError("PLUGIN_LOAD_FAILED: {Shortname}: {Reason}", f.Shortname, f.Reason);
+        pluginLog.LogError(
+            "PLUGIN_LOAD_SUMMARY: {FailedCount} plugin(s) failed to load and are NOT active: {Names}. "
+            + "See GET /info/plugins.",
+            failures.Count, string.Join(", ", failures.Select(f => f.Shortname)));
+    }
+}
 
 // Drain the Npgsql connection pool on graceful shutdown so SIGTERM doesn't
 // leave orphan backends attached to the dmart DB. Without this the next

@@ -54,7 +54,7 @@ public sealed class OtpProvider(
             // Wrap the localized template in the same HTML shell Python uses,
             // so "Your OTP code is 123456" / "رمز التحقق…" both render bold.
             var html = $"<p>{System.Net.WebUtility.HtmlEncode(body)}</p>";
-            var sent = await smtp.SendEmailAsync(destination, "OTP", html, ct);
+            var sent = await smtp.SendEmailAsync(destination, RenderSubject(language), html, ct);
             if (sent) return;
         }
 
@@ -83,6 +83,27 @@ public sealed class OtpProvider(
         return template
             .Replace("{code}", code, StringComparison.Ordinal)
             .Replace("{otp_ttl}", ttlMinutes, StringComparison.Ordinal);
+    }
+
+    // Email subject counterpart to RenderMessage. Resolves `otp_email_subject`
+    // through the same LanguageLoader path so the subject is served in the
+    // recipient's language and stays operator-overridable at
+    // ~/.dmart/languages/<locale>.json without a rebuild. Falls back to the
+    // historical "OTP" literal — a blank subject is spam-filter bait, so a
+    // deployment with no language files must still get a usable one.
+    //
+    // IsNullOrWhiteSpace, not `?? "OTP"`: the override path is a JSON file an
+    // operator edits by hand, where the natural way to say "I don't want a
+    // subject" is `"otp_email_subject": ""`, not omitting the key. A
+    // null-only guard sends that straight through as a blank Subject header —
+    // exactly the case the fallback exists to prevent.
+    //
+    // No {code} substitution: putting the OTP in the subject line leaks it to
+    // lock-screen notification previews and mail-server logs.
+    internal string RenderSubject(Language language)
+    {
+        var subject = languages.Get(language, "otp_email_subject");
+        return string.IsNullOrWhiteSpace(subject) ? "OTP" : subject;
     }
 
     // Lightweight email heuristic — good enough for dispatch routing; the OTP

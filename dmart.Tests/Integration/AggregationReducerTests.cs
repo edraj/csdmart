@@ -36,6 +36,11 @@ public class AggregationReducerTests : IClassFixture<DmartFactory>
             (await ReduceAsync(query, space, "count_distinct")).ShouldBe(3d);
             (await ReduceAsync(query, space, "sum")).ShouldBe(90d);
             (await ReduceAsync(query, space, "avg")).ShouldBe(22.5d);
+            // 10/20/30 is a blind spot for min and max: text and numeric
+            // ordering agree on it, so these two stayed green while a jsonb
+            // path was being compared lexicographically. Values whose orderings
+            // DISAGREE live in AggregationMinMaxTests — keep them there rather
+            // than reshaping this fixture, which count_distinct depends on.
             (await ReduceAsync(query, space, "min")).ShouldBe(10d);
             (await ReduceAsync(query, space, "max")).ShouldBe(30d);
 

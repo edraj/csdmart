@@ -8,12 +8,20 @@ namespace Dmart.Api.User;
 
 public static class ProfileHandler
 {
+    // The one attachment shortname /user/profile carries. Python pins the same
+    // literal (api/user/router.py:589, filter_shortnames=["avatar"]); it is a
+    // convention rather than a schema constraint, so it lives here as a name
+    // instead of being spelled inline at the filter.
+    private const string AvatarShortname = "avatar";
+
     public static void Map(RouteGroupBuilder g)
     {
         // GET /user/profile — Python returns records: [Record] with user
         // attributes. The tsdmart SDK reads data.records[0].attributes.
         g.MapGet("/profile", async (HttpContext http, UserService svc,
-            DataAdapters.Sql.AccessRepository access, CancellationToken ct) =>
+            DataAdapters.Sql.AccessRepository access,
+            DataAdapters.Sql.AttachmentRepository attachmentRepo,
+            CancellationToken ct) =>
         {
             var actor = http.Actor();
             if (actor is null)
@@ -46,12 +54,60 @@ public static class ProfileHandler
                 ["payload"] = user.Payload,
                 ["permissions"] = permissions,
             };
+            // The caller's avatar, grouped by resource_type — the same shape
+            // /managed/entry returns, so a client that already renders
+            // `record.attachments` needs no second call.
+            //
+            // AVATAR ONLY, matching Python (api/user/router.py:589 fetches
+            // `filter_shortnames=["avatar"]`). Returning every attachment
+            // instead looked like a harmless superset and is not:
+            //
+            //   * `ListForParentAsync` orders `created_at DESC`, so the
+            //     conventional `attachments.media[0]` stops being the avatar
+            //     the moment the user has a NEWER media attachment — an
+            //     uploaded document, an ID scan. The profile then renders that
+            //     file as the user's picture.
+            //   * `AttachmentMapper.ToEntryRecord` emits each attachment's
+            //     `payload` AND `body`, and this endpoint has no
+            //     `retrieve_attachments` flag to opt out of. Every profile
+            //     read would ship the body of every json/comment attachment on
+            //     the row, unbounded, on the hottest authenticated route.
+            //
+            // NOT read-gated per attachment, unlike Api/Managed/EntryHandler.
+            // That gate is right there, where the parent may belong to someone
+            // else. Here the row IS the caller's, and this handler already
+            // returns their email, msisdn, payload and full permission map
+            // ungated — refusing them their own avatar while handing over
+            // their contact details does not hold together. It would also
+            // refuse in the ordinary case: PermissionService.CanAsync returns
+            // false outright when the actor holds no role permissions
+            // (PermissionService.cs — `if (perms.Count == 0) return false;`),
+            // and AdminBootstrap provisions the implicit `logged_in` role with
+            // an empty permission list, so a self-registered user would never
+            // see their own avatar.
+            var children = await attachmentRepo.ListForParentAsync(
+                user.SpaceName, user.Subpath, user.Shortname, ct);
+            var avatars = children
+                .Where(a => string.Equals(a.Shortname, AvatarShortname, StringComparison.Ordinal))
+                .ToList();
+            // Left null when empty so DefaultIgnoreCondition.WhenWritingNull
+            // keeps the key off the wire entirely, rather than emitting `{}`
+            // for the strip middleware to clean up afterwards.
+            var attachments = avatars.Count == 0
+                ? null
+                : avatars
+                    .GroupBy(a => DataAdapters.Sql.JsonbHelpers.EnumMember(a.ResourceType))
+                    .ToDictionary(
+                        grp => grp.Key,
+                        grp => grp.Select(a => AttachmentMapper.ToEntryRecord(a)).ToList());
+
             var profileRecord = new Record
             {
                 ResourceType = Dmart.Models.Enums.ResourceType.User,
                 Shortname = user.Shortname,
                 Subpath = "/users",
                 Attributes = AttrHelper.StripNulls(attrs),
+                Attachments = attachments,
             };
             return Response.Ok(new[] { profileRecord });
         });

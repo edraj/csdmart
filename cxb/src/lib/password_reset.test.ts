@@ -6,7 +6,7 @@ import type { ResetFailureReason } from "@shared/password-reset";
 // shared client's behaviour is covered from catalog's suite, and what cxb owns
 // is the reason -> message-key mapping below.
 vi.mock("@edraj/tsdmart", () => ({
-  Dmart: { passwordResetRequest: vi.fn(), axiosDmartInstance: { post: vi.fn() } },
+  Dmart: { axiosDmartInstance: { post: vi.fn() } },
 }));
 
 import { resetErrorKey } from "./password_reset";

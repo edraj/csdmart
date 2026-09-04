@@ -25,12 +25,17 @@ export * from "@shared/password-reset";
  * or the flow would talk to a Dmart class that never received the axios
  * instance ensureDmartAxios() installs.
  *
- * password-reset-confirm is not in the SDK (it has passwordResetRequest but no
- * confirm), so leg 2 goes through the shared axios instance directly — the
+ * Neither leg goes through a typed SDK method: password-reset-confirm was
+ * never in the SDK, and passwordResetRequest now points at a deleted route.
+ * Both go through the shared axios instance directly — the
  * same pattern src/routes/management/tools/import.svelte uses.
  */
 const client = createPasswordResetClient({
-  requestReset: (body) => Dmart.passwordResetRequest(body),
+  // Direct, not Dmart.passwordResetRequest: that SDK method targets
+  // /user/password-reset-request, which no longer exists — leg 1 is
+  // /user/otp-request with purpose=reset now. Same reason leg 2 goes direct.
+  requestReset: (body) =>
+    Dmart.axiosDmartInstance.post("user/otp-request", body),
   confirmReset: async (body) =>
     (await Dmart.axiosDmartInstance.post("user/password-reset-confirm", body))
       ?.data,

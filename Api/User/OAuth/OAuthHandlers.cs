@@ -260,7 +260,7 @@ public static class OAuthHandlers
         // Python-parity: login emits a single long-lived access token; the
         // refresh minted by ProcessLoginAsync is discarded here. MCP OAuth
         // clients that need refresh go through /oauth/token directly.
-        var (access, _, loggedIn) = result.Value;
+        var (access, _, loggedIn, _) = result.Value;
 
         // Match /user/login's cookie: httponly auth_token, same-site strict.
         var maxAgeSeconds = settings.Value.JwtAccessExpires;

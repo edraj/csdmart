@@ -71,6 +71,9 @@ internal sealed class DmartSettingsValidator : IValidateOptions<DmartSettings>
             failures.Add($"AuthRateLimitPerMinute must be >= 1 (got {s.AuthRateLimitPerMinute})");
         if (s.MaxQueryLimit < 1)
             failures.Add($"MaxQueryLimit must be >= 1 (got {s.MaxQueryLimit})");
+        // 0 is meaningful (unlimited); negative is not.
+        if (s.QueryTotalCap < 0)
+            failures.Add($"QueryTotalCap must be >= 0, 0 meaning unlimited (got {s.QueryTotalCap})");
         if (s.RequestTimeout <= 0)
             failures.Add($"RequestTimeout must be > 0 (got {s.RequestTimeout})");
         if (!string.Equals(s.UserDeletionMode, "soft", StringComparison.OrdinalIgnoreCase)

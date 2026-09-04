@@ -2,6 +2,7 @@ using Dmart.Auth;
 using Dmart.Utils;
 using Dmart.Config;
 using Dmart.DataAdapters.Sql;
+using Dmart.Models.Api;
 using Microsoft.Data.Sqlite;
 using Microsoft.Extensions.Logging.Abstractions;
 using Microsoft.Extensions.Options;
@@ -10,13 +11,12 @@ using Xunit;
 
 namespace Dmart.Tests.Unit.Sql;
 
-// The OTP row's value column is the one hstore in the schema. SQLite has no
-// hstore, so the same key->string map is stored as a JSON object and updated
-// with json_set instead of hstore concatenation.
-//
-// These assert the behaviours that divergence could break: TTL enforcement
-// (which reads a key out of the map), and the attempts counter (which does an
-// in-place partial update and must not clobber the other keys).
+// The `otps` table is append-only: one row per issued code, doubling as
+// request history. These assert the lifecycle invariants on the SQLite
+// provider: at most one redeemable code per (identifier, purpose) — issuing
+// supersedes the predecessor; consumption is a guarded update (replays fail);
+// purpose scopes redemption; the attempts cap dead-ends a row in place; and
+// the per-day counter sees every issued row regardless of state.
 public sealed class SqliteOtpRepositoryTests : IAsyncLifetime
 {
     private readonly string _dbPath = Path.Combine(
@@ -43,85 +43,158 @@ public sealed class SqliteOtpRepositoryTests : IAsyncLifetime
     }
 
     private static DateTime Soon => TimeUtils.Now().AddMinutes(5);
+    private const string Login = OtpPurpose.Login;
+    private const string Verify = OtpPurpose.VerifyContact;
 
     [Fact]
-    public async Task StoreThenVerify_ConsumesTheCode()
+    public async Task IssueThenVerify_ConsumesTheCode()
     {
-        await _repo.StoreAsync("k1", "123456", Soon);
+        await _repo.IssueAsync("k1", Login, "123456", Soon);
 
-        (await _repo.VerifyAndConsumeAsync("k1", "999999")).ShouldBeFalse();
-        (await _repo.VerifyAndConsumeAsync("k1", "123456")).ShouldBeTrue();
+        (await _repo.VerifyAndConsumeAsync("k1", Login, "999999", 0)).ShouldBeFalse();
+        (await _repo.VerifyAndConsumeAsync("k1", Login, "123456", 0)).ShouldBeTrue();
         // Consumed — a replay must fail.
-        (await _repo.VerifyAndConsumeAsync("k1", "123456")).ShouldBeFalse();
+        (await _repo.VerifyAndConsumeAsync("k1", Login, "123456", 0)).ShouldBeFalse();
     }
 
     [Fact]
-    public async Task StoredValueIsHashed_NotThePlaintextCode()
+    public async Task Purpose_ScopesRedemption()
     {
-        await _repo.StoreAsync("k2", "123456", Soon);
-        var stored = await _repo.PeekStoredHashAsync("k2");
-        stored.ShouldNotBeNull();
-        stored.ShouldNotBe("123456", "a DB read must not surface a replayable code");
-        stored!.Length.ShouldBe(64, "keyed HMAC rendered as fixed-width hex");
+        // A code issued for verify-contact must not redeem as a login code —
+        // purpose is part of the OTP's identity, not a tag.
+        await _repo.IssueAsync("k2", Verify, "123456", Soon);
+        (await _repo.VerifyAndConsumeAsync("k2", Login, "123456", 0)).ShouldBeFalse();
+        (await _repo.VerifyAndConsumeAsync("k2", Verify, "123456", 0)).ShouldBeTrue();
     }
 
     [Fact]
-    public async Task ExpiredCode_IsRejectedAndInvisible()
+    public async Task Reissue_SupersedesThePredecessor()
     {
-        await _repo.StoreAsync("k3", "123456", TimeUtils.Now().AddSeconds(-1));
-        // expires_at lives inside the map, so this exercises the JSON read path.
-        (await _repo.PeekStoredHashAsync("k3")).ShouldBeNull();
-        (await _repo.VerifyAndConsumeAsync("k3", "123456")).ShouldBeFalse();
+        // Only the code in the latest SMS/email is redeemable: a resend kills
+        // the previous code rather than widening the guessing window to two.
+        await _repo.IssueAsync("k3", Login, "111111", Soon);
+        await _repo.IssueAsync("k3", Login, "222222", Soon);
+
+        (await _repo.VerifyAndConsumeAsync("k3", Login, "111111", 0)).ShouldBeFalse();
+        (await _repo.VerifyAndConsumeAsync("k3", Login, "222222", 0)).ShouldBeTrue();
     }
 
     [Fact]
-    public async Task AttemptsCap_SpendsTheCode_AndPreservesOtherKeys()
+    public async Task ExpiredCode_IsRejected()
     {
-        await _repo.StoreAsync("k4", "123456", Soon);
+        await _repo.IssueAsync("k4", Login, "123456", TimeUtils.Now().AddSeconds(-1));
+        (await _repo.VerifyAndConsumeAsync("k4", Login, "123456", 0)).ShouldBeFalse();
+    }
+
+    [Fact]
+    public async Task AttemptsCap_DeadEndsTheCodeInPlace()
+    {
+        await _repo.IssueAsync("k5", Login, "123456", Soon);
 
         // Two wrong guesses under a cap of three: the counter is bumped in
-        // place. If json_set clobbered the object instead of setting one key,
-        // the code would be lost and the correct guess below would fail.
-        (await _repo.VerifyAndConsumeAsync("k4", "000000", maxAttempts: 3)).ShouldBeFalse();
-        (await _repo.VerifyAndConsumeAsync("k4", "000000", maxAttempts: 3)).ShouldBeFalse();
-        (await _repo.PeekStoredHashAsync("k4")).ShouldNotBeNull("code must survive sub-cap failures");
+        // place and the code survives.
+        (await _repo.VerifyAndConsumeAsync("k5", Login, "000000", 3)).ShouldBeFalse();
+        (await _repo.VerifyAndConsumeAsync("k5", Login, "000000", 3)).ShouldBeFalse();
+        (await _repo.VerifyAndConsumeAsync("k5", Login, "123456", 3))
+            .ShouldBeTrue("code must survive sub-cap failures");
 
-        // The third failure reaches the cap and spends the code permanently.
-        (await _repo.VerifyAndConsumeAsync("k4", "000000", maxAttempts: 3)).ShouldBeFalse();
-        (await _repo.PeekStoredHashAsync("k4")).ShouldBeNull();
-        (await _repo.VerifyAndConsumeAsync("k4", "123456", maxAttempts: 3))
+        // Fresh code, cap exhausted: even the correct value is refused.
+        await _repo.IssueAsync("k5b", Login, "123456", Soon);
+        for (var i = 0; i < 3; i++)
+            (await _repo.VerifyAndConsumeAsync("k5b", Login, "000000", 3)).ShouldBeFalse();
+        (await _repo.VerifyAndConsumeAsync("k5b", Login, "123456", 3))
             .ShouldBeFalse("an exhausted code must not be redeemable even with the right value");
     }
 
     [Fact]
     public async Task UncappedAttempts_NeverSpendTheCode()
     {
-        await _repo.StoreAsync("k5", "123456", Soon);
+        await _repo.IssueAsync("k6", Login, "123456", Soon);
         for (var i = 0; i < 5; i++)
-            (await _repo.VerifyAndConsumeAsync("k5", "000000")).ShouldBeFalse();
-        // maxAttempts = 0 preserves the original uncapped behaviour.
-        (await _repo.VerifyAndConsumeAsync("k5", "123456")).ShouldBeTrue();
+            (await _repo.VerifyAndConsumeAsync("k6", Login, "000000", 0)).ShouldBeFalse();
+        // maxAttempts = 0 disables the cap.
+        (await _repo.VerifyAndConsumeAsync("k6", Login, "123456", 0)).ShouldBeTrue();
     }
 
     [Fact]
-    public async Task GetCreatedSince_IsZeroImmediatelyAfterWrite()
+    public async Task GetCreatedSince_IsZeroImmediatelyAfterIssue_AndPurposeScoped()
     {
-        (await _repo.GetCreatedSinceAsync("missing")).ShouldBeNull();
+        (await _repo.GetCreatedSinceAsync("missing", Login)).ShouldBeNull();
 
-        await _repo.StoreAsync("k6", "123456", Soon);
-        var since = await _repo.GetCreatedSinceAsync("k6");
+        await _repo.IssueAsync("k7", Login, "123456", Soon);
+        var since = await _repo.GetCreatedSinceAsync("k7", Login);
         since.ShouldNotBeNull();
         // Computed in C# rather than via julianday(), whose float day-count
         // round trip loses a second — a 60s gap measures as 59, which would let
         // a resend through early.
         since!.Value.ShouldBeInRange(0, 5);
+
+        // The purpose-scoped variant answers "was a code minted for THIS
+        // flow" — a login issue is invisible at the reset purpose.
+        (await _repo.GetCreatedSinceAsync("k7", OtpPurpose.Reset)).ShouldBeNull();
     }
 
     [Fact]
-    public async Task Delete_RemovesTheRow()
+    public async Task GetCreatedSinceBucket_SpansPurposesWithinABucket()
     {
-        await _repo.StoreAsync("k7", "123456", Soon);
-        await _repo.DeleteAsync("k7");
-        (await _repo.PeekStoredHashAsync("k7")).ShouldBeNull();
+        // Within a bucket the anchor is shared, so switching purpose is not a
+        // cooldown bypass: a login issue must anchor the cooldown that a
+        // register request then checks.
+        (await _repo.GetCreatedSinceBucketAsync("k7b", Login)).ShouldBeNull();
+
+        await _repo.IssueAsync("k7b", Login, "123456", Soon);
+
+        var sinceLogin = await _repo.GetCreatedSinceBucketAsync("k7b", Login);
+        sinceLogin.ShouldNotBeNull();
+        sinceLogin!.Value.ShouldBeInRange(0, 5);
+
+        var sinceRegister = await _repo.GetCreatedSinceBucketAsync("k7b", OtpPurpose.Register);
+        sinceRegister.ShouldNotBeNull("register shares the sign-in bucket with login");
+    }
+
+    // The bucket boundary, which is the whole point. `register` needs no JWT
+    // and no existing user, so a destination-wide cooldown let an anonymous
+    // caller hold it open with one request a minute and silently swallow every
+    // password reset the victim asked for. Reset anchors on reset alone.
+    [Fact]
+    public async Task GetCreatedSinceBucket_Isolates_Reset_From_SignIn()
+    {
+        await _repo.IssueAsync("k7c", Login, "123456", Soon);
+
+        (await _repo.GetCreatedSinceBucketAsync("k7c", OtpPurpose.Reset))
+            .ShouldBeNull("a login issue must not start the reset cooldown");
+
+        await _repo.IssueAsync("k7c", OtpPurpose.Reset, "654321", Soon);
+
+        (await _repo.GetCreatedSinceBucketAsync("k7c", OtpPurpose.Reset))
+            .ShouldNotBeNull("a reset issue anchors the reset cooldown");
+    }
+
+    [Fact]
+    public async Task CountIssuedSince_SpansPurposesAndStates()
+    {
+        var cutoff = TimeUtils.Now().AddHours(-24);
+        (await _repo.CountIssuedSinceAsync("k8", cutoff)).ShouldBe(0);
+
+        await _repo.IssueAsync("k8", Login, "111111", Soon);
+        await _repo.IssueAsync("k8", Verify, "222222", Soon);
+        // Consume one — history rows still count toward the daily cap.
+        (await _repo.VerifyAndConsumeAsync("k8", Verify, "222222", 0)).ShouldBeTrue();
+
+        (await _repo.CountIssuedSinceAsync("k8", cutoff)).ShouldBe(2);
+        // Other identifiers are unaffected.
+        (await _repo.CountIssuedSinceAsync("k8-other", cutoff)).ShouldBe(0);
+    }
+
+    [Fact]
+    public async Task PurgeOlderThan_RemovesOnlyAgedRows()
+    {
+        await _repo.IssueAsync("k9", Login, "123456", Soon);
+        // A cutoff in the past purges nothing…
+        (await _repo.PurgeOlderThanAsync(TimeUtils.Now().AddDays(-7))).ShouldBe(0);
+        // …a cutoff in the future takes the fresh row (superseded rows from
+        // IssueAsync would go the same way).
+        (await _repo.PurgeOlderThanAsync(TimeUtils.Now().AddMinutes(1))).ShouldBe(1);
+        (await _repo.GetCreatedSinceAsync("k9", Login)).ShouldBeNull();
     }
 }

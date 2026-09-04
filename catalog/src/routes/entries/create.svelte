@@ -20,6 +20,7 @@
     errorToastMessage,
     successToastMessage,
   } from "@/lib/toasts_messages";
+  import { pruneEmptyFormValues } from "@/lib/formUtils";
   import {
     CheckCircleSolid,
     CloseCircleOutline,
@@ -675,7 +676,9 @@
         }
         bodyContent = {};
       } else {
-        bodyContent = pollFormData;
+        // Only send the inputs the user actually filled — untouched
+        // schema-form placeholders ('' / null / [] / {}) stay out.
+        bodyContent = pruneEmptyFormValues(pollFormData) ?? {};
       }
 
       isLoading = true;
@@ -788,19 +791,19 @@
       // Required-field validation above (validateRequiredFields) has already
       // guaranteed required inputs are filled. Trust the form data from here —
       // an extra whole-object "is empty" heuristic produced false-negatives on
-      // valid submissions.
-      bodyContent =
-        jsonFormData && Object.keys(jsonFormData).length > 0
-          ? jsonFormData
-          : {};
+      // valid submissions. The schema form pre-initializes every property
+      // ('' / null / [] / {}); prune those so empty inputs never reach the
+      // payload body.
+      const prunedFormData = pruneEmptyFormValues(jsonFormData) ?? {};
+      bodyContent = prunedFormData;
 
       // If schema has a template attachment, wrap body content with template data
       if (schemaBasedTemplate && schemaBasedTemplate.schema && !isEmpty) {
         bodyContent = {
-          schema_data: jsonFormData,
+          schema_data: prunedFormData,
           template: {
             name: schemaBasedTemplate.shortname,
-            data: { ...templateFormData },
+            data: pruneEmptyFormValues(templateFormData) ?? {},
           },
         };
       }

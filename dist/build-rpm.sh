@@ -188,6 +188,37 @@ if [[ "$TARGET" == "el9" || "$TARGET" == "rhel9" ]]; then
             rpm -Uvh https://packages.microsoft.com/config/rhel/9/packages-microsoft-prod.rpm &&
             dnf install -y dotnet-sdk-10.0 rpm-build clang zlib-devel git --nobest
         '
+    else
+        # Refresh the SDK in the container we are REUSING.
+        #
+        # This container is a cache, and a cache that never expires silently
+        # freezes the toolchain. The builder on this machine was created
+        # 2026-08-15 with dotnet-sdk 10.0.110 and was still on it in late
+        # August: every EL9 RPM built in between shipped .NET runtime 10.0.10,
+        # which carries CVE-2026-62901 (HIGH) plus two MEDIUMs. Nothing noticed,
+        # because the container installs the SDK exactly once, at creation, and
+        # nothing here ever looked again.
+        #
+        # That matters more than an ordinary stale dependency: the build is
+        # self-contained + PublishAot, so the runtime is compiled INTO
+        # /usr/bin/dmart and a user cannot patch it by updating their distro
+        # .NET. It takes a rebuild and a re-release.
+        #
+        # Scoped to the SDK rather than a blanket `dnf upgrade`: this is about
+        # the one package whose version ends up inside the shipped binary, and
+        # a full upgrade of a long-lived builder is its own source of surprise.
+        echo "Refreshing dotnet-sdk in $CONTAINER_NAME (was: $($ENGINE exec "$CONTAINER_NAME" dotnet --version 2>/dev/null || echo unknown))..."
+        # Best-effort: a developer offline, or a transient mirror failure, must
+        # not block a build. Staleness is not silent any more either way —
+        # dist/scan-runtime-cves.sh reads the runtime out of the finished
+        # binary, so a refresh that failed still gets caught before release.
+        if ! $ENGINE exec --user root "$CONTAINER_NAME" \
+                dnf upgrade -y dotnet-sdk-10.0 2>&1 | tail -3; then
+            echo "  WARNING: could not refresh the SDK — building with whatever" >&2
+            echo "           the container already has. The runtime CVE scan in" >&2
+            echo "           CI is what will catch it if that is now stale." >&2
+        fi
+        echo "Building with dotnet $($ENGINE exec "$CONTAINER_NAME" dotnet --version 2>/dev/null || echo unknown)"
     fi
     # Clean previous build output to force recompilation against el9 glibc
     rm -rf bin/Release obj/Release

@@ -33,6 +33,18 @@ public enum JsonKind
 }
 
 /// <summary>
+/// A reducer's SQL: the aggregate expression, plus an optional FROM-clause
+/// fragment the caller must splice in for it to resolve.
+/// </summary>
+/// <param name="Expression">Goes in the SELECT list.</param>
+/// <param name="From">
+/// Null for the ordinary case. When set, it is a join the caller appends
+/// directly after the table name, and it MUST be row-preserving — exactly one
+/// row in, one row out — or it would silently change what the aggregate counts.
+/// </param>
+public sealed record ReducerSql(string Expression, string? From);
+
+/// <summary>
 /// The parts of SQL generation that genuinely differ between PostgreSQL and
 /// SQLite.
 /// </summary>
@@ -113,6 +125,37 @@ public interface ISqlDialect
     string ArrayAnyLike(string column, IReadOnlyList<string> patterns, SqlBinder bind);
 
     /// <summary>
+    /// True when the string-array column shares at least one element with
+    /// <paramref name="values"/> (PostgreSQL <c>&amp;&amp;</c>).
+    /// </summary>
+    /// <remarks>
+    /// The indexable form of the row-level ACL policy test. Callers get here
+    /// via <see cref="QueryPolicyExpansion"/>, which turns wildcard policy
+    /// patterns into the exact strings a row can carry; patterns it cannot
+    /// expand stay on <see cref="ArrayAnyLike"/>. Matching is by equality, so
+    /// no escaping applies and both backends compare case-sensitively.
+    /// </remarks>
+    string ArrayOverlapAny(string column, IReadOnlyList<string> values, SqlBinder bind)
+    {
+        // Default implementation so this member stays additive: Dmart.QueryGrammar
+        // is a published package, and a new abstract member would break every
+        // third-party ISqlDialect at compile time. Falls back to the LIKE form
+        // every dialect already implements — same rows, just not indexable. A
+        // backend that can serve an array overlap from an index overrides this;
+        // both in-tree dialects do.
+        //
+        // The values are already-expanded exact tokens, so they are escaped to
+        // match themselves literally. Deliberately NOT QueryPolicyExpansion
+        // .ToLikePattern: that maps '*' to '%', and widening a policy token here
+        // would grant access the overriding dialects refuse.
+        if (values.Count == 0) return "FALSE";
+        var patterns = new List<string>(values.Count);
+        foreach (var v in values)
+            patterns.Add(QueryPolicyExpansion.ToLiteralLikePattern(v));
+        return ArrayAnyLike(column, patterns, bind);
+    }
+
+    /// <summary>
     /// True when the ACL JSON array holds an entry granting
     /// <paramref name="action"/> to the bound user.
     /// </summary>
@@ -184,6 +227,67 @@ public interface ISqlDialect
     /// </remarks>
     string? Reducer(string name, string? field, string quantile);
 
+    /// <summary>
+    /// As <see cref="Reducer(string, string?, string)"/>, but also handed the
+    /// same field as an untyped JSON value, when there is one.
+    /// </summary>
+    /// <remarks>
+    /// Only ordering reducers care. A backend whose JSON extraction yields text
+    /// (PostgreSQL <c>-&gt;&gt;</c>) compares 9, 10 and 100 as strings and
+    /// answers "10" for the minimum; one whose extraction is typed (SQLite
+    /// <c>-&gt;&gt;</c>) compares them as numbers and needs no help.
+    ///
+    /// <paramref name="fieldJson"/> is the JSON value at the same path with its
+    /// type intact (PostgreSQL <c>-&gt;</c>), which is strictly more than a
+    /// "this is JSON text" flag would carry: a dialect can then tell a JSON
+    /// NUMBER from a JSON STRING that merely looks numeric, and order each the
+    /// way its own engine would. A flag cannot — its only recourse is to sniff
+    /// the text, and a text sniff cannot tell 7 from "007".
+    ///
+    /// Null for a plain column, which is already natively typed and MUST be
+    /// left alone — on PostgreSQL a text-oriented rewrite of
+    /// <c>MIN(updated_at)</c> both changes the returned type and fails
+    /// outright, since <c>timestamp ~ text</c> has no operator. Null also when
+    /// the reducer took no argument.
+    ///
+    /// Default implementation so this member stays additive: Dmart.QueryGrammar
+    /// is a published package, and a new abstract member would break every
+    /// third-party ISqlDialect at compile time. The default ignores the JSON
+    /// form and behaves exactly as before, which is correct for any dialect
+    /// whose JSON extraction is already typed.
+    /// </remarks>
+    string? Reducer(string name, string? field, string quantile, string? fieldJson)
+        => Reducer(name, field, quantile);
+
+    /// <summary>
+    /// As <see cref="Reducer(string, string?, string, string?)"/>, but the
+    /// dialect may hoist a repeated per-row extraction into the FROM clause
+    /// instead of repeating it inside the expression.
+    /// </summary>
+    /// <remarks>
+    /// Only a dialect that has to READ THE JSON TYPE needs this, and only
+    /// PostgreSQL does. Its <c>-&gt;&gt;</c> yields text with the value's type
+    /// erased, so an ordering reducer has to consult the <c>-&gt;</c> form as
+    /// well, and a scalar SQL expression has nowhere to put an intermediate:
+    /// each of the two aggregates needs its own type guard and its own value,
+    /// which is four walks down the same jsonb path per row. A dialect whose
+    /// extraction is already typed (SQLite) spells min/max as
+    /// <c>MIN(field)</c> — one mention — and has nothing to hoist.
+    ///
+    /// <paramref name="alias"/> is a caller-allocated, unique table alias the
+    /// fragment should bind its computed value under. The caller deduplicates:
+    /// two reducers over the same path are handed the same alias and the
+    /// fragment is spliced once.
+    ///
+    /// Default implementation delegates and hoists nothing, so a dialect that
+    /// does not override this — including every third-party one — keeps
+    /// working unchanged. Returning a null <see cref="ReducerSql.From"/> is
+    /// equally valid for a dialect that overrides it but declines to hoist a
+    /// particular reducer.
+    /// </remarks>
+    ReducerSql? Reducer(string name, string? field, string quantile, string? fieldJson, string alias)
+        => Reducer(name, field, quantile, fieldJson) is { } expr ? new ReducerSql(expr, null) : null;
+
     /// <summary>Casts an extracted JSON value to a number for comparison.</summary>
     string AsNumber(string expr);
 
@@ -200,6 +304,17 @@ public interface ISqlDialect
     /// assertions in tests that had every right to keep passing.
     /// </remarks>
     string ColumnAsNumber(string column);
+
+    /// <summary>
+    /// Compares a TEXT-typed array element against a numeric parameter without
+    /// letting a non-numeric element raise. Elements of a scalar array arrive
+    /// as text, so a bare <see cref="ColumnAsNumber"/> over them casts EVERY
+    /// element: on PostgreSQL <c>CAST('red' AS FLOAT)</c> aborts the whole
+    /// query. Implementations must keep the guard and the cast in one
+    /// expression that cannot be reordered — neither engine promises AND
+    /// short-circuits before the cast — so a CASE, not a conjunction.
+    /// </summary>
+    string SafeNumberCompare(string textExpr, string sqlOp, string numParam);
 
     /// <summary>Casts a whole COLUMN to a boolean for comparison.</summary>
     /// <remarks>
@@ -234,6 +349,17 @@ public interface ISqlDialect
     string JsonContains(string jsonExpr, string placeholder);
 
     /// <summary>
+    /// True when <see cref="JsonContains"/> of a one-element JSON ARRAY
+    /// literal matches ONLY array values — PostgreSQL <c>@&gt;</c> semantics,
+    /// where an object or scalar can never contain an array. Lets the parser
+    /// emit a bare, index-servable containment for @tags/@roles/@groups.
+    /// False for dialects whose containment emulation is looser (SQLite's
+    /// json_tree walk also matches an object/scalar holding the value), which
+    /// keep the original guarded emission so their behavior doesn't shift.
+    /// </summary>
+    bool JsonArrayContainmentIsExact { get; }
+
+    /// <summary>
     /// Iterates a JSON array, yielding the FROM fragment plus expressions for
     /// each element as JSON and as text.
     /// </summary>
@@ -254,6 +380,14 @@ public interface ISqlDialect
         string jsonExpr, IReadOnlyList<string> elementPath);
 
     /// <summary>FROM-clause fragment iterating a string-array column's elements.</summary>
+    /// <remarks>
+    /// The alias is NOT usable as a value on its own, so always dereference it
+    /// through <see cref="ArrayElementRef"/> instead of interpolating it into a
+    /// predicate. PostgreSQL's <c>unnest</c> yields a column, so the bare alias
+    /// happens to work there — which is exactly why the mistake survives review
+    /// and only shows up on SQLite, whose <c>json_each</c> yields a TABLE and
+    /// fails at execution with "no such column".
+    /// </remarks>
     string ArrayElements(string column, string alias);
 
     /// <summary>References an element produced by <see cref="ArrayElements"/>.</summary>

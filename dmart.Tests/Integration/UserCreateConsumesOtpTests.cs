@@ -11,10 +11,9 @@ using Xunit;
 
 namespace Dmart.Tests.Integration;
 
-// /user/create must CONSUME the verification OTP(s) once the account is
-// persisted, so a stored code can't be replayed (e.g. via /user/otp-confirm)
-// after registration. Previously the create path only peeked the code and left
-// it usable for the remainder of its TTL.
+// /user/create verifies the registration OTP(s) with a capped
+// verify-and-consume at the register purpose, so a stored code can't be
+// replayed after registration.
 public sealed class UserCreateConsumesOtpTests : IClassFixture<DmartFactory>
 {
     private const string Otp = "123456";
@@ -28,7 +27,7 @@ public sealed class UserCreateConsumesOtpTests : IClassFixture<DmartFactory>
         var factory = OtpRequired();
         var otpRepo = factory.Services.GetRequiredService<OtpRepository>();
         var email = $"otpc_{Guid.NewGuid():N}"[..16] + "@x.yz";
-        await otpRepo.StoreAsync(email, Otp, DateTime.UtcNow.AddMinutes(5));
+        await otpRepo.IssueAsync(email, OtpPurpose.Register, Otp, DateTime.UtcNow.AddMinutes(5));
 
         var body = "{\"attributes\":{\"email\":\"" + email + "\",\"password\":\"" + ValidPassword
             + "\",\"email_otp\":\"" + Otp + "\"}}";
@@ -40,8 +39,8 @@ public sealed class UserCreateConsumesOtpTests : IClassFixture<DmartFactory>
 
         try
         {
-            (await otpRepo.PeekStoredHashAsync(email)).ShouldBeNull(
-                "the email OTP must be consumed once the account is created");
+            (await otpRepo.VerifyAndConsumeAsync(email, OtpPurpose.Register, Otp, 0))
+                .ShouldBeFalse("the email OTP must be consumed by registration — a replay must fail");
         }
         finally { await TestUserCleanup.DeleteUserAndOwnedAsync(factory.Services, shortname); }
     }
@@ -51,8 +50,8 @@ public sealed class UserCreateConsumesOtpTests : IClassFixture<DmartFactory>
     {
         var factory = OtpRequired();
         var otpRepo = factory.Services.GetRequiredService<OtpRepository>();
-        var msisdn = $"+9647{Random.Shared.Next(10_000_000, 99_999_999)}";
-        await otpRepo.StoreAsync(msisdn, Otp, DateTime.UtcNow.AddMinutes(5));
+        var msisdn = $"9647{Random.Shared.Next(100_000_000, 999_999_999)}";
+        await otpRepo.IssueAsync(msisdn, OtpPurpose.Register, Otp, DateTime.UtcNow.AddMinutes(5));
 
         var body = "{\"attributes\":{\"msisdn\":\"" + msisdn + "\",\"password\":\"" + ValidPassword
             + "\",\"msisdn_otp\":\"" + Otp + "\"}}";
@@ -64,8 +63,8 @@ public sealed class UserCreateConsumesOtpTests : IClassFixture<DmartFactory>
 
         try
         {
-            (await otpRepo.PeekStoredHashAsync(msisdn)).ShouldBeNull(
-                "the msisdn OTP must be consumed once the account is created");
+            (await otpRepo.VerifyAndConsumeAsync(msisdn, OtpPurpose.Register, Otp, 0))
+                .ShouldBeFalse("the msisdn OTP must be consumed by registration — a replay must fail");
         }
         finally { await TestUserCleanup.DeleteUserAndOwnedAsync(factory.Services, shortname); }
     }

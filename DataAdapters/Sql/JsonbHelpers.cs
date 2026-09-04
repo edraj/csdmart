@@ -122,12 +122,31 @@ public static class JsonbHelpers
     // "english"). For PostgreSQL ENUM columns where dmart uses ISO codes (language: ar/en/...
     // — see EnumNameLower below), use the EnumNameLower variant instead.
     public static string EnumMember<TEnum>(TEnum value) where TEnum : struct, Enum
+        => EnumMemberCache<TEnum>.Map.TryGetValue(value, out var s)
+            ? s
+            : value.ToString().ToLowerInvariant(); // undefined enum value (bad cast) — no attribute to consult
+
+    // Reflection runs once per enum TYPE, at first use. EnumMember is on the
+    // per-request hot path several times over (resource_type binding, query
+    // policies, permission checks, plugin filter matching), where per-call
+    // GetField + GetCustomAttributes was pure overhead.
+    private static class EnumMemberCache<TEnum> where TEnum : struct, Enum
     {
-        var name = value.ToString();
-        var member = typeof(TEnum).GetField(name);
-        var attr = member?.GetCustomAttributes(typeof(System.Runtime.Serialization.EnumMemberAttribute), false)
-            .Cast<System.Runtime.Serialization.EnumMemberAttribute>().FirstOrDefault();
-        return attr?.Value ?? name.ToLowerInvariant();
+        public static readonly Dictionary<TEnum, string> Map = Build();
+
+        private static Dictionary<TEnum, string> Build()
+        {
+            var map = new Dictionary<TEnum, string>();
+            foreach (var value in Enum.GetValues<TEnum>())
+            {
+                var name = value.ToString();
+                var member = typeof(TEnum).GetField(name);
+                var attr = member?.GetCustomAttributes(typeof(System.Runtime.Serialization.EnumMemberAttribute), false)
+                    .Cast<System.Runtime.Serialization.EnumMemberAttribute>().FirstOrDefault();
+                map[value] = attr?.Value ?? name.ToLowerInvariant();
+            }
+            return map;
+        }
     }
 
     public static TEnum ParseEnumMember<TEnum>(string value) where TEnum : struct, Enum

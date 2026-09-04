@@ -4,7 +4,9 @@ using Dmart.DataAdapters.Sql;
 using Dmart.Models.Api;
 using Dmart.Models.Enums;
 using Dmart.Services;
+using Dmart.Config;
 using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.Options;
 using Shouldly;
 using Xunit;
 
@@ -36,6 +38,143 @@ public class QueryResponseShapeTests : IClassFixture<DmartFactory>
     }
 
     // ==================== envelope ====================
+
+    // QueryTotalCap bounds the pagination count so it stops scanning rather
+    // than walking every matching row. The response must SAY the total is a
+    // lower bound — a client reading a capped "total" as exact is the silent
+    // truncation this is meant to avoid.
+    [FactIfPg]
+    public async Task Query_BoundedTotal_ReportsTheCapAndFlagsIt()
+    {
+        _factory.CreateClient();
+        var settings = _factory.Services
+            .GetRequiredService<IOptions<DmartSettings>>().Value;
+        var original = settings.QueryTotalCap;
+        try
+        {
+            settings.QueryTotalCap = 1;
+            var query = _factory.Services.GetRequiredService<QueryService>();
+
+            var resp = await query.ExecuteAsync(new Query
+            {
+                Type = QueryType.Spaces,
+                SpaceName = "management",
+                Subpath = "/",
+                Limit = 100,
+            }, _factory.AdminShortname);
+
+            resp.Status.ShouldBe(Status.Success);
+            var total = (int)resp.Attributes!["total"]!;
+
+            // Either the fixture holds more spaces than the cap, in which case
+            // the total is clamped and flagged, or it does not, in which case
+            // the exact total stands and no flag appears. Both are correct;
+            // asserting one unconditionally would depend on fixture size.
+            if (resp.Attributes.ContainsKey("total_is_lower_bound"))
+            {
+                total.ShouldBe(1);
+                resp.Attributes["total_is_lower_bound"].ShouldBe(true);
+            }
+            else
+            {
+                total.ShouldBeLessThanOrEqualTo(1);
+            }
+        }
+        finally { settings.QueryTotalCap = original; }
+    }
+
+    // RetrieveTotalDefault decides what an OMITTED retrieve_total means. The
+    // three states must stay distinguishable: explicit false always skips,
+    // explicit true always counts, and only null follows the setting. Getting
+    // this wrong in either direction is silent — a client that never mentions
+    // the field either pays for a count it does not want, or receives -1 where
+    // it expected a number.
+    [FactIfPg]
+    public async Task Query_OmittedRetrieveTotal_FollowsTheConfiguredDefault()
+    {
+        _factory.CreateClient();
+        var settings = _factory.Services
+            .GetRequiredService<IOptions<DmartSettings>>().Value;
+        var original = settings.RetrieveTotalDefault;
+        try
+        {
+            var query = _factory.Services.GetRequiredService<QueryService>();
+            // Deliberately NOT QueryType.Spaces: that path counts in memory and
+            // ignores retrieve_total altogether, so it cannot exercise this.
+            Query Omitted() => new()
+            {
+                Type = QueryType.Subpath,
+                SpaceName = "management",
+                Subpath = "/users",
+                Limit = 100,
+                // RetrieveTotal deliberately not set — this is the case under test.
+            };
+
+            settings.RetrieveTotalDefault = true;
+            var counted = await query.ExecuteAsync(Omitted(), _factory.AdminShortname);
+            counted.Status.ShouldBe(Status.Success);
+            ((int)counted.Attributes!["total"]!).ShouldBeGreaterThanOrEqualTo(0,
+                "with the default true, an omitted retrieve_total must still count");
+
+            settings.RetrieveTotalDefault = false;
+            var skipped = await query.ExecuteAsync(Omitted(), _factory.AdminShortname);
+            skipped.Status.ShouldBe(Status.Success);
+            ((int)skipped.Attributes!["total"]!).ShouldBe(-1,
+                "with the default false, an omitted retrieve_total must skip the count");
+        }
+        finally { settings.RetrieveTotalDefault = original; }
+    }
+
+    // The setting must not be able to override an explicit choice, in either
+    // direction — otherwise a caller cannot get a total on a deployment that
+    // defaults to skipping.
+    [FactIfPg]
+    public async Task Query_ExplicitRetrieveTotal_IgnoresTheConfiguredDefault()
+    {
+        _factory.CreateClient();
+        var settings = _factory.Services
+            .GetRequiredService<IOptions<DmartSettings>>().Value;
+        var original = settings.RetrieveTotalDefault;
+        try
+        {
+            var query = _factory.Services.GetRequiredService<QueryService>();
+            Query With(bool? rt) => new()
+            {
+                Type = QueryType.Subpath,
+                SpaceName = "management",
+                Subpath = "/users",
+                Limit = 100,
+                RetrieveTotal = rt,
+            };
+
+            // Explicit true survives a false default.
+            settings.RetrieveTotalDefault = false;
+            var forced = await query.ExecuteAsync(With(true), _factory.AdminShortname);
+            ((int)forced.Attributes!["total"]!).ShouldBeGreaterThanOrEqualTo(0);
+
+            // Explicit false survives a true default.
+            settings.RetrieveTotalDefault = true;
+            var suppressed = await query.ExecuteAsync(With(false), _factory.AdminShortname);
+            ((int)suppressed.Attributes!["total"]!).ShouldBe(-1);
+        }
+        finally { settings.RetrieveTotalDefault = original; }
+    }
+
+    [FactIfPg]
+    public async Task Query_UncappedTotal_CarriesNoLowerBoundFlag()
+    {
+        var query = Resolve();
+        var resp = await query.ExecuteAsync(new Query
+        {
+            Type = QueryType.Spaces,
+            SpaceName = "management",
+            Subpath = "/",
+            Limit = 100,
+        }, _factory.AdminShortname);
+
+        // Default QueryTotalCap is 0 (unlimited), so nothing should be flagged.
+        resp.Attributes!.ShouldNotContainKey("total_is_lower_bound");
+    }
 
     [FactIfPg]
     public async Task Query_Response_Attributes_Has_Both_Total_And_Returned()

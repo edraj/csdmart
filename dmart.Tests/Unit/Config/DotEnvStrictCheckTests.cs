@@ -22,6 +22,50 @@ public class DotEnvStrictCheckTests
         DotEnvStrictCheck.ValidateKeys("/tmp/config.env", raw).ShouldBeEmpty();
     }
 
+    // config.env.sample is what an operator copies, and dmart calls
+    // Environment.Exit(1) on an unrecognised key (Program.cs). So a stale or
+    // misspelled key in the sample does not degrade gracefully — it hands the
+    // operator a file that refuses to boot. Nothing checked the sample against
+    // the settings surface until this test; adding a setting to DmartSettings
+    // and forgetting the sample, or renaming one and leaving the sample behind,
+    // were both silent.
+    [Fact]
+    public void ConfigEnvSample_ContainsOnlyKnownKeys()
+    {
+        var sample = FindRepoFile("config.env.sample");
+        var raw = DotEnv.Parse(sample);
+
+        raw.ShouldNotBeEmpty("config.env.sample parsed to zero keys — the parser " +
+                             "or the file moved, and this test would pass vacuously");
+        DotEnvStrictCheck.ValidateKeys(sample, raw).ShouldBeEmpty();
+    }
+
+    // The packaged default config is seeded to /etc/dmart/config.env on first
+    // install, so the same reasoning applies with more force: a bad key there
+    // breaks a fresh install rather than a copy-paste.
+    [Fact]
+    public void PackagedConfig_ContainsOnlyKnownKeys()
+    {
+        var packaged = FindRepoFile(Path.Combine("dist", "config.env.packaged"));
+        var raw = DotEnv.Parse(packaged);
+
+        raw.ShouldNotBeEmpty("dist/config.env.packaged parsed to zero keys");
+        DotEnvStrictCheck.ValidateKeys(packaged, raw).ShouldBeEmpty();
+    }
+
+    private static string FindRepoFile(string relative)
+    {
+        var dir = AppContext.BaseDirectory;
+        for (var i = 0; i < 8 && dir is not null; i++)
+        {
+            var candidate = Path.Combine(dir, relative);
+            if (File.Exists(candidate)) return candidate;
+            dir = Path.GetDirectoryName(dir.TrimEnd(Path.DirectorySeparatorChar));
+        }
+        throw new FileNotFoundException(
+            $"could not locate {relative} above {AppContext.BaseDirectory}");
+    }
+
     [Fact]
     public void Typo_Is_Flagged()
     {
@@ -71,5 +115,42 @@ public class DotEnvStrictCheckTests
             var snake = DotEnvStrictCheck.PascalToUpperSnake(pascal);
             DotEnv.ToConfigurationKey(snake).ShouldBe($"Dmart:{pascal}");
         }
+    }
+
+    // A key that USED to be valid is not a typo. Failing hard on one means the
+    // upgrade that retires the setting also refuses to boot — turning a
+    // routine deploy into an outage nothing warned about. ALLOW_PASSWORD_RESET
+    // _RESEND_AFTER was documented until the per-purpose OTP routes were
+    // collapsed, so it is sitting in real config.env files now.
+    [Fact]
+    public void A_Retired_Key_Warns_Instead_Of_Blocking_Startup()
+    {
+        var keys = new Dictionary<string, string>(StringComparer.Ordinal)
+        {
+            ["ALLOW_PASSWORD_RESET_RESEND_AFTER"] = "60",
+        };
+
+        DotEnvStrictCheck.ValidateKeys("config.env", keys)
+            .ShouldBeEmpty("a retired key must not stop the server from starting");
+
+        var warnings = DotEnvStrictCheck.RetiredKeyWarnings("config.env", keys);
+        warnings.Count.ShouldBe(1);
+        warnings[0].ShouldContain("ALLOW_PASSWORD_RESET_RESEND_AFTER");
+        warnings[0].ShouldContain("ALLOW_OTP_RESEND_AFTER", Case.Sensitive,
+            "the warning has to name the replacement, or it is just noise");
+    }
+
+    // The retirement path must not become a way to smuggle typos past the
+    // check — that is the whole reason strict validation exists.
+    [Fact]
+    public void A_Genuine_Typo_Is_Still_Fatal()
+    {
+        var keys = new Dictionary<string, string>(StringComparer.Ordinal)
+        {
+            ["DATABAE_HOST"] = "127.0.0.1",
+        };
+
+        DotEnvStrictCheck.ValidateKeys("config.env", keys).Count.ShouldBe(1);
+        DotEnvStrictCheck.RetiredKeyWarnings("config.env", keys).ShouldBeEmpty();
     }
 }

@@ -118,13 +118,18 @@ public class SearchExpressionParserTests
     }
 
     [Fact]
-    public void Jsonb_Array_Column_Tags_Uses_Containment_And_Object_Fallback()
+    public void Jsonb_Array_Column_Tags_Uses_Bare_Containment()
     {
+        // Positive @tags is a single bare @> so the jsonb_path_ops GIN index
+        // serves it (2026-08 query-level optimization). The old
+        // jsonb_typeof-guard + object-ILIKE fallback forced a seq scan and the
+        // guard was semantically inert (only an array can contain an array).
         var parsed = SearchExpressionParser.Parse("@tags:hot", 0);
 
         var combined = string.Join(" ", parsed.Clauses);
-        combined.ShouldContain("jsonb_typeof(tags) = 'array'");
         combined.ShouldContain("tags @>");
+        combined.ShouldNotContain("jsonb_typeof(tags)");
+        combined.ShouldNotContain("ILIKE");
     }
 
     [Fact]
@@ -969,8 +974,8 @@ public class SearchExpressionParserTests
         var combined = string.Join(" ", parsed.Clauses);
         Occurrences(combined, "tags @>").ShouldBe(2);
         combined.ShouldContain(" AND ");
-        // Each tags value binds two params (text + jsonb-array literal).
-        parsed.Parameters.Count.ShouldBe(4);
+        // Each positive tags value binds one param (the jsonb-array literal).
+        parsed.Parameters.Count.ShouldBe(2);
     }
 
     [Fact]
@@ -983,7 +988,7 @@ public class SearchExpressionParserTests
         var combined = string.Join(" ", parsed.Clauses);
         combined.ShouldContain(" OR ");
         Occurrences(combined, "tags @>").ShouldBe(2);
-        parsed.Parameters.Count.ShouldBe(4);
+        parsed.Parameters.Count.ShouldBe(2);
     }
 
     [Fact]
@@ -998,4 +1003,787 @@ public class SearchExpressionParserTests
         combined.ShouldNotContain("shortname::text = @s_0");
         parsed.Parameters.Count.ShouldBe(1);
     }
+
+    // ══════════════════════════════════════════════════════════════════════
+    // FEATURE / PREDICATE MATRIX
+    // ══════════════════════════════════════════════════════════════════════
+    // Everything below walks docs/query.md end to end: every column
+    // CATEGORY (scalar text, boolean, timestamp, jsonb-array, text-array,
+    // user-meta, payload path, payload array) crossed with every VALUE FORM
+    // (plain, quoted, boolean, numeric, existence, glob, alternation, range,
+    // comparison) and both signs. The sections above grew case-by-case as
+    // features landed; these fill the remaining branches of
+    // BuildSearchFieldSql so an untested emission path is the exception.
+
+    private static string Sql(string expr, string? targetTable = null,
+        ISqlDialect? dialect = null)
+        => string.Join(" ", SearchExpressionParser
+            .Parse(expr, 0, PlaceholderStyle.Named, targetTable, dialect).Clauses);
+
+    // ── Scalar text columns ───────────────────────────────────────────────
+    // Anything matching ^[a-z][a-z0-9_]{0,63}$ that isn't in a special-cased
+    // set lands on BuildScalarSql via `<col>::text`. The column list is open
+    // (unknown names reach the DB and error there — csdmart parity), so the
+    // test pins the SHAPE for the names dmart actually ships.
+
+    [Theory]
+    [InlineData("shortname")]
+    [InlineData("subpath")]
+    [InlineData("space_name")]
+    [InlineData("resource_type")]
+    [InlineData("owner_shortname")]
+    [InlineData("schema_shortname")]
+    [InlineData("state")]
+    [InlineData("slug")]
+    public void Scalar_Column_Equality_Emits_Text_Cast_Compare(string column)
+    {
+        Sql($"@{column}:abc").ShouldContain($"{column}::text = @s_0");
+    }
+
+    [Theory]
+    [InlineData("web*", "web%")]
+    [InlineData("*api*", "%api%")]
+    [InlineData("*tail", "%tail")]
+    [InlineData("a*b", "a%b")]
+    public void Scalar_Column_Glob_Falls_Back_To_ILike(string value, string pattern)
+    {
+        // `*` in a scalar-column value is a LIKE glob, not the existence
+        // sentinel — that one is only the LONE `*` (covered separately).
+        var parsed = SearchExpressionParser.Parse($"@shortname:{value}", 0);
+
+        parsed.Clauses[0].ShouldContain("shortname::text ILIKE @s_0");
+        parsed.Parameters[0].Value.ShouldBe(pattern);
+    }
+
+    [Fact]
+    public void Scalar_Column_Alternation_Of_Globs_Ors_Two_ILikes()
+    {
+        var parsed = SearchExpressionParser.Parse("@shortname:web*|api*", 0);
+
+        Occurrences(string.Join(" ", parsed.Clauses), "ILIKE").ShouldBe(2);
+        parsed.Parameters[0].Value.ShouldBe("web%");
+        parsed.Parameters[1].Value.ShouldBe("api%");
+    }
+
+    [Fact]
+    public void Scalar_Column_Existence_And_Absence_Bind_No_Parameters()
+    {
+        // The lone `*` is the existence sentinel: no value is bound, the
+        // clause is a bare NULL test on the column.
+        var present = SearchExpressionParser.Parse("@slug:*", 0);
+        present.Clauses[0].ShouldContain("slug IS NOT NULL");
+        present.Parameters.Count.ShouldBe(0);
+
+        var absent = SearchExpressionParser.Parse("-@slug:*", 0);
+        absent.Clauses[0].ShouldContain("slug IS NULL");
+        absent.Parameters.Count.ShouldBe(0);
+    }
+
+    [Fact]
+    public void Scalar_Column_Negated_Range_Emits_NOT_BETWEEN()
+    {
+        Sql("-@shortname:[apple banana]")
+            .ShouldContain("shortname::text NOT BETWEEN @s_0 AND @s_1");
+    }
+
+    [Theory]
+    [InlineData(">", ">")]
+    [InlineData(">=", ">=")]
+    [InlineData("<", "<")]
+    [InlineData("<=", "<=")]
+    public void Scalar_Column_Comparison_Casts_Both_Sides_To_Numeric(string op, string sqlOp)
+    {
+        Sql($"@shortname:{op}5")
+            .ShouldContain($"shortname::text::numeric {sqlOp} @s_0::numeric");
+    }
+
+    [Fact]
+    public void Scalar_Column_Negated_Comparison_Wraps_In_NOT()
+    {
+        // `-@k:>5` is NOT(k > 5) rather than `k <= 5`: rows where the cast
+        // yields NULL stay excluded either way, and NOT() is what the
+        // server emits.
+        Sql("-@shortname:>5").ShouldContain("NOT (shortname::text::numeric > @s_0::numeric)");
+    }
+
+    [Fact]
+    public void Comparison_With_NonNumeric_Value_Degrades_To_Plain_Equality()
+    {
+        // ComparisonRegex only accepts an operator when the remainder parses
+        // as a number (or the operator is `!`). `>abc` is therefore the
+        // literal value ">abc", not a comparison — documented in
+        // docs/query.md under "Comparison".
+        var parsed = SearchExpressionParser.Parse("@shortname:>abc", 0);
+
+        parsed.Clauses[0].ShouldContain("shortname::text = @s_0");
+        parsed.Clauses[0].ShouldNotContain("::numeric");
+        parsed.Parameters[0].Value.ShouldBe(">abc");
+    }
+
+    // ── Boolean columns ───────────────────────────────────────────────────
+
+    [Theory]
+    [InlineData("is_active")]
+    [InlineData("is_open")]
+    public void Boolean_Column_Binds_A_Typed_Boolean_Parameter(string column)
+    {
+        var parsed = SearchExpressionParser.Parse($"@{column}:false", 0);
+
+        parsed.Clauses[0].ShouldContain($"CAST({column} AS BOOLEAN) = @s_0");
+        parsed.Parameters[0].Value.ShouldBe(false);
+        parsed.Parameters[0].Kind.ShouldBe(SqlValueKind.Boolean);
+    }
+
+    [Fact]
+    public void Boolean_Column_Negated_And_Bang_Both_Emit_Inequality()
+    {
+        Sql("-@is_active:true").ShouldContain("CAST(is_active AS BOOLEAN) != @s_0");
+        Sql("@is_active:!true").ShouldContain("CAST(is_active AS BOOLEAN) != @s_0");
+    }
+
+    [Fact]
+    public void Boolean_Column_Alternation_Ors_Both_Values()
+    {
+        var parsed = SearchExpressionParser.Parse("@is_active:true|false", 0);
+
+        parsed.Clauses[0].ShouldContain(" OR ");
+        parsed.Parameters.Count.ShouldBe(2);
+        parsed.Parameters[0].Value.ShouldBe(true);
+        parsed.Parameters[1].Value.ShouldBe(false);
+    }
+
+    // ── Timestamp columns ─────────────────────────────────────────────────
+
+    [Theory]
+    [InlineData("created_at")]
+    [InlineData("updated_at")]
+    [InlineData("timestamp")]
+    public void Timestamp_Column_Iso_Value_Casts_To_Timestamptz(string column)
+    {
+        Sql($"@{column}:2026-01-01").ShouldContain($"{column} = @s_0::timestamptz");
+    }
+
+    [Fact]
+    public void Timestamp_Column_Numeric_Value_Is_Unix_Milliseconds()
+    {
+        // A bare number on a timestamp column is epoch MILLIS, not seconds —
+        // hence the /1000.0 before to_timestamp.
+        Sql("@created_at:>1700000000")
+            .ShouldContain("created_at > to_timestamp(@s_0::float8 / 1000.0)");
+    }
+
+    [Fact]
+    public void Timestamp_Column_Iso_Range_Casts_Both_Bounds()
+    {
+        Sql("@updated_at:[2026-01-01,2026-12-31]")
+            .ShouldContain("updated_at BETWEEN @s_0::timestamptz AND @s_1::timestamptz");
+    }
+
+    [Fact]
+    public void Timestamp_Column_Negated_Range_Emits_NOT_BETWEEN()
+    {
+        Sql("-@created_at:[1700000000 1800000000]").ShouldContain("created_at NOT BETWEEN");
+    }
+
+    [Fact]
+    public void Reversed_Range_Bounds_Are_Normalised_Low_To_High()
+    {
+        // BETWEEN with min > max matches nothing in SQL, so a user who typed
+        // the bounds backwards would silently get an empty page. Both the
+        // numeric and the string comparison paths swap instead.
+        var numeric = SearchExpressionParser.Parse("@created_at:[1800000000 1700000000]", 0);
+        numeric.Parameters[0].Value.ShouldBe("1700000000");
+        numeric.Parameters[1].Value.ShouldBe("1800000000");
+
+        var text = SearchExpressionParser.Parse("@shortname:[banana apple]", 0);
+        text.Parameters[0].Value.ShouldBe("apple");
+        text.Parameters[1].Value.ShouldBe("banana");
+
+        var payload = SearchExpressionParser.Parse("@payload.body.price:[100 10]", 0);
+        payload.Parameters[0].Value.ShouldBe("10");
+        payload.Parameters[1].Value.ShouldBe("100");
+    }
+
+    // ── JSONB array columns (tags / roles / groups) ───────────────────────
+    // These three are the RBAC-adjacent columns; @roles / @groups are how a
+    // caller searches for role- and group-membership, so their emission is
+    // pinned per column rather than only via @tags.
+
+    [Theory]
+    [InlineData("tags")]
+    [InlineData("roles")]
+    [InlineData("groups")]
+    public void Jsonb_Array_Column_Uses_Bare_Containment(string column)
+    {
+        // Positive selectors emit ONE bare @> per value so the
+        // jsonb_path_ops GIN indexes serve them. The old emission wrapped the
+        // containment in a jsonb_typeof guard OR'd with an object-ILIKE
+        // fallback; the fallback arm was unindexable, which forced a
+        // sequential scan on every @tags/@roles/@groups search. The guard was
+        // inert (only a jsonb array can contain a jsonb array) and the
+        // object fallback matched a shape the models never write.
+        var parsed = SearchExpressionParser.Parse($"@{column}:admin", 0);
+        var combined = string.Join(" ", parsed.Clauses);
+
+        combined.ShouldContain($"{column} @> CAST(@s_0 AS jsonb)");
+        combined.ShouldNotContain("jsonb_typeof");
+        combined.ShouldNotContain("ILIKE");
+        // One param per value: the one-element JSON array literal.
+        parsed.Parameters.Count.ShouldBe(1);
+        parsed.Parameters[0].Value.ShouldBe("[\"admin\"]");
+        parsed.Parameters[0].Kind.ShouldBe(SqlValueKind.Json);
+    }
+
+    [Theory]
+    [InlineData("tags")]
+    [InlineData("roles")]
+    [InlineData("groups")]
+    public void Jsonb_Array_Column_Negated_Emits_NOT_Containment(string column)
+    {
+        Sql($"-@{column}:admin").ShouldContain($"NOT ({column} @> CAST(@s_1 AS jsonb))");
+    }
+
+    [Fact]
+    public void Jsonb_Array_Negated_Alternation_Applies_DeMorgan()
+    {
+        // `-@roles:a|b` must mean "has NEITHER a NOR b" — i.e. the two
+        // per-value NOTs are AND'd, not OR'd. An OR here would let a user
+        // holding role `a` through a `-@roles:a|b` filter.
+        var parsed = SearchExpressionParser.Parse("-@roles:admin|owner", 0);
+        var combined = string.Join(" ", parsed.Clauses);
+
+        Occurrences(combined, "NOT (roles @>").ShouldBe(2);
+        // The two negated members join with AND (De Morgan).
+        combined.ShouldContain(" AND ");
+        parsed.Parameters.Count.ShouldBe(4);
+    }
+
+    [Fact]
+    public void Jsonb_Array_Positive_Alternation_Ors_Members()
+    {
+        var parsed = SearchExpressionParser.Parse("@groups:editors|writers", 0);
+
+        string.Join(" ", parsed.Clauses).ShouldContain(" OR ");
+        parsed.Parameters.Count.ShouldBe(2);
+    }
+
+    // ── TEXT[] column (query_policies) ────────────────────────────────────
+    // query_policies is the row-level permission column: each element is a
+    // "<space>:<subpath>:<resource_type>:<is_active>:<owner>" pattern written
+    // when the row was saved. Searching it is how an operator audits which
+    // rows a grant actually reaches.
+
+    [Fact]
+    public void Text_Array_Column_Exact_Value_Uses_Unnest_Equality()
+    {
+        var parsed = SearchExpressionParser.Parse("@query_policies:acme:users:content:true:bob", 0);
+
+        parsed.Clauses[0].ShouldContain("EXISTS (SELECT 1 FROM unnest(query_policies) AS elem WHERE elem = @s_0)");
+        parsed.Parameters[0].Value.ShouldBe("acme:users:content:true:bob");
+    }
+
+    [Fact]
+    public void Text_Array_Column_Wildcard_Becomes_ILike_Percent()
+    {
+        // The `*` that dmart writes into a policy pattern ("…:true:*") is a
+        // LIKE wildcard here, so an operator can ask "which rows carry ANY
+        // policy under this space/subpath?".
+        var parsed = SearchExpressionParser.Parse("@query_policies:acme:users:content:true:*", 0);
+
+        parsed.Clauses[0].ShouldContain("elem ILIKE @s_0");
+        parsed.Parameters[0].Value.ShouldBe("acme:users:content:true:%");
+    }
+
+    [Fact]
+    public void Text_Array_Column_Negated_Emits_NOT_EXISTS()
+    {
+        Sql("-@query_policies:acme").ShouldContain("NOT EXISTS (SELECT 1 FROM unnest(query_policies)");
+    }
+
+    [Fact]
+    public void Text_Array_Column_Existence_Uses_Array_Length_Not_Null_Test()
+    {
+        // TEXT[] defaults to '{}' (NOT NULL), so `IS NOT NULL` would be true
+        // for every row. The existence sentinel has to test length instead.
+        var present = SearchExpressionParser.Parse("@query_policies:*", 0);
+        present.Clauses[0].ShouldContain("COALESCE(array_length(query_policies, 1), 0) > 0");
+        present.Clauses[0].ShouldNotContain("IS NOT NULL");
+        present.Parameters.Count.ShouldBe(0);
+
+        var absent = SearchExpressionParser.Parse("-@query_policies:*", 0);
+        absent.Clauses[0].ShouldContain("COALESCE(array_length(query_policies, 1), 0) = 0");
+    }
+
+    // ── User-meta columns (email / msisdn) ────────────────────────────────
+
+    [Fact]
+    public void User_Meta_Alternation_Ors_Two_Owner_Subselects()
+    {
+        var parsed = SearchExpressionParser.Parse("@email:a@x.com|b@x.com", 0);
+
+        Occurrences(string.Join(" ", parsed.Clauses), "owner_shortname IN (SELECT shortname FROM users").ShouldBe(2);
+        parsed.Parameters.Count.ShouldBe(2);
+    }
+
+    [Fact]
+    public void User_Meta_Negated_Emits_NOT_IN()
+    {
+        Sql("-@email:a@x.com")
+            .ShouldContain("owner_shortname NOT IN (SELECT shortname FROM users WHERE email = @s_0)");
+    }
+
+    [Fact]
+    public void User_Meta_Range_Is_Rejected_Rather_Than_Mis_Emitted()
+    {
+        // msisdn/email are identifier strings; a range over them has no
+        // sensible meaning and the join form can't express one, so the
+        // selector drops out entirely instead of emitting broken SQL.
+        SearchExpressionParser.Parse("@email:[a b]", 0).Clauses.Count.ShouldBe(0);
+    }
+
+    // ── Payload JSONB paths ───────────────────────────────────────────────
+
+    [Fact]
+    public void Payload_Containment_Covers_Both_Scalar_And_Single_Element_Array()
+    {
+        // A value stored as "v" and one stored as ["v"] both count as a
+        // match, so the emit ORs two containment literals.
+        var parsed = SearchExpressionParser.Parse("@payload.body.env:prod", 0);
+
+        parsed.Parameters[0].Value.ShouldBe("{\"body\":{\"env\":\"prod\"}}");
+        parsed.Parameters[1].Value.ShouldBe("{\"body\":{\"env\":[\"prod\"]}}");
+        parsed.Parameters.All(p => p.Kind == SqlValueKind.Json).ShouldBeTrue();
+    }
+
+    [Fact]
+    public void Payload_Deep_Path_Nests_Containment_Literal_Per_Segment()
+    {
+        var parsed = SearchExpressionParser.Parse("@payload.body.config.db.host:localhost", 0);
+
+        parsed.Parameters[0].Value
+            .ShouldBe("{\"body\":{\"config\":{\"db\":{\"host\":\"localhost\"}}}}");
+    }
+
+    [Fact]
+    public void Payload_Quoted_Value_Keeps_Internal_Whitespace()
+    {
+        var parsed = SearchExpressionParser.Parse("@payload.body.name:\"John Doe\"", 0);
+
+        parsed.Parameters[0].Value.ShouldBe("{\"body\":{\"name\":\"John Doe\"}}");
+    }
+
+    [Fact]
+    public void Payload_Numeric_Adds_A_Type_Guarded_Float_Compare()
+    {
+        // JSON 42 and the string "42" are different values; the numeric
+        // branch ORs a jsonb_typeof-guarded float compare onto the two
+        // containment forms so both storage shapes match.
+        var parsed = SearchExpressionParser.Parse("@payload.body.count:42", 0);
+        var combined = string.Join(" ", parsed.Clauses);
+
+        combined.ShouldContain("jsonb_typeof(payload::jsonb->'body'->'count') = 'number'");
+        combined.ShouldContain("(payload::jsonb->'body'->>'count')::float = CAST(@s_2 AS float)");
+        parsed.Parameters.Count.ShouldBe(3);
+    }
+
+    [Fact]
+    public void Payload_Boolean_Accepts_Both_Json_Boolean_And_String_Storage()
+    {
+        var combined = Sql("@payload.body.enabled:true");
+
+        combined.ShouldContain("jsonb_typeof(payload::jsonb->'body'->'enabled') = 'boolean'");
+        combined.ShouldContain("jsonb_typeof(payload::jsonb->'body'->'enabled') = 'string'");
+        combined.ShouldContain("::boolean = @s_0");
+    }
+
+    [Theory]
+    [InlineData(">", ">")]
+    [InlineData(">=", ">=")]
+    [InlineData("<", "<")]
+    [InlineData("<=", "<=")]
+    [InlineData("!", "!=")]
+    public void Payload_Comparison_Guards_On_Number_Type(string op, string sqlOp)
+    {
+        var combined = Sql($"@payload.body.price:{op}100");
+
+        combined.ShouldContain("jsonb_typeof(payload::jsonb->'body'->'price') = 'number'");
+        combined.ShouldContain($"(payload::jsonb->'body'->>'price')::float {sqlOp} CAST(@s_0 AS float)");
+    }
+
+    [Fact]
+    public void Payload_Negation_Also_Matches_Missing_And_Null_Paths()
+    {
+        // "not equal to X" has to include rows that don't carry the field at
+        // all. Under three-valued logic a bare NOT(...) would drop them, so
+        // the absent/null disjunct is spelled out.
+        var combined = Sql("-@payload.body.status:deleted");
+
+        combined.ShouldContain("payload::jsonb->'body'->'status' IS NULL");
+        combined.ShouldContain("jsonb_typeof(payload::jsonb->'body'->'status') = 'null'");
+        combined.ShouldContain("jsonb_typeof(payload::jsonb->'body'->'status') = 'array' AND NOT (");
+        combined.ShouldContain("payload::jsonb->'body'->>'status' != @s_0");
+    }
+
+    [Fact]
+    public void Payload_Negated_Alternation_Ands_The_Per_Value_Exclusions()
+    {
+        // `-@k:a|b` ⇒ neither a nor b (De Morgan), same rule as @roles.
+        var combined = Sql("-@payload.body.env:staging|dev");
+
+        combined.ShouldContain(" AND ");
+        Occurrences(combined, "IS NULL OR jsonb_typeof").ShouldBe(2);
+    }
+
+    [Fact]
+    public void Payload_Numeric_Range_Guards_On_Number_Type()
+    {
+        Sql("@payload.body.price:[10 100]")
+            .ShouldContain("jsonb_typeof(payload::jsonb->'body'->'price') = 'number' AND (payload::jsonb->'body'->'price')::float BETWEEN");
+    }
+
+    [Fact]
+    public void Payload_String_Range_Compares_Extracted_Text()
+    {
+        var combined = Sql("@payload.body.created:[2024-01-01,2024-12-31]");
+
+        combined.ShouldContain("payload::jsonb->'body'->>'created' BETWEEN @s_0 AND @s_1");
+        combined.ShouldNotContain("AS float");
+    }
+
+    [Fact]
+    public void Payload_Negated_Range_Emits_NOT_BETWEEN()
+    {
+        Sql("-@payload.body.price:[10 100]").ShouldContain("NOT BETWEEN");
+    }
+
+    [Fact]
+    public void Bracket_Without_Separator_Is_Not_A_Range()
+    {
+        // RangeRegex needs two operands split by space or comma. `[18]` has
+        // one, so it stays the literal string "[18]" and goes down the
+        // containment path — no half-built BETWEEN.
+        var parsed = SearchExpressionParser.Parse("@payload.body.age:[18]", 0);
+
+        string.Join(" ", parsed.Clauses).ShouldNotContain("BETWEEN");
+        parsed.Parameters[0].Value.ShouldBe("{\"body\":{\"age\":\"[18]\"}}");
+    }
+
+    [Fact]
+    public void Payload_Subtree_Wildcard_Scans_Rendered_Text_At_That_Depth()
+    {
+        // `@payload.body.*:v` is substring search over the WHOLE body
+        // subtree rendered as text — keys included — not a path lookup.
+        var body = SearchExpressionParser.Parse("@payload.body.*:web01", 0);
+        body.Clauses[0].ShouldContain("(payload::jsonb->'body')::text ILIKE @s_0");
+        body.Parameters[0].Value.ShouldBe("%web01%");
+
+        var whole = SearchExpressionParser.Parse("@payload.*:something", 0);
+        whole.Clauses[0].ShouldContain("(payload::jsonb)::text ILIKE @s_0");
+    }
+
+    [Fact]
+    public void Non_Payload_Column_Dotted_Path_Reads_Through_Jsonb()
+    {
+        // Any `<col>.<path>` that isn't `payload.…` still resolves as JSONB
+        // on that column — this is how @displayname.en works.
+        Sql("@displayname.en:hello").ShouldContain("displayname::jsonb->>'en' = @s_0");
+    }
+
+    [Fact]
+    public void Non_Payload_Column_Star_Suffix_Scans_The_Whole_Column()
+    {
+        Sql("@displayname.*:hello").ShouldContain("displayname::text ILIKE @s_0");
+    }
+
+    // ── Payload array iteration ───────────────────────────────────────────
+
+    [Fact]
+    public void Array_Primitive_Element_Equality_Uses_Elements_Text()
+    {
+        var parsed = SearchExpressionParser.Parse("@payload.body.tags[]:alpha", 0);
+
+        parsed.Clauses[0].ShouldContain("jsonb_typeof(payload::jsonb->'body'->'tags') = 'array'");
+        parsed.Clauses[0].ShouldContain(
+            "EXISTS (SELECT 1 FROM jsonb_array_elements_text(payload::jsonb->'body'->'tags') AS e WHERE e = @s_0)");
+    }
+
+    [Fact]
+    public void Array_Object_Element_Subpath_Uses_Elements_And_Arrow()
+    {
+        Sql("@payload.body.items[].sku:ABC123").ShouldContain(
+            "EXISTS (SELECT 1 FROM jsonb_array_elements(payload::jsonb->'body'->'items') AS x WHERE x->>'sku' = @s_0)");
+    }
+
+    [Fact]
+    public void Array_Object_Element_Nested_Subpath_Chains_Arrows()
+    {
+        Sql("@payload.body.items[].config.host:localhost")
+            .ShouldContain("WHERE x->'config'->>'host' = @s_0");
+    }
+
+    [Fact]
+    public void Array_Element_Comparison_And_Range_Guard_On_Number()
+    {
+        Sql("@payload.body.items[].price:>100")
+            .ShouldContain("jsonb_typeof(x->'price') = 'number' AND (x->'price')::float > CAST(@s_0 AS float)");
+
+        Sql("@payload.body.items[].price:[10 100]")
+            .ShouldContain("(x->'price')::float BETWEEN CAST(@s_0 AS float) AND CAST(@s_1 AS float)");
+    }
+
+    [Fact]
+    public void Array_Element_Alternation_Ors_One_Exists_Per_Value()
+    {
+        var parsed = SearchExpressionParser.Parse("@payload.body.items[].status:active|pending", 0);
+
+        Occurrences(string.Join(" ", parsed.Clauses), "EXISTS (SELECT 1").ShouldBe(2);
+        string.Join(" ", parsed.Clauses).ShouldContain(" OR ");
+    }
+
+    [Fact]
+    public void Array_Negation_Means_No_Matching_Element_Not_All_Elements_Differ()
+    {
+        // REGRESSION GUARD. `-@arr[]:v` is documented as "the array does not
+        // contain v" (docs/query.md). The wrapper already supplies the
+        // negation via NOT EXISTS, so the per-element predicate must stay
+        // POSITIVE (`e = v`). Emitting `e != v` inside NOT EXISTS
+        // double-negates into "EVERY element equals v" — which matched only
+        // rows whose array is entirely `v`, the exact opposite of the
+        // contract.
+        var combined = Sql("-@payload.body.tags[]:archived");
+
+        combined.ShouldContain("NOT EXISTS (SELECT 1 FROM jsonb_array_elements_text(" +
+                               "payload::jsonb->'body'->'tags') AS e WHERE e = @s_0)");
+        combined.ShouldNotContain("WHERE e != @s_0");
+        // Rows with no array at all pass the negated filter.
+        combined.ShouldContain("payload::jsonb->'body'->'tags' IS NULL");
+    }
+
+    [Fact]
+    public void Array_Negation_Makes_A_Value_Operator_Inert_Not_An_Error()
+    {
+        // Under `-@` the value-level operator is DROPPED. `-@arr[]:!v`,
+        // `-@arr[]:>v` and `-@arr[]:v` all mean "the array does not contain v"
+        // and must emit byte-identical SQL. Pinned because the operator is
+        // silently ignored rather than rejected: without this, a caller
+        // writing `-@tags[]:!archived` and expecting something else would get
+        // no signal, and a future change could diverge the three unnoticed.
+        var plain = Sql("-@payload.body.tags[]:archived");
+
+        Sql("-@payload.body.tags[]:!archived").ShouldBe(plain);
+        Sql("-@payload.body.tags[]:>archived").ShouldBe(plain);
+    }
+
+    [Fact]
+    public void Array_Negation_With_A_Numeric_Value_Does_Not_Cast_Every_Element()
+    {
+        // A scalar array yields TEXT elements. Casting all of them —
+        // `CAST(e AS FLOAT)` — aborts the whole query on PostgreSQL as soon as
+        // one element is non-numeric, so `-@tags[]:100` over ["red","blue"]
+        // would 500 rather than match. The guard has to sit in the same
+        // expression as the cast (CASE, not AND) because PostgreSQL may
+        // reorder AND operands and evaluate the cast first.
+        var combined = Sql("-@payload.body.tags[]:100");
+
+        combined.ShouldNotContain("CAST(e AS FLOAT) = @s_0");
+        combined.ShouldContain("CASE WHEN e ~ ");
+        combined.ShouldContain("THEN CAST(e AS FLOAT) = ");
+    }
+
+    [Fact]
+    public void Array_Object_Negation_Also_Keeps_The_Element_Predicate_Positive()
+    {
+        var combined = Sql("-@payload.body.items[].status:archived");
+
+        combined.ShouldContain("NOT EXISTS (SELECT 1 FROM jsonb_array_elements(" +
+                               "payload::jsonb->'body'->'items') AS x WHERE x->>'status' = @s_0)");
+        combined.ShouldNotContain("x->>'status' != @s_0");
+    }
+
+    [Fact]
+    public void Array_Bang_Value_Without_Dash_Keeps_The_Inequality_Predicate()
+    {
+        // `@arr[]:!v` has no wrapper negation, so it asks the opposite
+        // question from `-@arr[]:v`: "is there SOME element that isn't v?".
+        var combined = Sql("@payload.body.tags[]:!archived");
+
+        combined.ShouldContain("WHERE e != @s_0");
+        combined.ShouldNotContain("NOT EXISTS");
+    }
+
+    [Fact]
+    public void Array_Negated_Alternation_Excludes_Every_Listed_Value()
+    {
+        var combined = Sql("-@payload.body.tags[]:a|b");
+
+        Occurrences(combined, "NOT EXISTS").ShouldBe(2);
+        combined.ShouldContain(" AND ");   // De Morgan
+        combined.ShouldNotContain("WHERE e != ");
+    }
+
+    [Fact]
+    public void Only_The_First_Bracket_Pair_Iterates()
+    {
+        // Documented limitation: a second `[]` is a literal key name, so
+        // `a[].b[].c` iterates `a` and then looks up the literal key "b[]".
+        var combined = Sql("@payload.body.a[].b[].c:v");
+
+        Occurrences(combined, "jsonb_array_elements").ShouldBe(1);
+        combined.ShouldContain("x->'b[]'->>'c'");
+    }
+
+    // ── Token-level robustness ────────────────────────────────────────────
+
+    [Theory]
+    [InlineData("@shortname")]        // no colon at all
+    [InlineData("@shortname:")]       // colon, empty value
+    [InlineData("-@shortname:")]      // negated, empty value
+    [InlineData("@Shortname:x")]      // uppercase — fails SafeColumnIdent
+    [InlineData("@1bad:x")]           // leading digit — fails SafeColumnIdent
+    [InlineData("@bad-name:x")]       // hyphen — fails SafeColumnIdent
+    public void Malformed_Selector_Is_Dropped_Without_Throwing(string expr)
+    {
+        // Lenient contract: an unusable selector contributes no clause rather
+        // than erroring. Note this WIDENS the result set, which is safe for
+        // user-typed filters but is why permission clauses are never built
+        // from user-controlled field names.
+        var parsed = SearchExpressionParser.Parse(expr, 0);
+
+        parsed.Clauses.Count.ShouldBe(0);
+        parsed.Parameters.Count.ShouldBe(0);
+    }
+
+    [Fact]
+    public void Over_Length_Expression_Fails_Closed_With_No_Parameters()
+    {
+        // POST /public/query is unauthenticated, so an oversized expression
+        // must not be tokenized. It also must not simply vanish: the caller's
+        // permission clause is folded into this same string, so dropping the
+        // expression would WIDEN the page. FALSE is the fail-closed answer.
+        var parsed = SearchExpressionParser.Parse(
+            new string('a', SearchExpressionParser.MaxExpressionLength + 1), 0);
+
+        parsed.Clauses.ShouldHaveSingleItem();
+        parsed.Clauses[0].ShouldBe("FALSE");
+        parsed.Parameters.Count.ShouldBe(0);
+    }
+
+    [Fact]
+    public void Expression_At_Exactly_The_Length_Limit_Still_Parses()
+    {
+        var expr = "@shortname:" + new string('a', SearchExpressionParser.MaxExpressionLength - 11);
+        expr.Length.ShouldBe(SearchExpressionParser.MaxExpressionLength);
+
+        var parsed = SearchExpressionParser.Parse(expr, 0);
+        parsed.Clauses[0].ShouldContain("shortname::text = @s_0");
+    }
+
+    // ── Placeholder styles ────────────────────────────────────────────────
+
+    [Fact]
+    public void Positional_Style_Emits_One_Based_Dollar_Placeholders()
+    {
+        // Npgsql binds $N by position, so the parameters must carry no name —
+        // mixing named and positional in one command is rejected by the
+        // driver.
+        var parsed = SearchExpressionParser.Parse(
+            "@shortname:alice or @tags:x", 0, PlaceholderStyle.Positional);
+
+        var combined = string.Join(" ", parsed.Clauses);
+        combined.ShouldContain("$1");
+        combined.ShouldContain("$2");
+        combined.ShouldNotContain("@s_");
+        parsed.Parameters.All(p => p.Name is null).ShouldBeTrue();
+        // shortname binds one param; positive @tags binds one (the jsonb-array
+        // literal — the object-fallback's second param is gone, see
+        // Jsonb_Array_Column_Uses_Bare_Containment).
+        parsed.Parameters.Count.ShouldBe(2);
+    }
+
+    [Fact]
+    public void Positional_Style_Honours_StartingParamIndex()
+    {
+        var parsed = SearchExpressionParser.Parse(
+            "@shortname:alice", startingParamIndex: 4, style: PlaceholderStyle.Positional);
+
+        parsed.Clauses[0].ShouldContain("$5");   // 0-based index → 1-based $N
+    }
+
+    // ── SQLite dialect ────────────────────────────────────────────────────
+    // Same grammar, different engine. These pin that the dialect seam is
+    // actually consulted (no PostgreSQL spelling leaks through) for the
+    // constructs that differ most.
+
+    [Fact]
+    public void Sqlite_Dialect_Uses_Json_Path_Extraction_Not_Arrows()
+    {
+        var combined = Sql("@payload.body.x:*hi*", dialect: SqliteSqlDialect.Instance);
+
+        combined.ShouldContain("json_type(payload -> '$.body.x') = 'text'");
+        combined.ShouldContain("lower(payload ->> '$.body.x') LIKE lower(@s_0)");
+        combined.ShouldNotContain("jsonb_typeof");
+        combined.ShouldNotContain("ILIKE");
+    }
+
+    [Fact]
+    public void Sqlite_Dialect_Iterates_Arrays_With_Json_Each()
+    {
+        var combined = Sql("@payload.body.items[].sku:A", dialect: SqliteSqlDialect.Instance);
+
+        combined.ShouldContain("json_each(payload -> '$.body.items')");
+        combined.ShouldNotContain("jsonb_array_elements");
+    }
+
+    [Fact]
+    public void Sqlite_Dialect_Text_Array_Column_Uses_Json_Each_Not_Unnest()
+    {
+        var combined = Sql("@query_policies:acme*", dialect: SqliteSqlDialect.Instance);
+
+        combined.ShouldContain("json_each(query_policies)");
+        combined.ShouldNotContain("unnest");
+    }
+
+    [Fact]
+    public void Sqlite_Dialect_Preserves_Array_Negation_Semantics()
+    {
+        // The double-negation fix lives in dialect-neutral code, so it has to
+        // hold on SQLite too.
+        var combined = Sql("-@payload.body.tags[]:archived", dialect: SqliteSqlDialect.Instance);
+
+        combined.ShouldContain("NOT EXISTS");
+        combined.ShouldNotContain("!= @s_0");
+    }
+
+    // ── IsSafeForAlternationValue ─────────────────────────────────────────
+    // QueryService synthesizes `@field:v1|v2|…` join terms from row values.
+    // Any value carrying a grammar metachar would change the parse, so the
+    // guard lives next to the grammar it protects.
+
+    [Theory]
+    [InlineData("plain")]
+    [InlineData("with-dash")]
+    [InlineData("dotted.value")]
+    [InlineData("under_score")]
+    [InlineData("123")]
+    public void Safe_Alternation_Values_Are_Accepted(string value)
+        => SearchExpressionParser.IsSafeForAlternationValue(value).ShouldBeTrue();
+
+    [Theory]
+    [InlineData("a|b")]      // alternation
+    [InlineData("a:b")]      // field separator
+    [InlineData("a*")]       // wildcard
+    [InlineData("(a)")]      // grouping
+    [InlineData("[a]")]      // range
+    [InlineData("{a}")]      // reserved
+    [InlineData("a\"b")]
+    [InlineData("a'b")]
+    [InlineData("a\\b")]
+    [InlineData("@a")]
+    [InlineData("a>b")]
+    [InlineData("a<b")]
+    [InlineData("a=b")]
+    [InlineData("a!b")]
+    [InlineData("a b")]      // whitespace terminates a value token
+    public void Unsafe_Alternation_Values_Are_Rejected(string value)
+        => SearchExpressionParser.IsSafeForAlternationValue(value).ShouldBeFalse();
 }
