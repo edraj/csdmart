@@ -175,6 +175,34 @@ dmart decodes it and streams the bytes with that content-type, adding a
 `Content-Disposition: attachment` header when `filename` is present. Anything
 without `"binary": true` flows through as JSON exactly as usual.
 
+### Handling calls in parallel (`workers`)
+
+dmart runs **one** process per plugin by default and sends it one message at a
+time. That is not incidental: the hook and request frames carry no correlation
+id, so a reply is matched to its request by arrival order, and two exchanges
+sharing one pipe could each read the other's answer. Serialising is what makes
+the protocol safe — and it is why your plugin can stay a simple
+`while line in stdin: handle; print` loop.
+
+To handle calls concurrently, ask for more processes in `config.json`:
+
+```json
+{ "shortname": "my_plugin", "is_active": true, "type": "hook", "workers": 4 }
+```
+
+dmart then starts 4 copies and dispatches each call to whichever is free.
+**Your plugin does not change** — each worker still sees one message at a time.
+
+The catch is state. Anything your plugin keeps between calls — a counter, a
+cache, a warm connection — now exists once *per worker*, and consecutive calls
+need not land on the same one. If that matters, keep the state in dmart (via
+the `save_entry` callback) rather than in the process, or leave `workers` at 1.
+
+Every worker gets its own `{"type":"info"}` handshake as it starts, including
+when one is restarted after a crash, so they cannot disagree about what the
+host supports. The allowed range is 1-32; anything outside is clamped and
+logged.
+
 ### Calling back into dmart
 
 Before writing its final response, your plugin can send any number of
@@ -290,6 +318,7 @@ own API. `user` is the already-resolved actor, which is what you actually need.
   "listen_time": "after",
   "ordinal": 100,
   "concurrent": true,
+  "workers": 1,
   "filters": {
     "subpaths": { "__all_spaces__": ["__all_subpaths__"] },
     "resource_types": ["content"],
@@ -307,6 +336,7 @@ own API. `user` is the already-resolved actor, which is what you actually need.
 | `listen_time` | `"before"` or `"after"` | Hook only. `before` can abort actions |
 | `ordinal` | int | Execution order (lower = first, default 9999) |
 | `concurrent` | bool | After-hooks: `true` = fire-and-forget (default) |
+| `workers` | int | Processes to run for this plugin (default 1, max 32). >1 handles calls in parallel — see "Handling calls in parallel" |
 | `filters.subpaths` | object | Per-space subpath dict — see "Filter shape" below |
 | `filters.resource_types` | string[] | Empty = all, or list specific resource types |
 | `filters.schema_shortnames` | string[] | Empty = all, or list specific content schemas |

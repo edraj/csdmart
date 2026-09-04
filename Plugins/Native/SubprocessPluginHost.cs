@@ -43,13 +43,31 @@ internal sealed class SubprocessPluginHost : IDisposable
     private StreamWriter? _stdin;
     private StreamReader? _stdout;
 
+    // The info frame, replayed to EVERY process this host starts — including
+    // the ones it starts to replace a crashed predecessor.
+    //
+    // A plugin learns what the host supports from this frame and caches the
+    // answer (the SDK sample keeps it in a module global). Before this was
+    // replayed, a respawn produced a process that had never been told, so a
+    // plugin that had been making callbacks silently stopped after its first
+    // crash and there was nothing in the logs to say why. Sending it on every
+    // spawn costs one round trip per process start and makes every worker's
+    // view of the host identical.
+    private readonly string? _handshakeLine;
+
+    // What the most recent process answered to the handshake. The loader reads
+    // it for the plugin's shortname/type/version/routes instead of issuing its
+    // own info exchange. Null when the plugin never answered.
+    public string? HandshakeResponse { get; private set; }
+
     public string Shortname { get; }
 
-    public SubprocessPluginHost(string executablePath, string shortname)
+    public SubprocessPluginHost(string executablePath, string shortname, string? handshakeLine = null)
     {
         _executablePath = executablePath;
         _workingDir = Path.GetDirectoryName(executablePath) ?? ".";
         Shortname = shortname;
+        _handshakeLine = handshakeLine;
         EnsureRunning();
     }
 
@@ -279,6 +297,33 @@ internal sealed class SubprocessPluginHost : IDisposable
         // Status to stderr so stdout stays pure JSONL (matches ASP.NET Core's
         // json-console-formatter output) — keeps `dmart serve | jq` usable.
         Console.Error.WriteLine($"SUBPROCESS_PLUGIN_STARTED: {Shortname} pid={_process.Id}");
+
+        if (_handshakeLine is null) return;
+
+        // Deliberately swallowed rather than thrown. This runs inside the
+        // caller's exchange, and a plugin that cannot answer `info` will fail
+        // that exchange on its own a moment later with a message about the
+        // request the caller actually made — more useful than a handshake
+        // stack trace. A null response is itself the signal the loader reads.
+        try
+        {
+            _stdin.WriteLine(_handshakeLine);
+            _stdin.Flush();
+            HandshakeResponse = ReadLineWithTimeout(_stdout);
+            if (HandshakeResponse is null)
+                Console.Error.WriteLine($"SUBPROCESS_PLUGIN_HANDSHAKE_EOF: {Shortname} exited during the info exchange");
+        }
+        catch (TimeoutException)
+        {
+            HandshakeResponse = null;
+            Console.Error.WriteLine(
+                $"SUBPROCESS_PLUGIN_HANDSHAKE_TIMEOUT: {Shortname} no info response within {LineTimeout.TotalSeconds:0}s");
+        }
+        catch (Exception ex)
+        {
+            HandshakeResponse = null;
+            Console.Error.WriteLine($"SUBPROCESS_PLUGIN_HANDSHAKE_ERROR: {Shortname} {ex.GetType().Name}: {ex.Message}");
+        }
     }
 
     private void Kill()

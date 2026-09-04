@@ -11,16 +11,16 @@ namespace Dmart.Plugins.Native;
 // (which would incorrectly return dmart's own version for this wrapper).
 internal sealed class SubprocessApiPlugin : IApiPlugin, IPluginVersionSource
 {
-    private readonly SubprocessPluginHost _host;
+    private readonly SubprocessPluginPool _pool;
     private readonly List<NativeRoute> _routes;
 
-    public string Shortname => _host.Shortname;
+    public string Shortname => _pool.Shortname;
     public string PluginVersion { get; }
 
-    public SubprocessApiPlugin(SubprocessPluginHost host, List<NativeRoute> routes,
+    public SubprocessApiPlugin(SubprocessPluginPool pool, List<NativeRoute> routes,
         string pluginVersion = "0.0.0")
     {
-        _host = host;
+        _pool = pool;
         _routes = routes;
         PluginVersion = pluginVersion;
     }
@@ -29,7 +29,7 @@ internal sealed class SubprocessApiPlugin : IApiPlugin, IPluginVersionSource
     {
         foreach (var route in _routes)
         {
-            var h = _host;
+            var h = _pool;
             switch (route.Method.ToUpperInvariant())
             {
                 case "GET":    group.MapGet(route.Path, async (HttpContext ctx) => await Handle(ctx, h)); break;
@@ -42,7 +42,7 @@ internal sealed class SubprocessApiPlugin : IApiPlugin, IPluginVersionSource
 
         if (_routes.Count == 0)
         {
-            var h = _host;
+            var h = _pool;
             group.MapGet("/", async (HttpContext ctx) => await Handle(ctx, h));
         }
     }
@@ -70,7 +70,7 @@ internal sealed class SubprocessApiPlugin : IApiPlugin, IPluginVersionSource
         return headers;
     }
 
-    private static async Task Handle(HttpContext ctx, SubprocessPluginHost host)
+    private static async Task Handle(HttpContext ctx, SubprocessPluginPool pool)
     {
         var query = new Dictionary<string, string>();
         foreach (var q in ctx.Request.Query)
@@ -100,7 +100,7 @@ internal sealed class SubprocessApiPlugin : IApiPlugin, IPluginVersionSource
         // The envelope's user is the ambient actor for any callback the plugin
         // makes while handling the request, so a plugin `query` runs under that
         // user's permissions rather than as the system.
-        var resultJson = host.SendAndReceive(wrapped, envelope.User);
+        var resultJson = pool.SendAndReceive(wrapped, envelope.User);
 
         // Binary-response opt-in: a plugin that needs to return non-JSON
         // (e.g. a generated PDF) wraps its bytes in

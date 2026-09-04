@@ -23,7 +23,7 @@ public static class NativePluginLoader
     // each subprocess gets a clean stdin-close (EOF) shutdown before the
     // dotnet process exits. Without this, subprocesses only find out dmart
     // is gone when their next stdin write raises a broken-pipe.
-    private static readonly List<SubprocessPluginHost> _hosts = new();
+    private static readonly List<SubprocessPluginPool> _pools = new();
 
     // Every plugin directory that failed to load, and why.
     //
@@ -93,15 +93,27 @@ public static class NativePluginLoader
     {
         try
         {
-            var host = new SubprocessPluginHost(execPath, dirName);
-            _hosts.Add(host);
-
-            // Ask the plugin for its info
             // The "host" object advertises what this dmart can do for the
             // plugin. A plugin built against a newer SDK can then avoid sending
             // a callback an older host would never answer — which would strand
             // it waiting while the host read the frame as its final response.
-            var infoJson = host.SendAndReceive("{\"type\":\"info\",\"host\":{\"callbacks\":1}}");
+            // Every worker is sent this as it starts, including on respawn, so
+            // they cannot disagree about what the host supports.
+            const string infoFrame = "{\"type\":\"info\",\"host\":{\"callbacks\":1}}";
+
+            var pool = new SubprocessPluginPool(execPath, dirName, ReadWorkerCount(execPath, dirName), infoFrame);
+            _pools.Add(pool);
+
+            var infoJson = pool.InfoResponse;
+            if (string.IsNullOrEmpty(infoJson))
+            {
+                RecordFailure(failures, dirName,
+                    "the plugin did not answer the {\"type\":\"info\"} handshake — "
+                    + "it must reply with one JSON line naming at least its shortname and type");
+                pool.Dispose();
+                return;
+            }
+
             using var infoDoc = JsonDocument.Parse(infoJson);
             var root = infoDoc.RootElement;
 
@@ -117,19 +129,19 @@ public static class NativePluginLoader
 
             if (typeStr == "hook")
             {
-                services.AddSingleton<IHookPlugin>(new SubprocessHookPlugin(host, version));
-                Console.Error.WriteLine($"SUBPROCESS_PLUGIN_REGISTERED: {shortname} v{version} (hook) from {execPath}");
+                services.AddSingleton<IHookPlugin>(new SubprocessHookPlugin(pool, version));
+                Console.Error.WriteLine($"SUBPROCESS_PLUGIN_REGISTERED: {shortname} v{version} (hook, {pool.Workers} worker(s)) from {execPath}");
             }
             else if (typeStr == "api")
             {
                 var routes = ParseRoutes(root);
-                services.AddSingleton<IApiPlugin>(new SubprocessApiPlugin(host, routes, version));
-                Console.Error.WriteLine($"SUBPROCESS_PLUGIN_REGISTERED: {shortname} v{version} (api, {routes.Count} routes) from {execPath}");
+                services.AddSingleton<IApiPlugin>(new SubprocessApiPlugin(pool, routes, version));
+                Console.Error.WriteLine($"SUBPROCESS_PLUGIN_REGISTERED: {shortname} v{version} (api, {routes.Count} routes, {pool.Workers} worker(s)) from {execPath}");
             }
             else
             {
                 RecordFailure(failures, dirName, $"unknown plugin type '{typeStr}'");
-                host.Dispose();
+                pool.Dispose();
             }
         }
         catch (Exception ex)
@@ -184,6 +196,41 @@ public static class NativePluginLoader
             if (Directory.Exists(homePath)) return homePath;
         }
         return null;
+    }
+
+    // `workers` from the plugin's own config.json, defaulting to 1.
+    //
+    // Read here rather than taken from the PluginWrapper list LoadNativeConfigs
+    // builds, because that runs separately and only feeds PluginManager's
+    // dispatch tables — the pool has to be sized before the plugin is
+    // registered at all. A malformed or absent config is not an error: the
+    // plugin still loads, single-worker, exactly as it did before the setting
+    // existed.
+    internal static int ReadWorkerCount(string execPath, string dirName)
+    {
+        try
+        {
+            var configPath = Path.Combine(Path.GetDirectoryName(execPath) ?? ".", "config.json");
+            if (!File.Exists(configPath)) return 1;
+            var wrapper = JsonSerializer.Deserialize(
+                File.ReadAllText(configPath), DmartJsonContext.Default.PluginWrapper);
+            // Normalised rather than trusted. Two reasons, and the second is
+            // the surprising one: `workers` is operator-edited, so 0 or a
+            // negative is plausible input; and the source-generated
+            // deserializer does NOT run PluginWrapper's property initialisers,
+            // so an omitted `workers` arrives as 0 rather than the 1 the
+            // property declares. (The same is true of its siblings — `ordinal`
+            // and `concurrent` reach PluginManager as 0/false rather than
+            // 9999/true. That is a pre-existing bug in its own right and is
+            // deliberately not papered over here.)
+            var declared = wrapper?.Workers ?? 0;
+            return declared > 0 ? declared : 1;
+        }
+        catch (Exception ex)
+        {
+            Console.Error.WriteLine($"SUBPROCESS_PLUGIN_CONFIG_UNREADABLE: {dirName}: {ex.Message}; using 1 worker");
+            return 1;
+        }
     }
 
     // Find an executable file (not a library) to run as the plugin.
@@ -244,9 +291,9 @@ public static class NativePluginLoader
     {
         lifetime.ApplicationStopping.Register(() =>
         {
-            foreach (var h in _hosts)
+            foreach (var p in _pools)
             {
-                try { h.Shutdown(); } catch { /* best-effort */ }
+                try { p.Shutdown(); } catch { /* best-effort */ }
             }
         });
     }

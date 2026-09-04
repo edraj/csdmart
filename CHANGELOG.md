@@ -44,7 +44,35 @@ A `query` runs as the user that triggered the exchange unless it carries an
 explicit `as_actor` override, so plugin queries stay inside that user's
 permissions by default — the same rule the in-process callback followed.
 
+**Plugins can serve calls in parallel — `"workers": N` in `config.json`.**
+Exchanges are serialized per process because the line protocol has no
+correlation ids: a reply is matched to its request by arrival order, so two
+exchanges sharing one pipe could each read the other's answer. Rather than add
+ids and require every plugin to handle concurrent requests itself, dmart now
+runs N copies of the executable and dispatches each call to whichever is free.
+The plugin contract is unchanged — each worker still sees one message at a
+time, so existing plugins work untouched.
+
+Default is 1, i.e. exactly the previous behaviour. It is opt-in because
+concurrency changes what a plugin's own state means: a counter, a cache or a
+warm connection becomes per-worker rather than per-plugin, and consecutive
+calls need not land on the same process. The range is clamped to 1-32 —
+`workers` is operator-edited JSON and a stray digit should not decide how many
+processes dmart forks.
+
+Genuine parallelism was the one thing in-process `.so` plugins had that
+subprocess plugins did not; this closes that gap without putting third-party
+code back inside the host process.
+
 ### Changed
+
+**Every plugin process is told what the host supports, including after a
+crash.** The `{"type":"info","host":{…}}` frame was sent once, by the loader,
+to the process running at startup. A plugin that cached the answer — as the
+SDK sample does — silently stopped making callbacks after its first crash,
+because the replacement process had never been told, and nothing in the log
+said so. The frame is now replayed by whichever code starts a process, so a
+respawned worker and a brand-new one are indistinguishable.
 
 **A plugin that dies mid-exchange is no longer retried once it has made a
 callback.** The retry exists for a plugin that dies before doing anything;

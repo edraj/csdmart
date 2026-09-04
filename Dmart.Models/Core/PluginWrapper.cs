@@ -24,5 +24,15 @@ public sealed record PluginWrapper
     public int Ordinal { get; init; } = 9999;
     public List<string> Dependencies { get; init; } = new();
     public bool Concurrent { get; init; } = true;
+
+    // How many worker processes to run for an external plugin. Exchanges are
+    // serialized per worker because the line protocol has no request ids, so
+    // this is the only knob that lets a plugin handle calls in parallel.
+    //
+    // Default 1 — one process, one call at a time, which is what every plugin
+    // written before this existed assumes. Raising it makes any state the
+    // plugin keeps between calls per-worker rather than per-plugin, so it is
+    // opt-in rather than sized automatically. Ignored by built-in plugins.
+    public int Workers { get; init; } = 1;
     public Dictionary<string, object>? Attributes { get; init; }
 }
