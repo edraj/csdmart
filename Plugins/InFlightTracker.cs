@@ -31,6 +31,35 @@ internal sealed class InFlightTracker
             TaskContinuationOptions.ExecuteSynchronously, TaskScheduler.Default);
     }
 
+    // Wait up to `timeout` for tracked tasks to finish WITHOUT signalling
+    // shutdown, and keep waiting for work that appears while waiting.
+    //
+    // DrainAsync cancels ShutdownToken as its last act. That is right once, at
+    // teardown, and wrong repeatedly: every hook dispatched afterwards would
+    // receive an already-cancelled token and unwind immediately, so the hooks
+    // would silently stop running. Callers that just want the in-flight work to
+    // settle — the test harness, between cases — need this instead.
+    //
+    // Re-snapshots rather than waiting on one set: a hook whose side effects
+    // dispatch further hooks would otherwise leave the second wave running,
+    // which is the exact overlap this exists to prevent.
+    internal async Task<bool> WaitForIdleAsync(TimeSpan timeout, CancellationToken ct = default)
+    {
+        var deadline = DateTime.UtcNow + timeout;
+        while (true)
+        {
+            var snapshot = _inflight.Keys.ToArray();
+            if (snapshot.Length == 0) return true;
+
+            var remaining = deadline - DateTime.UtcNow;
+            if (remaining <= TimeSpan.Zero) return false;
+
+            var all = Task.WhenAll(snapshot);
+            if (await Task.WhenAny(all, Task.Delay(remaining, ct)).ConfigureAwait(false) != all)
+                return false;
+        }
+    }
+
     // Wait up to `timeout` for all tracked tasks to finish. Returns true if they
     // all completed, false if the timeout was hit. Either way the shutdown token
     // is cancelled afterward. Short-circuits when nothing is in flight — this

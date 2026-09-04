@@ -167,14 +167,50 @@ public sealed class DmartFactory : WebApplicationFactory<Program>, IAsyncLifetim
             }
     }
 
+    // Every factory built by the suite, so DrainPluginHooksAttribute can settle
+    // all of them after each test without every test class opting in.
+    //
+    // ConditionalWeakTable-style bookkeeping is overkill here: the suite builds
+    // a bounded number of factories and holds them for the run, so a plain list
+    // with a lock is both correct and obvious. Entries are removed on dispose.
+    private static readonly List<DmartFactory> _live = new();
+    private static readonly object _liveLock = new();
+
+    internal static DmartFactory[] Live
+    {
+        get { lock (_liveLock) return _live.ToArray(); }
+    }
+
+    /// <summary>
+    /// Wait for this host's fire-and-forget plugin after-hooks to finish.
+    /// </summary>
+    /// <remarks>
+    /// DrainPluginHooksAttribute settles hooks BETWEEN tests, which stops one
+    /// test's hooks running during the next. It cannot help a test that asserts
+    /// on state a hook affects, because that assertion happens before the
+    /// attribute runs. Call this first in that case.
+    ///
+    /// A no-op while the shipped plugins are pinned `"concurrent": false`,
+    /// since nothing is dispatched fire-and-forget — it is here so a test does
+    /// not have to be rewritten when one of them is flipped.
+    /// </remarks>
+    public async Task SettlePluginHooksAsync(TimeSpan? timeout = null)
+    {
+        var plugins = Services.GetService<Dmart.Plugins.PluginManager>();
+        if (plugins is null) return;
+        await plugins.WaitForIdleAsync(timeout ?? TimeSpan.FromSeconds(15));
+    }
+
     async Task IAsyncLifetime.InitializeAsync()
     {
+        lock (_liveLock) { if (!_live.Contains(this)) _live.Add(this); }
         if (!HasPg) return;
         await ResetBootstrapAdminStateAsync(Services, AdminShortname, AdminPassword);
     }
 
     Task IAsyncLifetime.DisposeAsync()
     {
+        lock (_liveLock) _live.Remove(this);
         Dispose();
         return Task.CompletedTask;
     }

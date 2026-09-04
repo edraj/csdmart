@@ -212,6 +212,30 @@
   unconditionally, which is how the stale assumption survived; it accepts both
   outcomes and pins what each must contain.
 
+- **The test suite settles fire-and-forget plugin hooks between tests.**
+  `TestParallelization.cs` runs the assembly serially because the suite shares
+  one database and process-global plugin state, but that serializes *tests*,
+  not their side effects: a concurrent after-hook is dispatched with `Task.Run`
+  and outlives the request, so one test's hooks could still be writing while
+  the next ran. An assembly-level `BeforeAfterTestAttribute` now waits for them.
+
+  `InFlightTracker` gained `WaitForIdleAsync` for this. `DrainAsync` could not
+  be reused: it cancels `ShutdownToken` as its last act, which is correct once
+  at teardown and wrong repeatedly — every hook dispatched afterwards would
+  receive an already-cancelled token and unwind immediately, so the hooks would
+  silently stop running.
+
+  This is a prerequisite for moving any plugin to `"concurrent": true`, not a
+  green light. With the eight shipped plugins temporarily unpinned, the suite
+  still produced an intermittent extra failure (1 run in 3, in a different test
+  than before the change), so something beyond hook overlap remains. With them
+  pinned as they ship, the suite reproduces its baseline exactly across three
+  runs, so this costs nothing today.
+
+  `DmartFactory.SettlePluginHooksAsync()` covers the case the between-test hook
+  cannot: a test asserting on state a hook affects, where the assertion happens
+  before the attribute runs.
+
 ### Added
 
 **Plugins can call back into dmart.** Only in-process `.so` plugins could do
