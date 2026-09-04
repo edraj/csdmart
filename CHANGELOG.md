@@ -181,6 +181,37 @@
   New plugins are unaffected by the pinning and get the documented default:
   omitting `concurrent` means fire-and-forget, as the SDK has always said.
 
+- **The .NET half of the SBOM now carries licences, and one of them needs a
+  decision.** Five components had none, and an unlicensed component is
+  indistinguishable from a permissively licensed one — so a term that needs
+  attention read as uninteresting.
+
+  `Json.More.Net`, `JsonPointer.Net` and `JsonSchema.Net` declare
+  `<license type="file">OSMFEULA.txt</license>`, an **Open Source Maintenance
+  Fee** agreement: the source is MIT, but the pre-compiled Binary Release — the
+  NuGet package we consume — carries a monthly fee for users in
+  revenue-generating activities with annual gross revenue at or above
+  **US$10,000**. `JsonSchema.Net` is a direct dependency behind
+  `SchemaValidator` and `PreflightService`, so it is compiled into every
+  artifact we ship. The two runtime packs were simply missed: they declare MIT,
+  but `dist/sbom.sh` injects them outside the restore graph the CycloneDX tool
+  reads, so nothing ever asked.
+
+  Licences are now read from each package's `.nuspec` for anything the tool
+  left blank, and packages shipping their own licence text are printed at
+  generation time rather than reduced to a count. 34/34 components carry a
+  licence, and the document still validates against CycloneDX 1.6.
+
+- **`GET /db_size_info/` returns per-table sizes on builds that can provide
+  them.** `DbSizeInfoPlugin` hardcoded that `dbstat` is unavailable. That was
+  true of the SQLitePCLRaw `e_sqlite3` build and is not true of the static musl
+  artifact, which links Alpine's SQLite and does compile
+  `SQLITE_ENABLE_DBSTAT_VTAB` in — so the one artifact that could answer
+  refused to, and the refusal named a build it was not running. It now runs the
+  query and falls back only when that fails. The test asserted the failure
+  unconditionally, which is how the stale assumption survived; it accepts both
+  outcomes and pins what each must contain.
+
 ### Added
 
 **Plugins can call back into dmart.** Only in-process `.so` plugins could do
@@ -289,6 +320,15 @@ write-through that existed only because in-process plugins read the real
 `environ` — child processes inherit the managed view, so the managed API is
 enough now), and the `[ThreadStatic]` actor context's dependency on
 synchronous native frames.
+
+- **`validate_schema` is gone from the query body.** It had no consumers
+  anywhere in `Services`, `Api` or `DataAdapters`, while `docs/query.md`
+  advertised it — so it read as a working switch. Removing it changes no
+  output: `Query` is deserialized from request bodies and never serialized into
+  a response, so a client that keeps sending it is unaffected, since
+  System.Text.Json skips unmapped members. (`cxb` also passes `validate_schema`
+  to `/managed/entry`, whose handler never declared it either; those calls were
+  already inert and are left alone.)
 
 ## v1.4.1 — 2026-09-04
 
