@@ -9,7 +9,31 @@ neither.
 A **musl static-pie** build has no such coupling. One binary, zero shared
 libraries, runs on any x86-64 Linux.
 
-## Building it
+## Shipping it
+
+`release-verifiable.yml` builds this as `dmart-<version>-linux-musl-x64.tar.gz`
+on every `v*` tag, alongside the glibc tarballs. It rides the same matrix as
+those, so it goes through the same pin-to-the-tagged-commit check, the same
+per-RID CycloneDX SBOM, and the same keyless signing and SLSA provenance
+attestation — a separate job would have meant a second copy of the logic that
+guarantees nothing is signed that was not built from the tagged commit.
+
+Two things differ, and both are asserted in the release rather than assumed.
+The tarball carries **no `libe_sqlite3.so`**: it is one file, which is the
+entire point. And before signing, the job checks `readelf -d` reports zero
+`NEEDED` entries and that no `libe_sqlite3` / `libssl.so` / `libcrypto.so`
+strings survive, then runs `--version` inside **busybox** rather than the
+Alpine image it was built in — proving it starts somewhere that has none of its
+build-time surroundings.
+
+`scripts/verify-release.sh` requires the tarball, so a release that lost it
+fails verification rather than passing with one artifact fewer.
+
+## Building it locally
+
+`sh ./build.sh --aot --static --rid linux-musl-x64` is the scripted path and
+the one CI uses; it refuses a non-musl RID, since a static-pie is a musl
+construct. To do it by hand in a container:
 
 ```
 podman run --rm \
@@ -65,7 +89,9 @@ exercises OpenSSL (TLS to PostgreSQL) and SQLite.
 
 - **You own CVE patching.** Statically linked OpenSSL and SQLite do not get
   distro security updates. A libssl or SQLite advisory becomes a dmart
-  rebuild-and-reship.
+  rebuild-and-reship. This is why the glibc tarballs still ship alongside it
+  rather than being replaced by it: on those, a distro `openssl` update fixes
+  the binary in place.
 - **Alpine's SQLite is not byte-identical to SQLitePCLRaw's.** It adds
   `ENABLE_DBSTAT_VTAB`, `ENABLE_PERCENTILE` and `ENABLE_UNLOCK_NOTIFY`, and
   drops `ENABLE_SNAPSHOT`. The snapshot APIs are unused, so the drop is inert.
@@ -98,6 +124,12 @@ unconditionally on pushes to master. A new NuGet package that reaches its
 native library through `dlopen` arrives via a `PackageReference`, so that
 filter catches the case that matters.
 
-`release.yml` does **not** build this artifact — it is not shipped today. If it
-ever is, add a version check alongside: statically linked OpenSSL and SQLite
-only get patched when this is rebuilt.
+`release-verifiable.yml` ships it — see "Shipping it" above. `release.yml`
+still does not build it, and does not need to: the verifiable workflow is the
+one that signs and attests, and this artifact has no reason to exist unsigned.
+
+The CVE consequence is now live rather than hypothetical: the linked OpenSSL
+and SQLite are only patched when a release is cut. `dist/scan-runtime-cves.sh`
+runs against the produced binary in the release job, which covers the .NET
+runtime compiled into it — it does not cover the linked OpenSSL, so an advisory
+there is on us to notice.

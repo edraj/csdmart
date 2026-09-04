@@ -31,7 +31,7 @@ ISSUER="https://token.actions.githubusercontent.com"
 WORKFLOWS_DEFAULT="release-verifiable.yml release.yml"
 # Assets that MUST be present. Without this a release stripped of its binaries
 # would "verify" perfectly by having nothing left to check.
-REQUIRED_GLOBS_DEFAULT="dmart-*-linux-x64.tar.gz dmart-*-linux-arm64.tar.gz SHA256SUMS"
+REQUIRED_GLOBS_DEFAULT="dmart-*-linux-x64.tar.gz dmart-*-linux-arm64.tar.gz dmart-*-linux-musl-x64.tar.gz SHA256SUMS"
 
 TAG=""
 REPO="$REPO_DEFAULT"
