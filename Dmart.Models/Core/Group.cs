@@ -16,7 +16,7 @@ public sealed record Group
     public string? Slug { get; init; }
     public Translation? Displayname { get; init; }
     public Translation? Description { get; init; }
-    public List<string> Tags { get; init; } = new();
+    public List<string> Tags { get; set; } = new();
     public DateTime CreatedAt { get; init; }
     public DateTime UpdatedAt { get; init; }
     public required string OwnerShortname { get; init; }
@@ -25,7 +25,7 @@ public sealed record Group
     public Payload? Payload { get; init; }
     public List<Dictionary<string, object>>? Relationships { get; init; }
     public string? LastChecksumHistory { get; init; }
-    public ResourceType ResourceType { get; init; } = ResourceType.Group;
+    public ResourceType ResourceType { get; set; } = ResourceType.Group;
 
     // ----- Group-specific -----
     // Group shortnames whose members may assign THIS group to a user (the
@@ -33,5 +33,5 @@ public sealed record Group
     // global admin may grant it. Setting it is global-admin-only.
     public List<string>? GrantableBy { get; init; }
     [JsonIgnore]
-    public List<string> QueryPolicies { get; init; } = new();
+    public List<string> QueryPolicies { get; set; } = new();
 }

@@ -15,7 +15,7 @@ public sealed record Event
     public required ActionType ActionType { get; init; }
     public ResourceType? ResourceType { get; init; }
     public string? SchemaShortname { get; init; }
-    public Dictionary<string, object> Attributes { get; init; } = new();
+    public Dictionary<string, object> Attributes { get; set; } = new();
     public required string UserShortname { get; init; }
 
     // Resource snapshot fields, populated by EntryService.BuildEvent so the

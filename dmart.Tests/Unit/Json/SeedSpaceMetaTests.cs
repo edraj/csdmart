@@ -8,22 +8,25 @@ using Xunit;
 
 namespace Dmart.Tests.Unit.Json;
 
-// Lock in that every shipped seed/spaces/{space}/.dm/meta.space.json deserializes
-// cleanly through the same path TryImportSpaceAsync uses, AND pin the
-// STJ source-gen behavior that motivated the SpaceRepository `?? ""` backstops.
+// Lock in that every shipped seed/spaces/{space}/.dm/meta.space.json
+// deserializes cleanly through the same path TryImportSpaceAsync uses, and
+// that an omitted optional string arrives as the declared "" rather than null.
 //
-// The bug: `personal/.dm/meta.space.json` omits `root_registration_signature`
-// and `icon`. The Space record declares both as non-nullable strings with a
-// `= ""` initializer. With STJ source-gen + `required` members on the same
-// record, deserialization routes through a parameterized-constructor path
-// that does NOT run member initializers — so omitted fields land as null,
-// not "". The DB columns are NOT NULL, so the upsert blew up until
+// `personal/.dm/meta.space.json` omits `root_registration_signature` and
+// `icon`, and Space declares both as non-nullable strings with a `= ""`
+// initializer. That initializer used to be discarded: with any init-only
+// property, STJ source-gen routes deserialization through a
+// parameterized-constructor path that assigns every such property from an args
+// array, passing default(T) -- null here -- for whatever the payload omitted.
+// The DB columns are NOT NULL, so the upsert blew up until
 // SpaceRepository.UpsertAsync added `?? ""` coercions.
 //
-// This test asserts that exact behavior: present-in-JSON → "", omitted → null.
-// If STJ ever fixes the initializer skip (or someone "tidies" the seed JSON
-// to fill in the missing fields), the assertions here will tell us we can
-// drop the `?? ""` backstops in SpaceRepository.
+// This test used to assert the broken shape (omitted -> null), and said that if
+// the initializer skip were ever fixed the backstops could go. Half of that has
+// happened: the properties are `set` now, the initializers survive, and omitted
+// fields arrive as "". The backstops still cannot go, because a payload that
+// spells out `"icon": null` still lands a null -- System.Text.Json does not
+// enforce nullability at runtime. See ModelDefaultsTests.
 public sealed class SeedSpaceMetaTests
 {
     [Theory]
@@ -61,28 +64,19 @@ public sealed class SeedSpaceMetaTests
         space.ShouldNotBeNull();
         space!.Shortname.ShouldBe(spaceName);
 
-        // STJ source-gen + required members skips field initializers on the
-        // parameterized-ctor path. Assert per-field: present-in-JSON keeps the
-        // JSON value, omitted ends up null (NOT the C# default "").
-        // SpaceRepository.UpsertAsync coerces null→"" before the SQL write.
-        if (jsonHasRrs)
-            space.RootRegistrationSignature.ShouldNotBeNull($"{spaceName}: rrs present in JSON should round-trip");
-        else
-            space.RootRegistrationSignature.ShouldBeNull(
-                $"{spaceName}: STJ initializer-skip regression — RootRegistrationSignature was \"\" instead of null. "
-                + "If STJ now runs initializers on the required-ctor path, the SpaceRepository `?? \"\"` backstop can be removed.");
+        // Present-in-JSON keeps the JSON value; omitted falls back to the
+        // declared "" rather than null. Asserted per-field so a failure names
+        // which one drifted.
+        space.RootRegistrationSignature.ShouldNotBeNull(
+            $"{spaceName}: root_registration_signature is null - the `= \"\"` initializer is being discarded again");
+        space.PrimaryWebsite.ShouldNotBeNull(
+            $"{spaceName}: primary_website is null - the `= \"\"` initializer is being discarded again");
+        space.Icon.ShouldNotBeNull(
+            $"{spaceName}: icon is null - the `= \"\"` initializer is being discarded again");
 
-        if (jsonHasPw)
-            space.PrimaryWebsite.ShouldNotBeNull($"{spaceName}: primary_website present in JSON should round-trip");
-        else
-            space.PrimaryWebsite.ShouldBeNull(
-                $"{spaceName}: STJ initializer-skip regression — PrimaryWebsite was \"\" instead of null.");
-
-        if (jsonHasIcon)
-            space.Icon.ShouldNotBeNull($"{spaceName}: icon present in JSON should round-trip");
-        else
-            space.Icon.ShouldBeNull(
-                $"{spaceName}: STJ initializer-skip regression — Icon was \"\" instead of null.");
+        if (!jsonHasRrs) space.RootRegistrationSignature.ShouldBe("");
+        if (!jsonHasPw) space.PrimaryWebsite.ShouldBe("");
+        if (!jsonHasIcon) space.Icon.ShouldBe("");
     }
 
     private static string FindRepoRoot()

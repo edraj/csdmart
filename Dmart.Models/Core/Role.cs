@@ -16,7 +16,7 @@ public sealed record Role
     public string? Slug { get; init; }
     public Translation? Displayname { get; init; }
     public Translation? Description { get; init; }
-    public List<string> Tags { get; init; } = new();
+    public List<string> Tags { get; set; } = new();
     public DateTime CreatedAt { get; init; }
     public DateTime UpdatedAt { get; init; }
     public required string OwnerShortname { get; init; }
@@ -25,14 +25,14 @@ public sealed record Role
     public Payload? Payload { get; init; }
     public List<Dictionary<string, object>>? Relationships { get; init; }
     public string? LastChecksumHistory { get; init; }
-    public ResourceType ResourceType { get; init; } = ResourceType.Role;
+    public ResourceType ResourceType { get; set; } = ResourceType.Role;
 
     // ----- Roles-specific -----
-    public List<string> Permissions { get; init; } = new();
+    public List<string> Permissions { get; set; } = new();
     // Role shortnames whose holders may assign THIS role to a user (the
     // managed privilege floor's only non-admin path). null/empty ⇒ only a
     // global admin may grant it. Setting it is global-admin-only.
     public List<string>? GrantableBy { get; init; }
     [JsonIgnore]
-    public List<string> QueryPolicies { get; init; } = new();
+    public List<string> QueryPolicies { get; set; } = new();
 }

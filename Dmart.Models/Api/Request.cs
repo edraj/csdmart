@@ -13,11 +13,11 @@ public sealed record Request
     // Delete-only: when true, folder deletes cascade and user deletes do a full
     // owned-data cascade. The response reports the count of removed rows (`affected`)
     // plus a per-category `report` breakdown.
-    public bool Force { get; init; } = false;
+    public bool Force { get; set; } = false;
     // Delete-only: when true, nothing is removed — the delete is projected and the
     // response reports the count that WOULD be removed (ignoring `force`), with
     // `dry_run: true`. Wire field: `dry_run`.
-    public bool DryRun { get; init; } = false;
+    public bool DryRun { get; set; } = false;
 }
 
 // Mirrors dmart's models/core.py::Record. dmart's __init__ strips leading/trailing
