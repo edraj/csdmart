@@ -33,6 +33,39 @@
   dependencies reads as a licence finding rather than the tooling failure it
   is. `FRONTEND_SBOM_OFFLINE=1` skips the registry lookup for airgapped builds.
 
+- **A plugin's `config.json` defaults were silently discarded.** `PluginWrapper`
+  declares `ordinal` defaulting to 9999, `concurrent` to `true` and
+  `dependencies` to an empty list, and the SDK documents all three. None of them
+  survived deserialization: a config that omitted a field got `0`, `false` and
+  `null` instead.
+
+  The cause is a sharp edge in the source-generated deserializer. With any
+  init-only property, it abandons the parameterless constructor for
+  `ObjectWithParameterizedConstructorCreator`, which assigns *every* such
+  property from an args array and passes `default(T)` for whatever the JSON left
+  out. The constructor still ran, so the initialisers executed and were then
+  immediately overwritten. `new PluginWrapper()` was correct throughout, which is
+  why this survived: any test that built the object in C# saw the documented
+  values, and only a test that went through JSON could have caught it. The
+  properties are now `set` rather than `init`, which puts the generator back on
+  the real constructor.
+
+  The practical effect was on `concurrent`, which `PluginManager` reads directly
+  to choose between fire-and-forget and awaited after-hook dispatch. Every
+  shipped plugin omitted the field, so every after-hook had been awaited —
+  the opposite of the documented default, and of what the dispatch code was
+  written for.
+
+  **Runtime behaviour is deliberately unchanged by this release.** The eight
+  shipped after-hook plugins now state `"concurrent": false` explicitly, so they
+  keep running awaited exactly as before. Fixing the mechanism and changing when
+  every hook in the system runs are two different changes, and only the first
+  belongs in a bug fix. Moving them to fire-and-forget is now a one-line,
+  reviewable decision per plugin.
+
+  New plugins are unaffected by the pinning and get the documented default:
+  omitting `concurrent` means fire-and-forget, as the SDK has always said.
+
 ## v1.4.1 — 2026-09-04
 
 ### Fixed
