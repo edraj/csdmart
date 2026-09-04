@@ -367,11 +367,17 @@ jobs:
           PUB="bin/Release/net10.0/${RID}/publish"
           test -x "$PUB/dmart"
           if [ "${STATIC}" = "true" ]; then
+            # Deliberately NOT asserting that libe_sqlite3.so is absent here.
+            # SQLitePCLRaw ships it as a runtime asset of the PackageReference,
+            # so publish copies it out whether or not anything loads it — and
+            # for this target nothing does, which the standalone assertion above
+            # already proved from the binary itself (0 NEEDED, no dlopen target
+            # strings). What matters is that the sidecar does not reach the
+            # TARBALL, and that is asserted where the tarball is built.
+            #
             # A static binary's claim is that it needs NOTHING, so the honest
             # test is the emptiest image available -- not the one it was built
             # in, which would only prove it runs where its own toolchain lives.
-            test ! -f "$PUB/libe_sqlite3.so" \
-              || { echo "::error::static build emitted a libe_sqlite3.so sidecar"; exit 1; }
             docker run --rm -v "$PWD":/src -w /src \
               docker.io/library/busybox@sha256:73aaf090f3d85aa34ee199857f03fa3a95c8ede2ffd4cc2cdb5b94e566b11662 \
               "/src/$PUB/dmart" --version
@@ -444,6 +450,24 @@ jobs:
               --mtime="@${SOURCE_DATE_EPOCH}" \
               -cf - -C dist/out "$NAME" | gzip -n > "dist/out/${NAME}.tar.gz"
           rm -rf "$STAGE"
+
+          # The shipped artifact is what the claim is about, so it is what gets
+          # checked. For the static target that claim is "one binary, nothing
+          # beside it"; publish/ still holds a libe_sqlite3.so that nothing
+          # loads, and only this tells us it stayed out of the tarball.
+          if [ "${STATIC}" = "true" ]; then
+            if tar -tzf "dist/out/${NAME}.tar.gz" | grep -q 'libe_sqlite3'; then
+              echo "::error::the static tarball carries a libe_sqlite3 sidecar"
+              tar -tzf "dist/out/${NAME}.tar.gz"
+              exit 1
+            fi
+            echo "static tarball carries no sidecar:"
+            tar -tzf "dist/out/${NAME}.tar.gz"
+          else
+            tar -tzf "dist/out/${NAME}.tar.gz" | grep -q 'libe_sqlite3\.so' \
+              || { echo "::error::the tarball is missing libe_sqlite3.so"; exit 1; }
+          fi
+
           ls -lh "dist/out/${NAME}.tar.gz"
           echo "tarball=dist/out/${NAME}.tar.gz" >> "$GITHUB_OUTPUT"
 
