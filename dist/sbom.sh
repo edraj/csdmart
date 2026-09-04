@@ -171,6 +171,104 @@ rm -f "$RPJSON"
 COMPONENTS=$(grep -c '"purl"' "$OUT/$FILENAME" || true)
 echo "== $FILENAME: $COMPONENTS components (server + runtime)"
 
+# Licences for the .NET side, read from each package's .nuspec in the NuGet
+# cache. The CycloneDX tool leaves some components with none at all, and an
+# unlicensed component is not a cosmetic gap: it is indistinguishable from a
+# permissively licensed one, so a term that needs a decision reads as
+# uninteresting. The frontend half already does this (dist/frontend-sbom.sh);
+# this is the same job for the packages that ship inside the binary.
+NUGET_ROOT="${NUGET_PACKAGES:-$HOME/.nuget/packages}"
+NUGET_ROOT="$NUGET_ROOT" python3 - "$OUT/$FILENAME" <<'LICENCES'
+import json, os, re, sys, glob
+
+doc_path = sys.argv[1]
+doc = json.load(open(doc_path))
+root = os.environ["NUGET_ROOT"]
+
+# The identifiers CycloneDX accepts in `license.id`. That field is an
+# enumeration, and a value outside it fails the schema validation
+# actions/attest-sbom runs before signing, so anything unrecognised goes to
+# `license.name` instead — lossier, but always valid.
+SPDX_IDS = frozenset("""
+0BSD Apache-2.0 BSD-2-Clause BSD-3-Clause MIT MIT-0 MS-PL ISC MPL-2.0
+PostgreSQL Unlicense Zlib LGPL-2.1-only LGPL-2.1-or-later LGPL-3.0-only
+LGPL-3.0-or-later GPL-2.0-only GPL-3.0-only AGPL-3.0-only Apache-1.1 BSL-1.0
+CC0-1.0 CC-BY-4.0
+""".split())
+
+LICENSE_EL = re.compile(r'<license\s+type="(expression|file)"\s*>([^<]+)</license>')
+LICENSE_URL = re.compile(r'<licenseUrl>([^<]+)</licenseUrl>')
+
+def nuspec_for(name, version):
+    # The cache lower-cases both directory levels.
+    pat = os.path.join(root, name.lower(), version.lower(), "*.nuspec")
+    hits = glob.glob(pat)
+    return hits[0] if hits else None
+
+def licence_of(name, version):
+    """(cyclonedx entry, kind, note) or (None, None, None)."""
+    path = nuspec_for(name, version)
+    if not path:
+        return None, None, None
+    try:
+        text = open(path, encoding="utf-8", errors="replace").read()
+    except Exception:
+        return None, None, None
+
+    m = LICENSE_EL.search(text)
+    if m:
+        kind, value = m.group(1), m.group(2).strip()
+        if kind == "expression":
+            if value in SPDX_IDS:
+                return {"license": {"id": value}}, "id", None
+            return {"expression": value}, "expression", None
+        # type="file": the package ships its own terms rather than naming an
+        # SPDX licence. That is exactly the case worth a human reading it.
+        return ({"license": {"name": "see %s in the package" % value}},
+                "file", value)
+
+    m = LICENSE_URL.search(text)
+    url = m.group(1).strip() if m else ""
+    # Microsoft deprecated licenseUrl in favour of <license>; the placeholder
+    # carries no information, so treat it as absent rather than record it.
+    if url and "deprecateLicenseUrl" not in url:
+        return {"license": {"name": "see %s" % url, "url": url}}, "url", None
+    return None, None, None
+
+filled, review, missing = 0, [], []
+for c in doc.get("components", []):
+    if c.get("licenses"):
+        continue
+    name, ver = c.get("name"), c.get("version")
+    if not name or not ver:
+        continue
+    entry, kind, note = licence_of(name, ver)
+    if entry is None:
+        missing.append("%s@%s" % (name, ver))
+        continue
+    c["licenses"] = [entry]
+    filled += 1
+    if kind in ("file", "url"):
+        review.append("%s@%s  %s" % (name, ver, note or "licenceUrl only"))
+
+json.dump(doc, open(doc_path, "w"), indent=2)
+
+total = len(doc.get("components", []))
+have = sum(1 for c in doc.get("components", []) if c.get("licenses"))
+print("== licences: %d/%d components (%d filled from .nuspec)" % (have, total, filled))
+if review:
+    # Printed, never summarised to a count: a package shipping its own terms is
+    # the one licence outcome that needs a person, and the count alone would not
+    # say which package.
+    print("== %d component(s) ship their own licence text and need review:" % len(review))
+    for r in sorted(review):
+        print("     " + r)
+if missing:
+    print("== %d component(s) still declare no licence:" % len(missing))
+    for m in sorted(missing)[:20]:
+        print("     " + m)
+LICENCES
+
 # Merge the embedded Svelte frontends (cxb, catalog). dmart compiles their built
 # SPAs into the AOT binary via ManifestEmbeddedFileProvider, so their npm
 # dependencies ship inside /usr/bin/dmart; a .NET-only SBOM understates what is
