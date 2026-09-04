@@ -11,7 +11,7 @@ namespace Dmart.Models.Api;
 //     "attributes": {...} | null }
 public sealed record Response
 {
-    public Status Status { get; init; } = Status.Success;
+    public Status Status { get; set; } = Status.Success;
     public Error? Error { get; init; }
     public List<Record>? Records { get; init; }
     public Dictionary<string, object>? Attributes { get; init; }

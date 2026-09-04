@@ -13,7 +13,7 @@ public sealed record DeletionRow
     public required string Shortname { get; init; }
 
     /// <summary>Empty for tables that have no resource_type column.</summary>
-    public string ResourceType { get; init; } = "";
+    public string ResourceType { get; set; } = "";
 
     public DateTime DeletedAt { get; init; }
 }

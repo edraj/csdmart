@@ -21,8 +21,8 @@ public sealed record Query
     }
     public bool ExactSubpath { get; init; }
     public List<ResourceType>? FilterTypes { get; init; }
-    public List<string> FilterSchemaNames { get; init; } = new() { "meta" };
-    public List<string>? FilterShortnames { get; init; } = new();
+    public List<string> FilterSchemaNames { get; set; } = new() { "meta" };
+    public List<string>? FilterShortnames { get; set; } = new();
     public List<string>? FilterTags { get; init; }
     // Length is bounded by the parser, not here: QueryService rewrites Search
     // (join narrowing terms, permission filter-fields-values) before it reaches
@@ -33,7 +33,7 @@ public sealed record Query
     public DateTime? ToDate { get; init; }
     public List<string>? ExcludeFields { get; init; }
     public List<string>? IncludeFields { get; init; }
-    public Dictionary<string, string> HighlightFields { get; init; } = new();
+    public Dictionary<string, string> HighlightFields { get; set; } = new();
     public string? SortBy { get; init; }
     public SortType? SortType { get; init; }
     public bool RetrieveJsonPayload { get; init; }
@@ -61,10 +61,10 @@ public sealed record Query
     // sentinel is what QueryService keys the lower-bound flag off.
     [System.Text.Json.Serialization.JsonIgnore]
     public int TotalCap { get; init; }
-    public bool ValidateSchema { get; init; } = true;
+    public bool ValidateSchema { get; set; } = true;
     public bool RetrieveLockStatus { get; init; }
     public string? JqFilter { get; init; }
-    public int Limit { get; init; } = 10;
+    public int Limit { get; set; } = 10;
     public int Offset { get; init; }
     public RedisAggregate? AggregationData { get; init; }
     public List<JoinQuery>? Join { get; init; }
@@ -86,9 +86,9 @@ public sealed record JoinQuery
 // Mirrors dmart's models/api.py::RedisAggregate.
 public sealed record RedisAggregate
 {
-    public List<string> GroupBy { get; init; } = new();
-    public List<RedisReducer> Reducers { get; init; } = new();
-    public List<string> Load { get; init; } = new();
+    public List<string> GroupBy { get; set; } = new();
+    public List<RedisReducer> Reducers { get; set; } = new();
+    public List<string> Load { get; set; } = new();
 }
 
 // Mirrors dmart's models/api.py::RedisReducer.
@@ -96,5 +96,5 @@ public sealed record RedisReducer
 {
     public required string ReducerName { get; init; }
     public string? Alias { get; init; }
-    public List<string> Args { get; init; } = new();
+    public List<string> Args { get; set; } = new();
 }
