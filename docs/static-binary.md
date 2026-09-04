@@ -95,11 +95,11 @@ exercises OpenSSL (TLS to PostgreSQL) and SQLite.
 - **Alpine's SQLite is not byte-identical to SQLitePCLRaw's.** It adds
   `ENABLE_DBSTAT_VTAB`, `ENABLE_PERCENTILE` and `ENABLE_UNLOCK_NOTIFY`, and
   drops `ENABLE_SNAPSHOT`. The snapshot APIs are unused, so the drop is inert.
-  But `dbstat` becoming available makes
-  [`DbSizeInfoPlugin`](../Plugins/BuiltIn/DbSizeInfoPlugin.cs) inaccurate in a
-  static build: it hardcodes "the bundled SQLite build does not include dbstat"
-  without probing, so per-table sizes stay refused even though they would now
-  work.
+  `dbstat` becoming available is a genuine difference, and a visible one:
+  [`DbSizeInfoPlugin`](../Plugins/BuiltIn/DbSizeInfoPlugin.cs) returns real
+  per-table sizes on this build and the "unavailable" fallback on a dynamically
+  linked one. It asks rather than assumes, so `GET /db_size_info/` answers the
+  same question PostgreSQL does when running this artifact.
 - **Plugins are unaffected.** This used to be the blocker for making static the
   primary artifact: the missing `dlopen` that forces SQLite and OpenSSL to be
   link-bound also ruled out `NativeLibrary.Load`, so in-process `.so` plugins

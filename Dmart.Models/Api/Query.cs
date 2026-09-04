@@ -61,7 +61,6 @@ public sealed record Query
     // sentinel is what QueryService keys the lower-bound flag off.
     [System.Text.Json.Serialization.JsonIgnore]
     public int TotalCap { get; init; }
-    public bool ValidateSchema { get; set; } = true;
     public bool RetrieveLockStatus { get; init; }
     public string? JqFilter { get; init; }
     public int Limit { get; set; } = 10;
