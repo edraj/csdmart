@@ -11,10 +11,37 @@
 # to -- and made Dependency-Track over-report. Accurate versions matter more
 # than anything here.
 #
-# Method: syft reads yarn.lock for the resolved versions, `yarn list
-# --production` supplies the set of names that are runtime (not build) deps, and
-# the SBOM is the intersection. Build tooling (vite, esbuild, svelte-check) is
-# compiled away and does not ship, so it is excluded.
+# Method: syft reads yarn.lock for the resolved versions, the apps are BUILT and
+# the shipped bundle is asked what is actually in it, and the SBOM is the
+# intersection.
+#
+# The bundle is the authority because nothing else is accurate. This used to ask
+# `yarn list --production`, i.e. what package.json calls a runtime dependency —
+# and cxb declares `@tailwindcss/vite`, `tailwindcss`, `vite-plugin-static-copy`,
+# `vite-plugin-svelte-md` and `mdsvex` as dependencies. Every one is build-time,
+# and between them they dragged in esbuild, lightningcss, @tailwindcss/oxide,
+# @parcel/watcher and ~70 per-platform native binaries for operating systems this
+# artifact does not even run on. The document claimed all of it ships inside
+# /usr/bin/dmart. None of it does.
+#
+# That is not a tidiness problem. It is what produced the SBOM-driven false
+# positives: `jmespath` (a svelte-jsoneditor dependency that tree-shakes away
+# entirely — cxb/vite.config.ts already lists it under skipChunks) and
+# `apexcharts` (pulled in by flowbite-svelte, no JavaScript of which reaches the
+# bundle). Both were inventoried as shipping, and both drew scanner attention
+# that cost real time to disprove.
+#
+# Two sources, unioned:
+#   1. JS — every `node_modules/<pkg>` path in the built bundle's sourcemaps.
+#      That is the module graph rollup actually emitted, so tree-shaken code is
+#      absent by construction rather than by a maintained exclusion list.
+#   2. CSS — packages the apps' stylesheets pull in (`@import "tailwindcss"`,
+#      `@plugin 'flowbite/plugin'`, `@source ".../node_modules/<pkg>/..."`).
+#      Their code does not ship but their GENERATED OUTPUT does, and that output
+#      carries their licence. Sourcemaps do not cover it — Vite emits none for
+#      CSS here — so missing this step would under-report, which is the worse
+#      failure for an SBOM. `flowbite` is the live example: its plugin is where
+#      those apexcharts CSS classnames in the bundle come from.
 #
 # Licences are then attached from a second pass, because yarn.lock records only
 # name/version/integrity -- it has no licence field at all, so syft alone emits
@@ -60,39 +87,98 @@ fi
 
 WORK="$(mktemp -d)"; trap 'rm -rf "$WORK"' EXIT
 
-# Resolve node_modules so `yarn list` can report the runtime tree and so the
-# licence pass has a tree to read; this respects the committed yarn.lock and
-# changes nothing about the versions.
+# Resolve node_modules so the apps can build and the licence pass has a tree to
+# read; this respects the committed yarn.lock and changes nothing about versions.
 yarn install --frozen-lockfile >/dev/null 2>&1 || yarn install >/dev/null 2>&1
-yarn list --production --json 2>/dev/null > "$WORK/list.json" || true
+
+# Build each app with sourcemaps. Same inputs as the shipped build — only the
+# .map emission differs — so the module set is identical to what release.yml's
+# build-ui job produces. Built here rather than reused from that job because the
+# two run in parallel and neither can see the other's output.
+APPS="$(python3 - <<'PY'
+import json
+try:
+    ws = json.load(open("package.json")).get("workspaces") or []
+    print(" ".join(ws.get("packages", []) if isinstance(ws, dict) else ws))
+except Exception:
+    print("")
+PY
+)"
+[ -n "$APPS" ] || { echo "frontend-sbom.sh: no workspaces in package.json" >&2; exit 1; }
+
+for app in $APPS; do
+	[ -f "$app/package.json" ] || continue
+	echo "== building $app (with sourcemaps)"
+	( cd "$app" && yarn build --sourcemap >/dev/null 2>&1 ) || {
+		echo "frontend-sbom.sh: $app failed to build. The inventory is derived from" >&2
+		echo "        the built bundle, so there is nothing to inventory. Refusing to" >&2
+		echo "        emit a document that would understate what ships." >&2
+		exit 1
+	}
+done
 
 # syft the lockfile (a copy, so it does not also catalogue the .NET side).
 cp yarn.lock package.json "$WORK/" 2>/dev/null || true
 "$TOOLDIR/syft" "dir:$WORK" -o "cyclonedx-json@1.6"="$WORK/full.json" -q
 
-VERSION="$VERSION" OUT="$OUT" python3 - "$WORK/full.json" "$WORK/list.json" <<'PY'
+VERSION="$VERSION" OUT="$OUT" APPS="$APPS" python3 - "$WORK/full.json" <<'PY'
 import glob, json, os, re, sys, time, urllib.parse, urllib.request
 
-prod = set()
-try:
-	for line in open(sys.argv[2]):
-		o = json.loads(line)
-		if o.get("type") != "tree":
-			continue
-		def walk(nodes):
-			for n in nodes:
-				nm = n.get("name", "")
-				if "@" in nm[1:]:
-					prod.add(nm[:nm.rfind("@")])
-				if n.get("children"):
-					walk(n["children"])
-		walk(o["data"]["trees"])
-except Exception:
-	pass
+APPS = os.environ["APPS"].split()
+
+# A node_modules path names its owning package in the LAST such segment: a
+# nested copy reads ".../node_modules/a/node_modules/b", and the code belongs
+# to b.
+NM = re.compile(r"node_modules/((?:@[^/]+/)?[^/]+)")
+
+# 1. Everything rollup actually emitted, read from the bundle's own sourcemaps.
+def from_bundles():
+    found, maps = set(), 0
+    for app in APPS:
+        for path in glob.glob(f"{app}/dist/**/*.map", recursive=True):
+            try:
+                doc = json.load(open(path, encoding="utf-8"))
+            except Exception:
+                continue
+            maps += 1
+            for src in doc.get("sources") or []:
+                hit = NM.findall(src)
+                if hit:
+                    found.add(hit[-1])
+    return found, maps
+
+# 2. Packages the stylesheets pull in. Their own code never reaches the bundle,
+# so no sourcemap mentions them, but the CSS they generate does ship and carries
+# their licence.
+CSS_REF = re.compile(
+    r"""@(?:plugin|import|config)\s+['"]([^'"]+)['"]"""
+    r"""|@source\s+['"][^'"]*node_modules/((?:@[^/]+/)?[^/'"]+)""")
+
+def from_stylesheets():
+    found = set()
+    for app in APPS:
+        for path in glob.glob(f"{app}/src/**/*.css", recursive=True):
+            try:
+                text = open(path, encoding="utf-8").read()
+            except Exception:
+                continue
+            for direct, sourced in CSS_REF.findall(text):
+                ref = sourced or direct
+                if not ref or ref.startswith((".", "/")):
+                    continue
+                parts = ref.split("/")
+                # "flowbite/plugin" -> flowbite; "@tailwindcss/typography" stays whole.
+                found.add("/".join(parts[:2]) if ref.startswith("@") else parts[0])
+    return found
+
+bundled, mapcount = from_bundles()
+if mapcount == 0:
+    sys.exit("frontend-sbom.sh: the build produced no sourcemaps, so nothing can be\n"
+             "        read from it. Refusing to emit an empty inventory.")
+styled = from_stylesheets()
+prod = bundled | styled
 
 full = json.load(open(sys.argv[1])).get("components", [])
-# If `yarn list` produced nothing (older yarn, offline), fall back to the full
-# lockfile rather than emitting an empty SBOM.
 comps = {}
 for c in full:
 	if prod and c.get("name") not in prod:
@@ -246,7 +332,13 @@ json.dump(doc, open(os.environ["OUT"], "w"), indent=2)
 
 total = len(doc["components"])
 covered = from_local + from_registry
-print("== frontends: %d runtime npm components (from yarn.lock) -> %s" % (total, os.environ["OUT"]))
+# Say what was left out. A document that silently shrank from 434 components to
+# 70 is indistinguishable from one whose inventory step broke.
+print("== frontends: %d components ship (of %d in yarn.lock) -> %s"
+      % (total, len(full), os.environ["OUT"]))
+print("== sources: %d from the built bundle (%d sourcemaps), %d from stylesheets; "
+      "%d lockfile entries are build-only and excluded"
+      % (len(bundled), mapcount, len(styled - bundled), len(full) - total))
 print("== licences: %d from node_modules, %d from registry, %d undeclared%s"
       % (from_local, from_registry, len(undeclared), " (offline)" if offline else ""))
 if review:

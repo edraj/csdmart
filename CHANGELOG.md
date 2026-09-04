@@ -4,6 +4,47 @@
 
 ### Fixed
 
+- **The frontend SBOM listed 300+ things that do not ship.** It asked
+  `yarn list --production` — what `package.json` calls a runtime dependency —
+  and cxb declares `@tailwindcss/vite`, `tailwindcss`, `vite-plugin-static-copy`,
+  `vite-plugin-svelte-md` and `mdsvex` as dependencies. All are build-time, and
+  between them they dragged in esbuild, lightningcss, `@tailwindcss/oxide`,
+  `@parcel/watcher` and some seventy per-platform native binaries for operating
+  systems the artifact does not run on. The document asserted every one of them
+  ships inside `/usr/bin/dmart`.
+
+  That is what produced the SBOM-driven false positives. `jmespath` (a
+  `svelte-jsoneditor` dependency that tree-shakes away entirely —
+  `cxb/vite.config.ts` already lists it under `skipChunks`) drew two critical
+  JMESPath CVEs that turned out to be against the Ruby and PHP implementations.
+  `apexcharts`, pulled in by `flowbite-svelte`, is dual-licensed and free only
+  under $2M annual revenue — a real licence question, raised about a package
+  none of whose JavaScript reaches the bundle.
+
+  The inventory now comes from the built bundle. The apps are built with
+  sourcemaps and every `node_modules/<pkg>` path in them is collected, so
+  tree-shaken code is absent by construction rather than by a maintained
+  exclusion list. Stylesheet references (`@import "tailwindcss"`,
+  `@plugin 'flowbite/plugin'`, `@source ".../node_modules/<pkg>"`) are unioned
+  in: that code does not ship but its generated output does and carries its
+  licence, and Vite emits no CSS sourcemaps, so leaving it out would
+  under-report. `flowbite` is the live example — its plugin is where those
+  `apexcharts` CSS classnames in the bundle actually come from.
+
+  **434 components became 75**, and the count is not the interesting part.
+  The old set both over-reported build tooling *and* missed **`svelte` itself**
+  — the framework runtime, unquestionably in the shipped bundle, absent from
+  the inventory because it is declared a devDependency. Every one of the 75 now
+  resolves a licence locally; the npm-registry fallback added alongside the
+  licence fix is no longer reached, because the packages that needed it were
+  the per-platform binaries that never shipped.
+
+  Generation now fails if a build fails or emits no sourcemaps, rather than
+  quietly producing a thinner document, and it reports how many lockfile
+  entries were excluded so a shrunken inventory is never mistaken for a broken
+  one. The SBOM job now builds the frontends (~40s); `release.yml` builds them
+  in a separate parallel job whose output it cannot see.
+
 - **Declared defaults across the wire model were silently discarded.** #234
   fixed this for `PluginWrapper`; the same defect ran through most of the
   model. On meeting an init-only property, the source-generated deserializer
