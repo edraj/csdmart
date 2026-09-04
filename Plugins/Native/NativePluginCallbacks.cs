@@ -1,5 +1,3 @@
-using System.Runtime.CompilerServices;
-using System.Runtime.InteropServices;
 using System.Text;
 using System.Text.Json;
 using Dmart.Config;
@@ -13,101 +11,32 @@ using Microsoft.Extensions.Options;
 
 namespace Dmart.Plugins.Native;
 
-// C-ABI callbacks that dmart hands to each native .so plugin at load time, so
-// plugin hooks can reach back into dmart (read entries, save entries, send
-// email, broadcast WS). See the matching `init(const DmartCallbacks*)` export
-// described in custom_plugins_sdk/README.md.
+// Host-side implementations of the callbacks an external plugin can make back
+// into dmart: read and write entries and users, run a query, send mail,
+// broadcast on a channel, log, read attachment bytes.
 //
-// All string params are null-terminated UTF-8 (matches the existing hook()
-// wire format). `char*` return values are malloc'd with AllocHGlobal and must
-// be freed by the plugin via `dmart_free`; `int` return values use 0 = ok,
-// non-zero = error.
+// "Native" here means operator-supplied and external, as opposed to the
+// managed plugins in Plugins/BuiltIn — not in-process. Plugins reach these
+// over the subprocess line protocol; PluginCallbackDispatcher parses a
+// callback frame and calls the matching Emit* method below.
 //
-// Thread model: callbacks are sync (the plugin's hook() is sync from the C
-// side — see NativePluginHandle.CallHook). The [UnmanagedCallersOnly] ABI
-// imposes this: a managed `await` cannot suspend back through a native frame,
-// so every callback must return synchronously or the runtime tears down.
-// Async dmart services are bridged with GetAwaiter().GetResult(). This is
-// safe because:
-//   - each callback invocation runs on a thread-pool thread that dmart
-//     already allocated for the hook dispatch — no captured
-//     SynchronizationContext to deadlock against;
-//   - downstream repositories (`EntryRepository`, `UserRepository`,
-//     `HistoryRepository`) use library-style `await` with no
-//     `.ConfigureAwait(true)`, so their continuations run on the pool;
-//   - we never call back into managed code from inside the sync wait, so
-//     no deadlock risk.
+// Every method is named Emit* and takes typed arguments so it can be driven
+// directly from tests, and every one of them is written NOT to throw: a throw
+// would escape into SubprocessPluginHost's read loop and strand an exchange
+// with the plugin still waiting on its result. Failures are reported the way
+// each callback's contract says — an {"error":…} document, or a non-zero int
+// code — never by propagating.
 //
-// AOT: every managed method exposed as a function pointer is marked with
-// [UnmanagedCallersOnly(CallConvs=[CallConvCdecl])]. No reflection, no
-// dynamic delegate creation — fully AOT-friendly.
-public static unsafe class NativePluginCallbacks
+// Thread model: these run synchronously on the thread inside
+// SubprocessPluginHost.SendAndReceive, which is a thread-pool thread with no
+// captured SynchronizationContext, so bridging dmart's async services with
+// GetAwaiter().GetResult() cannot deadlock. The repositories use library-style
+// `await` with no ConfigureAwait(true), so their continuations run on the pool.
+public static class NativePluginCallbacks
 {
-    // Layout MUST match the C struct in custom_plugins_sdk/README.md and
-    // shared/DmartCallbacks.cs. Adding fields is a breaking change for all
-    // deployed .so plugins — append, never reorder.
-    [StructLayout(LayoutKind.Sequential)]
-    public struct DmartCallbacks
-    {
-        public delegate* unmanaged[Cdecl]<byte*, byte*, byte*, byte*, byte*> LoadEntry;
-        public delegate* unmanaged[Cdecl]<byte*, byte*> LoadUser;
-        public delegate* unmanaged[Cdecl]<byte*, int> SaveEntry;
-        public delegate* unmanaged[Cdecl]<byte*, int> UpdateUser;
-        public delegate* unmanaged[Cdecl]<byte*, byte*, byte*, int> SendEmail;
-        public delegate* unmanaged[Cdecl]<byte*, byte*, int> WsBroadcast;
-        public delegate* unmanaged[Cdecl]<byte*, void> DmartFree;
-        // Generic Query callback. Plugin sends a serialized Query JSON;
-        // host runs it through the same QueryService the HTTP API uses.
-        // By default the query is executed as the user that triggered the
-        // hook (so user permissions are honored). The plugin can override
-        // by adding "as_actor" to the JSON: a string impersonates that
-        // user, JSON null bypasses ACLs (system). APPENDED.
-        public delegate* unmanaged[Cdecl]<byte*, byte*> Query;
-        // Media bytes for an attachment, by (space, subpath, shortname).
-        // Returns the raw bytes via outBufLen (caller frees with DmartFree).
-        // null when the attachment has no media or doesn't exist. APPENDED.
-        public delegate* unmanaged[Cdecl]<byte*, byte*, byte*, int*, byte*> GetMediaAttachment;
-
-        // Capability-level marker; plugins read this to detect host
-        // version at runtime. Bumped whenever fields are appended.
-        //   1 — initial release (LoadEntry…DmartFree)
-        //   2 — Query, GetMediaAttachment appended; Query was ACL-free
-        //   3 — Query honors caller's actor by default; "as_actor" override
-        //   4 — Log appended (plugin → ILogger pipeline)
-        //   5 — GetSessionFirebaseTokens appended
-        public int Version;
-
-        // Plugin → host structured logging. Routes the message through
-        // dmart's ILogger (so it lands in the JSONL file sink, honors
-        // configured log-level filters, etc.) instead of stderr.
-        // Args: (level, category, message). `level` is the int value of
-        // Microsoft.Extensions.Logging.LogLevel (0 Trace … 5 Critical, 6
-        // None). `category` is appended to "plugin.<shortname>" by the
-        // host — pass NULL for the default. `message` is required.
-        // APPENDED in V4.
-        public delegate* unmanaged[Cdecl]<int, byte*, byte*, void> Log;
-
-        // Returns a JSON array of firebase_token strings for the user's
-        // active sessions. Args: (shortname, inactivityTtlSeconds).
-        // inactivityTtlSeconds <= 0 disables the TTL filter (all sessions).
-        // Returns "[]" when the user has no sessions or on error.
-        // Returned pointer must be released via DmartFree. APPENDED in V5.
-        public delegate* unmanaged[Cdecl]<byte*, int, byte*> GetSessionFirebaseTokens;
-    }
-
-    // Single source of truth for the version number written into every
-    // DmartCallbacks struct. Matches the comment in the field above.
-    public const int CurrentVersion = 5;
-
-    // Allocated once, stays alive for the process lifetime. Plugins keep
-    // the pointer we hand them in their `init()` and dereference it as
-    // needed from later hook() calls.
-    private static DmartCallbacks _instance;
-    private static IntPtr _instancePtr;
-
-    // One-way bridge from DI into the [UnmanagedCallersOnly] static methods
-    // below. Program.cs sets this right after `app.Build()`. The methods
-    // resolve scoped services with CreateScope() on each call.
+    // One-way bridge from DI into the static methods below. Program.cs sets
+    // this right after `app.Build()`. The methods resolve scoped services with
+    // CreateScope() on each call.
     public static IServiceProvider? Services { get; set; }
 
     // ILoggerFactory is a singleton in the container, so resolving it once
@@ -127,54 +56,23 @@ public static unsafe class NativePluginCallbacks
     // the new settings rather than the prior fixture's.
     private static string? _mgmtSpaceCache;
 
-    // Fills the struct with function pointers and returns a stable pointer
-    // that can be handed to every plugin's init() export.
-    public static IntPtr GetCallbacksPtr()
-    {
-        if (_instancePtr != IntPtr.Zero) return _instancePtr;
-
-        _instance = new DmartCallbacks
-        {
-            LoadEntry = &LoadEntryCb,
-            LoadUser = &LoadUserCb,
-            SaveEntry = &SaveEntryCb,
-            UpdateUser = &UpdateUserCb,
-            SendEmail = &SendEmailCb,
-            WsBroadcast = &WsBroadcastCb,
-            DmartFree = &DmartFreeCb,
-            Query = &QueryCb,
-            GetMediaAttachment = &GetMediaAttachmentCb,
-            Version = CurrentVersion,
-            Log = &LogCb,
-            GetSessionFirebaseTokens = &GetSessionFirebaseTokensCb,
-        };
-        // Copy into unmanaged memory so the pointer doesn't move under the
-        // GC. The struct is small and ABI-stable; the pointer lives until
-        // process exit (no Free).
-        _instancePtr = Marshal.AllocHGlobal(Unsafe.SizeOf<DmartCallbacks>());
-        Marshal.StructureToPtr(_instance, _instancePtr, false);
-        return _instancePtr;
-    }
-
     // ========================================================================
     // Callback implementations
     // ========================================================================
 
-    [UnmanagedCallersOnly(CallConvs = new[] { typeof(System.Runtime.CompilerServices.CallConvCdecl) })]
-    private static byte* LoadEntryCb(byte* space, byte* subpath, byte* shortname, byte* resourceType)
+    // internal for testing via dmart.Tests. Returns the JSON body the callback
+    // surfaces: a serialized Entry, {"entry":null} on a miss, or {"error":…}.
+    // Never throws — a throw would escape into SubprocessPluginHost's read loop
+    // and strand the exchange with the plugin still waiting on its result.
+    internal static string EmitLoadEntry(
+        string sp, string sub, string sn, string? rtStr, ILogger? logger)
     {
-        var logger = GetCallbackLogger();
-        var sp = PtrToString(space) ?? "";
-        var sub = PtrToString(subpath) ?? "";
-        var sn = PtrToString(shortname) ?? "";
         try
         {
-            var rtStr = PtrToString(resourceType);
-
             if (Services is null)
             {
                 logger?.LogWarning("load_entry called before services initialized");
-                return AllocUtf8("""{"error":"services_not_initialized"}""");
+                return """{"error":"services_not_initialized"}""";
             }
             using var scope = Services.CreateScope();
             var entries = scope.ServiceProvider.GetRequiredService<EntryRepository>();
@@ -188,30 +86,28 @@ public static unsafe class NativePluginCallbacks
             if (entry is null)
             {
                 logger?.LogDebug("load_entry miss {Space}/{Subpath}/{Shortname}", sp, sub, sn);
-                return AllocUtf8("""{"entry":null}""");
+                return """{"entry":null}""";
             }
             logger?.LogDebug("load_entry hit {Space}/{Subpath}/{Shortname}", sp, sub, sn);
-            var json = JsonSerializer.Serialize(entry, DmartJsonContext.Default.Entry);
-            return AllocUtf8(json);
+            return JsonSerializer.Serialize(entry, DmartJsonContext.Default.Entry);
         }
         catch (Exception ex)
         {
             logger?.LogError(ex, "load_entry failed for {Space}/{Subpath}/{Shortname}", sp, sub, sn);
-            return AllocUtf8($$"""{"error":{{JsonEncode(ex.Message)}}}""");
+            return $$"""{"error":{{JsonEncode(ex.Message)}}}""";
         }
     }
 
-    [UnmanagedCallersOnly(CallConvs = new[] { typeof(System.Runtime.CompilerServices.CallConvCdecl) })]
-    private static byte* LoadUserCb(byte* shortname)
+    // internal for testing via dmart.Tests. Returns a serialized User,
+    // {"user":null} on a miss, or {"error":…}. Never throws.
+    internal static string EmitLoadUser(string sn, ILogger? logger)
     {
-        var logger = GetCallbackLogger();
-        var sn = PtrToString(shortname) ?? "";
         try
         {
             if (Services is null)
             {
                 logger?.LogWarning("load_user called before services initialized");
-                return AllocUtf8("""{"error":"services_not_initialized"}""");
+                return """{"error":"services_not_initialized"}""";
             }
             using var scope = Services.CreateScope();
             var users = scope.ServiceProvider.GetRequiredService<UserRepository>();
@@ -219,46 +115,15 @@ public static unsafe class NativePluginCallbacks
             if (user is null)
             {
                 logger?.LogDebug("load_user miss {User}", sn);
-                return AllocUtf8("""{"user":null}""");
+                return """{"user":null}""";
             }
             logger?.LogDebug("load_user hit {User}", sn);
-            var json = JsonSerializer.Serialize(user, DmartJsonContext.Default.User);
-            return AllocUtf8(json);
+            return JsonSerializer.Serialize(user, DmartJsonContext.Default.User);
         }
         catch (Exception ex)
         {
             logger?.LogError(ex, "load_user failed for {User}", sn);
-            return AllocUtf8($$"""{"error":{{JsonEncode(ex.Message)}}}""");
-        }
-    }
-
-    [UnmanagedCallersOnly(CallConvs = new[] { typeof(System.Runtime.CompilerServices.CallConvCdecl) })]
-    private static int SaveEntryCb(byte* entryJson)
-    {
-        // Marshal-only here; the typed work lives in EmitSaveEntry so tests
-        // can drive history-write + logging without synthesising UTF-8 byte
-        // buffers. Mirrors the LogCb → EmitPluginLog split.
-        var logger = GetCallbackLogger();
-        try
-        {
-            var json = PtrToString(entryJson);
-            if (string.IsNullOrEmpty(json) || Services is null)
-            {
-                logger?.LogWarning("save_entry rejected: empty payload or services not ready");
-                return 1;
-            }
-            var entry = JsonSerializer.Deserialize(json, DmartJsonContext.Default.Entry);
-            if (entry is null)
-            {
-                logger?.LogWarning("save_entry rejected: deserialize returned null");
-                return 2;
-            }
-            return EmitSaveEntry(entry, logger);
-        }
-        catch (Exception ex)
-        {
-            logger?.LogError(ex, "save_entry failed (deserialize)");
-            return 3;
+            return $$"""{"error":{{JsonEncode(ex.Message)}}}""";
         }
     }
 
@@ -266,8 +131,8 @@ public static unsafe class NativePluginCallbacks
     // prior-fetch + upsert via UpsertWithPriorAsync (SELECT FOR UPDATE +
     // INSERT ON CONFLICT in one transaction), computes a {field: {old, new}}
     // diff against the prior row, and appends a history record for non-empty
-    // diffs on the update path. Returns the same 0/1/3 codes the raw cb
-    // surfaces so the C ABI contract is unchanged.
+    // diffs on the update path. Returns 0 = ok, non-zero = error; the codes are
+    // part of the callback's wire contract, so don't renumber them.
     //
     // Create path (`inserted == true`) writes no history row — Python parity
     // with EntryService.UpdateAsync, which only logs on update.
@@ -312,33 +177,6 @@ public static unsafe class NativePluginCallbacks
         {
             logger?.LogError(ex, "save_entry failed for {Space}/{Subpath}/{Shortname}",
                              entry.SpaceName, entry.Subpath, entry.Shortname);
-            return 3;
-        }
-    }
-
-    [UnmanagedCallersOnly(CallConvs = new[] { typeof(System.Runtime.CompilerServices.CallConvCdecl) })]
-    private static int UpdateUserCb(byte* userJson)
-    {
-        var logger = GetCallbackLogger();
-        try
-        {
-            var json = PtrToString(userJson);
-            if (string.IsNullOrEmpty(json) || Services is null)
-            {
-                logger?.LogWarning("update_user rejected: empty payload or services not ready");
-                return 1;
-            }
-            var user = JsonSerializer.Deserialize(json, DmartJsonContext.Default.User);
-            if (user is null)
-            {
-                logger?.LogWarning("update_user rejected: deserialize returned null");
-                return 2;
-            }
-            return EmitUpdateUser(user, logger);
-        }
-        catch (Exception ex)
-        {
-            logger?.LogError(ex, "update_user failed (deserialize)");
             return 3;
         }
     }
@@ -442,16 +280,12 @@ public static unsafe class NativePluginCallbacks
         return _markerWarnLast.TryUpdate(opName, now, last);
     }
 
-    [UnmanagedCallersOnly(CallConvs = new[] { typeof(System.Runtime.CompilerServices.CallConvCdecl) })]
-    private static int SendEmailCb(byte* to, byte* subject, byte* html)
+    // internal for testing via dmart.Tests. 0 = ok, non-zero = error; the codes
+    // are part of the callback's wire contract. Never throws.
+    internal static int EmitSendEmail(string? t, string? s, string? b, ILogger? logger)
     {
-        var logger = GetCallbackLogger();
-        string? t = null;
         try
         {
-            t = PtrToString(to);
-            var s = PtrToString(subject);
-            var b = PtrToString(html);
             if (string.IsNullOrEmpty(t) || Services is null)
             {
                 logger?.LogWarning("send_email rejected: empty 'to' or services not ready");
@@ -473,15 +307,12 @@ public static unsafe class NativePluginCallbacks
         }
     }
 
-    [UnmanagedCallersOnly(CallConvs = new[] { typeof(System.Runtime.CompilerServices.CallConvCdecl) })]
-    private static int WsBroadcastCb(byte* channel, byte* message)
+    // internal for testing via dmart.Tests. 0 = ok, non-zero = error; the codes
+    // are part of the callback's wire contract. Never throws.
+    internal static int EmitWsBroadcast(string? ch, string? msg, ILogger? logger)
     {
-        var logger = GetCallbackLogger();
-        string? ch = null;
         try
         {
-            ch = PtrToString(channel);
-            var msg = PtrToString(message);
             if (string.IsNullOrEmpty(ch) || Services is null)
             {
                 logger?.LogWarning("ws_broadcast rejected: empty channel or services not ready");
@@ -506,31 +337,31 @@ public static unsafe class NativePluginCallbacks
         }
     }
 
-    [UnmanagedCallersOnly(CallConvs = new[] { typeof(System.Runtime.CompilerServices.CallConvCdecl) })]
-    private static void DmartFreeCb(byte* ptr)
-    {
-        if (ptr != null) Marshal.FreeHGlobal((IntPtr)ptr);
-    }
-
     // Plugin → host query: same QueryService the HTTP API uses. By default
     // the query runs as the user that triggered the hook (so user
     // permissions are honored). A plugin can override the actor by adding
     // an "as_actor" field to the query JSON:
-    //   - field absent       → caller's actor (PluginInvocationContext)
+    //   - field absent       → caller's actor (the exchange's ambient actor)
     //   - field = "username"  → impersonate that user
     //   - field = null       → no actor (system / no ACL)
-    [UnmanagedCallersOnly(CallConvs = new[] { typeof(System.Runtime.CompilerServices.CallConvCdecl) })]
-    private static byte* QueryCb(byte* queryJson)
+
+    // internal for testing via dmart.Tests. `ambientActor` is who the query
+    // runs as when the JSON carries no "as_actor" override — the user that
+    // triggered the hook or API request. It is a PARAMETER rather than a read
+    // of PluginInvocationContext so the subprocess bridge can pass the actor it
+    // already knows from the exchange envelope instead of depending on thread
+    // affinity. Changing that default is security-relevant: the three-tier
+    // resolution in ResolveActor is what keeps a plugin query inside the
+    // triggering user's permissions. Never throws.
+    internal static string EmitQuery(string? json, string? ambientActor, ILogger? logger)
     {
-        var logger = GetCallbackLogger();
         try
         {
-            var json = PtrToString(queryJson);
             if (string.IsNullOrEmpty(json) || Services is null)
             {
                 logger?.LogWarning("query rejected: empty payload or services not ready");
-                return AllocUtf8(BuildQueryFailJson(InternalErrorCode.SOMETHING_WRONG,
-                    "empty query or services not initialized", ErrorTypes.Internal));
+                return BuildQueryFailJson(InternalErrorCode.SOMETHING_WRONG,
+                    "empty query or services not initialized", ErrorTypes.Internal);
             }
 
             // Single-parse: pull both the actor override (if any) and the
@@ -541,39 +372,39 @@ public static unsafe class NativePluginCallbacks
             catch (JsonException jex)
             {
                 logger?.LogWarning("query rejected: invalid json: {Message}", jex.Message);
-                return AllocUtf8(BuildQueryFailJson(InternalErrorCode.INVALID_DATA,
-                    $"invalid query json: {jex.Message}", ErrorTypes.Request));
+                return BuildQueryFailJson(InternalErrorCode.INVALID_DATA,
+                    $"invalid query json: {jex.Message}", ErrorTypes.Request);
             }
 
             using (doc)
             {
-                var actor = ResolveActor(doc.RootElement, PluginInvocationContext.CurrentActor);
+                var actor = ResolveActor(doc.RootElement, ambientActor);
                 Query? query;
                 try { query = doc.RootElement.Deserialize(DmartJsonContext.Default.Query); }
                 catch (JsonException jex)
                 {
                     logger?.LogWarning("query rejected: invalid json: {Message}", jex.Message);
-                    return AllocUtf8(BuildQueryFailJson(InternalErrorCode.INVALID_DATA,
-                        $"invalid query json: {jex.Message}", ErrorTypes.Request));
+                    return BuildQueryFailJson(InternalErrorCode.INVALID_DATA,
+                        $"invalid query json: {jex.Message}", ErrorTypes.Request);
                 }
                 if (query is null)
                 {
                     logger?.LogWarning("query rejected: deserialize returned null");
-                    return AllocUtf8(BuildQueryFailJson(InternalErrorCode.INVALID_DATA,
-                        "invalid query json", ErrorTypes.Request));
+                    return BuildQueryFailJson(InternalErrorCode.INVALID_DATA,
+                        "invalid query json", ErrorTypes.Request);
                 }
                 logger?.LogDebug("query type={Type} space={Space} actor={Actor}",
                     query.Type, query.SpaceName, actor);
                 using var scope = Services.CreateScope();
                 var qsvc = scope.ServiceProvider.GetRequiredService<QueryService>();
                 var resp = qsvc.ExecuteAsync(query, actor).GetAwaiter().GetResult();
-                return AllocUtf8(JsonSerializer.Serialize(resp, DmartJsonContext.Default.Response));
+                return JsonSerializer.Serialize(resp, DmartJsonContext.Default.Response);
             }
         }
         catch (Exception ex)
         {
             logger?.LogError(ex, "query failed");
-            return AllocUtf8(BuildQueryFailJson(InternalErrorCode.SOMETHING_WRONG, ex.Message, ErrorTypes.Exception));
+            return BuildQueryFailJson(InternalErrorCode.SOMETHING_WRONG, ex.Message, ErrorTypes.Exception);
         }
     }
 
@@ -596,22 +427,15 @@ public static unsafe class NativePluginCallbacks
         => JsonSerializer.Serialize(Response.Fail(code, message, type), DmartJsonContext.Default.Response);
 
     // Plugin → host: fetch the raw `media` BYTEA for an attachment by
-    // (space, subpath, shortname). Returns the bytes via outBufLen and a
-    // pointer that the plugin must release with DmartFree. Returns null
-    // when the attachment is missing or has no media.
-    [UnmanagedCallersOnly(CallConvs = new[] { typeof(System.Runtime.CompilerServices.CallConvCdecl) })]
-    private static byte* GetMediaAttachmentCb(byte* space, byte* subpath, byte* shortname, int* outBufLen)
+    // (space, subpath, shortname). Returns null when the attachment is missing
+    // or carries no media — the caller renders that as {"media":null}.
+    //
+    // internal for testing via dmart.Tests. Never throws.
+    internal static byte[]? EmitGetMediaAttachment(
+        string sp, string sub, string sn, ILogger? logger)
     {
-        var logger = GetCallbackLogger();
-        var sp = "";
-        var sub = "";
-        var sn = "";
         try
         {
-            if (outBufLen != null) *outBufLen = 0;
-            sp = PtrToString(space) ?? "";
-            sub = PtrToString(subpath) ?? "";
-            sn = PtrToString(shortname) ?? "";
             if (Services is null)
             {
                 logger?.LogWarning("get_media called before services initialized");
@@ -631,17 +455,13 @@ public static unsafe class NativePluginCallbacks
                 logger?.LogDebug("get_media miss {Space}/{Subpath}/{Shortname}", sp, sub, sn);
                 return null;
             }
-            var ptr = (byte*)Marshal.AllocHGlobal(bytes.Length);
-            Marshal.Copy(bytes, 0, (IntPtr)ptr, bytes.Length);
-            if (outBufLen != null) *outBufLen = bytes.Length;
             logger?.LogDebug("get_media ok {Space}/{Subpath}/{Shortname} bytes={Bytes}",
                 sp, sub, sn, bytes.Length);
-            return ptr;
+            return bytes;
         }
         catch (Exception ex)
         {
             logger?.LogError(ex, "get_media failed {Space}/{Subpath}/{Shortname}", sp, sub, sn);
-            if (outBufLen != null) *outBufLen = 0;
             return null;
         }
     }
@@ -656,27 +476,8 @@ public static unsafe class NativePluginCallbacks
     // when truncation occurs the recorded line is 16 KB + the literal
     // "…[truncated]" suffix (~12 bytes), so downstream consumers should
     // budget for "16 KB + suffix" rather than treating 16 KB as a hard cap.
-    [UnmanagedCallersOnly(CallConvs = new[] { typeof(System.Runtime.CompilerServices.CallConvCdecl) })]
-    private static void LogCb(int level, byte* category, byte* message)
-    {
-        try
-        {
-            // Marshal-only here; the real work lives in EmitPluginLog so
-            // tests can drive the full pipeline (category prefix, truncation,
-            // level mapping, ILogger dispatch, LogSink write) without
-            // synthesizing UTF-8 byte buffers.
-            EmitPluginLog(level, PtrToString(category), PtrToString(message));
-        }
-        catch
-        {
-            // Logging must never propagate an exception across the C ABI
-            // boundary — a managed throw in an [UnmanagedCallersOnly] would
-            // tear down the plugin's hook with no recourse.
-        }
-    }
-
-    // internal for testing via dmart.Tests. Holds all the policy LogCb
-    // applies once the byte* args have been decoded.
+    //
+    // internal for testing via dmart.Tests.
     internal static void EmitPluginLog(int level, string? sub, string? msg)
     {
         var factory = GetLoggerFactory();
@@ -692,19 +493,6 @@ public static unsafe class NativePluginCallbacks
         var lvl = ClampLevel(level);
         var logger = factory.CreateLogger(fullCategory);
         if (logger.IsEnabled(lvl)) logger.Log(lvl, "{Message}", msg);
-    }
-
-    [UnmanagedCallersOnly(CallConvs = new[] { typeof(System.Runtime.CompilerServices.CallConvCdecl) })]
-    private static byte* GetSessionFirebaseTokensCb(byte* shortname, int inactivityTtlSeconds)
-    {
-        // Marshal-only here; the typed work lives in EmitGetSessionFirebaseTokens
-        // so tests can call it with already-typed string + nullable-int args.
-        // Mirrors the SaveEntryCb → EmitSaveEntry / LogCb → EmitPluginLog
-        // split used throughout this file.
-        var logger = GetCallbackLogger();
-        var sn = PtrToString(shortname) ?? "";
-        int? ttl = inactivityTtlSeconds > 0 ? inactivityTtlSeconds : null;
-        return AllocUtf8(EmitGetSessionFirebaseTokens(sn, ttl, logger));
     }
 
     // internal for testing via dmart.Tests. Returns a serialized JSON array
@@ -757,18 +545,21 @@ public static unsafe class NativePluginCallbacks
 
     // Host-side logger for callback operations. Uses `plugin.<shortname>.callbacks`
     // so operator filter rules that already target `plugin.*` cover plugin-driven
-    // host activity. `LogCb` writes to `plugin.<shortname>[.<sub>]` directly —
-    // these two categories share a family but are distinct subcategories so
-    // host-emitted vs plugin-emitted lines are filterable independently.
+    // host activity. `EmitPluginLog` writes to `plugin.<shortname>[.<sub>]`
+    // directly — these two categories share a family but are distinct
+    // subcategories so host-emitted vs plugin-emitted lines are filterable
+    // independently.
     //
-    // Must never throw: every callback caches this at the very top (outside
-    // its try block), and a managed throw in an [UnmanagedCallersOnly] method
-    // would tear down the plugin's hook with no recourse. `Services` can be
-    // mid-disposal during test teardown or shutdown, in which case
-    // `GetService` / `CreateLogger` raise `ObjectDisposedException`. Swallow
-    // and return null — the rest of the callback uses `logger?.Log…` so the
-    // call becomes a no-op.
-    private static ILogger? GetCallbackLogger()
+    // Must never throw: the dispatcher resolves this before doing any work, and
+    // a throw here would escape into the read loop and strand the exchange.
+    // `Services` can be mid-disposal during test teardown or shutdown, in which
+    // case `GetService` / `CreateLogger` raise `ObjectDisposedException`.
+    // Swallow and return null — the rest of the callback uses `logger?.Log…`
+    // so the call becomes a no-op.
+    //
+    // internal so PluginCallbackDispatcher logs host-side callback activity
+    // under the same category the callbacks themselves use.
+    internal static ILogger? GetCallbackLogger()
     {
         try
         {
@@ -817,21 +608,10 @@ public static unsafe class NativePluginCallbacks
     // Helpers
     // ========================================================================
 
-    private static string? PtrToString(byte* ptr)
-        => ptr == null ? null : Marshal.PtrToStringUTF8((IntPtr)ptr);
-
-    private static byte* AllocUtf8(string s)
-    {
-        var bytes = Encoding.UTF8.GetBytes(s);
-        var ptr = Marshal.AllocHGlobal(bytes.Length + 1);
-        Marshal.Copy(bytes, 0, ptr, bytes.Length);
-        Marshal.WriteByte(ptr, bytes.Length, 0);
-        return (byte*)ptr;
-    }
-
     // Minimal JSON string encoder for the error-path only (avoids bringing
-    // JsonSerializer into every error return).
-    private static string JsonEncode(string s)
+    // JsonSerializer into every error return). internal so the subprocess
+    // callback bridge encodes its error messages the same way.
+    internal static string JsonEncode(string s)
     {
         var sb = new StringBuilder(s.Length + 2);
         sb.Append('"');

@@ -65,8 +65,7 @@ Each plugin directory has:
 ```
 ~/.dmart/plugins/my_plugin/
 ├── config.json
-└── my_plugin.so    (hook or api: loaded via dlopen)
-└── my_plugin       (subprocess: forked, stdio JSON-RPC)
+└── my_plugin       (executable: run as a child process, stdio JSON lines)
 ```
 
 `config.json` shape:
@@ -75,7 +74,7 @@ Each plugin directory has:
 {
   "shortname": "my_plugin",
   "is_active": true,
-  "type": "hook",                     // or "api" or "subprocess"
+  "type": "hook",                     // or "api"
   "listen_time": "after",
   "filters": {
     "subpaths": { "__all_spaces__": ["__all_subpaths__"] },
@@ -86,19 +85,44 @@ Each plugin directory has:
 }
 ```
 
-### Native `.so` ABI
+### Wire protocol
 
-Exported C functions:
+One JSON object per line, in both directions:
 
-```c
-char* get_info();             // returns JSON {shortname, version, type}
-char* hook(const char* evt);  // for hook type; returns JSON response
-char* handle_request(const char* req); // for api type
-void free_string(char* ptr);  // dmart calls this after reading the string
+```
+→ stdin:  {"type":"info","host":{"callbacks":1}}
+← stdout: {"shortname":"my_plugin","version":"1.0.0","type":"hook"}
+
+→ stdin:  {"type":"hook","event":{...}}
+← stdout: {"status":"ok"}
+
+→ stdin:  {"type":"request","request":{...}}
+← stdout: {"status":"success","attributes":{...}}
 ```
 
-See `custom_plugins_sdk/` for working C#, Rust, and Go examples. The loader
-is `Plugins/Native/NativePluginLoader.cs` — uses `dlopen` + `dlsym`.
+Before its final response a plugin may interleave **callback frames** —
+requests back into dmart, answered on its stdin:
+
+```
+← stdout: {"type":"callback","id":1,"op":"query","args":{...}}
+→ stdin:  {"type":"callback_result","id":1,"ok":true,"result":{...}}
+```
+
+The ops are `load_entry`, `load_user`, `save_entry`, `update_user`,
+`send_email`, `ws_broadcast`, `query`, `log`, `get_session_firebase_tokens` and
+`get_media_attachment`. A `query` runs as the user that triggered the exchange
+unless it carries an explicit `as_actor` override.
+
+The loader is `Plugins/Native/NativePluginLoader.cs`; the process host and read
+loop are `SubprocessPluginHost.cs`, and the callback routing table is
+`PluginCallbackDispatcher.cs`. See `custom_plugins_sdk/` for the full guide and
+Python samples.
+
+dmart previously also loaded in-process `.so` plugins through a C ABI
+(`get_info` / `hook` / `handle_request` / `free_string`, resolved with `dlopen`
++ `dlsym`). That mode was removed: it ran third-party code inside the host
+process, so a segfault took dmart down, and `dlopen` does not work in a static
+build. A directory holding only a `.so` is now reported as a load failure.
 
 ### Plugin lifecycle for hooks
 
@@ -109,7 +133,7 @@ sequenceDiagram
     participant ES as EntryService
     participant DB as entries table
     participant PM as PluginManager
-    participant P as Plugin (built-in or .so)
+    participant P as Plugin (built-in or external)
 
     C->>H: POST /managed/request (Create)
     H->>ES: CreateAsync(entry, actor)
@@ -279,6 +303,6 @@ configuration. Key pieces:
 | Hook interface | `Plugins/IHookPlugin.cs` |
 | API interface | `Plugins/IApiPlugin.cs` |
 | Built-in plugins | `Plugins/BuiltIn/*.cs` |
-| Native `.so` loader | `Plugins/Native/NativePluginLoader.cs` |
+| External plugin loader | `Plugins/Native/NativePluginLoader.cs` |
 | Subprocess runner | `Plugins/Native/SubprocessPluginRunner.cs` |
 | SDK + samples | `custom_plugins_sdk/` |

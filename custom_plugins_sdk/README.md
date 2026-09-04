@@ -2,20 +2,25 @@
 
 Build external plugins that dmart loads at runtime — no dmart recompilation needed.
 
-## Two Plugin Modes
+## How a plugin works
 
-| Mode | Deploy as | Crash safe | Latency | Best for |
-|------|-----------|------------|---------|----------|
-| **Subprocess** (recommended) | Executable | Yes — auto-respawn | ~0.1ms | Any language (Python, Node, Go, Rust, C#, bash) |
-| **In-process .so** | Shared library | No — crashes dmart | ~1us | Performance-critical C/Rust/C# plugins |
+Your plugin is a standalone **executable**. dmart starts it, then talks to it
+over stdin/stdout in JSON lines — one line per message. If it crashes, dmart
+respawns it on the next event, so a fault in your code cannot take the host
+down.
 
-dmart tries **executable first**, falls back to `.so`. If the directory has both, the executable wins.
+That means any language: Python, Node, Go, Rust, C#, even bash. Round-trip
+latency is roughly 0.1ms.
 
----
+> **In-process `.so` plugins have been removed.** dmart used to also load
+> shared libraries directly via `dlopen`, which was faster (~1us) but ran
+> third-party code inside the host process — a segfault there killed dmart —
+> and could not work at all in a static build. Everything those plugins could
+> do, including every callback into dmart, is available here. If you have a
+> `.so` deployed, dmart now reports it as a load failure at startup and on
+> `GET /info/plugins`; port it using this guide.
 
-## Subprocess Plugins (Recommended)
-
-The simplest way to write a plugin. Your plugin is a standalone executable that reads JSON lines from stdin and writes JSON lines to stdout. If it crashes, dmart respawns it automatically.
+## Writing a plugin
 
 ### Protocol
 
@@ -24,7 +29,7 @@ dmart sends one JSON line per message to your plugin's stdin. Your plugin writes
 **Message types:**
 
 ```
-→ stdin:  {"type":"info"}
+→ stdin:  {"type":"info","host":{"callbacks":1}}
 ← stdout: {"shortname":"my_plugin","version":"1.0.0","type":"hook"}
 
 → stdin:  {"type":"hook","event":{...}}
@@ -35,6 +40,13 @@ dmart sends one JSON line per message to your plugin's stdin. Your plugin writes
 ```
 
 Debug output goes to stderr (forwarded to dmart's console).
+
+**The `host` object in the info frame tells you what this dmart supports.**
+`"callbacks":1` means callback frames will be answered — see
+[Calling back into dmart](#calling-back-into-dmart-subprocess). Older dmart
+builds send a bare `{"type":"info"}`; treat a missing `host` as "no callbacks"
+and skip them, because a callback frame sent to such a host is read as your
+final response and desynchronises the exchange.
 
 **`version` is optional but recommended.** Surface your plugin's version so operators can see it on `GET /info/plugins` and in dmart's startup log (`SUBPROCESS_PLUGIN_REGISTERED: my_plugin v1.0.0 (hook) …`). Source the literal from your build artifact rather than hand-maintaining it in code: read it from `package.json`/`__version__`/the value linked by `go build -ldflags "-X main.Version=..."`. Absent versions resolve to `"0.0.0"`.
 
@@ -115,7 +127,7 @@ EOF
 # Look for: SUBPROCESS_PLUGIN_REGISTERED: my_hook (hook)
 ```
 
-### Subprocess API Plugin
+### API plugins
 
 Same protocol, but respond to `{"type":"request","request":{...}}`:
 
@@ -149,196 +161,119 @@ for line in sys.stdin:
             print(json.dumps({"status": "success", "attributes": {"plugin": "my_api", "user": user}}), flush=True)
 ```
 
----
+#### Returning binary from an API plugin
 
-## In-Process .so Plugins (Advanced)
+To answer with something that isn't JSON — a generated PDF, an image — wrap the
+bytes instead of returning a normal response:
 
-For maximum performance. The plugin is a native shared library loaded directly into dmart's process via `NativeLibrary.Load`. **A crash in the plugin crashes dmart.**
-
-### C-ABI Contract
-
-Every `.so` must export these C functions:
-
-| Export | Signature | Required |
-|--------|-----------|----------|
-| `get_info` | `() → char*` | Yes |
-| `hook` | `(char* event_json) → char*` | Hook plugins |
-| `handle_request` | `(char* request_json) → char*` | API plugins |
-| `free_string` | `(char* ptr) → void` | Yes |
-| `init` | `(const DmartCallbacks* cbs) → void` | Optional |
-| `dmart_plugin_version` | `() → const char*` | Optional |
-
-All strings are null-terminated UTF-8. The plugin allocates return strings via its own allocator and dmart calls `free_string()` to release them — **except** for `dmart_plugin_version`: that pointer must reference a static literal (typically `.rodata`) owned by the plugin for its lifetime, and dmart does NOT free it.
-
-### Plugin version (`dmart_plugin_version`)
-
-Optional one-liner that returns the plugin's version string, baked into the binary at compile time. dmart resolves the value via `dlsym(handle, "dmart_plugin_version")` once at load time and surfaces it via `GET /info/plugins` and the `NATIVE_PLUGIN_REGISTERED: my_plugin v1.2.3 (hook, in-process) …` startup line. Absent symbol resolves to `"0.0.0"`.
-
-Drive the literal from your build's version constant — `gcc -DPLUGIN_VERSION=\"$(VERSION)\"`, an embedded build-stamp file generated by your release pipeline, etc. — so the version that ships with the binary is the version operators see.
-
-```c
-// C — define from a build-time -DPLUGIN_VERSION="1.2.3" macro
-const char* dmart_plugin_version(void) { return PLUGIN_VERSION; }
+```json
+{"binary": true, "content_type": "application/pdf",
+ "body_b64": "JVBERi0xLjQK…", "filename": "report.pdf"}
 ```
 
-```rust
-// Rust — env! reads CARGO_PKG_VERSION at compile time
-#[no_mangle]
-pub extern "C" fn dmart_plugin_version() -> *const std::os::raw::c_char {
-    concat!(env!("CARGO_PKG_VERSION"), "\0").as_ptr() as *const _
-}
+dmart decodes it and streams the bytes with that content-type, adding a
+`Content-Disposition: attachment` header when `filename` is present. Anything
+without `"binary": true` flows through as JSON exactly as usual.
+
+### Handling calls in parallel (`workers`)
+
+dmart runs **one** process per plugin by default and sends it one message at a
+time. That is not incidental: the hook and request frames carry no correlation
+id, so a reply is matched to its request by arrival order, and two exchanges
+sharing one pipe could each read the other's answer. Serialising is what makes
+the protocol safe — and it is why your plugin can stay a simple
+`while line in stdin: handle; print` loop.
+
+To handle calls concurrently, ask for more processes in `config.json`:
+
+```json
+{ "shortname": "my_plugin", "is_active": true, "type": "hook", "workers": 4 }
 ```
 
-```csharp
-// C# — UnmanagedCallersOnly returns a pointer to a UTF-8 byte buffer that
-// lives in the assembly's read-only data section.
-[UnmanagedCallersOnly(EntryPoint = "dmart_plugin_version")]
-public static IntPtr GetVersion() => StaticVersionPtr;
-private static readonly IntPtr StaticVersionPtr =
-    Marshal.StringToHGlobalAnsi("1.2.3");  // never freed; process-lifetime
+dmart then starts 4 copies and dispatches each call to whichever is free.
+**Your plugin does not change** — each worker still sees one message at a time.
+
+The catch is state. Anything your plugin keeps between calls — a counter, a
+cache, a warm connection — now exists once *per worker*, and consecutive calls
+need not land on the same one. If that matters, keep the state in dmart (via
+the `save_entry` callback) rather than in the process, or leave `workers` at 1.
+
+Every worker gets its own `{"type":"info"}` handshake as it starts, including
+when one is restarted after a crash, so they cannot disagree about what the
+host supports. The allowed range is 1-32; anything outside is clamped and
+logged.
+
+### Calling back into dmart
+
+Before writing its final response, your plugin can send any number of
+**callback frames** — requests back into dmart. dmart answers each on your
+stdin, then you carry on and finish the exchange normally.
+
+```
+← stdout: {"type":"callback","id":1,"op":"query","args":{"type":"search","space_name":"acme"}}
+→ stdin:  {"type":"callback_result","id":1,"ok":true,"result":{"status":"success","records":[...]}}
+← stdout: {"status":"ok"}                     ← the response, as usual
 ```
 
-### Calling back into dmart (`init` + `DmartCallbacks`)
+`id` is echoed back verbatim — use whatever you already correlate on.
 
-If the plugin exports `init`, dmart calls it once at load time (right after `get_info`) with a pointer to a stable `DmartCallbacks` struct. Store the struct in a static and use it from `hook()` to read/write entries, send email, or push WebSocket messages — no HTTP, no JWT, in-process.
+**`ok` is about the frame, not the operation.** `ok:false` means dmart could
+not understand the callback (unknown `op`, missing args) and you should fix or
+rebuild the plugin. An operation that ran and failed comes back as `ok:true`
+with the failure inside `result` — an `{"error":…}` document, or a non-zero
+`code`. Keeping the two separate is what lets you tell "dmart doesn't
+understand me" (rebuild needed) from "the save didn't work" (retry or report).
 
-**Canonical struct layout** lives in [`shared/DmartCallbacks.cs`](shared/DmartCallbacks.cs) — that file is the single source of truth and is what the host emits (`Plugins/Native/NativePluginCallbacks.cs:DmartCallbacks`). Past V1-only inline snippets here drifted on every version bump; the pointer is now the contract.
+| `op` | `args` | `result` |
+|------|--------|----------|
+| `load_entry` | `space`, `subpath`, `shortname`, `resource_type` (optional) | the entry, or `{"entry":null}` |
+| `load_user` | `shortname` | the user, or `{"user":null}` |
+| `save_entry` | `entry` (the entry object) | `{"code":0}` |
+| `update_user` | `user` (the user object) | `{"code":0}` |
+| `send_email` | `to`, `subject`, `html` | `{"code":0}` |
+| `ws_broadcast` | `channel`, `message` | `{"code":0}` |
+| `query` | the query document itself | a standard response envelope |
+| `log` | `level` (0–6), `category` (optional), `message` | `{"code":0}` |
+| `get_session_firebase_tokens` | `shortname`, `inactivity_ttl_seconds` (optional) | `["token", …]` |
+| `get_media_attachment` | `space`, `subpath`, `shortname` | `{"media_b64":…,"length":N}`, or `{"media":null}` on a miss |
 
-Capability marker bumps so far:
+`get_media_attachment` base64-encodes the blob, so it costs about 33% more
+bytes on the wire than the file itself. A miss is `{"media":null}` rather than
+an empty string — an absent attachment and a zero-byte one are not the same
+thing.
 
-- **V1** — initial release: `load_entry`, `load_user`, `save_entry`, `update_user`, `send_email`, `ws_broadcast`, `dmart_free`
-- **V2** — `query`, `get_media_attachment` appended (query was ACL-free)
-- **V3** — `query` honors the caller's actor by default; `"as_actor"` override
-- **V4** — `log` appended (plugin → ILogger pipeline)
-- **V5** — `get_session_firebase_tokens` appended (per-user push tokens)
+`code` is `0` for ok, non-zero for error.
 
-Layout is **append-only** — fields are added at the end so plugins compiled against an older `DmartCallbacks` struct can still read the version they understand. Check `cb.Version >= N` before calling any field appended in V`N` (the `DmartSdk.*` C# wrappers do this automatically and fall back to a safe no-op return).
+**`query` runs as the user that triggered your hook**, so it sees exactly what
+that user is allowed to see. Add `"as_actor"` to the query document to override:
+a string impersonates that user, JSON `null` runs as system with no ACL filter.
+Omit it unless you mean it.
 
-`resource_type` in `load_entry` accepts the wire form (`"content"`, `"folder"`, `"ticket"`, …) or NULL for a type-agnostic lookup.
+Two limits keep a misbehaving plugin from wedging dmart: **256 callbacks per
+exchange**, and a **30s timeout per line** (not per exchange — a long honest
+chain of callbacks is fine, going silent for 30s is not). Exceeding either kills
+the process; it respawns on the next event.
 
-**C# helper** — copy `custom_plugins_sdk/shared/DmartCallbacks.cs` into your plugin project. It gives you a ready-to-use `DmartCallbacks` struct plus `DmartSdk.LoadUser(_cb, shortname)` / `DmartSdk.SaveEntry(_cb, entryJson)` / etc. wrappers that handle UTF-8 marshaling and string freeing for you.
+A callback must not re-enter your own plugin — one stdio pipe cannot carry two
+exchanges at once, so dmart rejects the nested call with
+`{"status":"error","message":"reentrant plugin call rejected"}` rather than
+corrupting both.
 
-```csharp
-using Dmart.Sdk;
+```python
+import json, sys
 
-private static DmartCallbacks _cb;
-private static bool _cbReady;
+def callback(op, args, _id=[0]):
+    _id[0] += 1
+    print(json.dumps({"type": "callback", "id": _id[0], "op": op, "args": args}), flush=True)
+    reply = json.loads(sys.stdin.readline())
+    if not reply.get("ok"):
+        raise RuntimeError(f"callback {op} rejected: {reply.get('error')}")
+    return reply["result"]
 
-[UnmanagedCallersOnly(EntryPoint = "init")]
-public static unsafe void Init(IntPtr cbsPtr)
-{
-    _cb = Marshal.PtrToStructure<DmartCallbacks>(cbsPtr);
-    _cbReady = true;
-}
-
-[UnmanagedCallersOnly(EntryPoint = "hook")]
-public static IntPtr Hook(IntPtr eventJsonPtr)
-{
-    if (_cbReady)
-    {
-        var userJson = DmartSdk.LoadUser(_cb, "dmart");
-        DmartSdk.SendEmail(_cb, "ops@example.com", "alert", "<p>hi</p>");
-    }
-    return AllocUtf8("""{"status":"ok"}""");
-}
+# inside your hook handler, once info reported host.callbacks:
+entry = callback("load_entry", {"space": "acme", "subpath": "/docs", "shortname": "readme"})
+callback("log", {"level": 2, "message": f"loaded {entry.get('shortname')}"})
 ```
-
-### C# Example
-
-```csharp
-using System.Runtime.InteropServices;
-using System.Text;
-using System.Text.Json;
-
-public static class Plugin
-{
-    [UnmanagedCallersOnly(EntryPoint = "get_info")]
-    public static IntPtr GetInfo()
-        => AllocUtf8("""{"shortname":"my_hook","type":"hook"}""");
-
-    [UnmanagedCallersOnly(EntryPoint = "dmart_plugin_version")]
-    public static IntPtr GetVersion() => StaticVersionPtr;
-    private static readonly IntPtr StaticVersionPtr =
-        Marshal.StringToHGlobalAnsi("1.0.0");  // process-lifetime, never freed
-
-    [UnmanagedCallersOnly(EntryPoint = "hook")]
-    public static IntPtr Hook(IntPtr eventJsonPtr)
-    {
-        var json = Marshal.PtrToStringUTF8(eventJsonPtr) ?? "";
-        Console.Error.WriteLine($"[my_hook] {json[..80]}");
-        return AllocUtf8("""{"status":"ok"}""");
-    }
-
-    [UnmanagedCallersOnly(EntryPoint = "free_string")]
-    public static void FreeString(IntPtr ptr)
-    {
-        if (ptr != IntPtr.Zero) Marshal.FreeHGlobal(ptr);
-    }
-
-    static IntPtr AllocUtf8(string s)
-    {
-        var bytes = Encoding.UTF8.GetBytes(s);
-        var ptr = Marshal.AllocHGlobal(bytes.Length + 1);
-        Marshal.Copy(bytes, 0, ptr, bytes.Length);
-        Marshal.WriteByte(ptr, bytes.Length, 0);
-        return ptr;
-    }
-}
-```
-
-Build: `dotnet publish -c Release -r linux-x64` → `*.so`
-
-### Rust Example
-
-```rust
-use std::ffi::{CStr, CString};
-use std::os::raw::c_char;
-
-#[no_mangle]
-pub extern "C" fn get_info() -> *mut c_char {
-    CString::new(r#"{"shortname":"rust_hook","type":"hook"}"#).unwrap().into_raw()
-}
-
-// Version literal lives in the binary's read-only data section and is never freed.
-#[no_mangle]
-pub extern "C" fn dmart_plugin_version() -> *const c_char {
-    concat!(env!("CARGO_PKG_VERSION"), "\0").as_ptr() as *const c_char
-}
-
-#[no_mangle]
-pub extern "C" fn hook(event_json: *const c_char) -> *mut c_char {
-    let json = unsafe { CStr::from_ptr(event_json).to_str().unwrap_or("") };
-    eprintln!("[rust_hook] {}", &json[..80.min(json.len())]);
-    CString::new(r#"{"status":"ok"}"#).unwrap().into_raw()
-}
-
-#[no_mangle]
-pub extern "C" fn free_string(ptr: *mut c_char) {
-    if !ptr.is_null() { unsafe { drop(CString::from_raw(ptr)); } }
-}
-```
-
-Build: `cargo build --release` → `target/release/librust_hook.so`
-
-### C Example
-
-```c
-#include <stdio.h>
-#include <stdlib.h>
-#include <string.h>
-
-char* get_info() { return strdup("{\"shortname\":\"c_hook\",\"type\":\"hook\"}"); }
-char* hook(const char* event_json) { fprintf(stderr, "[c_hook] event\n"); return strdup("{\"status\":\"ok\"}"); }
-void free_string(char* ptr) { free(ptr); }
-
-// Optional. Define PLUGIN_VERSION at build time:
-//   gcc -shared -fPIC -DPLUGIN_VERSION=\"1.0.0\" -o c_hook.so plugin.c
-const char* dmart_plugin_version(void) { return PLUGIN_VERSION; }
-```
-
-Build: `gcc -shared -fPIC -DPLUGIN_VERSION=\"1.0.0\" -o c_hook.so plugin.c`
-
----
 
 ## Event Object (what hook plugins receive)
 
@@ -362,11 +297,16 @@ Build: `gcc -shared -fPIC -DPLUGIN_VERSION=\"1.0.0\" -o c_hook.so plugin.c`
   "method": "GET",
   "path": "/my_api/greet/alice",
   "query": {"key": "value"},
-  "headers": {"Authorization": "Bearer ..."},
+  "headers": {"accept": "application/json"},
   "body": null,
   "user": "admin"
 }
 ```
+
+**Credentials are stripped from `headers`.** `authorization`,
+`proxy-authorization`, `cookie`, `x-channel-key` and `x-api-key` never reach a
+plugin — with any of them it could replay the caller's identity against dmart's
+own API. `user` is the already-resolved actor, which is what you actually need.
 
 ## config.json Reference
 
@@ -378,6 +318,7 @@ Build: `gcc -shared -fPIC -DPLUGIN_VERSION=\"1.0.0\" -o c_hook.so plugin.c`
   "listen_time": "after",
   "ordinal": 100,
   "concurrent": true,
+  "workers": 1,
   "filters": {
     "subpaths": { "__all_spaces__": ["__all_subpaths__"] },
     "resource_types": ["content"],
@@ -395,6 +336,7 @@ Build: `gcc -shared -fPIC -DPLUGIN_VERSION=\"1.0.0\" -o c_hook.so plugin.c`
 | `listen_time` | `"before"` or `"after"` | Hook only. `before` can abort actions |
 | `ordinal` | int | Execution order (lower = first, default 9999) |
 | `concurrent` | bool | After-hooks: `true` = fire-and-forget (default) |
+| `workers` | int | Processes to run for this plugin (default 1, max 32). >1 handles calls in parallel — see "Handling calls in parallel" |
 | `filters.subpaths` | object | Per-space subpath dict — see "Filter shape" below |
 | `filters.resource_types` | string[] | Empty = all, or list specific resource types |
 | `filters.schema_shortnames` | string[] | Empty = all, or list specific content schemas |
@@ -485,23 +427,23 @@ API plugins ignore `filters` entirely — routes are mounted if `is_active: true
 
 ```
 ~/.dmart/plugins/
-  my_subprocess_hook/
+  my_hook/
     config.json
-    my_subprocess_hook     ← executable (subprocess mode, crash-safe)
-  my_so_hook/
-    config.json
-    my_so_hook.so          ← shared library (in-process mode, fastest)
+    my_hook       ← executable, named after its directory
   my_api/
     config.json
-    my_api                 ← executable or .so
+    my_api
 ```
+
+dmart looks for a file named exactly like the directory first, then for any
+other executable in it. A directory with a `config.json` but no executable is
+reported as a load failure rather than skipped silently.
 
 ## Sample Projects
 
 Working examples in this directory:
 
-| Directory | Mode | Language | Type |
-|-----------|------|----------|------|
-| `sample_hook/` | In-process .so | C# | Hook |
-| `sample_api/` | In-process .so | C# | API |
-| `sample_subprocess/` | Subprocess | Python | Hook |
+| Directory | Language | Type | Shows |
+|-----------|----------|------|-------|
+| `sample_hook/` | Python | Hook | The info/hook exchange, plus a `log` callback |
+| `sample_api/` | Python | API | Route declaration and request handling |

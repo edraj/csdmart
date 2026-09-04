@@ -6,20 +6,24 @@ namespace Dmart.Plugins.Native;
 
 // Scans ~/.dmart/plugins/<name>/ directories for external plugins.
 //
-// Two loading modes (tried in order):
-//   1. Executable (subprocess) — crash-safe, auto-respawn. The plugin is a
-//      standalone binary that reads JSON lines from stdin and writes to stdout.
-//   2. Shared library (.so) — in-process, fastest, but a segfault crashes dmart.
+// A plugin is a standalone executable that reads JSON lines from stdin and
+// writes them to stdout; if it crashes, dmart respawns it on the next event.
+// The adapters it gets (SubprocessHookPlugin / SubprocessApiPlugin) implement
+// IHookPlugin/IApiPlugin, so PluginManager dispatches to them identically to
+// built-in plugins.
 //
-// Both modes create IHookPlugin/IApiPlugin adapters so PluginManager dispatches
-// to them identically to built-in plugins.
+// dmart also loaded in-process `.so` plugins through NativeLibrary.Load until
+// they were removed: a segfault in third-party code took the host down with
+// it, and dlopen does not work in a static build at all. A directory holding
+// only a `.so` is now reported as a load failure naming the removal, rather
+// than silently doing nothing.
 public static class NativePluginLoader
 {
     // Every SubprocessPluginHost we spawn. Walked on ApplicationStopping so
     // each subprocess gets a clean stdin-close (EOF) shutdown before the
     // dotnet process exits. Without this, subprocesses only find out dmart
     // is gone when their next stdin write raises a broken-pipe.
-    private static readonly List<SubprocessPluginHost> _hosts = new();
+    private static readonly List<SubprocessPluginPool> _pools = new();
 
     // Every plugin directory that failed to load, and why.
     //
@@ -61,7 +65,6 @@ public static class NativePluginLoader
             var configPath = Path.Combine(dir, "config.json");
             if (!File.Exists(configPath)) continue;
 
-            // Prefer executable (subprocess, crash-safe) over .so (in-process)
             var execPath = FindExecutable(dir, dirName);
             if (execPath is not null)
             {
@@ -69,20 +72,19 @@ public static class NativePluginLoader
                 continue;
             }
 
-            var soPath = FindSharedLibrary(dir, dirName);
-            if (soPath is not null)
-            {
-                LoadNativePlugin(services, soPath, dirName, failures);
-                continue;
-            }
-
-            // config.json present but no executable and no .so. Previously the
-            // loop just fell through in silence, which is the easiest failure
-            // of all to ship: the operator wrote a config, the binary is
-            // missing or misnamed, and nothing anywhere says so.
-            RecordFailure(failures, dirName,
-                $"config.json present but no plugin binary found in {dir} "
-                + $"(looked for an executable or {dirName}.so)");
+            // config.json present but no executable. Previously the loop just
+            // fell through in silence, which is the easiest failure of all to
+            // ship: the operator wrote a config, the binary is missing or
+            // misnamed, and nothing anywhere says so.
+            //
+            // A leftover .so gets its own message. That deployment worked
+            // before in-process plugins were removed, so "no plugin binary
+            // found" would be actively misleading — the binary is right there.
+            RecordFailure(failures, dirName, FindSharedLibrary(dir, dirName) is { } soPath
+                ? $"found {Path.GetFileName(soPath)} but in-process .so plugins are no longer "
+                  + "supported — port the plugin to a subprocess executable "
+                  + "(see custom_plugins_sdk/README.md)"
+                : $"config.json present but no plugin executable found in {dir}");
         }
         return failures;
     }
@@ -91,11 +93,27 @@ public static class NativePluginLoader
     {
         try
         {
-            var host = new SubprocessPluginHost(execPath, dirName);
-            _hosts.Add(host);
+            // The "host" object advertises what this dmart can do for the
+            // plugin. A plugin built against a newer SDK can then avoid sending
+            // a callback an older host would never answer — which would strand
+            // it waiting while the host read the frame as its final response.
+            // Every worker is sent this as it starts, including on respawn, so
+            // they cannot disagree about what the host supports.
+            const string infoFrame = "{\"type\":\"info\",\"host\":{\"callbacks\":1}}";
 
-            // Ask the plugin for its info
-            var infoJson = host.SendAndReceive("{\"type\":\"info\"}");
+            var pool = new SubprocessPluginPool(execPath, dirName, ReadWorkerCount(execPath, dirName), infoFrame);
+            _pools.Add(pool);
+
+            var infoJson = pool.InfoResponse;
+            if (string.IsNullOrEmpty(infoJson))
+            {
+                RecordFailure(failures, dirName,
+                    "the plugin did not answer the {\"type\":\"info\"} handshake — "
+                    + "it must reply with one JSON line naming at least its shortname and type");
+                pool.Dispose();
+                return;
+            }
+
             using var infoDoc = JsonDocument.Parse(infoJson);
             var root = infoDoc.RootElement;
 
@@ -111,87 +129,24 @@ public static class NativePluginLoader
 
             if (typeStr == "hook")
             {
-                services.AddSingleton<IHookPlugin>(new SubprocessHookPlugin(host, version));
-                Console.Error.WriteLine($"SUBPROCESS_PLUGIN_REGISTERED: {shortname} v{version} (hook) from {execPath}");
+                services.AddSingleton<IHookPlugin>(new SubprocessHookPlugin(pool, version));
+                Console.Error.WriteLine($"SUBPROCESS_PLUGIN_REGISTERED: {shortname} v{version} (hook, {pool.Workers} worker(s)) from {execPath}");
             }
             else if (typeStr == "api")
             {
                 var routes = ParseRoutes(root);
-                services.AddSingleton<IApiPlugin>(new SubprocessApiPlugin(host, routes, version));
-                Console.Error.WriteLine($"SUBPROCESS_PLUGIN_REGISTERED: {shortname} v{version} (api, {routes.Count} routes) from {execPath}");
+                services.AddSingleton<IApiPlugin>(new SubprocessApiPlugin(pool, routes, version));
+                Console.Error.WriteLine($"SUBPROCESS_PLUGIN_REGISTERED: {shortname} v{version} (api, {routes.Count} routes, {pool.Workers} worker(s)) from {execPath}");
             }
             else
             {
                 RecordFailure(failures, dirName, $"unknown plugin type '{typeStr}'");
-                host.Dispose();
+                pool.Dispose();
             }
         }
         catch (Exception ex)
         {
             RecordFailure(failures, dirName, $"subprocess load failed: {ex.Message}");
-        }
-    }
-
-    private static void LoadNativePlugin(IServiceCollection services, string soPath, string dirName, List<PluginLoadFailure> failures)
-    {
-        try
-        {
-            var handle = NativePluginHandle.Load(soPath);
-            var infoJson = handle.CallGetInfo();
-            using var infoDoc = JsonDocument.Parse(infoJson);
-            var root = infoDoc.RootElement;
-
-            // If the plugin exported `init`, hand it the callbacks struct so
-            // its hooks can call back into dmart (load/save entries, send
-            // email, ws broadcast). Optional export — plugins that don't need
-            // callbacks simply skip it.
-            if (handle.Init is not null)
-            {
-                try { handle.Init(NativePluginCallbacks.GetCallbacksPtr()); }
-                catch (Exception ex) { Console.Error.WriteLine($"NATIVE_PLUGIN_INIT_FAILED: {dirName}: {ex.Message}"); }
-            }
-
-            var shortname = root.TryGetProperty("shortname", out var sn)
-                ? sn.GetString() ?? dirName : dirName;
-            var typeStr = root.TryGetProperty("type", out var tp)
-                ? tp.GetString() ?? "hook" : "hook";
-            // Read the version baked into the .so via the optional
-            // dmart_plugin_version() export. Falls back to "0.0.0" for plugins
-            // that don't declare one — same sentinel used elsewhere.
-            var version = handle.CallGetVersion() ?? "0.0.0";
-
-            if (typeStr == "hook")
-            {
-                if (handle.Hook is null)
-                {
-                    Console.Error.WriteLine($"NATIVE_PLUGIN_ERROR: {shortname} type=hook but no hook() export");
-                    handle.Dispose();
-                    return;
-                }
-                services.AddSingleton<IHookPlugin>(new NativeHookPlugin(handle, shortname, version));
-                Console.Error.WriteLine($"NATIVE_PLUGIN_REGISTERED: {shortname} v{version} (hook, in-process) from {soPath}");
-            }
-            else if (typeStr == "api")
-            {
-                if (handle.HandleRequest is null)
-                {
-                    Console.Error.WriteLine($"NATIVE_PLUGIN_ERROR: {shortname} type=api but no handle_request() export");
-                    handle.Dispose();
-                    return;
-                }
-                var routes = ParseRoutes(root);
-                services.AddSingleton<IApiPlugin>(new NativeApiPlugin(handle, shortname, routes, version));
-                Console.Error.WriteLine($"NATIVE_PLUGIN_REGISTERED: {shortname} v{version} (api, in-process) from {soPath}");
-            }
-            else
-            {
-                Console.Error.WriteLine($"NATIVE_PLUGIN_ERROR: {shortname} unknown type '{typeStr}'");
-                handle.Dispose();
-            }
-        }
-        catch (Exception ex)
-        {
-            RecordFailure(failures, dirName, $"in-process .so load failed: {ex.Message}");
         }
     }
 
@@ -243,7 +198,42 @@ public static class NativePluginLoader
         return null;
     }
 
-    // Find an executable file (not .so) — for subprocess mode
+    // `workers` from the plugin's own config.json, defaulting to 1.
+    //
+    // Read here rather than taken from the PluginWrapper list LoadNativeConfigs
+    // builds, because that runs separately and only feeds PluginManager's
+    // dispatch tables — the pool has to be sized before the plugin is
+    // registered at all. A malformed or absent config is not an error: the
+    // plugin still loads, single-worker, exactly as it did before the setting
+    // existed.
+    internal static int ReadWorkerCount(string execPath, string dirName)
+    {
+        try
+        {
+            var configPath = Path.Combine(Path.GetDirectoryName(execPath) ?? ".", "config.json");
+            if (!File.Exists(configPath)) return 1;
+            var wrapper = JsonSerializer.Deserialize(
+                File.ReadAllText(configPath), DmartJsonContext.Default.PluginWrapper);
+            // Normalised rather than trusted. Two reasons, and the second is
+            // the surprising one: `workers` is operator-edited, so 0 or a
+            // negative is plausible input; and the source-generated
+            // deserializer does NOT run PluginWrapper's property initialisers,
+            // so an omitted `workers` arrives as 0 rather than the 1 the
+            // property declares. (The same is true of its siblings — `ordinal`
+            // and `concurrent` reach PluginManager as 0/false rather than
+            // 9999/true. That is a pre-existing bug in its own right and is
+            // deliberately not papered over here.)
+            var declared = wrapper?.Workers ?? 0;
+            return declared > 0 ? declared : 1;
+        }
+        catch (Exception ex)
+        {
+            Console.Error.WriteLine($"SUBPROCESS_PLUGIN_CONFIG_UNREADABLE: {dirName}: {ex.Message}; using 1 worker");
+            return 1;
+        }
+    }
+
+    // Find an executable file (not a library) to run as the plugin.
     internal static string? FindExecutable(string dir, string dirName)
     {
         // Try <dirname> (exact name, no extension)
@@ -262,6 +252,8 @@ public static class NativePluginLoader
         return null;
     }
 
+    // Retained only to recognise a pre-removal deployment so ScanRoot can say
+    // so explicitly. Nothing loads the file it finds.
     internal static string? FindSharedLibrary(string dir, string dirName)
     {
         var simple = Path.Combine(dir, $"{dirName}.so");
@@ -299,23 +291,23 @@ public static class NativePluginLoader
     {
         lifetime.ApplicationStopping.Register(() =>
         {
-            foreach (var h in _hosts)
+            foreach (var p in _pools)
             {
-                try { h.Shutdown(); } catch { /* best-effort */ }
+                try { p.Shutdown(); } catch { /* best-effort */ }
             }
         });
     }
 
-    private static List<NativeApiPlugin.NativeRoute> ParseRoutes(JsonElement root)
+    private static List<NativeRoute> ParseRoutes(JsonElement root)
     {
-        var routes = new List<NativeApiPlugin.NativeRoute>();
+        var routes = new List<NativeRoute>();
         if (root.TryGetProperty("routes", out var arr) && arr.ValueKind == JsonValueKind.Array)
         {
             foreach (var r in arr.EnumerateArray())
             {
                 var method = r.TryGetProperty("method", out var m) ? m.GetString() ?? "GET" : "GET";
                 var path = r.TryGetProperty("path", out var p) ? p.GetString() ?? "/" : "/";
-                routes.Add(new NativeApiPlugin.NativeRoute(method, path));
+                routes.Add(new NativeRoute(method, path));
             }
         }
         return routes;

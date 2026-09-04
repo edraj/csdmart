@@ -115,10 +115,10 @@ public sealed class LogSink : IDisposable
             ["hostname"] = Environment.MachineName,
             // InvariantCulture, because `-` and `:` are culture-DEPENDENT
             // separators in .NET custom date formats: under a culture that
-            // overrides either, this line renders differently from the plugin
-            // SDK's copy of the same format string (DmartCallbacks.cs), and the
-            // two log streams stop interleaving cleanly. The format is a wire
-            // contract, not display text.
+            // overrides either, this line renders differently from the same
+            // format string as written by a plugin into its own
+            // `<shortname>.ljson.log`, and the two log streams stop interleaving
+            // cleanly. The format is a wire contract, not display text.
             ["time"] = TimeUtils.Now().ToString("yyyy-MM-dd HH:mm:ss,fff", CultureInfo.InvariantCulture),
             ["level"] = PythonLevel(level),
             ["category"] = category,

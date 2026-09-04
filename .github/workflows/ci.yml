@@ -809,3 +809,149 @@ jobs:
       - name: Clean up the test image
         if: always()
         run: podman rmi -f dmart-ci:test 2>/dev/null || true
+
+  static-build:
+    name: Static musl binary
+    runs-on: self-hosted
+    # The fully static binary (docs/static-binary.md) is the one artifact with
+    # NO runtime dependencies — no libc, no OpenSSL, no libe_sqlite3.so — so it
+    # runs on any x86-64 Linux regardless of distro or glibc version.
+    #
+    # It is also the artifact most easily broken by an unrelated change. Both
+    # native dependencies are bound at LINK time (StaticOpenSslLinking for the
+    # crypto shim, DirectPInvoke + a static archive for SQLite) precisely
+    # because a musl static-pie has no working dlopen. Add one NuGet package
+    # that reaches its native library through dlopen and this binary starts
+    # failing at runtime while every other job stays green — the ordinary
+    # publish and the analyzers cannot see it, exactly as the aot-publish job
+    # comment describes for SQLite.
+    steps:
+      # Full history so the scope diff below has a base to compare against.
+      - uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+
+      # A sixth job against three runners, so it does not run on every PR. It
+      # runs when the change could plausibly break the STATIC LINK — the
+      # project files that carry PackageReferences and the linking block — and
+      # unconditionally on pushes to master, so every merge still validates it.
+      #
+      # WHAT THIS TRADES AWAY: a change that adds a dlopen-ing dependency
+      # WITHOUT touching a .csproj cannot exist (PackageReferences live there),
+      # but a source change that starts CALLING an existing dlopen path would
+      # be caught at the master push rather than on the PR. One merge late, not
+      # one release late.
+      - name: Is this change in static-link scope?
+        id: scope
+        run: |
+          if [ "${{ github.event_name }}" = "push" ]; then
+            echo "run=true" >> "$GITHUB_OUTPUT"
+            echo "push to master — running unconditionally"
+            exit 0
+          fi
+          BASE="${{ github.event.pull_request.base.sha }}"
+          if [ -z "$BASE" ] || ! git cat-file -e "$BASE" 2>/dev/null; then
+            # Fail open on uncertainty, same as the container job: a filter
+            # that silently stops testing is worse than one that costs time.
+            echo "run=true" >> "$GITHUB_OUTPUT"
+            echo "no usable base sha — running to be safe"
+            exit 0
+          fi
+          CHANGED=$(git diff --name-only "$BASE"...HEAD)
+          echo "$CHANGED" | sed 's/^/  /'
+          if echo "$CHANGED" | grep -qE '(\.csproj|^Directory\.Build\.|^\.github/workflows/ci\.yml$)'; then
+            echo "run=true" >> "$GITHUB_OUTPUT"
+            echo "project or linking inputs changed — running"
+          else
+            echo "run=false" >> "$GITHUB_OUTPUT"
+            echo "no project files changed — skipping the static build"
+          fi
+
+      - name: Podman preflight (self-heal stale state after host reboot)
+        if: steps.scope.outputs.run == 'true'
+        uses: ./.github/actions/podman-preflight
+
+      - name: Publish the static musl binary
+        if: steps.scope.outputs.run == 'true'
+        # Alpine because musl is the point: glibc cannot produce a working
+        # static-pie for a .NET app. Run as container ROOT — passing
+        # --userns=keep-id makes apk fail on its own log file, and rootless
+        # podman already maps container root to the runner user, so the
+        # artifacts come out owned correctly either way.
+        #
+        # The NuGet cache is mounted rather than restored fresh: a cold restore
+        # costs minutes on every run of a job that is already the longest in
+        # this workflow.
+        run: |
+          set -e
+          mkdir -p "$HOME/.nuget/packages"
+          podman run --rm \
+            -v "$PWD":/src:z \
+            -v "$HOME/.nuget/packages":/nuget:z \
+            -e NUGET_PACKAGES=/nuget \
+            -e DOTNET_CLI_TELEMETRY_OPTOUT=1 \
+            -w /src \
+            mcr.microsoft.com/dotnet/sdk:10.0-alpine \
+            sh -c '
+              set -e
+              apk add --no-cache clang lld build-base cmake zlib-static \
+                                 openssl-dev openssl-libs-static \
+                                 sqlite-dev sqlite-static
+              dotnet publish dmart.csproj -r linux-musl-x64 -c Release \
+                -p:PublishAot=true \
+                -p:StaticExecutable=true \
+                -p:StaticOpenSslLinking=true \
+                --nologo'
+
+      - name: Assert it is genuinely standalone
+        if: steps.scope.outputs.run == 'true'
+        # The regression this job exists to catch. A binary that still links
+        # something dynamically, or still carries a dlopen target string, has
+        # lost the only property that makes it worth building — and it would
+        # otherwise publish and smoke-test perfectly well ON THIS RUNNER, whose
+        # distro happens to have the libraries.
+        run: |
+          set -e
+          BIN="bin/Release/net10.0/linux-musl-x64/publish/dmart"
+          test -f "$BIN" || { echo "static binary was not produced"; exit 1; }
+          file "$BIN"
+          NEEDED=$(readelf -d "$BIN" 2>/dev/null | grep -c NEEDED || true)
+          if [ "$NEEDED" != "0" ]; then
+            echo "FAIL: binary has $NEEDED dynamic dependencies, expected 0"
+            readelf -d "$BIN" | grep NEEDED
+            exit 1
+          fi
+          DLOPEN=$(strings -a "$BIN" | grep -cE 'libe_sqlite3|libssl\.so|libcrypto\.so' || true)
+          if [ "$DLOPEN" != "0" ]; then
+            echo "FAIL: $DLOPEN dlopen target strings remain — something is still resolved at runtime"
+            strings -a "$BIN" | grep -E 'libe_sqlite3|libssl\.so|libcrypto\.so' | sort -u
+            exit 1
+          fi
+          echo "static-pie, 0 NEEDED, no dlopen targets"
+
+      - name: Smoke it on SQLite
+        if: steps.scope.outputs.run == 'true'
+        # Linking proves the symbols resolved; this proves the linked SQLite
+        # actually opens a database and executes DDL, which is the failure mode
+        # the dlopen-to-link change was made to fix. SQLite rather than
+        # PostgreSQL for the same reason aot-publish chose it: it is the driver
+        # with the native dependency and it needs no host database.
+        #
+        # Deliberately NOT run on the runner's own distro assumptions — the
+        # binary is musl-linked and static, so it runs here precisely because
+        # it depends on nothing.
+        run: |
+          set -e
+          BIN="$PWD/bin/Release/net10.0/linux-musl-x64/publish/dmart"
+          WORK=$(mktemp -d)
+          {
+            echo 'DATABASE_DRIVER="sqlite"'
+            echo "SQLITE_PATH=\"$WORK/static.db\""
+            echo 'JWT_SECRET="ci-test-secret-ci-test-secret-32bytes"'
+          } > "$WORK/config.env"
+          chmod 600 "$WORK/config.env"
+          BACKEND_ENV="$WORK/config.env" "$BIN" migrate
+          test -s "$WORK/static.db" \
+            || { echo "migrate reported success but wrote no database"; rm -rf "$WORK"; exit 1; }
+          echo "static binary migrated a SQLite database: $(stat -c%s "$WORK/static.db") bytes"
+          rm -rf "$WORK"

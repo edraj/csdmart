@@ -84,8 +84,8 @@ in `Dmart.Models/Core/Entry.cs`.
 A plugin that runs in response to entry lifecycle events (create / update /
 delete), either before or after the event. Registered via the `IHookPlugin`
 interface. Distinct from API plugins (which expose HTTP endpoints) and
-native plugins (which are `.so` files). See `Plugins/BuiltIn/` for the
-in-process implementations.
+external plugins (which run as separate processes). See `Plugins/BuiltIn/`
+for the compiled-in implementations.
 
 ## JSON Schema
 
@@ -129,12 +129,17 @@ mutations as MCP tools for in-IDE use. See `Api/Mcp/McpEndpoint.cs`,
 
 ## Native plugin
 
-A separately-compiled shared library (`.so` on Linux) that the dmart binary
-loads at startup via `dlopen` + function-pointer lookup. Can be written in
-any language that produces a C ABI shared library (C#, Rust, C have working
-examples). Contrast with built-in hook plugins, which are compiled into the
-server binary. See `Plugins/Native/NativePluginLoader.cs` and
-`custom_plugins_sdk/`.
+An operator-supplied plugin loaded from `~/.dmart/plugins/<name>/`, as opposed
+to the built-in ones compiled into the server binary. It is a standalone
+executable that dmart runs as a child process and talks to over stdin/stdout in
+JSON lines, so it can be written in any language, and a crash costs a respawn
+rather than the host. It can call back into dmart mid-request to read and write
+entries, run queries, send mail, broadcast, and log.
+
+dmart also loaded `.so` shared libraries in-process via `dlopen` until they
+were removed — third-party code inside the host process meant a segfault took
+dmart down with it, and `dlopen` does not work in a static build. See
+`Plugins/Native/NativePluginLoader.cs` and `custom_plugins_sdk/`.
 
 ## Payload
 

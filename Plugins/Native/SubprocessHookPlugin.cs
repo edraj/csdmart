@@ -11,17 +11,20 @@ namespace Dmart.Plugins.Native;
 // {"type":"info"} response. Surfaced via IPluginVersionSource so
 // PluginManager.ResolveVersion can prefer it over reflective assembly lookup
 // (which would incorrectly return dmart's own version for this wrapper).
-internal sealed class SubprocessHookPlugin(SubprocessPluginHost host, string pluginVersion = "0.0.0")
+internal sealed class SubprocessHookPlugin(SubprocessPluginPool pool, string pluginVersion = "0.0.0")
     : IHookPlugin, IPluginVersionSource
 {
-    public string Shortname => host.Shortname;
+    public string Shortname => pool.Shortname;
     public string PluginVersion { get; } = pluginVersion;
 
     public Task HookAsync(Event e, CancellationToken ct = default)
     {
         var eventJson = JsonSerializer.Serialize(e, DmartJsonContext.Default.Event);
         var request = $"{{\"type\":\"hook\",\"event\":{eventJson}}}";
-        var response = host.SendAndReceive(request);
+        // The event's user is the ambient actor for any callback the plugin
+        // makes while handling it, so a plugin `query` runs under that user's
+        // permissions rather than as the system.
+        var response = pool.SendAndReceive(request, e.UserShortname);
 
         if (!string.IsNullOrEmpty(response))
         {
