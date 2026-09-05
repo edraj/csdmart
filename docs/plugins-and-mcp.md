@@ -47,7 +47,7 @@ flowchart TD
 
 | Plugin | Purpose |
 |---|---|
-| `resource_folders_creation` | Creates default `/schema` folder when a new Space is created. Without it, first schema upload fails. |
+| `resource_folders_creation` | Creates default `/schema` folder when a new Space is created, and `people/{shortname}` + 5 sub-folders on User create. Without it, first schema upload fails. **Runs fire-and-forget**, so the create response can return before the folders exist — see below. |
 | `realtime_updates_notifier` | Publishes CRUD events to the WebSocket channel manager. |
 | `audit` | INFO-log every dispatched event. Useful as a development sanity check. |
 | `mcp_sse_bridge` | Fans CRUD events out to active MCP SSE sessions. `always_active` — filter is ignored. |
@@ -57,6 +57,33 @@ flowchart TD
 All live in `Plugins/BuiltIn/`. They subscribe by implementing the interface
 and adding themselves to DI — `PluginManager` discovers them via
 `IEnumerable<IHookPlugin>` / `IEnumerable<IApiPlugin>` injection.
+
+### After-hooks do not block the response
+
+Every shipped after-hook ships `"concurrent": true` — dispatched with
+`Task.Run`, so the action's response returns without waiting for it. For the
+notifiers, the audit log and the indexer that is simply what they are for.
+
+For `resource_folders_creation` it has a consequence worth knowing: **a client
+that creates a Space and immediately uploads a schema to it can lose the race
+with the `/schema` folder**, and the same applies to reading
+`personal/people/{shortname}/*` straight after creating a user. A client that
+must not race should poll for the folder rather than assume it — `curl.sh`
+check 49 does exactly that, and has since before this was fire-and-forget.
+
+Losing that race does **not** fail the upload. `EntryService.LoadParentFolderAsync`
+returns `null` for a parent that does not exist, and both folder-level gates —
+compound-key uniqueness and folder-content policy — treat `null` as *allow*.
+So the schema lands; it simply lands without folder-level validation. In the
+shipped configuration that is a no-op, because the folder the plugin creates is
+bare and declares no restrictions for those gates to apply. It stops being a
+no-op if an operator attaches a folder-content policy to `/schema` and
+something creates into that subpath before the folder exists — which, given the
+folder is created once at space-creation time, is a narrow window.
+
+Set `"concurrent": false` in that plugin's `config.json` to get the old awaited
+behaviour back, at the cost of adding the folder writes to every user and space
+create's latency.
 
 ### External plugin config
 

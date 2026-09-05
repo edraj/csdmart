@@ -2,6 +2,34 @@
 
 ## Unreleased
 
+### Changed
+
+- **The eight shipped after-hook plugins now run fire-and-forget.** They ship
+  `"concurrent": true`, so `audit`, `local_notification`,
+  `admin_notification_sender`, `system_notification_sender`,
+  `realtime_updates_notifier`, `mcp_sse_bridge`, `semantic_indexer` and
+  `resource_folders_creation` no longer add their work to the latency of the
+  action that triggered them.
+
+  This is a real behaviour change, not a restoration. The documented default
+  has always been `true`, but a source-generated-deserializer defect fixed in
+  the previous release meant the field never survived JSON, so every after-hook
+  had in fact always been awaited; that release pinned `false` to hold
+  behaviour still while the mechanism was fixed. This is the deliberate flip
+  that pin was there to make reviewable.
+
+  For the notifiers, the audit log and the indexer, not blocking the response
+  is the entire point. **`resource_folders_creation` is the one to know about:**
+  it materializes `/schema` on Space create and `people/{shortname}` plus five
+  sub-folders on User create, so a create response can now return before those
+  folders exist. A client that creates a Space and immediately uploads a schema
+  can lose that race. It does not fail — a missing parent folder is an explicit
+  *allow* for both folder-level gates — but the write lands without
+  folder-level validation, which in the shipped configuration is a no-op only
+  because the auto-created folder declares no restrictions. `curl.sh` check 49
+  already polls for the folder rather than assuming it. Set `"concurrent":
+  false` in that one plugin's `config.json` to keep it awaited.
+
 ### Added
 
 - **The fully static musl binary is now a release artifact.**

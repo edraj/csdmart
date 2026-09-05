@@ -10,5 +10,5 @@
   "type": "hook",
   "ordinal": 1,
   "listen_time": "after",
-  "concurrent": false
+  "concurrent": true
 }
