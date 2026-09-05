@@ -40,7 +40,9 @@ public sealed class PayloadSchemaValidationTests : IClassFixture<DmartFactory>
     // Seed a schema entry in the management space at /schema (where SchemaValidator
     // looks). Done via the repository so the test doesn't depend on the create path
     // it's about to exercise.
-    private async Task<string> SeedSchemaAsync()
+    private Task<string> SeedSchemaAsync() => SeedSchemaAsync(AgeSchema);
+
+    private async Task<string> SeedSchemaAsync(string schemaJson)
     {
         var entries = _factory.Services.GetRequiredService<EntryRepository>();
         var shortname = $"itestschema{Guid.NewGuid():N}"[..20];
@@ -56,12 +58,54 @@ public sealed class PayloadSchemaValidationTests : IClassFixture<DmartFactory>
             Payload = new Payload
             {
                 ContentType = ContentType.Json,
-                Body = JsonDocument.Parse(AgeSchema).RootElement.Clone(),
+                Body = JsonDocument.Parse(schemaJson).RootElement.Clone(),
             },
             CreatedAt = DateTime.UtcNow,
             UpdatedAt = DateTime.UtcNow,
         });
         return shortname;
+    }
+
+    // Same strict schema, but declaring an $id — the shape that used to make
+    // validation quietly stop happening.
+    private const string AgeSchemaWithId =
+        "{\"$id\":\"https://dmart.test/age\",\"type\":\"object\"," +
+        "\"properties\":{\"age\":{\"type\":\"integer\"}}," +
+        "\"required\":[\"age\"],\"additionalProperties\":false}";
+
+    // A schema declaring `$id` must keep being enforced after the validator's
+    // cache is cleared — which happens on EVERY schema entry write.
+    //
+    // It did not. JsonSchema.FromText registers `$id` into a process-global
+    // registry that refuses to overwrite, so the recompile after a cache clear
+    // threw; GetCompiledAsync caught it and returned null; and null reads as
+    // "schema not found — pass through". The net effect was that writing any
+    // schema entry silently switched off validation for every `$id`-bearing
+    // schema, leaving one warning log behind. dmart's own seed schemas declare
+    // no `$id`, which is why nothing caught it.
+    [FactIfPg]
+    public async Task A_Schema_With_An_Id_Is_Still_Enforced_After_The_Cache_Is_Cleared()
+    {
+        var schema = await SeedSchemaAsync(AgeSchemaWithId);
+        var schemas = _factory.Services.GetRequiredService<SchemaValidator>();
+
+        var bad = new Payload
+        {
+            ContentType = ContentType.Json,
+            SchemaShortname = schema,
+            Body = JsonDocument.Parse("{\"age\":\"not-an-integer\"}").RootElement.Clone(),
+        };
+
+        (await schemas.ValidatePayloadAsync("management", ResourceType.User, bad))
+            .ShouldNotBeNull("first compile must enforce the schema");
+
+        // What every schema entry write does.
+        schemas.ClearCache();
+
+        (await schemas.ValidatePayloadAsync("management", ResourceType.User, bad))
+            .ShouldNotBeNull(
+                "after a cache clear the schema must still be enforced — returning null here "
+                + "means the recompile threw and the violating payload was waved through");
     }
 
     private static string CreateUserBody(string shortname, string schema, string bodyJson) =>
