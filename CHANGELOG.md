@@ -236,6 +236,39 @@
   cannot: a test asserting on state a hook affects, where the assertion happens
   before the attribute runs.
 
+- **A user-supplied JSON Schema could kill the process, and another could
+  silently switch validation off.** Both are reachable by anyone able to store
+  a `schema` entry.
+
+  `{"$id":"https://x/s","allOf":[{"$ref":"https://x/s"}]}` compiles fine and
+  recurses only when something is evaluated against it. On the shipped
+  `JsonSchema.Net` 9.1.4 that recursed until the stack gave out — and a
+  `StackOverflowException` cannot be caught, so the process died and took every
+  in-flight request with it. Reaching it needed nothing exotic: store that
+  schema, then write one entry whose payload references it. Upgrading to 9.4.0
+  turns it into a catchable exception.
+
+  Separately, `JsonSchema.FromText` registers a schema's `$id` into a
+  **process-global** registry that refuses to overwrite. dmart recompiles the
+  same document routinely, because `ClearCache()` runs on every schema entry
+  write — so the second compile threw, `GetCompiledAsync` caught it and
+  returned null, and null reads as "schema not found — pass through". Writing
+  any schema entry therefore stopped every `$id`-bearing schema from being
+  enforced, leaving one warning log as the only trace. dmart's own seed schemas
+  declare no `$id`, which is why nothing caught it. Every compile now gets its
+  own registry.
+
+  Schema documents are also checked on the way in rather than waved through, so
+  an unusable one is refused with the error attributed to its author instead of
+  to whoever later writes the first entry against it. The check evaluates a
+  trivial instance rather than only compiling, because compiling is exactly what
+  fails to notice a reference cycle. Only exceptions reject: a schema that
+  legitimately fails against the empty instance — anything with `required` — is
+  fine, and so is one that recurses legally through `$defs`.
+
+  The upgrade keeps `JsonSchema.Net` on its Open Source Maintenance Fee terms
+  (see the SBOM entry above); the last MIT release, 8.0.5, still has the crash.
+
 ### Added
 
 **Plugins can call back into dmart.** Only in-process `.so` plugins could do
