@@ -210,6 +210,19 @@ jobs:
             buildargs: "--static"
             static: true
             builtin: alpine-container (musl static-pie, no runtime deps)
+          # Same thing for arm64. The image and busybox digests above are
+          # multi-arch manifest lists that both carry linux/arm64, so this
+          # entry differs from the x64 static leg ONLY in the runner — as with
+          # linux-arm64, it has to be a real arm64 machine because NativeAOT
+          # cannot cross-compile.
+          - rid: linux-musl-arm64
+            runner: ubuntu-24.04-arm
+            image: mcr.microsoft.com/dotnet/sdk:10.0-alpine@sha256:620e765fe18186c08399f7aa978f79f04b6bbf0ee1b3b8a91e2d5c9619e59da1
+            shell: sh
+            setup: apk add --no-cache clang lld build-base cmake zlib-static openssl-dev openssl-libs-static sqlite-dev sqlite-static
+            buildargs: "--static"
+            static: true
+            builtin: alpine-container (musl static-pie, no runtime deps)
     steps:
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
         with:

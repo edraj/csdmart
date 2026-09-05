@@ -7,13 +7,14 @@ built it. Glibc makes that worse than it sounds: a Fedora build wants
 neither.
 
 A **musl static-pie** build has no such coupling. One binary, zero shared
-libraries, runs on any x86-64 Linux.
+libraries, runs on any Linux of its architecture. Both x86-64 and arm64 are
+built.
 
 ## Shipping it
 
 `release-verifiable.yml` builds this as `dmart-<version>-linux-musl-x64.tar.gz`
-on every `v*` tag, alongside the glibc tarballs. It rides the same matrix as
-those, so it goes through the same pin-to-the-tagged-commit check, the same
+and `dmart-<version>-linux-musl-arm64.tar.gz` on every `v*` tag, alongside the
+glibc tarballs. It rides the same matrix as those, so it goes through the same pin-to-the-tagged-commit check, the same
 per-RID CycloneDX SBOM, and the same keyless signing and SLSA provenance
 attestation — a separate job would have meant a second copy of the logic that
 guarantees nothing is signed that was not built from the tagged commit.
@@ -26,14 +27,20 @@ strings survive, then runs `--version` inside **busybox** rather than the
 Alpine image it was built in — proving it starts somewhere that has none of its
 build-time surroundings.
 
-`scripts/verify-release.sh` requires the tarball, so a release that lost it
-fails verification rather than passing with one artifact fewer.
+`scripts/verify-release.sh` requires both tarballs, so a release that lost
+either fails verification rather than passing with one artifact fewer.
+
+The two static legs differ **only in their runner**. The Alpine SDK image and
+the busybox image used for the smoke test are both multi-arch manifest lists
+carrying `linux/arm64`, so the same pinned digests serve both; and as with
+`linux-arm64`, the arm64 leg has to run on a real arm64 machine because
+NativeAOT cannot cross-compile.
 
 ## Building it locally
 
 `sh ./build.sh --aot --static --rid linux-musl-x64` is the scripted path and
-the one CI uses; it refuses a non-musl RID, since a static-pie is a musl
-construct. To do it by hand in a container:
+the one CI uses (`--rid linux-musl-arm64` for the other); it refuses a non-musl
+RID, since a static-pie is a musl construct. To do it by hand in a container:
 
 ```
 podman run --rm \
@@ -47,7 +54,10 @@ podman run --rm \
       -p:PublishAot=true -p:StaticExecutable=true -p:StaticOpenSslLinking=true'
 ```
 
-Output lands in `bin/Release/net10.0/linux-musl-x64/publish/dmart`, ~52 MB.
+Output lands in `bin/Release/net10.0/linux-musl-x64/publish/dmart`, ~52 MB
+(the arm64 binary is about the same). Building arm64 by hand needs an arm64
+host or `--platform linux/arm64` under emulation, which is slow enough that
+the CI runner is usually the better path.
 
 Run the container as **root** — do not pass `--userns=keep-id`, which makes
 `apk` fail on its log file. Rootless podman already maps container root to your
@@ -108,7 +118,8 @@ exercises OpenSSL (TLS to PostgreSQL) and SQLite.
   like a dynamic one. See `custom_plugins_sdk/README.md`.
 ## CI
 
-The `static-build` job in `ci.yml` builds this and asserts it stays standalone:
+The `static-build` job in `ci.yml` builds the **x86-64** one and asserts it
+stays standalone:
 zero `NEEDED` entries, no `libe_sqlite3`/`libssl.so`/`libcrypto.so` strings,
 then `dmart migrate` on SQLite to prove the linked engine actually opens a
 database.
@@ -123,6 +134,13 @@ on changes to any `.csproj`, `Directory.Build.*` or `ci.yml`, and
 unconditionally on pushes to master. A new NuGet package that reaches its
 native library through `dlopen` arrives via a `PackageReference`, so that
 filter catches the case that matters.
+
+It deliberately does not also build arm64. The regression this job exists to
+catch — a dependency that resolves a native library at runtime — is not
+architecture-specific, so the x86-64 leg catches it, and the job runs on the
+self-hosted x86 runner. Genuinely arm-specific breakage (the toolchain, the
+static archive path) surfaces in the release workflow, which can be dry-run
+dispatched without cutting a tag.
 
 `release-verifiable.yml` ships it — see "Shipping it" above. `release.yml`
 still does not build it, and does not need to: the verifiable workflow is the
