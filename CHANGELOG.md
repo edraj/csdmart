@@ -1,34 +1,6 @@
 # Changelog
 
-## Unreleased
-
-### Changed
-
-- **The eight shipped after-hook plugins now run fire-and-forget.** They ship
-  `"concurrent": true`, so `audit`, `local_notification`,
-  `admin_notification_sender`, `system_notification_sender`,
-  `realtime_updates_notifier`, `mcp_sse_bridge`, `semantic_indexer` and
-  `resource_folders_creation` no longer add their work to the latency of the
-  action that triggered them.
-
-  This is a real behaviour change, not a restoration. The documented default
-  has always been `true`, but a source-generated-deserializer defect fixed in
-  the previous release meant the field never survived JSON, so every after-hook
-  had in fact always been awaited; that release pinned `false` to hold
-  behaviour still while the mechanism was fixed. This is the deliberate flip
-  that pin was there to make reviewable.
-
-  For the notifiers, the audit log and the indexer, not blocking the response
-  is the entire point. **`resource_folders_creation` is the one to know about:**
-  it materializes `/schema` on Space create and `people/{shortname}` plus five
-  sub-folders on User create, so a create response can now return before those
-  folders exist. A client that creates a Space and immediately uploads a schema
-  can lose that race. It does not fail — a missing parent folder is an explicit
-  *allow* for both folder-level gates — but the write lands without
-  folder-level validation, which in the shipped configuration is a no-op only
-  because the auto-created folder declares no restrictions. `curl.sh` check 49
-  already polls for the folder rather than assuming it. Set `"concurrent":
-  false` in that one plugin's `config.json` to keep it awaited.
+## v1.5.0 — 2026-09-05
 
 ### Added
 
@@ -64,6 +36,112 @@
   SQLite get no distro updates, so an advisory in either becomes a
   rebuild-and-reship. That is why the glibc tarballs still ship alongside it
   rather than being replaced by it.
+
+**Plugins can call back into dmart.** Only in-process `.so` plugins could do
+this before, via a C ABI struct — load an entry, run a query, send mail,
+broadcast on a channel. Subprocess plugins, the mode the SDK recommended, had
+none of it, so "recommended" came with a silent capability cliff and anything
+needing a callback had to crash the host when it faulted. That gap is what kept
+in-process plugins alive; closing it is what let them be removed.
+
+A plugin may now interleave callback frames into an exchange before its final
+response, and dmart answers each on stdin:
+
+```
+← {"type":"callback","id":1,"op":"query","args":{"type":"search","space_name":"acme"}}
+→ {"type":"callback_result","id":1,"ok":true,"result":{...}}
+← {"status":"ok"}
+```
+
+Ten ops are available: `load_entry`, `load_user`, `save_entry`, `update_user`,
+`send_email`, `ws_broadcast`, `query`, `log`, `get_session_firebase_tokens` and
+`get_media_attachment`. The last one base64-encodes the blob, costing about 33%
+more bytes on the wire than the file itself; a miss is `{"media":null}` rather
+than an empty string, so an absent attachment and a zero-byte one stay
+distinguishable.
+
+Support is negotiated: the info frame is now
+`{"type":"info","host":{"callbacks":1}}`. A plugin that sees no `host` object
+is talking to an older dmart and must not send callbacks — the frame would be
+read as its final response. Existing plugins that never send one are
+unaffected, and any line that is not a `"type":"callback"` object is still
+treated as the response exactly as before.
+
+Two limits bound a misbehaving plugin: 256 callbacks per exchange, and the 30s
+timeout now applies per line rather than per exchange — a long honest chain of
+callbacks is fine, going silent for 30s is not. A callback that re-enters its
+own plugin is rejected rather than allowed to write a second request onto a
+pipe that is midway through an exchange.
+
+A `query` runs as the user that triggered the exchange unless it carries an
+explicit `as_actor` override, so plugin queries stay inside that user's
+permissions by default — the same rule the in-process callback followed.
+
+**Plugins can serve calls in parallel — `"workers": N` in `config.json`.**
+Exchanges are serialized per process because the line protocol has no
+correlation ids: a reply is matched to its request by arrival order, so two
+exchanges sharing one pipe could each read the other's answer. Rather than add
+ids and require every plugin to handle concurrent requests itself, dmart now
+runs N copies of the executable and dispatches each call to whichever is free.
+The plugin contract is unchanged — each worker still sees one message at a
+time, so existing plugins work untouched.
+
+Default is 1, i.e. exactly the previous behaviour. It is opt-in because
+concurrency changes what a plugin's own state means: a counter, a cache or a
+warm connection becomes per-worker rather than per-plugin, and consecutive
+calls need not land on the same process. The range is clamped to 1-32 —
+`workers` is operator-edited JSON and a stray digit should not decide how many
+processes dmart forks.
+
+Genuine parallelism was the one thing in-process `.so` plugins had that
+subprocess plugins did not; this closes that gap without putting third-party
+code back inside the host process.
+
+### Changed
+
+- **The eight shipped after-hook plugins now run fire-and-forget.** They ship
+  `"concurrent": true`, so `audit`, `local_notification`,
+  `admin_notification_sender`, `system_notification_sender`,
+  `realtime_updates_notifier`, `mcp_sse_bridge`, `semantic_indexer` and
+  `resource_folders_creation` no longer add their work to the latency of the
+  action that triggered them.
+
+  This is a real behaviour change, not a restoration. The documented default
+  has always been `true`, but a source-generated-deserializer defect fixed in
+  the previous release meant the field never survived JSON, so every after-hook
+  had in fact always been awaited; that release pinned `false` to hold
+  behaviour still while the mechanism was fixed. This is the deliberate flip
+  that pin was there to make reviewable.
+
+  For the notifiers, the audit log and the indexer, not blocking the response
+  is the entire point. **`resource_folders_creation` is the one to know about:**
+  it materializes `/schema` on Space create and `people/{shortname}` plus five
+  sub-folders on User create, so a create response can now return before those
+  folders exist. A client that creates a Space and immediately uploads a schema
+  can lose that race. It does not fail — a missing parent folder is an explicit
+  *allow* for both folder-level gates — but the write lands without
+  folder-level validation, which in the shipped configuration is a no-op only
+  because the auto-created folder declares no restrictions. `curl.sh` check 49
+  already polls for the folder rather than assuming it. Set `"concurrent":
+  false` in that one plugin's `config.json` to keep it awaited.
+
+**Every plugin process is told what the host supports, including after a
+crash.** The `{"type":"info","host":{…}}` frame was sent once, by the loader,
+to the process running at startup. A plugin that cached the answer — as the
+SDK sample does — silently stopped making callbacks after its first crash,
+because the replacement process had never been told, and nothing in the log
+said so. The frame is now replayed by whichever code starts a process, so a
+respawned worker and a brand-new one are indistinguishable.
+
+**A plugin that dies mid-exchange is no longer retried once it has made a
+callback.** The retry exists for a plugin that dies before doing anything;
+after a callback has been serviced a `save_entry` may already have landed, and
+replaying the request would double it.
+
+**API plugins can return binary responses.** The
+`{"binary":true,"content_type":…,"body_b64":…,"filename":…}` envelope was only
+honoured on the in-process path; it now works for every plugin. Without this,
+removing in-process plugins would have silently taken binary responses with it.
 
 ### Fixed
 
@@ -318,88 +396,6 @@
 
   The upgrade keeps `JsonSchema.Net` on its Open Source Maintenance Fee terms
   (see the SBOM entry above); the last MIT release, 8.0.5, still has the crash.
-
-### Added
-
-**Plugins can call back into dmart.** Only in-process `.so` plugins could do
-this before, via a C ABI struct — load an entry, run a query, send mail,
-broadcast on a channel. Subprocess plugins, the mode the SDK recommended, had
-none of it, so "recommended" came with a silent capability cliff and anything
-needing a callback had to crash the host when it faulted. That gap is what kept
-in-process plugins alive; closing it is what let them be removed.
-
-A plugin may now interleave callback frames into an exchange before its final
-response, and dmart answers each on stdin:
-
-```
-← {"type":"callback","id":1,"op":"query","args":{"type":"search","space_name":"acme"}}
-→ {"type":"callback_result","id":1,"ok":true,"result":{...}}
-← {"status":"ok"}
-```
-
-Ten ops are available: `load_entry`, `load_user`, `save_entry`, `update_user`,
-`send_email`, `ws_broadcast`, `query`, `log`, `get_session_firebase_tokens` and
-`get_media_attachment`. The last one base64-encodes the blob, costing about 33%
-more bytes on the wire than the file itself; a miss is `{"media":null}` rather
-than an empty string, so an absent attachment and a zero-byte one stay
-distinguishable.
-
-Support is negotiated: the info frame is now
-`{"type":"info","host":{"callbacks":1}}`. A plugin that sees no `host` object
-is talking to an older dmart and must not send callbacks — the frame would be
-read as its final response. Existing plugins that never send one are
-unaffected, and any line that is not a `"type":"callback"` object is still
-treated as the response exactly as before.
-
-Two limits bound a misbehaving plugin: 256 callbacks per exchange, and the 30s
-timeout now applies per line rather than per exchange — a long honest chain of
-callbacks is fine, going silent for 30s is not. A callback that re-enters its
-own plugin is rejected rather than allowed to write a second request onto a
-pipe that is midway through an exchange.
-
-A `query` runs as the user that triggered the exchange unless it carries an
-explicit `as_actor` override, so plugin queries stay inside that user's
-permissions by default — the same rule the in-process callback followed.
-
-**Plugins can serve calls in parallel — `"workers": N` in `config.json`.**
-Exchanges are serialized per process because the line protocol has no
-correlation ids: a reply is matched to its request by arrival order, so two
-exchanges sharing one pipe could each read the other's answer. Rather than add
-ids and require every plugin to handle concurrent requests itself, dmart now
-runs N copies of the executable and dispatches each call to whichever is free.
-The plugin contract is unchanged — each worker still sees one message at a
-time, so existing plugins work untouched.
-
-Default is 1, i.e. exactly the previous behaviour. It is opt-in because
-concurrency changes what a plugin's own state means: a counter, a cache or a
-warm connection becomes per-worker rather than per-plugin, and consecutive
-calls need not land on the same process. The range is clamped to 1-32 —
-`workers` is operator-edited JSON and a stray digit should not decide how many
-processes dmart forks.
-
-Genuine parallelism was the one thing in-process `.so` plugins had that
-subprocess plugins did not; this closes that gap without putting third-party
-code back inside the host process.
-
-### Changed
-
-**Every plugin process is told what the host supports, including after a
-crash.** The `{"type":"info","host":{…}}` frame was sent once, by the loader,
-to the process running at startup. A plugin that cached the answer — as the
-SDK sample does — silently stopped making callbacks after its first crash,
-because the replacement process had never been told, and nothing in the log
-said so. The frame is now replayed by whichever code starts a process, so a
-respawned worker and a brand-new one are indistinguishable.
-
-**A plugin that dies mid-exchange is no longer retried once it has made a
-callback.** The retry exists for a plugin that dies before doing anything;
-after a callback has been serviced a `save_entry` may already have landed, and
-replaying the request would double it.
-
-**API plugins can return binary responses.** The
-`{"binary":true,"content_type":…,"body_b64":…,"filename":…}` envelope was only
-honoured on the in-process path; it now works for every plugin. Without this,
-removing in-process plugins would have silently taken binary responses with it.
 
 ### Removed
 
