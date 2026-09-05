@@ -415,6 +415,90 @@ jobs:
             objdump -T "$PUB/dmart" 2>/dev/null | grep -oE 'GLIBC_2\.[0-9]+' | sort -Vu || true
           fi
 
+      # v1.5.0 and v1.5.1 both shipped a static binary that returned 404 for
+      # /cxb and /cat. The SPA bytes were embedded correctly; the middleware
+      # read them through ManifestEmbeddedFileProvider, which does not work
+      # under Native AOT on musl, and the filesystem fallback found nothing
+      # because that tarball is deliberately one file. It failed silently.
+      #
+      # Nothing else can catch this. curl.sh check 50 accepts 404 as "SPA not
+      # built", the test suite treats a missing bundle as skip rather than
+      # failure, and both are right to — a dev build legitimately has no SPA.
+      # THIS job is the only place that knows the bundle is definitely present,
+      # because it unpacked it two steps ago. So the assertion belongs here.
+      - name: Prove it actually serves the embedded SPAs
+        env:
+          RID: ${{ matrix.rid }}
+          STATIC: ${{ matrix.static }}
+          IMAGE: ${{ matrix.image }}
+        run: |
+          set -euo pipefail
+          PUB="bin/Release/net10.0/${RID}/publish"
+          RUN_IMAGE="$IMAGE"
+          if [ "${STATIC}" = "true" ]; then
+            RUN_IMAGE="docker.io/library/busybox@sha256:73aaf090f3d85aa34ee199857f03fa3a95c8ede2ffd4cc2cdb5b94e566b11662"
+          fi
+
+          cat > "$PUB/smoke.env" <<EOF
+          LISTENING_HOST="127.0.0.1"
+          LISTENING_PORT=5099
+          DATABASE_DRIVER="sqlite"
+          SQLITE_PATH="/src/$PUB/smoke.db"
+          JWT_SECRET="$(head -c 32 /dev/urandom | od -An -tx1 | tr -d ' \n')"
+          EOF
+
+          # Written to a file rather than passed as `sh -c "..."`: the nested
+          # quoting was unreadable, and getting it wrong here means a gate that
+          # passes without asserting anything, which is worse than no gate.
+          cat > "$PUB/smoke.sh" <<'SMOKE'
+          set -u
+          PUB="$1"
+
+          # busybox has wget and no curl; AlmaLinux has curl and no wget.
+          # Refuse to run rather than skip if somehow neither is present — a
+          # silently-skipped check is exactly the failure mode this step exists
+          # to end.
+          if command -v curl >/dev/null 2>&1; then
+            GET() { curl -fsS -o /dev/null "$1"; }
+          elif command -v wget >/dev/null 2>&1; then
+            GET() { wget -q -O /dev/null "$1"; }
+          else
+            echo "::error::neither curl nor wget in the run image — cannot assert"
+            exit 91
+          fi
+
+          "$PUB/dmart" migrate >/dev/null 2>&1 || { echo "::error::migrate failed"; exit 90; }
+          "$PUB/dmart" serve > "$PUB/smoke.log" 2>&1 &
+          i=0
+          while [ "$i" -lt 60 ]; do
+            GET http://127.0.0.1:5099/ 2>/dev/null && break
+            i=$((i + 1))
+            sleep 1
+          done
+          if ! GET http://127.0.0.1:5099/ 2>/dev/null; then
+            echo "::error::server never became ready"
+            exit 92
+          fi
+
+          rc=0
+          for path in /cxb/ /cat/; do
+            if GET "http://127.0.0.1:5099$path"; then
+              echo "  $path serves OK"
+            else
+              echo "::error::$path did not serve — the embedded SPA is not reachable from this build"
+              rc=1
+            fi
+          done
+          exit "$rc"
+          SMOKE
+
+          docker run --rm --network host -v "$PWD":/src -w /src \
+            -e BACKEND_ENV="/src/$PUB/smoke.env" \
+            "$RUN_IMAGE" sh "/src/$PUB/smoke.sh" "/src/$PUB" \
+            || { echo '--- server log ---'; tail -40 "$PUB/smoke.log" 2>/dev/null; exit 1; }
+
+          rm -f "$PUB/smoke.env" "$PUB/smoke.sh" "$PUB/smoke.log" "$PUB"/smoke.db*
+
       - name: Assemble the release tarball
         id: pack
         env:

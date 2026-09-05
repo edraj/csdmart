@@ -29,15 +29,18 @@ public static class CatalogMiddleware
 
         IFileProvider? fileProvider = null;
 
-        // Strategy 1: Embedded resources.
-        try
-        {
-            var assembly = Assembly.GetExecutingAssembly();
-            var embedded = new ManifestEmbeddedFileProvider(assembly, "catalog/dist/client");
-            if (embedded.GetFileInfo("index.html").Exists)
-                fileProvider = embedded;
-        }
-        catch { /* native AOT on musl — fall through */ }
+        // Strategy 1: embedded resources, read straight out of the embedded
+        // manifest XML. This deliberately does NOT use
+        // ManifestEmbeddedFileProvider: that helper fails in the fully static
+        // musl build, which then fell through to strategy 2 — and the static
+        // tarball ships one file, so there was nothing on disk to find and
+        // /cat 404'd on the one artifact that is supposed to need nothing
+        // beside it. The bytes were embedded all along; only the reader failed.
+        // See ManifestXmlFileProvider for the full account.
+        fileProvider = ManifestXmlFileProvider.TryCreate(
+            Assembly.GetExecutingAssembly(), "catalog/dist/client");
+        if (fileProvider is not null && !fileProvider.GetFileInfo("index.html").Exists)
+            fileProvider = null;
 
         // Strategy 2: Filesystem fallback.
         if (fileProvider is null)
@@ -59,8 +62,17 @@ public static class CatalogMiddleware
             }
         }
 
-        // No Catalog bundle available — skip silently (dev builds without build-ui.sh).
-        if (fileProvider is null) return app;
+        // Nothing to serve. A dev build that never ran the UI build script is
+        // the ordinary case, so this is not fatal — but it is logged rather
+        // than skipped in silence, because silence is exactly how the static
+        // binary shipped twice with /cat returning 404.
+        if (fileProvider is null)
+        {
+            app.ApplicationServices.GetService<ILoggerFactory>()
+               ?.CreateLogger("Dmart.Startup")
+               .LogWarning("Catalog bundle not found (neither embedded nor on disk) — {Url} will 404", catUrl);
+            return app;
+        }
 
         // Pre-read index.html and rewrite <base href="/cat/"> to match CAT_URL.
         byte[]? indexHtmlBytes = null;

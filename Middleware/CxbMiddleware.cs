@@ -28,15 +28,18 @@ public static class CxbMiddleware
 
         IFileProvider? fileProvider = null;
 
-        // Strategy 1: Embedded resources (works on glibc/host builds).
-        try
-        {
-            var assembly = Assembly.GetExecutingAssembly();
-            var embedded = new ManifestEmbeddedFileProvider(assembly, "cxb/dist/client");
-            if (embedded.GetFileInfo("index.html").Exists)
-                fileProvider = embedded;
-        }
-        catch { /* native AOT on musl — fall through */ }
+        // Strategy 1: embedded resources, read straight out of the embedded
+        // manifest XML. This deliberately does NOT use
+        // ManifestEmbeddedFileProvider: that helper fails in the fully static
+        // musl build, which then fell through to strategy 2 — and the static
+        // tarball ships one file, so there was nothing on disk to find and
+        // /cxb 404'd on the one artifact that is supposed to need nothing
+        // beside it. The bytes were embedded all along; only the reader failed.
+        // See ManifestXmlFileProvider for the full account.
+        fileProvider = ManifestXmlFileProvider.TryCreate(
+            Assembly.GetExecutingAssembly(), "cxb/dist/client");
+        if (fileProvider is not null && !fileProvider.GetFileInfo("index.html").Exists)
+            fileProvider = null;
 
         // Strategy 2: Filesystem fallback (Docker / RPM).
         if (fileProvider is null)
@@ -58,8 +61,17 @@ public static class CxbMiddleware
             }
         }
 
-        // No CXB available — skip silently (dev builds without build-cxb.sh).
-        if (fileProvider is null) return app;
+        // Nothing to serve. A dev build that never ran the UI build script is
+        // the ordinary case, so this is not fatal — but it is logged rather
+        // than skipped in silence, because silence is exactly how the static
+        // binary shipped twice with /cxb returning 404.
+        if (fileProvider is null)
+        {
+            app.ApplicationServices.GetService<ILoggerFactory>()
+               ?.CreateLogger("Dmart.Startup")
+               .LogWarning("CXB bundle not found (neither embedded nor on disk) — {Url} will 404", cxbUrl);
+            return app;
+        }
 
         // Pre-read index.html and rewrite <base href="/cxb/"> to match CXB_URL.
         // Done once at startup so there's no per-request cost.

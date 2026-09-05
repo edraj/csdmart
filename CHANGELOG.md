@@ -1,5 +1,49 @@
 # Changelog
 
+## Unreleased
+
+### Fixed
+
+- **The fully static binary returned 404 for `/cxb` and `/cat`.** Both SPAs
+  were unreachable on the musl artifact in v1.5.0 and v1.5.1 — the one build
+  whose entire selling point is needing nothing beside it. The glibc builds
+  were unaffected.
+
+  The assets were embedded correctly the whole time; only the reader failed.
+  `CxbMiddleware` and `CatalogMiddleware` loaded them through
+  `ManifestEmbeddedFileProvider`, which does not work under Native AOT on musl.
+  That throw was caught and fell through to a filesystem fallback looking for a
+  `cxb/` directory next to the binary — which the static tarball deliberately
+  does not ship, because it is one file. Both strategies failed, and
+  `if (fileProvider is null) return app;` returned **silently**, so nothing in
+  the logs or the build said anything was missing.
+
+  Both middlewares now read the embedded manifest XML directly, the way
+  `Cli/SeedCommand.cs` already did for seed spaces and `LanguageLoader` for
+  translations — which is exactly why `languages loaded: 3 … from embedded`
+  appeared in the static binary's startup log while the SPAs did not. That
+  reader works on glibc and musl alike, so the two builds no longer diverge.
+  The filesystem fallback stays for the Docker and RPM layouts.
+
+  A missing bundle now logs a warning naming the URL that will 404. Silence is
+  how this shipped twice.
+
+  Verified on a locally built `linux-musl-x64` binary (0 `NEEDED`): both SPA
+  roots, `index.html`, all 12 referenced JS/CSS/icon assets, the `<base href>`
+  rewrite, the extensionless deep-route fallback, the root `/favicon.ico`
+  redirect, and non-default `CXB_URL`/`CAT_URL` prefixes.
+
+### Changed
+
+- **The release now proves each binary actually serves its embedded SPAs.**
+  `release-verifiable.yml` starts the freshly published binary against SQLite
+  and requires `/cxb/` and `/cat/` to return 200 — inside busybox for the
+  static legs. Nothing else could have caught the bug above: `curl.sh` check 49
+  accepts a 404 as "SPA not built" and the test suite treats a missing bundle
+  as skip, both correctly, since a dev build legitimately has no SPA. The
+  release job is the only place that knows the bundle is present, having
+  unpacked it two steps earlier.
+
 ## v1.5.1 — 2026-09-05
 
 ### Added
