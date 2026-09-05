@@ -1,4 +1,5 @@
 using Dmart.DataAdapters.Sql;
+using Dmart.Plugins;
 using Microsoft.Extensions.DependencyInjection;
 
 namespace Dmart.Tests.Infrastructure;
@@ -23,6 +24,24 @@ public static class TestUserCleanup
 {
     public static async Task DeleteUserAndOwnedAsync(IServiceProvider sp, string shortname)
     {
+        // Let the plugin finish before purging what it wrote.
+        //
+        // resource_folders_creation is an AFTER-hook. Pinned `"concurrent":
+        // false` it completes inside the request, so its rows are already there
+        // when the purge below runs. Set `"concurrent": true` it is dispatched
+        // with Task.Run and outlives the request — so its inserts can land
+        // AFTER the purge, and `users.DeleteAsync` then trips the very
+        // entries.owner_shortname FK this helper exists to avoid. The symptom
+        // is a "FOREIGN KEY constraint failed" from the CLEANUP, attributed to
+        // whichever test happened to be running, which is why it looked like an
+        // unrelated flake wandering between test classes.
+        //
+        // DrainPluginHooksAttribute cannot cover this: it settles hooks AFTER
+        // the test method, and this cleanup runs inside it.
+        var plugins = sp.GetService<PluginManager>();
+        if (plugins is not null)
+            await plugins.WaitForIdleAsync(TimeSpan.FromSeconds(15));
+
         var db = sp.GetRequiredService<IDbConnectionFactory>();
         var users = sp.GetRequiredService<UserRepository>();
 

@@ -39,6 +39,28 @@
 
 ### Fixed
 
+- **The last blocker to running after-hooks concurrently was in the test
+  harness, not the plugins.** `TestUserCleanup` deletes the rows a hook wrote
+  before deleting the user that owns them — `resource_folders_creation`
+  materializes `personal/people/{shortname}/*` entries whose
+  `owner_shortname` points at the new user. Pinned `"concurrent": false` that
+  hook finishes inside the request, so its rows are always there to purge. Set
+  `"concurrent": true` it is dispatched with `Task.Run`, so its inserts could
+  land *after* the purge, and the user delete then tripped the very foreign key
+  the helper exists to avoid.
+
+  It surfaced as `FOREIGN KEY constraint failed` attributed to whichever test
+  happened to be running, which is why it looked like an unrelated flake that
+  moved between test classes between runs — three different classes across the
+  runs that caught it. The between-test drain added previously could not cover
+  it: that settles hooks *after* the test method, and this cleanup runs inside
+  it. The helper now settles in-flight hooks before purging, in one place that
+  all eight affected test files already route through.
+
+  Measured: unpinned went from 1 extra failure in 3 runs to **0 in 6**; pinned
+  is unchanged at 0. Behaviour is unchanged — the eight plugins stay pinned —
+  but the flip is no longer gated on an unexplained flake.
+
 - **The frontend SBOM listed 300+ things that do not ship.** It asked
   `yarn list --production` — what `package.json` calls a runtime dependency —
   and cxb declares `@tailwindcss/vite`, `tailwindcss`, `vite-plugin-static-copy`,
