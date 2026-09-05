@@ -137,12 +137,18 @@ jobs:
 
       # Named for the tarball each one describes, so verify-release.sh can pair
       # them without knowing anything about RIDs.
+      #
+      # This list must cover every `rid` in the build matrix below. It cannot
+      # read the matrix — this job runs before it, and produces the artifact
+      # that job consumes — so the two are coupled by hand. Adding a matrix leg
+      # without adding it here fails that leg at "Place the SBOM beside the
+      # tarball it describes", which says so.
       - name: Generate the SBOMs
         env:
           VERSION: ${{ steps.v.outputs.version }}
         run: |
           set -euo pipefail
-          for RID in linux-x64 linux-arm64 linux-musl-x64; do
+          for RID in linux-x64 linux-arm64 linux-musl-x64 linux-musl-arm64; do
             ./dist/sbom.sh --rid "$RID" --version "$VERSION" --out sboms \
               --filename "dmart-${VERSION}-${RID}.tar.gz.cdx.json"
           done
@@ -168,6 +174,8 @@ jobs:
       attestations: write
     strategy:
       fail-fast: false
+      # Every `rid` here needs a matching entry in the sbom job's RID list
+      # above, which cannot read this matrix.
       matrix:
         include:
           - rid: linux-x64
@@ -204,6 +212,19 @@ jobs:
           # adds the toolchain and the static archives to link against.
           - rid: linux-musl-x64
             runner: ubuntu-24.04
+            image: mcr.microsoft.com/dotnet/sdk:10.0-alpine@sha256:620e765fe18186c08399f7aa978f79f04b6bbf0ee1b3b8a91e2d5c9619e59da1
+            shell: sh
+            setup: apk add --no-cache clang lld build-base cmake zlib-static openssl-dev openssl-libs-static sqlite-dev sqlite-static
+            buildargs: "--static"
+            static: true
+            builtin: alpine-container (musl static-pie, no runtime deps)
+          # Same thing for arm64. The image and busybox digests above are
+          # multi-arch manifest lists that both carry linux/arm64, so this
+          # entry differs from the x64 static leg ONLY in the runner — as with
+          # linux-arm64, it has to be a real arm64 machine because NativeAOT
+          # cannot cross-compile.
+          - rid: linux-musl-arm64
+            runner: ubuntu-24.04-arm
             image: mcr.microsoft.com/dotnet/sdk:10.0-alpine@sha256:620e765fe18186c08399f7aa978f79f04b6bbf0ee1b3b8a91e2d5c9619e59da1
             shell: sh
             setup: apk add --no-cache clang lld build-base cmake zlib-static openssl-dev openssl-libs-static sqlite-dev sqlite-static
@@ -496,7 +517,15 @@ jobs:
           VERSION: ${{ steps.src.outputs.version }}
         run: |
           set -euo pipefail
-          cp "sboms/dmart-${VERSION}-${RID}.tar.gz.cdx.json" dist/out/
+          SRC="sboms/dmart-${VERSION}-${RID}.tar.gz.cdx.json"
+          if [ ! -f "$SRC" ]; then
+            echo "::error::no SBOM was generated for ${RID}. The sbom job builds"
+            echo "::error::a hardcoded RID list that has to cover every matrix leg;"
+            echo "::error::add ${RID} to it. SBOMs present:"
+            ls -1 sboms/ >&2
+            exit 1
+          fi
+          cp "$SRC" dist/out/
           ls -l "dist/out/dmart-${VERSION}-${RID}.tar.gz.cdx.json"
 
       - name: Sign and attest

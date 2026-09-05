@@ -1,5 +1,29 @@
 # Changelog
 
+## Unreleased
+
+### Added
+
+- **A fully static arm64 binary**, `dmart-<version>-linux-musl-arm64.tar.gz`,
+  alongside the x86-64 one v1.5.0 introduced. Same construction: SQLite and
+  OpenSSL bound at link time, zero `NEEDED` entries, no `libe_sqlite3.so`
+  beside it — one file that runs on any arm64 Linux regardless of distro or
+  glibc version.
+
+  It is a new entry in the existing build matrix rather than any new
+  machinery, so it goes through the same pin-to-the-tagged-commit check, SBOM,
+  signing and SLSA attestation as everything else. It differs from the x86-64
+  static leg **only in its runner**: the pinned Alpine SDK and busybox digests
+  are both multi-arch manifest lists that already carry `linux/arm64`, and as
+  with `linux-arm64`, it has to be a real arm64 machine because NativeAOT
+  cannot cross-compile.
+
+  `scripts/verify-release.sh` now requires it, so a release that lost it fails
+  verification rather than passing with one artifact fewer. The `static-build`
+  job in `ci.yml` still builds only x86-64 — the regression it exists to catch,
+  a dependency reaching its native library through `dlopen`, is not
+  architecture-specific.
+
 ## v1.5.0 — 2026-09-05
 
 ### Added
