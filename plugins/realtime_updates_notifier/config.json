@@ -9,5 +9,5 @@
   },
   "type": "hook",
   "listen_time": "after",
-  "concurrent": false
+  "concurrent": true
 }
