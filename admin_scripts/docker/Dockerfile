@@ -54,20 +54,52 @@ ARG DMART_VERSION
 # pointing at an external PostgreSQL, so the client's Kerberos path must keep
 # working. (DOTNET_SYSTEM_NET_SECURITY_DISABLEGSSAPIPAL below may make it
 # redundant; that is a separate, testable trim, not something to infer.)
-RUN apk add --no-cache bash curl tzdata krb5-libs jq
+# bash and curl were here and nothing used them. entrypoint.sh is `#!/bin/sh`
+# and shells out to only tr/head/chmod; there is no HEALTHCHECK, and the
+# release smoke test curls from the host, not from inside. Between them they
+# cost ~5 MB once libcurl, brotli-libs, nghttp2, libidn2 and libunistring come
+# along. Add either back deliberately if something starts needing it.
+#
+# jq STAYS: it is a real runtime dependency — a join sub-query carrying a
+# jq_filter shells out to it (see JQ_TIMEOUT). tzdata STAYS: TimeZoneInfo reads
+# OS tzdata, and it is 433 KiB.
+#
+# krb5-libs STAYS, still untested. DOTNET_SYSTEM_NET_SECURITY_DISABLEGSSAPIPAL
+# below probably makes it redundant, since Npgsql's Kerberos path goes through
+# the GSSAPI PAL that variable disables — but "probably" is not a reason to
+# drop 1.7 MB from a supported auth path. Test it, then remove it.
+RUN apk add --no-cache tzdata krb5-libs jq
 
 # --allow-untrusted: the APK is signed with an ephemeral key generated inside
 # the build container (see dist/build-apk.sh), so there is no published key to
 # verify against. The package is not fetched from a repository — it is the
 # artifact this same release just produced, sitting in the build context.
-COPY dist/out/dmart-*-x86_64.apk /tmp/dmart.apk
-RUN apk add --no-cache --allow-untrusted /tmp/dmart.apk \
-    && rm -f /tmp/dmart.apk \
+# --mount=type=bind rather than COPY. The .apk was previously COPYed to /tmp
+# and deleted in the RUN below — but a delete in a LATER layer reclaims
+# nothing, so the image carried the package twice: once as the 21.8 MB .apk
+# layer and once installed. That single mistake was over half the image's
+# overhead. A bind mount exists only for the duration of the RUN and leaves
+# no layer at all.
+RUN --mount=type=bind,source=dist/out,target=/apk \
+    apk add --no-cache --allow-untrusted /apk/dmart-*-x86_64.apk \
     # The package seeds /etc/dmart/config.env for a host install. This image
     # does not use it: entrypoint.sh generates /root/.dmart/config.env and
     # points BACKEND_ENV at that. Leaving both would give an operator two
     # config files and one of them no effect, so the unused one goes.
-    && rm -f /etc/dmart/config.env
+    && rm -f /etc/dmart/config.env \
+    # The APK also lays the SPAs down at /usr/lib/dmart/{cxb,catalog}, 5.9 MB
+    # that this image never reads. That path is the FILESYSTEM FALLBACK the
+    # middlewares use when the embedded reader fails, which it did under
+    # NativeAOT on musl until v1.5.2 — the APK shipping these files is what
+    # kept /cxb and /cat working here while the static tarball 404'd. Since
+    # v1.5.2 both middlewares read the embedded manifest directly and this
+    # copy is dead weight; verified by masking both directories and watching
+    # /cxb/ still answer 200.
+    #
+    # Removing a fallback means the primary path now has to be checked: the
+    # release smoke test asserts /cxb/ and /cat/ serve before the image is
+    # pushed. Do not drop that assertion without putting these files back.
+    && rm -rf /usr/lib/dmart/cxb /usr/lib/dmart/catalog
 
 COPY --chmod=755 admin_scripts/docker/entrypoint.sh /entrypoint.sh
 
