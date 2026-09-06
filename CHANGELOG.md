@@ -4,8 +4,8 @@
 
 ### Changed
 
-- **The release build is faster, and the remaining cost is now measured rather
-  than assumed.** Consolidating the Linux packages onto one binary took
+- **The release build is faster where it was measured to be, and unchanged
+  where it was not.** Consolidating the Linux packages onto one binary took
   `release.yml` from 24 minutes wall clock to 11 (the Fedora RPM went 5 min → 1,
   the `.deb` 4 → 1). That moved the bottleneck rather than removing it, so this
   release addresses where the time actually went:
@@ -15,11 +15,15 @@
     They now build inside a published `dmart-el9-builder` image, multi-arch and
     pinned by digest, with the SDK and toolchain baked in.
 
-    **The speed gain is smaller than it first looked: ~50 seconds a leg.** The
-    `linux-x64` AOT step measured 585 s before and 532 s after. The glibc legs
-    take ~10 minutes against ~6–7 for the musl legs, and that gap was initially
-    attributed to the SDK install — wrongly. Most of it is something else, and
-    it is not yet explained.
+    **This is not a speed improvement.** Over thirteen runs of the same leg —
+    eight before the change, five after — the median is `584 s` on both sides.
+    The spread within either group (523–651 s before) is far wider than any
+    effect the change could have. Two earlier figures quoted for it, "~3
+    minutes" and then "~50 seconds", were both single-sample comparisons drawn
+    from that spread and neither survived being measured properly.
+
+    The glibc legs do take ~10 minutes against ~6–7 for the musl legs. That gap
+    is real and still unexplained; it is not the SDK install.
 
     The reason this change stays is the other one: it removes an **unpinned**
     `dnf install` from the path that produces signed artifacts. The SDK a
