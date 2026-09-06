@@ -18,6 +18,28 @@
 
 ### Changed
 
+- **The Linux packages are built from one binary instead of three.** The Fedora
+  RPM, the EL9 RPM and the `.deb` each ran their own `linux-x64` AOT compile —
+  three builds of the same target, about 12 minutes of a three-runner pool, and
+  three chances for the packages to quietly diverge.
+
+  `build-el9-rpm` now publishes the binary it already compiles, and the other
+  two consume it via `DMART_PREBUILT_BIN`. No new job: EL9 was already doing
+  this compile in an AlmaLinux 9 container. `dmart.spec` needed no change
+  either — its `%build` only compiles when `dmart.csproj` is present, which is
+  the SRPM-rebuild path, so it was written for this from the start.
+
+  **EL9 is the right one to build on.** AlmaLinux 9 is glibc 2.34, the lowest
+  floor of the three; that binary runs on Fedora and on Debian 12 (2.36), while
+  neither of theirs runs on EL9. Sharing it therefore *widens* what the Fedora
+  RPM and the `.deb` support. The `.deb` in particular was pinned to a Debian 12
+  builder purely to get 2.36 and now gets 2.34 — and with the binary supplied,
+  that job needs no .NET SDK, no clang and no Microsoft apt feed at all, just
+  `dpkg-dev`.
+
+  This is the same build-once-package-many move the container image made when
+  it stopped compiling dmart and started installing the Alpine package.
+
 - **dmart serves its UIs from inside the binary, and only from there.** The
   filesystem fallback in `CxbMiddleware`/`CatalogMiddleware` — `{BaseDir}/cxb`,
   `/usr/lib/dmart/cxb`, `/app/cxb` — is gone, along with the second copy of the
