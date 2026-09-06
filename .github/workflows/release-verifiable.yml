@@ -178,11 +178,22 @@ jobs:
       # above, which cannot read this matrix.
       matrix:
         include:
+          # dmart-el9-builder, not almalinux:9 plus an inline dnf install.
+          # That install ran cold on every release; removing it is worth about
+          # 50s a leg, which is less than first estimated. The reason it stays
+          # is the other one: it takes an UNPINNED `dnf install` out of the
+          # path that produces signed artifacts, so the SDK a release was built
+          # with is recorded rather than whatever the mirrors served that day.
+          #
+          # This is the INDEX digest, carrying amd64 and arm64. Pinning a
+          # per-architecture digest instead makes the other leg die with
+          # "exec format error" at run time. `setup: "true"` because the matrix
+          # field is required and there is nothing left to install.
           - rid: linux-x64
             runner: ubuntu-24.04
-            image: docker.io/library/almalinux@sha256:d2515c769e7b73f95c4fde38c0a505336ff38f14990c0b7253b77060a049a743
+            image: ghcr.io/edraj/dmart-el9-builder@sha256:618c17e78e80aac6006a31d8b5cfc93d76d938aac559bcac76e9791e237298a1
             shell: bash
-            setup: dnf install -y --setopt=install_weak_deps=False --nobest dotnet-sdk-10.0 clang zlib-devel
+            setup: "true"
             buildargs: ""
             static: false
             builtin: almalinux9-container (glibc 2.34 floor)
@@ -190,9 +201,9 @@ jobs:
           # cross-compile, so this genuinely has to be an arm64 machine.
           - rid: linux-arm64
             runner: ubuntu-24.04-arm
-            image: docker.io/library/almalinux@sha256:d2515c769e7b73f95c4fde38c0a505336ff38f14990c0b7253b77060a049a743
+            image: ghcr.io/edraj/dmart-el9-builder@sha256:618c17e78e80aac6006a31d8b5cfc93d76d938aac559bcac76e9791e237298a1
             shell: bash
-            setup: dnf install -y --setopt=install_weak_deps=False --nobest dotnet-sdk-10.0 clang zlib-devel
+            setup: "true"
             buildargs: ""
             static: false
             builtin: almalinux9-container (glibc 2.34 floor)
