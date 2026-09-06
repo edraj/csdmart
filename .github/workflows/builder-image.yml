@@ -70,8 +70,6 @@ jobs:
           IMG=ghcr.io/${{ github.repository_owner }}/dmart-el9-builder
           docker manifest rm "$IMG:latest" 2>/dev/null || true
           docker manifest create "$IMG:latest" "$IMG:latest-amd64" "$IMG:latest-arm64"
-          docker manifest push "$IMG:latest"
-
           # Both architectures must actually be in the index. Pinning an index
           # that carries only one is exactly the failure this job exists to
           # prevent, and it is invisible until a build runs on the missing arch.
@@ -86,7 +84,17 @@ jobs:
           # to its own architecture. A moving tag in the path that produces
           # signed artifacts would let the toolchain change under a release
           # with nothing recording it.
-          DIGEST=$(docker manifest inspect -v "$IMG:latest" | jq -r '.Descriptor.digest')
+          # `docker manifest push` prints the index digest it just pushed.
+          # Do NOT use `docker manifest inspect -v` for this: on a LIST it
+          # returns an ARRAY of per-manifest objects, so `.Descriptor.digest`
+          # errors with "Cannot index array with string" — and the per-manifest
+          # digests are the wrong thing to pin anyway, since pinning one of
+          # those is what pins a single architecture.
+          DIGEST=$(docker manifest push "$IMG:latest" | tail -1)
+          case "$DIGEST" in
+            sha256:*) ;;
+            *) echo "::error::could not read the index digest, got: $DIGEST"; exit 1 ;;
+          esac
           echo "digest: $DIGEST"
           {
             echo "### Builder image published (amd64 + arm64)"
