@@ -69,7 +69,57 @@ jobs:
         run: ./dist/check-dependency-graph.sh
 
 
+  changes:
+    name: Detect scope
+    # Hosted and tiny, for the same reason build-and-test is: it gates the
+    # self-hosted pool and must never queue behind an 8-minute build job to
+    # decide whether that build job should run at all.
+    runs-on: ubuntu-24.04
+    outputs:
+      code: ${{ steps.scope.outputs.code }}
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+        with:
+          fetch-depth: 0
+
+      # Names what is provably INERT and treats everything else as code, the
+      # same inversion aot-publish uses. An allowlist of "things that need
+      # testing" would eventually omit one; this way an unrecognised path runs
+      # the suite.
+      #
+      # Verified before this was added: nothing in the product or the tests
+      # reads a repo .md file, and the `docs/` strings in the test suite are
+      # URL paths (/docs/openapi.json) and dmart subpaths, not filesystem
+      # reads. A diff confined to these paths cannot change a test outcome.
+      - name: Does anything here affect the build or tests?
+        id: scope
+        run: |
+          if [ "${{ github.event_name }}" = "push" ]; then
+            echo "code=true" >> "$GITHUB_OUTPUT"
+            echo "push to master — running unconditionally"
+            exit 0
+          fi
+          BASE="${{ github.event.pull_request.base.sha }}"
+          if [ -z "$BASE" ] || ! git cat-file -e "$BASE" 2>/dev/null; then
+            echo "code=true" >> "$GITHUB_OUTPUT"
+            echo "no usable base sha — running to be safe"
+            exit 0
+          fi
+          CHANGED=$(git diff --name-only "$BASE"...HEAD)
+          echo "$CHANGED" | sed 's/^/  /'
+          SAFE='(\.md$|^docs/|^LICENSE$|^\.gitignore$|\.(png|jpg|jpeg|gif|svg|ico)$)'
+          RISKY=$(echo "$CHANGED" | grep -vE "$SAFE" || true)
+          if [ -n "$RISKY" ]; then
+            echo "code=true" >> "$GITHUB_OUTPUT"
+            echo "files that could affect build or tests changed — running"
+          else
+            echo "code=false" >> "$GITHUB_OUTPUT"
+            echo "only docs/assets changed — skipping build and test"
+          fi
+
   build-and-test-matrix:
+    needs: changes
+    if: needs.changes.outputs.code == 'true'
     runs-on: self-hosted
 
     # One axis: the SQL backend. Both drivers ship in the same binary and share
@@ -438,16 +488,27 @@ jobs:
     # minutes on an `echo`. `if: always()` made it worse: cancelled runs still
     # queued one. A hosted runner starts in seconds and costs the pool nothing.
     runs-on: ubuntu-24.04
-    needs: [build-and-test-matrix]
+    needs: [changes, build-and-test-matrix]
     if: always()
     steps:
       - name: Report the matrix result
         run: |
-          echo "matrix result: ${{ needs.build-and-test-matrix.result }}"
-          [ "${{ needs.build-and-test-matrix.result }}" = "success" ] || {
-            echo "one or more driver legs did not succeed"
-            exit 1
-          }
+          RESULT="${{ needs.build-and-test-matrix.result }}"
+          CODE="${{ needs.changes.outputs.code }}"
+          echo "matrix result: $RESULT (code-affecting change: $CODE)"
+          if [ "$RESULT" = "success" ]; then
+            exit 0
+          fi
+          # A skip counts as a pass ONLY when the scope job is the reason for
+          # it. This job is the single required status check, so accepting
+          # "skipped" unconditionally would let a cancelled or dependency-
+          # failed matrix merge as green.
+          if [ "$RESULT" = "skipped" ] && [ "$CODE" = "false" ]; then
+            echo "docs-only change — the suite was not run, and could not have been affected"
+            exit 0
+          fi
+          echo "one or more driver legs did not succeed"
+          exit 1
 
   aot-publish:
     runs-on: self-hosted
