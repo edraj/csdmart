@@ -21,40 +21,79 @@ permissions:
   packages: write
 
 jobs:
-  publish:
-    name: Build & push dmart-el9-builder
-    runs-on: ubuntu-24.04
+  # One job per architecture on a native runner, then a manifest list — the
+  # same shape release.yml uses for the application image, and for the same
+  # reason: `dnf install` has to execute binaries of the target architecture,
+  # so emulation would mean running the whole install under qemu.
+  #
+  # This started as a single amd64 build. release-verifiable.yml consumes it
+  # from BOTH ubuntu-24.04 and ubuntu-24.04-arm, so the arm64 leg died with
+  # "exec /usr/bin/bash: exec format error" the first time it was pinned. A
+  # single-arch image with multi-arch consumers fails at run time, not at
+  # publish time, which is why it reached a dry run before showing up.
+  build:
+    name: Build ${{ matrix.arch }}
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: amd64
+            runner: ubuntu-24.04
+          - arch: arm64
+            runner: ubuntu-24.04-arm
     steps:
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
 
       - name: Log in to ghcr.io
         run: echo "${{ secrets.GITHUB_TOKEN }}" | docker login ghcr.io -u "${{ github.actor }}" --password-stdin
 
-      - name: Build
-        run: |
-          docker build \
-            -t ghcr.io/${{ github.repository_owner }}/dmart-el9-builder:latest \
-            -f .github/builder/Containerfile.el9 .
-
-      - name: Push and report the digest to pin
+      - name: Build and push the per-arch tag
         run: |
           set -euo pipefail
           IMG=ghcr.io/${{ github.repository_owner }}/dmart-el9-builder
-          docker push "$IMG:latest"
-          # The digest is the point of this job. release-verifiable.yml pins by
-          # digest, not by :latest — a moving tag in the path that produces
-          # signed artifacts would mean the toolchain could change under a
-          # release without anything recording it.
-          DIGEST=$(docker inspect --format='{{index .RepoDigests 0}}' "$IMG:latest" | cut -d@ -f2)
+          docker build -t "$IMG:latest-${{ matrix.arch }}" -f .github/builder/Containerfile.el9 .
+          docker push "$IMG:latest-${{ matrix.arch }}"
+          echo "SDK: $(docker run --rm "$IMG:latest-${{ matrix.arch }}" cat /etc/dmart-builder-sdk-version)"
+
+  manifest:
+    name: Manifest + digest to pin
+    runs-on: ubuntu-24.04
+    needs: build
+    steps:
+      - name: Log in to ghcr.io
+        run: echo "${{ secrets.GITHUB_TOKEN }}" | docker login ghcr.io -u "${{ github.actor }}" --password-stdin
+
+      - name: Assemble, push, and report the digest
+        run: |
+          set -euo pipefail
+          IMG=ghcr.io/${{ github.repository_owner }}/dmart-el9-builder
+          docker manifest rm "$IMG:latest" 2>/dev/null || true
+          docker manifest create "$IMG:latest" "$IMG:latest-amd64" "$IMG:latest-arm64"
+          docker manifest push "$IMG:latest"
+
+          # Both architectures must actually be in the index. Pinning an index
+          # that carries only one is exactly the failure this job exists to
+          # prevent, and it is invisible until a build runs on the missing arch.
+          for a in amd64 arm64; do
+            docker manifest inspect "$IMG:latest" \
+              | jq -e --arg a "$a" '.manifests | map(.platform.architecture) | index($a)' >/dev/null \
+              || { echo "::error::index does not carry $a"; exit 1; }
+            echo "  index carries $a"
+          done
+
+          # release-verifiable.yml pins the INDEX digest, so each leg resolves
+          # to its own architecture. A moving tag in the path that produces
+          # signed artifacts would let the toolchain change under a release
+          # with nothing recording it.
+          DIGEST=$(docker manifest inspect -v "$IMG:latest" | jq -r '.Descriptor.digest')
           echo "digest: $DIGEST"
           {
-            echo "### Builder image published"
+            echo "### Builder image published (amd64 + arm64)"
             echo ""
             echo 'Pin this in `release-verifiable.yml`:'
             echo ""
             echo '```'
             echo "image: $IMG@$DIGEST"
             echo '```'
-            echo ""
-            echo "SDK: $(docker run --rm "$IMG:latest" cat /etc/dmart-builder-sdk-version)"
           } >> "$GITHUB_STEP_SUMMARY"
