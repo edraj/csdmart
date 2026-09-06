@@ -27,40 +27,28 @@ public static class CatalogMiddleware
         if (!catUrl.StartsWith('/')) catUrl = "/" + catUrl;
         var baseHref = catUrl + "/";  // <base href> needs trailing slash
 
-        IFileProvider? fileProvider = null;
+        // Concrete type, not IFileProvider: there is exactly one source now
+        // (CA1859 flags the interface as a needless indirection).
+        ManifestXmlFileProvider? fileProvider = null;
 
-        // Strategy 1: embedded resources, read straight out of the embedded
-        // manifest XML. This deliberately does NOT use
-        // ManifestEmbeddedFileProvider: that helper fails in the fully static
-        // musl build, which then fell through to strategy 2 — and the static
-        // tarball ships one file, so there was nothing on disk to find and
-        // /cat 404'd on the one artifact that is supposed to need nothing
-        // beside it. The bytes were embedded all along; only the reader failed.
-        // See ManifestXmlFileProvider for the full account.
+        // The SPA is served from the binary's own embedded resources, and only
+        // from there. There used to be a filesystem fallback at
+        // {BaseDir}/catalog, /usr/lib/dmart/catalog and /app/catalog, which existed
+        // solely because ManifestEmbeddedFileProvider does not survive
+        // NativeAOT on musl — the Alpine package shipped a second copy of the
+        // assets to that path to compensate. ManifestXmlFileProvider reads the
+        // embedded manifest XML directly and works on glibc and musl alike, so
+        // the duplicate is gone and dmart serves its UIs on its own.
+        //
+        // Consequence worth knowing: embedded is now the ONLY path, on every
+        // artifact. If it regresses, every UI 404s everywhere rather than only
+        // on musl. That is why the release asserts /cxb/ and /cat/ actually
+        // serve — on all four tarballs and on the container image — before
+        // anything is published.
         fileProvider = ManifestXmlFileProvider.TryCreate(
             Assembly.GetExecutingAssembly(), "catalog/dist/client");
         if (fileProvider is not null && !fileProvider.GetFileInfo("index.html").Exists)
             fileProvider = null;
-
-        // Strategy 2: Filesystem fallback.
-        if (fileProvider is null)
-        {
-            var candidates = new[]
-            {
-                Path.Combine(AppContext.BaseDirectory, "catalog"),
-                Path.Combine(Directory.GetCurrentDirectory(), "catalog"),
-                "/usr/lib/dmart/catalog",
-                "/app/catalog",
-            };
-            foreach (var fsPath in candidates)
-            {
-                if (File.Exists(Path.Combine(fsPath, "index.html")))
-                {
-                    fileProvider = new PhysicalFileProvider(fsPath);
-                    break;
-                }
-            }
-        }
 
         // Nothing to serve. A dev build that never ran the UI build script is
         // the ordinary case, so this is not fatal — but it is logged rather

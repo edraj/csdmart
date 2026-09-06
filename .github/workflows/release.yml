@@ -1075,11 +1075,15 @@ jobs:
           # could bake InformationalVersion into the binary; the binary now
           # arrives prebuilt in the .apk with that already baked in, and
           # `dmart --version` reports it from there.
+          # Arch-suffixed tag. The bare :<version> and :latest are a MANIFEST
+          # LIST assembled by the container-manifest job once both arches have
+          # pushed — tagging them here would make whichever arch finished last
+          # the only one an `podman pull` ever sees.
           podman build \
-            -t ghcr.io/${{ github.repository }}:${{ steps.version.outputs.version }} \
-            -t ghcr.io/${{ github.repository }}:latest \
+            -t ghcr.io/${{ github.repository }}:${{ steps.version.outputs.version }}-amd64 \
             -f admin_scripts/docker/Dockerfile \
             --build-arg DMART_VERSION=${{ steps.version.outputs.version }} \
+            --build-arg TARGETARCH_APK=x86_64 \
             .
 
       # The image is the package: prove the installed binary runs and serves
@@ -1089,7 +1093,7 @@ jobs:
       - name: Smoke the image before pushing
         run: |
           set -e
-          IMG=ghcr.io/${{ github.repository }}:${{ steps.version.outputs.version }}
+          IMG=ghcr.io/${{ github.repository }}:${{ steps.version.outputs.version }}-amd64
           podman run --rm "$IMG" dmart --version
           podman rm -f dmart-relsmoke 2>/dev/null || true
           RUNNER_DIGITS=$(printf '%s' "${RUNNER_NAME:-local}" | tr -cd '0-9' | tail -c 3)
@@ -1119,14 +1123,142 @@ jobs:
       - name: Push container image
         if: github.event_name == 'release'
         run: |
-          podman push ghcr.io/${{ github.repository }}:${{ steps.version.outputs.version }}
-          podman push ghcr.io/${{ github.repository }}:latest
+          podman push ghcr.io/${{ github.repository }}:${{ steps.version.outputs.version }}-amd64
 
-      - name: Print image info
+  # arm64 half of the image. Separate job rather than a --platform flag on the
+  # one above: the Dockerfile's `apk add` has to EXECUTE aarch64 binaries, so
+  # this needs a real arm64 machine. ubuntu-24.04-arm is the same runner the
+  # aarch64 APK is built on — which is also why that APK existed but no arm64
+  # image did.
+  #
+  # docker, not podman: ubuntu-24.04-arm is GitHub-hosted and ships docker.
+  # Same reason build-apk-aarch64 sets CONTAINER_ENGINE=docker and skips the
+  # podman-preflight its self-hosted siblings run.
+  build-container-arm64:
+    name: Build & Push Container Image (arm64)
+    runs-on: ubuntu-24.04-arm
+    permissions:
+      contents: read
+      packages: write
+    needs: build-apk-aarch64
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+        with:
+          fetch-depth: 0
+
+      - name: Download the Alpine package
+        uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7.0.0
+        with:
+          name: alpine-apk-aarch64
+          path: dist/out
+
+      - name: Set version
+        id: version
+        run: echo "version=$(dist/release-version.sh)" >> "$GITHUB_OUTPUT"
+
+      - name: Login to GitHub Container Registry
         if: github.event_name == 'release'
         run: |
+          echo "${{ secrets.GITHUB_TOKEN }}" | docker login ghcr.io -u "${{ github.actor }}" --password-stdin
+
+      - name: Build all-in-one container image (arm64)
+        run: |
+          docker build \
+            -t ghcr.io/${{ github.repository }}:${{ steps.version.outputs.version }}-arm64 \
+            -f admin_scripts/docker/Dockerfile \
+            --build-arg DMART_VERSION=${{ steps.version.outputs.version }} \
+            --build-arg TARGETARCH_APK=aarch64 \
+            .
+
+      - name: Smoke the image before pushing
+        run: |
+          set -e
+          IMG=ghcr.io/${{ github.repository }}:${{ steps.version.outputs.version }}-arm64
+          docker run --rm "$IMG" dmart --version
+          docker rm -f dmart-relsmoke-arm 2>/dev/null || true
+          docker run -d --name dmart-relsmoke-arm -p 18099:8000 "$IMG"
+          ready=0
+          for _ in $(seq 1 60); do
+            if curl -sf "http://127.0.0.1:18099/health/ready" >/dev/null 2>&1; then ready=1; break; fi
+            sleep 2
+          done
+          [ "$ready" = "1" ] || { echo "image never became ready"; docker logs dmart-relsmoke-arm | tail -30; exit 1; }
+          # Same assertion as the amd64 job, and for the same reason: the SPAs
+          # come only from the binary's embedded resources now, so nothing else
+          # would notice an image that serves neither UI.
+          for path in /cxb/ /cat/; do
+            code=$(curl -s -o /dev/null -w '%{http_code}' "http://127.0.0.1:18099$path")
+            [ "$code" = "200" ] || { echo "$path returned $code, expected 200"; docker logs dmart-relsmoke-arm | tail -30; exit 1; }
+            echo "  $path serves OK"
+          done
+          docker rm -f dmart-relsmoke-arm
+
+      - name: Push container image (arm64)
+        if: github.event_name == 'release'
+        run: |
+          docker push ghcr.io/${{ github.repository }}:${{ steps.version.outputs.version }}-arm64
+
+  # The multi-arch manifest. Until this runs, ghcr carries only the two
+  # arch-suffixed tags and `podman pull ghcr.io/edraj/csdmart` resolves to
+  # nothing — so this job is what actually publishes the image.
+  container-manifest:
+    name: Container manifest (multi-arch)
+    runs-on: self-hosted
+    if: github.event_name == 'release'
+    permissions:
+      contents: read
+      packages: write
+    needs:
+      - build-container
+      - build-container-arm64
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+        with:
+          fetch-depth: 0
+
+      - name: Podman preflight (self-heal stale state after host reboot)
+        uses: ./.github/actions/podman-preflight
+
+      - name: Set version
+        id: version
+        run: echo "version=$(dist/release-version.sh)" >> "$GITHUB_OUTPUT"
+
+      - name: Login to GitHub Container Registry
+        run: |
+          echo "${{ secrets.GITHUB_TOKEN }}" | podman login ghcr.io -u "${{ github.actor }}" --password-stdin
+
+      - name: Assemble and push the manifest list
+        run: |
+          set -euo pipefail
+          REPO=ghcr.io/${{ github.repository }}
+          V=${{ steps.version.outputs.version }}
+          for tag in "$V" latest; do
+            podman manifest rm "$REPO:$tag" 2>/dev/null || true
+            podman manifest create "$REPO:$tag"
+            podman manifest add "$REPO:$tag" "docker://$REPO:$V-amd64"
+            podman manifest add "$REPO:$tag" "docker://$REPO:$V-arm64"
+            podman manifest push --all "$REPO:$tag" "docker://$REPO:$tag"
+          done
+
+      - name: Verify both architectures resolve
+        run: |
+          set -euo pipefail
+          REPO=ghcr.io/${{ github.repository }}
+          V=${{ steps.version.outputs.version }}
+          # An index that lists one arch, or lists an arch whose manifest was
+          # never pushed, still "succeeds" above. Ask the registry what it
+          # actually has.
+          for arch in amd64 arm64; do
+            podman manifest inspect "docker://$REPO:$V" \
+              | jq -e --arg a "$arch" '.manifests | map(.platform.architecture) | index($a)' >/dev/null \
+              || { echo "::error::$REPO:$V does not carry $arch"; exit 1; }
+            echo "  $V carries $arch"
+          done
+
+      - name: Print image info
+        run: |
           echo "Pushed:"
-          echo "  ghcr.io/${{ github.repository }}:${{ steps.version.outputs.version }}"
+          echo "  ghcr.io/${{ github.repository }}:${{ steps.version.outputs.version }}  (amd64 + arm64)"
           echo "  ghcr.io/${{ github.repository }}:latest"
           echo ""
           echo "Run with:"

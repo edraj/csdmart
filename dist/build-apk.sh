@@ -231,30 +231,12 @@ cp dist/config.env.packaged                 "$APKROOT/"
 # /usr/lib/dmart/plugins/ inside package().
 tar -czf "$APKROOT/plugins.tar.gz" -C plugins .
 
-# UI frontends, same tarball trick, extracted into /usr/lib/dmart/{cxb,catalog}.
-#
-# They are ALSO embedded in the binary as manifest resources (see the
-# EmbeddedResource entries in dmart.csproj), and on a glibc native build
-# CxbMiddleware/CatalogMiddleware serve them straight from there. Under
-# NativeAOT on musl the ManifestEmbeddedFileProvider constructor throws, both
-# middlewares catch it and fall through to a filesystem lookup — of which
-# /usr/lib/dmart/{cxb,catalog} is the packaged candidate. Nothing was shipping
-# to that path, so the fallback found no index.html, and the middleware's last
-# resort is `return app` — a silent skip. The symptom is every /cxb and /cat
-# URL answering 404 with nothing in the log to say why, on every Alpine
-# release build.
-#
-# Empty tarballs when a dist is absent: the source list in APKBUILD.in is
-# fixed, so the entries have to exist even for a server-only build. package()
-# skips the install when the extracted tree has no index.html.
-for ui in cxb catalog; do
-	if [ -f "$ui/dist/client/index.html" ]; then
-		tar -czf "$APKROOT/$ui-ui.tar.gz" -C "$ui/dist/client" .
-	else
-		echo "No $ui/dist/client/index.html — packaging without the $ui UI"
-		tar -czf "$APKROOT/$ui-ui.tar.gz" -T /dev/null
-	fi
-done
+# The SPAs are NOT staged here any more. They used to be, and installed to
+# /usr/lib/dmart/{cxb,catalog}, purely because ManifestEmbeddedFileProvider
+# did not survive NativeAOT on musl — the middlewares fell through to that
+# path on disk. Since v1.5.2 both read the embedded manifest directly and it
+# works on musl, so the package shipped the same 5.9 MB of assets twice.
+# dmart now serves its UIs from inside the binary, on every artifact.
 
 # Render APKBUILD from template with version + arch.
 sed -e "s|__VERSION__|$VERSION|g" \

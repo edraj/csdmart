@@ -2,7 +2,39 @@
 
 ## Unreleased
 
+### Added
+
+- **The container image is published for arm64 as well as amd64.** `latest` and
+  `<version>` are now multi-arch manifest lists; each architecture also gets an
+  explicit `<version>-amd64` / `<version>-arm64` tag. Previously the aarch64
+  Alpine package was built on every release and then thrown away, because the
+  container job consumed only the x86_64 one.
+
+  The arm64 image is built on `ubuntu-24.04-arm` with docker, matching how the
+  aarch64 APK is already built — `apk add` has to execute aarch64 binaries, so
+  a native runner beats emulation. The manifest job then asserts the published
+  index actually carries both architectures: an index listing one arch, or
+  listing an arch whose manifest never pushed, otherwise succeeds silently.
+
 ### Changed
+
+- **dmart serves its UIs from inside the binary, and only from there.** The
+  filesystem fallback in `CxbMiddleware`/`CatalogMiddleware` — `{BaseDir}/cxb`,
+  `/usr/lib/dmart/cxb`, `/app/cxb` — is gone, along with the second copy of the
+  assets the Alpine package laid down at that path.
+
+  Both existed for one reason: `ManifestEmbeddedFileProvider` does not survive
+  Native AOT on musl, so the middlewares fell through to disk and the APK
+  shipped 5.9 MB of duplicate assets to catch them. That is what kept `/cxb`
+  and `/cat` alive in the Alpine package and container while the static tarball
+  404'd for two releases. v1.5.2 replaced the reader with one that works on
+  glibc and musl alike, which made the duplicate dead weight.
+
+  The consequence is worth stating plainly: **embedded is now the only path, on
+  every artifact.** A regression 404s every UI everywhere rather than only on
+  musl. That is why the release asserts `/cxb/` and `/cat/` actually serve — on
+  all four tarball legs and on both container images — before anything is
+  published.
 
 - **The container image is 36% smaller — 92.3 MB to 58.9 MB.** Almost none of
   that was Alpine, whose base rootfs is 8.7 MB. It was waste:
