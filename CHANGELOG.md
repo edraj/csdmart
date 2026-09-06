@@ -29,13 +29,20 @@
   either — its `%build` only compiles when `dmart.csproj` is present, which is
   the SRPM-rebuild path, so it was written for this from the start.
 
-  **EL9 is the right one to build on.** AlmaLinux 9 is glibc 2.34, the lowest
-  floor of the three; that binary runs on Fedora and on Debian 12 (2.36), while
-  neither of theirs runs on EL9. Sharing it therefore *widens* what the Fedora
-  RPM and the `.deb` support. The `.deb` in particular was pinned to a Debian 12
-  builder purely to get 2.36 and now gets 2.34 — and with the binary supplied,
-  that job needs no .NET SDK, no clang and no Microsoft apt feed at all, just
-  `dpkg-dev`.
+  **EL9 is the right one to build on.** AlmaLinux 9 has the oldest glibc of the
+  three, so a binary built there is the one most likely to run everywhere the
+  other two need to.
+
+  **What this does NOT change is compatibility.** An earlier version of this
+  entry claimed sharing the EL9 binary widens what the `.deb` supports. It does
+  not: the v1.5.2 and v1.5.3 debs require an identical set of glibc symbols,
+  floor `GLIBC_2.34` in both. A binary's floor is the highest symbol version it
+  actually references, not the builder's glibc, and the Debian 12 builder was
+  already producing 2.34. Every package supports exactly what it did before.
+
+  The real gains are one binary instead of three, so they cannot diverge, and a
+  much shorter build — with the binary supplied, the `.deb` job needs no .NET
+  SDK, no clang and no Microsoft apt feed at all, just `dpkg-dev`.
 
   This is the same build-once-package-many move the container image made when
   it stopped compiling dmart and started installing the Alpine package.
