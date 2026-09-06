@@ -457,8 +457,52 @@ jobs:
 
     steps:
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+        with:
+          # Full history so the scope diff below has a base to compare against.
+          fetch-depth: 0
+
+      # ~6 minutes on every PR, including ones that touch nothing but markdown.
+      #
+      # The filter here is the INVERSE of the one static-build and
+      # container-build use, deliberately. Those name the inputs that MUST
+      # trigger them (.csproj, Directory.Build.*) because their concern is
+      # linking. This job's concern is compilation, and any .cs file can
+      # introduce a trim or AOT warning — so an allowlist of triggers would
+      # eventually miss one. Instead it names what is provably INERT and runs
+      # for everything else.
+      #
+      # Add to SAFE only files that cannot affect a compile. When in doubt,
+      # leave them out: the cost of a wrong entry here is an AOT break reaching
+      # a tag, and the cost of an omission is six minutes.
+      - name: Is this change capable of affecting the AOT build?
+        id: scope
+        run: |
+          if [ "${{ github.event_name }}" = "push" ]; then
+            echo "run=true" >> "$GITHUB_OUTPUT"
+            echo "push to master — running unconditionally"
+            exit 0
+          fi
+          BASE="${{ github.event.pull_request.base.sha }}"
+          if [ -z "$BASE" ] || ! git cat-file -e "$BASE" 2>/dev/null; then
+            echo "run=true" >> "$GITHUB_OUTPUT"
+            echo "no usable base sha — running to be safe"
+            exit 0
+          fi
+          CHANGED=$(git diff --name-only "$BASE"...HEAD)
+          echo "$CHANGED" | sed 's/^/  /'
+          # Anything NOT matching this is treated as capable of affecting the build.
+          SAFE='(\.md$|^docs/|^LICENSE$|^\.gitignore$|\.(png|jpg|jpeg|gif|svg|ico)$)'
+          RISKY=$(echo "$CHANGED" | grep -vE "$SAFE" || true)
+          if [ -n "$RISKY" ]; then
+            echo "run=true" >> "$GITHUB_OUTPUT"
+            echo "files that could affect the build changed — running"
+          else
+            echo "run=false" >> "$GITHUB_OUTPUT"
+            echo "only docs/assets changed — skipping the AOT publish"
+          fi
 
       - name: Native AOT publish
+        if: steps.scope.outputs.run == 'true'
         # This used to live only in release.yml, deliberately — the reasoning
         # was that the trim/AOT analyzers are unconditional errors in
         # dmart.csproj and already fire during the ordinary `dotnet build`, so
@@ -478,6 +522,7 @@ jobs:
         run: dotnet publish dmart.csproj -r linux-x64 -c Release -p:PublishAot=true --nologo
 
       - name: Runtime CVE scan
+        if: steps.scope.outputs.run == 'true'
         # The runtime is compiled INTO the AOT binary and ships inside
         # /usr/bin/dmart, so a CVE in it is not something a user can patch by
         # updating their distro's .NET — it takes a rebuild and a re-release.
@@ -495,6 +540,7 @@ jobs:
         run: ./dist/scan-runtime-cves.sh --binary bin/Release/net10.0/linux-x64/publish/dmart
 
       - name: Smoke the native binary on SQLite
+        if: steps.scope.outputs.run == 'true'
         # The point of the job. The publish above proves it LINKS; this proves
         # the linked binary can actually load libe_sqlite3.so and serve — which
         # is the specific failure mode AOT introduces here and the only one the
@@ -547,6 +593,7 @@ jobs:
           exit $CURL_RC
 
       - name: Backup/restore round trip (native binary)
+        if: steps.scope.outputs.run == 'true'
         # Everything this covers was verified by hand once and could regress
         # silently: that BOTH export formats survive a full cycle, that
         # attachment MEDIA BYTES survive it, and that a full Parquet backup
