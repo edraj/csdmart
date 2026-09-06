@@ -1103,6 +1103,17 @@ jobs:
           podman logs dmart-relsmoke 2>&1 | tail -20
           podman rm -f dmart-relsmoke 2>/dev/null || true
           [ "$ready" = "1" ] || { echo "image never became ready"; exit 1; }
+          # The SPAs are served from the binary's embedded resources. The APK's
+          # on-disk copy at /usr/lib/dmart/{cxb,catalog} used to be a fallback
+          # and is now removed from the image, so this is the only thing
+          # standing between a broken embedded reader and a released container
+          # that 404s both UIs — which is exactly what v1.5.0 and v1.5.1 did to
+          # the static tarball, silently, for two releases.
+          for path in /cxb/ /cat/; do
+            code=$(curl -s -o /dev/null -w '%{http_code}' "http://127.0.0.1:$PORT$path")
+            [ "$code" = "200" ] || { echo "$path returned $code, expected 200"; podman logs dmart-relsmoke | tail -30; exit 1; }
+            echo "  $path serves OK"
+          done
           echo "image serves on SQLite"
 
       - name: Push container image

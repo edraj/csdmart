@@ -1,5 +1,49 @@
 # Changelog
 
+## Unreleased
+
+### Changed
+
+- **The container image is 36% smaller — 92.3 MB to 58.9 MB.** Almost none of
+  that was Alpine, whose base rootfs is 8.7 MB. It was waste:
+
+  - **21.8 MB: the `.apk` was carried twice.** It was `COPY`ed to `/tmp` and
+    deleted in the *next* `RUN` — but a delete in a later layer reclaims
+    nothing, so the package stayed in the image alongside its installed copy.
+    A `RUN --mount=type=bind` leaves no layer at all. This single mistake was
+    over half the image's overhead.
+  - **~7.5 MB: `bash` and `curl`, which nothing used.** `entrypoint.sh` is
+    `#!/bin/sh` and shells out to only `tr`, `head` and `chmod`; there is no
+    `HEALTHCHECK`, and the release smoke test curls from the host. Five
+    requested packages pulled in 38; between them these two dragged `libcurl`,
+    `brotli-libs`, `nghttp2`, `libidn2` and `libunistring`.
+  - **5.9 MB: the SPAs were shipped twice.** The APK lays `cxb` and `catalog`
+    down at `/usr/lib/dmart/` *and* they are embedded in the binary. That path
+    is the filesystem fallback the middlewares used when the embedded reader
+    failed under Native AOT on musl — it is what kept `/cxb` and `/cat` working
+    in this image while the static tarball 404'd. Since v1.5.2 the embedded
+    reader works, so the image drops the copy.
+
+  `jq` stays — a join sub-query carrying a `jq_filter` shells out to it.
+  `tzdata` stays at 433 KiB. `krb5-libs` stays: the GSSAPI PAL is disabled in
+  this image, which *probably* makes it redundant, but that is not a reason to
+  drop 1.7 MB from a supported auth path without testing it.
+
+  Removing the SPA fallback means the primary path now has to be checked, so
+  the release smoke test asserts `/cxb/` and `/cat/` return 200 before the
+  image is pushed. It previously checked only `/health/ready` — which is how
+  a container serving neither UI would have passed.
+
+- **The container mocks SMS OTP by default.** It ships no SMS gateway, and
+  `SmsSender`'s unconfigured path logs "SMS gateway not configured — dropping
+  message" and returns false. At the previous `MOCK_SMPP_API=false` default
+  that meant `/user/otp-request` minted a code and silently failed to deliver
+  it, so OTP login could not be completed and nothing said why. The generated
+  config now sets `MOCK_SMPP_API=true` with `MOCK_OTP_CODE=123456`, and the
+  first-run banner says so. Configure `SEND_SMS_OTP_API` + `SMPP_AUTH_KEY` and
+  unset it for real delivery. `MOCK_SMTP_API` is deliberately left alone —
+  email OTP has the same gap, but that is a separate call.
+
 ## v1.5.2 — 2026-09-06
 
 ### Fixed
