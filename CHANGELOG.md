@@ -12,19 +12,31 @@
 
   - **The two glibc legs of `release-verifiable.yml` ran
     `dnf install dotnet-sdk-10.0` on every release**, cold, on a hosted runner.
-    Measured on v1.5.3 that made them ~10 minutes each against ~6–7 for the musl
-    legs, whose base image already ships the SDK. They now build inside a
-    published `dmart-el9-builder` image with the SDK and toolchain baked in.
+    They now build inside a published `dmart-el9-builder` image, multi-arch and
+    pinned by digest, with the SDK and toolchain baked in.
 
-    That also removes an unpinned `dnf install` from the path that produces
-    signed artifacts: the SDK a release was built with used to be whatever the
-    AlmaLinux mirrors served that day, and is now a property of an image pinned
-    by digest.
+    **The speed gain is smaller than it first looked: ~50 seconds a leg.** The
+    `linux-x64` AOT step measured 585 s before and 532 s after. The glibc legs
+    take ~10 minutes against ~6–7 for the musl legs, and that gap was initially
+    attributed to the SDK install — wrongly. Most of it is something else, and
+    it is not yet explained.
+
+    The reason this change stays is the other one: it removes an **unpinned**
+    `dnf install` from the path that produces signed artifacts. The SDK a
+    release was built with used to be whatever the AlmaLinux mirrors served
+    that day; it is now a recorded property of a digest-pinned image, which the
+    image also reports at `/etc/dmart-builder-sdk-version`.
 
   - **Nothing cached NuGet in `release-verifiable.yml`** — all four legs
     restored from scratch, every time. They now share a cache keyed on the
     recorded dependency graph, so it invalidates exactly when the dependency
-    set does.
+    set does. Its effect is not quantified here: the first run with it could
+    only populate the cache, not hit it.
+
+  And one that is worth knowing but is not a build cost at all: 424 s of the
+  v1.5.3 release was the signing job waiting for the GitHub Release object to
+  be created after the tag was pushed. Creating the release promptly removes
+  it; no code is involved.
 
   Two things deliberately not changed. The Windows (9 min) and macOS (7 min)
   AOT builds are different RIDs with nothing to share. And the two workflows
