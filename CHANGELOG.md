@@ -27,11 +27,14 @@
     that day; it is now a recorded property of a digest-pinned image, which the
     image also reports at `/etc/dmart-builder-sdk-version`.
 
-  - **Nothing cached NuGet in `release-verifiable.yml`** — all four legs
-    restored from scratch, every time. They now share a cache keyed on the
-    recorded dependency graph, so it invalidates exactly when the dependency
-    set does. Its effect is not quantified here: the first run with it could
-    only populate the cache, not hit it.
+  - **A NuGet cache was added here and then removed again.** All four legs
+    restore from scratch, which looked like obvious waste — but GitHub scopes
+    caches by ref, and this workflow only runs on tag pushes and manual
+    dispatch. It never runs on the default branch, so it never writes a cache
+    another ref can read, and every tag is a new ref with a fresh scope. On a
+    dry run it missed even its `restore-keys` prefix while still spending 3–5 s
+    a leg saving an entry nothing would restore. A comment now records why
+    there is no cache, so the cold restores are not mistaken for an oversight.
 
   And one that is worth knowing but is not a build cost at all: 424 s of the
   v1.5.3 release was the signing job waiting for the GitHub Release object to
