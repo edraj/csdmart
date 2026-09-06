@@ -1315,8 +1315,18 @@ jobs:
           # An index that lists one arch, or lists an arch whose manifest was
           # never pushed, still "succeeds" above. Ask the registry what it
           # actually has.
+          # No docker:// prefix. `podman manifest push` takes a destination
+          # TRANSPORT, so docker:// is right there; `podman manifest inspect`
+          # takes an image REFERENCE and rejects it with "unsupported transport
+          # docker for looking up local images". v1.5.3 shipped correct
+          # manifests and failed this step on that alone — the check reported a
+          # problem that did not exist.
+          #
+          # Dropping the local copy first means the inspect has to come from
+          # the registry, which is what this step is claiming to verify.
+          podman manifest rm "$REPO:$V" 2>/dev/null || true
           for arch in amd64 arm64; do
-            podman manifest inspect "docker://$REPO:$V" \
+            podman manifest inspect "$REPO:$V" \
               | jq -e --arg a "$arch" '.manifests | map(.platform.architecture) | index($a)' >/dev/null \
               || { echo "::error::$REPO:$V does not carry $arch"; exit 1; }
             echo "  $V carries $arch"
