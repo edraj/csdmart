@@ -1,5 +1,37 @@
 # Changelog
 
+## Unreleased
+
+### Changed
+
+- **The release build is faster, and the remaining cost is now measured rather
+  than assumed.** Consolidating the Linux packages onto one binary took
+  `release.yml` from 24 minutes wall clock to 11 (the Fedora RPM went 5 min → 1,
+  the `.deb` 4 → 1). That moved the bottleneck rather than removing it, so this
+  release addresses where the time actually went:
+
+  - **The two glibc legs of `release-verifiable.yml` ran
+    `dnf install dotnet-sdk-10.0` on every release**, cold, on a hosted runner.
+    Measured on v1.5.3 that made them ~10 minutes each against ~6–7 for the musl
+    legs, whose base image already ships the SDK. They now build inside a
+    published `dmart-el9-builder` image with the SDK and toolchain baked in.
+
+    That also removes an unpinned `dnf install` from the path that produces
+    signed artifacts: the SDK a release was built with used to be whatever the
+    AlmaLinux mirrors served that day, and is now a property of an image pinned
+    by digest.
+
+  - **Nothing cached NuGet in `release-verifiable.yml`** — all four legs
+    restored from scratch, every time. They now share a cache keyed on the
+    recorded dependency graph, so it invalidates exactly when the dependency
+    set does.
+
+  Two things deliberately not changed. The Windows (9 min) and macOS (7 min)
+  AOT builds are different RIDs with nothing to share. And the two workflows
+  still compile the Linux targets separately: `release-verifiable.yml` exists
+  to establish that an artifact was built by hosted CI from the tagged commit,
+  and feeding it a self-hosted binary would forfeit exactly that.
+
 ## v1.5.3 — 2026-09-06
 
 ### Added

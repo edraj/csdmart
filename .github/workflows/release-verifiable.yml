@@ -281,6 +281,22 @@ jobs:
           test -f cxb/dist/client/index.html
           test -f catalog/dist/client/index.html
 
+      # Every leg restored NuGet from scratch — there was no cache here at
+      # all, on four jobs that each run a full restore before compiling.
+      # Mounted into the build container below rather than used on the runner,
+      # because the restore happens inside it.
+      #
+      # Keyed on the lock files: dist/deps/*.lock.json is the recorded
+      # dependency graph the drift check already gates on, so a key built from
+      # it changes exactly when the dependency set does.
+      - name: Cache NuGet packages
+        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
+        with:
+          path: .nuget-packages
+          key: ${{ runner.os }}-${{ matrix.rid }}-nuget-${{ hashFiles('dist/deps/*.lock.json', '**/Directory.Packages.props', '**/Directory.Build.props') }}
+          restore-keys: |
+            ${{ runner.os }}-${{ matrix.rid }}-nuget-
+
       # The AOT compile runs inside AlmaLinux 9, NOT on the Ubuntu runner.
       #
       # ILCompiler links against the build host's glibc, and ubuntu-24.04 is
@@ -301,8 +317,11 @@ jobs:
           DMART_INFORMATIONAL_VERSION: ${{ steps.src.outputs.informational }}
         run: |
           set -euo pipefail
+          mkdir -p "$PWD/.nuget-packages"
           docker run --rm \
             -v "$PWD":/src -w /src \
+            -v "$PWD/.nuget-packages":/nuget \
+            -e NUGET_PACKAGES=/nuget \
             -e DMART_INFORMATIONAL_VERSION \
             -e DOTNET_CLI_TELEMETRY_OPTOUT=1 \
             -e DOTNET_NOLOGO=1 \
@@ -330,7 +349,11 @@ jobs:
           # The container runs as root and the workspace is a bind mount, so
           # everything it wrote is root-owned. Later steps run as the runner
           # user and would fail on it.
-          sudo chown -R "$(id -u):$(id -g)" bin obj 2>/dev/null || true
+          # The container runs as root on a bind mount, so everything it wrote
+          # is root-owned. .nuget-packages is included because actions/cache
+          # runs as the runner user and silently fails to save a tree it
+          # cannot read.
+          sudo chown -R "$(id -u):$(id -g)" bin obj .nuget-packages 2>/dev/null || true
 
       - name: Runtime CVE scan
         env:
