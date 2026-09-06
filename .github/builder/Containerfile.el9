@@ -1,0 +1,34 @@
+# AlmaLinux 9 with the .NET SDK and the NativeAOT linker toolchain baked in.
+#
+# WHY THIS EXISTS. The two glibc legs of release-verifiable.yml ran
+# `dnf install -y dotnet-sdk-10.0 clang zlib-devel` on every release, cold, on
+# a GitHub-hosted runner. Measured on v1.5.3 that made them ~10 minutes each
+# against ~6-7 for the musl legs, whose base image
+# (mcr.microsoft.com/dotnet/sdk:10.0-alpine) already ships the SDK — the delta
+# is almost entirely the install. There is no vendor-published AlmaLinux .NET
+# image to use instead, so we publish one.
+#
+# AlmaLinux 9 rather than anything newer because it is glibc 2.34, and a binary
+# is only as portable as the glibc it was linked against. Building on the
+# hosted runner directly (Ubuntu 24.04, glibc 2.39) produces binaries that
+# refuse to start on EL9.
+#
+# It also removes an unpinned `dnf install` from the path that produces signed
+# artifacts: the SDK version those binaries were built with used to be whatever
+# the AlmaLinux mirrors served that day. Here it is a property of an image
+# pinned by digest.
+FROM almalinux@sha256:d2515c769e7b73f95c4fde38c0a505336ff38f14990c0b7253b77060a049a743
+
+# Same package set the workflow used to install inline. --nobest and
+# install_weak_deps=False match what was there, so the resulting toolchain is
+# the one those releases were already built with.
+RUN dnf install -y --setopt=install_weak_deps=False --nobest \
+        dotnet-sdk-10.0 clang zlib-devel \
+    && dnf clean all \
+    && rm -rf /var/cache/dnf
+
+# Recorded so a build log can state which SDK produced a binary without
+# needing the image to be pulled and inspected.
+RUN dotnet --version > /etc/dmart-builder-sdk-version
+LABEL org.opencontainers.image.source="https://github.com/edraj/csdmart" \
+      org.opencontainers.image.description="AlmaLinux 9 + .NET SDK + clang, for dmart NativeAOT glibc builds"
