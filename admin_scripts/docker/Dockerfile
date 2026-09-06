@@ -17,8 +17,9 @@
 #
 # Installing the .apk instead means the image ships the SAME artifact an Alpine
 # user installs, so the container also serves as a test of the package. The APK
-# carries everything this image needs — binary, libe_sqlite3.so, plugins, and
-# the cxb/catalog SPAs — so nothing is copied in alongside it.
+# carries everything this image needs — binary, libe_sqlite3.so and plugin
+# configs — so nothing is copied in alongside it. The SPAs are not on that
+# list: dmart serves /cxb and /cat from its own embedded resources.
 #
 # Prerequisites:
 #   ./build-ui.sh                          # the APK bakes the SPAs in
@@ -42,6 +43,9 @@ ARG DMART_VERSION=0.0.0-local
 FROM alpine:3.24
 
 ARG DMART_VERSION
+# Alpine's arch names, not Docker's: x86_64 / aarch64, matching what
+# dist/build-apk.sh --arch produces and what the .apk filename carries.
+ARG TARGETARCH_APK=x86_64
 
 # Runtime dependencies, then the package itself.
 #
@@ -81,25 +85,12 @@ RUN apk add --no-cache tzdata krb5-libs jq
 # overhead. A bind mount exists only for the duration of the RUN and leaves
 # no layer at all.
 RUN --mount=type=bind,source=dist/out,target=/apk \
-    apk add --no-cache --allow-untrusted /apk/dmart-*-x86_64.apk \
+    apk add --no-cache --allow-untrusted /apk/dmart-*-${TARGETARCH_APK}.apk \
     # The package seeds /etc/dmart/config.env for a host install. This image
     # does not use it: entrypoint.sh generates /root/.dmart/config.env and
     # points BACKEND_ENV at that. Leaving both would give an operator two
     # config files and one of them no effect, so the unused one goes.
-    && rm -f /etc/dmart/config.env \
-    # The APK also lays the SPAs down at /usr/lib/dmart/{cxb,catalog}, 5.9 MB
-    # that this image never reads. That path is the FILESYSTEM FALLBACK the
-    # middlewares use when the embedded reader fails, which it did under
-    # NativeAOT on musl until v1.5.2 — the APK shipping these files is what
-    # kept /cxb and /cat working here while the static tarball 404'd. Since
-    # v1.5.2 both middlewares read the embedded manifest directly and this
-    # copy is dead weight; verified by masking both directories and watching
-    # /cxb/ still answer 200.
-    #
-    # Removing a fallback means the primary path now has to be checked: the
-    # release smoke test asserts /cxb/ and /cat/ serve before the image is
-    # pushed. Do not drop that assertion without putting these files back.
-    && rm -rf /usr/lib/dmart/cxb /usr/lib/dmart/catalog
+    && rm -f /etc/dmart/config.env
 
 COPY --chmod=755 admin_scripts/docker/entrypoint.sh /entrypoint.sh
 
