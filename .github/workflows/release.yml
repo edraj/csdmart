@@ -1144,19 +1144,37 @@ jobs:
             sleep 1
           done
           podman logs dmart-relsmoke 2>&1 | tail -20
-          podman rm -f dmart-relsmoke 2>/dev/null || true
-          [ "$ready" = "1" ] || { echo "image never became ready"; exit 1; }
+          [ "$ready" = "1" ] || {
+            echo "image never became ready"
+            podman rm -f dmart-relsmoke 2>/dev/null || true
+            exit 1
+          }
+
           # The SPAs are served from the binary's embedded resources. The APK's
           # on-disk copy at /usr/lib/dmart/{cxb,catalog} used to be a fallback
           # and is now removed from the image, so this is the only thing
           # standing between a broken embedded reader and a released container
           # that 404s both UIs — which is exactly what v1.5.0 and v1.5.1 did to
           # the static tarball, silently, for two releases.
+          #
+          # These run while the container is still UP. The teardown below used
+          # to sit above the readiness assertion, so anything added after it
+          # curled a container that no longer existed and failed with exit 7
+          # (connection refused) rather than a status code.
+          rc=0
           for path in /cxb/ /cat/; do
-            code=$(curl -s -o /dev/null -w '%{http_code}' "http://127.0.0.1:$PORT$path")
-            [ "$code" = "200" ] || { echo "$path returned $code, expected 200"; podman logs dmart-relsmoke | tail -30; exit 1; }
-            echo "  $path serves OK"
+            code=$(curl -s -o /dev/null -w '%{http_code}' "http://127.0.0.1:$PORT$path" || echo 000)
+            if [ "$code" = "200" ]; then
+              echo "  $path serves OK"
+            else
+              echo "$path returned $code, expected 200"
+              podman logs dmart-relsmoke 2>&1 | tail -30
+              rc=1
+            fi
           done
+
+          podman rm -f dmart-relsmoke 2>/dev/null || true
+          [ "$rc" = "0" ] || exit 1
           echo "image serves on SQLite"
 
       - name: Push container image
@@ -1225,12 +1243,22 @@ jobs:
           # Same assertion as the amd64 job, and for the same reason: the SPAs
           # come only from the binary's embedded resources now, so nothing else
           # would notice an image that serves neither UI.
+          # `|| echo 000` matters under set -e: a connection failure would
+          # otherwise abort the assignment and exit 7 before the status check,
+          # reporting a shell error instead of "this path did not serve".
+          rc=0
           for path in /cxb/ /cat/; do
-            code=$(curl -s -o /dev/null -w '%{http_code}' "http://127.0.0.1:18099$path")
-            [ "$code" = "200" ] || { echo "$path returned $code, expected 200"; docker logs dmart-relsmoke-arm | tail -30; exit 1; }
-            echo "  $path serves OK"
+            code=$(curl -s -o /dev/null -w '%{http_code}' "http://127.0.0.1:18099$path" || echo 000)
+            if [ "$code" = "200" ]; then
+              echo "  $path serves OK"
+            else
+              echo "$path returned $code, expected 200"
+              docker logs dmart-relsmoke-arm 2>&1 | tail -30
+              rc=1
+            fi
           done
           docker rm -f dmart-relsmoke-arm
+          [ "$rc" = "0" ] || exit 1
 
       - name: Push container image (arm64)
         if: github.event_name == 'release'
