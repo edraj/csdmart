@@ -46,17 +46,9 @@ public static class OtpHandler
             var log = loggerFactory.CreateLogger(typeof(OtpHandler));
             Response SilentOk(string reason, LogLevel level = LogLevel.Information)
             {
-                // The destination is a phone number or an email address, and
-                // this line fires on EVERY no-op branch at Information — i.e.
-                // in production, for traffic an anonymous caller controls. So
-                // it goes in fingerprinted, not in clear: enough to correlate
-                // repeated requests to one destination while investigating,
-                // not enough to read the contact back out of the logs.
-                // OtpProvider keeps even its destination-plus-code line at
-                // Debug for the same reason.
                 log.Log(level,
                     "otp-request: silent no-op ({Reason}) purpose={Purpose} dest={Destination}",
-                    reason, req.Purpose, Fingerprint(req.Msisdn ?? req.Email ?? req.Shortname));
+                    reason, req.Purpose, req.Msisdn ?? req.Email ?? req.Shortname);
                 return Response.Ok();
             }
 
@@ -516,17 +508,4 @@ public static class OtpHandler
     // One rule, applied wherever an email becomes a destination: lowercase.
     // Msisdns are digits and need none of this.
     private static string? EmailDest(string? email) => email?.ToLowerInvariant();
-
-    // A stable, non-reversible stand-in for a contact in log output. Truncated
-    // to 8 hex characters: enough to tell "the same destination again" from "a
-    // different one" while reading a log, short enough that it is not a
-    // convenient lookup key, and lowercased first so the two spellings of one
-    // address fingerprint alike.
-    private static string Fingerprint(string? destination)
-    {
-        if (string.IsNullOrEmpty(destination)) return "(none)";
-        var hash = System.Security.Cryptography.SHA256.HashData(
-            System.Text.Encoding.UTF8.GetBytes(destination.ToLowerInvariant()));
-        return Convert.ToHexString(hash.AsSpan(0, 4)).ToLowerInvariant();
-    }
 }
