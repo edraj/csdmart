@@ -311,7 +311,9 @@ jobs:
       contents: write       # upload assets to the release
       id-token: write       # OIDC token for cosign + attestations
       attestations: write   # store the attestation against this repo
-    needs: [build-ui-tarballs, sboms]
+    # build-el9-rpm for the binary, not for the RPM: it performs the one
+    # linux-x64 AOT compile this release does. See its upload step.
+    needs: [build-ui-tarballs, sboms, build-el9-rpm]
     steps:
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
         with:
@@ -319,6 +321,15 @@ jobs:
 
       - name: Podman preflight (self-heal stale state after host reboot)
         uses: ./.github/actions/podman-preflight
+
+      # The one linux-x64 AOT compile of this release, from build-el9-rpm.
+      # DMART_PREBUILT_BIN below makes the packaging script use it instead of
+      # compiling its own copy of the same binary.
+      - name: Download the shared linux-x64 binary
+        uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7.0.0
+        with:
+          name: linux-x64-bin
+          path: prebuilt
 
       - name: Download UI tarballs
         uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7.0.0
@@ -339,7 +350,7 @@ jobs:
           sleep 1
           rm -rf bin obj dist/out
           VERSION="$(dist/release-version.sh)"
-          VERSION="$VERSION" ./dist/build-rpm.sh
+          VERSION="$VERSION" DMART_PREBUILT_BIN="$PWD/prebuilt" ./dist/build-rpm.sh
 
       - name: Fetch the SBOMs built from this tag
         uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7.0.0
@@ -440,6 +451,25 @@ jobs:
           VERSION="$(dist/release-version.sh)"
           VERSION="$VERSION" ./dist/build-rpm.sh el9
 
+      # This job is now the single linux-x64 AOT compile for the whole
+      # release. The Fedora RPM and the .deb used to run their own, three
+      # compiles of the same target costing ~12 minutes of a three-runner pool
+      # and giving three chances to quietly diverge.
+      #
+      # EL9 is the one to build on, not Fedora or Debian: AlmaLinux 9 is glibc
+      # 2.34, the LOWEST floor of the three. That binary runs on Fedora and on
+      # Debian 12 (2.36); neither of theirs would run here. So sharing this one
+      # widens what the other two packages support rather than narrowing it.
+      - name: Publish the linux-x64 binary for the other packaging jobs
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: linux-x64-bin
+          path: |
+            bin/dmart
+            bin/libe_sqlite3.so
+          if-no-files-found: error
+          retention-days: 1
+
       - name: Fetch the SBOMs built from this tag
         uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7.0.0
         with:
@@ -498,7 +528,7 @@ jobs:
       contents: write       # upload assets to the release
       id-token: write       # OIDC token for cosign + attestations
       attestations: write   # store the attestation against this repo
-    needs: [build-ui-tarballs, sboms]
+    needs: [build-ui-tarballs, sboms, build-el9-rpm]
     steps:
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
         with:
@@ -506,6 +536,15 @@ jobs:
 
       - name: Podman preflight (self-heal stale state after host reboot)
         uses: ./.github/actions/podman-preflight
+
+      # The one linux-x64 AOT compile of this release, from build-el9-rpm.
+      # DMART_PREBUILT_BIN below makes the packaging script use it instead of
+      # compiling its own copy of the same binary.
+      - name: Download the shared linux-x64 binary
+        uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7.0.0
+        with:
+          name: linux-x64-bin
+          path: prebuilt
 
       - name: Download UI tarballs
         uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7.0.0
@@ -526,7 +565,7 @@ jobs:
           sleep 1
           rm -rf dist/out/*.deb
           VERSION="$(dist/release-version.sh)"
-          VERSION="$VERSION" ./dist/build-deb.sh
+          VERSION="$VERSION" DMART_PREBUILT_BIN="$PWD/prebuilt" ./dist/build-deb.sh
 
       - name: Fetch the SBOMs built from this tag
         uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7.0.0

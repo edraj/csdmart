@@ -22,6 +22,24 @@ set -e
 cd "$(dirname "$0")/.."
 SRCDIR="$(pwd)"
 
+# DMART_PREBUILT_BIN arrives as a HOST path, but the build runs in a container
+# where the source tree is bind-mounted at /src. Translate it, and refuse a
+# path outside the tree rather than passing something the container cannot see
+# — the failure would otherwise surface as "dmart is not in it" from inside,
+# which points at the wrong thing.
+PREBUILT_IN_CONTAINER=""
+if [ -n "${DMART_PREBUILT_BIN:-}" ]; then
+    case "$DMART_PREBUILT_BIN" in
+        "$SRCDIR"/*) PREBUILT_IN_CONTAINER="/src/${DMART_PREBUILT_BIN#"$SRCDIR"/}" ;;
+        *)
+            echo "build-deb.sh: DMART_PREBUILT_BIN must live inside $SRCDIR" >&2
+            echo "              (it is bind-mounted into the build container as /src)." >&2
+            echo "              Got: $DMART_PREBUILT_BIN" >&2
+            exit 1
+            ;;
+    esac
+fi
+
 # Version derivation mirrors dist/build-rpm.sh + dist/build-apk.sh so .deb
 # / .rpm / .apk cut from the same commit get identical version strings.
 if [ -z "$VERSION" ]; then
@@ -70,6 +88,7 @@ $ENGINE run --rm \
     -v "${SRCDIR}:/src:z" \
     -v "${HOST_NUGET_CACHE}:/nuget-packages:z" \
     -e VERSION="$VERSION" \
+    -e DMART_PREBUILT_BIN="${PREBUILT_IN_CONTAINER}" \
     -e NUGET_PACKAGES=/nuget-packages \
     -e HOME=/root \
     -w /src \
@@ -85,30 +104,56 @@ $ENGINE run --rm \
         # in its Debian-12 apt feed precisely for this case.
         export DEBIAN_FRONTEND=noninteractive
         apt-get update -qq
-        # dpkg-dev gives us dpkg-deb. clang + zlib1g-dev are the
-        # NativeAOT linker toolchain. git is for ./build.sh git-describe.
-        # ca-certificates + curl + gnupg are needed to fetch and trust
-        # the MS apt feed signing key.
-        apt-get install -y --no-install-recommends \
-            ca-certificates curl gnupg \
-            dpkg-dev clang zlib1g-dev git xz-utils >/dev/null
 
-        # MS apt feed for .NET 10 on Debian 12 (bookworm). The
-        # signed-by= path scopes trust to this single keyring; default
-        # apt-key behaviour would trust the MS key for every repo.
-        curl -fsSL https://packages.microsoft.com/keys/microsoft.asc \
-            | gpg --dearmor -o /usr/share/keyrings/microsoft.gpg
-        echo "deb [signed-by=/usr/share/keyrings/microsoft.gpg] \
-              https://packages.microsoft.com/debian/12/prod bookworm main" \
-            > /etc/apt/sources.list.d/microsoft.list
-        apt-get update -qq
-        apt-get install -y --no-install-recommends dotnet-sdk-10.0 >/dev/null
+        if [ -n "${DMART_PREBUILT_BIN:-}" ]; then
+            # Prebuilt path: this container only PACKAGES. No SDK, no linker
+            # toolchain, no MS apt feed — dpkg-dev and xz-utils are the whole
+            # requirement, which removes most of the runtime of this job.
+            apt-get install -y --no-install-recommends dpkg-dev xz-utils >/dev/null
+        else
+            # dpkg-dev gives us dpkg-deb. clang + zlib1g-dev are the
+            # NativeAOT linker toolchain. git is for ./build.sh git-describe.
+            # ca-certificates + curl + gnupg are needed to fetch and trust
+            # the MS apt feed signing key.
+            apt-get install -y --no-install-recommends \
+                ca-certificates curl gnupg \
+                dpkg-dev clang zlib1g-dev git xz-utils >/dev/null
+        fi
 
-        # AOT publish. build.sh uses `[[` (bash extension), so invoke
-        # through bash rather than sh — sh would silently fall through
-        # to the default `fast` JIT path. build.sh handles the
-        # InformationalVersion stamping (git describe + branch + date).
-        bash ./build.sh --aot --rid linux-x64
+        if [ -n "${DMART_PREBUILT_BIN:-}" ]; then
+            # The binary was built once, elsewhere, on the LOWEST glibc floor
+            # it must run on — AlmaLinux 9 (2.34). That is LOWER than the
+            # Debian 12 (2.36) this container was chosen for, so the audience
+            # of the .deb widens rather than narrows: 2.34 runs on Debian 12+
+            # and Ubuntu 22.04+, which is what building here was meant to get.
+            echo "Using prebuilt binaries from $DMART_PREBUILT_BIN"
+            for f in dmart libe_sqlite3.so; do
+                [ -f "$DMART_PREBUILT_BIN/$f" ] || {
+                    echo "build-deb.sh: DMART_PREBUILT_BIN is set but $f is not in it." >&2
+                    exit 1
+                }
+            done
+            mkdir -p bin
+            cp "$DMART_PREBUILT_BIN/dmart" "$DMART_PREBUILT_BIN/libe_sqlite3.so" bin/
+            chmod +x bin/dmart
+        else
+            # MS apt feed for .NET 10 on Debian 12 (bookworm). The
+            # signed-by= path scopes trust to this single keyring; default
+            # apt-key behaviour would trust the MS key for every repo.
+            curl -fsSL https://packages.microsoft.com/keys/microsoft.asc \
+                | gpg --dearmor -o /usr/share/keyrings/microsoft.gpg
+            echo "deb [signed-by=/usr/share/keyrings/microsoft.gpg] \
+                  https://packages.microsoft.com/debian/12/prod bookworm main" \
+                > /etc/apt/sources.list.d/microsoft.list
+            apt-get update -qq
+            apt-get install -y --no-install-recommends dotnet-sdk-10.0 >/dev/null
+
+            # AOT publish. build.sh uses `[[` (bash extension), so invoke
+            # through bash rather than sh — sh would silently fall through
+            # to the default `fast` JIT path. build.sh handles the
+            # InformationalVersion stamping (git describe + branch + date).
+            bash ./build.sh --aot --rid linux-x64
+        fi
 
         # Assemble the install layout under STAGE. Mirrors dmart.spec %install
         # block file-for-file so /usr/bin/dmart, /usr/lib/dmart/plugins/,
