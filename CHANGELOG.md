@@ -58,6 +58,53 @@
   to establish that an artifact was built by hosted CI from the tagged commit,
   and feeding it a self-hosted binary would forfeit exactly that.
 
+- **The release build is faster where it was measured to be, and unchanged
+  where it was not.** Consolidating the Linux packages onto one binary took
+  `release.yml` from 24 minutes wall clock to 11 (the Fedora RPM went 5 min → 1,
+  the `.deb` 4 → 1). That moved the bottleneck rather than removing it, so this
+  release addresses where the time actually went:
+
+  - **The two glibc legs of `release-verifiable.yml` ran
+    `dnf install dotnet-sdk-10.0` on every release**, cold, on a hosted runner.
+    They now build inside a published `dmart-el9-builder` image, multi-arch and
+    pinned by digest, with the SDK and toolchain baked in.
+
+    **This is not a speed improvement.** Over thirteen runs of the same leg —
+    eight before the change, five after — the median is `584 s` on both sides.
+    The spread within either group (523–651 s before) is far wider than any
+    effect the change could have. Two earlier figures quoted for it, "~3
+    minutes" and then "~50 seconds", were both single-sample comparisons drawn
+    from that spread and neither survived being measured properly.
+
+    The glibc legs do take ~10 minutes against ~6–7 for the musl legs. That gap
+    is real and still unexplained; it is not the SDK install.
+
+    The reason this change stays is the other one: it removes an **unpinned**
+    `dnf install` from the path that produces signed artifacts. The SDK a
+    release was built with used to be whatever the AlmaLinux mirrors served
+    that day; it is now a recorded property of a digest-pinned image, which the
+    image also reports at `/etc/dmart-builder-sdk-version`.
+
+  - **A NuGet cache was added here and then removed again.** All four legs
+    restore from scratch, which looked like obvious waste — but GitHub scopes
+    caches by ref, and this workflow only runs on tag pushes and manual
+    dispatch. It never runs on the default branch, so it never writes a cache
+    another ref can read, and every tag is a new ref with a fresh scope. On a
+    dry run it missed even its `restore-keys` prefix while still spending 3–5 s
+    a leg saving an entry nothing would restore. A comment now records why
+    there is no cache, so the cold restores are not mistaken for an oversight.
+
+  And one that is worth knowing but is not a build cost at all: 424 s of the
+  v1.5.3 release was the signing job waiting for the GitHub Release object to
+  be created after the tag was pushed. Creating the release promptly removes
+  it; no code is involved.
+
+  Two things deliberately not changed. The Windows (9 min) and macOS (7 min)
+  AOT builds are different RIDs with nothing to share. And the two workflows
+  still compile the Linux targets separately: `release-verifiable.yml` exists
+  to establish that an artifact was built by hosted CI from the tagged commit,
+  and feeding it a self-hosted binary would forfeit exactly that.
+
 ## v1.5.3 — 2026-09-06
 
 ### Added
