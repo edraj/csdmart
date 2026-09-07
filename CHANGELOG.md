@@ -4,6 +4,60 @@
 
 ### Changed
 
+- **OTP silent-no-op logs show a partially masked destination instead of an
+  opaque fingerprint.** `/user/otp-request` answers `Ok` on nine no-op branches
+  and logs one line for each. Since v1.4.0 that line carried an 8-character
+  SHA-256 fingerprint of the destination — safe, but unreadable: an operator
+  holding a number from a support ticket could reproduce the hash, yet could
+  not glance at a log and recognise the customer.
+
+  It now logs the useful half and nothing more: `****3344` for a msisdn,
+  `a***e@example.com` for an email. Enough to confirm a destination you already
+  have, never enough to harvest one you do not.
+
+  **The destination is still never logged in clear.** That matters more here
+  than it looks: this endpoint needs no JWT for `login`, `reset` or `register`,
+  the line is emitted at Information by default, and the log file is created
+  0644 — so an anonymous caller looping requests would otherwise write a
+  contact list to disk for anyone with shell on the host.
+
+  The masked form is also sanitised, because the input is anonymous and
+  unvalidated. `Shortname` is free-form (`Msisdn` and `Email` are regex-checked;
+  it is not), and the default log format is plain text whenever
+  `INVOCATION_ID` is unset — dev, docker, any non-systemd host. Control
+  characters are stripped so a newline cannot forge log lines an investigator
+  later greps, and the result is length-capped so a 100 KB identifier cannot
+  inflate the log file. An absent or blank identifier logs `(none)` rather than
+  an empty `dest=`, which previously gave no way to tell the two apart.
+
+- **The release build is faster, and the remaining cost is now measured rather
+  than assumed.** Consolidating the Linux packages onto one binary took
+  `release.yml` from 24 minutes wall clock to 11 (the Fedora RPM went 5 min → 1,
+  the `.deb` 4 → 1). That moved the bottleneck rather than removing it, so this
+  release addresses where the time actually went:
+
+  - **The two glibc legs of `release-verifiable.yml` ran
+    `dnf install dotnet-sdk-10.0` on every release**, cold, on a hosted runner.
+    Measured on v1.5.3 that made them ~10 minutes each against ~6–7 for the musl
+    legs, whose base image already ships the SDK. They now build inside a
+    published `dmart-el9-builder` image with the SDK and toolchain baked in.
+
+    That also removes an unpinned `dnf install` from the path that produces
+    signed artifacts: the SDK a release was built with used to be whatever the
+    AlmaLinux mirrors served that day, and is now a property of an image pinned
+    by digest.
+
+  - **Nothing cached NuGet in `release-verifiable.yml`** — all four legs
+    restored from scratch, every time. They now share a cache keyed on the
+    recorded dependency graph, so it invalidates exactly when the dependency
+    set does.
+
+  Two things deliberately not changed. The Windows (9 min) and macOS (7 min)
+  AOT builds are different RIDs with nothing to share. And the two workflows
+  still compile the Linux targets separately: `release-verifiable.yml` exists
+  to establish that an artifact was built by hosted CI from the tagged commit,
+  and feeding it a self-hosted binary would forfeit exactly that.
+
 - **The release build is faster where it was measured to be, and unchanged
   where it was not.** Consolidating the Linux packages onto one binary took
   `release.yml` from 24 minutes wall clock to 11 (the Fedora RPM went 5 min → 1,
