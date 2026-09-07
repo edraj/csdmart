@@ -4,6 +4,32 @@
 
 ### Changed
 
+- **OTP silent-no-op logs show a partially masked destination instead of an
+  opaque fingerprint.** `/user/otp-request` answers `Ok` on nine no-op branches
+  and logs one line for each. Since v1.4.0 that line carried an 8-character
+  SHA-256 fingerprint of the destination — safe, but unreadable: an operator
+  holding a number from a support ticket could reproduce the hash, yet could
+  not glance at a log and recognise the customer.
+
+  It now logs the useful half and nothing more: `****3344` for a msisdn,
+  `a***e@example.com` for an email. Enough to confirm a destination you already
+  have, never enough to harvest one you do not.
+
+  **The destination is still never logged in clear.** That matters more here
+  than it looks: this endpoint needs no JWT for `login`, `reset` or `register`,
+  the line is emitted at Information by default, and the log file is created
+  0644 — so an anonymous caller looping requests would otherwise write a
+  contact list to disk for anyone with shell on the host.
+
+  The masked form is also sanitised, because the input is anonymous and
+  unvalidated. `Shortname` is free-form (`Msisdn` and `Email` are regex-checked;
+  it is not), and the default log format is plain text whenever
+  `INVOCATION_ID` is unset — dev, docker, any non-systemd host. Control
+  characters are stripped so a newline cannot forge log lines an investigator
+  later greps, and the result is length-capped so a 100 KB identifier cannot
+  inflate the log file. An absent or blank identifier logs `(none)` rather than
+  an empty `dest=`, which previously gave no way to tell the two apart.
+
 - **The release build is faster, and the remaining cost is now measured rather
   than assumed.** Consolidating the Linux packages onto one binary took
   `release.yml` from 24 minutes wall clock to 11 (the Fedora RPM went 5 min → 1,
