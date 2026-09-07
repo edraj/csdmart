@@ -151,3 +151,5 @@ and SQLite are only patched when a release is cut. `dist/scan-runtime-cves.sh`
 runs against the produced binary in the release job, which covers the .NET
 runtime compiled into it — it does not cover the linked OpenSSL, so an advisory
 there is on us to notice.
+
+<!-- CI scope test: verifying that a docs-only PR skips build-and-test while the required check still goes green. Delete this branch afterwards. -->
