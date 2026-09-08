@@ -12,6 +12,26 @@
   `daily-cap` warning undercounted the requests that caused it, which defeats
   the point of logging the destination at all.
 
+- **A shortname of only spaces logged a blank `dest=`.** The guard added
+  alongside this checked for an empty string after stripping control
+  characters, but spaces are not control characters and survive the strip — so
+  `{"purpose":"login","shortname":"   "}` still produced a `dest=` an operator
+  could not tell from an absent one. It checks for whitespace now, which covers
+  non-breaking and zero-width spaces too.
+
+- **The shortname branch undercounted the same way the email branch did.** The
+  log reported what the request supplied, while the cooldown and daily cap key
+  on the *resolved* contact — so a user hitting the cap by shortname and by
+  email appeared as two destinations spending one budget. The line now reports
+  the resolved contact wherever one has been determined, falling back to the
+  request only on the branches that fire before resolution.
+
+- **These three fixes are now pinned by tests.** `OtpLogDestinationTests`
+  asserts the logged destination against the value the rate limits key on. That
+  line had been wrong three times in three different ways without any test
+  noticing, because every one of them still answered 200 Ok and still minted or
+  withheld the code correctly.
+
 - **An identifier made only of control characters logged a bare `dest=`.**
   `SanitizeDest` checked for empty input before stripping control characters but
   not after, and `shortname` is free-form and validated nowhere — so a shortname
