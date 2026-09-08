@@ -1,6 +1,47 @@
 # Changelog
 
-## Unreleased
+## v1.5.5 — 2026-09-08
+
+### Security
+
+- **A permission grant scoped to one `resource_type` could read and overwrite
+  rows of another.** Authorization was performed against the resource type the
+  *caller declared*, while the lookup that found the row ignored it. Attachments
+  are the clearest case: `AttachmentRepository` has no typed lookup at all —
+  `(space, subpath, shortname)` is the whole identity — so the `{resource_type}`
+  segment of a URL was an unverified claim.
+
+  Concretely, a grant on `resource_types: ["comment"]` was enough to:
+
+  - read a schema, ticket or any other row at a known address via
+    `GET /managed/entry/content/...`, by naming it `content`;
+  - download the bytes of a media attachment via
+    `GET /managed/payload/comment/...`, or the MCP `download` tool;
+  - overwrite a media attachment by *creating* a comment at its address — the
+    attachment upsert rewrites `resource_type` along with the bytes, so the
+    media row was replaced in place with no other trace.
+
+  Every gate now authorizes against the `resource_type` of the row actually
+  loaded, never the one supplied by the caller: `EntryService` for
+  read/update/delete/move, and the attachment paths in `RequestHandler`,
+  `PayloadHandler` and `McpTools`. The two attachment create paths additionally
+  refuse an address already occupied by a different type, rather than upserting
+  over it — same-type re-create stays idempotent as before.
+
+  The write leg (update, delete, move) was fixed in an earlier release; this
+  closes the read leg and the attachment paths. Covered by nine tests across
+  every affected route.
+
+  **Operators:** review whether any deployed permission relies on
+  `resource_types` as an isolation boundary, and audit access to spaces where a
+  narrow grant coexists with sensitive rows at predictable addresses. Requests
+  that exploited this returned ordinary 200s and left no distinguishing trace.
+
+- **Attachments uploaded over `/managed/resource_with_payload` were stored under
+  an un-normalized subpath.** Every read of that table normalizes, but that
+  write path passed the subpath through verbatim — so an attachment created with
+  `subpath: "docs/x"` landed at `docs/x` and no later lookup could find it, the
+  new cross-type collision guard included.
 
 ### Fixed
 
