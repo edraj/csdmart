@@ -1046,7 +1046,7 @@ public sealed class UserRepository(
             cmd = conn.CreateCommand();
             var sn = DbParams.Add(cmd, shortname);
             cmd.CommandText = $"""
-                SELECT firebase_token FROM sessions
+                SELECT DISTINCT firebase_token FROM sessions
                 WHERE shortname = {sn}
                   AND firebase_token IS NOT NULL
                   AND timestamp >= {SessionLiveSince(cmd, ttl)}
@@ -1055,7 +1055,7 @@ public sealed class UserRepository(
         else
         {
             cmd = conn.Command(
-                "SELECT firebase_token FROM sessions WHERE shortname = $1 AND firebase_token IS NOT NULL");
+                "SELECT DISTINCT firebase_token FROM sessions WHERE shortname = $1 AND firebase_token IS NOT NULL");
             DbParams.Add(cmd, shortname);
         }
         await using (cmd)
