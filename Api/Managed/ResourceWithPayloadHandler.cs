@@ -230,6 +230,13 @@ public static class ResourceWithPayloadHandler
             }
             else
             {
+                // Same cross-type collision guard as RequestHandler's attachment
+                // create: the upsert rewrites resource_type along with everything
+                // else, so overwriting in place is idempotency only while the type
+                // matches. See RequestHandler.AttachmentTypeCollisionAsync.
+                if (await RequestHandler.AttachmentTypeCollisionAsync(record, spaceName, attachments, ct)
+                    is { } collision)
+                    return collision;
                 await attachments.UpsertAsync(attachment, ct);
             }
         }

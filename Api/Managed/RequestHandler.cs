@@ -779,6 +779,21 @@ public static class RequestHandler
             WithCreatedMetaAttributes(rec, space.Uuid, space.CreatedAt, space.UpdatedAt, space.OwnerShortname));
     }
 
+    // Shared by both attachment create paths (this one and
+    // ResourceWithPayloadHandler.StoreAttachmentAsync). Returns a failure
+    // response when an attachment already occupies (space, subpath, shortname)
+    // under a DIFFERENT resource_type, else null.
+    internal static async Task<Response?> AttachmentTypeCollisionAsync(
+        Record rec, string space, AttachmentRepository attachments, CancellationToken ct)
+    {
+        var occupant = await attachments.GetAsync(
+            space, "/" + rec.Subpath.TrimStart('/'), rec.Shortname, ct);
+        if (occupant is null || occupant.ResourceType == rec.ResourceType) return null;
+        return Response.Fail(InternalErrorCode.SHORTNAME_ALREADY_EXIST,
+            $"a {JsonbHelpers.EnumMember(occupant.ResourceType)} attachment already exists at this address",
+            ErrorTypes.Db);
+    }
+
     private static async Task<(Response Response, Record UpdatedRecord)> CreateAttachmentAsync(
         Record rec, string space, string actor, AttachmentRepository attachments,
         UniquenessValidator uniqueness, CancellationToken ct)
@@ -788,6 +803,19 @@ public static class RequestHandler
             space, rec.Subpath, rec.Shortname, rec.ResourceType, attrs, ActionType.Create, ct);
         if (!uniqRes.IsOk)
             return (Response.Fail(uniqRes.ErrorCode!, uniqRes.ErrorMessage!, uniqRes.ErrorType ?? ErrorTypes.Request), rec);
+
+        // Cross-type collision guard. Attachments upsert on
+        // (shortname, space_name, subpath) with `resource_type = EXCLUDED.resource_type`
+        // in the SET list, so re-creating at an occupied address rewrites the row
+        // in place — type, bytes and all. That is the intended idempotency when
+        // the type matches, and a silent overwrite of somebody else's row when it
+        // does not: the create gate only ever saw the type the caller declared, so
+        // a grant on resource_types:["comment"] could destroy a media attachment.
+        // Entries already refuse any occupied address (EntryService.CreateAsync);
+        // this refuses only the cross-type case, leaving same-type re-create
+        // idempotent as before.
+        if (await AttachmentTypeCollisionAsync(rec, space, attachments, ct) is { } collision)
+            return (collision, rec);
 
         // Python parity: Meta.from_record passes **record.attributes to the
         // Attachment constructor, which assigns the `payload` dict straight
@@ -1156,7 +1184,12 @@ public static class RequestHandler
                     return (Response.Fail(InternalErrorCode.SHORTNAME_DOES_NOT_EXIST,
                         "attachment not found", ErrorTypes.Request), rec, null);
                 var attrs = rec.Attributes ?? new();
-                var attLocator = new Locator(rec.ResourceType, space, existing.Subpath, existing.Shortname);
+                // Gate on the row's REAL resource_type. The lookup above is
+                // untyped (attachments are identified by space+subpath+shortname
+                // alone), and `existing with {...}` below preserves the row's
+                // type — so trusting rec.ResourceType let an update grant on
+                // resource_types:["comment"] rewrite a media attachment in place.
+                var attLocator = new Locator(existing.ResourceType, space, existing.Subpath, existing.Shortname);
                 if (!await perms.CanUpdateAsync(actor, attLocator, PermissionService.FromAttachment(existing), attrs, ct))
                     return (Response.Fail(InternalErrorCode.NOT_ALLOWED,
                         "not allowed to update attachment", ErrorTypes.Request), rec, null);
@@ -1334,7 +1367,11 @@ public static class RequestHandler
                 // Look up by (space, subpath, shortname) and delete by uuid.
                 var existing = await attachments.GetAsync(space, "/" + rec.Subpath.TrimStart('/'), rec.Shortname, ct);
                 if (existing is null) return Ok(DeleteReport.Empty); // already gone
-                var attLocator = new Locator(rec.ResourceType, space, existing.Subpath, existing.Shortname);
+                // Gate on the row's REAL resource_type — the lookup is untyped and
+                // the delete below goes by uuid with no type guard beside it, so
+                // a delete grant on resource_types:["comment"] could destroy a
+                // media attachment just by naming it a comment.
+                var attLocator = new Locator(existing.ResourceType, space, existing.Subpath, existing.Shortname);
                 if (await DenyDeleteAsync(attLocator, null, "attachment") is { } denied)
                     return denied;
                 if (!dryRun && Guid.TryParse(existing.Uuid, out var u))

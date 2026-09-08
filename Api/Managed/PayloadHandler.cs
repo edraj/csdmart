@@ -51,7 +51,12 @@ public static class PayloadHandler
         {
             var att = await attachments.GetAsync(space, normalizedSubpath, shortname, ct);
             if (att?.Media is null) return Results.NotFound();
-            var attachmentLocator = new Locator(rt, space, normalizedSubpath, shortname);
+            // Gate on the ROW's resource_type, never the URL's. AttachmentRepository
+            // has no typed lookup at all — (space, subpath, shortname) is the whole
+            // identity — so `rt` here is an unverified caller claim. Trusting it let
+            // a view grant on resource_types:["comment"] pull down the bytes of a
+            // media attachment simply by asking for /payload/comment/...
+            var attachmentLocator = new Locator(att.ResourceType, space, normalizedSubpath, shortname);
             if (!await perms.CanReadAsync(actor, attachmentLocator, PermissionService.FromAttachment(att), ct))
             {
                 return Results.Json(
