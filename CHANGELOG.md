@@ -1,5 +1,32 @@
 # Changelog
 
+## Unreleased
+
+### Fixed
+
+- **The OTP log line now shows the same spelling of an email that the rate
+  limits key on.** The resend cooldown, the daily cap and the `otps` row are all
+  keyed on the lowercased address, but the log recorded the raw request
+  spelling. `Bob@Example.com` and `bob@example.com` therefore shared one budget
+  while appearing as two destinations — so grepping the log to explain a
+  `daily-cap` warning undercounted the requests that caused it, which defeats
+  the point of logging the destination at all.
+
+- **An identifier made only of control characters logged a bare `dest=`.**
+  `SanitizeDest` checked for empty input before stripping control characters but
+  not after, and `shortname` is free-form and validated nowhere — so a shortname
+  of two control characters counted as a provided field, stripped to nothing,
+  and produced exactly the empty `dest=` the guard exists to prevent. It logs
+  `(none)` now.
+
+- **v1.5.4's changelog carried two contradictory copies of the release-build
+  entry.** Merging #256 resurrected a superseded version alongside the corrected
+  one: it claimed the builder image was a speed improvement (retracted — the
+  medians are identical) and that the release workflow shares a NuGet cache,
+  which `release-verifiable.yml` explicitly documents that it does not, having
+  tried and removed it. The stale copy is gone. The published v1.5.4 release
+  notes were written separately and were never wrong.
+
 ## v1.5.4 — 2026-09-08
 
 ### Changed
@@ -31,34 +58,6 @@
   valid email address, so no real destination is ever truncated — so a 100 KB
   identifier cannot inflate the log file. An absent or blank identifier logs
   `(none)` rather than an empty `dest=`.
-
-- **The release build is faster, and the remaining cost is now measured rather
-  than assumed.** Consolidating the Linux packages onto one binary took
-  `release.yml` from 24 minutes wall clock to 11 (the Fedora RPM went 5 min → 1,
-  the `.deb` 4 → 1). That moved the bottleneck rather than removing it, so this
-  release addresses where the time actually went:
-
-  - **The two glibc legs of `release-verifiable.yml` ran
-    `dnf install dotnet-sdk-10.0` on every release**, cold, on a hosted runner.
-    Measured on v1.5.3 that made them ~10 minutes each against ~6–7 for the musl
-    legs, whose base image already ships the SDK. They now build inside a
-    published `dmart-el9-builder` image with the SDK and toolchain baked in.
-
-    That also removes an unpinned `dnf install` from the path that produces
-    signed artifacts: the SDK a release was built with used to be whatever the
-    AlmaLinux mirrors served that day, and is now a property of an image pinned
-    by digest.
-
-  - **Nothing cached NuGet in `release-verifiable.yml`** — all four legs
-    restored from scratch, every time. They now share a cache keyed on the
-    recorded dependency graph, so it invalidates exactly when the dependency
-    set does.
-
-  Two things deliberately not changed. The Windows (9 min) and macOS (7 min)
-  AOT builds are different RIDs with nothing to share. And the two workflows
-  still compile the Linux targets separately: `release-verifiable.yml` exists
-  to establish that an artifact was built by hosted CI from the tagged commit,
-  and feeding it a self-hosted binary would forfeit exactly that.
 
 - **The release build is faster where it was measured to be, and unchanged
   where it was not.** Consolidating the Linux packages onto one binary took

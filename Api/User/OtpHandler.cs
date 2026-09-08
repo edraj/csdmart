@@ -66,8 +66,18 @@ public static class OtpHandler
                 // request validation above counts a provided field the same
                 // way: `{"msisdn":"","shortname":"alice"}` is accepted, and a
                 // ?? chain would coalesce on null only and log an empty string.
+                //
+                // The email goes through EmailDest for the same reason it does
+                // everywhere else: lowercased is the form that keys the resend
+                // cooldown, the daily cap and the otps row (see the dest built
+                // below). Logging the raw spelling instead would mean
+                // Bob@Example.com and bob@example.com share one budget but
+                // appear as two destinations, so grepping the log to explain a
+                // daily-cap Warning would undercount the requests that caused
+                // it. The fingerprint this line replaced lowercased first for
+                // exactly this reason.
                 var dest = !string.IsNullOrEmpty(req.Msisdn) ? req.Msisdn
-                         : !string.IsNullOrEmpty(req.Email) ? req.Email
+                         : !string.IsNullOrEmpty(req.Email) ? EmailDest(req.Email)
                          : req.Shortname;
                 log.Log(level,
                     "otp-request: silent no-op ({Reason}) purpose={Purpose} dest={Destination}",
@@ -556,6 +566,11 @@ public static class OtpHandler
     {
         if (string.IsNullOrEmpty(destination)) return "(none)";
         var clean = new string(destination.Where(c => !char.IsControl(c)).ToArray());
+        // Re-check AFTER stripping, not only before. Shortname is free-form and
+        // validated nowhere, so `{"shortname":"\u0001\u0001"}` is a provided
+        // field that survives to here and strips to nothing — which would print
+        // the bare `dest=` this whole guard exists to avoid.
+        if (clean.Length == 0) return "(none)";
         return clean.Length > DestMaxLength ? clean[..DestMaxLength] + "…" : clean;
     }
 }
