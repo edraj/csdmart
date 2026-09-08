@@ -76,7 +76,8 @@ public sealed class FailedAttemptLockoutTests : IClassFixture<DmartFactory>
             msg.ShouldBe(LockoutMessage);
 
             var refreshed = await GetUserAsync(shortname);
-            refreshed!.IsActive.ShouldBeFalse("threshold-trip must flip is_active=false");
+            refreshed!.IsActive.ShouldBeTrue(
+                "the attempt lock is counter-only — is_active means admin deactivation");
         }
         finally { await DeleteUserAsync(shortname); }
     }
@@ -131,7 +132,8 @@ public sealed class FailedAttemptLockoutTests : IClassFixture<DmartFactory>
             msg.ShouldBe(LockoutMessage);
 
             var refreshed = await GetUserAsync(shortname);
-            refreshed!.IsActive.ShouldBeFalse("threshold-trip must flip is_active=false");
+            refreshed!.IsActive.ShouldBeTrue(
+                "the attempt lock is counter-only — is_active means admin deactivation");
         }
         finally { await DeleteUserAsync(shortname); }
     }
@@ -182,14 +184,14 @@ public sealed class FailedAttemptLockoutTests : IClassFixture<DmartFactory>
             body.Error.Message.ShouldBe(LockoutMessage);
 
             var refreshed = await GetUserAsync(creds.Shortname);
-            refreshed!.IsActive.ShouldBeFalse("threshold-trip must flip is_active=false");
+            refreshed!.IsActive.ShouldBeTrue(
+                "the attempt lock is counter-only — is_active means admin deactivation");
 
-            // Lockout invalidates every active session for the user.
-            // CreateLoggedInUserAsync minted exactly one — verify it's gone so
-            // the already-issued bearer token can't continue making requests.
+            // Lockout blocks new logins only — it must NOT revoke sessions the
+            // user already holds. CreateLoggedInUserAsync minted exactly one.
             var users = _factory.Services.GetRequiredService<UserRepository>();
             var sessionsLeft = await users.CountSessionsAsync(creds.Shortname);
-            sessionsLeft.ShouldBe(0, "lockout must remove all active sessions");
+            sessionsLeft.ShouldBe(1, "lockout must leave live sessions intact");
         }
         finally { await creds.Cleanup(); }
     }
@@ -224,7 +226,7 @@ public sealed class FailedAttemptLockoutTests : IClassFixture<DmartFactory>
         client.PostAsync("/user/profile", ProfilePatch(oldPassword, newPassword));
 
     private async Task<(string Shortname, string Password)> CreateUserAsync(
-        string? password, string? msisdn = null)
+        string? password, string? msisdn = null, UserType type = UserType.Web)
     {
         var suffix = Guid.NewGuid().ToString("N")[..12];
         var shortname = $"lockout_{suffix}";
@@ -241,7 +243,7 @@ public sealed class FailedAttemptLockoutTests : IClassFixture<DmartFactory>
             Password = password is null ? null : hasher.Hash(password),
             Msisdn = msisdn,
             IsMsisdnVerified = msisdn is not null,
-            Type = UserType.Web,
+            Type = type,
             Language = Language.En,
             Roles = new(),
             Groups = new(),
@@ -308,7 +310,7 @@ public sealed class FailedAttemptLockoutTests : IClassFixture<DmartFactory>
         try
         {
             // Locked, last failed attempt well outside the cool-down window.
-            await SetLockedStateAsync(shortname, MaxAttempts(), isActive: false,
+            await SetLockedStateAsync(shortname, MaxAttempts(), isActive: true,
                 lastFailed: Dmart.Utils.TimeUtils.Now().AddSeconds(-(CooldownSeconds() + 60)));
 
             var client = _factory.CreateClient();
@@ -334,14 +336,16 @@ public sealed class FailedAttemptLockoutTests : IClassFixture<DmartFactory>
         try
         {
             // Last failed attempt 1 minute ago — well inside the window.
-            await SetLockedStateAsync(shortname, MaxAttempts(), isActive: false,
+            await SetLockedStateAsync(shortname, MaxAttempts(), isActive: true,
                 lastFailed: Dmart.Utils.TimeUtils.Now().AddSeconds(-60));
 
             var (_, code, msg) = await ExpectLoginFailureAsync(
                 new UserLoginRequest(shortname, null, null, password, null));
             code.ShouldBe(InternalErrorCode.USER_ACCOUNT_LOCKED);
             msg.ShouldBe(LockoutMessage);
-            (await GetUserAsync(shortname))!.IsActive.ShouldBeFalse();
+            var still = await GetUserAsync(shortname);
+            still!.IsActive.ShouldBeTrue("the attempt lock never touches is_active");
+            still.AttemptCount.ShouldBe(MaxAttempts(), "still at the threshold → still locked");
         }
         finally { await DeleteUserAsync(shortname); }
     }
@@ -353,7 +357,7 @@ public sealed class FailedAttemptLockoutTests : IClassFixture<DmartFactory>
         try
         {
             var stale = Dmart.Utils.TimeUtils.Now().AddSeconds(-300); // 5 min ago, still inside window
-            await SetLockedStateAsync(shortname, MaxAttempts(), isActive: false, lastFailed: stale);
+            await SetLockedStateAsync(shortname, MaxAttempts(), isActive: true, lastFailed: stale);
 
             // A blocked attempt must push last_failed_login forward to ~now, so a
             // persistent attacker never lets the window elapse.
@@ -394,7 +398,7 @@ public sealed class FailedAttemptLockoutTests : IClassFixture<DmartFactory>
         try
         {
             // Ancient last failed attempt, but cool-down disabled → never auto-unlocks.
-            await SetLockedStateAsync(shortname, MaxAttempts(), isActive: false,
+            await SetLockedStateAsync(shortname, MaxAttempts(), isActive: true,
                 lastFailed: Dmart.Utils.TimeUtils.Now().AddSeconds(-100000));
 
             var resp = await factory.CreateClient().PostAsJsonAsync("/user/login",
@@ -405,5 +409,181 @@ public sealed class FailedAttemptLockoutTests : IClassFixture<DmartFactory>
                 .Error!.Code.ShouldBe(InternalErrorCode.USER_ACCOUNT_LOCKED);
         }
         finally { await DeleteUserAsync(shortname); }
+    }
+
+    // ---- bot accounts are exempt from the lockout ----
+
+    [FactIfPg]
+    public async Task Bot_Crossing_The_Threshold_Is_Not_Locked()
+    {
+        // A bot authenticates from CI/MCP with a machine credential. Locking it
+        // turns 5 guesses by anyone who knows the shortname into an outage for a
+        // whole integration, and — because a bot never re-runs /user/login — the
+        // cool-down that rescues a human is never reached. So the counter still
+        // moves (the attack stays visible in attempt_count) but never locks.
+        var max = MaxAttempts();
+        var (shortname, _) = await CreateUserAsync(password: "Test1234aaa", type: UserType.Bot);
+        try
+        {
+            await SetAttemptCountAsync(shortname, max - 1);
+
+            var (_, code, _) = await ExpectLoginFailureAsync(
+                new UserLoginRequest(shortname, null, null, "WrongPassword1", null));
+            code.ShouldBe(InternalErrorCode.INVALID_USERNAME_AND_PASS,
+                "a bot crossing the threshold must not surface USER_ACCOUNT_LOCKED");
+
+            (await ReadAttemptCountAsync(shortname)).ShouldBe(max,
+                "the counter still moves so brute-force against a bot stays visible");
+            (await GetUserAsync(shortname))!.IsActive.ShouldBeTrue();
+        }
+        finally { await DeleteUserAsync(shortname); }
+    }
+
+    [FactIfPg]
+    public async Task Bot_Above_The_Threshold_Can_Still_Login()
+    {
+        // Defence in depth: even with the counter already past max — an admin or
+        // a migration could have set it — a bot with valid credentials gets in.
+        var (shortname, password) = await CreateUserAsync(password: "Test1234aaa", type: UserType.Bot);
+        try
+        {
+            await SetLockedStateAsync(shortname, MaxAttempts(), isActive: true,
+                lastFailed: Dmart.Utils.TimeUtils.Now());
+
+            var resp = await _factory.CreateClient().PostAsJsonAsync("/user/login",
+                new UserLoginRequest(shortname, null, null, password, null),
+                DmartJsonContext.Default.UserLoginRequest);
+
+            resp.StatusCode.ShouldBe(HttpStatusCode.OK);
+            (await resp.Content.ReadFromJsonAsync(DmartJsonContext.Default.Response))!
+                .Status.ShouldBe(Status.Success);
+        }
+        finally { await DeleteUserAsync(shortname); }
+    }
+
+    // ---- a lock blocks new logins, not live sessions ----
+
+    [FactIfPg]
+    public async Task Locked_User_Keeps_Using_An_Already_Issued_Access_Token()
+    {
+        var creds = await _factory.CreateLoggedInUserAsync();
+        try
+        {
+            await SetAttemptCountAsync(creds.Shortname, MaxAttempts() - 1);
+
+            // Trip the lock through the profile password-change path.
+            var locking = await PostProfileAsync(creds.Client,
+                oldPassword: "definitely-not-the-current-pw",
+                newPassword: "NewPassword1!");
+            (await locking.Content.ReadFromJsonAsync(DmartJsonContext.Default.Response))!
+                .Error!.Code.ShouldBe(InternalErrorCode.USER_ACCOUNT_LOCKED);
+
+            // Same bearer token, a plain authenticated read: still served.
+            var after = await creds.Client.GetAsync("/user/profile");
+            after.StatusCode.ShouldBe(HttpStatusCode.OK,
+                "the lock blocks new logins — it must not revoke a live session");
+        }
+        finally { await creds.Cleanup(); }
+    }
+
+    [FactIfPg]
+    public async Task Locked_User_Cannot_Mint_A_New_Access_Token_By_Refreshing()
+    {
+        // The live access token survives, but the session cannot be extended:
+        // the lock ends it at the next refresh, bounding the blast radius to the
+        // access token's own TTL.
+        var creds = await _factory.CreateLoggedInUserAsync();
+        try
+        {
+            var jwt = _factory.Services.GetRequiredService<JwtIssuer>();
+            var refresh = jwt.IssueRefresh(creds.Shortname, UserType.Web);
+
+            await SetLockedStateAsync(creds.Shortname, MaxAttempts(), isActive: true,
+                lastFailed: Dmart.Utils.TimeUtils.Now());
+
+            var resp = await _factory.CreateClient().PostAsync("/oauth/token",
+                new FormUrlEncodedContent(new Dictionary<string, string>
+                {
+                    ["grant_type"] = "refresh_token",
+                    ["refresh_token"] = refresh,
+                }));
+
+            resp.StatusCode.ShouldBe(HttpStatusCode.BadRequest);
+            (await resp.Content.ReadAsStringAsync()).ShouldContain("invalid_grant");
+        }
+        finally { await creds.Cleanup(); }
+    }
+
+    [FactIfPg]
+    public async Task Cooldown_Unlock_Does_Not_Reactivate_A_Deactivated_Account()
+    {
+        // An account can be BOTH admin-deactivated and at the attempt threshold.
+        // Clearing the counter after the cool-down must not hand back the
+        // is_active flag an admin deliberately cleared.
+        var (shortname, password) = await CreateUserAsync(password: "Test1234aaa");
+        try
+        {
+            await SetLockedStateAsync(shortname, MaxAttempts(), isActive: false,
+                lastFailed: Dmart.Utils.TimeUtils.Now().AddSeconds(-(CooldownSeconds() + 60)));
+
+            var (_, code, _) = await ExpectLoginFailureAsync(
+                new UserLoginRequest(shortname, null, null, password, null));
+            code.ShouldBe(InternalErrorCode.USER_ACCOUNT_LOCKED);
+
+            (await GetUserAsync(shortname))!.IsActive.ShouldBeFalse(
+                "the cool-down clears the counter, never the admin's deactivation");
+        }
+        finally { await DeleteUserAsync(shortname); }
+    }
+
+    [FactIfPg]
+    public async Task Admin_Setting_IsActive_True_Clears_The_Attempt_Lock()
+    {
+        // The attempt lock no longer flips is_active, so a locked account is
+        // still active — which leaves "set is_active=true" (the admin UI's
+        // unlock gesture) with no false→true transition to key off. Without
+        // this, an admin has no way to clear the counter at all, and with
+        // LOCKOUT_COOLDOWN_SECONDS=0 the lock would be unclearable forever.
+        var admin = await _factory.CreateLoggedInUserAsync();
+        var (shortname, password) = await CreateUserAsync(password: "Test1234aaa");
+        try
+        {
+            await SetLockedStateAsync(shortname, MaxAttempts(), isActive: true,
+                lastFailed: Dmart.Utils.TimeUtils.Now());
+
+            var (_, lockedCode, _) = await ExpectLoginFailureAsync(
+                new UserLoginRequest(shortname, null, null, password, null));
+            lockedCode.ShouldBe(InternalErrorCode.USER_ACCOUNT_LOCKED);
+
+            var unlock = await admin.Client.PostAsJsonAsync("/managed/request", new Request
+            {
+                RequestType = RequestType.Update,
+                SpaceName = "management",
+                Records = new()
+                {
+                    new Record
+                    {
+                        ResourceType = ResourceType.User,
+                        Subpath = "/users",
+                        Shortname = shortname,
+                        Attributes = new() { ["is_active"] = true },
+                    },
+                },
+            }, DmartJsonContext.Default.Request);
+            unlock.StatusCode.ShouldBe(HttpStatusCode.OK);
+
+            (await GetUserAsync(shortname))!.AttemptCount.ShouldBe(0,
+                "an explicit is_active=true is the admin's unlock gesture");
+
+            var resp = await _factory.CreateClient().PostAsJsonAsync("/user/login",
+                new UserLoginRequest(shortname, null, null, password, null),
+                DmartJsonContext.Default.UserLoginRequest);
+            resp.StatusCode.ShouldBe(HttpStatusCode.OK);
+        }
+        finally
+        {
+            await DeleteUserAsync(shortname);
+            await admin.Cleanup();
+        }
     }
 }

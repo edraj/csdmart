@@ -1,5 +1,39 @@
 # Changelog
 
+## Unreleased
+
+### Changed
+
+- **Account lockout no longer deactivates the user or revokes live sessions.**
+  Crossing `MAX_FAILED_LOGIN_ATTEMPTS` used to set `is_active = false` and delete
+  every session row, which meant the lock revoked access tokens already in flight
+  and conflated an automatic lock with an admin deactivation. The lock is now the
+  counter alone: `is_active = false` means only that an admin turned the account
+  off, and a locked user's already-issued access token keeps working until it
+  expires. New logins are still refused with `USER_ACCOUNT_LOCKED`, and
+  `/oauth/token` with `grant_type=refresh_token` now re-checks the lock and
+  returns `invalid_grant` — so a locked session ends at the next refresh rather
+  than instantly.
+
+  **Operators should understand the tradeoff.** An attacker who guesses the
+  password before the threshold trips is no longer kicked out when the lock later
+  fires; their access is bounded by the access token's TTL plus the refresh block,
+  not by immediate revocation.
+
+  Two consequences follow from the lock no longer touching `is_active`:
+  the cool-down auto-unlock no longer sets `is_active = true` (it would otherwise
+  reactivate an account an admin had deliberately deactivated), and manual unlock
+  is now a user update carrying an explicit `is_active: true`, which clears
+  `attempt_count` whether or not the account was inactive to begin with.
+
+- **Bot accounts are exempt from the failed-attempt lockout.** A `type = bot`
+  account still increments `attempt_count` — brute force against it stays visible
+  — but never locks. A bot authenticates from CI/MCP with a machine credential and
+  never re-runs `/user/login`, so the cool-down that rescues a human account was
+  unreachable for it and a lock was permanent until an admin intervened; five
+  requests from anyone who knew the shortname could take down an integration. Bots
+  remain subject to the ordinary `is_active` and soft-delete gates.
+
 ## v1.5.4 — 2026-09-08
 
 ### Changed

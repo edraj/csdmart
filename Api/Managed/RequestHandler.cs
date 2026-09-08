@@ -917,8 +917,17 @@ public static class RequestHandler
                     ResourceType.User, attrs, ActionType.Update, ct);
                 if (!userUniq.IsOk)
                     return (Response.Fail(userUniq.ErrorCode!, userUniq.ErrorMessage!, userUniq.ErrorType ?? ErrorTypes.Request), rec, null);
-                var newIsActive = attrs.TryGetValue("is_active", out var ia) ? !IsExplicitlyFalse(ia) : existing.IsActive;
-                var reactivating = !existing.IsActive && newIsActive;
+                var isActiveRequested = attrs.TryGetValue("is_active", out var ia);
+                var newIsActive = isActiveRequested ? !IsExplicitlyFalse(ia) : existing.IsActive;
+                // An explicit is_active=true is the admin's "unlock this account"
+                // gesture and clears the failed-attempt counter with it. Keying
+                // this off a false→true transition alone is not enough: the
+                // attempt lock is counter-only and leaves is_active set (see
+                // UserService.HandleFailedLoginAttemptAsync), so a locked account
+                // is already active and there would be no transition to observe —
+                // leaving an admin no way to clear the lock, permanently so when
+                // LockoutCooldownSeconds is 0.
+                var reactivating = newIsActive && (isActiveRequested || !existing.IsActive);
                 // Python parity: payload, type, language, and force_password_change
                 // flow through user update via Meta.update_from_record. payload.body
                 // is DEEP-MERGED (Payload.update(replace=false)) so a partial body

@@ -908,13 +908,16 @@ public sealed class UserRepository(
         await cmd.ExecuteNonQueryAsync(ct);
     }
 
-    // Clear an auto-lockout once the cool-down has elapsed: reset the counter, undo
-    // the is_active flip, and drop the anchor so the next login starts clean.
+    // Clear an auto-lockout once the cool-down has elapsed: reset the counter and
+    // drop the anchor so the next login starts clean. Deliberately does NOT touch
+    // is_active — the attempt lock never clears it, so setting it here would hand
+    // back the flag an admin cleared on an account that is both deactivated and
+    // at the threshold. See UserService.RejectIfAttemptLockedAsync.
     public async Task UnlockAfterCooldownAsync(string shortname, CancellationToken ct = default)
     {
         await using var conn = await db.OpenAsync(ct);
         await using var cmd = conn.Command(
-            "UPDATE users SET attempt_count = 0, is_active = true, last_failed_login = NULL WHERE shortname = $1");
+            "UPDATE users SET attempt_count = 0, last_failed_login = NULL WHERE shortname = $1");
         DbParams.Add(cmd, shortname);
         await cmd.ExecuteNonQueryAsync(ct);
     }

@@ -138,6 +138,12 @@ public sealed class DmartSettings
     public int ListeningPort { get; set; } = 8282;
     public string ManagementSpace { get; set; } = "management";
     public int MaxSessionsPerUser { get; set; } = 5;
+
+    // Bad password/OTP attempts before an account is locked. The lock is the
+    // counter alone — it leaves is_active set (that means admin deactivation) and
+    // leaves live sessions running, so it blocks new logins and refreshes rather
+    // than revoking an access token already in flight. Bot accounts are exempt.
+    // See UserService.RejectIfAttemptLockedAsync.
     public int MaxFailedLoginAttempts { get; set; } = 5;
 
     // Wrong guesses allowed against a single OTP code before it is invalidated.

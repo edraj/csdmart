@@ -187,17 +187,42 @@ deleted.
 
 `users.attempt_count` is incremented on every bad-password/bad-OTP attempt, which
 also stamps `users.last_failed_login`. When the count reaches
-`settings.MaxFailedLoginAttempts` (default 5) the account is auto-locked
-(`is_active = false`, all sessions wiped) and login returns `USER_ACCOUNT_LOCKED`
-even on a correct password.
+`settings.MaxFailedLoginAttempts` (default 5) the account is locked and login
+returns `USER_ACCOUNT_LOCKED` even on a correct password.
+
+**The lock is the counter, and nothing else.** It does not touch `is_active` and
+does not wipe sessions:
+
+- `is_active = false` means one thing only — an admin deactivated the account.
+- A locked user's **already-issued access token keeps working** until it expires.
+  The lock blocks new logins; it does not revoke a live session.
+- It does block **refresh**: `/oauth/token` with `grant_type=refresh_token`
+  re-checks the lock and returns `invalid_grant`, so a locked session ends at the
+  next refresh. The blast radius is bounded by the access token's TTL rather than
+  by immediate revocation.
+
+The tradeoff is deliberate: an attacker who guesses the password before tripping
+the threshold is not kicked out by the later lock.
+
+### Bot accounts are exempt
+
+A `type = bot` account is never locked by the attempt counter. The counter still
+increments — so brute force against a bot stays visible in `attempt_count` — but
+it never trips. Two reasons: a bot authenticates from CI/MCP with a machine
+credential nobody is guessing, and a bot never re-runs `/user/login`, so the
+cool-down below is unreachable for it and a lock would be permanent. Locking one
+would let anyone who knows the shortname take down a whole integration with five
+requests. A bot is still subject to the ordinary `is_active` / soft-delete gate.
 
 ### Cool-down auto-unlock (`LockoutCooldownSeconds`, default 900)
 
 The lock is **not permanent**. `UserService.RejectIfAttemptLockedAsync` (the gate
 that runs first in both the password and OTP login paths) checks
 `last_failed_login`: once `now − last_failed_login > LockoutCooldownSeconds`, the
-next login attempt auto-clears the lock (`attempt_count = 0`, `is_active = true`,
-`last_failed_login = NULL`) and proceeds to the normal credential check.
+next login attempt auto-clears the lock (`attempt_count = 0`,
+`last_failed_login = NULL`) and proceeds to the normal credential check. It leaves
+`is_active` alone — an account that is both deactivated and at the threshold must
+not be handed back the flag an admin cleared.
 
 The window is measured from the **last** failed/blocked attempt and is **refreshed
 on every attempt while locked**, so a persistent attacker never auto-unlocks — only
@@ -208,11 +233,21 @@ auto-unlocks.
 
 Set `LOCKOUT_COOLDOWN_SECONDS=0` to disable auto-unlock and keep the lock permanent
 until an admin resets it (the pre-cooldown behaviour, and the Python-reference
-behaviour — Python has no cool-down). Admin manual unlock:
+behaviour — Python has no cool-down).
+
+Admin manual unlock is a user update carrying an explicit `is_active: true`, which
+clears `attempt_count` along with it:
+
+```json
+{"space_name": "management", "request_type": "update",
+ "records": [{"resource_type": "user", "subpath": "/users",
+              "shortname": "...", "attributes": {"is_active": true}}]}
+```
+
+Or directly:
 
 ```sql
-UPDATE users SET attempt_count = 0, is_active = true, last_failed_login = NULL
-WHERE shortname = '...';
+UPDATE users SET attempt_count = 0, last_failed_login = NULL WHERE shortname = '...';
 ```
 
 ## OAuth providers (Google / Facebook / Apple)

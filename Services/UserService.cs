@@ -641,6 +641,14 @@ public sealed class UserService(
     private async Task<(Result<(string Access, string Refresh, User User, bool Created)>? Rejection, User User)>
         RejectIfAttemptLockedAsync(User user, CancellationToken ct)
     {
+        // A bot authenticates from CI/MCP with a machine credential, and never
+        // re-runs /user/login — so the cool-down below, which is what rescues a
+        // human, is unreachable for it and a lock is permanent until an admin
+        // intervenes. That turns MaxFailedLoginAttempts guesses by anyone who
+        // knows the shortname into an outage for a whole integration, against a
+        // credential nobody is guessing anyway. Bots are exempt.
+        if (user.Type == UserType.Bot) return (null, user);
+
         var maxAttempts = settings.Value.MaxFailedLoginAttempts;
         if (maxAttempts <= 0 || user.AttemptCount is not int count || count < maxAttempts)
             return (null, user); // not attempt-locked
@@ -651,7 +659,7 @@ public sealed class UserService(
         {
             // Cool-down elapsed → auto-unlock and let the normal credential check run.
             await users.UnlockAfterCooldownAsync(user.Shortname, ct);
-            return (null, user with { AttemptCount = 0, IsActive = true, LastFailedLogin = null });
+            return (null, user with { AttemptCount = 0, LastFailedLogin = null });
         }
 
         // Still locked → refresh the cool-down anchor (so ongoing attacks keep the
@@ -673,8 +681,11 @@ public sealed class UserService(
     // not a failed login attempt and shouldn't extend a lockout window.
     public async Task<bool> IsLockedAsync(User user, CancellationToken ct = default)
     {
+        // Bots skip the attempt-counter lock (see RejectIfAttemptLockedAsync) but
+        // NOT the IsUsable check below — a deactivated or deleted bot is locked.
         var maxAttempts = settings.Value.MaxFailedLoginAttempts;
-        if (maxAttempts > 0 && user.AttemptCount is int count && count >= maxAttempts)
+        if (user.Type != UserType.Bot
+            && maxAttempts > 0 && user.AttemptCount is int count && count >= maxAttempts)
         {
             var cooldown = settings.Value.LockoutCooldownSeconds;
             if (cooldown > 0 && user.LastFailedLogin is DateTime lastFailed
@@ -702,22 +713,22 @@ public sealed class UserService(
     {
         await users.IncrementAttemptAsync(user.Shortname, TimeUtils.Now(), ct);
 
+        // Bots are exempt from the lock — see RejectIfAttemptLockedAsync for
+        // why. The counter above still moves so an operator can see the attack
+        // in `attempt_count`; it just never trips anything.
+        if (user.Type == UserType.Bot) return false;
+
         var maxAttempts = settings.Value.MaxFailedLoginAttempts;
         if (maxAttempts <= 0) return false;
 
         // Load fresh — the attempt count in `user` is pre-increment and stale.
+        // The lock is the counter: nothing else is written. Flipping is_active
+        // here (as this used to) conflated the automatic lock with an admin
+        // deactivation and, via the IsUsable gate in JwtBearerSetup, revoked
+        // every live session — see RejectIfAttemptLockedAsync.
         var refreshed = await users.GetByShortnameAsync(user.Shortname, ct);
         if (refreshed is null) return false;
-        if (refreshed.AttemptCount is not int count || count < maxAttempts) return false;
-        if (!refreshed.IsActive) return true; // already locked by a prior attempt
-
-        var locked = refreshed with { IsActive = false, UpdatedAt = TimeUtils.Now() };
-        await users.UpsertAsync(locked, ct);
-        // Python: db.remove_user_session(shortname) — every active session is
-        // invalidated so an already-logged-in tab can't keep making requests
-        // after the account is auto-disabled.
-        await users.DeleteAllSessionsAsync(user.Shortname, ct);
-        return true;
+        return refreshed.AttemptCount is int count && count >= maxAttempts;
     }
 
     // Shared post-authentication flow. Mirrors Python's process_user_login().
