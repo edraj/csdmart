@@ -43,7 +43,7 @@ API. Top highlights:
   (`__all_spaces__`, `__all_subpaths__`).
 - **Workflow engine** — configurable ticket state machines with lock,
   assign, and progress-transition endpoints.
-- **Plugin system** — built-in hooks + external native `.so` plugins
+- **Plugin system** — built-in hooks + external plugins in any language
   loaded at runtime + MCP tool surface for AI agents.
 - **WebSocket** — real-time notifications via channel subscriptions.
 - **Microservice-friendly** — JWT shared secret lets other services
@@ -315,14 +315,15 @@ Compiled into the binary. Configured via `plugins/<name>/config.json`:
 - `audit` — logs all dispatched events
 - `db_size_info` — API plugin at `GET /db_size_info/`
 
-### External native plugins
+### External plugins
 
-Drop a `.so` + `config.json` into `~/.dmart/plugins/<name>/` — no
+Drop an executable + `config.json` into `~/.dmart/plugins/<name>/` — no
 recompile needed:
 
 ```
 mkdir -p ~/.dmart/plugins/my_plugin
-cp my_plugin.so ~/.dmart/plugins/my_plugin/
+cp my_plugin ~/.dmart/plugins/my_plugin/      # any language; must be executable
+chmod +x ~/.dmart/plugins/my_plugin/my_plugin
 cat > ~/.dmart/plugins/my_plugin/config.json << 'EOF'
 {
   "shortname": "my_plugin",
@@ -341,17 +342,18 @@ EOF
 
 ### Building custom plugins
 
-```
-cd custom_plugins_sdk/<name>
-dotnet publish <name>.csproj -c Release -r linux-x64 -o /tmp/<name>-build
-cp /tmp/<name>-build/<name>.so ~/.dmart/plugins/<name>/
-```
+A plugin is an executable that reads JSON lines from stdin and writes them to
+stdout, so any language works — Python, Node, Go, Rust, C#, bash. It can also
+call back into dmart mid-request to read and write entries, run queries, send
+mail or broadcast on a channel. If it crashes, dmart respawns it; a fault in
+plugin code cannot take the host down.
 
-Plugins export a C-ABI surface: `get_info()`, `hook()` or
-`handle_request()`, `free_string()`. Can be written in any language that
-produces a C ABI shared library (C#, Rust, C, Go). See
-[`custom_plugins_sdk/README.md`](./custom_plugins_sdk/README.md) for the
-full development guide with working examples.
+See [`custom_plugins_sdk/README.md`](./custom_plugins_sdk/README.md) for the
+protocol and working samples.
+
+> In-process `.so` plugins were removed — they ran third-party code inside the
+> host process and could not work in a static build. A leftover `.so` is now
+> reported as a load failure at startup and on `GET /info/plugins`.
 
 ## Building
 

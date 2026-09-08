@@ -1141,9 +1141,9 @@ else
 fi
 
 # ============================================================================
-# 62. Native hook plugin appears in manifest
+# 62. Hook plugin appears in manifest
 # ============================================================================
-printf '%-45s' "Native hook plugin in manifest:" >&2
+printf '%-45s' "Hook plugin in manifest:" >&2
 MANIFEST=$(curl -s -H "$AUTH_HEADER" "$API_URL/info/manifest")
 if echo "$MANIFEST" | jq -e '.attributes.plugins | index("sample_hook")' > /dev/null 2>&1; then
     ok
@@ -1154,7 +1154,7 @@ fi
 # Shell helper: true when $1 is a "route not found" response — either HTTP 404
 # or Python-parity HTTP 422 with INVALID_ROUTE (code 230). Used by the plugin
 # tests below to skip gracefully when the plugin isn't deployed (e.g. CI
-# runners that don't include the optional sample_api .so).
+# runners that don't install the optional sample_api plugin).
 _route_absent() {
     local url=$1
     local status
@@ -1165,9 +1165,9 @@ _route_absent() {
 }
 
 # ============================================================================
-# 63. Native API plugin endpoint responds
+# 63. API plugin endpoint responds
 # ============================================================================
-printf '%-45s' "Native API plugin responds:" >&2
+printf '%-45s' "API plugin responds:" >&2
 API_PLUGIN_RESP=$(curl -s -H "$AUTH_HEADER" "$API_URL/sample_api/" 2>/dev/null)
 if echo "$API_PLUGIN_RESP" | jq -e '.status == "success" and .attributes.plugin == "sample_api"' > /dev/null 2>&1; then
     ok
@@ -1178,9 +1178,9 @@ else
 fi
 
 # ============================================================================
-# 64. Native API plugin greet endpoint
+# 64. API plugin greet endpoint
 # ============================================================================
-printf '%-45s' "Native API plugin greet:" >&2
+printf '%-45s' "API plugin greet:" >&2
 GREET_RESP=$(curl -s -H "$AUTH_HEADER" "$API_URL/sample_api/greet/TestUser" 2>/dev/null)
 if echo "$GREET_RESP" | jq -e '.attributes.greeting | contains("TestUser")' > /dev/null 2>&1; then
     ok

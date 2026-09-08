@@ -2117,14 +2117,14 @@ builder.Services.AddOpenApi(options =>
     // Publish the log directory to plugins via env. Each plugin is
     // responsible for opening its own `<shortname>.ljson.log` under this
     // path — the host does not intercept, format, or rotate plugin-emitted
-    // lines. Subprocess plugins inherit the env from the dmart process;
-    // in-process .so plugins read it from the real process environ, which
-    // is why this must go through ProcessEnv.Set (libc setenv) and not the
-    // managed API alone — see Plugins/Native/ProcessEnv.cs.
-    // The value is absolutized because subprocess plugins run with their own
-    // working directory (the plugin's own folder), so a relative path would
-    // resolve to the wrong place. Empty LogFile = no env exported, and the
-    // plugin-side helper skips file logging on its own.
+    // lines. Plugins inherit the env from the dmart process via
+    // ProcessStartInfo, so the managed API is enough; the libc setenv
+    // write-through this used to need went away with in-process .so plugins,
+    // which read the real process environ instead.
+    // The value is absolutized because plugins run with their own working
+    // directory (the plugin's own folder), so a relative path would resolve to
+    // the wrong place. Empty LogFile = no env exported, and the plugin-side
+    // helper skips file logging on its own.
     //
     // dmart owns DMART_PLUGIN_LOG_DIR: a pre-existing value from the parent
     // env is overwritten so plugins always agree with the host on the log
@@ -2134,7 +2134,7 @@ builder.Services.AddOpenApi(options =>
     {
         var dir = Path.GetDirectoryName(logFile);
         if (!string.IsNullOrEmpty(dir))
-            Dmart.Plugins.Native.ProcessEnv.SetAtStartup("DMART_PLUGIN_LOG_DIR", Path.GetFullPath(dir));
+            Environment.SetEnvironmentVariable("DMART_PLUGIN_LOG_DIR", Path.GetFullPath(dir));
     }
 
     // Set minimum log level from config.env.
@@ -2438,7 +2438,7 @@ builder.Services.AddSingleton<ReindexBackgroundService>();
 builder.Services.AddHostedService(sp => sp.GetRequiredService<ReindexBackgroundService>());
 builder.Services.AddSingleton<IApiPlugin, DbSizeInfoPlugin>();
 
-// Native .so plugins from ~/.dmart/plugins/ — no rebuild needed.
+// External plugins from ~/.dmart/plugins/ — no rebuild needed.
 builder.Services.AddNativePlugins();
 
 // Per-request context
@@ -2459,9 +2459,9 @@ builder.Services.Configure<Microsoft.AspNetCore.Http.Features.FormOptions>(o =>
 
 var app = builder.Build();
 
-// Bridge DI into the [UnmanagedCallersOnly] static methods that back the
-// DmartCallbacks struct handed to each native plugin's init() export.
-// Stays alive for the process lifetime.
+// Bridge DI into the static methods that back the callbacks a plugin can make
+// into dmart (see Plugins/Native/NativePluginCallbacks.cs). Stays alive for
+// the process lifetime.
 Dmart.Plugins.Native.NativePluginCallbacks.Services = app.Services;
 
 // Register the shutdown hook for subprocess plugins so each one gets a

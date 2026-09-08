@@ -37,6 +37,27 @@ public sealed class SchemaValidator(EntryRepository entries, ILogger<SchemaValid
         OutputFormat = OutputFormat.List,
     };
 
+    // Every compile gets its OWN schema registry, and that is load-bearing.
+    //
+    // JsonSchema.FromText registers a schema's `$id` into whichever registry it
+    // is given, defaulting to a PROCESS-GLOBAL one that refuses to overwrite.
+    // Compiling the same document twice therefore throws "Overwriting
+    // registered schemas is not permitted" the second time — and dmart compiles
+    // the same document repeatedly, because ClearCache() runs on every schema
+    // entry write (EntryService) and the next validation recompiles.
+    //
+    // The failure was silent and it disabled validation: GetCompiledAsync
+    // catches the throw and returns null, which ValidateDetailedAsync reads as
+    // "schema not found — pass through". So for any schema declaring an `$id`,
+    // writing any schema entry stopped that schema being enforced, and the only
+    // trace was one warning log. dmart's own seed schemas declare no `$id`,
+    // which is why this went unnoticed; user-supplied schemas commonly do.
+    //
+    // Isolation costs nothing here: every `$ref` in play is a local pointer
+    // (`#/$defs/...`), and cross-document refs never worked anyway — nothing
+    // registers schemas globally and SchemaRegistry.Fetch is not configured.
+    private static BuildOptions FreshBuild() => new() { SchemaRegistry = new SchemaRegistry() };
+
     private readonly ConcurrentDictionary<(string Space, string Shortname), JsonSchema?> _cache = new();
 
     public void ClearCache() => _cache.Clear();
@@ -60,7 +81,25 @@ public sealed class SchemaValidator(EntryRepository entries, ILogger<SchemaValid
         var schema = await GetCompiledAsync(spaceName, schemaShortname, ct);
         if (schema is null) return null;   // schema not found — pass through
 
-        var result = schema.Evaluate(body, Options);
+        EvaluationResults result;
+        try
+        {
+            result = schema.Evaluate(body, Options);
+        }
+        catch (Exception ex)
+        {
+            // A schema that compiles but cannot be evaluated — a reference cycle
+            // is the realistic case. Stored schemas are now checked on the way
+            // in (see the Schema branch of ValidatePayloadDetailedAsync), but
+            // anything written before that guard existed, or straight into the
+            // database, still arrives here. Report it as a failure of the schema
+            // rather than letting it surface as an unhandled 500 against
+            // whoever happened to write the next entry.
+            log.LogWarning(ex, "schema {Space}/{Shortname} could not be evaluated",
+                spaceName, schemaShortname);
+            return [new SchemaError("", "", "schema",
+                $"schema '{schemaShortname}' cannot be evaluated: {ex.Message}", null)];
+        }
         if (result.IsValid) return null;
 
         var errors = new List<SchemaError>();
@@ -86,9 +125,57 @@ public sealed class SchemaValidator(EntryRepository entries, ILogger<SchemaValid
         if (payload is null) return null;
         if (string.IsNullOrEmpty(payload.SchemaShortname)) return null;
         if (payload.Body is null) return null;
-        if (resourceType == ResourceType.Schema) return null;  // schemas are themselves JSON Schemas
+        // A schema entry's body is not validated AGAINST a schema — it IS one,
+        // so it is checked for being a usable schema instead of being waved
+        // through, which is what used to happen here.
+        if (resourceType == ResourceType.Schema)
+            return ValidateSchemaDocument(payload.Body.Value);
 
         return await ValidateDetailedAsync(spaceName, payload.SchemaShortname, payload.Body.Value, ct);
+    }
+
+    // A trivial instance, evaluated purely to exercise the schema's reference
+    // graph. Its shape does not matter: a schema that fails against it is not
+    // rejected — only one that THROWS is.
+    private static readonly JsonElement TrialInstance =
+        JsonDocument.Parse("{}").RootElement.Clone();
+
+    /// <summary>
+    /// Checks that a stored schema document is one the validator can actually
+    /// use. Returns null when it is; a single error describing the problem when
+    /// it is not.
+    /// </summary>
+    /// <remarks>
+    /// Compiling is NOT sufficient, which is the whole reason this evaluates.
+    /// `JsonSchema.FromText` happily accepts
+    /// <c>{"$id":"https://x/s","allOf":[{"$ref":"https://x/s"}]}</c> — the
+    /// cycle only bites when something is evaluated against it. Before
+    /// JsonSchema.Net 9.2.2 that recursed until the stack gave out, and a
+    /// StackOverflowException cannot be caught: the process died, taking every
+    /// other request with it. It now raises a catchable JsonSchemaException,
+    /// but "the library survives it" is a weaker property than "we never stored
+    /// it", and the failure lands on the schema's author instead of on whoever
+    /// later writes the first entry against it.
+    ///
+    /// Only exceptions are rejections. A schema that legitimately fails against
+    /// the empty instance — anything with `required`, say — is fine, and so is
+    /// one that recurses legally through `$defs`; both were checked.
+    /// </remarks>
+    internal List<SchemaError>? ValidateSchemaDocument(JsonElement body)
+    {
+        try
+        {
+            var json = JsonSerializer.Serialize(body, DmartJsonContext.Default.JsonElement);
+            var schema = JsonSchema.FromText(json, FreshBuild());
+            _ = schema.Evaluate(TrialInstance, Options);
+            return null;
+        }
+        catch (Exception ex)
+        {
+            log.LogWarning(ex, "rejected an unusable schema document");
+            return [new SchemaError("", "", "schema",
+                $"not a usable JSON Schema: {ex.Message}", null)];
+        }
     }
 
     /// <summary>
@@ -184,7 +271,7 @@ public sealed class SchemaValidator(EntryRepository entries, ILogger<SchemaValid
         try
         {
             var json = JsonSerializer.Serialize(schemaEntry.Payload.Body!.Value, DmartJsonContext.Default.JsonElement);
-            var schema = JsonSchema.FromText(json);
+            var schema = JsonSchema.FromText(json, FreshBuild());
             _cache[key] = schema;
             return schema;
         }

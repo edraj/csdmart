@@ -1,5 +1,767 @@
 # Changelog
 
+## v1.5.4 — 2026-09-08
+
+### Changed
+
+- **OTP silent-no-op logs record the destination in clear.**
+  `/user/otp-request` answers `Ok` on nine no-op branches and logs one line for
+  each. Since v1.4.0 that line carried an 8-character SHA-256 fingerprint of the
+  destination; a partially-masked form (`****3344`) was tried and was still not
+  enough to work a support ticket from. The full msisdn or email is now written.
+
+  **Operators should understand what this means.** That line is emitted at
+  `Information` by default, `/user/otp-request` requires no JWT for `login`,
+  `reset` or `register`, and the log file is created `0644`. An anonymous caller
+  looping requests therefore writes a list of contacts to disk — their own
+  dictionary of numbers as much as any real user's — readable by anyone with
+  shell access to the host. Treat these logs as containing personal data:
+  restrict read access, and keep retention short.
+
+  If that trade stops being acceptable, the cheaper change than re-masking is to
+  keep `{Reason}` and `{Purpose}` at `Information` and drop this one line to
+  `Debug`.
+
+  Two protections that are **not** about privacy remain, because the input is
+  anonymous and unvalidated. `Shortname` is free-form (`Msisdn` and `Email` are
+  regex-checked; it is not) and the default log format is plain text whenever
+  `INVOCATION_ID` is unset — dev, docker, any non-systemd host. Control
+  characters are stripped, so a newline cannot forge log lines an investigator
+  later greps, and the value is capped at 254 characters — above the longest
+  valid email address, so no real destination is ever truncated — so a 100 KB
+  identifier cannot inflate the log file. An absent or blank identifier logs
+  `(none)` rather than an empty `dest=`.
+
+- **The release build is faster, and the remaining cost is now measured rather
+  than assumed.** Consolidating the Linux packages onto one binary took
+  `release.yml` from 24 minutes wall clock to 11 (the Fedora RPM went 5 min → 1,
+  the `.deb` 4 → 1). That moved the bottleneck rather than removing it, so this
+  release addresses where the time actually went:
+
+  - **The two glibc legs of `release-verifiable.yml` ran
+    `dnf install dotnet-sdk-10.0` on every release**, cold, on a hosted runner.
+    Measured on v1.5.3 that made them ~10 minutes each against ~6–7 for the musl
+    legs, whose base image already ships the SDK. They now build inside a
+    published `dmart-el9-builder` image with the SDK and toolchain baked in.
+
+    That also removes an unpinned `dnf install` from the path that produces
+    signed artifacts: the SDK a release was built with used to be whatever the
+    AlmaLinux mirrors served that day, and is now a property of an image pinned
+    by digest.
+
+  - **Nothing cached NuGet in `release-verifiable.yml`** — all four legs
+    restored from scratch, every time. They now share a cache keyed on the
+    recorded dependency graph, so it invalidates exactly when the dependency
+    set does.
+
+  Two things deliberately not changed. The Windows (9 min) and macOS (7 min)
+  AOT builds are different RIDs with nothing to share. And the two workflows
+  still compile the Linux targets separately: `release-verifiable.yml` exists
+  to establish that an artifact was built by hosted CI from the tagged commit,
+  and feeding it a self-hosted binary would forfeit exactly that.
+
+- **The release build is faster where it was measured to be, and unchanged
+  where it was not.** Consolidating the Linux packages onto one binary took
+  `release.yml` from 24 minutes wall clock to 11 (the Fedora RPM went 5 min → 1,
+  the `.deb` 4 → 1). That moved the bottleneck rather than removing it, so this
+  release addresses where the time actually went:
+
+  - **The two glibc legs of `release-verifiable.yml` ran
+    `dnf install dotnet-sdk-10.0` on every release**, cold, on a hosted runner.
+    They now build inside a published `dmart-el9-builder` image, multi-arch and
+    pinned by digest, with the SDK and toolchain baked in.
+
+    **This is not a speed improvement.** Over thirteen runs of the same leg —
+    eight before the change, five after — the median is `584 s` on both sides.
+    The spread within either group (523–651 s before) is far wider than any
+    effect the change could have. Two earlier figures quoted for it, "~3
+    minutes" and then "~50 seconds", were both single-sample comparisons drawn
+    from that spread and neither survived being measured properly.
+
+    The glibc legs do take ~10 minutes against ~6–7 for the musl legs. That gap
+    is real and still unexplained; it is not the SDK install.
+
+    The reason this change stays is the other one: it removes an **unpinned**
+    `dnf install` from the path that produces signed artifacts. The SDK a
+    release was built with used to be whatever the AlmaLinux mirrors served
+    that day; it is now a recorded property of a digest-pinned image, which the
+    image also reports at `/etc/dmart-builder-sdk-version`.
+
+  - **A NuGet cache was added here and then removed again.** All four legs
+    restore from scratch, which looked like obvious waste — but GitHub scopes
+    caches by ref, and this workflow only runs on tag pushes and manual
+    dispatch. It never runs on the default branch, so it never writes a cache
+    another ref can read, and every tag is a new ref with a fresh scope. On a
+    dry run it missed even its `restore-keys` prefix while still spending 3–5 s
+    a leg saving an entry nothing would restore. A comment now records why
+    there is no cache, so the cold restores are not mistaken for an oversight.
+
+  And one that is worth knowing but is not a build cost at all: 424 s of the
+  v1.5.3 release was the signing job waiting for the GitHub Release object to
+  be created after the tag was pushed. Creating the release promptly removes
+  it; no code is involved.
+
+  Two things deliberately not changed. The Windows (9 min) and macOS (7 min)
+  AOT builds are different RIDs with nothing to share. And the two workflows
+  still compile the Linux targets separately: `release-verifiable.yml` exists
+  to establish that an artifact was built by hosted CI from the tagged commit,
+  and feeding it a self-hosted binary would forfeit exactly that.
+
+## v1.5.3 — 2026-09-06
+
+### Added
+
+- **The container image is published for arm64 as well as amd64.** `latest` and
+  `<version>` are now multi-arch manifest lists; each architecture also gets an
+  explicit `<version>-amd64` / `<version>-arm64` tag. Previously the aarch64
+  Alpine package was built on every release and then thrown away, because the
+  container job consumed only the x86_64 one.
+
+  The arm64 image is built on `ubuntu-24.04-arm` with docker, matching how the
+  aarch64 APK is already built — `apk add` has to execute aarch64 binaries, so
+  a native runner beats emulation. The manifest job then asserts the published
+  index actually carries both architectures: an index listing one arch, or
+  listing an arch whose manifest never pushed, otherwise succeeds silently.
+
+### Changed
+
+- **The Linux packages are built from one binary instead of three.** The Fedora
+  RPM, the EL9 RPM and the `.deb` each ran their own `linux-x64` AOT compile —
+  three builds of the same target, about 12 minutes of a three-runner pool, and
+  three chances for the packages to quietly diverge.
+
+  `build-el9-rpm` now publishes the binary it already compiles, and the other
+  two consume it via `DMART_PREBUILT_BIN`. No new job: EL9 was already doing
+  this compile in an AlmaLinux 9 container. `dmart.spec` needed no change
+  either — its `%build` only compiles when `dmart.csproj` is present, which is
+  the SRPM-rebuild path, so it was written for this from the start.
+
+  **EL9 is the right one to build on.** AlmaLinux 9 has the oldest glibc of the
+  three, so a binary built there is the one most likely to run everywhere the
+  other two need to.
+
+  **What this does NOT change is compatibility.** An earlier version of this
+  entry claimed sharing the EL9 binary widens what the `.deb` supports. It does
+  not: the v1.5.2 and v1.5.3 debs require an identical set of glibc symbols,
+  floor `GLIBC_2.34` in both. A binary's floor is the highest symbol version it
+  actually references, not the builder's glibc, and the Debian 12 builder was
+  already producing 2.34. Every package supports exactly what it did before.
+
+  The real gains are one binary instead of three, so they cannot diverge, and a
+  much shorter build — with the binary supplied, the `.deb` job needs no .NET
+  SDK, no clang and no Microsoft apt feed at all, just `dpkg-dev`.
+
+  This is the same build-once-package-many move the container image made when
+  it stopped compiling dmart and started installing the Alpine package.
+
+- **dmart serves its UIs from inside the binary, and only from there.** The
+  filesystem fallback in `CxbMiddleware`/`CatalogMiddleware` — `{BaseDir}/cxb`,
+  `/usr/lib/dmart/cxb`, `/app/cxb` — is gone, along with the second copy of the
+  assets the Alpine package laid down at that path.
+
+  Both existed for one reason: `ManifestEmbeddedFileProvider` does not survive
+  Native AOT on musl, so the middlewares fell through to disk and the APK
+  shipped 5.9 MB of duplicate assets to catch them. That is what kept `/cxb`
+  and `/cat` alive in the Alpine package and container while the static tarball
+  404'd for two releases. v1.5.2 replaced the reader with one that works on
+  glibc and musl alike, which made the duplicate dead weight.
+
+  The consequence is worth stating plainly: **embedded is now the only path, on
+  every artifact.** A regression 404s every UI everywhere rather than only on
+  musl. That is why the release asserts `/cxb/` and `/cat/` actually serve — on
+  all four tarball legs and on both container images — before anything is
+  published.
+
+- **The container image is 36% smaller — 92.3 MB to 58.9 MB.** Almost none of
+  that was Alpine, whose base rootfs is 8.7 MB. It was waste:
+
+  - **21.8 MB: the `.apk` was carried twice.** It was `COPY`ed to `/tmp` and
+    deleted in the *next* `RUN` — but a delete in a later layer reclaims
+    nothing, so the package stayed in the image alongside its installed copy.
+    A `RUN --mount=type=bind` leaves no layer at all. This single mistake was
+    over half the image's overhead.
+  - **~7.5 MB: `bash` and `curl`, which nothing used.** `entrypoint.sh` is
+    `#!/bin/sh` and shells out to only `tr`, `head` and `chmod`; there is no
+    `HEALTHCHECK`, and the release smoke test curls from the host. Five
+    requested packages pulled in 38; between them these two dragged `libcurl`,
+    `brotli-libs`, `nghttp2`, `libidn2` and `libunistring`.
+  - **5.9 MB: the SPAs were shipped twice.** The APK lays `cxb` and `catalog`
+    down at `/usr/lib/dmart/` *and* they are embedded in the binary. That path
+    is the filesystem fallback the middlewares used when the embedded reader
+    failed under Native AOT on musl — it is what kept `/cxb` and `/cat` working
+    in this image while the static tarball 404'd. Since v1.5.2 the embedded
+    reader works, so the image drops the copy.
+
+  `jq` stays — a join sub-query carrying a `jq_filter` shells out to it.
+  `tzdata` stays at 433 KiB. `krb5-libs` stays: the GSSAPI PAL is disabled in
+  this image, which *probably* makes it redundant, but that is not a reason to
+  drop 1.7 MB from a supported auth path without testing it.
+
+  Removing the SPA fallback means the primary path now has to be checked, so
+  the release smoke test asserts `/cxb/` and `/cat/` return 200 before the
+  image is pushed. It previously checked only `/health/ready` — which is how
+  a container serving neither UI would have passed.
+
+- **The container mocks SMS OTP by default.** It ships no SMS gateway, and
+  `SmsSender`'s unconfigured path logs "SMS gateway not configured — dropping
+  message" and returns false. At the previous `MOCK_SMPP_API=false` default
+  that meant `/user/otp-request` minted a code and silently failed to deliver
+  it, so OTP login could not be completed and nothing said why. The generated
+  config now sets `MOCK_SMPP_API=true` with `MOCK_OTP_CODE=123456`, and the
+  first-run banner says so. Configure `SEND_SMS_OTP_API` + `SMPP_AUTH_KEY` and
+  unset it for real delivery. `MOCK_SMTP_API` is deliberately left alone —
+  email OTP has the same gap, but that is a separate call.
+
+## v1.5.2 — 2026-09-06
+
+### Fixed
+
+- **The fully static binary returned 404 for `/cxb` and `/cat`.** Both SPAs
+  were unreachable on the musl artifact in v1.5.0 and v1.5.1 — the one build
+  whose entire selling point is needing nothing beside it. The glibc builds
+  were unaffected.
+
+  The assets were embedded correctly the whole time; only the reader failed.
+  `CxbMiddleware` and `CatalogMiddleware` loaded them through
+  `ManifestEmbeddedFileProvider`, which does not work under Native AOT on musl.
+  That throw was caught and fell through to a filesystem fallback looking for a
+  `cxb/` directory next to the binary — which the static tarball deliberately
+  does not ship, because it is one file. Both strategies failed, and
+  `if (fileProvider is null) return app;` returned **silently**, so nothing in
+  the logs or the build said anything was missing.
+
+  Both middlewares now read the embedded manifest XML directly, the way
+  `Cli/SeedCommand.cs` already did for seed spaces and `LanguageLoader` for
+  translations — which is exactly why `languages loaded: 3 … from embedded`
+  appeared in the static binary's startup log while the SPAs did not. That
+  reader works on glibc and musl alike, so the two builds no longer diverge.
+  The filesystem fallback stays for the Docker and RPM layouts.
+
+  A missing bundle now logs a warning naming the URL that will 404. Silence is
+  how this shipped twice.
+
+  Verified on a locally built `linux-musl-x64` binary (0 `NEEDED`): both SPA
+  roots, `index.html`, all 12 referenced JS/CSS/icon assets, the `<base href>`
+  rewrite, the extensionless deep-route fallback, the root `/favicon.ico`
+  redirect, and non-default `CXB_URL`/`CAT_URL` prefixes.
+
+### Changed
+
+- **The release now proves each binary actually serves its embedded SPAs.**
+  `release-verifiable.yml` starts the freshly published binary against SQLite
+  and requires `/cxb/` and `/cat/` to return 200 — inside busybox for the
+  static legs. Nothing else could have caught the bug above: `curl.sh` check 49
+  accepts a 404 as "SPA not built" and the test suite treats a missing bundle
+  as skip, both correctly, since a dev build legitimately has no SPA. The
+  release job is the only place that knows the bundle is present, having
+  unpacked it two steps earlier.
+
+## v1.5.1 — 2026-09-05
+
+### Added
+
+- **A fully static arm64 binary**, `dmart-<version>-linux-musl-arm64.tar.gz`,
+  alongside the x86-64 one v1.5.0 introduced. Same construction: SQLite and
+  OpenSSL bound at link time, zero `NEEDED` entries, no `libe_sqlite3.so`
+  beside it — one file that runs on any arm64 Linux regardless of distro or
+  glibc version.
+
+  It is a new entry in the existing build matrix rather than any new
+  machinery, so it goes through the same pin-to-the-tagged-commit check, SBOM,
+  signing and SLSA attestation as everything else. It differs from the x86-64
+  static leg **only in its runner**: the pinned Alpine SDK and busybox digests
+  are both multi-arch manifest lists that already carry `linux/arm64`, and as
+  with `linux-arm64`, it has to be a real arm64 machine because NativeAOT
+  cannot cross-compile.
+
+  `scripts/verify-release.sh` now requires it, so a release that lost it fails
+  verification rather than passing with one artifact fewer. The `static-build`
+  job in `ci.yml` still builds only x86-64 — the regression it exists to catch,
+  a dependency reaching its native library through `dlopen`, is not
+  architecture-specific.
+
+## v1.5.0 — 2026-09-05
+
+### Added
+
+- **The fully static musl binary is now a release artifact.**
+  `dmart-<version>-linux-musl-x64.tar.gz` ships on every `v*` tag alongside the
+  glibc tarballs, with the same CycloneDX SBOM, keyless signature and SLSA
+  provenance attestation as the rest. SQLite and OpenSSL are bound at link
+  time, so it has zero `NEEDED` entries and runs on any x86-64 Linux regardless
+  of distro or glibc version — one file, with **no `libe_sqlite3.so`** beside
+  it.
+
+  It rides the existing build matrix rather than a job of its own, so it goes
+  through the same pin-to-the-tagged-commit check and the same signing path by
+  construction. A separate job would have meant a second copy of the logic that
+  guarantees nothing is signed that was not built from the tagged commit, and
+  that is not a thing to keep two copies of. The container image, toolchain
+  setup and build flags moved into matrix fields to make that possible.
+
+  Two assertions run before it is signed: `readelf -d` must report zero
+  `NEEDED` entries, and no `libe_sqlite3` / `libssl.so` / `libcrypto.so`
+  strings may survive. It then reports `--version` from inside **busybox**
+  rather than the Alpine image it was built in — proving it starts somewhere
+  with none of its build-time surroundings. `scripts/verify-release.sh`
+  requires the tarball, so a release that lost it fails verification instead of
+  passing with one artifact fewer.
+
+  `build.sh` gained `--static`, so the scripted build path is the one CI uses
+  rather than a `dotnet publish` line duplicated into a workflow. It refuses a
+  non-musl RID, since a static-pie is a musl construct that glibc cannot link
+  into something that actually runs.
+
+  **You own CVE patching for this artifact.** Statically linked OpenSSL and
+  SQLite get no distro updates, so an advisory in either becomes a
+  rebuild-and-reship. That is why the glibc tarballs still ship alongside it
+  rather than being replaced by it.
+
+**Plugins can call back into dmart.** Only in-process `.so` plugins could do
+this before, via a C ABI struct — load an entry, run a query, send mail,
+broadcast on a channel. Subprocess plugins, the mode the SDK recommended, had
+none of it, so "recommended" came with a silent capability cliff and anything
+needing a callback had to crash the host when it faulted. That gap is what kept
+in-process plugins alive; closing it is what let them be removed.
+
+A plugin may now interleave callback frames into an exchange before its final
+response, and dmart answers each on stdin:
+
+```
+← {"type":"callback","id":1,"op":"query","args":{"type":"search","space_name":"acme"}}
+→ {"type":"callback_result","id":1,"ok":true,"result":{...}}
+← {"status":"ok"}
+```
+
+Ten ops are available: `load_entry`, `load_user`, `save_entry`, `update_user`,
+`send_email`, `ws_broadcast`, `query`, `log`, `get_session_firebase_tokens` and
+`get_media_attachment`. The last one base64-encodes the blob, costing about 33%
+more bytes on the wire than the file itself; a miss is `{"media":null}` rather
+than an empty string, so an absent attachment and a zero-byte one stay
+distinguishable.
+
+Support is negotiated: the info frame is now
+`{"type":"info","host":{"callbacks":1}}`. A plugin that sees no `host` object
+is talking to an older dmart and must not send callbacks — the frame would be
+read as its final response. Existing plugins that never send one are
+unaffected, and any line that is not a `"type":"callback"` object is still
+treated as the response exactly as before.
+
+Two limits bound a misbehaving plugin: 256 callbacks per exchange, and the 30s
+timeout now applies per line rather than per exchange — a long honest chain of
+callbacks is fine, going silent for 30s is not. A callback that re-enters its
+own plugin is rejected rather than allowed to write a second request onto a
+pipe that is midway through an exchange.
+
+A `query` runs as the user that triggered the exchange unless it carries an
+explicit `as_actor` override, so plugin queries stay inside that user's
+permissions by default — the same rule the in-process callback followed.
+
+**Plugins can serve calls in parallel — `"workers": N` in `config.json`.**
+Exchanges are serialized per process because the line protocol has no
+correlation ids: a reply is matched to its request by arrival order, so two
+exchanges sharing one pipe could each read the other's answer. Rather than add
+ids and require every plugin to handle concurrent requests itself, dmart now
+runs N copies of the executable and dispatches each call to whichever is free.
+The plugin contract is unchanged — each worker still sees one message at a
+time, so existing plugins work untouched.
+
+Default is 1, i.e. exactly the previous behaviour. It is opt-in because
+concurrency changes what a plugin's own state means: a counter, a cache or a
+warm connection becomes per-worker rather than per-plugin, and consecutive
+calls need not land on the same process. The range is clamped to 1-32 —
+`workers` is operator-edited JSON and a stray digit should not decide how many
+processes dmart forks.
+
+Genuine parallelism was the one thing in-process `.so` plugins had that
+subprocess plugins did not; this closes that gap without putting third-party
+code back inside the host process.
+
+### Changed
+
+- **The eight shipped after-hook plugins now run fire-and-forget.** They ship
+  `"concurrent": true`, so `audit`, `local_notification`,
+  `admin_notification_sender`, `system_notification_sender`,
+  `realtime_updates_notifier`, `mcp_sse_bridge`, `semantic_indexer` and
+  `resource_folders_creation` no longer add their work to the latency of the
+  action that triggered them.
+
+  This is a real behaviour change, not a restoration. The documented default
+  has always been `true`, but a source-generated-deserializer defect fixed in
+  the previous release meant the field never survived JSON, so every after-hook
+  had in fact always been awaited; that release pinned `false` to hold
+  behaviour still while the mechanism was fixed. This is the deliberate flip
+  that pin was there to make reviewable.
+
+  For the notifiers, the audit log and the indexer, not blocking the response
+  is the entire point. **`resource_folders_creation` is the one to know about:**
+  it materializes `/schema` on Space create and `people/{shortname}` plus five
+  sub-folders on User create, so a create response can now return before those
+  folders exist. A client that creates a Space and immediately uploads a schema
+  can lose that race. It does not fail — a missing parent folder is an explicit
+  *allow* for both folder-level gates — but the write lands without
+  folder-level validation, which in the shipped configuration is a no-op only
+  because the auto-created folder declares no restrictions. `curl.sh` check 49
+  already polls for the folder rather than assuming it. Set `"concurrent":
+  false` in that one plugin's `config.json` to keep it awaited.
+
+**Every plugin process is told what the host supports, including after a
+crash.** The `{"type":"info","host":{…}}` frame was sent once, by the loader,
+to the process running at startup. A plugin that cached the answer — as the
+SDK sample does — silently stopped making callbacks after its first crash,
+because the replacement process had never been told, and nothing in the log
+said so. The frame is now replayed by whichever code starts a process, so a
+respawned worker and a brand-new one are indistinguishable.
+
+**A plugin that dies mid-exchange is no longer retried once it has made a
+callback.** The retry exists for a plugin that dies before doing anything;
+after a callback has been serviced a `save_entry` may already have landed, and
+replaying the request would double it.
+
+**API plugins can return binary responses.** The
+`{"binary":true,"content_type":…,"body_b64":…,"filename":…}` envelope was only
+honoured on the in-process path; it now works for every plugin. Without this,
+removing in-process plugins would have silently taken binary responses with it.
+
+### Fixed
+
+- **The last blocker to running after-hooks concurrently was in the test
+  harness, not the plugins.** `TestUserCleanup` deletes the rows a hook wrote
+  before deleting the user that owns them — `resource_folders_creation`
+  materializes `personal/people/{shortname}/*` entries whose
+  `owner_shortname` points at the new user. Pinned `"concurrent": false` that
+  hook finishes inside the request, so its rows are always there to purge. Set
+  `"concurrent": true` it is dispatched with `Task.Run`, so its inserts could
+  land *after* the purge, and the user delete then tripped the very foreign key
+  the helper exists to avoid.
+
+  It surfaced as `FOREIGN KEY constraint failed` attributed to whichever test
+  happened to be running, which is why it looked like an unrelated flake that
+  moved between test classes between runs — three different classes across the
+  runs that caught it. The between-test drain added previously could not cover
+  it: that settles hooks *after* the test method, and this cleanup runs inside
+  it. The helper now settles in-flight hooks before purging, in one place that
+  all eight affected test files already route through.
+
+  Measured: unpinned went from 1 extra failure in 3 runs to **0 in 6**; pinned
+  is unchanged at 0. Behaviour is unchanged — the eight plugins stay pinned —
+  but the flip is no longer gated on an unexplained flake.
+
+- **The frontend SBOM listed 300+ things that do not ship.** It asked
+  `yarn list --production` — what `package.json` calls a runtime dependency —
+  and cxb declares `@tailwindcss/vite`, `tailwindcss`, `vite-plugin-static-copy`,
+  `vite-plugin-svelte-md` and `mdsvex` as dependencies. All are build-time, and
+  between them they dragged in esbuild, lightningcss, `@tailwindcss/oxide`,
+  `@parcel/watcher` and some seventy per-platform native binaries for operating
+  systems the artifact does not run on. The document asserted every one of them
+  ships inside `/usr/bin/dmart`.
+
+  That is what produced the SBOM-driven false positives. `jmespath` (a
+  `svelte-jsoneditor` dependency that tree-shakes away entirely —
+  `cxb/vite.config.ts` already lists it under `skipChunks`) drew two critical
+  JMESPath CVEs that turned out to be against the Ruby and PHP implementations.
+  `apexcharts`, pulled in by `flowbite-svelte`, is dual-licensed and free only
+  under $2M annual revenue — a real licence question, raised about a package
+  none of whose JavaScript reaches the bundle.
+
+  The inventory now comes from the built bundle. The apps are built with
+  sourcemaps and every `node_modules/<pkg>` path in them is collected, so
+  tree-shaken code is absent by construction rather than by a maintained
+  exclusion list. Stylesheet references (`@import "tailwindcss"`,
+  `@plugin 'flowbite/plugin'`, `@source ".../node_modules/<pkg>"`) are unioned
+  in: that code does not ship but its generated output does and carries its
+  licence, and Vite emits no CSS sourcemaps, so leaving it out would
+  under-report. `flowbite` is the live example — its plugin is where those
+  `apexcharts` CSS classnames in the bundle actually come from.
+
+  **434 components became 75**, and the count is not the interesting part.
+  The old set both over-reported build tooling *and* missed **`svelte` itself**
+  — the framework runtime, unquestionably in the shipped bundle, absent from
+  the inventory because it is declared a devDependency. Every one of the 75 now
+  resolves a licence locally; the npm-registry fallback added alongside the
+  licence fix is no longer reached, because the packages that needed it were
+  the per-platform binaries that never shipped.
+
+  Generation now fails if a build fails or emits no sourcemaps, rather than
+  quietly producing a thinner document, and it reports how many lockfile
+  entries were excluded so a shrunken inventory is never mistaken for a broken
+  one. The SBOM job now builds the frontends (~40s); `release.yml` builds them
+  in a separate parallel job whose output it cannot see.
+
+- **Declared defaults across the wire model were silently discarded.** #234
+  fixed this for `PluginWrapper`; the same defect ran through most of the
+  model. On meeting an init-only property, the source-generated deserializer
+  abandons the parameterless constructor for
+  `ObjectWithParameterizedConstructorCreator`, which assigns every such
+  property from an args array and passes `default(T)` for whatever the payload
+  omitted. The initialisers ran and were immediately overwritten.
+
+  It only showed where the declared default differs from `default(T)`, which is
+  what kept it hidden — `Response.Status = Status.Success` looked correct
+  because `Success` is the enum's zero member. The same coincidence in reverse
+  is where it did real damage:
+
+  - `Space`, `Role`, `Group` and `Permission` deserialized with
+    `resource_type` **`user`**, because `ResourceType.User` is the zero member.
+  - A user parsed without an explicit language came back **Arabic**, not
+    English — `Language.Ar` is the zero member and `= Language.En` was dropped.
+  - Every `= new()` collection arrived as `null` and every `= ""` string as
+    `null`, which is what forced the `?? ""` coercions in
+    `SpaceRepository.UpsertAsync`.
+  - `Query.Limit` arrived as `0` rather than `10`, and
+    `Query.FilterSchemaNames` as `null` rather than `["meta"]`. `Query` is
+    deserialized straight from request bodies by `CsvHandler`,
+    `ImportExportHandler`, `ExecuteTaskHandler` and `AlterationHandler`.
+
+  The 67 properties that carry a default are now `set` rather than `init`,
+  which puts the generator back on the real constructor. Only those properties
+  changed: the rest stay init-only, and types never deserialized from JSON
+  (`DmartRole`, `DmartPermission`) were left alone. Types with `required`
+  members keep the parameterized creator, but it then carries only the required
+  members — which a payload must supply anyway — so the rest keep their
+  declared defaults.
+
+  `SpaceRepository`'s `?? ""` backstops stay. They no longer cover an omitted
+  field, but a payload that spells out `"icon": null` still lands a null in a
+  non-nullable string, because System.Text.Json does not enforce nullability at
+  runtime. `SeedSpaceMetaTests` previously asserted the broken shape and is now
+  inverted to pin the corrected one.
+
+- **The frontend half of the SBOM now carries licences.** `yarn.lock` records
+  only name, version and integrity — it has no licence field — so syft reading
+  it emitted 434 components with no licence at all, and every per-RID document
+  inherited that on merge. A reviewer could not tell an MIT dependency from a
+  revenue-gated commercial one, and Dependency-Track reported the whole tree as
+  unlicensed rather than flagging the single term that needs a decision.
+  `dist/frontend-sbom.sh` now resolves licences from the installed
+  `node_modules` tree, falling back to the npm registry for the optional
+  per-platform native binaries (`@esbuild/win32-*`, `lightningcss-*-msvc`,
+  `@tailwindcss/oxide-*`, `fsevents`) that never install on the build machine
+  and so can never be resolved locally. Coverage went 0/434 → 434/434; the
+  component set is unchanged.
+
+  Licences are encoded the way CycloneDX requires rather than pasted into one
+  field: SPDX identifiers as `license.id`, compound terms as an SPDX
+  `expression`, and anything unrecognised as `license.name`. `license.id` is a
+  schema enumeration, and an out-of-enum value fails the validation
+  `actions/attest-sbom` runs before signing — so an unknown string degrades to
+  a plain name rather than breaking a release. Non-SPDX licences are printed at
+  generation time as needing review, which is how `apexcharts` (dual-licensed,
+  free only under $2M annual revenue) becomes visible instead of silently
+  reading as unlicensed.
+
+  Generation fails if fewer than half the components resolve a licence. The two
+  sources fail independently, so losing either still clears the floor; losing
+  both is the case worth refusing, because an SBOM asserting 434 unlicensed
+  dependencies reads as a licence finding rather than the tooling failure it
+  is. `FRONTEND_SBOM_OFFLINE=1` skips the registry lookup for airgapped builds.
+
+- **A plugin's `config.json` defaults were silently discarded.** `PluginWrapper`
+  declares `ordinal` defaulting to 9999, `concurrent` to `true` and
+  `dependencies` to an empty list, and the SDK documents all three. None of them
+  survived deserialization: a config that omitted a field got `0`, `false` and
+  `null` instead.
+
+  The cause is a sharp edge in the source-generated deserializer. With any
+  init-only property, it abandons the parameterless constructor for
+  `ObjectWithParameterizedConstructorCreator`, which assigns *every* such
+  property from an args array and passes `default(T)` for whatever the JSON left
+  out. The constructor still ran, so the initialisers executed and were then
+  immediately overwritten. `new PluginWrapper()` was correct throughout, which is
+  why this survived: any test that built the object in C# saw the documented
+  values, and only a test that went through JSON could have caught it. The
+  properties are now `set` rather than `init`, which puts the generator back on
+  the real constructor.
+
+  The practical effect was on `concurrent`, which `PluginManager` reads directly
+  to choose between fire-and-forget and awaited after-hook dispatch. Every
+  shipped plugin omitted the field, so every after-hook had been awaited —
+  the opposite of the documented default, and of what the dispatch code was
+  written for.
+
+  **Runtime behaviour is deliberately unchanged by this release.** The eight
+  shipped after-hook plugins now state `"concurrent": false` explicitly, so they
+  keep running awaited exactly as before. Fixing the mechanism and changing when
+  every hook in the system runs are two different changes, and only the first
+  belongs in a bug fix. Moving them to fire-and-forget is now a one-line,
+  reviewable decision per plugin.
+
+  New plugins are unaffected by the pinning and get the documented default:
+  omitting `concurrent` means fire-and-forget, as the SDK has always said.
+
+- **The .NET half of the SBOM now carries licences, and one of them needs a
+  decision.** Five components had none, and an unlicensed component is
+  indistinguishable from a permissively licensed one — so a term that needs
+  attention read as uninteresting.
+
+  `Json.More.Net`, `JsonPointer.Net` and `JsonSchema.Net` declare
+  `<license type="file">OSMFEULA.txt</license>`, an **Open Source Maintenance
+  Fee** agreement: the source is MIT, but the pre-compiled Binary Release — the
+  NuGet package we consume — carries a monthly fee for users in
+  revenue-generating activities with annual gross revenue at or above
+  **US$10,000**. `JsonSchema.Net` is a direct dependency behind
+  `SchemaValidator` and `PreflightService`, so it is compiled into every
+  artifact we ship. The two runtime packs were simply missed: they declare MIT,
+  but `dist/sbom.sh` injects them outside the restore graph the CycloneDX tool
+  reads, so nothing ever asked.
+
+  Licences are now read from each package's `.nuspec` for anything the tool
+  left blank, and packages shipping their own licence text are printed at
+  generation time rather than reduced to a count. 34/34 components carry a
+  licence, and the document still validates against CycloneDX 1.6.
+
+- **`GET /db_size_info/` returns per-table sizes on builds that can provide
+  them.** `DbSizeInfoPlugin` hardcoded that `dbstat` is unavailable. That was
+  true of the SQLitePCLRaw `e_sqlite3` build and is not true of the static musl
+  artifact, which links Alpine's SQLite and does compile
+  `SQLITE_ENABLE_DBSTAT_VTAB` in — so the one artifact that could answer
+  refused to, and the refusal named a build it was not running. It now runs the
+  query and falls back only when that fails. The test asserted the failure
+  unconditionally, which is how the stale assumption survived; it accepts both
+  outcomes and pins what each must contain.
+
+- **The test suite settles fire-and-forget plugin hooks between tests.**
+  `TestParallelization.cs` runs the assembly serially because the suite shares
+  one database and process-global plugin state, but that serializes *tests*,
+  not their side effects: a concurrent after-hook is dispatched with `Task.Run`
+  and outlives the request, so one test's hooks could still be writing while
+  the next ran. An assembly-level `BeforeAfterTestAttribute` now waits for them.
+
+  `InFlightTracker` gained `WaitForIdleAsync` for this. `DrainAsync` could not
+  be reused: it cancels `ShutdownToken` as its last act, which is correct once
+  at teardown and wrong repeatedly — every hook dispatched afterwards would
+  receive an already-cancelled token and unwind immediately, so the hooks would
+  silently stop running.
+
+  This is a prerequisite for moving any plugin to `"concurrent": true`, not a
+  green light. With the eight shipped plugins temporarily unpinned, the suite
+  still produced an intermittent extra failure (1 run in 3, in a different test
+  than before the change), so something beyond hook overlap remains. With them
+  pinned as they ship, the suite reproduces its baseline exactly across three
+  runs, so this costs nothing today.
+
+  `DmartFactory.SettlePluginHooksAsync()` covers the case the between-test hook
+  cannot: a test asserting on state a hook affects, where the assertion happens
+  before the attribute runs.
+
+- **A user-supplied JSON Schema could kill the process, and another could
+  silently switch validation off.** Both are reachable by anyone able to store
+  a `schema` entry.
+
+  `{"$id":"https://x/s","allOf":[{"$ref":"https://x/s"}]}` compiles fine and
+  recurses only when something is evaluated against it. On the shipped
+  `JsonSchema.Net` 9.1.4 that recursed until the stack gave out — and a
+  `StackOverflowException` cannot be caught, so the process died and took every
+  in-flight request with it. Reaching it needed nothing exotic: store that
+  schema, then write one entry whose payload references it. Upgrading to 9.4.0
+  turns it into a catchable exception.
+
+  Separately, `JsonSchema.FromText` registers a schema's `$id` into a
+  **process-global** registry that refuses to overwrite. dmart recompiles the
+  same document routinely, because `ClearCache()` runs on every schema entry
+  write — so the second compile threw, `GetCompiledAsync` caught it and
+  returned null, and null reads as "schema not found — pass through". Writing
+  any schema entry therefore stopped every `$id`-bearing schema from being
+  enforced, leaving one warning log as the only trace. dmart's own seed schemas
+  declare no `$id`, which is why nothing caught it. Every compile now gets its
+  own registry.
+
+  Schema documents are also checked on the way in rather than waved through, so
+  an unusable one is refused with the error attributed to its author instead of
+  to whoever later writes the first entry against it. The check evaluates a
+  trivial instance rather than only compiling, because compiling is exactly what
+  fails to notice a reference cycle. Only exceptions reject: a schema that
+  legitimately fails against the empty instance — anything with `required` — is
+  fine, and so is one that recurses legally through `$defs`.
+
+  The upgrade keeps `JsonSchema.Net` on its Open Source Maintenance Fee terms
+  (see the SBOM entry above); the last MIT release, 8.0.5, still has the crash.
+
+### Removed
+
+**In-process `.so` plugins.** dmart no longer loads shared libraries into its
+own process via `NativeLibrary.Load`. The C ABI (`get_info`, `hook`,
+`handle_request`, `free_string`, `init`, `dmart_plugin_version`), the
+`DmartCallbacks` struct and its capability marker, and the C# SDK header in
+`custom_plugins_sdk/shared/` are all gone, along with the two `.so` sample
+projects — replaced by Python samples that use the protocol above.
+
+This mode ran third-party code inside the host process, so a segfault in a
+plugin took dmart down with it, and it could not work in a static build at all
+(`dlopen` is unavailable there). The subprocess protocol now covers everything
+it could do, including every callback.
+
+**If you have a `.so` deployed**, dmart reports it at startup and on
+`GET /info/plugins` as a load failure naming the removal rather than skipping
+the directory in silence — a plugin that stops running should never be
+something you have to infer from behaviour that quietly stopped happening. Port
+it using `custom_plugins_sdk/README.md`; the event and request envelopes are
+unchanged, so the handler logic usually transfers as-is.
+
+Two host-side details went with it: `ProcessEnv` (a libc `setenv`
+write-through that existed only because in-process plugins read the real
+`environ` — child processes inherit the managed view, so the managed API is
+enough now), and the `[ThreadStatic]` actor context's dependency on
+synchronous native frames.
+
+- **`validate_schema` is gone from the query body.** It had no consumers
+  anywhere in `Services`, `Api` or `DataAdapters`, while `docs/query.md`
+  advertised it — so it read as a working switch. Removing it changes no
+  output: `Query` is deserialized from request bodies and never serialized into
+  a response, so a client that keeps sending it is unaffected, since
+  System.Text.Json skips unmapped members. (`cxb` also passes `validate_schema`
+  to `/managed/entry`, whose handler never declared it either; those calls were
+  already inert and are left alone.)
+
+## v1.4.1 — 2026-09-04
+
+### Fixed
+
+**`POST /user/profile` accepts an unchanged `email`/`msisdn` again.** v1.4.0
+refused all six contact keys on presence alone. But `email` and `msisdn` are
+part of the profile *representation*: a client that reads its profile, edits a
+display name and posts the Record back sends them straight back unchanged, and
+that ordinary round-trip started failing with `INVALID_DATA` having changed
+nothing. They are now refused only when they name a *different* address than
+the row holds; an echo, or a null, is the no-op it always was. `new_email`,
+`new_msisdn`, `email_otp` and `msisdn_otp` are still refused by name. (#228)
+
+**`POST /user/verify-contact` no longer returns 500 when `code` is missing.**
+The field is non-nullable in the request record but nothing enforced that on
+the wire, so an omitted `code` reached the hasher as null — and did so
+precisely when a live code existed for the destination, i.e. right after
+`/otp-request`. Now a `MISSING_DATA` 400, refused before the store is touched
+so it cannot spend a verification attempt either. (#228)
+
+**Contact changes reach the audit history again.** `/user/verify-contact`
+wrote directly to the user row, skipping the diff the `/user/profile` path it
+replaced used to append — so a changed email was invisible to
+`/managed/query?type=history`. (#228)
+
+**Confirming a contact no longer rewrites its stored spelling.** An
+admin-provisioned or OAuth-sourced `Alice@Example.com` was silently lowercased
+the first time its owner confirmed it. The address is now written only on an
+actual change. (#228)
+
+**`GET /user/profile` returns the caller's avatar.** Attachments on the user's
+own row now come back under `attachments`, in the same shape `/managed/entry`
+returns, so a client that already renders `record.attachments` needs no second
+call. Avatar only, matching Python's `filter_shortnames=["avatar"]`. (#227)
+
+**`/managed/entry` honours `retrieve_attachments` for spaces, users, roles and
+permissions.** Those four returned a bare row and silently ignored the flag.
+(#227)
+
+### Security
+
+**`fast-uri` pinned past four HIGH CVEs** (CVE-2026-75899, CVE-2026-75931,
+CVE-2026-75975, CVE-2026-76172 — SSRF, host confusion via IDN, IPv6
+normalisation, URI parsing). It reached the frontend bundle transitively via
+`svelte-jsoneditor` → `ajv`. The declared range already permitted the fix; the
+lockfile was stale. Pinned through the root `resolutions` block, as with
+`vite` and `esbuild`. (#229)
+
+
 ## v1.4.0 — 2026-09-02
 
 ### Breaking — the OTP issuing endpoints are now one endpoint

@@ -13,12 +13,9 @@ namespace Dmart.Api.Info;
 // who want versioned plugin metadata should call /info/plugins.
 //
 // The version comes from the plugin binary itself (see PluginManager.ResolveVersion):
-//   - In-process .NET plugins → AssemblyInformationalVersion of the loaded
-//     assembly. Built-in plugins (Plugins/BuiltIn/*) ship inside the dmart
-//     binary so they inherit dmart's own version.
-//   - Native .so plugins → string returned from the optional `dmart_plugin_version`
-//     export, baked into the .so's .rodata at compile time.
-//   - Subprocess plugins → `version` field on the {"type":"info"} response,
+//   - Built-in plugins (Plugins/BuiltIn/*) → AssemblyInformationalVersion.
+//     They ship inside the dmart binary, so they inherit dmart's own version.
+//   - External plugins → `version` field on the {"type":"info"} response,
 //     which the plugin author bakes into their build artifact (Go ldflags,
 //     Python __version__, etc.).
 //   - Unknown / undeclared → "0.0.0" sentinel.

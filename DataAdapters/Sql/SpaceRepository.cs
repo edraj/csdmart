@@ -119,15 +119,19 @@ public sealed class SpaceRepository(IDbConnectionFactory db)
         AddJsonb(cmd, JsonbHelpers.ToJsonb(space.Relationships));
         DbParams.Add(cmd, (object?)space.LastChecksumHistory ?? DBNull.Value);
         DbParams.Add(cmd, JsonbHelpers.EnumMember(space.ResourceType));
-        // The `?? ""` backstops are load-bearing despite the C# property
-        // initializers (`= ""`). When STJ source-gen deserializes a record
-        // with `required` members (Shortname/SpaceName/Subpath/Uuid/
-        // OwnerShortname here), it uses the parameterized-constructor code
-        // path and SKIPS the field initializers for non-required members.
-        // So a Space loaded from JSON that omits e.g. `primary_website`
-        // arrives here with the property null, even though the C# default
-        // is `""`. The matching DB columns are NOT NULL DEFAULT '', so an
-        // empty string is the right value either way.
+        // The `?? ""` backstops are still load-bearing, but no longer for the
+        // reason they were added. They used to cover an OMITTED field: STJ
+        // source-gen discarded the `= ""` initializers, so a Space parsed from
+        // JSON without `primary_website` arrived here null. That is fixed --
+        // those properties are `set` rather than `init` now, so the
+        // initializers survive and an omitted field arrives as "".
+        //
+        // What remains is the EXPLICIT null: a payload spelling out
+        // `"icon": null` still lands a null in a non-nullable string, because
+        // System.Text.Json does not enforce nullability at runtime. The
+        // matching DB columns are NOT NULL DEFAULT '', so coercing here is
+        // what keeps such a payload from failing the upsert.
+        // Pinned by ModelDefaultsTests.An_Explicit_Null_Still_Arrives_As_Null.
         DbParams.Add(cmd, space.RootRegistrationSignature ?? "");
         DbParams.Add(cmd, space.PrimaryWebsite ?? "");
         DbParams.Add(cmd, space.IndexingEnabled);

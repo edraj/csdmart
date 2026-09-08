@@ -403,10 +403,26 @@ public class QuerySearchFeatureMatrixTests : IClassFixture<DmartFactory>
             (await RunSearch(query, sn, $"-@created_at:[{hourAgo} {hourAhead}]")).ShouldBeEmpty();
 
             // ISO strings cast to timestamptz instead.
-            var today = DateTime.UtcNow.ToString("yyyy-MM-dd");
-            var tomorrow = DateTime.UtcNow.AddDays(1).ToString("yyyy-MM-dd");
-            (await RunSearch(query, sn, $"@created_at:[{today},{tomorrow}]")).ShouldBe(all);
-            (await RunSearch(query, sn, $"@updated_at:[{today},{tomorrow}]")).ShouldBe(all);
+            //
+            // Bounds come from DateTime.Now, NOT UtcNow: rows are stamped by
+            // TimeUtils.Now(), which is DateTime.Now, because dmart is
+            // timezone-less end to end and stores local wall-clock verbatim.
+            // Building the range from UtcNow made this fail every night in the
+            // window between local midnight and UTC midnight (three hours at
+            // +03): a row stamped 2026-09-04T00:52 local fell past an upper
+            // bound of "2026-09-04" derived from a UTC date still reading
+            // 2026-09-03, and the range returned nothing.
+            //
+            // Widened to yesterday..tomorrow as well, so a local midnight
+            // crossing BETWEEN seeding the rows and running the query cannot
+            // reintroduce the same flake from a different direction. The
+            // assertion is about ISO strings casting to timestamptz at all,
+            // not about single-day precision.
+            var yesterday = DateTime.Now.AddDays(-1).ToString("yyyy-MM-dd");
+            var today = DateTime.Now.ToString("yyyy-MM-dd");
+            var tomorrow = DateTime.Now.AddDays(1).ToString("yyyy-MM-dd");
+            (await RunSearch(query, sn, $"@created_at:[{yesterday},{tomorrow}]")).ShouldBe(all);
+            (await RunSearch(query, sn, $"@updated_at:[{yesterday},{tomorrow}]")).ShouldBe(all);
 
             // FOOTGUN, pinned deliberately. Comparison operators only engage
             // for NUMERIC values (ComparisonRegex requires it), so

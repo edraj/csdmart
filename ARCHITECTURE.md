@@ -116,10 +116,10 @@ A typical `POST /managed/request` creating an entry:
 
 Plugins are first-class. They fall into two categories, each with two variants:
 
-|                   | **Hook plugins**                  | **API plugins**                      |
-|-------------------|-----------------------------------|--------------------------------------|
-| **Built-in**      | `Plugins/BuiltIn/*.cs`            | `Plugins/BuiltIn/*.cs`               |
-| **Native (.so)**  | `Plugins/Native/NativePluginLoader.cs` | Same loader, different config       |
+|                | **Hook plugins**                       | **API plugins**               |
+|----------------|----------------------------------------|-------------------------------|
+| **Built-in**   | `Plugins/BuiltIn/*.cs`                 | `Plugins/BuiltIn/*.cs`        |
+| **External**   | `Plugins/Native/NativePluginLoader.cs` | Same loader, different config |
 
 Hook plugins fire on domain events (`create`, `update`, `delete` on entries).
 They can run before or after the event. Built-in examples:
@@ -130,12 +130,17 @@ subscribers), `AuditPlugin` (logs events), `ResourceFoldersCreationPlugin`
 API plugins expose new HTTP endpoints. `DbSizeInfoPlugin` is the only
 built-in example.
 
-Native plugins are `.so` files dropped into `~/.dmart/plugins/<name>/` with a
-`config.json` describing filters (which subpaths, resource types, schemas,
-and actions they care about). They export a small C ABI — `get_info()`,
-`hook()` or `handle_request()`, `free_string()` — and can be written in any
-language that produces a shared library. See `custom_plugins_sdk/` for
-examples in C#, Rust, and C.
+External plugins are executables dropped into `~/.dmart/plugins/<name>/` with a
+`config.json` describing filters (which subpaths, resource types, schemas, and
+actions they care about). dmart speaks to them over stdin/stdout in JSON lines,
+so they can be written in any language, and a crash costs a respawn rather than
+the host process. They can call back into dmart mid-request — read and write
+entries, run queries under the triggering user's permissions, send mail,
+broadcast, log. See `custom_plugins_sdk/` for the protocol and samples.
+
+In-process `.so` plugins (loaded via `dlopen` behind a C ABI) were removed:
+third-party code in the host process meant a segfault took dmart down, and
+`dlopen` does not work in a static build at all.
 
 ## Configuration
 
@@ -174,7 +179,7 @@ Models/                Core domain types and API DTOs
   Json/                DmartJsonContext — the source-gen JSON hub
 Plugins/
   BuiltIn/             Compiled-in plugins
-  Native/              .so loader and callback bridge
+  Native/              External-plugin loader, subprocess host, callback bridge
 Services/              Domain logic — EntryService, QueryService, PermissionService, etc.
 Utils/                 Shared helpers (QueryPolicies, etc.)
 

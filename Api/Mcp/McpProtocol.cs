@@ -18,15 +18,15 @@ namespace Dmart.Api.Mcp;
 // We echo it back verbatim on the response.
 public sealed record McpRequest
 {
-    public string Jsonrpc { get; init; } = "2.0";
+    public string Jsonrpc { get; set; } = "2.0";
     public JsonElement? Id { get; init; }
-    public string Method { get; init; } = "";
+    public string Method { get; set; } = "";
     public JsonElement? Params { get; init; }
 }
 
 public sealed record McpResponse
 {
-    public string Jsonrpc { get; init; } = "2.0";
+    public string Jsonrpc { get; set; } = "2.0";
     public JsonElement? Id { get; init; }
     public JsonElement? Result { get; init; }
     public McpError? Error { get; init; }
@@ -42,7 +42,7 @@ public sealed record McpError(int Code, string Message, JsonElement? Data = null
 
 public sealed record InitializeParams
 {
-    public string ProtocolVersion { get; init; } = "";
+    public string ProtocolVersion { get; set; } = "";
     public JsonElement? Capabilities { get; init; }
     public ClientInfo? ClientInfo { get; init; }
 }
@@ -51,9 +51,9 @@ public sealed record ClientInfo(string Name, string Version);
 
 public sealed record InitializeResult
 {
-    public string ProtocolVersion { get; init; } = "";
-    public ServerCapabilities Capabilities { get; init; } = new();
-    public ServerInfo ServerInfo { get; init; } = new("dmart", "0.1.0");
+    public string ProtocolVersion { get; set; } = "";
+    public ServerCapabilities Capabilities { get; set; } = new();
+    public ServerInfo ServerInfo { get; set; } = new("dmart", "0.1.0");
 }
 
 public sealed record ServerInfo(string Name, string Version);
@@ -62,20 +62,20 @@ public sealed record ServerCapabilities
 {
     // v0.1: tools only; resources is a stub with list support, no subscription;
     // prompts/logging/completion deferred.
-    public ToolsCapability? Tools { get; init; } = new();
-    public ResourcesCapability? Resources { get; init; } = new();
+    public ToolsCapability? Tools { get; set; } = new();
+    public ResourcesCapability? Resources { get; set; } = new();
 }
 
 public sealed record ToolsCapability
 {
     // We don't notify on tools list changes yet.
-    public bool? ListChanged { get; init; } = false;
+    public bool? ListChanged { get; set; } = false;
 }
 
 public sealed record ResourcesCapability
 {
-    public bool? ListChanged { get; init; } = false;
-    public bool? Subscribe { get; init; } = false;
+    public bool? ListChanged { get; set; } = false;
+    public bool? Subscribe { get; set; } = false;
 }
 
 // ---- tools/list method ----
@@ -84,8 +84,8 @@ public sealed record ToolsListResult(IReadOnlyList<McpTool> Tools);
 
 public sealed record McpTool
 {
-    public string Name { get; init; } = "";
-    public string Description { get; init; } = "";
+    public string Name { get; set; } = "";
+    public string Description { get; set; } = "";
     public JsonElement InputSchema { get; init; }
 }
 
@@ -93,7 +93,7 @@ public sealed record McpTool
 
 public sealed record ToolsCallParams
 {
-    public string Name { get; init; } = "";
+    public string Name { get; set; } = "";
     public JsonElement? Arguments { get; init; }
 }
 
@@ -107,22 +107,22 @@ public sealed record ResourcesListResult(IReadOnlyList<McpResource> Resources);
 
 public sealed record McpResource
 {
-    public string Uri { get; init; } = "";
-    public string Name { get; init; } = "";
+    public string Uri { get; set; } = "";
+    public string Name { get; set; } = "";
     public string? Description { get; init; }
     public string? MimeType { get; init; }
 }
 
 public sealed record ResourcesReadParams
 {
-    public string Uri { get; init; } = "";
+    public string Uri { get; set; } = "";
 }
 
 public sealed record ResourcesReadResult(IReadOnlyList<ResourceContents> Contents);
 
 public sealed record ResourceContents
 {
-    public string Uri { get; init; } = "";
+    public string Uri { get; set; } = "";
     public string? MimeType { get; init; }
     public string? Text { get; init; }
 }

@@ -16,24 +16,24 @@ public sealed record User
     public string? Slug { get; init; }
     public Translation? Displayname { get; init; }
     public Translation? Description { get; init; }
-    public List<string> Tags { get; init; } = new();
+    public List<string> Tags { get; set; } = new();
     public DateTime CreatedAt { get; init; }
     public DateTime UpdatedAt { get; init; }
     public required string OwnerShortname { get; init; }
     public string? OwnerGroupShortname { get; init; }
     public Payload? Payload { get; init; }
     public string? LastChecksumHistory { get; init; }
-    public ResourceType ResourceType { get; init; } = ResourceType.User;
+    public ResourceType ResourceType { get; set; } = ResourceType.User;
 
     // ----- Users-specific -----
     [JsonIgnore]
     public string? Password { get; init; }    // hashed — never serialized to API responses
-    public List<string> Roles { get; init; } = new();
-    public List<string> Groups { get; init; } = new();
+    public List<string> Roles { get; set; } = new();
+    public List<string> Groups { get; set; } = new();
     public List<AclEntry>? Acl { get; init; }
     public List<Dictionary<string, object>>? Relationships { get; init; }
-    public UserType Type { get; init; } = UserType.Web;
-    public Language Language { get; init; } = Language.En;
+    public UserType Type { get; set; } = UserType.Web;
+    public Language Language { get; set; } = Language.En;
     public string? Email { get; init; }
     public string? Msisdn { get; init; }
     public bool LockedToDevice { get; init; }
@@ -53,7 +53,7 @@ public sealed record User
     public DateTime? LastFailedLogin { get; init; }
     public string? Notes { get; init; }
     [JsonIgnore]
-    public List<string> QueryPolicies { get; init; } = new();
+    public List<string> QueryPolicies { get; set; } = new();
 
     // Soft-delete state. Irreversible once set — see UserService.DeleteUserAsync.
     // A soft-deleted row keeps its shortname/uuid (so entries.owner_shortname etc.

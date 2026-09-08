@@ -7,12 +7,12 @@ using Xunit;
 
 namespace Dmart.Tests.Unit.Plugins;
 
-public class NativeApiPluginBinaryTests
+public class SubprocessApiPluginBinaryTests
 {
     [Fact]
     public void TryDecodeBinary_Returns_False_For_Plain_Json_Object()
     {
-        var ok = NativeApiPlugin.TryDecodeBinary(
+        var ok = SubprocessApiPlugin.TryDecodeBinary(
             """{"status":"success","records":[]}""",
             out _, out var body, out _);
         ok.ShouldBeFalse();
@@ -22,20 +22,20 @@ public class NativeApiPluginBinaryTests
     [Fact]
     public void TryDecodeBinary_Returns_False_For_Json_Array()
     {
-        NativeApiPlugin.TryDecodeBinary("[1,2,3]", out _, out _, out _).ShouldBeFalse();
+        SubprocessApiPlugin.TryDecodeBinary("[1,2,3]", out _, out _, out _).ShouldBeFalse();
     }
 
     [Fact]
     public void TryDecodeBinary_Returns_False_For_Empty_String()
     {
-        NativeApiPlugin.TryDecodeBinary("", out _, out _, out _).ShouldBeFalse();
+        SubprocessApiPlugin.TryDecodeBinary("", out _, out _, out _).ShouldBeFalse();
     }
 
     [Fact]
     public void TryDecodeBinary_Returns_False_For_Malformed_Json()
     {
         // Has the "binary" prefix to defeat the fast-path so we exercise the parse failure.
-        NativeApiPlugin.TryDecodeBinary("""{"binary":""", out _, out _, out _).ShouldBeFalse();
+        SubprocessApiPlugin.TryDecodeBinary("""{"binary":""", out _, out _, out _).ShouldBeFalse();
     }
 
     [Fact]
@@ -46,7 +46,7 @@ public class NativeApiPluginBinaryTests
         {"binary":true,"content_type":"application/pdf","body_b64":"{{Convert.ToBase64String(payload)}}","filename":"x.pdf"}
         """;
 
-        var ok = NativeApiPlugin.TryDecodeBinary(json, out var ct, out var body, out var fn);
+        var ok = SubprocessApiPlugin.TryDecodeBinary(json, out var ct, out var body, out var fn);
 
         ok.ShouldBeTrue();
         ct.ShouldBe("application/pdf");
@@ -60,7 +60,7 @@ public class NativeApiPluginBinaryTests
         var payload = new byte[] { 9, 9 };
         var json = $$"""{"binary":true,"body_b64":"{{Convert.ToBase64String(payload)}}"}""";
 
-        var ok = NativeApiPlugin.TryDecodeBinary(json, out var ct, out var body, out var fn);
+        var ok = SubprocessApiPlugin.TryDecodeBinary(json, out var ct, out var body, out var fn);
 
         ok.ShouldBeTrue();
         ct.ShouldBe("application/octet-stream");
@@ -72,7 +72,7 @@ public class NativeApiPluginBinaryTests
     public void TryDecodeBinary_Returns_False_When_Binary_Flag_Is_False()
     {
         var json = """{"binary":false,"body_b64":"AAAA"}""";
-        NativeApiPlugin.TryDecodeBinary(json, out _, out var body, out _).ShouldBeFalse();
+        SubprocessApiPlugin.TryDecodeBinary(json, out _, out var body, out _).ShouldBeFalse();
         body.Length.ShouldBe(0);
     }
 
@@ -80,7 +80,7 @@ public class NativeApiPluginBinaryTests
     public void TryDecodeBinary_Returns_False_When_Body_Is_Empty()
     {
         var json = """{"binary":true,"body_b64":""}""";
-        NativeApiPlugin.TryDecodeBinary(json, out _, out _, out _).ShouldBeFalse();
+        SubprocessApiPlugin.TryDecodeBinary(json, out _, out _, out _).ShouldBeFalse();
     }
 
     [Fact]
@@ -89,7 +89,7 @@ public class NativeApiPluginBinaryTests
         var payload = new byte[] { 7, 7, 7 };
         var json = "   \n  " + $$"""{"binary":true,"body_b64":"{{Convert.ToBase64String(payload)}}"}""";
 
-        var ok = NativeApiPlugin.TryDecodeBinary(json, out _, out var body, out _);
+        var ok = SubprocessApiPlugin.TryDecodeBinary(json, out _, out var body, out _);
 
         ok.ShouldBeTrue();
         body.ShouldBe(payload);
@@ -101,7 +101,7 @@ public class NativeApiPluginBinaryTests
         // Fast-path may flag this string because the substring "binary" is present, but the
         // structural parser should reject it because there's no top-level binary:true key.
         var json = """{"status":"success","records":[{"description":"\"binary\" data"}]}""";
-        NativeApiPlugin.TryDecodeBinary(json, out _, out _, out _).ShouldBeFalse();
+        SubprocessApiPlugin.TryDecodeBinary(json, out _, out _, out _).ShouldBeFalse();
     }
 }
 

@@ -11,16 +11,16 @@ namespace Dmart.Plugins.Native;
 // (which would incorrectly return dmart's own version for this wrapper).
 internal sealed class SubprocessApiPlugin : IApiPlugin, IPluginVersionSource
 {
-    private readonly SubprocessPluginHost _host;
-    private readonly List<NativeApiPlugin.NativeRoute> _routes;
+    private readonly SubprocessPluginPool _pool;
+    private readonly List<NativeRoute> _routes;
 
-    public string Shortname => _host.Shortname;
+    public string Shortname => _pool.Shortname;
     public string PluginVersion { get; }
 
-    public SubprocessApiPlugin(SubprocessPluginHost host, List<NativeApiPlugin.NativeRoute> routes,
+    public SubprocessApiPlugin(SubprocessPluginPool pool, List<NativeRoute> routes,
         string pluginVersion = "0.0.0")
     {
-        _host = host;
+        _pool = pool;
         _routes = routes;
         PluginVersion = pluginVersion;
     }
@@ -29,7 +29,7 @@ internal sealed class SubprocessApiPlugin : IApiPlugin, IPluginVersionSource
     {
         foreach (var route in _routes)
         {
-            var h = _host;
+            var h = _pool;
             switch (route.Method.ToUpperInvariant())
             {
                 case "GET":    group.MapGet(route.Path, async (HttpContext ctx) => await Handle(ctx, h)); break;
@@ -42,22 +42,41 @@ internal sealed class SubprocessApiPlugin : IApiPlugin, IPluginVersionSource
 
         if (_routes.Count == 0)
         {
-            var h = _host;
+            var h = _pool;
             group.MapGet("/", async (HttpContext ctx) => await Handle(ctx, h));
         }
     }
 
-    private static async Task Handle(HttpContext ctx, SubprocessPluginHost host)
+    // Credential headers stripped from the envelope handed to a plugin. A
+    // plugin is external code that must not receive the caller's bearer token,
+    // session cookie, or the /broadcast-to-channels shared secret — with any of
+    // them it could replay the caller's identity against dmart's own API. The
+    // envelope's `User` field already carries the resolved actor, which is all
+    // a plugin legitimately needs. Same set/rationale as SpaceEventLogger's
+    // _excludedHeaders (audit log) — kept in sync deliberately.
+    internal static readonly HashSet<string> ExcludedHeaders =
+        new(StringComparer.OrdinalIgnoreCase)
+        { "authorization", "proxy-authorization", "cookie", "x-channel-key", "x-api-key" };
+
+    // Snapshots the request headers minus the credential set above.
+    internal static Dictionary<string, string> CaptureHeaders(HttpRequest req)
+    {
+        var headers = new Dictionary<string, string>();
+        foreach (var h in req.Headers)
+        {
+            if (ExcludedHeaders.Contains(h.Key)) continue;
+            headers[h.Key] = h.Value.ToString();
+        }
+        return headers;
+    }
+
+    private static async Task Handle(HttpContext ctx, SubprocessPluginPool pool)
     {
         var query = new Dictionary<string, string>();
         foreach (var q in ctx.Request.Query)
             query[q.Key] = q.Value.ToString();
 
-        // Strips the caller's credentials (Authorization / Cookie /
-        // x-channel-key / ...) — a subprocess plugin is external code and the
-        // envelope's User field already names the resolved actor. Shared with
-        // NativeApiPlugin so both transports strip the same set.
-        var headers = NativeApiPlugin.CaptureHeaders(ctx.Request);
+        var headers = CaptureHeaders(ctx.Request);
 
         string? body = null;
         if (ctx.Request.ContentLength > 0 || ctx.Request.Headers.ContentType.Count > 0)
@@ -78,9 +97,85 @@ internal sealed class SubprocessApiPlugin : IApiPlugin, IPluginVersionSource
 
         var requestJson = JsonSerializer.Serialize(envelope, DmartJsonContext.Default.NativeApiRequest);
         var wrapped = $"{{\"type\":\"request\",\"request\":{requestJson}}}";
-        var resultJson = host.SendAndReceive(wrapped);
+        // The envelope's user is the ambient actor for any callback the plugin
+        // makes while handling the request, so a plugin `query` runs under that
+        // user's permissions rather than as the system.
+        var resultJson = pool.SendAndReceive(wrapped, envelope.User);
+
+        // Binary-response opt-in: a plugin that needs to return non-JSON
+        // (e.g. a generated PDF) wraps its bytes in
+        //   {"binary":true,"content_type":"...","body_b64":"...",
+        //    "filename":"optional.ext"}
+        // We unwrap and stream the bytes with the requested content-type.
+        // Anything else flows as JSON exactly like before.
+        if (TryDecodeBinary(resultJson, out var contentType, out var bodyBytes, out var filename))
+        {
+            ctx.Response.ContentType = contentType;
+            if (!string.IsNullOrEmpty(filename))
+                ctx.Response.Headers["Content-Disposition"] = $"attachment; filename=\"{filename}\"";
+            await ctx.Response.Body.WriteAsync(bodyBytes);
+            return;
+        }
 
         ctx.Response.ContentType = "application/json";
         await ctx.Response.WriteAsync(resultJson);
     }
+
+    // internal for testing via dmart.Tests.
+    internal static bool TryDecodeBinary(string json, out string contentType, out byte[] body, out string? filename)
+    {
+        contentType = "application/octet-stream";
+        body = Array.Empty<byte>();
+        filename = null;
+        if (!LooksLikeBinaryEnvelope(json)) return false;
+        try
+        {
+            using var doc = JsonDocument.Parse(json);
+            var root = doc.RootElement;
+            if (root.ValueKind != JsonValueKind.Object) return false;
+            if (!root.TryGetProperty("binary", out var b) || b.ValueKind != JsonValueKind.True) return false;
+            if (root.TryGetProperty("content_type", out var ct) && ct.ValueKind == JsonValueKind.String)
+                contentType = ct.GetString() ?? contentType;
+            if (root.TryGetProperty("filename", out var fn) && fn.ValueKind == JsonValueKind.String)
+                filename = fn.GetString();
+            if (root.TryGetProperty("body_b64", out var bb) && bb.ValueKind == JsonValueKind.String)
+                body = Convert.FromBase64String(bb.GetString() ?? "");
+            return body.Length > 0;
+        }
+        catch { return false; }
+    }
+
+    // Cheap pre-filter so ordinary JSON responses skip the JsonDocument.Parse round trip.
+    // A binary envelope is a JSON object whose first non-whitespace char is `{` and which
+    // contains the literal `"binary"` key. Substring matches inside string values are
+    // benign — the structural parse still rejects them.
+    private static bool LooksLikeBinaryEnvelope(string json)
+    {
+        if (string.IsNullOrEmpty(json)) return false;
+        var i = 0;
+        while (i < json.Length && char.IsWhiteSpace(json[i])) i++;
+        if (i >= json.Length || json[i] != '{') return false;
+        return json.IndexOf("\"binary\"", i, StringComparison.Ordinal) >= 0;
+    }
+}
+
+// A route a plugin declared in its {"type":"info"} response.
+internal sealed record NativeRoute(string Method, string Path);
+
+// JSON envelope sent to an API plugin as {"type":"request","request":{…}}.
+//
+// The defaulted properties are `set`, not `init`, and that is load-bearing: on
+// meeting an init-only property the source-generated deserializer assigns every
+// one of them from an args array, passing default(T) for anything the payload
+// omitted — so `= ""` and `= new()` would silently arrive as null. dmart only
+// ever builds this type in C#, so nothing is broken today, but a plugin SDK
+// that parses it back would hit exactly that.
+public sealed record NativeApiRequest
+{
+    public string Method { get; set; } = "";
+    public string Path { get; set; } = "";
+    public Dictionary<string, string> Query { get; set; } = new();
+    public Dictionary<string, string> Headers { get; set; } = new();
+    public string? Body { get; init; }
+    public string? User { get; init; }
 }

@@ -15,7 +15,7 @@ public sealed record Event
     public required ActionType ActionType { get; init; }
     public ResourceType? ResourceType { get; init; }
     public string? SchemaShortname { get; init; }
-    public Dictionary<string, object> Attributes { get; init; } = new();
+    public Dictionary<string, object> Attributes { get; set; } = new();
     public required string UserShortname { get; init; }
 
     // Resource snapshot fields, populated by EntryService.BuildEvent so the
@@ -32,8 +32,8 @@ public sealed record Event
     // bulk operation (e.g. CsvService.ImportAsync). Hook plugins that exist
     // solely to log every action (AuditPlugin) check this and skip, so a 10k-row
     // CSV produces one HTTP-level audit line instead of 10k plugin-level ones.
-    // [JsonIgnore] keeps it out of the wire form so external .so/subprocess
-    // plugins are unaffected.
+    // [JsonIgnore] keeps it out of the wire form so external plugins are
+    // unaffected.
     [JsonIgnore]
     public bool IsBulkImport { get; init; }
 }

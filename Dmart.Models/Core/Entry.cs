@@ -27,7 +27,7 @@ public sealed record Entry
     public string? Slug { get; init; }
     public Translation? Displayname { get; init; }
     public Translation? Description { get; init; }
-    public List<string> Tags { get; init; } = new();
+    public List<string> Tags { get; set; } = new();
     public DateTime CreatedAt { get; init; }
     public DateTime UpdatedAt { get; init; }
     public required string OwnerShortname { get; init; }

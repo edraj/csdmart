@@ -66,6 +66,7 @@ Useful flags:
 | Asset | What it is |
 |---|---|
 | `dmart-<v>-linux-x64.tar.gz`, `dmart-<v>-linux-arm64.tar.gz` | The Native AOT server: `dmart`, `libe_sqlite3.so`, `plugins/`, `config.env.sample`, `LICENSE`, `BUILDINFO`. Built inside AlmaLinux 9, so the glibc floor is 2.34 — they run on RHEL 9 and newer. |
+| `dmart-<v>-linux-musl-x64.tar.gz` | The same server as a fully static musl binary — **no `libe_sqlite3.so`**, because SQLite and OpenSSL are linked in. Zero `NEEDED` entries, so it runs on any x86-64 Linux regardless of distro or glibc version. Built inside Alpine; the release asserts 0 dynamic dependencies and no residual dlopen strings before signing it. You own CVE patching for the linked OpenSSL and SQLite — see [static-binary.md](./static-binary.md). |
 | `dmart-<v>-1.el9.x86_64.rpm`, `…fc44…rpm`, `…src.rpm` | RPM packages (RHEL/AlmaLinux 9, Fedora, and the source RPM). |
 | `dmart_<v>_amd64.deb` | Debian/Ubuntu package. |
 | `dmart-<v>-x86_64.apk`, `dmart-<v>-aarch64.apk` | Alpine (musl) packages. |
@@ -325,7 +326,7 @@ release with v3.
 
 | Workflow | Trigger | Runner | Produces |
 |---|---|---|---|
-| `release-verifiable.yml` | `push` of a `v*` tag | GitHub-hosted (`ubuntu-24.04`, `ubuntu-24.04-arm`) | linux-x64 / linux-arm64 tarballs, their SBOMs, `SHA256SUMS`; waits for the release to be created, then uploads |
+| `release-verifiable.yml` | `push` of a `v*` tag | GitHub-hosted (`ubuntu-24.04`, `ubuntu-24.04-arm`) | linux-x64 / linux-arm64 / linux-musl-x64 tarballs, their SBOMs, `SHA256SUMS`; waits for the release to be created, then uploads |
 | `release.yml` | `release: created` | mostly self-hosted | RPMs, `.deb`, APKs, Windows/macOS zips, SPA tarballs, NuGet packages, `SHA256SUMS-all`, container image |
 
 Both first run `dist/check-dependency-graph.sh` on a clean checkout with the

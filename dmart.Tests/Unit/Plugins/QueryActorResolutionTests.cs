@@ -1,17 +1,19 @@
 using System.Text.Json;
 using Dmart.Plugins.Native;
-using Dmart.Sdk;
 using Shouldly;
 using Xunit;
 
 namespace Dmart.Tests.Unit.Plugins;
 
-// Covers the three-tier actor resolution used by NativePluginCallbacks.QueryCb:
+// Covers the three-tier actor resolution behind the `query` callback:
 //   "as_actor" present, string  → impersonate that user
 //   "as_actor" present, null    → run as system (no ACL filter)
 //   "as_actor" absent           → fall back to ambient (the user that
 //                                 triggered the hook / API request)
-// and the SDK-side helper that injects/replaces the field.
+//
+// This is the security-relevant half of the callback contract: absent means
+// "run as the triggering user", not "run as the system", so a plugin query
+// stays inside that user's permissions unless it explicitly says otherwise.
 public class QueryActorResolutionTests
 {
     private static JsonElement Parse(string json) => JsonDocument.Parse(json).RootElement;
@@ -50,84 +52,6 @@ public class QueryActorResolutionTests
     {
         var root = Parse("[1,2,3]");
         NativePluginCallbacks.ResolveActor(root, ambient: "alice").ShouldBe("alice");
-    }
-
-    // ============================================================
-    // SDK helper — JSON rewrite
-    // ============================================================
-
-    [Fact]
-    public void BuildQueryJsonWithActor_Inserts_Actor_When_Absent()
-    {
-        var rewritten = DmartSdk.BuildQueryJsonWithActor(
-            """{"space_name":"acme","subpath":"/"}""", asActor: "bob");
-
-        rewritten.ShouldNotBeNull();
-        var root = Parse(rewritten!);
-        root.GetProperty("as_actor").GetString().ShouldBe("bob");
-        root.GetProperty("space_name").GetString().ShouldBe("acme");
-        root.GetProperty("subpath").GetString().ShouldBe("/");
-    }
-
-    [Fact]
-    public void BuildQueryJsonWithActor_Replaces_Existing_Actor()
-    {
-        var rewritten = DmartSdk.BuildQueryJsonWithActor(
-            """{"as_actor":"old","space_name":"acme"}""", asActor: "bob");
-
-        rewritten.ShouldNotBeNull();
-        var root = Parse(rewritten!);
-        root.GetProperty("as_actor").GetString().ShouldBe("bob");
-        // Crucially, the field appears exactly once — JsonDocument silently
-        // returns the last occurrence so a duplicate wouldn't be visible
-        // here, but we can count enumerated properties to assert that.
-        var count = 0;
-        foreach (var prop in root.EnumerateObject())
-            if (prop.NameEquals("as_actor")) count++;
-        count.ShouldBe(1);
-    }
-
-    [Fact]
-    public void BuildQueryJsonWithActor_Writes_Json_Null_When_Asked()
-    {
-        var rewritten = DmartSdk.BuildQueryJsonWithActor(
-            """{"space_name":"acme"}""", asActor: null);
-
-        rewritten.ShouldNotBeNull();
-        var root = Parse(rewritten!);
-        root.TryGetProperty("as_actor", out var asActor).ShouldBeTrue();
-        // JSON null, NOT the string "null" — the host distinguishes these.
-        asActor.ValueKind.ShouldBe(JsonValueKind.Null);
-    }
-
-    [Fact]
-    public void BuildQueryJsonWithActor_Returns_Null_For_Non_Object_Body()
-    {
-        DmartSdk.BuildQueryJsonWithActor("[1,2,3]", asActor: "bob").ShouldBeNull();
-    }
-
-    [Fact]
-    public void BuildQueryJsonWithActor_Round_Trip_Through_ResolveActor()
-    {
-        // End-to-end: rewriting on the SDK side and resolving on the host
-        // side must agree. This is the real contract callers depend on.
-        var rewritten = DmartSdk.BuildQueryJsonWithActor(
-            """{"space_name":"acme"}""", asActor: "carol");
-        rewritten.ShouldNotBeNull();
-
-        NativePluginCallbacks.ResolveActor(Parse(rewritten!), ambient: "alice")
-            .ShouldBe("carol");
-    }
-
-    [Fact]
-    public void BuildQueryJsonWithActor_Round_Trip_Null_Through_ResolveActor()
-    {
-        var rewritten = DmartSdk.BuildQueryJsonWithActor(
-            """{"space_name":"acme"}""", asActor: null);
-        rewritten.ShouldNotBeNull();
-
-        NativePluginCallbacks.ResolveActor(Parse(rewritten!), ambient: "alice")
-            .ShouldBeNull();
     }
 }
 

@@ -12,21 +12,21 @@
         "type": "Transitive"
       },
       "JsonPointer.Net": {
-        "contentHash": "5C497yxfktYFsqxKG+GUQPsMvBqIjzLkqtDEdMGsnBpl3/OB8DOvTo7LEyRX7AVc1kVVj0IX5zhmLrlbvAYEnw==",
+        "contentHash": "oClYHv2ooeRrtPZyC9sb/Za/ie5pGhjTbNHlAyFg4XOCyU+606FdoZKS7UdaWvtsPlrF+U2w0Ja3TRvn5+spyA==",
         "dependencies": {
           "Humanizer.Core": "3.0.10",
           "Json.More.Net": "3.0.1"
         },
-        "resolved": "7.0.1",
+        "resolved": "7.0.2",
         "type": "Transitive"
       },
       "JsonSchema.Net": {
-        "contentHash": "qc+FSfwEFBhuxPEPNa2A3QdLTIBU5GIyK+eVQRUNjpS+ob15To+rDKB2CqseakCtf8zuiIGjuZwyn/3iSl6iPg==",
+        "contentHash": "muE4nPuzbD9x5XA1mkXJNqX4mhz47oF3EY8qFLY1pyUY7lhXFKq65t/dSKIHeNSLBV17zwZuq24MD1em90rMNg==",
         "dependencies": {
-          "JsonPointer.Net": "7.0.1"
+          "JsonPointer.Net": "7.0.2"
         },
-        "requested": "[9.1.4, )",
-        "resolved": "9.1.4",
+        "requested": "[9.4.0, )",
+        "resolved": "9.4.0",
         "type": "Direct"
       },
       "Konscious.Security.Cryptography.Argon2": {

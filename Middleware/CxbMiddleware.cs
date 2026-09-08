@@ -26,40 +26,40 @@ public static class CxbMiddleware
         if (!cxbUrl.StartsWith('/')) cxbUrl = "/" + cxbUrl;
         var baseHref = cxbUrl + "/";  // <base href> needs trailing slash
 
-        IFileProvider? fileProvider = null;
+        // Concrete type, not IFileProvider: there is exactly one source now
+        // (CA1859 flags the interface as a needless indirection).
+        ManifestXmlFileProvider? fileProvider = null;
 
-        // Strategy 1: Embedded resources (works on glibc/host builds).
-        try
-        {
-            var assembly = Assembly.GetExecutingAssembly();
-            var embedded = new ManifestEmbeddedFileProvider(assembly, "cxb/dist/client");
-            if (embedded.GetFileInfo("index.html").Exists)
-                fileProvider = embedded;
-        }
-        catch { /* native AOT on musl — fall through */ }
+        // The SPA is served from the binary's own embedded resources, and only
+        // from there. There used to be a filesystem fallback at
+        // {BaseDir}/cxb, /usr/lib/dmart/cxb and /app/cxb, which existed
+        // solely because ManifestEmbeddedFileProvider does not survive
+        // NativeAOT on musl — the Alpine package shipped a second copy of the
+        // assets to that path to compensate. ManifestXmlFileProvider reads the
+        // embedded manifest XML directly and works on glibc and musl alike, so
+        // the duplicate is gone and dmart serves its UIs on its own.
+        //
+        // Consequence worth knowing: embedded is now the ONLY path, on every
+        // artifact. If it regresses, every UI 404s everywhere rather than only
+        // on musl. That is why the release asserts /cxb/ and /cat/ actually
+        // serve — on all four tarballs and on the container image — before
+        // anything is published.
+        fileProvider = ManifestXmlFileProvider.TryCreate(
+            Assembly.GetExecutingAssembly(), "cxb/dist/client");
+        if (fileProvider is not null && !fileProvider.GetFileInfo("index.html").Exists)
+            fileProvider = null;
 
-        // Strategy 2: Filesystem fallback (Docker / RPM).
+        // Nothing to serve. A dev build that never ran the UI build script is
+        // the ordinary case, so this is not fatal — but it is logged rather
+        // than skipped in silence, because silence is exactly how the static
+        // binary shipped twice with /cxb returning 404.
         if (fileProvider is null)
         {
-            var candidates = new[]
-            {
-                Path.Combine(AppContext.BaseDirectory, "cxb"),
-                Path.Combine(Directory.GetCurrentDirectory(), "cxb"),
-                "/usr/lib/dmart/cxb",
-                "/app/cxb",
-            };
-            foreach (var fsPath in candidates)
-            {
-                if (File.Exists(Path.Combine(fsPath, "index.html")))
-                {
-                    fileProvider = new PhysicalFileProvider(fsPath);
-                    break;
-                }
-            }
+            app.ApplicationServices.GetService<ILoggerFactory>()
+               ?.CreateLogger("Dmart.Startup")
+               .LogWarning("CXB bundle not found (neither embedded nor on disk) — {Url} will 404", cxbUrl);
+            return app;
         }
-
-        // No CXB available — skip silently (dev builds without build-cxb.sh).
-        if (fileProvider is null) return app;
 
         // Pre-read index.html and rewrite <base href="/cxb/"> to match CXB_URL.
         // Done once at startup so there's no per-request cost.

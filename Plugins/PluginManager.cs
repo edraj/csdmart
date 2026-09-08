@@ -67,6 +67,14 @@ public sealed class PluginManager(
     public Task<bool> DrainAsync(TimeSpan timeout, CancellationToken ct = default)
         => _inflight.DrainAsync(timeout, ct);
 
+    // Same wait, without signalling shutdown, so it can be called repeatedly.
+    // internal because its one caller is the test harness: fire-and-forget
+    // after-hooks outlive the request that triggered them, and a test suite
+    // that shares one database needs them settled before the next case starts.
+    // Production has no reason to want this — see InFlightTracker.
+    internal Task<bool> WaitForIdleAsync(TimeSpan timeout, CancellationToken ct = default)
+        => _inflight.WaitForIdleAsync(timeout, ct);
+
     // Parallel registry carrying the resolved version + type per active plugin.
     // Populated alongside _activePlugins in Register(); exposed to /info/plugins.
     private readonly List<PluginInfo> _activePluginInfos = new();
@@ -453,13 +461,12 @@ public sealed class PluginManager(
 
     // Resolve a plugin's version following the same "baked into the binary"
     // model dmart uses for itself (see Api/Info/ManifestHandler.cs):
-    //   1. Wrapper-supplied version (IPluginVersionSource): for native .so and
-    //      subprocess plugins, the source of truth is the external artifact —
-    //      the loader extracted it via dlsym(dmart_plugin_version) or from the
-    //      info-response JSON, then handed it to the wrapper at construction.
+    //   1. Wrapper-supplied version (IPluginVersionSource): for external
+    //      plugins, the source of truth is the plugin's own artifact — the
+    //      loader read it from the `version` field of the info response and
+    //      handed it to the wrapper at construction.
     //   2. AssemblyInformationalVersion on the plugin's runtime-type assembly:
-    //      for in-process .NET plugins (the BuiltIn classes plus any
-    //      externally-loaded .dll), this reads the same attribute that
+    //      for the managed BuiltIn classes, this reads the same attribute that
     //      Api/Info/ManifestHandler.cs reads on dmart's own assembly. Built-in
     //      plugins ship inside the dmart assembly so they inherit dmart's
     //      version automatically — no per-plugin override needed.

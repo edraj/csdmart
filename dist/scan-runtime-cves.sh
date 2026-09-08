@@ -153,8 +153,10 @@ fi
 
 # Pinned, and cached across invocations on a self-hosted runner. A supply-chain
 # check whose own tool version floats is a check you cannot reason about.
-# The release build runs this on both linux-x64 and linux-arm64 runners, and
-# trivy ships a separate asset per architecture.
+# The release build runs this on the linux-x64, linux-arm64 and linux-musl-x64
+# targets, and trivy ships a separate asset per architecture. The musl target
+# builds on an x86_64 runner, so it selects the same asset as linux-x64 — this
+# switch keys off the RUNNER's architecture, not the target RID.
 case "$(uname -m)" in
 	x86_64|amd64)  TRIVY_ARCH="Linux-64bit" ;;
 	aarch64|arm64) TRIVY_ARCH="Linux-ARM64" ;;

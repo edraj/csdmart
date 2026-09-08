@@ -1082,13 +1082,36 @@ public sealed class UserService(
         // prefix is gone with it.
         //
         // Silently ignoring a contact key would be worse than refusing it: a
-        // client still sending `new_email` would get a 200 and no change.
+        // client still sending `new_email` would get a 200 and no change. The
+        // four OTP-bearing keys only ever meant "operate on my contact", so
+        // they are refused on presence alone.
         foreach (var contactKey in new[]
-                 { "email", "new_email", "email_otp", "msisdn", "new_msisdn", "msisdn_otp" })
+                 { "new_email", "email_otp", "new_msisdn", "msisdn_otp" })
         {
             if (patch.ContainsKey(contactKey))
                 return Result<User>.Fail(InternalErrorCode.INVALID_DATA,
                     $"'{contactKey}' is not accepted here — use POST /user/verify-contact "
+                    + "with the contact and a verify-contact OTP", ErrorTypes.Request);
+        }
+
+        // `email` and `msisdn` are the two that cannot be refused on presence:
+        // they are part of the profile REPRESENTATION (see above), so the
+        // read-modify-write round-trip this design exists to protect — GET the
+        // profile, edit a display name, POST the Record back — echoes them
+        // straight back unchanged. Refusing that would 400 an edit that asks
+        // for no contact change at all. So only an actual REQUEST TO CHANGE is
+        // refused; echoing the stored address, or null, stays the no-op it has
+        // always been. Email compares case-insensitively because the stored
+        // column keeps whatever case it was written with while lookups lower
+        // both sides (UserRepository.EmailLookupWhere) — an echo of the row's
+        // own address must not read as a change on a spelling difference.
+        foreach (var (contactKey, stored) in new[]
+                 { ("email", user.Email), ("msisdn", user.Msisdn) })
+        {
+            if (patch.TryGetValue(contactKey, out var contactVal) && contactVal is not null
+                && !string.Equals(contactVal.ToString(), stored, StringComparison.OrdinalIgnoreCase))
+                return Result<User>.Fail(InternalErrorCode.INVALID_DATA,
+                    $"'{contactKey}' cannot be changed here — use POST /user/verify-contact "
                     + "with the contact and a verify-contact OTP", ErrorTypes.Request);
         }
 

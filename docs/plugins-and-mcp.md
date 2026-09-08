@@ -47,7 +47,7 @@ flowchart TD
 
 | Plugin | Purpose |
 |---|---|
-| `resource_folders_creation` | Creates default `/schema` folder when a new Space is created. Without it, first schema upload fails. |
+| `resource_folders_creation` | Creates default `/schema` folder when a new Space is created, and `people/{shortname}` + 5 sub-folders on User create. Without it, first schema upload fails. **Runs fire-and-forget**, so the create response can return before the folders exist — see below. |
 | `realtime_updates_notifier` | Publishes CRUD events to the WebSocket channel manager. |
 | `audit` | INFO-log every dispatched event. Useful as a development sanity check. |
 | `mcp_sse_bridge` | Fans CRUD events out to active MCP SSE sessions. `always_active` — filter is ignored. |
@@ -58,6 +58,33 @@ All live in `Plugins/BuiltIn/`. They subscribe by implementing the interface
 and adding themselves to DI — `PluginManager` discovers them via
 `IEnumerable<IHookPlugin>` / `IEnumerable<IApiPlugin>` injection.
 
+### After-hooks do not block the response
+
+Every shipped after-hook ships `"concurrent": true` — dispatched with
+`Task.Run`, so the action's response returns without waiting for it. For the
+notifiers, the audit log and the indexer that is simply what they are for.
+
+For `resource_folders_creation` it has a consequence worth knowing: **a client
+that creates a Space and immediately uploads a schema to it can lose the race
+with the `/schema` folder**, and the same applies to reading
+`personal/people/{shortname}/*` straight after creating a user. A client that
+must not race should poll for the folder rather than assume it — `curl.sh`
+check 49 does exactly that, and has since before this was fire-and-forget.
+
+Losing that race does **not** fail the upload. `EntryService.LoadParentFolderAsync`
+returns `null` for a parent that does not exist, and both folder-level gates —
+compound-key uniqueness and folder-content policy — treat `null` as *allow*.
+So the schema lands; it simply lands without folder-level validation. In the
+shipped configuration that is a no-op, because the folder the plugin creates is
+bare and declares no restrictions for those gates to apply. It stops being a
+no-op if an operator attaches a folder-content policy to `/schema` and
+something creates into that subpath before the folder exists — which, given the
+folder is created once at space-creation time, is a narrow window.
+
+Set `"concurrent": false` in that plugin's `config.json` to get the old awaited
+behaviour back, at the cost of adding the folder writes to every user and space
+create's latency.
+
 ### External plugin config
 
 Each plugin directory has:
@@ -65,8 +92,7 @@ Each plugin directory has:
 ```
 ~/.dmart/plugins/my_plugin/
 ├── config.json
-└── my_plugin.so    (hook or api: loaded via dlopen)
-└── my_plugin       (subprocess: forked, stdio JSON-RPC)
+└── my_plugin       (executable: run as a child process, stdio JSON lines)
 ```
 
 `config.json` shape:
@@ -75,7 +101,7 @@ Each plugin directory has:
 {
   "shortname": "my_plugin",
   "is_active": true,
-  "type": "hook",                     // or "api" or "subprocess"
+  "type": "hook",                     // or "api"
   "listen_time": "after",
   "filters": {
     "subpaths": { "__all_spaces__": ["__all_subpaths__"] },
@@ -86,19 +112,44 @@ Each plugin directory has:
 }
 ```
 
-### Native `.so` ABI
+### Wire protocol
 
-Exported C functions:
+One JSON object per line, in both directions:
 
-```c
-char* get_info();             // returns JSON {shortname, version, type}
-char* hook(const char* evt);  // for hook type; returns JSON response
-char* handle_request(const char* req); // for api type
-void free_string(char* ptr);  // dmart calls this after reading the string
+```
+→ stdin:  {"type":"info","host":{"callbacks":1}}
+← stdout: {"shortname":"my_plugin","version":"1.0.0","type":"hook"}
+
+→ stdin:  {"type":"hook","event":{...}}
+← stdout: {"status":"ok"}
+
+→ stdin:  {"type":"request","request":{...}}
+← stdout: {"status":"success","attributes":{...}}
 ```
 
-See `custom_plugins_sdk/` for working C#, Rust, and Go examples. The loader
-is `Plugins/Native/NativePluginLoader.cs` — uses `dlopen` + `dlsym`.
+Before its final response a plugin may interleave **callback frames** —
+requests back into dmart, answered on its stdin:
+
+```
+← stdout: {"type":"callback","id":1,"op":"query","args":{...}}
+→ stdin:  {"type":"callback_result","id":1,"ok":true,"result":{...}}
+```
+
+The ops are `load_entry`, `load_user`, `save_entry`, `update_user`,
+`send_email`, `ws_broadcast`, `query`, `log`, `get_session_firebase_tokens` and
+`get_media_attachment`. A `query` runs as the user that triggered the exchange
+unless it carries an explicit `as_actor` override.
+
+The loader is `Plugins/Native/NativePluginLoader.cs`; the process host and read
+loop are `SubprocessPluginHost.cs`, and the callback routing table is
+`PluginCallbackDispatcher.cs`. See `custom_plugins_sdk/` for the full guide and
+Python samples.
+
+dmart previously also loaded in-process `.so` plugins through a C ABI
+(`get_info` / `hook` / `handle_request` / `free_string`, resolved with `dlopen`
++ `dlsym`). That mode was removed: it ran third-party code inside the host
+process, so a segfault took dmart down, and `dlopen` does not work in a static
+build. A directory holding only a `.so` is now reported as a load failure.
 
 ### Plugin lifecycle for hooks
 
@@ -109,7 +160,7 @@ sequenceDiagram
     participant ES as EntryService
     participant DB as entries table
     participant PM as PluginManager
-    participant P as Plugin (built-in or .so)
+    participant P as Plugin (built-in or external)
 
     C->>H: POST /managed/request (Create)
     H->>ES: CreateAsync(entry, actor)
@@ -279,6 +330,6 @@ configuration. Key pieces:
 | Hook interface | `Plugins/IHookPlugin.cs` |
 | API interface | `Plugins/IApiPlugin.cs` |
 | Built-in plugins | `Plugins/BuiltIn/*.cs` |
-| Native `.so` loader | `Plugins/Native/NativePluginLoader.cs` |
+| External plugin loader | `Plugins/Native/NativePluginLoader.cs` |
 | Subprocess runner | `Plugins/Native/SubprocessPluginRunner.cs` |
 | SDK + samples | `custom_plugins_sdk/` |

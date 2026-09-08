@@ -17,6 +17,7 @@ install/run/CLI — this folder goes into the **how** and **why**.
 | …drive dmart from the command line (REPL, scripts, JSON pipelines) | [cli.md](./cli.md) |
 | …run or extend the test suite (xUnit + curl.sh) | [testing.md](./testing.md) |
 | …build, run, or upgrade the container image | [container.md](./container.md) |
+| …build one binary that runs on any Linux, with no runtime dependencies | [static-binary.md](./static-binary.md) |
 | …export/import at gigabyte scale, or run an incremental pipeline | [parquet-export-design.md](./parquet-export-design.md) |
 | …stop `histories` / `deletions` growing without bound | [maintenance.md](./maintenance.md) |
 | …decide whether to adopt the official MCP SDK | [mcp-sdk-2-spike.md](./mcp-sdk-2-spike.md) |
@@ -33,7 +34,7 @@ install/run/CLI — this folder goes into the **how** and **why**.
 - **`Models/`** — Flat records. `Api/` = wire DTOs, `Core/` = domain entities, `Enums/` = `[EnumMember]`-tagged enums, `Json/` = source-gen `DmartJsonContext`.
 - **`Auth/`** — Password hashing (Argon2id), JWT issuer, OAuth providers (Google/Facebook/Apple), JwtBearer setup, OTP provider, password rules.
 - **`Middleware/`** — Custom ASP.NET middleware (CXB SPA + static, request logging, response headers, WebSocket).
-- **`Plugins/`** — `PluginManager`, `IHookPlugin`/`IApiPlugin` interfaces, built-in plugins in `BuiltIn/`, native `.so` loader in `Native/`.
+- **`Plugins/`** — `PluginManager`, `IHookPlugin`/`IApiPlugin` interfaces, built-in plugins in `BuiltIn/`, external-plugin loader and callback bridge in `Native/`.
 - **`Config/`** — `DmartSettings`, strict dotenv validator, `SettingsSerializer` (redacts secrets for `/info/settings`).
 - **`Cli/`** — Interactive REPL + script runner for the `dmart cli` subcommand.
 - **`Utils/`** — `DotEnv` parser, `JsonbHelpers`, `LogSink`, correlation ID helpers.

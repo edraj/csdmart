@@ -73,12 +73,24 @@ CONF
   # DATABASE_DRIVER is likewise explicit: this file survives image upgrades,
   # and pinning it means a later edit adding a PostgreSQL connection has to
   # flip the driver too rather than switching backends as a side effect.
+  # MOCK_SMPP_API: this image ships no SMS gateway, and SmsSender's unconfigured
+  # path logs "SMS gateway not configured - dropping message" and returns false.
+  # Left at its false default, /user/otp-request therefore MINTS a code and
+  # silently fails to deliver it, so OTP login cannot be completed and nothing
+  # says why. Mocking makes that honest: the code is the fixed MOCK_OTP_CODE
+  # below and the log says a mock is active. Set it to false and configure
+  # SEND_SMS_OTP_API + SMPP_AUTH_KEY for real delivery.
+  #
+  # MOCK_SMTP_API is deliberately NOT forced here - email OTP has the same
+  # gap, but changing it is a separate call than the one this line answers.
   cat >> "$CONFIG_ENV" << EOF
 LISTENING_PORT=8000
 ALLOWED_CORS_ORIGINS="http://localhost:8000"
 DATABASE_DRIVER='sqlite'
 SQLITE_PATH='$CONFIG_DIR/dmart.db'
 JWT_SECRET='$JWT_SECRET'
+MOCK_SMPP_API=true
+MOCK_OTP_CODE='123456'
 EOF
 
   # config.env holds the generated JWT_SECRET; dmart itself warns when this is
@@ -87,6 +99,8 @@ EOF
 
   touch "$MARKER"
   echo "=== Initialized ==="
+  echo "SMS OTP is MOCKED (MOCK_SMPP_API=true) — codes are always 123456."
+  echo "Configure SEND_SMS_OTP_API + SMPP_AUTH_KEY and unset it for real delivery."
   echo "Set an admin password before exposing this container:"
   echo "  podman exec -it <container> dmart passwd dmart"
 fi

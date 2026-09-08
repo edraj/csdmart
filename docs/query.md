@@ -31,7 +31,6 @@ and where ACL filtering happens.
   "include_fields": [],         // trim Record.attributes
   "exclude_fields": [],
   "highlight_fields": {},
-  "validate_schema": true,
   "aggregation_data": { ... },  // for type=aggregation — see below
   "join": [ ... ]               // join queries — see below
 }

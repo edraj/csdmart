@@ -21,7 +21,7 @@ flowchart LR
         SvcLayer[Services]
         Repos[Repositories]
         Plugins[Built-in plugins]
-        NativePlugins[Native .so plugins<br/>via C-ABI]
+        NativePlugins[External plugins<br/>subprocess, JSON lines]
         CxbStatic[Embedded CXB<br/>static resources]
     end
 
@@ -179,7 +179,7 @@ Notable:
 | Password hashing | `Konscious.Security.Cryptography.Argon2` 1.3.1 | PHC-string Argon2id, `memory_cost=102400, time_cost=3, parallelism=8` |
 | WebSocket | built-in `WebSocketManager` + custom channel manager | |
 | Admin UI | Svelte (`cxb/`) served from embedded resources or filesystem | |
-| Plugins | built-in C# + loadable `.so` via C-ABI | See [plugins-and-mcp.md](./plugins-and-mcp.md) |
+| Plugins | built-in C# + external executables over a JSON line protocol | See [plugins-and-mcp.md](./plugins-and-mcp.md) |
 | Package | RPM (Fedora + el9) + OCI image (podman) + Debian | `dist/` |
 
 ## Project layout (annotated)
@@ -265,7 +265,7 @@ dmart/
 │   ├── IHookPlugin.cs · IApiPlugin.cs  contracts
 │   ├── PluginManager.cs                discovery + filter match + dispatch
 │   ├── BuiltIn/                        ResourceFoldersCreation, RealtimeUpdatesNotifier, AuditPlugin, McpSseBridgePlugin, SemanticIndexerPlugin, DbSizeInfoPlugin
-│   └── Native/                         NativePluginLoader (dlopen + dlsym) + subprocess runner
+│   └── Native/                         NativePluginLoader + subprocess host + callback bridge
 │
 ├── Config/
 │   ├── DmartSettings.cs                bound from IConfiguration section "Dmart"

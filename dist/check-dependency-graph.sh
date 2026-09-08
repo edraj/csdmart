@@ -87,10 +87,9 @@ LOCK=-p:RestorePackagesWithLockFile=true
 (
 	cd "$WORK"
 	dotnet restore dmart.slnx $LOCK --nologo
-	# Not in the solution, but they are shipped SDK samples and their
-	# dependencies deserve the same scrutiny.
-	dotnet restore custom_plugins_sdk/sample_hook/sample_hook.csproj $LOCK --nologo
-	dotnet restore custom_plugins_sdk/sample_api/sample_api.csproj $LOCK --nologo
+	# The SDK samples used to be restored here too, back when they were C#
+	# .so projects. They are plain executables now (see custom_plugins_sdk),
+	# so they carry no NuGet graph to check.
 )
 
 mkdir -p "$OUT"

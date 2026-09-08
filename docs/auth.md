@@ -20,8 +20,9 @@ Password resets confirm via `POST /user/password-reset-confirm`; contact
 verification happens on `POST /user/verify-contact` (`code` plus `email` or
 `msisdn`). That one call both confirms an address already on the row and
 changes to a new one — the server tells which from the row it already has, so
-there is no separate "change" field to get wrong. `POST /user/profile` refuses
-contact keys outright and points here. Every OTP verification is single-use (consumed on
+there is no separate "change" field to get wrong. `POST /user/profile` cannot
+change a contact and points here; it still tolerates `email`/`msisdn` echoed
+back unchanged, so a profile read-modify-write round-trip is unaffected. Every OTP verification is single-use (consumed on
 success) and capped at `MAX_OTP_VERIFY_ATTEMPTS` wrong guesses per code.
 
 Plus three OAuth callbacks (Google / Facebook / Apple) for web + mobile flows.

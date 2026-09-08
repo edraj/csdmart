@@ -172,7 +172,7 @@ public static class EntryHandler
     // Not requested (or nothing readable) yields an empty object: callers always
     // set an `attachments` key and JsonStripEmptiesMiddleware drops it on the way
     // out when it is empty.
-    private static async Task<JsonObject> BuildAttachmentsAsync(
+    internal static async Task<JsonObject> BuildAttachmentsAsync(
         string space, string subpath, string shortname, bool retrieveAttachments,
         AttachmentRepository attachmentRepo, PermissionService perms, string? actor,
         CancellationToken ct)
@@ -185,8 +185,11 @@ public static class EntryHandler
         // attachments carry their own ACL, and ToEntryRecord emits `payload` AND
         // `body` — so an unfiltered list hands over the attachment's CONTENT, not
         // just its metadata. Same gate, same shape as
-        // Api/Managed/PayloadHandler.cs:55 (which refuses the bytes) and
-        // Api/Public/EntryHandler.cs (the anonymous twin).
+        // Api/Managed/PayloadHandler.cs:55 (which refuses the bytes). The
+        // anonymous twin, Api/Public/EntryHandler.cs, CALLS this method rather
+        // than keeping its own copy — it passes actor: null, which was the only
+        // thing that ever differed between them. A change here (an ACL rule, a
+        // filter) now reaches both routes or neither.
         var visible = new List<Attachment>(children.Count);
         foreach (var a in children)
         {
@@ -230,7 +233,14 @@ public static class EntryHandler
     private static IResult JsonWithAttachments(string rowJson, JsonObject attachments)
     {
         var node = JsonNode.Parse(rowJson)!.AsObject();
-        node["attachments"] = attachments;
+        // Only when there is something to say. Setting the key unconditionally
+        // would leave `"attachments": {}` on a response that never asked for
+        // attachments, and leaning on JsonStripEmptiesMiddleware to remove it
+        // does not hold: that middleware skips stripping entirely above
+        // MaxStripBytes (1 MiB), so a space with a large payload.body would
+        // emit the empty object where it previously emitted nothing.
+        if (attachments.Count > 0)
+            node["attachments"] = attachments;
         return Results.Content(node.ToJsonString(DmartJsonContext.Default.Options), "application/json");
     }
 }

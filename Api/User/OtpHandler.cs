@@ -46,17 +46,32 @@ public static class OtpHandler
             var log = loggerFactory.CreateLogger(typeof(OtpHandler));
             Response SilentOk(string reason, LogLevel level = LogLevel.Information)
             {
-                // The destination is a phone number or an email address, and
-                // this line fires on EVERY no-op branch at Information — i.e.
-                // in production, for traffic an anonymous caller controls. So
-                // it goes in fingerprinted, not in clear: enough to correlate
-                // repeated requests to one destination while investigating,
-                // not enough to read the contact back out of the logs.
-                // OtpProvider keeps even its destination-plus-code line at
-                // Debug for the same reason.
+                // The destination is logged IN CLEAR, deliberately: the masked
+                // form (****3344) was not enough to work a support ticket from.
+                //
+                // Know what this costs. This line fires on every no-op branch
+                // at Information, /user/otp-request needs no JWT for
+                // login/reset/register, and LogSink creates the file 0644 — so
+                // an anonymous caller looping requests writes a list of contacts
+                // to disk, readable by anyone with shell on the host, and their
+                // own dictionary of numbers lands there too. If that becomes a
+                // problem the cheaper fix than re-masking is to keep {Reason}
+                // and {Purpose} at Information and drop this line to Debug.
+                //
+                // SanitizeDest still applies. That is NOT about privacy: it
+                // stops a shortname full of newlines forging log lines, and a
+                // 100 KB one inflating the log file.
+                //
+                // Selection uses IsNullOrEmpty rather than ??, because the
+                // request validation above counts a provided field the same
+                // way: `{"msisdn":"","shortname":"alice"}` is accepted, and a
+                // ?? chain would coalesce on null only and log an empty string.
+                var dest = !string.IsNullOrEmpty(req.Msisdn) ? req.Msisdn
+                         : !string.IsNullOrEmpty(req.Email) ? req.Email
+                         : req.Shortname;
                 log.Log(level,
                     "otp-request: silent no-op ({Reason}) purpose={Purpose} dest={Destination}",
-                    reason, req.Purpose, Fingerprint(req.Msisdn ?? req.Email ?? req.Shortname));
+                    reason, req.Purpose, SanitizeDest(dest));
                 return Response.Ok();
             }
 
@@ -390,8 +405,8 @@ public static class OtpHandler
         // /user/profile: there is no profile representation being echoed back
         // here, so nothing to disambiguate against.
         g.MapPost("/verify-contact", async (VerifyContactRequest req, OtpRepository repo,
-            UserRepository users, RegexPatternsConfig regexConfig, HttpContext http,
-            IOptions<DmartSettings> settings, CancellationToken ct) =>
+            UserRepository users, HistoryRepository history, RegexPatternsConfig regexConfig,
+            HttpContext http, IOptions<DmartSettings> settings, CancellationToken ct) =>
         {
             // Authenticated, and checked before the store is touched: the only
             // effect is on the caller's own row, so an anonymous call achieves
@@ -400,6 +415,17 @@ public static class OtpHandler
             if (actor is null)
                 return Response.Fail(InternalErrorCode.NOT_AUTHENTICATED,
                     "login required", ErrorTypes.Auth);
+
+            // `code` is a non-nullable positional parameter, but nothing
+            // enforces that on the wire: there is no AddValidation() in the
+            // pipeline and DmartJsonContext does not respect nullable
+            // annotations, so an omitted `code` binds to null and would reach
+            // OtpHasher.Hash as a null string. Checked here, with the other
+            // shape validation and before the store is touched, so a malformed
+            // request neither 500s nor spends an attempt on a live code.
+            if (string.IsNullOrWhiteSpace(req.Code))
+                return Response.Fail(InternalErrorCode.MISSING_DATA,
+                    "code is required", ErrorTypes.Request);
 
             var provided = (string.IsNullOrEmpty(req.Msisdn) ? 0 : 1)
                          + (string.IsNullOrEmpty(req.Email) ? 0 : 1);
@@ -452,14 +478,32 @@ public static class OtpHandler
                     "code mismatch or expired", ErrorTypes.Auth);
 
             // Flags never regress, and only the channel just proved is touched.
-            await users.UpsertAsync(user with
+            //
+            // The address itself is written only on a CHANGE. `dest` is the
+            // normalised form, so writing it unconditionally would quietly
+            // rewrite `Alice@Example.com` to lowercase the first time its owner
+            // confirmed it — losing an admin-provisioned or OAuth-sourced
+            // spelling. Confirming a contact should not restate it.
+            var updated = user with
             {
-                Email = isEmail ? dest : user.Email,
-                Msisdn = isEmail ? user.Msisdn : dest,
+                Email = isEmail && isChange ? dest : user.Email,
+                Msisdn = !isEmail && isChange ? dest : user.Msisdn,
                 IsEmailVerified = isEmail || user.IsEmailVerified,
                 IsMsisdnVerified = !isEmail || user.IsMsisdnVerified,
                 UpdatedAt = TimeUtils.Now(),
-            }, ct);
+            };
+            await users.UpsertAsync(updated, ct);
+
+            // Same audit trail the /user/profile path this replaced produced:
+            // HistoryDiffUtil covers email, msisdn and both verified flags, so
+            // a contact change or a first confirmation stays visible under
+            // /managed/query?type=history. Actor == target, as on every
+            // self-service path. Runs after the upsert, so a history-write
+            // failure cannot leave the verification itself un-applied.
+            var historyDiff = HistoryDiffUtil.ComputeUserDiff(user, updated);
+            if (historyDiff.Count > 0)
+                await history.AppendAsync(settings.Value.ManagementSpace, "/users",
+                    user.Shortname, user.Shortname, null, historyDiff, ct);
             return Response.Ok();
         }).RequireRateLimiting("auth-by-ip");
 
@@ -488,16 +532,30 @@ public static class OtpHandler
     // Msisdns are digits and need none of this.
     private static string? EmailDest(string? email) => email?.ToLowerInvariant();
 
-    // A stable, non-reversible stand-in for a contact in log output. Truncated
-    // to 8 hex characters: enough to tell "the same destination again" from "a
-    // different one" while reading a log, short enough that it is not a
-    // convenient lookup key, and lowercased first so the two spellings of one
-    // address fingerprint alike.
-    private static string Fingerprint(string? destination)
+    // Makes an anonymous caller's identifier safe to WRITE to a log. It does
+    // not make it private — the destination goes in whole, by decision; see the
+    // call site.
+    //
+    // What it still guards against, which is a separate concern from privacy:
+    //
+    //   * Control characters are stripped. Shortname is a free-form string that
+    //     nothing validates (Msisdn and Email are regex-checked before this
+    //     point, Shortname is not), and the default log format is plain text
+    //     whenever INVOCATION_ID is unset — dev, docker, any non-systemd host.
+    //     A newline in it would otherwise forge whole log lines into a file an
+    //     investigator later greps.
+    //   * The result is length-capped, so an anonymous caller cannot inflate
+    //     the log file with a 100 KB identifier.
+    //
+    // The cap is set far above any real destination — the longest valid email
+    // address is 254 characters — so it never truncates a genuine one. It only
+    // bites on input that was never a contact in the first place.
+    private const int DestMaxLength = 254;
+
+    private static string SanitizeDest(string? destination)
     {
         if (string.IsNullOrEmpty(destination)) return "(none)";
-        var hash = System.Security.Cryptography.SHA256.HashData(
-            System.Text.Encoding.UTF8.GetBytes(destination.ToLowerInvariant()));
-        return Convert.ToHexString(hash.AsSpan(0, 4)).ToLowerInvariant();
+        var clean = new string(destination.Where(c => !char.IsControl(c)).ToArray());
+        return clean.Length > DestMaxLength ? clean[..DestMaxLength] + "…" : clean;
     }
 }

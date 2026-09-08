@@ -71,3 +71,7 @@ dotnet-tools.json
 # reviewable dependency graph lives under dist/deps/ instead, where MSBuild
 # never reads it.
 packages.lock.json
+
+# Shared linux-x64 binary downloaded by the packaging jobs (see
+# DMART_PREBUILT_BIN in dist/build-rpm.sh and dist/build-deb.sh).
+/prebuilt/

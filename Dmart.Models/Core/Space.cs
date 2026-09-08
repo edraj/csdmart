@@ -16,7 +16,7 @@ public sealed record Space
     public string? Slug { get; init; }
     public Translation? Displayname { get; init; }
     public Translation? Description { get; init; }
-    public List<string> Tags { get; init; } = new();
+    public List<string> Tags { get; set; } = new();
     public DateTime CreatedAt { get; init; }
     public DateTime UpdatedAt { get; init; }
     public required string OwnerShortname { get; init; }
@@ -25,20 +25,20 @@ public sealed record Space
     public Payload? Payload { get; init; }
     public List<Dictionary<string, object>>? Relationships { get; init; }
     public string? LastChecksumHistory { get; init; }
-    public ResourceType ResourceType { get; init; } = ResourceType.Space;
+    public ResourceType ResourceType { get; set; } = ResourceType.Space;
 
     // ----- Spaces-specific -----
-    public string RootRegistrationSignature { get; init; } = "";
-    public string PrimaryWebsite { get; init; } = "";
+    public string RootRegistrationSignature { get; set; } = "";
+    public string PrimaryWebsite { get; set; } = "";
     public bool IndexingEnabled { get; init; }
     public bool CaptureMisses { get; init; }
     public bool CheckHealth { get; init; }
-    public List<Language> Languages { get; init; } = new();
-    public string Icon { get; init; } = "";
+    public List<Language> Languages { get; set; } = new();
+    public string Icon { get; set; } = "";
     public List<string>? Mirrors { get; init; }
     public List<string>? HideFolders { get; init; }
     public bool? HideSpace { get; init; }
     public int? Ordinal { get; init; }
     [JsonIgnore]
-    public List<string> QueryPolicies { get; init; } = new();
+    public List<string> QueryPolicies { get; set; } = new();
 }

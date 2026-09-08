@@ -252,12 +252,43 @@ if [ -z "$VERSION" ]; then
 fi
 echo "Building dmart-${VERSION} RPM..."
 
-# Step 1: Build binaries.
-# RPM ships a self-contained native binary, so opt into the AOT publish
-# path explicitly — build.sh defaults to a JIT framework-dependent
+# Step 1: Obtain the binaries.
+#
+# DMART_PREBUILT_BIN points at a directory already holding `dmart` and
+# `libe_sqlite3.so`. When set, the AOT compile is SKIPPED and those are used
+# as-is.
+#
+# Why: the Fedora RPM, the EL9 RPM and the .deb each used to run their own
+# `dotnet publish` for linux-x64 — three AOT compiles, ~12 minutes of a
+# three-runner pool, producing the same binary three times and giving three
+# chances to diverge. The release now builds it once and hands the artifact to
+# each packaging job. dmart.spec was already written for this: its %build only
+# compiles when dmart.csproj is present, which is the SRPM-rebuild path.
+#
+# The shared binary must come from the LOWEST glibc floor it will run on —
+# AlmaLinux 9 (2.34), not Fedora. An EL9-built binary runs on Fedora; a
+# Fedora-built one (2.38+) does not run on EL9. release-verifiable.yml already
+# builds linux-x64 that way.
+#
+# RPM ships a self-contained native binary, so the fallback path opts into the
+# AOT publish explicitly — build.sh defaults to a JIT framework-dependent
 # apphost (good for dev iteration, wrong for distribution).
-echo "=== Building binaries ==="
-./build.sh --aot
+if [ -n "${DMART_PREBUILT_BIN:-}" ]; then
+    echo "=== Using prebuilt binaries from $DMART_PREBUILT_BIN ==="
+    for f in dmart libe_sqlite3.so; do
+        [ -f "$DMART_PREBUILT_BIN/$f" ] || {
+            echo "build-rpm.sh: DMART_PREBUILT_BIN is set but $f is not in it." >&2
+            echo "              Expected both dmart and libe_sqlite3.so." >&2
+            exit 1
+        }
+    done
+    mkdir -p bin
+    cp "$DMART_PREBUILT_BIN/dmart" "$DMART_PREBUILT_BIN/libe_sqlite3.so" bin/
+    chmod +x bin/dmart
+else
+    echo "=== Building binaries ==="
+    ./build.sh --aot
+fi
 
 # Step 2: Assemble source tarball for rpmbuild
 STAGING=$(mktemp -d)
