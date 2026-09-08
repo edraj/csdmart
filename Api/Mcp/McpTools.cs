@@ -456,21 +456,25 @@ public static class McpTools
         var resourceType = TryParseEnum<ResourceType>(GetString(args, "resource_type"))
             ?? ResourceType.Content;
 
-        // Explicit permission check — CanReadAsync walks the same
-        // user→role→permission chain the HTTP handlers rely on.
         var services = http.RequestServices;
         var perms = services.GetRequiredService<PermissionService>();
         var locator = new Locator(resourceType, space, subpath, shortname);
-        if (!await perms.CanReadAsync(actor, locator, ct))
-            throw new UnauthorizedAccessException("no read access");
 
-        // Attachment-flavor: load bytes from the attachments table.
+        // Attachment-flavor: load bytes from the attachments table. The row is
+        // loaded BEFORE the gate so the gate can run against its real
+        // resource_type: the lookup is untyped, and `resource_type` here is a
+        // tool argument the caller wrote, so gating on the claim let a view
+        // grant on resource_types:["comment"] download a media attachment.
         if (Api.Managed.ResourceWithPayloadHandler.IsAttachmentResourceType(resourceType))
         {
             var repo = services.GetRequiredService<AttachmentRepository>();
             var att = await repo.GetAsync(space, subpath, shortname, ct);
             if (att is null)
                 throw new InvalidOperationException("attachment not found");
+            if (!await perms.CanReadAsync(
+                    actor, locator with { Type = att.ResourceType },
+                    PermissionService.FromAttachment(att), ct))
+                throw new UnauthorizedAccessException("no read access");
 
             // Prefer binary media; fall back to text body.
             if (att.Media is not null)
@@ -493,7 +497,10 @@ public static class McpTools
             throw new InvalidOperationException("attachment has no payload");
         }
 
-        // Entry-flavor: inline JSON payload.
+        // Entry-flavor: inline JSON payload. EntryService.GetAsync runs the
+        // read gate against the loaded row's real resource_type and returns null
+        // when it refuses, so no separate pre-check is needed (and a pre-check on
+        // the caller's claimed type would be the bypass this branch used to have).
         var entries = services.GetRequiredService<EntryService>();
         var entry = await entries.GetAsync(locator, actor, ct)
             ?? throw new InvalidOperationException("entry not found");

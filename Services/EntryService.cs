@@ -48,7 +48,15 @@ public sealed class EntryService(
         // path it's free because we'd have loaded the entry anyway.
         var entry = await entries.GetAsync(l.SpaceName, l.Subpath, l.Shortname, l.Type, ct);
         if (entry is null) return null;
-        if (!await perms.CanReadAsync(actor, l, PermissionService.FromEntry(entry), ct)) return null;
+        // Gate on the row's REAL resource_type, not the caller's declared one —
+        // the same guard UpdateAsync/DeleteAsync/MoveAsync carry, for the same
+        // reason. The lookup above falls back to an untyped query, and the
+        // {resource_type} segment of /managed/entry/... and /managed/payload/...
+        // is caller-supplied, so a view grant on resource_types:["content"] was
+        // enough to read a schema, a ticket, or anything else living at that
+        // address just by naming it "content".
+        var authzLocator = entry.ResourceType == l.Type ? l : l with { Type = entry.ResourceType };
+        if (!await perms.CanReadAsync(actor, authzLocator, PermissionService.FromEntry(entry), ct)) return null;
         return entry;
     }
 

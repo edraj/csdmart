@@ -193,7 +193,18 @@ public static class ResourceWithPayloadHandler
             Uuid = string.IsNullOrEmpty(record.Uuid) ? Guid.NewGuid().ToString() : record.Uuid,
             Shortname = record.Shortname,
             SpaceName = spaceName,
-            Subpath = record.Subpath,
+            // Normalized, matching RequestHandler.CreateAttachmentAsync. Every
+            // READ of this table normalizes — AttachmentRepository.GetAsync runs
+            // Locator.NormalizeSubpath — but BindAttachment writes a.Subpath
+            // verbatim, so a record arriving as "docs/x" was stored as "docs/x"
+            // and then never found again by a lookup for "/docs/x". The gate
+            // locator two dozen lines up already normalizes for exactly this
+            // reason.
+            //
+            // It matters more now than it did: the cross-type collision guard
+            // below queries through GetAsync, so an un-normalized occupant was
+            // invisible to it and the overwrite it exists to refuse went ahead.
+            Subpath = "/" + record.Subpath.TrimStart('/'),
             ResourceType = record.ResourceType,
             OwnerShortname = actor,
             IsActive = true,
@@ -230,6 +241,13 @@ public static class ResourceWithPayloadHandler
             }
             else
             {
+                // Same cross-type collision guard as RequestHandler's attachment
+                // create: the upsert rewrites resource_type along with everything
+                // else, so overwriting in place is idempotency only while the type
+                // matches. See RequestHandler.AttachmentTypeCollisionAsync.
+                if (await RequestHandler.AttachmentTypeCollisionAsync(record, spaceName, attachments, ct)
+                    is { } collision)
+                    return collision;
                 await attachments.UpsertAsync(attachment, ct);
             }
         }
