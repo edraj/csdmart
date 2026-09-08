@@ -1,38 +1,92 @@
 # Changelog
 
-## Unreleased
+## v1.5.5 — 2026-09-08
 
-### Changed
+### Security
 
-- **Account lockout no longer deactivates the user or revokes live sessions.**
-  Crossing `MAX_FAILED_LOGIN_ATTEMPTS` used to set `is_active = false` and delete
-  every session row, which meant the lock revoked access tokens already in flight
-  and conflated an automatic lock with an admin deactivation. The lock is now the
-  counter alone: `is_active = false` means only that an admin turned the account
-  off, and a locked user's already-issued access token keeps working until it
-  expires. New logins are still refused with `USER_ACCOUNT_LOCKED`, and
-  `/oauth/token` with `grant_type=refresh_token` now re-checks the lock and
-  returns `invalid_grant` — so a locked session ends at the next refresh rather
-  than instantly.
+- **A permission grant scoped to one `resource_type` could read and overwrite
+  rows of another.** Authorization was performed against the resource type the
+  *caller declared*, while the lookup that found the row ignored it. Attachments
+  are the clearest case: `AttachmentRepository` has no typed lookup at all —
+  `(space, subpath, shortname)` is the whole identity — so the `{resource_type}`
+  segment of a URL was an unverified claim.
 
-  **Operators should understand the tradeoff.** An attacker who guesses the
-  password before the threshold trips is no longer kicked out when the lock later
-  fires; their access is bounded by the access token's TTL plus the refresh block,
-  not by immediate revocation.
+  Concretely, a grant on `resource_types: ["comment"]` was enough to:
 
-  Two consequences follow from the lock no longer touching `is_active`:
-  the cool-down auto-unlock no longer sets `is_active = true` (it would otherwise
-  reactivate an account an admin had deliberately deactivated), and manual unlock
-  is now a user update carrying an explicit `is_active: true`, which clears
-  `attempt_count` whether or not the account was inactive to begin with.
+  - read a schema, ticket or any other row at a known address via
+    `GET /managed/entry/content/...`, by naming it `content`;
+  - download the bytes of a media attachment via
+    `GET /managed/payload/comment/...`, or the MCP `download` tool;
+  - overwrite a media attachment by *creating* a comment at its address — the
+    attachment upsert rewrites `resource_type` along with the bytes, so the
+    media row was replaced in place with no other trace.
 
-- **Bot accounts are exempt from the failed-attempt lockout.** A `type = bot`
-  account still increments `attempt_count` — brute force against it stays visible
-  — but never locks. A bot authenticates from CI/MCP with a machine credential and
-  never re-runs `/user/login`, so the cool-down that rescues a human account was
-  unreachable for it and a lock was permanent until an admin intervened; five
-  requests from anyone who knew the shortname could take down an integration. Bots
-  remain subject to the ordinary `is_active` and soft-delete gates.
+  Every gate now authorizes against the `resource_type` of the row actually
+  loaded, never the one supplied by the caller: `EntryService` for
+  read/update/delete/move, and the attachment paths in `RequestHandler`,
+  `PayloadHandler` and `McpTools`. The two attachment create paths additionally
+  refuse an address already occupied by a different type, rather than upserting
+  over it — same-type re-create stays idempotent as before.
+
+  The write leg (update, delete, move) was fixed in an earlier release; this
+  closes the read leg and the attachment paths. Covered by nine tests across
+  every affected route.
+
+  **Operators:** review whether any deployed permission relies on
+  `resource_types` as an isolation boundary, and audit access to spaces where a
+  narrow grant coexists with sensitive rows at predictable addresses. Requests
+  that exploited this returned ordinary 200s and left no distinguishing trace.
+
+- **Attachments uploaded over `/managed/resource_with_payload` were stored under
+  an un-normalized subpath.** Every read of that table normalizes, but that
+  write path passed the subpath through verbatim — so an attachment created with
+  `subpath: "docs/x"` landed at `docs/x` and no later lookup could find it, the
+  new cross-type collision guard included.
+
+### Fixed
+
+- **The OTP log line now shows the same spelling of an email that the rate
+  limits key on.** The resend cooldown, the daily cap and the `otps` row are all
+  keyed on the lowercased address, but the log recorded the raw request
+  spelling. `Bob@Example.com` and `bob@example.com` therefore shared one budget
+  while appearing as two destinations — so grepping the log to explain a
+  `daily-cap` warning undercounted the requests that caused it, which defeats
+  the point of logging the destination at all.
+
+- **A shortname of only spaces logged a blank `dest=`.** The guard added
+  alongside this checked for an empty string after stripping control
+  characters, but spaces are not control characters and survive the strip — so
+  `{"purpose":"login","shortname":"   "}` still produced a `dest=` an operator
+  could not tell from an absent one. It checks for whitespace now, which covers
+  non-breaking and zero-width spaces too.
+
+- **The shortname branch undercounted the same way the email branch did.** The
+  log reported what the request supplied, while the cooldown and daily cap key
+  on the *resolved* contact — so a user hitting the cap by shortname and by
+  email appeared as two destinations spending one budget. The line now reports
+  the resolved contact wherever one has been determined, falling back to the
+  request only on the branches that fire before resolution.
+
+- **These three fixes are now pinned by tests.** `OtpLogDestinationTests`
+  asserts the logged destination against the value the rate limits key on. That
+  line had been wrong three times in three different ways without any test
+  noticing, because every one of them still answered 200 Ok and still minted or
+  withheld the code correctly.
+
+- **An identifier made only of control characters logged a bare `dest=`.**
+  `SanitizeDest` checked for empty input before stripping control characters but
+  not after, and `shortname` is free-form and validated nowhere — so a shortname
+  of two control characters counted as a provided field, stripped to nothing,
+  and produced exactly the empty `dest=` the guard exists to prevent. It logs
+  `(none)` now.
+
+- **v1.5.4's changelog carried two contradictory copies of the release-build
+  entry.** Merging #256 resurrected a superseded version alongside the corrected
+  one: it claimed the builder image was a speed improvement (retracted — the
+  medians are identical) and that the release workflow shares a NuGet cache,
+  which `release-verifiable.yml` explicitly documents that it does not, having
+  tried and removed it. The stale copy is gone. The published v1.5.4 release
+  notes were written separately and were never wrong.
 
 ## v1.5.4 — 2026-09-08
 
@@ -65,34 +119,6 @@
   valid email address, so no real destination is ever truncated — so a 100 KB
   identifier cannot inflate the log file. An absent or blank identifier logs
   `(none)` rather than an empty `dest=`.
-
-- **The release build is faster, and the remaining cost is now measured rather
-  than assumed.** Consolidating the Linux packages onto one binary took
-  `release.yml` from 24 minutes wall clock to 11 (the Fedora RPM went 5 min → 1,
-  the `.deb` 4 → 1). That moved the bottleneck rather than removing it, so this
-  release addresses where the time actually went:
-
-  - **The two glibc legs of `release-verifiable.yml` ran
-    `dnf install dotnet-sdk-10.0` on every release**, cold, on a hosted runner.
-    Measured on v1.5.3 that made them ~10 minutes each against ~6–7 for the musl
-    legs, whose base image already ships the SDK. They now build inside a
-    published `dmart-el9-builder` image with the SDK and toolchain baked in.
-
-    That also removes an unpinned `dnf install` from the path that produces
-    signed artifacts: the SDK a release was built with used to be whatever the
-    AlmaLinux mirrors served that day, and is now a property of an image pinned
-    by digest.
-
-  - **Nothing cached NuGet in `release-verifiable.yml`** — all four legs
-    restored from scratch, every time. They now share a cache keyed on the
-    recorded dependency graph, so it invalidates exactly when the dependency
-    set does.
-
-  Two things deliberately not changed. The Windows (9 min) and macOS (7 min)
-  AOT builds are different RIDs with nothing to share. And the two workflows
-  still compile the Linux targets separately: `release-verifiable.yml` exists
-  to establish that an artifact was built by hosted CI from the tagged commit,
-  and feeding it a self-hosted binary would forfeit exactly that.
 
 - **The release build is faster where it was measured to be, and unchanged
   where it was not.** Consolidating the Linux packages onto one binary took

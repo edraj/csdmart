@@ -44,6 +44,16 @@ public static class OtpHandler
             // only place a swallowed send is visible. daily-cap logs at
             // Warning; everything else at Information.
             var log = loggerFactory.CreateLogger(typeof(OtpHandler));
+
+            // Declared HERE, above SilentOk, so the log line can report the
+            // destination the rate limits actually key on. It is assigned once
+            // the identifier has been resolved to a contact, further down; the
+            // branches that fire before that (locked-account,
+            // anonymous-verify-contact, the register gate) leave it null and
+            // fall back to what the request supplied, which is all that is
+            // known at that point.
+            string? dest = null;
+
             Response SilentOk(string reason, LogLevel level = LogLevel.Information)
             {
                 // The destination is logged IN CLEAR, deliberately: the masked
@@ -66,12 +76,27 @@ public static class OtpHandler
                 // request validation above counts a provided field the same
                 // way: `{"msisdn":"","shortname":"alice"}` is accepted, and a
                 // ?? chain would coalesce on null only and log an empty string.
-                var dest = !string.IsNullOrEmpty(req.Msisdn) ? req.Msisdn
-                         : !string.IsNullOrEmpty(req.Email) ? req.Email
-                         : req.Shortname;
+                //
+                // Prefer the RESOLVED contact over what the request said. The
+                // resend cooldown, the daily cap and the otps row are all keyed
+                // on the resolved form — a lowercased email, or for a shortname
+                // request the account's own msisdn/email. Logging the request
+                // spelling instead would mean Bob@Example.com and
+                // bob@example.com, or `alice` and alice@example.com, share one
+                // budget while appearing as two destinations. Grepping the log
+                // to explain a daily-cap Warning would then undercount the
+                // requests that caused it, which is the whole reason this line
+                // carries a destination at all.
+                //
+                // Before resolution there is nothing better than the request,
+                // so those branches fall back to it — with the email lowercased
+                // so it at least matches the eventual key.
+                var requested = !string.IsNullOrEmpty(req.Msisdn) ? req.Msisdn
+                              : !string.IsNullOrEmpty(req.Email) ? EmailDest(req.Email)
+                              : req.Shortname;
                 log.Log(level,
                     "otp-request: silent no-op ({Reason}) purpose={Purpose} dest={Destination}",
-                    reason, req.Purpose, SanitizeDest(dest));
+                    reason, req.Purpose, SanitizeDest(dest ?? requested));
                 return Response.Ok();
             }
 
@@ -146,7 +171,6 @@ public static class OtpHandler
 
             // Resolve the user (when one exists) and the delivery destination.
             Models.Core.User? user = null;
-            string? dest = null;
             if (!string.IsNullOrEmpty(req.Shortname))
             {
                 user = await users.GetByShortnameAsync(req.Shortname, ct);
@@ -556,6 +580,15 @@ public static class OtpHandler
     {
         if (string.IsNullOrEmpty(destination)) return "(none)";
         var clean = new string(destination.Where(c => !char.IsControl(c)).ToArray());
+        // Re-check AFTER stripping, not only before, and check for WHITESPACE
+        // rather than length. Shortname is free-form and validated nowhere, so
+        // a value of two control characters survives to here and strips to
+        // nothing, and a value of three spaces survives the strip intact —
+        // spaces are not control characters. Both would print a `dest=` an
+        // operator cannot tell from an absent one, which is what this guard
+        // exists to prevent. IsNullOrWhiteSpace covers non-breaking and
+        // zero-width spaces too.
+        if (string.IsNullOrWhiteSpace(clean)) return "(none)";
         return clean.Length > DestMaxLength ? clean[..DestMaxLength] + "…" : clean;
     }
 }
