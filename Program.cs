@@ -163,6 +163,523 @@ static async Task<int> BulkUpdatePoliciesAsync(
     return await cmd.ExecuteNonQueryAsync();
 }
 
+// Ensures the reserved "anonymous" user row exists. NOTHING ELSE.
+//
+// It is here for one reason: entries.owner_shortname carries a FOREIGN KEY to
+// users(shortname), and EnsureBaseSchemasAsync must be able to insert the two
+// base schemas into a database that `serve` has never bootstrapped an admin
+// into. Without a valid owner row the insert fails the constraint.
+//
+// DELIBERATELY ROLE-LESS, and that is the whole safety argument. An earlier
+// revision gave this row the "world" role and created a "world" role and
+// permission alongside it. That turns on the switch PermissionService
+// documents as an opt-in: ResolvePermissionsAsync only consults the world
+// permission when the anonymous user has at least one role
+// (`if (isAnonymous && roles.Count > 0)`, PermissionService.cs), and the
+// implicit `logged_in` role is explicitly NOT added for anonymous. So a
+// migrate that attached a role would have activated any world permission
+// already present in an existing deployment — a schema-migration command
+// silently changing the authorization posture. With no roles the row is inert:
+// world is never consulted, and public access stays exactly as opt-in as
+// before.
+//
+// The real "world" role and permission belong to `dmart seed`, which ships
+// them with their actual scope (four permissions on the role; subpaths keyed
+// by the `test` and `applications` spaces). Creating stubs here would shadow
+// them permanently, because `seed` and `import` skip existing rows without
+// --force/-r.
+//
+// Self-owned (OwnerShortname = "anonymous") for the same FK reason: the
+// "dmart" admin is only guaranteed to exist once AdminBootstrap has run.
+// Created INACTIVE — this is a structural placeholder, not a usable account.
+static async Task EnsureAnonymousUserAsync(IDbConnectionFactory db, DmartSettings settings, bool quiet)
+{
+    const string MgmtSpace = "management";
+    const string AnonShortname = "anonymous";
+
+    var users = new UserRepository(db, new AuthzCacheRefresher(), new SessionTokenHasher(settings));
+
+    if (await users.GetByShortnameAsync(AnonShortname) is not null) return;
+
+    await users.UpsertAsync(new Dmart.Models.Core.User
+    {
+        Uuid = Guid.NewGuid().ToString(),
+        Shortname = AnonShortname,
+        SpaceName = MgmtSpace,
+        Subpath = "/users",
+        OwnerShortname = AnonShortname,
+        Roles = new(),
+        Groups = new(),
+        Type = UserType.Web,
+        Language = Language.Ar,
+        IsActive = false,
+        IsEmailVerified = false,
+        IsMsisdnVerified = false,
+        ForcePasswordChange = true,
+        LockedToDevice = false,
+        CreatedAt = Dmart.Utils.TimeUtils.Now(),
+        UpdatedAt = Dmart.Utils.TimeUtils.Now(),
+    });
+    if (!quiet) Console.WriteLine("  created \"anonymous\" user (role-less placeholder)");
+}
+
+// JSON Schema draft-07 meta-schema — the body of the "meta_schema" entry.
+// Every schema entry (content_type = schema) validates its own body against
+// this.
+//
+// Copied VERBATIM from seed/spaces/management/schema/meta_schema.json, which
+// is the canonical copy this repo ships. Keep it that way: an earlier
+// hand-written version silently required every `enum` member to be an object
+// (canonical draft-07 has `items: true`), so a plain `"enum": ["a","b"]` in
+// any schema body would have been rejected.
+static string MetaSchemaBodyJson() => """
+{
+      "$defs": {
+        "type_leaf": {
+          "type": "object",
+          "required": [
+            "type"
+          ],
+          "properties": {
+            "type": {
+              "enum": [
+                "string",
+                "number",
+                "integer",
+                "boolean",
+                "array",
+                "null"
+              ],
+              "type": "string"
+            },
+            "title": {
+              "type": "string",
+              "title": "",
+              "description": ""
+            },
+            "description": {
+              "type": "string",
+              "title": "",
+              "description": ""
+            }
+          }
+        },
+        "type_object": {
+          "type": "object",
+          "required": [
+            "properties",
+            "type"
+          ],
+          "properties": {
+            "type": {
+              "enum": [
+                "object"
+              ],
+              "type": "string"
+            },
+            "title": {
+              "type": "string",
+              "title": "",
+              "description": ""
+            },
+            "properties": {
+              "0": {
+                "0": {
+                  "$ref": "#/$defs/type_object"
+                },
+                "1": {
+                  "$ref": "#/$defs/type_leaf"
+                },
+                "name": "oneOf",
+                "title": "",
+                "description": ""
+              },
+              "1": {
+                "0": {
+                  "$ref": "#/$defs/type_object"
+                },
+                "1": {
+                  "$ref": "#/$defs/type_leaf"
+                },
+                "name": "oneOf",
+                "title": "",
+                "description": ""
+              },
+              "2": {
+                "name": "title",
+                "title": "",
+                "description": ""
+              },
+              "3": {
+                "name": "description",
+                "title": "",
+                "description": ""
+              },
+              "title": "",
+              "description": ""
+            },
+            "description": {
+              "type": "string",
+              "title": "",
+              "description": ""
+            },
+            "additionalProperties": {
+              "type": "boolean",
+              "title": "",
+              "description": ""
+            }
+          }
+        }
+      },
+      "oneOf": [
+        {
+          "$ref": "#/$defs/type_object"
+        },
+        {
+          "$ref": "#/$defs/type_leaf"
+        }
+      ]
+    }
+""";
+
+// Folder schema — the body of the "folder_rendering" entry. Validates every
+// folder entry's payload body across every space (SchemaValidator.cs always
+// resolves this one from the management space regardless of which space the
+// folder itself lives in).
+static string FolderRenderingBodyJson() => """
+{
+  "title": "Folder schema",
+  "description": "Canonical folder-body schema. CENTRALIZED: resolved from the management space for every space (SchemaValidator special-cases the shortname), and EXACT: additionalProperties is false at every level, so unknown or misspelled fields are rejected rather than silently ignored.",
+  "type": "object",
+  "additionalProperties": false,
+  "properties": {
+    "stream": {
+      "title": "Enable websocket stream",
+      "description": "folder level websocket watch",
+      "type": "boolean"
+    },
+    "disable_filter": {
+      "title": "Disable filter",
+      "description": "The search filter icon / functionality is disabled",
+      "type": "boolean"
+    },
+    "expand_children": {
+      "title": "Expand folders' children",
+      "description": "If the folder should expand children",
+      "type": "boolean"
+    },
+    "append_subpath": {
+      "title": "Append subpath",
+      "description": "Append string to the query subpath",
+      "type": "string"
+    },
+    "csv_columns": {
+      "title": "CSV columns",
+      "description": "CSV columns title",
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "key": {
+            "title": "Key",
+            "type": "string"
+          },
+          "name": {
+            "title": "Name",
+            "type": "string"
+          }
+        }
+      }
+    },
+    "search_columns": {
+      "title": "Search columns",
+      "description": "Search columns title",
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "key": {
+            "title": "Key",
+            "type": "string"
+          },
+          "name": {
+            "title": "Name",
+            "type": "string"
+          }
+        }
+      }
+    },
+    "enable_pdf_schema_shortnames": {
+      "title": "List of schema shortnames for which pdf icon is displayed",
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "workflow_shortnames": {
+      "title": "Workflow shortnames",
+      "description": "Tickets created in this folder must declare one of these workflows",
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "shortname_title": {
+      "title": "shortname field title",
+      "description": "shortname field title",
+      "type": "string"
+    },
+    "query": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "type": {
+          "type": "string",
+          "enum": [
+            "subpath",
+            "search"
+          ]
+        },
+        "search": {
+          "type": "string"
+        },
+        "filter_types": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        }
+      }
+    },
+    "icon": {
+      "title": "folder main icon",
+      "description": "The icon displayed next to the folder",
+      "type": "string"
+    },
+    "icon_opened": {
+      "title": "folder opened icon",
+      "description": "The icon displayed next to the folder when opened",
+      "type": "string"
+    },
+    "icon_closed": {
+      "title": "folder closed icon",
+      "description": "The icon displayed next to the folder when closed",
+      "type": "string"
+    },
+    "sort_by": {
+      "title": "sort by",
+      "description": "the field name to be used in ordering",
+      "type": "string"
+    },
+    "sort_type": {
+      "title": "sort order",
+      "description": "the ordering of the sort asc/desc",
+      "type": "string",
+      "enum": [
+        "ascending",
+        "descending"
+      ]
+    },
+    "content_resource_types": {
+      "title": "Resource types",
+      "description": "Resources created in this folder must be one of these types",
+      "type": "array",
+      "items": {
+        "type": "string",
+        "enum": [
+          "user",
+          "group",
+          "folder",
+          "schema",
+          "content",
+          "log",
+          "acl",
+          "comment",
+          "media",
+          "data_asset",
+          "locator",
+          "relationship",
+          "alteration",
+          "history",
+          "space",
+          "permission",
+          "role",
+          "ticket",
+          "json",
+          "lock",
+          "post",
+          "reaction",
+          "reply",
+          "share",
+          "plugin_wrapper",
+          "notification",
+          "csv",
+          "jsonl",
+          "sqlite",
+          "parquet"
+        ]
+      }
+    },
+    "content_schema_shortnames": {
+      "title": "schema shortname",
+      "description": "Entries created in this folder that declare a schema must use one of these",
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "filter": {
+      "title": "Additional filter options",
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {}
+      }
+    },
+    "index_attributes": {
+      "title": "index attributes",
+      "description": "the attributes from the schema that should be displayed in index page",
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "key": {
+            "title": "Key",
+            "type": "string"
+          },
+          "name": {
+            "title": "Name",
+            "type": "string"
+          }
+        }
+      },
+      "uniqueItems": true
+    },
+    "unique_fields": {
+      "title": "Unique Fields",
+      "description": "List of list of composite fields which should be unique accross the folder entries",
+      "type": "array",
+      "items": {
+        "title": "Composite unique list",
+        "type": "array",
+        "items": {
+          "title": "Field Name",
+          "type": "string"
+        }
+      }
+    },
+    "allow_view": {
+      "title": "flag to enable or disable resource view inside this folder",
+      "description": "flag to enable or disable resource view inside this folder",
+      "type": "boolean"
+    },
+    "allow_create": {
+      "title": "flag to enable or disable resource creation inside this folder",
+      "description": "flag to enable or disable resource creation inside this folder",
+      "type": "boolean"
+    },
+    "allow_create_category": {
+      "title": "flag to enable or disable folder creation inside this folder",
+      "description": "flag to enable or disable folder creation inside this folder",
+      "type": "boolean"
+    },
+    "allow_update": {
+      "title": "flag to enable or disable resource update inside this folder",
+      "description": "flag to enable or disable resource update inside this folder",
+      "type": "boolean"
+    },
+    "allow_delete": {
+      "title": "flag to enable or disable resource delete inside this folder",
+      "description": "flag to enable or disable resource delete inside this folder",
+      "type": "boolean"
+    },
+    "allow_csv": {
+      "title": "flag to enable or disable CSV download button",
+      "description": "Allow the user to download csv of the displayed list",
+      "type": "boolean"
+    },
+    "allow_upload_csv": {
+      "title": "flag to enable or disable CSV upload feature",
+      "description": "Allow the user to upload  csv",
+      "type": "boolean"
+    },
+    "use_media": {
+      "title": "does the content inside this folder has a media or not",
+      "description": "does the content inside this folder has a media or not",
+      "type": "boolean"
+    }
+  },
+  "required": [
+    "index_attributes"
+  ]
+}
+""";
+
+// Ensures the two schema entries every deployment needs to validate its own
+// structural data: "meta_schema" (the JSON-schema meta-schema — validates
+// schema entries' own bodies) and "folder_rendering" (validates folder entry
+// bodies; SchemaValidator.cs hard-codes resolving it from the management
+// space — see the "folder_rendering is CENTRALIZED" comment there). Both
+// live at management/schema, matching FolderRenderingFixerTests' fixture and
+// AdminBootstrap's standard folder set. Create-if-missing only.
+static async Task EnsureBaseSchemasAsync(IDbConnectionFactory db, DmartSettings settings, bool quiet)
+{
+    const string MgmtSpace = "management";
+
+    var entries = new EntryRepository(db);
+    var users = new UserRepository(db, new AuthzCacheRefresher(), new SessionTokenHasher(settings));
+
+    // owner_shortname carries a FOREIGN KEY to users(shortname). Prefer "dmart"
+    // (matches the reference export) when it already exists; otherwise fall
+    // back to "anonymous", which EnsureAnonymousUserAsync guarantees exists
+    // by the time this runs — migrate must not fail on a database `serve`
+    // has never bootstrapped an admin into.
+    var ownerShortname = await users.GetByShortnameAsync("dmart") is not null ? "dmart" : "anonymous";
+
+    async Task EnsureSchemaEntryAsync(string shortname, string bodyJson, string? schemaShortname)
+    {
+        // Probe BOTH spellings. The rest of the codebase treats them as
+        // equivalent (SchemaValidator.cs, Cli/FolderRenderingFixer.cs), so
+        // checking only "/schema" would insert a SECOND copy on a deployment
+        // whose schemas live at "management/schemas" — and since
+        // GetCompiledAsync probes "/schema" first, that new copy would win
+        // over the operator's existing one.
+        if (await entries.GetAsync(MgmtSpace, "/schema", shortname, ResourceType.Schema) is not null
+            || await entries.GetAsync(MgmtSpace, "/schemas", shortname, ResourceType.Schema) is not null)
+            return;
+
+        var body = System.Text.Json.JsonDocument.Parse(bodyJson).RootElement.Clone();
+        var checksum = Dmart.Utils.HashUtils.Sha256Hex(bodyJson);
+
+        await entries.UpsertAsync(new Entry
+        {
+            Uuid = Guid.NewGuid().ToString(),
+            Shortname = shortname,
+            SpaceName = MgmtSpace,
+            Subpath = "/schema",
+            ResourceType = ResourceType.Schema,
+            IsActive = true,
+            OwnerShortname = ownerShortname,
+            CreatedAt = Dmart.Utils.TimeUtils.Now(),
+            UpdatedAt = Dmart.Utils.TimeUtils.Now(),
+            Payload = new Payload
+            {
+                ContentType = ContentType.Json,
+                SchemaShortname = schemaShortname,
+                Checksum = checksum,
+                Body = body,
+            },
+        });
+        if (!quiet) Console.WriteLine($"  created \"{shortname}\" schema");
+    }
+
+    await EnsureSchemaEntryAsync("meta_schema", MetaSchemaBodyJson(), schemaShortname: null);
+    await EnsureSchemaEntryAsync("folder_rendering", FolderRenderingBodyJson(), schemaShortname: "meta_schema");
+}
+
 switch (subcommand)
 {
     case "version":
@@ -213,7 +730,10 @@ switch (subcommand)
             Subcommands:
               serve          Start the HTTP server
                              Options: --cxb-config <path>
-              migrate        Create/update the PG schema (idempotent; no server)
+              migrate        Create/update the PG schema (idempotent; no server).
+                             Also ensures the reserved "anonymous" user, "world"
+                             role, "world" permission, and the "meta_schema" /
+                             "folder_rendering" schema entries exist.
               prune-empty-histories
                              Delete history rows that record no change — diff
                              `{}` or NULL — written before the empty-diff append
@@ -1491,6 +2011,18 @@ switch (subcommand)
         // Idempotent — safe to re-run. Captures PG NOTICE messages so the
         // caller sees exactly what was created vs. skipped.
         //
+        // Also ensures the "meta_schema" / "folder_rendering" schema entries
+        // every space needs to validate its own data (see
+        // EnsureBaseSchemasAsync below), plus the role-less "anonymous" user
+        // row those entries need to satisfy the owner_shortname foreign key
+        // (see EnsureAnonymousUserAsync below). Create-if-missing only, so
+        // migrate never fights an operator's changes.
+        //
+        // It does NOT bootstrap authorization data. The "world" role and
+        // permission belong to `dmart seed`, which ships their real scope;
+        // creating stubs here would shadow them permanently, since seed and
+        // import skip existing rows without --force/-r.
+        //
         // Options:
         //   -q, --quiet    Suppress per-statement output (show summary only)
         var quiet = serverArgs.Contains("-q") || serverArgs.Contains("--quiet");
@@ -1518,6 +2050,8 @@ switch (subcommand)
                 // and `dmart import` runs before a rebuild.
                 await SqliteSchemaInitializer.EnsureSchemaAsync(
                     sqliteFactory, Microsoft.Extensions.Logging.Abstractions.NullLogger.Instance);
+                await EnsureAnonymousUserAsync(sqliteFactory, migrateSettings, quiet);
+                await EnsureBaseSchemasAsync(sqliteFactory, migrateSettings, quiet);
                 Console.WriteLine("dmart schema ready.");
                 return;
             }
@@ -1526,6 +2060,10 @@ switch (subcommand)
         var (s, dbInst) = CliBootstrap.BuildOrExit(dotenvPath, dotenvValues,
             "Error: Database not configured. Set DATABASE_HOST/PORT/USERNAME/PASSWORD/NAME in config.env.");
 
+        // Held until after the base rows are seeded so the "dmart schema ready"
+        // line lands LAST — the `created "…"` lines belong under the migration
+        // that produced them, not after the summary that says it finished.
+        string migrateSummary = "dmart schema ready.";
         try
         {
             Console.WriteLine($"Migrating {CliBootstrap.DescribeStore(s, dbInst)} ...");
@@ -1566,7 +2104,7 @@ switch (subcommand)
                 // "skipped" when IF NOT EXISTS guards fired.
                 var skipped = notices.Count(n =>
                     n.Contains("already exists", StringComparison.OrdinalIgnoreCase));
-                Console.WriteLine($"dmart schema ready. {applied} dynamic column patches applied, {skipped} statements already-in-sync.");
+                migrateSummary = $"dmart schema ready. {applied} dynamic column patches applied, {skipped} statements already-in-sync.";
             }
             finally
             {
@@ -1583,6 +2121,28 @@ switch (subcommand)
             Environment.ExitCode = 1;
             return;
         }
+
+        // Outside the migration try/catch on purpose. The schema migration has
+        // already COMMITTED by this point, so a failure seeding the base rows
+        // must not print "migration failed" — an operator reading that would
+        // reasonably conclude the migration did not apply and retry or roll
+        // back for nothing. Reported as its own step, with its own message.
+        try
+        {
+            await EnsureAnonymousUserAsync(dbInst, s, quiet);
+            await EnsureBaseSchemasAsync(dbInst, s, quiet);
+        }
+        catch (Exception ex)
+        {
+            Console.Error.WriteLine(
+                $"Error: schema migration succeeded, but seeding base rows failed: {ex.Message}");
+            if (ex.InnerException is not null)
+                Console.Error.WriteLine($"  {ex.InnerException.Message}");
+            Environment.ExitCode = 1;
+            return;
+        }
+
+        Console.WriteLine(migrateSummary);
         return;
     }
 
