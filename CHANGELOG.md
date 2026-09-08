@@ -4,31 +4,33 @@
 
 ### Changed
 
-- **OTP silent-no-op logs show a partially masked destination instead of an
-  opaque fingerprint.** `/user/otp-request` answers `Ok` on nine no-op branches
-  and logs one line for each. Since v1.4.0 that line carried an 8-character
-  SHA-256 fingerprint of the destination — safe, but unreadable: an operator
-  holding a number from a support ticket could reproduce the hash, yet could
-  not glance at a log and recognise the customer.
+- **OTP silent-no-op logs record the destination in clear.**
+  `/user/otp-request` answers `Ok` on nine no-op branches and logs one line for
+  each. Since v1.4.0 that line carried an 8-character SHA-256 fingerprint of the
+  destination; a partially-masked form (`****3344`) was tried and was still not
+  enough to work a support ticket from. The full msisdn or email is now written.
 
-  It now logs the useful half and nothing more: `****3344` for a msisdn,
-  `a***e@example.com` for an email. Enough to confirm a destination you already
-  have, never enough to harvest one you do not.
+  **Operators should understand what this means.** That line is emitted at
+  `Information` by default, `/user/otp-request` requires no JWT for `login`,
+  `reset` or `register`, and the log file is created `0644`. An anonymous caller
+  looping requests therefore writes a list of contacts to disk — their own
+  dictionary of numbers as much as any real user's — readable by anyone with
+  shell access to the host. Treat these logs as containing personal data:
+  restrict read access, and keep retention short.
 
-  **The destination is still never logged in clear.** That matters more here
-  than it looks: this endpoint needs no JWT for `login`, `reset` or `register`,
-  the line is emitted at Information by default, and the log file is created
-  0644 — so an anonymous caller looping requests would otherwise write a
-  contact list to disk for anyone with shell on the host.
+  If that trade stops being acceptable, the cheaper change than re-masking is to
+  keep `{Reason}` and `{Purpose}` at `Information` and drop this one line to
+  `Debug`.
 
-  The masked form is also sanitised, because the input is anonymous and
-  unvalidated. `Shortname` is free-form (`Msisdn` and `Email` are regex-checked;
-  it is not), and the default log format is plain text whenever
+  Two protections that are **not** about privacy remain, because the input is
+  anonymous and unvalidated. `Shortname` is free-form (`Msisdn` and `Email` are
+  regex-checked; it is not) and the default log format is plain text whenever
   `INVOCATION_ID` is unset — dev, docker, any non-systemd host. Control
-  characters are stripped so a newline cannot forge log lines an investigator
-  later greps, and the result is length-capped so a 100 KB identifier cannot
-  inflate the log file. An absent or blank identifier logs `(none)` rather than
-  an empty `dest=`, which previously gave no way to tell the two apart.
+  characters are stripped, so a newline cannot forge log lines an investigator
+  later greps, and the value is capped at 254 characters — above the longest
+  valid email address, so no real destination is ever truncated — so a 100 KB
+  identifier cannot inflate the log file. An absent or blank identifier logs
+  `(none)` rather than an empty `dest=`.
 
 - **The release build is faster, and the remaining cost is now measured rather
   than assumed.** Consolidating the Linux packages onto one binary took

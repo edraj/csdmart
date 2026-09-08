@@ -46,13 +46,21 @@ public static class OtpHandler
             var log = loggerFactory.CreateLogger(typeof(OtpHandler));
             Response SilentOk(string reason, LogLevel level = LogLevel.Information)
             {
-                // This line fires on EVERY no-op branch at Information — in
-                // production, for traffic an ANONYMOUS caller controls
-                // (/user/otp-request needs no JWT for login/reset/register).
-                // So the destination goes in partially masked, never in clear:
-                // enough for an operator to recognise "yes, that is the number
-                // ending 3344 from the ticket", not enough to harvest a
-                // contact list by looping requests. See MaskDest.
+                // The destination is logged IN CLEAR, deliberately: the masked
+                // form (****3344) was not enough to work a support ticket from.
+                //
+                // Know what this costs. This line fires on every no-op branch
+                // at Information, /user/otp-request needs no JWT for
+                // login/reset/register, and LogSink creates the file 0644 — so
+                // an anonymous caller looping requests writes a list of contacts
+                // to disk, readable by anyone with shell on the host, and their
+                // own dictionary of numbers lands there too. If that becomes a
+                // problem the cheaper fix than re-masking is to keep {Reason}
+                // and {Purpose} at Information and drop this line to Debug.
+                //
+                // SanitizeDest still applies. That is NOT about privacy: it
+                // stops a shortname full of newlines forging log lines, and a
+                // 100 KB one inflating the log file.
                 //
                 // Selection uses IsNullOrEmpty rather than ??, because the
                 // request validation above counts a provided field the same
@@ -63,7 +71,7 @@ public static class OtpHandler
                          : req.Shortname;
                 log.Log(level,
                     "otp-request: silent no-op ({Reason}) purpose={Purpose} dest={Destination}",
-                    reason, req.Purpose, MaskDest(dest));
+                    reason, req.Purpose, SanitizeDest(dest));
                 return Response.Ok();
             }
 
@@ -524,60 +532,30 @@ public static class OtpHandler
     // Msisdns are digits and need none of this.
     private static string? EmailDest(string? email) => email?.ToLowerInvariant();
 
-    // A partially-masked stand-in for a contact in log output.
+    // Makes an anonymous caller's identifier safe to WRITE to a log. It does
+    // not make it private — the destination goes in whole, by decision; see the
+    // call site.
     //
-    // This replaced an opaque SHA-256 fingerprint. The fingerprint was safe but
-    // unreadable: an operator holding a number from a support ticket could
-    // reproduce it, yet could not glance at a log line and recognise the
-    // customer. The masked form keeps the useful half — the last four digits of
-    // a msisdn, the first and last character of an email local part, the domain
-    // — while never emitting a whole contact. Reading a log gives you enough to
-    // confirm a destination you ALREADY have; it does not give you a contact
-    // list you did not.
-    //
-    // Everything here is anonymous-caller-controlled input on an unauthenticated
-    // endpoint, so the output is also sanitised:
+    // What it still guards against, which is a separate concern from privacy:
     //
     //   * Control characters are stripped. Shortname is a free-form string that
     //     nothing validates (Msisdn and Email are regex-checked before this
     //     point, Shortname is not), and the default log format is plain text
     //     whenever INVOCATION_ID is unset — dev, docker, any non-systemd host.
-    //     A newline in it would otherwise forge whole log lines.
+    //     A newline in it would otherwise forge whole log lines into a file an
+    //     investigator later greps.
     //   * The result is length-capped, so an anonymous caller cannot inflate
     //     the log file with a 100 KB identifier.
-    private const int MaskMaxLength = 40;
+    //
+    // The cap is set far above any real destination — the longest valid email
+    // address is 254 characters — so it never truncates a genuine one. It only
+    // bites on input that was never a contact in the first place.
+    private const int DestMaxLength = 254;
 
-    private static string MaskDest(string? destination)
+    private static string SanitizeDest(string? destination)
     {
         if (string.IsNullOrEmpty(destination)) return "(none)";
-
-        var at = destination.IndexOf('@');
-        string masked;
-        if (at > 0)
-        {
-            // Email: keep first and last of the local part, keep the domain.
-            // "alice@example.com" -> "a***e@example.com", and a one- or
-            // two-character local part is masked whole rather than exposed.
-            var local = destination[..at];
-            var domain = destination[at..];
-            masked = local.Length <= 2
-                ? new string('*', local.Length) + domain
-                : $"{local[0]}***{local[^1]}{domain}";
-        }
-        else if (destination.Length > 4 && destination.All(c => char.IsDigit(c) || c == '+'))
-        {
-            // Msisdn: last four digits only. Short enough that it is not a
-            // contact, long enough to match a ticket.
-            masked = "****" + destination[^4..];
-        }
-        else
-        {
-            // Shortname, or anything unrecognised. Not a phone number or an
-            // address, but still untrusted free-form input.
-            masked = destination;
-        }
-
-        var clean = new string(masked.Where(c => !char.IsControl(c)).ToArray());
-        return clean.Length > MaskMaxLength ? clean[..MaskMaxLength] + "…" : clean;
+        var clean = new string(destination.Where(c => !char.IsControl(c)).ToArray());
+        return clean.Length > DestMaxLength ? clean[..DestMaxLength] + "…" : clean;
     }
 }
