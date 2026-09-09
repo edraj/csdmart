@@ -140,7 +140,7 @@ public static class OtpHandler
             if (actor is not null)
             {
                 var jwtUser = await users.GetByShortnameAsync(actor, ct);
-                if (jwtUser is not null && await userService.IsLockedAsync(jwtUser, ct))
+                if (jwtUser is not null && userService.IsLocked(jwtUser))
                     return SilentOk("locked-account");
             }
             else if (purpose == OtpPurpose.VerifyContact)
@@ -206,17 +206,16 @@ public static class OtpHandler
             // Shortname requests are unaffected — dest is null for an
             // unresolved shortname (no contact to gate), so they still hit
             // the no-destination branch below.
-            // IsLockedAsync, not raw IsUsable. HandleFailedLoginAttemptAsync
-            // persists IsActive=false when an account locks, and only
-            // IsLockedAsync/RejectIfAttemptLockedAsync clear it once
-            // LockoutCooldownSeconds has elapsed. Reading IsUsable directly
-            // therefore keeps answering SilentOk("unusable-account") forever
-            // after the cool-down expired — and for an account whose only
-            // credential is an OTP (the password-less users this repo
-            // provisions), nothing else on any path would ever unlock it. The
-            // user asks for a code, gets 200, and no message ever arrives.
+            // IsLocked, not raw IsUsable: the attempt lock lives in
+            // attempt_count, which IsUsable knows nothing about, so reading
+            // IsUsable here would hand a locked account a login code. It also
+            // honours the cool-down, so an account that locked itself out and
+            // then went quiet can ask for a code again — which matters most
+            // for the password-less users this repo provisions, whose only
+            // credential IS the OTP. IsLocked is a pure read: it reports the
+            // release, it does not persist it (the next /user/login does).
             // The JWT branch above already uses this check.
-            var blocked = user is null || await userService.IsLockedAsync(user, ct);
+            var blocked = user is null || userService.IsLocked(user);
             if (!contactPurpose && blocked)
             {
                 var implicitEligible = purpose == OtpPurpose.Login && user is null

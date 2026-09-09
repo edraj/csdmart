@@ -187,17 +187,62 @@ deleted.
 
 `users.attempt_count` is incremented on every bad-password/bad-OTP attempt, which
 also stamps `users.last_failed_login`. When the count reaches
-`settings.MaxFailedLoginAttempts` (default 5) the account is auto-locked
-(`is_active = false`, all sessions wiped) and login returns `USER_ACCOUNT_LOCKED`
-even on a correct password.
+`settings.MaxFailedLoginAttempts` (default 5) the account is locked and login
+returns `USER_ACCOUNT_LOCKED` even on a correct password.
+
+**The lock is the counter, and nothing else.** It does not touch `is_active` and
+does not wipe the user's sessions:
+
+- `is_active = false` means one thing only — an admin deactivated the account.
+- A locked user's **already-issued access token keeps working** until it expires.
+  The lock blocks new logins; it does not sign the victim out of every device
+  because a stranger guessed at their password.
+- It does block **refresh**: both `/oauth/token` grants (`refresh_token` and
+  `authorization_code`) re-check the lock and return `invalid_grant`, so a locked
+  session ends at the next refresh. The blast radius is bounded by the access
+  token's TTL rather than by immediate revocation.
+- **One session is revoked**: the one that made the attempt that tripped the lock,
+  and only when that attempt came through an authenticated endpoint
+  (`/user/profile`'s `old_password`, `/user/validate_password`). Someone
+  brute-forcing a password from inside a session they already hold — a hijacked
+  one, in the case this defends against — must not keep that token for the rest of
+  its TTL. Anonymous `/user/login` attempts have no session to name and revoke
+  nothing.
+
+The tradeoff is deliberate: an attacker who guesses the password before tripping
+the threshold, and then logs in normally, is not kicked out by a later lock.
+
+### The gate is a pure read
+
+`UserService.IsLocked` is what the non-login gates (`/user/otp-request`, both
+`/oauth/token` grants) ask, and it writes nothing. It reports that the cool-down
+has released a lock; it does not persist that release — only a real login attempt
+does, through `RejectIfAttemptLockedAsync`. Presenting a refresh token or asking
+for an OTP is not a login, and neither should be able to clear `attempt_count`,
+which is both the lock itself and the only surviving record of a brute-force run.
+
+It also checks `is_active` / `is_deleted` **before** the counter, so a deactivated
+or soft-deleted account is locked whatever the cool-down says.
+
+### Bot accounts are exempt
+
+A `type = bot` account is never locked by the attempt counter. The counter still
+increments — so brute force against a bot stays visible in `attempt_count` — but
+it never trips. Two reasons: a bot authenticates from CI/MCP with a machine
+credential nobody is guessing, and a bot never re-runs `/user/login`, so the
+cool-down below is unreachable for it and a lock would be permanent. Locking one
+would let anyone who knows the shortname take down a whole integration with five
+requests. A bot is still subject to the ordinary `is_active` / soft-delete gate.
 
 ### Cool-down auto-unlock (`LockoutCooldownSeconds`, default 900)
 
 The lock is **not permanent**. `UserService.RejectIfAttemptLockedAsync` (the gate
 that runs first in both the password and OTP login paths) checks
 `last_failed_login`: once `now − last_failed_login > LockoutCooldownSeconds`, the
-next login attempt auto-clears the lock (`attempt_count = 0`, `is_active = true`,
-`last_failed_login = NULL`) and proceeds to the normal credential check.
+next login attempt auto-clears the lock (`attempt_count = 0`,
+`last_failed_login = NULL`) and proceeds to the normal credential check. It leaves
+`is_active` alone — an account that is both deactivated and at the threshold must
+not be handed back the flag an admin cleared.
 
 The window is measured from the **last** failed/blocked attempt and is **refreshed
 on every attempt while locked**, so a persistent attacker never auto-unlocks — only
@@ -208,12 +253,79 @@ auto-unlocks.
 
 Set `LOCKOUT_COOLDOWN_SECONDS=0` to disable auto-unlock and keep the lock permanent
 until an admin resets it (the pre-cooldown behaviour, and the Python-reference
-behaviour — Python has no cool-down). Admin manual unlock:
+behaviour — Python has no cool-down).
+
+`attempt_count` is returned on a user read, so an admin UI can show that an
+account is locked — the lock leaves `is_active` set, so the counter is the only
+thing that says so. cxb and catalog surface it on the user form and strip it from
+ordinary saves, the same way they strip `password`; ticking "clear on save" is
+what sends the unlock.
+
+Admin manual unlock is a user update carrying an explicit `attempt_count`:
+
+```json
+{"space_name": "management", "request_type": "update",
+ "records": [{"resource_type": "user", "subpath": "/users",
+              "shortname": "...", "attributes": {"attempt_count": 0}}]}
+```
+
+It has to be `attempt_count` and not `is_active: true`. A locked account is still
+active, so there is no `false → true` transition to key an unlock off — and keying
+it off the mere *presence* of the flag would be worse, because the admin UI emits
+`is_active` on every save. Editing a locked user's display name would then cancel
+an in-progress lockout the admin never meant to touch. Nothing echoes
+`attempt_count` back (it is not part of a user read), so it appears in an update
+only when a human put it there.
+
+A genuine reactivation (`is_active` going `false → true`) does still clear the
+counter: an account coming back from a deactivation should not be one mistyped
+password away from locking again.
+
+The unlock is audited. `attempt_count` is normally excluded from the history diff
+— every failed login moves it — but an admin *clearing* it writes a history row
+naming the actor, so `/managed/query?type=history` records who lifted a lockout.
+
+Or directly:
 
 ```sql
-UPDATE users SET attempt_count = 0, is_active = true, last_failed_login = NULL
-WHERE shortname = '...';
+UPDATE users SET attempt_count = 0, last_failed_login = NULL WHERE shortname = '...';
 ```
+
+### Upgrading from a pre-1.5.6 release
+
+The previous lockout wrote `is_active = false` alongside the counter. Under the
+rules above those rows read as admin deactivations, which the cool-down
+deliberately refuses to undo — so every account the old release auto-locked would
+stay locked out permanently, with no login-side path that recovers it.
+
+**The server repairs them at startup.** It reactivates exactly the rows carrying
+the old lock's signature — `is_active = false AND attempt_count >=
+MAX_FAILED_LOGIN_ATTEMPTS` — and logs a warning naming the count. On the first
+boot after an upgrade that heals the database; every boot after that is a no-op.
+
+That pair is unambiguous because no current code path can write it. An ordinary
+admin deactivation cannot: `RejectIfNotActive` runs before the credential check,
+so a deactivated account never reaches the counter to raise it. An admin
+deactivating an account that is *already* attempt-locked cannot either, because
+the managed user update clears `attempt_count` when it deactivates — the mirror
+of clearing it when it reactivates. The signature belongs to the release that
+wrote it, and to nothing else.
+
+The one case it gets wrong is inherent to the data rather than to the timing: an
+account that a pre-upgrade admin deactivated *and* that was already at the
+threshold looks exactly like an auto-lock, and is reactivated. The old release
+wrote both columns for a lock, so nothing in the row distinguishes them. Audit
+`is_active` on accounts you deliberately disabled before upgrading.
+
+Set `REPAIR_LEGACY_LOCKOUTS_ON_START=false` to keep startup strictly read-only.
+`dmart migrate` runs the same repair and prints the count — but **run it before
+starting the upgraded server, not after**. A locked-out user who retries once
+past the cool-down has their counter cleared by `RejectIfAttemptLockedAsync`;
+the row keeps `is_active = false` but drops below the threshold, stops matching
+the signature, and that account can no longer be repaired by anything. The
+startup pass completes before the host begins listening, so with it enabled
+nothing can retry in front of it — which is the reason it is a startup step and
+not a manual one.
 
 ## OAuth providers (Google / Facebook / Apple)
 

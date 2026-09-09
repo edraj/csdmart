@@ -2076,6 +2076,14 @@ internal static class UserMapper
             ["is_email_verified"] = u.IsEmailVerified,
             ["is_msisdn_verified"] = u.IsMsisdnVerified,
             ["force_password_change"] = u.ForcePasswordChange,
+            // Failed-attempt counter. Emitted so an admin UI can show that an
+            // account is locked and offer to clear it — the lock leaves
+            // is_active set, so this column is the only thing that says so.
+            // A client echoing it back on update writes the value it read,
+            // which is a no-op; only an explicit 0 unlocks. cxb and catalog
+            // strip it from ordinary saves anyway (see MetaUserForm), for the
+            // same reason they strip `password`.
+            ["attempt_count"] = u.AttemptCount,
             ["device_id"] = u.DeviceId,
             ["google_id"] = u.GoogleId,
             ["facebook_id"] = u.FacebookId,

@@ -138,7 +138,22 @@ public sealed class DmartSettings
     public int ListeningPort { get; set; } = 8282;
     public string ManagementSpace { get; set; } = "management";
     public int MaxSessionsPerUser { get; set; } = 5;
+
+    // Bad password/OTP attempts before an account is locked. The lock is the
+    // counter alone — it leaves is_active set (that means admin deactivation) and
+    // leaves live sessions running, so it blocks new logins and refreshes rather
+    // than revoking an access token already in flight. Bot accounts are exempt.
+    // See UserService.RejectIfAttemptLockedAsync.
     public int MaxFailedLoginAttempts { get; set; } = 5;
+
+    // Repair, at startup, the account lockouts written by the pre-counter-only
+    // release, which set is_active=false alongside the counter. Without it every
+    // account that release auto-locked stays locked out permanently after an
+    // upgrade. It is a no-op on any database that has already been repaired (and
+    // on a fresh one), so it costs one UPDATE per boot and normally reports
+    // nothing. See DataAdapters/Sql/LegacyLockoutBackfill.cs. Turn it off to keep
+    // startup strictly read-only and run `dmart migrate` instead.
+    public bool RepairLegacyLockoutsOnStart { get; set; } = true;
 
     // Wrong guesses allowed against a single OTP code before it is invalidated.
     // Caps brute force on the 6-digit code independently of the per-IP rate

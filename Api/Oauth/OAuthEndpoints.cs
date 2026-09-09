@@ -281,6 +281,13 @@ public static class OAuthEndpoints
         var user = await users.GetByShortnameAsync(entry.UserShortname, ct);
         if (user is null)
             return OAuthError(400, "invalid_grant", "user no longer exists");
+        // Same gate the refresh grant runs below, for the same reason and with
+        // the same generic message. A code is minted at /oauth/authorize and
+        // stays redeemable for its whole TTL; without this, an account that is
+        // locked, deactivated, or soft-deleted in that window still exchanges
+        // it for an access token and a live sessions row.
+        if (users.IsLocked(user))
+            return OAuthError(400, "invalid_grant", "user is no longer active");
 
         var access = jwt.IssueAccess(user.Shortname, user.Roles, user.Type);
         var refresh = jwt.IssueRefresh(user.Shortname, user.Type);
@@ -325,10 +332,17 @@ public static class OAuthEndpoints
         var user = await users.GetByShortnameAsync(shortname, ct);
         if (user is null)
             return OAuthError(400, "invalid_grant", "user no longer exists");
-        // Re-check usability on every refresh. Without this, deactivating (or
-        // deleting) a compromised account doesn't cut off its refresh tokens —
-        // they keep minting fresh access tokens until the refresh JWT's own expiry.
-        if (!user.IsUsable)
+        // Re-check on every refresh. Without this, deactivating (or deleting) a
+        // compromised account doesn't cut off its refresh tokens — they keep
+        // minting fresh access tokens until the refresh JWT's own expiry.
+        // IsLocked rather than IsUsable: a failed-attempt lock no longer flips
+        // is_active, so this is what ends a locked user's session. Their live
+        // access token still works until it expires, but it cannot be renewed
+        // — which bounds the lock's blast radius to the access TTL. IsLocked
+        // is a pure read, so presenting a refresh token can neither extend nor
+        // clear the lock. Same generic message either way, so the response
+        // doesn't distinguish "locked" from "deactivated".
+        if (users.IsLocked(user))
             return OAuthError(400, "invalid_grant", "user is no longer active");
 
         // Enforce absolute session lifetime. The incoming refresh carries the

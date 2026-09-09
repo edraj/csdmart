@@ -211,9 +211,12 @@ public static class ProfileHandler
                 // is an unmetered password oracle for anyone holding a stolen
                 // session token (e.g. checking a candidate before using it to
                 // step up through POST /user/profile's old_password gate).
+                // The caller's own token goes along: this endpoint is reachable
+                // only with a live session, so if this guess is the one that
+                // trips the lock, that session is the one to end.
                 var user = await svc.GetByShortnameAsync(actor, ct);
                 if (user is not null)
-                    await svc.RecordFailedAttemptAsync(user, ct);
+                    await svc.RecordFailedAttemptAsync(user, ct, TryExtractSessionToken(http));
             }
             return Response.Ok(attributes: new() { ["valid"] = valid });
         })

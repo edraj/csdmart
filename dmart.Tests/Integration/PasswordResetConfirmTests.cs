@@ -7,6 +7,7 @@ using Dmart.Models.Core;
 using Dmart.Models.Enums;
 using Dmart.Models.Json;
 using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.Options;
 using Shouldly;
 using Xunit;
 
@@ -255,7 +256,7 @@ public sealed class PasswordResetConfirmTests : IClassFixture<DmartFactory>
             }
 
             // 5th wrong OTP trips the lockout — server returns USER_ACCOUNT_LOCKED
-            // (HTTP 401) on the same call that flipped IsActive=false.
+            // (HTTP 401) on the same call that pushed the counter to the threshold.
             var lockResp = await client.PostAsJsonAsync("/user/password-reset-confirm",
                 new PasswordResetConfirm(Shortname: shortname, Email: null, Msisdn: null,
                     Otp: "000000", Password: ValidPassword),
@@ -264,11 +265,16 @@ public sealed class PasswordResetConfirmTests : IClassFixture<DmartFactory>
             var lockBody = await lockResp.Content.ReadAsStringAsync();
             lockBody.ShouldContain("Account has been locked");
 
-            // Confirm the lock landed in the DB.
+            // Confirm the lock landed in the DB. The lock is the counter — it
+            // deliberately leaves is_active alone (that means admin deactivation)
+            // and leaves live sessions running; see UserService.HandleFailedLoginAttemptAsync.
             var users = _factory.Services.GetRequiredService<UserRepository>();
             var locked = await users.GetByShortnameAsync(shortname);
             locked.ShouldNotBeNull();
-            locked!.IsActive.ShouldBeFalse();
+            locked!.AttemptCount.ShouldBe(
+                _factory.Services.GetRequiredService<IOptions<Dmart.Config.DmartSettings>>()
+                    .Value.MaxFailedLoginAttempts);
+            locked.IsActive.ShouldBeTrue();
         }
         finally { await CleanupAsync(shortname, email, msisdn); }
     }

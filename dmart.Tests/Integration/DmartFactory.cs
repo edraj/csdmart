@@ -125,6 +125,15 @@ public sealed class DmartFactory : WebApplicationFactory<Program>, IAsyncLifetim
                 // their own factory (AuthRateLimitTests, ShortLinkAnonymous-
                 // ResolveTests both pin it to 3).
                 ["Dmart:AuthRateLimitPerMinute"] = "1000",
+                // The legacy-lockout repair reactivates every user row holding
+                // `is_active = false AND attempt_count >= max`. Production can
+                // no longer produce that pair (the managed update clears the
+                // counter when it deactivates), but tests seed it directly by
+                // SQL to reproduce a pre-upgrade database — and a host booting
+                // mid-test would heal the row out from under the assertion.
+                // LegacyLockoutBackfillTests turns it back on for the one test
+                // that covers the startup path.
+                ["Dmart:RepairLegacyLockoutsOnStart"] = "false",
             };
 
             // If a PostgresConnection is resolved (from env var or config.env),

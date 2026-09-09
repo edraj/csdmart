@@ -91,6 +91,34 @@ if (dotenvPath is not null)
     }
 }
 
+// `dmart migrate`'s data half: undo the account lockouts written by the
+// pre-counter-only release, which flipped is_active=false alongside the
+// counter. See LegacyLockoutBackfill for why those rows are otherwise locked
+// out permanently and why this is an explicit migrate-time step rather than
+// something the server does at boot.
+static async Task ReportLegacyLockoutBackfillAsync(
+    Dmart.DataAdapters.Sql.IDbConnectionFactory db, Dmart.Config.DmartSettings settings)
+{
+    try
+    {
+        var reactivated = await Dmart.DataAdapters.Sql.LegacyLockoutBackfill.RunAsync(
+            db, settings.MaxFailedLoginAttempts);
+        if (reactivated > 0)
+            Console.WriteLine(
+                $"Reactivated {reactivated} account(s) auto-locked by a pre-1.5.6 release "
+                + "(is_active restored, attempt_count cleared). The lockout is the counter "
+                + "alone now; is_active means admin deactivation.");
+        else
+            Console.WriteLine("No pre-1.5.6 account lockouts to repair.");
+    }
+    catch (System.Data.Common.DbException ex)
+    {
+        // The schema is current either way — surface the repair's failure
+        // without failing the migration that already succeeded.
+        Console.Error.WriteLine($"Warning: legacy lockout repair failed: {ex.Message}");
+    }
+}
+
 // Bulk-update query_policies for a chunk of rows in one of the five
 // ACL-filterable tables (entries, users, roles, permissions, spaces). Builds
 // one `UPDATE … FROM (VALUES …)` statement that joins the target table
@@ -1519,6 +1547,7 @@ switch (subcommand)
                 await SqliteSchemaInitializer.EnsureSchemaAsync(
                     sqliteFactory, Microsoft.Extensions.Logging.Abstractions.NullLogger.Instance);
                 Console.WriteLine("dmart schema ready.");
+                await ReportLegacyLockoutBackfillAsync(sqliteFactory, migrateSettings);
                 return;
             }
         }
@@ -1573,6 +1602,7 @@ switch (subcommand)
                 await using var ul = new Npgsql.NpgsqlCommand("SELECT pg_advisory_unlock(1)", conn);
                 await ul.ExecuteNonQueryAsync();
             }
+            await ReportLegacyLockoutBackfillAsync(dbInst, s);
             Npgsql.NpgsqlConnection.ClearAllPools();
         }
         catch (Exception ex)
@@ -2333,6 +2363,10 @@ builder.Services.Configure<Microsoft.AspNetCore.Builder.ForwardedHeadersOptions>
 builder.Services.AddHostedService<SchemaInitializer>();
 builder.Services.AddHostedService<SqliteSchemaInitializer>();
 builder.Services.AddHostedService<AdminBootstrap>();
+// Upgrade repair for accounts the pre-counter-only lockout deactivated. After
+// the schema initializers for the obvious reason (the users table has to exist)
+// and a no-op on every boot after the first — see LegacyLockoutBackfill.
+builder.Services.AddHostedService<LegacyLockoutRepair>();
 
 // IP-based rate limiter for authentication endpoints. Account lockout (on the
 // user row) limits attempts per-account; this limits attempts per-IP so an

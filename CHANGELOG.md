@@ -2,6 +2,105 @@
 
 ## Unreleased
 
+### Security
+
+- **The account lockout is the failed-attempt counter now, and nothing else.**
+  It no longer flips `is_active` and no longer wipes every session the user
+  holds. `is_active = false` means one thing — an admin deactivated the account.
+
+  What this changes for a locked user:
+
+  - their **already-issued access token keeps working** until it expires. A
+    stranger guessing at someone's password no longer signs that person out of
+    every device they own;
+  - they cannot **refresh**. Both `/oauth/token` grants re-check the lock, so a
+    locked session ends at the next refresh and the blast radius is bounded by
+    `JWT_ACCESS_EXPIRES`;
+  - the one session that *is* revoked is the one that made the attempt which
+    tripped the lock, and only when that attempt came through an authenticated
+    endpoint (`/user/profile`'s `old_password`, `/user/validate_password`).
+    Someone brute-forcing from inside a session they already hold — a hijacked
+    one — does not get to keep that token.
+
+  `type = bot` accounts are exempt from the lock entirely. The counter still
+  moves, so an attack stays visible in `attempt_count`; it just never trips. A
+  bot authenticates with a machine credential nobody is guessing and never
+  re-runs `/user/login`, so the cool-down that rescues a human is unreachable
+  for it — locking one meant five requests from anyone who knew the shortname
+  could take down a whole integration until an admin intervened.
+
+  **Operators upgrading from v1.5.5 or earlier:** the old lockout wrote
+  `is_active = false` alongside the counter, and those rows would now read as
+  admin deactivations — which the cool-down deliberately refuses to undo,
+  leaving every account the previous release auto-locked stuck for good. The
+  server repairs them at startup, reactivating exactly the rows carrying the old
+  signature and logging a warning with the count. The startup pass finishes
+  before the host begins listening, which matters: a locked-out user who retries
+  once past the cool-down has their counter cleared, and the row then no longer
+  matches the signature the repair looks for. `dmart migrate` runs the same
+  repair and `REPAIR_LEGACY_LOCKOUTS_ON_START=false` disables the startup pass —
+  but if you go that route, run migrate *before* starting the upgraded server. The one
+  case the repair cannot get right is inherent to the data: an account you
+  deliberately deactivated *before* upgrading that was also at the threshold
+  looks identical to an auto-lock and will be reactivated — audit those.
+
+- **A user update now clears `attempt_count` when it deactivates an account**,
+  the mirror of clearing it on reactivation. While an account is deactivated the
+  counter means nothing (the active check rejects before any credential check),
+  and leaving it set would recreate the exact row shape the old lockout used —
+  which is what makes the upgrade repair above unambiguous.
+
+- **`/oauth/token`'s `authorization_code` grant performed no account checks at
+  all.** It looked up the user row, confirmed it existed, and issued an access
+  token plus a live sessions row. An authorization code stays redeemable for its
+  whole TTL, so an account locked, deactivated, or soft-deleted in that window
+  still exchanged its code for a working token — while the `refresh_token` grant
+  fifty lines below refused. Both grants run the same gate now.
+
+- **The lock check answered "not locked" for deactivated and soft-deleted
+  accounts.** When an account was at the attempt threshold *and* its cool-down
+  had elapsed, the counter branch returned early and the `is_active` /
+  `is_deleted` check below it never ran. Deactivating a compromised account
+  therefore did not stop its refresh tokens from minting fresh access tokens,
+  and `/user/otp-request` kept issuing login codes to it. Usability is checked
+  first now.
+
+- **Presenting a refresh token could clear a brute-force lockout.** The gate
+  was a predicate with a write side effect: once the cool-down elapsed it reset
+  `attempt_count` and dropped the anchor. An attacker holding a refresh token
+  could brute-force a password to the threshold, wait out
+  `LOCKOUT_COOLDOWN_SECONDS`, and spend one refresh to wipe the counter — the
+  lock itself, and the only surviving record of the run — without ever
+  presenting a credential. The gate is a pure read now; the durable unlock
+  happens only on a real login attempt.
+
+- **A routine admin edit could silently cancel a lockout.** The unlock gesture
+  was keyed on the *presence* of `is_active` in a user update, and the admin UI
+  emits that flag on every save — so fixing a typo in a locked user's display
+  name cleared `attempt_count` with it, with nothing in the response to say so.
+  The gesture is an explicit `attempt_count` attribute now, and a genuine
+  `false → true` reactivation still clears the counter. Admin unlocks are
+  written to the audit history, naming the actor.
+
+  `attempt_count` is also returned on a user read, so an admin UI can show that
+  an account is locked — the lock leaves `is_active` set, so the counter is the
+  only thing that says so. cxb and catalog show it on the user form with a
+  "clear on save" tick that sends the unlock, and strip the field from ordinary
+  saves exactly as they already strip `password`.
+
+- **A non-boolean `is_active` force-activated the account.** `{"is_active":
+  "false"}` — a stringified boolean, the commonest client bug — fell through to
+  the default arm and read as `true`, reactivating the very account the caller
+  was trying to disable. Malformed values are rejected with `INVALID_DATA`
+  rather than guessed at.
+
+- **An admin user update rolled back concurrent failed-attempt increments.**
+  The handler read the row, then wrote `attempt_count` back from that read —
+  handing an in-flight brute-force run its attempts back. `attempt_count` is
+  now preserved on write when the caller doesn't mean to change it, the same
+  protection the password column already had, and the self-service profile
+  update takes it too.
+
 ### Fixed
 
 - **Duplicate push notifications when one device signed in more than once.**

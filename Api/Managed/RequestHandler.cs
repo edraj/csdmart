@@ -917,8 +917,58 @@ public static class RequestHandler
                     ResourceType.User, attrs, ActionType.Update, ct);
                 if (!userUniq.IsOk)
                     return (Response.Fail(userUniq.ErrorCode!, userUniq.ErrorMessage!, userUniq.ErrorType ?? ErrorTypes.Request), rec, null);
-                var newIsActive = attrs.TryGetValue("is_active", out var ia) ? !IsExplicitlyFalse(ia) : existing.IsActive;
+                // is_active is parsed strictly. A value that is not a boolean
+                // (a stringified "false", 0, null) used to fall through
+                // IsExplicitlyFalse's default arm and read as TRUE, so a client
+                // sending {"is_active": "false"} reactivated the very account it
+                // was trying to disable. Reject it instead of guessing.
+                var isActiveRequested = attrs.TryGetValue("is_active", out var ia);
+                var parsedIsActive = isActiveRequested ? TryParseBool(ia) : null;
+                if (isActiveRequested && parsedIsActive is null)
+                    return (Response.Fail(InternalErrorCode.INVALID_DATA,
+                        "is_active must be a boolean", ErrorTypes.Request), rec, null);
+                var newIsActive = parsedIsActive ?? existing.IsActive;
+                // A genuine false→true transition reactivates the account, and a
+                // reactivated account starts with a clean counter. The mirror
+                // transition clears it too: while an account is deactivated the
+                // counter means nothing (RejectIfNotActive rejects before the
+                // credential check ever runs), and leaving it set would recreate
+                // the one row shape the pre-counter-only release used for its
+                // locks — the shape LegacyLockoutBackfill repairs on sight. Both
+                // transitions clearing it is what keeps that repair unambiguous.
                 var reactivating = !existing.IsActive && newIsActive;
+                var deactivating = existing.IsActive && !newIsActive;
+                // The attempt lock is counter-only and leaves is_active set (see
+                // UserService.HandleFailedLoginAttemptAsync), so a locked account
+                // is already active and there is no transition to key an unlock
+                // off. `attempt_count` is therefore the explicit unlock gesture:
+                // send it (0, conventionally) to clear the lock.
+                //
+                // is_active=true is deliberately NOT that gesture, however
+                // convenient it looks. cxb's meta form emits the flag on every
+                // save (cxb/src/utils/metaFormUtils.ts:40 defaults it to true),
+                // so treating its mere presence as an unlock means an admin who
+                // edits a locked user's displayname silently cancels an
+                // in-progress brute-force lockout they never meant to touch.
+                // attempt_count is safe to key on precisely because nothing
+                // echoes it back: QueryService never emits it, so it appears in
+                // an update only when a human put it there.
+                var attemptCountRequested = attrs.TryGetValue("attempt_count", out var acRaw);
+                int? requestedAttemptCount = null;
+                if (attemptCountRequested)
+                {
+                    requestedAttemptCount = TryParseInt(acRaw);
+                    if (requestedAttemptCount is null or < 0)
+                        return (Response.Fail(InternalErrorCode.INVALID_DATA,
+                            "attempt_count must be a non-negative integer", ErrorTypes.Request), rec, null);
+                }
+                // null means "leave the stored counter alone" — the upsert
+                // COALESCEs it (see UserRepository.UserConflictClause). Replaying
+                // `existing.AttemptCount`, read at the top of this handler, would
+                // roll back increments a concurrent brute-force run landed in
+                // between and hand the attacker those attempts back.
+                var newAttemptCount = requestedAttemptCount
+                    ?? (reactivating || deactivating ? 0 : (int?)null);
                 // Python parity: payload, type, language, and force_password_change
                 // flow through user update via Meta.update_from_record. payload.body
                 // is DEEP-MERGED (Payload.update(replace=false)) so a partial body
@@ -944,7 +994,7 @@ public static class RequestHandler
                     Displayname = attrs.TryGetValue("displayname", out var dn) ? ParseTranslation(dn) : existing.Displayname,
                     Description = attrs.TryGetValue("description", out var desc) ? ParseTranslation(desc) : existing.Description,
                     IsActive = newIsActive,
-                    AttemptCount = reactivating ? 0 : existing.AttemptCount,
+                    AttemptCount = newAttemptCount,
                     IsEmailVerified = attrs.TryGetValue("is_email_verified", out var iev) ? IsTruthy(iev) : existing.IsEmailVerified,
                     IsMsisdnVerified = attrs.TryGetValue("is_msisdn_verified", out var imv) ? IsTruthy(imv) : existing.IsMsisdnVerified,
                     ForcePasswordChange = attrs.TryGetValue("force_password_change", out var fpc) ? IsTruthy(fpc) : existing.ForcePasswordChange,
@@ -978,6 +1028,21 @@ public static class RequestHandler
                 // is updated but the audit row is missing. Acceptable for
                 // an audit trail that isn't itself a source of truth.
                 var userDiff = HistoryDiffUtil.ComputeUserDiff(existing, updated);
+                // ComputeUserDiff excludes attempt_count on purpose — every
+                // failed login moves it and the audit trail would be noise. An
+                // admin CLEARING it is the opposite: it is a deliberate
+                // security action, and when the account was already active it is
+                // also the ONLY field the request changes, so without this the
+                // whole update produces an empty diff, no history row, and no
+                // record anywhere of who lifted a brute-force lockout or when.
+                if (newAttemptCount is int written && written != (existing.AttemptCount ?? 0))
+                {
+                    userDiff["attempt_count"] = new Dictionary<string, object?>(StringComparer.Ordinal)
+                    {
+                        ["old"] = existing.AttemptCount,
+                        ["new"] = written,
+                    };
+                }
                 if (userDiff.Count > 0)
                     await history.AppendAsync(updated.SpaceName, updated.Subpath, updated.Shortname, actor, null, userDiff, ct);
 
@@ -1889,6 +1954,35 @@ public static class RequestHandler
         bool b => !b,
         JsonElement el => el.ValueKind == JsonValueKind.False,
         _ => false,
+    };
+
+    // Tri-state boolean parse: true / false / null for "not a boolean at all".
+    // IsTruthy and IsExplicitlyFalse both collapse the third case into `false`,
+    // which is right where a missing flag should default off but wrong where
+    // the flag decides whether an account is active — there, guessing turns a
+    // malformed request into a silent force-activation. Callers that care
+    // reject on null.
+    private static bool? TryParseBool(object? v) => v switch
+    {
+        bool b => b,
+        JsonElement el => el.ValueKind switch
+        {
+            JsonValueKind.True => true,
+            JsonValueKind.False => false,
+            _ => null,
+        },
+        _ => null,
+    };
+
+    // Null when the value is not an integer. JSON numbers arrive as JsonElement
+    // through the AOT serializer and as boxed primitives from native plugins,
+    // so both shapes are accepted.
+    private static int? TryParseInt(object? v) => v switch
+    {
+        int i => i,
+        long l when l >= int.MinValue && l <= int.MaxValue => (int)l,
+        JsonElement el when el.ValueKind == JsonValueKind.Number && el.TryGetInt32(out var n) => n,
+        _ => null,
     };
 
     private static bool TryGetString(Dictionary<string, object> attrs, string key, out string? value)

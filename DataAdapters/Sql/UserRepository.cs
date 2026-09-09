@@ -239,7 +239,14 @@ public sealed class UserRepository(
                 facebook_id = EXCLUDED.facebook_id,
                 apple_id = EXCLUDED.apple_id,
                 social_avatar_url = EXCLUDED.social_avatar_url,
-                attempt_count = EXCLUDED.attempt_count,
+                -- Preserve the stored counter when the caller passes
+                -- AttemptCount=null. Same protection the password column gets,
+                -- and for a sharper reason: the counter IS the lockout now, so
+                -- a read-modify-write writer replaying the value it read a few
+                -- hundred milliseconds ago hands an in-flight brute-forcer its
+                -- attempts back. Writers that mean to change it (an admin
+                -- unlock, a successful login) pass an explicit number.
+                attempt_count = COALESCE(EXCLUDED.attempt_count, users.attempt_count),
                 last_login = EXCLUDED.last_login,
                 notes = EXCLUDED.notes,
                 query_policies = EXCLUDED.query_policies,
@@ -524,7 +531,14 @@ public sealed class UserRepository(
                 facebook_id = EXCLUDED.facebook_id,
                 apple_id = EXCLUDED.apple_id,
                 social_avatar_url = EXCLUDED.social_avatar_url,
-                attempt_count = EXCLUDED.attempt_count,
+                -- Preserve the stored counter when the caller passes
+                -- AttemptCount=null. Same protection the password column gets,
+                -- and for a sharper reason: the counter IS the lockout now, so
+                -- a read-modify-write writer replaying the value it read a few
+                -- hundred milliseconds ago hands an in-flight brute-forcer its
+                -- attempts back. Writers that mean to change it (an admin
+                -- unlock, a successful login) pass an explicit number.
+                attempt_count = COALESCE(EXCLUDED.attempt_count, users.attempt_count),
                 last_login = EXCLUDED.last_login,
                 notes = EXCLUDED.notes,
                 query_policies = EXCLUDED.query_policies,
@@ -908,16 +922,19 @@ public sealed class UserRepository(
         await cmd.ExecuteNonQueryAsync(ct);
     }
 
-    // Clear an auto-lockout once the cool-down has elapsed: reset the counter, undo
-    // the is_active flip, and drop the anchor so the next login starts clean.
-    public async Task UnlockAfterCooldownAsync(string shortname, CancellationToken ct = default)
-    {
-        await using var conn = await db.OpenAsync(ct);
-        await using var cmd = conn.Command(
-            "UPDATE users SET attempt_count = 0, is_active = true, last_failed_login = NULL WHERE shortname = $1");
-        DbParams.Add(cmd, shortname);
-        await cmd.ExecuteNonQueryAsync(ct);
-    }
+    // Clear an auto-lockout once the cool-down has elapsed: reset the counter and
+    // drop the anchor so the next login starts clean. Deliberately does NOT touch
+    // is_active — the attempt lock never sets it, so clearing it here would hand
+    // back the flag an admin deliberately cleared on an account that is both
+    // deactivated and at the threshold. See UserService.RejectIfAttemptLockedAsync.
+    //
+    // A named alias for ResetAttemptsAsync rather than a second copy of the same
+    // UPDATE: since the lock became counter-only, "unlock" and "reset the
+    // counter" ARE the same statement, and two copies of it would drift the
+    // first time one of them grows a clause. The name survives so the call site
+    // reads as intent.
+    public Task UnlockAfterCooldownAsync(string shortname, CancellationToken ct = default)
+        => ResetAttemptsAsync(shortname, ct);
 
     public async Task ResetAttemptsAsync(string shortname, CancellationToken ct = default)
     {
