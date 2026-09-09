@@ -31,6 +31,7 @@
     import {untrack, onDestroy} from "svelte";
     import {filterRequestHeaders, getAttributeValue, getRowsPerPageSetting} from "@/utils/listViewUtils";
     import {website} from "@/config";
+    import {resolveBackendBase} from "@shared/backend-url";
     import {authToken} from "@/stores/auth";
 
     $goto;
@@ -192,9 +193,8 @@
     }
 
     function buildStreamUrl(token: string): string | null {
-        const backendBase = (website.backend?.trim()
-            || (typeof window !== "undefined" ? window.location.origin : "")
-        ).replace(/\/+$/, "");
+        const backendBase = resolveBackendBase(website.backend,
+            typeof window !== "undefined" ? window.location.origin : "");
         if (!backendBase) return null;
         const parsed = new URL(backendBase);
         const wsProtocol = parsed.protocol === "https:" ? "wss:" : "ws:";
