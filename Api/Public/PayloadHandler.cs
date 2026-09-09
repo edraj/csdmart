@@ -11,7 +11,7 @@ public static class PayloadHandler
         g.MapGet("/payload/{resource_type}/{space}/{**rest}",
             async (string resource_type, string space, string rest,
                    AttachmentRepository attachments, EntryService entries,
-                   PermissionService perms, CancellationToken ct) =>
+                   PermissionService perms, HttpContext http, CancellationToken ct) =>
             {
                 if (!Enum.TryParse<ResourceType>(resource_type, true, out var rt)) return Results.BadRequest();
                 var parts = RouteParts.SplitPayloadParts(rest);
@@ -19,6 +19,6 @@ public static class PayloadHandler
                 var (subpath, shortname, _schema, ext) = parts.Value;
                 return await Dmart.Api.Managed.PayloadHandler.ServePayloadAsync(
                     rt, space, subpath, shortname, ext, attachments, entries,
-                    perms, "anonymous", ct);
+                    perms, "anonymous", http, ct);
             });
 }

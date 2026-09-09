@@ -2,6 +2,7 @@ using System.Text;
 using System.Text.Json;
 using Dmart.Api;
 using MediaTypeNames = System.Net.Mime.MediaTypeNames;
+using ContentDispositionHeaderValue = Microsoft.Net.Http.Headers.ContentDispositionHeaderValue;
 using Dmart.DataAdapters.Sql;
 using Dmart.Models.Api;
 using Dmart.Models.Core;
@@ -36,14 +37,14 @@ public static class PayloadHandler
                     return Results.BadRequest($"invalid payload path '{rest}' — expected {{subpath}}/{{shortname}}.{{ext}}");
                 var (subpath, shortname, _schema, ext) = parts.Value;
                 return await ServePayloadAsync(rt, space, subpath, shortname, ext,
-                    attachments, entries, perms, http.Actor(), ct);
+                    attachments, entries, perms, http.Actor(), http, ct);
             });
     }
 
     public static async Task<IResult> ServePayloadAsync(
         ResourceType rt, string space, string subpath, string shortname, string ext,
         AttachmentRepository attachments, EntryService entries, PermissionService perms,
-        string? actor, CancellationToken ct)
+        string? actor, HttpContext http, CancellationToken ct)
     {
         var normalizedSubpath = Locator.NormalizeSubpath(subpath);
 
@@ -66,14 +67,34 @@ public static class PayloadHandler
                     statusCode: StatusCodes.Status401Unauthorized);
             }
             var mime = MimeFor(att.Payload?.ContentType, ext);
+            var fileName = $"{shortname}.{ext}";
+            var forceDownload = WantsDownload(http.Request);
+
             // JSON payloads (either by stored content-type or by ".json" URL
-            // suffix, case-insensitive) come back inline so callers can read
-            // the body without a Content-Disposition: attachment forcing a
-            // download in browsers. Everything else keeps the
-            // filename-bearing attachment header used for media downloads.
+            // suffix, case-insensitive) come back with no disposition header at
+            // all, so callers can read the body straight off the response —
+            // unless ?download was asked for explicitly.
             if (IsJsonResponse(mime, ext))
-                return Results.File(att.Media, "application/json; charset=utf-8");
-            return Results.File(att.Media, mime, $"{shortname}.{ext}");
+                return forceDownload
+                    ? Results.File(att.Media, "application/json; charset=utf-8", fileName)
+                    : Results.File(att.Media, "application/json; charset=utf-8");
+
+            if (RendersInline(mime) && !forceDownload)
+            {
+                // Results.File writes Content-Disposition only when handed a
+                // fileDownloadName, and it always spells it `attachment`. So
+                // write the inline form here and leave that argument null, or
+                // it gets clobbered. SetHttpFileName does the quoting and the
+                // RFC 5987 filename*, which also keeps a crafted shortname from
+                // breaking out of the header.
+                var cd = new ContentDispositionHeaderValue("inline");
+                cd.SetHttpFileName(fileName);
+                http.Response.Headers.ContentDisposition = cd.ToString();
+                // Ranges let <audio>/<video> seek and let PDF viewers fetch
+                // page-at-a-time instead of pulling the whole file.
+                return Results.File(att.Media, mime, enableRangeProcessing: true);
+            }
+            return Results.File(att.Media, mime, fileName);
         }
 
         // Entry-flavor: serialize the inline JSON payload from
@@ -85,6 +106,33 @@ public static class PayloadHandler
         if (entry?.Payload?.Body is null) return Results.NotFound();
         var bodyJson = JsonSerializer.Serialize(entry.Payload.Body!.Value, DmartJsonContext.Default.JsonElement);
         return Results.Content(bodyJson, MediaTypeNames.Application.Json, Encoding.UTF8);
+    }
+
+    // MIME types a browser renders passively, so a pasted payload URL shows the
+    // thing instead of downloading it. Python's dmart sends no Content-Disposition
+    // at all; this is that behaviour minus the types that are not passive.
+    //
+    // text/html and image/svg+xml are deliberately absent. Both are documents
+    // the browser will execute script from, attachments are user-uploaded, and
+    // this API authenticates by the auth_token cookie — inline would be stored
+    // XSS on our own origin. The global CSP only attaches to text/html
+    // responses, so svg in particular would carry no policy whatsoever.
+    internal static bool RendersInline(string mime) => mime switch
+    {
+        "image/jpeg" or "image/png" or "image/gif" or "image/webp" => true,
+        "application/pdf" => true,
+        "audio/mpeg" or "video/mp4" => true,
+        "text/plain" or "text/markdown" or "text/csv" => true,
+        _ => false,
+    };
+
+    // ?download=1 (or =true) forces the attachment header for any type, so a
+    // client that wants a save-to-disk always has one. Checking the VALUE and
+    // not merely the key means ?download=0 still renders inline.
+    internal static bool WantsDownload(HttpRequest req)
+    {
+        var raw = req.Query["download"].ToString();
+        return raw == "1" || string.Equals(raw, "true", StringComparison.OrdinalIgnoreCase);
     }
 
     internal static bool IsJsonResponse(string mime, string ext) =>
