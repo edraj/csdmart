@@ -245,7 +245,7 @@ public sealed class UserService(
         // Auto-login (Python: process_user_login at the end of create_user).
         var access = jwt.IssueAccess(user.Shortname, user.Roles, user.Type);
         var refresh = jwt.IssueRefresh(user.Shortname, user.Type);
-        await users.CreateSessionAsync(user.Shortname, access, null, ct);
+        await users.CreateSessionAsync(user.Shortname, access, null, user.DeviceId, ct);
 
         var timestamp = LoginTimestamp();
         // Read the previous login off the pre-update row — null here, since the
@@ -797,8 +797,13 @@ public sealed class UserService(
         // UserRepository.GetSessionFirebaseTokensAsync. Python parity.
         // Skip for bots — utils/jwt.py:114 in Python doesn't create a row
         // for them at all (matching the bypass on the read side).
+        // device_id rides along so the push-token dedup can tell one handset's
+        // sessions apart from another's — see
+        // UserRepository.ClearDuplicateFirebaseTokenAsync. Prefer the id on this
+        // request; fall back to the one already stored on the user.
         if (!isBot)
-            await users.CreateSessionAsync(updatedUser.Shortname, access, req.FirebaseToken, ct);
+            await users.CreateSessionAsync(updatedUser.Shortname, access, req.FirebaseToken,
+                req.DeviceId ?? updatedUser.DeviceId, ct);
 
         // Last, so the trail records only logins that actually completed: an
         // exception from the session write above must not leave behind an audit

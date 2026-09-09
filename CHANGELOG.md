@@ -1,5 +1,37 @@
 # Changelog
 
+## Unreleased
+
+### Fixed
+
+- **Duplicate push notifications when one device signed in more than once.**
+  Every login writes a new `sessions` row carrying the body's `firebase_token`,
+  so a phone that signed in five times left five rows holding the same token and
+  the user got every notification five times.
+
+  A session is per-login; an FCM token identifies a *device*; the two have
+  different lifetimes, which is the whole problem. Three changes close it:
+
+  - registering a token clears it from the user's other session rows, so
+    duplicates stop accumulating;
+  - `sessions` gains a **`device_id`** column, carried from the login body. FCM
+    rotates a device's token (app reinstall, data restore, periodic refresh),
+    and after a rotation the rows that phone left behind hold a *different*
+    string — nothing about the two strings says they are one handset, but the
+    device id does. Clearing now matches on either. Clients that send no
+    `device_id` (web) and the OAuth grants fall back to token matching, exactly
+    as before. The column is added by `dmart migrate` and at startup; no manual
+    step;
+  - a new **`invalidate_firebase_tokens`** plugin callback (and repository
+    method) clears the tokens FCM's send response rejected. A token FCM has
+    retired is dead for every account that shares the device, so this is not
+    user-scoped. Without it a dead token sat on its row until
+    `SESSION_INACTIVITY_TTL` aged the session out, which for a long-lived
+    session is never.
+
+  The read still collapses duplicates (`SELECT DISTINCT`) for rows written
+  before any of this.
+
 ## v1.5.5 — 2026-09-08
 
 ### Security
