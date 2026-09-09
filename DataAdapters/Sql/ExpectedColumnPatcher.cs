@@ -51,6 +51,7 @@ internal static class ExpectedColumnPatcher
         ["sessions"] =
         [
             ("firebase_token", "TEXT"),
+            ("device_id", "TEXT"),
         ],
     };
 

@@ -1000,7 +1000,8 @@ public sealed class UserRepository(
     // ship a push sender (out of scope), but the row must still be written so
     // a future plugin has data to read via GetSessionFirebaseTokensAsync.
     public async Task CreateSessionAsync(
-        string shortname, string token, string? firebaseToken = null, CancellationToken ct = default)
+        string shortname, string token, string? firebaseToken = null,
+        string? deviceId = null, CancellationToken ct = default)
     {
         var tokenHash = tokenHasher.Hash(token);
         await using var conn = await db.OpenAsync(ct);
@@ -1012,6 +1013,7 @@ public sealed class UserRepository(
         var sn = DbParams.Add(cmd, shortname);
         var tk = DbParams.Add(cmd, tokenHash);
         var fb = DbParams.Add(cmd, (object?)firebaseToken ?? DBNull.Value);
+        var dev = DbParams.Add(cmd, (object?)deviceId ?? DBNull.Value);
         // Same clock as the freshness comparisons that will read this row.
         var now = NowExpr(cmd);
         // CA3001 traces `shortname` from the HTTP boundary into this method and
@@ -1021,11 +1023,94 @@ public sealed class UserRepository(
         // interpolated.
 #pragma warning disable CA3001
         cmd.CommandText = $"""
-            INSERT INTO sessions (uuid, shortname, token, firebase_token, timestamp)
-            VALUES ({uuid}, {sn}, {tk}, {fb}, {now})
+            INSERT INTO sessions (uuid, shortname, token, firebase_token, timestamp, device_id)
+            VALUES ({uuid}, {sn}, {tk}, {fb}, {now}, {dev})
             """;
 #pragma warning restore CA3001
         await cmd.ExecuteNonQueryAsync(ct);
+        if (!string.IsNullOrEmpty(firebaseToken))
+            await ClearDuplicateFirebaseTokenAsync(conn, shortname, firebaseToken!, tokenHash, deviceId, ct);
+    }
+
+    // One device gets one push, so at most one of a user's session rows may
+    // carry a given device's FCM token. Sessions are per-login and devices are
+    // not, so without this every login leaves another row holding a push target
+    // and a fan-out over GetSessionFirebaseTokensAsync delivers the same
+    // notification once per row. The row that just claimed the device keeps the
+    // token; the user's other rows for it are cleared.
+    //
+    // "The same device" is recognised two ways, and it needs both:
+    //
+    //   * the same firebase_token string — the simple case, a phone signing in
+    //     again with the token it already had;
+    //   * the same device_id — the case the token match cannot see. FCM rotates
+    //     a device's token (app reinstall, data restore, periodic refresh), so
+    //     after a rotation the rows that phone left behind hold a DIFFERENT
+    //     string. Nothing about those strings says they are the same handset;
+    //     the device_id the client sent with its login does.
+    //
+    // device_id is null for clients that do not send one (web) and for the OAuth
+    // grants, which have no device to name — those fall back to token matching,
+    // which is exactly the pre-device_id behaviour.
+    //
+    // The SELECT DISTINCT in GetSessionFirebaseTokensAsync stays as the
+    // read-side backstop for rows written before any of this.
+    private static async Task ClearDuplicateFirebaseTokenAsync(
+        DbConnection conn, string shortname, string firebaseToken, string keepTokenHash,
+        string? deviceId, CancellationToken ct)
+    {
+        // Two shapes rather than one with an `OR ($4 IS NOT NULL AND …)`: a bare
+        // parameter in a null test needs a cast on PostgreSQL, and the two-branch
+        // SQL says what it does without one.
+        await using var cmd = string.IsNullOrEmpty(deviceId)
+            ? conn.Command("""
+                UPDATE sessions SET firebase_token = NULL
+                WHERE shortname = $1 AND token <> $2 AND firebase_token = $3
+                """)
+            : conn.Command("""
+                UPDATE sessions SET firebase_token = NULL
+                WHERE shortname = $1 AND token <> $2
+                  AND (firebase_token = $3 OR device_id = $4)
+                """);
+        DbParams.Add(cmd, shortname);
+        DbParams.Add(cmd, keepTokenHash);
+        DbParams.Add(cmd, firebaseToken);
+        if (!string.IsNullOrEmpty(deviceId)) DbParams.Add(cmd, deviceId!);
+        await cmd.ExecuteNonQueryAsync(ct);
+    }
+
+    // Clear a set of FCM tokens wherever they appear, across every user.
+    //
+    // The other half of keeping the table honest, and the reactive one: FCM's
+    // send response names the tokens it rejected (UNREGISTERED, or
+    // INVALID_ARGUMENT for a malformed one), and a token FCM has retired is dead
+    // for everyone — hence no shortname scope. A push sender feeds the rejects
+    // back here so the next fan-out does not retry them. Without it, dead tokens
+    // sit on their rows until SESSION_INACTIVITY_TTL ages the session out, which
+    // for a long-lived session is never.
+    //
+    // Returns the number of session rows cleared. Chunked because FCM sends in
+    // batches of up to 500 and PostgreSQL caps a statement at 65535 parameters.
+    public async Task<int> InvalidateFirebaseTokensAsync(
+        IReadOnlyCollection<string> tokens, CancellationToken ct = default)
+    {
+        var wanted = tokens.Where(t => !string.IsNullOrEmpty(t)).Distinct(StringComparer.Ordinal).ToList();
+        if (wanted.Count == 0) return 0;
+
+        const int ChunkSize = 500;
+        var cleared = 0;
+        await using var conn = await db.OpenAsync(ct);
+        for (var offset = 0; offset < wanted.Count; offset += ChunkSize)
+        {
+            await using var cmd = conn.CreateCommand();
+            var placeholders = new List<string>();
+            foreach (var token in wanted.Skip(offset).Take(ChunkSize))
+                placeholders.Add(DbParams.Add(cmd, token));
+            cmd.CommandText =
+                $"UPDATE sessions SET firebase_token = NULL WHERE firebase_token IN ({string.Join(", ", placeholders)})";
+            cleared += await cmd.ExecuteNonQueryAsync(ct);
+        }
+        return cleared;
     }
 
     // Update the firebase_token on exactly one session row — identified by
@@ -1045,13 +1130,33 @@ public sealed class UserRepository(
         DbParams.Add(cmd, tokenHash);
         DbParams.Add(cmd, firebaseToken);
         await cmd.ExecuteNonQueryAsync(ct);
+
+        // The device is whatever this session was opened from — read it back
+        // rather than asking the caller, because /user/profile's firebase_token
+        // patch carries no device_id of its own.
+        string? deviceId;
+        await using (var dev = conn.Command(
+            "SELECT device_id FROM sessions WHERE shortname = $1 AND token = $2"))
+        {
+            DbParams.Add(dev, shortname);
+            DbParams.Add(dev, tokenHash);
+            deviceId = await dev.ExecuteScalarAsync(ct) as string;
+        }
+        await ClearDuplicateFirebaseTokenAsync(conn, shortname, firebaseToken, tokenHash, deviceId, ct);
     }
 
-    // Returns every non-null firebase_token across the user's active sessions.
-    // Optionally filters out sessions whose timestamp is older than
-    // `inactivityTtlSeconds` so callers don't push to stale devices. Mirrors
-    // Python's db.get_user_session_firebase_tokens() — shipped now so a future
-    // push plugin has a stable API to call.
+    // Returns the DISTINCT set of non-null firebase_tokens across the user's
+    // active sessions — one entry per token, however many session rows carry
+    // it, because a push fan-out over the raw column delivers the same
+    // notification once per duplicated row. Optionally filters out sessions
+    // whose timestamp is older than `inactivityTtlSeconds` so callers don't
+    // push to stale devices. Mirrors Python's
+    // db.get_user_session_firebase_tokens() — shipped now so a future push
+    // plugin has a stable API to call.
+    //
+    // DISTINCT is the read-side backstop; ClearDuplicateFirebaseTokenAsync
+    // keeps the duplicates from accumulating in the first place. See its
+    // comment for the case neither of them can catch (token rotation).
     public async Task<List<string>> GetSessionFirebaseTokensAsync(
         string shortname, int? inactivityTtlSeconds = null, CancellationToken ct = default)
     {
@@ -1063,7 +1168,7 @@ public sealed class UserRepository(
             cmd = conn.CreateCommand();
             var sn = DbParams.Add(cmd, shortname);
             cmd.CommandText = $"""
-                SELECT firebase_token FROM sessions
+                SELECT DISTINCT firebase_token FROM sessions
                 WHERE shortname = {sn}
                   AND firebase_token IS NOT NULL
                   AND timestamp >= {SessionLiveSince(cmd, ttl)}
@@ -1072,7 +1177,7 @@ public sealed class UserRepository(
         else
         {
             cmd = conn.Command(
-                "SELECT firebase_token FROM sessions WHERE shortname = $1 AND firebase_token IS NOT NULL");
+                "SELECT DISTINCT firebase_token FROM sessions WHERE shortname = $1 AND firebase_token IS NOT NULL");
             DbParams.Add(cmd, shortname);
         }
         await using (cmd)

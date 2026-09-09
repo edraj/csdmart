@@ -125,6 +125,239 @@ public sealed class FirebaseTokenTests : IClassFixture<DmartFactory>
         finally { await DeleteUserAsync(shortname); }
     }
 
+    // One FCM token identifies one device, and a push fan-out over
+    // GetSessionFirebaseTokensAsync sends one notification per entry it
+    // returns. Every login writes a NEW sessions row carrying the body's
+    // firebase_token, so a phone that signs in twice used to leave two rows
+    // holding the same token — and the user got every notification twice.
+    [FactIfPg]
+    public async Task Signing_In_Twice_From_One_Device_Yields_One_Token()
+    {
+        var (shortname, password) = await CreateUserAsync();
+        try
+        {
+            var client = _factory.CreateClient();
+            const string fcm = "fcm-same-device";
+
+            var first = await client.PostAsJsonAsync("/user/login",
+                new UserLoginRequest(shortname, null, null, password,
+                    Otp: null, DeviceId: null, FirebaseToken: fcm),
+                DmartJsonContext.Default.UserLoginRequest);
+            var tokenA = (await ExtractAccessTokenAsync(first))!;
+
+            var second = await client.PostAsJsonAsync("/user/login",
+                new UserLoginRequest(shortname, null, null, password,
+                    Otp: null, DeviceId: null, FirebaseToken: fcm),
+                DmartJsonContext.Default.UserLoginRequest);
+            var tokenB = (await ExtractAccessTokenAsync(second))!;
+
+            var users = _factory.Services.GetRequiredService<UserRepository>();
+            var tokens = await users.GetSessionFirebaseTokensAsync(shortname);
+            tokens.Count(t => t == fcm).ShouldBe(1, "one device, one push");
+
+            // The newest session keeps the token; the older row is cleared, so
+            // the duplicate never accumulates in the first place. (SELECT
+            // DISTINCT would have hidden it from this read, but the row would
+            // still be sitting there for any other reader of the column.)
+            (await ReadFirebaseTokenAsync(shortname, tokenB)).ShouldBe(fcm);
+            (await ReadFirebaseTokenAsync(shortname, tokenA)).ShouldBeNull();
+        }
+        finally { await DeleteUserAsync(shortname); }
+    }
+
+    // Rotation — the case a token match cannot see. FCM reissues a device's
+    // token (app reinstall, data restore, periodic refresh), so the rows that
+    // phone left behind hold a DIFFERENT string. Nothing about the two strings
+    // says they are the same handset; the device_id the client logged in with
+    // does, which is why the session row carries one.
+    [FactIfPg]
+    public async Task A_Rotated_Token_Retires_The_Same_Devices_Older_Token()
+    {
+        var (shortname, password) = await CreateUserAsync();
+        try
+        {
+            var client = _factory.CreateClient();
+            const string device = "handset-7";
+
+            var before = await client.PostAsJsonAsync("/user/login",
+                new UserLoginRequest(shortname, null, null, password,
+                    Otp: null, DeviceId: device, FirebaseToken: "fcm-before-rotation"),
+                DmartJsonContext.Default.UserLoginRequest);
+            var tokenBefore = (await ExtractAccessTokenAsync(before))!;
+
+            // Same handset, new FCM token.
+            var after = await client.PostAsJsonAsync("/user/login",
+                new UserLoginRequest(shortname, null, null, password,
+                    Otp: null, DeviceId: device, FirebaseToken: "fcm-after-rotation"),
+                DmartJsonContext.Default.UserLoginRequest);
+            var tokenAfter = (await ExtractAccessTokenAsync(after))!;
+
+            var users = _factory.Services.GetRequiredService<UserRepository>();
+            var tokens = await users.GetSessionFirebaseTokensAsync(shortname);
+            tokens.ShouldBe(new List<string> { "fcm-after-rotation" },
+                "one handset must be one push target across a token rotation");
+
+            (await ReadFirebaseTokenAsync(shortname, tokenAfter)).ShouldBe("fcm-after-rotation");
+            (await ReadFirebaseTokenAsync(shortname, tokenBefore)).ShouldBeNull();
+        }
+        finally { await DeleteUserAsync(shortname); }
+    }
+
+    [FactIfPg]
+    public async Task Two_Real_Devices_Both_Keep_Their_Tokens()
+    {
+        // The guard on the test above: clearing by device must not collapse a
+        // user's genuinely separate handsets into one push target.
+        var (shortname, password) = await CreateUserAsync();
+        try
+        {
+            var client = _factory.CreateClient();
+            await client.PostAsJsonAsync("/user/login",
+                new UserLoginRequest(shortname, null, null, password,
+                    Otp: null, DeviceId: "phone", FirebaseToken: "fcm-phone"),
+                DmartJsonContext.Default.UserLoginRequest);
+            await client.PostAsJsonAsync("/user/login",
+                new UserLoginRequest(shortname, null, null, password,
+                    Otp: null, DeviceId: "tablet", FirebaseToken: "fcm-tablet"),
+                DmartJsonContext.Default.UserLoginRequest);
+
+            var users = _factory.Services.GetRequiredService<UserRepository>();
+            var tokens = await users.GetSessionFirebaseTokensAsync(shortname);
+            tokens.Count.ShouldBe(2);
+            tokens.ShouldContain("fcm-phone");
+            tokens.ShouldContain("fcm-tablet");
+        }
+        finally { await DeleteUserAsync(shortname); }
+    }
+
+    [FactIfPg]
+    public async Task A_Profile_Patch_Retires_The_Same_Devices_Older_Token()
+    {
+        // Rotation reaching the server the other way: the app keeps its session
+        // and PATCHes the new token onto /user/profile. The patch carries no
+        // device_id, so the repository reads it off the session row being
+        // updated.
+        var (shortname, password) = await CreateUserAsync();
+        try
+        {
+            var client = _factory.CreateClient();
+            var first = await client.PostAsJsonAsync("/user/login",
+                new UserLoginRequest(shortname, null, null, password,
+                    Otp: null, DeviceId: "handset-9", FirebaseToken: "fcm-old"),
+                DmartJsonContext.Default.UserLoginRequest);
+            var tokenOld = (await ExtractAccessTokenAsync(first))!;
+
+            var second = await client.PostAsJsonAsync("/user/login",
+                new UserLoginRequest(shortname, null, null, password,
+                    Otp: null, DeviceId: "handset-9", FirebaseToken: null),
+                DmartJsonContext.Default.UserLoginRequest);
+            var tokenNew = (await ExtractAccessTokenAsync(second))!;
+
+            client.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Bearer", tokenNew);
+            var patch = new Dictionary<string, object> { ["firebase_token"] = "fcm-new" };
+            (await client.PostAsJsonAsync("/user/profile", patch,
+                DmartJsonContext.Default.DictionaryStringObject))
+                .StatusCode.ShouldBe(HttpStatusCode.OK);
+
+            var users = _factory.Services.GetRequiredService<UserRepository>();
+            (await users.GetSessionFirebaseTokensAsync(shortname))
+                .ShouldBe(new List<string> { "fcm-new" });
+            (await ReadFirebaseTokenAsync(shortname, tokenOld)).ShouldBeNull();
+        }
+        finally { await DeleteUserAsync(shortname); }
+    }
+
+    // Prune-on-send. Everything above keeps duplicates from accumulating; this
+    // is what removes a token FCM itself has retired, which no amount of
+    // write-side care can predict.
+    [FactIfPg]
+    public async Task Invalidating_A_Token_Clears_It_Everywhere()
+    {
+        var (alice, alicePw) = await CreateUserAsync();
+        var (bob, bobPw) = await CreateUserAsync();
+        try
+        {
+            var client = _factory.CreateClient();
+            // One shared handset, both accounts signed in on it, plus a token
+            // that stays valid so the clear can be shown to be targeted.
+            await client.PostAsJsonAsync("/user/login",
+                new UserLoginRequest(alice, null, null, alicePw,
+                    Otp: null, DeviceId: "shared", FirebaseToken: "fcm-dead"),
+                DmartJsonContext.Default.UserLoginRequest);
+            await client.PostAsJsonAsync("/user/login",
+                new UserLoginRequest(bob, null, null, bobPw,
+                    Otp: null, DeviceId: "shared", FirebaseToken: "fcm-dead"),
+                DmartJsonContext.Default.UserLoginRequest);
+            await client.PostAsJsonAsync("/user/login",
+                new UserLoginRequest(bob, null, null, bobPw,
+                    Otp: null, DeviceId: "bobs-own", FirebaseToken: "fcm-live"),
+                DmartJsonContext.Default.UserLoginRequest);
+
+            var users = _factory.Services.GetRequiredService<UserRepository>();
+            (await users.GetSessionFirebaseTokensAsync(alice)).ShouldContain("fcm-dead");
+
+            // FCM answered UNREGISTERED for it. A retired token is dead for
+            // every account that shares the device, so this is not user-scoped.
+            var cleared = await users.InvalidateFirebaseTokensAsync(new[] { "fcm-dead" });
+            cleared.ShouldBe(2);
+
+            (await users.GetSessionFirebaseTokensAsync(alice)).ShouldBeEmpty();
+            (await users.GetSessionFirebaseTokensAsync(bob))
+                .ShouldBe(new List<string> { "fcm-live" }, "only the rejected token goes");
+
+            // Idempotent, and an empty request is a no-op rather than a wildcard.
+            (await users.InvalidateFirebaseTokensAsync(new[] { "fcm-dead" })).ShouldBe(0);
+            (await users.InvalidateFirebaseTokensAsync(Array.Empty<string>())).ShouldBe(0);
+            (await users.GetSessionFirebaseTokensAsync(bob)).ShouldBe(new List<string> { "fcm-live" });
+        }
+        finally
+        {
+            await DeleteUserAsync(alice);
+            await DeleteUserAsync(bob);
+        }
+    }
+
+    [FactIfPg]
+    public async Task Duplicate_Rows_That_Predate_The_Fix_Still_Collapse_On_Read()
+    {
+        // The read-side backstop, tested against rows the write path can no
+        // longer produce: an upgraded database still holds them, and dropping
+        // the DISTINCT would quietly bring the duplicate pushes back.
+        var (shortname, password) = await CreateUserAsync();
+        try
+        {
+            var client = _factory.CreateClient();
+            const string fcm = "fcm-legacy-dup";
+            await client.PostAsJsonAsync("/user/login",
+                new UserLoginRequest(shortname, null, null, password,
+                    Otp: null, DeviceId: null, FirebaseToken: fcm),
+                DmartJsonContext.Default.UserLoginRequest);
+
+            // A second row carrying the same token, written straight to the
+            // table the way the pre-fix login path did.
+            var db = _factory.Services.GetRequiredService<IDbConnectionFactory>();
+            await using (var conn = await db.OpenAsync())
+            await using (var cmd = conn.Command("""
+                INSERT INTO sessions (uuid, shortname, token, firebase_token, timestamp)
+                VALUES ($1, $2, $3, $4, $5)
+                """))
+            {
+                DbParams.Add(cmd, Guid.NewGuid());
+                DbParams.Add(cmd, shortname);
+                DbParams.Add(cmd, $"legacy{Guid.NewGuid():N}");
+                DbParams.Add(cmd, fcm);
+                DbParams.Add(cmd, Dmart.Utils.TimeUtils.Now());
+                await cmd.ExecuteNonQueryAsync();
+            }
+
+            var users = _factory.Services.GetRequiredService<UserRepository>();
+            (await users.GetSessionFirebaseTokensAsync(shortname))
+                .Count(t => t == fcm)
+                .ShouldBe(1, "DISTINCT is what keeps legacy duplicates from double-pushing");
+        }
+        finally { await DeleteUserAsync(shortname); }
+    }
+
     // Regression: the bearer JWT is NEVER persisted in plaintext. The column
     // holds a keyed HMAC-SHA256 hex digest of the raw JWT; the raw JWT must
     // hash to the stored value but must not appear verbatim.

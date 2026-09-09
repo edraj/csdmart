@@ -296,7 +296,7 @@ public static class OAuthEndpoints
         // sessions row for non-bot tokens. Mirror ProcessLoginAsync (Services/
         // UserService.cs:541) so OAuth-issued access tokens authenticate.
         if (user.Type != UserType.Bot)
-            await userRepo.CreateSessionAsync(user.Shortname, access, null, ct);
+            await userRepo.CreateSessionAsync(user.Shortname, access, null, null, ct);
 
         return TokenResponse(access, refresh, settings, entry.Scope);
     }
@@ -362,7 +362,7 @@ public static class OAuthEndpoints
         var newRefresh = jwt.IssueRefresh(user.Shortname, user.Type, originalIat);
 
         if (user.Type != UserType.Bot)
-            await userRepo.CreateSessionAsync(user.Shortname, access, null, ct);
+            await userRepo.CreateSessionAsync(user.Shortname, access, null, null, ct);
 
         return TokenResponse(access, newRefresh, settings, scope: "mcp");
     }

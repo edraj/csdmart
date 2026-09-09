@@ -227,8 +227,18 @@ Key columns: Metas base + Space-specific (`root_registration_signature`,
 
 One row per (user, access token) pair. Columns: `shortname`, `access_token`
 (stored verbatim for `session_inactivity_ttl` checks), `last_used_at`,
-`firebase_token`. Used by JwtBearerSetup for session-based inactivity
-enforcement.
+`firebase_token`, `device_id`. Used by JwtBearerSetup for session-based
+inactivity enforcement.
+
+`firebase_token` and `device_id` are the odd pair here: they describe a *device*,
+while the row describes a *login*. A phone that signs in repeatedly leaves a
+row each time, and FCM reissues its token periodically, so without something
+stable linking those rows a push fan-out delivers duplicates and keeps retrying
+retired tokens. `device_id` (copied from the login body) is that link —
+registering a token clears it from the user's other rows for the same token
+*or* the same device. It is null for clients that send no device id (web) and
+for the OAuth grants. `UserRepository.InvalidateFirebaseTokensAsync` handles the
+other direction: clearing the tokens FCM's send response rejected.
 
 ### `histories`
 
