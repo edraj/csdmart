@@ -23,27 +23,37 @@ public class ExportStreamingTests : IClassFixture<DmartFactory>
     private readonly DmartFactory _factory;
     public ExportStreamingTests(DmartFactory factory) => _factory = factory;
 
-    private static int SpoolFileCount() =>
-        Directory.EnumerateFiles(Path.GetTempPath(), "dmart-export-*.zip").Count();
-
     // The spool is an implementation detail, but a leaked one fills /tmp on a
     // server that exports nightly — silently, until a disk alert.
+    //
+    // Asserts on THIS export's spool by name rather than counting
+    // dmart-export-*.zip across the whole temp directory. That count was shared
+    // state: Path.GetTempPath() is machine-wide, CI runs the sqlite and
+    // postgresql legs concurrently on one runner, and a spool created by the
+    // other leg between the two counts made this fail with "should be 0 but was
+    // 1" — a red build caused by a passing test somewhere else. ExportAsync
+    // hands back the DeleteOnClose handle itself, so the exact path is right
+    // there and nothing about the check has to be probabilistic.
     [FactIfPg]
     public async Task Spool_File_Is_Deleted_When_The_Returned_Stream_Is_Disposed()
     {
         await WithSpaceAsync(5, async (io, space) =>
         {
-            var before = SpoolFileCount();
-
-            long length;
+            string spoolPath;
             await using (var stream = await io.ExportAsync(space, "/", actor: null))
             {
-                SpoolFileCount().ShouldBe(before + 1, "the spool should exist while the stream is open");
-                length = stream.Length;
-                length.ShouldBeGreaterThan(0);
+                // The returned stream IS the spool handle — see
+                // ImportExportService.ExportAsync, which opens it with
+                // FileOptions.DeleteOnClose and returns it directly.
+                spoolPath = stream.ShouldBeOfType<FileStream>().Name;
+                // The naming is what an operator greps for when /tmp fills.
+                Path.GetFileName(spoolPath).ShouldStartWith("dmart-export-");
+                File.Exists(spoolPath).ShouldBeTrue("the spool should exist while the stream is open");
+                stream.Length.ShouldBeGreaterThan(0);
             }
 
-            SpoolFileCount().ShouldBe(before, "the spool must be gone once the caller disposes the stream");
+            File.Exists(spoolPath).ShouldBeFalse(
+                "the spool must be gone once the caller disposes the stream");
         });
     }
 
