@@ -14,6 +14,7 @@
     import {SearchOutline} from 'flowbite-svelte-icons';
     import {onMount} from 'svelte';
     import {Dmart, QueryType} from '@edraj/tsdmart';
+    import {canClearLockout, readFailedAttempts, resolveAttemptCount} from '@shared/user-lockout';
 
     let {
         formData = $bindable(),
@@ -39,8 +40,10 @@
 
     // Read the counter BEFORE it is stripped below. It is the account lockout:
     // the lock leaves is_active set, so this is the only thing that says an
-    // account is locked out.
-    const failedAttempts: number = formData.attempt_count ?? 0;
+    // account is locked out. The rules live in @shared/user-lockout, where they
+    // are tested — both failure modes here are silent saves.
+    const failedAttempts: number = readFailedAttempts(formData.attempt_count);
+    const showClearLockout: boolean = canClearLockout(formData.attempt_count);
     let resetAttempts = $state(false);
 
     formData = {
@@ -79,7 +82,7 @@
     // silently cancels their lockout. Sending an explicit 0 is unambiguous, and
     // the server records it in the audit history.
     function applyAttemptReset() {
-        formData.attempt_count = resetAttempts ? 0 : undefined;
+        formData.attempt_count = resolveAttemptCount(failedAttempts, resetAttempts);
     }
 
     const userTypeOptions = ["bot", "mobile", "web", "admin", "api"]
@@ -261,8 +264,8 @@
             <div class="mb-4">
                 <Label class="mb-2">Failed Login Attempts</Label>
                 <div class="flex items-center gap-3">
-                    <Badge color={failedAttempts > 0 ? 'red' : 'green'}>{failedAttempts}</Badge>
-                    {#if failedAttempts > 0}
+                    <Badge color={showClearLockout ? 'red' : 'green'}>{failedAttempts}</Badge>
+                    {#if showClearLockout}
                         <Checkbox id="reset_attempt_count" bind:checked={resetAttempts} onchange={applyAttemptReset} />
                         <Label for="reset_attempt_count" class="ml-1">Clear on save</Label>
                     {/if}

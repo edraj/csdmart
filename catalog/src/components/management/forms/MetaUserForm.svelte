@@ -5,6 +5,7 @@
     import FieldGate from '@/components/access/FieldGate.svelte';
     import { permissions } from '@/stores/permissions';
     import { constrainEnumOptions } from '@/lib/access-fields';
+    import { canClearLockout, readFailedAttempts, resolveAttemptCount } from '@shared/user-lockout';
 
     let {
         formData = $bindable(),
@@ -34,8 +35,10 @@
 
     // Read the counter BEFORE it is stripped below. It is the account lockout:
     // the lock leaves is_active set, so this is the only thing that says an
-    // account is locked out.
-    const failedAttempts: number = formData.attempt_count ?? 0;
+    // account is locked out. The rules live in @shared/user-lockout, where they
+    // are tested — both failure modes here are silent saves.
+    const failedAttempts: number = readFailedAttempts(formData.attempt_count);
+    const showClearLockout: boolean = canClearLockout(formData.attempt_count);
     let resetAttempts = $state(false);
 
     formData = {
@@ -74,7 +77,7 @@
     // silently cancels their lockout. Sending an explicit 0 is unambiguous, and
     // the server records it in the audit history.
     function applyAttemptReset() {
-        formData.attempt_count = resetAttempts ? 0 : undefined;
+        formData.attempt_count = resolveAttemptCount(failedAttempts, resetAttempts);
     }
 
     // The same allowed_fields_values whitelist DynamicSchemaBasedForms applies
@@ -309,10 +312,10 @@
                 <div class="field-group">
                     <label class="field-label">Failed Login Attempts</label>
                     <div class="checkbox-row compact">
-                        <span class="attempt-count" class:attempt-count-warn={failedAttempts > 0}>
+                        <span class="attempt-count" class:attempt-count-warn={showClearLockout}>
                             {failedAttempts}
                         </span>
-                        {#if failedAttempts > 0}
+                        {#if showClearLockout}
                             <div class="checkbox-group">
                                 <input type="checkbox" id="reset_attempt_count" class="checkbox" bind:checked={resetAttempts} onchange={applyAttemptReset} />
                                 <label for="reset_attempt_count" class="checkbox-label">Clear on save</label>
