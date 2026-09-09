@@ -409,7 +409,14 @@ public static class ResourceWithPayloadHandler
                 "apk"  => ContentType.Apk,
                 "sqlite" or "db" => ContentType.Sqlite,
                 "parquet" => ContentType.Parquet,
-                _ => ContentType.Json,
+                // Not json. An upload we cannot place is opaque, and calling it
+                // JSON is a claim about the bytes rather than an absence of one:
+                // a .docx stored as json was served as application/json with no
+                // disposition at all, dumping binary into the browser tab, and
+                // the MCP download tool labelled it the same way. `binary` says
+                // what we actually know, and PayloadHandler turns it into an
+                // octet-stream attachment under its own filename.
+                _ => ContentType.Binary,
             },
         };
     }

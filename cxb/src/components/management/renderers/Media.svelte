@@ -44,14 +44,15 @@
     <track kind="captions" />
   </video>
 {:else if content_type.includes("pdf")}
-  <object
+  <!-- iframe, not <object>: the CSP this app serves carries object-src 'none',
+       so an <object> embed is refused outright and the user gets the fallback
+       text below instead of the document. An iframe falls under frame-src,
+       which inherits default-src 'self' — and the payload is same-origin. -->
+  <iframe
           title={displayname}
           class="pdf-viewer"
-          type="application/pdf"
-          data={url}
-  >
-    <p>For some reason PDF is not rendered here properly.</p>
-  </object>
+          src={url}
+  ></iframe>
 {:else if ["markdown", "html", "text"].includes(content_type)}
   <div class="w-full h-full">
     <article class="prose">
