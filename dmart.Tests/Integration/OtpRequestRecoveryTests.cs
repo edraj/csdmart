@@ -137,10 +137,11 @@ public sealed class OtpRequestRecoveryTests : IClassFixture<DmartFactory>
         finally { await CleanupAsync(shortname, msisdn); }
     }
 
-    // Locking persists IsActive=false; only IsLockedAsync clears it once the
-    // cool-down elapses. Reading IsUsable directly meant the account stayed
-    // silently un-OTP-able forever after — and for a password-less user, whose
-    // only credential IS the OTP, nothing on any path would have unlocked it.
+    // The attempt lock lives in attempt_count and IsUsable knows nothing about
+    // it, so /user/otp-request has to ask IsLocked. Reading IsUsable directly
+    // meant a locked account stayed silently un-OTP-able forever after the
+    // cool-down expired — and for a password-less user, whose only credential
+    // IS the OTP, nothing on any path would have unlocked it.
     [FactIfPg]
     public async Task A_Locked_Account_Can_Get_A_Code_Once_The_Cooldown_Expires()
     {
@@ -158,22 +159,61 @@ public sealed class OtpRequestRecoveryTests : IClassFixture<DmartFactory>
             // Built through the repository's own writers, not by upserting a
             // hand-made User: UpsertAsync does not carry last_failed_login, so
             // assembling the state that way yields attempt_count set with no
-            // timestamp anchor — which IsLockedAsync correctly reads as "still
+            // timestamp anchor — which IsLocked correctly reads as "still
             // locked" and the test would then pass or fail for the wrong reason.
             var stale = DateTime.Now.AddSeconds(-(cooldown + 60));
             for (var i = 0; i < maxAttempts; i++)
                 await users.IncrementAttemptAsync(shortname, stale);
 
-            // …and the deactivation the lockout itself persists.
+            // The account is attempt-locked and ACTIVE. That combination is the
+            // whole point: the lock is the counter, and it never touches
+            // is_active. (This test used to also upsert IsActive=false, back
+            // when locking persisted it — which now describes a deactivated
+            // account, a different thing entirely. See the test below.)
             var locked = (await users.GetByShortnameAsync(shortname)).ShouldNotBeNull();
             locked.AttemptCount.ShouldBe(maxAttempts);
             locked.LastFailedLogin.ShouldNotBeNull();
-            await users.UpsertAsync(locked with { IsActive = false });
+            locked.IsActive.ShouldBeTrue();
 
             (await RequestAsync(_factory, msisdn, OtpPurpose.Login)).Status.ShouldBe(Status.Success);
 
             (await CountAsync(repo, msisdn, OtpPurpose.Login)).ShouldBe(1,
                 "the cool-down has expired, so the account must be able to receive a code again");
+        }
+        finally { await CleanupAsync(shortname, msisdn); }
+    }
+
+    // The other side of the same gate, and the one the cool-down branch used to
+    // fall straight through: an elapsed cool-down answered "not locked" without
+    // ever re-reading IsUsable, so a DEACTIVATED — or soft-deleted — account
+    // that happened to sit at the threshold collected login codes. Every
+    // response here is a silent 200 either way, so the assertion has to be that
+    // no code was actually issued.
+    [FactIfPg]
+    public async Task A_Deactivated_Account_Gets_No_Code_Even_Past_The_Cooldown()
+    {
+        var settings = _factory.Services.GetRequiredService<IOptions<DmartSettings>>().Value;
+        var maxAttempts = settings.MaxFailedLoginAttempts;
+        var cooldown = settings.LockoutCooldownSeconds;
+        if (maxAttempts <= 0 || cooldown <= 0) return;
+
+        var msisdn = NewMsisdn();
+        var shortname = await SeedUserAsync(_factory, msisdn);
+        var users = _factory.Services.GetRequiredService<UserRepository>();
+        var repo = _factory.Services.GetRequiredService<OtpRepository>();
+        try
+        {
+            var stale = DateTime.Now.AddSeconds(-(cooldown + 60));
+            for (var i = 0; i < maxAttempts; i++)
+                await users.IncrementAttemptAsync(shortname, stale);
+
+            var seeded = (await users.GetByShortnameAsync(shortname)).ShouldNotBeNull();
+            await users.UpsertAsync(seeded with { IsActive = false, AttemptCount = null });
+
+            (await RequestAsync(_factory, msisdn, OtpPurpose.Login)).Status.ShouldBe(Status.Success);
+
+            (await CountAsync(repo, msisdn, OtpPurpose.Login)).ShouldBe(0,
+                "a deactivated account is locked whatever the cool-down says");
         }
         finally { await CleanupAsync(shortname, msisdn); }
     }

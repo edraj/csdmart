@@ -136,8 +136,10 @@ requests back into dmart, answered on its stdin:
 ```
 
 The ops are `load_entry`, `load_user`, `save_entry`, `update_user`,
-`send_email`, `ws_broadcast`, `query`, `log`, `get_session_firebase_tokens` and
-`get_media_attachment`. A `query` runs as the user that triggered the exchange
+`send_email`, `ws_broadcast`, `query`, `log`, `get_session_firebase_tokens`,
+`invalidate_firebase_tokens` and `get_media_attachment`. A push plugin uses the
+last two as a pair: fan out over the tokens the first returns, then hand the
+rejects from FCM's response to the second so they are not retried. A `query` runs as the user that triggered the exchange
 unless it carries an explicit `as_actor` override.
 
 The loader is `Plugins/Native/NativePluginLoader.cs`; the process host and read

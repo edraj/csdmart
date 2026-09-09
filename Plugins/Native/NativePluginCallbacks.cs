@@ -534,6 +534,48 @@ public static class NativePluginCallbacks
         }
     }
 
+    // internal for testing via dmart.Tests. Returns {"cleared": <n>} — the
+    // number of session rows whose firebase_token was dropped.
+    //
+    // The return leg of push dispatch. FCM's send response names the tokens it
+    // rejected (UNREGISTERED for one that has been retired, INVALID_ARGUMENT for
+    // a malformed one); a plugin feeds them back here so the next fan-out over
+    // get_session_firebase_tokens does not retry them. Without it a dead token
+    // sits on its session row until SESSION_INACTIVITY_TTL ages the row out,
+    // which for a long-lived session is never.
+    //
+    // Not scoped to a shortname on purpose: a token FCM has retired is dead for
+    // every account that shares the device.
+    internal static string EmitInvalidateFirebaseTokens(string? tokensJson, ILogger? logger)
+    {
+        if (string.IsNullOrEmpty(tokensJson)) return """{"cleared":0}""";
+        try
+        {
+            var tokens = JsonSerializer.Deserialize(tokensJson!, DmartJsonContext.Default.ListString);
+            if (tokens is null || tokens.Count == 0) return """{"cleared":0}""";
+
+            if (Services is null)
+            {
+                logger?.LogWarning("invalidate_firebase_tokens called before services initialized");
+                return """{"cleared":0}""";
+            }
+            using var scope = Services.CreateScope();
+            var users = scope.ServiceProvider.GetRequiredService<UserRepository>();
+            var cleared = users.InvalidateFirebaseTokensAsync(tokens).GetAwaiter().GetResult();
+            logger?.LogDebug("invalidate_firebase_tokens requested={Requested} cleared={Cleared}",
+                tokens.Count, cleared);
+            return $$"""{"cleared":{{cleared}}}""";
+        }
+        catch (Exception ex)
+        {
+            // Same shape on failure as on success, for the same reason
+            // EmitGetSessionFirebaseTokens collapses its error path: the caller
+            // is mid-push and has nothing useful to do with the distinction.
+            logger?.LogError(ex, "invalidate_firebase_tokens failed");
+            return """{"cleared":0}""";
+        }
+    }
+
     // internal for testing — lets tests inject a fake ILoggerFactory or
     // clear the cache between cases without going through DI.
     internal static void SetServicesForTesting(IServiceProvider? services)

@@ -384,7 +384,15 @@ public static class SqlSchema
         shortname        TEXT NOT NULL,
         token            TEXT NOT NULL,
         timestamp        TIMESTAMP NOT NULL DEFAULT NOW(),
-        firebase_token   TEXT
+        firebase_token   TEXT,
+        -- The device this session was opened from, copied from the login body.
+        -- A session is per-login, but firebase_token identifies a DEVICE, and the
+        -- two have different lifetimes: FCM rotates a device's token, so the
+        -- rows a phone left behind from earlier logins hold a stale string that
+        -- nothing can otherwise recognise as the same device. This column is what
+        -- links them. Null for clients that send no device_id (web) and for the
+        -- OAuth grants, which have no device to name.
+        device_id        TEXT
     );
 
     -- ============================================================
@@ -587,6 +595,7 @@ public static class SqlSchema
     -- vector). Drop the table on existing deployments so any outstanding
     -- tokens are purged on upgrade. Idempotent.
     DROP TABLE IF EXISTS invitations;
+    ALTER TABLE sessions    ADD COLUMN IF NOT EXISTS device_id             TEXT;
     ALTER TABLE users       ADD COLUMN IF NOT EXISTS device_id             TEXT;
     ALTER TABLE users       ADD COLUMN IF NOT EXISTS google_id             TEXT;
     ALTER TABLE users       ADD COLUMN IF NOT EXISTS facebook_id           TEXT;

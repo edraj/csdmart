@@ -710,6 +710,63 @@ public sealed class ResourceTypeConfusionAuthzTests : IClassFixture<DmartFactory
         finally { await CleanupAttachmentFixtureAsync(f); }
     }
 
+    // The SAME clobber, through the OTHER door.
+    //
+    // AttachmentTypeCollisionAsync has two call sites: RequestHandler's
+    // attachment create (covered by the test above) and StoreAttachmentAsync,
+    // which serves the multipart /managed/resource_with_payload upload. Only the
+    // first was tested. Both write through the same upsert, which rewrites
+    // resource_type along with the bytes, so an unguarded path here is the same
+    // silent overwrite by a different route.
+    //
+    // The subpath is sent WITHOUT a leading slash because that is the shape a
+    // real client sends and the shape the collision lookup has to cope with.
+    //
+    // Scope: this pins the guard, not the subpath normalization shipped beside
+    // it — the fixture stores the media row normalized, so the guard finds it
+    // either way. Covering the normalization end to end needs an actor holding
+    // media-create permission, which this fixture does not grant.
+    [FactIfPg]
+    public async Task Comment_Only_Grant_Cannot_Clobber_A_Media_Attachment_Over_Multipart()
+    {
+        var f = await SetupAttachmentFixtureAsync();
+        var attachments = _factory.Services.GetRequiredService<AttachmentRepository>();
+        try
+        {
+            var client = await LoginAsAsync(f.Actor);
+            var record = JsonSerializer.Serialize(new
+            {
+                resource_type = "comment",
+                subpath = f.AttSubpath.TrimStart('/'),
+                shortname = f.Att,
+                attributes = new { body = "pwned over multipart" },
+            });
+
+            using var form = new MultipartFormDataContent();
+            form.Add(new StringContent(f.Space), "space_name");
+            var recordPart = new ByteArrayContent(Encoding.UTF8.GetBytes(record));
+            recordPart.Headers.ContentType = new MediaTypeHeaderValue("application/json");
+            form.Add(recordPart, "request_record", "request_record.json");
+            var payloadPart = new ByteArrayContent(Encoding.UTF8.GetBytes("pwned"));
+            payloadPart.Headers.ContentType = new MediaTypeHeaderValue("text/plain");
+            form.Add(payloadPart, "payload_file", "pwned.txt");
+
+            var resp = await client.PostAsync("/managed/resource_with_payload", form);
+            var raw = await resp.Content.ReadAsStringAsync();
+
+            // The row's state is the assertion that matters, not the status code:
+            // the upsert rewrites resource_type with the bytes, so a successful
+            // clobber leaves no other trace.
+            var after = await attachments.GetAsync(f.Space, f.AttSubpath, f.Att);
+            after.ShouldNotBeNull(
+                $"the media attachment must still exist at its address. Response: {raw}");
+            after!.ResourceType.ShouldBe(ResourceType.Media,
+                $"a comment-only grant must not rewrite a media row's resource_type. Response: {raw}");
+            after.Media.ShouldNotBeNull($"the media bytes must survive. Response: {raw}");
+        }
+        finally { await CleanupAttachmentFixtureAsync(f); }
+    }
+
     // -------------------------------------------------------------------------
     // Shared fixture for the attachment legs: a space, a parent content entry, a
     // MEDIA attachment hanging off it, and an actor whose grant covers every
