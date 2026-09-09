@@ -673,43 +673,62 @@ public sealed class UserService(
     }
 
     // Read-style "is this account locked?" check for gates that are NOT
-    // themselves login attempts (currently /user/otp-request when a JWT is
-    // present). Uses the same "locked" determination as /user/login —
-    // attempt-counter lock honoring the cool-down auto-unlock, or a deactivated
-    // account (IsActive==false) — but, unlike RejectIfAttemptLockedAsync, it
-    // does NOT refresh the cool-down anchor, because merely requesting an OTP is
-    // not a failed login attempt and shouldn't extend a lockout window.
-    public async Task<bool> IsLockedAsync(User user, CancellationToken ct = default)
+    // themselves login attempts: /user/otp-request, and both /oauth/token
+    // grants. Uses the same "locked" determination as /user/login —
+    // attempt-counter lock honoring the cool-down window, or a deactivated /
+    // soft-deleted account — and, unlike RejectIfAttemptLockedAsync, writes
+    // NOTHING.
+    //
+    // Pure by design, on both counts:
+    //   * it must not refresh the cool-down anchor, because requesting an OTP
+    //     is not a failed attempt and shouldn't extend a lockout window;
+    //   * it must not clear the counter either. Presenting a refresh token is
+    //     not a login, and an unlock here would let anyone holding one wipe
+    //     `attempt_count` — the lock itself, and the only surviving evidence
+    //     of a brute-force run — without ever presenting a credential.
+    // The durable unlock happens on the next real login attempt, in
+    // RejectIfAttemptLockedAsync.
+    public bool IsLocked(User user)
     {
-        // Bots skip the attempt-counter lock (see RejectIfAttemptLockedAsync) but
-        // NOT the IsUsable check below — a deactivated or deleted bot is locked.
+        // A deactivated or soft-deleted account is locked, full stop — and this
+        // has to come FIRST. The cool-down branch below answers "not locked"
+        // once the window elapses; reaching it before this check is what let a
+        // deleted account mint a fresh access token at /oauth/token and collect
+        // an OTP at /user/otp-request.
+        if (!user.IsUsable) return true;
+
+        // Bots skip the attempt-counter lock (see RejectIfAttemptLockedAsync)
+        // but not the IsUsable check above — a deactivated or deleted bot is
+        // locked like anyone else.
+        if (user.Type == UserType.Bot) return false;
+
         var maxAttempts = settings.Value.MaxFailedLoginAttempts;
-        if (user.Type != UserType.Bot
-            && maxAttempts > 0 && user.AttemptCount is int count && count >= maxAttempts)
-        {
-            var cooldown = settings.Value.LockoutCooldownSeconds;
-            if (cooldown > 0 && user.LastFailedLogin is DateTime lastFailed
-                && (TimeUtils.Now() - lastFailed).TotalSeconds > cooldown)
-            {
-                // Cool-down elapsed → auto-unlock, mirroring RejectIfAttemptLockedAsync.
-                await users.UnlockAfterCooldownAsync(user.Shortname, ct);
-                return false;
-            }
-            return true; // attempt-locked, cool-down still in effect (or no anchor set)
-        }
-        // Not attempt-locked → a manually deactivated OR soft-deleted account is
-        // still locked.
-        return !user.IsUsable;
+        if (maxAttempts <= 0 || user.AttemptCount is not int count || count < maxAttempts)
+            return false;
+
+        // Attempt-locked. The cool-down releases it once the window since the
+        // last failed/blocked attempt has elapsed; with no anchor (or the
+        // cool-down disabled) the lock stands.
+        var cooldown = settings.Value.LockoutCooldownSeconds;
+        return !(cooldown > 0 && user.LastFailedLogin is DateTime lastFailed
+                 && (TimeUtils.Now() - lastFailed).TotalSeconds > cooldown);
     }
 
     // Public wrapper around the private failed-attempt counter so out-of-class
-    // callers (currently only OtpHandler./password-reset-confirm) can apply the
-    // same account-lockout discipline /user/login enforces on wrong OTPs.
-    // Returns true when this attempt caused the account to lock.
-    public Task<bool> RecordFailedAttemptAsync(User user, CancellationToken ct = default)
-        => HandleFailedLoginAttemptAsync(user, ct);
+    // callers (OtpHandler./password-reset-confirm, /user/validate-password) can
+    // apply the same account-lockout discipline /user/login enforces on wrong
+    // OTPs. Returns true when this attempt caused the account to lock.
+    // `callerSessionToken` — see HandleFailedLoginAttemptAsync.
+    public Task<bool> RecordFailedAttemptAsync(
+        User user, CancellationToken ct = default, string? callerSessionToken = null)
+        => HandleFailedLoginAttemptAsync(user, ct, callerSessionToken);
 
-    private async Task<bool> HandleFailedLoginAttemptAsync(User user, CancellationToken ct)
+    // `callerSessionToken` is the raw bearer/cookie JWT of the session that
+    // made this attempt, and is set only on the AUTHENTICATED failure paths
+    // (/user/profile's old_password, /user/validate-password). Anonymous
+    // attempts at /user/login have no session to name and pass null.
+    private async Task<bool> HandleFailedLoginAttemptAsync(
+        User user, CancellationToken ct, string? callerSessionToken = null)
     {
         await users.IncrementAttemptAsync(user.Shortname, TimeUtils.Now(), ct);
 
@@ -728,7 +747,22 @@ public sealed class UserService(
         // every live session — see RejectIfAttemptLockedAsync.
         var refreshed = await users.GetByShortnameAsync(user.Shortname, ct);
         if (refreshed is null) return false;
-        return refreshed.AttemptCount is int count && count >= maxAttempts;
+        var locked = refreshed.AttemptCount is int count && count >= maxAttempts;
+
+        // The one session the lock DOES revoke: the one that just spent the
+        // account's last attempt. A lock no longer kills every live session
+        // (that punished the victim for an attacker's guessing, and the
+        // guessing that matters happens at anonymous /user/login where there is
+        // no session to kill anyway). But a caller brute-forcing the password
+        // through an AUTHENTICATED endpoint is holding a session already — a
+        // hijacked one, in the case this defends against — and leaving that
+        // token alive for the rest of its TTL is what the old
+        // DeleteAllSessionsAsync was there to prevent. Killing exactly the
+        // offending session keeps that protection without the collateral.
+        if (locked && !string.IsNullOrEmpty(callerSessionToken))
+            await users.DeleteSessionAsync(user.Shortname, callerSessionToken!, ct);
+
+        return locked;
     }
 
     // Shared post-authentication flow. Mirrors Python's process_user_login().
@@ -1042,8 +1076,10 @@ public sealed class UserService(
                     // Wrong old_password counts toward the lockout threshold.
                     // Without this, an attacker who hijacks a session can brute
                     // the original password indefinitely on the change-password
-                    // path while never tripping the login-side counter.
-                    var locked = await HandleFailedLoginAttemptAsync(user, ct);
+                    // path while never tripping the login-side counter. Passing
+                    // the caller's own token means tripping the lock also ends
+                    // the session that did the guessing.
+                    var locked = await HandleFailedLoginAttemptAsync(user, ct, sessionToken);
                     if (locked)
                         return Result<User>.Fail(
                             InternalErrorCode.USER_ACCOUNT_LOCKED,
@@ -1172,7 +1208,12 @@ public sealed class UserService(
             // Python's set_user_profile calls db.clear_failed_password_attempts
             // after hashing a new password — a user who just reset their own
             // password shouldn't be one mistyped login away from being locked.
-            AttemptCount = newPasswordHash is not null ? 0 : user.AttemptCount,
+            // Otherwise null, meaning "leave the stored counter alone": `user`
+            // was read at the top of this method, and replaying its counter
+            // here would undo increments that landed while the request ran —
+            // including the ones from the wrong-old_password attempts this very
+            // method makes. See UserRepository.UserConflictClause.
+            AttemptCount = newPasswordHash is not null ? 0 : null,
             Payload = resolvedPayload,
             UpdatedAt = TimeUtils.Now(),
         };

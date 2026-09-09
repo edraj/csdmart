@@ -37,6 +37,12 @@
     let showGroupsDropdown = $state(false);
     let groupsDropdownRef: HTMLDivElement | null = $state(null);
 
+    // Read the counter BEFORE it is stripped below. It is the account lockout:
+    // the lock leaves is_active set, so this is the only thing that says an
+    // account is locked out.
+    const failedAttempts: number = formData.attempt_count ?? 0;
+    let resetAttempts = $state(false);
+
     formData = {
         ...formData,
         email: formData.email || null,
@@ -57,7 +63,23 @@
         // these undefined so neither a loaded $argon2id hash nor a typed value is
         // ever sent. Users set their own password via login OTP / password reset.
         password: undefined,
-        old_password: undefined
+        old_password: undefined,
+        // Same reason, different risk. attempt_count IS the lockout, and this
+        // form round-trips whatever the API returned — so echoing it back on an
+        // ordinary save would write a value read seconds ago, rolling back
+        // increments an in-flight brute-force run landed in between. Stripped
+        // unless the admin explicitly asks to clear it below (JSON.stringify
+        // drops undefined keys, which is how `password` is handled too).
+        attempt_count: undefined
+    }
+
+    // The unlock gesture. Deliberately NOT is_active: a locked account is still
+    // active (the lock is counter-only), and this form emits is_active on every
+    // save — so keying an unlock off that flag would mean renaming a locked user
+    // silently cancels their lockout. Sending an explicit 0 is unambiguous, and
+    // the server records it in the audit history.
+    function applyAttemptReset() {
+        formData.attempt_count = resetAttempts ? 0 : undefined;
     }
 
     const userTypeOptions = ["bot", "mobile", "web", "admin", "api"]
@@ -234,6 +256,25 @@
                     bind:value={formData.msisdn}
                     pattern="^\+?\d{'{'}7,15{'}'}$" />
         </div>
+
+        {#if !isCreate}
+            <div class="mb-4">
+                <Label class="mb-2">Failed Login Attempts</Label>
+                <div class="flex items-center gap-3">
+                    <Badge color={failedAttempts > 0 ? 'red' : 'green'}>{failedAttempts}</Badge>
+                    {#if failedAttempts > 0}
+                        <Checkbox id="reset_attempt_count" bind:checked={resetAttempts} onchange={applyAttemptReset} />
+                        <Label for="reset_attempt_count" class="ml-1">Clear on save</Label>
+                    {/if}
+                </div>
+                <Helper class="mt-1">
+                    The account lockout is this counter — once it reaches the server's
+                    MAX_FAILED_LOGIN_ATTEMPTS the user cannot log in until it is cleared
+                    or the cool-down elapses. Saving other fields leaves it alone; tick
+                    the box to unlock the account.
+                </Helper>
+            </div>
+        {/if}
 
         <div class="grid grid-cols-1 md:grid-cols-3 gap-4 mb-4">
             <div class="flex items-center">

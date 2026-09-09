@@ -32,6 +32,12 @@
     let isRolesOpen = $state(false);
     let isSocialOpen = $state(false);
 
+    // Read the counter BEFORE it is stripped below. It is the account lockout:
+    // the lock leaves is_active set, so this is the only thing that says an
+    // account is locked out.
+    const failedAttempts: number = formData.attempt_count ?? 0;
+    let resetAttempts = $state(false);
+
     formData = {
         ...formData,
         email: formData.email || null,
@@ -52,7 +58,23 @@
         google_id: formData.google_id || null,
         facebook_id: formData.facebook_id || null,
         apple_id: formData.apple_id || null,
-        social_avatar_url: formData.social_avatar_url || null
+        social_avatar_url: formData.social_avatar_url || null,
+        // Same reasoning as the passwords above, different risk. attempt_count IS
+        // the account lockout, and this form round-trips whatever the API
+        // returned — echoing it back on an ordinary save would write a value read
+        // seconds ago, rolling back increments an in-flight brute-force run
+        // landed in between. Stripped unless the admin explicitly asks to clear
+        // it below (undefined keys are dropped on serialize).
+        attempt_count: undefined
+    }
+
+    // The unlock gesture. Deliberately NOT is_active: a locked account is still
+    // active (the lock is counter-only), and this form emits is_active on every
+    // save — so keying an unlock off that flag would mean renaming a locked user
+    // silently cancels their lockout. Sending an explicit 0 is unambiguous, and
+    // the server records it in the audit history.
+    function applyAttemptReset() {
+        formData.attempt_count = resetAttempts ? 0 : undefined;
     }
 
     // The same allowed_fields_values whitelist DynamicSchemaBasedForms applies
@@ -282,6 +304,29 @@
                 />
             </div>
             </FieldGate>
+
+            {#if !isCreate}
+                <div class="field-group">
+                    <label class="field-label">Failed Login Attempts</label>
+                    <div class="checkbox-row compact">
+                        <span class="attempt-count" class:attempt-count-warn={failedAttempts > 0}>
+                            {failedAttempts}
+                        </span>
+                        {#if failedAttempts > 0}
+                            <div class="checkbox-group">
+                                <input type="checkbox" id="reset_attempt_count" class="checkbox" bind:checked={resetAttempts} onchange={applyAttemptReset} />
+                                <label for="reset_attempt_count" class="checkbox-label">Clear on save</label>
+                            </div>
+                        {/if}
+                    </div>
+                    <p class="field-hint">
+                        The account lockout is this counter — once it reaches the server's
+                        MAX_FAILED_LOGIN_ATTEMPTS the user cannot log in until it is cleared
+                        or the cool-down elapses. Saving other fields leaves it alone; tick
+                        the box to unlock the account.
+                    </p>
+                </div>
+            {/if}
 
             <div class="checkbox-row compact">
                 <div class="checkbox-group">
@@ -614,6 +659,30 @@
         color: #4b5563;
         font-weight: 500;
         cursor: pointer;
+    }
+
+    .attempt-count {
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        min-width: 1.75rem;
+        padding: 0.125rem 0.5rem;
+        border-radius: 9999px;
+        font-size: 0.8125rem;
+        font-weight: 600;
+        background: #dcfce7;
+        color: #166534;
+    }
+
+    .attempt-count-warn {
+        background: #fee2e2;
+        color: #991b1b;
+    }
+
+    .field-hint {
+        font-size: 0.75rem;
+        color: #6b7280;
+        margin: 0.25rem 0 0;
     }
 
     .grid-row {
