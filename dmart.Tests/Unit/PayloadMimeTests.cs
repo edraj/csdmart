@@ -74,6 +74,42 @@ public class PayloadMimeTests
         PayloadHandler.RendersInline(mime).ShouldBeFalse();
     }
 
+    [Theory]
+    [InlineData("docx", "application/vnd.openxmlformats-officedocument.wordprocessingml.document")]
+    [InlineData("zip", "application/zip")]
+    [InlineData("bin", "application/octet-stream")]
+    [InlineData("", "application/octet-stream")]
+    public void The_Opaque_Type_Is_Never_Json(string ext, string expected)
+    {
+        // ContentType.Binary is what InferContentType stores now for an upload it
+        // cannot place. Unlike the legacy `json` rows, this one carries no claim
+        // about the bytes, so it is correct even with no extension to read —
+        // which is the MCP download path, where MimeFor is called with "".
+        PayloadHandler.MimeFor(ContentType.Binary, ext).ShouldBe(expected);
+        PayloadHandler.RendersInline(PayloadHandler.MimeFor(ContentType.Binary, ext)).ShouldBeFalse();
+    }
+
+    [Fact]
+    public void An_Unplaceable_Upload_Is_Stored_As_Binary_Not_Json()
+    {
+        // The fallback itself. Storing `json` for a .docx was a lie that then had
+        // to be un-told at every read; the ext-based rescue in MimeFor only
+        // covers the reads that HAVE an extension to look at.
+        ResourceWithPayloadHandler.InferContentType(null, "docx").ShouldBe(ContentType.Binary);
+        ResourceWithPayloadHandler.InferContentType("application/zip", "zip").ShouldBe(ContentType.Binary);
+        ResourceWithPayloadHandler.InferContentType(null, "").ShouldBe(ContentType.Binary);
+    }
+
+    [Fact]
+    public void The_Types_We_Do_Know_Are_Still_Placed()
+    {
+        // Guard on the change above: the fallback moved, the recognised set did not.
+        ResourceWithPayloadHandler.InferContentType(null, "json").ShouldBe(ContentType.Json);
+        ResourceWithPayloadHandler.InferContentType(null, "pdf").ShouldBe(ContentType.Pdf);
+        ResourceWithPayloadHandler.InferContentType("image/png", "png").ShouldBe(ContentType.ImagePng);
+        ResourceWithPayloadHandler.InferContentType(null, "webm").ShouldBe(ContentType.Video);
+    }
+
     [Fact]
     public void A_Real_Json_Payload_Is_Still_Json()
     {

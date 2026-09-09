@@ -5,8 +5,22 @@ using Dmart.Models.Json;
 namespace Dmart.Models.Enums;
 
 [JsonConverter(typeof(ContentTypeJsonConverter))]
-// Mirrors dmart/backend/models/enums.py::ContentType. Note: image is split per-format
-// (no generic "image"); the dmart Python class has _missing_("image") → image_jpeg.
+// Mirrors dmart/backend/models/enums.py::ContentType, with one addition.
+//
+// `image` is BOTH a member here and split per-format. Python's class defines only
+// the per-format values and resolves a bare "image" through _missing_ → image_jpeg;
+// carrying the member explicitly means a stored "image" round-trips instead of
+// failing to parse. PayloadHandler.MimeFor treats it the same way Python's
+// _missing_ does when the filename says nothing more specific.
+//
+// `binary` has no Python counterpart. It exists because InferContentType has to
+// name "an upload I could not identify", and the alternative it used to pick —
+// json — is a claim about the bytes that is simply false for a .docx or a .zip:
+// it made the payload endpoint serve them as application/json, and the MCP
+// download tool label them the same way. A value that means "opaque" is the
+// honest answer, and an unknown token is a far smaller parity problem than a
+// wrong known one. Anything reading these rows should treat it as
+// application/octet-stream.
 public enum ContentType
 {
     [EnumMember(Value = "text")]        Text,
@@ -30,4 +44,5 @@ public enum ContentType
     [EnumMember(Value = "jsonl")]       Jsonl,
     [EnumMember(Value = "apk")]         Apk,
     [EnumMember(Value = "sqlite")]      Sqlite,
+    [EnumMember(Value = "binary")]      Binary,
 }

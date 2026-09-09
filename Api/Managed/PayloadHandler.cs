@@ -271,6 +271,11 @@ public static class PayloadHandler
             ContentType.Apk        => "application/vnd.android.package-archive",
             ContentType.Sqlite     => "application/vnd.sqlite3",
             ContentType.Parquet    => "application/octet-stream",
+            // What InferContentType now stores for an upload it cannot place.
+            // The extension still gets a say — a .docx deserves its real type on
+            // the way out even though we could not name it on the way in — but
+            // the floor is octet-stream, which RendersInline refuses.
+            ContentType.Binary     => MimeForExtension(e),
             _                      => "application/octet-stream",
         };
     }
