@@ -158,6 +158,177 @@ public class PayloadContentDispositionTests : IClassFixture<DmartFactory>
             (resp.Content.Headers.ContentDisposition?.DispositionType ?? "inline").ShouldBe("inline");
         });
 
+    // ==================== the response a browser actually gets ====================
+
+    [FactIfPg]
+    public async Task Inline_Payload_Allows_A_SameOrigin_Frame()
+        => await WithUploadedMediaAsync("doc.pdf", "application/pdf", Bytes(64), async (client, url) =>
+        {
+            // The global X-Frame-Options: DENY applies to <iframe>/<embed>/<object>
+            // as surely as to a cross-origin frame, so it blocked the in-app PDF
+            // viewers — cxb and catalog both embed the payload same-origin — and
+            // the user got the "PDF is not rendered here properly" fallback. The
+            // header this endpoint went inline for has to permit that one case.
+            var resp = await OkAsync(client, url);
+            resp.Headers.GetValues("X-Frame-Options").ShouldHaveSingleItem()
+                .ShouldBe("SAMEORIGIN");
+        });
+
+    [FactIfPg]
+    public async Task Attachment_Payload_Keeps_The_Strict_Frame_Policy()
+        => await WithUploadedMediaAsync("page.html", "text/html", Bytes(64), async (client, url) =>
+        {
+            // Only the inline branch relaxes it. An attachment is never framed,
+            // so it keeps the site-wide default — and html is exactly the type
+            // that must not become a document on this origin.
+            var resp = await OkAsync(client, url);
+            resp.Headers.GetValues("X-Frame-Options").ShouldHaveSingleItem().ShouldBe("DENY");
+        });
+
+    [FactIfPg]
+    public async Task Inline_Text_Declares_Utf8()
+        => await WithUploadedMediaAsync("notes.txt", "text/plain",
+            Encoding.UTF8.GetBytes("مرحبا"), async (client, url) =>
+        {
+            // nosniff is set globally, so a bare text/plain leaves the browser on
+            // its locale default and Arabic renders as mojibake.
+            var resp = await OkAsync(client, url);
+            resp.Content.Headers.ContentType!.CharSet.ShouldBe("utf-8");
+            (await resp.Content.ReadAsStringAsync()).ShouldBe("مرحبا");
+        });
+
+    [FactIfPg]
+    public async Task An_Opaque_Upload_Downloads_Under_Its_Own_Name()
+        => await WithUploadedMediaAsync("report.docx",
+            "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+            Bytes(64), async (client, url) =>
+        {
+            // InferContentType cannot place a .docx, and its fallback is `json`
+            // — so this used to come back as application/json with no
+            // disposition at all, dumping binary into the tab.
+            var resp = await OkAsync(client, url);
+            resp.Content.Headers.ContentType!.MediaType.ShouldNotBe("application/json");
+            resp.Content.Headers.ContentDisposition!.DispositionType.ShouldBe("attachment");
+            resp.Content.Headers.ContentDisposition!.FileName!.Trim('"').ShouldBe("report.docx");
+        });
+
+    // ==================== ranges ====================
+
+    [FactIfPg]
+    public async Task A_Range_Request_Returns_Only_The_Requested_Bytes()
+        => await WithUploadedMediaAsync("clip.mp4", "video/mp4", Bytes(4096), async (client, url) =>
+        {
+            // What lets <video> seek. Also the assertion that the lazy media
+            // stream slices correctly rather than returning the whole blob.
+            var req = new HttpRequestMessage(HttpMethod.Get, url);
+            req.Headers.Range = new RangeHeaderValue(100, 199);
+            var resp = await client.SendAsync(req);
+
+            resp.StatusCode.ShouldBe(HttpStatusCode.PartialContent);
+            resp.Content.Headers.ContentRange!.From.ShouldBe(100);
+            resp.Content.Headers.ContentRange!.To.ShouldBe(199);
+            var body = await resp.Content.ReadAsByteArrayAsync();
+            body.Length.ShouldBe(100);
+            body.ShouldBe(Bytes(4096)[100..200]);
+        });
+
+    [FactIfPg]
+    public async Task A_Range_Spanning_The_Stream_Buffer_Is_Contiguous()
+        => await WithUploadedMediaAsync("clip.mp4", "video/mp4", Bytes(300_000), async (client, url) =>
+        {
+            // The media stream reads in chunks, so a range has to survive the
+            // seam between two of them — an off-by-one in the refill would show
+            // up here as a shifted or truncated body, not as an error.
+            var req = new HttpRequestMessage(HttpMethod.Get, url);
+            req.Headers.Range = new RangeHeaderValue(1000, 250_999);
+            var resp = await client.SendAsync(req);
+
+            resp.StatusCode.ShouldBe(HttpStatusCode.PartialContent);
+            var body = await resp.Content.ReadAsByteArrayAsync();
+            body.Length.ShouldBe(250_000);
+            body.ShouldBe(Bytes(300_000)[1000..251_000]);
+        });
+
+    [FactIfPg]
+    public async Task A_Whole_Payload_Still_Round_Trips_Byte_For_Byte()
+        => await WithUploadedMediaAsync("clip.mp4", "video/mp4", Bytes(300_000), async (client, url) =>
+        {
+            // The stream is chunked; a full read must still reassemble exactly.
+            var resp = await OkAsync(client, url);
+            (await resp.Content.ReadAsByteArrayAsync()).ShouldBe(Bytes(300_000));
+        });
+
+    [FactIfPg]
+    public async Task A_Download_Can_Be_Resumed()
+        => await WithUploadedMediaAsync("clip.mp4", "video/mp4", Bytes(4096), async (client, url) =>
+        {
+            // Resumability is orthogonal to disposition: a ?download=1 that drops
+            // at 90% should resume, not restart. Range support used to be enabled
+            // on the inline branch only.
+            var resp = await OkAsync(client, url + "?download=1");
+            resp.Headers.AcceptRanges.ShouldContain("bytes");
+            resp.Content.Headers.ContentDisposition!.DispositionType.ShouldBe("attachment");
+        });
+
+    [FactIfPg]
+    public async Task An_Unsatisfiable_Range_Does_Not_Claim_An_Inline_Body()
+        => await WithUploadedMediaAsync("shot.jpeg", "image/jpeg", Bytes(64), async (client, url) =>
+        {
+            // The disposition used to be stamped on the response before the file
+            // result ran, so a 416 came back still advertising an inline body it
+            // does not have — a header/body mismatch that confuses caches.
+            var req = new HttpRequestMessage(HttpMethod.Get, url);
+            req.Headers.Range = new RangeHeaderValue(99_999, null);
+            var resp = await client.SendAsync(req);
+
+            resp.StatusCode.ShouldBe(HttpStatusCode.RequestedRangeNotSatisfiable);
+            resp.Content.Headers.ContentDisposition.ShouldBeNull();
+        });
+
+    // ==================== ?download ====================
+
+    [FactIfPg]
+    public async Task A_Repeated_Download_Param_Still_Forces_A_Download()
+        => await WithUploadedMediaAsync("shot.jpeg", "image/jpeg", Bytes(64), async (client, url) =>
+        {
+            // StringValues.ToString() joins repeats with a comma, so "1,1"
+            // matched nothing and the save-to-disk silently became a render.
+            var resp = await OkAsync(client, url + "?download=1&download=1");
+            resp.Content.Headers.ContentDisposition!.DispositionType.ShouldBe("attachment");
+        });
+
+    [FactIfPg]
+    public async Task Download_Also_Works_Spelled_As_A_Word()
+        => await WithUploadedMediaAsync("shot.jpeg", "image/jpeg", Bytes(64), async (client, url) =>
+        {
+            // WantsDownload accepts =true, and nothing exercised it end to end.
+            var resp = await OkAsync(client, url + "?download=true");
+            resp.Content.Headers.ContentDisposition!.DispositionType.ShouldBe("attachment");
+        });
+
+    // ==================== entry-flavor payloads ====================
+
+    [FactIfPg]
+    public async Task An_Entry_Payload_Renders_Inline_By_Default()
+        => await WithEntryPayloadAsync(async (client, url) =>
+        {
+            var resp = await OkAsync(client, url);
+            resp.Content.Headers.ContentType!.MediaType.ShouldBe("application/json");
+            resp.Content.Headers.ContentDisposition.ShouldBeNull();
+        });
+
+    [FactIfPg]
+    public async Task An_Entry_Payload_Honours_Download()
+        => await WithEntryPayloadAsync(async (client, url) =>
+        {
+            // WantsDownload's contract is "for any type", but this branch returns
+            // Results.Content, which never emits a disposition — so the flag was
+            // accepted and silently ignored, and the JSON rendered in the tab.
+            var resp = await OkAsync(client, url + "?download=1");
+            resp.Content.Headers.ContentDisposition!.DispositionType.ShouldBe("attachment");
+            resp.Content.Headers.ContentDisposition!.FileName!.Trim('"').ShouldEndWith(".json");
+        });
+
     // ==================== helpers ====================
 
     // GET that fails loudly: a non-200 reports status + body, instead of the
@@ -205,6 +376,44 @@ public class PayloadContentDispositionTests : IClassFixture<DmartFactory>
                 .Status.ShouldBe(Status.Success, "upload media");
 
             await assert(client, $"/managed/payload/media/{space}/bin/{shortname}.{ext}");
+        }
+        finally
+        {
+            try
+            {
+                await client.PostAsync("/managed/request",
+                    JsonContent(
+                        $"{{\"space_name\":\"{space}\",\"request_type\":\"delete\",\"records\":[{{\"resource_type\":\"space\",\"subpath\":\"/\",\"shortname\":\"{space}\",\"attributes\":{{}}}}]}}"));
+            }
+            catch { /* best effort */ }
+            await user.Cleanup();
+        }
+    }
+
+    // Stands up a space + folder + one content entry carrying a JSON payload,
+    // then hands the assert its /payload URL. The entry branch reads
+    // entries.payload.body rather than attachments.media, so it needs its own
+    // fixture — and had none, which is how ?download went unimplemented there.
+    private async Task WithEntryPayloadAsync(Func<HttpClient, string, Task> assert)
+    {
+        var space = $"itest_cd_{Guid.NewGuid():N}"[..20];
+        const string shortname = "note";
+        var user = await _factory.CreateLoggedInUserAsync();
+        var client = user.Client;
+        try
+        {
+            (await CreateAsync(client, space,
+                $"{{\"resource_type\":\"space\",\"subpath\":\"/\",\"shortname\":\"{space}\",\"attributes\":{{\"is_active\":true}}}}"))
+                .Status.ShouldBe(Status.Success, "create space");
+            (await CreateAsync(client, space,
+                "{\"resource_type\":\"folder\",\"subpath\":\"/\",\"shortname\":\"bin\",\"attributes\":{\"is_active\":true}}"))
+                .Status.ShouldBe(Status.Success, "create folder");
+            (await CreateAsync(client, space,
+                $"{{\"resource_type\":\"content\",\"subpath\":\"bin\",\"shortname\":\"{shortname}\",\"attributes\":{{\"is_active\":true,"
+                + "\"payload\":{\"content_type\":\"json\",\"body\":{\"hello\":\"world\"}}}}"))
+                .Status.ShouldBe(Status.Success, "create content");
+
+            await assert(client, $"/managed/payload/content/{space}/bin/{shortname}.json");
         }
         finally
         {

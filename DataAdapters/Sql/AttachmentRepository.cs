@@ -326,6 +326,67 @@ public sealed class AttachmentRepository(IDbConnectionFactory db, ISqlDialect di
         return await r.ReadAsync(ct) ? Hydrate(r) : null;
     }
 
+    // Metadata plus the media's byte length, WITHOUT the bytes.
+    //
+    // What /payload serves is decided entirely by metadata — the permission gate
+    // reads resource_type and acl, the disposition reads payload.content_type —
+    // yet GetAsync above hands back the whole blob to answer any of it. A 401 on
+    // a 50MB video detoasted and shipped 50MB to write "not allowed", and the
+    // inline path then re-read the same 50MB for every Range the browser sent
+    // while scrubbing. This is the same economy SelectColumnsNoMedia already
+    // documents for the listing paths, applied to the one read that serves a
+    // single attachment.
+    //
+    // `length()` rather than `octet_length()`: PostgreSQL's length(bytea) and
+    // SQLite's length(BLOB) both count bytes, so one statement serves both
+    // drivers. Null media yields 0, which callers treat as "nothing to serve".
+    public async Task<(Attachment Attachment, long MediaLength)?> GetWithMediaLengthAsync(
+        string spaceName, string subpath, string shortname, CancellationToken ct = default)
+    {
+        await using var conn = await db.OpenAsync(ct);
+        await using var cmd = conn.Command(
+            $"{SelectColumnsNoMedia.Replace("FROM attachments", ", length(media) AS media_length FROM attachments")} "
+            + "WHERE space_name = $1 AND subpath = $2 AND shortname = $3");
+        DbParams.Add(cmd, spaceName);
+        DbParams.Add(cmd, Locator.NormalizeSubpath(subpath));
+        DbParams.Add(cmd, shortname);
+        await using var r = await cmd.ExecuteReaderAsync(ct);
+        if (!await r.ReadAsync(ct)) return null;
+        var length = r.IsDBNull(21) ? 0L : Convert.ToInt64(r.GetValue(21), System.Globalization.CultureInfo.InvariantCulture);
+        return (Hydrate(r), length);
+    }
+
+    // One window of an attachment's media. `offset` is 0-based; both dialects'
+    // substr() are 1-based, hence the +1.
+    //
+    // substr() over a bytea/BLOB is what keeps a Range request proportional to
+    // the range: PostgreSQL detoasts only the requested slice rather than the
+    // whole value. Returns an empty array past the end rather than throwing, so
+    // a stream at EOF reads 0 instead of faulting.
+    //
+    // The position binds as int, not long: PostgreSQL declares only
+    // substr(bytea, integer, integer), so a bigint parameter fails the overload
+    // lookup outright ("No function matches the given name and argument types").
+    // int spans the whole addressable range anyway — a bytea caps at 1GB, well
+    // inside int.MaxValue, and the upload cap is 50MB.
+    public async Task<byte[]> ReadMediaSliceAsync(
+        string spaceName, string subpath, string shortname, long offset, int count,
+        CancellationToken ct = default)
+    {
+        if (count <= 0 || offset < 0 || offset > int.MaxValue - 1) return [];
+        await using var conn = await db.OpenAsync(ct);
+        await using var cmd = conn.Command(
+            "SELECT substr(media, $4, $5) FROM attachments "
+            + "WHERE space_name = $1 AND subpath = $2 AND shortname = $3");
+        DbParams.Add(cmd, spaceName);
+        DbParams.Add(cmd, Locator.NormalizeSubpath(subpath));
+        DbParams.Add(cmd, shortname);
+        DbParams.Add(cmd, (int)offset + 1);
+        DbParams.Add(cmd, count);
+        var raw = await cmd.ExecuteScalarAsync(ct);
+        return raw as byte[] ?? [];
+    }
+
     public async Task<Attachment?> GetByUuidAsync(Guid uuid, CancellationToken ct = default)
     {
         await using var conn = await db.OpenAsync(ct);

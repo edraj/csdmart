@@ -125,7 +125,18 @@ public static class ResponseHeadersMiddleware
 
                 // --- Security headers ---
                 headers["X-Content-Type-Options"] = "nosniff";
-                headers["X-Frame-Options"] = "DENY";
+                // DENY is the default, not a mandate: a handler that has already
+                // written its own value keeps it. /payload serves inline images,
+                // PDFs and video that the SPA embeds in a same-origin <iframe>,
+                // and DENY blocks <iframe>/<embed>/<object> as surely as it
+                // blocks a cross-origin frame — so that endpoint downgrades
+                // itself to SAMEORIGIN. This callback runs LAST (OnStarting is
+                // LIFO and this middleware is outermost), so without the guard it
+                // would overwrite the handler unconditionally. Anything that does
+                // not opt out still gets DENY, including every error path where
+                // Kestrel has cleared the headers.
+                if (!headers.ContainsKey("X-Frame-Options"))
+                    headers["X-Frame-Options"] = "DENY";
                 headers["Referrer-Policy"] = "strict-origin-when-cross-origin";
                 headers["Permissions-Policy"] = PermissionsPolicy;
                 // HSTS must only be sent over HTTPS (RFC 6797).
