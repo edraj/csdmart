@@ -34,9 +34,12 @@
   admin deactivations — which the cool-down deliberately refuses to undo,
   leaving every account the previous release auto-locked stuck for good. The
   server repairs them at startup, reactivating exactly the rows carrying the old
-  signature and logging a warning with the count; `dmart migrate` runs the same
-  repair if you would rather do it before taking traffic, and
-  `REPAIR_LEGACY_LOCKOUTS_ON_START=false` disables the startup pass. The one
+  signature and logging a warning with the count. The startup pass finishes
+  before the host begins listening, which matters: a locked-out user who retries
+  once past the cool-down has their counter cleared, and the row then no longer
+  matches the signature the repair looks for. `dmart migrate` runs the same
+  repair and `REPAIR_LEGACY_LOCKOUTS_ON_START=false` disables the startup pass —
+  but if you go that route, run migrate *before* starting the upgraded server. The one
   case the repair cannot get right is inherent to the data: an account you
   deliberately deactivated *before* upgrading that was also at the threshold
   looks identical to an auto-lock and will be reactivated — audit those.

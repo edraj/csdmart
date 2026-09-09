@@ -15,8 +15,8 @@ using Xunit;
 
 namespace Dmart.Tests.Integration;
 
-// The upgrade hazard the counter-only lockout creates, and the `dmart migrate`
-// step that clears it.
+// The upgrade hazard the counter-only lockout creates, and the startup step
+// that clears it.
 //
 // The old auto-lockout wrote BOTH attempt_count >= max AND is_active = false.
 // The new one writes only the counter, and treats is_active = false as "an
@@ -53,10 +53,15 @@ public sealed class LegacyLockoutBackfillTests : IClassFixture<DmartFactory>
             (await LoginAsync(shortname, password)).StatusCode.ShouldBe(HttpStatusCode.Unauthorized,
                 "and it stays that way — there is no self-recovery from here");
 
-            // Note what this also shows: once the counter has been cleared the
-            // row no longer carries the legacy signature, so the repair below
-            // can no longer recognise it. That is why it belongs to
-            // `dmart migrate` at upgrade time, before the users start retrying.
+            // And note the second-order effect, which is why the repair runs at
+            // startup rather than being left to the operator: the cool-down has
+            // just cleared this row's counter, so it no longer carries the
+            // legacy signature and the repair can no longer recognise it. One
+            // retry is enough to make an account unrepairable. The startup pass
+            // completes before the host begins listening, so no request can
+            // land in front of it — but an operator who sets
+            // RepairLegacyLockoutsOnStart=false, serves traffic, and only then
+            // runs `dmart migrate` will have burned exactly these rows.
         }
         finally { await DeleteAsync(shortname); }
     }
@@ -154,7 +159,9 @@ public sealed class LegacyLockoutBackfillTests : IClassFixture<DmartFactory>
         // The repair's real trigger. `dmart migrate` can run it too, but an
         // operator who upgrades and restarts without running migrate must not
         // be left with a database full of permanently locked-out accounts —
-        // which is why this is a hosted service and not a manual step.
+        // and, per the test above, a single login retry destroys the evidence
+        // the repair matches on. Hence a hosted service, which runs before the
+        // host starts listening, rather than a manual step.
         // DmartFactory pins RepairLegacyLockoutsOnStart off for every other
         // test (see the comment there); this one turns it back on.
         var (shortname, password) = await SeedAsync();

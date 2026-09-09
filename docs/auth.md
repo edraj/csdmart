@@ -317,9 +317,15 @@ threshold looks exactly like an auto-lock, and is reactivated. The old release
 wrote both columns for a lock, so nothing in the row distinguishes them. Audit
 `is_active` on accounts you deliberately disabled before upgrading.
 
-Set `REPAIR_LEGACY_LOCKOUTS_ON_START=false` to keep startup strictly read-only;
-`dmart migrate` runs the same repair and prints the count, so an operator who
-wants to see it before the server takes traffic can.
+Set `REPAIR_LEGACY_LOCKOUTS_ON_START=false` to keep startup strictly read-only.
+`dmart migrate` runs the same repair and prints the count — but **run it before
+starting the upgraded server, not after**. A locked-out user who retries once
+past the cool-down has their counter cleared by `RejectIfAttemptLockedAsync`;
+the row keeps `is_active = false` but drops below the threshold, stops matching
+the signature, and that account can no longer be repaired by anything. The
+startup pass completes before the host begins listening, so with it enabled
+nothing can retry in front of it — which is the reason it is a startup step and
+not a manual one.
 
 ## OAuth providers (Google / Facebook / Apple)
 

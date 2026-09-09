@@ -14,11 +14,11 @@ namespace Dmart.DataAdapters.Sql;
 // USER_ACCOUNT_LOCKED, forever, on every future attempt. The account is locked
 // out permanently and no login-side path can recover it.
 //
-// The repair is exact rather than heuristic: `is_active = false AND
-// attempt_count >= MAX_FAILED_LOGIN_ATTEMPTS` is the old lock's signature and
-// essentially nothing else's. An admin deactivation cannot produce it, because
-// RejectIfNotActive runs BEFORE the credential check in LoginAsync — a
-// deactivated account never reaches the counter to raise it.
+// The repair matches the old lock's signature: `is_active = false AND
+// attempt_count >= MAX_FAILED_LOGIN_ATTEMPTS`. Deactivating an ACTIVE account
+// cannot produce that pair, because RejectIfNotActive runs before the credential
+// check in LoginAsync — a deactivated account never reaches the counter to raise
+// it. (Deactivating an already-locked one can; see the caveat at the bottom.)
 //
 // Safe to run at boot, which is where it runs (LegacyLockoutRepair), because
 // no current code path can produce that pair: the managed user update clears
@@ -31,11 +31,21 @@ namespace Dmart.DataAdapters.Sql;
 // keep startup read-only (RepairLegacyLockoutsOnStart=false) or want to see the
 // count before the server accepts traffic.
 //
-// The one case it cannot get right is inherent to the data, not to the timing:
-// an account that a pre-upgrade admin deactivated AND that was already at the
-// threshold is indistinguishable from an auto-lock, and gets reactivated. The
-// old release wrote both columns for a lock, so nothing in the row says which
-// happened.
+// The one case it cannot get right is inherent to the data, not to the timing.
+// The old release deactivated an account when it locked it, so an admin who
+// looked at one of those and decided "this one stays off" left a row identical
+// to the ones nobody ever looked at — same two columns, and nothing recording
+// who set the flag or why. Those get reactivated. The alternative is to repair
+// nothing and strand every genuinely auto-locked user, which is both worse and
+// far more common; the startup log names the count so an operator can audit.
+//
+// Timing matters in the other direction, though, and it is why this runs at
+// startup. A locked-out user who retries once past the cool-down has their
+// counter cleared by RejectIfAttemptLockedAsync — the row keeps is_active=false
+// but drops below the threshold, so it stops matching and the account becomes
+// unrepairable. Hosted services complete before the host begins listening, so
+// nothing can retry in front of the repair. An operator who disables it and
+// serves traffic before running `dmart migrate` loses exactly those rows.
 internal static class LegacyLockoutBackfill
 {
     // Returns the number of accounts reactivated. Idempotent in practice: the
