@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## v1.5.6 — 2026-09-09
 
 ### Security
 
@@ -130,6 +130,49 @@
 
   The read still collapses duplicates (`SELECT DISTINCT`) for rows written
   before any of this.
+
+- **A payload URL pasted into a browser downloaded instead of rendering.**
+  Images, PDFs, audio, video and plain text now come back with
+  `Content-Disposition: inline`; `?download=1` (or `=true`) forces a save for
+  callers that want one. `text/html` and `image/svg+xml` deliberately stay
+  attachments — served inline they are documents that execute script on the
+  API's own origin, and the CSP only attaches to HTML responses, so an SVG
+  would carry no policy at all.
+
+  Three things had to change for the inline path to actually work:
+
+  - **`X-Frame-Options` on a payload response is now `SAMEORIGIN`** rather than
+    the site-wide `DENY`. XFO blocks `<iframe>`, `<embed>` and `<object>` as surely as
+    a cross-origin frame, so `DENY` stopped the in-app PDF viewers from
+    rendering anything. Every other response keeps `DENY`; cross-origin framing
+    of a payload is still refused.
+  - **Audio and video are labelled by extension.** One stored `audio` value
+    covers mp3/wav/ogg and one `video` covers mp4/webm/mov, so every clip used
+    to be announced as `audio/mpeg` or `video/mp4` — harmless while it
+    downloaded, fatal once a browser is asked to decode it.
+  - **An upload the server cannot identify is stored as `binary`, not `json`.**
+    The old fallback made a `.docx` or `.zip` come back as `application/json`
+    with no disposition at all, dumping binary into the tab, and the MCP
+    download tool label it the same way. Existing rows are untouched and still
+    serve correctly; the new `binary` content type has no Python counterpart.
+
+  Range requests are served from the database a slice at a time instead of
+  materialising the whole blob, so seeking within a video no longer re-reads
+  (and re-allocates) the entire attachment per request, and a `?download=1` can
+  now be resumed.
+
+- **The admin UI pointed at a hardcoded `localhost`.** The generated
+  `config.json` pinned `backend` to a literal host, which is only ever right for
+  a browser on the same machine as the server — reach the container on a LAN
+  address, a different published port, or through a reverse proxy and every API
+  call went somewhere the browser could not resolve. An empty `backend` now
+  means "same origin as the page", resolved in the browser at use time.
+
+  **Operators:** an existing `config.json` is not rewritten, so a deployment
+  that deliberately points the SPA at a separate API host keeps working. New
+  installs get the same-origin default. The retired `websocket` field is no
+  longer written — the WebSocket URL has been derived from `backend` for some
+  time.
 
 ## v1.5.5 — 2026-09-08
 
