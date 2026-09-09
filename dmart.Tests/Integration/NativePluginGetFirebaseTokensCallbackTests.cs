@@ -99,6 +99,60 @@ public sealed class NativePluginGetFirebaseTokensCallbackTests : IClassFixture<D
         }
     }
 
+    // ----- invalidate_firebase_tokens: the return leg of a push -----
+
+    [Fact]
+    public void EmitInvalidateFirebaseTokens_EmptyInput_Is_A_NoOp_Without_DB()
+    {
+        // Short-circuits before Services is read, same as the empty-shortname
+        // branch above. An empty reject list is the normal case — most sends
+        // have nothing to clean up — so it must not cost a scope and a query.
+        NativePluginCallbacks.EmitInvalidateFirebaseTokens(null, logger: null)
+            .ShouldBe("""{"cleared":0}""");
+        NativePluginCallbacks.EmitInvalidateFirebaseTokens("[]", logger: null)
+            .ShouldBe("""{"cleared":0}""");
+    }
+
+    [Fact]
+    public void EmitInvalidateFirebaseTokens_Malformed_Json_Collapses_To_Zero()
+    {
+        // Same deliberate deviation from the JSON error envelope as
+        // EmitGetSessionFirebaseTokens: the caller is mid-push and has nothing
+        // useful to do with the distinction.
+        NativePluginCallbacks.EmitInvalidateFirebaseTokens("{not json", logger: null)
+            .ShouldBe("""{"cleared":0}""");
+    }
+
+    [FactIfPg]
+    public async Task EmitInvalidateFirebaseTokens_Clears_Only_The_Rejected_Tokens()
+    {
+        var sp = _factory.Services;
+        _factory.CreateClient();
+        var users = sp.GetRequiredService<UserRepository>();
+        var sn = "fcm_cb_inval_" + Guid.NewGuid().ToString("N")[..8];
+        await SeedUserAsync(users, sn);
+
+        try
+        {
+            await users.CreateSessionAsync(sn, token: "tok-dead", firebaseToken: "fcm-dead");
+            await users.CreateSessionAsync(sn, token: "tok-live", firebaseToken: "fcm-live");
+
+            // What a plugin does with the UNREGISTERED entries FCM handed back.
+            var json = NativePluginCallbacks.EmitInvalidateFirebaseTokens(
+                """["fcm-dead"]""", logger: null);
+
+            using var doc = JsonDocument.Parse(json);
+            doc.RootElement.GetProperty("cleared").GetInt32().ShouldBe(1);
+
+            var left = await users.GetSessionFirebaseTokensAsync(sn);
+            left.ShouldBe(new List<string> { "fcm-live" });
+        }
+        finally
+        {
+            await TryDeleteAsync(users, sn);
+        }
+    }
+
     // ----- helpers -----
 
     private static async Task SeedUserAsync(UserRepository users, string sn)

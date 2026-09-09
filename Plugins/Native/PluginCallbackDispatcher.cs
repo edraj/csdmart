@@ -129,6 +129,17 @@ internal static class PluginCallbackDispatcher
                         Str(args, "shortname") ?? "", ttl, logger));
                 }
 
+                case "invalidate_firebase_tokens":
+                {
+                    // `tokens` is a JSON array of the strings FCM rejected —
+                    // spliced through as raw JSON so the dispatcher does not
+                    // re-serialize what the plugin already encoded.
+                    var raw = args.TryGetProperty("tokens", out var tk)
+                              && tk.ValueKind == JsonValueKind.Array
+                        ? tk.GetRawText() : null;
+                    return Ok(id, NativePluginCallbacks.EmitInvalidateFirebaseTokens(raw, logger));
+                }
+
                 case "get_media_attachment":
                 {
                     // Base64 rather than a side channel: it keeps one framing

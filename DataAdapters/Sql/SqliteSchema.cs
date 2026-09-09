@@ -411,7 +411,9 @@ public static class SqliteSchema
         shortname        TEXT NOT NULL,
         token            TEXT NOT NULL,
         timestamp        TEXT NOT NULL DEFAULT {NowExpr},
-        firebase_token   TEXT
+        firebase_token   TEXT,
+        -- See the PostgreSQL schema for why a session row carries a device id.
+        device_id        TEXT
     );
 
     -- ============================================================
@@ -578,6 +580,7 @@ public static class SqliteSchema
     // created before the change never gets it.
     public static readonly IReadOnlyList<(string Table, string Column, string Definition)> ExpectedColumns = new[]
     {
+        ("sessions", "device_id", "TEXT"),
         ("users", "device_id", "TEXT"),
         ("users", "google_id", "TEXT"),
         ("users", "facebook_id", "TEXT"),

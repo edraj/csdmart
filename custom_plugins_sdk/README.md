@@ -235,7 +235,17 @@ understand me" (rebuild needed) from "the save didn't work" (retry or report).
 | `query` | the query document itself | a standard response envelope |
 | `log` | `level` (0–6), `category` (optional), `message` | `{"code":0}` |
 | `get_session_firebase_tokens` | `shortname`, `inactivity_ttl_seconds` (optional) | `["token", …]` |
+| `invalidate_firebase_tokens` | `tokens` (array of strings) | `{"cleared":N}` |
 | `get_media_attachment` | `space`, `subpath`, `shortname` | `{"media_b64":…,"length":N}`, or `{"media":null}` on a miss |
+
+`invalidate_firebase_tokens` is the return leg of a push: FCM's send response
+names the tokens it rejected (`UNREGISTERED` for one it has retired,
+`INVALID_ARGUMENT` for a malformed one), and feeding those back clears them off
+the session rows so the next `get_session_firebase_tokens` does not hand them to
+you again. It is not scoped to a user — a token FCM has retired is dead for every
+account that shares the device. Call it after every send whose response carries
+rejects; skipping it leaves dead tokens in place until the session ages out,
+which for a long-lived session is never.
 
 `get_media_attachment` base64-encodes the blob, so it costs about 33% more
 bytes on the wire than the file itself. A miss is `{"media":null}` rather than
