@@ -166,9 +166,14 @@ runs:
         subject-path: ${{ steps.resolve.outputs.list }}
         github-token: ${{ inputs.github-token }}
 
+    # actions/attest, not actions/attest-sbom: the latter is deprecated and now
+    # only a wrapper over this. The inputs are unchanged — `sbom-path` is a
+    # first-class input here and infers the predicate type from the document
+    # (SPDX or CycloneDX), so no predicate-type is needed and the attestation
+    # this emits is the same one as before.
     - name: SBOM attestation
       if: inputs.sbom != ''
-      uses: actions/attest-sbom@c604332985a26aa8cf1bdc465b92731239ec6b9e # v4.1.0
+      uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6 # v4.2.2
       with:
         subject-path: ${{ steps.resolve.outputs.list }}
         sbom-path: ${{ inputs.sbom }}
