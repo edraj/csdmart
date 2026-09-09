@@ -4,6 +4,7 @@
   import { onMount } from "svelte";
   import { Dmart } from "@edraj/tsdmart";
   import { website } from "@/config";
+  import { resolveAxiosBaseUrl } from "@shared/backend-url";
   import axios from "axios";
   import { get } from "svelte/store";
   import { initGlobalWebSocket } from "@/stores/websocket";
@@ -18,9 +19,12 @@
   }
 
   const dmartAxios = axios.create({
-    baseURL: website.backend,
+    // Not `website.backend` directly: it is blank for a same-origin deployment,
+    // and axios reads a blank base as "resolve against the document URL" — which
+    // under <base href="/cat/"> sends `user/login` to /cat/<current route>/user/login.
+    baseURL: resolveAxiosBaseUrl(website.backend, window.location.origin),
     withCredentials: true,
-    timeout: 30000,
+    timeout: website.backend_timeout ?? 30000,
   });
 
   // Add request interceptor to inject auth token

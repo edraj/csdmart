@@ -1316,7 +1316,12 @@ switch (subcommand)
         else
             Console.WriteLine($"  {configEnvPath} already exists");
 
-        // 2. config.json — CXB frontend configuration
+        // 2. config.json — frontend configuration, served to both cxb and catalog.
+        //    `backend` empty means "same origin as the page", which is what a
+        //    dmart-served SPA wants and what a hardcoded host cannot express —
+        //    the right value is whatever address the browser arrived on. The
+        //    retired `websocket` field is not written: the WS URL is derived
+        //    from `backend` (the endpoint sits at /ws beside the API).
         var configJsonPath = Path.Combine(dmartHome, "config.json");
         if (!File.Exists(configJsonPath))
         {
@@ -1329,8 +1334,8 @@ switch (subcommand)
                   "description": "dmart unified data platform",
                   "default_language": "en",
                   "languages": { "ar": "العربية", "en": "English" },
-                  "backend": "http://localhost:5099",
-                  "websocket": "ws://localhost:5099/ws"
+                  "backend": "",
+                  "backend_timeout": 30000
                 }
 
                 """.Replace("                ", ""));

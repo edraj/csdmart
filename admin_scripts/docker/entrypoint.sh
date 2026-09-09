@@ -49,6 +49,19 @@ if [ ! -f "$MARKER" ]; then
   echo "=== First run: initializing ==="
 
   dmart init
+  # Served to both SPAs (cxb at /cxb, catalog at /cat) — see DmartSettings.CatUrl.
+  #
+  # `backend` is EMPTY on purpose: it means "same origin as the page", which the
+  # frontends resolve at use time. A literal host cannot be right here, because
+  # the correct value is whatever address the user reached the container on —
+  # localhost on a published port, a LAN address, a reverse-proxied domain. The
+  # previous "http://localhost:8000" worked only for a browser on the Docker
+  # host itself and broke every other access with CORS errors or refused
+  # connections.
+  #
+  # `websocket` is gone: the field was retired when the WS URL started being
+  # derived from `backend` (the endpoint always sits at /ws beside the API), and
+  # nothing has read it since.
   cat > "$CONFIG_DIR/config.json" << 'CONF'
 {
   "title": "DMART Unified Data Platform",
@@ -58,8 +71,8 @@ if [ ! -f "$MARKER" ]; then
   "description": "dmart unified data platform",
   "default_language": "en",
   "languages": { "ar": "العربية", "en": "English" },
-  "backend": "http://localhost:8000",
-  "websocket": "ws://localhost:8000/ws"
+  "backend": "",
+  "backend_timeout": 30000
 }
 CONF
 

@@ -30,6 +30,7 @@
 import axios, { type AxiosInstance } from "axios";
 import { Dmart } from "@edraj/tsdmart";
 import { website } from "@/config";
+import { resolveAxiosBaseUrl } from "@shared/backend-url";
 import { Level } from "@/utils/toast";
 import { debouncedShowToast } from "@/utils/debounce";
 
@@ -40,7 +41,10 @@ export function ensureDmartAxios(): AxiosInstance {
   if (instance) return instance;
 
   const dmartAxios = axios.create({
-    baseURL: website.backend,
+    // Not `website.backend` directly: it is blank for a same-origin deployment,
+    // and axios reads a blank base as "resolve against the document URL" — which
+    // under <base href="/cxb/"> sends `user/login` to /cxb/<current route>/user/login.
+    baseURL: resolveAxiosBaseUrl(website.backend, window.location.origin),
     withCredentials: true,
     timeout: website.backend_timeout,
   });

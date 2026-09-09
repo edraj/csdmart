@@ -17,6 +17,7 @@ import { getCurrentScope } from "@/stores/user";
 import { checkAccess } from "@/stores/permissions";
 import { MANAGEMENT_SPACE, APPLICATIONS_SPACE } from "@/lib/constants";
 import { website } from "@/config";
+import { resolveBackendBase } from "@shared/backend-url";
 
 export async function getAllUsers(
     limit: number = 100,
@@ -284,7 +285,11 @@ export async function setDefaultUserRole(
  */
 export async function fetchOnlineUsers(): Promise<Set<string>> {
     try {
-        const baseUrl = website.backend.replace(/\/+$/, "");
+        // Same resolution as the axios instance — this one bypasses axios, so
+        // without it a same-origin deployment (blank backend) built "/ws-info"
+        // off an empty base while an absent key threw on .replace of undefined.
+        const baseUrl = resolveBackendBase(website.backend,
+            typeof window !== "undefined" ? window.location.origin : "");
         const token = localStorage.getItem("authToken");
         const headers: Record<string, string> = {};
         if (token) {

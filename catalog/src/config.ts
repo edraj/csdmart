@@ -31,7 +31,11 @@ const defaultConfig: WebsiteConfig = {
   description: "dmart unified data platform",
   default_language: "ar",
   languages: { ar: "العربية", en: "English" },
-  backend: "http://localhost:8282/dmart",
+  // Same-origin. Resolved against the page's origin at use time (see
+  // @shared/backend-url) — a hardcoded host is wrong for every deployment where
+  // dmart serves this SPA itself, which is all of them by default, and the
+  // right value depends on how the user reached the page.
+  backend: "",
   backend_timeout: 30000,
   delay_total_count: false,
   enable_websocket: true,

@@ -6,6 +6,7 @@
  */
 
 import { configReady, website } from "@/config";
+import { resolveBackendBase } from "@shared/backend-url";
 
 export type WebSocketMessage = {
   type: string;
@@ -128,8 +129,8 @@ export class WebSocketService {
         // When backend is empty (same-origin deployment, e.g. SPA embedded in
         // dmart), fall back to the page's origin instead of crashing on `new
         // URL("")`.
-        const backendBase =
-          (website.backend?.trim() || (typeof window !== "undefined" ? window.location.origin : "")).replace(/\/+$/, "");
+        const backendBase = resolveBackendBase(website.backend,
+          typeof window !== "undefined" ? window.location.origin : "");
         if (!backendBase) {
           this.updateStatus("disconnected");
           resolve(false);
