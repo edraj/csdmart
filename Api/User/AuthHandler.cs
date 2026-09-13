@@ -1,6 +1,9 @@
 using Dmart.Config;
 using Dmart.Models.Api;
+using Dmart.Models.Core;
+using Dmart.Models.Enums;
 using Dmart.Models.Json;
+using Dmart.Plugins;
 using Dmart.Services;
 using Microsoft.Extensions.Options;
 
@@ -13,6 +16,7 @@ public static class AuthHandler
         g.MapPost("/login", async Task<IResult> (
             UserLoginRequest req,
             UserService svc,
+            PluginManager plugins,
             HttpContext http,
             IOptions<DmartSettings> settings,
             CancellationToken ct) =>
@@ -43,6 +47,21 @@ public static class AuthHandler
             // by the service is discarded here for parity; MCP OAuth clients
             // that need refresh go through /oauth/token instead.
             var (access, _, user, created) = result.Value;
+
+            // Implicit registration bypasses EntryService/CreateAsync's hooks, so fire
+            // Create here too (mirrors RegistrationHandler.cs) for personal folders etc.
+            if (created)
+            {
+                await plugins.AfterActionAsync(new Event
+                {
+                    SpaceName = settings.Value.ManagementSpace,
+                    Subpath = "/users",
+                    Shortname = user.Shortname,
+                    ActionType = ActionType.Create,
+                    ResourceType = ResourceType.User,
+                    UserShortname = user.Shortname,
+                }, ct);
+            }
 
             // dmart sets an httponly cookie called auth_token in addition to returning
             // the token in the body. Browser clients rely on the cookie.
