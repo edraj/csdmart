@@ -244,16 +244,15 @@ public class CsvRoundTripTests : IClassFixture<DmartFactory>
                 "\",\"type\":\"subpath\",\"subpath\":\"items\",\"filter_schema_names\":[],\"limit\":50}";
             var queryResp = await PostJson(client, "/managed/query", queryBody);
             queryResp.Status.ShouldBe(Status.Success);
-            var autoNames = queryResp.Records!
-                .Select(r => r.Shortname)
-                .Where(s => s.StartsWith("row-", StringComparison.Ordinal))
-                .ToList();
+            // ImportAsync builds Guid.NewGuid().ToString("N")[..8] — same convention as
+            // RequestHandler.ResolveAutoShortname on the /request path — since the
+            // shortname regex rejects "-", so "Plum" and "Apricot" are the only
+            // fixed values to match on; every shortname here is auto-generated.
+            var autoNames = queryResp.Records!.Select(r => r.Shortname).ToList();
             autoNames.Count.ShouldBe(2);
-            // ImportAsync builds `row-{Guid.NewGuid():N}`.Substring(0, 12) →
-            // 4-char "row-" prefix + 8 hex chars from the start of the guid = 12 total.
             foreach (var n in autoNames)
-                System.Text.RegularExpressions.Regex.IsMatch(n, "^row-[0-9a-f]{8}$")
-                    .ShouldBeTrue($"auto-generated shortname '{n}' must match row-<8hex>");
+                System.Text.RegularExpressions.Regex.IsMatch(n, "^[0-9a-f]{8}$")
+                    .ShouldBeTrue($"auto-generated shortname '{n}' must match <8hex>");
             autoNames.Distinct().Count().ShouldBe(2, "auto-generated shortnames must be unique");
         }
         finally
@@ -626,6 +625,103 @@ public class CsvRoundTripTests : IClassFixture<DmartFactory>
             var row0 = ((JsonElement)importResp.Attributes!["failed"])[0];
             row0.GetProperty("key").GetString().ShouldBe("price: usd");
             row0.GetProperty("value").GetString().ShouldBe("999");
+        }
+        finally
+        {
+            await CleanupAsync(client, space);
+        }
+    }
+
+    // A schema property declared number/integer/boolean coerces its CSV cell to
+    // that JSON kind. Declared-string and undeclared columns stay plain text.
+    [FactIfPg]
+    public async Task Csv_Import_SchemaAware_CoercesDeclaredNumberIntegerBooleanColumns()
+    {
+        const string space = "itest_csv_typed";
+        var (client, _, _, _) = await _factory.CreateLoggedInUserAsync();
+
+        try
+        {
+            await CleanupAsync(client, space);
+            await SeedSpaceAsync(client, space);
+            await UploadSchemaAsync(client,
+                shortname: "typed",
+                schemaJson: """
+                {"title":"typed","type":"object","additionalProperties":true,
+                 "properties":{"name":{"type":"string"},"price":{"type":"number"},
+                               "qty":{"type":"integer"},"in_stock":{"type":"boolean"}}}
+                """,
+                space: space);
+
+            var csv = "shortname,name,price,qty,in_stock,note\r\n" +
+                      "T1,Widget,19.99,5,true,plain text\r\n";
+            var importResp = await UploadCsvAsync(client,
+                resourceType: "content", space: space, subpath: "items", schema: "typed",
+                csvBytes: Encoding.UTF8.GetBytes(csv));
+
+            importResp.Status.ShouldBe(Status.Success);
+            ExtractInt(importResp.Attributes!["inserted"]).ShouldBe(1);
+            ExtractInt(importResp.Attributes!["failed_count"]).ShouldBe(0);
+
+            var queryResp = await PostJson(client, "/managed/query",
+                "{\"space_name\":\"" + space + "\",\"type\":\"subpath\"," +
+                "\"subpath\":\"items\",\"filter_schema_names\":[],\"retrieve_json_payload\":true,\"limit\":50}");
+            queryResp.Status.ShouldBe(Status.Success);
+
+            var body = GetPayloadBody(queryResp.Records!.First(r => r.Shortname == "T1"));
+            body.GetProperty("price").ValueKind.ShouldBe(JsonValueKind.Number);
+            body.GetProperty("price").GetDouble().ShouldBe(19.99);
+            body.GetProperty("qty").ValueKind.ShouldBe(JsonValueKind.Number);
+            body.GetProperty("qty").GetInt32().ShouldBe(5);
+            body.GetProperty("in_stock").ValueKind.ShouldBe(JsonValueKind.True);
+            body.GetProperty("name").ValueKind.ShouldBe(JsonValueKind.String);
+            body.GetProperty("name").GetString().ShouldBe("Widget");
+            body.GetProperty("note").ValueKind.ShouldBe(JsonValueKind.String);
+        }
+        finally
+        {
+            await CleanupAsync(client, space);
+        }
+    }
+
+    // A nested schema property (e.g. stats.views) coerces its type too, matched
+    // against a flat dotted CSV header of the same name.
+    [FactIfPg]
+    public async Task Csv_Import_SchemaAware_NestedPropertyType_CoercedViaDotJoinedHeader()
+    {
+        const string space = "itest_csv_nested_typed";
+        var (client, _, _, _) = await _factory.CreateLoggedInUserAsync();
+
+        try
+        {
+            await CleanupAsync(client, space);
+            await SeedSpaceAsync(client, space);
+            await UploadSchemaAsync(client,
+                shortname: "nested",
+                schemaJson: """
+                {"title":"nested","type":"object","additionalProperties":true,
+                 "properties":{"stats":{"type":"object","properties":{"views":{"type":"integer"}}}}}
+                """,
+                space: space);
+
+            var csv = "shortname,stats.views\r\nN1,42\r\n";
+            var importResp = await UploadCsvAsync(client,
+                resourceType: "content", space: space, subpath: "items", schema: "nested",
+                csvBytes: Encoding.UTF8.GetBytes(csv));
+
+            importResp.Status.ShouldBe(Status.Success);
+            ExtractInt(importResp.Attributes!["inserted"]).ShouldBe(1);
+
+            var queryResp = await PostJson(client, "/managed/query",
+                "{\"space_name\":\"" + space + "\",\"type\":\"subpath\"," +
+                "\"subpath\":\"items\",\"filter_schema_names\":[],\"retrieve_json_payload\":true,\"limit\":50}");
+            queryResp.Status.ShouldBe(Status.Success);
+
+            var body = GetPayloadBody(queryResp.Records!.First(r => r.Shortname == "N1"));
+            // Import keeps headers flat — the body key is literally "stats.views",
+            // not a nested object — but its type still comes from the schema.
+            body.GetProperty("stats.views").ValueKind.ShouldBe(JsonValueKind.Number);
+            body.GetProperty("stats.views").GetInt32().ShouldBe(42);
         }
         finally
         {

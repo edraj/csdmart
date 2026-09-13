@@ -15,7 +15,7 @@ namespace Dmart.Services;
 //     ["resource_type", "shortname", "subpath", "uuid", ...flattened attributes].
 //   * Import: parse a CSV file, build a Record per row using the column headers as
 //     attribute keys, schema-validate each, and create via EntryService.
-public sealed class CsvService(QueryService queries, EntryService entries)
+public sealed class CsvService(QueryService queries, EntryService entries, SchemaValidator schemaValidator)
 {
     public async Task<Stream> ExportAsync(Query q, string? actor, CancellationToken ct = default)
     {
@@ -75,6 +75,19 @@ public sealed class CsvService(QueryService queries, EntryService entries)
             return Response.Fail(InternalErrorCode.MISSING_DATA, "csv has no header row", ErrorTypes.Request);
 
         var headers = ParseCsvLine(headerLine);
+
+        // Schema-driven coercion for the flat scalar columns (number/integer/
+        // boolean): a CSV cell is always text, but the schema may require e.g.
+        // discount_value to be a JSON number, so a plain "25000" cell would
+        // otherwise fail SchemaValidator's strict type check. Built once per
+        // import, keyed by the schema's own property names (matching the CSV
+        // header, case-insensitively).
+        var propertyTypes = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+        if (!string.IsNullOrEmpty(schemaShortname))
+        {
+            var schemaDoc = await schemaValidator.GetSchemaDocumentAsync(spaceName, schemaShortname, ct);
+            if (schemaDoc is not null) CollectScalarPropertyTypes(schemaDoc.Value, "", propertyTypes);
+        }
         // Resolve the shortname column index once — headers don't change per row.
         // The match is OrdinalIgnoreCase by design: `Shortname`, `SHORTNAME`, and
         // `shortname` are all accepted as the shortname column. Python's
@@ -112,14 +125,30 @@ public sealed class CsvService(QueryService queries, EntryService entries)
             // import_resources_from_csv_handler (api/managed/utils.py:1553-1557).
             var rowDict = new Dictionary<string, object>();
             for (var i = 0; i < headers.Count; i++)
-                rowDict[headers[i]] = ParseCellValue(fields[i]);
+            {
+                var declaredType = propertyTypes.TryGetValue(headers[i], out var t) ? t : null;
+                rowDict[headers[i]] = ParseCellValue(fields[i], declaredType);
+            }
 
             // shortname column is required (or auto-generate). Read from the raw
             // fields (not rowDict) so a JSON-shaped shortname cell doesn't get lifted
             // into a JsonElement by ParseCellValue — the shortname is always a string.
+            // "auto" (case-insensitive) is treated the same as an empty cell — mirrors
+            // RequestHandler's IsAutoShortname sentinel on the /request path, so a CSV
+            // built by hand (or exported from a UI that offers the same "auto" convention)
+            // doesn't collide every row on the literal text "auto".
+            //
+            // Matches RequestHandler.ResolveAutoShortname: one UUID, first 8 hex chars as
+            // the shortname, same UUID reused as the entry's Uuid below. The shortname
+            // regex (^[a-zA-Zء-ي0-9٠-٩ً-ٟ_]{1,64}$) has no `-`, so
+            // the value can't contain one either.
             var shortname = shortnameIdx >= 0 && shortnameIdx < fields.Count ? fields[shortnameIdx] : "";
-            if (string.IsNullOrEmpty(shortname))
-                shortname = $"row-{Guid.NewGuid():N}".Substring(0, 12);
+            Guid? autoUuid = null;
+            if (string.IsNullOrEmpty(shortname) || string.Equals(shortname, "auto", StringComparison.OrdinalIgnoreCase))
+            {
+                autoUuid = Guid.NewGuid();
+                shortname = autoUuid.Value.ToString("N")[..8];
+            }
 
             // Build the entry's payload.body from the remaining columns.
             var bodyDict = rowDict
@@ -159,7 +188,7 @@ public sealed class CsvService(QueryService queries, EntryService entries)
 
             var entry = new Entry
             {
-                Uuid = Guid.NewGuid().ToString(),
+                Uuid = (autoUuid ?? Guid.NewGuid()).ToString(),
                 Shortname = shortname,
                 SpaceName = spaceName,
                 Subpath = subpath,
@@ -354,24 +383,61 @@ public sealed class CsvService(QueryService queries, EntryService entries)
 
     // Mirrors the always-on heuristic in dmart Python's import_resources_from_csv_handler
     // (api/managed/utils.py:1553-1557): if the stripped cell starts with `[` or `{`,
-    // try to parse it as JSON; on failure, fall back to the raw string. Schema-driven
-    // coercion (Python's data_types_mapper for integer/number/boolean) is deliberately
-    // not replicated here — only the array/object case the heuristic actually covers.
-    private static object ParseCellValue(string raw)
+    // try to parse it as JSON; on failure, fall back to the raw string. When the
+    // schema declares the column number/integer/boolean, also try parsing the whole
+    // cell as JSON of that kind — mirrors Python's data_types_mapper coercion, scoped
+    // to the scalar types a CSV cell can unambiguously represent.
+    private static object ParseCellValue(string raw, string? declaredType = null)
     {
         if (string.IsNullOrEmpty(raw)) return raw;
         var stripped = raw.Trim();
         if (stripped.Length == 0) return raw;
         var first = stripped[0];
-        if (first != '[' && first != '{') return raw;
+        var looksLikeJson = first is '[' or '{';
+        var looksLikeTypedScalar = declaredType is "number" or "integer" or "boolean";
+        if (!looksLikeJson && !looksLikeTypedScalar) return raw;
         try
         {
             using var doc = JsonDocument.Parse(stripped);
-            return doc.RootElement.Clone();
+            var kind = doc.RootElement.ValueKind;
+            if (looksLikeJson && kind is JsonValueKind.Array or JsonValueKind.Object)
+                return doc.RootElement.Clone();
+            if (declaredType is "number" or "integer" && kind is JsonValueKind.Number)
+                return doc.RootElement.Clone();
+            if (declaredType is "boolean" && kind is JsonValueKind.True or JsonValueKind.False)
+                return doc.RootElement.Clone();
         }
         catch (JsonException)
         {
-            return raw;
+            // fall through to raw
+        }
+        return raw;
+    }
+
+    // Walks a JSON Schema document's "properties" (recursing into nested objects)
+    // collecting dot-joined paths whose declared type is number/integer/boolean —
+    // the only types a CSV cell's text needs help coercing into. string/object/array
+    // columns need no help: strings round-trip as-is, and object/array cells are
+    // already JSON blobs handled by ParseCellValue's `[`/`{` heuristic.
+    private static void CollectScalarPropertyTypes(JsonElement schema, string prefix, Dictionary<string, string> types)
+    {
+        if (!schema.TryGetProperty("properties", out var props) || props.ValueKind != JsonValueKind.Object)
+            return;
+        foreach (var prop in props.EnumerateObject())
+        {
+            var key = string.IsNullOrEmpty(prefix) ? prop.Name : $"{prefix}.{prop.Name}";
+            var type = prop.Value.TryGetProperty("type", out var typeEl)
+                ? typeEl.ValueKind switch
+                {
+                    JsonValueKind.String => typeEl.GetString(),
+                    JsonValueKind.Array => typeEl.EnumerateArray()
+                        .Select(t => t.GetString())
+                        .FirstOrDefault(t => t is "number" or "integer" or "boolean"),
+                    _ => null,
+                }
+                : null;
+            if (type is "number" or "integer" or "boolean") types[key] = type;
+            CollectScalarPropertyTypes(prop.Value, key, types);
         }
     }
 

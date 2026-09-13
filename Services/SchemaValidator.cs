@@ -242,20 +242,37 @@ public sealed class SchemaValidator(EntryRepository entries, ILogger<SchemaValid
             foreach (var d in r.Details) Collect(d, body, errors);
     }
 
+    /// <summary>
+    /// Returns the raw (uncompiled) JSON Schema document — for callers that need
+    /// to walk "properties"/"type" themselves (e.g. CsvService's import-time
+    /// type coercion) rather than evaluate an instance against it.
+    /// </summary>
+    public async Task<JsonElement?> GetSchemaDocumentAsync(string spaceName, string shortname, CancellationToken ct = default)
+    {
+        if (shortname == "folder_rendering") spaceName = "management";
+        var schemaEntry = await FindSchemaEntryAsync(spaceName, shortname, ct);
+        return schemaEntry?.Payload?.Body;
+    }
+
+    // dmart stores schemas as entries with resource_type='schema'. The actual
+    // JSON Schema document lives in payload.body (jsonb).
+    // We try a few canonical subpaths since dmart projects vary; the first hit wins.
+    private async Task<Entry?> FindSchemaEntryAsync(string spaceName, string shortname, CancellationToken ct)
+    {
+        foreach (var sub in new[] { "/schema", "/schemas", "/" })
+        {
+            var entry = await entries.GetAsync(spaceName, sub, shortname, ResourceType.Schema, ct);
+            if (entry is not null) return entry;
+        }
+        return null;
+    }
+
     private async Task<JsonSchema?> GetCompiledAsync(string spaceName, string shortname, CancellationToken ct)
     {
         var key = (spaceName, shortname);
         if (_cache.TryGetValue(key, out var cached)) return cached;
 
-        // dmart stores schemas as entries with resource_type='schema'. The actual
-        // JSON Schema document lives in payload.body (jsonb).
-        // We try a few canonical subpaths since dmart projects vary; the first hit wins.
-        Entry? schemaEntry = null;
-        foreach (var sub in new[] { "/schema", "/schemas", "/" })
-        {
-            schemaEntry = await entries.GetAsync(spaceName, sub, shortname, ResourceType.Schema, ct);
-            if (schemaEntry is not null) break;
-        }
+        var schemaEntry = await FindSchemaEntryAsync(spaceName, shortname, ct);
 
         if (schemaEntry?.Payload?.Body is null)
         {
