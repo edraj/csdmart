@@ -1,3 +1,4 @@
+using Dmart.Utils;
 using System.Collections.Generic;
 using System.Linq;
 using System.Text.Json;
@@ -51,8 +52,8 @@ public class QueryJoinTests : IClassFixture<DmartFactory>
                 OwnerShortname = "dmart",
                 IsActive = true,
                 Languages = new() { Language.En },
-                CreatedAt = DateTime.UtcNow,
-                UpdatedAt = DateTime.UtcNow,
+                CreatedAt = TimeUtils.Now(),
+                UpdatedAt = TimeUtils.Now(),
             });
 
             // Seed: two orders referencing two customers by shortname.
@@ -166,8 +167,8 @@ public class QueryJoinTests : IClassFixture<DmartFactory>
                 OwnerShortname = "dmart",
                 IsActive = true,
                 Languages = new() { Language.En },
-                CreatedAt = DateTime.UtcNow,
-                UpdatedAt = DateTime.UtcNow,
+                CreatedAt = TimeUtils.Now(),
+                UpdatedAt = TimeUtils.Now(),
             });
 
             // Orders: matched_order → customer_a (exists); unmatched_order
@@ -340,8 +341,8 @@ public class QueryJoinTests : IClassFixture<DmartFactory>
                 OwnerShortname = "dmart",
                 IsActive = true,
                 Languages = new() { Language.En },
-                CreatedAt = DateTime.UtcNow,
-                UpdatedAt = DateTime.UtcNow,
+                CreatedAt = TimeUtils.Now(),
+                UpdatedAt = TimeUtils.Now(),
             });
 
             await SeedEntryAsync(entries, spaceName, "/orders", "safe_order", ResourceType.Content,
@@ -420,8 +421,8 @@ public class QueryJoinTests : IClassFixture<DmartFactory>
                 OwnerShortname = "dmart",
                 IsActive = true,
                 Languages = new() { Language.En },
-                CreatedAt = DateTime.UtcNow,
-                UpdatedAt = DateTime.UtcNow,
+                CreatedAt = TimeUtils.Now(),
+                UpdatedAt = TimeUtils.Now(),
             });
 
             await SeedEntryAsync(entries, spaceName, "/orders", "ghost_order", ResourceType.Content,
@@ -468,8 +469,8 @@ public class QueryJoinTests : IClassFixture<DmartFactory>
                 OwnerShortname = "dmart",
                 IsActive = true,
                 Languages = new() { Language.En },
-                CreatedAt = DateTime.UtcNow,
-                UpdatedAt = DateTime.UtcNow,
+                CreatedAt = TimeUtils.Now(),
+                UpdatedAt = TimeUtils.Now(),
             });
 
             // Orders only — no customers seeded, so the sub-query returns
@@ -658,7 +659,7 @@ public class QueryJoinTests : IClassFixture<DmartFactory>
         var bob = $"bob_{Guid.NewGuid():N}"[..20];
         var role = $"role_{Guid.NewGuid():N}"[..20];
         var perm = $"perm_{Guid.NewGuid():N}"[..20];
-        var now = DateTime.UtcNow;
+        var now = TimeUtils.Now();
         try
         {
             // Space registered under management (the limited-user-access pattern).
@@ -874,8 +875,8 @@ public class QueryJoinTests : IClassFixture<DmartFactory>
             OwnerShortname = "dmart",
             IsActive = true,
             Languages = new() { Language.En },
-            CreatedAt = DateTime.UtcNow,
-            UpdatedAt = DateTime.UtcNow,
+            CreatedAt = TimeUtils.Now(),
+            UpdatedAt = TimeUtils.Now(),
         });
 
     // Build + run an inner join from base subpath → right (space, subpath) with
@@ -926,8 +927,8 @@ public class QueryJoinTests : IClassFixture<DmartFactory>
             OwnerShortname = "dmart",
             IsActive = true,
             Languages = new() { Language.En },
-            CreatedAt = DateTime.UtcNow,
-            UpdatedAt = DateTime.UtcNow,
+            CreatedAt = TimeUtils.Now(),
+            UpdatedAt = TimeUtils.Now(),
         });
 
         for (var i = 0; i < 10; i++)
@@ -1015,8 +1016,8 @@ public class QueryJoinTests : IClassFixture<DmartFactory>
                 OwnerShortname = "dmart",
                 IsActive = true,
                 Languages = new() { Language.En },
-                CreatedAt = DateTime.UtcNow,
-                UpdatedAt = DateTime.UtcNow,
+                CreatedAt = TimeUtils.Now(),
+                UpdatedAt = TimeUtils.Now(),
             });
 
             // Even orders reference customers that exist; odd reference ghosts.
@@ -1315,8 +1316,8 @@ public class QueryJoinTests : IClassFixture<DmartFactory>
             ResourceType = rt,
             IsActive = true,
             OwnerShortname = "dmart",
-            CreatedAt = DateTime.UtcNow,
-            UpdatedAt = DateTime.UtcNow,
+            CreatedAt = TimeUtils.Now(),
+            UpdatedAt = TimeUtils.Now(),
             Payload = new Payload
             {
                 ContentType = ContentType.Json,

@@ -1,3 +1,4 @@
+using Dmart.Utils;
 using System.Text;
 using System.Text.Json;
 using Dmart.DataAdapters.Sql;
@@ -84,7 +85,7 @@ public sealed class PluginCallbackHistoryTests : IClassFixture<DmartFactory>
             Shortname = spaceName, SpaceName = spaceName, Subpath = "/",
             OwnerShortname = _factory.AdminShortname,
             IsActive = true, Languages = new() { Language.En },
-            CreatedAt = DateTime.UtcNow, UpdatedAt = DateTime.UtcNow,
+            CreatedAt = TimeUtils.Now(), UpdatedAt = TimeUtils.Now(),
         });
         var sn = "t_" + Guid.NewGuid().ToString("N")[..6];
         var original = new Entry
@@ -92,7 +93,7 @@ public sealed class PluginCallbackHistoryTests : IClassFixture<DmartFactory>
             Uuid = Guid.NewGuid().ToString(), Shortname = sn, SpaceName = spaceName,
             Subpath = "/", ResourceType = ResourceType.Ticket, IsActive = true,
             OwnerShortname = _factory.AdminShortname, State = "new",
-            CreatedAt = DateTime.UtcNow, UpdatedAt = DateTime.UtcNow,
+            CreatedAt = TimeUtils.Now(), UpdatedAt = TimeUtils.Now(),
         };
         await entryRepo.UpsertAsync(original);
 
@@ -108,7 +109,7 @@ public sealed class PluginCallbackHistoryTests : IClassFixture<DmartFactory>
         try
         {
             // Mutate state — should produce exactly one history row.
-            var mutated = original with { State = "confirmed", UpdatedAt = DateTime.UtcNow };
+            var mutated = original with { State = "confirmed", UpdatedAt = TimeUtils.Now() };
             ShouldReturnZero("EmitSaveEntry", log => NativePluginCallbacks.EmitSaveEntry(mutated, log));
 
             var resp = await qsvc.ExecuteAsync(new Query
@@ -162,7 +163,7 @@ public sealed class PluginCallbackHistoryTests : IClassFixture<DmartFactory>
             Shortname = spaceName, SpaceName = spaceName, Subpath = "/",
             OwnerShortname = _factory.AdminShortname,
             IsActive = true, Languages = new() { Language.En },
-            CreatedAt = DateTime.UtcNow, UpdatedAt = DateTime.UtcNow,
+            CreatedAt = TimeUtils.Now(), UpdatedAt = TimeUtils.Now(),
         });
         var sn = "t_" + Guid.NewGuid().ToString("N")[..6];
         var original = new Entry
@@ -170,7 +171,7 @@ public sealed class PluginCallbackHistoryTests : IClassFixture<DmartFactory>
             Uuid = Guid.NewGuid().ToString(), Shortname = sn, SpaceName = spaceName,
             Subpath = "/", ResourceType = ResourceType.Ticket, IsActive = true,
             OwnerShortname = _factory.AdminShortname, State = "new",
-            CreatedAt = DateTime.UtcNow, UpdatedAt = DateTime.UtcNow,
+            CreatedAt = TimeUtils.Now(), UpdatedAt = TimeUtils.Now(),
         };
         await entryRepo.UpsertAsync(original);
 
@@ -220,7 +221,7 @@ public sealed class PluginCallbackHistoryTests : IClassFixture<DmartFactory>
             Shortname = spaceName, SpaceName = spaceName, Subpath = "/",
             OwnerShortname = _factory.AdminShortname,
             IsActive = true, Languages = new() { Language.En },
-            CreatedAt = DateTime.UtcNow, UpdatedAt = DateTime.UtcNow,
+            CreatedAt = TimeUtils.Now(), UpdatedAt = TimeUtils.Now(),
         });
         var sn = "t_" + Guid.NewGuid().ToString("N")[..6];
         var fresh = new Entry
@@ -228,7 +229,7 @@ public sealed class PluginCallbackHistoryTests : IClassFixture<DmartFactory>
             Uuid = Guid.NewGuid().ToString(), Shortname = sn, SpaceName = spaceName,
             Subpath = "/", ResourceType = ResourceType.Ticket, IsActive = true,
             OwnerShortname = _factory.AdminShortname, State = "new",
-            CreatedAt = DateTime.UtcNow, UpdatedAt = DateTime.UtcNow,
+            CreatedAt = TimeUtils.Now(), UpdatedAt = TimeUtils.Now(),
         };
 
         // NativePluginCallbacks.Services is already wired to this same SP by
@@ -280,7 +281,7 @@ public sealed class PluginCallbackHistoryTests : IClassFixture<DmartFactory>
             Email = $"{sn}@test.local", IsEmailVerified = true,
             Roles = new(), Groups = new(),
             Type = UserType.Web, Language = Language.En,
-            CreatedAt = DateTime.UtcNow, UpdatedAt = DateTime.UtcNow,
+            CreatedAt = TimeUtils.Now(), UpdatedAt = TimeUtils.Now(),
         };
         await users.UpsertAsync(original);
 
@@ -298,7 +299,7 @@ public sealed class PluginCallbackHistoryTests : IClassFixture<DmartFactory>
             {
                 Email = $"new_{sn}@test.local",
                 Language = Language.Ar,
-                UpdatedAt = DateTime.UtcNow,
+                UpdatedAt = TimeUtils.Now(),
             };
             ShouldReturnZero("EmitUpdateUser", log => NativePluginCallbacks.EmitUpdateUser(mutated, log));
 
@@ -352,7 +353,7 @@ public sealed class PluginCallbackHistoryTests : IClassFixture<DmartFactory>
             Email = $"{sn}@test.local", IsEmailVerified = true,
             Roles = new(), Groups = new(),
             Type = UserType.Web, Language = Language.En,
-            CreatedAt = DateTime.UtcNow, UpdatedAt = DateTime.UtcNow,
+            CreatedAt = TimeUtils.Now(), UpdatedAt = TimeUtils.Now(),
         };
         await users.UpsertAsync(original);
 
@@ -403,7 +404,7 @@ public sealed class PluginCallbackHistoryTests : IClassFixture<DmartFactory>
             Email = $"{sn}@test.local", IsEmailVerified = true,
             Roles = new(), Groups = new(),
             Type = UserType.Web, Language = Language.En,
-            CreatedAt = DateTime.UtcNow, UpdatedAt = DateTime.UtcNow,
+            CreatedAt = TimeUtils.Now(), UpdatedAt = TimeUtils.Now(),
         };
 
         PluginInvocationContext.CurrentShortname = "test_plugin";

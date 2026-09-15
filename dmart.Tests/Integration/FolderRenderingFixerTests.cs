@@ -1,3 +1,4 @@
+using Dmart.Utils;
 using System;
 using System.Linq;
 using System.Text.Json;
@@ -38,7 +39,7 @@ public class FolderRenderingFixerTests : IClassFixture<DmartFactory>
             Uuid = Guid.NewGuid().ToString(),
             Shortname = "folder_rendering", SpaceName = "management", Subpath = "/schema",
             ResourceType = ResourceType.Schema, IsActive = true, OwnerShortname = "dmart",
-            CreatedAt = DateTime.UtcNow, UpdatedAt = DateTime.UtcNow,
+            CreatedAt = TimeUtils.Now(), UpdatedAt = TimeUtils.Now(),
             Payload = new Payload
             {
                 ContentType = ContentType.Json,
@@ -74,7 +75,7 @@ public class FolderRenderingFixerTests : IClassFixture<DmartFactory>
             Shortname = spaceName, SpaceName = spaceName, Subpath = "/",
             OwnerShortname = "dmart", IsActive = true,
             Languages = new() { Language.En },
-            CreatedAt = DateTime.UtcNow, UpdatedAt = DateTime.UtcNow,
+            CreatedAt = TimeUtils.Now(), UpdatedAt = TimeUtils.Now(),
         });
         // Legacy folder: junk field, missing required index_attributes, and a
         // policy that doesn't cover the children that already live inside.
@@ -83,7 +84,7 @@ public class FolderRenderingFixerTests : IClassFixture<DmartFactory>
             Uuid = Guid.NewGuid().ToString(),
             Shortname = "legacy", SpaceName = spaceName, Subpath = "/",
             ResourceType = ResourceType.Folder, IsActive = true, OwnerShortname = "dmart",
-            CreatedAt = DateTime.UtcNow, UpdatedAt = DateTime.UtcNow,
+            CreatedAt = TimeUtils.Now(), UpdatedAt = TimeUtils.Now(),
             Payload = new Payload
             {
                 ContentType = ContentType.Json,
@@ -96,14 +97,14 @@ public class FolderRenderingFixerTests : IClassFixture<DmartFactory>
             Uuid = Guid.NewGuid().ToString(),
             Shortname = "doc1", SpaceName = spaceName, Subpath = "/legacy",
             ResourceType = ResourceType.Content, IsActive = true, OwnerShortname = "dmart",
-            CreatedAt = DateTime.UtcNow, UpdatedAt = DateTime.UtcNow,
+            CreatedAt = TimeUtils.Now(), UpdatedAt = TimeUtils.Now(),
         });
         await entries.UpsertAsync(new Entry
         {
             Uuid = Guid.NewGuid().ToString(),
             Shortname = "tk1", SpaceName = spaceName, Subpath = "/legacy",
             ResourceType = ResourceType.Ticket, IsActive = true, OwnerShortname = "dmart",
-            CreatedAt = DateTime.UtcNow, UpdatedAt = DateTime.UtcNow,
+            CreatedAt = TimeUtils.Now(), UpdatedAt = TimeUtils.Now(),
             WorkflowShortname = "other_flow",
         });
 

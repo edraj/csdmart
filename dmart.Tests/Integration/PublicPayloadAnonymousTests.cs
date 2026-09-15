@@ -1,3 +1,4 @@
+using Dmart.Utils;
 using System.Net;
 using System.Net.Http.Headers;
 using Dmart.DataAdapters.Sql;
@@ -130,8 +131,8 @@ public sealed class PublicPayloadAnonymousTests : IClassFixture<DmartFactory>
                 IsActive = true,
                 Payload = new Payload { ContentType = contentType },
                 Media = Bytes(64),
-                CreatedAt = DateTime.UtcNow,
-                UpdatedAt = DateTime.UtcNow,
+                CreatedAt = TimeUtils.Now(),
+                UpdatedAt = TimeUtils.Now(),
             });
 
             if (grantWorld)
@@ -150,8 +151,8 @@ public sealed class PublicPayloadAnonymousTests : IClassFixture<DmartFactory>
                     OwnerShortname = "dmart",
                     IsActive = true,
                     Permissions = new() { worldPerm },
-                    CreatedAt = DateTime.UtcNow,
-                    UpdatedAt = DateTime.UtcNow,
+                    CreatedAt = TimeUtils.Now(),
+                    UpdatedAt = TimeUtils.Now(),
                 });
             }
             await users.UpsertAsync(new User
@@ -165,8 +166,8 @@ public sealed class PublicPayloadAnonymousTests : IClassFixture<DmartFactory>
                 Roles = grantWorld ? new() { anonRole } : new(),
                 Type = UserType.Web,
                 Language = Language.En,
-                CreatedAt = DateTime.UtcNow,
-                UpdatedAt = DateTime.UtcNow,
+                CreatedAt = TimeUtils.Now(),
+                UpdatedAt = TimeUtils.Now(),
             });
             await access.InvalidateAllCachesAsync();
 

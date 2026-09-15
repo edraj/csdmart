@@ -1,3 +1,4 @@
+using Dmart.Utils;
 using System.Text.Json;
 using Dmart.DataAdapters.Sql;
 using Dmart.Models.Api;
@@ -60,8 +61,8 @@ public sealed class DmartSqlAdapterConformanceTests : IClassFixture<DmartFactory
         OwnerShortname = "dmart",
         IsActive = true,
         Tags = new List<string> { "sdk", "conformance" },
-        CreatedAt = DateTime.UtcNow,
-        UpdatedAt = DateTime.UtcNow,
+        CreatedAt = TimeUtils.Now(),
+        UpdatedAt = TimeUtils.Now(),
     };
 
     private static Locator LocatorFor(Entry e) =>
@@ -190,8 +191,8 @@ public sealed class DmartSqlAdapterConformanceTests : IClassFixture<DmartFactory
                         { ["theme"] = "dark" }),
                 },
                 Roles = new(), Groups = new(),
-                CreatedAt = DateTime.UtcNow,
-                UpdatedAt = DateTime.UtcNow,
+                CreatedAt = TimeUtils.Now(),
+                UpdatedAt = TimeUtils.Now(),
             });
 
             var profile = await adapter.GetProfileAsync(shortname);

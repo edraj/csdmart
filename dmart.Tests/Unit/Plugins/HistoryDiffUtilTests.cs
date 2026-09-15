@@ -1,3 +1,4 @@
+using Dmart.Utils;
 using System.Text.Json;
 using Dmart.Models.Core;
 using Dmart.Models.Enums;
@@ -76,7 +77,7 @@ public sealed class HistoryDiffUtilTests
         {
             Password = "different-hash",
             AttemptCount = 99,
-            UpdatedAt = DateTime.UtcNow.AddDays(1),
+            UpdatedAt = TimeUtils.Now().AddDays(1),
         };
         var diff = HistoryDiffUtil.ComputeUserDiff(u1, u2);
         diff.ShouldNotContainKey("password");

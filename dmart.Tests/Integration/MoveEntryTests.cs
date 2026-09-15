@@ -3,6 +3,7 @@ using Dmart.Models.Api;
 using Dmart.Models.Core;
 using Dmart.Models.Enums;
 using Dmart.Services;
+using Dmart.Utils;
 using Microsoft.Extensions.DependencyInjection;
 using Npgsql;
 using Shouldly;
@@ -290,8 +291,8 @@ public sealed class MoveEntryTests : IClassFixture<DmartFactory>
                 Subpaths = new() { [space] = new() { newSubpath.TrimStart('/') } },
                 Actions = new() { "view", "query" },
                 ResourceTypes = new() { "content" },
-                CreatedAt = DateTime.UtcNow,
-                UpdatedAt = DateTime.UtcNow,
+                CreatedAt = TimeUtils.Now(),
+                UpdatedAt = TimeUtils.Now(),
             });
             await access.UpsertRoleAsync(new Role
             {
@@ -302,8 +303,8 @@ public sealed class MoveEntryTests : IClassFixture<DmartFactory>
                 OwnerShortname = "dmart",
                 IsActive = true,
                 Permissions = new() { permName },
-                CreatedAt = DateTime.UtcNow,
-                UpdatedAt = DateTime.UtcNow,
+                CreatedAt = TimeUtils.Now(),
+                UpdatedAt = TimeUtils.Now(),
             });
             await users.UpsertAsync(new User
             {
@@ -317,8 +318,8 @@ public sealed class MoveEntryTests : IClassFixture<DmartFactory>
                 Language = Language.En,
                 Roles = new() { roleName },
                 Groups = new(),
-                CreatedAt = DateTime.UtcNow,
-                UpdatedAt = DateTime.UtcNow,
+                CreatedAt = TimeUtils.Now(),
+                UpdatedAt = TimeUtils.Now(),
             });
             await access.InvalidateAllCachesAsync();
 
@@ -481,8 +482,8 @@ public sealed class MoveEntryTests : IClassFixture<DmartFactory>
             Language = Language.En,
             Roles = new() { "super_admin" },
             Groups = new(),
-            CreatedAt = DateTime.UtcNow,
-            UpdatedAt = DateTime.UtcNow,
+            CreatedAt = TimeUtils.Now(),
+            UpdatedAt = TimeUtils.Now(),
         });
         await _factory.Services.GetRequiredService<AccessRepository>().InvalidateAllCachesAsync();
         return actor;
@@ -500,8 +501,8 @@ public sealed class MoveEntryTests : IClassFixture<DmartFactory>
             OwnerShortname = "dmart",
             IsActive = true,
             Languages = new() { Language.En },
-            CreatedAt = DateTime.UtcNow,
-            UpdatedAt = DateTime.UtcNow,
+            CreatedAt = TimeUtils.Now(),
+            UpdatedAt = TimeUtils.Now(),
         });
     }
 
@@ -521,8 +522,8 @@ public sealed class MoveEntryTests : IClassFixture<DmartFactory>
             OwnerShortname = owner,
             ResourceType = ResourceType.Content,
             IsActive = true,
-            CreatedAt = DateTime.UtcNow,
-            UpdatedAt = DateTime.UtcNow,
+            CreatedAt = TimeUtils.Now(),
+            UpdatedAt = TimeUtils.Now(),
         };
 
     private static Entry BuildFolder(string space, string subpath, string shortname, string owner)
@@ -535,8 +536,8 @@ public sealed class MoveEntryTests : IClassFixture<DmartFactory>
             OwnerShortname = owner,
             ResourceType = ResourceType.Folder,
             IsActive = true,
-            CreatedAt = DateTime.UtcNow,
-            UpdatedAt = DateTime.UtcNow,
+            CreatedAt = TimeUtils.Now(),
+            UpdatedAt = TimeUtils.Now(),
         };
 
     private static Attachment BuildAttachment(
@@ -550,8 +551,8 @@ public sealed class MoveEntryTests : IClassFixture<DmartFactory>
             OwnerShortname = owner,
             ResourceType = type,
             IsActive = true,
-            CreatedAt = DateTime.UtcNow,
-            UpdatedAt = DateTime.UtcNow,
+            CreatedAt = TimeUtils.Now(),
+            UpdatedAt = TimeUtils.Now(),
         };
 
     private async Task<List<string>> GetQueryPoliciesAsync(string spaceName, string subpath, string shortname)

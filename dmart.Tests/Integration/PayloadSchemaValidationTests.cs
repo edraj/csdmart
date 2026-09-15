@@ -1,3 +1,4 @@
+using Dmart.Utils;
 using System;
 using System.Net.Http;
 using System.Text;
@@ -60,8 +61,8 @@ public sealed class PayloadSchemaValidationTests : IClassFixture<DmartFactory>
                 ContentType = ContentType.Json,
                 Body = JsonDocument.Parse(schemaJson).RootElement.Clone(),
             },
-            CreatedAt = DateTime.UtcNow,
-            UpdatedAt = DateTime.UtcNow,
+            CreatedAt = TimeUtils.Now(),
+            UpdatedAt = TimeUtils.Now(),
         });
         return shortname;
     }
@@ -219,8 +220,8 @@ public sealed class PayloadSchemaValidationTests : IClassFixture<DmartFactory>
                 OwnerShortname = "dmart",
                 IsActive = true,
                 Language = Language.En,
-                CreatedAt = DateTime.UtcNow,
-                UpdatedAt = DateTime.UtcNow,
+                CreatedAt = TimeUtils.Now(),
+                UpdatedAt = TimeUtils.Now(),
             });
 
             var body =
@@ -264,8 +265,8 @@ public sealed class PayloadSchemaValidationTests : IClassFixture<DmartFactory>
                 OwnerShortname = "dmart",
                 IsActive = true,
                 Language = Language.En,
-                CreatedAt = DateTime.UtcNow,
-                UpdatedAt = DateTime.UtcNow,
+                CreatedAt = TimeUtils.Now(),
+                UpdatedAt = TimeUtils.Now(),
             });
 
             var body =

@@ -1,3 +1,4 @@
+using Dmart.Utils;
 using System;
 using System.Collections.Generic;
 using System.Linq;
@@ -88,8 +89,8 @@ public class LockPermissionDbTests : IClassFixture<DmartFactory>
             Actions = actions.ToList(),
             ResourceTypes = resourceTypes,
             Conditions = new(),
-            CreatedAt = DateTime.UtcNow,
-            UpdatedAt = DateTime.UtcNow,
+            CreatedAt = TimeUtils.Now(),
+            UpdatedAt = TimeUtils.Now(),
         });
         await access.UpsertRoleAsync(new Role
         {
@@ -100,8 +101,8 @@ public class LockPermissionDbTests : IClassFixture<DmartFactory>
             OwnerShortname = "dmart",
             IsActive = true,
             Permissions = new() { permName },
-            CreatedAt = DateTime.UtcNow,
-            UpdatedAt = DateTime.UtcNow,
+            CreatedAt = TimeUtils.Now(),
+            UpdatedAt = TimeUtils.Now(),
         });
         await access.InvalidateAllCachesAsync();
         return await _factory.CreateLoggedInUserAsync(roles: new() { roleName });

@@ -234,8 +234,8 @@ public sealed class LoginVerifiedGateTests : IClassFixture<DmartFactory>
             Language = Language.En,
             Roles = new(),
             Groups = new(),
-            CreatedAt = DateTime.UtcNow,
-            UpdatedAt = DateTime.UtcNow,
+            CreatedAt = TimeUtils.Now(),
+            UpdatedAt = TimeUtils.Now(),
         });
         return (shortname, email, msisdn);
     }

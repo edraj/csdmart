@@ -1,3 +1,4 @@
+using Dmart.Utils;
 using System.Net.Http.Json;
 using Dmart.Config;
 using Dmart.DataAdapters.Sql;
@@ -246,7 +247,7 @@ public sealed class OtpRequestRecoveryTests : IClassFixture<DmartFactory>
             Msisdn = msisdn, IsMsisdnVerified = true,
             Type = UserType.Web, Language = Language.En,
             Roles = new(), Groups = new(),
-            CreatedAt = DateTime.UtcNow, UpdatedAt = DateTime.UtcNow,
+            CreatedAt = TimeUtils.Now(), UpdatedAt = TimeUtils.Now(),
         });
         return shortname;
     }

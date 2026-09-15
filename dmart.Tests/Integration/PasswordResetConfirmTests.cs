@@ -432,8 +432,8 @@ public sealed class PasswordResetConfirmTests : IClassFixture<DmartFactory>
             Password = hasher.Hash("OriginalPass1"),
             Type = UserType.Web,
             Language = Language.En,
-            CreatedAt = DateTime.UtcNow,
-            UpdatedAt = DateTime.UtcNow,
+            CreatedAt = TimeUtils.Now(),
+            UpdatedAt = TimeUtils.Now(),
         };
         await users.UpsertAsync(user);
         return (shortname, email, msisdn);

@@ -1,3 +1,4 @@
+using Dmart.Utils;
 using System.Text;
 using System.Text.Json;
 using Dmart.DataAdapters.Sql;
@@ -37,8 +38,8 @@ public sealed class ManagedUserUpdateFormatTests : IClassFixture<DmartFactory>
         Email = $"{shortname}@x.y",
         Msisdn = null,
         Roles = new(), Groups = new(),
-        CreatedAt = DateTime.UtcNow,
-        UpdatedAt = DateTime.UtcNow,
+        CreatedAt = TimeUtils.Now(),
+        UpdatedAt = TimeUtils.Now(),
     };
 
     private static string UpdateBody(string shortname, string attrsJson) =>

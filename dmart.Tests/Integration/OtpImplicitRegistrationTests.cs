@@ -247,8 +247,8 @@ public sealed class OtpImplicitRegistrationTests : IClassFixture<DmartFactory>
             Language = Models.Enums.Language.En,
             Roles = new(),
             Groups = new(),
-            CreatedAt = DateTime.UtcNow,
-            UpdatedAt = DateTime.UtcNow,
+            CreatedAt = TimeUtils.Now(),
+            UpdatedAt = TimeUtils.Now(),
         });
         return shortname;
     }

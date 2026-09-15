@@ -1,6 +1,7 @@
 using Dmart.DataAdapters.Sql;
 using Dmart.Models.Core;
 using Dmart.Services;
+using Dmart.Utils;
 using Microsoft.Extensions.DependencyInjection;
 using Shouldly;
 using Xunit;
@@ -23,7 +24,7 @@ public class NonGrantableGroupsTests : IClassFixture<DmartFactory>
             Uuid = Guid.NewGuid().ToString(),
             Shortname = shortname, SpaceName = "management", Subpath = "/groups",
             OwnerShortname = "dmart", IsActive = isActive, GrantableBy = grantableBy,
-            CreatedAt = DateTime.UtcNow, UpdatedAt = DateTime.UtcNow,
+            CreatedAt = TimeUtils.Now(), UpdatedAt = TimeUtils.Now(),
         });
 
     [FactIfPg]
@@ -96,7 +97,7 @@ public class NonGrantableGroupsTests : IClassFixture<DmartFactory>
             OwnerShortname = "dmart", IsActive = true,
             Tags = new() { "t1", "t2" },
             GrantableBy = new() { "g1" },
-            CreatedAt = DateTime.UtcNow, UpdatedAt = DateTime.UtcNow,
+            CreatedAt = TimeUtils.Now(), UpdatedAt = TimeUtils.Now(),
         });
         try
         {

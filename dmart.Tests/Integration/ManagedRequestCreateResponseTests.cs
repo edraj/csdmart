@@ -1,3 +1,4 @@
+using Dmart.Utils;
 using System.Net.Http.Json;
 using System.Text;
 using System.Text.Json;
@@ -92,8 +93,8 @@ public class ManagedRequestCreateResponseTests : IClassFixture<DmartFactory>
             OwnerShortname = _factory.AdminShortname,
             IsActive = true,
             Languages = new() { Language.En },
-            CreatedAt = DateTime.UtcNow,
-            UpdatedAt = DateTime.UtcNow,
+            CreatedAt = TimeUtils.Now(),
+            UpdatedAt = TimeUtils.Now(),
         });
 
         try

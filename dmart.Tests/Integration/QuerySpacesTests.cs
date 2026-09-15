@@ -1,3 +1,4 @@
+using Dmart.Utils;
 using System;
 using System.Collections.Generic;
 using System.Linq;
@@ -227,8 +228,8 @@ public class QuerySpacesTests : IClassFixture<DmartFactory>
                 Actions = new() { "view", "query" },
                 ResourceTypes = new() { "content", "folder", "user", "schema" },
                 Conditions = new(),
-                CreatedAt = DateTime.UtcNow,
-                UpdatedAt = DateTime.UtcNow,
+                CreatedAt = TimeUtils.Now(),
+                UpdatedAt = TimeUtils.Now(),
             });
             await accessRepo.UpsertRoleAsync(new Role
             {
@@ -239,8 +240,8 @@ public class QuerySpacesTests : IClassFixture<DmartFactory>
                 OwnerShortname = "dmart",
                 IsActive = true,
                 Permissions = new() { permName },
-                CreatedAt = DateTime.UtcNow,
-                UpdatedAt = DateTime.UtcNow,
+                CreatedAt = TimeUtils.Now(),
+                UpdatedAt = TimeUtils.Now(),
             });
             await usersRepo.UpsertAsync(new User
             {
@@ -252,8 +253,8 @@ public class QuerySpacesTests : IClassFixture<DmartFactory>
                 IsActive = true,
                 Roles = new() { roleName },
                 Type = UserType.Web,
-                CreatedAt = DateTime.UtcNow,
-                UpdatedAt = DateTime.UtcNow,
+                CreatedAt = TimeUtils.Now(),
+                UpdatedAt = TimeUtils.Now(),
             });
             await accessRepo.InvalidateAllCachesAsync();
 

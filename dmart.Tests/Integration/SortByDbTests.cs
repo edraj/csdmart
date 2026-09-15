@@ -1,3 +1,4 @@
+using Dmart.Utils;
 using System.Text.Json;
 using Dmart.DataAdapters.Sql;
 using Dmart.Models.Api;
@@ -49,8 +50,8 @@ public sealed class SortByDbTests : IClassFixture<DmartFactory>
                     ResourceType = ResourceType.Content,
                     IsActive = true,
                     Payload = new Payload { ContentType = ContentType.Json, Body = payloadBody },
-                    CreatedAt = DateTime.UtcNow,
-                    UpdatedAt = DateTime.UtcNow,
+                    CreatedAt = TimeUtils.Now(),
+                    UpdatedAt = TimeUtils.Now(),
                 });
             }
 
@@ -113,8 +114,8 @@ public sealed class SortByDbTests : IClassFixture<DmartFactory>
                     ResourceType = ResourceType.Content,
                     IsActive = true,
                     Payload = new Payload { ContentType = ContentType.Json, Body = payloadBody },
-                    CreatedAt = DateTime.UtcNow,
-                    UpdatedAt = DateTime.UtcNow,
+                    CreatedAt = TimeUtils.Now(),
+                    UpdatedAt = TimeUtils.Now(),
                 });
             }
 

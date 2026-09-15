@@ -1,3 +1,4 @@
+using Dmart.Utils;
 using System.Net;
 using System.Net.Http.Headers;
 using System.Net.Http.Json;
@@ -1193,7 +1194,7 @@ public sealed class ComprehensivePermissionsTests : IClassFixture<DmartFactory>
         var viewerUser = Unique("e2e_vu");
         var editorUser = Unique("e2e_eu");
         var seedSn = Unique("seed");
-        var now = DateTime.UtcNow;
+        var now = TimeUtils.Now();
 
         try
         {
@@ -1331,7 +1332,7 @@ public sealed class ComprehensivePermissionsTests : IClassFixture<DmartFactory>
         var userA = Unique("own_ua");
         var userB = Unique("own_ub");
         var seedSn = Unique("ownseed");
-        var now = DateTime.UtcNow;
+        var now = TimeUtils.Now();
 
         try
         {
@@ -1410,7 +1411,7 @@ public sealed class ComprehensivePermissionsTests : IClassFixture<DmartFactory>
         var user = Unique("iax_u");
         var visibleSn = Unique("vis");
         var hiddenSn = Unique("hid");
-        var now = DateTime.UtcNow;
+        var now = TimeUtils.Now();
 
         try
         {
@@ -1635,8 +1636,8 @@ public sealed class ComprehensivePermissionsTests : IClassFixture<DmartFactory>
         Conditions = conditions ?? new(),
         RestrictedFields = restrictedFields,
         AllowedFieldsValues = allowedFieldsValues,
-        CreatedAt = DateTime.UtcNow,
-        UpdatedAt = DateTime.UtcNow,
+        CreatedAt = TimeUtils.Now(),
+        UpdatedAt = TimeUtils.Now(),
     };
 
     private static Role BuildRole(string shortname, params string[] permissions)
@@ -1649,8 +1650,8 @@ public sealed class ComprehensivePermissionsTests : IClassFixture<DmartFactory>
         OwnerShortname = "dmart",
         IsActive = true,
         Permissions = new(permissions),
-        CreatedAt = DateTime.UtcNow,
-        UpdatedAt = DateTime.UtcNow,
+        CreatedAt = TimeUtils.Now(),
+        UpdatedAt = TimeUtils.Now(),
     };
 
     // For tests that only call PermissionService directly (no login). Skips
@@ -1668,8 +1669,8 @@ public sealed class ComprehensivePermissionsTests : IClassFixture<DmartFactory>
             Language = Language.En,
             Roles = roles,
             Groups = new(),
-            CreatedAt = DateTime.UtcNow,
-            UpdatedAt = DateTime.UtcNow,
+            CreatedAt = TimeUtils.Now(),
+            UpdatedAt = TimeUtils.Now(),
         });
 
     // For tests that need to log in as the user — sets the standard test password.
@@ -1688,8 +1689,8 @@ public sealed class ComprehensivePermissionsTests : IClassFixture<DmartFactory>
             Language = Language.En,
             Roles = roles,
             Groups = new(),
-            CreatedAt = DateTime.UtcNow,
-            UpdatedAt = DateTime.UtcNow,
+            CreatedAt = TimeUtils.Now(),
+            UpdatedAt = TimeUtils.Now(),
         });
 
     private static Space BuildSpace(string shortname, DateTime now)

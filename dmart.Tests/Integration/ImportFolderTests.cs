@@ -1,3 +1,4 @@
+using Dmart.Utils;
 using System.Diagnostics;
 using System.IO.Compression;
 using System.Text.Json;
@@ -137,15 +138,15 @@ public class ImportFolderTests : IClassFixture<DmartFactory>
             OwnerShortname = "dmart",
             IsActive = true,
             Languages = new() { Language.En },
-            CreatedAt = DateTime.UtcNow,
-            UpdatedAt = DateTime.UtcNow,
+            CreatedAt = TimeUtils.Now(),
+            UpdatedAt = TimeUtils.Now(),
         });
 
         var folder = new Entry
         {
             Uuid = Guid.NewGuid().ToString(), Shortname = "items", SpaceName = spaceName,
             Subpath = "/", ResourceType = ResourceType.Folder, IsActive = true,
-            OwnerShortname = "dmart", CreatedAt = DateTime.UtcNow, UpdatedAt = DateTime.UtcNow,
+            OwnerShortname = "dmart", CreatedAt = TimeUtils.Now(), UpdatedAt = TimeUtils.Now(),
         };
         var c1 = MakeContent(spaceName, "/items", "i1", new { sku = "F-1", price = 7 });
         var c2 = MakeContent(spaceName, "/items", "i2", new { sku = "F-2", price = 11 });
@@ -298,14 +299,14 @@ public class ImportFolderTests : IClassFixture<DmartFactory>
             Uuid = Guid.NewGuid().ToString(), Shortname = spaceName, SpaceName = spaceName,
             Subpath = "/", OwnerShortname = "dmart", IsActive = true,
             Languages = new() { Language.En },
-            CreatedAt = DateTime.UtcNow, UpdatedAt = DateTime.UtcNow,
+            CreatedAt = TimeUtils.Now(), UpdatedAt = TimeUtils.Now(),
         });
 
         var folder = new Entry
         {
             Uuid = Guid.NewGuid().ToString(), Shortname = "batched", SpaceName = spaceName,
             Subpath = "/", ResourceType = ResourceType.Folder, IsActive = true,
-            OwnerShortname = "dmart", CreatedAt = DateTime.UtcNow, UpdatedAt = DateTime.UtcNow,
+            OwnerShortname = "dmart", CreatedAt = TimeUtils.Now(), UpdatedAt = TimeUtils.Now(),
         };
         // Five content entries so batchSize=1 yields multiple bulk-COPY
         // flushes (the original code would have done one).
@@ -453,7 +454,7 @@ public class ImportFolderTests : IClassFixture<DmartFactory>
             Uuid = Guid.NewGuid().ToString(), Shortname = spaceName, SpaceName = spaceName,
             Subpath = "/", OwnerShortname = "dmart", IsActive = true,
             Languages = new() { Language.En },
-            CreatedAt = DateTime.UtcNow, UpdatedAt = DateTime.UtcNow,
+            CreatedAt = TimeUtils.Now(), UpdatedAt = TimeUtils.Now(),
         });
 
         // Stage a partial export: just a single content entry's meta and
@@ -581,8 +582,8 @@ public class ImportFolderTests : IClassFixture<DmartFactory>
             ResourceType = ResourceType.Content,
             IsActive = true,
             OwnerShortname = "dmart",
-            CreatedAt = DateTime.UtcNow,
-            UpdatedAt = DateTime.UtcNow,
+            CreatedAt = TimeUtils.Now(),
+            UpdatedAt = TimeUtils.Now(),
             Payload = new Payload
             {
                 ContentType = ContentType.Json,

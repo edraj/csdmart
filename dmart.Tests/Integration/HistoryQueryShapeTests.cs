@@ -1,3 +1,4 @@
+using Dmart.Utils;
 using System.Text.Json;
 using Dmart.DataAdapters.Sql;
 using Dmart.Models.Api;
@@ -37,7 +38,7 @@ public class HistoryQueryShapeTests : IClassFixture<DmartFactory>
             Shortname = spaceName, SpaceName = spaceName, Subpath = "/",
             OwnerShortname = _factory.AdminShortname,
             IsActive = true, Languages = new() { Language.En },
-            CreatedAt = DateTime.UtcNow, UpdatedAt = DateTime.UtcNow,
+            CreatedAt = TimeUtils.Now(), UpdatedAt = TimeUtils.Now(),
         });
         var sn = "c_" + Guid.NewGuid().ToString("N")[..6];
         // Seed a ticket-ish entry so we can update a state field.
@@ -46,7 +47,7 @@ public class HistoryQueryShapeTests : IClassFixture<DmartFactory>
             Uuid = Guid.NewGuid().ToString(), Shortname = sn, SpaceName = spaceName,
             Subpath = "/", ResourceType = ResourceType.Ticket, IsActive = true,
             OwnerShortname = _factory.AdminShortname, State = "new",
-            CreatedAt = DateTime.UtcNow, UpdatedAt = DateTime.UtcNow,
+            CreatedAt = TimeUtils.Now(), UpdatedAt = TimeUtils.Now(),
         };
         await entryRepo.UpsertAsync(original);
 
@@ -117,7 +118,7 @@ public class HistoryQueryShapeTests : IClassFixture<DmartFactory>
             Shortname = spaceName, SpaceName = spaceName, Subpath = "/",
             OwnerShortname = _factory.AdminShortname,
             IsActive = true, Languages = new() { Language.En },
-            CreatedAt = DateTime.UtcNow, UpdatedAt = DateTime.UtcNow,
+            CreatedAt = TimeUtils.Now(), UpdatedAt = TimeUtils.Now(),
         });
         var sn = "t_" + Guid.NewGuid().ToString("N")[..6];
 
@@ -138,7 +139,7 @@ public class HistoryQueryShapeTests : IClassFixture<DmartFactory>
             Subpath = "/", ResourceType = ResourceType.Ticket, IsActive = true,
             OwnerShortname = _factory.AdminShortname, State = "new",
             Payload = new Payload { ContentType = ContentType.Json, Body = seededBody },
-            CreatedAt = DateTime.UtcNow, UpdatedAt = DateTime.UtcNow,
+            CreatedAt = TimeUtils.Now(), UpdatedAt = TimeUtils.Now(),
         });
 
         try
@@ -214,7 +215,7 @@ public class HistoryQueryShapeTests : IClassFixture<DmartFactory>
             Shortname = spaceName, SpaceName = spaceName, Subpath = "/",
             OwnerShortname = _factory.AdminShortname,
             IsActive = true, Languages = new() { Language.En },
-            CreatedAt = DateTime.UtcNow, UpdatedAt = DateTime.UtcNow,
+            CreatedAt = TimeUtils.Now(), UpdatedAt = TimeUtils.Now(),
         });
         var sn = "t_" + Guid.NewGuid().ToString("N")[..6];
         await entryRepo.UpsertAsync(new Entry
@@ -222,7 +223,7 @@ public class HistoryQueryShapeTests : IClassFixture<DmartFactory>
             Uuid = Guid.NewGuid().ToString(), Shortname = sn, SpaceName = spaceName,
             Subpath = "/", ResourceType = ResourceType.Content, IsActive = true,
             OwnerShortname = _factory.AdminShortname,
-            CreatedAt = DateTime.UtcNow, UpdatedAt = DateTime.UtcNow,
+            CreatedAt = TimeUtils.Now(), UpdatedAt = TimeUtils.Now(),
         });
 
         try

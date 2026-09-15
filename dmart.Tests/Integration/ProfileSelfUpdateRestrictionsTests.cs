@@ -1,3 +1,4 @@
+using Dmart.Utils;
 using System.Text.Json;
 using Dmart.Auth;
 using Dmart.Config;
@@ -36,7 +37,7 @@ public class ProfileSelfUpdateRestrictionsTests : IClassFixture<DmartFactory>
             ForcePasswordChange = false,
             Type = UserType.Web, Language = Language.En,
             Roles = new(), Groups = new(),
-            CreatedAt = DateTime.UtcNow, UpdatedAt = DateTime.UtcNow,
+            CreatedAt = TimeUtils.Now(), UpdatedAt = TimeUtils.Now(),
         });
         return shortname;
     }

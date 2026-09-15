@@ -2,6 +2,7 @@ using Dmart.Auth;
 using Dmart.DataAdapters.Sql;
 using Dmart.Models.Core;
 using Dmart.Models.Enums;
+using Dmart.Utils;
 using Microsoft.Extensions.DependencyInjection;
 using Shouldly;
 using Xunit;
@@ -142,7 +143,7 @@ public sealed class UserRepositoryPasswordPreservationTests : IClassFixture<Dmar
         Groups = new(),
         Type = UserType.Web,
         Language = Language.En,
-        CreatedAt = DateTime.UtcNow,
-        UpdatedAt = DateTime.UtcNow,
+        CreatedAt = TimeUtils.Now(),
+        UpdatedAt = TimeUtils.Now(),
     };
 }

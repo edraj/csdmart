@@ -1,3 +1,4 @@
+using Dmart.Utils;
 using System.Collections.Concurrent;
 using System.Net;
 using System.Net.Http.Json;
@@ -206,8 +207,8 @@ public sealed class OAuthEndpointsTests : IClassFixture<DmartFactory>
             GoogleId = providerId,
             Type = UserType.Web,
             Language = Language.En,
-            CreatedAt = DateTime.UtcNow,
-            UpdatedAt = DateTime.UtcNow,
+            CreatedAt = TimeUtils.Now(),
+            UpdatedAt = TimeUtils.Now(),
             Roles = [], Groups = [],
         });
 
@@ -261,8 +262,8 @@ public sealed class OAuthEndpointsTests : IClassFixture<DmartFactory>
             Email = email,
             Type = UserType.Web,
             Language = Language.En,
-            CreatedAt = DateTime.UtcNow,
-            UpdatedAt = DateTime.UtcNow,
+            CreatedAt = TimeUtils.Now(),
+            UpdatedAt = TimeUtils.Now(),
             Roles = [], Groups = [],
         });
 
@@ -426,8 +427,8 @@ public sealed class OAuthEndpointsTests : IClassFixture<DmartFactory>
             Email = email,
             Type = UserType.Web,
             Language = Language.En,
-            CreatedAt = DateTime.UtcNow,
-            UpdatedAt = DateTime.UtcNow,
+            CreatedAt = TimeUtils.Now(),
+            UpdatedAt = TimeUtils.Now(),
             Roles = [], Groups = [],
         });
 

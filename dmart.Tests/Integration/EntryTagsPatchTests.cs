@@ -1,3 +1,4 @@
+using Dmart.Utils;
 using System.Text.Json;
 using Dmart.DataAdapters.Sql;
 using Dmart.Models.Core;
@@ -26,7 +27,7 @@ public sealed class EntryTagsPatchTests : IClassFixture<DmartFactory>
         _factory.CreateClient(); // ensure AdminBootstrap ran (dmart user exists)
         var entries = _factory.Services.GetRequiredService<EntryRepository>();
         var shortname = $"tagpatch_{Guid.NewGuid():N}"[..20];
-        var now = DateTime.UtcNow;
+        var now = TimeUtils.Now();
         await entries.UpsertAsync(new Entry
         {
             Uuid = Guid.NewGuid().ToString(),

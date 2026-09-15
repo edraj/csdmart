@@ -2,6 +2,7 @@ using Dmart.Auth.OAuth;
 using Dmart.DataAdapters.Sql;
 using Dmart.Models.Core;
 using Dmart.Models.Enums;
+using Dmart.Utils;
 using Microsoft.Extensions.DependencyInjection;
 using Shouldly;
 using Xunit;
@@ -40,8 +41,8 @@ public sealed class OAuthProviderIdLookupTests : IClassFixture<DmartFactory>
         Email = email,
         GoogleId = googleId,
         Roles = new(), Groups = new(),
-        CreatedAt = DateTime.UtcNow,
-        UpdatedAt = DateTime.UtcNow,
+        CreatedAt = TimeUtils.Now(),
+        UpdatedAt = TimeUtils.Now(),
     };
 
     // First link (matched by email) must write the provider id to the DB.

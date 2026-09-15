@@ -1,3 +1,4 @@
+using Dmart.Utils;
 using System;
 using System.Text.Json;
 using System.Threading.Tasks;
@@ -87,7 +88,7 @@ public sealed class DictionaryKeyConventionTests : IClassFixture<DmartFactory>
                     ContentType = ContentType.Json,
                     Body = JsonDocument.Parse("{\"myKey\":\"v\",\"other_key\":\"w\"}").RootElement.Clone(),
                 },
-                CreatedAt = DateTime.UtcNow, UpdatedAt = DateTime.UtcNow,
+                CreatedAt = TimeUtils.Now(), UpdatedAt = TimeUtils.Now(),
             });
 
             var read = await entries.GetAsync("management", "/dkc", shortname, ResourceType.Content);
@@ -129,7 +130,7 @@ public sealed class DictionaryKeyConventionTests : IClassFixture<DmartFactory>
                 ContentType = ContentType.Json,
                 Body = JsonDocument.Parse(SnakeSchema).RootElement.Clone(),
             },
-            CreatedAt = DateTime.UtcNow, UpdatedAt = DateTime.UtcNow,
+            CreatedAt = TimeUtils.Now(), UpdatedAt = TimeUtils.Now(),
         });
         return shortname;
     }

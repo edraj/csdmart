@@ -1,3 +1,4 @@
+using Dmart.Utils;
 using System.Net;
 using System.Net.Http.Json;
 using System.Text;
@@ -52,8 +53,8 @@ public sealed class SavedQueryParityTests : IClassFixture<DmartFactory>
                 SchemaShortname = "query",
                 Body = queryBody,
             },
-            CreatedAt = DateTime.UtcNow,
-            UpdatedAt = DateTime.UtcNow,
+            CreatedAt = TimeUtils.Now(),
+            UpdatedAt = TimeUtils.Now(),
         });
 
         try
@@ -122,8 +123,8 @@ public sealed class SavedQueryParityTests : IClassFixture<DmartFactory>
                 SchemaShortname = "api",
                 Body = apiBody,
             },
-            CreatedAt = DateTime.UtcNow,
-            UpdatedAt = DateTime.UtcNow,
+            CreatedAt = TimeUtils.Now(),
+            UpdatedAt = TimeUtils.Now(),
         });
 
         try

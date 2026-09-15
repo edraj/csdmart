@@ -1,3 +1,4 @@
+using Dmart.Utils;
 using System.Net;
 using System.Net.Http.Json;
 using System.Text.Json;
@@ -192,7 +193,7 @@ public sealed class TouchLoginPostAuthTests : IClassFixture<DmartFactory>
             Payload = payload,
             Roles = new(), Groups = new(),
             Type = UserType.Web, Language = Language.En,
-            CreatedAt = DateTime.UtcNow, UpdatedAt = DateTime.UtcNow,
+            CreatedAt = TimeUtils.Now(), UpdatedAt = TimeUtils.Now(),
         });
     }
 
@@ -216,7 +217,7 @@ public sealed class TouchLoginPostAuthTests : IClassFixture<DmartFactory>
             Email = $"{sn}@test.local", IsEmailVerified = true,
             Roles = new(), Groups = new(),
             Type = UserType.Web, Language = Language.En,
-            CreatedAt = DateTime.UtcNow, UpdatedAt = DateTime.UtcNow,
+            CreatedAt = TimeUtils.Now(), UpdatedAt = TimeUtils.Now(),
         });
         return (sn, password);
     }

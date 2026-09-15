@@ -1,3 +1,4 @@
+using Dmart.Utils;
 using System;
 using System.Collections.Generic;
 using System.Threading.Tasks;
@@ -78,8 +79,8 @@ public class PermissionServiceIntegrationTests : IClassFixture<DmartFactory>
         Conditions = conditions ?? new(),
         RestrictedFields = restrictedFields,
         AllowedFieldsValues = allowedFieldsValues,
-        CreatedAt = DateTime.UtcNow,
-        UpdatedAt = DateTime.UtcNow,
+        CreatedAt = TimeUtils.Now(),
+        UpdatedAt = TimeUtils.Now(),
     };
 
     private static Role BuildRole(string shortname, params string[] permissions)
@@ -92,8 +93,8 @@ public class PermissionServiceIntegrationTests : IClassFixture<DmartFactory>
         OwnerShortname = "dmart",
         IsActive = true,
         Permissions = new(permissions),
-        CreatedAt = DateTime.UtcNow,
-        UpdatedAt = DateTime.UtcNow,
+        CreatedAt = TimeUtils.Now(),
+        UpdatedAt = TimeUtils.Now(),
     };
 
     private static User BuildUser(string shortname, params string[] roles)
@@ -107,8 +108,8 @@ public class PermissionServiceIntegrationTests : IClassFixture<DmartFactory>
         IsActive = true,
         Roles = new(roles),
         Type = UserType.Web,
-        CreatedAt = DateTime.UtcNow,
-        UpdatedAt = DateTime.UtcNow,
+        CreatedAt = TimeUtils.Now(),
+        UpdatedAt = TimeUtils.Now(),
     };
 
     // ==================== test cases ====================

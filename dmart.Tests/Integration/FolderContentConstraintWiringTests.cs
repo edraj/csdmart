@@ -1,3 +1,4 @@
+using Dmart.Utils;
 using System;
 using System.Collections.Generic;
 using System.Net.Http;
@@ -45,7 +46,7 @@ public class FolderContentConstraintWiringTests : IClassFixture<DmartFactory>
             Shortname = spaceName, SpaceName = spaceName, Subpath = "/",
             OwnerShortname = _factory.AdminShortname, IsActive = true,
             Languages = new() { Language.En },
-            CreatedAt = DateTime.UtcNow, UpdatedAt = DateTime.UtcNow,
+            CreatedAt = TimeUtils.Now(), UpdatedAt = TimeUtils.Now(),
         });
         await AddFolderAsync(spaceName, folderShortname, bodyJson);
         return spaceName;
@@ -59,7 +60,7 @@ public class FolderContentConstraintWiringTests : IClassFixture<DmartFactory>
             Uuid = Guid.NewGuid().ToString(),
             Shortname = folderShortname, SpaceName = spaceName, Subpath = "/",
             ResourceType = ResourceType.Folder, IsActive = true, OwnerShortname = _factory.AdminShortname,
-            CreatedAt = DateTime.UtcNow, UpdatedAt = DateTime.UtcNow,
+            CreatedAt = TimeUtils.Now(), UpdatedAt = TimeUtils.Now(),
             Payload = new Payload { ContentType = ContentType.Json, Body = JsonDocument.Parse(bodyJson).RootElement.Clone() },
         });
     }

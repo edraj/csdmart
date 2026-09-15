@@ -1,6 +1,7 @@
 using Dmart.DataAdapters.Sql;
 using Dmart.Models.Core;
 using Dmart.Models.Enums;
+using Dmart.Utils;
 using Microsoft.Extensions.DependencyInjection;
 using Shouldly;
 using Xunit;
@@ -30,7 +31,7 @@ public class AttachmentTryInsertTests : IClassFixture<DmartFactory>
             ResourceType = ResourceType.Comment,
             OwnerShortname = "dmart", IsActive = true,
             Tags = new(), Body = body,
-            CreatedAt = DateTime.UtcNow, UpdatedAt = DateTime.UtcNow,
+            CreatedAt = TimeUtils.Now(), UpdatedAt = TimeUtils.Now(),
         };
         try
         {

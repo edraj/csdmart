@@ -1,3 +1,4 @@
+using Dmart.Utils;
 using System;
 using System.Text.Json;
 using System.Threading.Tasks;
@@ -45,8 +46,8 @@ public class UniqueFieldsTests : IClassFixture<DmartFactory>
             OwnerShortname = "dmart",
             IsActive = true,
             Languages = new() { Language.En },
-            CreatedAt = DateTime.UtcNow,
-            UpdatedAt = DateTime.UtcNow,
+            CreatedAt = TimeUtils.Now(),
+            UpdatedAt = TimeUtils.Now(),
         });
 
         // Folder lives at subpath="/" with shortname="people"; entries written
@@ -61,8 +62,8 @@ public class UniqueFieldsTests : IClassFixture<DmartFactory>
             ResourceType = ResourceType.Folder,
             IsActive = true,
             OwnerShortname = "dmart",
-            CreatedAt = DateTime.UtcNow,
-            UpdatedAt = DateTime.UtcNow,
+            CreatedAt = TimeUtils.Now(),
+            UpdatedAt = TimeUtils.Now(),
             Payload = new Payload
             {
                 ContentType = ContentType.Json,
@@ -83,8 +84,8 @@ public class UniqueFieldsTests : IClassFixture<DmartFactory>
             ResourceType = ResourceType.Content,
             IsActive = true,
             OwnerShortname = "dmart",
-            CreatedAt = DateTime.UtcNow,
-            UpdatedAt = DateTime.UtcNow,
+            CreatedAt = TimeUtils.Now(),
+            UpdatedAt = TimeUtils.Now(),
             Payload = new Payload
             {
                 ContentType = ContentType.Json,

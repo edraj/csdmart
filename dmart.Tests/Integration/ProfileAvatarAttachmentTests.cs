@@ -1,3 +1,4 @@
+using Dmart.Utils;
 using System.Net.Http.Json;
 using Dmart.DataAdapters.Sql;
 using Dmart.Models.Api;
@@ -61,7 +62,7 @@ public sealed class ProfileAvatarAttachmentTests : IClassFixture<DmartFactory>
         try
         {
             await AttachAsync(user.Shortname, "avatar", ResourceType.Media,
-                createdAt: DateTime.UtcNow.AddDays(-1));
+                createdAt: TimeUtils.Now().AddDays(-1));
             // Uploaded later, so it sorts FIRST under created_at DESC.
             await AttachAsync(user.Shortname, "passport_scan", ResourceType.Media);
 
@@ -116,7 +117,7 @@ public sealed class ProfileAvatarAttachmentTests : IClassFixture<DmartFactory>
         ResourceType type, DateTime? createdAt)
     {
         var parent = (await users.GetByShortnameAsync(parentShortname)).ShouldNotBeNull();
-        var stamp = createdAt ?? DateTime.UtcNow;
+        var stamp = createdAt ?? TimeUtils.Now();
         await attachments.UpsertAsync(new Attachment
         {
             Uuid = Guid.NewGuid().ToString(),

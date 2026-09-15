@@ -89,8 +89,8 @@ public class FullParityTests : IClassFixture<DmartFactory>
             Language = Language.En,
             Roles = new(),
             Groups = new(),
-            CreatedAt = DateTime.UtcNow,
-            UpdatedAt = DateTime.UtcNow,
+            CreatedAt = TimeUtils.Now(),
+            UpdatedAt = TimeUtils.Now(),
         });
 
         try
@@ -148,8 +148,8 @@ public class FullParityTests : IClassFixture<DmartFactory>
             Language = Language.En,
             Roles = new(),
             Groups = new(),
-            CreatedAt = DateTime.UtcNow,
-            UpdatedAt = DateTime.UtcNow,
+            CreatedAt = TimeUtils.Now(),
+            UpdatedAt = TimeUtils.Now(),
         });
 
         try
@@ -216,8 +216,8 @@ public class FullParityTests : IClassFixture<DmartFactory>
             Language = Dmart.Models.Enums.Language.En,
             Roles = new(),
             Groups = new(),
-            CreatedAt = DateTime.UtcNow,
-            UpdatedAt = DateTime.UtcNow,
+            CreatedAt = TimeUtils.Now(),
+            UpdatedAt = TimeUtils.Now(),
         });
 
         try
@@ -690,8 +690,8 @@ public class FullParityTests : IClassFixture<DmartFactory>
             Subpath = "/users",
             Uuid = Guid.NewGuid().ToString("n"),
             OwnerShortname = "dmart",
-            CreatedAt = DateTime.UtcNow,
-            UpdatedAt = DateTime.UtcNow,
+            CreatedAt = TimeUtils.Now(),
+            UpdatedAt = TimeUtils.Now(),
             IsActive = true,
             Type = UserType.Bot,
             Password = hasher.Hash(pwd),

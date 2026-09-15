@@ -1,3 +1,4 @@
+using Dmart.Utils;
 using System.Net;
 using System.Net.Http.Headers;
 using System.Net.Http.Json;
@@ -366,7 +367,7 @@ public sealed class SecurityPenetrationTests : IClassFixture<SecurityPenetration
         var space = "test";
         var subpath = "/itest";
         var sn = Unique("pen_ownr");
-        var now = DateTime.UtcNow;
+        var now = TimeUtils.Now();
 
         try
         {
@@ -421,7 +422,7 @@ public sealed class SecurityPenetrationTests : IClassFixture<SecurityPenetration
         var role = Unique("pen_r");
         var user = Unique("pen_u");
         var seedSn = Unique("pen_seed");
-        var now = DateTime.UtcNow;
+        var now = TimeUtils.Now();
 
         try
         {
@@ -477,7 +478,7 @@ public sealed class SecurityPenetrationTests : IClassFixture<SecurityPenetration
         var owner = Unique("pen_own_o");
         var attacker = Unique("pen_own_a");
         var sn = Unique("pen_own_e");
-        var now = DateTime.UtcNow;
+        var now = TimeUtils.Now();
 
         try
         {
@@ -873,7 +874,7 @@ public sealed class SecurityPenetrationTests : IClassFixture<SecurityPenetration
         var space = "test";
         var subpath = "/itest";
         var sn = Unique("pen_acl_e");
-        var now = DateTime.UtcNow;
+        var now = TimeUtils.Now();
 
         try
         {
@@ -987,7 +988,7 @@ public sealed class SecurityPenetrationTests : IClassFixture<SecurityPenetration
         var space = "test";
         var subpath = "/itest";
         var sn = Unique("pen_grp");
-        var now = DateTime.UtcNow;
+        var now = TimeUtils.Now();
 
         try
         {
@@ -1049,7 +1050,7 @@ public sealed class SecurityPenetrationTests : IClassFixture<SecurityPenetration
         var role = Unique("pen_xs_r");
         var user = Unique("pen_xs_u");
         var sn = Unique("pen_xs_e");
-        var now = DateTime.UtcNow;
+        var now = TimeUtils.Now();
 
         try
         {
@@ -1178,7 +1179,7 @@ public sealed class SecurityPenetrationTests : IClassFixture<SecurityPenetration
         var subpath = "/secret_subpath";
         var sn = Unique("pen_uuid_e");
         var uuid = Guid.NewGuid().ToString();
-        var now = DateTime.UtcNow;
+        var now = TimeUtils.Now();
 
         try
         {
@@ -2092,8 +2093,8 @@ public sealed class SecurityPenetrationTests : IClassFixture<SecurityPenetration
                 Language = Language.En,
                 Roles = new() { role },
                 Groups = new() { sharedGroup },
-                CreatedAt = DateTime.UtcNow,
-                UpdatedAt = DateTime.UtcNow,
+                CreatedAt = TimeUtils.Now(),
+                UpdatedAt = TimeUtils.Now(),
             };
             await users.UpsertAsync(u);
             await access.InvalidateAllCachesAsync();
@@ -2314,7 +2315,7 @@ public sealed class SecurityPenetrationTests : IClassFixture<SecurityPenetration
         var role = Unique("pen_mv_r");
         var user = Unique("pen_mv_u");
         var sn = Unique("pen_mv_e");
-        var now = DateTime.UtcNow;
+        var now = TimeUtils.Now();
 
         try
         {
@@ -2378,7 +2379,7 @@ public sealed class SecurityPenetrationTests : IClassFixture<SecurityPenetration
         var role = Unique("pen_mv2_r");
         var user = Unique("pen_mv2_u");
         var sn = Unique("pen_mv2_e");
-        var now = DateTime.UtcNow;
+        var now = TimeUtils.Now();
 
         try
         {
@@ -2444,7 +2445,7 @@ public sealed class SecurityPenetrationTests : IClassFixture<SecurityPenetration
         var user = Unique("pen_mr_u");
         var allowedSn = Unique("pen_mr_ok");
         var forbiddenSn = Unique("pen_mr_no");
-        var now = DateTime.UtcNow;
+        var now = TimeUtils.Now();
 
         try
         {
@@ -2674,8 +2675,8 @@ public sealed class SecurityPenetrationTests : IClassFixture<SecurityPenetration
                 Language = Language.En,
                 Roles = new() { "super_admin" },
                 Groups = new(),
-                CreatedAt = DateTime.UtcNow,
-                UpdatedAt = DateTime.UtcNow,
+                CreatedAt = TimeUtils.Now(),
+                UpdatedAt = TimeUtils.Now(),
             });
 
             var (botClient, botToken) = await LoginAs(bot);
@@ -2780,7 +2781,7 @@ public sealed class SecurityPenetrationTests : IClassFixture<SecurityPenetration
         var space = "test";
         var subpath = "/itest";
         var sn = Unique("pen_hijack");
-        var now = DateTime.UtcNow;
+        var now = TimeUtils.Now();
         try
         {
             // Seed entry.
@@ -3008,8 +3009,8 @@ public sealed class SecurityPenetrationTests : IClassFixture<SecurityPenetration
         Actions = actions,
         ResourceTypes = resourceTypes ?? new(),
         Conditions = conditions ?? new(),
-        CreatedAt = DateTime.UtcNow,
-        UpdatedAt = DateTime.UtcNow,
+        CreatedAt = TimeUtils.Now(),
+        UpdatedAt = TimeUtils.Now(),
     };
 
     private static Role BuildRole(string shortname, params string[] permissions)
@@ -3022,8 +3023,8 @@ public sealed class SecurityPenetrationTests : IClassFixture<SecurityPenetration
         OwnerShortname = "dmart",
         IsActive = true,
         Permissions = new(permissions),
-        CreatedAt = DateTime.UtcNow,
-        UpdatedAt = DateTime.UtcNow,
+        CreatedAt = TimeUtils.Now(),
+        UpdatedAt = TimeUtils.Now(),
     };
 
     private static Space BuildSpace(string shortname, DateTime now)
@@ -3070,8 +3071,8 @@ public sealed class SecurityPenetrationTests : IClassFixture<SecurityPenetration
             Language = Language.En,
             Roles = roles ?? new(),
             Groups = new(),
-            CreatedAt = DateTime.UtcNow,
-            UpdatedAt = DateTime.UtcNow,
+            CreatedAt = TimeUtils.Now(),
+            UpdatedAt = TimeUtils.Now(),
         });
 
     private async Task<(HttpClient Client, string Token)> LoginAs(string shortname)
@@ -3110,8 +3111,8 @@ public sealed class SecurityPenetrationTests : IClassFixture<SecurityPenetration
             Language = Language.En,
             Roles = new() { "super_admin" },
             Groups = new(),
-            CreatedAt = DateTime.UtcNow,
-            UpdatedAt = DateTime.UtcNow,
+            CreatedAt = TimeUtils.Now(),
+            UpdatedAt = TimeUtils.Now(),
         });
 
         var (client, token) = await LoginAs(shortname);

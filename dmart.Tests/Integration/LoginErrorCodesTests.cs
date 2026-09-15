@@ -1,3 +1,4 @@
+using Dmart.Utils;
 using System.Net;
 using System.Net.Http.Json;
 using Dmart.Auth;
@@ -161,8 +162,8 @@ public sealed class LoginErrorCodesTests : IClassFixture<DmartFactory>
             LockedToDevice = lockedToDevice,
             Roles = new(),
             Groups = new(),
-            CreatedAt = DateTime.UtcNow,
-            UpdatedAt = DateTime.UtcNow,
+            CreatedAt = TimeUtils.Now(),
+            UpdatedAt = TimeUtils.Now(),
         });
         return (shortname, password ?? "");
     }

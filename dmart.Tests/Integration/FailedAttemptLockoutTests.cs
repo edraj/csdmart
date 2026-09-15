@@ -299,8 +299,8 @@ public sealed class FailedAttemptLockoutTests : IClassFixture<DmartFactory>
             Language = Language.En,
             Roles = new(),
             Groups = new(),
-            CreatedAt = DateTime.UtcNow,
-            UpdatedAt = DateTime.UtcNow,
+            CreatedAt = TimeUtils.Now(),
+            UpdatedAt = TimeUtils.Now(),
         });
         return (shortname, password ?? "");
     }

@@ -1,3 +1,4 @@
+using Dmart.Utils;
 using System.Net;
 using System.Text;
 using System.Text.Json;
@@ -107,8 +108,8 @@ public sealed class SavedQueryJqFilterTests : IClassFixture<DmartFactory>
                 SchemaShortname = "query",
                 Body = queryBody,
             },
-            CreatedAt = DateTime.UtcNow,
-            UpdatedAt = DateTime.UtcNow,
+            CreatedAt = TimeUtils.Now(),
+            UpdatedAt = TimeUtils.Now(),
         });
 
         try
@@ -210,8 +211,8 @@ public sealed class SavedQueryJqFilterTests : IClassFixture<DmartFactory>
                 OwnerShortname = "dmart",
                 IsActive = true,
                 Permissions = new() { WorldPermissionFixture.Shortname },
-                CreatedAt = DateTime.UtcNow,
-                UpdatedAt = DateTime.UtcNow,
+                CreatedAt = TimeUtils.Now(),
+                UpdatedAt = TimeUtils.Now(),
             });
             await users.UpsertAsync(new User
             {
@@ -224,8 +225,8 @@ public sealed class SavedQueryJqFilterTests : IClassFixture<DmartFactory>
                 Roles = new() { anonRole },
                 Type = UserType.Web,
                 Language = Language.En,
-                CreatedAt = DateTime.UtcNow,
-                UpdatedAt = DateTime.UtcNow,
+                CreatedAt = TimeUtils.Now(),
+                UpdatedAt = TimeUtils.Now(),
             });
 
             await entries.UpsertAsync(new Entry
@@ -237,8 +238,8 @@ public sealed class SavedQueryJqFilterTests : IClassFixture<DmartFactory>
                 ResourceType = ResourceType.Content,
                 OwnerShortname = "dmart",
                 IsActive = true,
-                CreatedAt = DateTime.UtcNow,
-                UpdatedAt = DateTime.UtcNow,
+                CreatedAt = TimeUtils.Now(),
+                UpdatedAt = TimeUtils.Now(),
             });
             var savedQuery = JsonDocument.Parse($$"""
             {
@@ -265,8 +266,8 @@ public sealed class SavedQueryJqFilterTests : IClassFixture<DmartFactory>
                     SchemaShortname = "query",
                     Body = savedQuery,
                 },
-                CreatedAt = DateTime.UtcNow,
-                UpdatedAt = DateTime.UtcNow,
+                CreatedAt = TimeUtils.Now(),
+                UpdatedAt = TimeUtils.Now(),
             });
             await access.InvalidateAllCachesAsync();
 
@@ -331,8 +332,8 @@ public sealed class SavedQueryJqFilterTests : IClassFixture<DmartFactory>
                 SchemaShortname = "query",
                 Body = queryBody,
             },
-            CreatedAt = DateTime.UtcNow,
-            UpdatedAt = DateTime.UtcNow,
+            CreatedAt = TimeUtils.Now(),
+            UpdatedAt = TimeUtils.Now(),
         });
 
         try

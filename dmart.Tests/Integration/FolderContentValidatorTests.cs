@@ -1,3 +1,4 @@
+using Dmart.Utils;
 using System;
 using System.Collections.Generic;
 using System.Text.Json;
@@ -54,14 +55,14 @@ public class FolderContentValidatorTests : IClassFixture<DmartFactory>
             Shortname = spaceName, SpaceName = spaceName, Subpath = "/",
             OwnerShortname = "dmart", IsActive = true,
             Languages = new() { Language.En },
-            CreatedAt = DateTime.UtcNow, UpdatedAt = DateTime.UtcNow,
+            CreatedAt = TimeUtils.Now(), UpdatedAt = TimeUtils.Now(),
         });
         await entries.UpsertAsync(new Entry
         {
             Uuid = Guid.NewGuid().ToString(),
             Shortname = folderShortname, SpaceName = spaceName, Subpath = "/",
             ResourceType = ResourceType.Folder, IsActive = true, OwnerShortname = "dmart",
-            CreatedAt = DateTime.UtcNow, UpdatedAt = DateTime.UtcNow,
+            CreatedAt = TimeUtils.Now(), UpdatedAt = TimeUtils.Now(),
             Payload = new Payload
             {
                 ContentType = ContentType.Json,
@@ -79,7 +80,7 @@ public class FolderContentValidatorTests : IClassFixture<DmartFactory>
         Shortname = $"e_{Guid.NewGuid():N}"[..10],
         SpaceName = space, Subpath = subpath, ResourceType = type,
         IsActive = true, OwnerShortname = "dmart",
-        CreatedAt = DateTime.UtcNow, UpdatedAt = DateTime.UtcNow,
+        CreatedAt = TimeUtils.Now(), UpdatedAt = TimeUtils.Now(),
         WorkflowShortname = workflow,
         Payload = schema is null ? null : new Payload { ContentType = ContentType.Json, SchemaShortname = schema },
     };

@@ -1,3 +1,4 @@
+using Dmart.Utils;
 using System;
 using System.Linq;
 using System.Threading.Tasks;
@@ -69,8 +70,8 @@ public class AdminBootstrapLoggedInRoleTests : IClassFixture<DmartFactory>
                 Subpath = "/roles",
                 OwnerShortname = "dmart",
                 IsActive = true,
-                CreatedAt = DateTime.UtcNow,
-                UpdatedAt = DateTime.UtcNow,
+                CreatedAt = TimeUtils.Now(),
+                UpdatedAt = TimeUtils.Now(),
             }) with
             {
                 Permissions = new() { "operator_attached_perm" },

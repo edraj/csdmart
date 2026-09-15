@@ -1,3 +1,4 @@
+using Dmart.Utils;
 using System.Text.Json;
 using Dmart.DataAdapters.Sql;
 using Dmart.Models.Core;
@@ -166,7 +167,7 @@ public sealed class NativePluginGetFirebaseTokensCallbackTests : IClassFixture<D
             Email = $"{sn}@test.local", IsEmailVerified = true,
             Roles = new(), Groups = new(),
             Type = UserType.Web, Language = Language.En,
-            CreatedAt = DateTime.UtcNow, UpdatedAt = DateTime.UtcNow,
+            CreatedAt = TimeUtils.Now(), UpdatedAt = TimeUtils.Now(),
         });
     }
 
