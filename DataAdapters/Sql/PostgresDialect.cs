@@ -29,7 +29,7 @@ public static class PostgresDialect
 {
     public static NpgsqlParameter CreateParameter(SqlParam p)
     {
-        var value = p.Value;
+        var value = Naive(p.Value);
         return p.Kind switch
         {
             SqlValueKind.Inferred => p.Name is null
@@ -40,6 +40,38 @@ public static class PostgresDialect
                 : new NpgsqlParameter(p.Name, ToNpgsqlDbType(p.Kind)) { Value = value },
         };
     }
+
+    /// <summary>
+    /// Strips the Kind off a bound <see cref="DateTime"/> so it binds as the
+    /// naive wall-clock dmart stores.
+    /// </summary>
+    /// <remarks>
+    /// dmart's time model is naive LOCAL: every timestamp column is `timestamp
+    /// without time zone`, TimeUtils.Now() is DateTime.Now, and
+    /// Db.ApplyHostTimezone pins the session TimeZone to the host so SQL NOW()
+    /// reads the same clock. The one thing that escaped that model was the
+    /// binding itself — Npgsql infers the PostgreSQL type from DateTime.Kind,
+    /// and Kind=Utc infers `timestamptz`, which the server then converts into
+    /// the column through that pinned session zone. Measured, binding the same
+    /// 12:00 wall-clock with the session on Asia/Baghdad:
+    ///
+    ///     Unspecified -> 12:00      Local -> 12:00      Utc -> 15:00
+    ///
+    /// SQLite has no such behaviour (SqliteValues.FromDateTime writes the
+    /// components verbatim), so the two backends disagreed about what a
+    /// Kind=Utc value means — silently, and by exactly the host's offset.
+    ///
+    /// SpecifyKind keeps the clock components and only relabels the Kind, the
+    /// same thing TimeUtils.Naive does for the same reason. Local and
+    /// Unspecified already stored verbatim, so this is a no-op for everything
+    /// the application produces; it only stops a stray Kind=Utc from being
+    /// reinterpreted. Pinned by
+    /// DatabaseClockTests.Every_DateTimeKind_Stores_The_Same_Wall_Clock.
+    /// </remarks>
+    private static object? Naive(object? value)
+        => value is DateTime { Kind: not DateTimeKind.Unspecified } dt
+            ? TimeUtils.Naive(dt)
+            : value;
 
     private static NpgsqlDbType ToNpgsqlDbType(SqlValueKind kind) => kind switch
     {
