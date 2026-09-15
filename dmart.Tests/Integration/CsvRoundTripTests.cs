@@ -214,9 +214,13 @@ public class CsvRoundTripTests : IClassFixture<DmartFactory>
         }
     }
 
-    // ImportAsync auto-generates a `row-<12-hex>` shortname when the shortname cell is
-    // empty (Guid.NewGuid().ToString("N").Substring(0, 12)). #24 dropped the prior
-    // fixture row covering this branch; re-add explicit coverage.
+    // ImportAsync auto-generates an 8-hex shortname when the shortname cell is
+    // empty — Guid.NewGuid().ToString("N")[..8], the same convention
+    // RequestHandler.ResolveAutoShortname uses on the /request path. The older
+    // `row-<8hex>` format contained a `-`, which the shortname regex rejects, so
+    // entries created that way passed CreateAsync and then failed validation on
+    // every later operation. #24 dropped the prior fixture row covering this
+    // branch; re-add explicit coverage.
     [FactIfPg]
     public async Task Csv_Import_EmptyShortnameCell_AutoGenerates()
     {
@@ -316,8 +320,10 @@ public class CsvRoundTripTests : IClassFixture<DmartFactory>
             var alpha = GetPayloadBody(queryResp.Records!.First(r => r.Shortname == "alpha"));
             alpha.GetProperty("name").GetString().ShouldBe("Alpha original");
             alpha.GetProperty("in_stock").GetBoolean().ShouldBeTrue();
-            // CSV cells come through as strings (no schema-driven type coercion —
-            // pinning Python parity behavior, see ParseCellValue comment).
+            // The `goods` schema declares no properties at all, so nothing tells
+            // the importer `price` is a number and the cell stays a string.
+            // Coercion is schema-driven: see the *_SchemaAware_* tests for the
+            // declared-type behaviour.
             alpha.GetProperty("price").GetString().ShouldBe("9.99");
             alpha.GetProperty("color").GetString().ShouldBe("red");
 
@@ -684,12 +690,15 @@ public class CsvRoundTripTests : IClassFixture<DmartFactory>
         }
     }
 
-    // A nested schema property (e.g. stats.views) coerces its type too, matched
-    // against a flat dotted CSV header of the same name.
+    // Import keeps CSV headers flat (Python's csv.DictReader does, and the
+    // failed-row `key` the API reports is the header text), so a DOTTED header
+    // is matched against a literally-dotted schema property name — not against
+    // a nested {"stats":{"properties":{"views":...}}}, which could never apply
+    // to a flat "stats.views" key anyway.
     [FactIfPg]
-    public async Task Csv_Import_SchemaAware_NestedPropertyType_CoercedViaDotJoinedHeader()
+    public async Task Csv_Import_SchemaAware_LiteralDottedPropertyName_IsCoerced()
     {
-        const string space = "itest_csv_nested_typed";
+        const string space = "itest_csv_dotted";
         var (client, _, _, _) = await _factory.CreateLoggedInUserAsync();
 
         try
@@ -697,16 +706,62 @@ public class CsvRoundTripTests : IClassFixture<DmartFactory>
             await CleanupAsync(client, space);
             await SeedSpaceAsync(client, space);
             await UploadSchemaAsync(client,
-                shortname: "nested",
+                shortname: "dotted",
                 schemaJson: """
-                {"title":"nested","type":"object","additionalProperties":true,
-                 "properties":{"stats":{"type":"object","properties":{"views":{"type":"integer"}}}}}
+                {"title":"dotted","type":"object","additionalProperties":true,
+                 "properties":{"stats.views":{"type":"integer"}}}
                 """,
                 space: space);
 
             var csv = "shortname,stats.views\r\nN1,42\r\n";
             var importResp = await UploadCsvAsync(client,
-                resourceType: "content", space: space, subpath: "items", schema: "nested",
+                resourceType: "content", space: space, subpath: "items", schema: "dotted",
+                csvBytes: Encoding.UTF8.GetBytes(csv));
+
+            importResp.Status.ShouldBe(Status.Success);
+            ExtractInt(importResp.Attributes!["inserted"]).ShouldBe(1);
+            ExtractInt(importResp.Attributes!["failed_count"]).ShouldBe(0);
+
+            var queryResp = await PostJson(client, "/managed/query",
+                "{\"space_name\":\"" + space + "\",\"type\":\"subpath\"," +
+                "\"subpath\":\"items\",\"filter_schema_names\":[],\"retrieve_json_payload\":true,\"limit\":50}");
+            queryResp.Status.ShouldBe(Status.Success);
+
+            var body = GetPayloadBody(queryResp.Records!.First(r => r.Shortname == "N1"));
+            body.GetProperty("stats.views").ValueKind.ShouldBe(JsonValueKind.Number);
+            body.GetProperty("stats.views").GetInt32().ShouldBe(42);
+        }
+        finally
+        {
+            await CleanupAsync(client, space);
+        }
+    }
+
+    // A boolean sub-schema (`{"properties":{"x":true}}`) is legal JSON Schema and
+    // stores fine, but JsonElement.TryGetProperty throws InvalidOperationException
+    // on a non-object — which is NOT a JsonException and so was caught nowhere,
+    // taking the whole import down with a 500 instead of importing the file.
+    [FactIfPg]
+    public async Task Csv_Import_SchemaAware_BooleanSubSchema_DoesNotFailTheImport()
+    {
+        const string space = "itest_csv_boolsub";
+        var (client, _, _, _) = await _factory.CreateLoggedInUserAsync();
+
+        try
+        {
+            await CleanupAsync(client, space);
+            await SeedSpaceAsync(client, space);
+            await UploadSchemaAsync(client,
+                shortname: "boolsub",
+                schemaJson: """
+                {"title":"boolsub","type":"object","additionalProperties":true,
+                 "properties":{"anything":true,"qty":{"type":"integer"}}}
+                """,
+                space: space);
+
+            var csv = "shortname,anything,qty\r\nB1,free text,7\r\n";
+            var importResp = await UploadCsvAsync(client,
+                resourceType: "content", space: space, subpath: "items", schema: "boolsub",
                 csvBytes: Encoding.UTF8.GetBytes(csv));
 
             importResp.Status.ShouldBe(Status.Success);
@@ -715,13 +770,248 @@ public class CsvRoundTripTests : IClassFixture<DmartFactory>
             var queryResp = await PostJson(client, "/managed/query",
                 "{\"space_name\":\"" + space + "\",\"type\":\"subpath\"," +
                 "\"subpath\":\"items\",\"filter_schema_names\":[],\"retrieve_json_payload\":true,\"limit\":50}");
-            queryResp.Status.ShouldBe(Status.Success);
+            var body = GetPayloadBody(queryResp.Records!.First(r => r.Shortname == "B1"));
+            // The sibling declared type still took effect — the walk didn't abort.
+            body.GetProperty("qty").ValueKind.ShouldBe(JsonValueKind.Number);
+            body.GetProperty("anything").ValueKind.ShouldBe(JsonValueKind.String);
+        }
+        finally
+        {
+            await CleanupAsync(client, space);
+        }
+    }
 
-            var body = GetPayloadBody(queryResp.Records!.First(r => r.Shortname == "N1"));
-            // Import keeps headers flat — the body key is literally "stats.views",
-            // not a nested object — but its type still comes from the schema.
-            body.GetProperty("stats.views").ValueKind.ShouldBe(JsonValueKind.Number);
-            body.GetProperty("stats.views").GetInt32().ShouldBe(42);
+    // Declared types reached through allOf + a local $ref into $defs must coerce
+    // too. A composed schema has no top-level "properties", so walking only that
+    // key silently dropped coercion for the entire document.
+    [FactIfPg]
+    public async Task Csv_Import_SchemaAware_ComposedSchema_AllOfAndRef_IsCoerced()
+    {
+        const string space = "itest_csv_allof";
+        var (client, _, _, _) = await _factory.CreateLoggedInUserAsync();
+
+        try
+        {
+            await CleanupAsync(client, space);
+            await SeedSpaceAsync(client, space);
+            await UploadSchemaAsync(client,
+                shortname: "composed",
+                schemaJson: """
+                {"title":"composed","type":"object","additionalProperties":true,
+                 "$defs":{"pricing":{"type":"object","properties":{"price":{"type":"number"}}}},
+                 "allOf":[{"$ref":"#/$defs/pricing"},
+                          {"type":"object","properties":{"qty":{"type":"integer"}}}]}
+                """,
+                space: space);
+
+            var csv = "shortname,price,qty\r\nA1,19.99,5\r\n";
+            var importResp = await UploadCsvAsync(client,
+                resourceType: "content", space: space, subpath: "items", schema: "composed",
+                csvBytes: Encoding.UTF8.GetBytes(csv));
+
+            importResp.Status.ShouldBe(Status.Success);
+            ExtractInt(importResp.Attributes!["inserted"]).ShouldBe(1);
+            ExtractInt(importResp.Attributes!["failed_count"]).ShouldBe(0);
+
+            var queryResp = await PostJson(client, "/managed/query",
+                "{\"space_name\":\"" + space + "\",\"type\":\"subpath\"," +
+                "\"subpath\":\"items\",\"filter_schema_names\":[],\"retrieve_json_payload\":true,\"limit\":50}");
+            var body = GetPayloadBody(queryResp.Records!.First(r => r.Shortname == "A1"));
+            body.GetProperty("price").ValueKind.ShouldBe(JsonValueKind.Number);  // via $ref
+            body.GetProperty("qty").ValueKind.ShouldBe(JsonValueKind.Number);    // via allOf member
+        }
+        finally
+        {
+            await CleanupAsync(client, space);
+        }
+    }
+
+    // Spreadsheets do not write JSON booleans. TRUE/FALSE (Excel, LibreOffice),
+    // yes/no and 1/0 must all reach a declared-boolean column as a real boolean;
+    // anything else stays a string so the schema can reject it rather than
+    // silently becoming `false`.
+    [FactIfPg]
+    public async Task Csv_Import_SchemaAware_SpreadsheetBooleanSpellings_AreCoerced()
+    {
+        const string space = "itest_csv_bools";
+        var (client, _, _, _) = await _factory.CreateLoggedInUserAsync();
+
+        try
+        {
+            await CleanupAsync(client, space);
+            await SeedSpaceAsync(client, space);
+            await UploadSchemaAsync(client,
+                shortname: "flags",
+                schemaJson: """
+                {"title":"flags","type":"object","additionalProperties":true,
+                 "properties":{"flag":{"type":"boolean"}}}
+                """,
+                space: space);
+
+            var csv = "shortname,flag\r\n" +
+                      "up,TRUE\r\ndown,False\r\nyep,yes\r\nnope,no\r\none,1\r\nzero,0\r\n";
+            var importResp = await UploadCsvAsync(client,
+                resourceType: "content", space: space, subpath: "items", schema: "flags",
+                csvBytes: Encoding.UTF8.GetBytes(csv));
+
+            importResp.Status.ShouldBe(Status.Success);
+            ExtractInt(importResp.Attributes!["failed_count"]).ShouldBe(0);
+            ExtractInt(importResp.Attributes!["inserted"]).ShouldBe(6);
+
+            var queryResp = await PostJson(client, "/managed/query",
+                "{\"space_name\":\"" + space + "\",\"type\":\"subpath\"," +
+                "\"subpath\":\"items\",\"filter_schema_names\":[],\"retrieve_json_payload\":true,\"limit\":50}");
+            JsonValueKind FlagOf(string sn) =>
+                GetPayloadBody(queryResp.Records!.First(r => r.Shortname == sn))
+                    .GetProperty("flag").ValueKind;
+
+            FlagOf("up").ShouldBe(JsonValueKind.True);
+            FlagOf("down").ShouldBe(JsonValueKind.False);
+            FlagOf("yep").ShouldBe(JsonValueKind.True);
+            FlagOf("nope").ShouldBe(JsonValueKind.False);
+            FlagOf("one").ShouldBe(JsonValueKind.True);
+            FlagOf("zero").ShouldBe(JsonValueKind.False);
+        }
+        finally
+        {
+            await CleanupAsync(client, space);
+        }
+    }
+
+    // A blank cell in a declared number/integer/boolean column means "no value".
+    // Storing "" there put a string where the schema requires a number and
+    // failed the row — which is exactly what re-importing a sparse export did,
+    // since the exporter writes "" for a null/absent attribute.
+    [FactIfPg]
+    public async Task Csv_Import_SchemaAware_EmptyTypedCell_IsOmittedNotEmptyString()
+    {
+        const string space = "itest_csv_sparse";
+        var (client, _, _, _) = await _factory.CreateLoggedInUserAsync();
+
+        try
+        {
+            await CleanupAsync(client, space);
+            await SeedSpaceAsync(client, space);
+            await UploadSchemaAsync(client,
+                shortname: "sparse",
+                schemaJson: """
+                {"title":"sparse","type":"object","additionalProperties":true,
+                 "properties":{"price":{"type":"number"},"in_stock":{"type":"boolean"},
+                               "note":{"type":"string"}}}
+                """,
+                space: space);
+
+            // S1 has price + in_stock; S2 leaves both blank and must still import.
+            var csv = "shortname,price,in_stock,note\r\n" +
+                      "S1,19.99,true,first\r\n" +
+                      "S2,,,second\r\n";
+            var importResp = await UploadCsvAsync(client,
+                resourceType: "content", space: space, subpath: "items", schema: "sparse",
+                csvBytes: Encoding.UTF8.GetBytes(csv));
+
+            importResp.Status.ShouldBe(Status.Success);
+            ExtractInt(importResp.Attributes!["failed_count"]).ShouldBe(0,
+                "a blank cell in a typed column must not fail schema validation");
+            ExtractInt(importResp.Attributes!["inserted"]).ShouldBe(2);
+
+            var queryResp = await PostJson(client, "/managed/query",
+                "{\"space_name\":\"" + space + "\",\"type\":\"subpath\"," +
+                "\"subpath\":\"items\",\"filter_schema_names\":[],\"retrieve_json_payload\":true,\"limit\":50}");
+
+            var s2 = GetPayloadBody(queryResp.Records!.First(r => r.Shortname == "S2"));
+            s2.TryGetProperty("price", out _).ShouldBeFalse("blank typed cell must be absent, not \"\"");
+            s2.TryGetProperty("in_stock", out _).ShouldBeFalse();
+            // An UNdeclared column keeps its verbatim (empty) text — unchanged behaviour.
+            s2.GetProperty("note").GetString().ShouldBe("second");
+
+            var s1 = GetPayloadBody(queryResp.Records!.First(r => r.Shortname == "S1"));
+            s1.GetProperty("price").ValueKind.ShouldBe(JsonValueKind.Number);
+            s1.GetProperty("in_stock").ValueKind.ShouldBe(JsonValueKind.True);
+        }
+        finally
+        {
+            await CleanupAsync(client, space);
+        }
+    }
+
+    // On the update path the shortname is the row's ADDRESS, so a blank cell is
+    // a malformed row. It used to be handed a freshly-minted random 8-hex name
+    // and come back as OBJECT_NOT_FOUND naming a string the operator never
+    // wrote; it now fails the row saying what is actually wrong.
+    [FactIfPg]
+    public async Task Csv_Import_UpdateMode_BlankShortname_ReportsMissingShortname()
+    {
+        const string space = "itest_csv_updblank";
+        var (client, _, _, _) = await _factory.CreateLoggedInUserAsync();
+
+        try
+        {
+            await CleanupAsync(client, space);
+            await SeedSpaceAsync(client, space);
+            (await PostOk(client, "/managed/request",
+                "{\"space_name\":\"" + space + "\",\"request_type\":\"create\",\"records\":[" +
+                "{\"resource_type\":\"content\",\"subpath\":\"items\",\"shortname\":\"kept\"," +
+                "\"attributes\":{\"payload\":{\"content_type\":\"json\",\"schema_shortname\":\"goods\"," +
+                "\"body\":{\"name\":\"Original\"}}}}]}"))
+                .ShouldBeTrue("seed");
+
+            var csv = "shortname,name\r\n,Orphan\r\nkept,Updated\r\n";
+            var importResp = await UploadCsvAsync(client,
+                resourceType: "content", space: space, subpath: "items", schema: "goods",
+                csvBytes: Encoding.UTF8.GetBytes(csv), isUpdate: true);
+
+            importResp.Status.ShouldBe(Status.Success);
+            ExtractInt(importResp.Attributes!["inserted"]).ShouldBe(1, "the addressable row still applies");
+            ExtractInt(importResp.Attributes!["failed_count"]).ShouldBe(1);
+
+            var row0 = ((JsonElement)importResp.Attributes!["failed"])[0];
+            row0.GetProperty("shortname").GetString().ShouldBe("",
+                "the failure names the blank cell, not an invented shortname");
+            row0.GetProperty("error").GetString()!.ShouldContain("shortname is required");
+
+            var queryResp = await PostJson(client, "/managed/query",
+                "{\"space_name\":\"" + space + "\",\"type\":\"subpath\"," +
+                "\"subpath\":\"items\",\"filter_schema_names\":[],\"retrieve_json_payload\":true,\"limit\":50}");
+            queryResp.Records!.Count.ShouldBe(1, "no stray entry was created by the blank row");
+            GetPayloadBody(queryResp.Records!.First(r => r.Shortname == "kept"))
+                .GetProperty("name").GetString().ShouldBe("Updated");
+        }
+        finally
+        {
+            await CleanupAsync(client, space);
+        }
+    }
+
+    // `auto` on the CREATE path still mints a fresh 8-hex name, as before.
+    [FactIfPg]
+    public async Task Csv_Import_AutoShortnameCell_MintsGeneratedName()
+    {
+        const string space = "itest_csv_autocreate";
+        var (client, _, _, _) = await _factory.CreateLoggedInUserAsync();
+
+        try
+        {
+            await CleanupAsync(client, space);
+            await SeedSpaceAsync(client, space);
+
+            var csv = "shortname,name\r\nauto,First\r\nAUTO,Second\r\n";
+            var importResp = await UploadCsvAsync(client,
+                resourceType: "content", space: space, subpath: "items", schema: "goods",
+                csvBytes: Encoding.UTF8.GetBytes(csv));
+
+            importResp.Status.ShouldBe(Status.Success);
+            ExtractInt(importResp.Attributes!["inserted"]).ShouldBe(2,
+                "both rows mint their own name instead of colliding on the text `auto`");
+
+            var queryResp = await PostJson(client, "/managed/query",
+                "{\"space_name\":\"" + space + "\",\"type\":\"subpath\"," +
+                "\"subpath\":\"items\",\"filter_schema_names\":[],\"limit\":50}");
+            var names = queryResp.Records!.Select(r => r.Shortname).ToList();
+            names.Count.ShouldBe(2);
+            names.ShouldNotContain("auto");
+            foreach (var n in names)
+                System.Text.RegularExpressions.Regex.IsMatch(n, "^[0-9a-f]{8}$")
+                    .ShouldBeTrue($"auto-generated shortname '{n}' must match <8hex>");
         }
         finally
         {
