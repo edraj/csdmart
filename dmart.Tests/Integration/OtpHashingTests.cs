@@ -1,6 +1,7 @@
 using Dmart.Auth;
 using Dmart.DataAdapters.Sql;
 using Dmart.Models.Api;
+using Dmart.Utils;
 using Microsoft.Extensions.DependencyInjection;
 using Shouldly;
 using Xunit;
@@ -41,12 +42,26 @@ public sealed class OtpHashingTests : IClassFixture<DmartFactory>
             reader.GetValue(2) is string s ? s : null);
     }
 
+    // Expiries are seeded with TimeUtils.Now(), never DateTime.UtcNow, and that
+    // is load-bearing rather than stylistic. dmart stores timestamps LOCAL-NAIVE
+    // in `timestamp without time zone` columns ("no UTC anywhere" — see the
+    // TIMESTAMPTZ→TIMESTAMP migration in SqlSchema.cs), and
+    // VerifyAndConsumeAsync compares expires_at against TimeUtils.Now(). A UTC
+    // expiry is therefore off by the host's offset: on a host ahead of UTC the
+    // code is born already expired and every verification returns false.
+    //
+    // PostgreSQL used to hide that. Npgsql infers `timestamptz` from a
+    // Kind=Utc DateTime, and the server then coerces it into the TIMESTAMP
+    // column through the session TimeZone — silently converting UTC back to
+    // local and repairing the mistake. SQLite writes the wall-clock verbatim,
+    // so it does not. CI runners are UTC, where the two are equal, which is why
+    // this only ever appeared for a developer in a non-UTC zone.
     [FactIfPg]
     public async Task IssueAsync_Persists_Hashed_Code_Not_Plaintext()
     {
         var ident = $"otphash_{Guid.NewGuid():N}@x.yz";
         const string code = "123456";
-        await Repo().IssueAsync(ident, OtpPurpose.VerifyContact, code, DateTime.UtcNow.AddMinutes(5));
+        await Repo().IssueAsync(ident, OtpPurpose.VerifyContact, code, TimeUtils.Now().AddMinutes(5));
 
         var row = await RawLatestRowAsync(ident, OtpPurpose.VerifyContact);
         row.ShouldNotBeNull();
@@ -59,7 +74,7 @@ public sealed class OtpHashingTests : IClassFixture<DmartFactory>
     {
         var ident = $"otphash_{Guid.NewGuid():N}@x.yz";
         const string code = "654321";
-        await Repo().IssueAsync(ident, OtpPurpose.VerifyContact, code, DateTime.UtcNow.AddMinutes(5));
+        await Repo().IssueAsync(ident, OtpPurpose.VerifyContact, code, TimeUtils.Now().AddMinutes(5));
 
         (await Repo().VerifyAndConsumeAsync(ident, OtpPurpose.VerifyContact, code, 0)).ShouldBeTrue();
 
@@ -76,7 +91,7 @@ public sealed class OtpHashingTests : IClassFixture<DmartFactory>
     public async Task VerifyAndConsume_Fails_With_Wrong_Code()
     {
         var ident = $"otphash_{Guid.NewGuid():N}@x.yz";
-        await Repo().IssueAsync(ident, OtpPurpose.VerifyContact, "111111", DateTime.UtcNow.AddMinutes(5));
+        await Repo().IssueAsync(ident, OtpPurpose.VerifyContact, "111111", TimeUtils.Now().AddMinutes(5));
         (await Repo().VerifyAndConsumeAsync(ident, OtpPurpose.VerifyContact, "222222", 0)).ShouldBeFalse();
     }
 
@@ -84,8 +99,8 @@ public sealed class OtpHashingTests : IClassFixture<DmartFactory>
     public async Task Reissue_Supersedes_The_Predecessor_Row()
     {
         var ident = $"otphash_{Guid.NewGuid():N}@x.yz";
-        await Repo().IssueAsync(ident, OtpPurpose.VerifyContact, "111111", DateTime.UtcNow.AddMinutes(5));
-        await Repo().IssueAsync(ident, OtpPurpose.VerifyContact, "333333", DateTime.UtcNow.AddMinutes(5));
+        await Repo().IssueAsync(ident, OtpPurpose.VerifyContact, "111111", TimeUtils.Now().AddMinutes(5));
+        await Repo().IssueAsync(ident, OtpPurpose.VerifyContact, "333333", TimeUtils.Now().AddMinutes(5));
 
         // Only the newest code redeems; the older row is tombstoned as
         // superseded rather than deleted.

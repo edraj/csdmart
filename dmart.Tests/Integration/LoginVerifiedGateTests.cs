@@ -1,3 +1,4 @@
+using Dmart.Utils;
 using System.Net;
 using System.Net.Http.Json;
 using System.Text;
@@ -66,7 +67,7 @@ public sealed class LoginVerifiedGateTests : IClassFixture<DmartFactory>
             // msisdn-identifier OTP path resolves to).
             var otpRepo = _factory.Services.GetRequiredService<OtpRepository>();
             const string code = "123456";
-            await otpRepo.IssueAsync(msisdn!, OtpPurpose.Login, code, DateTime.UtcNow.AddMinutes(5));
+            await otpRepo.IssueAsync(msisdn!, OtpPurpose.Login, code, TimeUtils.Now().AddMinutes(5));
 
             var resp = await Login(new UserLoginRequest(null, null, msisdn, null, Otp: code));
             resp.StatusCode.ShouldBe(HttpStatusCode.Unauthorized);

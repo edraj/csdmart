@@ -1,5 +1,6 @@
 using Dmart.DataAdapters.Sql;
 using Dmart.Models.Api;
+using Dmart.Utils;
 using Microsoft.Extensions.DependencyInjection;
 using Shouldly;
 using Xunit;
@@ -29,7 +30,7 @@ public sealed class OtpVerifyAttemptCapTests : IClassFixture<DmartFactory>
         const string realCode = "123456";
         const int cap = 5;
 
-        await repo.IssueAsync(ident, OtpPurpose.Login, realCode, DateTime.UtcNow.AddMinutes(5));
+        await repo.IssueAsync(ident, OtpPurpose.Login, realCode, TimeUtils.Now().AddMinutes(5));
 
         // Exhaust the cap with wrong codes.
         for (var i = 0; i < cap; i++)
@@ -47,7 +48,7 @@ public sealed class OtpVerifyAttemptCapTests : IClassFixture<DmartFactory>
         const string realCode = "654321";
         const int cap = 5;
 
-        await repo.IssueAsync(ident, OtpPurpose.Login, realCode, DateTime.UtcNow.AddMinutes(5));
+        await repo.IssueAsync(ident, OtpPurpose.Login, realCode, TimeUtils.Now().AddMinutes(5));
 
         // A few wrong attempts (below cap) must not lock out a legitimate user.
         for (var i = 0; i < cap - 1; i++)
