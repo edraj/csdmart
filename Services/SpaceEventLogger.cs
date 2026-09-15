@@ -109,7 +109,22 @@ public sealed class SpaceEventLogger(
 
         var path = ResolveLogPath(e.SpaceName);
         var sem = GetLock(e.SpaceName);
-        await sem.WaitAsync(ct);
+        // The wait itself is inside the guard, not outside it. `ct` is the
+        // originating request's token, so a client that disconnects right after
+        // its write committed makes WaitAsync throw OperationCanceledException —
+        // which used to escape LogAsync, escape PluginManager.AfterActionAsync
+        // (it logs first, before any hook dispatch), and fail an action that had
+        // already succeeded in PG. Same contract as the append below: the audit
+        // sink never decides whether an action is reported as successful.
+        try
+        {
+            await sem.WaitAsync(ct);
+        }
+        catch (Exception ex)
+        {
+            log.LogWarning(ex, "space-event-logger: gave up waiting to append to {Path}", path);
+            return;
+        }
         try
         {
             // Cache the "directory created" bit per space — typical hot path

@@ -2,7 +2,10 @@ using System.Net;
 using System.Net.Http.Json;
 using Dmart.DataAdapters.Sql;
 using Dmart.Models.Api;
+using Dmart.Models.Enums;
 using Dmart.Models.Json;
+using Dmart.Plugins;
+using Dmart.Tests.Infrastructure;
 using Microsoft.AspNetCore.Mvc.Testing;
 using Microsoft.Extensions.DependencyInjection;
 using Shouldly;
@@ -254,6 +257,47 @@ public sealed class OtpImplicitRegistrationTests : IClassFixture<DmartFactory>
 
     private static string NewMsisdn() => $"9647{Random.Shared.Next(100_000_000, 999_999_999)}";
 
+    // The whole point of firing the create hooks from TryImplicitRegisterAsync:
+    // an implicitly-registered account must get the same personal/people/*
+    // scaffolding /user/create produces, not a bare users row.
+    [FactIfPg]
+    public async Task Flag_On_Implicit_Registration_Materializes_Personal_Folders()
+    {
+        var factory = WithImplicitRegistration();
+        var msisdn = NewMsisdn();
+        const string code = "112358";
+        await SeedOtpAsync(msisdn, code, factory.Services);
+
+        var resp = await factory.CreateClient().PostAsJsonAsync("/user/login",
+            new UserLoginRequest(null, null, msisdn, null, Otp: code),
+            DmartJsonContext.Default.UserLoginRequest);
+        var body = await resp.Content.ReadFromJsonAsync(DmartJsonContext.Default.Response);
+        var shortname = body?.Records is { Count: > 0 } ? body.Records[0].Shortname : null;
+        try
+        {
+            resp.StatusCode.ShouldBe(HttpStatusCode.OK, await resp.Content.ReadAsStringAsync());
+            shortname.ShouldNotBeNullOrEmpty();
+
+            // resource_folders_creation is "concurrent": true, so it is
+            // dispatched with Task.Run and outlives the request — settle it
+            // before asserting, exactly as TestUserCleanup does before purging.
+            (await factory.Services.GetRequiredService<PluginManager>()
+                .WaitForIdleAsync(TimeSpan.FromSeconds(15)))
+                .ShouldBeTrue("plugin hooks did not settle");
+
+            var entries = factory.Services.GetRequiredService<EntryRepository>();
+            (await entries.GetAsync("personal", "/people", shortname!, ResourceType.Folder))
+                .ShouldNotBeNull($"personal/people/{shortname} must exist");
+            foreach (var sub in new[] { "notifications", "private", "protected", "public", "inbox" })
+                (await entries.GetAsync("personal", $"/people/{shortname}", sub, ResourceType.Folder))
+                    .ShouldNotBeNull($"personal/people/{shortname}/{sub} must exist");
+        }
+        finally
+        {
+            if (!string.IsNullOrEmpty(shortname)) await DeleteUserAsync(shortname!, factory.Services);
+        }
+    }
+
     private WebApplicationFactory<Program> WithImplicitRegistration() =>
         _factory.WithWebHostBuilder(b => b.ConfigureServices(svcs =>
             svcs.Configure<Dmart.Config.DmartSettings>(s => s.EnableOtpImplicitRegistration = true)));
@@ -270,13 +314,18 @@ public sealed class OtpImplicitRegistrationTests : IClassFixture<DmartFactory>
         await repo.IssueAsync(identifier, OtpPurpose.Login, code, DateTime.UtcNow.AddMinutes(5));
     }
 
+    // Implicit registration fires the same resource_folders_creation hook
+    // /user/create does, so the new user owns personal/people/{shortname}/*
+    // entries and a bare users.DeleteAsync trips the
+    // entries.owner_shortname -> users.shortname FK. TestUserCleanup settles
+    // the (concurrent, fire-and-forget) hook first, then purges everything the
+    // user owns — see TestUserCleanup for why draining is not optional here.
     private async Task DeleteUserAsync(string shortname, IServiceProvider services)
     {
         try
         {
-            var users = services.GetRequiredService<UserRepository>();
-            await users.DeleteAllSessionsAsync(shortname);
-            await users.DeleteAsync(shortname);
+            await services.GetRequiredService<UserRepository>().DeleteAllSessionsAsync(shortname);
+            await TestUserCleanup.DeleteUserAndOwnedAsync(services, shortname);
         }
         catch { /* best effort */ }
     }
