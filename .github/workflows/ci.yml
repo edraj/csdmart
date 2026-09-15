@@ -385,8 +385,25 @@ jobs:
         # at SQLite (it overrides the config in-memory and nulls the PostgreSQL
         # settings, so nothing can silently fall back). Empty for the
         # PostgreSQL leg, which keeps that command byte-identical to before.
+        #
+        # TZ pins the SQLite leg to a NON-UTC zone, and that is a real test, not
+        # housekeeping. dmart stores timestamps local-naive in `timestamp
+        # without time zone` columns ("no UTC anywhere" — see the
+        # TIMESTAMPTZ->TIMESTAMP migration in SqlSchema.cs), so any code that
+        # reaches for DateTime.UtcNow where it owes TimeUtils.Now() is wrong by
+        # the host's offset. On a UTC runner the two are equal and the mistake
+        # is invisible; a whole class of OTP-expiry bugs shipped green here and
+        # only failed for developers outside UTC.
+        #
+        # Asia/Kolkata deliberately: no DST, so the leg behaves the same all
+        # year, and a :30 offset also catches anything that would round away a
+        # whole-hour skew. The PostgreSQL leg stays UTC on purpose — it masks
+        # this class of bug anyway, because Npgsql infers `timestamptz` from a
+        # Kind=Utc DateTime and the server converts it back through the session
+        # TimeZone on the way into the column.
         env:
           DMART_TEST_DRIVER: ${{ matrix.driver == 'sqlite' && 'sqlite' || '' }}
+          TZ: ${{ matrix.driver == 'sqlite' && 'Asia/Kolkata' || '' }}
         run: BACKEND_ENV=$(pwd)/config.env DMART_TEST_PWD=dmart dotnet test dmart.Tests/dmart.Tests.csproj -c Release --nologo --logger "trx;LogFileName=results.trx"
 
       # AOT publish is no longer deferred to release.yml — see the aot-publish
