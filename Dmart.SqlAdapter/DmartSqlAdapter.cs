@@ -911,8 +911,14 @@ public sealed partial class DmartSqlAdapter : IDmartData
         cmd.Parameters.Add(JsonbHelpers.ToJsonbParameter(e.Displayname, _json));
         cmd.Parameters.Add(JsonbHelpers.ToJsonbParameter(e.Description, _json));
         cmd.Parameters.Add(JsonbHelpers.ToJsonbParameter(e.Tags, _json));
-        cmd.Parameters.Add(new() { Value = e.CreatedAt == default ? DateTime.UtcNow : e.CreatedAt });
-        cmd.Parameters.Add(new() { Value = e.UpdatedAt == default ? DateTime.UtcNow : e.UpdatedAt });
+        // DateTime.Now, not UtcNow: dmart stores naive LOCAL wall-clock in
+        // `timestamp without time zone`, and the session TimeZone is pinned to
+        // the host, so a Kind=Utc default is converted by the server on the way
+        // in rather than stored as read. Naive() matches what the main adapter's
+        // binding seam (PostgresDialect.CreateParameter) enforces for every
+        // other timestamp.
+        cmd.Parameters.Add(new() { Value = Naive(e.CreatedAt == default ? DateTime.Now : e.CreatedAt) });
+        cmd.Parameters.Add(new() { Value = Naive(e.UpdatedAt == default ? DateTime.Now : e.UpdatedAt) });
         cmd.Parameters.Add(new() { Value = e.OwnerShortname });
         cmd.Parameters.Add(new() { Value = (object?)e.OwnerGroupShortname ?? DBNull.Value });
         cmd.Parameters.Add(JsonbHelpers.ToJsonbParameter(e.Acl, _json));
@@ -1046,6 +1052,13 @@ public sealed partial class DmartSqlAdapter : IDmartData
     // for compounds like PluginWrapper → "plugin_wrapper" and
     // DataAsset → "data_asset"; read those via reflection so the wire
     // strings match what the server writes.
+    // Bind timestamps as the naive wall-clock dmart stores: Npgsql infers
+    // `timestamptz` from Kind=Utc/Local, which the server then converts through
+    // the pinned session TimeZone into a `timestamp without time zone` column.
+    // Keeping the clock components and dropping only the Kind stores what was
+    // read, on any host.
+    private static DateTime Naive(DateTime t) => DateTime.SpecifyKind(t, DateTimeKind.Unspecified);
+
     private static string EnumWire<TEnum>(TEnum value) where TEnum : struct, Enum
         => JsonbHelpers.EnumMember(value);
 
