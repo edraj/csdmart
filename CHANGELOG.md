@@ -1,5 +1,128 @@
 # Changelog
 
+## v1.5.7 — 2026-09-16
+
+### Changed
+
+- **Timestamps now bind as the naive wall clock on both backends, not just on
+  paper.** dmart's time model has always been naive local — every column is
+  `timestamp without time zone`, `TimeUtils.Now()` is `DateTime.Now`, the
+  PostgreSQL session timezone is pinned to the host so SQL `NOW()` reads the
+  same clock, and a migration converts legacy `timestamptz` columns away. The
+  binding was the one place that escaped it.
+
+  Npgsql infers the PostgreSQL type from `DateTime.Kind`, and `Kind = Utc`
+  infers `timestamptz` — which the server then converts into the naive column
+  through that pinned session zone. Binding one 12:00 wall clock with the
+  session on `Asia/Baghdad` stored `12:00` for `Unspecified`, `12:00` for
+  `Local`, and **`15:00` for `Utc`**. SQLite writes the clock components
+  verbatim and never did that, so the two backends disagreed about what a
+  `Kind = Utc` value meant, by exactly the host's offset, with nothing to say so.
+
+  Every bound `DateTime` is relabelled `Unspecified` at the single seam all
+  PostgreSQL parameters pass through. The clock components are kept and only the
+  label is dropped. `Local` and `Unspecified` already stored verbatim, so
+  **nothing dmart itself writes changes value** — what changes is that a stray
+  `Kind = Utc` is now stored as the clock it reads rather than silently shifted.
+
+  **Operators:** no migration, and no rewrite of existing rows — those were
+  written through the same conversion and are already local wall clocks. The one
+  thing to check is *your own* code writing to a dmart database directly, or
+  through `Dmart.SqlAdapter`: a `DateTime.UtcNow` you were passing in was being
+  converted for you on PostgreSQL and is not any more. Pass local wall clocks
+  (`DateTime.Now`). `Dmart.SqlAdapter`'s own `created_at` / `updated_at`
+  defaults were on the wrong side of this and now read the local clock.
+
+  Two guards assert it against a live database, on both backends: one binds all
+  three `DateTime.Kind` values and requires a single wall clock back, the other
+  refuses any `timestamp with time zone` column in PostgreSQL and any non-`TEXT`
+  timestamp column in SQLite — which also catches a deployment whose
+  `TIMESTAMPTZ → TIMESTAMP` migration never ran.
+
+- **Implicitly registered accounts get their personal folders.** With
+  `ENABLE_OTP_IMPLICIT_REGISTRATION` on, an OTP login for an unknown
+  msisdn/email creates the account inline — but that path wrote the user row
+  straight through the repository, so nothing fired the create hooks that
+  `/user/create` fires. Those accounts came into existence without
+  `personal/people/{shortname}` or any of its five sub-folders, and nothing
+  created them later.
+
+  The hooks now fire from the service, at the point the row is actually
+  written, rather than from whichever handler asked for the login — so the
+  explicit and implicit registration paths cannot drift apart again. The audit
+  line for a new user also carries its `uuid` now, which was null for exactly
+  the accounts these paths create, leaving nothing to join the trail back to
+  the users row.
+
+  **Operators:** accounts created by this path *before* upgrading still have no
+  personal folders; this release does not backfill them.
+
+### Added
+
+- **CSV bulk import is schema-aware.** A CSV cell is always text, so a column
+  the target schema declares `number`, `integer` or `boolean` failed validation
+  on every row — the import could not populate a typed schema at all. Columns
+  are now coerced to the declared type before validation, including types
+  reached through `allOf` / `anyOf` / `oneOf` and local `$ref` into `$defs`,
+  which a composed schema needs and which otherwise silently coerced nothing.
+
+  Booleans accept the spellings a spreadsheet actually writes — `TRUE`/`FALSE`
+  from Excel and LibreOffice, `yes`/`no`, `1`/`0` — not only the JSON literal.
+  Anything else stays a string so the schema rejects it rather than quietly
+  becoming `false`. A blank cell in a typed column is omitted rather than
+  written as `""`: an empty string is not a number, and re-importing a sparse
+  export failed every such row.
+
+  `SchemaValidator` exposes the raw schema document for this, sharing one cache
+  and one lookup with the compiled form.
+
+### Fixed
+
+- **Auto-generated CSV shortnames were invalid and failed every later
+  operation.** An empty shortname cell produced `row-<8 hex>`, and the shortname
+  regex has no `-`. The entry was created, then rejected by validation on every
+  subsequent request against it, including its own deletion. Auto-generation now
+  matches the `auto` sentinel used everywhere else — the first 8 hex characters
+  of a fresh UUID, with that UUID reused as the entry's `uuid` — and goes
+  through the same collision retry, which at 32 bits over a 100,000-row import
+  is not theoretical.
+
+  `auto` in a shortname cell is honoured on create. On **update** it is not:
+  there the shortname is the row's address, and minting one aimed the patch at a
+  name that cannot exist and reported `OBJECT_NOT_FOUND` for a string the
+  operator never wrote. A blank shortname on an update row is now refused by
+  name.
+
+- **A malformed stored schema could take down a whole CSV import.** A boolean
+  sub-schema — `{"properties": {"x": true}}`, valid JSON Schema and accepted on
+  upload — raised an unhandled exception while the importer walked the schema,
+  returning a 500 instead of importing the file.
+
+- **`dmart fix-folder-rendering` stamped `updated_at` in UTC.** On PostgreSQL
+  the conversion above hid it; on SQLite it wrote a row stamped hours off on any
+  non-UTC host — enough to sort wrongly and to fall outside an incremental
+  export's `updated_at >= watermark`, which is the silent row loss that
+  mechanism exists to prevent.
+
+- **A failed audit-log write could fail the action it was recording.** The
+  per-space `events.jsonl` writer took its lock outside the guard that makes
+  every other failure in it non-fatal, so a client disconnecting immediately
+  after its write committed turned a succeeded action into an error response.
+  The audit sink never decides whether an action succeeded.
+
+### Internal
+
+- The test suite seeded stored timestamps with `DateTime.UtcNow` in 421 places.
+  PostgreSQL's conversion repaired them and UTC CI runners could not tell the
+  difference, so 14 OTP tests failed only for developers outside UTC, and a
+  Parquet watermark assertion failed only *west* of it. All of them now use the
+  clock the code compares against.
+
+- CI runs the SQLite tier in `Asia/Kolkata` — no DST, and a `:30` offset that
+  also catches a rounded-away whole-hour skew. The PostgreSQL tier stays UTC,
+  since it masks this class of bug regardless. A `DateTime.UtcNow` that owes a
+  local wall clock now fails in CI instead of only for whoever sits outside UTC.
+
 ## v1.5.6 — 2026-09-09
 
 ### Security
