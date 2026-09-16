@@ -1,3 +1,4 @@
+using Dmart.Utils;
 using System.Collections.Generic;
 using System.Linq;
 using System.Text.Json;
@@ -93,7 +94,7 @@ public class QuerySearchPermissionsTests : IClassFixture<DmartFactory>
         var user = Unique("qsp_user");
         var role = Unique("qsp_role");
         var perm = Unique("qsp_perm");
-        var now = DateTime.UtcNow;
+        var now = TimeUtils.Now();
 
         await c.Spaces.UpsertAsync(new Space
         {
@@ -176,8 +177,8 @@ public class QuerySearchPermissionsTests : IClassFixture<DmartFactory>
             ResourceType = ResourceType.Content,
             IsActive = isActive,
             OwnerShortname = owner,
-            CreatedAt = DateTime.UtcNow,
-            UpdatedAt = DateTime.UtcNow,
+            CreatedAt = TimeUtils.Now(),
+            UpdatedAt = TimeUtils.Now(),
             Payload = new Payload
             {
                 ContentType = ContentType.Json,

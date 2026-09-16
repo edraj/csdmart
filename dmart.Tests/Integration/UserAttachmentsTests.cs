@@ -1,3 +1,4 @@
+using Dmart.Utils;
 using System.Text.Json;
 using Dmart.DataAdapters.Sql;
 using Dmart.Models.Core;
@@ -44,8 +45,8 @@ public sealed class UserAttachmentsTests : IClassFixture<DmartFactory>
             IsActive = true,
             Tags = new(),
             Body = "hello from an attachment",
-            CreatedAt = DateTime.UtcNow,
-            UpdatedAt = DateTime.UtcNow,
+            CreatedAt = TimeUtils.Now(),
+            UpdatedAt = TimeUtils.Now(),
         };
         await attachments.UpsertAsync(att);
         return (att, async () =>

@@ -1,3 +1,4 @@
+using Dmart.Utils;
 using System.Net;
 using System.Net.Http.Headers;
 using System.Net.Http.Json;
@@ -36,7 +37,7 @@ public sealed class AuthzRegressionTests : IClassFixture<DmartFactory>
         var targetRole = Unique("authz_role");
         var targetPerm = Unique("authz_perm");
         var targetSpace = Unique("authz_space");
-        var now = DateTime.UtcNow;
+        var now = TimeUtils.Now();
 
         await CreateUserAsync(users, hasher, viewer);
         await CreateUserAsync(users, hasher, targetUser);
@@ -123,7 +124,7 @@ public sealed class AuthzRegressionTests : IClassFixture<DmartFactory>
         var hidden = Unique("acl_hidden");
         var visibleTag = Unique("visible_tag");
         var hiddenTag = Unique("hidden_tag");
-        var now = DateTime.UtcNow;
+        var now = TimeUtils.Now();
 
         await spaces.UpsertAsync(new Space
         {
@@ -265,7 +266,7 @@ public sealed class AuthzRegressionTests : IClassFixture<DmartFactory>
         var space = Unique("ticketonly_space");
         var subpath = $"/sp_{Guid.NewGuid():N}"[..14];
         var ticketSn = Unique("tk");
-        var now = DateTime.UtcNow;
+        var now = TimeUtils.Now();
 
         await spaces.UpsertAsync(new Space
         {
@@ -383,7 +384,7 @@ public sealed class AuthzRegressionTests : IClassFixture<DmartFactory>
         var subpath = $"/sp_{Guid.NewGuid():N}"[..14];
         var activeSn = Unique("ffv_active");
         var archivedSn = Unique("ffv_archived");
-        var now = DateTime.UtcNow;
+        var now = TimeUtils.Now();
 
         await spaces.UpsertAsync(new Space
         {
@@ -517,8 +518,8 @@ public sealed class AuthzRegressionTests : IClassFixture<DmartFactory>
             Language = Language.En,
             Roles = roles ?? new(),
             Groups = new(),
-            CreatedAt = DateTime.UtcNow,
-            UpdatedAt = DateTime.UtcNow,
+            CreatedAt = TimeUtils.Now(),
+            UpdatedAt = TimeUtils.Now(),
         });
     }
 
@@ -552,7 +553,7 @@ public sealed class AuthzRegressionTests : IClassFixture<DmartFactory>
         var secret   = Unique("gb_secret");
         var newUserOk   = Unique("gb_newok");
         var newUserDeny = Unique("gb_newdeny");
-        var now = DateTime.UtcNow;
+        var now = TimeUtils.Now();
 
         await access.UpsertPermissionAsync(new Permission
         {

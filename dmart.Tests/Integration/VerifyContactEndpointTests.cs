@@ -1,3 +1,4 @@
+using Dmart.Utils;
 using System.Net.Http.Json;
 using System.Text;
 using System.Text.Json;
@@ -252,7 +253,7 @@ public sealed class VerifyContactEndpointTests : IClassFixture<DmartFactory>
     private OtpRepository Repo() => _factory.Services.GetRequiredService<OtpRepository>();
 
     private Task SeedAsync(string dest, string code) =>
-        Repo().IssueAsync(dest, OtpPurpose.VerifyContact, code, DateTime.Now.AddMinutes(5));
+        Repo().IssueAsync(dest, OtpPurpose.VerifyContact, code, TimeUtils.Now().AddMinutes(5));
 
     private async Task<(string Shortname, string Email, HttpClient Client)> LoggedInUserAsync(
         bool mixedCase = false)

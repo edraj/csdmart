@@ -1,3 +1,4 @@
+using Dmart.Utils;
 using System.Net;
 using System.Net.Http.Json;
 using Dmart.DataAdapters.Sql;
@@ -249,8 +250,8 @@ public sealed class OtpImplicitRegistrationTests : IClassFixture<DmartFactory>
             Language = Models.Enums.Language.En,
             Roles = new(),
             Groups = new(),
-            CreatedAt = DateTime.UtcNow,
-            UpdatedAt = DateTime.UtcNow,
+            CreatedAt = TimeUtils.Now(),
+            UpdatedAt = TimeUtils.Now(),
         });
         return shortname;
     }
@@ -311,7 +312,7 @@ public sealed class OtpImplicitRegistrationTests : IClassFixture<DmartFactory>
     private async Task SeedOtpAsync(string identifier, string code, IServiceProvider? services = null)
     {
         var repo = (services ?? _factory.Services).GetRequiredService<OtpRepository>();
-        await repo.IssueAsync(identifier, OtpPurpose.Login, code, DateTime.UtcNow.AddMinutes(5));
+        await repo.IssueAsync(identifier, OtpPurpose.Login, code, TimeUtils.Now().AddMinutes(5));
     }
 
     // Implicit registration fires the same resource_folders_creation hook

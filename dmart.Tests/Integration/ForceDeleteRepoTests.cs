@@ -1,3 +1,4 @@
+using Dmart.Utils;
 using System.Net;
 using System.Net.Http.Json;
 using Dmart.DataAdapters.Sql;
@@ -127,7 +128,7 @@ public sealed class ForceDeleteRepoTests : IClassFixture<DmartFactory>
             Shortname = ownedSn, SpaceName = "management", Subpath = "/users",
             OwnerShortname = owner.Shortname, IsActive = true,
             Type = UserType.Web, Language = Language.En,
-            CreatedAt = DateTime.UtcNow, UpdatedAt = DateTime.UtcNow,
+            CreatedAt = TimeUtils.Now(), UpdatedAt = TimeUtils.Now(),
         });
         try
         {
@@ -294,7 +295,7 @@ public sealed class ForceDeleteRepoTests : IClassFixture<DmartFactory>
             Uuid = Guid.NewGuid().ToString(),
             Shortname = space, SpaceName = space, Subpath = "/",
             OwnerShortname = owner.Shortname, IsActive = true,
-            CreatedAt = DateTime.UtcNow, UpdatedAt = DateTime.UtcNow,
+            CreatedAt = TimeUtils.Now(), UpdatedAt = TimeUtils.Now(),
         });
         // A foreign-owned entry inside the user's space must survive the reassignment
         // — proving the space is reassigned, not wiped with its contents.
@@ -304,7 +305,7 @@ public sealed class ForceDeleteRepoTests : IClassFixture<DmartFactory>
             Uuid = Guid.NewGuid().ToString(),
             Shortname = foreignSn, SpaceName = space, Subpath = "/",
             ResourceType = ResourceType.Content, OwnerShortname = "dmart", IsActive = true,
-            CreatedAt = DateTime.UtcNow, UpdatedAt = DateTime.UtcNow,
+            CreatedAt = TimeUtils.Now(), UpdatedAt = TimeUtils.Now(),
         });
         try
         {
@@ -341,7 +342,7 @@ public sealed class ForceDeleteRepoTests : IClassFixture<DmartFactory>
             Uuid = Guid.NewGuid().ToString(),
             Shortname = name, SpaceName = "management", Subpath = "/roles",
             OwnerShortname = owner.Shortname, IsActive = true, Permissions = new(),
-            CreatedAt = DateTime.UtcNow, UpdatedAt = DateTime.UtcNow,
+            CreatedAt = TimeUtils.Now(), UpdatedAt = TimeUtils.Now(),
         });
         try
         {
@@ -368,7 +369,7 @@ public sealed class ForceDeleteRepoTests : IClassFixture<DmartFactory>
             OwnerShortname = owner.Shortname, IsActive = true,
             Subpaths = new() { ["management"] = new() { "/" } },
             ResourceTypes = new() { "content" }, Actions = new() { "view" },
-            CreatedAt = DateTime.UtcNow, UpdatedAt = DateTime.UtcNow,
+            CreatedAt = TimeUtils.Now(), UpdatedAt = TimeUtils.Now(),
         });
         try
         {
@@ -393,7 +394,7 @@ public sealed class ForceDeleteRepoTests : IClassFixture<DmartFactory>
             Uuid = Guid.NewGuid().ToString(),
             Shortname = name, SpaceName = "management", Subpath = "/groups",
             OwnerShortname = owner.Shortname, IsActive = true,
-            CreatedAt = DateTime.UtcNow, UpdatedAt = DateTime.UtcNow,
+            CreatedAt = TimeUtils.Now(), UpdatedAt = TimeUtils.Now(),
         });
         try
         {
@@ -419,7 +420,7 @@ public sealed class ForceDeleteRepoTests : IClassFixture<DmartFactory>
             Shortname = ownedSn, SpaceName = "management", Subpath = "/users",
             OwnerShortname = owner.Shortname, IsActive = true,
             Type = UserType.Web, Language = Language.En,
-            CreatedAt = DateTime.UtcNow, UpdatedAt = DateTime.UtcNow,
+            CreatedAt = TimeUtils.Now(), UpdatedAt = TimeUtils.Now(),
         });
         try
         {
@@ -506,7 +507,7 @@ public sealed class ForceDeleteRepoTests : IClassFixture<DmartFactory>
             Uuid = Guid.NewGuid().ToString(),
             Shortname = roleName, SpaceName = "management", Subpath = "/roles",
             OwnerShortname = owner.Shortname, IsActive = true, Permissions = new(),
-            CreatedAt = DateTime.UtcNow, UpdatedAt = DateTime.UtcNow,
+            CreatedAt = TimeUtils.Now(), UpdatedAt = TimeUtils.Now(),
         });
         // An owned data entry so the projection still has something to count.
         var sn = $"e{Guid.NewGuid():N}"[..12];

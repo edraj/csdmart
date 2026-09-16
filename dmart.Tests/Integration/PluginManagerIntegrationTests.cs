@@ -1,3 +1,4 @@
+using Dmart.Utils;
 using System;
 using System.Collections.Generic;
 using System.Threading.Tasks;
@@ -79,8 +80,8 @@ public class PluginManagerIntegrationTests : IClassFixture<DmartFactory>
                 OwnerShortname = "dmart",
                 IsActive = true,
                 Languages = new() { Language.En },
-                CreatedAt = DateTime.UtcNow,
-                UpdatedAt = DateTime.UtcNow,
+                CreatedAt = TimeUtils.Now(),
+                UpdatedAt = TimeUtils.Now(),
             });
 
             // Now fire a Folder create via EntryService. The plugin's filters
@@ -95,8 +96,8 @@ public class PluginManagerIntegrationTests : IClassFixture<DmartFactory>
                 ResourceType = ResourceType.Folder,
                 IsActive = true,
                 OwnerShortname = "dmart",
-                CreatedAt = DateTime.UtcNow,
-                UpdatedAt = DateTime.UtcNow,
+                CreatedAt = TimeUtils.Now(),
+                UpdatedAt = TimeUtils.Now(),
             };
             var result = await entries.CreateAsync(probe, "dmart");
             result.IsOk.ShouldBeTrue($"probe folder create failed: {result.ErrorMessage}");
@@ -168,8 +169,8 @@ public class PluginManagerIntegrationTests : IClassFixture<DmartFactory>
                 OwnerShortname = "dmart",
                 IsActive = true,
                 Languages = new() { Language.En },
-                CreatedAt = DateTime.UtcNow,
-                UpdatedAt = DateTime.UtcNow,
+                CreatedAt = TimeUtils.Now(),
+                UpdatedAt = TimeUtils.Now(),
             });
 
             await plugins.AfterActionAsync(new Event

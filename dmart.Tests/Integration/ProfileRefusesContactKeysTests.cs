@@ -3,6 +3,7 @@ using Dmart.DataAdapters.Sql;
 using Dmart.Models.Core;
 using Dmart.Models.Enums;
 using Dmart.Services;
+using Dmart.Utils;
 using Microsoft.Extensions.DependencyInjection;
 using Shouldly;
 using Xunit;
@@ -170,7 +171,7 @@ public class ProfileRefusesContactKeysTests : IClassFixture<DmartFactory>
             Password = hasher.Hash("OldPass1234!"),
             Type = UserType.Web, Language = Language.En,
             Roles = new(), Groups = new(),
-            CreatedAt = DateTime.UtcNow, UpdatedAt = DateTime.UtcNow,
+            CreatedAt = TimeUtils.Now(), UpdatedAt = TimeUtils.Now(),
         });
         return (shortname, email);
     }

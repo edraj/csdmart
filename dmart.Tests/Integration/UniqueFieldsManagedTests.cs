@@ -1,3 +1,4 @@
+using Dmart.Utils;
 using System;
 using System.Collections.Generic;
 using System.Text.Json;
@@ -67,8 +68,8 @@ public class UniqueFieldsManagedTests : IClassFixture<DmartFactory>
             OwnerShortname = "dmart",
             IsActive = true,
             Languages = new() { Language.En },
-            CreatedAt = DateTime.UtcNow,
-            UpdatedAt = DateTime.UtcNow,
+            CreatedAt = TimeUtils.Now(),
+            UpdatedAt = TimeUtils.Now(),
         });
 
         await entries.UpsertAsync(new Entry
@@ -80,8 +81,8 @@ public class UniqueFieldsManagedTests : IClassFixture<DmartFactory>
             ResourceType = ResourceType.Folder,
             IsActive = true,
             OwnerShortname = "dmart",
-            CreatedAt = DateTime.UtcNow,
-            UpdatedAt = DateTime.UtcNow,
+            CreatedAt = TimeUtils.Now(),
+            UpdatedAt = TimeUtils.Now(),
             Payload = new Payload
             {
                 ContentType = ContentType.Json,
@@ -103,8 +104,8 @@ public class UniqueFieldsManagedTests : IClassFixture<DmartFactory>
         Email = email,
         Type = UserType.Web,
         Language = Language.En,
-        CreatedAt = DateTime.UtcNow,
-        UpdatedAt = DateTime.UtcNow,
+        CreatedAt = TimeUtils.Now(),
+        UpdatedAt = TimeUtils.Now(),
     };
 
     private static Attachment MakeComment(string space, string subpath, string shortname, object body) => new()
@@ -116,8 +117,8 @@ public class UniqueFieldsManagedTests : IClassFixture<DmartFactory>
         ResourceType = ResourceType.Comment,
         IsActive = true,
         OwnerShortname = "dmart",
-        CreatedAt = DateTime.UtcNow,
-        UpdatedAt = DateTime.UtcNow,
+        CreatedAt = TimeUtils.Now(),
+        UpdatedAt = TimeUtils.Now(),
         Payload = new Payload
         {
             ContentType = ContentType.Json,

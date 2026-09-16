@@ -1,3 +1,4 @@
+using Dmart.Utils;
 using System.Net;
 using System.Net.Http.Headers;
 using System.Net.Http.Json;
@@ -52,7 +53,7 @@ public sealed class AssignOwnershipTests : IClassFixture<DmartFactory>
         var caller = Unique("asnh_c");
         var newOwner = Unique("asnh_no");
         var sn = Unique("asnh_e");
-        var now = DateTime.UtcNow;
+        var now = TimeUtils.Now();
 
         try
         {
@@ -107,7 +108,7 @@ public sealed class AssignOwnershipTests : IClassFixture<DmartFactory>
         var space = "test";
         var subpath = "/itest";
         var sn = Unique("asn_miss");
-        var now = DateTime.UtcNow;
+        var now = TimeUtils.Now();
 
         try
         {
@@ -151,7 +152,7 @@ public sealed class AssignOwnershipTests : IClassFixture<DmartFactory>
         var space = "test";
         var subpath = "/itest";
         var sn = Unique("asn_empty");
-        var now = DateTime.UtcNow;
+        var now = TimeUtils.Now();
 
         try
         {
@@ -184,7 +185,7 @@ public sealed class AssignOwnershipTests : IClassFixture<DmartFactory>
         var space = "test";
         var subpath = "/itest";
         var sn = Unique("asn_ghost");
-        var now = DateTime.UtcNow;
+        var now = TimeUtils.Now();
 
         try
         {
@@ -231,7 +232,7 @@ public sealed class AssignOwnershipTests : IClassFixture<DmartFactory>
         var user = Unique("asn_u");
         var newOwner = Unique("asn_no");
         var sn = Unique("asn_e");
-        var now = DateTime.UtcNow;
+        var now = TimeUtils.Now();
 
         try
         {
@@ -295,7 +296,7 @@ public sealed class AssignOwnershipTests : IClassFixture<DmartFactory>
         var user = Unique("asn2_u");
         var newOwner = Unique("asn2_no");
         var sn = Unique("asn2_e");
-        var now = DateTime.UtcNow;
+        var now = TimeUtils.Now();
 
         try
         {
@@ -358,7 +359,7 @@ public sealed class AssignOwnershipTests : IClassFixture<DmartFactory>
         var caller = Unique("asnk_c");
         var newOwner = Unique("asnk_no");
         var sn = Unique("asnk_e");
-        var now = DateTime.UtcNow;
+        var now = TimeUtils.Now();
 
         try
         {
@@ -458,8 +459,8 @@ public sealed class AssignOwnershipTests : IClassFixture<DmartFactory>
         Subpaths = subpaths,
         Actions = actions,
         ResourceTypes = resourceTypes ?? new(),
-        CreatedAt = DateTime.UtcNow,
-        UpdatedAt = DateTime.UtcNow,
+        CreatedAt = TimeUtils.Now(),
+        UpdatedAt = TimeUtils.Now(),
     };
 
     private static Role BuildRole(string shortname, params string[] permissions)
@@ -472,8 +473,8 @@ public sealed class AssignOwnershipTests : IClassFixture<DmartFactory>
         OwnerShortname = "dmart",
         IsActive = true,
         Permissions = new(permissions),
-        CreatedAt = DateTime.UtcNow,
-        UpdatedAt = DateTime.UtcNow,
+        CreatedAt = TimeUtils.Now(),
+        UpdatedAt = TimeUtils.Now(),
     };
 
     private static Space BuildSpace(string shortname, DateTime now)
@@ -520,8 +521,8 @@ public sealed class AssignOwnershipTests : IClassFixture<DmartFactory>
             Language = Language.En,
             Roles = roles ?? new(),
             Groups = new(),
-            CreatedAt = DateTime.UtcNow,
-            UpdatedAt = DateTime.UtcNow,
+            CreatedAt = TimeUtils.Now(),
+            UpdatedAt = TimeUtils.Now(),
         });
 
     private async Task<(HttpClient Client, string Token)> LoginAs(string shortname)

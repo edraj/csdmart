@@ -1,5 +1,6 @@
 using Dmart.DataAdapters.Sql;
 using Dmart.Models.Core;
+using Dmart.Utils;
 using Microsoft.Extensions.DependencyInjection;
 using Shouldly;
 using Xunit;
@@ -27,7 +28,7 @@ public class ManagementShortnameUniquenessTests : IClassFixture<DmartFactory>
             Uuid = Guid.NewGuid().ToString(),
             Shortname = name, SpaceName = "management", Subpath = subpath,
             OwnerShortname = "dmart", IsActive = true, Permissions = new(),
-            CreatedAt = DateTime.UtcNow, UpdatedAt = DateTime.UtcNow,
+            CreatedAt = TimeUtils.Now(), UpdatedAt = TimeUtils.Now(),
         };
         await access.UpsertRoleAsync(Make("/roles"));
         try
@@ -52,7 +53,7 @@ public class ManagementShortnameUniquenessTests : IClassFixture<DmartFactory>
             Uuid = Guid.NewGuid().ToString(),
             Shortname = name, SpaceName = "management", Subpath = subpath,
             OwnerShortname = "dmart", IsActive = true,
-            CreatedAt = DateTime.UtcNow, UpdatedAt = DateTime.UtcNow,
+            CreatedAt = TimeUtils.Now(), UpdatedAt = TimeUtils.Now(),
         };
         await access.UpsertGroupAsync(Make("/groups"));
         try
@@ -77,7 +78,7 @@ public class ManagementShortnameUniquenessTests : IClassFixture<DmartFactory>
             Subpaths = new() { ["management"] = new() { "/" } },
             ResourceTypes = new() { "content" },
             Actions = new() { "view" },
-            CreatedAt = DateTime.UtcNow, UpdatedAt = DateTime.UtcNow,
+            CreatedAt = TimeUtils.Now(), UpdatedAt = TimeUtils.Now(),
         };
         await access.UpsertPermissionAsync(Make("/permissions"));
         try

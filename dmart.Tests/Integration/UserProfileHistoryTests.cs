@@ -1,3 +1,4 @@
+using Dmart.Utils;
 using System.Text.Json;
 using Dmart.Auth;
 using Dmart.DataAdapters.Sql;
@@ -140,7 +141,7 @@ public sealed class UserProfileHistoryTests : IClassFixture<DmartFactory>
             // Stage force_password_change so the password change bypasses
             // the old_password requirement.
             var u = (await users.GetByShortnameAsync(shortname))!;
-            await users.UpsertAsync(u with { ForcePasswordChange = true, UpdatedAt = DateTime.UtcNow });
+            await users.UpsertAsync(u with { ForcePasswordChange = true, UpdatedAt = TimeUtils.Now() });
 
             var patch = new Dictionary<string, object> { ["password"] = "NewPass1234!" };
             var result = await svc.UpdateProfileAsync(shortname, patch);
@@ -203,8 +204,8 @@ public sealed class UserProfileHistoryTests : IClassFixture<DmartFactory>
             Groups = new(),
             Type = UserType.Web,
             Language = language,
-            CreatedAt = DateTime.UtcNow,
-            UpdatedAt = DateTime.UtcNow,
+            CreatedAt = TimeUtils.Now(),
+            UpdatedAt = TimeUtils.Now(),
         };
         await users.UpsertAsync(user);
         return (shortname, address);

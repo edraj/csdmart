@@ -1,3 +1,4 @@
+using Dmart.Utils;
 using System.IO.Compression;
 using System.Text.Json;
 using Dmart.DataAdapters.Sql;
@@ -43,8 +44,8 @@ public class ImportExportRoundTripTests : IClassFixture<DmartFactory>
             OwnerShortname = "dmart",
             IsActive = true,
             Languages = new() { Language.En },
-            CreatedAt = DateTime.UtcNow,
-            UpdatedAt = DateTime.UtcNow,
+            CreatedAt = TimeUtils.Now(),
+            UpdatedAt = TimeUtils.Now(),
         });
 
         // Seed: two folders + three content entries with JSON payloads.
@@ -52,13 +53,13 @@ public class ImportExportRoundTripTests : IClassFixture<DmartFactory>
         {
             Uuid = Guid.NewGuid().ToString(), Shortname = "products", SpaceName = spaceName,
             Subpath = "/", ResourceType = ResourceType.Folder, IsActive = true,
-            OwnerShortname = "dmart", CreatedAt = DateTime.UtcNow, UpdatedAt = DateTime.UtcNow,
+            OwnerShortname = "dmart", CreatedAt = TimeUtils.Now(), UpdatedAt = TimeUtils.Now(),
         };
         var folderB = new Entry
         {
             Uuid = Guid.NewGuid().ToString(), Shortname = "widgets", SpaceName = spaceName,
             Subpath = "/products", ResourceType = ResourceType.Folder, IsActive = true,
-            OwnerShortname = "dmart", CreatedAt = DateTime.UtcNow, UpdatedAt = DateTime.UtcNow,
+            OwnerShortname = "dmart", CreatedAt = TimeUtils.Now(), UpdatedAt = TimeUtils.Now(),
         };
         var c1 = MakeContent(spaceName, "/products/widgets", "w1", new { sku = "A-1", price = 10 });
         var c2 = MakeContent(spaceName, "/products/widgets", "w2", new { sku = "A-2", price = 25 });
@@ -181,7 +182,7 @@ public class ImportExportRoundTripTests : IClassFixture<DmartFactory>
             Shortname = spaceName, SpaceName = spaceName, Subpath = "/",
             OwnerShortname = "dmart", IsActive = true,
             Languages = new() { Language.En },
-            CreatedAt = DateTime.UtcNow, UpdatedAt = DateTime.UtcNow,
+            CreatedAt = TimeUtils.Now(), UpdatedAt = TimeUtils.Now(),
         });
 
         var sn = "readme";
@@ -330,7 +331,7 @@ public class ImportExportRoundTripTests : IClassFixture<DmartFactory>
             Uuid = Guid.NewGuid().ToString(), Shortname = spaceName,
             SpaceName = spaceName, Subpath = "/", OwnerShortname = "dmart",
             IsActive = true, Languages = new() { Language.En },
-            CreatedAt = DateTime.UtcNow, UpdatedAt = DateTime.UtcNow,
+            CreatedAt = TimeUtils.Now(), UpdatedAt = TimeUtils.Now(),
         });
         await entryRepo.UpsertAsync(MakeContent(spaceName, "/", parentShortname, new { title = "no filename" }));
         await attachRepo.UpsertAsync(new Attachment
@@ -338,7 +339,7 @@ public class ImportExportRoundTripTests : IClassFixture<DmartFactory>
             Uuid = Guid.NewGuid().ToString(), Shortname = "att1",
             SpaceName = spaceName, Subpath = $"/{parentShortname}",
             ResourceType = ResourceType.Media, IsActive = true, OwnerShortname = "dmart",
-            CreatedAt = DateTime.UtcNow, UpdatedAt = DateTime.UtcNow,
+            CreatedAt = TimeUtils.Now(), UpdatedAt = TimeUtils.Now(),
             Media = mediaBytes,
             // Bytes present, no filename to write them under — the case.
             Payload = new Payload { ContentType = ContentType.ImagePng, Body = null },
@@ -422,8 +423,8 @@ public class ImportExportRoundTripTests : IClassFixture<DmartFactory>
             OwnerShortname = "dmart",
             IsActive = true,
             Languages = new() { Language.En },
-            CreatedAt = DateTime.UtcNow,
-            UpdatedAt = DateTime.UtcNow,
+            CreatedAt = TimeUtils.Now(),
+            UpdatedAt = TimeUtils.Now(),
         });
 
         var parent = MakeContent(spaceName, "/", parentShortname, new { title = "with media" });
@@ -439,8 +440,8 @@ public class ImportExportRoundTripTests : IClassFixture<DmartFactory>
             ResourceType = ResourceType.Media,
             IsActive = true,
             OwnerShortname = "dmart",
-            CreatedAt = DateTime.UtcNow,
-            UpdatedAt = DateTime.UtcNow,
+            CreatedAt = TimeUtils.Now(),
+            UpdatedAt = TimeUtils.Now(),
             Media = mediaBytes,
             Payload = new Payload
             {
@@ -495,8 +496,8 @@ public class ImportExportRoundTripTests : IClassFixture<DmartFactory>
             ResourceType = ResourceType.Content,
             IsActive = true,
             OwnerShortname = "dmart",
-            CreatedAt = DateTime.UtcNow,
-            UpdatedAt = DateTime.UtcNow,
+            CreatedAt = TimeUtils.Now(),
+            UpdatedAt = TimeUtils.Now(),
             Payload = new Payload
             {
                 ContentType = ContentType.Json,

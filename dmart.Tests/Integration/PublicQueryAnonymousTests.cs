@@ -1,3 +1,4 @@
+using Dmart.Utils;
 using System.Net;
 using System.Net.Http.Json;
 using System.Text.Json;
@@ -63,8 +64,8 @@ public sealed class PublicQueryAnonymousTests : IClassFixture<DmartFactory>
                 OwnerShortname = "dmart",
                 IsActive = true,
                 Permissions = new() { worldPerm },
-                CreatedAt = DateTime.UtcNow,
-                UpdatedAt = DateTime.UtcNow,
+                CreatedAt = TimeUtils.Now(),
+                UpdatedAt = TimeUtils.Now(),
             });
             await users.UpsertAsync(new User
             {
@@ -77,8 +78,8 @@ public sealed class PublicQueryAnonymousTests : IClassFixture<DmartFactory>
                 Roles = new() { anonRole },
                 Type = UserType.Web,
                 Language = Language.En,
-                CreatedAt = DateTime.UtcNow,
-                UpdatedAt = DateTime.UtcNow,
+                CreatedAt = TimeUtils.Now(),
+                UpdatedAt = TimeUtils.Now(),
             });
             foreach (var (shortname, rank) in seeded)
             {
@@ -93,8 +94,8 @@ public sealed class PublicQueryAnonymousTests : IClassFixture<DmartFactory>
                     ResourceType = ResourceType.Content,
                     IsActive = true,
                     Payload = new Payload { ContentType = ContentType.Json, Body = payloadBody },
-                    CreatedAt = DateTime.UtcNow,
-                    UpdatedAt = DateTime.UtcNow,
+                    CreatedAt = TimeUtils.Now(),
+                    UpdatedAt = TimeUtils.Now(),
                 });
             }
             await access.InvalidateAllCachesAsync();
@@ -459,8 +460,8 @@ internal sealed class WorldScopeHarness : IAsyncDisposable
             OwnerShortname = "dmart",
             IsActive = true,
             Permissions = new() { worldPerm },
-            CreatedAt = DateTime.UtcNow,
-            UpdatedAt = DateTime.UtcNow,
+            CreatedAt = TimeUtils.Now(),
+            UpdatedAt = TimeUtils.Now(),
         });
         await users.UpsertAsync(new User
         {
@@ -473,8 +474,8 @@ internal sealed class WorldScopeHarness : IAsyncDisposable
             Roles = new() { anonRole },
             Type = UserType.Web,
             Language = Language.En,
-            CreatedAt = DateTime.UtcNow,
-            UpdatedAt = DateTime.UtcNow,
+            CreatedAt = TimeUtils.Now(),
+            UpdatedAt = TimeUtils.Now(),
         });
         if (seeds is { Length: > 0 })
         {
@@ -491,8 +492,8 @@ internal sealed class WorldScopeHarness : IAsyncDisposable
                     ResourceType = ResourceType.Content,
                     IsActive = true,
                     Payload = new Payload { ContentType = ContentType.Json, Body = body },
-                    CreatedAt = DateTime.UtcNow,
-                    UpdatedAt = DateTime.UtcNow,
+                    CreatedAt = TimeUtils.Now(),
+                    UpdatedAt = TimeUtils.Now(),
                 });
             }
         }

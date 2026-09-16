@@ -1,3 +1,4 @@
+using Dmart.Utils;
 using System.Text.Json;
 using Dmart.DataAdapters.Sql;
 using Dmart.Models.Api;
@@ -226,7 +227,7 @@ public sealed class WorkflowServiceProgressTests : IClassFixture<DmartFactory>
         ctx.TicketLocator = new Locator(
             ResourceType.Ticket, ctx.SpaceName, "/tickets", ctx.TicketName);
 
-        var now = DateTime.UtcNow;
+        var now = TimeUtils.Now();
 
         // 1. Space — required so the FK from entries.space_name resolves.
         await ctx.Spaces.UpsertAsync(new Space

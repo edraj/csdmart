@@ -1,3 +1,4 @@
+using Dmart.Utils;
 using System.Net.Http.Headers;
 using System.Net.Http.Json;
 using System.Text.Json;
@@ -300,8 +301,8 @@ public sealed class DmartFactory : WebApplicationFactory<Program>, IAsyncLifetim
             Language = Language.En,
             Roles = roles ?? new() { "super_admin" },
             Groups = new(),
-            CreatedAt = DateTime.UtcNow,
-            UpdatedAt = DateTime.UtcNow,
+            CreatedAt = TimeUtils.Now(),
+            UpdatedAt = TimeUtils.Now(),
         });
 
         async Task Cleanup()
@@ -346,8 +347,8 @@ public sealed class DmartFactory : WebApplicationFactory<Program>, IAsyncLifetim
             Language = Language.En,
             Roles = roles ?? new() { "super_admin" },
             Groups = groups ?? new(),
-            CreatedAt = DateTime.UtcNow,
-            UpdatedAt = DateTime.UtcNow,
+            CreatedAt = TimeUtils.Now(),
+            UpdatedAt = TimeUtils.Now(),
         });
 
         var loginClient = host.CreateClient(new WebApplicationFactoryClientOptions { HandleCookies = false });

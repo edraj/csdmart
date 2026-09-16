@@ -1,3 +1,4 @@
+using Dmart.Utils;
 using System.Net;
 using System.Net.Http.Headers;
 using System.Net.Http.Json;
@@ -58,7 +59,7 @@ public sealed class ResourceTypeConfusionAuthzTests : IClassFixture<DmartFactory
         var space = Unique("rtc_space");
         var subpath = "/schema";
         var schemaShortname = Unique("rtc_schema");
-        var now = DateTime.UtcNow;
+        var now = TimeUtils.Now();
 
         await spaces.UpsertAsync(new Space
         {
@@ -199,7 +200,7 @@ public sealed class ResourceTypeConfusionAuthzTests : IClassFixture<DmartFactory
         var space = Unique("rtc_fspace");
         const string subpath = "/docs";
         var victim = Unique("rtc_victim");
-        var now = DateTime.UtcNow;
+        var now = TimeUtils.Now();
 
         await spaces.UpsertAsync(new Space
         {
@@ -348,7 +349,7 @@ public sealed class ResourceTypeConfusionAuthzTests : IClassFixture<DmartFactory
         const string subpath = "/schema";
         var schemaShortname = Unique("rtc_rschema");
         const string Marker = "rtc_marker_do_not_leak";
-        var now = DateTime.UtcNow;
+        var now = TimeUtils.Now();
 
         await spaces.UpsertAsync(new Space
         {
@@ -465,7 +466,7 @@ public sealed class ResourceTypeConfusionAuthzTests : IClassFixture<DmartFactory
         const string subpath = "/schema";
         var schemaShortname = Unique("rtc_mschema");
         const string Marker = "rtc_mcp_marker_do_not_leak";
-        var now = DateTime.UtcNow;
+        var now = TimeUtils.Now();
 
         await spaces.UpsertAsync(new Space
         {
@@ -798,7 +799,7 @@ public sealed class ResourceTypeConfusionAuthzTests : IClassFixture<DmartFactory
             Parent: Unique("rtc_parent"),
             Att: Unique("rtc_att"));
         f = f with { AttSubpath = $"{f.ParentSubpath}/{f.Parent}" };
-        var now = DateTime.UtcNow;
+        var now = TimeUtils.Now();
 
         await spaces.UpsertAsync(new Space
         {
@@ -906,8 +907,8 @@ public sealed class ResourceTypeConfusionAuthzTests : IClassFixture<DmartFactory
             Language = Language.En,
             Roles = roles ?? new(),
             Groups = new(),
-            CreatedAt = DateTime.UtcNow,
-            UpdatedAt = DateTime.UtcNow,
+            CreatedAt = TimeUtils.Now(),
+            UpdatedAt = TimeUtils.Now(),
         });
     }
 

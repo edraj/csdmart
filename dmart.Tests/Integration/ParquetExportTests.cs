@@ -2,6 +2,7 @@ using Dmart.DataAdapters.Sql;
 using Dmart.Models.Core;
 using Dmart.Models.Enums;
 using Dmart.Services;
+using Dmart.Utils;
 using Microsoft.Extensions.DependencyInjection;
 using Shouldly;
 using Xunit;
@@ -164,7 +165,7 @@ public class ParquetExportTests : IClassFixture<DmartFactory>, IDisposable
     {
         await WithSpaceAsync(2, async (svc, space, _) =>
         {
-            var before = DateTime.UtcNow;
+            var before = TimeUtils.Now();
             var manifest = await svc.ExportAsync(NewDir(), space, "/", actor: null);
 
             manifest.Watermark.ShouldBeLessThanOrEqualTo(manifest.CreatedAt);
@@ -1353,7 +1354,7 @@ public class ParquetExportTests : IClassFixture<DmartFactory>, IDisposable
         await WithSpaceAsync(1, async (svc, space, _) =>
         {
             await Should.ThrowAsync<NotSupportedException>(
-                svc.ExportAsync(NewDir(), space, "/", actor: "dmart", since: DateTime.UtcNow));
+                svc.ExportAsync(NewDir(), space, "/", actor: "dmart", since: TimeUtils.Now()));
         });
     }
 

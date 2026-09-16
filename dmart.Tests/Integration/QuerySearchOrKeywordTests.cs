@@ -1,3 +1,4 @@
+using Dmart.Utils;
 using System.Collections.Generic;
 using System.Linq;
 using System.Text.Json;
@@ -50,8 +51,8 @@ public class QuerySearchOrKeywordTests : IClassFixture<DmartFactory>
             OwnerShortname = "dmart",
             IsActive = true,
             Languages = new() { Language.En },
-            CreatedAt = DateTime.UtcNow,
-            UpdatedAt = DateTime.UtcNow,
+            CreatedAt = TimeUtils.Now(),
+            UpdatedAt = TimeUtils.Now(),
         });
 
         await Seed(entries, spaceName, "red_small", "{\"color\":\"red\",\"size\":\"small\"}");
@@ -73,8 +74,8 @@ public class QuerySearchOrKeywordTests : IClassFixture<DmartFactory>
             ResourceType = ResourceType.Content,
             IsActive = true,
             OwnerShortname = "dmart",
-            CreatedAt = DateTime.UtcNow,
-            UpdatedAt = DateTime.UtcNow,
+            CreatedAt = TimeUtils.Now(),
+            UpdatedAt = TimeUtils.Now(),
             Payload = new Payload
             {
                 ContentType = ContentType.Json,

@@ -1,3 +1,4 @@
+using Dmart.Utils;
 using System.Net;
 using System.Net.Http.Json;
 using Dmart.Auth;
@@ -306,7 +307,7 @@ public sealed class PasswordResetConfirmTests : IClassFixture<DmartFactory>
     private async Task SeedResetOtpAsync(string dest, string code)
     {
         var repo = _factory.Services.GetRequiredService<OtpRepository>();
-        await repo.IssueAsync(dest, OtpPurpose.Reset, code, DateTime.UtcNow.AddMinutes(5));
+        await repo.IssueAsync(dest, OtpPurpose.Reset, code, TimeUtils.Now().AddMinutes(5));
     }
 
     // A stored email that is not exactly lowercase must still be able to
@@ -431,8 +432,8 @@ public sealed class PasswordResetConfirmTests : IClassFixture<DmartFactory>
             Password = hasher.Hash("OriginalPass1"),
             Type = UserType.Web,
             Language = Language.En,
-            CreatedAt = DateTime.UtcNow,
-            UpdatedAt = DateTime.UtcNow,
+            CreatedAt = TimeUtils.Now(),
+            UpdatedAt = TimeUtils.Now(),
         };
         await users.UpsertAsync(user);
         return (shortname, email, msisdn);

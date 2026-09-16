@@ -56,7 +56,15 @@ public sealed class FolderRenderingFixer(IDbConnectionFactory db)
             using var doc = JsonDocument.Parse(fix.NewBodyJson);
             await entries.UpsertAsync(folder with
             {
-                UpdatedAt = DateTime.UtcNow,
+                // TimeUtils.Now(), not DateTime.UtcNow: updated_at is
+                // `timestamp without time zone` holding a naive LOCAL wall
+                // clock. PostgreSQL happened to repair a UTC value (Npgsql
+                // infers timestamptz from Kind=Utc and the server converts it
+                // through the pinned session TimeZone); SQLite stores the
+                // components verbatim, so on a non-UTC host this wrote a row
+                // stamped hours off — enough to sort wrongly and to fall
+                // outside an incremental export's `updated_at >= watermark`.
+                UpdatedAt = TimeUtils.Now(),
                 Payload = folder.Payload with { Body = doc.RootElement.Clone() },
             }, ct);
             applied++;

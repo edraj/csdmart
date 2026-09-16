@@ -1,3 +1,4 @@
+using Dmart.Utils;
 using System.Text;
 using System.Text.Json;
 using Dmart.DataAdapters.Sql;
@@ -52,7 +53,7 @@ public sealed class PluginMediaCallbackTests : IClassFixture<DmartFactory>
             ResourceType = ResourceType.Media,
             OwnerShortname = "dmart", IsActive = true,
             Tags = new(), Media = Blob,
-            CreatedAt = DateTime.UtcNow, UpdatedAt = DateTime.UtcNow,
+            CreatedAt = TimeUtils.Now(), UpdatedAt = TimeUtils.Now(),
         });
 
         try

@@ -1,3 +1,4 @@
+using Dmart.Utils;
 using System;
 using System.Linq;
 using System.Text.Json;
@@ -38,7 +39,7 @@ public class FolderRenderingComplianceTests : IClassFixture<DmartFactory>
             Uuid = Guid.NewGuid().ToString(),
             Shortname = "folder_rendering", SpaceName = "management", Subpath = "/schema",
             ResourceType = ResourceType.Schema, IsActive = true, OwnerShortname = "dmart",
-            CreatedAt = DateTime.UtcNow, UpdatedAt = DateTime.UtcNow,
+            CreatedAt = TimeUtils.Now(), UpdatedAt = TimeUtils.Now(),
             Payload = new Payload
             {
                 ContentType = ContentType.Json,
@@ -96,7 +97,7 @@ public class FolderRenderingComplianceTests : IClassFixture<DmartFactory>
             Shortname = spaceName, SpaceName = spaceName, Subpath = "/",
             OwnerShortname = "dmart", IsActive = true,
             Languages = new() { Language.En },
-            CreatedAt = DateTime.UtcNow, UpdatedAt = DateTime.UtcNow,
+            CreatedAt = TimeUtils.Now(), UpdatedAt = TimeUtils.Now(),
         });
         // Folder restricted to content; seed one compliant and one violating
         // child DIRECTLY via the repo (mimicking legacy rows that predate
@@ -106,7 +107,7 @@ public class FolderRenderingComplianceTests : IClassFixture<DmartFactory>
             Uuid = Guid.NewGuid().ToString(),
             Shortname = "locked", SpaceName = spaceName, Subpath = "/",
             ResourceType = ResourceType.Folder, IsActive = true, OwnerShortname = "dmart",
-            CreatedAt = DateTime.UtcNow, UpdatedAt = DateTime.UtcNow,
+            CreatedAt = TimeUtils.Now(), UpdatedAt = TimeUtils.Now(),
             Payload = new Payload
             {
                 ContentType = ContentType.Json,
@@ -118,14 +119,14 @@ public class FolderRenderingComplianceTests : IClassFixture<DmartFactory>
             Uuid = Guid.NewGuid().ToString(),
             Shortname = "ok_child", SpaceName = spaceName, Subpath = "/locked",
             ResourceType = ResourceType.Content, IsActive = true, OwnerShortname = "dmart",
-            CreatedAt = DateTime.UtcNow, UpdatedAt = DateTime.UtcNow,
+            CreatedAt = TimeUtils.Now(), UpdatedAt = TimeUtils.Now(),
         });
         await entries.UpsertAsync(new Entry
         {
             Uuid = Guid.NewGuid().ToString(),
             Shortname = "bad_child", SpaceName = spaceName, Subpath = "/locked",
             ResourceType = ResourceType.Ticket, IsActive = true, OwnerShortname = "dmart",
-            CreatedAt = DateTime.UtcNow, UpdatedAt = DateTime.UtcNow,
+            CreatedAt = TimeUtils.Now(), UpdatedAt = TimeUtils.Now(),
         });
 
         try

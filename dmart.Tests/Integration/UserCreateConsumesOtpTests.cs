@@ -1,3 +1,4 @@
+using Dmart.Utils;
 using System.Net.Http.Json;
 using System.Text;
 using Dmart.DataAdapters.Sql;
@@ -27,7 +28,7 @@ public sealed class UserCreateConsumesOtpTests : IClassFixture<DmartFactory>
         var factory = OtpRequired();
         var otpRepo = factory.Services.GetRequiredService<OtpRepository>();
         var email = $"otpc_{Guid.NewGuid():N}"[..16] + "@x.yz";
-        await otpRepo.IssueAsync(email, OtpPurpose.Register, Otp, DateTime.UtcNow.AddMinutes(5));
+        await otpRepo.IssueAsync(email, OtpPurpose.Register, Otp, TimeUtils.Now().AddMinutes(5));
 
         var body = "{\"attributes\":{\"email\":\"" + email + "\",\"password\":\"" + ValidPassword
             + "\",\"email_otp\":\"" + Otp + "\"}}";
@@ -51,7 +52,7 @@ public sealed class UserCreateConsumesOtpTests : IClassFixture<DmartFactory>
         var factory = OtpRequired();
         var otpRepo = factory.Services.GetRequiredService<OtpRepository>();
         var msisdn = $"9647{Random.Shared.Next(100_000_000, 999_999_999)}";
-        await otpRepo.IssueAsync(msisdn, OtpPurpose.Register, Otp, DateTime.UtcNow.AddMinutes(5));
+        await otpRepo.IssueAsync(msisdn, OtpPurpose.Register, Otp, TimeUtils.Now().AddMinutes(5));
 
         var body = "{\"attributes\":{\"msisdn\":\"" + msisdn + "\",\"password\":\"" + ValidPassword
             + "\",\"msisdn_otp\":\"" + Otp + "\"}}";

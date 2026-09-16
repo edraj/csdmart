@@ -1,3 +1,4 @@
+using Dmart.Utils;
 using System.Net;
 using System.Net.Http.Json;
 using Dmart.DataAdapters.Sql;
@@ -185,8 +186,8 @@ public sealed class PasswordResetRequestTests : IClassFixture<DmartFactory>
             Msisdn = withMsisdn ? msisdn : null,
             Type = UserType.Web,
             Language = Language.En,
-            CreatedAt = DateTime.UtcNow,
-            UpdatedAt = DateTime.UtcNow,
+            CreatedAt = TimeUtils.Now(),
+            UpdatedAt = TimeUtils.Now(),
         };
         await users.UpsertAsync(user);
         return (shortname, email, msisdn);

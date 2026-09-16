@@ -1,3 +1,4 @@
+using Dmart.Utils;
 using System.Net.Http.Headers;
 using System.Net.Http.Json;
 using System.Text;
@@ -55,8 +56,8 @@ public class CurlScenarioTests : IClassFixture<DmartFactory>
             Language = Language.En,
             Roles = new() { "super_admin" },
             Groups = new(),
-            CreatedAt = DateTime.UtcNow,
-            UpdatedAt = DateTime.UtcNow,
+            CreatedAt = TimeUtils.Now(),
+            UpdatedAt = TimeUtils.Now(),
         });
 
         var client = _factory.CreateClient();

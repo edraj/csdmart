@@ -1,5 +1,6 @@
 using Dmart.DataAdapters.Sql;
 using Dmart.Models.Core;
+using Dmart.Utils;
 
 namespace Dmart.Tests.Integration;
 
@@ -38,7 +39,7 @@ internal static class WorldPermissionFixture
             ResourceTypes = resourceTypes ?? new() { "content" },
             Actions = actions,
             Conditions = conditions ?? new(),
-            CreatedAt = DateTime.UtcNow,
-            UpdatedAt = DateTime.UtcNow,
+            CreatedAt = TimeUtils.Now(),
+            UpdatedAt = TimeUtils.Now(),
         });
 }

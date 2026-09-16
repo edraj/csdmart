@@ -1,3 +1,4 @@
+using Dmart.Utils;
 using System.Text;
 using System.Text.Json;
 using Dmart.Auth;
@@ -271,8 +272,8 @@ public sealed class ManagedUserPasswordTests : IClassFixture<DmartFactory>
                 IsActive = true,
                 Password = originalHash,
                 Language = Language.En,
-                CreatedAt = DateTime.UtcNow,
-                UpdatedAt = DateTime.UtcNow,
+                CreatedAt = TimeUtils.Now(),
+                UpdatedAt = TimeUtils.Now(),
             });
 
             var body =

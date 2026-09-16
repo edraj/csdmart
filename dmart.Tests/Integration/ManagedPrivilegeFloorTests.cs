@@ -1,3 +1,4 @@
+using Dmart.Utils;
 using System.Net.Http.Json;
 using System.Text;
 using Dmart.DataAdapters.Sql;
@@ -41,7 +42,7 @@ public class ManagedPrivilegeFloorTests : IClassFixture<DmartFactory>
             Subpaths = new() { [PermissionService.AllSpacesMw] = new() { PermissionService.AllSubpathsMw } },
             ResourceTypes = new() { "user" },
             Actions = new() { "create" },
-            CreatedAt = DateTime.UtcNow, UpdatedAt = DateTime.UtcNow,
+            CreatedAt = TimeUtils.Now(), UpdatedAt = TimeUtils.Now(),
         });
         await access.UpsertRoleAsync(new Role
         {
@@ -49,7 +50,7 @@ public class ManagedPrivilegeFloorTests : IClassFixture<DmartFactory>
             Shortname = roleName, SpaceName = "management", Subpath = "/roles",
             OwnerShortname = "dmart", IsActive = true,
             Permissions = new() { permName },
-            CreatedAt = DateTime.UtcNow, UpdatedAt = DateTime.UtcNow,
+            CreatedAt = TimeUtils.Now(), UpdatedAt = TimeUtils.Now(),
         });
         await access.InvalidateAllCachesAsync();
 

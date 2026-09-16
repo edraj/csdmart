@@ -1,3 +1,4 @@
+using Dmart.Utils;
 using System.Linq;
 using System.Net;
 using System.Net.Http.Json;
@@ -88,8 +89,8 @@ public class FullParityTests : IClassFixture<DmartFactory>
             Language = Language.En,
             Roles = new(),
             Groups = new(),
-            CreatedAt = DateTime.UtcNow,
-            UpdatedAt = DateTime.UtcNow,
+            CreatedAt = TimeUtils.Now(),
+            UpdatedAt = TimeUtils.Now(),
         });
 
         try
@@ -147,8 +148,8 @@ public class FullParityTests : IClassFixture<DmartFactory>
             Language = Language.En,
             Roles = new(),
             Groups = new(),
-            CreatedAt = DateTime.UtcNow,
-            UpdatedAt = DateTime.UtcNow,
+            CreatedAt = TimeUtils.Now(),
+            UpdatedAt = TimeUtils.Now(),
         });
 
         try
@@ -215,8 +216,8 @@ public class FullParityTests : IClassFixture<DmartFactory>
             Language = Dmart.Models.Enums.Language.En,
             Roles = new(),
             Groups = new(),
-            CreatedAt = DateTime.UtcNow,
-            UpdatedAt = DateTime.UtcNow,
+            CreatedAt = TimeUtils.Now(),
+            UpdatedAt = TimeUtils.Now(),
         });
 
         try
@@ -528,7 +529,7 @@ public class FullParityTests : IClassFixture<DmartFactory>
         var otpRepo = _factory.Services.GetRequiredService<OtpRepository>();
         var email = "otpok_" + Guid.NewGuid().ToString("N")[..6] + "@example.test";
         var code = "654321";
-        await otpRepo.IssueAsync(email, OtpPurpose.Register, code, DateTime.UtcNow.AddMinutes(5));
+        await otpRepo.IssueAsync(email, OtpPurpose.Register, code, TimeUtils.Now().AddMinutes(5));
 
         var client = _factory.CreateClient();
         // No shortname on the wire: /user/create allocates it server-side.
@@ -689,8 +690,8 @@ public class FullParityTests : IClassFixture<DmartFactory>
             Subpath = "/users",
             Uuid = Guid.NewGuid().ToString("n"),
             OwnerShortname = "dmart",
-            CreatedAt = DateTime.UtcNow,
-            UpdatedAt = DateTime.UtcNow,
+            CreatedAt = TimeUtils.Now(),
+            UpdatedAt = TimeUtils.Now(),
             IsActive = true,
             Type = UserType.Bot,
             Password = hasher.Hash(pwd),

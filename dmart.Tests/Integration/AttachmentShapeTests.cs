@@ -1,3 +1,4 @@
+using Dmart.Utils;
 using System.Text.Json;
 using System.Text.Json.Nodes;
 using Dmart.DataAdapters.Sql;
@@ -43,8 +44,8 @@ public sealed class AttachmentShapeTests : IClassFixture<DmartFactory>
             OwnerShortname = "dmart",
             Body = "hello",
             State = "initial",
-            CreatedAt = DateTime.UtcNow,
-            UpdatedAt = DateTime.UtcNow,
+            CreatedAt = TimeUtils.Now(),
+            UpdatedAt = TimeUtils.Now(),
         };
         var rec = AttachmentMapper.ToEntryRecord(att);
         var json = JsonSerializer.Serialize(rec, DmartJsonContext.Default.Record);
@@ -92,8 +93,8 @@ public sealed class AttachmentShapeTests : IClassFixture<DmartFactory>
             ResourceType = ResourceType.Media,
             IsActive = true,
             OwnerShortname = "dmart",
-            CreatedAt = DateTime.UtcNow,
-            UpdatedAt = DateTime.UtcNow,
+            CreatedAt = TimeUtils.Now(),
+            UpdatedAt = TimeUtils.Now(),
         };
         var rec = AttachmentMapper.ToEntryRecord(att);
         var recJson = JsonSerializer.Serialize(rec, DmartJsonContext.Default.Record);

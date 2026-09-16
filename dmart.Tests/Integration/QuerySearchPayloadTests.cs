@@ -1,3 +1,4 @@
+using Dmart.Utils;
 using System.Collections.Generic;
 using System.Linq;
 using System.Text.Json;
@@ -56,8 +57,8 @@ public class QuerySearchPayloadTests : IClassFixture<DmartFactory>
             OwnerShortname = "dmart",
             IsActive = true,
             Languages = new() { Language.En },
-            CreatedAt = DateTime.UtcNow,
-            UpdatedAt = DateTime.UtcNow,
+            CreatedAt = TimeUtils.Now(),
+            UpdatedAt = TimeUtils.Now(),
         });
 
         await Seed(entries, spaceName, "has_value", "{\"x\":\"delate it now\"}");
@@ -81,8 +82,8 @@ public class QuerySearchPayloadTests : IClassFixture<DmartFactory>
             ResourceType = ResourceType.Content,
             IsActive = true,
             OwnerShortname = "dmart",
-            CreatedAt = DateTime.UtcNow,
-            UpdatedAt = DateTime.UtcNow,
+            CreatedAt = TimeUtils.Now(),
+            UpdatedAt = TimeUtils.Now(),
             Payload = new Payload
             {
                 ContentType = ContentType.Json,
