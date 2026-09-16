@@ -76,6 +76,12 @@ public static class InternalErrorCode
     public const int JQ_TIMEOUT                   = 120;
     public const int JQ_ERROR                     = 121;
 
+    // Backpressure
+    // Argon2 memory budget saturated past the queue timeout. Distinct from the
+    // per-IP 429: that one means "you are asking too often", this one means
+    // "the server has no memory to hash with right now" and is answered 503.
+    public const int PASSWORD_HASHING_BUSY        = 503;
+
     // Misc / catch-all
     public const int CONFLICT                     = 409;
     public const int SOMETHING_WRONG              = 430;

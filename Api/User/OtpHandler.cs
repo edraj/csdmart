@@ -387,7 +387,7 @@ public static class OtpHandler
 
             var updated = user with
             {
-                Password = hasher.Hash(req.Password),
+                Password = await hasher.HashAsync(req.Password, ct),
                 ForcePasswordChange = false,
                 // OrdinalIgnoreCase for the email: `dest` is normalised (see
                 // EmailDest) while user.Email keeps its stored case, so an

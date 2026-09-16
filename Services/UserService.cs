@@ -56,8 +56,11 @@ public sealed class UserService(
     // INVALID_USERNAME_AND_PASS, which diverges from Python and from what the
     // cxb login UI shows the user ("your account is locked" is the message a
     // legitimate locked-out user needs), so it is deliberately left open.
-    private static readonly string DecoyHash =
-        new PasswordHasher().Hash(Convert.ToBase64String(RandomNumberGenerator.GetBytes(32)));
+    // Owned by PasswordHasher now, and built lazily from the CONFIGURED
+    // parameters. As a `static readonly` here it was computed during type
+    // initialization — 100 MiB allocated at startup on every boot, before a
+    // single request arrived, on a path that may never run.
+    private string DecoyHash => hasher.DecoyHash;
 
     // Python's /user/create takes a core.Record body and returns a Record with
     // {access_token, type} — i.e. it auto-logs-in the new user. This mirrors
@@ -224,7 +227,7 @@ public sealed class UserService(
             OwnerShortname = "dmart",
             Email = email,
             Msisdn = msisdn,
-            Password = string.IsNullOrEmpty(password) ? null : hasher.Hash(password),
+            Password = string.IsNullOrEmpty(password) ? null : await hasher.HashAsync(password, ct),
             ForcePasswordChange = string.IsNullOrEmpty(password),
             Language = language,
             Displayname = displayname,
@@ -332,7 +335,7 @@ public sealed class UserService(
             // Deliberate constant-work path — see DecoyHash. The body already
             // matches the wrong-password response; this makes the timing match
             // too, so "no such user" isn't distinguishable from "bad password".
-            _ = hasher.Verify(req.Password ?? string.Empty, DecoyHash);
+            _ = await hasher.VerifyAsync(req.Password ?? string.Empty, DecoyHash, ct);
             return Result<(string, string, User, bool)>.Fail(
                 InternalErrorCode.INVALID_USERNAME_AND_PASS, "Invalid username or password", ErrorTypes.Auth);
         }
@@ -350,12 +353,12 @@ public sealed class UserService(
         bool passwordOk;
         if (string.IsNullOrEmpty(user.Password) || req.Password is null)
         {
-            _ = hasher.Verify(req.Password ?? string.Empty, DecoyHash);
+            _ = await hasher.VerifyAsync(req.Password ?? string.Empty, DecoyHash, ct);
             passwordOk = false;
         }
         else
         {
-            passwordOk = hasher.Verify(req.Password, user.Password);
+            passwordOk = await hasher.VerifyAsync(req.Password, user.Password, ct);
         }
 
         if (!passwordOk)
@@ -372,6 +375,13 @@ public sealed class UserService(
                 : Result<(string, string, User, bool)>.Fail(
                     InternalErrorCode.INVALID_USERNAME_AND_PASS, "Invalid username or password", ErrorTypes.Auth);
         }
+
+        // The password is correct, so this is the one moment we hold the
+        // plaintext AND know it matches — the only point at which a stored hash
+        // can be re-derived at different parameters without asking the user for
+        // anything. For an account created by 1.5.x this is how it stops
+        // costing 100 MiB per login, once.
+        await RehashIfNeededAsync(user, req.Password!, ct);
 
         // Device lock check — applies regardless of user type.
         if (user.LockedToDevice && !string.IsNullOrEmpty(user.DeviceId)
@@ -456,7 +466,7 @@ public sealed class UserService(
         // Python also optionally verifies password if provided alongside OTP.
         if (!string.IsNullOrEmpty(req.Password)
             && !string.IsNullOrEmpty(user.Password)
-            && !hasher.Verify(req.Password, user.Password))
+            && !await hasher.VerifyAsync(req.Password, user.Password, ct))
         {
             var locked = await HandleFailedLoginAttemptAsync(user, ct);
             return locked
@@ -1046,12 +1056,54 @@ public sealed class UserService(
         }
     }
 
+    /// <summary>
+    /// Re-derives the stored hash at the configured parameters when it was
+    /// created with different ones. Never throws, never fails the login.
+    /// </summary>
+    /// <remarks>
+    /// Gated by PASSWORD_REHASH_ON_LOGIN. This is the migration path off the
+    /// 1.5.x m=102400 hashes: it costs one extra hash at the CONFIGURED (cheap)
+    /// parameters, once per account, on a request that has already paid for the
+    /// expensive verify.
+    ///
+    /// Every failure here is swallowed with a warning. The user typed the right
+    /// password; refusing the login because an optimization could not be
+    /// persisted would be strictly worse than keeping the old hash and trying
+    /// again next time. Capacity exhaustion is caught for the same reason —
+    /// the login itself already got its budget.
+    /// </remarks>
+    private async Task RehashIfNeededAsync(User user, string plaintext, CancellationToken ct)
+    {
+        if (!settings.Value.PasswordRehashOnLogin) return;
+        if (string.IsNullOrEmpty(user.Password) || string.IsNullOrEmpty(plaintext)) return;
+        if (!hasher.NeedsRehash(user.Password)) return;
+
+        try
+        {
+            var upgraded = await hasher.HashAsync(plaintext, ct);
+            var rows = await users.UpdatePasswordHashOnlyAsync(user.Shortname, upgraded, ct);
+            if (rows == 0)
+            {
+                log.LogWarning("password rehash for {Shortname} matched no row — left as-is", user.Shortname);
+                return;
+            }
+            log.LogInformation("password hash for {Shortname} upgraded to the configured parameters",
+                user.Shortname);
+        }
+        catch (Exception ex)
+        {
+            log.LogWarning(ex,
+                "password rehash for {Shortname} failed — the stored hash is unchanged and the login stands",
+                user.Shortname);
+        }
+    }
+
     // Validate a password against the stored hash (Python: POST /validate_password).
     public async Task<bool> ValidatePasswordAsync(string shortname, string password, CancellationToken ct = default)
     {
         var user = await users.GetByShortnameAsync(shortname, ct);
         if (user is null || string.IsNullOrEmpty(user.Password)) return false;
-        return hasher.Verify(password, user.Password);
+        return await hasher.VerifyAsync(password, user.Password, ct);
     }
 
     public async Task<Result<User>> UpdateProfileAsync(
@@ -1120,7 +1172,7 @@ public sealed class UserService(
                     return Result<User>.Fail(
                         InternalErrorCode.PASSWORD_RESET_ERROR,
                         "Wrong password have been provided!", ErrorTypes.Auth);
-                if (!hasher.Verify(oldPwObj.ToString()!, user.Password))
+                if (!await hasher.VerifyAsync(oldPwObj.ToString()!, user.Password, ct))
                 {
                     // Wrong old_password counts toward the lockout threshold.
                     // Without this, an attacker who hijacks a session can brute
@@ -1138,7 +1190,7 @@ public sealed class UserService(
                         "mismatch with the information provided", ErrorTypes.Request);
                 }
             }
-            newPasswordHash = string.IsNullOrEmpty(newPw) ? null : hasher.Hash(newPw!);
+            newPasswordHash = string.IsNullOrEmpty(newPw) ? null : await hasher.HashAsync(newPw!, ct);
         }
 
         // Str only accepts scalar strings. When a client sends a non-string

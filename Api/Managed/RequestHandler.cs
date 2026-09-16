@@ -591,7 +591,7 @@ public static class RequestHandler
             Payload = ParsePayloadFromAttrs(attrs),
             Email = attrs.TryGetValue("email", out var e) ? ConvertToString(e) : null,
             Msisdn = attrs.TryGetValue("msisdn", out var m) ? ConvertToString(m) : null,
-            Password = hasPassword ? hasher.Hash(passwordRaw!) : null,
+            Password = hasPassword ? await hasher.HashAsync(passwordRaw!, ct) : null,
             Roles = rolesList ?? new(),
             Groups = groupsList ?? new(),
             Type = ParseUserType(typeStr),

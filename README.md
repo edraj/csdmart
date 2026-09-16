@@ -158,6 +158,47 @@ LOG_FORMAT="json"
 The admin user `dmart` is created passwordless on first startup. Set a
 password with `dmart passwd` before exposing the server.
 
+## Running on small devices
+
+dmart runs on a 512 MB board (a Raspberry Pi Zero 2 W, say), but password
+hashing needs attention first — it is the one part whose peak memory scales
+with request concurrency rather than with how much data you hold.
+
+Argon2id is deliberately memory-hard: each hash allocates its `m` outright.
+dmart <= 1.5.7 hard-coded `m=102400` (100 MiB per hash) for parity with dmart
+Python, so three simultaneous logins asked for 300 MiB and the kernel picked a
+process to kill. From 1.5.8 the default is OWASP's recommended 19456 KiB
+(19 MiB) / t=2 / p=1, and concurrent hashes are bounded rather than
+unbounded:
+
+```bash
+# Ceiling on the SUM of Argon2 memory in flight. 0 = auto (half of what the
+# runtime reports available, which respects container limits and the GC cap).
+PASSWORD_HASH_MEMORY_BUDGET_MB=64
+# How long a hash waits for budget before the request gets 503 + Retry-After.
+PASSWORD_HASH_QUEUE_TIMEOUT_SECONDS=30
+```
+
+Hashes past the ceiling queue instead of allocating, so a burst of logins gets
+slower rather than fatal. Accounts created by an older dmart still carry
+100 MiB hashes; each one is re-derived at the new parameters on its next
+successful login (`PASSWORD_REHASH_ON_LOGIN`, on by default).
+
+Two runtime knobs matter as much as the dmart ones:
+
+```bash
+# Workstation GC. Server GC sizes its heaps per core and is the wrong trade on
+# a 4-core board with 430 MB usable.
+DOTNET_gcServer=0
+# Hard cap on the managed heap, in BARE HEX with no 0x prefix.
+DOTNET_GCHeapHardLimit=8000000   # = 0x8000000 = 128 MiB
+```
+
+The missing `0x` is not a typo. The NativeAOT runtime parses this value as hex
+already and **silently ignores** a `0x`-prefixed one — the cap simply does not
+apply, with nothing logged to say so. Verify it took by watching RSS under load
+rather than by trusting the setting.
+
 ## Storage backends
 
 The flat files under `SPACES_FOLDER` are the source of truth. The SQL store

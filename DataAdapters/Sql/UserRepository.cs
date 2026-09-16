@@ -912,6 +912,31 @@ public sealed class UserRepository(
 
     // Refresh the cool-down anchor on an attempt against an already-locked account
     // (reset-on-every-attempt), without touching the counter.
+    /// <summary>
+    /// Writes ONLY the password hash. Used by the rehash-on-login upgrade path.
+    /// </summary>
+    /// <remarks>
+    /// Narrow on purpose. A rehash is not a password change: the secret is
+    /// unchanged and the user did not ask for anything, so it must not touch
+    /// updated_at, must not trip LogoutOnPwdChange, and must not write history
+    /// or events. Round-tripping a whole User through UpsertAsync would do
+    /// several of those, and would also race any concurrent profile update by
+    /// writing back fields read before it.
+    ///
+    /// Returns the rows affected so the caller can tell "upgraded" from "the
+    /// row vanished underneath us" without a second query.
+    /// </remarks>
+    public async Task<int> UpdatePasswordHashOnlyAsync(
+        string shortname, string passwordHash, CancellationToken ct = default)
+    {
+        await using var conn = await db.OpenAsync(ct);
+        await using var cmd = conn.Command(
+            "UPDATE users SET password = $2 WHERE shortname = $1");
+        DbParams.Add(cmd, shortname);
+        DbParams.Add(cmd, passwordHash);
+        return await cmd.ExecuteNonQueryAsync(ct);
+    }
+
     public async Task TouchLastFailedLoginAsync(string shortname, DateTime failedAt, CancellationToken ct = default)
     {
         await using var conn = await db.OpenAsync(ct);

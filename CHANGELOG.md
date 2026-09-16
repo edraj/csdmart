@@ -1,5 +1,66 @@
 # Changelog
 
+## Unreleased
+
+### Changed
+
+- **Every login used to allocate 100 MiB and take ~185 ms. It now allocates
+  19 MiB and takes ~40 ms.** This is a general improvement, not a small-device
+  one: the Argon2id parameters were hard-coded at `m=102400, t=3, p=8` for
+  parity with dmart Python, and `m` is allocated outright on every hash. dmart
+  idles at ~25 MB RSS; the first login took it to ~234 MB, on any host.
+
+  Worse, nothing bounded concurrent hashes. `AUTH_RATE_LIMIT_PER_MINUTE` caps
+  arrivals per IP, not how many hashes are resident at once, so ten simultaneous
+  logins asked for a gigabyte of Argon2 working memory — an unauthenticated
+  memory denial of service against a server of any size. Small hardware is
+  simply where it turned fatal rather than merely wasteful: on a 512 MB board
+  three concurrent logins were enough for the kernel to OOM-kill the process.
+
+  The default is now OWASP's recommended Argon2id configuration — 19456 KiB,
+  t=2, p=1 — and all three are configurable via `PASSWORD_HASH_MEMORY_KB`,
+  `PASSWORD_HASH_ITERATIONS` and `PASSWORD_HASH_PARALLELISM`. They govern hash
+  CREATION only; verification reads m/t/p from the stored string, so **every
+  password already in your database keeps working, untouched**.
+
+  **Operators:** no migration and no action required. Existing accounts still
+  carry 100 MiB hashes until each one logs in again, at which point the hash is
+  re-derived at the configured parameters — once, on a request that had already
+  paid for the expensive verify (`PASSWORD_REHASH_ON_LOGIN`, default `true`).
+  A rehash is not a password change: it invalidates no session, writes no
+  history, and a failure never fails the login. Raising the cost back up on a
+  large server is a config line; see `config.env.sample`.
+
+- **Concurrent hashing is bounded by MEMORY, not by request count** — on every
+  deployment, not only constrained ones. A new
+  `PASSWORD_HASH_MEMORY_BUDGET_MB` (default `0` = auto: half of what the runtime
+  reports available, which respects `DOTNET_GCHeapHardLimit` and container
+  limits) caps the sum of Argon2 working memory in flight. Hashes past the
+  ceiling queue rather than allocate; past `PASSWORD_HASH_QUEUE_TIMEOUT_SECONDS`
+  (default 30) the request is answered **HTTP 503 with `Retry-After`** and the
+  usual failure envelope, rather than the process dying.
+
+  Counting requests would not have been enough: while legacy hashes are still
+  around, one 100 MiB verify and five 19 MiB ones are the same number of
+  requests and nearly twice the memory. A hash larger than the whole budget is
+  clamped and runs alone, so a legacy hash stays verifiable on any budget.
+
+### Fixed
+
+- **`POST /user/login` returned HTTP 500 when the password field was omitted.**
+  The timing-equalization decoy is fed `req.Password ?? string.Empty`, and the
+  Argon2 library rejects a zero-length password with `ArgumentException` — so
+  an unauthenticated request carrying only a shortname for an unknown user
+  produced an unhandled exception. An empty password now does the full
+  computation against fixed filler and returns false, which fixes the crash
+  without opening the timing oracle that returning early would have.
+
+- **Startup no longer pays for a password hash.** The login decoy was a
+  `static readonly` computed during type initialization — 100 MiB allocated on
+  every boot, before any request arrived, on a path that many deployments never
+  take. It is built lazily now, from the configured parameters, so it also
+  tracks the settings instead of drifting from them.
+
 ## v1.5.7 — 2026-09-16
 
 ### Changed
