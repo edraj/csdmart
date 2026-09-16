@@ -60,7 +60,24 @@ public sealed class SchemaValidator(EntryRepository entries, ILogger<SchemaValid
 
     private readonly ConcurrentDictionary<(string Space, string Shortname), JsonSchema?> _cache = new();
 
-    public void ClearCache() => _cache.Clear();
+    // Raw documents behind the compiled schemas, keyed the same way (after the
+    // ResolveSchemaSpace remap). Hits only — see GetSchemaDocumentAsync.
+    private readonly ConcurrentDictionary<(string Space, string Shortname), JsonElement> _docCache = new();
+
+    public void ClearCache()
+    {
+        _cache.Clear();
+        _docCache.Clear();
+    }
+
+    // folder_rendering is CENTRALIZED: the canonical (strict,
+    // additionalProperties:false) definition lives in the management space only,
+    // so every space's folder bodies validate against the same document — a
+    // per-space copy can't weaken or fork it. One helper rather than the literal
+    // repeated per entry point, so the rule cannot be applied to some lookups
+    // and not others.
+    private static string ResolveSchemaSpace(string spaceName, string shortname)
+        => shortname == "folder_rendering" ? "management" : spaceName;
 
     /// <summary>
     /// Validates a JSON payload body against a schema named in the same space.
@@ -73,11 +90,7 @@ public sealed class SchemaValidator(EntryRepository entries, ILogger<SchemaValid
         string spaceName, string schemaShortname, JsonElement body, CancellationToken ct = default)
     {
         if (string.IsNullOrEmpty(schemaShortname)) return null;
-        // folder_rendering is CENTRALIZED: the canonical (strict,
-        // additionalProperties:false) definition lives in the management space
-        // only, so every space's folder bodies validate against the same
-        // document — a per-space copy can't weaken or fork it.
-        if (schemaShortname == "folder_rendering") spaceName = "management";
+        spaceName = ResolveSchemaSpace(spaceName, schemaShortname);
         var schema = await GetCompiledAsync(spaceName, schemaShortname, ct);
         if (schema is null) return null;   // schema not found — pass through
 
@@ -242,22 +255,54 @@ public sealed class SchemaValidator(EntryRepository entries, ILogger<SchemaValid
             foreach (var d in r.Details) Collect(d, body, errors);
     }
 
+    /// <summary>
+    /// Returns the raw (uncompiled) JSON Schema document — for callers that need
+    /// to walk "properties"/"type" themselves (e.g. CsvService's import-time
+    /// type coercion) rather than evaluate an instance against it.
+    /// </summary>
+    /// <remarks>
+    /// Shares the document cache with GetCompiledAsync, so a CSV import that
+    /// reads the raw document up front and then validates every row against the
+    /// compiled form pays for ONE lookup instead of two — and the two callers
+    /// cannot disagree about which document is current, since ClearCache drops
+    /// both together.
+    /// </remarks>
+    public async Task<JsonElement?> GetSchemaDocumentAsync(string spaceName, string shortname, CancellationToken ct = default)
+    {
+        var key = (ResolveSchemaSpace(spaceName, shortname), shortname);
+        if (_docCache.TryGetValue(key, out var cachedDoc)) return cachedDoc;
+
+        var schemaEntry = await FindSchemaEntryAsync(key.Item1, shortname, ct);
+        if (schemaEntry?.Payload?.Body is not { } body) return null;   // misses stay uncached
+
+        // Clone: the cached element outlives whatever JsonDocument the
+        // repository materialized it from.
+        var cloned = body.Clone();
+        _docCache[key] = cloned;
+        return cloned;
+    }
+
+    // dmart stores schemas as entries with resource_type='schema'. The actual
+    // JSON Schema document lives in payload.body (jsonb).
+    // We try a few canonical subpaths since dmart projects vary; the first hit wins.
+    private async Task<Entry?> FindSchemaEntryAsync(string spaceName, string shortname, CancellationToken ct)
+    {
+        foreach (var sub in new[] { "/schema", "/schemas", "/" })
+        {
+            var entry = await entries.GetAsync(spaceName, sub, shortname, ResourceType.Schema, ct);
+            if (entry is not null) return entry;
+        }
+        return null;
+    }
+
     private async Task<JsonSchema?> GetCompiledAsync(string spaceName, string shortname, CancellationToken ct)
     {
         var key = (spaceName, shortname);
         if (_cache.TryGetValue(key, out var cached)) return cached;
 
-        // dmart stores schemas as entries with resource_type='schema'. The actual
-        // JSON Schema document lives in payload.body (jsonb).
-        // We try a few canonical subpaths since dmart projects vary; the first hit wins.
-        Entry? schemaEntry = null;
-        foreach (var sub in new[] { "/schema", "/schemas", "/" })
-        {
-            schemaEntry = await entries.GetAsync(spaceName, sub, shortname, ResourceType.Schema, ct);
-            if (schemaEntry is not null) break;
-        }
+        var body = await GetSchemaDocumentAsync(spaceName, shortname, ct);
 
-        if (schemaEntry?.Payload?.Body is null)
+        if (body is null)
         {
             // Don't cache misses — callers supply schema_shortname intentionally,
             // and caching null would pin the "not found" result until process
@@ -270,7 +315,7 @@ public sealed class SchemaValidator(EntryRepository entries, ILogger<SchemaValid
 
         try
         {
-            var json = JsonSerializer.Serialize(schemaEntry.Payload.Body!.Value, DmartJsonContext.Default.JsonElement);
+            var json = JsonSerializer.Serialize(body.Value, DmartJsonContext.Default.JsonElement);
             var schema = JsonSchema.FromText(json, FreshBuild());
             _cache[key] = schema;
             return schema;
