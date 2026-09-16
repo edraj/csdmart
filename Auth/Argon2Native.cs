@@ -6,9 +6,14 @@ namespace Dmart.Auth;
 /// Argon2id from the reference C library (<c>libargon2</c>).
 /// </summary>
 /// <remarks>
-/// Replaces the managed Konscious implementation, for two measured reasons —
-/// both about what Argon2's working buffer does to a .NET process rather than
-/// about the algorithm, which is identical either way.
+/// The hashing path on LINUX. The win-x64 and osx-arm64 builds use the managed
+/// implementation instead — see PasswordHasher.ComputeArgon2id — because the
+/// library name below is a Linux SONAME and resolves to neither
+/// libargon2.dylib nor argon2.dll. Output is identical either way.
+///
+/// Preferred where it is available, for two measured reasons — both about what
+/// Argon2's working buffer does to a .NET process rather than about the
+/// algorithm, which is the same in both.
 ///
 /// **The buffer stops being the GC's problem.** Argon2 needs `m` KiB of scratch
 /// for the duration of one call. Managed, that is an allocation well past the
@@ -39,9 +44,9 @@ namespace Dmart.Auth;
 ///
 /// LINKING: `DirectPInvoke` + a static archive for the fully static musl binary
 /// (see dmart.csproj) — a musl static-pie has no working dlopen, so the symbols
-/// must be bound at link time exactly as SQLite's are. Every other build
-/// resolves libargon2.so.1 normally, and the packages declare a dependency on
-/// it.
+/// must be bound at link time exactly as SQLite's are. Every other Linux build
+/// resolves libargon2.so.1 normally, and the Linux packages declare a
+/// dependency on it.
 /// </remarks>
 internal static partial class Argon2Native
 {
