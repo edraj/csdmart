@@ -225,7 +225,7 @@ jobs:
             runner: ubuntu-24.04
             image: mcr.microsoft.com/dotnet/sdk:10.0-alpine@sha256:620e765fe18186c08399f7aa978f79f04b6bbf0ee1b3b8a91e2d5c9619e59da1
             shell: sh
-            setup: apk add --no-cache clang lld build-base cmake zlib-static openssl-dev openssl-libs-static sqlite-dev sqlite-static
+            setup: apk add --no-cache clang lld build-base cmake zlib-static openssl-dev openssl-libs-static sqlite-dev sqlite-static argon2-dev argon2-static
             buildargs: "--static"
             static: true
             builtin: alpine-container (musl static-pie, no runtime deps)
@@ -238,7 +238,7 @@ jobs:
             runner: ubuntu-24.04-arm
             image: mcr.microsoft.com/dotnet/sdk:10.0-alpine@sha256:620e765fe18186c08399f7aa978f79f04b6bbf0ee1b3b8a91e2d5c9619e59da1
             shell: sh
-            setup: apk add --no-cache clang lld build-base cmake zlib-static openssl-dev openssl-libs-static sqlite-dev sqlite-static
+            setup: apk add --no-cache clang lld build-base cmake zlib-static openssl-dev openssl-libs-static sqlite-dev sqlite-static argon2-dev argon2-static
             buildargs: "--static"
             static: true
             builtin: alpine-container (musl static-pie, no runtime deps)

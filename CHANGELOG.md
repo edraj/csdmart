@@ -1,5 +1,27 @@
 # Changelog
 
+## Unreleased
+
+### Fixed
+
+- **v1.5.8 and v1.5.9 shipped without their portable Linux tarballs.** Neither
+  release carries `dmart-<v>-linux-x64.tar.gz`, `-linux-arm64.tar.gz`,
+  `-linux-musl-x64.tar.gz` or `-linux-musl-arm64.tar.gz`, and neither carries
+  the signed manifest the verifiable-release workflow produces. Use v1.5.10 if
+  you install from a tarball; the RPMs, `.deb`, APKs, container images and
+  NuGet packages in those releases are unaffected.
+
+  When v1.5.8 moved Argon2id onto libargon2, the static musl builds gained a
+  link-time dependency on `/usr/lib/libargon2.a`. `argon2-static` was added to
+  the build image in `ci.yml` but not in `release-verifiable.yml`, so both musl
+  legs failed with `clang: error: no such file or directory:
+  '/usr/lib/libargon2.a'`.
+
+  The two glibc legs built fine — but the jobs that checksum, sign and publish
+  the tarballs run downstream of all four, so one failed leg skipped them and
+  took the working artifacts down with it. That is why nothing appeared rather
+  than two of four.
+
 ## v1.5.9 — 2026-09-16
 
 ### Fixed
