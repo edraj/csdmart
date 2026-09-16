@@ -689,6 +689,86 @@ jobs:
           Compress-Archive -Path "$pub/*" -DestinationPath $zip -Force
           Get-ChildItem $zip | Format-List FullName,Length
 
+      # The zip COMPILES. That is not the same as it running, and until now
+      # nothing in this workflow ever executed it. v1.5.8 shipped a win-x64 and
+      # an osx-arm64 zip that both died on the first password hash with a
+      # DllNotFoundException for libargon2.so.1 -- a Linux SONAME that had been
+      # made unconditional. Both legs were green. Users found out instead.
+      #
+      # So this runs the SHIPPED ZIP, not the publish tree: extraction is where
+      # an over-eager prune or a missing native sidecar would show up. And it
+      # makes the binary hash twice -- AdminBootstrap writes the admin password
+      # at boot, the login below verifies it -- because a readiness probe only
+      # proves the database loaded, and the hasher is the part that broke.
+      - name: Smoke the packaged zip
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $zip  = Get-ChildItem dist/out/*-win-x64.zip | Select-Object -First 1
+          $root = Join-Path $env:RUNNER_TEMP 'smoke'
+          if (Test-Path $root) { Remove-Item $root -Recurse -Force }
+          Expand-Archive -Path $zip.FullName -DestinationPath $root -Force
+          New-Item -ItemType Directory -Force -Path "$root/spaces" | Out-Null
+
+          # Forward slashes: these land in a config file, and a Windows path's
+          # backslashes are an escape sequence to anything that parses it.
+          # .NET opens either form on Windows.
+          $u = $root.Replace('\', '/')
+          $port = 5290
+          @(
+            'DATABASE_DRIVER="sqlite"'
+            "SQLITE_PATH=`"$u/smoke.db`""
+            "SPACES_FOLDER=`"$u/spaces`""
+            "LISTENING_PORT=$port"
+            'JWT_SECRET="ci-test-secret-ci-test-secret-32bytes"'
+            'ADMIN_PASSWORD="dmart"'
+            'MOCK_SMTP_API=true'
+          ) | Set-Content -Encoding utf8NoBOM "$root/config.env"
+
+          $env:BACKEND_ENV = './config.env'
+          $p = Start-Process -FilePath "$root/dmart.exe" -ArgumentList 'serve' `
+                 -WorkingDirectory $root -PassThru `
+                 -RedirectStandardOutput "$root/out.log" `
+                 -RedirectStandardError  "$root/err.log"
+          try {
+            $ready = $false
+            foreach ($i in 1..60) {
+              # A crashed process will never answer; stop waiting out the full
+              # minute for one, and let the log dump below say why it died.
+              if ($p.HasExited) { break }
+              try {
+                Invoke-WebRequest -UseBasicParsing -TimeoutSec 3 `
+                  "http://127.0.0.1:$port/health/ready" | Out-Null
+                $ready = $true
+                break
+              } catch { Start-Sleep -Seconds 1 }
+            }
+            if (-not $ready) {
+              Get-Content "$root/out.log", "$root/err.log" -ErrorAction SilentlyContinue
+              throw "the packaged binary never became ready on port $port"
+            }
+
+            # Wrapped because Invoke-WebRequest throws on a non-2xx and the
+            # bare HTTP error says nothing about WHY -- the server log does.
+            try {
+              $resp = Invoke-WebRequest -UseBasicParsing -Method Post `
+                        -ContentType 'application/json' `
+                        -Body '{"shortname":"dmart","password":"dmart"}' `
+                        "http://127.0.0.1:$port/user/login"
+            } catch {
+              Get-Content "$root/out.log", "$root/err.log" -ErrorAction SilentlyContinue
+              throw
+            }
+            $token = ($resp.Content | ConvertFrom-Json).records[0].attributes.access_token
+            if (-not $token) {
+              Get-Content "$root/out.log", "$root/err.log" -ErrorAction SilentlyContinue
+              throw "login returned no access_token: $($resp.Content)"
+            }
+            Write-Host "smoke OK: served, hashed and verified a password ($($token.Length)-char token)"
+          } finally {
+            if (-not $p.HasExited) { Stop-Process -Id $p.Id -Force -ErrorAction SilentlyContinue }
+          }
+
       - name: Fetch the SBOMs built from this tag
         uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7.0.0
         with:
@@ -810,6 +890,75 @@ jobs:
           # matches the layout of the win-x64 zip.
           (cd bin/Release/net10.0/osx-arm64/publish && zip -9 -r "$OLDPWD/$ZIP" .)
           ls -lh "$ZIP"
+
+      # See the win-x64 leg for why this exists: v1.5.8 shipped both zips
+      # broken on the first password hash and both legs were green, because
+      # nothing ever ran them. Smoking the EXTRACTED zip also covers this
+      # job's ad-hoc codesign -- an unrunnable signature fails here, at the
+      # exec, rather than on a downloader's Mac.
+      - name: Smoke the packaged zip
+        run: |
+          set -euo pipefail
+          # Absolute: the `cd "$ROOT"` below moves away from the workspace.
+          ZIP=$(ls "$PWD"/dist/out/*-osx-arm64.zip | head -1)
+          ROOT="${RUNNER_TEMP}/smoke"
+          rm -rf "$ROOT"
+          mkdir -p "$ROOT/spaces"
+          unzip -q "$ZIP" -d "$ROOT"
+          chmod +x "$ROOT/dmart"
+
+          PORT=5291
+          # echo rather than a heredoc: a heredoc body inside an indented
+          # `run: |` keeps its leading spaces and its terminator has to sit at
+          # column 0 to match at all.
+          {
+            echo 'DATABASE_DRIVER="sqlite"'
+            echo "SQLITE_PATH=\"$ROOT/smoke.db\""
+            echo "SPACES_FOLDER=\"$ROOT/spaces\""
+            echo "LISTENING_PORT=$PORT"
+            echo 'JWT_SECRET="ci-test-secret-ci-test-secret-32bytes"'
+            echo 'ADMIN_PASSWORD="dmart"'
+            echo 'MOCK_SMTP_API=true'
+          } > "$ROOT/config.env"
+
+          cd "$ROOT"
+          # Not a subshell: `$!` has to be dmart's own pid, or the kill below
+          # reaps a shell and leaves the server running on the runner.
+          BACKEND_ENV=./config.env ./dmart serve > serve.log 2>&1 &
+          PID=$!
+          for _ in $(seq 1 60); do
+            kill -0 "$PID" 2>/dev/null || break
+            curl -sf "http://127.0.0.1:$PORT/health/ready" >/dev/null 2>&1 && break
+            sleep 1
+          done
+          if ! curl -sf "http://127.0.0.1:$PORT/health/ready" >/dev/null 2>&1; then
+            cat serve.log || true
+            kill "$PID" 2>/dev/null || true
+            echo "::error::the packaged binary never became ready on port $PORT"
+            exit 1
+          fi
+
+          # AdminBootstrap already hashed once to get here; this verifies that
+          # hash. Checked with grep rather than jq so the step depends on
+          # nothing the runner image might drop.
+          CODE=$(curl -s -o login.json -w '%{http_code}' \
+                   -H 'Content-Type: application/json' \
+                   -d '{"shortname":"dmart","password":"dmart"}' \
+                   "http://127.0.0.1:$PORT/user/login" || echo 000)
+          RC=0
+          if [ "$CODE" != "200" ] || ! grep -q '"access_token"' login.json; then
+            echo "::error::login failed (HTTP $CODE)"
+            cat login.json || true
+            cat serve.log || true
+            RC=1
+          else
+            echo "smoke OK: served, hashed and verified a password"
+          fi
+          # Guarded rather than trailing the failure: `set -e` is on, so a bare
+          # failing command here would abort before the kill.
+          kill "$PID" 2>/dev/null || true
+          wait "$PID" 2>/dev/null || true
+          exit $RC
 
       - name: Fetch the SBOMs built from this tag
         uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7.0.0
