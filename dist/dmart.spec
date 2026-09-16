@@ -24,6 +24,11 @@ BuildRequires:  zlib-devel
 # a join sub-query (mirrors Python dmart's subprocess shell-out). Absent jq,
 # such requests return JQ_ERROR; every other endpoint works without it.
 Requires:       jq
+# Argon2id password hashing. Unlike jq this is NOT optional — every login and
+# every password write goes through it, so a missing libargon2 is a server that
+# starts and then fails to authenticate anyone. The shared library is used
+# rather than a vendored copy so security updates arrive through the distro.
+Requires:       libargon2
 Requires(pre):  shadow-utils
 
 %description

@@ -4,7 +4,7 @@ Section: net
 Priority: optional
 Architecture: amd64
 Maintainer: dmart <admin@dmart.cc>
-Depends: jq
+Depends: jq, libargon2-1
 Homepage: https://github.com/edraj/csdmart
 Description: dmart - Unified Data Platform (REST API server + CLI)
  dmart is a unified data platform providing a REST API backed by PostgreSQL.
@@ -12,6 +12,7 @@ Description: dmart - Unified Data Platform (REST API server + CLI)
  built-in plugin configurations, and a systemd service unit.
  .
  The binary is self-contained (NativeAOT publish, no .NET runtime
- dependency). Built against Debian 12's glibc (2.36) - runs on Debian 12+,
+ dependency) apart from libargon2, which provides Argon2id password
+ hashing and is required for any login to succeed. Built against Debian 12's glibc (2.36) - runs on Debian 12+,
  Ubuntu 22.04+, and any glibc 2.36+ system. Older targets require building
  from source on the target distro.

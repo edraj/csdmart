@@ -4,6 +4,40 @@
 
 ### Changed
 
+- **Argon2id now runs through the reference C library (`libargon2`) instead of
+  a managed implementation.** Same algorithm, same output — verified
+  byte-identical at both the new defaults and the legacy
+  `m=102400,t=3,p=8`, so **no stored password is affected** — but the working
+  buffer stops being the garbage collector's problem.
+
+  Argon2 needs `m` KiB of scratch for the duration of one call. Managed, that
+  is an allocation far past the 85 KB Large Object Heap threshold, so every
+  hash handed the GC a 19 MiB (or, for a legacy hash, 100 MiB) object with a
+  lifetime of milliseconds. Measured, five sequential hashes on an 8-core
+  x86-64 host:
+
+  | | managed | native |
+  | --- | --- | --- |
+  | `m=19456` | RSS 23 → 81 MB, 2 gen2 GCs | RSS 23 → 24 MB, 0 GCs |
+  | `m=102400` | RSS 27 → 355 MB, 3 gen2 GCs | RSS 27 → 27 MB, 0 GCs |
+  | latency `m=19456` | 45.8 ms | **14.9 ms** |
+
+  The managed memory was never leaked — a forced collection returned it — but
+  "the GC will get to it" is the wrong property under memory pressure, and it
+  is why the hashing budget introduced above under-reported real RSS: the
+  budget bounds what it admits, while buffers from finished hashes are still
+  resident. Native `malloc`/`free` returns the memory when the call ends, so
+  the budget and the resident set now agree.
+
+  **Operators:** the packages declare the dependency for you — `libargon2`
+  (Fedora/RHEL), `libargon2-1` (Debian/Ubuntu), `argon2-libs` (Alpine) — and
+  the portable tarballs ship `libargon2.so.1` beside the binary. The fully
+  static musl binary links it in and remains a single file with zero runtime
+  dependencies. If you build from source, install your distro's argon2 runtime
+  library. libsodium was evaluated and rejected: its `crypto_pwhash` matches
+  byte-for-byte at `p=1` but cannot express `p` at all, so it could not verify
+  the `p=8` hashes dmart 1.5.x wrote.
+
 - **Every login used to allocate 100 MiB and take ~185 ms. It now allocates
   19 MiB and takes ~40 ms.** This is a general improvement, not a small-device
   one: the Argon2id parameters were hard-coded at `m=102400, t=3, p=8` for

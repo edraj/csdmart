@@ -2,7 +2,6 @@ using System.Security.Cryptography;
 using System.Text;
 using System.Threading.RateLimiting;
 using Dmart.Config;
-using Konscious.Security.Cryptography;
 using Microsoft.Extensions.Options;
 
 namespace Dmart.Auth;
@@ -15,7 +14,7 @@ namespace Dmart.Auth;
 // the m=102400,t=3,p=8 hashes written by 1.5.x and by dmart Python's argon2-cffi.
 // Only hash CREATION uses the configured parameters.
 //
-// Two things make this class more than a wrapper around Konscious:
+// Two things make this class more than a wrapper around libargon2:
 //
 //   1. **The parameters are configuration, not constants.** 1.5.x hard-coded
 //      m=102400 (100 MiB), which is a per-hash allocation. On a 512 MB board
@@ -186,18 +185,22 @@ public sealed class PasswordHasher
         return CryptographicOperations.FixedTimeEquals(actual, expected);
     }
 
-    // Konscious throws ArgumentException("Argon2 needs a password set") on a
-    // zero-length password. `LoginAsync` reaches this on every request that
-    // omits the password field — `req.Password ?? string.Empty` — so before
-    // this guard, an unauthenticated POST /user/login carrying only a shortname
-    // for an unknown user produced an unhandled exception and HTTP 500.
+    // libargon2 accepts a zero-length password and hashes it happily, so unlike
+    // the managed implementation this is no longer crash-prevention — Konscious
+    // threw ArgumentException here, which is how an unauthenticated
+    // POST /user/login carrying only a shortname produced HTTP 500 in 1.5.7 and
+    // earlier (`LoginAsync` passes `req.Password ?? string.Empty`).
     //
-    // Returning early would fix the crash and open a timing oracle instead: a
-    // blank password would answer in ~0 ms where a wrong one costs a full
-    // Argon2, which is precisely the signal the decoy exists to suppress. So do
-    // the whole computation against fixed filler and throw the answer away. The
-    // result is unconditionally false, never a comparison — an account whose
-    // password somehow equalled the filler must not be reachable with "".
+    // It stays because the guarantee is worth more than the line: a blank
+    // password must never authenticate ANY account, whatever happens to be in
+    // the password column. Letting the normal path run would return false for
+    // every hash dmart writes — the password policy is 8-64 characters — but it
+    // would authenticate a row whose hash really was derived from "", and no
+    // reachable code should be able to produce that outcome.
+    //
+    // The work still happens, against fixed filler, because returning early
+    // would open a timing oracle: a blank password answering in ~0 ms where a
+    // wrong one costs a full Argon2 is exactly the signal the decoy suppresses.
     private const string EmptyPasswordFiller = "\0dmart\0empty\0password\0filler";
 
     private static void BurnEmptyPassword(byte[] salt, int m, int t, int p, int outputLength)
@@ -394,17 +397,16 @@ public sealed class PasswordHasher
         return expected.Length > 0;
     }
 
+    // libargon2, not a managed implementation: the working buffer is malloc'd
+    // and freed inside the call rather than handed to the GC as a multi-MiB LOH
+    // object. See Argon2Native for the measurements behind that choice.
     private static byte[] ComputeArgon2id(
         string password, byte[] salt, int memoryKb, int iterations, int parallelism, int outputLength)
     {
-        using var argon2 = new Argon2id(Encoding.UTF8.GetBytes(password))
-        {
-            Salt = salt,
-            DegreeOfParallelism = parallelism,
-            Iterations = iterations,
-            MemorySize = memoryKb,
-        };
-        return argon2.GetBytes(outputLength);
+        var output = new byte[outputLength];
+        Argon2Native.HashRaw(
+            Encoding.UTF8.GetBytes(password), salt, memoryKb, iterations, parallelism, output);
+        return output;
     }
 
     private static string Base64NoPad(byte[] bytes)

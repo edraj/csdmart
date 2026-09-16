@@ -13,7 +13,14 @@ license="AGPL-3.0-only"
 # on a join sub-query (mirrors Python dmart). Every other endpoint works
 # without it. PostgreSQL itself is intentionally NOT a hard depends —
 # dmart talks to a remote PG over TCP just as often as a local one.
-depends="jq"
+#
+# libargon2 IS hard: Argon2id password hashing runs on every login and every
+# password write, so without it the server starts and then authenticates
+# nobody. Shared rather than vendored, so distro security updates apply.
+# NOTE the Alpine spelling: the runtime library package is argon2-libs.
+# Fedora calls it libargon2 and Debian libargon2-1; all three ship the same
+# libargon2.so.1, and each packaging file has to use its own distro's name.
+depends="jq argon2-libs"
 
 # post-upgrade is byte-identical to post-install — build-apk.sh copies one to
 # the other so they cannot drift. Both are needed because apk dispatches to
