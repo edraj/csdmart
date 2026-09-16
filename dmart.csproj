@@ -213,7 +213,6 @@
 
   <ItemGroup>
     <PackageReference Include="JsonSchema.Net" Version="9.4.0" />
-    <PackageReference Include="Konscious.Security.Cryptography.Argon2" Version="1.3.1" />
     <PackageReference Include="Microsoft.AspNetCore.Authentication.JwtBearer" Version="10.0.5" />
     <PackageReference Include="Microsoft.AspNetCore.OpenApi" Version="10.0.5" />
     <!-- Pin transitive Microsoft.OpenApi (2.0.0 via AspNetCore.OpenApi) to a patched version for CVE-2026-49451 (GHSA-v5pm-xwqc-g5wc) -->
@@ -257,9 +256,24 @@
     <SqliteStaticLib>/usr/lib/libsqlite3.a</SqliteStaticLib>
   </PropertyGroup>
 
+  <PropertyGroup Condition="'$(StaticExecutable)' == 'true' and '$(Argon2StaticLib)' == ''">
+    <Argon2StaticLib>/usr/lib/libargon2.a</Argon2StaticLib>
+  </PropertyGroup>
+
   <ItemGroup Condition="'$(StaticExecutable)' == 'true'">
     <DirectPInvoke Include="e_sqlite3" />
     <NativeLibrary Include="$(SqliteStaticLib)" />
+    <!-- Argon2id for password hashing, bound at link time for the same reason
+         SQLite is: no working dlopen in a musl static-pie. The archive comes
+         from the build image (`apk add argon2-static` on Alpine); override
+         Argon2StaticLib to point elsewhere.
+
+         The DirectPInvoke name is the LIBRARY name as ILC sees it, which is the
+         string in [LibraryImport] — "libargon2.so.1" — not the linker's -largon2
+         form. Getting that wrong links cleanly and then fails to resolve at
+         startup, which the static job's hashing smoke test is there to catch. -->
+    <DirectPInvoke Include="libargon2.so.1" />
+    <NativeLibrary Include="$(Argon2StaticLib)" />
   </ItemGroup>
 
   <ItemGroup>

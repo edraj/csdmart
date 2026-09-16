@@ -16,7 +16,8 @@ public class PasswordHasherTests
     // A real hash written by dmart 1.5.x with the old hard-coded parameters,
     // generated once and pinned here. The only test allowed to spend 100 MiB —
     // it is the compatibility promise, and a synthesized string would prove
-    // nothing about whether Konscious still derives the same bytes.
+    // nothing about whether the hasher still derives the same bytes — which
+    // is the entire question when the implementation underneath changes.
     private const string LegacyHash =
         "$argon2id$v=19$m=102400,t=3,p=8$XyxnlHQVrhuJqCKcmetlCw$fqibrf9io3jWbMIDWyuakQ0mJiCEmAXbI3Wc5CSFSaY";
     private const string LegacyPassword = "hunter22hunter";
@@ -195,10 +196,14 @@ public class PasswordHasherTests
     [Fact]
     public void Empty_Password_Returns_False_Instead_Of_Throwing()
     {
-        // Regression: Konscious throws ArgumentException on a zero-length
-        // password, and LoginAsync feeds it `req.Password ?? string.Empty`. An
-        // unauthenticated POST /user/login carrying only a shortname for an
-        // unknown user therefore produced HTTP 500 in 1.5.7 and earlier.
+        // Regression from 1.5.7 and earlier, where the managed implementation
+        // threw ArgumentException on a zero-length password and LoginAsync feeds
+        // it `req.Password ?? string.Empty` — so an unauthenticated
+        // POST /user/login carrying only a shortname produced HTTP 500.
+        //
+        // libargon2 would accept "" and hash it, so the crash is gone either
+        // way; what this pins is the stronger property, that a blank password
+        // never authenticates regardless of what is stored.
         var stored = _h.Hash("realpassword");
         _h.Verify("", stored).ShouldBeFalse();
         _h.Verify("", _h.DecoyHash).ShouldBeFalse();

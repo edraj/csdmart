@@ -542,15 +542,32 @@ jobs:
 
           cp "$PUB/dmart"            "$STAGE/"
           if [ "${STATIC}" = "true" ]; then
-            # One file, by design: SQLite is linked in, so there is no sidecar
-            # to ship and no way for the two to be separated in transit.
-            echo "static build: no libe_sqlite3 sidecar"
+            # One file, by design: SQLite and Argon2 are both linked in, so
+            # there is no sidecar to ship and no way for them to be separated
+            # in transit.
+            echo "static build: no native sidecars"
           else
             # dmart is NOT a single self-contained file here: SQLitePCLRaw
             # ships no static lib for glibc RIDs, so libe_sqlite3.so has to
             # travel beside the executable or the process aborts the first time
             # DATABASE_DRIVER=sqlite touches the database.
             cp "$PUB/libe_sqlite3.so"  "$STAGE/"
+
+            # Argon2id, for the tarball only. The packages declare a dependency
+            # on the distro's runtime library instead (libargon2 / libargon2-1 /
+            # argon2-libs) — but this tarball promises to run on "any glibc
+            # 2.36+ system", and a system without libargon2 installed would
+            # start fine and then fail every login. .NET's native-library
+            # resolution searches the app directory first, so a copy beside the
+            # binary is found before any system one.
+            ARGON2_SO=$(ldconfig -p 2>/dev/null | awk '/libargon2\.so\.1/ {print $NF; exit}')
+            if [ -n "$ARGON2_SO" ] && [ -f "$ARGON2_SO" ]; then
+              cp "$ARGON2_SO" "$STAGE/libargon2.so.1"
+              echo "staged $(basename "$ARGON2_SO") from $ARGON2_SO"
+            else
+              echo "::error::libargon2.so.1 not found on the builder — the tarball would ship without it"
+              exit 1
+            fi
           fi
           cp "$PUB/config.env.sample" "$STAGE/" 2>/dev/null || cp config.env.sample "$STAGE/"
           cp LICENSE "$STAGE/"
@@ -594,8 +611,8 @@ jobs:
           # tar exit cleanly.
           LISTING=$(tar -tzf "dist/out/${NAME}.tar.gz")
           if [ "${STATIC}" = "true" ]; then
-            if printf '%s\n' "$LISTING" | grep -q 'libe_sqlite3'; then
-              echo "::error::the static tarball carries a libe_sqlite3 sidecar"
+            if printf '%s\n' "$LISTING" | grep -qE 'libe_sqlite3|libargon2'; then
+              echo "::error::the static tarball carries a native sidecar"
               printf '%s\n' "$LISTING"
               exit 1
             fi

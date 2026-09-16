@@ -84,7 +84,8 @@ internal sealed class DmartSettingsValidator : IValidateOptions<DmartSettings>
         if (s.PasswordHashMemoryKb < 7168)
             failures.Add($"PasswordHashMemoryKb must be >= 7168 (got {s.PasswordHashMemoryKb})");
         // Argon2 requires m >= 8*p — fewer blocks than that and the lanes have
-        // nothing to work on. Konscious throws at hash time; catch it at boot.
+        // nothing to work on. libargon2 rejects it at hash time with
+        // ARGON2_MEMORY_TOO_LITTLE; catch it at boot instead.
         if (s.PasswordHashMemoryKb < 8 * s.PasswordHashParallelism)
             failures.Add(
                 $"PasswordHashMemoryKb must be >= 8 * PasswordHashParallelism "

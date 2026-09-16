@@ -158,6 +158,23 @@ LOG_FORMAT="json"
 The admin user `dmart` is created passwordless on first startup. Set a
 password with `dmart passwd` before exposing the server.
 
+## Runtime dependencies
+
+Beyond libc, dmart needs one shared library at runtime: **libargon2**, which
+provides Argon2id password hashing. Every login and every password write goes
+through it, so a missing libargon2 is a server that starts and then
+authenticates nobody.
+
+The packages declare it — `libargon2` (Fedora/RHEL), `libargon2-1`
+(Debian/Ubuntu), `argon2-libs` (Alpine) — and the portable tarballs ship
+`libargon2.so.1` beside the binary. The fully static musl build links it in and
+has no runtime dependencies at all. Building from source, install your distro's
+argon2 runtime package.
+
+`jq` is the other external binary, but it is optional: it is shelled out to only
+for `/managed/query` requests carrying a `jq_filter` on a join sub-query, and
+every other endpoint works without it.
+
 ## Running on small devices
 
 dmart runs on a 512 MB board (a Raspberry Pi Zero 2 W, say), but password

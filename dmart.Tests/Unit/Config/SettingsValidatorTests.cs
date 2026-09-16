@@ -65,7 +65,7 @@ public class SettingsValidatorTests
     public void PasswordHashMemoryKb_Below_Eight_Times_Parallelism_Fails()
     {
         // Argon2's own constraint: fewer blocks than 8*p and the lanes have
-        // nothing to work on. Konscious throws at hash time; this catches it at
+        // nothing to work on. libargon2 rejects it at hash time; this catches it at
         // boot instead of at the first password written.
         var s = Valid();
         s.PasswordHashParallelism = 64;

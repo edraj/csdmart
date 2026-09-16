@@ -1021,7 +1021,8 @@ jobs:
               set -e
               apk add --no-cache clang lld build-base cmake zlib-static \
                                  openssl-dev openssl-libs-static \
-                                 sqlite-dev sqlite-static
+                                 sqlite-dev sqlite-static \
+                                 argon2-dev argon2-static
               dotnet publish dmart.csproj -r linux-musl-x64 -c Release \
                 -p:PublishAot=true \
                 -p:StaticExecutable=true \
@@ -1046,10 +1047,16 @@ jobs:
             readelf -d "$BIN" | grep NEEDED
             exit 1
           fi
-          DLOPEN=$(strings -a "$BIN" | grep -cE 'libe_sqlite3|libssl\.so|libcrypto\.so' || true)
+          # This list is an ALLOWLIST OF KNOWN NATIVE DEPENDENCIES, not a fixed
+          # pattern: every library bound at link time has to be named here, or
+          # the check silently stops covering it. libargon2 was added when
+          # password hashing moved off the managed implementation — without it,
+          # a dlopen'd argon2 would leave this binary green and unable to
+          # authenticate anyone.
+          DLOPEN=$(strings -a "$BIN" | grep -cE 'libe_sqlite3|libssl\.so|libcrypto\.so|libargon2' || true)
           if [ "$DLOPEN" != "0" ]; then
             echo "FAIL: $DLOPEN dlopen target strings remain — something is still resolved at runtime"
-            strings -a "$BIN" | grep -E 'libe_sqlite3|libssl\.so|libcrypto\.so' | sort -u
+            strings -a "$BIN" | grep -E 'libe_sqlite3|libssl\.so|libcrypto\.so|libargon2' | sort -u
             exit 1
           fi
           echo "static-pie, 0 NEEDED, no dlopen targets"
@@ -1079,4 +1086,65 @@ jobs:
           test -s "$WORK/static.db" \
             || { echo "migrate reported success but wrote no database"; rm -rf "$WORK"; exit 1; }
           echo "static binary migrated a SQLite database: $(stat -c%s "$WORK/static.db") bytes"
+
+          # Argon2id, for the same reason the SQLite check above exists: the
+          # symbols are bound at LINK time because a musl static-pie has no
+          # working dlopen, and until this step nothing in CI ever made a built
+          # artifact hash a password. A libargon2 resolved the wrong way links
+          # cleanly, passes every other job, and then fails on the first login —
+          # exactly the shape this job's header warns about.
+          #
+          # Booting the server rather than calling `dmart passwd`: passwd only
+          # UPDATEs an existing row, and `migrate` does not create the admin, so
+          # it hashes into nothing and reports success. AdminBootstrap creating
+          # the admin exercises hash CREATION, and the login below exercises
+          # VERIFICATION — both halves, which is what actually has to work.
+          # Same per-runner port derivation the other jobs use. Two digits
+          # matter here: `sed 's/^$/0/'` prints NOTHING for empty input (no
+          # line to substitute), so folding the default into the pipeline gives
+          # `10# % 50` and an arithmetic error on any runner whose name has no
+          # digits. The default belongs on the parameter expansion.
+          RUNNER_DIGITS=$(printf '%s' "${RUNNER_NAME:-local}" | tr -cd '0-9' | tail -c 3)
+          PORT=$(( 18300 + 10#${RUNNER_DIGITS:-0} % 50 ))
+          {
+            echo "LISTENING_HOST=\"127.0.0.1\""
+            echo "LISTENING_PORT=$PORT"
+            echo 'ADMIN_PASSWORD="StaticSmoke-12345"'
+          } >> "$WORK/config.env"
+          BACKEND_ENV="$WORK/config.env" "$BIN" serve > "$WORK/serve.log" 2>&1 &
+          SRV=$!
+          ready=0
+          for _ in $(seq 1 90); do
+            curl -sf "http://127.0.0.1:$PORT/health/ready" >/dev/null 2>&1 && { ready=1; break; }
+            sleep 1
+          done
+          if [ "$ready" != "1" ]; then
+            echo "FAIL: static binary never became ready"; tail -30 "$WORK/serve.log"
+            kill $SRV 2>/dev/null; rm -rf "$WORK"; exit 1
+          fi
+          # sqlite3(1) is a nicety, not a guarantee on a self-hosted runner, so
+          # the PHC-prefix assertion below is conditional. The login is not —
+          # it alone proves creation and verification both worked.
+          HASH=""
+          if command -v sqlite3 >/dev/null 2>&1; then
+            HASH=$(echo "select password from users where shortname='dmart';" | sqlite3 "$WORK/static.db")
+          fi
+          LOGIN=$(curl -s -X POST "http://127.0.0.1:$PORT/user/login" \
+                    -H 'Content-Type: application/json' \
+                    -d '{"shortname":"dmart","password":"StaticSmoke-12345"}')
+          kill $SRV 2>/dev/null || true
+          if [ -n "$HASH" ]; then
+            case "$HASH" in
+              '$argon2id$v=19$m='*) echo "bootstrap hashed: $(echo "$HASH" | cut -d'$' -f1-4)\$..." ;;
+              *) echo "FAIL: expected an argon2id PHC hash in users, got: $HASH"
+                 tail -30 "$WORK/serve.log"; rm -rf "$WORK"; exit 1 ;;
+            esac
+          else
+            echo "(sqlite3 not on this runner — relying on the login assertion below)"
+          fi
+          case "$LOGIN" in
+            *'"success"'*) echo "static binary created AND verified an argon2id hash" ;;
+            *) echo "FAIL: login against that hash did not succeed: $LOGIN"
+               tail -30 "$WORK/serve.log"; rm -rf "$WORK"; exit 1 ;;
+          esac
           rm -rf "$WORK"

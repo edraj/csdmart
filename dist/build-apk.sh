@@ -199,11 +199,15 @@ set -e
 #                 the link then fails with a misleading "cannot find -lz"
 #   git         — ./build.sh git-describe version stamping
 #   jq          — the runtime dep declared in APKBUILD; abuild folds runtime
-#                 deps into its builddeps virtual package for validation,
-#                 so pre-installing avoids a second apk round-trip in -r
+#   argon2-libs   deps into its builddeps virtual package for validation,
+#                 so pre-installing avoids a second apk round-trip in -r.
+#                 Both MUST be listed: abuild cannot create .makedepends-dmart
+#                 when a declared runtime dep will not resolve, and the package
+#                 then comes out missing that dependency entirely rather than
+#                 failing loudly.
 if [ -n "$INSTALL_TOOLCHAIN" ]; then
 	apk add --no-cache --quiet \
-		abuild alpine-sdk clang lld zlib-dev zlib-static git jq
+		abuild alpine-sdk clang lld zlib-dev zlib-static git jq argon2-libs
 fi
 
 # AOT publish. build.sh handles the InformationalVersion stamping
