@@ -74,7 +74,7 @@ public sealed class AdminBootstrap(
                     Subpath = "/users",
                     OwnerShortname = AdminShortname,
                     Email = string.IsNullOrWhiteSpace(s.AdminEmail) ? null : s.AdminEmail,
-                    Password = string.IsNullOrEmpty(s.AdminPassword) ? null : hasher.Hash(s.AdminPassword),
+                    Password = string.IsNullOrEmpty(s.AdminPassword) ? null : await hasher.HashAsync(s.AdminPassword, ct),
                     Roles = new() { "super_admin" },
                     // Admin is always bootstrapped as English — there's no user-facing
                     // localization that consumes User.Language, so a richer default
@@ -132,7 +132,7 @@ public sealed class AdminBootstrap(
                 if (!string.IsNullOrEmpty(s.AdminPassword)
                     && string.IsNullOrEmpty(existing.Password))
                 {
-                    repaired = repaired with { Password = hasher.Hash(s.AdminPassword) };
+                    repaired = repaired with { Password = await hasher.HashAsync(s.AdminPassword, ct) };
                     repairs.Add("password seeded from config (stored hash was empty)");
                 }
                 if (repairs.Count > 0)

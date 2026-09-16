@@ -495,6 +495,41 @@ public sealed class DmartSettings
     // flow; ignored by the mobile/id-token flow.
     public string AppleOauthCallback { get; set; } = "";
 
+    // ==================== Password hashing (Argon2id) ====================
+    // These govern hash CREATION only. Verification always reads m/t/p from the
+    // stored hash, so changing them never invalidates an existing password.
+    //
+    // Defaults are OWASP's recommended Argon2id configuration (19456 KiB / t=2 /
+    // p=1). 1.5.x hard-coded m=102400 (100 MiB) for parity with dmart Python;
+    // that is a per-hash allocation, and on a 512 MB board three concurrent
+    // logins were enough to get the process OOM-killed. Raise the cost on a
+    // large server if you want to — the memory budget below is what keeps a
+    // higher cost from becoming a denial of service.
+    public int PasswordHashMemoryKb { get; set; } = Auth.PasswordHasher.DefaultMemoryKb;
+    public int PasswordHashIterations { get; set; } = Auth.PasswordHasher.DefaultIterations;
+    public int PasswordHashParallelism { get; set; } = Auth.PasswordHasher.DefaultParallelism;
+
+    // Ceiling, in MiB, on the SUM of Argon2 working memory in flight at once.
+    // Hashes past the ceiling queue instead of allocating. 0 = auto: half of
+    // GC.GetGCMemoryInfo().TotalAvailableMemoryBytes, which already reflects
+    // DOTNET_GCHeapHardLimit and any container memory limit.
+    //
+    // This bounds MEMORY, not concurrency, and the difference matters while
+    // legacy hashes are still around: one 100 MiB verify and five 19 MiB ones
+    // are the same count and nearly 2x the memory.
+    public int PasswordHashMemoryBudgetMb { get; set; }
+
+    // How long a hash waits for budget before the request is answered 503 with
+    // Retry-After. Long enough to ride out a burst, short enough that a client
+    // is not left hanging behind a queue it will never reach the front of.
+    public int PasswordHashQueueTimeoutSeconds { get; set; } = 30;
+
+    // Rehash a password to the configured parameters after a successful login
+    // when the stored hash used different ones. This is how accounts created by
+    // 1.5.x stop costing 100 MiB per login — on their next login, once. Never
+    // fails the login and never counts as a password change.
+    public bool PasswordRehashOnLogin { get; set; } = true;
+
     public bool LogoutOnPwdChange { get; set; } = true;
     public int RequestTimeout { get; set; } = 35;
 

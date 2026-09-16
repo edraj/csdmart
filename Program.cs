@@ -414,7 +414,12 @@ switch (subcommand)
         // The statement itself is portable as written; only the connection was
         // ever PostgreSQL-specific.
         var (s, dbInst) = CliBootstrap.BuildFactoryOrExit(dotenvPath, dotenvValues);
-        var hasher = new PasswordHasher();
+        // Configured parameters, not the compiled defaults: a hash written by
+        // `dmart passwd` should cost what this deployment's hashes cost.
+        // Unbudgeted by design — the CLI is one hash in a process of its own,
+        // and there is nothing here for it to contend with.
+        var hasher = new PasswordHasher(
+            s.PasswordHashMemoryKb, s.PasswordHashIterations, s.PasswordHashParallelism);
         var hashed = hasher.Hash(password);
         await using var conn = await dbInst.OpenAsync();
         await using var cmd = conn.Command(
@@ -2941,6 +2946,12 @@ app.UseRequestLogging();
 
 app.UseAuthorization();
 app.UseRateLimiter();
+
+// Backpressure from the Argon2 memory budget, turned into 503 + Retry-After.
+// After UseRateLimiter, because a caller that the per-IP limiter is already
+// rejecting should get its 429 and never reach a hash at all; the budget is
+// the second line, for legitimate concurrency rather than abuse.
+app.UseMiddleware<Dmart.Middleware.PasswordHashingCapacityMiddleware>();
 
 app.MapOpenApi("/docs/openapi.json");
 app.MapGet("/docs", () => Results.Content("""

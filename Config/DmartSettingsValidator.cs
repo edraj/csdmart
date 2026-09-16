@@ -69,6 +69,31 @@ internal sealed class DmartSettingsValidator : IValidateOptions<DmartSettings>
             failures.Add($"LockoutCooldownSeconds must be >= 0 (got {s.LockoutCooldownSeconds})");
         if (s.AuthRateLimitPerMinute < 1)
             failures.Add($"AuthRateLimitPerMinute must be >= 1 (got {s.AuthRateLimitPerMinute})");
+        // Argon2id creation parameters. Verification is unaffected by these —
+        // it reads m/t/p from the stored hash — so a bad value here breaks new
+        // passwords only, which is exactly the kind of failure that should stop
+        // the process rather than surface at the first signup.
+        if (s.PasswordHashIterations < 1)
+            failures.Add($"PasswordHashIterations must be >= 1 (got {s.PasswordHashIterations})");
+        if (s.PasswordHashParallelism < 1)
+            failures.Add($"PasswordHashParallelism must be >= 1 (got {s.PasswordHashParallelism})");
+        if (s.PasswordHashParallelism > 64)
+            failures.Add($"PasswordHashParallelism must be <= 64 (got {s.PasswordHashParallelism})");
+        // 7168 KiB is OWASP's floor for Argon2id at t=3/p=1; below it the memory
+        // hardness stops being the thing protecting the hash.
+        if (s.PasswordHashMemoryKb < 7168)
+            failures.Add($"PasswordHashMemoryKb must be >= 7168 (got {s.PasswordHashMemoryKb})");
+        // Argon2 requires m >= 8*p — fewer blocks than that and the lanes have
+        // nothing to work on. Konscious throws at hash time; catch it at boot.
+        if (s.PasswordHashMemoryKb < 8 * s.PasswordHashParallelism)
+            failures.Add(
+                $"PasswordHashMemoryKb must be >= 8 * PasswordHashParallelism "
+                + $"(got {s.PasswordHashMemoryKb} for p={s.PasswordHashParallelism})");
+        if (s.PasswordHashMemoryBudgetMb < 0)
+            failures.Add($"PasswordHashMemoryBudgetMb must be >= 0, 0 meaning auto (got {s.PasswordHashMemoryBudgetMb})");
+        if (s.PasswordHashQueueTimeoutSeconds < 1)
+            failures.Add($"PasswordHashQueueTimeoutSeconds must be >= 1 (got {s.PasswordHashQueueTimeoutSeconds})");
+
         if (s.MaxQueryLimit < 1)
             failures.Add($"MaxQueryLimit must be >= 1 (got {s.MaxQueryLimit})");
         // 0 is meaningful (unlimited); negative is not.

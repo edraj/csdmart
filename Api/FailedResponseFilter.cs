@@ -65,6 +65,10 @@ public sealed class FailedResponseFilter : IEndpointFilter
         InternalErrorCode.LOCKED_ENTRY => 423,
         InternalErrorCode.LOCK_UNAVAILABLE => 423,
 
+        // Backpressure — HTTP 503. The request was well-formed and may well
+        // succeed on retry; only the Argon2 memory budget was full.
+        InternalErrorCode.PASSWORD_HASHING_BUSY => 503,
+
         // Everything else (bad_request, invalid data, OTP, QR, etc.) — HTTP 400
         _ => 400,
     };
