@@ -1099,7 +1099,13 @@ jobs:
           # it hashes into nothing and reports success. AdminBootstrap creating
           # the admin exercises hash CREATION, and the login below exercises
           # VERIFICATION — both halves, which is what actually has to work.
-          PORT=$(( 18300 + 10#$(printf '%s' "${RUNNER_NAME:-local}" | tr -cd '0-9' | tail -c 3 | sed 's/^$/0/') % 50 ))
+          # Same per-runner port derivation the other jobs use. Two digits
+          # matter here: `sed 's/^$/0/'` prints NOTHING for empty input (no
+          # line to substitute), so folding the default into the pipeline gives
+          # `10# % 50` and an arithmetic error on any runner whose name has no
+          # digits. The default belongs on the parameter expansion.
+          RUNNER_DIGITS=$(printf '%s' "${RUNNER_NAME:-local}" | tr -cd '0-9' | tail -c 3)
+          PORT=$(( 18300 + 10#${RUNNER_DIGITS:-0} % 50 ))
           {
             echo "LISTENING_HOST=\"127.0.0.1\""
             echo "LISTENING_PORT=$PORT"
@@ -1140,14 +1146,5 @@ jobs:
             *'"success"'*) echo "static binary created AND verified an argon2id hash" ;;
             *) echo "FAIL: login against that hash did not succeed: $LOGIN"
                tail -30 "$WORK/serve.log"; rm -rf "$WORK"; exit 1 ;;
-          esac
-          rm -rf "$WORK"; exit 1
-          fi
-          HASH=$(echo "select password from users where shortname='dmart';" \
-                 | sqlite3 "$WORK/static.db" 2>/dev/null || true)
-          case "$HASH" in
-            '$argon2id$v=19$m='*) echo "static binary hashed a password: ${HASH%%\$*}\$argon2id..." ;;
-            *) echo "FAIL: expected an argon2id PHC hash in the users table, got: ${HASH:-<empty>}"
-               cat "$WORK/passwd.log"; rm -rf "$WORK"; exit 1 ;;
           esac
           rm -rf "$WORK"
