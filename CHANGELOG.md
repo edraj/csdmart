@@ -4,13 +4,18 @@
 
 ### Changed
 
-- **Argon2id now costs 19 MiB per hash, not 100.** The parameters were
-  hard-coded at `m=102400, t=3, p=8` for parity with dmart Python. That is a
-  per-hash allocation: dmart idles at ~25 MB RSS and the first login took it to
-  ~234 MB, and on a 512 MB board three concurrent logins were enough for the
-  kernel to OOM-kill the process. Nothing bounded them — `AUTH_RATE_LIMIT_PER_MINUTE`
-  caps arrivals per IP, not how many hashes are resident at once, so this was
-  also an unauthenticated memory denial of service on any host.
+- **Every login used to allocate 100 MiB and take ~185 ms. It now allocates
+  19 MiB and takes ~40 ms.** This is a general improvement, not a small-device
+  one: the Argon2id parameters were hard-coded at `m=102400, t=3, p=8` for
+  parity with dmart Python, and `m` is allocated outright on every hash. dmart
+  idles at ~25 MB RSS; the first login took it to ~234 MB, on any host.
+
+  Worse, nothing bounded concurrent hashes. `AUTH_RATE_LIMIT_PER_MINUTE` caps
+  arrivals per IP, not how many hashes are resident at once, so ten simultaneous
+  logins asked for a gigabyte of Argon2 working memory — an unauthenticated
+  memory denial of service against a server of any size. Small hardware is
+  simply where it turned fatal rather than merely wasteful: on a 512 MB board
+  three concurrent logins were enough for the kernel to OOM-kill the process.
 
   The default is now OWASP's recommended Argon2id configuration — 19456 KiB,
   t=2, p=1 — and all three are configurable via `PASSWORD_HASH_MEMORY_KB`,
@@ -26,7 +31,8 @@
   history, and a failure never fails the login. Raising the cost back up on a
   large server is a config line; see `config.env.sample`.
 
-- **Concurrent hashing is bounded by MEMORY, not by request count.** A new
+- **Concurrent hashing is bounded by MEMORY, not by request count** — on every
+  deployment, not only constrained ones. A new
   `PASSWORD_HASH_MEMORY_BUDGET_MB` (default `0` = auto: half of what the runtime
   reports available, which respects `DOTNET_GCHeapHardLimit` and container
   limits) caps the sum of Argon2 working memory in flight. Hashes past the
