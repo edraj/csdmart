@@ -1,5 +1,34 @@
 # Changelog
 
+## Unreleased
+
+### Fixed
+
+- **The v1.5.8 Windows and macOS builds could not authenticate anyone.** v1.5.8
+  moved Argon2id onto the reference C library and bound it by its **Linux**
+  SONAME, `libargon2.so.1`. That name resolves to neither `libargon2.dylib` on
+  macOS nor `argon2.dll` on Windows, so `dmart-1.5.8-win-x64.zip` and
+  `dmart-1.5.8-osx-arm64.zip` started normally and then threw
+  `DllNotFoundException` on the first login. Both artifacts have been withdrawn
+  from the v1.5.8 release.
+
+  Linux keeps hashing through libargon2 — that is where the 3x latency and flat
+  resident set come from, and where the dependency is one package away. The
+  Windows and macOS builds hash with the managed implementation instead, which
+  is exactly what every dmart before 1.5.8 did on every platform. Bundling a
+  native library for them was the alternative and was rejected: macOS could take
+  Homebrew's, but Windows has no standard argon2 package, so it would mean
+  adding vcpkg to the release path to produce a DLL for the one artifact class
+  nobody deploys.
+
+  The two implementations produce **byte-identical output** at every parameter
+  set, so a password set on one platform verifies on any other. That is now
+  pinned by a test rather than left as an assumption.
+
+  **No Linux artifact was affected** — RPMs, `.deb`, both APKs, all tarballs,
+  the static musl binary, the container images and the NuGet packages are all
+  correct in v1.5.8 and unchanged here.
+
 ## v1.5.8 — 2026-09-16
 
 ### Changed

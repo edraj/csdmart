@@ -1,6 +1,7 @@
 using System.Security.Cryptography;
 using System.Text;
 using System.Threading.RateLimiting;
+using Konscious.Security.Cryptography;
 using Dmart.Config;
 using Microsoft.Extensions.Options;
 
@@ -397,17 +398,60 @@ public sealed class PasswordHasher
         return expected.Length > 0;
     }
 
-    // libargon2, not a managed implementation: the working buffer is malloc'd
-    // and freed inside the call rather than handed to the GC as a multi-MiB LOH
-    // object. See Argon2Native for the measurements behind that choice.
+    // Linux hashes through libargon2: the working buffer is malloc'd and freed
+    // inside the call rather than handed to the GC as a multi-MiB LOH object,
+    // which is worth 3x latency and a flat resident set. See Argon2Native.
+    //
+    // Everything else uses the managed implementation. The native binding names
+    // a Linux SONAME, and it does not resolve to libargon2.dylib on macOS or
+    // argon2.dll on Windows — dmart 1.5.8 shipped win-x64 and osx-arm64 builds
+    // that started and then failed every login with DllNotFoundException,
+    // because this was a bare P/Invoke with no fallback.
+    //
+    // Bundling a native library for those two was the alternative. It was not
+    // taken: macOS could use Homebrew's, but Windows has no standard argon2
+    // package, so it would mean adding vcpkg to the release path to produce a
+    // DLL for the one artifact class nobody deploys. Those builds keep exactly
+    // the hashing behaviour they had in 1.5.7.
+    //
+    // The two produce byte-identical output at every parameter set — verified
+    // before the native path was adopted, and pinned by
+    // PasswordHasherTests.Both_Implementations_Agree — so a hash written on one
+    // platform verifies on the other, and neither is "a different format".
     private static byte[] ComputeArgon2id(
         string password, byte[] salt, int memoryKb, int iterations, int parallelism, int outputLength)
     {
-        var output = new byte[outputLength];
-        Argon2Native.HashRaw(
-            Encoding.UTF8.GetBytes(password), salt, memoryKb, iterations, parallelism, output);
-        return output;
+        var pwd = Encoding.UTF8.GetBytes(password);
+        if (OperatingSystem.IsLinux())
+        {
+            var output = new byte[outputLength];
+            Argon2Native.HashRaw(pwd, salt, memoryKb, iterations, parallelism, output);
+            return output;
+        }
+        return ComputeManaged(pwd, salt, memoryKb, iterations, parallelism, outputLength);
     }
+
+    // Deliberately NOT a fallback for a FAILED native call on Linux. A Linux
+    // box without libargon2 has a broken install — the packages declare the
+    // dependency — and silently degrading to 100 MiB per hash on a host that
+    // may be memory constrained is worse than refusing to start hashing.
+    private static byte[] ComputeManaged(
+        byte[] password, byte[] salt, int memoryKb, int iterations, int parallelism, int outputLength)
+    {
+        using var argon2 = new Argon2id(password)
+        {
+            Salt = salt,
+            DegreeOfParallelism = parallelism,
+            Iterations = iterations,
+            MemorySize = memoryKb,
+        };
+        return argon2.GetBytes(outputLength);
+    }
+
+    /// <summary>Managed Argon2id, for the test that pins the two paths together.</summary>
+    internal static byte[] ComputeManagedForTests(
+        string password, byte[] salt, int memoryKb, int iterations, int parallelism, int outputLength)
+        => ComputeManaged(Encoding.UTF8.GetBytes(password), salt, memoryKb, iterations, parallelism, outputLength);
 
     private static string Base64NoPad(byte[] bytes)
         => Convert.ToBase64String(bytes).TrimEnd('=');

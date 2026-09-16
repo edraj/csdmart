@@ -160,10 +160,14 @@ password with `dmart passwd` before exposing the server.
 
 ## Runtime dependencies
 
-Beyond libc, dmart needs one shared library at runtime: **libargon2**, which
-provides Argon2id password hashing. Every login and every password write goes
-through it, so a missing libargon2 is a server that starts and then
-authenticates nobody.
+Beyond libc, the **Linux** builds need one shared library at runtime:
+**libargon2**, which provides Argon2id password hashing. Every login and every
+password write goes through it, so a missing libargon2 is a server that starts
+and then authenticates nobody.
+
+The Windows and macOS builds have no such dependency — they hash with a managed
+implementation that produces identical output, so a password set on one platform
+verifies on any other.
 
 The packages declare it — `libargon2` (Fedora/RHEL), `libargon2-1`
 (Debian/Ubuntu), `argon2-libs` (Alpine) — and the portable tarballs ship

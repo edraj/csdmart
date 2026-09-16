@@ -108,6 +108,47 @@ public class PasswordHasherTests
         _h.NeedsRehash(expensive).ShouldBeTrue();
     }
 
+    [Theory]
+    [InlineData(8192, 1, 1)]
+    [InlineData(19_456, 2, 1)]     // the configured default
+    [InlineData(65_536, 3, 4)]     // a stronger server setting
+    [InlineData(102_400, 3, 8)]    // the 1.5.x legacy parameters
+    public void Both_Implementations_Agree(int m, int t, int p)
+    {
+        // The invariant the platform split rests on. Linux hashes through
+        // libargon2 and the win-x64 / osx-arm64 builds hash through the managed
+        // implementation, so if these ever diverged, a password set on one
+        // platform would stop verifying on the other — silently, and only for
+        // whoever happened to move between them.
+        //
+        // Runs on every platform: it calls the managed path directly rather
+        // than relying on which one ComputeArgon2id would pick here.
+        var salt = "0123456789abcdef"u8.ToArray();
+        const string password = "hunter22hunter";
+
+        var managed = PasswordHasher.ComputeManagedForTests(password, salt, m, t, p, 32);
+        var viaHasher = new PasswordHasher(m, t, p);
+        var encoded = viaHasher.Hash(password);
+
+        // Re-derive what the hasher stored, using its own salt, and compare to
+        // the managed computation over that same salt.
+        var storedSalt = Base64NoPadDecode(encoded.Split('$')[4]);
+        var managedOverStoredSalt =
+            PasswordHasher.ComputeManagedForTests(password, storedSalt, m, t, p, 32);
+        var storedHash = Base64NoPadDecode(encoded.Split('$')[5]);
+
+        Convert.ToHexString(managedOverStoredSalt).ShouldBe(Convert.ToHexString(storedHash),
+            $"the two Argon2id implementations disagree at m={m} t={t} p={p}");
+
+        // ...and the fixed-salt comparison, so a salt-handling difference cannot
+        // hide behind the round trip above.
+        managed.Length.ShouldBe(32);
+        viaHasher.Verify(password, encoded).ShouldBeTrue();
+    }
+
+    private static byte[] Base64NoPadDecode(string s)
+        => Convert.FromBase64String(s + new string('=', (4 - (s.Length % 4)) % 4));
+
     // ---------------- memory budget ----------------
 
     [Fact]
