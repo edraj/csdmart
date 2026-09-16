@@ -5,7 +5,6 @@ using Dmart.Models.Api;
 using Dmart.Models.Core;
 using Dmart.Models.Enums;
 using Dmart.Models.Json;
-using Dmart.Plugins;
 using Dmart.Services;
 using Microsoft.Extensions.Options;
 
@@ -26,7 +25,7 @@ public static class RegistrationHandler
         // accepts caller-supplied shortnames) so that no caller can squat
         // on a name on this public endpoint.
         g.MapPost("/create", async Task<IResult> (HttpContext http, UserService svc,
-            PluginManager plugins, IOptions<DmartSettings> settings, CancellationToken ct) =>
+            IOptions<DmartSettings> settings, CancellationToken ct) =>
         {
             UserCreateBody? body;
             try
@@ -81,24 +80,12 @@ public static class RegistrationHandler
 
             var (user, access, _) = result.Value;
 
-            // Notify plugin hooks of the new user, same as the managed
-            // CRUD path (RequestHandler.cs:174-192) and EntryService
-            // (EntryService.cs:133). Following the EntryService pattern:
-            // call AfterActionAsync directly so plugin authors' Concurrent
-            // flag is honored — synchronous hooks block, Concurrent hooks
-            // run fire-and-forget. PluginManager logs failures itself
-            // (Plugins/PluginManager.cs:252,264) and after-hook errors
-            // never fail the originating action.
-            await plugins.AfterActionAsync(new Event
-            {
-                SpaceName = settings.Value.ManagementSpace,
-                Subpath = "/users",
-                Shortname = user.Shortname,
-                ActionType = ActionType.Create,
-                ResourceType = ResourceType.User,
-                // Self-registration: the actor is the user being created.
-                UserShortname = user.Shortname,
-            }, ct);
+            // Notify plugin hooks of the new user, same as the managed CRUD
+            // path (RequestHandler.cs:174-192) and EntryService
+            // (EntryService.cs:133). The Event is built by UserService so the
+            // explicit (/user/create) and implicit (OTP login) registration
+            // paths cannot drift apart — the shape lives next to the writes.
+            await svc.NotifyCreatedAsync(user, ct);
 
             // Set auth_token cookie — mirrors the login flow so browser
             // clients are authenticated immediately after create.

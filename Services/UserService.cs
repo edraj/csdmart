@@ -557,7 +557,51 @@ public sealed class UserService(
         };
         await users.UpsertAsync(user, ct);
 
+        // Implicit registration writes the row straight through UserRepository,
+        // so nothing else would fire the create hooks — personal folders and the
+        // audit line come from here, at the point the user actually exists,
+        // rather than from whichever handler happened to ask for the login.
+        await NotifyCreatedAsync(user, ct);
+
         return await ProcessLoginAsync(user, req, requestHeaders, ct, created: true);
+    }
+
+    /// <summary>
+    /// Fires the after-action Create hooks for a newly-persisted user
+    /// (resource_folders_creation materializes personal/people/{shortname}/*,
+    /// AuditPlugin records the create, etc.).
+    /// </summary>
+    /// <remarks>
+    /// Never throws. PluginManager already swallows individual hook failures,
+    /// but AfterActionAsync also awaits SpaceEventLogger.LogAsync first, and a
+    /// create that already committed must not be reported to the caller as a
+    /// failure because the audit sink was unavailable or the request was
+    /// cancelled mid-flight. Callers get "the user exists" either way; a hook
+    /// that didn't run is a logged warning, not a failed registration.
+    /// </remarks>
+    public async Task NotifyCreatedAsync(User user, CancellationToken ct = default)
+    {
+        try
+        {
+            await plugins.AfterActionAsync(new Event
+            {
+                SpaceName = MgmtSpace,
+                Subpath = "/users",
+                Shortname = user.Shortname,
+                // Carried so the audit line's `resource.uuid` joins back to the
+                // users row, the way EntryService.BuildEvent does for entries.
+                Uuid = user.Uuid,
+                ActionType = ActionType.Create,
+                ResourceType = ResourceType.User,
+                // Self-registration (explicit or implicit): the actor is the
+                // user being created.
+                UserShortname = user.Shortname,
+            }, ct);
+        }
+        catch (Exception ex)
+        {
+            log.LogWarning(ex, "after-create hooks failed for user {Shortname}", user.Shortname);
+        }
     }
 
     // Mints an unused 8-hex shortname, matching the "auto" shortname scheme
