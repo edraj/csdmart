@@ -2400,6 +2400,39 @@ builder.Services.AddRateLimiter(opts =>
                 QueueLimit = 0,
             });
     });
+    // Blanket per-IP cap on the anonymous surface. /public reaches real work
+    // without a credential — QueryService, attachment payloads, and (with a
+    // jq_filter) a subprocess — so "how many requests one address may make"
+    // needs an answer that does not depend on which handler it lands in.
+    //
+    // Deliberately a SEPARATE policy from auth-by-ip rather than a reuse: that
+    // one is 10/min because a login attempt should be rare, and applying it to
+    // the anonymous read path would throttle ordinary browsing. Endpoints that
+    // carry both (submit, the anonymous attach routes) acquire both leases, so
+    // the stricter one binds.
+    //
+    // 0 disables, which is a real configuration: the partition key is the peer
+    // address, so behind a reverse proxy with TrustedProxies unset every
+    // visitor shares one bucket and this becomes a global cap. See
+    // DmartSettings.PublicRateLimitPerMinute.
+    opts.AddPolicy("public-by-ip", ctx =>
+    {
+        var permit = ctx.RequestServices
+            .GetRequiredService<IOptions<DmartSettings>>().Value.PublicRateLimitPerMinute;
+        var ip = ctx.Connection.RemoteIpAddress?.ToString() ?? "unknown";
+        if (permit <= 0)
+            return System.Threading.RateLimiting.RateLimitPartition.GetNoLimiter(ip);
+
+        return System.Threading.RateLimiting.RateLimitPartition.GetFixedWindowLimiter(
+            ip,
+            _ => new System.Threading.RateLimiting.FixedWindowRateLimiterOptions
+            {
+                PermitLimit = permit,
+                Window = TimeSpan.FromMinutes(1),
+                QueueLimit = 0,
+            });
+    });
+
     // Rejected requests get HTTP 429 with a short JSON body matching our
     // Response.Fail shape, not the default empty 429.
     opts.OnRejected = async (ctx, ct) =>
@@ -2982,7 +3015,8 @@ app.MapGet("/", () => Results.Content("{\"status\":\"success\",\"message\":\"DMA
 app.MapHealth();
 
 app.MapGroup("/managed").WithTags("Managed").RequireAuthorization().AddEndpointFilter<FailedResponseFilter>().MapManaged();
-app.MapGroup("/public").WithTags("Public").AddEndpointFilter<FailedResponseFilter>().MapPublic();
+app.MapGroup("/public").WithTags("Public").AddEndpointFilter<FailedResponseFilter>()
+    .RequireRateLimiting("public-by-ip").MapPublic();
 app.MapGroup("/user").WithTags("User").AddEndpointFilter<FailedResponseFilter>().MapUser();
 app.MapGroup("/info").WithTags("Info").RequireAuthorization().AddEndpointFilter<FailedResponseFilter>().AddEndpointFilter<GlobalAdminFilter>().MapInfo();
 app.MapGroup("/qr").WithTags("QR").AddEndpointFilter<FailedResponseFilter>().MapQr();
