@@ -242,6 +242,27 @@ public sealed class DmartSettings
     // immediately with HTTP 429 (no queue).
     public int AuthRateLimitPerMinute { get; set; } = 10;
 
+    // Per-IP cap on ALL /public calls in a 60-second window. 0 disables it.
+    //
+    // Separate from AuthRateLimitPerMinute, and far looser, because it guards
+    // different traffic: /public is the anonymous READ path (query, entry,
+    // attachment payloads), where one page view can legitimately be a dozen
+    // requests. Reusing the auth limit's 10/min here would throttle ordinary
+    // browsing. The auth endpoints that also live under /public — submit and
+    // the anonymous attach routes — keep their own auth-by-ip policy on top of
+    // this one, so both apply and the stricter binds.
+    //
+    // 600/min is roughly 10 requests a second from one address: generous for a
+    // human client, and still a bound.
+    //
+    // BEHIND A PROXY this depends on TrustedProxies. The partition key is the
+    // peer address, and X-Forwarded-For is only honoured from a configured
+    // proxy hop — so if TrustedProxies is unset behind a reverse proxy, every
+    // visitor shares the proxy's address and therefore ONE bucket, which turns
+    // this into a global cap rather than a per-client one. Set TrustedProxies,
+    // or set this to 0.
+    public int PublicRateLimitPerMinute { get; set; } = 600;
+
     // CSRF defense for cookie-borne auth. When true (default), the auth_token
     // cookie is only accepted as a credential for requests that are NOT
     // cross-site (judged by the browser-sent Sec-Fetch-Site header, or an

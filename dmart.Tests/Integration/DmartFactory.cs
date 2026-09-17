@@ -126,6 +126,13 @@ public sealed class DmartFactory : WebApplicationFactory<Program>, IAsyncLifetim
                 // their own factory (AuthRateLimitTests, ShortLinkAnonymous-
                 // ResolveTests both pin it to 3).
                 ["Dmart:AuthRateLimitPerMinute"] = "1000",
+                // Same reasoning as the line above, for the /public group's
+                // limiter: every test request arrives from 127.0.0.1, so the
+                // whole suite shares one partition and the production default
+                // (600/min) would be a budget for the entire run rather than
+                // per client. PublicRateLimitTests pins it low on its own
+                // factory to exercise the behaviour.
+                ["Dmart:PublicRateLimitPerMinute"] = "1000000",
                 // The legacy-lockout repair reactivates every user row holding
                 // `is_active = false AND attempt_count >= max`. Production can
                 // no longer produce that pair (the managed update clears the
