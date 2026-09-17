@@ -607,6 +607,24 @@ public sealed class DmartSettings
     // carries a jq_filter expression. Python default (backend/utils/settings.py).
     public int JqTimeout { get; set; } = 2;
 
+    // How many `jq` subprocesses may run AT ONCE, process-wide.
+    //
+    // Each one forks and buffers its stdout in memory (JqRunner.MaxOutputBytes,
+    // 32MB), so this is what bounds the worst case: MaxConcurrency x 32MB of
+    // heap and that many child processes, whatever the request rate. It has to
+    // be a concurrency bound rather than a rate limit, because the damage is
+    // done by requests overlapping, not by how many arrive per minute — and
+    // /public/query reaches the jq path unauthenticated.
+    //
+    // 4 keeps the ceiling at ~128MB, which a 512MB board survives. Raise it on
+    // a server with headroom and a jq-heavy client.
+    public int JqMaxConcurrency { get; set; } = 4;
+
+    // Seconds a request waits for a jq slot before giving up with a 503-shaped
+    // failure. Short on purpose: a caller queued behind a full budget is better
+    // told to retry than left holding a request thread.
+    public int JqQueueTimeoutSeconds { get; set; } = 5;
+
     // ---- Parquet archive tuning (docs/parquet-export-design.md §4.2) ----
     //
     // These were test-only statics with no operator surface. The defaults are

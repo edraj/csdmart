@@ -28,6 +28,33 @@ public static class JqRunner
         @"\benv\b|\$ENV\b|\binput\b|\bdebug\b|\bstderr\b|\bpath\(|\bhalt\b|\bhalt_error\b|\bbuiltins\b|\bmodulemeta\b|\bgetpath\b|\$__loc__",
         RegexOptions.IgnoreCase | RegexOptions.Compiled);
 
+    // jq's MODULE SYSTEM, which the blocklist above does not cover and which is
+    // a filesystem read, not a builtin:
+    //
+    //     import "config" as $c {search:"/some/dir"}; $c
+    //         -> [{"db_password":"hunter2"}]      (verified, jq 1.8.2)
+    //
+    // `search` takes an absolute directory, so this reads any <dir>/<name>.json
+    // the server process can open — which in dmart means entry payloads, with
+    // no ACL anywhere in the path. `include` is the same read for a `.jq` file.
+    //
+    // Today neither is reachable: both call sites wrap the caller's filter as
+    // `map(<filter>)`, and jq's grammar (Module Imports Exp) only accepts a
+    // directive at the TOP of a program, so nothing the caller writes can get
+    // in front of the `map(`. That is the wrapper saving us, not this
+    // validator — and ValidateFilter is a public method whose contract is "this
+    // filter is safe to run", so it should not depend on how its one caller
+    // happens to spell things.
+    //
+    // Anchored at the start of the program (after leading whitespace and
+    // #-comments, which jq allows there) because that is the only position the
+    // directive is legal in. Matching the bare keyword anywhere would reject
+    // honest filters that merely mention it — `.import`, `test("include")`,
+    // `{note: "please import this"}` — for no gain.
+    private static readonly Regex ModuleDirective = new(
+        @"^\s*(?:#[^\n]*\n\s*)*(?:import|include)\s*""",
+        RegexOptions.IgnoreCase | RegexOptions.Compiled);
+
     public const int MaxFilterLength = 1024;
 
     // Hard ceiling on how much of jq's stdout we buffer. ValidateFilter caps the
@@ -36,6 +63,42 @@ public static class JqRunner
     // inside JqTimeout — a few concurrent requests like that OOM the process.
     // Overflow is reported as JqError (the filter is at fault), not Timeout.
     public const int MaxOutputBytes = 32 * 1024 * 1024;
+
+    // ---- concurrency budget ------------------------------------------------
+    //
+    // Every run forks a `jq` and buffers its stdout in memory up to
+    // MaxOutputBytes. Unbounded, that is the amplification: an anonymous
+    // POST /public/query carrying a jq_filter reaches here (an empty result set
+    // is still Status.Success with a non-null records[]), and neither
+    // /public/query nor /managed/query is rate limited. N concurrent requests
+    // meant N processes and up to N x 32MB of heap, on a server that targets
+    // boards with 512MB of RAM.
+    //
+    // A rate limit would not fix this — it bounds requests per minute, while
+    // the thing that hurts is how many are running AT ONCE. This bounds that
+    // directly: worst-case buffered jq output is MaxConcurrency x MaxOutputBytes
+    // whatever the arrival rate, and callers past the queue timeout get a clean
+    // 503 instead of the process getting slower for everyone.
+    //
+    // Same shape as PasswordHasher's memory budget, for the same reason.
+    private const int DefaultMaxConcurrency = 4;
+    private const int DefaultQueueTimeoutSeconds = 5;
+
+    private static SemaphoreSlim _slots = new(DefaultMaxConcurrency, DefaultMaxConcurrency);
+    private static TimeSpan _queueTimeout = TimeSpan.FromSeconds(DefaultQueueTimeoutSeconds);
+
+    /// <summary>Applies the configured budget. Call ONCE, at startup.</summary>
+    /// <remarks>
+    /// JqRunner is static (it holds no per-request state and its one resource
+    /// is the machine's process table), so the budget is static too. Replacing
+    /// the semaphore is only safe before any request is served — Program.cs
+    /// calls this while the host is still building. It is not a runtime knob.
+    /// </remarks>
+    internal static void Configure(int maxConcurrency, int queueTimeoutSeconds)
+    {
+        _slots = new SemaphoreSlim(Math.Max(1, maxConcurrency), Math.Max(1, maxConcurrency));
+        _queueTimeout = TimeSpan.FromSeconds(Math.Max(1, queueTimeoutSeconds));
+    }
 
     public enum FailureKind
     {
@@ -48,6 +111,9 @@ public static class JqRunner
         Timeout,
         // jq exited non-zero (syntax error or runtime error in the filter).
         JqError,
+        // Every concurrency slot was taken for longer than the queue timeout.
+        // Server-side backpressure, not a fault in the filter.
+        Busy,
     }
 
     public readonly record struct Result(FailureKind Failure, JsonElement? Output, string? Stderr);
@@ -66,6 +132,11 @@ public static class JqRunner
         if (DangerousBuiltins.IsMatch(filter))
         {
             reason = "jq_filter contains disallowed builtins (env, input, debug, stderr, path)";
+            return false;
+        }
+        if (ModuleDirective.IsMatch(filter))
+        {
+            reason = "jq_filter may not import or include modules";
             return false;
         }
         reason = null;
@@ -141,6 +212,10 @@ public static class JqRunner
             "jq_filter validation failed", ErrorTypes.Request),
         FailureKind.JqError => Response.Fail(InternalErrorCode.JQ_ERROR,
             $"jq filter failed: {(stderr ?? "unknown error").Trim()}", ErrorTypes.Request),
+        // Backpressure, not the caller's filter: every slot was busy. Server
+        // error type so clients retry rather than "fix" a filter that is fine.
+        FailureKind.Busy => Response.Fail(InternalErrorCode.JQ_TIMEOUT,
+            "jq is at capacity, retry shortly", ErrorTypes.Internal),
         _ => throw new ArgumentOutOfRangeException(nameof(kind), kind, "None is not a failure"),
     };
 
@@ -151,9 +226,29 @@ public static class JqRunner
     private static async Task<(FailureKind Failure, byte[]? Stdout, string? Stderr)> RunCoreAsync(
         string filter, byte[] inputJson, int timeoutSeconds, CancellationToken ct)
     {
+        // Validation first: a filter we are going to refuse should not wait for
+        // a slot, and refusing it costs nothing to run concurrently.
         if (!ValidateFilter(filter, out _))
             return (FailureKind.Invalid, null, null);
 
+        if (!await _slots.WaitAsync(_queueTimeout, ct).ConfigureAwait(false))
+            return (FailureKind.Busy, null, "jq is at capacity");
+        try
+        {
+            return await RunProcessAsync(filter, inputJson, timeoutSeconds, ct).ConfigureAwait(false);
+        }
+        finally
+        {
+            _slots.Release();
+        }
+    }
+
+    // The actual subprocess run. Split out so the slot acquired above is
+    // released by exactly one `finally`, on every path out of here — including
+    // the early `return`s for a missing binary.
+    private static async Task<(FailureKind Failure, byte[]? Stdout, string? Stderr)> RunProcessAsync(
+        string filter, byte[] inputJson, int timeoutSeconds, CancellationToken ct)
+    {
         var psi = new ProcessStartInfo
         {
             FileName = "jq",
@@ -164,6 +259,13 @@ public static class JqRunner
             CreateNoWindow = true,
         };
         psi.ArgumentList.Add("-c");
+        // `--` first: without it a filter beginning with `-` is parsed as an
+        // OPTION rather than the program. jq 1.8 rejects attached values
+        // (`--from-file=x`) so the reachable damage there is a usage error, but
+        // the jq version is the distro's choice — dmart declares a dependency
+        // and takes what the package manager installs — and "which jq is on
+        // PATH" is the wrong thing for that to depend on.
+        psi.ArgumentList.Add("--");
         psi.ArgumentList.Add(filter);
 
         Process proc;

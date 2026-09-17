@@ -97,6 +97,10 @@ internal sealed class DmartSettingsValidator : IValidateOptions<DmartSettings>
 
         if (s.MaxQueryLimit < 1)
             failures.Add($"MaxQueryLimit must be >= 1 (got {s.MaxQueryLimit})");
+        if (s.JqMaxConcurrency < 1)
+            failures.Add($"JqMaxConcurrency must be >= 1 (got {s.JqMaxConcurrency})");
+        if (s.JqQueueTimeoutSeconds < 1)
+            failures.Add($"JqQueueTimeoutSeconds must be >= 1 (got {s.JqQueueTimeoutSeconds})");
         // 0 is meaningful (unlimited); negative is not.
         if (s.QueryTotalCap < 0)
             failures.Add($"QueryTotalCap must be >= 0, 0 meaning unlimited (got {s.QueryTotalCap})");
