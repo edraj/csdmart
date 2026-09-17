@@ -1,5 +1,97 @@
 # Changelog
 
+## v1.5.11 — 2026-09-17
+
+Security and robustness fixes from a review of the codebase. Nothing here
+changes a wire format or a stored hash; upgrading is a drop-in.
+
+### Fixed
+
+- **A single write could issue millions of database queries.** Folder-level
+  uniqueness (`unique_fields`) expands a compound key into the *Cartesian
+  product* of its per-path values and runs one search per combination. The
+  number of paths comes from the folder's configuration, but the list lengths
+  come from the request body — and nothing bounded them. One path over a 50MB
+  array of short strings is roughly 5.8 million serial searches; a second path
+  multiplies rather than adds.
+
+  The expansion is now counted before any query runs and refused past
+  `UNIQUENESS_MAX_PROBES` (default 1000). It refuses rather than truncates on
+  purpose: the probes are the only thing that establishes uniqueness, so
+  running a prefix of them and accepting the write would admit exactly the
+  duplicate the constraint exists to prevent.
+
+- **Uniqueness stopped being enforced when the database was struggling.** Four
+  places treated "could not check" as "no violation" — both probe loops caught
+  every exception and moved on to the next combination, and both parent-folder
+  loads turned a failed load into `folder = null`, which reads downstream as
+  "no folder declares unique_fields" and skips the check entirely. All four now
+  refuse the write.
+
+  The two defects composed: the unbounded expansion above is a way to *create*
+  the load that makes probes fail, so an attacker could degrade the database
+  until uniqueness quietly stopped applying. **If you see the new
+  "uniqueness could not be verified" failures after upgrading, the database was
+  already failing and duplicates were getting through silently before.**
+
+- **A uniqueness path with nested arrays behaved differently on each engine.**
+  `outer[].inner[].leaf` (two `[]` segments — one more than the query layer
+  translates) matched nothing on PostgreSQL and raised
+  `bad JSON path` on SQLite. Both looked like "no collision" only because the
+  error was being swallowed. Such a path is now recognised as unsupported
+  before a probe is built — skipped identically on both engines, and logged at
+  warning, because a declared constraint that cannot be enforced is something
+  an operator should be told rather than left to infer.
+
+### Security
+
+- **`jq_filter` could not import modules, but only by accident.** jq's module
+  system — `import "name" as $x {search:"/dir"}; $x` — reads any
+  `<dir>/<name>.json` the server process can open, which for dmart means entry
+  payloads with no ACL on the path. It was not covered by the builtin
+  blocklist. It was also not reachable, because both call sites wrap the
+  caller's filter as `map(<filter>)` and jq only accepts a directive at the top
+  of a program — so the wrapper was holding, not the validator. The validator
+  now rejects module directives itself, anchored at the start of the program so
+  filters that merely mention the word (`.import`, `test("include")`) still
+  work.
+
+  The filter is also passed after a `--` separator now, so one beginning with
+  `-` is a filter rather than an option, whatever the installed jq does with
+  it.
+
+- **`jq_filter` had no concurrency limit on an unauthenticated endpoint.** Each
+  use forks a `jq` and buffers its output in memory (up to 32MB). The path is
+  reachable from `POST /public/query` — an empty result set is still a success
+  with a non-null `records[]`, so the subprocess starts even for a caller who
+  can see nothing — and neither `/public/query` nor `/managed/query` is rate
+  limited. Concurrent requests meant that many processes and that much heap, on
+  a server that targets 512MB boards.
+
+  `JQ_MAX_CONCURRENCY` (default 4) now bounds the worst case at about 128MB
+  regardless of arrival rate; callers past `JQ_QUEUE_TIMEOUT_SECONDS`
+  (default 5) get a retryable failure instead of everyone getting slower. A
+  rate limit was the obvious alternative and is the wrong tool: it bounds
+  arrivals per minute, while the damage here is done by requests overlapping.
+
+### Changed
+
+- **Release artifacts for Windows and macOS are now executed before they
+  ship.** The `win-x64` and `osx-arm64` zips were only ever compiled, which is
+  how v1.5.8 shipped two artifacts that started and then failed on the first
+  login. Each is now extracted and run — boot, hash a password, log in — before
+  it is signed. The verifiable-release workflow also accepts a `tag` input, so
+  a failed leg can be re-run against an existing tag instead of costing a
+  version number.
+
+### New settings
+
+| setting | default | what it bounds |
+| --- | --- | --- |
+| `UNIQUENESS_MAX_PROBES` | 1000 | searches one uniqueness compound may run for a single write |
+| `JQ_MAX_CONCURRENCY` | 4 | `jq` subprocesses alive at once, process-wide |
+| `JQ_QUEUE_TIMEOUT_SECONDS` | 5 | how long a request waits for a `jq` slot |
+
 ## v1.5.10 — 2026-09-16
 
 ### Fixed
