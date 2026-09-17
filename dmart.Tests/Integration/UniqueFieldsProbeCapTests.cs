@@ -123,6 +123,59 @@ public class UniqueFieldsProbeCapTests : IClassFixture<DmartFactory>
         }
     }
 
+    [Fact]
+    public async Task A_Doubly_Nested_Array_Path_Is_Skipped_Identically_On_Both_Engines()
+    {
+        // Plain [Fact], not [FactIfPg]: the whole point is that the two engines
+        // agree, so it has to run on whichever one the leg is configured for.
+        //
+        // QueryHelper expresses ONE `[]` per path. A second one used to mean
+        // "matches nothing" on PostgreSQL and SqliteException "bad JSON path"
+        // on SQLite -- indistinguishable only because the probe's catch
+        // swallowed both. With probe failures now refusing the write, that
+        // difference would have made the same folder work on one engine and
+        // reject every write on the other, so the path is recognised as
+        // unsupported before a probe is built.
+        var (spaces, entries, entryService) = Resolve();
+        var space = await SeedAsync(spaces, entries,
+            """[["payload.body.outer[].inner[].leaf"]]""");
+        try
+        {
+            var e = MakeNested(space, "p1", "alpha");
+            var res = await entryService.CreateAsync(e, "dmart");
+
+            res.IsOk.ShouldBeTrue(
+                $"an unsupported nested path must be skipped, not refused: {res.ErrorMessage}");
+            res.ErrorCode.ShouldNotBe(InternalErrorCode.SOMETHING_WRONG);
+        }
+        finally
+        {
+            await spaces.DeleteAsync(space);
+        }
+    }
+
+    private static Entry MakeNested(string space, string shortname, string leaf)
+        => new()
+        {
+            Uuid = Guid.NewGuid().ToString(),
+            Shortname = shortname,
+            SpaceName = space,
+            Subpath = "/things",
+            ResourceType = ResourceType.Content,
+            IsActive = true,
+            OwnerShortname = "dmart",
+            CreatedAt = TimeUtils.Now(),
+            UpdatedAt = TimeUtils.Now(),
+            Payload = new Payload
+            {
+                ContentType = ContentType.Json,
+                Body = JsonDocument.Parse(JsonSerializer.Serialize(new
+                {
+                    outer = new object[] { new { inner = new object[] { new { leaf } } } },
+                })).RootElement.Clone(),
+            },
+        };
+
     [FactIfPg]
     public async Task An_Ordinary_List_Still_Validates_Normally()
     {

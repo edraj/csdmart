@@ -112,6 +112,28 @@ public sealed class UniquenessValidator(
     // probe is worse than it looks: the probe fails under exactly the load the
     // unbounded product above can manufacture, so the two defects composed into
     // "flood the database and the uniqueness constraint stops applying".
+    // QueryHelper translates ONE `[]` segment per path (see
+    // BuildPayloadArraySql). A path with two is not merely unmatched — the two
+    // engines disagree about what it does, and neither does the right thing:
+    //
+    //   PostgreSQL  the second `[]` becomes part of a literal key name, so the
+    //               EXISTS predicate matches nothing and the write is allowed;
+    //   SQLite      the generated JSON path is rejected outright --
+    //               SqliteException "bad JSON path: '$.inner[].leaf'".
+    //
+    // Until that catch swallowed the SQLite error, both looked like "no
+    // collision found". They are not the same thing, and with the probe failure
+    // now refusing the write (which is the point of this change) the difference
+    // became "this folder works on PostgreSQL and is unusable on SQLite".
+    //
+    // So the path is recognised as unsupported BEFORE a probe is built: skipped
+    // on both engines, identically, and logged at warning because a declared
+    // constraint that cannot be enforced is something an operator needs told.
+    // Skipping one path and keeping the compound's others is the rule this file
+    // already follows for a missing or unchanged path.
+    private static bool IsUnsupportedNestedArrayPath(string path)
+        => path.AsSpan().Count("[]") > 1;
+
     private static Result<bool> ProbeUnavailable(string spaceName, string subpath) =>
         Result<bool>.Fail(
             InternalErrorCode.SOMETHING_WRONG,
@@ -240,6 +262,15 @@ public sealed class UniquenessValidator(
             var declaredPaths = paths.Count;
             foreach (var path in paths)
             {
+                if (IsUnsupportedNestedArrayPath(path))
+                {
+                    log.LogWarning(
+                        "uniqueness: path {Path} on {Space}{Subpath} nests more than one [] segment, "
+                        + "which the query layer cannot express — this path is NOT being enforced",
+                        path, spaceName, subpath);
+                    continue;
+                }
+
                 var newValues = ReadPathFromAttrs(root, path);
                 if (newValues.Count == 0) continue;
 
@@ -444,6 +475,15 @@ public sealed class UniquenessValidator(
                 if (pathEl.ValueKind != JsonValueKind.String) continue;
                 var path = pathEl.GetString();
                 if (string.IsNullOrEmpty(path)) continue;
+
+                if (IsUnsupportedNestedArrayPath(path))
+                {
+                    log.LogWarning(
+                        "uniqueness: path {Path} on {Space}{Subpath} nests more than one [] segment, "
+                        + "which the query layer cannot express — this path is NOT being enforced",
+                        path, entry.SpaceName, entry.Subpath);
+                    continue;
+                }
 
                 if (!TryReadValue(entry, path, out var newValues)) continue;
                 if (newValues.Count == 0) continue;
