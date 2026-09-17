@@ -173,6 +173,23 @@ public sealed class DmartSettings
 
     public int MaxQueryLimit { get; set; } = 10000;
 
+    // Ceiling on the number of search probes ONE uniqueness compound may run
+    // for a single write (UniquenessValidator).
+    //
+    // A compound of K paths whose values are arrays runs the CARTESIAN PRODUCT
+    // of those arrays as individual searches — and the array lengths come from
+    // the request body, not from the folder config. A 50MB body can carry
+    // millions of elements, so an uncapped product turns one authenticated
+    // write into millions of serial queries.
+    //
+    // Exceeding the cap REJECTS the write. It cannot be a truncation: the
+    // probes are the only thing that establishes uniqueness, so skipping some
+    // would admit exactly the duplicate the constraint exists to stop. 1000 is
+    // far above any legitimate compound (a uniqueness key over a thousand-element
+    // array is a modelling mistake, not a use case) and far below the volume
+    // that hurts.
+    public int UniquenessMaxProbes { get; set; } = 1000;
+
     // Largest exact value a query `total` will compute. 0 (default) = unlimited,
     // which is the Python-parity behaviour: every query counts every matching
     // row. Set it on any deployment with large subpaths — counting is O(matching
