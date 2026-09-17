@@ -2508,6 +2508,15 @@ var app = builder.Build();
 // the process lifetime.
 Dmart.Plugins.Native.NativePluginCallbacks.Services = app.Services;
 
+// Apply the jq concurrency budget before anything can serve a request. Static
+// for the same reason the bridge above is: JqRunner holds no per-request state
+// and the resource it guards (processes + the heap they stream into) is
+// process-wide. See JqRunner.Configure — boot-time only, not a runtime knob.
+{
+    var jqSettings = app.Services.GetRequiredService<IOptions<DmartSettings>>().Value;
+    Dmart.Utils.JqRunner.Configure(jqSettings.JqMaxConcurrency, jqSettings.JqQueueTimeoutSeconds);
+}
+
 // Register the shutdown hook for subprocess plugins so each one gets a
 // clean stdin-close (EOF) when dmart starts shutting down. Paired with the
 // SDK sample's SIGINT handling, this silences the KeyboardInterrupt trace
