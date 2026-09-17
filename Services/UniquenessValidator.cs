@@ -56,12 +56,89 @@ public sealed class UniquenessValidator(
     UserRepository users,
     AccessRepository access,
     AttachmentRepository attachments,
+    Microsoft.Extensions.Options.IOptions<Dmart.Config.DmartSettings> settings,
     ILogger<UniquenessValidator> log)
 {
     // Characters that QueryHelper's tokenizer treats specially; values that
     // contain any of these need to be wrapped in double quotes to round-trip.
     private static readonly SearchValues<char> SearchTokenizerSpecials =
         SearchValues.Create(" \t()|@");
+
+    // ---- probe budget -----------------------------------------------------
+    //
+    // Both validation paths below expand a compound into the CARTESIAN PRODUCT
+    // of its per-path token lists and run one search per combination. The path
+    // count comes from the folder's `unique_fields` (operator-controlled), but
+    // the token counts come from the ARRAY LENGTHS IN THE REQUEST BODY, which
+    // are not. Left unbounded, one write can issue millions of serial queries:
+    // a single path over a 50MB array of short strings is ~5.8M probes, and a
+    // two-path compound multiplies.
+    //
+    // Counted before any query runs, so an abusive write costs one multiply
+    // rather than the first million probes.
+
+    /// <summary>
+    /// Product of the per-path token counts, saturating at <paramref name="cap"/>.
+    /// </summary>
+    /// <remarks>
+    /// Saturating rather than returning the true product: the real value can
+    /// overflow long (64 paths x 4 values is already 2^128) and the only thing
+    /// the caller asks is "is this over the line". Stops multiplying at the cap.
+    /// </remarks>
+    internal static long ProbeCount(List<List<string>> perPathTokens, long cap)
+    {
+        var n = 1L;
+        foreach (var set in perPathTokens)
+        {
+            n *= set.Count;
+            if (n > cap) return cap + 1;
+        }
+        return n;
+    }
+
+    private static Result<bool> TooManyProbes(
+        string spaceName, string subpath, long cap) =>
+        Result<bool>.Fail(
+            InternalErrorCode.INVALID_DATA,
+            $"uniqueness check for {spaceName}{subpath} would need more than {cap} "
+            + "searches; the compound's list values are too large. Shorten the list, "
+            + "or raise UNIQUENESS_MAX_PROBES.",
+            ErrorTypes.Request);
+
+    // A probe that could not run leaves uniqueness UNVERIFIED. The file already
+    // takes this position for a payload it cannot serialize ("fail closed
+    // rather than silently waving the request through") — this extends it to
+    // the two other ways the gate can fail to run. Continuing past a failed
+    // probe is worse than it looks: the probe fails under exactly the load the
+    // unbounded product above can manufacture, so the two defects composed into
+    // "flood the database and the uniqueness constraint stops applying".
+    // QueryHelper translates ONE `[]` segment per path (see
+    // BuildPayloadArraySql). A path with two is not merely unmatched — the two
+    // engines disagree about what it does, and neither does the right thing:
+    //
+    //   PostgreSQL  the second `[]` becomes part of a literal key name, so the
+    //               EXISTS predicate matches nothing and the write is allowed;
+    //   SQLite      the generated JSON path is rejected outright --
+    //               SqliteException "bad JSON path: '$.inner[].leaf'".
+    //
+    // Until that catch swallowed the SQLite error, both looked like "no
+    // collision found". They are not the same thing, and with the probe failure
+    // now refusing the write (which is the point of this change) the difference
+    // became "this folder works on PostgreSQL and is unusable on SQLite".
+    //
+    // So the path is recognised as unsupported BEFORE a probe is built: skipped
+    // on both engines, identically, and logged at warning because a declared
+    // constraint that cannot be enforced is something an operator needs told.
+    // Skipping one path and keeping the compound's others is the rule this file
+    // already follows for a missing or unchanged path.
+    private static bool IsUnsupportedNestedArrayPath(string path)
+        => path.AsSpan().Count("[]") > 1;
+
+    private static Result<bool> ProbeUnavailable(string spaceName, string subpath) =>
+        Result<bool>.Fail(
+            InternalErrorCode.SOMETHING_WRONG,
+            $"uniqueness could not be verified for {spaceName}{subpath}; the write was refused",
+            ErrorTypes.Db);
 
 
     // Raw-attrs entry point used by RequestHandler for resource types that
@@ -103,10 +180,15 @@ public sealed class UniquenessValidator(
         {
             folder = await entries.GetAsync(spaceName, parentSubpath, folderShortname, ResourceType.Folder, ct);
         }
-        catch (Exception ex)
+        catch (Exception ex) when (!ct.IsCancellationRequested)
         {
-            log.LogDebug(ex, "uniqueness: parent folder load failed for {Space}/{Subpath}", spaceName, subpath);
-            folder = null;
+            // NOT `folder = null`. A null folder means "this entry has no
+            // parent declaring unique_fields", which is an allow; a THROW means
+            // we never found out whether it declares any. Treating the second
+            // as the first disables uniqueness for the duration of a database
+            // wobble, silently, on the writes most likely to be concurrent.
+            log.LogWarning(ex, "uniqueness: parent folder load failed for {Space}/{Subpath}", spaceName, subpath);
+            return ProbeUnavailable(spaceName, subpath);
         }
 
         // Compounds to probe: whatever the folder declares via `unique_fields`,
@@ -180,6 +262,15 @@ public sealed class UniquenessValidator(
             var declaredPaths = paths.Count;
             foreach (var path in paths)
             {
+                if (IsUnsupportedNestedArrayPath(path))
+                {
+                    log.LogWarning(
+                        "uniqueness: path {Path} on {Space}{Subpath} nests more than one [] segment, "
+                        + "which the query layer cannot express — this path is NOT being enforced",
+                        path, spaceName, subpath);
+                    continue;
+                }
+
                 var newValues = ReadPathFromAttrs(root, path);
                 if (newValues.Count == 0) continue;
 
@@ -203,6 +294,17 @@ public sealed class UniquenessValidator(
                 continue;
             }
 
+            var cap = settings.Value.UniquenessMaxProbes;
+            if (ProbeCount(perPathTokens, cap) > cap)
+            {
+                log.LogWarning(
+                    "uniqueness: compound on {Space}{Subpath} expands past the {Cap}-probe cap "
+                    + "({Paths} paths, list sizes {Sizes}); refusing the write",
+                    spaceName, subpath, cap, perPathTokens.Count,
+                    string.Join("x", perPathTokens.Select(t => t.Count)));
+                return TooManyProbes(spaceName, subpath, cap);
+            }
+
             foreach (var tokenSet in CartesianProduct(perPathTokens))
             {
                 var search = string.Join(' ', tokenSet);
@@ -219,11 +321,11 @@ public sealed class UniquenessValidator(
 
                 List<(string Shortname, string Subpath)> hits;
                 try { hits = await ProbeAsync(resourceType, q, ct); }
-                catch (Exception ex)
+                catch (Exception ex) when (!ct.IsCancellationRequested)
                 {
                     log.LogWarning(ex, "uniqueness probe failed for {Space}{Subpath} search={Search}",
                         spaceName, subpath, search);
-                    continue;
+                    return ProbeUnavailable(spaceName, subpath);
                 }
 
                 if (action == ActionType.Update)
@@ -330,10 +432,11 @@ public sealed class UniquenessValidator(
         {
             folder = await entries.GetAsync(entry.SpaceName, parentSubpath, folderShortname, ResourceType.Folder, ct);
         }
-        catch (Exception ex)
+        catch (Exception ex) when (!ct.IsCancellationRequested)
         {
-            log.LogDebug(ex, "uniqueness: parent folder load failed for {Space}/{Subpath}", entry.SpaceName, entry.Subpath);
-            folder = null;
+            // See ValidateRawAsync: a throw is not the same as "no parent".
+            log.LogWarning(ex, "uniqueness: parent folder load failed for {Space}/{Subpath}", entry.SpaceName, entry.Subpath);
+            return ProbeUnavailable(entry.SpaceName, entry.Subpath);
         }
         return await ValidateWithFolderAsync(entry, action, existing, folder, ct);
     }
@@ -373,6 +476,15 @@ public sealed class UniquenessValidator(
                 var path = pathEl.GetString();
                 if (string.IsNullOrEmpty(path)) continue;
 
+                if (IsUnsupportedNestedArrayPath(path))
+                {
+                    log.LogWarning(
+                        "uniqueness: path {Path} on {Space}{Subpath} nests more than one [] segment, "
+                        + "which the query layer cannot express — this path is NOT being enforced",
+                        path, entry.SpaceName, entry.Subpath);
+                    continue;
+                }
+
                 if (!TryReadValue(entry, path, out var newValues)) continue;
                 if (newValues.Count == 0) continue;
 
@@ -393,6 +505,17 @@ public sealed class UniquenessValidator(
 
             // For each combination of one token per path (Cartesian over the
             // expanded list values), run the search; ANY hit is a violation.
+            var cap = settings.Value.UniquenessMaxProbes;
+            if (ProbeCount(perPathTokens, cap) > cap)
+            {
+                log.LogWarning(
+                    "uniqueness: compound on {Space}{Subpath} expands past the {Cap}-probe cap "
+                    + "({Paths} paths, list sizes {Sizes}); refusing the write",
+                    entry.SpaceName, entry.Subpath, cap, perPathTokens.Count,
+                    string.Join("x", perPathTokens.Select(t => t.Count)));
+                return TooManyProbes(entry.SpaceName, entry.Subpath, cap);
+            }
+
             foreach (var tokenSet in CartesianProduct(perPathTokens))
             {
                 var search = string.Join(' ', tokenSet);
@@ -418,11 +541,11 @@ public sealed class UniquenessValidator(
                 // probe (a hidden conflict is still a conflict).
                 List<Entry> hits;
                 try { hits = await entries.QueryAsync(q, ct); }
-                catch (Exception ex)
+                catch (Exception ex) when (!ct.IsCancellationRequested)
                 {
                     log.LogWarning(ex, "uniqueness probe failed for {Space}{Subpath} search={Search}",
                         entry.SpaceName, entry.Subpath, search);
-                    continue;
+                    return ProbeUnavailable(entry.SpaceName, entry.Subpath);
                 }
 
                 if (action == ActionType.Update && existing is not null)

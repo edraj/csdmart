@@ -97,6 +97,8 @@ internal sealed class DmartSettingsValidator : IValidateOptions<DmartSettings>
 
         if (s.MaxQueryLimit < 1)
             failures.Add($"MaxQueryLimit must be >= 1 (got {s.MaxQueryLimit})");
+        if (s.UniquenessMaxProbes < 1)
+            failures.Add($"UniquenessMaxProbes must be >= 1 (got {s.UniquenessMaxProbes})");
         if (s.JqMaxConcurrency < 1)
             failures.Add($"JqMaxConcurrency must be >= 1 (got {s.JqMaxConcurrency})");
         if (s.JqQueueTimeoutSeconds < 1)
