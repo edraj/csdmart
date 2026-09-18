@@ -181,14 +181,33 @@ every other endpoint works without it.
 
 ## Running on small devices
 
-dmart runs on a 512 MB board (a Raspberry Pi Zero 2 W, say), but password
-hashing needs attention first — it is the one part whose peak memory scales
-with request concurrency rather than with how much data you hold.
+dmart runs on a Raspberry Pi Zero 2 W — 4 cores, **416 MB usable**, Alpine,
+the fully-static `linux-musl-arm64` build, with **PostgreSQL alongside it on
+the same board**. Measured on v1.5.11:
+
+| | |
+|---|---:|
+| dmart + PostgreSQL, idle | **106 MB PSS** of 416 MB |
+| bulk import, 5,000 entries | 11.25 s (444 rows/s) |
+| warm read | ~14 ms |
+| login (Argon2id verify) | ~295 ms |
+| 4 concurrent logins | 650 ms, all served, peak +55 MB, fully reclaimed |
+
+Full method, caveats and the x86 comparison: [`bench/REPORT-pi-zero-2w.md`](bench/REPORT-pi-zero-2w.md).
+Re-run it yourself with [`bench/pi-zero-2w.sh`](bench/pi-zero-2w.sh) — it runs
+on the device and verifies each login actually authenticated before timing it.
+
+It is not fast on hardware like this (roughly an order of magnitude off x86),
+and a login storm is not what a board this size is for. What makes it viable is
+that the memory is **bounded** rather than proportional to load — and the one
+part where that was not true is password hashing, which is worth understanding
+before you deploy on anything this size.
 
 Argon2id is deliberately memory-hard: each hash allocates its `m` outright.
 dmart <= 1.5.7 hard-coded `m=102400` (100 MiB per hash) for parity with dmart
 Python, so three simultaneous logins asked for 300 MiB and the kernel picked a
-process to kill. From 1.5.8 the default is OWASP's recommended 19456 KiB
+process to kill. On the board above, four concurrent logins would have asked
+for ~400 MB of 416 MB; they now peak at +55 MB and all four are served. From 1.5.8 the default is OWASP's recommended 19456 KiB
 (19 MiB) / t=2 / p=1, and concurrent hashes are bounded rather than
 unbounded:
 
