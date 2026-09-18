@@ -3,6 +3,8 @@
 A fast, AOT-native headless information-management backend on .NET 10,
 PostgreSQL, and Svelte. Ships as a single ~37 MB self-contained binary.
 
+**[dmart.cc](https://dmart.cc)** — overview, feature tour and reference docs.
+
 ## The problem DMART solves
 
 Valuable information — organizational and personal — tends to sprawl:
