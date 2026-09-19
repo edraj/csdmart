@@ -149,22 +149,51 @@ constant high-water mark says.
 
 ### Wear
 
-26.0 MB/h under continuous write load, against **0 KB in a 300-second idle
-sample**. Wear is a function of use, not of uptime — the opposite of the usual
-appliance failure mode, where logging and atime churn grind a card down while
-the device does nothing. Much of that credit belongs to the image (root on
-tmpfs under Alpine's `lbu`) rather than to dmart.
+An earlier draft of this report said idle writes were **zero**, on the strength
+of a 300-second sample. That was a measurement artifact and is corrected here.
+PostgreSQL's `checkpoint_timeout` on this board is 15 minutes, so a five-minute
+window can easily contain no checkpoint at all and read as zero. Re-measured
+over a full 15-minute window with dmart and PostgreSQL up and **no** request
+traffic — the soak stopped and verified stopped at both ends of the window:
 
-At 0.61 GB/day a card rated for even 100 TBW is not the constraint.
+| workload | write-ops/h | SD written | per day | to 100 TBW |
+|---|---:|---:|---:|---:|
+| idle, no traffic | 0 | **1.66 MB/h** | 0.04 GB | ~7,200 yr |
+| light soak — 2 creates + 2 deletes / 300 s | 48 | **5.68 MB/h** | 0.13 GB | ~2,100 yr |
+| heavy soak — 3 creates + 1 update + 3 deletes / 30 s | 828 | **25.97 MB/h** | 0.61 GB | ~460 yr |
+
+Two things follow, and only the second one is the one to repeat.
+
+**Idle is low, not zero.** ~1.7 MB/h is the floor a box pays for being switched
+on with a database attached — checkpoints and autovacuum, not dmart. It is still
+two orders of magnitude below the usual appliance failure mode, where logging and
+atime churn grind a card down continuously; much of that credit belongs to the
+image (root on tmpfs under Alpine's `lbu`) rather than to dmart. But "wear scales
+with work, not uptime" was too strong. Wear scales *mostly* with work.
+
+**Write cost is not linear in work.** The marginal cost of a write-op falls from
+~86 KB between idle and light load to ~27 KB between light and heavy — the
+per-checkpoint overhead is fixed, so it amortizes as the rate rises. A deployment
+doing very little work pays proportionally more per operation than a busy one.
+
+At 0.61 GB/day under the heaviest load measured, a card rated for even 100 TBW is
+not the constraint, and that conclusion survives the correction comfortably.
+
+Caveat on n: the idle figure is a single 15-minute window containing one
+checkpoint, not a long-run average.
 
 ## What this does NOT show
 
 - **No multi-day behaviour.** Ten hours covers no daily cycle, so nothing here
   speaks to log rotation, autovacuum on a longer period, ambient temperature
   swings between night and day, or heap fragmentation, which typically needs
-  days. An unattended service (`/etc/init.d/dmart-soak`) now runs a low-rate
-  version of this indefinitely and records reboots, OOM kills and dmart
-  restarts across power cuts, which is the only way to reach those.
+  days. An unattended harness (`/etc/periodic/15min/dmart-soak`, shipped in the
+  board image) now runs a low-rate version of this indefinitely and records
+  reboots, OOM kills and dmart restarts across power cuts, which is the only way
+  to reach those. It is cron-driven rather than an OpenRC service on purpose:
+  the image is Alpine diskless, and `lbu` cannot persist `/etc/init.d` — apk's
+  protected paths exclude it, so an init-script version of this harness did not
+  survive its first reboot.
 - **No concurrent-write ceiling.** PostgreSQL was configured with
   `max_connections=20`; that was not approached.
 - **Login throughput is ~6/s at best** (4 in 650 ms) and each login costs
