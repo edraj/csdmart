@@ -53,6 +53,10 @@ public static class SelfCheckCommand
         var opts = ParseArgs(args, dotenv);
         if (opts is null) return 0; // --help printed; not an error
 
+        // The report below renders through Spectre; without this it would
+        // emit ANSI under NO_COLOR or into a redirected stdout.
+        CliColor.SyncSpectre();
+
         // Per-call HttpClient — selfcheck is short-lived, no pooling needed.
         // Same 30s timeout as DmartClient; matches the operator expectation
         // that a hung server fails the smoke within seconds, not 100s later.

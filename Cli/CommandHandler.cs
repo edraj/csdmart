@@ -1071,74 +1071,12 @@ public sealed class CommandHandler(DmartClient dmart, CliSettings settings)
 
     private static void PrintJson(JsonElement json)
     {
-        if (CliTheme.JsonOnly || !CliTheme.ColorEnabled)
-        {
-            // Compact-then-pretty: System.Text.Json's `Indented` is enough.
-            // We round-trip via JsonSerializer using the AOT-safe overload.
-            using var ms = new MemoryStream();
-            using (var w = new System.Text.Json.Utf8JsonWriter(ms,
-                       new System.Text.Json.JsonWriterOptions { Indented = true }))
-            {
-                json.WriteTo(w);
-            }
-            Console.WriteLine(System.Text.Encoding.UTF8.GetString(ms.ToArray()));
-            return;
-        }
-        ColorizeJson(json, indent: 0);
+        // One emitter for every JSON-printing code path in the CLI, color
+        // decided centrally. `--json` suppresses color on top of whatever
+        // CliColor resolved, since that mode exists to be machine-read.
+        CliConsole.WriteJson(Console.Out, json,
+            color: CliColor.Stdout && CliTheme.ColorEnabled && !CliTheme.JsonOnly);
         Console.WriteLine();
-    }
-
-    private static void ColorizeJson(JsonElement el, int indent)
-    {
-        var pad = new string(' ', indent * 2);
-        switch (el.ValueKind)
-        {
-            case JsonValueKind.Object:
-                Console.WriteLine("{");
-                var props = el.EnumerateObject().ToList();
-                for (var i = 0; i < props.Count; i++)
-                {
-                    var p = props[i];
-                    Console.Write($"{pad}  [36m\"{p.Name}\"[0m: ");
-                    ColorizeJson(p.Value, indent + 1);
-                    Console.WriteLine(i < props.Count - 1 ? "," : "");
-                }
-                Console.Write($"{pad}}}");
-                break;
-            case JsonValueKind.Array:
-                var items = el.EnumerateArray().ToList();
-                if (items.Count == 0) { Console.Write("[]"); break; }
-                Console.WriteLine("[");
-                for (var i = 0; i < items.Count; i++)
-                {
-                    Console.Write($"{pad}  ");
-                    ColorizeJson(items[i], indent + 1);
-                    Console.WriteLine(i < items.Count - 1 ? "," : "");
-                }
-                Console.Write($"{pad}]");
-                break;
-            case JsonValueKind.String:
-                var s = el.GetString()!;
-                if (s is "success") Console.Write($"[32m\"{s}\"[0m");
-                else if (s is "failed" or "error") Console.Write($"[31m\"{s}\"[0m");
-                else Console.Write($"[33m\"{s}\"[0m");
-                break;
-            case JsonValueKind.Number:
-                Console.Write($"[35m{el}[0m");
-                break;
-            case JsonValueKind.True:
-                Console.Write("[32mtrue[0m");
-                break;
-            case JsonValueKind.False:
-                Console.Write("[31mfalse[0m");
-                break;
-            case JsonValueKind.Null:
-                Console.Write("[90mnull[0m");
-                break;
-            default:
-                Console.Write(el.ToString());
-                break;
-        }
     }
 
     // ---- help ----

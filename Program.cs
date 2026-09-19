@@ -30,6 +30,20 @@ using Microsoft.Extensions.Options;
 // ============================================================================
 
 
+// Resolve the color policy before anything prints, and before the subcommand
+// is parsed — `dmart --no-color version` has to reach the `version` case, not
+// fall through to `serve` because args[0] starts with a dash.
+//
+// Color is off unless stdout (or stderr, decided separately) is a terminal and
+// NO_COLOR is unset. Until this existed, `dmart version` wrote SGR escapes into
+// its JSON unconditionally, so `dmart version | jq -r .version` returned an
+// empty string — a silent failure, not an error.
+{
+    var (rest, colorMode) = CliColor.ParseFlags(args);
+    args = rest;
+    CliColor.Apply(colorMode ?? ColorMode.Auto);
+}
+
 // Top-level exception handler — clean error message, no stack trace, no core dump.
 // Disabled when flag-like args are present (WebApplicationFactory injects --contentRoot).
 if (args.Length == 0 || !args[0].StartsWith('-'))
@@ -37,12 +51,18 @@ if (args.Length == 0 || !args[0].StartsWith('-'))
     AppDomain.CurrentDomain.UnhandledException += (_, e) =>
     {
         var ex = e.ExceptionObject as Exception;
-        Console.Error.WriteLine($"\u001b[31mError: {ex?.Message ?? "unknown error"}\u001b[0m");
+        Console.Error.WriteLine(Paint("31", $"Error: {ex?.Message ?? "unknown error"}"));
         if (ex?.InnerException is not null)
-            Console.Error.WriteLine($"\u001b[33m  {ex.InnerException.Message}\u001b[0m");
+            Console.Error.WriteLine(Paint("33", $"  {ex.InnerException.Message}"));
         Environment.Exit(1);
     };
 }
+
+// Wrap stderr text in an SGR pair only when stderr may carry color. Separate
+// from the stdout decision on purpose: `dmart version > out.json` on a
+// terminal should still color the diagnostics it writes to stderr.
+static string Paint(string sgr, string text) =>
+    CliColor.Stderr ? $"\u001b[{sgr}m{text}\u001b[0m" : text;
 
 // Parse subcommand from args.
 // - No args at all → "help" (terminal user intent: show subcommands).
@@ -225,8 +245,7 @@ switch (subcommand)
             // No baked-in version — development build via dotnet run
             json = $"{{\"version\":\"dev\",\"runtime\":\".NET {Environment.Version}\"}}";
         }
-        CliConsole.PrintColorJson(System.Text.Json.JsonDocument.Parse(json).RootElement, 0);
-        Console.WriteLine();
+        CliConsole.PrintJson(System.Text.Json.JsonDocument.Parse(json).RootElement);
         return;
     }
 
@@ -336,6 +355,18 @@ switch (subcommand)
               cli            Interactive CLI client (REPL/command/script)
               help           Print this help
 
+            Global options (any subcommand):
+              --no-color     Never emit ANSI color. Same as --color=never.
+              --color=<when> always | never | auto (default). `auto` colors
+                             only when the stream is a terminal and NO_COLOR
+                             is unset or empty. Use `always` to keep color
+                             through a pager: dmart --color=always version | less -R
+
+            Color is off by default when stdout is redirected, so
+            `dmart version | jq -r .version` works without stripping escapes.
+            NO_COLOR (https://no-color.org) disables it too; an explicit
+            --color/--no-color takes precedence over NO_COLOR.
+
             Config file lookup: $BACKEND_ENV → ./config.env → ~/.dmart/config.env
             """);
         return;
@@ -376,8 +407,7 @@ switch (subcommand)
             w.WriteEndObject();
         }
         var json = System.Text.Encoding.UTF8.GetString(ms.ToArray());
-        CliConsole.PrintColorJson(System.Text.Json.JsonDocument.Parse(json).RootElement, 0);
-        Console.WriteLine();
+        CliConsole.PrintJson(System.Text.Json.JsonDocument.Parse(json).RootElement);
         return;
     }
 
@@ -3091,8 +3121,8 @@ app.Services.GetRequiredService<LanguageLoader>().Load();
     }
     catch (System.Net.Sockets.SocketException)
     {
-        Console.Error.WriteLine($"\u001b[31mError: Port {port} is already in use.\u001b[0m");
-        Console.Error.WriteLine($"\u001b[33mAnother dmart instance may be running. Stop it first or change LISTENING_PORT in config.env.\u001b[0m");
+        Console.Error.WriteLine(Paint("31", $"Error: Port {port} is already in use."));
+        Console.Error.WriteLine(Paint("33", "Another dmart instance may be running. Stop it first or change LISTENING_PORT in config.env."));
         Environment.ExitCode = 1;
         return;
     }

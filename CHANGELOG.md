@@ -27,6 +27,11 @@
   treated as RAM-backed: its upper layer is normally on disk, and flagging every
   container would turn the warning into noise.
 
+- **`--color=always|never|auto` and `--no-color` as global CLI flags**, valid
+  on every subcommand rather than only on `dmart cli`. `--color=always` keeps
+  color through a pager (`dmart --color=always settings | less -R`);
+  `--no-color` is a synonym for `--color=never`.
+
 ### Documentation
 
 - **bench/REPORT-pi-zero-2w.md** corrects its idle-write figure. It reported
@@ -50,6 +55,47 @@
   the `findmnt --target` / `mount | grep` commands that confirm it, and the
   instruction not to restart dmart before the volume is mounted, since every
   write since startup exists only in RAM.
+
+||||||| parent of 805e1cb (fix(cli): emit colour only to a terminal, and honour NO_COLOR)
+
+### Fixed
+
+- **The CLI no longer writes ANSI color into a redirected stdout**, and it
+  honours [`NO_COLOR`](https://no-color.org). `dmart version` colorized its
+  JSON unconditionally, so
+
+  ```
+  $ dmart version | jq -r .version
+  (empty)
+  ```
+
+  The failure mode is the reason this is a bug and not a nuisance: jq does not
+  reject SGR-laced input, it yields an empty string. Nothing exits non-zero,
+  nothing appears on stderr, and a script that reads a version and compares it
+  silently compares against `""`. The Raspberry Pi soak harness worked around
+  it by piping through `sed 's/\x1b\[[0-9;]*m//g'` before every jq call.
+
+  Color is now decided in one place (`Cli/CliColor.cs`) for every entry point:
+  an explicit `--color`/`--no-color` wins, then a non-empty `NO_COLOR`, then
+  whether the stream is a terminal. Per the spec any non-empty `NO_COLOR`
+  value disables color — `NO_COLOR=0` means "set", not "off" — and a
+  command-line option takes precedence over it.
+
+  stdout and stderr are resolved independently, so `dmart version > out.json`
+  run from a terminal still colors the diagnostics it writes to stderr.
+
+  The same emitter now serves `version`, `settings`, and every `dmart cli`
+  JSON path; `selfcheck`'s Spectre report is told about the decision too.
+  Previously `dmart cli` checked redirection and the top-level subcommands
+  did not, which is how the two drifted apart.
+
+  While consolidating: the printer interpolated string values between two bare
+  quote characters, so a value containing `"`, a backslash, or a control
+  character produced a document that would not parse even with the escapes
+  stripped. Strings and property names are now encoded through
+  `Utf8JsonWriter`, and numbers are emitted via `GetRawText()` rather than
+  round-tripped through `double`.
+
 
 ## v1.5.12 — 2026-09-19
 
