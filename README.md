@@ -213,14 +213,45 @@ Two runtime knobs matter as much as the dmart ones:
 # Workstation GC. Server GC sizes its heaps per core and is the wrong trade on
 # a 4-core board with 430 MB usable.
 DOTNET_gcServer=0
-# Hard cap on the managed heap, in BARE HEX with no 0x prefix.
+# Hard cap on the MANAGED heap, in BARE HEX with no 0x prefix.
 DOTNET_GCHeapHardLimit=8000000   # = 0x8000000 = 128 MiB
 ```
 
 The missing `0x` is not a typo. The NativeAOT runtime parses this value as hex
 already and **silently ignores** a `0x`-prefixed one — the cap simply does not
-apply, with nothing logged to say so. Verify it took by watching RSS under load
-rather than by trusting the setting.
+apply, with nothing logged to say so. Read `gc_heap_hard_limit_bytes` from
+[`/info/metrics`](#observability) to confirm it took; a `0` there means unset.
+
+**`GCHeapHardLimit` bounds the managed heap only, and that is not where this
+workload's memory goes.** Since 1.5.8 Argon2 runs in libargon2 — native memory,
+malloc'd and freed per hash — which the GC never sees and this cap does not
+govern. `PASSWORD_HASH_MEMORY_BUDGET_MB` is the control that bounds it. Treat
+the heap cap as a backstop against a runaway *managed* allocation, and size it
+well clear of normal operation: set too low it converts a non-problem into an
+`OutOfMemoryException`. On the Pi Zero measured above, anonymous memory
+(managed heap plus native malloc plus stacks — an upper bound on the heap) sat
+at 32 MB under sustained load, so 128 MiB is roughly 4x headroom.
+
+## Observability
+
+`GET /info/metrics` reports garbage-collector and process telemetry: gen0/1/2
+collection counts, heap and committed bytes, total allocated, pause-time
+percentage, the heap hard limit, GC mode, plus working set, private bytes, CPU
+seconds, threads and uptime.
+
+```bash
+curl -H "Authorization: Bearer $TOKEN" localhost:8000/info/metrics
+curl -H "Authorization: Bearer $TOKEN" localhost:8000/info/metrics?format=prometheus
+```
+
+Admin-only, like the rest of `/info` — a Prometheus scraper needs a bot token.
+
+The reason it reports **both** `process_working_set_bytes` and `gc_heap_bytes`
+is that the gap between them is where native allocation lives, and RSS alone
+cannot tell apart the three things that grow a managed process: a cache that
+never evicts, native memory the GC never sees, and the GC simply not returning
+freed segments to the OS. Those have identical RSS signatures and completely
+different remedies.
 
 ## Storage backends
 

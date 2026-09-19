@@ -4,6 +4,25 @@
 
 ### Added
 
+- **`GET /info/metrics`** — garbage-collector and process telemetry: gen0/1/2
+  collection counts, heap and committed bytes, total allocated, pause-time
+  percentage, the heap hard limit, GC mode, plus working set, private bytes,
+  CPU seconds, threads and uptime. JSON by default; `?format=prometheus`
+  returns exposition format. Admin-only, like the rest of `/info`.
+
+  It exists because RSS observed from outside the process cannot separate the
+  three things that grow a managed service — a cache that never evicts, native
+  memory the GC never sees (libargon2 mallocs its whole `m` per hash), and the
+  GC simply not returning freed segments to the OS. Those have identical RSS
+  signatures and completely different remedies, which is why the endpoint
+  reports both `process_working_set_bytes` and `gc_heap_bytes`: the gap between
+  them is the native allocation.
+
+  It also makes `DOTNET_GCHeapHardLimit` verifiable. That setting is parsed as
+  bare hex and a `0x`-prefixed value is silently ignored, so the documented way
+  to confirm it had applied was to watch RSS under load;
+  `gc_heap_hard_limit_bytes` now answers it directly, and `0` means unset.
+
 - **Per-IP rate limiting on the whole `/public` group** (`PUBLIC_RATE_LIMIT_PER_MINUTE`,
   default 600, `0` disables). `/public` reaches real work without a credential —
   QueryService, attachment payloads, and with a `jq_filter`, a subprocess — and
