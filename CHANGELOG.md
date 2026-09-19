@@ -29,6 +29,17 @@
 
 ### Documentation
 
+- **bench/REPORT-pi-zero-2w.md** corrects its idle-write figure. It reported
+  **zero** idle writes from a 300-second sample; PostgreSQL's
+  `checkpoint_timeout` on that board is 15 minutes, so a five-minute window can
+  contain no checkpoint and read as zero. Re-measured over a full 15-minute
+  window with no request traffic: **1.66 MB/h** idle, against 5.68 MB/h under a
+  light synthetic load and 25.97 MB/h under a heavy one. The marginal cost of a
+  write-op falls from ~86 KB to ~27 KB as the rate rises, because the
+  per-checkpoint overhead is fixed and amortizes. "Wear scales with work, not
+  uptime" was too strong; it scales *mostly* with work. The headline conclusion
+  is unchanged — 0.61 GB/day at the heaviest load measured leaves a 100 TBW card
+  far from being the constraint.
 - **README** now carries a verified recipe for scraping `/info/metrics` without
   a human's token, using a **bot user** — the mechanism dmart already has for
   machine clients (no session rows, no `MAX_SESSIONS_PER_USER` slot, exempt from
