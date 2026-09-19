@@ -25,6 +25,7 @@ public static class InfoEndpoints
         SettingsHandler.Map(g);
         ManifestHandler.Map(g);
         PluginsHandler.Map(g);
+        MetricsHandler.Map(g);
         return g;
     }
 }

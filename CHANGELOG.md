@@ -1,5 +1,68 @@
 # Changelog
 
+## Unreleased
+
+### Added
+
+- **`GET /info/metrics`** — garbage-collector and process telemetry: gen0/1/2
+  collection counts, heap and committed bytes, total allocated, pause-time
+  percentage, the heap hard limit, GC mode, plus working set, private bytes,
+  CPU seconds, threads and uptime. JSON by default; `?format=prometheus`
+  returns exposition format. Admin-only, like the rest of `/info`.
+
+  It exists because RSS observed from outside the process cannot separate the
+  three things that grow a managed service — a cache that never evicts, native
+  memory the GC never sees (libargon2 mallocs its whole `m` per hash), and the
+  GC simply not returning freed segments to the OS. Those have identical RSS
+  signatures and completely different remedies, which is why the endpoint
+  reports both `process_working_set_bytes` and `gc_heap_bytes`: the gap between
+  them is the native allocation.
+
+  It also makes `DOTNET_GCHeapHardLimit` verifiable. That setting is parsed as
+  bare hex and a `0x`-prefixed value is silently ignored, so the documented way
+  to confirm it had applied was to watch RSS under load;
+  `gc_heap_hard_limit_bytes` now answers it directly, and `0` means unset.
+
+- **Per-IP rate limiting on the whole `/public` group** (`PUBLIC_RATE_LIMIT_PER_MINUTE`,
+  default 600, `0` disables). `/public` reaches real work without a credential —
+  QueryService, attachment payloads, and with a `jq_filter`, a subprocess — and
+  carried no limiter at all. v1.5.11's jq concurrency budget bounds how much
+  memory concurrent work can hold; this bounds how many requests one address may
+  make.
+
+  Deliberately a separate policy from `AUTH_RATE_LIMIT_PER_MINUTE` rather than a
+  reuse of it: that one is 10/min because a login attempt should be rare, and
+  applying it to the anonymous read path — where one page view is legitimately a
+  dozen requests — would throttle ordinary browsing. `/public/submit` and the
+  anonymous attach routes keep the auth cap on top of this one, so both apply
+  and the stricter binds.
+
+  > **Behind a reverse proxy this depends on `TRUSTED_PROXIES`.** The partition
+  > key is the peer address and `X-Forwarded-For` is only honoured from a
+  > configured hop, so with `TRUSTED_PROXIES` unset every visitor shares one
+  > bucket and this becomes a global cap rather than a per-client one. Set
+  > `TRUSTED_PROXIES`, or set this to `0`. The same has always been true of the
+  > auth cap; the blast radius is just larger here.
+
+### Documentation
+
+- **`config.env.sample` now documents the bounds v1.5.11 shipped without.**
+  `UNIQUENESS_MAX_PROBES`, `JQ_MAX_CONCURRENCY` and `JQ_QUEUE_TIMEOUT_SECONDS`
+  were live and enforcing limits with no entry in the sample config explaining
+  them. Each entry says what the bound *protects*, not just what it sets — all
+  four exist to stop a request amplifying into work, so anyone raising one
+  should know what they are re-opening.
+- **The README links [dmart.cc](https://dmart.cc).** The repository had no link
+  to its own site, and until recently the site's GitHub buttons pointed at the
+  archived Python repo rather than here, so the two halves of the project
+  referenced each other in neither direction.
+
+### New settings
+
+| setting | default | what it bounds |
+| --- | --- | --- |
+| `PUBLIC_RATE_LIMIT_PER_MINUTE` | 600 | requests one IP may make to `/public` per minute; 0 disables |
+
 ## v1.5.11 — 2026-09-17
 
 Security and robustness fixes from a review of the codebase. Nothing here
