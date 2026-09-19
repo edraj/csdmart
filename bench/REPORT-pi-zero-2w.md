@@ -108,11 +108,63 @@ Roughly an order of magnitude, which is about what four 1 GHz A53 cores and an
 SD card should cost against a modern x86 core and NVMe. Nothing here suggests a
 pathology specific to small hardware; it is the hardware.
 
+## The 10-hour write soak
+
+The workloads above are tens of requests each. This one ran **1,200 cycles over
+10.14 hours** — every 30 seconds: a login (full Argon2id verify), three creates,
+an update, a query, and three deletes of the batch from 20 cycles back. The
+deletes are the design: row count reaches a steady ~60 and stays there, so the
+figure measures write AMPLIFICATION rather than the cost of a growing table.
+
+```
+1,200 cycles · 10.14 h · errors 0 · login failures 0
+```
+
+| | |
+|---|---|
+| Resident memory | 69.7 → 73.5 MB (**+3.75 MB**) |
+| Peak (VmHWM) | **124.3 MB, constant for the entire run** |
+| Temperature | 39.7–48.3 °C, mean 44.9 (a Pi throttles at 80) |
+| SD written | 263.3 MB → **26.0 MB/h · 0.61 GB/day** |
+| Entries | bounded throughout, as designed |
+
+### The +3.75 MB is a plateau, not a leak
+
+A single start-and-end pair cannot tell those apart, and the distinction
+matters: 0.37 MB/h sustained linearly is ~270 MB in a month, which on a 416 MB
+board is fatal. The shape settles it.
+
+| quarter | span | RSS | delta |
+|---|---|---|---:|
+| Q1 | 0.1–2.5 h | 69.7 → 74.0 MB | **+4.29** |
+| Q2 | 2.6–5.1 h | 74.0 → 74.8 MB | **+0.81** |
+| Q3 | 5.2–7.6 h | 74.9 → 73.7 MB | **−1.21** |
+| Q4 | 7.7–10.1 h | 73.7 → 73.5 MB | **−0.21** |
+
+Growth decays by roughly 5x in the second quarter and then turns negative. Means
+over successive sixths — 71.8, 73.7, 74.5, 74.3, 73.6, 73.6 MB — rise, peak, and
+come back down to a level they then hold. **A leak cannot do that**: it holds its
+slope. This is a working set filling and settling, which is also what the
+constant high-water mark says.
+
+### Wear
+
+26.0 MB/h under continuous write load, against **0 KB in a 300-second idle
+sample**. Wear is a function of use, not of uptime — the opposite of the usual
+appliance failure mode, where logging and atime churn grind a card down while
+the device does nothing. Much of that credit belongs to the image (root on
+tmpfs under Alpine's `lbu`) rather than to dmart.
+
+At 0.61 GB/day a card rated for even 100 TBW is not the constraint.
+
 ## What this does NOT show
 
-- **No sustained-load or soak figure.** Every workload here is tens of
-  requests. Nothing ran for an hour, so nothing here speaks to thermal
-  throttling, SD-card wear, or memory behaviour over days.
+- **No multi-day behaviour.** Ten hours covers no daily cycle, so nothing here
+  speaks to log rotation, autovacuum on a longer period, ambient temperature
+  swings between night and day, or heap fragmentation, which typically needs
+  days. An unattended service (`/etc/init.d/dmart-soak`) now runs a low-rate
+  version of this indefinitely and records reboots, OOM kills and dmart
+  restarts across power cuts, which is the only way to reach those.
 - **No concurrent-write ceiling.** PostgreSQL was configured with
   `max_connections=20`; that was not approached.
 - **Login throughput is ~6/s at best** (4 in 650 ms) and each login costs

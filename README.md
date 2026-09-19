@@ -194,6 +194,7 @@ the same board**. Measured on v1.5.11:
 | warm read | ~14 ms |
 | login (Argon2id verify) | ~295 ms |
 | 4 concurrent logins | 650 ms, all served, peak +55 MB, fully reclaimed |
+| 10 h write soak | 1,200 cycles, **0 errors**, memory plateaus, 26 MB/h to SD |
 
 Full method, caveats and the x86 comparison: [`bench/REPORT-pi-zero-2w.md`](bench/REPORT-pi-zero-2w.md).
 Re-run it yourself with [`bench/pi-zero-2w.sh`](bench/pi-zero-2w.sh) — it runs
