@@ -114,6 +114,28 @@ Tests that touch `anonymous` or `world` rows race if run in parallel.
 Make sure the class is in `[Collection(AnonymousWorldCollection.Name)]`.
 See [testing.md](./testing.md).
 
+### "Memory keeps climbing"
+
+Read `GET /info/metrics` before concluding anything from RSS. RSS cannot
+distinguish the three things that grow a managed process, and they have
+different fixes:
+
+| what you see | what it means |
+| --- | --- |
+| `gc_heap_bytes` rising, gen2 count rising | genuine managed growth — a cache that never evicts |
+| `gc_heap_bytes` flat, `process_working_set_bytes` rising | native allocation the GC never sees (libargon2 mid-hash, Npgsql, `jq`), or the GC holding freed segments rather than returning them to the OS |
+| both flat, RSS still rising | something outside the process — check `jq` subprocesses and plugin hosts |
+
+A rising curve is not automatically a leak. Sample over hours and look at the
+SHAPE: a warm-up plateaus, each interval growing less than the last, while a
+leak holds its slope. On a 7.6 h write soak the Pi Zero grew +4 MB with
+quartile deltas of +3.00, +1.56, +0.42 and −1.23 MB — a plateau.
+
+`gc_heap_hard_limit_bytes` also reports whether `DOTNET_GCHeapHardLimit`
+actually applied; `0` means unset. That setting is parsed as bare hex and a
+`0x`-prefixed value is ignored silently, so it is worth checking rather than
+assuming.
+
 ## AOT + source-gen JSON gotchas
 
 ### `Dictionary<string, object>` values with unregistered runtime types

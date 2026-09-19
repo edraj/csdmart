@@ -200,7 +200,7 @@ dmart/
 │   ├── Managed/                        /managed/* — authenticated CRUD + query
 │   ├── Public/                         /public/* — anonymous-allowed
 │   ├── User/                           /user/* — login, profile, OTP, OAuth
-│   ├── Info/                           /info/* — manifest, settings, me
+│   ├── Info/                           /info/* — manifest, settings, me, metrics
 │   ├── Mcp/                            /mcp — MCP JSON-RPC transport
 │   ├── Oauth/                          /oauth/* — OAuth AS for MCP clients
 │   └── Qr/                             /qr/* — QR code generation / validation
