@@ -266,7 +266,37 @@ curl -H "Authorization: Bearer $TOKEN" localhost:8000/info/metrics
 curl -H "Authorization: Bearer $TOKEN" localhost:8000/info/metrics?format=prometheus
 ```
 
-Admin-only, like the rest of `/info` — a Prometheus scraper needs a bot token.
+Admin-only, like the rest of `/info`. A scraper therefore needs its own
+credential, and dmart already has the right kind: a **bot user**. Bot accounts
+sit outside the session machinery entirely — they create no session rows, never
+consume a slot in `MAX_SESSIONS_PER_USER`, and are exempt from failed-attempt
+lockout — which is exactly what an unattended scraper needs.
+
+```bash
+# 1. As an admin, create the scraper account.
+curl -X POST localhost:8000/managed/request \
+  -H "Authorization: Bearer $ADMIN_TOKEN" -H 'Content-Type: application/json' -d '{
+  "space_name":"management","request_type":"create",
+  "records":[{"resource_type":"user","subpath":"users","shortname":"metrics_scraper",
+    "attributes":{"is_active":true,"type":"bot","roles":["super_admin"],
+                  "password":"<a long random password>"}}]}'
+
+# 2. Log in as the bot. The token is valid for JWT_ACCESS_EXPIRES (default 30 days).
+curl -X POST localhost:8000/user/login -H 'Content-Type: application/json' \
+  -d '{"shortname":"metrics_scraper","password":"<same password>"}' \
+  | jq -r '.records[0].attributes.access_token'
+
+# 3. Scrape.
+curl -H "Authorization: Bearer $BOT_TOKEN" localhost:8000/info/metrics?format=prometheus
+```
+
+`"roles":["super_admin"]` is required, not decorative: `/info` enforces a global
+admin floor, and a bot without it gets `401 not allowed — global admin required`.
+That is a real grant — the same role your human admin holds — so treat the bot's
+password as a production secret and give it its own account rather than sharing
+one with a person. Shorten the window by setting `JWT_ACCESS_EXPIRES` lower and
+re-logging in on that cadence; the login itself is an Argon2id verify, so scrape
+far more often than you re-authenticate.
 
 The reason it reports **both** `process_working_set_bytes` and `gc_heap_bytes`
 is that the gap between them is where native allocation lives, and RSS alone

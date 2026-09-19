@@ -1,5 +1,45 @@
 # Changelog
 
+## Unreleased
+
+### Added
+
+- **Startup warning when data would be written to non-persistent storage.**
+  dmart now checks, at startup, whether `SPACES_FOLDER` (and the SQLite file,
+  when SQLite is the active driver) sits on a RAM-backed filesystem, and logs
+  `NON_DURABLE_STORAGE` at Warning if so.
+
+  A directory on a `tmpfs` is writable, correctly permissioned and
+  indistinguishable from real storage until the power cycles. The usual cause is
+  not a misconfiguration but a mount that did not happen — a container volume
+  that failed to attach, an fstab entry that lost a race at boot — which leaves
+  the mount point's own empty directory exposed at exactly the configured path.
+  Observed in the wild on a diskless board whose root is a tmpfs with the real
+  partition mounted over `/var/lib/dmart`: the mount silently failed, dmart
+  served happily, health was green, and every write was one power cut from
+  being gone.
+
+  It warns rather than refuses, because tmpfs is a legitimate choice for CI,
+  test suites and ephemeral demo instances — the cost of the warning is a log
+  line, the cost of a wrong refusal is a server that will not start. Linux-only
+  (it reads `/proc/mounts`); anywhere else, and whenever `/proc` cannot be read,
+  the check reports nothing rather than failing. `overlay` is deliberately not
+  treated as RAM-backed: its upper layer is normally on disk, and flagging every
+  container would turn the warning into noise.
+
+### Documentation
+
+- **README** now carries a verified recipe for scraping `/info/metrics` without
+  a human's token, using a **bot user** — the mechanism dmart already has for
+  machine clients (no session rows, no `MAX_SESSIONS_PER_USER` slot, exempt from
+  failed-attempt lockout), with a 30-day token by default. It also states
+  plainly that `"roles":["super_admin"]` is a real grant, not boilerplate, so
+  the bot's password is a production secret.
+- **docs/debugging.md** gains `NON_DURABLE_STORAGE` — what the warning means,
+  the `findmnt --target` / `mount | grep` commands that confirm it, and the
+  instruction not to restart dmart before the volume is mounted, since every
+  write since startup exists only in RAM.
+
 ## v1.5.12 — 2026-09-19
 
 ### Added

@@ -114,6 +114,41 @@ Tests that touch `anonymous` or `world` rows race if run in parallel.
 Make sure the class is in `[Collection(AnonymousWorldCollection.Name)]`.
 See [testing.md](./testing.md).
 
+### `NON_DURABLE_STORAGE` at startup, or data missing after a reboot
+
+```
+NON_DURABLE_STORAGE: spaces folder at /var/lib/dmart/spaces is on a tmpfs
+filesystem — its contents are held in RAM and will be LOST on reboot.
+```
+
+dmart writes where it is told, and a directory on a `tmpfs` is writable,
+correctly permissioned and indistinguishable from real storage until the power
+cycles. The usual cause is not a misconfiguration but a **mount that did not
+happen**: a Docker volume that failed to attach, a `fstab` entry that lost a
+race at boot, a systemd unit that started before the mount unit. The mount point
+then exposes its own empty underlying directory at exactly the path you
+configured, and everything looks fine.
+
+Check what is actually backing the path:
+
+```bash
+findmnt --target /var/lib/dmart      # what filesystem is really there?
+mount | grep /var/lib/dmart          # is it mounted at all?
+```
+
+If the answer is `tmpfs` and you did not intend it, do not restart dmart until
+the volume is mounted — every write since startup is already only in RAM.
+
+This is a warning rather than a refusal because running on `tmpfs` is a
+legitimate choice for CI, test suites and throwaway demo instances. If you meant
+it, the line is noise you can ignore; the check exists for the case where you
+did not.
+
+The shape that motivated the check: a diskless board whose root filesystem is
+itself a tmpfs, with the real storage mounted over `/var/lib/dmart`. When that
+mount silently failed, the same path stayed writable — backed by the tmpfs root —
+and nothing in the stack could tell the difference. Health was green.
+
 ### "Memory keeps climbing"
 
 Read `GET /info/metrics` before concluding anything from RSS. RSS cannot
