@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## v1.5.12 — 2026-09-19
 
 ### Added
 
@@ -45,6 +45,30 @@
   > auth cap; the blast radius is just larger here.
 
 ### Documentation
+
+- **Corrected the small-device GC guidance, which was actively misleading.**
+  The README recommended `DOTNET_GCHeapHardLimit` without saying what it
+  bounds, and told the reader to verify it by watching RSS under load. Both
+  were true when written and are not now: **the cap governs the managed heap
+  only**, and since 1.5.8 this workload's memory is not there — Argon2 runs in
+  libargon2, native and freed per hash, which the GC never sees.
+  `PASSWORD_HASH_MEMORY_BUDGET_MB` is the control that bounds it. Anyone who
+  set the cap expecting it to constrain hashing should know it does not, and
+  that sizing it too low converts a non-problem into an `OutOfMemoryException`.
+  `gc_heap_hard_limit_bytes` from the new endpoint now answers "did it apply"
+  directly, where `0` means unset — which matters because the value is parsed
+  as bare hex and a `0x`-prefixed one is ignored silently.
+
+- **Measured dmart on a Raspberry Pi Zero 2 W** — 4 cores, 416 MB usable, with
+  PostgreSQL on the same board: 106 MB PSS idle, ~14 ms warm reads, ~295 ms
+  Argon2id logins, 444 rows/s bulk import, and four concurrent logins served
+  with a bounded peak that is fully reclaimed. A 10-hour write soak ran 1,200
+  cycles with zero errors; resident memory plateaus rather than leaking
+  (quarterly deltas +4.29, +0.81, −1.21, −0.21 MB) and the high-water mark
+  never moved. Wear is 26 MB/h under continuous writes against **zero at
+  idle**. Method, caveats and the x86 comparison in
+  `bench/REPORT-pi-zero-2w.md`, with a checked-in harness that asserts before
+  it times.
 
 - **`config.env.sample` now documents the bounds v1.5.11 shipped without.**
   `UNIQUENESS_MAX_PROBES`, `JQ_MAX_CONCURRENCY` and `JQ_QUEUE_TIMEOUT_SECONDS`
