@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## v1.5.13 — 2026-09-19
 
 ### Added
 
@@ -55,8 +55,6 @@
   the `findmnt --target` / `mount | grep` commands that confirm it, and the
   instruction not to restart dmart before the volume is mounted, since every
   write since startup exists only in RAM.
-
-||||||| parent of 805e1cb (fix(cli): emit colour only to a terminal, and honour NO_COLOR)
 
 ### Fixed
 
