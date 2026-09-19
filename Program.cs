@@ -2632,6 +2632,24 @@ Dmart.Plugins.Native.NativePluginLoader.WireSubprocessShutdown(
             startupLog.LogInformation(
                 "sqlite database at {Path} — set DATABASE_DRIVER explicitly to pin this choice",
                 startupSettings.SqlitePath);
+
+        // Warn when data would be written somewhere that does not survive a
+        // reboot. A directory on a tmpfs is writable, correctly permissioned and
+        // indistinguishable from the real thing until the power cycles — the
+        // usual cause is a volume or partition that failed to mount, leaving the
+        // mount point's empty underlying directory exposed at the same path.
+        // See Services/StorageDurability.cs for why this warns rather than
+        // refuses to start.
+        foreach (var (what, where) in StorageDurability.DataPaths(startupSettings, startupDriver))
+        {
+            var fs = StorageDurability.RamBackedFilesystem(where);
+            if (fs is not null)
+                startupLog.LogWarning(
+                    "NON_DURABLE_STORAGE: {What} at {Path} is on a {Filesystem} filesystem — "
+                    + "its contents are held in RAM and will be LOST on reboot. If a volume or "
+                    + "partition was meant to be mounted there, it is not mounted.",
+                    what, where, fs);
+        }
     }
 }
 
