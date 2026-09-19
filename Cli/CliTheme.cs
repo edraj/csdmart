@@ -9,7 +9,8 @@ namespace Dmart.Cli;
 // reference roles, not colors, so a future palette swap stays in one file.
 internal static class CliTheme
 {
-    // Toggled by --no-color or output redirection. When false, MarkupLine
+    // Mirrors CliColor.Stdout, which owns the decision (--color/--no-color,
+    // NO_COLOR, then whether stdout is a terminal). When false, MarkupLine
     // becomes WriteLine and Wrap returns the input unchanged.
     public static bool ColorEnabled { get; set; } = true;
 

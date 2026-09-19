@@ -190,6 +190,7 @@ Three orthogonal flags shape output:
 |---|---|
 | (none) | Colorized tables, spinners, banner, prompts |
 | `--no-color` | Drops ANSI colors but keeps tables/banner. Auto-on when stdout is redirected. |
+| `--color=<when>` | `always` \| `never` \| `auto` (default). `never` is a synonym for `--no-color`. |
 | `--json` | Drops everything decorative; emits only structured data. Implies `--no-color`. |
 
 ```bash
@@ -198,6 +199,38 @@ dmart cli --json c management whoami | jq .
 
 # Table for the eye, plain ASCII for `script(1)` capture
 dmart cli --no-color c management ls
+```
+
+### When color is emitted
+
+`--no-color` and `--color` are **global** — they work on every subcommand,
+not just `cli`. The rule, applied to stdout and stderr independently:
+
+1. An explicit `--color=always` / `--color=never` / `--no-color` wins.
+2. Otherwise, a non-empty [`NO_COLOR`](https://no-color.org) environment
+   variable disables color. Any non-empty value counts — `NO_COLOR=0` means
+   "set", not "off".
+3. Otherwise, color is on only when the stream is a terminal.
+
+The two streams are decided separately on purpose: `dmart version > out.json`
+from a terminal still colors anything the command writes to stderr.
+
+So piping just works — no escape-stripping step:
+
+```bash
+dmart version | jq -r .version
+dmart settings | jq -r '.["dmart:database_host"]'
+```
+
+Before v1.5.13 these emitted SGR escapes unconditionally and `jq` returned an
+empty string rather than an error, so scripts had to pre-filter with
+`sed 's/\x1b\[[0-9;]*m//g'`. That workaround is no longer needed (it remains
+harmless).
+
+To keep color through a pager, ask for it explicitly:
+
+```bash
+dmart --color=always settings | less -R
 ```
 
 `whoami` and `version` emit one-line JSON objects under `--json` (hand-built,

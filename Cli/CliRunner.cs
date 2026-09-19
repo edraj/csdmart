@@ -15,14 +15,14 @@ public static class CliRunner
         var (passthrough, strict) = ParseGlobalFlags(args);
         args = passthrough;
 
-        // Auto-disable color when output is being piped (e.g. `dmart cli c "ls /" | jq`).
-        if (Console.IsOutputRedirected) CliTheme.ColorEnabled = false;
+        // CliColor already resolved the policy from the flags parsed above,
+        // NO_COLOR, and whether stdout is a terminal (e.g. `dmart cli c
+        // "ls /" | jq` is redirected, so color is off).
+        CliTheme.ColorEnabled = CliColor.Stdout;
 
         // Tell Spectre's renderer too — without this, AnsiConsole.Write(table)
-        // would still emit ANSI escapes even when CliTheme.ColorEnabled is
-        // false (Spectre makes its own decision based on its profile).
-        if (!CliTheme.ColorEnabled)
-            AnsiConsole.Profile.Capabilities.ColorSystem = ColorSystem.NoColors;
+        // would still emit ANSI escapes even when color is off.
+        CliColor.SyncSpectre();
 
         var settings = CliSettings.Load();
 
@@ -103,18 +103,24 @@ public static class CliRunner
 
     private static (string[] Args, bool Strict) ParseGlobalFlags(string[] args)
     {
+        // --no-color / --color=<mode> are handled centrally so every entry
+        // point agrees on spelling and precedence. Program.cs already stripped
+        // and applied them before dispatching here, so `mode` is normally null
+        // and the decision it made stands; this second pass only matters when
+        // RunAsync is called with an unstripped argument vector.
+        var (rest, mode) = CliColor.ParseFlags(args);
+        if (mode is { } explicitMode) CliColor.Apply(explicitMode);
+
         var strict = false;
-        var keep = new List<string>(args.Length);
-        foreach (var a in args)
+        var keep = new List<string>(rest.Length);
+        foreach (var a in rest)
         {
             switch (a)
             {
                 case "--json":
                     CliTheme.JsonOnly = true;
-                    CliTheme.ColorEnabled = false;
-                    break;
-                case "--no-color":
-                    CliTheme.ColorEnabled = false;
+                    // --json is for machines; it overrides even --color=always.
+                    CliColor.Disable();
                     break;
                 case "--strict":
                     strict = true;
