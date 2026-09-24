@@ -151,10 +151,17 @@
   resolved "https://registry.npmjs.org/@csstools/css-tokenizer/-/css-tokenizer-4.0.0.tgz"
   integrity sha512-QxULHAm7cNu72w97JUNCBFODFaXpbDg+dP8b/oWFAZ2MTRppA3U00Y2L1HqaS4J6yBqxwa/Y3nMBaxVKbB/NsA==
 
-"@edraj/tsdmart@^5.3.4", "@edraj/tsdmart@^5.4.0":
+"@edraj/tsdmart@^5.3.4":
   version "5.5.0"
   resolved "https://registry.npmjs.org/@edraj/tsdmart/-/tsdmart-5.5.0.tgz"
   integrity sha512-t6FX27ha6gU6WBLXQsF1Jf00vR7Nvm2CJxT5BNcJVVEfZntLiAOZ05Nk3IRKAuO1zKcOQ/abcn9XiY67+nTUGA==
+  dependencies:
+    axios "^1.19.0"
+
+"@edraj/tsdmart@^5.7.0":
+  version "5.7.0"
+  resolved "https://registry.yarnpkg.com/@edraj/tsdmart/-/tsdmart-5.7.0.tgz#4b158b9670dff0bf246920eccbfd2e2c367cd6e0"
+  integrity sha512-HvwG4HqgdIg7uob19jllgVaYpBZFSH73zwbtFT6OQmLXoucn/A1xhhFBN6SHiFLdTGoo5Xn+E7ed4nQkKAi0Mg==
   dependencies:
     axios "^1.19.0"
 
