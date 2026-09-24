@@ -144,6 +144,17 @@ jobs:
 
     name: build-and-test (${{ matrix.driver }})
 
+    # One definition for both the setup and the always() teardown, which were
+    # previously two hardcoded copies of a path that silently stopped existing
+    # when the runners moved hosts.
+    #
+    # NOT under the runner's $HOME: the unit sets ProtectHome=true, which
+    # makes /home unreadable to the service and turns a missing file into
+    # "Permission denied" rather than "No such file". Ansible-managed, from
+    # roles/github_runner in matrix-deploy.
+    env:
+      PGPASSFILE: /opt/actions-runners/ci/.pgpass
+
     steps:
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
 
@@ -225,14 +236,15 @@ jobs:
           yarn --cwd cxb test || rc=1
           exit $rc
 
-      - name: Copy host config (PostgreSQL)
+      - name: Write PostgreSQL config
         if: matrix.driver == 'postgresql'
-        # Absolute paths throughout — the runner's $HOME is per-instance
-        # (/home/githubrunner/runners/rXX/home) under the systemd override
-        # that isolates per-runner podman/NuGet state. The host config and
-        # the PostgreSQL .pgpass both live in the real githubrunner home.
-        env:
-          PGPASSFILE: /home/githubrunner/.pgpass
+        # Built from the checked-in sample, NOT copied off the runner host.
+        # The host copy lived in the service account's home directory, was
+        # never provisioned by anything, and did not survive the move to a
+        # new machine — which took every run on both drivers down at once.
+        # Configuration that lives beside the code cannot go stale against a
+        # host we no longer own. The host now supplies exactly one thing:
+        # the database password, via the Ansible-managed .pgpass below.
         run: |
           # set -e so a silent dropdb/createdb failure no longer cascades
           # into a polluted-DB test run where the admin password is stale
@@ -242,15 +254,39 @@ jobs:
           # still-existing DB, and the next run inherits stale state.
           # Fail loud at the drop step instead.
           set -e
-          cp /home/githubrunner/config.env ./
-          # Ensure the test/smoke phases have everything the settings
-          # validator requires. Append-if-missing so we don't clobber
-          # a host config that already has stricter values.
-          grep -q '^JWT_SECRET' config.env || echo 'JWT_SECRET="ci-test-secret-ci-test-secret-32bytes"' >> config.env
-          grep -q '^ADMIN_PASSWORD' config.env || echo 'ADMIN_PASSWORD="dmart"' >> config.env
-          grep -q '^DATABASE_HOST' config.env || echo 'DATABASE_HOST="127.0.0.1"' >> config.env
-          grep -q '^DATABASE_USERNAME' config.env || echo 'DATABASE_USERNAME="dmart"' >> config.env
-          grep -q '^DATABASE_PASSWORD' config.env || echo 'DATABASE_PASSWORD="dmart"' >> config.env
+          cp config.env.sample config.env
+          # The .pgpass the psql/dropdb/createdb calls below authenticate
+          # with also carries the password the SERVER needs for its own
+          # connection pool, in field 5 of host:port:db:user:password. Read
+          # it from there rather than adding a second copy in a GitHub
+          # secret: two places holding one password is how the sbom host
+          # ended up with a working web UI and a silently broken backup.
+          # -f5- not -f5, plus the unescape: .pgpass escapes a literal colon
+          # or backslash inside a field, so a password containing one would
+          # otherwise be silently truncated at the colon and authenticate
+          # with a prefix of itself.
+          CI_DB_PASSWORD=$(cut -d: -f5- "$PGPASSFILE" | sed -E 's/\\(.)/\1/g')
+          # Keep it out of the log if any later step runs under set -x.
+          echo "::add-mask::$CI_DB_PASSWORD"
+          # Replace, do not append-if-missing: the sample ships a DUMMY value
+          # for every key below (DATABASE_PASSWORD="somepassword"), so an
+          # append-if-missing would find the key present, skip it, and leave
+          # the placeholder in place — the server would then fail to
+          # authenticate while the CLI tools, which read .pgpass, worked fine.
+          sed -i -E '/^(DATABASE_(HOST|USERNAME|PASSWORD)|JWT_SECRET|ADMIN_PASSWORD|SPACES_FOLDER)[[:space:]]*=/d' config.env
+          {
+            echo 'DATABASE_HOST="127.0.0.1"'
+            echo 'DATABASE_USERNAME="dmart"'
+            echo "DATABASE_PASSWORD=\"$CI_DB_PASSWORD\""
+            echo 'JWT_SECRET="ci-test-secret-ci-test-secret-32bytes"'
+            echo 'ADMIN_PASSWORD="dmart"'
+            # Workspace-local, for the reason the SQLite leg gives below: the
+            # shared host folder this used to inherit is ONE directory for
+            # every runner, so two PostgreSQL jobs on different runners raced
+            # on the same flat files. The runner discards the workspace.
+            echo "SPACES_FOLDER=\"$(pwd)/ci-spaces\""
+          } >> config.env
+          mkdir -p ci-spaces
           # Per-runner test database — NOT the host-global "dmart".
           # This host runs several runner instances (r01, r02, …) against ONE
           # PostgreSQL. The reset below drops and recreates the database, so
@@ -271,8 +307,8 @@ jobs:
           # Publish it to the job env so the always() teardown at the end can
           # drop it — the variable itself is local to this step's shell.
           echo "TEST_DB=$TEST_DB" >> "$GITHUB_ENV"
-          # Replace rather than append-if-missing: the host config already
-          # pins DATABASE_NAME, and appending would leave two keys where the
+          # Replace rather than append-if-missing: the sample already pins
+          # DATABASE_NAME, and appending would leave two keys where the
           # winner depends on parse order rather than on intent.
           sed -i '/^DATABASE_NAME[[:space:]]*=/d' config.env
           echo "DATABASE_NAME=\"$TEST_DB\"" >> config.env
@@ -324,7 +360,7 @@ jobs:
         # discards. That is most of the point of the tier.
         run: |
           set -e
-          cp /home/githubrunner/config.env ./
+          cp config.env.sample config.env
           # Drop every PostgreSQL key rather than leaving them alongside
           # DATABASE_DRIVER="sqlite". They would be inert, but a config that
           # still names a host and database is a config someone will later read
@@ -340,7 +376,7 @@ jobs:
           {
             echo 'DATABASE_DRIVER="sqlite"'
             echo "SQLITE_PATH=\"$(pwd)/ci-smoke.db\""
-            # Workspace-local spaces folder. The host config points at a shared
+            # Workspace-local spaces folder. The sample points at a shared
             # one, and with two matrix jobs now running per push, two servers
             # writing the same flat files would race. Empty is fine: the admin
             # bootstrap creates the management space on first boot, which is
@@ -348,8 +384,13 @@ jobs:
             echo "SPACES_FOLDER=\"$(pwd)/ci-spaces\""
           } >> config.env
           mkdir -p ci-spaces
-          grep -q '^JWT_SECRET' config.env || echo 'JWT_SECRET="ci-test-secret-ci-test-secret-32bytes"' >> config.env
-          grep -q '^ADMIN_PASSWORD' config.env || echo 'ADMIN_PASSWORD="dmart"' >> config.env
+          # Replace, do not append-if-missing. The sample ships
+          # JWT_SECRET="change-me-…", and DmartSettingsValidator rejects that
+          # string by name rather than merely checking length, so a config
+          # that kept it would fail to start the server at all.
+          sed -i -E '/^(JWT_SECRET|ADMIN_PASSWORD)[[:space:]]*=/d' config.env
+          echo 'JWT_SECRET="ci-test-secret-ci-test-secret-32bytes"' >> config.env
+          echo 'ADMIN_PASSWORD="dmart"' >> config.env
           # Per-runner smoke port. The runners share ONE host and one network
           # stack, so two jobs that both bind the config's LISTENING_PORT
           # cannot coexist — and the smoke step used to DISCOVER its server by
@@ -472,8 +513,6 @@ jobs:
         # Never fails the job: a missing TEST_DB (job died before the config
         # step) or an unreachable PostgreSQL is not a test result.
         if: always() && matrix.driver == 'postgresql'
-        env:
-          PGPASSFILE: /home/githubrunner/.pgpass
         run: |
           [ -n "$TEST_DB" ] || { echo "no TEST_DB to drop"; exit 0; }
           psql -w -h 127.0.0.1 -U dmart -d postgres -c \
