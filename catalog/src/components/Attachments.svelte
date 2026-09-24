@@ -21,6 +21,7 @@
   } from "../lib/fileUtils";
   import type { Attachment } from "../lib/types";
   import { log } from "../lib/logger";
+  import { getCurrentScope } from "@/stores/user";
 
   function pickTranslation(value: any, activeLocale: string): string {
     if (!value) return "";
@@ -124,7 +125,7 @@
       parent_shortname,
       shortname: removeFileExtension(attachment.shortname),
       ext: getFileExtension(filename) ?? "",
-    });
+    }, getCurrentScope());
   }
 
   async function fetchWithAuth(url: string): Promise<Blob | null> {
@@ -350,16 +351,7 @@
                   resource_type={attachment.resource_type}
                   attributes={attachment.attributes}
                   displayname={attachment.shortname}
-                  url={Dmart.getAttachmentUrl({
-                    resource_type: attachment.resource_type,
-                    space_name,
-                    subpath,
-                    parent_shortname,
-                    shortname: removeFileExtension(attachment.shortname),
-                    ext:
-                      getFileExtension(attachment.attributes?.payload?.body) ??
-                      "",
-                  })}
+                  url={getAttachmentApiUrl(attachment)}
                 />
                 <div class="media-overlay">
                   <button
