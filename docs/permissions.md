@@ -82,11 +82,39 @@ The contract is strict: for an anonymous caller to see anything at all,
    appended to each role's permission set during resolution, so a zero-role
    anonymous user gets nothing even if `world` is defined.
 
+`AdminBootstrap` provisions all three on every startup, so a fresh
+deployment satisfies 1–3 out of the box. It ships them **inert**: `world`
+has an empty `subpaths`, which matches no space and therefore grants
+nothing. Opening up public access is a one-field edit — add the spaces and
+subpaths you intend:
+
+```jsonc
+// PUT /managed/request, resource_type "permission", shortname "world"
+{ "subpaths": { "archive": ["__all_subpaths__"] } }
+```
+
+Scope it through the API, not SQL: a raw `UPDATE` leaves `query_policies`
+ungenerated and the authz cache stale, so the permission looks correct in
+the table while `/public/query` still returns `{total:0}`.
+
+The bootstrapped rows are **create-if-missing only** (same contract as
+`logged_in`): once they exist, their scope, actions and resource types
+belong to the operator and bootstrap never repairs, widens or resets them.
+The seeded `resource_types` deliberately exclude `user`, `group`, `role`,
+`permission`, `acl`, `log` and `history`, so scoping a space public cannot
+also publish the user list or the permission model — widen it yourself if
+you mean to. The `anonymous` row carries no password, email or msisdn and
+is `is_active: false`, which closes both login paths; none of that affects
+public reads, because resolution skips the `IsUsable` check for the
+anonymous bucket specifically.
+
 Fails seen in practice:
 - No anonymous user → CanAsync returns false silently → `/public/query`
   returns `{total:0}`.
 - Anonymous user exists but `roles=[]` → `world` never consulted → same
   outcome.
+- `world` exists but `subpaths` is still `{}` (the bootstrapped default) →
+  nothing matches → same outcome.
 - `world.subpaths.<space>` stored as `["/foo", "/bar"]` (leading slashes) —
   the matcher normalizes both sides via `NormalizePermissionSubpath`, so
   `/foo` matches the walk key `foo`.
