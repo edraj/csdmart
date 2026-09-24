@@ -12,6 +12,7 @@ import type { Translation } from "@edraj/tsdmart/dmart.model";
 import { log } from "@/lib/logger";
 import { MANAGEMENT_SPACE, APPLICATIONS_SPACE, DEFAULT_SPACE_ORDINAL } from "@/lib/constants";
 import { getCurrentScope } from "@/stores/user";
+import { buildFieldFilterClause } from "@/lib/searchFilters";
 
 export async function getSpaces(
     ignoreFilter = false,
@@ -216,11 +217,7 @@ export async function getSpaceContentsByTags(
     offset = 0,
     tags: string[] = []
 ): Promise<ApiQueryResponse> {
-    let searchQuery = "";
-    if (tags.length > 0) {
-        const tagQuery = tags.map((tag) => `${tag}`).join(" OR ");
-        searchQuery = `@tags:${tagQuery}`;
-    }
+    const searchQuery = buildFieldFilterClause("tags", tags);
 
     return (await Dmart.query(
         {
