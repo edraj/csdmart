@@ -32,6 +32,41 @@ runs:
           exit 0
         fi
 
+        # Derive a per-runner XDG_RUNTIME_DIR when the job did not inherit one.
+        #
+        # The runner service sets it, but the Actions runner does NOT pass it
+        # through to job steps, so podman falls back to /tmp/storage-run-<uid>
+        # and every container job on this host dies on
+        #   path "/tmp/storage-run-957" exists and it is not writeable only by
+        #   the current user
+        # even when that directory is a perfectly good 0700 owned by the
+        # runner. Setting it here is also what makes the cleanup below
+        # reachable at all: unset, the branch that clears stale per-boot state
+        # can never run, and this action can only report a failure it was
+        # written to heal.
+        #
+        # Derived from RUNNER_WORKSPACE (<runner-root>/_work/<repo>) rather
+        # than hardcoded, so it follows the runner wherever it is installed.
+        # Ansible creates this directory at 0700; mkdir -m is a belt for a
+        # runner that predates that.
+        if [ -z "${XDG_RUNTIME_DIR:-}" ] && [ -n "${RUNNER_WORKSPACE:-}" ]; then
+          runner_root=$(dirname "$(dirname "$RUNNER_WORKSPACE")")
+          XDG_RUNTIME_DIR="$runner_root/runtime"
+          mkdir -m 700 -p "$XDG_RUNTIME_DIR"
+          export XDG_RUNTIME_DIR
+          # Persist it for the podman calls in the REST of the job, not just
+          # this step -- otherwise the build steps fall back to /tmp again.
+          echo "XDG_RUNTIME_DIR=$XDG_RUNTIME_DIR" >> "$GITHUB_ENV"
+          echo "derived XDG_RUNTIME_DIR=$XDG_RUNTIME_DIR"
+        fi
+
+        # State this action is about, printed before the probe so a failure
+        # report carries the facts rather than requiring a host login. Cheap,
+        # and the last three attempts at this were all guesses from outside.
+        echo "  uid=$(id -u) home=$HOME tmpdir=${TMPDIR:-unset}"
+        echo "  XDG_RUNTIME_DIR=${XDG_RUNTIME_DIR:-unset}"
+        stat -c '  runroot %n mode=%a owner=%u:%g' "/tmp/storage-run-$(id -u)" 2>&1 || true
+
         # `timeout` on both probes: a wedged store makes podman block on the
         # libpod lock rather than exit non-zero, and an untimed probe would then
         # hang until the job's own timeout — the exact opposite of self-healing.
