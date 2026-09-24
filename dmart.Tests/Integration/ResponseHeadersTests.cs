@@ -1,3 +1,5 @@
+using System;
+using System.Linq;
 using System.Net;
 using System.Net.Http;
 using Microsoft.AspNetCore.Hosting;
@@ -153,5 +155,80 @@ public class ResponseHeadersTests : IClassFixture<DmartFactory>
 
         resp.StatusCode.ShouldBe(HttpStatusCode.NoContent);
         resp.Headers.Contains("Access-Control-Allow-Origin").ShouldBeTrue();
+    }
+
+    // ==================== CSP: attachment rendering ====================
+    //
+    // Attachments are not rendered by pointing an <img>/<audio> at the payload
+    // endpoint. The SPA fetches the bytes — so it can send the bearer token,
+    // which a subresource load cannot carry — wraps them with
+    // URL.createObjectURL and renders the resulting blob: URL.
+    //
+    // If the CSP omits blob:, the fetch still returns 200 and the blob is still
+    // built; only the paint is refused. The failure is silent: images degrade to
+    // their alt text and <audio> reports "Media load rejected by URL safety
+    // check" with a 0:00 duration, while the network tab shows two clean 200s.
+    // It reads as a broken or unauthorized download and is neither. These tests
+    // exist because that is precisely the regression a human does not catch by
+    // looking at the page.
+
+    // Read the policy the middleware actually serves, rather than a copy in the
+    // test that can drift away from it.
+    private static string Csp()
+    {
+        var field = typeof(Dmart.Middleware.ResponseHeadersMiddleware).GetField(
+            "ContentSecurityPolicy",
+            System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Static);
+        field.ShouldNotBeNull("the ContentSecurityPolicy const was renamed or removed");
+        return (string)field!.GetRawConstantValue()!;
+    }
+
+    // "img-src 'self' data: blob:" -> "'self' data: blob:"; "" when absent.
+    private static string Directive(string name)
+    {
+        var match = Csp().Split(';')
+            .Select(part => part.Trim())
+            .FirstOrDefault(part => part == name || part.StartsWith(name + " ", StringComparison.Ordinal));
+        return match is null ? "" : match.Substring(name.Length).Trim();
+    }
+
+    [Fact]
+    public void Csp_Allows_Blob_For_Images()
+    {
+        Directive("img-src").ShouldContain("blob:",
+            customMessage: "without blob: in img-src, attachment images silently render as alt text");
+    }
+
+    [Fact]
+    public void Csp_Declares_MediaSrc_Allowing_Blob()
+    {
+        // media-src must be declared explicitly: with no media-src, <audio> and
+        // <video> fall back to default-src 'self', which excludes blob: — so
+        // adding blob: to img-src alone fixes images and leaves audio broken.
+        Directive("media-src").ShouldContain("blob:",
+            customMessage: "without media-src blob:, <audio> reports "
+                + "\"Media load rejected by URL safety check\" and shows a 0:00 duration");
+    }
+
+    // blob: is safe for img/media because a blob: URL is an opaque handle
+    // readable only by the document that minted it — it names no remote host and
+    // widens no network reach. It is NOT safe as a script source.
+    [Fact]
+    public void Csp_Does_Not_Allow_Blob_For_Scripts_Or_Default()
+    {
+        Directive("script-src").ShouldNotContain("blob:");
+        Directive("default-src").ShouldNotContain("blob:");
+    }
+
+    [Fact]
+    public void Csp_Keeps_Its_Existing_Hardening()
+    {
+        // object-src stays 'none': the PDF/SVG branches of Media.svelte use
+        // <object>, which is a materially larger XSS surface than <img>/<audio>.
+        // Those should move to an iframe/viewer rather than loosen this.
+        Directive("object-src").ShouldBe("'none'");
+        Directive("frame-ancestors").ShouldBe("'none'");
+        Directive("base-uri").ShouldBe("'self'");
+        Directive("script-src").ShouldBe("'self'");
     }
 }

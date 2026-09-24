@@ -38,15 +38,34 @@ public static class ResponseHeadersMiddleware
     private const string Hsts = "max-age=31536000; includeSubDomains";
 
     // The SPA is served same-origin with the API, so 'self' covers every script,
-    // style, XHR and WebSocket it needs. Two deliberate relaxations:
+    // style, XHR and WebSocket it needs. Four deliberate relaxations:
     //   * style-src 'unsafe-inline' — the Svelte bundles inject scoped styles at
     //     runtime; without it the SPA renders unstyled.
     //   * img-src https://www.plantuml.com — the schema/diagram views render
     //     PlantUML images straight from that host.
+    //   * img-src blob: and media-src blob: — attachments are NOT rendered by
+    //     pointing an <img>/<audio>/<video> straight at the payload endpoint.
+    //     The SPA fetches the bytes (so it can attach the bearer token, which a
+    //     subresource load cannot carry), wraps them with URL.createObjectURL
+    //     and renders the resulting blob: URL. Without these the fetch succeeds,
+    //     the blob is built, and the browser then silently refuses to paint it:
+    //     images fall back to their alt text and <audio> reports
+    //     "Media load rejected by URL safety check" with a 0:00 duration. It
+    //     looks like a broken or unauthorized download and is neither.
+    //
+    //     This is a narrow grant: a blob: URL is an opaque handle minted by, and
+    //     readable only from, the document that created it. It cannot name a
+    //     remote host, so it widens no network reach — unlike a scheme or host
+    //     allowance, which does.
+    //
+    // object-src stays 'none' on purpose. The PDF and SVG branches of
+    // Media.svelte use <object> and remain blocked; <object> is a materially
+    // larger XSS surface than <img>/<audio>, so the fix there is to render PDFs
+    // in an <iframe>/viewer rather than to loosen this.
     private const string ContentSecurityPolicy =
         "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; "
-        + "img-src 'self' data: https://www.plantuml.com; connect-src 'self'; "
-        + "frame-ancestors 'none'; object-src 'none'; base-uri 'self'";
+        + "img-src 'self' data: blob: https://www.plantuml.com; media-src 'self' blob:; "
+        + "connect-src 'self'; frame-ancestors 'none'; object-src 'none'; base-uri 'self'";
 
     public static IApplicationBuilder UseDmartResponseHeaders(
         this IApplicationBuilder app, PathString cxbPath, PathString catPath)
