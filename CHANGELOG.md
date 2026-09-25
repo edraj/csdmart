@@ -1,5 +1,50 @@
 # Changelog
 
+## Unreleased
+
+### Fixed
+
+- **Audio and video attachments now stream instead of downloading in full
+  before they can play.** Playback starts on the file header rather than the
+  last byte, and seeking works from the outset.
+
+  The payload endpoint was already correct — it advertises
+  `accept-ranges: bytes` and answers a ranged GET with `206` plus a
+  `content-range`, on both the public and managed paths. `Media.svelte` threw
+  that away: it `fetch`ed the whole attachment into a blob and handed the
+  element a `blob:` URL, so the browser's media stack never issued a ranged
+  request. An eight-minute recording had to arrive completely before the play
+  button did anything, and seeking ahead was impossible until then.
+
+  Audio, video and PDF now receive the URL directly. Measured on four entries
+  in a live archive, authenticated, alternating which strategy ran first so
+  cache warming favoured neither:
+
+  | file | before | after |
+  |---|---|---|
+  | 6.2 MB | 1049 ms | 97 ms |
+  | 9.9 MB | 1712 ms | 113 ms |
+  | 12.6 MB | 2018 ms | 92 ms |
+  | 12.9 MB | 1919 ms | 95 ms |
+
+  The direct timing is flat in file size because only the header is fetched;
+  the old timing scaled with the file, and scales again on a slower link. PDFs
+  gain the same way — the viewer can page-stream rather than wait on a complete
+  download.
+
+  A media element cannot carry an `Authorization` header, which is why the blob
+  path existed. It turned out not to be needed: dmart accepts the `auth_token`
+  cookie and `CookieAuthAllowed` admits `Sec-Fetch-Site: same-origin`, which is
+  exactly what a same-origin `<audio src>` sends. Verified against
+  `managed/payload` with the cookie alone — `206`, `bytes 0-99/12965325`. The
+  URL keeps using `getCurrentScope()`, so anonymous visitors stream from
+  `public/payload` and signed-in users from `managed/payload`.
+
+  Images are unchanged. There is nothing to stream, and the existing path keeps
+  the `Authorization`-header route working for a deployment that has cookie
+  auth disabled via `CsrfProtectCookieAuth`. No CSP change is needed:
+  `media-src 'self'` and `frame-src 'self'` already cover a same-origin URL.
+
 ## v1.5.15 — 2026-09-25
 
 Re-release of v1.5.14. **Same code, plus a fix to the release pipeline itself.**
