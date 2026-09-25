@@ -49,7 +49,24 @@ runs:
   using: composite
   steps:
     - name: Install cosign
-      uses: sigstore/cosign-installer@6f9f17788090df1f26f669e9d70d6ae9567deba6 # v4.1.2
+      # PINNED BACK to v3.10.1, and the installer version is now part of the
+      # v2 decision below rather than incidental.
+      #
+      # v4.1.2 hardcodes bootstrap_version='v3.0.6': it downloads that v3
+      # binary and uses it to verify-blob the cosign we asked for. Against
+      # v2.6.1 that verification fails outright and the whole release stops:
+      #   ERROR: Unable to validate cosign version: 'v2.6.1'
+      # It broke v1.5.14 with config identical to v1.5.13, which released
+      # cleanly -- nothing here changed, the validator upstream did.
+      #
+      # v3.10.1 hardcodes bootstrap_version='v2.6.1', the same binary this
+      # action installs, so the bootstrap and the target agree.
+      #
+      # This is a STAY OF EXECUTION, not a fix. Moving to a newer installer
+      # means accepting a v3 signer, which is the bundle migration described
+      # below. Do that deliberately; do not bump this pin to make a
+      # dependency alert go away.
+      uses: sigstore/cosign-installer@7e8b541eb2e61bf99390e1afd4be13a184e9ebc5 # v3.10.1
       with:
         # Pin the cosign binary, not just the action that installs it — and pin
         # it to v2, deliberately.
