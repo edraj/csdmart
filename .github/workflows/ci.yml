@@ -868,8 +868,10 @@ jobs:
           done
 
   container-build:
-    # Runaway guard (~4 min typical); without it a hang holds a runner for 6h.
-    timeout-minutes: 20
+    # Runaway guard; without it a hang holds a runner for 6h. Higher than the
+    # other packaging jobs because this one also waits on a container first
+    # boot: ~4 min of build plus a readiness ceiling of ~9.
+    timeout-minutes: 25
     name: Container build
     runs-on: self-hosted
     # The container image was only ever built by release.yml, so a broken
@@ -967,10 +969,21 @@ jobs:
           # failing fast, and this "90 second" loop took 3h22m on master
           # (22:08 -> 01:30) before reporting a failure. Two seconds is ample
           # against a loopback port that either answers or does not.
-          for _ in $(seq 1 90); do
+          # 180 x (2s curl + 1s sleep) ~= 9 minutes. The old 90 was ~4.5 and
+          # the container came up at just about that mark on a host running
+          # three jobs at once, so it was decided by load rather than by
+          # whether the image works. First boot does `dmart init`, builds the
+          # SQLite schema and loads plugins before it listens.
+          #
+          # The elapsed time is REPORTED on success: a first boot that starts
+          # creeping toward this ceiling is worth seeing in the log while it
+          # is still passing, instead of finding out when it flakes.
+          start=$(date +%s)
+          for _ in $(seq 1 180); do
             if curl -sf --max-time 2 "http://127.0.0.1:$PORT/health/ready" >/dev/null 2>&1; then ready=1; break; fi
             sleep 1
           done
+          echo "container became ready after $(( $(date +%s) - start ))s (ready=$ready)"
           if [ "$ready" != "1" ]; then
             echo "--- container never became ready; logs follow ---"
             podman logs dmart-cismoke 2>&1 | tail -40
