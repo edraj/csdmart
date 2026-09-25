@@ -35,6 +35,19 @@
   `user.Msisdn` and bails when empty. None of that affects public reads, since
   resolution skips the `IsUsable` check for the anonymous bucket specifically.
 
+### Changed
+
+- **`cxb` now requires `@edraj/tsdmart ^5.7.0`**, matching catalog. The two
+  workspaces share one hoisted install, so the split pin left the tree carrying
+  two copies of the client — 5.5.0 for cxb, 5.7.0 for catalog — and cxb kept
+  running the build whose `getAttachmentUrl` defaults to `DmartScope.managed`.
+
+  No behaviour change for cxb: it is the authenticated admin UI, so 5.7.0's
+  scope auto-detection resolves to `managed` exactly as the old hardcoded
+  default did, and its one explicit `DmartScope.managed` call site in
+  `ListView.svelte` is unaffected either way. The lockfile now resolves a single
+  `@edraj/tsdmart@^5.7.0` entry instead of two.
+
 ### Fixed
 
 - **Attachments would not render for anyone — including a logged-in
