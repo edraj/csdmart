@@ -99,7 +99,11 @@ jobs:
             echo "push to master — running unconditionally"
             exit 0
           fi
-          BASE="${{ github.event.pull_request.base.sha }}"
+          # merge_group carries its base on a different field. Without the
+          # fallback this is empty in the queue, every gate below takes its
+          # "no usable base sha - running to be safe" branch, and a queue
+          # entry runs EVERY job with no scope skipping at all.
+          BASE="${{ github.event.pull_request.base.sha || github.event.merge_group.base_sha }}"
           if [ -z "$BASE" ] || ! git cat-file -e "$BASE" 2>/dev/null; then
             echo "code=true" >> "$GITHUB_OUTPUT"
             echo "no usable base sha — running to be safe"
@@ -603,7 +607,11 @@ jobs:
             echo "push to master — running unconditionally"
             exit 0
           fi
-          BASE="${{ github.event.pull_request.base.sha }}"
+          # merge_group carries its base on a different field. Without the
+          # fallback this is empty in the queue, every gate below takes its
+          # "no usable base sha - running to be safe" branch, and a queue
+          # entry runs EVERY job with no scope skipping at all.
+          BASE="${{ github.event.pull_request.base.sha || github.event.merge_group.base_sha }}"
           if [ -z "$BASE" ] || ! git cat-file -e "$BASE" 2>/dev/null; then
             echo "run=true" >> "$GITHUB_OUTPUT"
             echo "no usable base sha — running to be safe"
@@ -774,7 +782,11 @@ jobs:
             echo "push to master — running unconditionally"
             exit 0
           fi
-          BASE="${{ github.event.pull_request.base.sha }}"
+          # merge_group carries its base on a different field. Without the
+          # fallback this is empty in the queue, every gate below takes its
+          # "no usable base sha - running to be safe" branch, and a queue
+          # entry runs EVERY job with no scope skipping at all.
+          BASE="${{ github.event.pull_request.base.sha || github.event.merge_group.base_sha }}"
           if [ -z "$BASE" ] || ! git cat-file -e "$BASE" 2>/dev/null; then
             echo "run=true" >> "$GITHUB_OUTPUT"
             echo "no usable base sha — running to be safe"
@@ -909,7 +921,11 @@ jobs:
             echo "push to master — running unconditionally"
             exit 0
           fi
-          BASE="${{ github.event.pull_request.base.sha }}"
+          # merge_group carries its base on a different field. Without the
+          # fallback this is empty in the queue, every gate below takes its
+          # "no usable base sha - running to be safe" branch, and a queue
+          # entry runs EVERY job with no scope skipping at all.
+          BASE="${{ github.event.pull_request.base.sha || github.event.merge_group.base_sha }}"
           if [ -z "$BASE" ] || ! git cat-file -e "$BASE" 2>/dev/null; then
             # No usable base to diff against: run rather than skip. A filter
             # that fails open on uncertainty costs runner time; one that fails
@@ -1042,7 +1058,11 @@ jobs:
             echo "push to master — running unconditionally"
             exit 0
           fi
-          BASE="${{ github.event.pull_request.base.sha }}"
+          # merge_group carries its base on a different field. Without the
+          # fallback this is empty in the queue, every gate below takes its
+          # "no usable base sha - running to be safe" branch, and a queue
+          # entry runs EVERY job with no scope skipping at all.
+          BASE="${{ github.event.pull_request.base.sha || github.event.merge_group.base_sha }}"
           if [ -z "$BASE" ] || ! git cat-file -e "$BASE" 2>/dev/null; then
             # Fail open on uncertainty, same as the container job: a filter
             # that silently stops testing is worse than one that costs time.
