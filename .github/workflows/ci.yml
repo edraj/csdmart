@@ -5,6 +5,20 @@ on:
     branches: ["master"]
   pull_request:
     branches: ["master"]
+  # LOAD-BEARING once a merge queue is enabled on master, and inert until
+  # then - no merge_group event is ever delivered without a queue, so this
+  # changes nothing today. Do NOT delete it as dead config: without it the
+  # workflow never runs on queue entries, the required build-and-test check
+  # never reports, and the QUEUE STALLS waiting for a verdict that cannot
+  # arrive. The scope gates below already read merge_group.base_sha for the
+  # same reason.
+  #
+  # `push` stays alongside it. It becomes redundant once a queue is on, since
+  # the queue tests the exact tree before it lands - but dropping it now would
+  # leave master untested in the window before the queue exists. Retire it
+  # deliberately, after the queue has run a few merges.
+  merge_group:
+    branches: ["master"]
 
 permissions:
   contents: read
@@ -21,6 +35,12 @@ permissions:
 # run to completion: that run is the record for a commit that has already
 # landed, and cancelling it leaves a merged commit with no verdict. Only
 # pull_request runs are superseded by their own next push.
+#
+# merge_group falls on the uncancellable side too, and must: a queue entry's
+# run IS the verdict deciding whether that batch lands, so cancelling one
+# would either stall the queue or land untested code. The expression below
+# already yields false for it - noted because it is easy to "simplify" this
+# to `!= 'push'` and silently break the queue.
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
