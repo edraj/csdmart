@@ -1,5 +1,35 @@
 # Changelog
 
+## v1.5.15 — 2026-09-25
+
+Re-release of v1.5.14. **Same code, plus a fix to the release pipeline itself.**
+
+### Fixed
+
+- **v1.5.14 published no artifacts.** Its release page carries no binaries, no
+  RPMs, no `.deb`, no APKs, no container images and no checksums. Use v1.5.15
+  instead — the contents are identical.
+
+  The pipeline failed at the first signing step. `cosign-installer` v4.1.2
+  hardcodes a v3.0.6 bootstrap binary and uses it to verify the cosign release
+  it installs; against the pinned v2.6.1 that verification now fails:
+
+      ERROR: Unable to validate cosign version: 'v2.6.1'
+
+  Ten of the twelve build jobs depend on the signed UI tarballs, so a single
+  failure stopped all of them. Nothing in this repository changed — v1.5.13
+  released cleanly with identical configuration, and the installer is pinned by
+  commit SHA. The bootstrap it runs is baked into the action, and upstream moved.
+
+  The installer is pinned back to v3.10.1, whose bootstrap is v2.6.1 — the same
+  binary it installs — so the two agree. The v2 pin itself is unchanged and
+  deliberate: cosign v3 refuses to emit the detached `.sig` + `.pem` pair this
+  release chain publishes.
+
+  **The NuGet packages for 1.5.14 did publish**, from commit `2049329`, before
+  the failure. They are valid and identical in content to 1.5.15's. Nothing was
+  withdrawn.
+
 ## v1.5.14 — 2026-09-25
 
 ### Added
