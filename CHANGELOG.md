@@ -1,5 +1,40 @@
 # Changelog
 
+## Unreleased
+
+### Added
+
+- **The `anonymous` user, `world` role and `world` permission are now
+  provisioned at startup**, so granting public read access is a one-field edit
+  instead of a three-row archaeology exercise.
+
+  Public access was already supported but required assembling three rows by
+  hand, and all three are load-bearing:
+  `ResolvePermissionsAsync` folds the `world` permission into an anonymous
+  caller's set only when an `anonymous` user exists *and* resolves through at
+  least one real role row (`if (isAnonymous && roles.Count > 0)`). Miss any one
+  and public access resolves to nothing — silently, as `{total:0}` rather than
+  an error, which is close to undiagnosable from outside the database.
+
+  The triple ships **inert**: `world` has an empty `subpaths`, so it matches no
+  space and grants nothing on a fresh deployment. An operator opens up exactly
+  what they intend by scoping it, e.g. `{"archive": ["__all_subpaths__"]}`.
+  Seeded actions are `view`/`query` with `conditions: ["is_active"]`, and the
+  seeded `resource_types` deliberately exclude `user`, `group`, `role`,
+  `permission`, `acl`, `log` and `history` — so scoping a space public cannot
+  also publish the user list or the permission model.
+
+  Create-if-missing only, the same contract as `logged_in`: once the rows
+  exist, their scope belongs to the operator and bootstrap never repairs,
+  widens or resets them. A restart that silently reset `subpaths` would revoke
+  public access; one that widened them would publish more than was asked for.
+
+  The `anonymous` row carries no password, email or msisdn and is
+  `is_active: false`, which closes both login paths — `LoginAsync` bails on an
+  empty stored hash, and the OTP path derives its destination from
+  `user.Msisdn` and bails when empty. None of that affects public reads, since
+  resolution skips the `IsUsable` check for the anonymous bucket specifically.
+
 ## v1.5.13 — 2026-09-19
 
 ### Added

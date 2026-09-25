@@ -28,6 +28,14 @@ public sealed class AdminBootstrap(
     private const string MgmtSpace = "management";
     private static readonly string[] LockUnlockActions = { "lock", "unlock" };
 
+    // Seed resource types for the `world` (public) permission: what a public
+    // site needs to render content, and nothing that would leak the user list,
+    // the permission model, audit trails or bulk exports. Deliberately excludes
+    // user, group, role, permission, acl, log, history, lock, ticket and the
+    // data-asset/csv/jsonl/sqlite/parquet export types.
+    private static readonly string[] PublicResourceTypes =
+        { "content", "folder", "media", "json", "schema", "comment" };
+
     public async Task StartAsync(CancellationToken ct)
     {
         // Refuse to start in Production with insecure defaults.
@@ -287,6 +295,113 @@ public sealed class AdminBootstrap(
                 }, ct);
                 log.LogInformation(
                     "admin bootstrap: created empty logged_in role (implicitly held by every authenticated user)");
+            }
+
+            // 6. Ensure the anonymous/world triple exists. Granting public read
+            // access is a three-row operation and every row is load-bearing:
+            // ResolvePermissionsAsync folds the `world` permission into an
+            // anonymous caller's set ONLY when an `anonymous` user row exists AND
+            // resolves to at least one real role row (`if (isAnonymous &&
+            // roles.Count > 0)`). Miss any one and public access resolves to
+            // nothing — silently, as {total:0} rather than an error, which is
+            // needlessly hard to diagnose from the outside.
+            //
+            // Bootstrapped INERT: `world`.Subpaths is EMPTY, so the permission
+            // walk matches no space and the triple grants nothing at all. An
+            // operator opens up exactly what they intend by adding space →
+            // subpath entries, e.g.
+            //     subpaths: { "archive": ["__all_subpaths__"] }
+            // Actions/resource types are seeded with a conservative read-only
+            // set so that edit is the only one required; they deliberately
+            // exclude user/group/role/permission/acl/log/history and the bulk
+            // export types, so scoping a space public cannot also expose the
+            // user list or the permission model.
+            //
+            // CREATE-IF-MISSING ONLY, exactly like logged_in above: once the rows
+            // exist their scope belongs to the operator, so bootstrap must never
+            // repair, widen or reset them.
+            var world = await access.GetPermissionAsync(PermissionService.WorldPermission, ct);
+            if (world is null)
+            {
+                await access.UpsertPermissionAsync(new Permission
+                {
+                    Uuid = Guid.NewGuid().ToString(),
+                    Shortname = PermissionService.WorldPermission,
+                    SpaceName = MgmtSpace,
+                    Subpath = "/permissions",
+                    OwnerShortname = AdminShortname,
+                    IsActive = true,
+                    Displayname = new Translation(En: "World"),
+                    Description = new Translation(
+                        En: "Public (anonymous) access. Grants nothing until an operator adds space → subpath entries to `subpaths`."),
+                    // Empty on purpose — see the note above. This is what makes
+                    // the bootstrapped triple safe to ship enabled.
+                    Subpaths = new(),
+                    ResourceTypes = PublicResourceTypes.ToList(),
+                    Actions = new() { "view", "query" },
+                    // Only entries the operator has actually activated are ever
+                    // exposed, so content can be staged privately and published
+                    // by flipping is_active.
+                    Conditions = new() { "is_active" },
+                    CreatedAt = TimeUtils.Now(),
+                    UpdatedAt = TimeUtils.Now(),
+                }, ct);
+                log.LogInformation(
+                    "admin bootstrap: created inert world permission (no subpaths — scope it to grant public access)");
+            }
+
+            var worldRole = await access.GetRoleAsync(PermissionService.WorldPermission, ct);
+            if (worldRole is null)
+            {
+                await access.UpsertRoleAsync(new Role
+                {
+                    Uuid = Guid.NewGuid().ToString(),
+                    Shortname = PermissionService.WorldPermission,
+                    SpaceName = MgmtSpace,
+                    Subpath = "/roles",
+                    OwnerShortname = AdminShortname,
+                    Permissions = new() { PermissionService.WorldPermission },
+                    IsActive = true,
+                    Displayname = new Translation(En: "World"),
+                    Description = new Translation(
+                        En: "Held by the anonymous user — the role that makes the world permission reachable"),
+                    CreatedAt = TimeUtils.Now(),
+                    UpdatedAt = TimeUtils.Now(),
+                }, ct);
+                log.LogInformation("admin bootstrap: created world role");
+            }
+
+            // The anonymous row carries NO credential of any kind: no password,
+            // no email, no msisdn, and IsActive=false. That closes both login
+            // paths — LoginAsync bails on `string.IsNullOrEmpty(user.Password)`,
+            // and LoginWithOtpAsync derives its destination from `user.Msisdn`
+            // and bails when empty (and RejectIfNotActive fires first anyway).
+            // None of it affects public reads: ResolvePermissionsAsync skips the
+            // IsUsable check for the anonymous bucket specifically, so an
+            // inactive anonymous row still resolves the world permission. Mirrors
+            // the row dmart Python ships in its own seed.
+            var anonymous = await users.GetByShortnameAsync(PermissionService.AnonymousUser, ct);
+            if (anonymous is null)
+            {
+                await users.UpsertAsync(new User
+                {
+                    Uuid = Guid.NewGuid().ToString(),
+                    Shortname = PermissionService.AnonymousUser,
+                    SpaceName = MgmtSpace,
+                    Subpath = "/users",
+                    OwnerShortname = AdminShortname,
+                    Password = null,
+                    Email = null,
+                    Msisdn = null,
+                    Roles = new() { PermissionService.WorldPermission },
+                    Language = Language.En,
+                    Type = UserType.Web,
+                    IsActive = false,
+                    CreatedAt = TimeUtils.Now(),
+                    UpdatedAt = TimeUtils.Now(),
+                }, ct);
+                log.LogInformation(
+                    "admin bootstrap: created credential-less anonymous user holding the world role");
             }
         }
         catch (Exception ex)

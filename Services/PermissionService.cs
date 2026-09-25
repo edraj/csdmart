@@ -94,7 +94,9 @@ public sealed class PermissionService(UserRepository users, AccessRepository acc
     // roles (or the special "world" permission) resolve the same way they would
     // for any other user.
     internal const string AnonymousUser = "anonymous";
-    private const string WorldPermission = "world";
+    // internal (not private): AdminBootstrap provisions this row on every
+    // deployment, same as ImplicitAuthenticatedRole above.
+    internal const string WorldPermission = "world";
 
     // Resolves the user + flattened permission list, using the in-memory cache.
     // Shared by CanAsync and HasAnyAccessToSpaceAsync to avoid duplicating the
