@@ -1,5 +1,34 @@
 # Changelog
 
+## v1.5.17 — 2026-09-26
+
+Re-release of v1.5.16, whose Windows build and signed checksum manifest did
+not publish. **Same code, plus a fix to the release pipeline.**
+
+### Fixed
+
+- **v1.5.16 shipped without `dmart-*-win-x64.zip` and without
+  `SHA256SUMS-all`.** Everything else published — RPMs, `.deb`, APKs,
+  containers, the linux tarballs and their signatures — so Linux and macOS
+  users were unaffected. Windows users, and anyone verifying against the signed
+  manifest of all artifacts, were not. Use v1.5.17.
+
+  v1.5.16 moved cosign's install directory to `runner.temp` so that ten
+  concurrent signing jobs on three self-hosted runners would stop racing over
+  one shared `$HOME/.cosign`. That worked — the collision is gone. But
+  `runner.temp` on a Windows runner is a Windows path, and the installer's bash
+  script was handed a target it cannot create:
+
+      install-dir: D:\a\_temp/cosign
+      mkdir -p D:\a\_temp/cosign
+
+  cosign never reached `PATH`, the signing step exited 127, and
+  `SHA256SUMS-all` was skipped because it depends on every build.
+
+  The override was never needed on GitHub-hosted runners: each job there gets a
+  fresh VM and cannot collide. It now applies only when the runner is
+  self-hosted, which is where the shared `$HOME` actually is.
+
 ## v1.5.16 — 2026-09-25
 
 ### Fixed
