@@ -1,32 +1,5 @@
 # Changelog
 
-## Unreleased
-
-### Fixed
-
-- **PDF and SVG attachments now render.** They were the two attachment kinds
-  `<object>` was used for, and `object-src 'none'` blocked both — so fixing
-  images and audio in v1.5.14 left these still broken.
-
-  The policy was not loosened to accommodate them. `<object>` can instantiate
-  plugins and execute script embedded in an SVG, which is a materially larger
-  surface than displaying a document, so `object-src` stays `'none'` and the two
-  branches moved to elements that are both safer and already permitted:
-
-  - **SVG renders through `<img>`**, where browsers disable scripting in the
-    image outright. The previous markup already carried this `<img>` as its
-    `<object>` fallback. Verified: the SVG displays and a `<script>` inside it
-    does not run.
-  - **PDF renders in an `<iframe>`**, which `frame-src 'self' blob:` now admits.
-
-  `Media.svelte` additionally pins the blob's own MIME type to
-  `application/pdf` on that path rather than trusting the response header. The
-  element is chosen from dmart's declared `content_type`, so a file whose stored
-  bytes disagree with its metadata could otherwise be framed as `text/html` and
-  executed in this origin. Verified: HTML bytes served as `application/pdf` load
-  in the frame and do not execute. Image, audio and video keep the response's
-  own type, which audio and video need for codec selection.
-
 ## v1.5.14 — 2026-09-25
 
 ### Added
@@ -94,6 +67,29 @@
   `@edraj/tsdmart` 5.7.0 derives the scope from whether a token is set, and the
   catalog now requires `^5.7.0`. The inline Media preview reuses
   `getAttachmentApiUrl()` rather than duplicating URL construction.
+
+- **PDF and SVG attachments now render.** They were the two attachment kinds
+  `<object>` was used for, and `object-src 'none'` blocked both — so fixing
+  images and audio in v1.5.14 left these still broken.
+
+  The policy was not loosened to accommodate them. `<object>` can instantiate
+  plugins and execute script embedded in an SVG, which is a materially larger
+  surface than displaying a document, so `object-src` stays `'none'` and the two
+  branches moved to elements that are both safer and already permitted:
+
+  - **SVG renders through `<img>`**, where browsers disable scripting in the
+    image outright. The previous markup already carried this `<img>` as its
+    `<object>` fallback. Verified: the SVG displays and a `<script>` inside it
+    does not run.
+  - **PDF renders in an `<iframe>`**, which `frame-src 'self' blob:` now admits.
+
+  `Media.svelte` additionally pins the blob's own MIME type to
+  `application/pdf` on that path rather than trusting the response header. The
+  element is chosen from dmart's declared `content_type`, so a file whose stored
+  bytes disagree with its metadata could otherwise be framed as `text/html` and
+  executed in this origin. Verified: HTML bytes served as `application/pdf` load
+  in the frame and do not execute. Image, audio and video keep the response's
+  own type, which audio and video need for codec selection.
 
 - **Multi-word tags matched nothing in the catalog tag filter.**
   `getSpaceContentsByTags` built `@tags:<a> OR <b>` with unquoted values. The
