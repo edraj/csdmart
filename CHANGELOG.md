@@ -1,5 +1,20 @@
 # Changelog
 
+## Unreleased
+
+### Changed
+
+- **`cxb` now requires `@edraj/tsdmart ^5.7.0`**, matching catalog. The two
+  workspaces share one hoisted install, so the split pin left the tree carrying
+  two copies of the client — 5.5.0 for cxb, 5.7.0 for catalog — and cxb kept
+  running the build whose `getAttachmentUrl` defaults to `DmartScope.managed`.
+
+  No behaviour change for cxb: it is the authenticated admin UI, so 5.7.0's
+  scope auto-detection resolves to `managed` exactly as the old hardcoded
+  default did, and its one explicit `DmartScope.managed` call site in
+  `ListView.svelte` is unaffected either way. The point is that the lockfile now
+  resolves a single `@edraj/tsdmart@^5.7.0` entry instead of two.
+
 ## v1.5.14 — 2026-09-25
 
 ### Added
