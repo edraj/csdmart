@@ -97,7 +97,18 @@ runs:
         #
         # runner.temp is unique per job and cleaned up with it, so no two
         # signers can collide however many run at once.
-        install-dir: ${{ runner.temp }}/cosign
+        # SELF-HOSTED ONLY, and the condition is the whole point.
+        #
+        # runner.temp on a Windows runner is a Windows path (D:\a\_temp), and
+        # the installer's bash script cannot mkdir it -- the install silently
+        # produces nothing, cosign is never on PATH, and the sign step exits
+        # 127. That broke the Windows build of v1.5.16 having fixed nothing,
+        # because a GitHub-hosted runner gets a fresh VM per job and cannot
+        # collide in the first place.
+        #
+        # Hosted runners keep the action's own default. The override applies
+        # exactly where the problem is.
+        install-dir: ${{ runner.environment == 'self-hosted' && format('{0}/cosign', runner.temp) || '$HOME/.cosign' }}
 
     - name: Resolve subjects
       id: resolve
