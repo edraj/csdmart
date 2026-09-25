@@ -136,7 +136,22 @@ internal static class SeedCommand
             return 1;
         }
 
-        var (seedDbSettings, seedDb) = CliBootstrap.BuildOrExit(dotenvPath, dotenvValues);
+        // BuildFactoryOrExit, not BuildOrExit. BuildOrExit hands back the
+        // PostgreSQL-typed Db whose IsConfigured is built from
+        // DATABASE_HOST/PORT/USERNAME/PASSWORD/NAME, so with DATABASE_DRIVER
+        // set to sqlite it reported "Database not configured" against a
+        // perfectly good SQLite config and the db half of `dmart seed` could
+        // not run at all. `migrate` already took the driver-aware path.
+        var (seedDbSettings, seedDb) = CliBootstrap.BuildFactoryOrExit(dotenvPath, dotenvValues);
+
+        // The bundled rows are owned by "dmart", and owner_shortname is a
+        // foreign key to users. That row is created by AdminBootstrap when the
+        // SERVER starts, so seeding a database that has never served produced
+        // 176 FK violations - reading like corrupt seed data rather than a
+        // missing user. Create-if-missing, so it is a no-op everywhere else.
+        await CliBootstrap.BuildAdminBootstrap(seedDbSettings, seedDb)
+            .BootstrapAdminAsync(CancellationToken.None);
+
         var importService = CliBootstrap.BuildImportExportService(seedDbSettings, seedDb);
 
         using var zipStream = new MemoryStream();
