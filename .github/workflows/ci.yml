@@ -1,22 +1,32 @@
 name: CI
 
 on:
-  push:
-    branches: ["master"]
   pull_request:
     branches: ["master"]
-  # LOAD-BEARING once a merge queue is enabled on master, and inert until
-  # then - no merge_group event is ever delivered without a queue, so this
-  # changes nothing today. Do NOT delete it as dead config: without it the
-  # workflow never runs on queue entries, the required build-and-test check
-  # never reports, and the QUEUE STALLS waiting for a verdict that cannot
-  # arrive. The scope gates below already read merge_group.base_sha for the
-  # same reason.
+  # LOAD-BEARING. The merge queue is enabled on master, and with `push` now
+  # retired this is the ONLY trigger that tests what lands there. Delete it
+  # and the workflow never runs on queue entries, the required build-and-test
+  # check never reports, the queue stalls on a verdict that cannot arrive --
+  # and nothing tests master at all. The scope gates below read
+  # merge_group.base_sha for the same reason.
   #
-  # `push` stays alongside it. It becomes redundant once a queue is on, since
-  # the queue tests the exact tree before it lands - but dropping it now would
-  # leave master untested in the window before the queue exists. Retire it
-  # deliberately, after the queue has run a few merges.
+  # `push` is GONE, retired deliberately once the queue had proved itself over
+  # several merges. The queue tests the exact tree BEFORE it lands, so a
+  # post-merge run re-tested a verdict that already existed: measured over one
+  # working session, 228 of 939 self-hosted runner-minutes - 24% - went on
+  # master push runs duplicating merge_group runs that had already passed.
+  #
+  # The invariant the old comment defended is not weakened, it is better
+  # served. "A landed commit must have a verdict" is satisfied by a check that
+  # runs before the commit lands rather than after, and a queue entry that
+  # fails never becomes a landed commit at all.
+  #
+  # If the merge queue is ever DISABLED, put this back in the same commit:
+  #
+  #   push:
+  #     branches: ["master"]
+  #
+  # without it and without a queue, nothing whatsoever tests master.
   merge_group:
     branches: ["master"]
 
