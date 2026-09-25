@@ -121,6 +121,8 @@ jobs:
     needs: changes
     if: needs.changes.outputs.code == 'true'
     runs-on: self-hosted
+    # Longest observed run is ~9 min; this is a runaway guard, not a target.
+    timeout-minutes: 30
 
     # One axis: the SQL backend. Both drivers ship in the same binary and share
     # the same REST surface, so the only way to know a change is safe on both
@@ -568,6 +570,8 @@ jobs:
 
   aot-publish:
     runs-on: self-hosted
+    # Runaway guard (~6 min typical); without it a hang holds a runner for 6h.
+    timeout-minutes: 30
     # Independent of build-and-test: a native-link failure and a test failure
     # are different diagnoses, and there is no reason to make one wait on the
     # other.
@@ -730,6 +734,8 @@ jobs:
           ./.github/scripts/backup-round-trip.sh bin/Release/net10.0/linux-x64/publish "$RT_PORT"
 
   rpm-build:
+    # Runaway guard (~4 min typical); without it a hang holds a runner for 6h.
+    timeout-minutes: 20
     name: RPM build
     runs-on: self-hosted
     # Packaging was only ever built by release.yml, so a broken spec could sit
@@ -862,6 +868,10 @@ jobs:
           done
 
   container-build:
+    # Runaway guard; without it a hang holds a runner for 6h. Higher than the
+    # other packaging jobs because this one also waits on a container first
+    # boot: ~4 min of build plus a readiness ceiling of ~9.
+    timeout-minutes: 25
     name: Container build
     runs-on: self-hosted
     # The container image was only ever built by release.yml, so a broken
@@ -953,10 +963,27 @@ jobs:
           podman rm -f dmart-cismoke 2>/dev/null || true
           podman run -d --name dmart-cismoke -p "$PORT":8000 dmart-ci:test
           ready=0
-          for _ in $(seq 1 90); do
-            if curl -sf "http://127.0.0.1:$PORT/health/ready" >/dev/null 2>&1; then ready=1; break; fi
+          # --max-time is NOT optional here. podman publishes the port, so
+          # the forwarder ACCEPTS the connection even while nothing inside is
+          # listening yet - curl then blocks on its ~130s default rather than
+          # failing fast, and this "90 second" loop took 3h22m on master
+          # (22:08 -> 01:30) before reporting a failure. Two seconds is ample
+          # against a loopback port that either answers or does not.
+          # 180 x (2s curl + 1s sleep) ~= 9 minutes. The old 90 was ~4.5 and
+          # the container came up at just about that mark on a host running
+          # three jobs at once, so it was decided by load rather than by
+          # whether the image works. First boot does `dmart init`, builds the
+          # SQLite schema and loads plugins before it listens.
+          #
+          # The elapsed time is REPORTED on success: a first boot that starts
+          # creeping toward this ceiling is worth seeing in the log while it
+          # is still passing, instead of finding out when it flakes.
+          start=$(date +%s)
+          for _ in $(seq 1 180); do
+            if curl -sf --max-time 2 "http://127.0.0.1:$PORT/health/ready" >/dev/null 2>&1; then ready=1; break; fi
             sleep 1
           done
+          echo "container became ready after $(( $(date +%s) - start ))s (ready=$ready)"
           if [ "$ready" != "1" ]; then
             echo "--- container never became ready; logs follow ---"
             podman logs dmart-cismoke 2>&1 | tail -40
@@ -975,6 +1002,8 @@ jobs:
         run: podman rmi -f dmart-ci:test 2>/dev/null || true
 
   static-build:
+    # Runaway guard (~4 min typical); without it a hang holds a runner for 6h.
+    timeout-minutes: 20
     name: Static musl binary
     runs-on: self-hosted
     # The fully static binary (docs/static-binary.md) is the one artifact with
