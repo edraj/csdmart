@@ -11,6 +11,24 @@
   let content_type: string = attributes?.payload?.content_type || "";
   let body: any = attributes?.payload?.body;
 
+  // A type to pin the blob to, or null to keep whatever the response declared.
+  //
+  // Only the branches that could interpret bytes as markup are pinned. An
+  // <iframe> handed a blob typed text/html executes it in this origin, and the
+  // element is chosen from dmart's declared content_type — so a file whose
+  // stored bytes disagree with its metadata is the case to close. Pinning
+  // application/pdf hands the frame to the browser's PDF viewer instead, and a
+  // mislabelled file simply fails to display.
+  //
+  // <img>/<audio>/<video> never execute markup, and audio and video need the
+  // real type for codec selection, so those keep the server's own value. A
+  // wildcard like "audio/*" is not a valid Blob type and would blank it.
+  function pinnedType(ct: string, u: string): string | null {
+    if (ct.includes("pdf")) return "application/pdf";
+    if (ct.includes("image") && u.endsWith("svg")) return "image/svg+xml";
+    return null;
+  }
+
   let blobUrl: string | null = null;
   let loading = true;
   let error = false;
@@ -30,7 +48,13 @@
         }
         const res = await fetch(url, { headers, credentials: "include" });
         if (res.ok) {
-          const blob = await res.blob();
+          // See pinnedType: PDF and SVG are retyped so a mislabelled file
+          // cannot be interpreted as markup; everything else keeps the
+          // response's own Content-Type.
+          const pinned = pinnedType(content_type, url);
+          const blob = pinned
+            ? new Blob([await res.arrayBuffer()], { type: pinned })
+            : await res.blob();
           blobUrl = URL.createObjectURL(blob);
         } else {
           error = true;
@@ -58,13 +82,11 @@
   {:else if error}
     <div class="media-error">Failed to load image</div>
   {:else if blobUrl}
-    {#if url.endsWith("svg")}
-      <object data={blobUrl} type="image/svg+xml" title={displayname}>
-        <img src={blobUrl} alt={displayname || "no-image"} class="media-img" />
-      </object>
-    {:else}
-      <img src={blobUrl} alt={displayname || "no-image"} class="media-img" />
-    {/if}
+    <!-- SVG renders through <img>, not <object>. A browser disables scripting
+         in an SVG loaded as an image, while <object> executes it — so this is
+         the safer element as well as the one object-src 'none' permits. The
+         previous markup already carried this <img> as its fallback. -->
+    <img src={blobUrl} alt={displayname || "no-image"} class="media-img" />
   {/if}
 {:else if content_type.includes("audio")}
   {#if loading}
@@ -86,15 +108,13 @@
   {#if loading}
     <div class="media-loading"><div class="spinner spinner-md"></div></div>
   {:else if blobUrl}
+    <!-- <iframe>, not <object>: object-src stays 'none' because <object> can
+         instantiate plugins and execute embedded script, which is a materially
+         larger XSS surface than rendering a document. The blob is retyped to
+         application/pdf below, so the frame is handed to the browser's PDF
+         viewer and never interpreted as markup. -->
     <div class="media-pdf-wrap">
-      <object
-        title={displayname}
-        class="media-pdf"
-        type="application/pdf"
-        data={blobUrl}
-      >
-        <p>For some reason PDF is not rendered here properly.</p>
-      </object>
+      <iframe title={displayname} class="media-pdf" src={blobUrl}></iframe>
     </div>
   {/if}
 {:else if ["markdown", "html", "text"].includes(content_type)}
