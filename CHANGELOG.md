@@ -35,6 +35,29 @@
   `user.Msisdn` and bails when empty. None of that affects public reads, since
   resolution skips the `IsUsable` check for the anonymous bucket specifically.
 
+- **`dmart migrate` now also creates the two base schemas** — `meta_schema`
+  and `folder_rendering` — from the canonical files, so a migrated database can
+  validate its own content without a separate `seed` or a first `serve`.
+
+  Create-if-missing, and it probes **both** spellings of the subpath. The rest
+  of the codebase treats `management/schema` and `management/schemas` as
+  equivalent, so checking only one would insert a second copy on a deployment
+  using the other — and since lookup probes `/schema` first, that new copy
+  would silently win over the operator's existing one.
+
+  It deliberately does **not** bootstrap authorization data. An earlier
+  revision created a `world` role, a `world` permission and an anonymous user
+  carrying it; that would have attached a role to the anonymous user, which is
+  the switch `ResolvePermissionsAsync` treats as the operator's opt-in
+  (`if (isAnonymous && roles.Count > 0)`) — a schema-migration command
+  silently changing authorization posture. Those rows belong to startup
+  provisioning, which is where they now live.
+
+  The schema rows are owned by `dmart`, and `migrate` runs the same
+  create-if-missing admin bootstrap `serve` and `seed` use to guarantee that
+  owner exists, rather than inventing a stand-in. `owner_shortname` is a
+  foreign key to `users`, so without it the insert simply fails.
+
 ### Changed
 
 - **`cxb` now requires `@edraj/tsdmart ^5.7.0`**, matching catalog. The two
