@@ -161,6 +161,40 @@ internal static class CliBootstrap
             nlog.CreateLogger<ImportExportService>());
     }
 
+    // The bootstrap admin, for CLI paths that write rows OWNED by it.
+    //
+    // `dmart seed` needs this: 88 of the bundled rows carry
+    // owner_shortname="dmart", and that column is a foreign key to users. The
+    // admin is created by AdminBootstrap at SERVER startup, so on a database
+    // that has never run the server the entire seed fails — 176 FK violations
+    // across entries, permissions, roles, spaces and attachments — for a
+    // reason that reads like corrupt seed data rather than a missing row.
+    //
+    // Same repository graph as BuildImportExportService, and driver-aware for
+    // the same reason: the dialect follows the factory it was handed.
+    public static AdminBootstrap BuildAdminBootstrap(DmartSettings s, IDbConnectionFactory db)
+    {
+        var nlog = LoggerFactory.Create(b => b
+            .SetMinimumLevel(LogLevel.Information)
+            .AddProvider(new StderrLoggerProvider(LogLevel.Information)));
+        var refresher = new AuthzCacheRefresher();
+        var userRepo = new UserRepository(db, refresher, new SessionTokenHasher(s));
+        var dialect = db is SqliteConnectionFactory
+            ? (Dmart.QueryGrammar.ISqlDialect)Dmart.QueryGrammar.SqliteSqlDialect.Instance
+            : Dmart.QueryGrammar.PostgresSqlDialect.Instance;
+        var accessRepo = new AccessRepository(db, dialect, refresher, userRepo);
+        return new AdminBootstrap(
+            db,
+            Options.Create(s),
+            userRepo,
+            accessRepo,
+            new SpaceRepository(db),
+            new EntryRepository(db),
+            new PasswordHasher(Options.Create(s), nlog.CreateLogger<PasswordHasher>()),
+            refresher,
+            nlog.CreateLogger<AdminBootstrap>());
+    }
+
     // Just the history table — `prune-empty-histories` needs nothing else.
     //
     // The dialect follows the FACTORY, not the config key, for the same reason

@@ -57,7 +57,14 @@ public sealed class AdminBootstrap(
 
     private const string AdminShortname = "dmart";
 
-    private async Task BootstrapAdminAsync(CancellationToken ct)
+    /// <summary>
+    /// Creates the bootstrap admin (<c>dmart</c>) if it is missing. Public so
+    /// the CLI can call exactly this, without StartAsync's JWT_SECRET
+    /// production check or the authz cache refresh — neither of which means
+    /// anything in a one-shot process, and the first of which would turn
+    /// `dmart seed` on a placeholder secret into a hard failure.
+    /// </summary>
+    public async Task BootstrapAdminAsync(CancellationToken ct)
     {
         var s = settings.Value;
 
