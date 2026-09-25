@@ -58,14 +58,23 @@ public static class ResponseHeadersMiddleware
     //     remote host, so it widens no network reach — unlike a scheme or host
     //     allowance, which does.
     //
-    // object-src stays 'none' on purpose. The PDF and SVG branches of
-    // Media.svelte use <object> and remain blocked; <object> is a materially
-    // larger XSS surface than <img>/<audio>, so the fix there is to render PDFs
-    // in an <iframe>/viewer rather than to loosen this.
+    //   * frame-src blob: — PDF attachments render in an <iframe> pointed at the
+    //     same kind of blob: URL. object-src stays 'none': <object> can
+    //     instantiate plugins and execute script embedded in an SVG, which is a
+    //     materially larger surface than framing a document, so the PDF and SVG
+    //     branches of Media.svelte were moved off <object> rather than the
+    //     policy being loosened to accommodate them. SVG now renders through
+    //     <img>, where browsers disable scripting outright.
+    //
+    //     Media.svelte additionally pins the blob's own MIME type to
+    //     application/pdf on that path, so a file whose stored bytes disagree
+    //     with its declared content_type cannot be framed as text/html and
+    //     executed in this origin.
     private const string ContentSecurityPolicy =
         "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; "
         + "img-src 'self' data: blob: https://www.plantuml.com; media-src 'self' blob:; "
-        + "connect-src 'self'; frame-ancestors 'none'; object-src 'none'; base-uri 'self'";
+        + "frame-src 'self' blob:; connect-src 'self'; frame-ancestors 'none'; "
+        + "object-src 'none'; base-uri 'self'";
 
     public static IApplicationBuilder UseDmartResponseHeaders(
         this IApplicationBuilder app, PathString cxbPath, PathString catPath)

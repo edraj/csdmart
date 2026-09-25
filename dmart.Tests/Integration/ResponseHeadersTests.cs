@@ -220,6 +220,26 @@ public class ResponseHeadersTests : IClassFixture<DmartFactory>
         Directive("default-src").ShouldNotContain("blob:");
     }
 
+    // PDF attachments render in an <iframe> pointed at a blob: URL. frame-src
+    // must admit blob: for that, and must be declared: with no frame-src it
+    // falls back to default-src 'self', which does not.
+    [Fact]
+    public void Csp_Allows_Blob_For_Frames()
+    {
+        Directive("frame-src").ShouldContain("blob:",
+            customMessage: "without frame-src blob:, PDF attachments render as a blank frame");
+    }
+
+    // The point of moving PDF to <iframe> and SVG to <img> was to leave this
+    // alone. <object> can instantiate plugins and run script embedded in an
+    // SVG; if a future change relaxes it to make some attachment type render,
+    // that is the wrong trade and this test should fail loudly.
+    [Fact]
+    public void Csp_Still_Forbids_Object_Entirely()
+    {
+        Directive("object-src").ShouldBe("'none'");
+    }
+
     [Fact]
     public void Csp_Keeps_Its_Existing_Hardening()
     {
