@@ -85,6 +85,19 @@ runs:
         # will not be supported forever. It changes the published asset shape,
         # so it belongs in its own change with its own fork test.
         cosign-release: 'v2.6.1'
+        # PER-JOB, not the default $HOME/.cosign.
+        #
+        # The three self-hosted runners share one account and therefore one
+        # $HOME, and release.yml calls this action from TEN jobs that run
+        # concurrently. They raced to write and execute the same binary:
+        #   /opt/actions-runners/.cosign/cosign: Text file busy
+        # That killed the v1.5.15 release twice - once across the two release
+        # workflows, once between two packaging jobs - and cost three reruns
+        # before it completed by luck rather than by fix.
+        #
+        # runner.temp is unique per job and cleaned up with it, so no two
+        # signers can collide however many run at once.
+        install-dir: ${{ runner.temp }}/cosign
 
     - name: Resolve subjects
       id: resolve

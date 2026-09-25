@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## v1.5.16 — 2026-09-25
 
 ### Fixed
 
@@ -44,6 +44,26 @@
   the `Authorization`-header route working for a deployment that has cookie
   auth disabled via `CsrfProtectCookieAuth`. No CSP change is needed:
   `media-src 'self'` and `frame-src 'self'` already cover a same-origin URL.
+
+- **Release signing no longer races itself.** `sign-attest` installed cosign to
+  `$HOME/.cosign`, and the self-hosted runners share one account and therefore
+  one `$HOME`. `release.yml` calls that action from ten concurrent jobs, which
+  raced to write and execute the same binary:
+
+      /opt/actions-runners/.cosign/cosign: Text file busy
+
+  It broke the v1.5.15 release twice — once across the two release workflows,
+  once between two packaging jobs — and cost three reruns before completing by
+  luck rather than by fix. Each job now installs into its own `runner.temp`.
+
+### Documentation
+
+- **How to install from the dnf, deb and apk repositories** at
+  `packages.imx.sh`, which carries the last five releases in all three formats,
+  signed. Upgrades then arrive through the package manager, and the index is
+  signed, so a tampered mirror fails loudly rather than installing quietly.
+  Every command in the README was run against a clean container before being
+  written down.
 
 ## v1.5.15 — 2026-09-25
 
