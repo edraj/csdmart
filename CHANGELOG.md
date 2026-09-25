@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## v1.5.14 — 2026-09-25
 
 ### Added
 
@@ -34,6 +34,51 @@
   empty stored hash, and the OTP path derives its destination from
   `user.Msisdn` and bails when empty. None of that affects public reads, since
   resolution skips the `IsUsable` check for the anonymous bucket specifically.
+
+### Fixed
+
+- **Attachments would not render for anyone — including a logged-in
+  `super_admin` — because of the Content-Security-Policy.** The failure looked
+  like an authorization problem and was not one.
+
+  `Media.svelte` does not point an `<img>`/`<audio>` at the payload endpoint. It
+  *fetches* the bytes, so it can attach the bearer token that a subresource load
+  cannot carry, wraps them with `URL.createObjectURL`, and renders the `blob:`
+  URL. The policy allowed `img-src 'self' data:` and declared no `media-src` at
+  all, so `media-src` fell back to `default-src 'self'`. Neither admits `blob:`.
+
+  It survived because it fails silently: the fetch returns 200, the blob is
+  built correctly, and only the paint is refused. Images degrade to their alt
+  text and `<audio>` reports `MEDIA_ELEMENT_ERROR: Media load rejected by URL
+  safety check` with a 0:00 duration — while the network tab shows two clean
+  200s carrying the full payload.
+
+- **Anonymous visitors on public catalog pages got 401s for every attachment.**
+  `getAttachmentUrl()` defaulted to the managed scope, which requires a bearer
+  token, so a signed-out reader received a correctly rendered entry with broken
+  images and audio:
+
+      GET  /dmart/public/entry/content/archive/content/kud_rah_hp   200
+      POST /dmart/public/query                                      200
+      GET  /dmart/managed/payload/media/.../3ff3a488.jpg            401
+
+  `Attachments.svelte` calls `getAttachmentUrl()` with no scope and there is no
+  natural place to pass one, so the fix belongs in the library default:
+  `@edraj/tsdmart` 5.7.0 derives the scope from whether a token is set, and the
+  catalog now requires `^5.7.0`. The inline Media preview reuses
+  `getAttachmentApiUrl()` rather than duplicating URL construction.
+
+- **Multi-word tags matched nothing in the catalog tag filter.**
+  `getSpaceContentsByTags` built `@tags:<a> OR <b>` with unquoted values. The
+  search grammar splits an unquoted value on whitespace, so the tag
+  `Hafiz Post` became `@tags:Hafiz` plus a free-text `Post` and matched nothing
+  — reported to the reader as "no content found". `OR` is also not an
+  alternation operator in that grammar, so combining selections silently
+  dropped tags.
+
+  It now uses `buildFieldFilterClause`, already used by the admin listing, which
+  emits `@tags:a|b` for simple values and `(@tags:"a b" or @tags:c)` when
+  quoting is needed.
 
 ## v1.5.13 — 2026-09-19
 
