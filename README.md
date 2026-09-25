@@ -69,7 +69,67 @@ podman exec -it dmart dmart passwd
 # Open http://localhost:8000/cxb/ or http://localhost:8000/cat/
 ```
 
-### RPM (Fedora / RHEL 9)
+### Package repositories (dnf / apt / apk)
+
+Signed repositories at `packages.imx.sh`, carrying the **five most recent
+releases**. Prefer these over downloading a file: upgrades arrive through the
+package manager, and the index is signed, so a tampered mirror fails loudly
+instead of installing quietly.
+
+**Fedora / RHEL 9 — dnf**
+
+```
+sudo rpm --import https://packages.imx.sh/dmart.asc
+sudo tee /etc/yum.repos.d/dmart.repo >/dev/null <<'EOF'
+[dmart]
+name=dmart
+baseurl=https://packages.imx.sh/rpm/fc44/x86_64
+gpgcheck=1
+gpgkey=https://packages.imx.sh/dmart.asc
+EOF
+sudo dnf install dmart
+```
+
+Use `baseurl=https://packages.imx.sh/rpm/el9/x86_64` on RHEL 9 / Alma / Rocky.
+The two builds are not interchangeable — they link against different glibc
+versions.
+
+**Debian / Ubuntu — apt**
+
+```
+sudo install -d /etc/apt/keyrings
+curl -fsSL https://packages.imx.sh/dmart.asc | sudo tee /etc/apt/keyrings/dmart.asc >/dev/null
+echo "deb [signed-by=/etc/apt/keyrings/dmart.asc] https://packages.imx.sh/deb stable main" \
+  | sudo tee /etc/apt/sources.list.d/dmart.list >/dev/null
+sudo apt update && sudo apt install dmart
+```
+
+**Alpine — apk**
+
+```
+sudo curl -fsSL -o /etc/apk/keys/packages@imx.sh-6ab6757d.rsa.pub \
+  https://packages.imx.sh/alpine/packages@imx.sh-6ab6757d.rsa.pub
+echo "https://packages.imx.sh/alpine/v3.24/main" | sudo tee -a /etc/apk/repositories
+sudo apk update && sudo apk add dmart
+```
+
+The repository index is signed with the key above. The individual `.apk` files
+carry an ephemeral signature from their own build container and are *not*
+verifiable on their own — what you are trusting is the index.
+
+Only the last five releases are carried. Pinning an older version fails rather
+than silently resolving something ancient; fetch those from the
+[releases page](https://github.com/edraj/csdmart/releases).
+
+Then, whichever package manager you used:
+
+```
+sudo vi /etc/dmart/config.env          # set DATABASE_PASSWORD, JWT_SECRET
+dmart passwd                           # set admin password
+sudo systemctl enable --now dmart
+```
+
+### RPM from a release file
 
 ```
 sudo dnf install ./dmart-*.rpm
