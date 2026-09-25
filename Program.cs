@@ -211,65 +211,6 @@ static async Task<int> BulkUpdatePoliciesAsync(
     return await cmd.ExecuteNonQueryAsync();
 }
 
-// Ensures the reserved "anonymous" user row exists. NOTHING ELSE.
-//
-// It is here for one reason: entries.owner_shortname carries a FOREIGN KEY to
-// users(shortname), and EnsureBaseSchemasAsync must be able to insert the two
-// base schemas into a database that `serve` has never bootstrapped an admin
-// into. Without a valid owner row the insert fails the constraint.
-//
-// DELIBERATELY ROLE-LESS, and that is the whole safety argument. An earlier
-// revision gave this row the "world" role and created a "world" role and
-// permission alongside it. That turns on the switch PermissionService
-// documents as an opt-in: ResolvePermissionsAsync only consults the world
-// permission when the anonymous user has at least one role
-// (`if (isAnonymous && roles.Count > 0)`, PermissionService.cs), and the
-// implicit `logged_in` role is explicitly NOT added for anonymous. So a
-// migrate that attached a role would have activated any world permission
-// already present in an existing deployment — a schema-migration command
-// silently changing the authorization posture. With no roles the row is inert:
-// world is never consulted, and public access stays exactly as opt-in as
-// before.
-//
-// The real "world" role and permission belong to `dmart seed`, which ships
-// them with their actual scope (four permissions on the role; subpaths keyed
-// by the `test` and `applications` spaces). Creating stubs here would shadow
-// them permanently, because `seed` and `import` skip existing rows without
-// --force/-r.
-//
-// Self-owned (OwnerShortname = "anonymous") for the same FK reason: the
-// "dmart" admin is only guaranteed to exist once AdminBootstrap has run.
-// Created INACTIVE — this is a structural placeholder, not a usable account.
-static async Task EnsureAnonymousUserAsync(IDbConnectionFactory db, DmartSettings settings, bool quiet)
-{
-    const string MgmtSpace = "management";
-    const string AnonShortname = "anonymous";
-
-    var users = new UserRepository(db, new AuthzCacheRefresher(), new SessionTokenHasher(settings));
-
-    if (await users.GetByShortnameAsync(AnonShortname) is not null) return;
-
-    await users.UpsertAsync(new Dmart.Models.Core.User
-    {
-        Uuid = Guid.NewGuid().ToString(),
-        Shortname = AnonShortname,
-        SpaceName = MgmtSpace,
-        Subpath = "/users",
-        OwnerShortname = AnonShortname,
-        Roles = new(),
-        Groups = new(),
-        Type = UserType.Web,
-        Language = Language.Ar,
-        IsActive = false,
-        IsEmailVerified = false,
-        IsMsisdnVerified = false,
-        ForcePasswordChange = true,
-        LockedToDevice = false,
-        CreatedAt = Dmart.Utils.TimeUtils.Now(),
-        UpdatedAt = Dmart.Utils.TimeUtils.Now(),
-    });
-    if (!quiet) Console.WriteLine("  created \"anonymous\" user (role-less placeholder)");
-}
 
 // JSON Schema draft-07 meta-schema — the body of the "meta_schema" entry.
 // Every schema entry (content_type = schema) validates its own body against
@@ -680,12 +621,16 @@ static async Task EnsureBaseSchemasAsync(IDbConnectionFactory db, DmartSettings 
     var entries = new EntryRepository(db);
     var users = new UserRepository(db, new AuthzCacheRefresher(), new SessionTokenHasher(settings));
 
-    // owner_shortname carries a FOREIGN KEY to users(shortname). Prefer "dmart"
-    // (matches the reference export) when it already exists; otherwise fall
-    // back to "anonymous", which EnsureAnonymousUserAsync guarantees exists
-    // by the time this runs — migrate must not fail on a database `serve`
-    // has never bootstrapped an admin into.
-    var ownerShortname = await users.GetByShortnameAsync("dmart") is not null ? "dmart" : "anonymous";
+    // owner_shortname carries a FOREIGN KEY to users(shortname), and the
+    // caller has already run the shared admin bootstrap, so "dmart" exists.
+    //
+    // Unconditional on purpose. This used to fall back to "anonymous" when
+    // `serve` had never bootstrapped an admin, which meant the SAME migrate
+    // produced dmart-owned rows on one deployment and anonymous-owned rows on
+    // another — a difference nothing in the output mentions and that surfaces
+    // much later as a puzzling ownership question. Matches the reference
+    // export either way.
+    const string ownerShortname = "dmart";
 
     async Task EnsureSchemaEntryAsync(string shortname, string bodyJson, string? schemaShortname)
     {
@@ -2081,10 +2026,11 @@ switch (subcommand)
         //
         // Also ensures the "meta_schema" / "folder_rendering" schema entries
         // every space needs to validate its own data (see
-        // EnsureBaseSchemasAsync below), plus the role-less "anonymous" user
-        // row those entries need to satisfy the owner_shortname foreign key
-        // (see EnsureAnonymousUserAsync below). Create-if-missing only, so
-        // migrate never fights an operator's changes.
+        // EnsureBaseSchemasAsync below). Those rows are owned by "dmart", so
+        // the shared create-if-missing admin bootstrap runs first to satisfy
+        // the owner_shortname foreign key — the same one `serve` and `seed`
+        // use. Create-if-missing throughout, so migrate never fights an
+        // operator's changes.
         //
         // It does NOT bootstrap authorization data. The "world" role and
         // permission belong to `dmart seed`, which ships their real scope;
@@ -2118,7 +2064,12 @@ switch (subcommand)
                 // and `dmart import` runs before a rebuild.
                 await SqliteSchemaInitializer.EnsureSchemaAsync(
                     sqliteFactory, Microsoft.Extensions.Logging.Abstractions.NullLogger.Instance);
-                await EnsureAnonymousUserAsync(sqliteFactory, migrateSettings, quiet);
+                // The schemas below are owned by "dmart", and owner_shortname is
+                // a foreign key to users. Create that row with the SAME
+                // create-if-missing bootstrap `serve` and `seed` use, rather
+                // than inventing a stand-in owner.
+                await CliBootstrap.BuildAdminBootstrap(migrateSettings, sqliteFactory)
+                    .BootstrapAdminAsync(CancellationToken.None);
                 await EnsureBaseSchemasAsync(sqliteFactory, migrateSettings, quiet);
                 Console.WriteLine("dmart schema ready.");
                 await ReportLegacyLockoutBackfillAsync(sqliteFactory, migrateSettings);
@@ -2199,7 +2150,12 @@ switch (subcommand)
         // back for nothing. Reported as its own step, with its own message.
         try
         {
-            await EnsureAnonymousUserAsync(dbInst, s, quiet);
+            // The schemas below are owned by "dmart", and owner_shortname is a
+            // foreign key to users. Create that row with the SAME
+            // create-if-missing bootstrap `serve` and `seed` use, rather than
+            // inventing a stand-in owner.
+            await CliBootstrap.BuildAdminBootstrap(s, dbInst)
+                .BootstrapAdminAsync(CancellationToken.None);
             await EnsureBaseSchemasAsync(dbInst, s, quiet);
         }
         catch (Exception ex)
