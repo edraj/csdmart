@@ -117,8 +117,63 @@ jobs:
             echo "only docs/assets changed — skipping build and test"
           fi
 
-  build-and-test-matrix:
+  frontend:
+    name: Frontend (build + unit tests)
     needs: changes
+    if: needs.changes.outputs.code == 'true'
+    runs-on: self-hosted
+    timeout-minutes: 20
+
+    # Built ONCE per run and shared. build-ui.sh used to run in both matrix
+    # legs and again inside build-apk.sh for the container job - three yarn
+    # installs and six vite builds of identical output, ~2.5 min each.
+    #
+    # It is also what made the shared yarn cache corrupt: three runners
+    # calling `yarn install` concurrently against one cache produced
+    # "Extracting tar content of undefined failed" and a truncated
+    # package.json on 2026-09-24. One producer means no concurrency on the
+    # cache at all, which is a better fix than the per-runner caches it
+    # supersedes.
+    #
+    # The dists are not optional for consumers: dmart.csproj embeds
+    # cxb/dist/client/** and catalog/dist/client/** as EmbeddedResource, so a
+    # build without them silently produces a binary that serves no SPA.
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+
+      - name: Build UI frontends (cxb + catalog)
+        run: ./build-ui.sh
+
+      # Lives here rather than in the matrix for the same reason the build
+      # does: the suites cover ui-shared/, which both frontends depend on, and
+      # the result cannot differ between the SQL backends. Both run even if
+      # the first fails, so a red build names every broken suite.
+      - name: Frontend unit tests (catalog + cxb + ui-shared)
+        run: |
+          rc=0
+          yarn --cwd catalog test || rc=1
+          yarn --cwd cxb test || rc=1
+          exit $rc
+
+      # Tarred, not uploaded as loose files: these are thousands of small
+      # assets and upload-artifact is markedly slower per-file than per-blob.
+      # Same shape release.yml already uses, which is why build-apk.sh's
+      # skip-if-dists-present check exists.
+      - name: Package the dists
+        run: |
+          mkdir -p dist/ui
+          tar -czf dist/ui/cxb-dist.tar.gz     -C cxb/dist/client     .
+          tar -czf dist/ui/catalog-dist.tar.gz -C catalog/dist/client .
+          ls -lh dist/ui/
+
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: ui-dists
+          path: dist/ui/*.tar.gz
+          retention-days: 1
+
+  build-and-test-matrix:
+    needs: [changes, frontend]
     if: needs.changes.outputs.code == 'true'
     runs-on: self-hosted
     # Longest observed run is ~9 min; this is a runaway guard, not a target.
@@ -213,30 +268,26 @@ jobs:
 
           "$bin" -color
 
-      - name: Build UI tarballs (smoke)
-        # Mirror what release.yml's build-ui-tarballs job does — runs
-        # `yarn install` at the workspace root and then `yarn build`
-        # under cxb/ and catalog/. Catches yarn-install / vite-build
-        # regressions at PR time instead of at release time, where they
-        # have previously only surfaced after a tag was already cut.
-        # No untrusted input is interpolated into the run: command — it
-        # invokes the checked-in build-ui.sh script with no arguments.
-        run: ./build-ui.sh
+      # Built once by the `frontend` job. The extract is required, not an
+      # optimisation: dmart.csproj embeds cxb/dist/client/** and
+      # catalog/dist/client/** as EmbeddedResource, so building without them
+      # yields a binary that compiles happily and serves no SPA.
+      - name: Download UI dists
+        uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7.0.0
+        with:
+          name: ui-dists
+          path: dist/ui
 
-      - name: Frontend unit tests (catalog + cxb + ui-shared)
-        # The vite build above type-checks nothing and runs no assertions, so
-        # without this step the frontend suites — including everything covering
-        # ui-shared/, which both frontends depend on — would be dead weight
-        # that only ever ran on a developer's machine. build-ui.sh has already
-        # done the hoisted `yarn install`, so node_modules is populated here.
-        #
-        # Both are run even if the first fails, so a red build reports every
-        # broken suite rather than only the alphabetically luckier one.
+      - name: Extract UI dists
         run: |
-          rc=0
-          yarn --cwd catalog test || rc=1
-          yarn --cwd cxb test || rc=1
-          exit $rc
+          set -e
+          mkdir -p cxb/dist/client catalog/dist/client
+          tar -xzf dist/ui/cxb-dist.tar.gz     -C cxb/dist/client
+          tar -xzf dist/ui/catalog-dist.tar.gz -C catalog/dist/client
+          # Fail here rather than three steps later with an empty SPA: the
+          # embed glob matching nothing is silent.
+          test -f cxb/dist/client/index.html
+          test -f catalog/dist/client/index.html
 
       - name: Write PostgreSQL config
         if: matrix.driver == 'postgresql'
