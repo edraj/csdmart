@@ -48,6 +48,28 @@
   `ListView.svelte` is unaffected either way. The lockfile now resolves a single
   `@edraj/tsdmart@^5.7.0` entry instead of two.
 
+- **The seed no longer ships the `world` permission, the `world` role or the
+  `anonymous` user.** Startup provisioning owns that triple now, and two
+  components writing the same three rows meant the loser was silent.
+
+  Bootstrap always won, because `seed` and `import` skip existing rows without
+  `--force`/`-r` and the bootstrap runs first — on every `serve`, and now from
+  `seed` itself. So the seed's scoped `world` (public view/query on `test` and
+  three `applications` subpaths) had quietly stopped being reachable: a fresh
+  install got the inert bootstrap row, and nothing said the seed's version had
+  been skipped.
+
+  `seed --force` did apply it, and that was the sharper problem. Forcing wrote
+  the seed's `msisdn` onto the `anonymous` row — the field startup
+  provisioning deliberately leaves empty, because `LoginWithOtpAsync` derives
+  its destination from it. (The password hash was not carried, so the password
+  path was never opened.) Removing the row removes that edge entirely.
+
+  `access_applications_world` and `view_world` are untouched: different
+  permissions, not created by bootstrap. Operators who scoped `world` by
+  editing the seed should scope the provisioned row instead — its `subpaths`
+  belong to them and bootstrap never resets them.
+
 ### Fixed
 
 - **Attachments would not render for anyone — including a logged-in
