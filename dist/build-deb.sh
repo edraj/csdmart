@@ -204,6 +204,16 @@ $ENGINE run --rm \
         # dist/dmart.spec and dist/apk/APKBUILD.in — see those files for
         # the same comment in a format that allows inline comments
         # (Debian control files do not).
+        #
+        # adduser IS declared, and has to be. postinst calls addgroup and
+        # adduser --system, which ship in the adduser package. That package is
+        # priority "important", so it is present on any normal Debian install
+        # and its absence is invisible there -- but it is NOT in minimal
+        # images (debian:*-slim, debootstrap --variant=minbase), where
+        # installing this package unpacked cleanly and then failed:
+        #   /var/lib/dpkg/info/dmart.postinst: 13: addgroup: not found
+        # leaving dpkg in the half-configured "iF" state. Found by installing
+        # into debian:stable-slim from the package repository.
         sed "s|__VERSION__|$VERSION|" dist/debian/control.in > "$STAGE/DEBIAN/control"
         install -m 0755 dist/debian/postinst "$STAGE/DEBIAN/postinst"
         install -m 0755 dist/debian/prerm    "$STAGE/DEBIAN/prerm"
