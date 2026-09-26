@@ -209,6 +209,22 @@ on infrastructure neither we nor an attacker can quietly modify". If your policy
 requires the stronger claim, deploy the linux tarball and run
 `verify-release.sh --require-hosted`.
 
+**Installing from a package repository breaks the checksum match — for RPMs.**
+If you `dnf install dmart` from a repository that re-signs packages with its own
+GPG key, the `.rpm` you receive is *not* the `.rpm` on the release page. `rpm
+--addsign` rewrites the file to embed the repository's signature, so its SHA256
+will not match `SHA256SUMS-all`, and `cosign`/`gh attestation verify` will not
+verify it either. Nothing is wrong: this is how distribution repositories
+normally work, and `rpm` verifies the repository's signature rather than ours.
+But it means **the release asset, not the repository copy, is what the
+provenance chain in this document covers.** To verify the chain, download from
+the release page.
+
+This is specific to RPMs. `.deb` and `.apk` files are served byte-identical to
+the release assets — only their *indexes* are signed locally (`InRelease` /
+`Release.gpg`, and `APKINDEX.tar.gz` via `abuild-sign`), so their checksums
+still match and they can still be verified against this document.
+
 **The dependency graph is recorded, not enforced at build time — and the
 toolchain is neither.** `dist/deps/` fixes what a review saw; it is checked
 against a fresh restore in CI and before every SBOM, on one pinned SDK. It is
