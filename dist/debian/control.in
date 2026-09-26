@@ -4,7 +4,7 @@ Section: net
 Priority: optional
 Architecture: amd64
 Maintainer: dmart <admin@dmart.cc>
-Depends: jq, libargon2-1
+Depends: jq, libargon2-1, adduser
 Homepage: https://github.com/edraj/csdmart
 Description: dmart - Unified Data Platform (REST API server + CLI)
  dmart is a unified data platform providing a REST API backed by PostgreSQL.
