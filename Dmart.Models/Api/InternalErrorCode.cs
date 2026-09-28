@@ -82,6 +82,11 @@ public static class InternalErrorCode
     // "the server has no memory to hash with right now" and is answered 503.
     public const int PASSWORD_HASHING_BUSY        = 503;
 
+    // The request ran past REQUEST_TIMEOUT and was stopped (HTTP 504). Python
+    // answers its own request_timeout with the same 504/504 pair, as an inline
+    // literal rather than a named code — named here so it can't drift.
+    public const int REQUEST_TIMEOUT              = 504;
+
     // Misc / catch-all
     public const int CONFLICT                     = 409;
     public const int SOMETHING_WRONG              = 430;

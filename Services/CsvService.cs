@@ -18,6 +18,8 @@ namespace Dmart.Services;
 //     attribute keys, schema-validate each, and create via EntryService.
 public sealed class CsvService(QueryService queries, EntryService entries, SchemaValidator schemaValidator)
 {
+    private static readonly TimeSpan RowGrace = TimeSpan.FromSeconds(5);
+
     public async Task<Stream> ExportAsync(Query q, string? actor, CancellationToken ct = default)
     {
         var response = await queries.ExecuteAsync(q, actor, ct);
@@ -66,9 +68,13 @@ public sealed class CsvService(QueryService queries, EntryService entries, Schem
         return new MemoryStream(bytes);
     }
 
+    // `startRow` (1 = the first row after the header) skips the rows before it
+    // without touching them, for finishing an import the request deadline cut
+    // off — CsvImportInterruptedException.ResumeRow is the row to pass back.
+    // Row numbers in the response stay those of the whole file.
     public async Task<Response> ImportAsync(
         string spaceName, string subpath, ResourceType resourceType, string? schemaShortname,
-        Stream csv, string? actor, CancellationToken ct = default, bool isUpdate = false)
+        Stream csv, string? actor, CancellationToken ct = default, bool isUpdate = false, int startRow = 1)
     {
         using var reader = new StreamReader(csv, Encoding.UTF8);
         var headerLine = await reader.ReadLineAsync(ct);
@@ -87,7 +93,13 @@ public sealed class CsvService(QueryService queries, EntryService entries, Schem
         if (!string.IsNullOrEmpty(schemaShortname))
         {
             var schemaDoc = await schemaValidator.GetSchemaDocumentAsync(spaceName, schemaShortname, ct);
-            if (schemaDoc is not null) CollectScalarPropertyTypes(schemaDoc.Value, schemaDoc.Value, propertyTypes);
+            // Python's import loads the schema first and 404s when it is missing.
+            // Going on would write rows nothing validates (a missing schema is a
+            // pass) and, in update mode, bind every entry to a schema that isn't there.
+            if (schemaDoc is null)
+                return Response.Fail(InternalErrorCode.OBJECT_NOT_FOUND,
+                    $"schema '{schemaShortname}' not found in space '{spaceName}'", ErrorTypes.Db);
+            CollectScalarPropertyTypes(schemaDoc.Value, schemaDoc.Value, propertyTypes);
         }
         // Resolve the shortname column index once — headers don't change per row.
         // The match is OrdinalIgnoreCase by design: `Shortname`, `SHORTNAME`, and
@@ -104,13 +116,30 @@ public sealed class CsvService(QueryService queries, EntryService entries, Schem
         var failed = new List<Dictionary<string, object>>();
         var rowNumber = 0;
 
+        // A row's write sees a cancellation only RowGrace after it happens: long
+        // enough for any normal row to finish, so rows stop at a boundary below,
+        // but a hung plugin hook still cannot hold the request open indefinitely.
+        using var rowCts = new CancellationTokenSource();
+        using var cancelRows = ct.Register(
+            static s => ((CancellationTokenSource)s!).CancelAfter(RowGrace), rowCts);
+
+        // The uploaded file is already buffered server-side, so reading it never
+        // waits on the client; cancellation is checked explicitly instead.
         string? line;
-        while ((line = await reader.ReadLineAsync(ct)) is not null)
+        while ((line = await reader.ReadLineAsync(CancellationToken.None)) is not null)
         {
+            // Rows commit one at a time, so a cancellation (REQUEST_TIMEOUT, a
+            // client disconnect) is honoured here, between rows, and not inside
+            // one (see rowCts). Cut mid-row, a row could be saved yet uncounted —
+            // resuming would import an auto-shortname row twice — or a cancelled
+            // before-hook could file it as "plugin rejected create".
+            if (ct.IsCancellationRequested)
+                throw new CsvImportInterruptedException(startRow, rowNumber, inserted, failed, finished: false, ct);
             rowNumber++;
             if (rowNumber > 100_000)
                 return Response.Fail(InternalErrorCode.INVALID_DATA,
                     "CSV exceeds maximum of 100,000 rows", "request");
+            if (rowNumber < startRow) continue;
             if (string.IsNullOrWhiteSpace(line)) continue;
             var fields = ParseCsvLine(line);
             if (fields.Count != headers.Count)
@@ -174,7 +203,8 @@ public sealed class CsvService(QueryService queries, EntryService entries, Schem
                 // Deep-merge only payload.body into the existing entry.
                 // EntryService.ApplyPatch reads attrs["payload"]["body"] and
                 // hands it to JsonMerge.DeepMergeAndStripNulls; every other
-                // field falls back to the existing row, so only the body
+                // field falls back to the existing row, so only the body (and
+                // the payload's schema and content type, see UpdatePatchFor)
                 // gets touched. Missing shortnames surface as OBJECT_NOT_FOUND
                 // in the row-level failed list — symmetric with the create
                 // branch's SHORTNAME_ALREADY_EXIST.
@@ -197,14 +227,12 @@ public sealed class CsvService(QueryService queries, EntryService entries, Schem
 
                 var patchAttrs = new Dictionary<string, object>
                 {
-                    ["payload"] = new Dictionary<string, object>
-                    {
-                        ["body"] = bodyEl,
-                    },
+                    ["payload"] = new Dictionary<string, object> { ["body"] = bodyEl },
                 };
                 var locator = new Locator(resourceType, spaceName, subpath, shortname);
-                var updateResult = await entries.UpdateAsync(locator, patchAttrs, actor, ct,
-                    isBulkImport: true);
+                var updateResult = await entries.UpdateAsync(locator, patchAttrs, actor, rowCts.Token,
+                    isBulkImport: true,
+                    patchFor: existing => UpdatePatchFor(existing, bodyEl, resourceType, schemaShortname));
                 if (updateResult.IsOk) inserted++;
                 else failed.Add(BuildFailure(rowNumber, shortname, updateResult.ErrorMessage, updateResult.ErrorCode, updateResult.Info));
                 continue;
@@ -248,12 +276,17 @@ public sealed class CsvService(QueryService queries, EntryService entries, Schem
                     // line covers the whole CSV import. Functional hooks
                     // (resource_folders_creation, etc.) still fire because they
                     // ignore the flag.
-                    return entries.CreateAsync(entry, actor, rawAttrs: null, isBulkImport: true, ct);
+                    return entries.CreateAsync(entry, actor, rawAttrs: null, isBulkImport: true, rowCts.Token);
                 },
                 r => r.ErrorCode == InternalErrorCode.SHORTNAME_ALREADY_EXIST);
             if (result.IsOk) inserted++;
             else failed.Add(BuildFailure(rowNumber, rowShortname, result.ErrorMessage, result.ErrorCode, result.Info));
         }
+
+        // Cancelled during the last row: every row is done, but the response
+        // below would be written through the cancelled token and arrive empty.
+        if (ct.IsCancellationRequested)
+            throw new CsvImportInterruptedException(startRow, rowNumber, inserted, failed, finished: true, ct);
 
         return Response.Ok(attributes: new()
         {
@@ -264,6 +297,29 @@ public sealed class CsvService(QueryService queries, EntryService entries, Schem
     }
 
     // ----- helpers -----
+
+    // The patch for one update row, built once the entry it lands on is loaded.
+    // Like Python's import, which re-declares both on every row, it declares:
+    //   * schema_shortname — the import's schema, so the merged body is validated
+    //     against it and it is saved; only when it differs, so a permission rule
+    //     on payload.schema_shortname sees no change where there is none.
+    //   * content_type json — a CSV row always writes a JSON object; left on a
+    //     markdown or image entry, the entry would claim one type and hold another.
+    // Neither on an entry of another resource type (a row's shortname can resolve
+    // to e.g. a folder in the subpath): that one keeps its own schema, as before.
+    private static Dictionary<string, object> UpdatePatchFor(
+        Entry existing, JsonElement body, ResourceType importedType, string? schemaShortname)
+    {
+        var payload = new Dictionary<string, object> { ["body"] = body };
+        if (existing.ResourceType == importedType)
+        {
+            if (!string.IsNullOrEmpty(schemaShortname) && existing.Payload?.SchemaShortname != schemaShortname)
+                payload["schema_shortname"] = schemaShortname;
+            if (existing.Payload is { ContentType: not ContentType.Json })
+                payload["content_type"] = "json";
+        }
+        return new Dictionary<string, object> { ["payload"] = payload };
+    }
 
     // Build the per-row entry for the import's `failed` list. Beyond the base
     // (row, shortname, error, code) it enriches schema-validation failures —
@@ -606,4 +662,29 @@ public sealed class CsvService(QueryService queries, EntryService entries, Schem
         fields.Add(sb.ToString());
         return fields;
     }
+}
+
+// Thrown when ImportAsync is cancelled part-way — the request deadline or a
+// client disconnect. Rows commit one at a time, so everything before the cut is
+// already saved; this carries how far the import got, so a caller can report a
+// partial import as exactly that instead of an unexplained failure.
+public sealed class CsvImportInterruptedException(
+    int firstRow, int lastRow, int inserted, List<Dictionary<string, object>> failed, bool finished,
+    CancellationToken token)
+    : OperationCanceledException($"CSV import cancelled after row {lastRow}", token)
+{
+    // The row this import started at (its start_row), and the last row it got
+    // through. Rows are numbered from the first row after the header; each row
+    // from FirstRow to LastRow is saved, is in Failed, or was blank.
+    public int FirstRow { get; } = firstRow;
+    public int LastRow { get; } = lastRow;
+    public int Inserted { get; } = inserted;
+    public List<Dictionary<string, object>> Failed { get; } = failed;
+
+    // True when the cancellation landed after the last row: nothing is left to
+    // import, only the answer was cut off.
+    public bool Finished { get; } = finished;
+
+    // The first row not processed — the start_row that imports the rest.
+    public int ResumeRow => Math.Max(LastRow + 1, FirstRow);
 }

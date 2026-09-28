@@ -1,5 +1,22 @@
 # Changelog
 
+## Unreleased
+
+### Changed
+
+- **CSV update (`resources_from_csv?is_update=true`) now validates each row
+  against the schema picked for the import, and saves that schema on the
+  entry**, as Python dmart does. It used to validate against whatever schema
+  the entry was created under, and ignore the one picked.
+
+  This is stricter. The merged body is checked as a whole, so an entry that had
+  no schema, or that still carries fields the picked schema does not allow, now
+  fails its row where it used to update. The failure names the field. An entry
+  on another schema is moved to the picked one; a role whose
+  `restricted_fields` covers `payload.schema_shortname` is refused on those
+  rows. A schema that does not exist now stops the import before any row, in
+  both modes.
+
 ## v1.5.17 — 2026-09-26
 
 Re-release of v1.5.16, whose Windows build and signed checksum manifest did

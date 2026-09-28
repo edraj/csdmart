@@ -31,8 +31,8 @@ public sealed class CommandHandler(DmartClient dmart, CliSettings settings)
         ["version"]  = ("version",                         "Show CLI build + server manifest."),
         ["attach"]   = ("attach <sn> <entry> <type> <file> [--name-en T] [--desc-en T] | attach --batch <entry> <type> <glob>",
                                                             "Upload attachment(s); --batch globs many files; per-locale name/desc."),
-        ["upload"]   = ("upload schema <name> <file> | upload csv <type> <sub> <schema> <file>",
-                                                            "Upload schema or CSV."),
+        ["upload"]   = ("upload schema <name> <file> | upload csv <type> <sub> <schema> <file> [--update] [--start-row N]",
+                                                            "Upload schema or CSV. A CSV goes on past the server's time limit, in parts, until the whole file is in."),
         ["request"]  = ("request <json_file>",             "POST raw managed/request JSON."),
         ["progress"] = ("progress <sub> <sn> <action>",    "Progress a ticket."),
         ["import"]   = ("import <zip_file>",               "Import a ZIP archive."),
@@ -552,15 +552,68 @@ public sealed class CommandHandler(DmartClient dmart, CliSettings settings)
                 PrintJson(await Spinner($"Uploading schema '{parts[2]}'…",
                     () => dmart.UploadSchemaAsync(parts[2], parts[3])));
                 break;
-            case "csv" when parts.Length >= 6:
-                PrintJson(await Spinner($"Uploading CSV '{parts[5]}'…",
-                    () => dmart.UploadCsvAsync(parts[2], parts[3], parts[4], parts[5])));
+            case "csv" when ParseUploadCsvArgs(parts[2..]) is { } csv:
+                await UploadCsvAsync(csv.Positional, csv.IsUpdate, csv.StartRow);
                 break;
             default:
                 LastCommandFailed = true;
-                CliTheme.Line($"{CliTheme.Wrap(CliTheme.Error, "Usage:")} upload schema <name> <file> | upload csv <type> <subpath> <schema> <file>");
+                CliTheme.Line($"{CliTheme.Wrap(CliTheme.Error, "Usage:")} " + CliTheme.Escape(
+                    "upload schema <name> <file> | upload csv <type> <subpath> <schema> <file> [--update] [--start-row N]"));
                 break;
         }
+    }
+
+    // Arguments of `upload csv`: four positionals (type, subpath, schema, file)
+    // and the flags, in any order. Null for anything else — an unknown or
+    // malformed flag included, since silently ignoring a mistyped --start-row
+    // would re-import the file from row 1.
+    internal static (string[] Positional, bool IsUpdate, int StartRow)? ParseUploadCsvArgs(string[] args)
+    {
+        var positional = new List<string>();
+        var isUpdate = false;
+        var startRow = 1;
+        for (var i = 0; i < args.Length; i++)
+        {
+            if (args[i] == "--update") isUpdate = true;
+            else if (args[i] == "--start-row")
+            {
+                if (i + 1 >= args.Length
+                    || !int.TryParse(args[++i], System.Globalization.NumberStyles.None,
+                        System.Globalization.CultureInfo.InvariantCulture, out startRow)
+                    || startRow < 1)
+                    return null;
+            }
+            else if (args[i].StartsWith("--", StringComparison.Ordinal)) return null;
+            else positional.Add(args[i]);
+        }
+        return positional.Count == 4 ? (positional.ToArray(), isUpdate, startRow) : null;
+    }
+
+    // Runs the upload to the end — past dmart's time limit, part by part — and
+    // prints one summary; the spinner shows how far it has got meanwhile.
+    private async Task UploadCsvAsync(string[] args, bool isUpdate, int startRow)
+    {
+        var (type, subpath, schema, file) = (args[0], args[1], args[2], args[3]);
+        Task<JsonElement> Upload(Action<CsvUploadPart>? onPart) =>
+            dmart.UploadCsvToEndAsync(type, subpath, schema, file, isUpdate, startRow, onPart);
+
+        JsonElement summary = default;
+        // The name alone: the spinner gets one line, and the progress must fit.
+        var name = Markup.Escape(Path.GetFileName(file));
+        if (CliTheme.JsonOnly || Console.IsOutputRedirected)
+            summary = await Upload(null);
+        else
+            await AnsiConsole.Status()
+                .Spinner(Spectre.Console.Spinner.Known.Dots)
+                .StartAsync($"Uploading CSV '{name}'…", async ctx =>
+                {
+                    summary = await Upload(part => ctx.Status(
+                        $"Uploading CSV '{name}': rows up to {part.ResumeRow - 1:N0} done, " +
+                        $"continuing from row {part.ResumeRow:N0}…"));
+                });
+
+        PrintJson(summary);
+        if (summary.GetProperty("status").GetString() != "success") LastCommandFailed = true;
     }
 
     // ---- attach (single + batch + multilingual) ----

@@ -194,10 +194,18 @@ public static class RequestLoggingMiddleware
         // `client_aborted: true`, and don't re-throw to the global exception
         // handler (the client is gone — writing a 500 into a dead connection
         // just generates a second misleading ERROR line).
+        //
+        // RequestAborted also fires at REQUEST_TIMEOUT, when the client is still
+        // waiting. Filing that as a disconnect swallowed it here and sent a 200
+        // with an empty body, so a timeout is logged as one and re-thrown for
+        // RequestDeadlineMiddleware to answer with the 504 recorded below.
+        var timedOut = captured is OperationCanceledException
+            && RequestDeadline.Of(ctx) is { Expired: true };
         var clientAborted = captured is OperationCanceledException
+            && !timedOut
             && ctx.RequestAborted.IsCancellationRequested;
 
-        var status = ctx.Response.StatusCode;
+        var status = timedOut ? RequestDeadline.TimeoutStatusCode : ctx.Response.StatusCode;
         var level = MapLevel(status, clientAborted);
         var user = ctx.ActorOrAnonymous();
         var correlationId = ctx.Response.Headers["X-Correlation-ID"].ToString();
@@ -239,6 +247,10 @@ public static class RequestLoggingMiddleware
         if (clientAborted)
         {
             ((Dictionary<string, object?>)record["props"]!)["client_aborted"] = true;
+        }
+        else if (timedOut)
+        {
+            ((Dictionary<string, object?>)record["props"]!)["timed_out"] = true;
         }
         else if (captured is not null)
         {

@@ -2,6 +2,14 @@
     import {Dmart, QueryType, ResourceType} from "@edraj/tsdmart";
     import {warningToastMessage, successToastMessage} from "@/lib/toasts_messages";
     import Modal from "@/components/Modal.svelte";
+    import {
+        describeCsvFailureRow,
+        formatCount,
+        groupCsvFailures,
+        mergeCsvImportResults,
+        uploadCsv,
+        type CsvImportResult,
+    } from "@shared/csv-import";
 
     interface Props {
         space_name: string;
@@ -27,8 +35,18 @@
     let isUploading = $state(false);
     let resourceTypeError = $state(false);
     let schemaError = $state(false);
-    let responseError = $state<any>(null);
     let isUpdate = $state(false);
+
+    // What the last upload came to, and the choices it was made with — a
+    // "continue from row N" must re-send exactly those, not whatever the form
+    // has been changed to since.
+    let result = $state<CsvImportResult | null>(null);
+    let sent = $state<{
+        spaceName: string; resourceType: ResourceType; schema: string; file: File; isUpdate: boolean;
+    } | null>(null);
+    let failureGroups = $derived(result ? groupCsvFailures(result.failed) : []);
+    const MAX_GROUPS = 20;
+    const MAX_ROWS_PER_GROUP = 10;
 
     // Reset selected space when modal opens
     $effect(() => {
@@ -36,7 +54,8 @@
             selectedSpace = space_name;
             selectedSchema = null;
             payloadFiles = [];
-            responseError = null;
+            result = null;
+            sent = null;
         }
     });
 
@@ -69,6 +88,7 @@
         const files = target.files;
         if (files && files.length > 0) {
             payloadFiles = Array.from(files);
+            result = null;
         }
     }
 
@@ -99,39 +119,57 @@
             return;
         }
 
-        try {
-            isUploading = true;
-            const response: any = await Dmart.resourcesFromCsv(
-                {
-                    space_name: selectedSpace,
-                    subpath,
-                    resourceType: selectedResourceType,
-                    schema: selectedSchema as string,
-                    payload: payloadFiles[0],
-                    isUpdate: isUpdate
-                }
-            );
+        sent = {
+            spaceName: selectedSpace,
+            resourceType: selectedResourceType,
+            schema: selectedSchema as string,
+            file: payloadFiles[0],
+            isUpdate,
+        };
+        result = null;
+        await send(1);
+    }
 
-            if (response.status === "success") {
-                if((response?.attributes?.failed_shortnames ?? []).length !== 0){
-                    warningToastMessage("Some entries failed to upload");
-                    responseError = response.attributes.failed_shortnames;
-                } else {
-                    successToastMessage("CSV uploaded successfully");
-                    onUploadSuccess();
-                    isOpen = false;
-                    // Reset state
-                    selectedSchema = null;
-                    payloadFiles = [];
-                    responseError = null;
-                }
-            } else {
-                warningToastMessage("Failed to upload CSV");
-            }
-        } catch (error) {
-            warningToastMessage("Error uploading CSV");
+    // After the server's time limit stopped an import part-way: re-sends the
+    // same file from the first row it did not reach.
+    async function continueUpload() {
+        if (sent && result?.resumeRow) await send(result.resumeRow);
+    }
+
+    async function send(startRow: number) {
+        const upload = sent!;
+        isUploading = true;
+        let outcome: CsvImportResult;
+        try {
+            outcome = await uploadCsv(
+                (url, body, config) => Dmart.axiosDmartInstance.post(url, body, config),
+                {
+                    resourceType: upload.resourceType,
+                    spaceName: upload.spaceName,
+                    subpath,
+                    schema: upload.schema,
+                    file: upload.file,
+                    isUpdate: upload.isUpdate,
+                    startRow,
+                },
+            );
         } finally {
             isUploading = false;
+        }
+        result = startRow > 1 && result ? mergeCsvImportResults(result, outcome) : outcome;
+
+        if (result.imported > 0) onUploadSuccess();
+        if (result.ok && result.failedCount === 0) {
+            successToastMessage(
+                `CSV uploaded: ${formatCount(result.imported)} ${upload.isUpdate ? "updated" : "imported"}`,
+            );
+            isOpen = false;
+            // Reset state
+            selectedSchema = null;
+            payloadFiles = [];
+            result = null;
+        } else {
+            warningToastMessage(result.message ?? `${formatCount(result.failedCount)} rows failed`);
         }
     }
 </script>
@@ -242,10 +280,47 @@
                 </div>
             </div>
 
-            {#if responseError}
-                <div class="mt-4 p-4 border border-red-300 bg-red-50 rounded-lg">
-                    <h4 class="text-red-800 font-semibold mb-2">Some entries failed to upload:</h4>
-                    <pre class="text-xs bg-white p-2 rounded overflow-auto max-h-40 border border-gray-200"><code>{JSON.stringify(responseError, null, 2)}</code></pre>
+            {#if result}
+                <div class="mt-4 p-4 border border-red-300 bg-red-50 text-red-800 rounded-lg max-h-80 overflow-y-auto">
+                    <h4 class="font-semibold">
+                        {formatCount(result.imported)}
+                        {sent?.isUpdate ? "updated" : "imported"}, {formatCount(result.failedCount)} failed
+                    </h4>
+                    {#if result.message}
+                        <p class="mt-2 text-sm break-words">{result.message}</p>
+                    {/if}
+                    {#if result.resumeRow}
+                        <button
+                            onclick={continueUpload}
+                            disabled={isUploading}
+                            class="mt-2 px-4 py-1.5 bg-indigo-600 text-white rounded-lg text-xs font-semibold hover:bg-indigo-700 disabled:opacity-50 disabled:cursor-not-allowed"
+                        >
+                            Continue from row {formatCount(result.resumeRow)}
+                        </button>
+                    {/if}
+                    {#each failureGroups.slice(0, MAX_GROUPS) as group}
+                        <div class="mt-3">
+                            <p class="text-sm font-medium break-words">
+                                {group.error}
+                                <span class="font-normal">
+                                    ({formatCount(group.rows.length)} {group.rows.length === 1 ? "row" : "rows"})
+                                </span>
+                            </p>
+                            <ul class="mt-1 text-xs space-y-0.5">
+                                {#each group.rows.slice(0, MAX_ROWS_PER_GROUP) as failure}
+                                    <li class="break-all">{describeCsvFailureRow(failure)}</li>
+                                {/each}
+                                {#if group.rows.length > MAX_ROWS_PER_GROUP}
+                                    <li>… and {formatCount(group.rows.length - MAX_ROWS_PER_GROUP)} more</li>
+                                {/if}
+                            </ul>
+                        </div>
+                    {/each}
+                    {#if failureGroups.length > MAX_GROUPS}
+                        <p class="mt-3 text-xs">
+                            … and {formatCount(failureGroups.length - MAX_GROUPS)} other errors
+                        </p>
+                    {/if}
                 </div>
             {/if}
     </div>

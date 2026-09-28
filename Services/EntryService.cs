@@ -420,13 +420,18 @@ public sealed class EntryService(
         // logging-only hooks (AuditPlugin) skip per-row noise. Used by
         // CsvService.ImportAsync's update branch to keep a 10k-row CSV
         // from generating 10k audit history rows.
-        bool isBulkImport = false)
+        bool isBulkImport = false,
+        // Replaces `patch` with one built from the loaded entry, for a caller
+        // whose patch depends on what it lands on (CsvService's update rows).
+        // Applied before the permission check: the patch checked is the one applied.
+        Func<Entry, Dictionary<string, object>>? patchFor = null)
     {
         // Load existing first so the permission check has the resource context for
         // "own"/"is_active" conditions and the patch dict for field-restriction gating.
         var existing = await entries.GetAsync(locator.SpaceName, locator.Subpath, locator.Shortname, locator.Type, ct);
         if (existing is null)
             return Result<Entry>.Fail(InternalErrorCode.OBJECT_NOT_FOUND, "entry missing", ErrorTypes.Db);
+        if (patchFor is not null) patch = patchFor(existing);
         var action = actionOverride ?? "update";
         // Gate on the row's REAL resource_type, not the caller's declared one.
         // EntryRepository.GetAsync deliberately retries without the type filter

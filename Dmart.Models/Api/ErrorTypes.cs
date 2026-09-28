@@ -34,6 +34,10 @@ public static class ErrorTypes
     // Unhandled server-side exception made it to the boundary.
     public const string Exception = "exception";
 
+    // The request was fine but the server could not finish it under its own
+    // limits — the REQUEST_TIMEOUT deadline, the password-hashing budget.
+    public const string Server = "server";
+
     // Caller tried to write a protected field (payload.body keys enumerated
     // in settings.UserProfilePayloadProtectedFields). Python emits this
     // under HTTP 401 with type="restriction" — we preserve the string.

@@ -4,6 +4,9 @@ using System.Text;
 using System.Text.Json;
 using Dmart.Models.Api;
 using Dmart.Models.Json;
+using Microsoft.AspNetCore.Mvc.Testing;
+using Microsoft.Extensions.Configuration;
+using Microsoft.Extensions.DependencyInjection;
 using Shouldly;
 using Xunit;
 
@@ -601,6 +604,280 @@ public class CsvRoundTripTests : IClassFixture<DmartFactory>
         }
     }
 
+    // Update mode validates against the schema picked for the import — the one
+    // in the route, which also drove the cell coercion — and saves it on the
+    // entry, as Python's import does (it re-declares schema_shortname on every
+    // row). It used to be ignored: each row was checked against the schema the
+    // entry was created under, so entries from an older schema rejected valid
+    // rows and accepted rows the picked schema forbids.
+    [FactIfPg]
+    public async Task Csv_Import_UpdateMode_Validates_Against_And_Saves_The_Picked_Schema()
+    {
+        const string space = "itest_csv_updschema";
+        var (client, _, _, _) = await _factory.CreateLoggedInUserAsync();
+
+        try
+        {
+            await CleanupAsync(client, space);
+            await SeedSpaceAsync(client, space);
+            await UploadSchemaAsync(client,
+                shortname: "legacy_status",
+                schemaJson: """{"type":"object","additionalProperties":true,"properties":{"status":{"enum":["draft"]}}}""",
+                space: space);
+            await UploadSchemaAsync(client,
+                shortname: "current_status",
+                schemaJson: """{"type":"object","additionalProperties":true,"properties":{"status":{"enum":["active","expired"]}}}""",
+                space: space);
+            foreach (var name in new[] { "alpha", "beta" })
+            {
+                (await PostOk(client, "/managed/request",
+                    "{\"space_name\":\"" + space + "\",\"request_type\":\"create\",\"records\":[" +
+                    "{\"resource_type\":\"content\",\"subpath\":\"items\",\"shortname\":\"" + name + "\"," +
+                    "\"attributes\":{\"payload\":{\"content_type\":\"json\",\"schema_shortname\":\"legacy_status\"," +
+                    "\"body\":{\"status\":\"draft\"}}}}]}"))
+                    .ShouldBeTrue($"{name} seed under legacy_status");
+            }
+
+            // alpha: valid under the picked schema, invalid under its old one.
+            // beta:  the reverse.
+            var csv = "shortname,status\r\nalpha,active\r\nbeta,draft\r\n";
+            var importResp = await UploadCsvAsync(client,
+                resourceType: "content", space: space, subpath: "items", schema: "current_status",
+                csvBytes: Encoding.UTF8.GetBytes(csv), isUpdate: true);
+
+            importResp.Status.ShouldBe(Status.Success);
+            ExtractInt(importResp.Attributes!["inserted"]).ShouldBe(1);
+            ExtractInt(importResp.Attributes!["failed_count"]).ShouldBe(1);
+            var failure = ((JsonElement)importResp.Attributes!["failed"])[0];
+            failure.GetProperty("shortname").GetString().ShouldBe("beta");
+            failure.GetProperty("key").GetString().ShouldBe("status");
+            failure.GetProperty("value").GetString().ShouldBe("draft");
+
+            var queryResp = await PostJson(client, "/managed/query",
+                "{\"space_name\":\"" + space + "\",\"type\":\"subpath\"," +
+                "\"subpath\":\"items\",\"filter_schema_names\":[],\"retrieve_json_payload\":true,\"limit\":50}");
+            var alpha = (JsonElement)queryResp.Records!.First(r => r.Shortname == "alpha").Attributes!["payload"];
+            alpha.GetProperty("schema_shortname").GetString().ShouldBe("current_status");
+            alpha.GetProperty("body").GetProperty("status").GetString().ShouldBe("active");
+            // A rejected row is not written, so beta keeps its old schema and value.
+            var beta = (JsonElement)queryResp.Records!.First(r => r.Shortname == "beta").Attributes!["payload"];
+            beta.GetProperty("schema_shortname").GetString().ShouldBe("legacy_status");
+            beta.GetProperty("body").GetProperty("status").GetString().ShouldBe("draft");
+        }
+        finally
+        {
+            await CleanupAsync(client, space);
+        }
+    }
+
+    // A schema that doesn't exist stops the import before any row, as Python's
+    // does (its schema load 404s). Carrying on would validate nothing — a missing
+    // schema is a pass — and, in update mode, bind every entry to it.
+    [FactIfPg]
+    public async Task Csv_Import_Rejects_A_Schema_That_Does_Not_Exist()
+    {
+        const string space = "itest_csv_noschema";
+        var (client, _, _, _) = await _factory.CreateLoggedInUserAsync();
+
+        try
+        {
+            await CleanupAsync(client, space);
+            await SeedSpaceAsync(client, space);
+            await SeedStatusSchemasAsync(client, space);
+            await SeedEntryAsync(client, space, "items", "alpha", "content",
+                """{"content_type":"json","schema_shortname":"current_status","body":{"status":"active"}}""");
+
+            foreach (var isUpdate in new[] { true, false })
+            {
+                var resp = await UploadCsvAsync(client,
+                    resourceType: "content", space: space, subpath: "items", schema: "Current_status",
+                    csvBytes: Encoding.UTF8.GetBytes("shortname,status\r\nalpha,anything\r\nnewrow,anything\r\n"),
+                    isUpdate: isUpdate);
+                resp.Status.ShouldBe(Status.Failed, $"is_update={isUpdate}");
+                resp.Error!.Code.ShouldBe(InternalErrorCode.OBJECT_NOT_FOUND);
+            }
+
+            var alpha = await PayloadOfAsync(client, space, "items", "alpha");
+            alpha!.Value.GetProperty("schema_shortname").GetString().ShouldBe("current_status");
+            alpha.Value.GetProperty("body").GetProperty("status").GetString().ShouldBe("active");
+            (await PayloadOfAsync(client, space, "items", "newrow")).ShouldBeNull();
+        }
+        finally
+        {
+            await CleanupAsync(client, space);
+        }
+    }
+
+    // A row's shortname can resolve to an entry of another resource type in the
+    // subpath (the lookup falls back to any type). That entry keeps its own
+    // schema: re-binding a folder to the import's content schema would drop the
+    // validation that is meant to hold it.
+    [FactIfPg]
+    public async Task Csv_Import_UpdateMode_Keeps_Other_Resource_Types_On_Their_Own_Schema()
+    {
+        const string space = "itest_csv_crosstype";
+        var (client, _, _, _) = await _factory.CreateLoggedInUserAsync();
+
+        try
+        {
+            await CleanupAsync(client, space);
+            await SeedSpaceAsync(client, space);
+            await SeedStatusSchemasAsync(client, space);
+            await SeedEntryAsync(client, space, "items", "archive", "folder",
+                """{"content_type":"json","schema_shortname":"legacy_status","body":{"status":"draft"}}""");
+
+            var resp = await UploadCsvAsync(client,
+                resourceType: "content", space: space, subpath: "items", schema: "current_status",
+                csvBytes: Encoding.UTF8.GetBytes("shortname,status\r\narchive,active\r\n"), isUpdate: true);
+
+            ExtractInt(resp.Attributes!["failed_count"]).ShouldBe(1,
+                "checked against the folder's own schema, which only allows draft");
+            var archive = await PayloadOfAsync(client, space, "items", "archive");
+            archive!.Value.GetProperty("schema_shortname").GetString().ShouldBe("legacy_status");
+            archive.Value.GetProperty("body").GetProperty("status").GetString().ShouldBe("draft");
+        }
+        finally
+        {
+            await CleanupAsync(client, space);
+        }
+    }
+
+    // The schema is declared only when it changes, so a role that may not
+    // re-schema entries (restricted_fields: payload.schema_shortname) can still
+    // update rows already on the picked schema — and is still refused on a row
+    // the import would move to it.
+    [FactIfPg]
+    public async Task Csv_Import_UpdateMode_Declares_The_Schema_Only_When_It_Changes()
+    {
+        const string space = "itest_csv_updperm";
+        var (admin, _, _, _) = await _factory.CreateLoggedInUserAsync();
+        var access = _factory.Services.GetRequiredService<Dmart.DataAdapters.Sql.AccessRepository>();
+        var permName = $"perm_{Guid.NewGuid():N}"[..16];
+        var roleName = $"role_{Guid.NewGuid():N}"[..16];
+        DmartFactory.TestUser? editor = null;
+
+        try
+        {
+            await CleanupAsync(admin, space);
+            await SeedSpaceAsync(admin, space);
+            await SeedStatusSchemasAsync(admin, space);
+            await SeedEntryAsync(admin, space, "items", "same", "content",
+                """{"content_type":"json","schema_shortname":"current_status","body":{"status":"expired"}}""");
+            await SeedEntryAsync(admin, space, "items", "moved", "content",
+                """{"content_type":"json","schema_shortname":"legacy_status","body":{"status":"draft"}}""");
+
+            var now = Dmart.Utils.TimeUtils.Now();
+            await access.UpsertPermissionAsync(new Dmart.Models.Core.Permission
+            {
+                Uuid = Guid.NewGuid().ToString(), Shortname = permName, SpaceName = "management",
+                Subpath = "/permissions", OwnerShortname = "dmart", IsActive = true,
+                Subpaths = new() { [space] = new() { "items" } },
+                Actions = new() { "update" },
+                ResourceTypes = new() { "content" },
+                RestrictedFields = new() { "payload.schema_shortname" },
+                CreatedAt = now, UpdatedAt = now,
+            });
+            await access.UpsertRoleAsync(new Dmart.Models.Core.Role
+            {
+                Uuid = Guid.NewGuid().ToString(), Shortname = roleName, SpaceName = "management",
+                Subpath = "/roles", OwnerShortname = "dmart", IsActive = true,
+                Permissions = new() { permName },
+                CreatedAt = now, UpdatedAt = now,
+            });
+            await access.InvalidateAllCachesAsync();
+            editor = await _factory.CreateLoggedInUserAsync(roles: new() { roleName });
+
+            var resp = await UploadCsvAsync(editor.Client,
+                resourceType: "content", space: space, subpath: "items", schema: "current_status",
+                csvBytes: Encoding.UTF8.GetBytes("shortname,status\r\nsame,active\r\nmoved,active\r\n"),
+                isUpdate: true);
+
+            resp.Status.ShouldBe(Status.Success);
+            ExtractInt(resp.Attributes!["inserted"]).ShouldBe(1);
+            var failure = ((JsonElement)resp.Attributes!["failed"])[0];
+            failure.GetProperty("shortname").GetString().ShouldBe("moved");
+            failure.GetProperty("code").GetInt32().ShouldBe(InternalErrorCode.NOT_ALLOWED);
+            (await PayloadOfAsync(admin, space, "items", "same"))!.Value
+                .GetProperty("body").GetProperty("status").GetString().ShouldBe("active");
+            (await PayloadOfAsync(admin, space, "items", "moved"))!.Value
+                .GetProperty("schema_shortname").GetString().ShouldBe("legacy_status");
+        }
+        finally
+        {
+            await CleanupAsync(admin, space);
+            if (editor is not null) await editor.Cleanup();
+            try { await access.DeleteRoleAsync(roleName); } catch { }
+            try { await access.DeletePermissionAsync(permName); } catch { }
+            await access.InvalidateAllCachesAsync();
+        }
+    }
+
+    // A CSV row always writes a JSON object, so an entry that held another kind
+    // of payload is declared JSON, as Python's import declares it on every row —
+    // left alone it would claim to be markdown while holding an object.
+    [FactIfPg]
+    public async Task Csv_Import_UpdateMode_Makes_A_Non_Json_Payload_Json()
+    {
+        const string space = "itest_csv_nonjson";
+        var (client, _, _, _) = await _factory.CreateLoggedInUserAsync();
+
+        try
+        {
+            await CleanupAsync(client, space);
+            await SeedSpaceAsync(client, space);
+            await SeedStatusSchemasAsync(client, space);
+            await SeedEntryAsync(client, space, "items", "notes", "content",
+                """{"content_type":"markdown","body":"# notes"}""");
+
+            var resp = await UploadCsvAsync(client,
+                resourceType: "content", space: space, subpath: "items", schema: "current_status",
+                csvBytes: Encoding.UTF8.GetBytes("shortname,status\r\nnotes,active\r\n"), isUpdate: true);
+
+            ExtractInt(resp.Attributes!["inserted"]).ShouldBe(1);
+            var notes = await PayloadOfAsync(client, space, "items", "notes");
+            notes!.Value.GetProperty("content_type").GetString().ShouldBe("json");
+            notes.Value.GetProperty("schema_shortname").GetString().ShouldBe("current_status");
+            notes.Value.GetProperty("body").GetProperty("status").GetString().ShouldBe("active");
+        }
+        finally
+        {
+            await CleanupAsync(client, space);
+        }
+    }
+
+    // The picked schema still has to be one the folder allows
+    // (content_schema_shortnames), like any other schema change.
+    [FactIfPg]
+    public async Task Csv_Import_UpdateMode_Honours_The_Folders_Allowed_Schemas()
+    {
+        const string space = "itest_csv_gated";
+        var (client, _, _, _) = await _factory.CreateLoggedInUserAsync();
+
+        try
+        {
+            await CleanupAsync(client, space);
+            await SeedSpaceAsync(client, space);
+            await SeedStatusSchemasAsync(client, space);
+            await SeedEntryAsync(client, space, "/", "gated", "folder",
+                """{"content_type":"json","body":{"content_schema_shortnames":["legacy_status"]}}""");
+            await SeedEntryAsync(client, space, "gated", "gamma", "content",
+                """{"content_type":"json","schema_shortname":"legacy_status","body":{"status":"draft"}}""");
+
+            var resp = await UploadCsvAsync(client,
+                resourceType: "content", space: space, subpath: "gated", schema: "current_status",
+                csvBytes: Encoding.UTF8.GetBytes("shortname,status\r\ngamma,active\r\n"), isUpdate: true);
+
+            var failure = ((JsonElement)resp.Attributes!["failed"])[0];
+            failure.GetProperty("error").GetString()!.ShouldContain("not permitted in this folder");
+            (await PayloadOfAsync(client, space, "gated", "gamma"))!.Value
+                .GetProperty("schema_shortname").GetString().ShouldBe("legacy_status");
+        }
+        finally
+        {
+            await CleanupAsync(client, space);
+        }
+    }
+
     // CSV headers become body property names verbatim, and RFC 6901 pointers
     // don't escape ": " — the reported `key` must carry the full property name
     // instead of being truncated at the first ": " (which is what happens when
@@ -1019,6 +1296,187 @@ public class CsvRoundTripTests : IClassFixture<DmartFactory>
         }
     }
 
+    // REQUEST_TIMEOUT cutting an import short used to reach the client as a 200
+    // with an empty body — indistinguishable from success, with part of the
+    // file already saved. It must be a 504 that says where the import stopped,
+    // and what it reports must match what is actually in the folder.
+    [FactIfPg]
+    public async Task Csv_Import_Cut_Off_By_Request_Timeout_Reports_Where_It_Stopped()
+    {
+        const string space = "itest_csv_timeout";
+        var (client, _, _, _) = await _factory.CreateLoggedInUserAsync();
+        using var shortDeadline = _factory.WithWebHostBuilder(b => b.ConfigureAppConfiguration((_, cfg) =>
+            cfg.AddInMemoryCollection(new Dictionary<string, string?> { ["Dmart:RequestTimeout"] = "1" })));
+        var (slowClient, _, _, _) = await _factory.CreateLoggedInUserAsync(host: shortDeadline);
+
+        try
+        {
+            await CleanupAsync(client, space);
+            await SeedSpaceAsync(client, space);
+
+            // Far more rows than one second of per-row inserts gets through, so
+            // the deadline — not the end of the file — is what ends the import.
+            const int rows = 20_000;
+            var csv = new StringBuilder("shortname,name\r\n");
+            for (var i = 1; i <= rows; i++) csv.Append("row_").Append(i).Append(",n").Append(i).Append("\r\n");
+
+            using var form = new MultipartFormDataContent();
+            var part = new ByteArrayContent(Encoding.UTF8.GetBytes(csv.ToString()));
+            part.Headers.ContentType = new MediaTypeHeaderValue("text/csv");
+            form.Add(part, "resources_file", "rows.csv");
+            using var resp = await slowClient.PostAsync($"/managed/resources_from_csv/content/{space}/items/goods", form);
+
+            ((int)resp.StatusCode).ShouldBe(504);
+            var body = await resp.Content.ReadFromJsonAsync(DmartJsonContext.Default.Response);
+            body!.Status.ShouldBe(Status.Failed);
+            body.Error!.Code.ShouldBe(InternalErrorCode.REQUEST_TIMEOUT);
+            var progress = body.Error.Info![0];
+            var resumeRow = ExtractInt(progress["resume_row"]);
+            var inserted = ExtractInt(progress["inserted"]);
+            resumeRow.ShouldBeInRange(2, rows);
+            inserted.ShouldBe(resumeRow - 1, "no row failed, so every row before the cut was saved");
+            body.Error.Message.ShouldContain(
+                "Import stopped at row " + resumeRow.ToString("N0", System.Globalization.CultureInfo.InvariantCulture));
+
+            body.Error.Message.ShouldContain("start_row=" + resumeRow);
+
+            // No row is cut mid-write, so the folder holds exactly the rows the
+            // report counts — which is what makes "upload from resume_row" safe.
+            var queryResp = await PostJson(client, "/managed/query",
+                "{\"space_name\":\"" + space + "\",\"type\":\"subpath\"," +
+                "\"subpath\":\"items\",\"filter_schema_names\":[],\"limit\":1}");
+            ExtractInt(queryResp.Attributes!["total"]).ShouldBe(inserted);
+        }
+        finally
+        {
+            await CleanupAsync(client, space);
+        }
+    }
+
+    // The CLI's `upload csv` has to outwait dmart's own time limit instead of
+    // cutting it off — it used to give up after 30 s, abandoning a large import
+    // while dmart kept writing rows — and carry on from resume_row until the
+    // whole file is in, so one command covers a file of any size. `--update`
+    // has to reach the server as is_update.
+    [FactIfPg]
+    public async Task Cli_Upload_Csv_Continues_Past_The_Request_Timeout_Until_The_File_Is_In()
+    {
+        const string space = "itest_csv_cli";
+        var (admin, _, _, _) = await _factory.CreateLoggedInUserAsync();
+        using var shortDeadline = _factory.WithWebHostBuilder(b => b.ConfigureAppConfiguration((_, cfg) =>
+            cfg.AddInMemoryCollection(new Dictionary<string, string?> { ["Dmart:RequestTimeout"] = "1" })));
+        var creds = await _factory.CreateTestUserAsync();
+        var file = Path.GetTempFileName();
+
+        try
+        {
+            await CleanupAsync(admin, space);
+            await SeedSpaceAsync(admin, space);
+
+            // Several seconds of rows under a one-second limit: only a run that
+            // continues from resume_row gets them all in.
+            const int rows = 8_000;
+            var csv = new StringBuilder("shortname,name\r\n");
+            for (var i = 1; i <= rows; i++) csv.Append("cli_").Append(i).Append(",n").Append(i).Append("\r\n");
+            await File.WriteAllTextAsync(file, csv.ToString());
+
+            using var cli = new Dmart.Cli.DmartClient(
+                new Dmart.Cli.CliSettings
+                {
+                    Url = "http://localhost", Shortname = creds.Shortname, Password = creds.Password,
+                    DefaultSpace = space,
+                },
+                shortDeadline.Server.CreateHandler());
+            var (ok, error) = await cli.LoginAsync();
+            ok.ShouldBeTrue(error);
+
+            var parts = new List<Dmart.Cli.CsvUploadPart>();
+            var summary = await cli.UploadCsvToEndAsync("content", "items", "goods", file, onPart: parts.Add);
+
+            summary.GetProperty("status").GetString().ShouldBe("success");
+            summary.GetProperty("attributes").GetProperty("inserted").GetInt32().ShouldBe(rows);
+            parts.ShouldNotBeEmpty("a one-second limit cannot fit the whole file in one request");
+            var total = await PostJson(admin, "/managed/query",
+                "{\"space_name\":\"" + space + "\",\"type\":\"subpath\"," +
+                "\"subpath\":\"items\",\"filter_schema_names\":[],\"limit\":1}");
+            ExtractInt(total.Attributes!["total"]).ShouldBe(rows);
+
+            // --update: an existing row is updated, not refused as "entry exists".
+            await File.WriteAllTextAsync(file, "shortname,name\r\ncli_1,renamed\r\n");
+            var update = await cli.UploadCsvToEndAsync("content", "items", "goods", file, isUpdate: true);
+            update.GetProperty("attributes").GetProperty("inserted").GetInt32().ShouldBe(1);
+            var renamed = await PostJson(admin, "/managed/query",
+                "{\"space_name\":\"" + space + "\",\"type\":\"subpath\",\"subpath\":\"items\"," +
+                "\"filter_shortnames\":[\"cli_1\"],\"filter_schema_names\":[],\"retrieve_json_payload\":true,\"limit\":1}");
+            GetPayloadBody(renamed.Records!.Single()).GetProperty("name").GetString().ShouldBe("renamed");
+        }
+        finally
+        {
+            File.Delete(file);
+            await creds.Cleanup();
+            await CleanupAsync(admin, space);
+        }
+    }
+
+    // `start_row` finishes an import the deadline cut off: rows before it are
+    // skipped untouched, and row numbers stay those of the whole file so the
+    // failures line up with what the operator sees in their spreadsheet.
+    [FactIfPg]
+    public async Task Csv_Import_StartRow_Skips_Earlier_Rows_And_Keeps_File_Row_Numbers()
+    {
+        const string space = "itest_csv_startrow";
+        var (client, _, _, _) = await _factory.CreateLoggedInUserAsync();
+
+        try
+        {
+            await CleanupAsync(client, space);
+            await SeedSpaceAsync(client, space);
+
+            var csv =
+                "shortname,name\r\n" +
+                "r1,one\r\n" +
+                "r2,two\r\n" +
+                "r3,three\r\n" +
+                "r4,four,extra\r\n" +   // malformed: reported, with its row in the file
+                "r5,five\r\n";
+            using var form = new MultipartFormDataContent();
+            var part = new ByteArrayContent(Encoding.UTF8.GetBytes(csv));
+            part.Headers.ContentType = new MediaTypeHeaderValue("text/csv");
+            form.Add(part, "resources_file", "rows.csv");
+            using var resp = await client.PostAsync(
+                $"/managed/resources_from_csv/content/{space}/items/goods?start_row=3", form);
+            var body = await resp.Content.ReadFromJsonAsync(DmartJsonContext.Default.Response);
+
+            body!.Status.ShouldBe(Status.Success);
+            ExtractInt(body.Attributes!["inserted"]).ShouldBe(2);
+            var failed = (JsonElement)body.Attributes["failed"];
+            failed.GetArrayLength().ShouldBe(1);
+            failed[0].GetProperty("row").GetInt32().ShouldBe(4);
+
+            var queryResp = await PostJson(client, "/managed/query",
+                "{\"space_name\":\"" + space + "\",\"type\":\"subpath\"," +
+                "\"subpath\":\"items\",\"filter_schema_names\":[],\"limit\":50}");
+            queryResp.Records!.Select(r => r.Shortname).OrderBy(s => s).ShouldBe(new[] { "r3", "r5" });
+
+            foreach (var bad in new[] { "0", "-2", "abc" })
+            {
+                using var badForm = new MultipartFormDataContent();
+                var badPart = new ByteArrayContent(Encoding.UTF8.GetBytes(csv));
+                badPart.Headers.ContentType = new MediaTypeHeaderValue("text/csv");
+                badForm.Add(badPart, "resources_file", "rows.csv");
+                using var badResp = await client.PostAsync(
+                    $"/managed/resources_from_csv/content/{space}/items/goods?start_row={bad}", badForm);
+                var badBody = await badResp.Content.ReadFromJsonAsync(DmartJsonContext.Default.Response);
+                badBody!.Status.ShouldBe(Status.Failed, $"start_row={bad}");
+                badBody.Error!.Code.ShouldBe(InternalErrorCode.INVALID_DATA);
+            }
+        }
+        finally
+        {
+            await CleanupAsync(client, space);
+        }
+    }
+
     // ---------------- helpers ----------------
 
     // Sets up space + items folder + schema folder + a permissive `goods` schema
@@ -1046,6 +1504,38 @@ public class CsvRoundTripTests : IClassFixture<DmartFactory>
             shortname: "goods",
             schemaJson: """{"title":"goods","type":"object","additionalProperties":true}""",
             space: space);
+    }
+
+    // Two schemas that disagree on `status`, for the update-mode schema tests.
+    private static async Task SeedStatusSchemasAsync(HttpClient client, string space)
+    {
+        await UploadSchemaAsync(client,
+            shortname: "legacy_status",
+            schemaJson: """{"type":"object","additionalProperties":true,"properties":{"status":{"enum":["draft"]}}}""",
+            space: space);
+        await UploadSchemaAsync(client,
+            shortname: "current_status",
+            schemaJson: """{"type":"object","additionalProperties":true,"properties":{"status":{"enum":["active","expired"]}}}""",
+            space: space);
+    }
+
+    private static async Task SeedEntryAsync(
+        HttpClient client, string space, string subpath, string shortname, string resourceType, string payloadJson)
+        => (await PostOk(client, "/managed/request",
+                "{\"space_name\":\"" + space + "\",\"request_type\":\"create\",\"records\":[" +
+                "{\"resource_type\":\"" + resourceType + "\",\"subpath\":\"" + subpath + "\",\"shortname\":\"" +
+                shortname + "\",\"attributes\":{\"is_active\":true,\"payload\":" + payloadJson + "}}]}"))
+            .ShouldBeTrue($"{resourceType} {shortname} seed");
+
+    // The stored payload of one entry in `subpath` (any resource type), or null
+    // when there is no such entry.
+    private static async Task<JsonElement?> PayloadOfAsync(HttpClient client, string space, string subpath, string shortname)
+    {
+        var resp = await PostJson(client, "/managed/query",
+            "{\"space_name\":\"" + space + "\",\"type\":\"subpath\",\"subpath\":\"" + subpath + "\"," +
+            "\"filter_schema_names\":[],\"retrieve_json_payload\":true,\"limit\":100}");
+        var record = resp.Records?.FirstOrDefault(r => r.Shortname == shortname);
+        return record is null ? null : (JsonElement)record.Attributes!["payload"];
     }
 
     private static async Task CleanupAsync(HttpClient client, string space = "itest_csv")

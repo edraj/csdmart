@@ -4,12 +4,24 @@ using System.Text.Json;
 
 namespace Dmart.Cli;
 
+// One part of a CSV upload that dmart's time limit cut off: rows FromRow to
+// ResumeRow - 1 were handled, and the upload continues from ResumeRow.
+public sealed record CsvUploadPart(int FromRow, int ResumeRow, int Inserted, int Failed);
+
 // HTTP client for dmart REST API — mirrors Python cli.py's DMart class.
 // All JSON request bodies are built as literal strings for AOT compatibility
 // (no reflection-based serialization).
 public sealed class DmartClient : IDisposable
 {
+    // A CSV upload is not an interactive call: dmart itself stops it at
+    // REQUEST_TIMEOUT and answers with the row to resume from, so the client
+    // must outwait that answer rather than cut it off at 30 s. This only
+    // guards against a connection that died without closing.
+    private static readonly TimeSpan UploadTimeout = TimeSpan.FromMinutes(10);
+
+    private readonly HttpMessageHandler _handler;
     private readonly HttpClient _http;
+    private readonly HttpClient _uploadHttp;
     private readonly CliSettings _settings;
     private string? _token;
 
@@ -22,19 +34,31 @@ public sealed class DmartClient : IDisposable
     // operators see the round-trip latency to the configured server up front.
     public long LastLoginLatencyMs { get; private set; }
 
-    public DmartClient(CliSettings settings)
+    public DmartClient(CliSettings settings) : this(settings, new HttpClientHandler()) { }
+
+    // Both clients share `handler` (connections, cookies); tests pass the
+    // in-memory server's.
+    internal DmartClient(CliSettings settings, HttpMessageHandler handler)
     {
         _settings = settings;
         CurrentSpace = settings.DefaultSpace;
+        _handler = handler;
         // Default HttpClient.Timeout is 100s — too long for an interactive
         // REPL where a hung server should surface within seconds, not after
         // the user has wandered off.
-        _http = new HttpClient
+        _http = NewHttpClient(TimeSpan.FromSeconds(30));
+        _uploadHttp = NewHttpClient(UploadTimeout);
+    }
+
+    private HttpClient NewHttpClient(TimeSpan timeout)
+    {
+        var client = new HttpClient(_handler, disposeHandler: false)
         {
-            BaseAddress = new Uri(settings.Url.TrimEnd('/')),
-            Timeout = TimeSpan.FromSeconds(30),
+            BaseAddress = new Uri(_settings.Url.TrimEnd('/')),
+            Timeout = timeout,
         };
-        _http.DefaultRequestHeaders.Accept.Add(new MediaTypeWithQualityHeaderValue("application/json"));
+        client.DefaultRequestHeaders.Accept.Add(new MediaTypeWithQualityHeaderValue("application/json"));
+        return client;
     }
 
     // ---- Auth ----
@@ -62,7 +86,9 @@ public sealed class DmartClient : IDisposable
         {
             _token = json.GetProperty("records")[0].GetProperty("attributes")
                 .GetProperty("access_token").GetString();
-            _http.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Bearer", _token);
+            var auth = new AuthenticationHeaderValue("Bearer", _token);
+            _http.DefaultRequestHeaders.Authorization = auth;
+            _uploadHttp.DefaultRequestHeaders.Authorization = auth;
             return (true, null);
         }
         var msg = json.TryGetProperty("error", out var err) ? err.GetProperty("message").GetString() : "login failed";
@@ -185,17 +211,136 @@ public sealed class DmartClient : IDisposable
         return UploadWithPayloadAsync(recordJson, filePath);
     }
 
-    public async Task<JsonElement> UploadCsvAsync(string resourceType, string subpath, string schemaShortname, string filePath, bool isUpdate = false)
+    // Uploads a CSV to the end, in as many requests as it takes: when dmart's
+    // REQUEST_TIMEOUT stops the import part-way, its 504 names the row to
+    // resume from (error.info[0].resume_row) and the rest is sent from there.
+    // Returns one summary in the shape of a single upload's answer, with the
+    // totals and every failed row across parts. On a failure it is "failed",
+    // with the error and the `resume_row` to pick up from (--start-row).
+    public async Task<JsonElement> UploadCsvToEndAsync(
+        string resourceType, string subpath, string schemaShortname, string filePath,
+        bool isUpdate = false, int startRow = 1, Action<CsvUploadPart>? onPart = null)
     {
-        using var form = new MultipartFormDataContent();
-        await using var fs = File.OpenRead(filePath);
-        form.Add(new StreamContent(fs), "resources_file", Path.GetFileName(filePath));
-        var path = $"/managed/resources_from_csv/{resourceType}/{CurrentSpace}/{subpath}/{schemaShortname}";
-        // `?` if no existing query string, `&` if one already present.
-        if (isUpdate) path += (path.Contains('?') ? "&" : "?") + "is_update=true";
-        var resp = await SendWithRefreshAsync(() => _http.PostAsync(path, form));
-        return await ParseAsync(resp);
+        var inserted = 0;
+        var failed = new List<JsonElement>();
+        while (true)
+        {
+            int status;
+            JsonElement body;
+            try
+            {
+                (status, body) = await UploadCsvPartAsync(
+                    resourceType, subpath, schemaShortname, filePath, isUpdate, startRow);
+            }
+            catch (Exception ex) when (ex is HttpRequestException or TaskCanceledException)
+            {
+                return CsvSummary(inserted, failed, startRow, MessageJson(ex.Message));
+            }
+
+            if (body.TryGetProperty("status", out var st) && st.GetString() == "success")
+            {
+                if (body.TryGetProperty("attributes", out var attrs)) Absorb(attrs, ref inserted, failed);
+                return CsvSummary(inserted, failed, resumeRow: null, error: null);
+            }
+
+            // A part the time limit cut off reports its progress in error.info[0].
+            if (status == 504
+                && body.TryGetProperty("error", out var err)
+                && err.TryGetProperty("info", out var info) && info.ValueKind == JsonValueKind.Array
+                && info.GetArrayLength() > 0 && info[0].TryGetProperty("inserted", out _))
+            {
+                var progress = info[0];
+                var insertedBefore = inserted;
+                var failedBefore = failed.Count;
+                Absorb(progress, ref inserted, failed);
+                // No resume_row: every row was processed, only the answer ran late.
+                if (!progress.TryGetProperty("resume_row", out var rr))
+                    return CsvSummary(inserted, failed, resumeRow: null, error: null);
+                var resumeRow = rr.GetInt32();
+                // Not one row fit in the limit: sending it again would loop forever.
+                if (resumeRow <= startRow)
+                    return CsvSummary(inserted, failed, startRow, err);
+                onPart?.Invoke(new CsvUploadPart(
+                    startRow, resumeRow, inserted - insertedBefore, failed.Count - failedBefore));
+                startRow = resumeRow;
+                continue;
+            }
+
+            return CsvSummary(inserted, failed, startRow,
+                body.TryGetProperty("error", out var error) ? error
+                    : MessageJson($"unexpected answer (HTTP {status}): {Truncate(body.ToString(), 200)}"));
+        }
     }
+
+    private async Task<(int Status, JsonElement Body)> UploadCsvPartAsync(
+        string resourceType, string subpath, string schemaShortname, string filePath, bool isUpdate, int startRow)
+    {
+        var query = new List<string>();
+        if (isUpdate) query.Add("is_update=true");
+        if (startRow > 1) query.Add($"start_row={startRow}");
+        var path = $"/managed/resources_from_csv/{resourceType}/{CurrentSpace}/{subpath}/{schemaShortname}"
+                   + (query.Count > 0 ? "?" + string.Join('&', query) : "");
+        // A fresh form per attempt: the retry after a token refresh would
+        // otherwise re-send a file stream the first attempt read to the end.
+        var resp = await SendWithRefreshAsync(async () =>
+        {
+            using var form = new MultipartFormDataContent();
+            await using var fs = File.OpenRead(filePath);
+            form.Add(new StreamContent(fs), "resources_file", Path.GetFileName(filePath));
+            return await _uploadHttp.PostAsync(path, form);
+        });
+        return ((int)resp.StatusCode, await ParseAsync(resp));
+    }
+
+    private static void Absorb(JsonElement part, ref int inserted, List<JsonElement> failed)
+    {
+        if (part.TryGetProperty("inserted", out var n) && n.ValueKind == JsonValueKind.Number)
+            inserted += n.GetInt32();
+        if (part.TryGetProperty("failed", out var list) && list.ValueKind == JsonValueKind.Array)
+            foreach (var f in list.EnumerateArray()) failed.Add(f.Clone());
+    }
+
+    private static JsonElement CsvSummary(int inserted, List<JsonElement> failed, int? resumeRow, JsonElement? error)
+    {
+        using var ms = new MemoryStream();
+        using (var w = new Utf8JsonWriter(ms))
+        {
+            w.WriteStartObject();
+            w.WriteString("status", error is null ? "success" : "failed");
+            w.WriteStartObject("attributes");
+            w.WriteNumber("inserted", inserted);
+            w.WriteNumber("failed_count", failed.Count);
+            if (failed.Count > 0)
+            {
+                w.WriteStartArray("failed");
+                foreach (var f in failed) f.WriteTo(w);
+                w.WriteEndArray();
+            }
+            if (resumeRow is { } row) w.WriteNumber("resume_row", row);
+            w.WriteEndObject();
+            if (error is { } e)
+            {
+                w.WritePropertyName("error");
+                e.WriteTo(w);
+            }
+            w.WriteEndObject();
+        }
+        return JsonDocument.Parse(ms.ToArray()).RootElement.Clone();
+    }
+
+    private static JsonElement MessageJson(string message)
+    {
+        using var ms = new MemoryStream();
+        using (var w = new Utf8JsonWriter(ms))
+        {
+            w.WriteStartObject();
+            w.WriteString("message", message);
+            w.WriteEndObject();
+        }
+        return JsonDocument.Parse(ms.ToArray()).RootElement.Clone();
+    }
+
+    private static string Truncate(string s, int max) => s.Length <= max ? s : s[..max] + "…";
 
     // displayname/description maps are en/ar/ku → text. Server's
     // RequestHandler.ParseTranslation accepts the {en,ar,ku} shape.
@@ -370,5 +515,10 @@ public sealed class DmartClient : IDisposable
     private static string Esc(string s)
         => s.Replace("\\", "\\\\").Replace("\"", "\\\"").Replace("\n", "\\n").Replace("\r", "\\r");
 
-    public void Dispose() => _http.Dispose();
+    public void Dispose()
+    {
+        _http.Dispose();
+        _uploadHttp.Dispose();
+        _handler.Dispose();
+    }
 }

@@ -3,7 +3,14 @@
     import { Dmart, QueryType, ResourceType } from "@edraj/tsdmart";
     import { Level, showToast } from "@/utils/toast";
     import { currentListView } from "@/stores/global";
-    import Prism from "@/components/Prism.svelte";
+    import {
+        describeCsvFailureRow,
+        formatCount,
+        groupCsvFailures,
+        mergeCsvImportResults,
+        uploadCsv,
+        type CsvImportResult,
+    } from "@shared/csv-import";
 
     let {
         space_name,
@@ -21,8 +28,16 @@
     let isUploading = $state(false);
     let resourceTypeError = $state(false);
     let schemaError = $state(false);
-    let responseError = $state(null);
     let isUpdate = $state(false);
+
+    // What the last upload came to, and the choices it was made with — a
+    // "continue from row N" must re-send exactly those, not whatever the form
+    // has been changed to since.
+    let result = $state<CsvImportResult | null>(null);
+    let sent = $state<{ resourceType: ResourceType; schema: string; file: File; isUpdate: boolean } | null>(null);
+    let failureGroups = $derived(result ? groupCsvFailures(result.failed) : []);
+    const MAX_GROUPS = 20;
+    const MAX_ROWS_PER_GROUP = 10;
 
     let resourceTypeItems = $derived(
         (() => {
@@ -110,6 +125,7 @@
         const files = e.target.files;
         if (files.length > 0) {
             payloadFiles = Array.from(files);
+            result = null;
         }
     }
 
@@ -140,35 +156,60 @@
             return;
         }
 
-        try {
-            isUploading = true;
-            const response = await Dmart.resourcesFromCsv({
-                space_name,
-                subpath,
-                resourceType: selectedResourceType,
-                schema: selectedSchema!,
-                payload: payloadFiles[0],
-                isUpdate: isUpdate,
-            });
+        sent = {
+            resourceType: selectedResourceType,
+            schema: selectedSchema!,
+            file: payloadFiles[0],
+            isUpdate,
+        };
+        result = null;
+        await send(1);
+    }
 
-            if ((response as any).status === "success") {
-                if (
-                    ((response as any)?.attributes?.failed_shortnames ?? []).length !== 0
-                ) {
-                    showToast(Level.warn, "Some entries failed to upload");
-                    responseError = (response as any).attributes.failed_shortnames;
-                } else {
-                    showToast(Level.info, "CSV uploaded successfully");
-                    await $currentListView?.fetchPageRecords();
-                    isOpen = false;
-                }
-            } else {
-                showToast(Level.warn, "Failed to upload CSV");
-            }
-        } catch (error) {
-            showToast(Level.warn, "Error uploading CSV");
+    // After the server's time limit stopped an import part-way: re-sends the
+    // same file from the first row it did not reach.
+    async function continueUpload() {
+        if (sent && result?.resumeRow) await send(result.resumeRow);
+    }
+
+    async function send(startRow: number) {
+        const upload = sent!;
+        isUploading = true;
+        let outcome: CsvImportResult;
+        try {
+            outcome = await uploadCsv(
+                (url, body, config) => Dmart.axiosDmartInstance.post(url, body, config),
+                {
+                    resourceType: upload.resourceType,
+                    spaceName: space_name,
+                    subpath,
+                    schema: upload.schema,
+                    file: upload.file,
+                    isUpdate: upload.isUpdate,
+                    startRow,
+                },
+            );
         } finally {
             isUploading = false;
+        }
+        result = startRow > 1 && result ? mergeCsvImportResults(result, outcome) : outcome;
+
+        if (result.imported > 0) {
+            // A failed refresh leaves the list stale; it must not hide the
+            // outcome of the upload itself.
+            try {
+                await $currentListView?.fetchPageRecords();
+            } catch {}
+        }
+        if (result.ok && result.failedCount === 0) {
+            showToast(
+                Level.info,
+                `CSV uploaded: ${formatCount(result.imported)} ${upload.isUpdate ? "updated" : "imported"}`,
+            );
+            result = null;
+            isOpen = false;
+        } else {
+            showToast(Level.warn, result.message ?? `${formatCount(result.failedCount)} rows failed`);
         }
     }
 </script>
@@ -246,12 +287,45 @@
             </div>
         </Label>
 
-        {#if responseError}
-            <div class="mt-4 p-4 border border-red-300 bg-red-50 rounded">
-                <h4 class="text-red-800 font-semibold mb-2">
-                    Some entries failed to upload:
+        {#if result}
+            <div
+                class="mt-4 p-4 border border-red-300 bg-red-50 text-red-800 rounded max-h-80 overflow-y-auto dark:bg-gray-800 dark:border-red-800 dark:text-red-300"
+            >
+                <h4 class="font-semibold">
+                    {formatCount(result.imported)}
+                    {sent?.isUpdate ? "updated" : "imported"}, {formatCount(result.failedCount)} failed
                 </h4>
-                <Prism code={responseError} />
+                {#if result.message}
+                    <p class="mt-2 text-sm break-words">{result.message}</p>
+                {/if}
+                {#if result.resumeRow}
+                    <Button size="xs" class="mt-2 bg-primary" onclick={continueUpload} disabled={isUploading}>
+                        Continue from row {formatCount(result.resumeRow)}
+                    </Button>
+                {/if}
+                {#each failureGroups.slice(0, MAX_GROUPS) as group}
+                    <div class="mt-3">
+                        <p class="text-sm font-medium break-words">
+                            {group.error}
+                            <span class="font-normal">
+                                ({formatCount(group.rows.length)} {group.rows.length === 1 ? "row" : "rows"})
+                            </span>
+                        </p>
+                        <ul class="mt-1 text-xs space-y-0.5">
+                            {#each group.rows.slice(0, MAX_ROWS_PER_GROUP) as failure}
+                                <li class="break-all">{describeCsvFailureRow(failure)}</li>
+                            {/each}
+                            {#if group.rows.length > MAX_ROWS_PER_GROUP}
+                                <li>… and {formatCount(group.rows.length - MAX_ROWS_PER_GROUP)} more</li>
+                            {/if}
+                        </ul>
+                    </div>
+                {/each}
+                {#if failureGroups.length > MAX_GROUPS}
+                    <p class="mt-3 text-xs">
+                        … and {formatCount(failureGroups.length - MAX_GROUPS)} other errors
+                    </p>
+                {/if}
             </div>
         {/if}
     </div>

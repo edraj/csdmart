@@ -3388,27 +3388,8 @@ app.Use(async (ctx, next) =>
     await next();
 });
 
-// Request timeout
-app.Use(async (ctx, next) =>
-{
-    // Long-lived connections must NOT get a deadline. Overwriting
-    // RequestAborted with a CancelAfter token kills every WebSocket session and
-    // every MCP SSE stream RequestTimeout seconds (default 35) after it opens —
-    // the 15s keep-alive ticker on those endpoints exists precisely because they
-    // are expected to stay open indefinitely. Skip before installing the token.
-    if (ctx.WebSockets.IsWebSocketRequest || ctx.Request.Path.StartsWithSegments("/mcp"))
-    {
-        await next();
-        return;
-    }
-
-    var s = ctx.RequestServices.GetRequiredService<IOptions<DmartSettings>>().Value;
-    var timeout = s.RequestTimeout > 0 ? s.RequestTimeout : 35;
-    using var cts = CancellationTokenSource.CreateLinkedTokenSource(ctx.RequestAborted);
-    cts.CancelAfter(TimeSpan.FromSeconds(timeout));
-    ctx.RequestAborted = cts.Token;
-    await next();
-});
+// Request timeout (REQUEST_TIMEOUT) — answers an expired request with a 504.
+app.UseMiddleware<Dmart.Middleware.RequestDeadlineMiddleware>();
 
 // SPA URL prefixes ({CXB_URL}, {CAT_URL}). Computed once here because two
 // consumers need to agree on exactly which paths are SPA-served: the
@@ -3449,16 +3430,20 @@ app.UseChannelAuth();
         // of TestServer / Kestrel buffering semantics. HasStarted alone is
         // unreliable: TestServer may buffer writes without flipping the
         // flag, and ContentLength may not be set on small WriteAsync calls.
+        // RequestDeadlineMiddleware already counts every byte written below it,
+        // so its counter is reused; this one wraps only the requests the
+        // deadline skips (WebSockets, /mcp).
         var originalBody = ctx.Response.Body;
-        var counter = new BodyByteCounterStream(originalBody);
-        ctx.Response.Body = counter;
+        var shared = ctx.Features.Get<BodyByteCounterStream>();
+        var counter = shared ?? new BodyByteCounterStream(originalBody);
+        if (shared is null) ctx.Response.Body = counter;
         try
         {
             await next();
         }
         finally
         {
-            ctx.Response.Body = originalBody;
+            if (shared is null) ctx.Response.Body = originalBody;
         }
 
         if (ctx.Response.HasStarted) return;
