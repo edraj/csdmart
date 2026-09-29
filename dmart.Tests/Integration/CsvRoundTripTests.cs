@@ -1477,6 +1477,70 @@ public class CsvRoundTripTests : IClassFixture<DmartFactory>
         }
     }
 
+    // `first_row` is the other way to finish a cut-off import: the caller uploads
+    // the header plus only the rows it still needs, and says which file row the
+    // first of them is. Re-sending the whole file once per part made a resumed
+    // import transfer it k times, and the server re-parse and discard the
+    // earlier rows each time. The rows it reports must still be the operator's
+    // own row numbers, or `resume_row` walks backwards and the failures name
+    // rows that are not the ones that failed.
+    [FactIfPg]
+    public async Task Csv_Import_FirstRow_Numbers_A_Sliced_Upload_From_That_Row()
+    {
+        const string space = "itest_csv_firstrow";
+        var (client, _, _, _) = await _factory.CreateLoggedInUserAsync();
+
+        try
+        {
+            await CleanupAsync(client, space);
+            await SeedSpaceAsync(client, space);
+
+            // The tail of a 5-row file: rows 1 and 2 went in an earlier part and
+            // are not uploaded at all.
+            var csv =
+                "shortname,name\r\n" +
+                "r3,three\r\n" +
+                "r4,four,extra\r\n" +   // malformed: reported as file row 4
+                "r5,five\r\n";
+            using var form = new MultipartFormDataContent();
+            var part = new ByteArrayContent(Encoding.UTF8.GetBytes(csv));
+            part.Headers.ContentType = new MediaTypeHeaderValue("text/csv");
+            form.Add(part, "resources_file", "rows.csv");
+            using var resp = await client.PostAsync(
+                $"/managed/resources_from_csv/content/{space}/items/goods?first_row=3", form);
+            var body = await resp.Content.ReadFromJsonAsync(DmartJsonContext.Default.Response);
+
+            body!.Status.ShouldBe(Status.Success);
+            ExtractInt(body.Attributes!["inserted"]).ShouldBe(2);
+            var failed = (JsonElement)body.Attributes["failed"];
+            failed.GetArrayLength().ShouldBe(1);
+            failed[0].GetProperty("row").GetInt32().ShouldBe(4,
+                "the malformed row is the 2nd in the body but row 4 of the operator's file");
+
+            var queryResp = await PostJson(client, "/managed/query",
+                "{\"space_name\":\"" + space + "\",\"type\":\"subpath\"," +
+                "\"subpath\":\"items\",\"filter_schema_names\":[],\"limit\":50}");
+            queryResp.Records!.Select(r => r.Shortname).OrderBy(s => s).ShouldBe(new[] { "r3", "r5" });
+
+            foreach (var bad in new[] { "0", "-2", "abc" })
+            {
+                using var badForm = new MultipartFormDataContent();
+                var badPart = new ByteArrayContent(Encoding.UTF8.GetBytes(csv));
+                badPart.Headers.ContentType = new MediaTypeHeaderValue("text/csv");
+                badForm.Add(badPart, "resources_file", "rows.csv");
+                using var badResp = await client.PostAsync(
+                    $"/managed/resources_from_csv/content/{space}/items/goods?first_row={bad}", badForm);
+                var badBody = await badResp.Content.ReadFromJsonAsync(DmartJsonContext.Default.Response);
+                badBody!.Status.ShouldBe(Status.Failed, $"first_row={bad}");
+                badBody.Error!.Code.ShouldBe(InternalErrorCode.INVALID_DATA);
+            }
+        }
+        finally
+        {
+            await CleanupAsync(client, space);
+        }
+    }
+
     // ---------------- helpers ----------------
 
     // Sets up space + items folder + schema folder + a permissive `goods` schema

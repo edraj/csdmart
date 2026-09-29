@@ -68,13 +68,24 @@ public sealed class CsvService(QueryService queries, EntryService entries, Schem
         return new MemoryStream(bytes);
     }
 
-    // `startRow` (1 = the first row after the header) skips the rows before it
-    // without touching them, for finishing an import the request deadline cut
-    // off — CsvImportInterruptedException.ResumeRow is the row to pass back.
-    // Row numbers in the response stay those of the whole file.
+    // Two ways to finish an import the request deadline cut off, both keeping
+    // the row numbers of the WHOLE file so `failed[].row`, `resume_row` and the
+    // operator's own file agree:
+    //
+    //   * `startRow` (1 = the first row after the header) skips the rows before
+    //     it without touching them — the whole file is uploaded again.
+    //   * `firstRow` says which file row this body's FIRST data row is, for a
+    //     caller that uploads only the header plus the rows it still needs.
+    //     Re-sending a 200 MB file once per part made the transfer quadratic in
+    //     the number of parts.
+    //
+    // CsvImportInterruptedException.ResumeRow is the row to pass back to either.
+    // A caller that sends the whole file leaves `firstRow` at 1; one that slices
+    // sets both to the same row (the skip is then a no-op) or only `firstRow`.
     public async Task<Response> ImportAsync(
         string spaceName, string subpath, ResourceType resourceType, string? schemaShortname,
-        Stream csv, string? actor, CancellationToken ct = default, bool isUpdate = false, int startRow = 1)
+        Stream csv, string? actor, CancellationToken ct = default, bool isUpdate = false, int startRow = 1,
+        int firstRow = 1)
     {
         using var reader = new StreamReader(csv, Encoding.UTF8);
         var headerLine = await reader.ReadLineAsync(ct);
@@ -114,7 +125,12 @@ public sealed class CsvService(QueryService queries, EntryService entries, Schem
             string.Equals(h, "shortname", StringComparison.OrdinalIgnoreCase));
         var inserted = 0;
         var failed = new List<Dictionary<string, object>>();
-        var rowNumber = 0;
+        // File coordinates, not body coordinates: a sliced upload's first data
+        // row is file row `firstRow`, so the counter starts one below it.
+        var rowNumber = firstRow - 1;
+        // The first row this call can actually process, for the report: the
+        // skip below and the slice the caller sent, whichever reaches further.
+        var beginRow = Math.Max(startRow, firstRow);
 
         // A row's write sees a cancellation only RowGrace after it happens: long
         // enough for any normal row to finish, so rows stop at a boundary below,
@@ -134,11 +150,18 @@ public sealed class CsvService(QueryService queries, EntryService entries, Schem
             // resuming would import an auto-shortname row twice — or a cancelled
             // before-hook could file it as "plugin rejected create".
             if (ct.IsCancellationRequested)
-                throw new CsvImportInterruptedException(startRow, rowNumber, inserted, failed, finished: false, ct);
+                throw new CsvImportInterruptedException(beginRow, rowNumber, inserted, failed, finished: false, ct);
             rowNumber++;
+            // The rows already committed by this call are reported alongside the
+            // rejection: a resumed import can cross the cap (`start_row=60000`
+            // on a 120,000-row file commits 40,000 rows and then hits it), and a
+            // bare failure said zero. Same `info[0]` shape the timeout answer
+            // uses, which is where both the CLI and the upload dialogs read
+            // progress from.
             if (rowNumber > 100_000)
                 return Response.Fail(InternalErrorCode.INVALID_DATA,
-                    "CSV exceeds maximum of 100,000 rows", "request");
+                    "CSV exceeds maximum of 100,000 rows", "request",
+                    Progress(inserted, failed));
             if (rowNumber < startRow) continue;
             if (string.IsNullOrWhiteSpace(line)) continue;
             var fields = ParseCsvLine(line);
@@ -225,14 +248,23 @@ public sealed class CsvService(QueryService queries, EntryService entries, Schem
                     continue;
                 }
 
-                var patchAttrs = new Dictionary<string, object>
-                {
-                    ["payload"] = new Dictionary<string, object> { ["body"] = bodyEl },
-                };
                 var locator = new Locator(resourceType, spaceName, subpath, shortname);
-                var updateResult = await entries.UpdateAsync(locator, patchAttrs, actor, rowCts.Token,
-                    isBulkImport: true,
-                    patchFor: existing => UpdatePatchFor(existing, bodyEl, resourceType, schemaShortname));
+                Result<Entry> updateResult;
+                try
+                {
+                    // The patch is built by `patchFor` once EntryService has
+                    // loaded the entry it lands on — schema_shortname and
+                    // content_type are re-declared only when they differ — so
+                    // the `patch` argument is replaced before it is read. It
+                    // used to be built here, where it read as the patch applied.
+                    updateResult = await entries.UpdateAsync(locator, new(), actor, rowCts.Token,
+                        isBulkImport: true,
+                        patchFor: existing => UpdatePatchFor(existing, bodyEl, resourceType, schemaShortname));
+                }
+                catch (OperationCanceledException) when (rowCts.IsCancellationRequested)
+                {
+                    throw RowInterrupted(beginRow, rowNumber, shortname, inserted, failed, ct);
+                }
                 if (updateResult.IsOk) inserted++;
                 else failed.Add(BuildFailure(rowNumber, shortname, updateResult.ErrorMessage, updateResult.ErrorCode, updateResult.Info));
                 continue;
@@ -245,40 +277,48 @@ public sealed class CsvService(QueryService queries, EntryService entries, Schem
             // can't act on a SHORTNAME_ALREADY_EXIST for it. Same retry every
             // other auto-shortname path uses (RequestHandler, /user/create).
             var rowShortname = shortname;
-            var result = await RequestHandler.RetryOnShortnameCollisionAsync(
-                wasAuto,
-                () =>
-                {
-                    var uuid = wasAuto ? RequestHandler.NewAutoUuid() : Guid.NewGuid();
-                    if (wasAuto) rowShortname = uuid.ToString("N")[..8];
-                    var entry = new Entry
+            Result<Entry> result;
+            try
+            {
+                result = await RequestHandler.RetryOnShortnameCollisionAsync(
+                    wasAuto,
+                    () =>
                     {
-                        // Same UUID the shortname was derived from, matching
-                        // RequestHandler.ResolveAutoShortname.
-                        Uuid = uuid.ToString(),
-                        Shortname = rowShortname,
-                        SpaceName = spaceName,
-                        Subpath = subpath,
-                        ResourceType = resourceType,
-                        OwnerShortname = actor ?? "anonymous",
-                        IsActive = true,
-                        Payload = new Payload
+                        var uuid = wasAuto ? RequestHandler.NewAutoUuid() : Guid.NewGuid();
+                        if (wasAuto) rowShortname = uuid.ToString("N")[..8];
+                        var entry = new Entry
                         {
-                            ContentType = ContentType.Json,
-                            SchemaShortname = schemaShortname,
-                            Body = bodyEl,
-                        },
-                        CreatedAt = TimeUtils.Now(),
-                        UpdatedAt = TimeUtils.Now(),
-                    };
-                    // isBulkImport tags the Event so logging-only hooks
-                    // (AuditPlugin) skip per-row noise — one HTTP-level audit
-                    // line covers the whole CSV import. Functional hooks
-                    // (resource_folders_creation, etc.) still fire because they
-                    // ignore the flag.
-                    return entries.CreateAsync(entry, actor, rawAttrs: null, isBulkImport: true, rowCts.Token);
-                },
-                r => r.ErrorCode == InternalErrorCode.SHORTNAME_ALREADY_EXIST);
+                            // Same UUID the shortname was derived from, matching
+                            // RequestHandler.ResolveAutoShortname.
+                            Uuid = uuid.ToString(),
+                            Shortname = rowShortname,
+                            SpaceName = spaceName,
+                            Subpath = subpath,
+                            ResourceType = resourceType,
+                            OwnerShortname = actor ?? "anonymous",
+                            IsActive = true,
+                            Payload = new Payload
+                            {
+                                ContentType = ContentType.Json,
+                                SchemaShortname = schemaShortname,
+                                Body = bodyEl,
+                            },
+                            CreatedAt = TimeUtils.Now(),
+                            UpdatedAt = TimeUtils.Now(),
+                        };
+                        // isBulkImport tags the Event so logging-only hooks
+                        // (AuditPlugin) skip per-row noise — one HTTP-level audit
+                        // line covers the whole CSV import. Functional hooks
+                        // (resource_folders_creation, etc.) still fire because they
+                        // ignore the flag.
+                        return entries.CreateAsync(entry, actor, rawAttrs: null, isBulkImport: true, rowCts.Token);
+                    },
+                    r => r.ErrorCode == InternalErrorCode.SHORTNAME_ALREADY_EXIST);
+            }
+            catch (OperationCanceledException) when (rowCts.IsCancellationRequested)
+            {
+                throw RowInterrupted(beginRow, rowNumber, rowShortname, inserted, failed, ct);
+            }
             if (result.IsOk) inserted++;
             else failed.Add(BuildFailure(rowNumber, rowShortname, result.ErrorMessage, result.ErrorCode, result.Info));
         }
@@ -286,7 +326,7 @@ public sealed class CsvService(QueryService queries, EntryService entries, Schem
         // Cancelled during the last row: every row is done, but the response
         // below would be written through the cancelled token and arrive empty.
         if (ct.IsCancellationRequested)
-            throw new CsvImportInterruptedException(startRow, rowNumber, inserted, failed, finished: true, ct);
+            throw new CsvImportInterruptedException(beginRow, rowNumber, inserted, failed, finished: true, ct);
 
         return Response.Ok(attributes: new()
         {
@@ -297,6 +337,52 @@ public sealed class CsvService(QueryService queries, EntryService entries, Schem
     }
 
     // ----- helpers -----
+
+    // A row's write outlived RowGrace and was cancelled inside EntryService.
+    // Without this it surfaced as a plain OperationCanceledException, which
+    // ResourceWithPayloadHandler does not catch: the 504 then carried the
+    // generic "took longer than the time limit" and no resume point at all, so
+    // an operator was left with a part-imported folder and no way to continue.
+    //
+    // The row is also recorded in `failed`, and the resume point is set PAST it:
+    // whether it was committed is genuinely unknown (the cancellation can land
+    // either side of the write), and one named row to check by hand beats either
+    // silently losing it or re-importing it as a duplicate.
+    private static CsvImportInterruptedException RowInterrupted(
+        int beginRow, int rowNumber, string shortname, int inserted,
+        List<Dictionary<string, object>> failed, CancellationToken ct)
+    {
+        failed.Add(BuildFailure(rowNumber, shortname,
+            "row was still being written when the server's time limit stopped the import; "
+            + "it may or may not have been saved — check this row before resuming",
+            InternalErrorCode.REQUEST_TIMEOUT, null));
+        return new CsvImportInterruptedException(beginRow, rowNumber, inserted, failed, finished: false, ct);
+    }
+
+    // How many per-row failures an ERROR body carries. A 100,000-row CSV whose
+    // header does not match the schema fails every row, each entry holding the
+    // row, the shortname, the full validation message, the key and the value —
+    // tens of megabytes of JSON, serialized and written on a request that has
+    // already been declared over its time budget, and held whole by the dialog
+    // before it trims the list for display. `failed_count` still reports the
+    // true total and `failed_truncated` says the list is partial.
+    internal const int MaxFailedInError = 1000;
+
+    // The `info[0]` progress block an import that did not run to completion
+    // reports — shared with ResourceWithPayloadHandler.CsvTimeoutInfo, so the
+    // CLI and the upload dialogs read one shape whichever way the import ended.
+    internal static List<Dictionary<string, object>> Progress(int inserted, List<Dictionary<string, object>> failed)
+    {
+        var truncated = failed.Count > MaxFailedInError;
+        var block = new Dictionary<string, object>
+        {
+            ["inserted"] = inserted,
+            ["failed_count"] = failed.Count,
+            ["failed"] = truncated ? failed.GetRange(0, MaxFailedInError) : failed,
+        };
+        if (truncated) block["failed_truncated"] = true;
+        return [block];
+    }
 
     // The patch for one update row, built once the entry it lands on is loaded.
     // Like Python's import, which re-declares both on every row, it declares:
@@ -680,11 +766,16 @@ public sealed class CsvImportInterruptedException : OperationCanceledException
         Inserted = inserted;
         Failed = failed;
         Finished = finished;
+        KnowsProgress = true;
     }
 
     // The three standard exception constructors (CA1032). ImportAsync always
     // knows how far it got; these are for the ordinary construction paths
-    // (wrapping, rethrowing) and report nothing done.
+    // (wrapping, rethrowing) and report that they do NOT know — see
+    // KnowsProgress. They must not report row 1: a wrapped-and-rethrown
+    // interruption would then tell an operator whose import had already written
+    // most of the file to start it again from the top, duplicating every
+    // auto-shortname row.
     public CsvImportInterruptedException()
         : base("CSV import cancelled") { }
 
@@ -694,9 +785,9 @@ public sealed class CsvImportInterruptedException : OperationCanceledException
     public CsvImportInterruptedException(string message, Exception innerException)
         : base(message, innerException) { }
 
-    // The row this import started at (its start_row), and the last row it got
-    // through. Rows are numbered from the first row after the header; each row
-    // from FirstRow to LastRow is saved, is in Failed, or was blank.
+    // The row this import started at, and the last row it got through. Rows are
+    // numbered from the first row after the header; each row from FirstRow to
+    // LastRow is saved, is in Failed, or was blank.
     public int FirstRow { get; } = 1;
     public int LastRow { get; }
     public int Inserted { get; }
@@ -706,6 +797,12 @@ public sealed class CsvImportInterruptedException : OperationCanceledException
     // import, only the answer was cut off.
     public bool Finished { get; }
 
-    // The first row not processed — the start_row that imports the rest.
+    // False on the standard constructors above, whose Inserted/LastRow are
+    // defaults rather than measurements. A caller reporting progress must say
+    // "unknown" rather than quote them — ResumeRow in particular.
+    public bool KnowsProgress { get; }
+
+    // The first row not processed — the start_row that imports the rest. Only
+    // meaningful when KnowsProgress.
     public int ResumeRow => Math.Max(LastRow + 1, FirstRow);
 }

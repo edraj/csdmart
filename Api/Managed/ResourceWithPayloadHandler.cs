@@ -81,12 +81,24 @@ public static class ResourceWithPayloadHandler
                     return Response.Fail(InternalErrorCode.INVALID_DATA,
                         "start_row must be a positive whole number", ErrorTypes.Request);
 
+                // `?first_row=N` is the same resume, for a caller that uploads
+                // only the header plus the rows it still needs instead of the
+                // whole file again: it says which file row this body's first
+                // data row is, so `failed[].row` and `resume_row` keep counting
+                // in the operator's own file. Re-sending the whole file once per
+                // part made the transfer quadratic in the number of parts.
+                var firstRow = 1;
+                if (req.Query["first_row"].FirstOrDefault() is { Length: > 0 } rawFirst
+                    && (!int.TryParse(rawFirst, NumberStyles.None, CultureInfo.InvariantCulture, out firstRow) || firstRow < 1))
+                    return Response.Fail(InternalErrorCode.INVALID_DATA,
+                        "first_row must be a positive whole number", ErrorTypes.Request);
+
                 await using var stream = csvFile.OpenReadStream();
                 try
                 {
                     return await csv.ImportAsync(space, "/" + subpath.TrimStart('/'), rt,
                         string.IsNullOrEmpty(schema) ? null : schema,
-                        stream, http.Actor(), ct, isUpdate, startRow);
+                        stream, http.Actor(), ct, isUpdate, startRow, firstRow);
                 }
                 catch (CsvImportInterruptedException cut) when (RequestDeadline.Of(http) is { Expired: true } deadline)
                 {
@@ -347,6 +359,15 @@ public static class ResourceWithPayloadHandler
     internal static string CsvTimeoutMessage(CsvImportInterruptedException cut, RequestDeadline deadline, bool isUpdate)
     {
         var inv = CultureInfo.InvariantCulture;
+        // An interruption raised through one of the standard constructors
+        // measured nothing: quoting its defaults would tell the operator "start
+        // again from row 1" after an import that may have written most of the
+        // file, duplicating every auto-shortname row.
+        if (!cut.KnowsProgress)
+            return string.Format(inv,
+                "The import reached the server's {0} time limit and was stopped. How far it got is not "
+                + "known — check the folder before uploading the file again.", deadline.LimitText);
+
         var processed = cut.LastRow >= cut.FirstRow
             ? string.Format(inv, "Rows {0:N0}–{1:N0} were processed ({2:N0} {3}, {4:N0} failed).",
                 cut.FirstRow, cut.LastRow, cut.Inserted, isUpdate ? "updated" : "saved", cut.Failed.Count)
@@ -361,18 +382,19 @@ public static class ResourceWithPayloadHandler
             cut.ResumeRow, deadline.LimitText, processed, isUpdate ? "update" : "import");
     }
 
-    // Same progress, machine-readable, in the error's `info`. `resume_row` is
-    // absent when every row was processed and only the answer was cut off.
-    internal static List<Dictionary<string, object>> CsvTimeoutInfo(CsvImportInterruptedException cut)
+    // Same progress, machine-readable, in the error's `info` — built by
+    // CsvService.Progress, which caps the per-row `failed` list so an import
+    // where every row fails cannot turn an over-budget request into a
+    // multi-megabyte error body. `resume_row` is absent when every row was
+    // processed and only the answer was cut off, and when the interruption did
+    // not measure its progress at all (see CsvImportInterruptedException.
+    // KnowsProgress) — an absent resume_row reads as "do not resume blindly".
+    internal static List<Dictionary<string, object>>? CsvTimeoutInfo(CsvImportInterruptedException cut)
     {
-        var progress = new Dictionary<string, object>
-        {
-            ["inserted"] = cut.Inserted,
-            ["failed_count"] = cut.Failed.Count,
-            ["failed"] = cut.Failed,
-        };
-        if (!cut.Finished) progress["resume_row"] = cut.ResumeRow;
-        return new List<Dictionary<string, object>> { progress };
+        if (!cut.KnowsProgress) return null;
+        var info = CsvService.Progress(cut.Inserted, cut.Failed);
+        if (!cut.Finished) info[0]["resume_row"] = cut.ResumeRow;
+        return info;
     }
 
     // Tolerant wire-flag parser. Accepts the truthy values dmart Python uses
