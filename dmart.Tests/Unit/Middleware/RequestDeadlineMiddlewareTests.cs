@@ -134,6 +134,55 @@ public sealed class RequestDeadlineMiddlewareTests
         lifetime.Aborted.ShouldBeTrue();
         Encoding.UTF8.GetString(body.ToArray()).ShouldBe("partial");
         ctx.Response.StatusCode.ShouldBe(200);
+        // Which is also what the access log has to record: no 504 went out.
+        RequestDeadline.CanStillAnswer(ctx).ShouldBeFalse();
+    }
+
+    [Fact]
+    public void Deadline_That_Fires_Before_A_Disconnect_Is_Still_A_Timeout()
+    {
+        using var client = new CancellationTokenSource();
+        using var cts = CancellationTokenSource.CreateLinkedTokenSource(client.Token);
+        var deadline = new RequestDeadline(Short, cts.Token, client.Token);
+
+        // The order a slow request the user gives up on actually produces: the
+        // limit is reached, and only then does the browser go away. Deciding
+        // this on the first READ lost it — by then both tokens are cancelled and
+        // the request would be filed as a disconnect for ever, which is the
+        // empty-200 behaviour this class exists to remove.
+        cts.Cancel();
+        client.Cancel();
+
+        deadline.Expired.ShouldBeTrue();
+    }
+
+    [Fact]
+    public void Disconnect_That_Fires_Before_The_Deadline_Is_Not_A_Timeout()
+    {
+        using var client = new CancellationTokenSource();
+        using var cts = CancellationTokenSource.CreateLinkedTokenSource(client.Token);
+        var deadline = new RequestDeadline(TimeSpan.FromMinutes(5), cts.Token, client.Token);
+
+        // Cancelling the client token cancels the linked deadline token too, so
+        // both are set here as well — the latch has to look at which came first.
+        client.Cancel();
+
+        deadline.Expired.ShouldBeFalse();
+    }
+
+    [Fact]
+    public void A_Response_That_Has_Begun_Can_No_Longer_Be_Answered_With_A_504()
+    {
+        var ctx = new DefaultHttpContext();
+        var counter = new BodyByteCounterStream(new MemoryStream());
+        ctx.Features.Set(counter);
+
+        RequestDeadline.CanStillAnswer(ctx).ShouldBeTrue();
+        counter.Write([1], 0, 1);
+        // The access log asks the same question: recording a clean 504 for this
+        // request would claim an answer the client never got — it gets a reset
+        // in the middle of the body instead.
+        RequestDeadline.CanStillAnswer(ctx).ShouldBeFalse();
     }
 
     [Fact]

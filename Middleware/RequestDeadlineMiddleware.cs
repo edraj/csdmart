@@ -19,30 +19,45 @@ public sealed class RequestDeadline
 
     private readonly CancellationToken _deadline;
     private readonly CancellationToken _clientAborted;
-    private bool _expired;
+    // Set once — by the cancellation callback or by a reader — and never
+    // cleared. Volatile because RequestLoggingMiddleware and
+    // RequestDeadlineMiddleware read it from different points in the pipeline.
+    private volatile bool _expired;
 
     internal RequestDeadline(TimeSpan timeout, CancellationToken deadline, CancellationToken clientAborted)
     {
         Timeout = timeout;
         _deadline = deadline;
         _clientAborted = clientAborted;
+        // Latch the classification the MOMENT the deadline fires. Deciding it
+        // only on the first read loses the race where the client also
+        // disconnects before anyone asks: _clientAborted is true by then, the
+        // request is filed as a disconnect for ever, and RunAsync's
+        // `when (deadline.Expired)` never fires — the original empty-200
+        // behaviour this class exists to remove. The registration is released
+        // with the linked CancellationTokenSource RunAsync owns.
+        deadline.Register(static s => ((RequestDeadline)s!).Latch(), this);
     }
 
     public TimeSpan Timeout { get; }
 
-    // Read from the tokens rather than set by a callback on the deadline token:
-    // cancellation runs the handler's own callbacks first (LIFO), so a handler
-    // can already be unwinding before any callback registered here would fire.
-    // Latched so the access log and the middleware classify a request the same
-    // way even if the client also disconnects in between.
+    // Read from the tokens too, not only latched by the callback above:
+    // cancellation runs callbacks LIFO and this one is registered before the
+    // request has run, so every callback a handler adds runs ahead of it — a
+    // handler can already be unwinding and asking.
     public bool Expired
     {
         get
         {
-            if (!_expired && _deadline.IsCancellationRequested && !_clientAborted.IsCancellationRequested)
-                _expired = true;
+            Latch();
             return _expired;
         }
+    }
+
+    private void Latch()
+    {
+        if (!_expired && _deadline.IsCancellationRequested && !_clientAborted.IsCancellationRequested)
+            _expired = true;
     }
 
     public string? Message { get; private set; }
@@ -61,6 +76,18 @@ public sealed class RequestDeadline
     public string LimitText => Timeout.TotalSeconds.ToString("0.##", CultureInfo.InvariantCulture) + "-second";
 
     public static RequestDeadline? Of(HttpContext ctx) => ctx.Features.Get<RequestDeadline>();
+
+    /// <summary>
+    /// Whether a request that ran out of time can still be ANSWERED with the
+    /// 504, i.e. nothing of a response has gone out yet. Once it has,
+    /// <see cref="RequestDeadlineMiddleware"/> cuts the connection instead —
+    /// appending an error to half a body would produce a response that is
+    /// neither. The access log asks the same question so it does not record a
+    /// clean 504 for a client that actually saw a reset.
+    /// </summary>
+    public static bool CanStillAnswer(HttpContext ctx)
+        => !ctx.Response.HasStarted
+           && (ctx.Features.Get<BodyByteCounterStream>()?.BytesWritten ?? 0) == 0;
 }
 
 /// <summary>
@@ -86,8 +113,11 @@ public sealed class RequestDeadlineMiddleware(RequestDelegate next)
         if (ctx.WebSockets.IsWebSocketRequest || ctx.Request.Path.StartsWithSegments("/mcp"))
             return next(ctx);
 
-        var seconds = settings.Value.RequestTimeout > 0 ? settings.Value.RequestTimeout : 35;
-        return RunAsync(ctx, next, TimeSpan.FromSeconds(seconds), log);
+        // No "> 0 ? … : 35" fallback: DmartSettingsValidator fails startup under
+        // ValidateOnStart when RequestTimeout is not positive, so the false
+        // branch is unreachable — and a third copy of the default is a third
+        // place to forget when DmartSettings.RequestTimeout changes.
+        return RunAsync(ctx, next, TimeSpan.FromSeconds(settings.Value.RequestTimeout), log);
     }
 
     internal static async Task RunAsync(HttpContext ctx, RequestDelegate next, TimeSpan timeout, ILogger log)
@@ -130,12 +160,14 @@ public sealed class RequestDeadlineMiddleware(RequestDelegate next)
         if (!cutOff && deadline.Expired && counter.BytesWritten == 0
             && ctx.Response.StatusCode == StatusCodes.Status200OK)
             cutOff = true;
-        if (cutOff) await AnswerTimeoutAsync(ctx, deadline, counter.BytesWritten > 0, log);
+        if (cutOff) await AnswerTimeoutAsync(ctx, deadline, log);
     }
 
-    private static async Task AnswerTimeoutAsync(HttpContext ctx, RequestDeadline deadline, bool bodyWritten, ILogger log)
+    private static async Task AnswerTimeoutAsync(HttpContext ctx, RequestDeadline deadline, ILogger log)
     {
-        if (ctx.Response.HasStarted || bodyWritten)
+        // One rule, shared with the access log (RequestDeadline.CanStillAnswer),
+        // so the line recorded for this request matches what the client got.
+        if (!RequestDeadline.CanStillAnswer(ctx))
         {
             // Appending an error to half a body would produce a response that is
             // neither; a cut connection is the one signal a client can't mistake
