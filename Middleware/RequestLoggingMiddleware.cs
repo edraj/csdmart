@@ -194,11 +194,31 @@ public static class RequestLoggingMiddleware
         // `client_aborted: true`, and don't re-throw to the global exception
         // handler (the client is gone — writing a 500 into a dead connection
         // just generates a second misleading ERROR line).
+        //
+        // RequestAborted also fires at REQUEST_TIMEOUT, when the client is still
+        // waiting. Filing that as a disconnect swallowed it here and sent a 200
+        // with an empty body, so a timeout is logged as one and re-thrown for
+        // RequestDeadlineMiddleware to answer with the 504 recorded below.
+        var timedOut = captured is OperationCanceledException
+            && RequestDeadline.Of(ctx) is { Expired: true };
         var clientAborted = captured is OperationCanceledException
+            && !timedOut
             && ctx.RequestAborted.IsCancellationRequested;
 
-        var status = ctx.Response.StatusCode;
-        var level = MapLevel(status, clientAborted);
+        // …but only when a 504 can still go out. A handler that had already
+        // begun its body (a streaming export, anything that flushed early) gets
+        // its connection cut instead — see RequestDeadline.CanStillAnswer — and
+        // recording 504 for that told ops a clean answer was sent where the
+        // client saw a reset mid-body. That case keeps the status the response
+        // was carrying and is marked `response_aborted`.
+        var answeredTimeout = timedOut && RequestDeadline.CanStillAnswer(ctx);
+        var status = answeredTimeout ? RequestDeadline.TimeoutStatusCode : ctx.Response.StatusCode;
+        // Levelled from `timedOut`, not from the status it is given: a request
+        // cut mid-body is the same server-side failure as one answered 504, but
+        // its status is whatever the half-written response was carrying — often
+        // a 200, which MapLevel would file as routine. Alerting that watches for
+        // ERROR must see both.
+        var level = timedOut ? LogLevel.Error : MapLevel(status, clientAborted);
         var user = ctx.ActorOrAnonymous();
         var correlationId = ctx.Response.Headers["X-Correlation-ID"].ToString();
 
@@ -239,6 +259,15 @@ public static class RequestLoggingMiddleware
         if (clientAborted)
         {
             ((Dictionary<string, object?>)record["props"]!)["client_aborted"] = true;
+        }
+        else if (timedOut)
+        {
+            ((Dictionary<string, object?>)record["props"]!)["timed_out"] = true;
+            // The connection was cut rather than answered: `http_status` above
+            // is what the half-written response was carrying, not what the
+            // client received, and nothing was received in full.
+            if (!answeredTimeout)
+                ((Dictionary<string, object?>)record["props"]!)["response_aborted"] = true;
         }
         else if (captured is not null)
         {

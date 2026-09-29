@@ -1,6 +1,8 @@
+using System.Globalization;
 using System.Security.Cryptography;
 using System.Text.Json;
 using Dmart.DataAdapters.Sql;
+using Dmart.Middleware;
 using Dmart.Models.Api;
 using Dmart.Models.Core;
 using Dmart.Models.Enums;
@@ -71,10 +73,40 @@ public static class ResourceWithPayloadHandler
                 // as other Python wire-flag toggles in this codebase ("true"/"1"/"yes").
                 var isUpdate = ParseBoolFlag(req.Query["is_update"].FirstOrDefault());
 
+                // `?start_row=N` resumes an import the request deadline cut off:
+                // rows before N are skipped untouched (N = the error's resume_row).
+                var startRow = 1;
+                if (req.Query["start_row"].FirstOrDefault() is { Length: > 0 } rawStart
+                    && (!int.TryParse(rawStart, NumberStyles.None, CultureInfo.InvariantCulture, out startRow) || startRow < 1))
+                    return Response.Fail(InternalErrorCode.INVALID_DATA,
+                        "start_row must be a positive whole number", ErrorTypes.Request);
+
+                // `?first_row=N` is the same resume, for a caller that uploads
+                // only the header plus the rows it still needs instead of the
+                // whole file again: it says which file row this body's first
+                // data row is, so `failed[].row` and `resume_row` keep counting
+                // in the operator's own file. Re-sending the whole file once per
+                // part made the transfer quadratic in the number of parts.
+                var firstRow = 1;
+                if (req.Query["first_row"].FirstOrDefault() is { Length: > 0 } rawFirst
+                    && (!int.TryParse(rawFirst, NumberStyles.None, CultureInfo.InvariantCulture, out firstRow) || firstRow < 1))
+                    return Response.Fail(InternalErrorCode.INVALID_DATA,
+                        "first_row must be a positive whole number", ErrorTypes.Request);
+
                 await using var stream = csvFile.OpenReadStream();
-                return await csv.ImportAsync(space, "/" + subpath.TrimStart('/'), rt,
-                    string.IsNullOrEmpty(schema) ? null : schema,
-                    stream, http.Actor(), ct, isUpdate);
+                try
+                {
+                    return await csv.ImportAsync(space, "/" + subpath.TrimStart('/'), rt,
+                        string.IsNullOrEmpty(schema) ? null : schema,
+                        stream, http.Actor(), ct, isUpdate, startRow, firstRow);
+                }
+                catch (CsvImportInterruptedException cut) when (RequestDeadline.Of(http) is { Expired: true } deadline)
+                {
+                    // Re-thrown for RequestDeadlineMiddleware to answer with a 504;
+                    // this only supplies the words.
+                    deadline.Explain(CsvTimeoutMessage(cut, deadline, isUpdate), CsvTimeoutInfo(cut));
+                    throw;
+                }
             })
           .Produces<Response>()
           .DisableAntiforgery();
@@ -318,6 +350,52 @@ public static class ResourceWithPayloadHandler
     // the context so we don't trip IL2026/IL3050.
     private static JsonElement StringJsonElement(string value)
         => JsonSerializer.SerializeToElement(value, DmartJsonContext.Default.String);
+
+    // The REQUEST_TIMEOUT answer for a CSV import that ran out of time. Rows
+    // commit one at a time, so the rows before the cut are saved: the message
+    // names where the import stopped, what the earlier rows came to, and how to
+    // finish — a partial import must read as one, not as a bare timeout.
+    // Row numbers count data rows after the header, like `failed[].row`.
+    internal static string CsvTimeoutMessage(CsvImportInterruptedException cut, RequestDeadline deadline, bool isUpdate)
+    {
+        var inv = CultureInfo.InvariantCulture;
+        // An interruption raised through one of the standard constructors
+        // measured nothing: quoting its defaults would tell the operator "start
+        // again from row 1" after an import that may have written most of the
+        // file, duplicating every auto-shortname row.
+        if (!cut.KnowsProgress)
+            return string.Format(inv,
+                "The import reached the server's {0} time limit and was stopped. How far it got is not "
+                + "known — check the folder before uploading the file again.", deadline.LimitText);
+
+        var processed = cut.LastRow >= cut.FirstRow
+            ? string.Format(inv, "Rows {0:N0}–{1:N0} were processed ({2:N0} {3}, {4:N0} failed).",
+                cut.FirstRow, cut.LastRow, cut.Inserted, isUpdate ? "updated" : "saved", cut.Failed.Count)
+            : "No rows were processed.";
+        if (cut.Finished)
+            return string.Format(inv, "{0} The import finished, but ran past the server's {1} time limit.",
+                processed, deadline.LimitText);
+
+        return string.Format(inv,
+            "Import stopped at row {0:N0}: it reached the server's {1} time limit. {2} "
+            + "Upload the same file again with start_row={0} to {3} the rest.",
+            cut.ResumeRow, deadline.LimitText, processed, isUpdate ? "update" : "import");
+    }
+
+    // Same progress, machine-readable, in the error's `info` — built by
+    // CsvService.Progress, which caps the per-row `failed` list so an import
+    // where every row fails cannot turn an over-budget request into a
+    // multi-megabyte error body. `resume_row` is absent when every row was
+    // processed and only the answer was cut off, and when the interruption did
+    // not measure its progress at all (see CsvImportInterruptedException.
+    // KnowsProgress) — an absent resume_row reads as "do not resume blindly".
+    internal static List<Dictionary<string, object>>? CsvTimeoutInfo(CsvImportInterruptedException cut)
+    {
+        if (!cut.KnowsProgress) return null;
+        var info = CsvService.Progress(cut.Inserted, cut.Failed);
+        if (!cut.Finished) info[0]["resume_row"] = cut.ResumeRow;
+        return info;
+    }
 
     // Tolerant wire-flag parser. Accepts the truthy values dmart Python uses
     // ("true"/"1"/"yes", case-insensitive); everything else (including the

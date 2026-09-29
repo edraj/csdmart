@@ -49,7 +49,7 @@ public sealed class PasswordHashingCapacityMiddleware(RequestDelegate next)
             context.Response.Headers.RetryAfter =
                 ex.RetryAfterSeconds.ToString(System.Globalization.CultureInfo.InvariantCulture);
             await context.Response.WriteAsync(
-                "{\"status\":\"failed\",\"error\":{\"type\":\"server\",\"code\":503,"
+                "{\"status\":\"failed\",\"error\":{\"type\":\"" + Dmart.Models.Api.ErrorTypes.Server + "\",\"code\":503,"
                 + "\"message\":\"password hashing is at capacity, retry shortly\"}}",
                 context.RequestAborted);
         }
