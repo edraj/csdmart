@@ -1,3 +1,4 @@
+using System.Net;
 using System.Net.Http.Headers;
 using System.Text;
 using System.Text.Json;
@@ -20,6 +21,7 @@ public sealed class DmartClient : IDisposable
     private static readonly TimeSpan UploadTimeout = TimeSpan.FromMinutes(10);
 
     private readonly HttpMessageHandler _handler;
+    private readonly bool _ownsHandler;
     private readonly HttpClient _http;
     private readonly HttpClient _uploadHttp;
     private readonly CliSettings _settings;
@@ -34,15 +36,22 @@ public sealed class DmartClient : IDisposable
     // operators see the round-trip latency to the configured server up front.
     public long LastLoginLatencyMs { get; private set; }
 
-    public DmartClient(CliSettings settings) : this(settings, new HttpClientHandler()) { }
+    public DmartClient(CliSettings settings) : this(settings, new HttpClientHandler(), ownsHandler: true) { }
 
     // Both clients share `handler` (connections, cookies); tests pass the
-    // in-memory server's.
+    // in-memory server's. A handler that came from outside belongs to whoever
+    // built it: two DmartClients can share one, and a TestServer handler can
+    // outlive the client that borrowed it, so Dispose leaves it alone. That is
+    // also what `disposeHandler: false` below already promised.
     internal DmartClient(CliSettings settings, HttpMessageHandler handler)
+        : this(settings, handler, ownsHandler: false) { }
+
+    private DmartClient(CliSettings settings, HttpMessageHandler handler, bool ownsHandler)
     {
         _settings = settings;
         CurrentSpace = settings.DefaultSpace;
         _handler = handler;
+        _ownsHandler = ownsHandler;
         // Default HttpClient.Timeout is 100s — too long for an interactive
         // REPL where a hung server should surface within seconds, not after
         // the user has wandered off.
@@ -266,18 +275,39 @@ public sealed class DmartClient : IDisposable
                 continue;
             }
 
+            if (body.TryGetProperty("error", out var error))
+            {
+                // A terminal failure can still have committed rows in this part:
+                // the 100,000-row cap is only reached once the rows below it are
+                // saved, so a resumed import that crosses it has written tens of
+                // thousands of entries. That progress rides in the same
+                // error.info[0] block the timeout answer uses.
+                if (error.TryGetProperty("info", out var errInfo) && errInfo.ValueKind == JsonValueKind.Array
+                    && errInfo.GetArrayLength() > 0 && errInfo[0].TryGetProperty("inserted", out _))
+                    Absorb(errInfo[0], ref inserted, failed);
+                return CsvSummary(inserted, failed, startRow, error);
+            }
             return CsvSummary(inserted, failed, startRow,
-                body.TryGetProperty("error", out var error) ? error
-                    : MessageJson($"unexpected answer (HTTP {status}): {Truncate(body.ToString(), 200)}"));
+                MessageJson($"unexpected answer (HTTP {status}): {Truncate(body.ToString(), 200)}"));
         }
     }
 
     private async Task<(int Status, JsonElement Body)> UploadCsvPartAsync(
         string resourceType, string subpath, string schemaShortname, string filePath, bool isUpdate, int startRow)
     {
+        // Only the rows this part imports are uploaded: the header, then the
+        // file from the byte offset row `startRow` begins at. Re-sending the
+        // whole file on every part made a resumed import transfer it once per
+        // part — and the server re-parse and discard the earlier rows each time.
+        // `first_row` (not `start_row`) tells it the body starts AT that row, so
+        // the rows it reports stay the operator's own row numbers.
+        var slice = startRow > 1 ? await CsvSliceAsync(filePath, startRow) : null;
         var query = new List<string>();
         if (isUpdate) query.Add("is_update=true");
-        if (startRow > 1) query.Add($"start_row={startRow}");
+        // Falling back to the whole file (slice is null) means the scan found no
+        // such row — or no header line at all — so the server must skip to that
+        // row rather than renumber a body that does not start there.
+        if (startRow > 1) query.Add(slice is null ? $"start_row={startRow}" : $"first_row={startRow}");
         var path = $"/managed/resources_from_csv/{resourceType}/{CurrentSpace}/{subpath}/{schemaShortname}"
                    + (query.Count > 0 ? "?" + string.Join('&', query) : "");
         // A fresh form per attempt: the retry after a token refresh would
@@ -285,11 +315,117 @@ public sealed class DmartClient : IDisposable
         var resp = await SendWithRefreshAsync(async () =>
         {
             using var form = new MultipartFormDataContent();
-            await using var fs = File.OpenRead(filePath);
-            form.Add(new StreamContent(fs), "resources_file", Path.GetFileName(filePath));
+            HttpContent content = slice is { } s
+                ? new CsvPartContent(s.Header, filePath, s.Offset)
+                : new StreamContent(File.OpenRead(filePath));
+            form.Add(content, "resources_file", Path.GetFileName(filePath));
             return await _uploadHttp.PostAsync(path, form);
         });
         return ((int)resp.StatusCode, await ParseAsync(resp));
+    }
+
+    // A header line longer than this is not a header line. Bounds the buffer the
+    // scan below builds before it has seen a single line break.
+    private const int MaxCsvHeaderBytes = 8 * 1024 * 1024;
+
+    // The header line's bytes (its line break included) and the byte offset at
+    // which file row `startRow` begins, or null when the file has no such row —
+    // or no header line at all — in which case the caller uploads the whole file
+    // and lets the server skip.
+    //
+    // Rows are lines: CsvService reads the upload with ReadLineAsync, so the two
+    // must agree on what ends one. That is "\n", "\r\n" or a lone "\r", exactly
+    // as StreamReader sees it. Scanning raw bytes is safe because none of those
+    // can occur inside a UTF-8 multi-byte sequence.
+    private static async Task<(byte[] Header, long Offset)?> CsvSliceAsync(string filePath, int startRow)
+    {
+        await using var fs = File.OpenRead(filePath);
+        using var head = new MemoryStream();
+        var buffer = new byte[64 * 1024];
+        long consumed = 0;
+        var lines = 0;
+        var pendingCr = false;
+        byte[]? header = null;
+        int read;
+        while ((read = await fs.ReadAsync(buffer)) > 0)
+        {
+            for (var i = 0; i < read; i++)
+            {
+                var at = consumed + i;
+                if (lines == 0)
+                {
+                    if (head.Length >= MaxCsvHeaderBytes) return null;
+                    head.WriteByte(buffer[i]);
+                }
+                // A "\r" already seen and this byte is not the "\n" that would
+                // have joined it: the line ended before this byte.
+                if (pendingCr && buffer[i] != (byte)'\n' && Ends(at) is { } early) return early;
+                pendingCr = false;
+                if (buffer[i] == (byte)'\n')
+                {
+                    if (Ends(at + 1) is { } here) return here;
+                }
+                else if (buffer[i] == (byte)'\r')
+                {
+                    pendingCr = true;
+                }
+            }
+            consumed += read;
+        }
+        // A trailing lone "\r" still ends a line, at end of file — but there is
+        // nothing after it to send.
+        return null;
+
+        // Records a line ending at byte `offset` (the first byte of the next
+        // line) and returns the slice once `startRow` is reached. Line 1 is the
+        // header, so data row N begins after the Nth line break.
+        (byte[] Header, long Offset)? Ends(long offset)
+        {
+            lines++;
+            if (lines == 1)
+            {
+                var buffered = head.ToArray();
+                // `head` holds the current byte too; the header line stops at
+                // the break, which for a lone "\r" is one byte back.
+                header = buffered.Length == offset ? buffered : buffered[..(int)offset];
+            }
+            return lines == startRow ? (header!, offset) : null;
+        }
+    }
+
+    // Streams a CSV's header line followed by the file from `offset` — the body
+    // of one resumed upload part. Built fresh per attempt (SendWithRefreshAsync
+    // re-runs its factory after a token refresh), so it owns the handle it
+    // opens and MultipartFormDataContent disposes it with the form.
+    private sealed class CsvPartContent : HttpContent
+    {
+        private readonly byte[] _header;
+        private readonly FileStream _file;
+
+        public CsvPartContent(byte[] header, string filePath, long offset)
+        {
+            _header = header;
+            _file = File.OpenRead(filePath);
+            _file.Position = offset;
+        }
+
+        protected override async Task SerializeToStreamAsync(Stream stream, TransportContext? context)
+        {
+            await stream.WriteAsync(_header);
+            await _file.CopyToAsync(stream);
+        }
+
+        protected override bool TryComputeLength(out long length)
+        {
+            length = _header.Length + (_file.Length - _file.Position);
+            return true;
+        }
+
+        protected override void Dispose(bool disposing)
+        {
+            if (disposing) _file.Dispose();
+            base.Dispose(disposing);
+        }
     }
 
     private static void Absorb(JsonElement part, ref int inserted, List<JsonElement> failed)
@@ -519,6 +655,6 @@ public sealed class DmartClient : IDisposable
     {
         _http.Dispose();
         _uploadHttp.Dispose();
-        _handler.Dispose();
+        if (_ownsHandler) _handler.Dispose();
     }
 }
