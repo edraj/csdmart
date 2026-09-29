@@ -668,22 +668,43 @@ public sealed class CsvService(QueryService queries, EntryService entries, Schem
 // client disconnect. Rows commit one at a time, so everything before the cut is
 // already saved; this carries how far the import got, so a caller can report a
 // partial import as exactly that instead of an unexplained failure.
-public sealed class CsvImportInterruptedException(
-    int firstRow, int lastRow, int inserted, List<Dictionary<string, object>> failed, bool finished,
-    CancellationToken token)
-    : OperationCanceledException($"CSV import cancelled after row {lastRow}", token)
+public sealed class CsvImportInterruptedException : OperationCanceledException
 {
+    public CsvImportInterruptedException(
+        int firstRow, int lastRow, int inserted, List<Dictionary<string, object>> failed, bool finished,
+        CancellationToken token)
+        : base($"CSV import cancelled after row {lastRow}", token)
+    {
+        FirstRow = firstRow;
+        LastRow = lastRow;
+        Inserted = inserted;
+        Failed = failed;
+        Finished = finished;
+    }
+
+    // The three standard exception constructors (CA1032). ImportAsync always
+    // knows how far it got; these are for the ordinary construction paths
+    // (wrapping, rethrowing) and report nothing done.
+    public CsvImportInterruptedException()
+        : base("CSV import cancelled") { }
+
+    public CsvImportInterruptedException(string message)
+        : base(message) { }
+
+    public CsvImportInterruptedException(string message, Exception innerException)
+        : base(message, innerException) { }
+
     // The row this import started at (its start_row), and the last row it got
     // through. Rows are numbered from the first row after the header; each row
     // from FirstRow to LastRow is saved, is in Failed, or was blank.
-    public int FirstRow { get; } = firstRow;
-    public int LastRow { get; } = lastRow;
-    public int Inserted { get; } = inserted;
-    public List<Dictionary<string, object>> Failed { get; } = failed;
+    public int FirstRow { get; } = 1;
+    public int LastRow { get; }
+    public int Inserted { get; }
+    public List<Dictionary<string, object>> Failed { get; } = [];
 
     // True when the cancellation landed after the last row: nothing is left to
     // import, only the answer was cut off.
-    public bool Finished { get; } = finished;
+    public bool Finished { get; }
 
     // The first row not processed — the start_row that imports the rest.
     public int ResumeRow => Math.Max(LastRow + 1, FirstRow);
