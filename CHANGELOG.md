@@ -17,6 +17,46 @@
   rows. A schema that does not exist now stops the import before any row, in
   both modes.
 
+### Added
+
+- **`resources_from_csv?first_row=N`** — resume a cut-off import by uploading
+  the header plus only the rows still to come, saying which file row the first
+  of them is. `start_row=N`, which skips to that row in a full re-upload, still
+  works; the CLI and both upload dialogs now slice instead, so a file imported
+  in _k_ parts is transferred once rather than _k_ times.
+
+### Fixed
+
+- **A CSV upload from the cxb dialog carried no `Authorization` header.** cxb's
+  axios instance has no request interceptor, so a deployment whose backend is a
+  different origin fell back to the `auth_token` cookie — refused on a
+  cross-site request — and every upload answered 401.
+- **Both upload dialogs aborted before the server's 504 could arrive.** The
+  apps' axios instances default to a 30-second timeout and `REQUEST_TIMEOUT`
+  defaults to 35, so the answer carrying `resume_row` never reached the browser
+  and "Continue from row N" could not appear. A CSV upload now waits out the
+  server's own limit.
+- A `resume_row` that does not advance past the row the part started at is no
+  longer offered as "Continue from row N" — it re-imported the file from the
+  top, duplicating every auto-shortname row.
+- A row still being written when the time limit stopped the import now reports
+  the import's progress and resume point instead of a bare timeout, and names
+  that one row as needing a check.
+- An import that crosses the 100,000-row cap after committing rows now reports
+  those rows instead of a failure that says nothing was done.
+- The per-row failure list in a timeout's `error.info` is capped at 1,000
+  entries (`failed_count` still carries the true total, and `failed_truncated`
+  marks the list as partial). A CSV whose every row fails produced a
+  multi-megabyte error body on a request already over its time budget.
+- The access log no longer records `504` for a timed-out request whose response
+  had already begun: those connections are cut, not answered, and the line now
+  carries `response_aborted` alongside `timed_out`.
+- A request that reached the deadline and whose client disconnected immediately
+  afterwards is classified as a timeout rather than a disconnect.
+- The cxb upload dialog no longer reopens showing the previous upload's
+  failures and a live "Continue from row N" for a file the operator has moved
+  on from.
+
 ## v1.5.17 — 2026-09-26
 
 Re-release of v1.5.16, whose Windows build and signed checksum manifest did

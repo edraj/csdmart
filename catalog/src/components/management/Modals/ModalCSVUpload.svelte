@@ -151,6 +151,11 @@
                     file: upload.file,
                     isUpdate: upload.isUpdate,
                     startRow,
+                    // Catalog's axios instance does inject the bearer token in a
+                    // request interceptor, which reaffirms the same value; these
+                    // are passed so the upload does not depend on which app's
+                    // instance it was handed.
+                    headers: Dmart.getHeaders(),
                 },
             );
         } finally {

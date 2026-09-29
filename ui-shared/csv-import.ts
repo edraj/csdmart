@@ -46,6 +46,16 @@ export interface CsvUpload {
   isUpdate: boolean;
   // 1 = from the first row after the header.
   startRow?: number;
+  // The SDK's auth headers, i.e. `Dmart.getHeaders()`. Required: cxb's axios
+  // instance deliberately has no request interceptor ("unlike catalog, cxb
+  // never had one — the bearer token is handed to the SDK with
+  // Dmart.setToken()"), so nothing puts `Authorization` back on a call made
+  // through the instance directly. Without it a cxb deployment whose
+  // `website.backend` is a different origin falls back to the `auth_token`
+  // cookie, which JwtBearerSetup refuses on a cross-site request: every CSV
+  // upload answered 401. The same convention as cxb's other direct-axios
+  // calls (tools/import.svelte, tools/db_size_info.svelte).
+  headers: Record<string, string>;
 }
 
 // Each app passes its own SDK's axios instance: the workspaces pin different
@@ -54,8 +64,22 @@ export interface CsvUpload {
 export type CsvPost = (
   url: string,
   body: FormData,
-  config: { params: Record<string, string | number | boolean> },
+  config: {
+    params: Record<string, string | number | boolean>;
+    headers: Record<string, string>;
+    timeout: number;
+  },
 ) => Promise<{ data: unknown }>;
+
+// A CSV import is not an interactive call. dmart stops it at REQUEST_TIMEOUT
+// (35 s by default) and ANSWERS with the row to resume from, so the upload has
+// to outwait that answer — but both apps build their axios instance with
+// `timeout: website.backend_timeout`, which defaults to 30 s in each. The
+// browser aborted five seconds BEFORE the 504 that carries `resume_row`, so
+// "Continue from row N" could never appear in the one case it exists for.
+// Matches the CLI's own ceiling (DmartClient.UploadTimeout); it only guards a
+// connection that died without closing.
+const UPLOAD_TIMEOUT_MS = 10 * 60 * 1000;
 
 export async function uploadCsv(post: CsvPost, upload: CsvUpload): Promise<CsvImportResult> {
   // A picked File is a snapshot: once the file on disk changes (say, between an
@@ -66,19 +90,100 @@ export async function uploadCsv(post: CsvPost, upload: CsvUpload): Promise<CsvIm
   } catch {
     return failure("The file can no longer be read; it may have been changed or moved. Select it again and upload.");
   }
+  const startRow = upload.startRow && upload.startRow > 1 ? upload.startRow : 1;
+  // A resumed part sends only the rows it imports: the header, then the file
+  // from where that row begins. Re-sending the whole file on every part made a
+  // resumed import upload it once per part, and the server re-parse and discard
+  // the earlier rows each time. `first_row` says the body starts AT that row, so
+  // the rows the server reports stay the operator's own row numbers; the
+  // whole-file fallback keeps `start_row`, which makes it skip to there.
+  const body = startRow > 1 ? await sliceFromRow(upload.file, startRow) : null;
   const form = new FormData();
-  form.append("resources_file", upload.file);
+  form.append("resources_file", body ?? upload.file);
   const params: Record<string, string | number | boolean> = {};
   if (upload.isUpdate) params.is_update = true;
-  if (upload.startRow && upload.startRow > 1) params.start_row = upload.startRow;
+  if (startRow > 1) params[body ? "first_row" : "start_row"] = startRow;
   // Same route tsdmart's resourcesFromCsv builds.
   const url = `/managed/resources_from_csv/${upload.resourceType}/${upload.spaceName}/${upload.subpath}/${upload.schema}`;
+  let result: CsvImportResult;
   try {
-    const { data } = await post(url, form, { params });
-    return readCsvImportResponse(data);
+    const { data } = await post(url, form, {
+      params,
+      headers: withoutContentType(upload.headers),
+      timeout: UPLOAD_TIMEOUT_MS,
+    });
+    result = readCsvImportResponse(data);
   } catch (error) {
-    return readCsvImportError(error);
+    result = readCsvImportError(error);
   }
+  // The server answers `resume_row = lastRow + 1`. When not one row fit inside
+  // the time limit that is the row this part already started at, and offering
+  // "Continue from row N" would re-import from there for ever — and, from row 1,
+  // re-import the whole file, duplicating every auto-shortname row. Same guard
+  // the CLI applies in UploadCsvToEndAsync.
+  if (result.resumeRow !== undefined && result.resumeRow <= startRow) delete result.resumeRow;
+  return result;
+}
+
+// The SDK's header bag is the one it uses for its JSON calls, so it carries
+// `Content-type: application/json` (tsdmart's dmart.model.ts spells it with a
+// lower-case `t`; HTTP header names are case-insensitive and axios normalises
+// them, so it would be sent). This body is multipart, and only the browser can
+// name it — the Content-Type has to carry the boundary it generates.
+function withoutContentType(headers: Record<string, string>): Record<string, string> {
+  return Object.fromEntries(
+    Object.entries(headers).filter(([k]) => k.toLowerCase() !== "content-type"),
+  );
+}
+
+// The upload body for a resumed part: the header line, then the file from the
+// byte offset row `startRow` begins at. null when the file has no such row, or
+// when it cannot be scanned — the caller then sends the whole file and lets the
+// server skip.
+//
+// Rows are lines: CsvService reads the upload with ReadLineAsync, so the two
+// must agree on what ends one. That is "\n", "\r\n" or a lone "\r", exactly as
+// StreamReader sees it. Scanning raw bytes is safe because none of those can
+// occur inside a UTF-8 multi-byte sequence.
+async function sliceFromRow(file: Blob, startRow: number): Promise<Blob | null> {
+  const CHUNK = 1 << 16;
+  const LF = 0x0a;
+  const CR = 0x0d;
+  let lines = 0;
+  let headerEnd = 0;
+  let pendingCr = false;
+  const ends = (offset: number): Blob | null => {
+    lines++;
+    if (lines === 1) headerEnd = offset;
+    return lines === startRow ? new Blob([file.slice(0, headerEnd), file.slice(offset)]) : null;
+  };
+  try {
+    for (let consumed = 0; consumed < file.size; consumed += CHUNK) {
+      const chunk = new Uint8Array(await file.slice(consumed, consumed + CHUNK).arrayBuffer());
+      for (let i = 0; i < chunk.length; i++) {
+        const at = consumed + i;
+        // A "\r" already seen and this byte is not the "\n" that would have
+        // joined it: the line ended before this byte, which may itself start
+        // another break.
+        if (pendingCr && chunk[i] !== LF) {
+          const done = ends(at);
+          if (done) return done;
+        }
+        pendingCr = false;
+        if (chunk[i] === LF) {
+          const done = ends(at + 1);
+          if (done) return done;
+        } else if (chunk[i] === CR) {
+          pendingCr = true;
+        }
+      }
+    }
+  } catch {
+    return null;
+  }
+  // A trailing lone "\r" still ends a line, at end of file — but there is
+  // nothing after it to send.
+  return null;
 }
 
 // A request that got an answer (2xx).

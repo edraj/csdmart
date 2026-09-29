@@ -102,6 +102,15 @@
             } else {
                 selectedResourceType = ResourceType.content;
             }
+            // Everything the last upload left behind, cleared — as catalog's
+            // dialog already did. Without this a reopened dialog still showed
+            // the previous upload's failures and a live "Continue from row N"
+            // button, which re-sent that file (and its schema) against whatever
+            // subpath the dialog is mounted on now.
+            selectedSchema = null;
+            payloadFiles = [];
+            result = null;
+            sent = null;
         }
     });
 
@@ -187,6 +196,10 @@
                     file: upload.file,
                     isUpdate: upload.isUpdate,
                     startRow,
+                    // cxb's axios instance has no request interceptor, so a
+                    // call made through it directly carries no Authorization —
+                    // the same reason tools/import.svelte spreads these.
+                    headers: Dmart.getHeaders(),
                 },
             );
         } finally {
@@ -207,6 +220,7 @@
                 `CSV uploaded: ${formatCount(result.imported)} ${upload.isUpdate ? "updated" : "imported"}`,
             );
             result = null;
+            payloadFiles = [];
             isOpen = false;
         } else {
             showToast(Level.warn, result.message ?? `${formatCount(result.failedCount)} rows failed`);
