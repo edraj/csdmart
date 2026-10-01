@@ -1886,7 +1886,14 @@
                       </div>
                     </div>
                   {:else if itemDataValue?.payload?.content_type === "markdown" || itemDataValue?.payload?.content_type === "md"}
-                    <MarkdownEditor bind:content={markdownContent} />
+                    <MarkdownEditor
+                      bind:content={markdownContent}
+                      space_name={spaceNameValue}
+                      subpath={actualSubpathValue}
+                      parent_shortname={itemShortnameValue}
+                      isEditMode={true}
+                      attachments={itemDataValue?.attachments || []}
+                    />
                   {:else}
                     <HtmlEditor
                       bind:content={htmlEditor}

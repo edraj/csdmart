@@ -3,6 +3,9 @@
   import { mangle } from "marked-mangle";
   import { sanitizeHtml } from "@/lib/utils/sanitize";
   import { gfmHeadingId } from "marked-gfm-heading-id";
+  import { Dmart } from "@edraj/tsdmart";
+  import { getFileExtension, isImageFile } from "@/lib/fileUtils";
+  import { attachmentMarkdown } from "@/lib/markdownInsert";
 
   marked.use(mangle());
   marked.use(
@@ -22,13 +25,26 @@
     handleSave?: any;
     enableDynamicContent?: boolean;
     onDropKey?: ((key: { name: string; type: string }) => void) | null;
+    // Media insertion. All optional: without them the attachments button is
+    // simply not rendered, so the editor keeps working at the call sites that
+    // have no parent entry to attach to (template editing, entry creation).
+    isEditMode?: boolean;
+    attachments?: any;
+    space_name?: string;
+    subpath?: string;
+    parent_shortname?: string;
   }
 
-  let { 
-    content = $bindable(""), 
+  let {
+    content = $bindable(""),
     handleSave = () => {},
     enableDynamicContent = true,
-    onDropKey = null as any
+    onDropKey = null as any,
+    isEditMode = false,
+    attachments = null,
+    space_name = "",
+    subpath = "",
+    parent_shortname = "",
   }: Props = $props();
 
   const fieldTypes: FieldType[] = [
@@ -55,6 +71,11 @@
   let selectedFieldType = $state("string");
   let dynamicMenuRef: HTMLDivElement = $state(undefined as any);
   let isDraggingOver = $state(false);
+  let showAttachments = $state(false);
+
+  // Only media attachments are offered: the picker exists to put a picture in
+  // the prose, and a json/comment attachment has no meaningful markdown form.
+  let mediaAttachments = $derived(attachments?.media ?? []);
 
   function handleSelect() {
     start = textarea.selectionStart;
@@ -140,22 +161,64 @@
     }
   }
 
-  function insertKeyAtCursor(key: { name: string; type: string }) {
-    const placeholder = `{{${key.name}:${key.type}}}`;
-    const cursorPos = textarea.selectionStart;
-    
+  // Splice `snippet` in at the caret and leave the caret after it. Extracted
+  // from insertKeyAtCursor so attachment insertion reuses the same mechanics
+  // rather than reimplementing them a second way.
+  function insertAtCursor(snippet: string) {
+    const cursorPos = textarea?.selectionStart ?? content.length;
+
     const before = content.substring(0, cursorPos);
     const after = content.substring(cursorPos);
-    
-    content = before + placeholder + after;
+
+    content = before + snippet + after;
     handleSave();
-    
-    // Set cursor after the inserted placeholder
+
     setTimeout(() => {
-      const newCursorPos = cursorPos + placeholder.length;
-      textarea.setSelectionRange(newCursorPos, newCursorPos);
-      textarea.focus();
+      const newCursorPos = cursorPos + snippet.length;
+      textarea?.setSelectionRange(newCursorPos, newCursorPos);
+      textarea?.focus();
     }, 0);
+  }
+
+  function insertKeyAtCursor(key: { name: string; type: string }) {
+    insertAtCursor(`{{${key.name}:${key.type}}}`);
+  }
+
+  // Insert a media attachment of the entry being edited as markdown.
+  //
+  // The HTML editor has had this since forever; markdown did not, so authors
+  // had to hand-type the attachment URL — which meant knowing the
+  // /managed/payload URL shape by heart. Same picker, same URL builder, output
+  // as markdown instead of a DOM node.
+  function insertAttachment(attachment: any) {
+    if (!attachment) return;
+
+    const filename = attachment?.attributes?.payload?.body ?? "";
+    const url = Dmart.getAttachmentUrl({
+      resource_type: attachment.resource_type,
+      space_name,
+      subpath,
+      parent_shortname,
+      shortname: attachment.shortname,
+      // tsdmart appends `.${ext}` unless ext is literally null, and
+      // getFileExtension returns "" for a name with no dot — which would emit a
+      // URL ending in a bare dot. Harmless in a DOM node, but markdown shows
+      // the URL as text, so normalise "" to null.
+      ext: getFileExtension(filename) || null,
+    });
+
+    const label = attachment.shortname || filename || "attachment";
+    insertAtCursor(attachmentMarkdown(label, url, filename));
+
+    showAttachments = false;
+  }
+
+  function closeAttachments() {
+    showAttachments = false;
+  }
+
+  function handleAttachmentsModalClick(event: any) {
+    if (event.target === event.currentTarget) closeAttachments();
   }
 
   const listViewInsert =
@@ -350,6 +413,18 @@
       </button>
     </div>
 
+    {#if isEditMode && mediaAttachments.length > 0}
+      <div class="toolbar-group">
+        <button
+          class="toolbar-btn"
+          onclick={() => (showAttachments = true)}
+          title="Insert attachment"
+        >
+          <span>📎</span>
+        </button>
+      </div>
+    {/if}
+
     {#if enableDynamicContent}
       <div class="toolbar-group dynamic-content-group">
         <div class="dynamic-content-wrapper" bind:this={dynamicMenuRef}>
@@ -465,7 +540,125 @@
   </div>
 </div>
 
+{#if showAttachments}
+  <!-- svelte-ignore a11y_click_events_have_key_events a11y_no_noninteractive_element_interactions -->
+  <div
+    class="md-attachments-overlay"
+    role="dialog"
+    aria-modal="true"
+    aria-label="Insert attachment"
+    tabindex="-1"
+    onclick={handleAttachmentsModalClick}
+  >
+    <!-- The inner stopPropagation exists so a click on the panel does not reach
+         the overlay's close handler; role=presentation says it carries no
+         semantics of its own, which is what keeps that legitimate. -->
+    <div
+      class="md-attachments-modal"
+      role="presentation"
+      onclick={(e) => e.stopPropagation()}
+    >
+      <div class="md-attachments-header">
+        <h3>Insert attachment</h3>
+        <button
+          class="md-attachments-close"
+          aria-label="Close attachments"
+          onclick={closeAttachments}>✕</button
+        >
+      </div>
+      <div class="md-attachments-grid">
+        {#each mediaAttachments as attachment}
+          <button
+            type="button"
+            class="md-attachment-item"
+            onclick={() => insertAttachment(attachment)}
+            title={attachment?.attributes?.payload?.body ?? attachment.shortname}
+          >
+            <span class="md-attachment-icon">
+              {isImageFile(attachment?.attributes?.payload?.body ?? "") ? "🖼️" : "📎"}
+            </span>
+            <span class="md-attachment-name">{attachment.shortname}</span>
+          </button>
+        {/each}
+      </div>
+    </div>
+  </div>
+{/if}
+
+
 <style>
+
+  /* Attachment picker. Namespaced md- because the HTML editor ships its own
+     .attachments-* classes and these two editors can render on the same page. */
+  .md-attachments-overlay {
+    position: fixed;
+    inset: 0;
+    background: rgba(0, 0, 0, 0.5);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    z-index: 1000;
+  }
+  .md-attachments-modal {
+    background: var(--md-surface, #fff);
+    color: inherit;
+    border-radius: 8px;
+    width: min(560px, 92vw);
+    max-height: 80vh;
+    overflow: auto;
+    box-shadow: 0 10px 30px rgba(0, 0, 0, 0.25);
+  }
+  .md-attachments-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 12px 16px;
+    border-bottom: 1px solid rgba(0, 0, 0, 0.1);
+  }
+  .md-attachments-header h3 {
+    margin: 0;
+    font-size: 1rem;
+  }
+  .md-attachments-close {
+    border: 0;
+    background: transparent;
+    cursor: pointer;
+    font-size: 1rem;
+    line-height: 1;
+    padding: 4px 8px;
+  }
+  .md-attachments-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(140px, 1fr));
+    gap: 10px;
+    padding: 16px;
+  }
+  .md-attachment-item {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 6px;
+    padding: 12px 8px;
+    border: 1px solid rgba(0, 0, 0, 0.12);
+    border-radius: 6px;
+    background: transparent;
+    cursor: pointer;
+    font: inherit;
+    color: inherit;
+  }
+  .md-attachment-item:hover,
+  .md-attachment-item:focus-visible {
+    border-color: rgba(0, 0, 0, 0.35);
+  }
+  .md-attachment-icon {
+    font-size: 1.5rem;
+  }
+  .md-attachment-name {
+    font-size: 0.8rem;
+    overflow-wrap: anywhere;
+    text-align: center;
+  }
+
   .markdown-editor-container {
     height: 100%;
     display: flex;
