@@ -2,6 +2,57 @@
 
 ## Unreleased
 
+### Added
+
+- **A static-site generator over dmart content** — `catalog/ssg/generate.mjs`.
+  Queries dmart and writes one real HTML file per entry with the prose **in the
+  markup**, plus `sitemap.xml` and `robots.txt`:
+
+  ```bash
+  node ssg/generate.mjs --space website --subpath /pages --out dist/site \
+    --base https://dmart.cc [--api URL] [--token-file F]
+  ```
+
+  dmart could already hold content but not render a page:
+  `PayloadHandler.RendersInline` deliberately refuses `text/html` (user-uploaded
+  documents on a cookie-authenticated origin would be stored XSS), and the
+  catalog SPA pre-renders a shell only — `sanitize.ts` says it outright, "those
+  build-time pages carry no user payload". A crawler that does not execute JS saw
+  nothing. This closes that.
+
+  Deliberately a standalone Node tool rather than routify/spank SSR: the catalog
+  is client-only with `ssr: false` throughout, and nothing about emitting static
+  pages requires making ~1,900 files SSR-clean. It never touches the SPA's render
+  mode, so `/cat` as an admin UI cannot regress.
+
+  URLs come from `Entry.Slug` when present, `shortname` otherwise. Shortnames
+  cannot contain hyphens (`^[a-zA-Zء-ي0-9٠-٩ً-ٟ_]{1,64}$`), so a hyphenated URL
+  can only come from a slug — relevant to any site with existing URLs to
+  preserve. Mermaid fences emit `<pre class="mermaid">` for client-side
+  hydration rather than rendered SVG, which would need a headless browser and
+  drags ELK (1.4 MB) behind it. An empty result exits non-zero rather than
+  publishing an empty site over a good one. `html` payloads pass through
+  unsanitized, which is a trust boundary worth naming: whoever can write an
+  entry in the space can put script on the published site.
+
+- **A seeded `website` space** holding dmart.cc's 14 pages as markdown entries,
+  converted by `tools/website-migrate/convert.py`. Seed grows 740K → 992K; as
+  `seed/**` is an `EmbeddedResource` that is ~0.5% of the binary.
+
+  **Seeding grants no public access.** On a fresh install `/public/query`
+  returns 0 for the space while `/managed/query` returns 14, because
+  `AdminBootstrap` ships `world` with empty `subpaths` and — per
+  `docs/permissions.md` — its scope belongs to the operator once it exists.
+  Opening it up is one deliberate API call, documented in
+  `docs/catalog-ssg-plan.md`. Nothing serves the generated output yet; wiring it
+  to a URL prefix needs a regeneration story first.
+
+- **`resources_from_csv?first_row=N`** — resume a cut-off import by uploading
+  the header plus only the rows still to come, saying which file row the first
+  of them is. `start_row=N`, which skips to that row in a full re-upload, still
+  works; the CLI and both upload dialogs now slice instead, so a file imported
+  in _k_ parts is transferred once rather than _k_ times.
+
 ### Changed
 
 - **CSV update (`resources_from_csv?is_update=true`) now validates each row
@@ -17,15 +68,20 @@
   rows. A schema that does not exist now stops the import before any row, in
   both modes.
 
-### Added
-
-- **`resources_from_csv?first_row=N`** — resume a cut-off import by uploading
-  the header plus only the rows still to come, saying which file row the first
-  of them is. `start_row=N`, which skips to that row in a full re-upload, still
-  works; the CLI and both upload dialogs now slice instead, so a file imported
-  in _k_ parts is transferred once rather than _k_ times.
-
 ### Fixed
+
+- **The markdown editor could not insert media attachments.** The HTML editor
+  has had a 📎 picker for a long time; markdown authors had to hand-type the
+  `/managed/payload/{rt}/{space}/{subpath}/{parent}/{shortname}.{ext}` URL from
+  memory. Same picker, same URL builder, markdown output.
+
+  Images become `![label](url)` and everything else `[label](url)` — a PDF
+  emitted as an image renders as a broken-image icon rather than a download.
+  Labels have their brackets escaped, since a shortname containing `]` would
+  terminate the link text early. And `ext` is normalised from `""` to `null`:
+  tsdmart appends `` `.${ext}` `` unless `ext` is literally null, so an
+  extension-less attachment produced a URL ending in a bare dot — invisible in
+  the HTML editor's DOM node, visible as text in markdown.
 
 - **A CSV upload from the cxb dialog carried no `Authorization` header.** cxb's
   axios instance has no request interceptor, so a deployment whose backend is a
@@ -56,6 +112,29 @@
 - The cxb upload dialog no longer reopens showing the previous upload's
   failures and a live "Continue from row N" for a file the operator has moved
   on from.
+
+### Security
+
+- **axios 1.19.0 → 1.20.0** — 7 CVEs, including CVE-2026-101907 (SSRF via a
+  bypassed protocol check) and CVE-2026-101905 (request socket hijacking).
+- **undici 7.29.0 → 7.30.0 and 8.10.0 → 8.11.2** — CVE-2026-19534 (DoS via an
+  unrequested WebSocket) and CVE-2026-84961 (TLS certificate validation bypass).
+- **devalue 5.9.1 → 5.9.4** — CVE-2026-92708 (HIGH, cross-request process
+  memory disclosure) plus three advisories.
+
+  All three are lockfile refreshes with no `package.json` change — every range
+  already admitted the fixed version. All were newly published CVEs that began
+  failing the Security Gate on every branch, not regressions introduced here.
+
+### Removed
+
+- **`catalog/package-lock.json`** — an npm lockfile inside a yarn workspace that
+  was an input to nothing. `build-ui.sh` installs only at the workspace root, no
+  workflow referenced it, `cxb` has no equivalent, and it could not be
+  regenerated correctly anyway: resolving catalog standalone fails `ERESOLVE`
+  because `@roxi/routify` peer-requires `@sveltejs/vite-plugin-svelte ^2–^6`
+  while catalog is on `^7`. It was also being scanned alongside `yarn.lock`,
+  double-counting every dependency finding.
 
 ## v1.5.17 — 2026-09-26
 
