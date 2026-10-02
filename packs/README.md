@@ -50,14 +50,21 @@ be named explicitly.
 
 ```bash
 export BACKEND_ENV=/path/to/config.env      # how the CLI finds the database
-export DMART_URL=http://127.0.0.1:8282      # for the API phase
-export DMART_ADMIN_PASSWORD=...             # for the API phase
+export DMART_URL=http://127.0.0.1:8282      # for the API phases
+export DMART_ADMIN_PASSWORD=...             # for the API phases
+export DMART_PACKS_DEMO_PASSWORD=...        # the demo personas' password
 
 ./packs/install.sh                          # every non-optional pack
 ./packs/install.sh --packs servicedesk      # that pack plus its dependencies
 ./packs/install.sh --packs kb,comms --scale small
+./packs/demo.sh                             # drive the storyline's workflows
 ./packs/reset.sh --packs kb                 # drop one pack
 ```
+
+`demo.sh` walks the cases and access requests through their workflows over the
+real API as the real personas, so the resulting state and history come from
+dmart's engine rather than from the data. [DEMO.md](DEMO.md) is the guided tour
+— start there.
 
 `build.sh` alone assembles `dist/spaces/` without touching any database, which
 is the thing to run when inspecting what *would* be imported.
@@ -90,12 +97,15 @@ archive. So `pack.json` lists groups under `provides.groups` and `install.sh`
 creates them over the HTTP API in a second phase. That is the only reason
 `install.sh` needs a URL and a password at all.
 
-**The server must restart after installing.** dmart's authz cache is an
-in-process dictionary (`AuthzCacheRefresher`), not a materialized view — the
-documented `mv_user_roles` / `mv_role_permissions` do not exist. A CLI import
-writes the roles to the database but cannot invalidate a running server's copy,
-so new roles and permissions stay invisible until it restarts. `install.sh` says
-so when it finishes.
+**A running server cannot see the new roles until its authz cache is cleared.**
+That cache is a process-local dictionary (`AuthzCacheRefresher`), not a
+materialized view — the `mv_user_roles` / `mv_role_permissions` the docs used to
+describe never existed. Only a write made *through* the server clears it, so a
+CLI import leaves it stale.
+
+`install.sh` calls `GET /managed/reload-security-data` for you when it has a URL
+and a token, which fixes it without dropping connections. Restarting works too.
+Run the install without `--url` and it tells you to do one or the other.
 
 **Packs ship no history.** Re-importing an archive *appends* its
 `history.jsonl` rows every time rather than upserting them, so a pack installed
@@ -136,7 +146,7 @@ forgets `resolution_required`, and `gen_dataset.py` fails if it ever writes a
 ## Verified
 
 Installed on both drivers against a clean, seeded instance: **108 rows, 0
-failed** — 7 spaces, 20 folders, 12 schemas, 2 workflows, 77 entries, 8
+failed** — 7 spaces, 20 folders, 10 schemas, 2 workflows, 77 entries, 8
 attachments, 8 roles, 8 permissions, 3 groups and 8 personas. Every folder
 returns a resolved `folder_rendering` payload, so CXB renders all 20. A second
 install skips every existing row. `reset.sh --packs kb` removed exactly the `kb`

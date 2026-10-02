@@ -258,7 +258,7 @@ a running binary:
 | [k6](https://k6.io/) | JS-scripted scenarios with built-in thresholds; plays nice with CI. |
 
 Recommendations:
-- Keep a **real DB** underneath. In-memory mocks don't surface connection-pool or MV-refresh bottlenecks.
+- Keep a **real DB** underneath. In-memory mocks don't surface connection-pool bottlenecks or the cost of the authz lookups behind a cold cache.
 - Authenticate once, re-use the JWT. `/user/login` is rate-limited and its password-hashing step (Argon2id with `time_cost=3`) dominates if you retry it per request.
 - Measure both `total` and `returned` — large `retrieve_total: true` queries dominate the cost due to the extra `COUNT(*)` roundtrip. `retrieve_total: false` halves the work.
-- Watch `mv_user_roles` / `mv_role_permissions` refresh time under write-heavy workloads. `REFRESH MATERIALIZED VIEW CONCURRENTLY` is bounded by their row counts; if it starts dominating, pre-warm the user-access cache or throttle role/permission writes.
+- Watch the **authz cache hit rate** under write-heavy workloads. There are no materialized views to refresh; instead, every write to users/roles/permissions clears the whole in-process cache (`AuthzCacheRefresher.RefreshAsync`), so the next request from each distinct actor pays three SELECTs again. A workload that interleaves permission writes with reads from many actors can spend most of its time re-resolving authz. If that dominates, batch the role/permission writes rather than scattering them.

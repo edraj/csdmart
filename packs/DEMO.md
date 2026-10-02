@@ -14,8 +14,7 @@ export DMART_URL=http://127.0.0.1:8282
 export DMART_ADMIN_PASSWORD=...
 export DMART_PACKS_DEMO_PASSWORD=...            # the personas' password
 
-./packs/install.sh                              # 108 rows
-# restart dmart here — see "Why the restart" below
+./packs/install.sh                              # 108 rows; clears the authz cache
 ./packs/demo.sh                                 # drive the storyline
 ```
 
@@ -161,14 +160,19 @@ no endpoint that queries within a data asset. The downloadable file is for
 taking away; the entries are what answers a question — and only the entries
 honour path-based ACL.
 
-## Why the restart
+## Why the authz cache has to be cleared
 
-`install.sh` ends by telling you to restart dmart, and it means it. The authz
-cache is an in-process dictionary (`AuthzCacheRefresher`), not a materialized
-view — the `mv_user_roles` / `mv_role_permissions` that the docs describe do not
-exist. A CLI import writes the roles and permissions to the database but cannot
-invalidate a running server's copy, so the personas will fail their permission
-checks until the server restarts.
+The authz cache is a process-local dictionary (`AuthzCacheRefresher`), not a
+materialized view — the `mv_user_roles` / `mv_role_permissions` the docs used to
+describe never existed. Only a write made *through* the server clears it, so the
+import leaves it stale and the personas would fail their permission checks.
+
+`install.sh` calls `GET /managed/reload-security-data` at the end, which clears
+it in place. The sequence is easy to see for yourself: grant a role by direct
+SQL, watch the server still refuse the request, call that endpoint, watch the
+same request succeed — no restart involved.
+
+Restarting also works, and is the only option if you installed without a URL.
 
 ## What the demo does not claim
 

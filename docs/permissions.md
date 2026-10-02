@@ -338,8 +338,7 @@ For anonymous queries, `CanQueryAsync` is the ONLY gate.
 flowchart LR
     subgraph Write path
         W[UserRepo.UpsertAsync or<br/>AccessRepo.Upsert/DeleteRole/PermAsync]
-        MV["REFRESH MATERIALIZED VIEW<br/>mv_user_roles / mv_role_permissions<br/>(CONCURRENTLY)"]
-        Inv[AuthzCacheRefresher.InvalidateAllInMemory]
+        Inv["AuthzCacheRefresher.RefreshAsync<br/>→ InvalidateAllInMemory<br/>(clears the whole dict)"]
     end
     subgraph Read path
         R[PermissionService.ResolvePermissionsAsync]
@@ -387,14 +386,19 @@ contract.
 ## Debugging a permission decision
 
 1. Reproduce the HTTP call with a known actor.
-2. SQL: dump the actor's user row, their roles (via `mv_user_roles`),
-   their reachable permissions (via `mv_role_permissions` + direct
-   `users.roles`), and any `world` permission.
-3. Walk by hand: for `target.Subpath = "/foo/bar"`, candidates are
+2. SQL: dump the actor's user row and its `users.roles` array, the matching
+   `roles` rows and their `permissions` arrays, the `permissions` rows those
+   name, and any `world` permission. There are no `mv_*` views to read — the
+   flattening happens in `ResolvePermissionsAsync`, so the arrays are the
+   source of truth.
+3. If the database says the actor has access but the server denies it, the
+   in-process cache is stale — see the write path above. Call
+   `GET /managed/reload-security-data` and retry.
+4. Walk by hand: for `target.Subpath = "/foo/bar"`, candidates are
    `/`, `foo`, `foo/bar`. For each, try the permission's `subpaths[space]`
    (normalized) AND `subpaths[__all_spaces__]` (normalized).
-4. Check action, resource_type, conditions.
-5. If CanAsync returns true but you still see 0 results: SQL-level ACL
+5. Check action, resource_type, conditions.
+6. If CanAsync returns true but you still see 0 results: SQL-level ACL
    might be filtering. Dump the entry's `query_policies` and the user's
    policies.
 
