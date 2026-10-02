@@ -1,0 +1,14 @@
+{
+  "uuid": "0c359818-95f2-55ee-b85d-34d0cb9793ed",
+  "shortname": "datasets",
+  "is_active": true,
+  "tags": [],
+  "created_at": "2026-10-01T00:00:00",
+  "updated_at": "2026-10-01T00:00:00",
+  "owner_shortname": "dmart",
+  "payload": {
+    "content_type": "json",
+    "schema_shortname": "folder_rendering",
+    "body": "datasets.json"
+  }
+}

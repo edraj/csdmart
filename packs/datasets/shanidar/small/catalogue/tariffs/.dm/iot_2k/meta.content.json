@@ -1,0 +1,32 @@
+{
+  "uuid": "2c4885f4-b3ba-5443-b367-12be8b984381",
+  "shortname": "iot_2k",
+  "is_active": true,
+  "tags": [
+    "active"
+  ],
+  "created_at": "2026-10-01T00:00:00",
+  "updated_at": "2026-10-01T00:00:00",
+  "owner_shortname": "dmart",
+  "displayname": {
+    "en": "IoT 2,000"
+  },
+  "relationships": [
+    {
+      "related_to": {
+        "space_name": "catalogue",
+        "subpath": "products",
+        "shortname": "iot_fleet",
+        "resource_type": "content"
+      },
+      "attributes": {
+        "relation": "about_product"
+      }
+    }
+  ],
+  "payload": {
+    "content_type": "json",
+    "body": "iot_2k.json",
+    "schema_shortname": "tariff"
+  }
+}

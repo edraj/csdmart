@@ -1,0 +1,11 @@
+{
+  "name": "Baghdad Karrada Rooftop",
+  "region": "central",
+  "city": "Baghdad",
+  "kind": "rooftop",
+  "status": "live",
+  "commissioned_on": "2019-06-28",
+  "latitude": 33.3024,
+  "longitude": 44.4211,
+  "grid_hours_per_day": 14
+}

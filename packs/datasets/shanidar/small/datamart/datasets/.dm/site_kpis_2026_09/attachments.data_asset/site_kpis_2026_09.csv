@@ -1,0 +1,6 @@
+site,region,period,availability_pct,dropped_call_pct,data_volume_tb,outage_minutes
+bgd_0210,central,2026_09,99.5,0.7,61.8,14
+bsr_0031,south,2026_09,99.6,0.6,52.7,9
+erb_0142,north,2026_09,97.2,1.9,41.3,41
+krb_0007,central,2026_09,99.9,0.3,88.4,1
+mos_0088,north,2026_09,96.4,2.4,19.2,96

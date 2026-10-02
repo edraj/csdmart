@@ -1,0 +1,26 @@
+{
+  "uuid": "8e85bd04-78b1-55ac-80ed-a3e8d7d384dc",
+  "shortname": "comms",
+  "is_active": true,
+  "displayname": {
+    "en": "Communications"
+  },
+  "description": {
+    "en": "Outbound notices and campaign content."
+  },
+  "tags": [
+    "shanidar",
+    "pack:comms"
+  ],
+  "created_at": "2026-10-01T00:00:00",
+  "updated_at": "2026-10-01T00:00:00",
+  "owner_shortname": "dmart",
+  "languages": [
+    "english"
+  ],
+  "indexing_enabled": true,
+  "hide_folders": [
+    "schema"
+  ],
+  "active_plugins": []
+}

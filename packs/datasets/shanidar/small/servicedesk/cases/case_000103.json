@@ -1,0 +1,11 @@
+{
+  "title": "Home router slow every evening",
+  "category": "slow_data",
+  "severity": "normal",
+  "region": "south",
+  "site": "bsr_0031",
+  "customer_msisdn": "+9647800000917",
+  "reported_on": "2026-09-25",
+  "product": "home_wireless",
+  "article": "home_router_setup"
+}

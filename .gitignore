@@ -80,3 +80,10 @@ packages.lock.json
 # Python bytecode from tools/
 __pycache__/
 *.pyc
+
+# packs/build.sh output — assembled from packs/<name>/ on demand, never edited
+# by hand. The import also drops its work-list and issues sidecar in here.
+/packs/dist/
+# Generated dataset scales: only `small` is committed (PLAN.md "Scales").
+/packs/datasets/*/medium/
+/packs/datasets/*/large/

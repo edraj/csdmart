@@ -1,0 +1,12 @@
+{
+  "title": "No signal at home since Tuesday evening",
+  "category": "no_signal",
+  "severity": "high",
+  "region": "north",
+  "site": "erb_0142",
+  "customer_msisdn": "+9647500001842",
+  "reported_on": "2026-09-19",
+  "product": "prepaid_basic",
+  "equipment": "gen_erb_0142_a",
+  "article": "no_signal_triage"
+}

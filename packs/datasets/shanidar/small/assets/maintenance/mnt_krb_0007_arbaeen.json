@@ -1,0 +1,13 @@
+{
+  "summary": "Arbaeen COW deployed and commissioned",
+  "site": "krb_0007",
+  "region": "central",
+  "equipment": [
+    "cow_krb_0007"
+  ],
+  "kind": "upgrade",
+  "performed_on": "2026-08-20",
+  "technician": "tech_north_erbil",
+  "outcome": "completed",
+  "notes": "COW positioned on the eastern approach road, aligned to the pilgrim corridor. Commissioned on generator with a 9-hour grid window. Scheduled for recovery after the pilgrimage."
+}

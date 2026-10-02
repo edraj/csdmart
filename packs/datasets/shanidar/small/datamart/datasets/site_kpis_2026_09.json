@@ -1,0 +1,16 @@
+{
+  "title": "Site KPIs, September 2026",
+  "period": "2026_09",
+  "format": "csv",
+  "row_count": 5,
+  "columns": [
+    "site",
+    "region",
+    "period",
+    "availability_pct",
+    "dropped_call_pct",
+    "data_volume_tb",
+    "outage_minutes"
+  ],
+  "note": "One row per site for the month. Shipped as a downloadable CSV AND mirrored as kpi_row entries under /kpis, because dmart serves the file but does not run SQL inside it."
+}

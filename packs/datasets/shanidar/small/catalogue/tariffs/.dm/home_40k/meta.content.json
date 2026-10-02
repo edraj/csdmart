@@ -1,0 +1,32 @@
+{
+  "uuid": "6bc972e4-69b2-5130-ac64-ef56bdf5ec32",
+  "shortname": "home_40k",
+  "is_active": true,
+  "tags": [
+    "active"
+  ],
+  "created_at": "2026-10-01T00:00:00",
+  "updated_at": "2026-10-01T00:00:00",
+  "owner_shortname": "dmart",
+  "displayname": {
+    "en": "Home Wireless 40,000"
+  },
+  "relationships": [
+    {
+      "related_to": {
+        "space_name": "catalogue",
+        "subpath": "products",
+        "shortname": "home_wireless",
+        "resource_type": "content"
+      },
+      "attributes": {
+        "relation": "about_product"
+      }
+    }
+  ],
+  "payload": {
+    "content_type": "json",
+    "body": "home_40k.json",
+    "schema_shortname": "tariff"
+  }
+}

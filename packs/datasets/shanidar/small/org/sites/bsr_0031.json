@@ -1,0 +1,11 @@
+{
+  "name": "Basra Corniche",
+  "region": "south",
+  "city": "Basra",
+  "kind": "macro",
+  "status": "live",
+  "commissioned_on": "2020-11-03",
+  "latitude": 30.5085,
+  "longitude": 47.7804,
+  "grid_hours_per_day": 11
+}

@@ -1,0 +1,23 @@
+{
+  "uuid": "af215ca5-eca3-55f7-a47a-7b0855560ebf",
+  "shortname": "prepaid_basic",
+  "is_active": true,
+  "tags": [
+    "prepaid",
+    "active"
+  ],
+  "created_at": "2026-10-01T00:00:00",
+  "updated_at": "2026-10-01T00:00:00",
+  "owner_shortname": "dmart",
+  "displayname": {
+    "en": "Shanidar Prepaid Basic"
+  },
+  "description": {
+    "en": "Pay-as-you-go voice and data on a monthly top-up."
+  },
+  "payload": {
+    "content_type": "json",
+    "body": "prepaid_basic.json",
+    "schema_shortname": "product"
+  }
+}

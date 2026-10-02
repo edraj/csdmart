@@ -1,0 +1,11 @@
+{
+  "name": "Erbil Citadel East",
+  "region": "north",
+  "city": "Erbil",
+  "kind": "macro",
+  "status": "live",
+  "commissioned_on": "2021-04-12",
+  "latitude": 36.1911,
+  "longitude": 44.0092,
+  "grid_hours_per_day": 18
+}

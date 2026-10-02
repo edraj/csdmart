@@ -1,0 +1,20 @@
+{
+  "shortname_title": "Shortname",
+  "content_schema_shortnames": [],
+  "index_attributes": [
+    {
+      "key": "shortname",
+      "name": "Shortname"
+    },
+    {
+      "key": "displayname",
+      "name": "Title"
+    }
+  ],
+  "allow_view": true,
+  "allow_create": true,
+  "allow_update": true,
+  "allow_delete": false,
+  "use_media": false,
+  "filter": []
+}

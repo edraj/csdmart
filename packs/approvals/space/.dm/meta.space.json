@@ -1,0 +1,27 @@
+{
+  "uuid": "60aac99e-30a6-5eeb-a94a-8b1ef98e1ee9",
+  "shortname": "approvals",
+  "is_active": true,
+  "displayname": {
+    "en": "Approvals"
+  },
+  "description": {
+    "en": "Multi-step approval requests gated by role, reusing the seeded channel workflow."
+  },
+  "tags": [
+    "shanidar",
+    "pack:approvals"
+  ],
+  "created_at": "2026-10-01T00:00:00",
+  "updated_at": "2026-10-01T00:00:00",
+  "owner_shortname": "dmart",
+  "languages": [
+    "english"
+  ],
+  "indexing_enabled": true,
+  "hide_folders": [
+    "schema",
+    "workflows"
+  ],
+  "active_plugins": []
+}

@@ -1,0 +1,12 @@
+{
+  "title": "Unusable data along the Arbaeen route",
+  "category": "capacity",
+  "severity": "critical",
+  "region": "central",
+  "site": "krb_0007",
+  "customer_msisdn": "+9647500003301",
+  "reported_on": "2026-08-29",
+  "product": "prepaid_basic",
+  "equipment": "cow_krb_0007",
+  "article": "cow_deployment"
+}

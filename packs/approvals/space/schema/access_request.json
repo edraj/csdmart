@@ -1,0 +1,61 @@
+{
+  "title": "Access request",
+  "description": "A request to enter or work on a site.",
+  "type": "object",
+  "additionalProperties": false,
+  "properties": {
+    "summary": {
+      "type": "string"
+    },
+    "site": {
+      "type": "string"
+    },
+    "region": {
+      "type": "string",
+      "enum": [
+        "north",
+        "central",
+        "south"
+      ]
+    },
+    "requested_by": {
+      "type": "string"
+    },
+    "requested_for": {
+      "type": "string",
+      "format": "date"
+    },
+    "reason": {
+      "type": "string",
+      "enum": [
+        "maintenance",
+        "installation",
+        "audit",
+        "emergency"
+      ]
+    },
+    "escort_required": {
+      "type": "boolean"
+    },
+    "rejection_code": {
+      "type": "string",
+      "enum": [
+        "no_escort_available",
+        "window_clashes",
+        "insufficient_detail",
+        "not_authorised"
+      ]
+    },
+    "decision_note": {
+      "type": "string"
+    }
+  },
+  "required": [
+    "summary",
+    "site",
+    "region",
+    "requested_by",
+    "requested_for",
+    "reason"
+  ]
+}

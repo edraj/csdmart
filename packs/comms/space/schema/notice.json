@@ -1,0 +1,62 @@
+{
+  "title": "Notice",
+  "description": "An outbound customer or staff notice.",
+  "type": "object",
+  "additionalProperties": false,
+  "properties": {
+    "title": {
+      "type": "string"
+    },
+    "channel": {
+      "type": "string",
+      "enum": [
+        "sms",
+        "email",
+        "app_push",
+        "staff_portal"
+      ]
+    },
+    "audience": {
+      "type": "string",
+      "enum": [
+        "all",
+        "region",
+        "product",
+        "staff"
+      ]
+    },
+    "region": {
+      "type": "string",
+      "enum": [
+        "north",
+        "central",
+        "south"
+      ]
+    },
+    "site": {
+      "type": "string"
+    },
+    "article": {
+      "type": "string"
+    },
+    "send_on": {
+      "type": "string",
+      "format": "date"
+    },
+    "status": {
+      "type": "string",
+      "enum": [
+        "draft",
+        "scheduled",
+        "sent",
+        "cancelled"
+      ]
+    }
+  },
+  "required": [
+    "title",
+    "channel",
+    "audience",
+    "status"
+  ]
+}

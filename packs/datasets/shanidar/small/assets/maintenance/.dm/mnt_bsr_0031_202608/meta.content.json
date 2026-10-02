@@ -1,0 +1,55 @@
+{
+  "uuid": "f677bc12-ba32-5a4b-8126-628ce9a3faac",
+  "shortname": "mnt_bsr_0031_202608",
+  "is_active": true,
+  "tags": [
+    "scheduled",
+    "completed"
+  ],
+  "created_at": "2026-10-01T00:00:00",
+  "updated_at": "2026-10-01T00:00:00",
+  "owner_shortname": "dmart",
+  "displayname": {
+    "en": "Quarterly power inspection"
+  },
+  "relationships": [
+    {
+      "related_to": {
+        "space_name": "org",
+        "subpath": "sites",
+        "shortname": "bsr_0031",
+        "resource_type": "content"
+      },
+      "attributes": {
+        "relation": "located_in"
+      }
+    },
+    {
+      "related_to": {
+        "space_name": "assets",
+        "subpath": "equipment",
+        "shortname": "gen_bsr_0031_a",
+        "resource_type": "content"
+      },
+      "attributes": {
+        "relation": "affects"
+      }
+    },
+    {
+      "related_to": {
+        "space_name": "assets",
+        "subpath": "equipment",
+        "shortname": "bat_bsr_0031_1",
+        "resource_type": "content"
+      },
+      "attributes": {
+        "relation": "affects"
+      }
+    }
+  ],
+  "payload": {
+    "content_type": "json",
+    "body": "mnt_bsr_0031_202608.json",
+    "schema_shortname": "maintenance_visit"
+  }
+}

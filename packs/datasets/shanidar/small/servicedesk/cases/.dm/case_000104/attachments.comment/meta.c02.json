@@ -1,0 +1,13 @@
+{
+  "uuid": "bccdedae-058b-56b2-a965-d37c39f1ff05",
+  "shortname": "c02",
+  "is_active": true,
+  "tags": [],
+  "created_at": "2026-10-01T00:00:00",
+  "updated_at": "2026-10-01T00:00:00",
+  "owner_shortname": "sup_south",
+  "payload": {
+    "content_type": "comment",
+    "body": "c02.json"
+  }
+}

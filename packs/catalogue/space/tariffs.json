@@ -1,0 +1,29 @@
+{
+  "shortname_title": "Shortname",
+  "content_schema_shortnames": [
+    "tariff"
+  ],
+  "index_attributes": [
+    {
+      "key": "shortname",
+      "name": "Shortname"
+    },
+    {
+      "key": "product",
+      "name": "Product"
+    },
+    {
+      "key": "monthly_iqd",
+      "name": "IQD/month"
+    }
+  ],
+  "allow_view": true,
+  "allow_create": true,
+  "allow_update": true,
+  "allow_delete": false,
+  "use_media": false,
+  "filter": [],
+  "content_resource_types": [
+    "content"
+  ]
+}

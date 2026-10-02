@@ -1,0 +1,81 @@
+{
+  "title": "Case",
+  "description": "A customer-reported case worked by the service desk.",
+  "type": "object",
+  "additionalProperties": false,
+  "properties": {
+    "title": {
+      "type": "string"
+    },
+    "category": {
+      "type": "string",
+      "enum": [
+        "no_signal",
+        "slow_data",
+        "billing",
+        "device",
+        "capacity"
+      ]
+    },
+    "severity": {
+      "type": "string",
+      "enum": [
+        "low",
+        "normal",
+        "high",
+        "critical"
+      ]
+    },
+    "region": {
+      "type": "string",
+      "enum": [
+        "north",
+        "central",
+        "south"
+      ]
+    },
+    "site": {
+      "type": "string"
+    },
+    "product": {
+      "type": "string"
+    },
+    "equipment": {
+      "type": "string"
+    },
+    "article": {
+      "type": "string"
+    },
+    "customer_msisdn": {
+      "type": "string",
+      "pattern": "^\\+9647[0-9]0000[0-9]{4}$"
+    },
+    "reported_on": {
+      "type": "string",
+      "format": "date"
+    },
+    "resolution_code": {
+      "type": "string",
+      "enum": [
+        "fixed_remotely",
+        "site_repaired",
+        "equipment_replaced",
+        "billing_corrected",
+        "customer_educated",
+        "duplicate",
+        "not_reproducible",
+        "withdrawn"
+      ]
+    },
+    "resolution_note": {
+      "type": "string"
+    }
+  },
+  "required": [
+    "title",
+    "category",
+    "severity",
+    "region",
+    "reported_on"
+  ]
+}

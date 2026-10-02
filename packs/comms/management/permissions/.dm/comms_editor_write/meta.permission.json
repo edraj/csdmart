@@ -1,0 +1,31 @@
+{
+  "uuid": "470c36a6-ce5b-595f-bb42-b9c8491aa705",
+  "shortname": "comms_editor_write",
+  "is_active": true,
+  "tags": [],
+  "created_at": "2026-10-01T00:00:00",
+  "updated_at": "2026-10-01T00:00:00",
+  "owner_shortname": "dmart",
+  "subpaths": {
+    "comms": [
+      "notices"
+    ]
+  },
+  "resource_types": [
+    "content",
+    "folder",
+    "json",
+    "media",
+    "comment",
+    "reaction",
+    "relationship",
+    "data_asset"
+  ],
+  "actions": [
+    "query",
+    "view",
+    "create",
+    "update"
+  ],
+  "conditions": []
+}

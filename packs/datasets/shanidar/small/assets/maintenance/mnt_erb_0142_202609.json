@@ -1,0 +1,13 @@
+{
+  "summary": "Generator failed to start on grid loss",
+  "site": "erb_0142",
+  "region": "north",
+  "equipment": [
+    "gen_erb_0142_a"
+  ],
+  "kind": "reactive",
+  "performed_on": "2026-09-18",
+  "technician": "tech_north_erbil",
+  "outcome": "partial",
+  "notes": "Starter motor cranks but will not fire. Fuel polished, filter replaced, fault persists. Replacement starter ordered; site is on battery reserve until it arrives."
+}

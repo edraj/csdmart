@@ -1,0 +1,34 @@
+{
+  "name": "approvals",
+  "format": 1,
+  "title": "Approvals",
+  "summary": "Multi-step approval requests gated by role, reusing the seeded channel workflow.",
+  "space": "approvals",
+  "depends": [
+    "org"
+  ],
+  "links": [
+    "assets",
+    "org"
+  ],
+  "optional": false,
+  "folders": [
+    "requests",
+    "workflows",
+    "schema"
+  ],
+  "provides": {
+    "roles": [
+      "approvals_security"
+    ],
+    "permissions": [
+      "approvals_security_review"
+    ],
+    "groups": []
+  },
+  "scales": [
+    "small",
+    "medium",
+    "large"
+  ]
+}

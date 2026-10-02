@@ -1,0 +1,32 @@
+{
+  "uuid": "0728f407-6ece-59c7-bf58-7d5060bfce79",
+  "shortname": "prepaid_5k",
+  "is_active": true,
+  "tags": [
+    "active"
+  ],
+  "created_at": "2026-10-01T00:00:00",
+  "updated_at": "2026-10-01T00:00:00",
+  "owner_shortname": "dmart",
+  "displayname": {
+    "en": "Prepaid 5,000"
+  },
+  "relationships": [
+    {
+      "related_to": {
+        "space_name": "catalogue",
+        "subpath": "products",
+        "shortname": "prepaid_basic",
+        "resource_type": "content"
+      },
+      "attributes": {
+        "relation": "about_product"
+      }
+    }
+  ],
+  "payload": {
+    "content_type": "json",
+    "body": "prepaid_5k.json",
+    "schema_shortname": "tariff"
+  }
+}

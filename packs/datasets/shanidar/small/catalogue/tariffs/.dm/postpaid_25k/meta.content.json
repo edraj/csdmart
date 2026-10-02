@@ -1,0 +1,32 @@
+{
+  "uuid": "be8501ea-a06d-5e4a-ad5f-1d476c008f96",
+  "shortname": "postpaid_25k",
+  "is_active": true,
+  "tags": [
+    "active"
+  ],
+  "created_at": "2026-10-01T00:00:00",
+  "updated_at": "2026-10-01T00:00:00",
+  "owner_shortname": "dmart",
+  "displayname": {
+    "en": "Postpaid 25,000"
+  },
+  "relationships": [
+    {
+      "related_to": {
+        "space_name": "catalogue",
+        "subpath": "products",
+        "shortname": "postpaid_pro",
+        "resource_type": "content"
+      },
+      "attributes": {
+        "relation": "about_product"
+      }
+    }
+  ],
+  "payload": {
+    "content_type": "json",
+    "body": "postpaid_25k.json",
+    "schema_shortname": "tariff"
+  }
+}

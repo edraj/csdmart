@@ -1,0 +1,14 @@
+{
+  "uuid": "abbb446e-147f-54f0-abb2-6cf90a0d86bf",
+  "shortname": "sites",
+  "is_active": true,
+  "tags": [],
+  "created_at": "2026-10-01T00:00:00",
+  "updated_at": "2026-10-01T00:00:00",
+  "owner_shortname": "dmart",
+  "payload": {
+    "content_type": "json",
+    "schema_shortname": "folder_rendering",
+    "body": "sites.json"
+  }
+}

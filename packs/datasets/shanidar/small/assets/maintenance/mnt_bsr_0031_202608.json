@@ -1,0 +1,14 @@
+{
+  "summary": "Quarterly power inspection",
+  "site": "bsr_0031",
+  "region": "south",
+  "equipment": [
+    "gen_bsr_0031_a",
+    "bat_bsr_0031_1"
+  ],
+  "kind": "scheduled",
+  "performed_on": "2026-08-11",
+  "technician": "tech_south_basra",
+  "outcome": "completed",
+  "notes": "Generator load-tested at 70% for one hour. Battery bank holds to specification. No action required."
+}

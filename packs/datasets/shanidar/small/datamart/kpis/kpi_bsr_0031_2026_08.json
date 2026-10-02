@@ -1,0 +1,9 @@
+{
+  "site": "bsr_0031",
+  "region": "south",
+  "period": "2026_08",
+  "availability_pct": 99.7,
+  "dropped_call_pct": 0.5,
+  "data_volume_tb": 50.2,
+  "outage_minutes": 7
+}

@@ -1,0 +1,32 @@
+{
+  "uuid": "756e36c6-6881-506e-a1fd-10893de987fb",
+  "shortname": "catalogue_editor_write",
+  "is_active": true,
+  "tags": [],
+  "created_at": "2026-10-01T00:00:00",
+  "updated_at": "2026-10-01T00:00:00",
+  "owner_shortname": "dmart",
+  "subpaths": {
+    "catalogue": [
+      "products",
+      "tariffs"
+    ]
+  },
+  "resource_types": [
+    "content",
+    "folder",
+    "json",
+    "media",
+    "comment",
+    "reaction",
+    "relationship",
+    "data_asset"
+  ],
+  "actions": [
+    "query",
+    "view",
+    "create",
+    "update"
+  ],
+  "conditions": []
+}

@@ -1,0 +1,62 @@
+{
+  "title": "Maintenance visit",
+  "description": "A scheduled or reactive visit to a site.",
+  "type": "object",
+  "additionalProperties": false,
+  "properties": {
+    "summary": {
+      "type": "string"
+    },
+    "site": {
+      "type": "string"
+    },
+    "region": {
+      "type": "string",
+      "enum": [
+        "north",
+        "central",
+        "south"
+      ]
+    },
+    "equipment": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "kind": {
+      "type": "string",
+      "enum": [
+        "scheduled",
+        "reactive",
+        "upgrade"
+      ]
+    },
+    "performed_on": {
+      "type": "string",
+      "format": "date"
+    },
+    "technician": {
+      "type": "string"
+    },
+    "outcome": {
+      "type": "string",
+      "enum": [
+        "completed",
+        "partial",
+        "deferred"
+      ]
+    },
+    "notes": {
+      "type": "string"
+    }
+  },
+  "required": [
+    "summary",
+    "site",
+    "region",
+    "kind",
+    "performed_on",
+    "outcome"
+  ]
+}

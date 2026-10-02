@@ -1,0 +1,30 @@
+{
+  "name": "kb",
+  "format": 1,
+  "title": "Knowledge base",
+  "summary": "Markdown articles that cases and products cite.",
+  "space": "kb",
+  "depends": [],
+  "links": [
+    "catalogue",
+    "servicedesk"
+  ],
+  "optional": false,
+  "folders": [
+    "articles"
+  ],
+  "provides": {
+    "roles": [
+      "kb_author"
+    ],
+    "permissions": [
+      "kb_author_write"
+    ],
+    "groups": []
+  },
+  "scales": [
+    "small",
+    "medium",
+    "large"
+  ]
+}

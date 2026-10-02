@@ -1,0 +1,33 @@
+{
+  "shortname_title": "Shortname",
+  "content_schema_shortnames": [
+    "maintenance_visit"
+  ],
+  "index_attributes": [
+    {
+      "key": "shortname",
+      "name": "Shortname"
+    },
+    {
+      "key": "site",
+      "name": "Site"
+    },
+    {
+      "key": "performed_on",
+      "name": "Date"
+    },
+    {
+      "key": "outcome",
+      "name": "Outcome"
+    }
+  ],
+  "allow_view": true,
+  "allow_create": true,
+  "allow_update": true,
+  "allow_delete": false,
+  "use_media": false,
+  "filter": [],
+  "content_resource_types": [
+    "content"
+  ]
+}

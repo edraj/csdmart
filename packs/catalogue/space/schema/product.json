@@ -1,0 +1,39 @@
+{
+  "title": "Product",
+  "description": "A sellable mobile or fixed-wireless product.",
+  "type": "object",
+  "additionalProperties": false,
+  "properties": {
+    "name": {
+      "type": "string"
+    },
+    "family": {
+      "type": "string",
+      "enum": [
+        "prepaid",
+        "postpaid",
+        "fixed_wireless",
+        "iot"
+      ]
+    },
+    "status": {
+      "type": "string",
+      "enum": [
+        "active",
+        "retired"
+      ]
+    },
+    "launched_on": {
+      "type": "string",
+      "format": "date"
+    },
+    "summary": {
+      "type": "string"
+    }
+  },
+  "required": [
+    "name",
+    "family",
+    "status"
+  ]
+}

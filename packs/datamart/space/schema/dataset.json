@@ -1,0 +1,43 @@
+{
+  "title": "Dataset",
+  "description": "A published dataset; the file rides as a data_asset.",
+  "type": "object",
+  "additionalProperties": false,
+  "properties": {
+    "title": {
+      "type": "string"
+    },
+    "period": {
+      "type": "string",
+      "pattern": "^[0-9]{4}_[0-9]{2}$"
+    },
+    "format": {
+      "type": "string",
+      "enum": [
+        "csv",
+        "jsonl",
+        "parquet",
+        "sqlite"
+      ]
+    },
+    "row_count": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "columns": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "note": {
+      "type": "string"
+    }
+  },
+  "required": [
+    "title",
+    "period",
+    "format",
+    "row_count"
+  ]
+}

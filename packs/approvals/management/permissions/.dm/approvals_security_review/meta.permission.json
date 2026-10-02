@@ -1,0 +1,32 @@
+{
+  "uuid": "0d06ffee-042b-50c4-a51f-9df3f9206427",
+  "shortname": "approvals_security_review",
+  "is_active": true,
+  "tags": [],
+  "created_at": "2026-10-01T00:00:00",
+  "updated_at": "2026-10-01T00:00:00",
+  "owner_shortname": "dmart",
+  "subpaths": {
+    "approvals": [
+      "requests"
+    ]
+  },
+  "resource_types": [
+    "content",
+    "folder",
+    "json",
+    "media",
+    "comment",
+    "reaction",
+    "relationship",
+    "data_asset",
+    "ticket"
+  ],
+  "actions": [
+    "query",
+    "view",
+    "update",
+    "progress_ticket"
+  ],
+  "conditions": []
+}

@@ -1,0 +1,47 @@
+{
+  "title": "KPI row",
+  "description": "One site-month of network KPIs, queryable as an entry.",
+  "type": "object",
+  "additionalProperties": false,
+  "properties": {
+    "site": {
+      "type": "string"
+    },
+    "region": {
+      "type": "string",
+      "enum": [
+        "north",
+        "central",
+        "south"
+      ]
+    },
+    "period": {
+      "type": "string",
+      "pattern": "^[0-9]{4}_[0-9]{2}$"
+    },
+    "availability_pct": {
+      "type": "number",
+      "minimum": 0,
+      "maximum": 100
+    },
+    "dropped_call_pct": {
+      "type": "number",
+      "minimum": 0,
+      "maximum": 100
+    },
+    "data_volume_tb": {
+      "type": "number",
+      "minimum": 0
+    },
+    "outage_minutes": {
+      "type": "integer",
+      "minimum": 0
+    }
+  },
+  "required": [
+    "site",
+    "region",
+    "period",
+    "availability_pct"
+  ]
+}

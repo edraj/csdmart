@@ -1,0 +1,33 @@
+{
+  "name": "org",
+  "format": 1,
+  "title": "Organisation",
+  "summary": "Sites, regions and the organisational spine every other pack hangs off.",
+  "space": "org",
+  "depends": [],
+  "links": [],
+  "optional": false,
+  "folders": [
+    "sites",
+    "regions",
+    "schema"
+  ],
+  "provides": {
+    "roles": [
+      "org_viewer"
+    ],
+    "permissions": [
+      "org_viewer_read"
+    ],
+    "groups": [
+      "org_region_north",
+      "org_region_central",
+      "org_region_south"
+    ]
+  },
+  "scales": [
+    "small",
+    "medium",
+    "large"
+  ]
+}
