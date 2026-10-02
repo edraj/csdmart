@@ -307,8 +307,6 @@ public static class SearchExpressionParser
         @"^[a-z][a-z0-9_]{0,63}$",
         RegexOptions.Compiled, matchTimeout: TimeSpan.FromMilliseconds(RegexTimeoutMs));
 
-    private static string EscapeSqlLiteral(string s) => s.Replace("'", "''");
-
     // ── Parsed data structures ────────────────────────────────────────────
 
     private sealed class SearchField
@@ -737,7 +735,7 @@ public static class SearchExpressionParser
             var sub = field[(dot + 1)..];
             if (!SafeColumnIdent.IsMatch(col)) return null;
             if (sub == "*") return BuildWildcardTextSql(col, data, ctx);
-            var expr = BuildJsonbPath(col, sub);
+            var expr = BuildJsonbPath(col, sub, ctx.Dialect);
             return BuildScalarSql(expr, data, ctx);
         }
 
@@ -1436,16 +1434,21 @@ public static class SearchExpressionParser
         return "(" + string.Join(joinOp, conditions) + ")";
     }
 
-    private static string BuildJsonbPath(string column, string dotPath)
+    // Addresses a dotted path under a non-payload JSON column — `@acl.foo:x`,
+    // `@relationships.attributes.relation:installed_at`. The payload column has
+    // its own richer builder (BuildPayloadSql); this is the generic fallback.
+    //
+    // Must go through the dialect. This used to emit PostgreSQL's
+    // `col::jsonb->>'k'` unconditionally, which on SQLite tokenizes `::` as a
+    // named parameter and failed the whole query with
+    // `SQLite Error 1: 'unrecognized token: ":"'` — surfacing to the caller as
+    // a 430 db error rather than a result. Every such selector was unusable on
+    // SQLite while working on PostgreSQL, so the two drivers answered the same
+    // query differently. PostgresSqlDialect.JsonText emits exactly the string
+    // this method used to build, so the PostgreSQL side is unchanged.
+    private static string BuildJsonbPath(string column, string dotPath, ISqlDialect dialect)
     {
         var segments = dotPath.Split('.');
-        if (segments.Length == 0) return $"{column}::text";
-        if (segments.Length == 1) return $"{column}::jsonb->>'{EscapeSqlLiteral(segments[0])}'";
-
-        var sb = new StringBuilder($"{column}::jsonb");
-        for (var i = 0; i < segments.Length - 1; i++)
-            sb.Append($"->'{EscapeSqlLiteral(segments[i])}'");
-        sb.Append($"->>'{EscapeSqlLiteral(segments[^1])}'");
-        return sb.ToString();
+        return dialect.JsonText(column, segments);
     }
 }
