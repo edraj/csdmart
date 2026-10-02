@@ -1,0 +1,11 @@
+{
+  "name": "Mosul Left Bank",
+  "region": "north",
+  "city": "Mosul",
+  "kind": "shelter",
+  "status": "maintenance",
+  "commissioned_on": "2022-02-14",
+  "latitude": 36.3489,
+  "longitude": 43.1577,
+  "grid_hours_per_day": 13
+}

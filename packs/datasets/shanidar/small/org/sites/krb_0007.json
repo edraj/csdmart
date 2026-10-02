@@ -1,0 +1,11 @@
+{
+  "name": "Karbala Arbaeen COW",
+  "region": "central",
+  "city": "Karbala",
+  "kind": "cow",
+  "status": "live",
+  "commissioned_on": "2026-08-20",
+  "latitude": 32.616,
+  "longitude": 44.0249,
+  "grid_hours_per_day": 9
+}

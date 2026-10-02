@@ -1,0 +1,66 @@
+{
+  "title": "Site",
+  "description": "A physical network site: a tower, rooftop or shelter.",
+  "type": "object",
+  "additionalProperties": false,
+  "properties": {
+    "name": {
+      "type": "string"
+    },
+    "region": {
+      "type": "string",
+      "enum": [
+        "north",
+        "central",
+        "south"
+      ]
+    },
+    "city": {
+      "type": "string"
+    },
+    "kind": {
+      "type": "string",
+      "enum": [
+        "macro",
+        "rooftop",
+        "shelter",
+        "cow"
+      ]
+    },
+    "status": {
+      "type": "string",
+      "enum": [
+        "live",
+        "planned",
+        "maintenance",
+        "decommissioned"
+      ]
+    },
+    "commissioned_on": {
+      "type": "string",
+      "format": "date"
+    },
+    "latitude": {
+      "type": "number",
+      "minimum": 28.5,
+      "maximum": 37.5
+    },
+    "longitude": {
+      "type": "number",
+      "minimum": 38.5,
+      "maximum": 48.5
+    },
+    "grid_hours_per_day": {
+      "type": "integer",
+      "minimum": 0,
+      "maximum": 24
+    }
+  },
+  "required": [
+    "name",
+    "region",
+    "city",
+    "kind",
+    "status"
+  ]
+}

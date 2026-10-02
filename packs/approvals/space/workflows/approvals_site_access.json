@@ -1,0 +1,66 @@
+{
+  "name": "Site access request",
+  "initial_state": "submitted",
+  "states": [
+    {
+      "name": "Submitted",
+      "state": "submitted",
+      "next": [
+        {
+          "action": "approve",
+          "state": "approved",
+          "roles": [
+            "approvals_security"
+          ]
+        },
+        {
+          "action": "reject",
+          "state": "rejected",
+          "roles": [
+            "approvals_security"
+          ],
+          "resolution_required": true
+        }
+      ]
+    },
+    {
+      "name": "Approved",
+      "state": "approved",
+      "next": [
+        {
+          "action": "complete",
+          "state": "completed",
+          "roles": [
+            "approvals_security"
+          ]
+        }
+      ]
+    },
+    {
+      "name": "Rejected",
+      "state": "rejected",
+      "resolutions": [
+        {
+          "key": "no_escort_available",
+          "en": "No escort available"
+        },
+        {
+          "key": "window_clashes",
+          "en": "Clashes with another visit"
+        },
+        {
+          "key": "insufficient_detail",
+          "en": "Insufficient detail"
+        },
+        {
+          "key": "not_authorised",
+          "en": "Requester not authorised for this site"
+        }
+      ]
+    },
+    {
+      "name": "Completed",
+      "state": "completed"
+    }
+  ]
+}

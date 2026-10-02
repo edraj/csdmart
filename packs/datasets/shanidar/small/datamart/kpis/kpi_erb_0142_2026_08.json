@@ -1,0 +1,9 @@
+{
+  "site": "erb_0142",
+  "region": "north",
+  "period": "2026_08",
+  "availability_pct": 99.8,
+  "dropped_call_pct": 0.4,
+  "data_volume_tb": 38.1,
+  "outage_minutes": 3
+}

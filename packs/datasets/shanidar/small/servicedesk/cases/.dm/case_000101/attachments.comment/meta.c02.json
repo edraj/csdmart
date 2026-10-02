@@ -1,0 +1,13 @@
+{
+  "uuid": "92ef5126-03bd-5379-a458-0a551fe6d10b",
+  "shortname": "c02",
+  "is_active": true,
+  "tags": [],
+  "created_at": "2026-10-01T00:00:00",
+  "updated_at": "2026-10-01T00:00:00",
+  "owner_shortname": "agent_baghdad",
+  "payload": {
+    "content_type": "comment",
+    "body": "c02.json"
+  }
+}

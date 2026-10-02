@@ -1,0 +1,23 @@
+{
+  "uuid": "c3ed5d75-6a81-55fb-9d5b-d9831706b0e1",
+  "shortname": "iot_fleet",
+  "is_active": true,
+  "tags": [
+    "iot",
+    "active"
+  ],
+  "created_at": "2026-10-01T00:00:00",
+  "updated_at": "2026-10-01T00:00:00",
+  "owner_shortname": "dmart",
+  "displayname": {
+    "en": "Shanidar IoT Fleet"
+  },
+  "description": {
+    "en": "Low-bandwidth SIMs for vehicle and meter telemetry."
+  },
+  "payload": {
+    "content_type": "json",
+    "body": "iot_fleet.json",
+    "schema_shortname": "product"
+  }
+}

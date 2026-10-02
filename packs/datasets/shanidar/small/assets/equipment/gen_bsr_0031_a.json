@@ -1,0 +1,10 @@
+{
+  "name": "Basra 0031 primary generator",
+  "kind": "generator",
+  "site": "bsr_0031",
+  "region": "south",
+  "status": "in_service",
+  "installed_on": "2020-11-03",
+  "last_service_on": "2026-08-11",
+  "rated_kva": 80
+}

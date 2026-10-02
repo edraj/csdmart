@@ -1,0 +1,23 @@
+{
+  "uuid": "69bc0172-545a-5d96-849b-292ad9a0306f",
+  "shortname": "home_wireless",
+  "is_active": true,
+  "tags": [
+    "fixed_wireless",
+    "active"
+  ],
+  "created_at": "2026-10-01T00:00:00",
+  "updated_at": "2026-10-01T00:00:00",
+  "owner_shortname": "dmart",
+  "displayname": {
+    "en": "Shanidar Home Wireless"
+  },
+  "description": {
+    "en": "Fixed-wireless broadband over a bundled indoor router."
+  },
+  "payload": {
+    "content_type": "json",
+    "body": "home_wireless.json",
+    "schema_shortname": "product"
+  }
+}

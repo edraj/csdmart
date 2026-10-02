@@ -1,0 +1,8 @@
+{
+  "name": "Postpaid 25,000",
+  "product": "postpaid_pro",
+  "monthly_iqd": 25000,
+  "data_gb": 30,
+  "voice_minutes": 1200,
+  "status": "active"
+}

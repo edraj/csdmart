@@ -1,0 +1,20 @@
+{
+  "uuid": "b5b81a69-edf5-5c5b-acf1-80c947e84b2a",
+  "shortname": "no_signal_triage",
+  "is_active": true,
+  "tags": [
+    "agent",
+    "coverage",
+    "triage"
+  ],
+  "created_at": "2026-10-01T00:00:00",
+  "updated_at": "2026-10-01T00:00:00",
+  "owner_shortname": "dmart",
+  "displayname": {
+    "en": "Triaging a no-signal report"
+  },
+  "payload": {
+    "content_type": "markdown",
+    "body": "no_signal_triage.md"
+  }
+}

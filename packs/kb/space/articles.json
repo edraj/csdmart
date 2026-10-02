@@ -8,7 +8,7 @@
     },
     {
       "key": "displayname",
-      "name": "Name"
+      "name": "Title"
     }
   ],
   "allow_view": true,

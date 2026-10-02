@@ -1,0 +1,14 @@
+{
+  "uuid": "c3548b9b-e076-5a74-b529-439b4c946d6c",
+  "shortname": "access_request",
+  "is_active": true,
+  "tags": [],
+  "created_at": "2026-10-01T00:00:00",
+  "updated_at": "2026-10-01T00:00:00",
+  "owner_shortname": "dmart",
+  "payload": {
+    "content_type": "json",
+    "schema_shortname": "meta_schema",
+    "body": "access_request.json"
+  }
+}

@@ -1,0 +1,101 @@
+{
+  "note": "Fictional staff of the fictional Shanidar Telecom. Created by install.sh over the API; passwords come from DMART_PACKS_DEMO_PASSWORD and are never stored here.",
+  "personas": [
+    {
+      "shortname": "agent_baghdad",
+      "displayname": "Service desk agent, Baghdad",
+      "email": "agent_baghdad@example.com",
+      "msisdn": "+9647700000101",
+      "roles": [
+        "servicedesk_agent"
+      ],
+      "groups": [
+        "org_region_central"
+      ]
+    },
+    {
+      "shortname": "sup_south",
+      "displayname": "Service desk supervisor, South",
+      "email": "sup_south@example.com",
+      "msisdn": "+9647800000102",
+      "roles": [
+        "servicedesk_supervisor"
+      ],
+      "groups": [
+        "org_region_south"
+      ]
+    },
+    {
+      "shortname": "tech_north_erbil",
+      "displayname": "Field technician, Erbil",
+      "email": "tech_north_erbil@example.com",
+      "msisdn": "+9647500000103",
+      "roles": [
+        "assets_technician"
+      ],
+      "groups": [
+        "org_region_north"
+      ]
+    },
+    {
+      "shortname": "tech_south_basra",
+      "displayname": "Field technician, Basra",
+      "email": "tech_south_basra@example.com",
+      "msisdn": "+9647800000104",
+      "roles": [
+        "assets_technician"
+      ],
+      "groups": [
+        "org_region_south"
+      ]
+    },
+    {
+      "shortname": "security_officer",
+      "displayname": "Site security officer",
+      "email": "security_officer@example.com",
+      "msisdn": "+9647700000105",
+      "roles": [
+        "approvals_security"
+      ],
+      "groups": [
+        "org_region_central"
+      ]
+    },
+    {
+      "shortname": "kb_author_najaf",
+      "displayname": "Knowledge base author",
+      "email": "kb_author_najaf@example.com",
+      "msisdn": "+9647700000106",
+      "roles": [
+        "kb_author"
+      ],
+      "groups": [
+        "org_region_central"
+      ]
+    },
+    {
+      "shortname": "analyst_hq",
+      "displayname": "Network analyst, HQ",
+      "email": "analyst_hq@example.com",
+      "msisdn": "+9647700000107",
+      "roles": [
+        "datamart_analyst"
+      ],
+      "groups": [
+        "org_region_central"
+      ]
+    },
+    {
+      "shortname": "editor_hq",
+      "displayname": "Catalogue editor, HQ",
+      "email": "editor_hq@example.com",
+      "msisdn": "+9647700000108",
+      "roles": [
+        "catalogue_editor"
+      ],
+      "groups": [
+        "org_region_central"
+      ]
+    }
+  ]
+}

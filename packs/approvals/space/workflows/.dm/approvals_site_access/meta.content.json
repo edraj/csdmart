@@ -1,0 +1,18 @@
+{
+  "uuid": "e909a320-e8a1-57a1-940f-e4c5d71defd3",
+  "shortname": "approvals_site_access",
+  "is_active": true,
+  "tags": [
+    "workflow"
+  ],
+  "created_at": "2026-10-01T00:00:00",
+  "updated_at": "2026-10-01T00:00:00",
+  "owner_shortname": "dmart",
+  "displayname": {
+    "en": "Site access request"
+  },
+  "payload": {
+    "content_type": "json",
+    "body": "approvals_site_access.json"
+  }
+}

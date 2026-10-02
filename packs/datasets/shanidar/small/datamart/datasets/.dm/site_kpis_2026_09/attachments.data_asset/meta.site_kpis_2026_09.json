@@ -1,0 +1,16 @@
+{
+  "uuid": "c9b83751-fc57-5c0b-8118-866d4ebde95d",
+  "shortname": "site_kpis_2026_09",
+  "is_active": true,
+  "tags": [
+    "csv"
+  ],
+  "created_at": "2026-10-01T00:00:00",
+  "updated_at": "2026-10-01T00:00:00",
+  "owner_shortname": "dmart",
+  "payload": {
+    "content_type": "csv",
+    "checksum": "2c61506a3cd1aa27475fdfbba5f845e9fe69300cb10e67cf5ea6dbfe459b440e",
+    "body": "site_kpis_2026_09.csv"
+  }
+}

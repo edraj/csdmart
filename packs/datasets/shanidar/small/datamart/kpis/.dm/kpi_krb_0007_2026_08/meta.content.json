@@ -1,0 +1,33 @@
+{
+  "uuid": "6d505c91-3839-5b57-bac1-56debebb2847",
+  "shortname": "kpi_krb_0007_2026_08",
+  "is_active": true,
+  "tags": [
+    "central",
+    "2026_08"
+  ],
+  "created_at": "2026-10-01T00:00:00",
+  "updated_at": "2026-10-01T00:00:00",
+  "owner_shortname": "dmart",
+  "displayname": {
+    "en": "krb_0007 2026-08"
+  },
+  "relationships": [
+    {
+      "related_to": {
+        "space_name": "org",
+        "subpath": "sites",
+        "shortname": "krb_0007",
+        "resource_type": "content"
+      },
+      "attributes": {
+        "relation": "located_in"
+      }
+    }
+  ],
+  "payload": {
+    "content_type": "json",
+    "body": "kpi_krb_0007_2026_08.json",
+    "schema_shortname": "kpi_row"
+  }
+}

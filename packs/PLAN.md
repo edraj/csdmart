@@ -703,6 +703,63 @@ parsed and then dropped for zip imports. Fixed in
 re-install is idempotent for everything else. Once #324 lands, `--skip-history`
 is the belt to that braces.
 
+### Found while authoring the content
+
+Six more things the content had to be shaped around, each hit in practice.
+
+**`content_type` is the ContentType enum's wire value, not the file
+extension.** A markdown entry needs `"content_type": "markdown"` with the body
+at `{sn}.md`; `"md"` is rejected at import with `unknown ContentType value: md`.
+
+**`msisdn` is validated digits-only** — `^\+?[0-9]{6,15}$`
+(`Config/RegexPatternsConfig.cs:26`). The brief's `+964 7X0 000 NNNN` is a
+*display* format; stored values are `+9647500001842`. A spaced value fails with
+`MSISDN format is invalid`.
+
+**An imported row's `owner_shortname` must already exist as a user.** It is a
+foreign key to `users(shortname)`, so a pack cannot import content owned by a
+persona the same install creates — the case comments failed every row until
+`install.sh` was reordered to create the personas *before* the import. The
+reverse is fine: `users.roles` is a plain text array with no foreign key, so a
+persona can be created holding a role the import has not landed yet.
+
+**A folder named after one of its schemas silently disabled validation.** The
+import validator resolved a schema's externalized body from the space root
+before the schema folder, so `assets/equipment.json` (a folder's
+`folder_rendering` body) was compiled instead of
+`assets/schema/equipment.json`. The compile threw, the warning went to the log,
+null was cached, and every row imported unvalidated. Fixed in
+[#325](https://github.com/edraj/csdmart/pull/325) — and `cases`/`case`,
+`equipment`/`equipment` is the natural naming, so this was not an exotic shape.
+
+**A history query scopes by `filter_shortnames`, not `search`.**
+`HistoryRepository.QueryHistoryAsync` builds its WHERE from
+space/subpath/filter_shortnames/from/to and never reads `Search`
+(`DataAdapters/Sql/HistoryRepository.cs:252-283`), so `@shortname:x` on a
+history query is accepted and silently ignored — it returns every row in the
+subpath.
+
+**The payload route wants the CLR name, not the wire value.** Downloading a
+data asset needs `/managed/payload/dataasset/...`; `data_asset` returns
+`400 unknown resource_type 'data_asset'`. The route parses with
+`Enum.TryParse<ResourceType>` (`Api/Managed/PayloadHandler.cs:33`), which
+matches the C# member rather than `[EnumMember]`. Seven route handlers share
+the pattern, and it only bites the two-word types (`data_asset`,
+`plugin_wrapper`), which is presumably why it has gone unnoticed. **Not
+changed** — it is consistent across the whole URL surface and
+`ErrorCodeParityTests.cs:170` suggests the shape is deliberate parity, so
+widening it is a call for the maintainer rather than a drive-by.
+
+### Personas: two dropped, and why
+
+The approved persona list named `acct_mgr_dealers` and `backoffice_channel` to
+reuse the seeded `channel` workflow's existing gates. Both are dropped: that
+workflow gates on roles `account_manager` and `backoffice`, which dmart does
+**not** seed (`seed/spaces/management/roles/.dm/` ships `dummy`, `logged_in`,
+`manager`, `moderator`, `super_admin`, `test_role`). "Reusing" it would have
+meant inventing the roles anyway, so `approvals` defines its own workflow with
+`<pack>_` prefixed gates, per the naming rule.
+
 ### Corrections to earlier notes in this document
 
 - The "every meta FK-fails on import" failure was a stale binary against a

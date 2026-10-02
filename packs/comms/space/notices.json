@@ -1,14 +1,24 @@
 {
   "shortname_title": "Shortname",
-  "content_schema_shortnames": [],
+  "content_schema_shortnames": [
+    "notice"
+  ],
   "index_attributes": [
     {
       "key": "shortname",
       "name": "Shortname"
     },
     {
-      "key": "displayname",
-      "name": "Name"
+      "key": "channel",
+      "name": "Channel"
+    },
+    {
+      "key": "send_on",
+      "name": "Send on"
+    },
+    {
+      "key": "status",
+      "name": "Status"
     }
   ],
   "allow_view": true,
@@ -16,5 +26,8 @@
   "allow_update": true,
   "allow_delete": false,
   "use_media": false,
-  "filter": []
+  "filter": [],
+  "content_resource_types": [
+    "content"
+  ]
 }

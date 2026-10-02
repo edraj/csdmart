@@ -62,6 +62,23 @@ export DMART_ADMIN_PASSWORD=...             # for the API phase
 `build.sh` alone assembles `dist/spaces/` without touching any database, which
 is the thing to run when inspecting what *would* be imported.
 
+## What is in it
+
+The storyline is anchored on three sites that recur across every pack, which is
+what makes the demo interlinked rather than eight unrelated folders:
+`erb_0142` (Erbil — a faulty generator, a customer case, a bad KPI month),
+`bsr_0031` (Basra — the healthy comparison) and `krb_0007` (Karbala — a cell on
+wheels for the Arbaeen pilgrimage).
+
+At `small` scale: 5 sites, 3 regions, 4 products, 5 tariffs, 7 equipment units,
+3 maintenance visits, 4 markdown KB articles, 4 cases with comments, 2 access
+requests, 8 KPI rows, 1 dual-shipped dataset, 2 notices, and 8 personas.
+
+Two content styles on purpose: `kb` holds **markdown** entries with `tags` and
+no schema (a schema validates `payload.body` as JSON, which markdown is not);
+every other pack holds **JSON** against a real schema, with each folder
+declaring the schema and resource type it accepts.
+
 ## Three constraints the code imposes
 
 These are not design preferences. Each was measured against a running dmart and
@@ -91,24 +108,43 @@ and permissions are keyed and skipped (`skipped 43 existing, 0 failed`).
 
 ## Regenerating
 
-The space trees and management overlays are generated, not hand-written:
+Nothing under `packs/<name>/space`, `packs/<name>/management` or
+`packs/datasets/` is hand-written:
 
 ```bash
-python3 packs/lib/gen_spaces.py
-python3 packs/lib/gen_management.py
+python3 packs/lib/gen_spaces.py        # space + folder metas, folder_rendering
+python3 packs/lib/gen_management.py    # roles and permissions
+python3 packs/lib/gen_schemas.py       # the content schemas
+python3 packs/lib/gen_workflows.py     # the two state machines
+python3 packs/lib/gen_dataset.py --scale small
 ```
 
-Both are deterministic — UUIDv5 from a fixed namespace and one fixed timestamp
-— so re-running produces a byte-identical tree. That matters because the output
-is committed, and a churning diff would hide real change. `gen_management.py`
-also fails if a pack's `pack.json` and its generated permissions drift apart.
+`packs/lib/shanidar.py` holds the storyline itself — sites, cases, articles,
+personas, and the resolution catalogues. It is the one file to edit to change
+what the demo says.
+
+All are deterministic — UUIDv5 from a fixed namespace and one fixed timestamp —
+so re-running produces a byte-identical tree. That matters because the output is
+committed, and a churning diff would hide real change.
+
+They also check themselves: `gen_management.py` fails if a pack's `pack.json`
+and its generated permissions drift apart, `gen_workflows.py` fails on a
+transition naming a state that does not exist or a closing transition that
+forgets `resolution_required`, and `gen_dataset.py` fails if it ever writes a
+`history.jsonl`.
 
 ## Verified
 
-Installed on both drivers against a clean, seeded instance: **43 rows, 0
-failed** on SQLite and on PostgreSQL, 7 spaces, 20 folders, 8 roles, 8
-permissions and 3 groups. Every folder returns a resolved `folder_rendering`
-payload, so CXB renders all 20. A second install reports `skipped 43 existing,
-0 failed`. `reset.sh --packs kb` removed exactly the `kb` space, role and
-permission, leaving dmart's own `super_admin`, `logged_in` and `world` intact,
-and a re-install restored it.
+Installed on both drivers against a clean, seeded instance: **108 rows, 0
+failed** — 7 spaces, 20 folders, 12 schemas, 2 workflows, 77 entries, 8
+attachments, 8 roles, 8 permissions, 3 groups and 8 personas. Every folder
+returns a resolved `folder_rendering` payload, so CXB renders all 20. A second
+install skips every existing row. `reset.sh --packs kb` removed exactly the `kb`
+space, role and permission, left dmart's own `super_admin`, `logged_in` and
+`world` intact, and a re-install restored it.
+
+`demo.sh` then drove every workflow path: three cases resolved by the role that
+was allowed to, four refusals that should have been refused (an agent closing an
+escalated case, a close with no reason, a technician approving his own request),
+and `case_000101` left with three history rows attributed to the two users who
+caused them.

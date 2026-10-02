@@ -1,0 +1,23 @@
+{
+  "uuid": "24fa3c50-e84f-561a-8116-ab42e5538e1d",
+  "shortname": "site_kpis_2026_09",
+  "is_active": true,
+  "tags": [
+    "2026_09",
+    "csv"
+  ],
+  "created_at": "2026-10-01T00:00:00",
+  "updated_at": "2026-10-01T00:00:00",
+  "owner_shortname": "dmart",
+  "displayname": {
+    "en": "Site KPIs, September 2026"
+  },
+  "description": {
+    "en": "One row per site for the month. Shipped as a downloadable CSV AND mirrored as kpi_row entries under /kpis, because dmart serves the file but does not run SQL inside it."
+  },
+  "payload": {
+    "content_type": "json",
+    "body": "site_kpis_2026_09.json",
+    "schema_shortname": "dataset"
+  }
+}

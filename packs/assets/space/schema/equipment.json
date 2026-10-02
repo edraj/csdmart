@@ -1,0 +1,60 @@
+{
+  "title": "Equipment",
+  "description": "A serviceable unit installed at a site.",
+  "type": "object",
+  "additionalProperties": false,
+  "properties": {
+    "name": {
+      "type": "string"
+    },
+    "kind": {
+      "type": "string",
+      "enum": [
+        "generator",
+        "cabinet",
+        "cow",
+        "battery_bank",
+        "aircon"
+      ]
+    },
+    "site": {
+      "type": "string"
+    },
+    "region": {
+      "type": "string",
+      "enum": [
+        "north",
+        "central",
+        "south"
+      ]
+    },
+    "status": {
+      "type": "string",
+      "enum": [
+        "in_service",
+        "faulty",
+        "standby",
+        "retired"
+      ]
+    },
+    "installed_on": {
+      "type": "string",
+      "format": "date"
+    },
+    "rated_kva": {
+      "type": "number",
+      "minimum": 0
+    },
+    "last_service_on": {
+      "type": "string",
+      "format": "date"
+    }
+  },
+  "required": [
+    "name",
+    "kind",
+    "site",
+    "region",
+    "status"
+  ]
+}

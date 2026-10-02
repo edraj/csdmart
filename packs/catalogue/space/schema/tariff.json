@@ -1,0 +1,39 @@
+{
+  "title": "Tariff",
+  "description": "A priced plan attached to a product.",
+  "type": "object",
+  "additionalProperties": false,
+  "properties": {
+    "name": {
+      "type": "string"
+    },
+    "product": {
+      "type": "string"
+    },
+    "monthly_iqd": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "data_gb": {
+      "type": "number",
+      "minimum": 0
+    },
+    "voice_minutes": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "status": {
+      "type": "string",
+      "enum": [
+        "active",
+        "retired"
+      ]
+    }
+  },
+  "required": [
+    "name",
+    "product",
+    "monthly_iqd",
+    "status"
+  ]
+}

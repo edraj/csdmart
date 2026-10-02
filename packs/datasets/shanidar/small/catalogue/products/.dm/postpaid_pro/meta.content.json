@@ -1,0 +1,23 @@
+{
+  "uuid": "1b04427e-e16e-5a1e-9b82-3d8caab0da79",
+  "shortname": "postpaid_pro",
+  "is_active": true,
+  "tags": [
+    "postpaid",
+    "active"
+  ],
+  "created_at": "2026-10-01T00:00:00",
+  "updated_at": "2026-10-01T00:00:00",
+  "owner_shortname": "dmart",
+  "displayname": {
+    "en": "Shanidar Postpaid Pro"
+  },
+  "description": {
+    "en": "Billed monthly, with a shared data allowance across two SIMs."
+  },
+  "payload": {
+    "content_type": "json",
+    "body": "postpaid_pro.json",
+    "schema_shortname": "product"
+  }
+}

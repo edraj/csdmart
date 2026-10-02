@@ -1,0 +1,9 @@
+{
+  "site": "krb_0007",
+  "region": "central",
+  "period": "2026_08",
+  "availability_pct": 99.1,
+  "dropped_call_pct": 0.8,
+  "data_volume_tb": 22.6,
+  "outage_minutes": 12
+}

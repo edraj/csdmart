@@ -1,0 +1,9 @@
+{
+  "summary": "Site access to replace the erb_0142 generator starter",
+  "site": "erb_0142",
+  "region": "north",
+  "requested_by": "tech_north_erbil",
+  "requested_for": "2026-09-26",
+  "reason": "maintenance",
+  "escort_required": true
+}

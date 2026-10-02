@@ -1,0 +1,20 @@
+{
+  "uuid": "58189005-52bf-56e7-9a9e-dba1f5297927",
+  "shortname": "cow_deployment",
+  "is_active": true,
+  "tags": [
+    "technician",
+    "deployment",
+    "capacity"
+  ],
+  "created_at": "2026-10-01T00:00:00",
+  "updated_at": "2026-10-01T00:00:00",
+  "owner_shortname": "dmart",
+  "displayname": {
+    "en": "Deploying a COW for a seasonal event"
+  },
+  "payload": {
+    "content_type": "markdown",
+    "body": "cow_deployment.md"
+  }
+}

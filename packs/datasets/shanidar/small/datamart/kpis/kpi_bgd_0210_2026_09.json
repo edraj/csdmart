@@ -1,0 +1,9 @@
+{
+  "site": "bgd_0210",
+  "region": "central",
+  "period": "2026_09",
+  "availability_pct": 99.5,
+  "dropped_call_pct": 0.7,
+  "data_volume_tb": 61.8,
+  "outage_minutes": 14
+}

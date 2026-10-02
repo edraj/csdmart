@@ -1,0 +1,9 @@
+{
+  "name": "Basra 0031 battery bank",
+  "kind": "battery_bank",
+  "site": "bsr_0031",
+  "region": "south",
+  "status": "standby",
+  "installed_on": "2020-11-03",
+  "last_service_on": "2026-07-30"
+}

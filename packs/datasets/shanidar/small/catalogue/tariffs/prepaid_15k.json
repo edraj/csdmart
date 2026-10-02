@@ -1,0 +1,8 @@
+{
+  "name": "Prepaid 15,000",
+  "product": "prepaid_basic",
+  "monthly_iqd": 15000,
+  "data_gb": 12,
+  "voice_minutes": 400,
+  "status": "active"
+}

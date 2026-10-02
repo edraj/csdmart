@@ -1,0 +1,108 @@
+{
+  "name": "Service desk case",
+  "initial_state": "open",
+  "states": [
+    {
+      "name": "Open",
+      "state": "open",
+      "next": [
+        {
+          "action": "take",
+          "state": "in_progress",
+          "roles": [
+            "servicedesk_agent",
+            "servicedesk_supervisor"
+          ]
+        },
+        {
+          "action": "escalate",
+          "state": "escalated",
+          "roles": [
+            "servicedesk_agent"
+          ]
+        }
+      ]
+    },
+    {
+      "name": "In progress",
+      "state": "in_progress",
+      "next": [
+        {
+          "action": "resolve",
+          "state": "resolved",
+          "roles": [
+            "servicedesk_agent",
+            "servicedesk_supervisor"
+          ],
+          "resolution_required": true
+        },
+        {
+          "action": "escalate",
+          "state": "escalated",
+          "roles": [
+            "servicedesk_agent"
+          ]
+        }
+      ]
+    },
+    {
+      "name": "Escalated",
+      "state": "escalated",
+      "next": [
+        {
+          "action": "resolve",
+          "state": "resolved",
+          "roles": [
+            "servicedesk_supervisor"
+          ],
+          "resolution_required": true
+        },
+        {
+          "action": "return",
+          "state": "in_progress",
+          "roles": [
+            "servicedesk_supervisor"
+          ]
+        }
+      ]
+    },
+    {
+      "name": "Resolved",
+      "state": "resolved",
+      "resolutions": [
+        {
+          "key": "fixed_remotely",
+          "en": "Fixed remotely"
+        },
+        {
+          "key": "site_repaired",
+          "en": "Site repaired"
+        },
+        {
+          "key": "equipment_replaced",
+          "en": "Equipment replaced"
+        },
+        {
+          "key": "billing_corrected",
+          "en": "Billing corrected"
+        },
+        {
+          "key": "customer_educated",
+          "en": "Customer advised"
+        },
+        {
+          "key": "duplicate",
+          "en": "Duplicate report"
+        },
+        {
+          "key": "not_reproducible",
+          "en": "Not reproducible"
+        },
+        {
+          "key": "withdrawn",
+          "en": "Withdrawn by customer"
+        }
+      ]
+    }
+  ]
+}

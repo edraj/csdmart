@@ -1,0 +1,10 @@
+{
+  "name": "Karbala Arbaeen COW unit",
+  "kind": "cow",
+  "site": "krb_0007",
+  "region": "central",
+  "status": "in_service",
+  "installed_on": "2026-08-20",
+  "last_service_on": "2026-09-25",
+  "rated_kva": 25
+}

@@ -11,8 +11,7 @@
   ],
   "optional": false,
   "folders": [
-    "articles",
-    "schema"
+    "articles"
   ],
   "provides": {
     "roles": [

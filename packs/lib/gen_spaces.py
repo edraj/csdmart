@@ -58,18 +58,57 @@ def folder_meta(pack, folder):
         },
     }
 
-def folder_body(folder):
+# What each folder is allowed to hold. dmart enforces both of these on write
+# (FolderContentValidator), so a folder that declares its schema rejects an
+# entry of the wrong shape instead of silently storing it.
+#
+# A folder absent from this table accepts anything — `schema` and `workflows`
+# hold pack machinery whose shapes vary, and kb's `articles` hold MARKDOWN,
+# which a JSON Schema cannot validate.
+FOLDER_CONTENT = {
+    ("org", "regions"):            (["region"], ["content"]),
+    ("org", "sites"):              (["site"], ["content"]),
+    ("catalogue", "products"):     (["product"], ["content"]),
+    ("catalogue", "tariffs"):      (["tariff"], ["content"]),
+    ("assets", "equipment"):       (["equipment"], ["content"]),
+    ("assets", "maintenance"):     (["maintenance_visit"], ["content"]),
+    ("servicedesk", "cases"):      (["case"], ["ticket"]),
+    ("approvals", "requests"):     (["access_request"], ["ticket"]),
+    ("datamart", "datasets"):      (["dataset"], ["content"]),
+    ("datamart", "kpis"):          (["kpi_row"], ["content"]),
+    ("comms", "notices"):          (["notice"], ["content"]),
+}
+
+# Columns the admin UI lists for a folder, beyond shortname. Chosen per folder
+# so a listing is readable rather than a wall of identical rows.
+INDEX_EXTRA = {
+    ("org", "sites"):          [("region", "Region"), ("city", "City"), ("status", "Status")],
+    ("org", "regions"):        [("name", "Name"), ("hq_city", "HQ")],
+    ("catalogue", "products"): [("family", "Family"), ("status", "Status")],
+    ("catalogue", "tariffs"):  [("product", "Product"), ("monthly_iqd", "IQD/month")],
+    ("assets", "equipment"):   [("kind", "Kind"), ("site", "Site"), ("status", "Status")],
+    ("assets", "maintenance"): [("site", "Site"), ("performed_on", "Date"), ("outcome", "Outcome")],
+    ("servicedesk", "cases"):  [("state", "State"), ("severity", "Severity"), ("region", "Region")],
+    ("approvals", "requests"): [("state", "State"), ("site", "Site"), ("requested_for", "For")],
+    ("datamart", "kpis"):      [("site", "Site"), ("period", "Period"), ("availability_pct", "Availability %")],
+    ("datamart", "datasets"):  [("period", "Period"), ("format", "Format"), ("row_count", "Rows")],
+    ("comms", "notices"):      [("channel", "Channel"), ("send_on", "Send on"), ("status", "Status")],
+    ("kb", "articles"):        [("displayname", "Title")],
+}
+
+def folder_body(pack_name, folder):
     # folder_rendering requires index_attributes; everything else is optional.
-    # allow_create/update stay false on `schema` so the admin UI does not invite
-    # editing pack machinery by hand.
+    # allow_create/update stay false on `schema` and `workflows` so the admin UI
+    # does not invite editing pack machinery by hand.
     machinery = folder in ("schema", "workflows")
-    return {
+    schemas, types = FOLDER_CONTENT.get((pack_name, folder), ([], []))
+    index = [{"key": "shortname", "name": "Shortname"}]
+    for key, label in INDEX_EXTRA.get((pack_name, folder), []):
+        index.append({"key": key, "name": label})
+    body = {
         "shortname_title": "Shortname",
-        "content_schema_shortnames": [],
-        "index_attributes": [
-            {"key": "shortname", "name": "Shortname"},
-            {"key": "displayname", "name": "Name"},
-        ],
+        "content_schema_shortnames": schemas,
+        "index_attributes": index,
         "allow_view": True,
         "allow_create": not machinery,
         "allow_update": not machinery,
@@ -77,6 +116,9 @@ def folder_body(folder):
         "use_media": False,
         "filter": [],
     }
+    if types:
+        body["content_resource_types"] = types
+    return body
 
 def main():
     # Pack root is this script's parent's parent — packs/lib/ -> packs/.
@@ -90,7 +132,7 @@ def main():
         write_json(f"{base}/.dm/meta.space.json", space_meta(pack))
         for folder in pack["folders"]:
             write_json(f"{base}/{folder}/.dm/meta.folder.json", folder_meta(pack, folder))
-            write_json(f"{base}/{folder}.json", folder_body(folder))
+            write_json(f"{base}/{folder}.json", folder_body(name, folder))
         print(f"  {name}: space + {len(pack['folders'])} folders")
 
 if __name__ == "__main__":

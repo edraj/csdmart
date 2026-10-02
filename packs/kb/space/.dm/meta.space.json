@@ -19,8 +19,6 @@
     "english"
   ],
   "indexing_enabled": true,
-  "hide_folders": [
-    "schema"
-  ],
+  "hide_folders": [],
   "active_plugins": []
 }

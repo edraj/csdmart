@@ -1,0 +1,20 @@
+{
+  "uuid": "e4c4cb60-0933-5f38-aa9a-10fbdccbb4e8",
+  "shortname": "south",
+  "is_active": true,
+  "tags": [],
+  "created_at": "2026-10-01T00:00:00",
+  "updated_at": "2026-10-01T00:00:00",
+  "owner_shortname": "dmart",
+  "displayname": {
+    "en": "South"
+  },
+  "description": {
+    "en": "South region, headquartered in Basra."
+  },
+  "payload": {
+    "content_type": "json",
+    "body": "south.json",
+    "schema_shortname": "region"
+  }
+}

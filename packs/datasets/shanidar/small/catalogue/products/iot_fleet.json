@@ -1,0 +1,7 @@
+{
+  "name": "Shanidar IoT Fleet",
+  "family": "iot",
+  "status": "active",
+  "launched_on": "2024-05-20",
+  "summary": "Low-bandwidth SIMs for vehicle and meter telemetry."
+}

@@ -1,14 +1,20 @@
 {
   "shortname_title": "Shortname",
-  "content_schema_shortnames": [],
+  "content_schema_shortnames": [
+    "region"
+  ],
   "index_attributes": [
     {
       "key": "shortname",
       "name": "Shortname"
     },
     {
-      "key": "displayname",
+      "key": "name",
       "name": "Name"
+    },
+    {
+      "key": "hq_city",
+      "name": "HQ"
     }
   ],
   "allow_view": true,
@@ -16,5 +22,8 @@
   "allow_update": true,
   "allow_delete": false,
   "use_media": false,
-  "filter": []
+  "filter": [],
+  "content_resource_types": [
+    "content"
+  ]
 }
