@@ -338,12 +338,58 @@ else:
         a = r["attributes"]
         print("    %-20s %s" % (a.get("request_headers", {}).get("actor")
               or a.get("owner_shortname", "?"), json.dumps(a.get("diff", {}))[:90]))'
+    cat <<'EOF'
+
+== 8. the archive: twelve months that nothing replayed
+
+   Six cases shipped WITH their history, dated across 2025-11 to 2026-08 and
+   attributed to the agent or supervisor who did the work. No script walked
+   them: the rows arrived as data and the importer kept the authored uuid and
+   timestamp.
+EOF
+    curl -sS -m 20 -X POST "$URL/managed/query" \
+        -H 'Content-Type: application/json' -H "Authorization: Bearer $ADMIN_TOKEN" \
+        -d '{"type":"history","space_name":"servicedesk","subpath":"cases","limit":200}' \
+      | python3 -c '
+import json, sys
+d = json.load(sys.stdin)
+if d.get("status") != "success":
+    print("  (history query unavailable: %s)"
+          % str((d.get("error") or {}).get("message"))[:60]); raise SystemExit
+rows = []
+for r in d.get("records", []):
+    a = r["attributes"]
+    diff = a.get("diff") or {}
+    st = diff.get("state") or {}
+    # Sort on the FULL timestamp, print only the date: two transitions on the
+    # same day would otherwise come out in arbitrary order and read as a
+    # ticket resolving before it was taken.
+    rows.append((str(a.get("timestamp")), r["shortname"],
+                 a.get("owner_shortname"),
+                 "%s->%s" % (st.get("old"), st.get("new")),
+                 (diff.get("resolution_reason") or {}).get("new") or ""))
+rows.sort()
+# Only the authored archive: everything dated before today was shipped, not
+# replayed. The live cases demo.sh just drove are stamped now.
+import datetime
+today = datetime.date.today().isoformat()
+old = [r for r in rows if r[0][:10] < today]
+for ts, sn, who, move, why in old:
+    print("  %-11s %-14s %-16s %-26s %s" % (ts[:10], sn, who, move, why))
+print()
+print("  %d authored row(s) spanning %s to %s"
+      % (len(old), old[0][0][:10], old[-1][0][:10]) if old else "  (none)")
+new = len(rows) - len(old)
+print("  %d row(s) written by this run, stamped today" % new)'
 fi
 
 cat <<'EOF'
 
 == done
 
-Nothing above was scripted into the data: every state, every refusal and every
-history row came from dmart's own workflow engine and permission walk.
+Two kinds of history sit side by side above. Sections 1-4 were driven live:
+every state, every refusal and every row came from dmart's own workflow engine
+and permission walk, stamped now. Section 8 was shipped as data, dated across
+twelve months and attributed to the people who did the work — which only works
+because the importer preserves an authored uuid and timestamp.
 EOF

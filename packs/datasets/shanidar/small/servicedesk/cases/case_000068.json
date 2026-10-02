@@ -1,0 +1,11 @@
+{
+  "title": "Karbala route congested before the season",
+  "category": "capacity",
+  "severity": "high",
+  "region": "central",
+  "site": "krb_0007",
+  "customer_msisdn": "+9647500003301",
+  "reported_on": "2026-06-21",
+  "product": "prepaid_basic",
+  "resolution_code": "site_repaired"
+}

@@ -1,0 +1,2 @@
+{"uuid": "ffb617d6-3d98-5bfe-83f6-d1d65feee6b4", "shortname": "history", "owner_shortname": "tech_north_erbil", "timestamp": "2026-06-02T10:00:00.0000000", "request_headers": {}, "diff": {"last_service_on": {"old": "2026-02-28", "new": "2026-06-02"}}}
+{"uuid": "f4e1f898-2c89-5bf7-bfbe-32d7d2e4b5f8", "shortname": "history", "owner_shortname": "tech_north_erbil", "timestamp": "2026-09-18T11:23:00.0000000", "request_headers": {}, "diff": {"status": {"old": "in_service", "new": "faulty"}, "last_service_on": {"old": "2026-06-02", "new": "2026-09-18"}}}

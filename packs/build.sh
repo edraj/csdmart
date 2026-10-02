@@ -144,15 +144,44 @@ for p in $selected; do
     fi
 done
 
-# Packs ship no history: re-importing an archive APPENDS its history.jsonl
-# rows every time (PLAN.md verification 5, measured 2 -> 4 -> 6), and synthetic
-# history has no demo value anyway. Belt and braces — nothing authors one, and
-# this would catch it if something started to.
-found_history="$(find "$DIST/spaces" -name 'history.jsonl' -print -quit)"
-if [ -n "$found_history" ]; then
-    echo "refusing to build: $found_history — packs must not ship history" >&2
-    exit 1
-fi
+# Packs DO ship history. They did not until #329: the importer called
+# AppendAsync, so it stamped every imported row with the import moment and
+# appended a duplicate on each re-run. It now restores an authored uuid and
+# timestamp and dedupes on the uuid, which is what makes a twelve-month archive
+# possible at all.
+#
+# So the check inverts: not "refuse history" but "refuse history that would
+# silently lose its dates". A line missing uuid or timestamp falls back to
+# AppendAsync and gets `now()` — no error, just a quietly wrong archive. That is
+# the failure worth catching here.
+python3 - "$DIST/spaces" <<'PY'
+import json, os, sys
+root = sys.argv[1]
+bad = []
+files = 0
+for dirpath, _, names in os.walk(root):
+    if "history.jsonl" not in names:
+        continue
+    files += 1
+    path = os.path.join(dirpath, "history.jsonl")
+    for n, line in enumerate(open(path), start=1):
+        if not line.strip():
+            continue
+        try:
+            row = json.loads(line)
+        except Exception as exc:
+            bad.append(f"{path}:{n} unreadable ({exc})")
+            continue
+        for field in ("uuid", "timestamp", "owner_shortname"):
+            if not row.get(field):
+                bad.append(f"{path}:{n} missing {field}")
+if bad:
+    print("refusing to build — history that would lose its dates:", file=sys.stderr)
+    print("\n".join("  " + b for b in bad), file=sys.stderr)
+    raise SystemExit(1)
+if files:
+    print(f"history: {files} file(s), every line dated and attributed")
+PY
 
 # A management overlay naming a space that is not in this build would import a
 # permission whose subpaths point nowhere. Catch it here rather than at install.

@@ -266,10 +266,15 @@ echo
 echo "== import"
 import_args=(import --type=fs)
 [ "$REPLACE" = 1 ] && import_args+=(-r)
-# --skip-history is passed even though packs ship none: it costs nothing, and
-# it is the guard if a dataset ever starts carrying history. It was a no-op on
-# the zip path until #324; --type=fs has always honoured it.
-import_args+=(--skip-history "$SPACES")
+# --skip-history is deliberately NOT passed: the packs ship a twelve-month
+# archive and that history is the point.
+#
+# It used to be passed because re-importing duplicated every row. Since #329 the
+# importer restores the authored uuid and timestamp and dedupes on the uuid, so
+# a re-run is idempotent for history exactly as it already was for entries —
+# verified at 2 rows across three successive imports. Pass --skip-history by
+# hand if you want the structures without the archive.
+import_args+=("$SPACES")
 "$DMART" "${import_args[@]}"
 
 # ── public surface ────────────────────────────────────────────────────────────

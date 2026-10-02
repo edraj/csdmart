@@ -25,7 +25,7 @@ so they are up front rather than buried in the answers.
 | # | Brief assumes | Reality | Consequence |
 |---|---|---|---|
 | 1 | History may not be importable; propose API replay | **History imports** as `history.jsonl`, with author and timestamp per row | No replay. Author history directly, at real dates. |
-| 2 | — | **Re-import duplicates history** (append, never upsert) | Packs ship without `history.jsonl`. `--skip-history` was a no-op on zips until #324. |
+| 2 | — | **Re-import duplicated history** — the importer called AppendAsync, discarding the authored uuid/timestamp. Fixed in #329 | Packs ship a twelve-month archive; history import is now idempotent and keeps its dates. |
 | 3 | Packs ship groups in `management_overlay` | **`group` does not round-trip** through import/export | Groups must be created over the API by `install.sh`. |
 | 4 | Workflow gates may match roles inherited through groups | Gates read **`user.Roles` only** | Every transition-driving persona needs the role *directly*. |
 | 5 | `/public/submit` + `own` gives customers their own cases | Submitted entries are owned by **`anonymous`** | Customer-owned cases need an authenticated create, or a re-owning step. |
@@ -119,17 +119,24 @@ The history line format (`:611-630`):
  "timestamp":"2026-02-11T09:04:17.0000000","request_headers":{…},"diff":{…}}
 ```
 
-**So the brief's fallback is unnecessary.** We author history directly, with the
-right persona in `owner_shortname` and the right date in `timestamp`. No replay,
-no "timestamps would be now" problem, and ticket state transitions can be told
-as a story that happened over twelve months.
+**So the brief's fallback is unnecessary** — but not for the reason this section
+first gave. Authoring history directly with the right persona in
+`owner_shortname` and the right date in `timestamp` is what the FORMAT supports;
+the importer did not. It called `AppendAsync` and stamped every row with the
+import moment, so the "timestamps would be now" problem was exactly what
+happened, and only `owner_shortname` survived. Measured, then fixed in
+[#329](https://github.com/edraj/csdmart/pull/329).
+
+With that fix the claim holds as written: the packs ship six cases whose state
+transitions are told as a story spanning 2025-11 to 2026-08.
 
 **Not preserved / caveats:**
 
-- **History import is not idempotent.** "History append is NOT idempotent (every
-  line inserts a fresh row)" (`:1773-1774`). A second `install.sh` run duplicates
-  every history row. Mitigation in the installer: `--skip-history` unless the
-  target is empty (see §3).
+- **History import is idempotent since #329.** It was not: "History append is
+  NOT idempotent (every line inserts a fresh row)" (`:1773-1774`), and a second
+  `install.sh` run duplicated every row. The importer now routes a line
+  carrying a `uuid` and `timestamp` through `RestoreAsync`, whose
+  `ON CONFLICT (uuid) DO NOTHING` dedupes. No `--skip-history` needed.
 - **Referential integrity is not enforced on import.** The RI gate lives in
   `EntryService.CreateAsync` (`Services/EntryService.cs:124-133`); bulk import
   writes through repository COPY. A dangling `related_to` will land silently.
@@ -705,10 +712,20 @@ History is not. Each import appends the whole `history.jsonl` again — measured
 parsed and then dropped for zip imports. Fixed in
 [#324](https://github.com/edraj/csdmart/pull/324).
 
-⇒ `install.sh` gets a defined re-run contract: packs ship **without**
-`history.jsonl` (synthetic history has no demo value and duplicates), and a
-re-install is idempotent for everything else. Once #324 lands, `--skip-history`
-is the belt to that braces.
+⇒ **Superseded.** This was measured correctly but diagnosed as a limitation
+when it was a bug. `AppendAsync` — the path the importer used — binds
+`Guid.NewGuid()` and `TimeUtils.Now()`, so it both discarded the authored
+timestamp and had no conflict key to dedupe on. `RestoreAsync` already existed
+and did neither, and the Parquet restore path already used it.
+
+Fixed in [#329](https://github.com/edraj/csdmart/pull/329): the zip/fs importer
+now restores an authored `uuid` and `timestamp` and dedupes on the uuid. So
+history import is idempotent (17 rows after one install, still 17 after three)
+*and* keeps its dates, which is what makes §2's twelve-month archive possible.
+`install.sh` no longer passes `--skip-history`.
+
+The same bug meant **restoring any dmart backup rewrote every history row to the
+restore moment** — a fidelity loss well beyond the packs.
 
 ### Found while authoring the content
 

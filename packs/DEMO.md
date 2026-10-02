@@ -250,12 +250,19 @@ checked by nothing: `resolutions[]` is never read by the engine, and
 enforced is presence, via `resolution_required: true`. Enforcing the value needs
 a plugin.
 
-**History is dated at install time, not at the story's dates.** The cases are
-reported in September 2026 but their history rows carry the moment `demo.sh`
-ran. Packs ship no `history.jsonl` on purpose: re-importing an archive *appends*
-its history rather than upserting it, so a pack installed three times would
-carry three copies. Generated history is real; authored history would have been
-better dated and worse behaved.
+**Some history is dated at install time — only some, and on purpose.** The four
+cases `demo.sh` drives carry the moment it ran, because the engine wrote those
+rows and the engine stamps `now()`. That is the live half.
+
+The archive is the other half: six cases ship with authored history dated across
+twelve months and attributed to the people who did the work, plus history on the
+`erb_0142` generator. Section 8 of the walkthrough separates the two by date.
+
+An earlier revision of this document said authored history was not possible, and
+it was true at the time for a reason worth knowing: the importer discarded the
+`uuid` and `timestamp` from `history.jsonl` and appended a duplicate row on every
+re-import. Fixed in #329, which also made history import idempotent — 17 rows
+after one install, still 17 after three.
 
 **Scale beyond `small` is padding, not story.** `--scale medium` (×10) and
 `--scale large` (×250) repeat the authored set with a `_gNN` suffix. The first

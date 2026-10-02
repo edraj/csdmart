@@ -1,0 +1,11 @@
+{
+  "title": "Data slow every evening in Erbil",
+  "category": "slow_data",
+  "severity": "normal",
+  "region": "north",
+  "site": "erb_0142",
+  "customer_msisdn": "+9647500001842",
+  "reported_on": "2026-02-11",
+  "product": "home_wireless",
+  "resolution_code": "customer_educated"
+}
