@@ -675,7 +675,7 @@ public sealed class ImportExportService(
     /// is false — would have no effect since the slow path has no scoped
     /// session to share. Clamped to <c>[1, 16]</c> defensively.
     /// </param>
-    public async Task<Response> ImportZipAsync(Stream zip, string? actor, bool preserveExisting, bool fastUnsafeNoFkCheck, int fastParallelism, int batchSize = DefaultBatchSize, CancellationToken ct = default)
+    public async Task<Response> ImportZipAsync(Stream zip, string? actor, bool preserveExisting, bool fastUnsafeNoFkCheck, int fastParallelism, int batchSize = DefaultBatchSize, bool skipHistory = false, CancellationToken ct = default)
     {
         // `actor` is accepted for API stability but no longer threaded through —
         // every imported record's owner comes from its meta's owner_shortname,
@@ -718,8 +718,14 @@ public sealed class ImportExportService(
         // cache needs filesystem layout to resolve schemas. Threading zip
         // entries to a synthetic root would work but is out of scope for
         // now. Operators wanting validation use the filesystem path.
+        // skipHistory has to be threaded: `--skip-history` was parsed, printed
+        // in the usage line, and then silently dropped on the zip path, so a
+        // re-import of an export appended its history.jsonl rows again on
+        // every run while the operator had asked for exactly the opposite.
+        // The sibling zip-incompatible flags (--drop-indexes, --space/--subpath)
+        // Bail with a reason; this one quietly produced wrong data instead.
         return await ImportFromEntriesAsync(entries, ImportSourceKind.Zip,
-            preserveExisting, fastUnsafeNoFkCheck, fastParallelism, batchSize, checkpoint: null, validation: null, importTags: null, ct: ct);
+            preserveExisting, fastUnsafeNoFkCheck, fastParallelism, batchSize, checkpoint: null, validation: null, importTags: null, skipHistory: skipHistory, ct: ct);
     }
 
     public Task<Response> ImportFolderAsync(string folderPath, string? actor, CancellationToken ct = default)
