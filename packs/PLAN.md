@@ -503,18 +503,151 @@ gitignored.
 
 ---
 
-## Phase 1 verification list
+## Phase 1 verification list — RUN 2026-10-02
 
-Carried forward as the first work of Phase 1, before any bulk authoring:
+All five ran against a local dmart on SQLite (`dmart seed db-only`, then the
+server on port 5412) plus source reading with citations. Four of the five
+changed something; two uncovered core defects that are now separate PRs.
 
-1. Round-trip one entry of every resource type the packs use → pin the real
-   `.dm` layout for ticket/user/comment/reaction/relationship/data_asset (§1).
-2. Confirm `attributes.relation` survives export→import, and whether
-   `@relationships[]...` is a legal selector (§4).
-3. Confirm `allowed_fields_values` can constrain top-level `resolution_reason` (§6).
-4. Confirm the authz materialized views refresh at boot (§3).
-5. Confirm a history-bearing re-import duplicates rows, and that `--skip-history`
-   prevents it (§2) — this decides `install.sh`'s re-run contract.
+**A caution that applies to every result below.** The first pass of these
+experiments ran against a stale `bin/dmart` from 2026-09-16, which predated
+[#305](https://github.com/edraj/csdmart/pull/305). Two findings were wrong as a
+result — a phantom "every meta FK-fails on import" and a phantom history
+duplication — and both are corrected below. Rebuild before measuring.
+
+### 1 — Export layout: CONFIRMED
+
+`dmart export --space vtest` on a space with a folder, two content entries and
+history produced exactly:
+
+```
+vtest/.dm/meta.space.json
+vtest/items/.dm/meta.folder.json
+vtest/items/.dm/<shortname>/meta.content.json
+vtest/items/.dm/<shortname>/history.jsonl
+vtest/items/<shortname>.json              ← payload body, externalized
+```
+
+So the rule is: metas live under `.dm/`, the payload body sits beside it as
+`<shortname>.<ext>`, and a folder's own payload (when it has one) is
+`<folder>.json` one level up. §1's assumed layout holds.
+
+Two usage corrections: the flag is `--output`, not `--out`, and with no flag
+the archive lands in the **current working directory**, not beside the source.
+
+### 2 — Relationship filtering: DOES NOT WORK (plan fallback now mandatory)
+
+Two separate results.
+
+**`attributes.relation` survives.** A custom key beside `related_to` round-trips
+through create → read → export verbatim. §4's structure is safe.
+
+**No form of relationship filtering works.** Three spellings, none usable:
+
+| selector | result |
+| --- | --- |
+| `@relationships.attributes.relation:installed_at` | 430 db error on SQLite — **now fixed**, returns 0 |
+| `@relationships[].attributes.relation:installed_at` | clause **silently dropped** → returns *everything* |
+| `@payload.body.relation:installed_at` | works — 1 match |
+
+The first was a genuine engine divergence: the parser spelled PostgreSQL's
+`col::jsonb->>'k'` regardless of dialect, and SQLite tokenizes `::` as a named
+parameter. Fixed in
+[#323](https://github.com/edraj/csdmart/pull/323). It now returns 0 rather than
+erroring — but 0 is still the wrong answer, because `relationships` is a JSON
+*array* and an object path cannot address array elements.
+
+The second is the dangerous one and is **not** fixed: `[]` iteration is
+implemented only under `payload.`, so for any other column the clause is
+dropped from the WHERE and the query returns unfiltered rows **with no error**.
+Proof: `@payload.body.kind:generator @relationships[].attributes.relation:NONSENSE`
+still returns the 1 row that matches the first clause alone.
+
+⇒ §4's fallback is no longer a fallback, it is **the** mechanism: every
+relationship key the packs need to filter on must be duplicated into
+`payload.body`. A pack UI that filtered on `@relationships[]...` would show
+unfiltered data as if filtered.
+
+### 3 — `allowed_fields_values` on `resolution_reason`: WORKS, BUT NOT WHERE IT MATTERS
+
+Three findings, the middle one decisive.
+
+**It does address a top-level attribute.** `CheckRestrictions` flattens the
+request attributes with `.` separators, so a top-level key flattens to its bare
+name. Confirmed live: an agent whose permission caps
+`resolution_reason` to `["fixed","duplicate"]` can set `fixed` and is refused
+`blocked_value_here` with `no update access` (401).
+
+**It is inert on the workflow path.** `CheckRestrictions` returns `true`
+immediately for any action that is not `create` or `update`
+([PermissionService.cs:629](Services/PermissionService.cs#L629)), and a workflow
+transition gates on `progress_ticket`
+([EntryService.cs:435](Services/EntryService.cs#L435), via
+`actionOverride: "progress_ticket"`). Confirmed live: that same agent set
+`resolution_reason` to `not_in_the_catalogue` through
+`PUT /managed/progress-ticket/...` and it **succeeded**.
+
+**It cannot make a field mandatory** — an absent key is skipped (`continue`),
+not rejected.
+
+And the workflow's own `resolutions[]` catalogue is **never read by the
+engine**: zero C# references to `"resolutions"`; only `resolution_required`
+(a boolean on the `next[]` transition) is. The catalogue is consumed by
+`catalog/src/components/forms/WorkflowForm.svelte` alone, which the migrated
+docs already state — "Presentational — surfaced by the admin UI"
+(`seed/spaces/website/pages/tickets.md:52`).
+
+⇒ **Nothing in dmart validates a submitted `resolution_reason` against a
+catalogue.** `resolution_required` makes it *present*, never *valid*. For the
+servicedesk pack, enforcement has to come from a plugin, or from a payload
+schema `enum` — and a schema can only see `payload.body`, not the top-level
+column, so that route needs the reason duplicated into the payload. This is the
+same duplication §4 now requires; the two should use one convention.
+
+### 4 — Authz materialized views: THEY DO NOT EXIST
+
+`mv_user_roles` / `mv_role_permissions` appear **only in documentation** —
+GLOSSARY.md:38, docs/architecture.md:240,340, docs/testing.md:264,
+docs/data-model.md:129-130,254-255, docs/debugging.md:241,334-336,
+docs/permissions.md:341,390-391. No view creation, no `REFRESH MATERIALIZED`,
+nothing in the SQL schema. The real mechanism is `AuthzCacheRefresher`, an
+in-memory `ConcurrentDictionary` with `InvalidateAllInMemory()`.
+
+Two consequences. For the packs: a standalone CLI import cannot invalidate a
+**running** server's cache, so `install.sh` must restart the server (or install
+against a stopped one) — not "refresh the views". For dmart: docs/debugging.md
+tells operators to run a `REFRESH MATERIALIZED VIEW` that would error. Six
+files need correcting; that is a docs PR, kept out of the packs work.
+
+### 5 — Re-import duplicates history, and `--skip-history` did not prevent it
+
+Entries, folders and spaces are **idempotent**: re-importing the same archive
+reports `skipped 5 existing, 0 failed` and changes no row.
+
+History is not. Each import appends the whole `history.jsonl` again — measured
+2 → 4 → 6 on successive imports of one archive.
+
+`--skip-history` made **no difference** (8 → 10 → 12 with the flag set). It was
+parsed and then dropped for zip imports. Fixed in
+[#324](https://github.com/edraj/csdmart/pull/324).
+
+⇒ `install.sh` gets a defined re-run contract: packs ship **without**
+`history.jsonl` (synthetic history has no demo value and duplicates), and a
+re-install is idempotent for everything else. Once #324 lands, `--skip-history`
+is the belt to that braces.
+
+### Corrections to earlier notes in this document
+
+- The "every meta FK-fails on import" failure was a stale binary against a
+  never-bootstrapped database, not a format problem. `dmart seed` has called
+  `BootstrapAdminAsync` since #305 precisely for this
+  ([SeedCommand.cs:152](Cli/SeedCommand.cs#L152)); a fresh build imports the
+  same archive with **0 failed**. Note `dmart import` still does *not*
+  bootstrap, so install order matters.
+- `BACKEND_ENV` is the only way to point the CLI at a config file. A
+  cwd-relative `config.env` is deliberately *not* a lookup step
+  ([DotEnv.cs:62-66](Config/DotEnv.cs#L62)), and exported shell variables are
+  not read in its place.
 
 ---
 
@@ -527,5 +660,17 @@ All five were approved on 2026-10-02: Shanidar Telecom, one space per pack with
 `<pack>_` prefixes, `attributes.relation` beside `related_to`, datamart
 dual-shipping, and authenticated customer creates alongside anonymous intake.
 
-Phase 1 begins with the verification list above — items 1, 2 and 3 can each
-change the structures, so they run before any are authored.
+Phase 1's verification list ran on 2026-10-02 and is recorded above with its
+results. Four of the five changed something, so running it before authoring was
+the right call: relationship filtering turned out not to work at all, the
+resolution catalogue turned out to be unenforced, the materialized views turned
+out not to exist, and `--skip-history` turned out to be a no-op on zips.
+
+Two core defects surfaced and are separate PRs, so the packs work itself still
+touches no core code: [#323](https://github.com/edraj/csdmart/pull/323) (dotted
+search selectors on SQLite) and
+[#324](https://github.com/edraj/csdmart/pull/324) (`--skip-history` on zips).
+A third item — six docs files describing materialized views that do not
+exist — is noted under §4 and left for its own PR.
+
+Structures can now be authored against verified behaviour.
