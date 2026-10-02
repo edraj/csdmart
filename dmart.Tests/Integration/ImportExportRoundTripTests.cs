@@ -1,6 +1,7 @@
 using Dmart.Utils;
 using System.IO.Compression;
 using System.Text.Json;
+using System.Text.Json.Nodes;
 using Dmart.DataAdapters.Sql;
 using Dmart.Models.Api;
 using Dmart.Models.Core;
@@ -226,7 +227,17 @@ public class ImportExportRoundTripTests : IClassFixture<DmartFactory>
         {
             resp.Status.ShouldBe(Status.Success);
             var stats = resp.Attributes!;
-            ((int)stats["histories_inserted"]!).ShouldBeGreaterThanOrEqualTo(1);
+            // NOT "inserted >= 1": the row was already in the database when the
+            // archive was exported from it, and history import now dedupes on
+            // uuid, so a re-import correctly inserts nothing. What this test is
+            // about is that the root-subpath history PATH parses — so assert the
+            // row is present and keeps its original timestamp.
+            var rootRows = await historyRepo.QueryHistoryAsync(new Query
+            {
+                Type = QueryType.History, SpaceName = spaceName, Subpath = "/",
+                FilterShortnames = new() { sn }, FilterSchemaNames = new(), Limit = 50,
+            });
+            rootRows.Count.ShouldBe(1, "the seeded history row must still be there");
             // `failed` must not contain a history-path error.
             var failed = (List<Dictionary<string, object>>)stats["failed"]!;
             var hasHistoryPathError = failed.Any(f =>
@@ -250,6 +261,161 @@ public class ImportExportRoundTripTests : IClassFixture<DmartFactory>
     // the opposite of what was asked, so re-importing an export appended its
     // history.jsonl rows again on every run. That is exactly the re-install
     // case the flag exists for.
+    // Regression: history.jsonl carries the uuid and timestamp the exporter
+    // wrote, and the importer threw both away. It called AppendAsync — the
+    // path for NEW events, which binds Guid.NewGuid() and TimeUtils.Now() — so
+    // restoring a backup rewrote every history row to the restore moment. A
+    // year of history came back stamped the same second, and the original dates
+    // were simply gone.
+    //
+    // RestoreAsync already existed for this, and the Parquet restore path
+    // already used it. Its ON CONFLICT (uuid) DO NOTHING also makes the import
+    // idempotent, which AppendAsync never was: re-importing an archive appended
+    // a second copy of every row.
+    [FactIfImportSupported]
+    public async Task Zip_Import_Preserves_History_Uuid_And_Timestamp()
+    {
+        var sp = _factory.Services;
+        _factory.CreateClient();
+        var io = sp.GetRequiredService<ImportExportService>();
+        var entryRepo = sp.GetRequiredService<EntryRepository>();
+        var spaceRepo = sp.GetRequiredService<SpaceRepository>();
+        var historyRepo = sp.GetRequiredService<HistoryRepository>();
+
+        var spaceName = "hstamp_" + Guid.NewGuid().ToString("N")[..6];
+        const string sn = "thing";
+        // Deliberately not "now": a date no clock would produce during the test.
+        var authored = new DateTime(2025, 11, 4, 8, 15, 0, DateTimeKind.Unspecified);
+        var authoredUuid = Guid.NewGuid();
+
+        byte[] archive = BuildHistoryZip(spaceName, sn, authoredUuid, authored, "tech_north_erbil");
+
+        try
+        {
+            var first = await io.ImportZipAsync(new MemoryStream(archive), actor: null,
+                preserveExisting: true, fastUnsafeNoFkCheck: false, fastParallelism: 1,
+                batchSize: ImportExportService.DefaultBatchSize);
+            first.Status.ShouldBe(Status.Success,
+                customMessage: $"unexpected error: {first.Error?.Message}");
+            ((int)first.Attributes!["histories_inserted"]!).ShouldBe(1);
+
+            var rows = await historyRepo.QueryHistoryAsync(new Query
+            {
+                Type = QueryType.History, SpaceName = spaceName, Subpath = "/",
+                FilterShortnames = new() { sn }, FilterSchemaNames = new(), Limit = 50,
+            });
+            rows.Count.ShouldBe(1, "exactly the one authored row");
+            rows[0].Timestamp.ShouldBe(authored,
+                "the authored timestamp must survive — not be replaced by now()");
+            Guid.Parse(rows[0].Uuid.ToString()).ShouldBe(authoredUuid,
+                "the authored uuid must survive, since it is the dedupe key");
+            rows[0].OwnerShortname.ShouldBe("tech_north_erbil");
+
+            // Idempotent: the same archive again must add nothing.
+            var second = await io.ImportZipAsync(new MemoryStream(archive), actor: null,
+                preserveExisting: true, fastUnsafeNoFkCheck: false, fastParallelism: 1,
+                batchSize: ImportExportService.DefaultBatchSize);
+            second.Status.ShouldBe(Status.Success);
+            ((int)second.Attributes!["histories_inserted"]!).ShouldBe(0,
+                "ON CONFLICT (uuid) DO NOTHING must swallow the duplicate");
+
+            var after = await historyRepo.QueryHistoryAsync(new Query
+            {
+                Type = QueryType.History, SpaceName = spaceName, Subpath = "/",
+                FilterShortnames = new() { sn }, FilterSchemaNames = new(), Limit = 50,
+            });
+            after.Count.ShouldBe(1, "re-import must not duplicate history");
+        }
+        finally
+        {
+            try { await entryRepo.DeleteAsync(spaceName, "/", sn, ResourceType.Content); } catch { }
+            try { await spaceRepo.DeleteAsync(spaceName); } catch { }
+        }
+    }
+
+    // A line WITHOUT uuid/timestamp still has to work: a hand-written
+    // history.jsonl is a legitimate thing to feed in, and it should get a fresh
+    // uuid and the current time rather than be rejected.
+    [FactIfImportSupported]
+    public async Task Zip_Import_Still_Accepts_History_Without_Uuid_Or_Timestamp()
+    {
+        var sp = _factory.Services;
+        _factory.CreateClient();
+        var io = sp.GetRequiredService<ImportExportService>();
+        var entryRepo = sp.GetRequiredService<EntryRepository>();
+        var spaceRepo = sp.GetRequiredService<SpaceRepository>();
+        var historyRepo = sp.GetRequiredService<HistoryRepository>();
+
+        var spaceName = "hbare_" + Guid.NewGuid().ToString("N")[..6];
+        const string sn = "thing";
+        var before = TimeUtils.Now().AddSeconds(-5);
+        byte[] archive = BuildHistoryZip(spaceName, sn, uuid: null, stamp: null,
+                                          owner: "tech_north_erbil");
+        try
+        {
+            var resp = await io.ImportZipAsync(new MemoryStream(archive), actor: null,
+                preserveExisting: true, fastUnsafeNoFkCheck: false, fastParallelism: 1,
+                batchSize: ImportExportService.DefaultBatchSize);
+            resp.Status.ShouldBe(Status.Success,
+                customMessage: $"unexpected error: {resp.Error?.Message}");
+            ((int)resp.Attributes!["histories_inserted"]!).ShouldBe(1);
+
+            var rows = await historyRepo.QueryHistoryAsync(new Query
+            {
+                Type = QueryType.History, SpaceName = spaceName, Subpath = "/",
+                FilterShortnames = new() { sn }, FilterSchemaNames = new(), Limit = 50,
+            });
+            rows.Count.ShouldBe(1);
+            rows[0].Timestamp.ShouldBeGreaterThan(before,
+                "with no authored timestamp the row gets the current time");
+            rows[0].OwnerShortname.ShouldBe("tech_north_erbil");
+        }
+        finally
+        {
+            try { await entryRepo.DeleteAsync(spaceName, "/", sn, ResourceType.Content); } catch { }
+            try { await spaceRepo.DeleteAsync(spaceName); } catch { }
+        }
+    }
+
+    // {space}/.dm/meta.space.json + {space}/.dm/{sn}/meta.content.json +
+    // {space}/.dm/{sn}/history.jsonl — the root-subpath shape.
+    private static byte[] BuildHistoryZip(
+        string spaceName, string sn, Guid? uuid, DateTime? stamp, string owner)
+    {
+        using var ms = new MemoryStream();
+        using (var ar = new ZipArchive(ms, ZipArchiveMode.Create, leaveOpen: true))
+        {
+            void Write(string path, string text)
+            {
+                var e = ar.CreateEntry(path);
+                using var w = new StreamWriter(e.Open());
+                w.Write(text);
+            }
+            Write($"{spaceName}/.dm/meta.space.json", $$"""
+            {"uuid":"{{Guid.NewGuid()}}","shortname":"{{spaceName}}","is_active":true,
+             "owner_shortname":"dmart","languages":["english"]}
+            """);
+            Write($"{spaceName}/.dm/{sn}/meta.content.json", $$"""
+            {"uuid":"{{Guid.NewGuid()}}","shortname":"{{sn}}","is_active":true,
+             "owner_shortname":"dmart"}
+            """);
+            var line = new JsonObject
+            {
+                ["shortname"] = "history",
+                ["owner_shortname"] = owner,
+                ["request_headers"] = new JsonObject(),
+                ["diff"] = new JsonObject
+                {
+                    ["state"] = new JsonObject { ["old"] = "open", ["new"] = "resolved" },
+                },
+            };
+            if (uuid is not null) line["uuid"] = uuid.Value.ToString();
+            if (stamp is not null) line["timestamp"] = stamp.Value.ToString("o");
+            Write($"{spaceName}/.dm/{sn}/history.jsonl", line.ToJsonString() + "\n");
+        }
+        return ms.ToArray();
+    }
+
     [FactIfImportSupported]
     public async Task Zip_Import_Honors_SkipHistory()
     {
@@ -314,15 +480,21 @@ public class ImportExportRoundTripTests : IClassFixture<DmartFactory>
             ((int)skip.Attributes!["histories_inserted"]!).ShouldBe(0,
                 "skipHistory must skip the history pass on the zip path too");
 
-            // Without the flag the same archive still imports its history, so
-            // the zero above is the flag and not a broken history pass.
-            var keep = await io.ImportZipAsync(new MemoryStream(archiveBytes), actor: null,
+            // The control leg gets its OWN archive with its own history uuid.
+            // Re-importing the first archive would now insert 0 whether the flag
+            // was set or not — history import dedupes on uuid — so reusing it
+            // could no longer tell the flag apart from the dedupe.
+            var control = BuildHistoryZip(
+                spaceName + "_ctl", sn, Guid.NewGuid(),
+                new DateTime(2025, 6, 1, 12, 0, 0, DateTimeKind.Unspecified),
+                "dmart");
+            var keep = await io.ImportZipAsync(new MemoryStream(control), actor: null,
                 preserveExisting: true, fastUnsafeNoFkCheck: false, fastParallelism: 1,
                 batchSize: ImportExportService.DefaultBatchSize, skipHistory: false);
             keep.Status.ShouldBe(Status.Success,
                 customMessage: $"unexpected error: {keep.Error?.Message}");
             ((int)keep.Attributes!["histories_inserted"]!).ShouldBeGreaterThan(0,
-                "without the flag the zip's history.jsonl must still import");
+                "without the flag a history.jsonl must still import");
         }
         finally
         {
