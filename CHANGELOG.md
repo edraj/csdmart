@@ -91,6 +91,16 @@
   error. Filter on a value copied into `payload.body` until relationship
   search exists.
 
+- **`dmart import --skip-history` was silently ignored for zip archives.** The
+  flag was parsed, printed in the usage line, and threaded into Pass 5 for
+  `--type=fs` — but the zip branch called `ImportZipAsync`, which never took
+  it. So re-importing an export appended its `history.jsonl` rows again on
+  every run, which is the precise case the flag exists to prevent: a space
+  re-imported three times carried three copies of its history. The two sibling
+  flags the zip path cannot honour (`--drop-indexes`, `--space`/`--subpath`
+  remap) refuse with a reason; this one quietly did the opposite of what was
+  asked. Entries themselves were never affected — they are keyed and skipped.
+
 - **The markdown editor could not insert media attachments.** The HTML editor
   has had a 📎 picker for a long time; markdown authors had to hand-type the
   `/managed/payload/{rt}/{space}/{subpath}/{parent}/{shortname}.{ext}` URL from

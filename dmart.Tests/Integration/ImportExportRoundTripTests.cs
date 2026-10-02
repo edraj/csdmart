@@ -242,6 +242,95 @@ public class ImportExportRoundTripTests : IClassFixture<DmartFactory>
         }
     }
 
+    // Regression: --skip-history was parsed by the CLI, named in the usage
+    // line, and then dropped on the floor for ZIP imports — Program.cs called
+    // ImportZipAsync, which never took the flag, while the fs path threaded it
+    // into Pass 5. The two sibling zip-incompatible flags (--drop-indexes,
+    // --space/--subpath remap) Bail with a reason; this one silently produced
+    // the opposite of what was asked, so re-importing an export appended its
+    // history.jsonl rows again on every run. That is exactly the re-install
+    // case the flag exists for.
+    [FactIfImportSupported]
+    public async Task Zip_Import_Honors_SkipHistory()
+    {
+        var sp = _factory.Services;
+        _factory.CreateClient();
+        var io = sp.GetRequiredService<ImportExportService>();
+        var entryRepo = sp.GetRequiredService<EntryRepository>();
+        var spaceRepo = sp.GetRequiredService<SpaceRepository>();
+        var historyRepo = sp.GetRequiredService<HistoryRepository>();
+
+        var spaceName = "zskiphist_" + Guid.NewGuid().ToString("N")[..6];
+        await spaceRepo.UpsertAsync(new Space
+        {
+            Uuid = Guid.NewGuid().ToString(),
+            Shortname = spaceName, SpaceName = spaceName, Subpath = "/",
+            OwnerShortname = "dmart", IsActive = true,
+            Languages = new() { Language.En },
+            CreatedAt = TimeUtils.Now(), UpdatedAt = TimeUtils.Now(),
+        });
+
+        const string sn = "withhist";
+        await entryRepo.UpsertAsync(MakeContent(spaceName, "/", sn, new { text = "hi" }));
+        await historyRepo.AppendAsync(spaceName, "/", sn, "dmart", null,
+            new Dictionary<string, object>
+            {
+                ["state"] = new Dictionary<string, object>
+                    { ["old"] = "new", ["new"] = "confirmed" },
+            });
+
+        var q = new Query
+        {
+            Type = QueryType.Search, SpaceName = spaceName, Subpath = "/",
+            FilterSchemaNames = new(), Limit = 1000, RetrieveJsonPayload = true,
+        };
+        byte[] archiveBytes;
+        await using (var exported = await io.ExportAsync(q, actor: null))
+        using (var ms = new MemoryStream())
+        {
+            await exported.CopyToAsync(ms);
+            archiveBytes = ms.ToArray();
+        }
+
+        // One fresh stream per import: ImportZipAsync's ZipArchive closes the
+        // stream it was handed, so a single MemoryStream cannot serve both
+        // calls (the second throws ObjectDisposedException).
+        try
+        {
+            // Sanity: the export really does carry a history.jsonl, so a zero
+            // below means the flag worked rather than that there was nothing
+            // to skip in the first place.
+            using (var read = new ZipArchive(new MemoryStream(archiveBytes), ZipArchiveMode.Read))
+            {
+                read.Entries.Select(e => e.FullName)
+                    .ShouldContain($"{spaceName}/.dm/{sn}/history.jsonl");
+            }
+
+            var skip = await io.ImportZipAsync(new MemoryStream(archiveBytes), actor: null,
+                preserveExisting: true, fastUnsafeNoFkCheck: false, fastParallelism: 1,
+                batchSize: ImportExportService.DefaultBatchSize, skipHistory: true);
+            skip.Status.ShouldBe(Status.Success,
+                customMessage: $"unexpected error: {skip.Error?.Message}");
+            ((int)skip.Attributes!["histories_inserted"]!).ShouldBe(0,
+                "skipHistory must skip the history pass on the zip path too");
+
+            // Without the flag the same archive still imports its history, so
+            // the zero above is the flag and not a broken history pass.
+            var keep = await io.ImportZipAsync(new MemoryStream(archiveBytes), actor: null,
+                preserveExisting: true, fastUnsafeNoFkCheck: false, fastParallelism: 1,
+                batchSize: ImportExportService.DefaultBatchSize, skipHistory: false);
+            keep.Status.ShouldBe(Status.Success,
+                customMessage: $"unexpected error: {keep.Error?.Message}");
+            ((int)keep.Attributes!["histories_inserted"]!).ShouldBeGreaterThan(0,
+                "without the flag the zip's history.jsonl must still import");
+        }
+        finally
+        {
+            try { await entryRepo.DeleteAsync(spaceName, "/", sn, ResourceType.Content); } catch { }
+            try { await spaceRepo.DeleteAsync(spaceName); } catch { }
+        }
+    }
+
     [FactIfImportSupported]
     public async Task Import_Falls_Back_To_Dmart_Owner_When_Meta_Has_No_Owner_Shortname()
     {

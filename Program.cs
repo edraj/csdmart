@@ -1718,7 +1718,8 @@ switch (subcommand)
             }
             await using var zipStream = File.OpenRead(targetPath);
             resp = await importService.ImportZipAsync(zipStream, actor: null,
-                preserveExisting: !replace, fastUnsafeNoFkCheck: fast, fastParallelism: parallelism, batchSize: batchSize);
+                preserveExisting: !replace, fastUnsafeNoFkCheck: fast, fastParallelism: parallelism, batchSize: batchSize,
+                skipHistory: skipHistory);
         }
 
         if (resp.Status != Status.Success)
