@@ -1743,6 +1743,38 @@ public class SearchExpressionParserTests
         combined.ShouldNotContain("unnest");
     }
 
+    // Regression: a dotted path under a NON-payload JSON column
+    // (`@acl.foo:x`, `@relationships.attributes.relation:installed_at`) went
+    // through a helper that spelled PostgreSQL's `col::jsonb->>'k'` no matter
+    // which dialect was passed. SQLite tokenizes `::` as a named parameter, so
+    // every such selector failed the whole query with
+    // `SQLite Error 1: 'unrecognized token: ":"'` and the caller saw a 430 db
+    // error. The same selector worked on PostgreSQL, making this a silent
+    // divergence between the two drivers rather than a shared limitation.
+    [Theory]
+    [InlineData("@relationships.attributes.relation:installed_at", "relationships ->> '$.attributes.relation'")]
+    [InlineData("@acl.foo:bar", "acl ->> '$.foo'")]
+    public void Sqlite_Dialect_Dotted_Non_Payload_Path_Uses_Json_Path(string expr, string expected)
+    {
+        var combined = Sql(expr, dialect: SqliteSqlDialect.Instance);
+
+        combined.ShouldContain(expected);
+        combined.ShouldNotContain("::jsonb");
+        combined.ShouldNotContain("::");
+    }
+
+    // The PostgreSQL spelling is the one the old helper emitted, so routing
+    // through the dialect must not have changed it.
+    [Theory]
+    [InlineData("@relationships.attributes.relation:installed_at", "relationships::jsonb->'attributes'->>'relation'")]
+    [InlineData("@acl.foo:bar", "acl::jsonb->>'foo'")]
+    public void Postgres_Dialect_Dotted_Non_Payload_Path_Keeps_Arrow_Chain(string expr, string expected)
+    {
+        var combined = Sql(expr);
+
+        combined.ShouldContain(expected);
+    }
+
     [Fact]
     public void Sqlite_Dialect_Preserves_Array_Negation_Semantics()
     {

@@ -70,6 +70,27 @@
 
 ### Fixed
 
+- **A search selector on any non-payload JSON column failed every query on
+  SQLite.** `@relationships.attributes.relation:installed_at`, `@acl.foo:x` —
+  anything dotted that is not `payload.*` — reached a helper that spelled
+  PostgreSQL's `col::jsonb->>'key'` regardless of the dialect it was handed.
+  SQLite tokenizes `::` as a named parameter, so the query died with
+  `SQLite Error 1: 'unrecognized token: ":"'` and the caller got a 430 db
+  error. The same selector worked on PostgreSQL, so the two drivers answered
+  the same query differently rather than sharing a limitation.
+
+  The helper now delegates to `ISqlDialect.JsonText`, whose PostgreSQL
+  implementation emits byte-for-byte what the old code built — the PostgreSQL
+  side is unchanged by construction.
+
+  Two related limits are *not* fixed and are worth knowing: `relationships` is
+  a JSON array, so an object-path selector against it parses and runs but can
+  never match; and the `[]` iteration syntax is only implemented under
+  `payload.`, so `@relationships[].related_to.shortname:x` is dropped from the
+  WHERE clause silently and the query returns **unfiltered** rows with no
+  error. Filter on a value copied into `payload.body` until relationship
+  search exists.
+
 - **The markdown editor could not insert media attachments.** The HTML editor
   has had a 📎 picker for a long time; markdown authors had to hand-type the
   `/managed/payload/{rt}/{space}/{subpath}/{parent}/{shortname}.{ext}` URL from
