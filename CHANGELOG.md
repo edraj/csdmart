@@ -70,6 +70,20 @@
 
 ### Fixed
 
+- **A space whose folder was named after one of its schemas imported
+  unvalidated.** The import validator resolved a schema's externalized body by
+  walking three levels up from `{space}/schema/.dm/{sn}/`, which lands in the
+  space root rather than in `schema/`; it worked only because an explicit
+  `{space}/schema/` candidate was tried when the first path did not exist. So a
+  space holding both `schema/{x}.json` and `{x}.json` compiled the wrong file —
+  and a folder's own `folder_rendering` body *is* such an `{x}.json`.
+
+  A `cases` folder of `case` entries, an `equipment` folder of `equipment`
+  entries: the natural shape. In that shape the compile threw on the folder
+  body, the warning went to the log, `null` was cached for the schema, and
+  every row imported **unvalidated** — the lenient "schema not found" path. The
+  candidates are now ordered most-specific first, so the schema folder wins.
+
 - **A search selector on any non-payload JSON column failed every query on
   SQLite.** `@relationships.attributes.relation:installed_at`, `@acl.foo:x` —
   anything dotted that is not `payload.*` — reached a helper that spelled

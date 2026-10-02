@@ -133,15 +133,34 @@ public sealed class ImportValidationContext : IAsyncDisposable
                     var bodyFilename = bodyEl.GetString();
                     if (!string.IsNullOrEmpty(bodyFilename))
                     {
-                        var schemaBodyPath = Path.Combine(
-                            Path.GetDirectoryName(candidate)!, "..", "..", "..", bodyFilename);
-                        // Fall back to the schemas folder sibling — typical layout.
-                        if (!File.Exists(schemaBodyPath))
-                            schemaBodyPath = Path.Combine(_sourceRoot, space, "schema", bodyFilename);
-                        if (File.Exists(schemaBodyPath))
+                        // Candidates most-specific first. `..`/`..` from
+                        // {space}/schema/.dm/{sn}/ lands in {space}/schema/,
+                        // which is where that layout keeps its bodies; three
+                        // levels lands in {space}/ instead, which is where the
+                        // `.dm/schema` layout keeps them.
+                        //
+                        // Order is the fix, not just the extra candidate. With
+                        // the space root tried first, a space holding BOTH
+                        // schema/{x}.json and {x}.json compiled the wrong file —
+                        // and a folder's own folder_rendering body is exactly
+                        // such an {x}.json, so any space with a folder named
+                        // after one of its schemas (a `cases` folder of `case`
+                        // entries is the natural shape) silently validated
+                        // nothing: the compile threw on the folder body,
+                        // the warning was logged, null was cached, and every
+                        // row passed unvalidated.
+                        var metaDir = Path.GetDirectoryName(candidate)!;
+                        foreach (var bodyPath in new[]
                         {
-                            var schemaJson = await File.ReadAllTextAsync(schemaBodyPath, ct);
+                            Path.Combine(metaDir, "..", "..", bodyFilename),
+                            Path.Combine(_sourceRoot, space, "schema", bodyFilename),
+                            Path.Combine(metaDir, "..", "..", "..", bodyFilename),
+                        })
+                        {
+                            if (!File.Exists(bodyPath)) continue;
+                            var schemaJson = await File.ReadAllTextAsync(bodyPath, ct);
                             compiled = JsonSchema.FromText(schemaJson);
+                            break;
                         }
                     }
                 }
