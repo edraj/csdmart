@@ -1,0 +1,22 @@
+{
+  "uuid": "b65739e1-114b-5dae-801d-081bacabae67",
+  "shortname": "query_search",
+  "is_active": true,
+  "slug": "query-search",
+  "displayname": {
+    "en": "Query Search"
+  },
+  "description": {
+    "en": "The `search` field on the `Query` body (`POST /managed/query`, `POST /public/query`) accepts a small RediSearch-flavoured expression language. The name is historical: this is purely a **syntax** — the parser compiles it straight into PostgreSQL `WHERE` clauses (pg_trgm wildcards + GIN jsonb containment). There is no Redis or RediSearch engine anywhere in the stack; every query runs against Postgres. This page covers **every operator** and **every value form**, with worked examples for each."
+  },
+  "tags": [
+    "docs"
+  ],
+  "created_at": "2026-10-01T00:00:00",
+  "updated_at": "2026-10-01T00:00:00",
+  "owner_shortname": "dmart",
+  "payload": {
+    "content_type": "markdown",
+    "body": "query_search.md"
+  }
+}

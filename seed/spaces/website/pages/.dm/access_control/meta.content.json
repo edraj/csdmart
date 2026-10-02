@@ -1,0 +1,22 @@
+{
+  "uuid": "32cb6b44-0b7c-547c-88f4-2dd7de49098b",
+  "shortname": "access_control",
+  "is_active": true,
+  "slug": "access-control",
+  "displayname": {
+    "en": "Access Control"
+  },
+  "description": {
+    "en": "A deep technical overview of the DMART Access Control system. The system implements a hybrid model combining **Role-Based Access Control (RBAC)** for broad permissions and **Access Control Lists (ACLs)** for fine-grained, resource-specific overrides."
+  },
+  "tags": [
+    "docs"
+  ],
+  "created_at": "2026-10-01T00:00:00",
+  "updated_at": "2026-10-01T00:00:00",
+  "owner_shortname": "dmart",
+  "payload": {
+    "content_type": "markdown",
+    "body": "access_control.md"
+  }
+}

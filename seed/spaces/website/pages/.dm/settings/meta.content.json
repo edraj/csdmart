@@ -1,0 +1,22 @@
+{
+  "uuid": "c58d32a1-33c6-5f6e-82d3-a7feee51c55b",
+  "shortname": "settings",
+  "is_active": true,
+  "slug": "settings",
+  "displayname": {
+    "en": "Configuration Settings"
+  },
+  "description": {
+    "en": "All configurable settings for DMART. Bound to the strongly-typed `DmartSettings` record and loaded from a `config.env` dotenv file and/or environment variables. Values are read **once at boot** and validated before the server starts — there is no hot reload and no file watcher."
+  },
+  "tags": [
+    "docs"
+  ],
+  "created_at": "2026-10-01T00:00:00",
+  "updated_at": "2026-10-01T00:00:00",
+  "owner_shortname": "dmart",
+  "payload": {
+    "content_type": "markdown",
+    "body": "settings.md"
+  }
+}
