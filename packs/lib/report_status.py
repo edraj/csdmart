@@ -12,10 +12,18 @@ except Exception:
 if d.get("status") == "success":
     print("success")
     raise SystemExit
+def classify(message):
+    # Re-running install.sh must not look like a broken install. The import
+    # half is idempotent by design ("skipped N existing"), so the API half
+    # reports an existing group or user the same way rather than as a failure.
+    if "already exist" in message.lower():
+        return "already"
+    return "failed — " + message[:100]
+
 err = d.get("error") or {}
 for block in err.get("info") or []:
     if isinstance(block, dict):
         for f in block.get("failed") or []:
-            print("failed — " + str(f.get("error"))[:100])
+            print(classify(str(f.get("error") or "")))
             raise SystemExit
-print("failed — " + str(err.get("message"))[:100])
+print(classify(str(err.get("message") or "")))

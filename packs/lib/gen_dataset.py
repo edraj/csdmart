@@ -16,7 +16,7 @@ Every cross-entity edge is written twice — as a real `relationships` entry and
 as a scalar `payload.body` key — because relationship filtering does not work.
 See shanidar.py's module docstring.
 """
-import argparse, hashlib, json, os, shutil, sys, uuid
+import argparse, hashlib, json, os, re, shutil, sys, uuid
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import shanidar as S
@@ -127,20 +127,21 @@ def gen_catalogue(root, mult):
 
 def gen_assets(root, mult):
     site_region = {s["sn"]: s["region"] for s in S.SITES}
+    region_of = lambda sn: site_region[base_sn(sn)]
     for e in each(S.EQUIPMENT, mult, "equipment"):
         body = {"name": e["name"], "kind": e["kind"], "site": e["site"],
-                "region": site_region[e["site"]], "status": e["status"],
+                "region": region_of(e["site"]), "status": e["status"],
                 "installed_on": e["on"], "last_service_on": e["serviced"]}
         if e["kva"]:
             body["rated_kva"] = e["kva"]
         entry(root, "assets", "equipment", e["sn"], body,
               schema="equipment", displayname=e["name"],
-              tags=[e["kind"], e["status"], site_region[e["site"]]],
+              tags=[e["kind"], e["status"], region_of(e["site"])],
               relationships=[rel("org", "sites", e["site"], "installed_at")])
     for m in S.MAINTENANCE:
         entry(root, "assets", "maintenance", m["sn"],
               {"summary": m["summary"], "site": m["site"],
-               "region": site_region[m["site"]], "equipment": m["equipment"],
+               "region": region_of(m["site"]), "equipment": m["equipment"],
                "kind": m["kind"], "performed_on": m["on"],
                "technician": m["tech"], "outcome": m["outcome"],
                "notes": m["notes"]},
@@ -233,17 +234,18 @@ def gen_approvals(root, mult):
 
 def gen_datamart(root, mult):
     site_region = {s["sn"]: s["region"] for s in S.SITES}
+    region_of = lambda sn: site_region[base_sn(sn)]
     rows = list(each(S.KPI_ROWS, mult, "kpi"))
     for k in rows:
         sn = f"kpi_{k['site']}_{k['period']}"
         entry(root, "datamart", "kpis", sn,
-              {"site": k["site"], "region": site_region[k["site"]],
+              {"site": k["site"], "region": region_of(k["site"]),
                "period": k["period"], "availability_pct": k["avail"],
                "dropped_call_pct": k["drops"], "data_volume_tb": k["tb"],
                "outage_minutes": k["outage"]},
               schema="kpi_row",
               displayname=f"{k['site']} {k['period'].replace('_', '-')}",
-              tags=[site_region[k["site"]], k["period"]],
+              tags=[region_of(k["site"]), k["period"]],
               relationships=[rel("org", "sites", k["site"], "located_in")])
     # The dataset entry, plus the SAME numbers as a real downloadable CSV
     # riding as a data_asset attachment. Dual-shipping is deliberate: dmart
@@ -256,7 +258,7 @@ def gen_datamart(root, mult):
         csv_lines = [",".join(cols)]
         for k in sorted(period_rows, key=lambda r: r["site"]):
             csv_lines.append(",".join(str(x) for x in [
-                k["site"], site_region[k["site"]], k["period"], k["avail"],
+                k["site"], region_of(k["site"]), k["period"], k["avail"],
                 k["drops"], k["tb"], k["outage"]]))
         csv = "\n".join(csv_lines) + "\n"
         base = f"{root}/datamart/datasets"
@@ -305,26 +307,47 @@ def gen_comms(root, mult):
 
 # ── scale ─────────────────────────────────────────────────────────────────────
 
+# `_gNN` marks a generated clone. Stripping it recovers the authored shortname,
+# which is how a clone still resolves its region: the region tables are keyed by
+# the authored site names and are not themselves cloned.
+GEN_SUFFIX = re.compile(r"_g\d{2}$")
+
+def base_sn(shortname):
+    return GEN_SUFFIX.sub("", shortname)
+
 def each(items, mult, kind):
-    """Yield items `mult` times. The first pass is the authored set verbatim, so
-    `small` and the first slice of `large` are identical and the anchors
+    """Yield items `mult` times. The first pass is the authored set VERBATIM, so
+    `small` and the first slice of `large` are identical and the three anchors
     (erb_0142, bsr_0031, krb_0007) mean the same thing at every scale. Later
-    passes get a `_gNN` suffix and are padding, not story."""
+    passes carry a `_gNN` suffix and are padding, not story.
+
+    A clone's links are suffixed too, so generation N points at generation N's
+    own site rather than all of them piling onto the authored one. The graph
+    stays internally consistent at every scale instead of growing one
+    absurdly-busy site."""
     for item in items:
         yield item
     for g in range(2, mult + 1):
+        suffix = f"_g{g:02d}"
         for item in items:
             clone = dict(item)
-            clone["sn"] = f"{item['sn']}_g{g:02d}"
+            # KPI rows derive their shortname from site+period and carry no
+            # `sn` of their own — suffixing the site is what makes them unique.
+            if "sn" in item:
+                clone["sn"] = f"{item['sn']}{suffix}"
+            if item.get("site"):
+                clone["site"] = f"{item['site']}{suffix}"
+            if item.get("equipment"):
+                eq = item["equipment"]
+                clone["equipment"] = ([f"{q}{suffix}" for q in eq]
+                                      if isinstance(eq, list) else f"{eq}{suffix}")
             if kind == "site":
                 clone["name"] = f"{item['name']} #{g}"
             elif kind == "case":
                 clone["title"] = f"{item['title']} (#{g})"
+                # Comments are owned by personas, which are NOT cloned; a clone
+                # carrying them would just repeat the same two notes 250 times.
                 clone["comments"] = []
-            elif kind == "kpi":
-                # KPI rows are keyed by site+period, so a clone must point at a
-                # cloned site or it collides with the original's shortname.
-                clone["site"] = f"{item['site']}_g{g:02d}"
             yield clone
 
 SCALE_MULT = {"small": 1, "medium": 10, "large": 250}

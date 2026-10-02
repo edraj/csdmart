@@ -147,4 +147,9 @@ space, role and permission, left dmart's own `super_admin`, `logged_in` and
 was allowed to, four refusals that should have been refused (an agent closing an
 escalated case, a close with no reason, a technician approving his own request),
 and `case_000101` left with three history rows attributed to the two users who
-caused them.
+caused them. Identical on both drivers: same transitions, same refusals, same
+final states, same history.
+
+`--scale medium` was generated and installed too — 342 rows, ×10 across every
+entity, with generation N's equipment pointing at generation N's own site
+rather than all of them piling onto the authored one.
