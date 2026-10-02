@@ -76,3 +76,7 @@ packages.lock.json
 # DMART_PREBUILT_BIN in dist/build-rpm.sh and dist/build-deb.sh).
 /prebuilt/
 .claude/settings.local.json
+
+# Python bytecode from tools/
+__pycache__/
+*.pyc

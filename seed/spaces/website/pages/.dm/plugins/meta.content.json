@@ -1,0 +1,22 @@
+{
+  "uuid": "cc9ef8df-8578-5ab6-ba37-6e78625ac7dd",
+  "shortname": "plugins",
+  "is_active": true,
+  "slug": "plugins",
+  "displayname": {
+    "en": "Plugins"
+  },
+  "description": {
+    "en": "DMART ships with a plugin system that lets you extend the platform without forking it. Plugins come in two flavours: **hook plugins** react to before/after action events, and **API plugins** mount their own HTTP routes. They can be compiled into the binary as managed C# classes, or loaded at runtime as native plugins."
+  },
+  "tags": [
+    "docs"
+  ],
+  "created_at": "2026-10-01T00:00:00",
+  "updated_at": "2026-10-01T00:00:00",
+  "owner_shortname": "dmart",
+  "payload": {
+    "content_type": "markdown",
+    "body": "plugins.md"
+  }
+}

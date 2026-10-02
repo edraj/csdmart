@@ -1,0 +1,22 @@
+{
+  "uuid": "92933d96-6da7-5e5c-93a9-a75e0dd5f9f9",
+  "shortname": "folders",
+  "is_active": true,
+  "slug": "folders",
+  "displayname": {
+    "en": "Folders & Rendering"
+  },
+  "description": {
+    "en": "A folder in DMART is deceptively simple — and quietly one of the most powerful concepts in the platform. It is at once a **structural node** (the thing that makes a subpath browsable) and a **declarative control panel** that tells the admin UI exactly how to list, sort, filter, paginate and edit everything inside it, and tells the backend exactly what is allowed to live there. All of that lives in one small JSON body validated against a schema called `folder_rendering`. This page dissects every property."
+  },
+  "tags": [
+    "docs"
+  ],
+  "created_at": "2026-10-01T00:00:00",
+  "updated_at": "2026-10-01T00:00:00",
+  "owner_shortname": "dmart",
+  "payload": {
+    "content_type": "markdown",
+    "body": "folders.md"
+  }
+}

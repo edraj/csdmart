@@ -1,0 +1,22 @@
+{
+  "uuid": "60d4b2e9-2e1d-51a9-9dad-b99c2b00deb5",
+  "shortname": "data_model",
+  "is_active": true,
+  "slug": "data-model",
+  "displayname": {
+    "en": "Data Model"
+  },
+  "description": {
+    "en": "Everything in DMART is an **Entry** — a single, uniformly addressed unit of information. There are no bespoke tables per feature, no separate \"users API\" versus \"documents API\": a user, a folder, a blog post, a support ticket, an uploaded PDF and a system log are all the same shape of object, distinguished only by a `resource_type`. Understand the Entry and its address, and you understand the whole platform."
+  },
+  "tags": [
+    "docs"
+  ],
+  "created_at": "2026-10-01T00:00:00",
+  "updated_at": "2026-10-01T00:00:00",
+  "owner_shortname": "dmart",
+  "payload": {
+    "content_type": "markdown",
+    "body": "data_model.md"
+  }
+}

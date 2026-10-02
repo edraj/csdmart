@@ -248,3 +248,93 @@ Deliberately still out of scope: image variants/`srcset`, menus, comment
 moderation, incremental rebuilds, and build-time mermaid rendering (the fence is
 emitted as `<pre class="mermaid">` for the website's existing cached
 dynamic-import helper to hydrate).
+
+---
+
+## The `website` space (migration landed)
+
+dmart.cc's 14 pages now exist as dmart content in `seed/spaces/website`,
+converted by `tools/website-migrate/convert.py`.
+
+**Fidelity, measured rather than asserted.** The converted markdown reproduces
+the source's document structure exactly:
+
+| | source | converted |
+|---|---:|---:|
+| tables | 41 | **41** |
+| mermaid diagrams | 14 | **14** |
+| `h2` | 102 | **102** |
+| `h3` | 128 | **128** |
+
+Per-page word counts land within ~1% (api-docs 2357 → 2357, settings 1328 →
+1330, query-search 3652 → 3661; the small surplus is markdown's own table
+pipes and fence markers). The only deliberate loss is the text inside
+copy-to-clipboard `<button>` subtrees — UI affordances, not content.
+
+**What is lost, plainly:** per-page visual treatment. `endpoint`, `method`,
+`plugin-card` and friends are presentation, and one template cannot reproduce
+them. The api-docs page feels it most — 60 endpoint blocks become headings plus
+code. The content survives; the styling does not.
+
+### Verified end to end
+
+```
+dmart seed files-only   → website/ laid down from the binary (31 files)
+dmart seed db-only      → 15 entries (14 pages + folder), 0 failed
+ssg/generate.mjs        → 14 pages, 41 tables, 14 diagrams, canonical on each
+```
+
+`dmart seed db-only` orders this correctly on its own: AdminBootstrap runs
+first (creating the `dmart` user), then the import. Importing into a database
+that has never been bootstrapped fails every row on
+`FOREIGN KEY constraint failed` — `owner_shortname` references `users`.
+
+### Public access is NOT enabled by seeding, deliberately
+
+Seeding the content grants nothing. On a fresh install:
+
+```
+POST /public/query  {space_name: "website"}   → total 0     (anonymous)
+POST /managed/query {space_name: "website"}   → total 14    (admin)
+```
+
+`AdminBootstrap` ships the `world` permission with `subpaths: {}` — inert — and
+`docs/permissions.md:100-102` states that once it exists, its scope "belongs to
+the operator and bootstrap never repairs, widens or resets" it. Pre-scoping it
+from seed would fight a deliberate design decision, and would mean every fresh
+dmart install serves a public website by default. That is the operator's call,
+not a default.
+
+Enabling it is one call, through the API rather than SQL (a raw `UPDATE` leaves
+`query_policies` ungenerated and the authz cache stale —
+`docs/permissions.md:96-98`):
+
+```bash
+curl -X POST localhost:8000/managed/request \
+  -H "Authorization: Bearer $ADMIN_TOKEN" -H 'Content-Type: application/json' -d '{
+  "space_name":"management","request_type":"update",
+  "records":[{"resource_type":"permission","subpath":"/permissions","shortname":"world",
+    "attributes":{"subpaths":{"website":["__all_subpaths__"]},
+                  "resource_types":["content","folder"],
+                  "actions":["query","view"],"conditions":["is_active"]}}]}'
+```
+
+Verified: after that call, `/public/query` returns the pages and the generator
+runs with **no token at all**.
+
+### Two open questions this does not answer
+
+**1. Serving it from dmart (`/website`).** The generator writes static files;
+nothing yet serves them. `/cxb` and `/cat` are precedent — embedded SPAs behind
+a configurable URL prefix — so a `/website` prefix fits. The unresolved part is
+**regeneration**: content edited in dmart does not change a site that was
+generated at build time. Options, none free: regenerate on demand via a CLI
+command; a hook plugin that regenerates on write to the space; or render per
+request, which re-opens exactly the XSS question `PayloadHandler` closed.
+Worth deciding before building it.
+
+**2. Drift.** dmart.cc currently has two sources of truth: the Svelte pages in
+`edraj/website` and this seeded markdown. They will diverge. The clean
+resolution is to make the seed authoritative and retire the Svelte pages so the
+site builds from dmart — but that retires 8,046 lines of working markup and is
+a decision for the site's owner, not a side effect of this migration.
