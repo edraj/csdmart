@@ -1,0 +1,26 @@
+{
+  "uuid": "98145fdf-b785-5f48-be1f-907f96f89fa3",
+  "shortname": "assets",
+  "is_active": true,
+  "displayname": {
+    "en": "Field assets"
+  },
+  "description": {
+    "en": "Generators, cabinets and COWs installed at sites, with their technicians."
+  },
+  "tags": [
+    "shanidar",
+    "pack:assets"
+  ],
+  "created_at": "2026-10-01T00:00:00",
+  "updated_at": "2026-10-01T00:00:00",
+  "owner_shortname": "dmart",
+  "languages": [
+    "english"
+  ],
+  "indexing_enabled": true,
+  "hide_folders": [
+    "schema"
+  ],
+  "active_plugins": []
+}

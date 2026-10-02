@@ -1,0 +1,26 @@
+{
+  "uuid": "6c70f0c1-e346-5d9d-bff2-29c68bab3c16",
+  "shortname": "datamart",
+  "is_active": true,
+  "displayname": {
+    "en": "Data mart"
+  },
+  "description": {
+    "en": "KPI datasets shipped twice: the file as a data_asset, the rows as queryable entries."
+  },
+  "tags": [
+    "shanidar",
+    "pack:datamart"
+  ],
+  "created_at": "2026-10-01T00:00:00",
+  "updated_at": "2026-10-01T00:00:00",
+  "owner_shortname": "dmart",
+  "languages": [
+    "english"
+  ],
+  "indexing_enabled": true,
+  "hide_folders": [
+    "schema"
+  ],
+  "active_plugins": []
+}

@@ -1,0 +1,37 @@
+{
+  "name": "servicedesk",
+  "format": 1,
+  "title": "Service desk",
+  "summary": "Customer cases on a real workflow, with comments and resolutions.",
+  "space": "servicedesk",
+  "depends": [
+    "org"
+  ],
+  "links": [
+    "catalogue",
+    "assets",
+    "kb"
+  ],
+  "optional": false,
+  "folders": [
+    "cases",
+    "workflows",
+    "schema"
+  ],
+  "provides": {
+    "roles": [
+      "servicedesk_agent",
+      "servicedesk_supervisor"
+    ],
+    "permissions": [
+      "servicedesk_agent_case",
+      "servicedesk_supervisor_case"
+    ],
+    "groups": []
+  },
+  "scales": [
+    "small",
+    "medium",
+    "large"
+  ]
+}

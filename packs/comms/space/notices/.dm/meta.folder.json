@@ -1,0 +1,14 @@
+{
+  "uuid": "12305770-c191-5554-8a77-d5de7986e4d5",
+  "shortname": "notices",
+  "is_active": true,
+  "tags": [],
+  "created_at": "2026-10-01T00:00:00",
+  "updated_at": "2026-10-01T00:00:00",
+  "owner_shortname": "dmart",
+  "payload": {
+    "content_type": "json",
+    "schema_shortname": "folder_rendering",
+    "body": "notices.json"
+  }
+}

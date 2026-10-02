@@ -1,0 +1,27 @@
+{
+  "uuid": "c6324e40-aed2-5a82-83a9-345b3ec39be9",
+  "shortname": "servicedesk",
+  "is_active": true,
+  "displayname": {
+    "en": "Service desk"
+  },
+  "description": {
+    "en": "Customer cases on a real workflow, with comments and resolutions."
+  },
+  "tags": [
+    "shanidar",
+    "pack:servicedesk"
+  ],
+  "created_at": "2026-10-01T00:00:00",
+  "updated_at": "2026-10-01T00:00:00",
+  "owner_shortname": "dmart",
+  "languages": [
+    "english"
+  ],
+  "indexing_enabled": true,
+  "hide_folders": [
+    "schema",
+    "workflows"
+  ],
+  "active_plugins": []
+}

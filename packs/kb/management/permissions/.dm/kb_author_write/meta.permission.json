@@ -1,0 +1,31 @@
+{
+  "uuid": "a501eac3-0e16-5675-bda0-9bc9b33fac7f",
+  "shortname": "kb_author_write",
+  "is_active": true,
+  "tags": [],
+  "created_at": "2026-10-01T00:00:00",
+  "updated_at": "2026-10-01T00:00:00",
+  "owner_shortname": "dmart",
+  "subpaths": {
+    "kb": [
+      "articles"
+    ]
+  },
+  "resource_types": [
+    "content",
+    "folder",
+    "json",
+    "media",
+    "comment",
+    "reaction",
+    "relationship",
+    "data_asset"
+  ],
+  "actions": [
+    "query",
+    "view",
+    "create",
+    "update"
+  ],
+  "conditions": []
+}

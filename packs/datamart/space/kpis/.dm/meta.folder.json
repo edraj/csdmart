@@ -1,0 +1,14 @@
+{
+  "uuid": "621204cf-c798-56b5-8ceb-d480396da19e",
+  "shortname": "kpis",
+  "is_active": true,
+  "tags": [],
+  "created_at": "2026-10-01T00:00:00",
+  "updated_at": "2026-10-01T00:00:00",
+  "owner_shortname": "dmart",
+  "payload": {
+    "content_type": "json",
+    "schema_shortname": "folder_rendering",
+    "body": "kpis.json"
+  }
+}

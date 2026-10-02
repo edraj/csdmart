@@ -1,0 +1,12 @@
+{
+  "uuid": "e21207d2-78bc-5cd7-af8e-8ca5fcce4ab4",
+  "shortname": "comms_editor",
+  "is_active": true,
+  "tags": [],
+  "created_at": "2026-10-01T00:00:00",
+  "updated_at": "2026-10-01T00:00:00",
+  "owner_shortname": "dmart",
+  "permissions": [
+    "comms_editor_write"
+  ]
+}

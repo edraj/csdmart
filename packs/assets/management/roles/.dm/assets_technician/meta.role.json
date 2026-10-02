@@ -1,0 +1,12 @@
+{
+  "uuid": "d8e398ed-bc25-5715-9626-724bdf9a4c70",
+  "shortname": "assets_technician",
+  "is_active": true,
+  "tags": [],
+  "created_at": "2026-10-01T00:00:00",
+  "updated_at": "2026-10-01T00:00:00",
+  "owner_shortname": "dmart",
+  "permissions": [
+    "assets_technician_write"
+  ]
+}

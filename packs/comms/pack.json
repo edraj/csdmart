@@ -1,0 +1,33 @@
+{
+  "name": "comms",
+  "format": 1,
+  "title": "Communications",
+  "summary": "Outbound notices and campaign content.",
+  "space": "comms",
+  "depends": [
+    "org"
+  ],
+  "links": [
+    "assets",
+    "kb"
+  ],
+  "optional": true,
+  "folders": [
+    "notices",
+    "schema"
+  ],
+  "provides": {
+    "roles": [
+      "comms_editor"
+    ],
+    "permissions": [
+      "comms_editor_write"
+    ],
+    "groups": []
+  },
+  "scales": [
+    "small",
+    "medium",
+    "large"
+  ]
+}

@@ -1,0 +1,14 @@
+{
+  "uuid": "aa375131-8023-58e7-8dc9-52dab4b9cccc",
+  "shortname": "cases",
+  "is_active": true,
+  "tags": [],
+  "created_at": "2026-10-01T00:00:00",
+  "updated_at": "2026-10-01T00:00:00",
+  "owner_shortname": "dmart",
+  "payload": {
+    "content_type": "json",
+    "schema_shortname": "folder_rendering",
+    "body": "cases.json"
+  }
+}

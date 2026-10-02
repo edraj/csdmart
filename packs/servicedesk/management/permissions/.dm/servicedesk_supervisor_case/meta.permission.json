@@ -1,0 +1,35 @@
+{
+  "uuid": "12314275-ac03-5e7b-8070-25b61d160f98",
+  "shortname": "servicedesk_supervisor_case",
+  "is_active": true,
+  "tags": [],
+  "created_at": "2026-10-01T00:00:00",
+  "updated_at": "2026-10-01T00:00:00",
+  "owner_shortname": "dmart",
+  "subpaths": {
+    "servicedesk": [
+      "__all_subpaths__"
+    ]
+  },
+  "resource_types": [
+    "content",
+    "folder",
+    "json",
+    "media",
+    "comment",
+    "reaction",
+    "relationship",
+    "data_asset",
+    "ticket"
+  ],
+  "actions": [
+    "query",
+    "view",
+    "create",
+    "update",
+    "progress_ticket",
+    "assign",
+    "delete"
+  ],
+  "conditions": []
+}

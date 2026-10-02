@@ -1,0 +1,12 @@
+{
+  "uuid": "f1e43c50-4129-5714-ab8b-43a46e3255bd",
+  "shortname": "org_viewer",
+  "is_active": true,
+  "tags": [],
+  "created_at": "2026-10-01T00:00:00",
+  "updated_at": "2026-10-01T00:00:00",
+  "owner_shortname": "dmart",
+  "permissions": [
+    "org_viewer_read"
+  ]
+}

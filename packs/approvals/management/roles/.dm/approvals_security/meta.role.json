@@ -1,0 +1,12 @@
+{
+  "uuid": "c348ebd6-ad55-5d01-a2a8-8769bf8f43a8",
+  "shortname": "approvals_security",
+  "is_active": true,
+  "tags": [],
+  "created_at": "2026-10-01T00:00:00",
+  "updated_at": "2026-10-01T00:00:00",
+  "owner_shortname": "dmart",
+  "permissions": [
+    "approvals_security_review"
+  ]
+}

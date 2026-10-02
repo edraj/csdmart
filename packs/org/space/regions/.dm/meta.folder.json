@@ -1,0 +1,14 @@
+{
+  "uuid": "f997e289-f9af-58bb-879b-8dbb8d54b11d",
+  "shortname": "regions",
+  "is_active": true,
+  "tags": [],
+  "created_at": "2026-10-01T00:00:00",
+  "updated_at": "2026-10-01T00:00:00",
+  "owner_shortname": "dmart",
+  "payload": {
+    "content_type": "json",
+    "schema_shortname": "folder_rendering",
+    "body": "regions.json"
+  }
+}

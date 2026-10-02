@@ -1,0 +1,35 @@
+{
+  "name": "datamart",
+  "format": 1,
+  "title": "Data mart",
+  "summary": "KPI datasets shipped twice: the file as a data_asset, the rows as queryable entries.",
+  "space": "datamart",
+  "depends": [
+    "org"
+  ],
+  "links": [
+    "assets",
+    "catalogue",
+    "servicedesk"
+  ],
+  "optional": false,
+  "folders": [
+    "datasets",
+    "kpis",
+    "schema"
+  ],
+  "provides": {
+    "roles": [
+      "datamart_analyst"
+    ],
+    "permissions": [
+      "datamart_analyst_read"
+    ],
+    "groups": []
+  },
+  "scales": [
+    "small",
+    "medium",
+    "large"
+  ]
+}

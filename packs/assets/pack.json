@@ -1,0 +1,33 @@
+{
+  "name": "assets",
+  "format": 1,
+  "title": "Field assets",
+  "summary": "Generators, cabinets and COWs installed at sites, with their technicians.",
+  "space": "assets",
+  "depends": [
+    "org"
+  ],
+  "links": [
+    "org"
+  ],
+  "optional": false,
+  "folders": [
+    "equipment",
+    "maintenance",
+    "schema"
+  ],
+  "provides": {
+    "roles": [
+      "assets_technician"
+    ],
+    "permissions": [
+      "assets_technician_write"
+    ],
+    "groups": []
+  },
+  "scales": [
+    "small",
+    "medium",
+    "large"
+  ]
+}

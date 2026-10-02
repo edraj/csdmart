@@ -1,0 +1,33 @@
+{
+  "name": "catalogue",
+  "format": 1,
+  "title": "Product catalogue",
+  "summary": "Products, tariffs and bundles, each priced and regioned.",
+  "space": "catalogue",
+  "depends": [
+    "org"
+  ],
+  "links": [
+    "org"
+  ],
+  "optional": false,
+  "folders": [
+    "products",
+    "tariffs",
+    "schema"
+  ],
+  "provides": {
+    "roles": [
+      "catalogue_editor"
+    ],
+    "permissions": [
+      "catalogue_editor_write"
+    ],
+    "groups": []
+  },
+  "scales": [
+    "small",
+    "medium",
+    "large"
+  ]
+}

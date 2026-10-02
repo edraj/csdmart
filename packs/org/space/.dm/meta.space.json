@@ -1,0 +1,26 @@
+{
+  "uuid": "63d472ba-e8cc-55aa-845e-ee2250565718",
+  "shortname": "org",
+  "is_active": true,
+  "displayname": {
+    "en": "Organisation"
+  },
+  "description": {
+    "en": "Sites, regions and the organisational spine every other pack hangs off."
+  },
+  "tags": [
+    "shanidar",
+    "pack:org"
+  ],
+  "created_at": "2026-10-01T00:00:00",
+  "updated_at": "2026-10-01T00:00:00",
+  "owner_shortname": "dmart",
+  "languages": [
+    "english"
+  ],
+  "indexing_enabled": true,
+  "hide_folders": [
+    "schema"
+  ],
+  "active_plugins": []
+}
