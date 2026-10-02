@@ -102,6 +102,22 @@
 
 ### Fixed
 
+- **Six docs files described two materialized views that do not exist.**
+  `mv_user_roles` and `mv_role_permissions` appear in `GLOSSARY.md`,
+  `docs/architecture.md`, `docs/data-model.md`, `docs/debugging.md`,
+  `docs/permissions.md` and `docs/testing.md` — and nowhere in the code.
+  `SqlSchema.CreateAll` emits tables, columns and indexes only; dmart creates no
+  views at all. The authz flattening they describe is real but happens in C# in
+  `PermissionService.ResolvePermissionsAsync`, cached per user shortname in the
+  process-local `AuthzCacheRefresher`.
+
+  Worst of it, `docs/debugging.md` handed operators a `REFRESH MATERIALIZED
+  VIEW mv_user_roles;` to run after a manual permission edit — which errors on
+  a missing relation and sends someone debugging permissions off after a
+  non-existent problem. It now points at `GET /managed/reload-security-data`,
+  which actually clears the cache. A stale comment in `Program.cs` claiming
+  `migrate` creates the views is corrected too.
+
 - **A space whose folder was named after one of its schemas imported
   unvalidated.** The import validator resolved a schema's externalized body by
   walking three levels up from `{space}/schema/.dm/{sn}/`, which lands in the

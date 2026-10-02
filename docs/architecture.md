@@ -237,7 +237,7 @@ dmart/
 │   ├── CountHistoryRepository.cs       count_history (periodic snapshots)
 │   ├── LinkRepository.cs               urlshorts (short links)
 │   ├── HealthCheckRepository.cs        health-check queries
-│   ├── AuthzCacheRefresher.cs          mv_user_roles / mv_role_permissions REFRESH + in-memory user-access cache
+│   ├── AuthzCacheRefresher.cs          in-memory user-access cache (no DB views; see Non-obvious decisions)
 │   ├── JsonbHelpers.cs                 C# ↔ JSONB round-trip helpers
 │   └── EntryMapper / AttachmentMapper / SpaceMapper  Entry → Record shapers
 │
@@ -335,10 +335,21 @@ sequenceDiagram
    `Models/Api/InternalErrorCode.cs`). No string-keyed error codes, no
    multiple overloads.
 
-5. **Process-local caches, MV-backed authz.** `AuthzCacheRefresher` holds the
-   in-memory user-access dict AND runs `REFRESH MATERIALIZED VIEW CONCURRENTLY`
-   on `mv_user_roles` / `mv_role_permissions` after every user/role/permission
-   write. No cross-instance invalidation (yet).
+5. **Authz is a process-local cache, not a database view.**
+   `AuthzCacheRefresher` is one `ConcurrentDictionary` of resolved
+   (user, permissions) tuples. `PermissionService.ResolvePermissionsAsync`
+   fills it on a miss with three ordinary SELECTs — user, their roles, those
+   roles' permissions — and every write to users/roles/permissions clears it
+   whole.
+
+   dmart creates **no** materialized views; earlier revisions of these docs
+   described `mv_user_roles` / `mv_role_permissions`, which were never built.
+
+   Two consequences. There is no cross-instance invalidation, so a multi-process
+   deployment can serve stale access decisions until each process writes or
+   restarts. And a write from *outside* the server — `dmart import`, direct
+   SQL — cannot clear a running server's copy at all, so new roles and
+   permissions stay invisible until it restarts.
 
 6. **Plugins are async by design.** `AfterActionAsync` is fired with
    `Task.Run(...)` so a slow plugin can't slow a CRUD response.

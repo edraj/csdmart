@@ -126,8 +126,6 @@ erDiagram
     users ||--o{ roles : "owner_shortname FK"
     roles  }|..|{ users : "users.roles JSONB[]"
     permissions }|..|{ roles : "roles.permissions JSONB[]"
-    mv_user_roles }o--|| users : "flattens"
-    mv_role_permissions }o--|| roles : "flattens"
     entries ||--o{ attachments : "parent_subpath+parent_shortname"
     entries ||--o{ histories : "space+subpath+shortname"
     entries ||--o{ locks : "space+subpath+shortname"
@@ -249,14 +247,23 @@ Change log. Every create/update/delete writes a row with `event_shortname`,
 
 Straightforward single-purpose tables. See their repos for columns.
 
-### Materialized views
+### No views, materialized or otherwise
 
-- `mv_user_roles` — `(user_shortname, role_shortname)` flattened from `users.roles`
-- `mv_role_permissions` — `(role_shortname, permission_shortname)` flattened from `roles.permissions`
+dmart creates **no** database views. `SqlSchema.CreateAll` emits tables,
+columns and indexes only.
 
-Both have UNIQUE indexes so `REFRESH MATERIALIZED VIEW CONCURRENTLY` works.
-`AuthzCacheRefresher.RefreshAsync` runs them after every user/role/permission
-write and at boot.
+Earlier revisions of this document described two materialized views,
+`mv_user_roles` and `mv_role_permissions`, flattening `users.roles` and
+`roles.permissions`. They were never built. The flattening they describe is
+real, but it happens **in C# on a cache miss**, in
+`PermissionService.ResolvePermissionsAsync`: load the user, take `user.Roles`
+(plus the implicit `logged_in`), `GetRolesAsync` them, keep the active ones,
+`SelectMany` their `.Permissions`, then `GetPermissionsAsync` that list. Three
+ordinary SELECTs, and the result is cached per user shortname in the
+in-process AuthzCache.
+
+So there is nothing to `REFRESH`, and a query joining against `mv_user_roles`
+will fail with a missing-relation error.
 
 ## Non-obvious storage rules (discovered the hard way)
 

@@ -681,10 +681,17 @@ nothing in the SQL schema. The real mechanism is `AuthzCacheRefresher`, an
 in-memory `ConcurrentDictionary` with `InvalidateAllInMemory()`.
 
 Two consequences. For the packs: a standalone CLI import cannot invalidate a
-**running** server's cache, so `install.sh` must restart the server (or install
-against a stopped one) — not "refresh the views". For dmart: docs/debugging.md
-tells operators to run a `REFRESH MATERIALIZED VIEW` that would error. Six
-files need correcting; that is a docs PR, kept out of the packs work.
+**running** server's cache — but it does not need a restart either.
+`GET /managed/reload-security-data` calls `PermissionService.ReloadAsync` →
+`InvalidateAllCachesAsync` (`Api/Managed/HealthHandler.cs:33-40`), the same path
+a write takes, so `install.sh` calls it at the end. Proven end to end: grant a
+role by direct SQL → the server still denies → call the endpoint → the same
+request is allowed, no restart. An earlier revision of this plan said "must
+restart"; that was overstated.
+
+For dmart: docs/debugging.md told operators to run a `REFRESH MATERIALIZED
+VIEW` that would error. Six files plus a stale comment in `Program.cs`,
+corrected in a separate docs PR.
 
 ### 5 — Re-import duplicates history, and `--skip-history` did not prevent it
 

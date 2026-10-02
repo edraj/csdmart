@@ -35,11 +35,21 @@ persisted in the `attachments` table and served by `AttachmentRepository`.
 
 ## AuthzCache
 
-Two PostgreSQL materialized views (`mv_user_roles`, `mv_role_permissions`)
-that pre-compute the user → role → permission join graph so the in-process
-`PermissionService` doesn't walk JSONB on every request. Refreshed after
-any write to users/roles/permissions, and on boot. See
+A **process-local in-memory cache** of the resolved user → role → permission
+graph, so `PermissionService` does not re-run the three lookups on every
+request. One `ConcurrentDictionary<string, CachedUserAccess>` keyed by user
+shortname; `CachedUserAccess` holds the `User` row plus the flattened list of
+`Permission` rows reachable through it.
+
+Populated on a miss by `PermissionService.ResolvePermissionsAsync`, and
+**cleared whole** by `AuthzCacheRefresher.RefreshAsync` after any write to
+users, roles or permissions. There is no partial invalidation and no TTL. See
 `DataAdapters/Sql/AuthzCacheRefresher.cs`.
+
+Being process-local has one consequence worth knowing: a write made by a
+*different* process — a `dmart import`, a direct SQL change — cannot invalidate
+a running server's copy. Restart the server after one of those, or the old
+access decisions stand.
 
 ## Catalog
 

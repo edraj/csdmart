@@ -2021,7 +2021,8 @@ switch (subcommand)
         //   * CREATE TABLE IF NOT EXISTS (new tables)
         //   * ALTER TABLE ... ADD COLUMN IF NOT EXISTS (new columns)
         //   * CREATE INDEX IF NOT EXISTS (new indexes)
-        //   * CREATE MATERIALIZED VIEW IF NOT EXISTS (authz views)
+        // No views: authz is a process-local cache (AuthzCacheRefresher), not
+        // the mv_user_roles / mv_role_permissions this comment used to claim.
         // Idempotent — safe to re-run. Captures PG NOTICE messages so the
         // caller sees exactly what was created vs. skipped.
         //

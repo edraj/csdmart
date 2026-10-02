@@ -236,11 +236,23 @@ not just `shortname`. `SpaceRepository.UpsertAsync` uses the tuple on
 conflict. Don't "simplify" it or you'll get `42P10: there is no unique or
 exclusion constraint matching the ON CONFLICT specification`.
 
-### Materialized views need `REFRESH CONCURRENTLY`-capable unique indexes
+### The authz cache is in-process, so an external write does not clear it
 
-`mv_user_roles` and `mv_role_permissions` have `idx_mv_*_unique` indexes.
-Without them, `REFRESH MATERIALIZED VIEW CONCURRENTLY` fails.
-`SqlSchema.cs` creates them.
+`AuthzCacheRefresher` is a `ConcurrentDictionary` living in the server process,
+not a database view — there is no `mv_user_roles`, no `mv_role_permissions`, and
+nothing to `REFRESH`. Writes made *through the server* clear it automatically.
+Writes made by anything else do not: a `dmart import`, a direct SQL edit, or
+another instance of dmart will leave the running server deciding access from
+its old copy.
+
+The symptom is a user denied access they demonstrably have in the database.
+Clear it with:
+
+    GET /managed/reload-security-data
+
+which drops the user-access cache and the compiled-schema cache in one go.
+Restarting the server works too, but the endpoint is cheaper and does not drop
+connections.
 
 ### `CREATE TABLE IF NOT EXISTS` doesn't add columns to existing tables
 
@@ -329,11 +341,11 @@ PGPASSWORD=tramd psql -h localhost -U dmart -d dmart \
 PGPASSWORD=tramd psql -h localhost -U dmart -d dmart \
   -c "SELECT indexname FROM pg_indexes WHERE tablename='entries';"
 
-# Force materialized view refresh (e.g. after a manual permission edit)
-PGPASSWORD=tramd psql -h localhost -U dmart -d dmart \
-  -c "REFRESH MATERIALIZED VIEW mv_user_roles;"
-PGPASSWORD=tramd psql -h localhost -U dmart -d dmart \
-  -c "REFRESH MATERIALIZED VIEW mv_role_permissions;"
+# Clear the authz cache (e.g. after a manual permission edit or a CLI import).
+# NOT a materialized view refresh — there are no views. This drops the
+# in-process user-access cache and the compiled schemas.
+curl -fsS -H "Authorization: Bearer $TOKEN" \
+  "$DMART_URL/managed/reload-security-data"
 ```
 
 ## When something is still wrong

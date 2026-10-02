@@ -268,12 +268,33 @@ import_args=(import --type=fs)
 import_args+=(--skip-history "$SPACES")
 "$DMART" "${import_args[@]}"
 
+# The import wrote the roles and permissions straight to the database, which a
+# running server cannot see: its authz cache is a process-local dictionary
+# (AuthzCacheRefresher), so only a write made THROUGH the server clears it.
+# /managed/reload-security-data does exactly that, which beats asking the
+# operator to restart.
+if [ -n "$URL" ] && [ -n "${token:-}" ]; then
+    echo
+    printf '%s ' "== clearing the server's authz cache"
+    curl -sS -m 20 "$URL/managed/reload-security-data" \
+        -H "Authorization: Bearer $token" \
+      | python3 -c 'import sys,json; print(json.load(sys.stdin).get("status","?"))' \
+      || echo "failed — restart the server instead"
+fi
+
 cat <<EOF
 
 == done
-
-Restart the dmart server before using the new roles and permissions. dmart's
-authz cache is in-process (AuthzCacheRefresher), so a CLI import cannot
-invalidate a running server's copy — the roles exist in the database but the
-server will not see them until it restarts.
 EOF
+
+if [ -z "$URL" ] || [ -z "${token:-}" ]; then
+    cat <<'EOF'
+The new roles and permissions are in the database but a RUNNING server cannot
+see them yet: its authz cache is in-process, so a CLI import cannot invalidate
+it. Either call
+
+    GET /managed/reload-security-data
+
+as an authenticated user, or restart the server.
+EOF
+fi
