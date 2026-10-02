@@ -4,6 +4,38 @@
 
 ### Added
 
+- **Solution packs — ready-made dmart applications defined as data**, under
+  `packs/`. A pack is a space, the folders inside it, and the roles and
+  permissions that make it usable; nothing is compiled and core is untouched.
+  Eight ship: `org`, `catalogue`, `assets`, `servicedesk`, `approvals`, `kb`,
+  `datamart` and the optional `comms`.
+
+  ```bash
+  export BACKEND_ENV=/path/to/config.env
+  ./packs/install.sh --packs servicedesk        # pulls in `org` too
+  ./packs/reset.sh  --packs kb --url ... --yes
+  ```
+
+  A directory is a pack if and only if it holds a `pack.json`, so no script
+  carries a hardcoded list. `depends` is resolved transitively; `links` is
+  narrative only. The space trees and management overlays are generated
+  deterministically (UUIDv5 from a fixed namespace, one fixed timestamp), so
+  re-running the generators yields a byte-identical tree — the output is
+  committed, and a churning diff would hide real change.
+
+  Three shapes are forced by what dmart actually does rather than by taste.
+  `install.sh` has a second, API-only phase because **groups do not round-trip**
+  through import/export, which is the only reason it needs a URL at all. It
+  ends by telling you to restart the server, because the authz cache is an
+  in-process dictionary and a CLI import cannot invalidate a running server's
+  copy. And `build.sh` refuses to build a pack carrying a `history.jsonl`,
+  because re-import *appends* history rather than upserting it. `packs/PLAN.md`
+  records each of these with citations and the experiment that established it.
+
+  Installed clean on both drivers: 43 rows, 0 failed; 7 spaces, 20 folders, 8
+  roles, 8 permissions, 3 groups. A second install skips all 43. Every folder
+  returns a resolved `folder_rendering` payload, so CXB renders all of them.
+
 - **A static-site generator over dmart content** — `catalog/ssg/generate.mjs`.
   Queries dmart and writes one real HTML file per entry with the prose **in the
   markup**, plus `sitemap.xml` and `robots.txt`:
