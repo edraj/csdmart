@@ -25,13 +25,13 @@ so they are up front rather than buried in the answers.
 | # | Brief assumes | Reality | Consequence |
 |---|---|---|---|
 | 1 | History may not be importable; propose API replay | **History imports** as `history.jsonl`, with author and timestamp per row | No replay. Author history directly, at real dates. |
-| 2 | — | **Re-import duplicates history** (append, never upsert) | `install.sh` must pass `--skip-history` on re-runs, or reset first. |
+| 2 | — | **Re-import duplicates history** (append, never upsert) | Packs ship without `history.jsonl`. `--skip-history` was a no-op on zips until #324. |
 | 3 | Packs ship groups in `management_overlay` | **`group` does not round-trip** through import/export | Groups must be created over the API by `install.sh`. |
 | 4 | Workflow gates may match roles inherited through groups | Gates read **`user.Roles` only** | Every transition-driving persona needs the role *directly*. |
 | 5 | `/public/submit` + `own` gives customers their own cases | Submitted entries are owned by **`anonymous`** | Customer-owned cases need an authenticated create, or a re-owning step. |
 | 6 | Plugins must call REST as a service account | A `save_entry` **callback exists** — but it bypasses validation/permissions and attributes history to the **triggering user** | Use REST + service account anyway, now for a *demonstrated* reason. |
 | 7 | `shop_daily_sales` SQLite is "queryable through the API" | **No endpoint queries inside a data asset** | Ship the blob *and* mirror rows as entries, or drop the claim. |
-| 8 | Resolution comes "from a catalogue" | Workflow `resolutions` is **not enforced**; only presence of `resolution_reason` is | Enforce the catalogue with `allowed_fields_values`, or accept free text. |
+| 8 | Resolution comes "from a catalogue" | **Nothing enforces a catalogue.** Workflow `resolutions` is never read by the engine, and `allowed_fields_values` is inert on `progress_ticket` — both verified | Enforce with a plugin or a payload-schema `enum`; `allowed_fields_values` cannot do it (verification 3). |
 
 ---
 
@@ -515,7 +515,7 @@ experiments ran against a stale `bin/dmart` from 2026-09-16, which predated
 result — a phantom "every meta FK-fails on import" and a phantom history
 duplication — and both are corrected below. Rebuild before measuring.
 
-### 1 — Export layout: CONFIRMED
+### 1 — Export layout: CONFIRMED for space/folder/content; per-type metas pinned separately
 
 `dmart export --space vtest` on a space with a folder, two content entries and
 history produced exactly:
@@ -532,8 +532,75 @@ So the rule is: metas live under `.dm/`, the payload body sits beside it as
 `<shortname>.<ext>`, and a folder's own payload (when it has one) is
 `<folder>.json` one level up. §1's assumed layout holds.
 
+This run covered `space`, `folder` and `content` only. The six types §1 flags as
+having no in-tree example — `ticket`, `user`, `comment`, `reaction`,
+`relationship`, `data_asset` — are pinned in the table under "Per-type meta
+filenames" below, from their own round trip.
+
 Two usage corrections: the flag is `--output`, not `--out`, and with no flag
 the archive lands in the **current working directory**, not beside the source.
+
+### Per-type meta filenames — PINNED by round trip
+
+Created one of every type the packs use over the API, ran `dmart export`, then
+imported the archive into a **fresh** database (`dmart seed` first, then
+`dmart import`): **14 rows, 0 failed**. The layout:
+
+| Resource | Path in the archive | Shape |
+|---|---|---|
+| space | `rt/.dm/meta.space.json` | entry |
+| folder | `rt/tickets/.dm/meta.folder.json` | entry |
+| content | `rt/assets/.dm/a1/meta.content.json` + `rt/assets/a1.json` | entry |
+| **ticket** | `rt/tickets/.dm/tk1/meta.ticket.json` + `rt/tickets/tk1.json` | entry |
+| **user** | `management/users/.dm/rt_user/meta.user.json` | entry |
+| **comment** | `rt/tickets/.dm/tk1/attachments.comment/meta.c1.json` + `c1.json` | **attachment** |
+| **reaction** | `rt/tickets/.dm/tk1/attachments.reaction/meta.r1.json` + `r1.json` | **attachment** |
+| **relationship** | `rt/tickets/.dm/tk1/attachments.relationship/meta.rel1.json` + `rel1.json` | **attachment** |
+| **data_asset** | `rt/assets/.dm/a1/attachments.data_asset/meta.sales_ds.json` + `sales_ds.csv` | **attachment** |
+| **group** | *absent from the export* | **does not round-trip** |
+
+Four things this settles that §1 could only guess at:
+
+**`comment`, `reaction` and `relationship` are attachments, not entries**, even
+though they are created through `/managed/request` with a subpath that looks
+like an entry path (`tickets/tk1`). They land under
+`attachments.{rt}/meta.{sn}.json`, flat and prefixed.
+
+**A `data_asset`'s bytes are named after the attachment shortname, not the
+uploaded filename** — `payload.body` is `"sales_ds.csv"` and the file sits
+beside the meta as `sales_ds.csv`. `content_type` is inferred from the
+extension and `checksum` (sha256 of the bytes) is written into the meta, so
+`build.sh` must compute it when authoring a data asset by hand.
+
+**`csv` / `jsonl` / `sqlite` / `parquet` are inert resource types.** They exist
+in `ResourceType` (`Dmart.Models/Enums/ResourceType.cs:38-41`) and **nowhere
+else in the codebase** — declared for Python parity with no handling.
+`IsAttachmentResourceType`
+(`Api/Managed/ResourceWithPayloadHandler.cs:418-430`) and
+`docs/data-model.md:161-174` both list only `data_asset`. §1's claim that
+"`data_asset`/`csv`/… are attachment types" was too generous to the other four.
+⇒ datamart ships its Parquet/CSV/SQLite files as **`data_asset`**; posting one
+as `csv` falls through to the *entry* path, which parses the upload as JSON and
+fails with "invalid request body".
+
+**Groups genuinely do not round-trip** (finding 3, now measured rather than
+inferred): `rt_group` was in the `groups` table and simply absent from the
+archive. `install.sh` must create groups over the API.
+
+### Ticket `reporter` drops three of its seven fields
+
+`reporter` must be an **object** — a bare string is silently discarded
+(`ParseReporter` returns null, `Api/Managed/RequestHandler.cs:1667-1681`). Worse,
+even as an object only `type`, `name`, `channel` and `msisdn` are read.
+`distributor`, `governorate` and `channel_address` are on the model
+(`Dmart.Models/Core/Reporter.cs`) and in the DB column, but the create path
+never parses them. Measured: posting all seven stored exactly four.
+
+⇒ Do not carry regional attribution in `reporter.governorate` — it will vanish
+without an error. Regional ownership stays on the `org_region_*` groups as
+already planned, and anything else the story needs goes in `payload.body`.
+This is a small core bug (parse the remaining three) left unfixed and
+unrequested; the packs do not need it.
 
 ### 2 — Relationship filtering: DOES NOT WORK (plan fallback now mandatory)
 
