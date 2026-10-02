@@ -4,6 +4,34 @@
 
 ### Added
 
+- **A public surface for the solution packs, opt-in.** Two packs now ship a
+  public face and neither opens by default: `install.sh --public` is what grants
+  the roles each pack lists under `provides.public_roles` to dmart's
+  `anonymous` user.
+
+  `kb_public` opens anonymous read of `kb/articles` — a help centre. Its
+  permission deliberately carries **no** `conditions`: `is_active` looks like
+  the careful choice but conditions are enforced on `view` and exempt on
+  `query`, so it would pass `/public/query` and then fail the `/public/entry`
+  read of the same article.
+
+  `servicedesk_public` opens anonymous **create** in a new `servicedesk/intake`
+  folder — a contact form, create-only, so a public caller cannot read back even
+  the case they just filed. It has its own `intake_case` schema rather than
+  reusing `case`, which requires region, severity and a report date that no
+  member of the public can supply. Note `/public/submit` is gated by config too:
+  it needs `ALLOWED_SUBMIT_MODELS="servicedesk.intake_case"` in `config.env`,
+  and `install.sh` reports that rather than editing a file holding secrets.
+
+  The seeded `world` permission is left inert and untouched — each pack owns its
+  own permission, the grant unions onto the `anonymous` user's existing `world`
+  role, and `reset.sh` revokes it.
+
+  Alongside it, `servicedesk_customer` and two customer personas: a signed-in
+  customer creates cases **owned by themselves** and queries only those, which
+  is the half anonymous intake cannot give you since `/public/submit` owns the
+  entry as `anonymous`.
+
 - **Solution packs — ready-made dmart applications defined as data**, under
   `packs/`. A pack is a space, the folders inside it, and the roles and
   permissions that make it usable; nothing is compiled and core is untouched.

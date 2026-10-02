@@ -96,6 +96,26 @@
       "groups": [
         "org_region_central"
       ]
+    },
+    {
+      "shortname": "customer_erbil",
+      "displayname": "Customer, Erbil",
+      "email": "customer_erbil@example.com",
+      "msisdn": "+9647500001842",
+      "roles": [
+        "servicedesk_customer"
+      ],
+      "groups": []
+    },
+    {
+      "shortname": "customer_basra",
+      "displayname": "Customer, Basra",
+      "email": "customer_basra@example.com",
+      "msisdn": "+9647800000917",
+      "roles": [
+        "servicedesk_customer"
+      ],
+      "groups": []
     }
   ]
 }

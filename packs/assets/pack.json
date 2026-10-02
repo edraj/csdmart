@@ -23,7 +23,8 @@
     "permissions": [
       "assets_technician_write"
     ],
-    "groups": []
+    "groups": [],
+    "public_roles": []
   },
   "scales": [
     "small",

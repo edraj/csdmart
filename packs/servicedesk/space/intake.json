@@ -1,0 +1,33 @@
+{
+  "shortname_title": "Shortname",
+  "content_schema_shortnames": [
+    "intake_case"
+  ],
+  "index_attributes": [
+    {
+      "key": "shortname",
+      "name": "Shortname"
+    },
+    {
+      "key": "state",
+      "name": "State"
+    },
+    {
+      "key": "category",
+      "name": "Category"
+    },
+    {
+      "key": "city",
+      "name": "City"
+    }
+  ],
+  "allow_view": true,
+  "allow_create": true,
+  "allow_update": true,
+  "allow_delete": false,
+  "use_media": false,
+  "filter": [],
+  "content_resource_types": [
+    "ticket"
+  ]
+}

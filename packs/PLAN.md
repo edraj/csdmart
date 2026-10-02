@@ -757,6 +757,50 @@ changed** — it is consistent across the whole URL surface and
 `ErrorCodeParityTests.cs:170` suggests the shape is deliberate parity, so
 widening it is a call for the maintainer rather than a drive-by.
 
+### Public surface, built — and one gate §5 missed
+
+§5 worked out the three things anonymous reads need and the three URL forms of
+`/public/submit`. Building it turned up a fourth requirement §5 does not
+mention, and settled two choices §5 left open.
+
+**`/public/submit` is gated by config, not only by permissions.**
+`IsSubmitAllowed` (`Api/Public/SubmitHandler.cs`) returns false on an empty
+`ALLOWED_SUBMIT_MODELS`, which is the shipped default — so the endpoint is
+closed no matter what the `anonymous` user is permitted to create. The value is
+a CSV of `space.schema` pairs. Anonymous intake needs
+`ALLOWED_SUBMIT_MODELS="servicedesk.intake_case"` and a restart. `install.sh`
+checks for it and reports rather than editing a file holding secrets.
+
+**`world` is not touched.** §5 says to scope the seeded `world` permission's
+`subpaths`. Building it that way would have a pack overwrite a dmart-seeded row
+and leave no clean way back. Instead each pack owns its own permission and
+declares the role under `provides.public_roles`; `install.sh --public` adds that
+role to the `anonymous` user, which already holds `world` from bootstrap, and
+`ResolvePermissionsAsync` walks every role a user holds. The union is explicit
+because dropping `world` would stop the world permission resolving at all. The
+seeded permission stays inert, and `reset.sh` revokes cleanly. Verified: after
+`reset.sh --packs kb`, `anonymous` holds `servicedesk_public, world` — `world`
+intact.
+
+**No `is_active` condition on the public read.** It looks like the careful
+choice and it is the wrong one: conditions are enforced on `view` and exempt on
+`query`, so an `is_active` world permission passes `/public/query` and then
+fails the `/public/entry` read of the same row. Both were tested; the permission
+carries no conditions.
+
+**`own` filters a query, just not through `CheckConditions`.** §6's reading that
+conditions are exempt for `query` is correct, and the row filtering still
+happens: `BuildUserQueryPoliciesAsync` emits
+`<space>:<subpath>:<rt>:<is_active>:<owner>` with the actor's shortname and each
+of their groups, and the SQL ACL filter matches it per row. Measured:
+`customer_erbil` and `customer_basra` each see exactly one of the six-plus
+cases, a cross-customer `view` is refused, and a customer-created case is owned
+by the customer and immediately visible to them. That is finding 5's "customer
+needs an authenticated create", built.
+
+Customer personas carry **no group**, precisely because a pattern is emitted per
+group — group membership would widen an `own`-scoped query.
+
 ### Personas: two dropped, and why
 
 The approved persona list named `acct_mgr_dealers` and `backoffice_channel` to

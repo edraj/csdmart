@@ -23,7 +23,8 @@
       "org_region_north",
       "org_region_central",
       "org_region_south"
-    ]
+    ],
+    "public_roles": []
   },
   "scales": [
     "small",

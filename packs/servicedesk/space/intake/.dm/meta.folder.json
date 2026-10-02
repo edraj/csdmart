@@ -1,0 +1,14 @@
+{
+  "uuid": "78441c83-8047-5122-bda0-41a83e2e3cc1",
+  "shortname": "intake",
+  "is_active": true,
+  "tags": [],
+  "created_at": "2026-10-01T00:00:00",
+  "updated_at": "2026-10-01T00:00:00",
+  "owner_shortname": "dmart",
+  "payload": {
+    "content_type": "json",
+    "schema_shortname": "folder_rendering",
+    "body": "intake.json"
+  }
+}

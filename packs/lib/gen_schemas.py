@@ -180,6 +180,31 @@ SCHEMAS = {
             },
             ["title", "category", "severity", "region", "reported_on"]),
     },
+    "servicedesk_intake": {
+        # The PUBLIC form's shape, separate from `case` on purpose.
+        #
+        # `case` requires region, severity and reported_on — none of which a
+        # member of the public can be asked for, and severity is a judgement an
+        # agent makes rather than the reporter. Relaxing `case` to fit the form
+        # would weaken the schema the agents rely on, so intake gets its own
+        # minimal one and an agent promotes it to a full case on triage.
+        #
+        # This is also the schema named in ALLOWED_SUBMIT_MODELS, so keeping it
+        # separate means enabling public submit cannot accidentally open
+        # `servicedesk.case` as well.
+        "intake_case": obj(
+            "Intake case", "A case submitted through the public form.",
+            {
+                "title": S(minLength=4, maxLength=160),
+                "category": ENUM("no_signal", "slow_data", "billing",
+                                 "device", "capacity", "other"),
+                "description": S(maxLength=2000),
+                "contact_msisdn": S(pattern=r"^\+9647[0-9]0000[0-9]{4}$"),
+                "contact_name": S(maxLength=80),
+                "city": S(maxLength=60),
+            },
+            ["title", "category", "contact_msisdn"]),
+    },
     "approvals": {
         "access_request": obj(
             "Access request", "A request to enter or work on a site.",
@@ -238,9 +263,14 @@ SCHEMAS = {
     },
 }
 
+PACK_OF = {"servicedesk_intake": "servicedesk"}
+
 def main():
     root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-    for pack, schemas in sorted(SCHEMAS.items()):
+    # One pack may own more than one schema group; the key is the group name and
+    # PACK_OF maps it back to the directory that holds it.
+    for group, schemas in sorted(SCHEMAS.items()):
+        pack = PACK_OF.get(group, group)
         manifest = os.path.join(root, pack, "pack.json")
         if not os.path.isfile(manifest):
             raise SystemExit(f"no pack.json for '{pack}'")

@@ -57,6 +57,7 @@ export DMART_PACKS_DEMO_PASSWORD=...        # the demo personas' password
 ./packs/install.sh                          # every non-optional pack
 ./packs/install.sh --packs servicedesk      # that pack plus its dependencies
 ./packs/install.sh --packs kb,comms --scale small
+./packs/install.sh --public                 # also open the public surface
 ./packs/demo.sh                             # drive the storyline's workflows
 ./packs/reset.sh --packs kb                 # drop one pack
 ```
@@ -78,13 +79,78 @@ what makes the demo interlinked rather than eight unrelated folders:
 wheels for the Arbaeen pilgrimage).
 
 At `small` scale: 5 sites, 3 regions, 4 products, 5 tariffs, 7 equipment units,
-3 maintenance visits, 4 markdown KB articles, 4 cases with comments, 2 access
-requests, 8 KPI rows, 1 dual-shipped dataset, 2 notices, and 8 personas.
+3 maintenance visits, 4 markdown KB articles, 4 agent-worked cases with
+comments, 2 customer-raised cases, 1 queued public-intake case, 2 access
+requests, 8 KPI rows, 1 dual-shipped dataset, 2 notices, and 10 personas —
+eight staff and two customers.
 
 Two content styles on purpose: `kb` holds **markdown** entries with `tags` and
 no schema (a schema validates `payload.body` as JSON, which markdown is not);
 every other pack holds **JSON** against a real schema, with each folder
 declaring the schema and resource type it accepts.
+
+## The public surface is opt-in
+
+Two packs ship a public face, and **neither opens by default**. Installing a
+pack must not quietly make anything world-readable, so each lists its public
+roles under `provides.public_roles` and `install.sh --public` is what grants
+them to dmart's `anonymous` user.
+
+| Pack | Public role | Opens |
+| --- | --- | --- |
+| `kb` | `kb_public` | anonymous read of `kb/articles` — a help centre |
+| `servicedesk` | `servicedesk_public` | anonymous **create** in `servicedesk/intake` — a contact form |
+
+Granting is additive and reversible. `AdminBootstrap` already creates
+`anonymous` holding the `world` role, and permission resolution walks every role
+a user holds — so the pack's own permission does the scoping, the seeded `world`
+permission stays inert and untouched, and `reset.sh` takes the role back off.
+The install unions rather than overwrites, because dropping `world` would stop
+the world permission resolving at all.
+
+Three things worth knowing:
+
+**`/public/submit` is gated by config as well as permissions.** An empty
+`ALLOWED_SUBMIT_MODELS` closes it no matter what the anonymous user may create.
+Anonymous intake needs this in `config.env`, and a restart:
+
+```
+ALLOWED_SUBMIT_MODELS="servicedesk.intake_case"
+```
+
+`install.sh --public` checks for it and tells you if it is missing, rather than
+rewriting a file that holds secrets.
+
+**Intake is create-only.** A public caller may post a case and may not read one
+back — not even the one they just filed. `/public/submit` owns the entry as
+`anonymous`, so there is no "their own" to read.
+
+**The intake schema is separate from `case` on purpose.** `case` requires
+region, severity and `reported_on`; none of those can be asked of a member of
+the public, and severity is an agent's judgement. `intake_case` has its own
+minimal required set, and an agent promotes an intake entry to a full case on
+triage. Keeping them separate also means enabling public submit cannot
+accidentally open `servicedesk.case`.
+
+## A signed-in customer sees only their own cases
+
+`servicedesk_customer` is the other half of the approved design: a customer with
+an account creates cases **owned by themselves** and queries only those. Two
+personas hold it, `customer_erbil` and `customer_basra`, and each sees exactly
+one case out of the six-plus in the space.
+
+The filtering is worth understanding, because it is not where you would look.
+`conditions: ["own"]` does it — but `CheckConditions` is *exempt* for `create`
+and `query`, so `own` is not what gates the query.
+`BuildUserQueryPoliciesAsync` emits a policy pattern carrying the actor's
+shortname (and each of their groups) in the owner segment, and the SQL ACL
+filter matches that against every row's own `query_policies`. `view` takes the
+other path, where the condition *is* enforced, so a cross-customer read is
+refused as well.
+
+Customer personas are deliberately in **no group**: `org_region_*` carries
+internal ownership, and a customer inheriting one would widen what their
+`own`-scoped query can reach, since a pattern is emitted per group too.
 
 ## Three constraints the code imposes
 
@@ -145,13 +211,28 @@ forgets `resolution_required`, and `gen_dataset.py` fails if it ever writes a
 
 ## Verified
 
-Installed on both drivers against a clean, seeded instance: **108 rows, 0
-failed** — 7 spaces, 20 folders, 10 schemas, 2 workflows, 77 entries, 8
-attachments, 8 roles, 8 permissions, 3 groups and 8 personas. Every folder
-returns a resolved `folder_rendering` payload, so CXB renders all 20. A second
-install skips every existing row. `reset.sh --packs kb` removed exactly the `kb`
-space, role and permission, left dmart's own `super_admin`, `logged_in` and
-`world` intact, and a re-install restored it.
+Installed on both drivers against a clean, seeded instance: **119 rows, 0
+failed** — 7 spaces, 21 folders, 11 schemas, 2 workflows, 82 entries, 8
+attachments, 11 roles, 11 permissions, 3 groups and 10 personas. Every folder
+returns a resolved `folder_rendering` payload, so CXB renders all of them. A
+second install skips every existing row. `reset.sh --packs kb` removed exactly
+the `kb` space, role and permission, revoked `kb_public` from the anonymous user
+while leaving `world` and `servicedesk_public` intact, left dmart's own
+`super_admin`/`logged_in`/`world` alone, and a re-install restored it.
+
+The public surface, verified on both drivers with **no restart** after the
+install:
+
+| check | result |
+| --- | --- |
+| anonymous query of `kb/articles` | 4 records |
+| anonymous direct view of one article | ok |
+| anonymous query of `servicedesk/cases`, `intake`, `org/sites`, `datamart/kpis` | 0 records each |
+| anonymous `POST /public/submit` | accepted, owned by `anonymous` |
+| `customer_erbil` / `customer_basra` query `cases` | 1 record each, their own |
+| `agent_baghdad` queries the same folder | 6 records |
+| `customer_erbil` views `customer_basra`'s case | refused |
+| a customer creates a case | owned by them, visible to them immediately |
 
 `demo.sh` then drove every workflow path: three cases resolved by the role that
 was allowed to, four refusals that should have been refused (an agent closing an

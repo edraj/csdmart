@@ -15,12 +15,17 @@
   ],
   "provides": {
     "roles": [
-      "kb_author"
+      "kb_author",
+      "kb_public"
     ],
     "permissions": [
-      "kb_author_write"
+      "kb_author_write",
+      "kb_public_read"
     ],
-    "groups": []
+    "groups": [],
+    "public_roles": [
+      "kb_public"
+    ]
   },
   "scales": [
     "small",

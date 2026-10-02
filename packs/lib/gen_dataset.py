@@ -214,6 +214,56 @@ def gen_servicedesk(root, mult):
             })
             write_json(f"{adir}/{csn}.json", {"body": text, "state": "commented"})
 
+def gen_servicedesk_public(root, mult):
+    """The two customer-owned cases and the one queued intake case.
+
+    Split out from gen_servicedesk because these differ in the one way that
+    matters: who OWNS them. A customer-raised case is owned by the customer, so
+    their `own`-scoped query finds it; an intake case is owned by `anonymous`,
+    because that is what /public/submit does and pretending otherwise would
+    make the demo lie about finding 5."""
+    site_region = {x["sn"]: x["region"] for x in S.SITES}
+    base = f"{root}/servicedesk/cases"
+    for c in S.CUSTOMER_CASES:
+        body = {"title": c["title"], "category": c["category"],
+                "severity": c["severity"], "region": c["region"],
+                "site": c["site"], "product": c["product"],
+                "customer_msisdn": c["msisdn"], "reported_on": c["on"]}
+        rels = [rel("org", "sites", c["site"], "served_by"),
+                rel("catalogue", "products", c["product"], "about_product")]
+        m = meta("ticket", "servicedesk", "cases", c["sn"],
+                 schema="case", displayname=c["title"],
+                 tags=[c["category"], c["severity"], c["region"], "self_service"],
+                 relationships=rels,
+                 extra={"workflow_shortname": "servicedesk_case",
+                        "state": "open", "is_open": True,
+                        "reporter": {"type": "retail", "name": c["reporter"],
+                                     "channel": "self_service",
+                                     "msisdn": c["msisdn"]}})
+        # The whole point: owner_shortname is the CUSTOMER.
+        m["owner_shortname"] = c["owner"]
+        write_json(f"{base}/.dm/{c['sn']}/meta.ticket.json", m)
+        write_json(f"{base}/{c['sn']}.json", body)
+
+    ibase = f"{root}/servicedesk/intake"
+    for c in S.INTAKE_CASES:
+        m = meta("ticket", "servicedesk", "intake", c["sn"],
+                 schema="intake_case", displayname=c["title"],
+                 tags=[c["category"], "intake"],
+                 extra={"workflow_shortname": "servicedesk_case",
+                        "state": "open", "is_open": True,
+                        "reporter": {"type": "retail", "name": c["contact_name"],
+                                     "channel": "public_form",
+                                     "msisdn": c["msisdn"]}})
+        # Owned by `anonymous` — the user AdminBootstrap always creates, so the
+        # owner_shortname foreign key resolves on any instance.
+        m["owner_shortname"] = "anonymous"
+        write_json(f"{ibase}/.dm/{c['sn']}/meta.ticket.json", m)
+        write_json(f"{ibase}/{c['sn']}.json", {
+            "title": c["title"], "category": c["category"],
+            "description": c["description"], "contact_msisdn": c["msisdn"],
+            "contact_name": c["contact_name"], "city": c["city"]})
+
 def gen_approvals(root, mult):
     for r in each(S.REQUESTS, mult, "request"):
         base = f"{root}/approvals/requests"
@@ -354,7 +404,10 @@ SCALE_MULT = {"small": 1, "medium": 10, "large": 250}
 
 WRITERS = {
     "org": gen_org, "catalogue": gen_catalogue, "assets": gen_assets,
-    "kb": gen_kb, "servicedesk": gen_servicedesk, "approvals": gen_approvals,
+    "kb": gen_kb,
+    "servicedesk": lambda root, mult: (gen_servicedesk(root, mult),
+                                        gen_servicedesk_public(root, mult)),
+    "approvals": gen_approvals,
     "datamart": gen_datamart, "comms": gen_comms,
 }
 
