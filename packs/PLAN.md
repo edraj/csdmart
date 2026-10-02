@@ -1,8 +1,13 @@
 # Solution Packs — Phase 0 plan
 
-Recon output. **Nothing has been implemented.** This document answers the ten
-Phase-0 questions with citations, lists the proposals needing approval, and
-keeps every core-change request separate at the end.
+Recon output: the ten Phase-0 questions answered with citations, with every
+core-change request kept separate at the end.
+
+**Status: APPROVED 2026-10-02.** The storyline is **Shanidar Telecom** and all
+four remaining proposals were accepted as recommended. The decisions are
+recorded below as settled rather than open. Phase 1 starts with the
+verification list at the end of this document, because three of its five items
+change what the structures must contain.
 
 Read against `8ded171` (master).
 
@@ -421,19 +426,19 @@ justification.
 
 ## Proposals for approval
 
-### Storyline name — recommend changing
+### Storyline name — SETTLED: Shanidar Telecom
 
-`Lamassu` is **not** an Iraqi operator or retailer, so it passes the brief's
-literal test. But **"Lamassu For Mobile Applications" is a real IT company in
-Almansour, Baghdad** ([Facebook](https://www.facebook.com/lamassuIraq/)) — a real
-Iraqi company with "Lamassu" and "Mobile" in its name is a poor choice for a
-fictional mobile operator.
+`Lamassu` passes the brief's literal test (not an Iraqi operator or retailer),
+but **"Lamassu For Mobile Applications" is a real IT company in Almansour,
+Baghdad** ([Facebook](https://www.facebook.com/lamassuIraq/)) — a real Iraqi
+company with "Lamassu" and "Mobile" in its name is a poor choice for a
+fictional mobile operator, so the name changed.
 
-**Recommend `Shanidar Telecom`** (Shanidar Cave, Erbil governorate — a place and
-archaeological site, fits the northern framing). A search for Shanidar and Anzu
-as Iraqi telecom businesses returns nothing. Fallback: `Anzu Telecom`.
-Dataset directory becomes `packs/datasets/shanidar/`.
-Real operators for contrast, deliberately unused: Zain Iraq, Asiacell, Korek.
+**`Shanidar Telecom`** it is (Shanidar Cave, Erbil governorate — a place and
+archaeological site, which also fits the northern framing). Searches for
+Shanidar and Anzu as Iraqi telecom businesses return nothing. Dataset directory
+is `packs/datasets/shanidar/`. Real operators, deliberately unused for
+contrast: Zain Iraq, Asiacell, Korek.
 
 ### Pack list
 
@@ -513,12 +518,14 @@ Carried forward as the first work of Phase 1, before any bulk authoring:
 
 ---
 
-## Stopping here
+## Phase 0 outcome
 
-Per the brief, Phase 0 ends at this document. Nothing has been written beyond
-`packs/PLAN.md`, no core code has been touched, and no core change has been
-made.
+Phase 0 ended at this document: nothing was written beyond `packs/PLAN.md`, no
+core code was touched, and no core change was made or requested.
 
-Awaiting review of: the **name change**, the **pack/space/role naming**, the
-**relationship vocabulary**, the **datamart dual-shipping decision**, and the
-**customer-ownership approach** in §5.
+All five were approved on 2026-10-02: Shanidar Telecom, one space per pack with
+`<pack>_` prefixes, `attributes.relation` beside `related_to`, datamart
+dual-shipping, and authenticated customer creates alongside anonymous intake.
+
+Phase 1 begins with the verification list above — items 1, 2 and 3 can each
+change the structures, so they run before any are authored.
