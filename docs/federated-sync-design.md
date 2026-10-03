@@ -38,7 +38,7 @@ created elsewhere while that elsewhere is unreachable.
 
 ---
 
-## Headline: six findings that constrain the design
+## Headline: seven findings that constrain the design
 
 | # | Assumption | Reality | Consequence |
 |---|---|---|---|
@@ -48,6 +48,7 @@ created elsewhere while that elsewhere is unreachable.
 | 4 | Tombstones identify the row | **`deletions` has no `uuid` column** — it is tuple-keyed | A tombstone cannot be applied safely under D4 without adding the uuid |
 | 5 | Deployment identity exists somewhere | **Nothing.** No `site_id`, `node_id`, `instance_id` or `replica_id` anywhere. And two of those names are already taken by unrelated meanings | Must be added first — the one thing that cannot be reconstructed later — and must not be called `site` or `replica` (§4.1) |
 | 6 | Entries can sync alone | **`owner_shortname` is an FK to `users`**, and scoped exports deliberately omit users | Some user identity must sync before the first entry can |
+| 7 | A restore is a local matter | **A restore silently and permanently loses data.** Peers' cursors still say "I have everything from you up to N", so rows the restore rewound are never re-shipped | Phase 3's trigger is not "offline too long" but "this deployment's state went backwards" — a broader condition (§9) |
 
 ---
 
@@ -363,6 +364,30 @@ sync between two named instances.
 
 ---
 
+## 9. Restore interacts badly with cursors
+
+Raised after the first draft and **not yet resolved**; it widens phase 3.
+
+Restoring a deployment from a parquet archive rewinds its own rows. Its peers'
+cursors do not rewind — each still records "I have everything from this
+deployment up to counter N". So every row the restore undid is never re-sent, the
+restored deployment permanently lacks content its peers believe it has, and
+nothing detects the divergence. That is the same failure shape
+`DataAdapters/Sql/Tombstones.cs:11` calls the worst kind: drift that is never
+noticed.
+
+The same applies, more quietly, to any operation that moves a deployment's state
+backwards — a partial restore, a manual `DELETE`, a database rollback.
+
+Likely resolution: a restore must invalidate the peers' view of this deployment
+and force the full reconcile that phase 3 already builds. That makes phase 3's
+trigger **"this deployment's state went backwards"** rather than merely "a peer
+was offline past the retention floor", which is a broader and harder condition to
+detect — it probably needs a generation or epoch counter bumped on restore, so a
+peer can notice the rewind rather than having to be told.
+
+Unresolved either way. Phase 3 should not be scoped until it is.
+
 ## Objective
 
 **One sentence:** several independently administered dmart deployments, each
@@ -482,6 +507,19 @@ instance that then goes offline for weeks cannot be corrected anywhere else.
 Confirm that is acceptable for all content, or name the subpaths needing
 transferable ownership (deferred option B) so phase 1 can leave room for it.
 
+**O8 — Derive the change log, or append to it?** §4.2 assumes a per-deployment
+monotonic counter, which means an append on every mutation — on top of the
+history row the write path already appends when the diff is non-empty
+(`Services/EntryService.cs:528`), and against the grain of `import --fast`, which
+drops indexes precisely to avoid per-row work. The alternative is to **derive**
+the log from `updated_at >= cursor` (indexed by `idx_entries_updated_at`) plus
+the `deletions` table — exactly what the parquet incremental already does, at
+**zero added write cost**. An append-only counter buys cursors with no clock
+involvement; deriving reuses machinery that is already built and already correct,
+and the overlap-not-gap bargain (`ParquetArchiveService.cs:304-306`) already
+makes an `updated_at` cursor safe, given the idempotent replay that is required
+regardless. Recommend deriving, per D5.
+
 ## Phase 1 verification list
 
 Run before implementing. Each is marked **VERIFY** above and is deliberately not
@@ -497,4 +535,5 @@ stated as fact.
 ## Stopping here
 
 No schema change, no `origin_id`, no transport, no core changes. Phase 0 begins
-once O1, O2 and O7 are settled.
+once O1, O2 and O7 are settled. O8 is needed before phase 1, and §9 before
+phase 3.
