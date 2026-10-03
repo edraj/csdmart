@@ -46,7 +46,7 @@ created elsewhere while that elsewhere is unreachable.
 | 2 | Tombstones need building | **Already production-grade**, with four correctness rules and a retention floor | Deletion propagation is mostly solved |
 | 3 | A tuple collision fails loudly | **It silently merges two entities.** The upsert resolves `ON CONFLICT (shortname, space_name, subpath)` and does not update `uuid` | The single most dangerous finding here. A uuid-keyed import path is mandatory, not a refinement |
 | 4 | Tombstones identify the row | **`deletions` has no `uuid` column** — it is tuple-keyed | A tombstone cannot be applied safely under D4 without adding the uuid |
-| 5 | Instance identity exists somewhere | **Nothing.** No `site_id`, `node_id`, `instance_id` or `replica_id` anywhere in the codebase | Must be added first; it is the one thing that cannot be reconstructed later |
+| 5 | Deployment identity exists somewhere | **Nothing.** No `site_id`, `node_id`, `instance_id` or `replica_id` anywhere. And two of those names are already taken by unrelated meanings | Must be added first — the one thing that cannot be reconstructed later — and must not be called `site` or `replica` (§4.1) |
 | 6 | Entries can sync alone | **`owner_shortname` is an FK to `users`**, and scoped exports deliberately omit users | Some user identity must sync before the first entry can |
 
 ---
@@ -163,27 +163,66 @@ returning 3 rows instead of 1. Independent servers in different offsets make
 timestamp ordering unusable for a correctness decision. UUID comparison is
 clock-free, totally ordered, and identical everywhere without coordination.
 
-## 4. Change log and cursors
+## 4. Deployment identity, the change log, and cursors
 
-`site_id` does not exist (finding 5): a search for `site_id`, `node_id`,
-`instance_id` and `replica_id` across the codebase returns nothing. It is needed
-for four distinct jobs:
+### 4.1 Two jobs, two names
 
-1. **Suppressing echoes.** Without an origin stamp, instance B republishes A's
-   changes as its own, A receives them back as foreign, and a change circulates
-   indefinitely once there are three instances.
+Nothing in the codebase identifies a deployment: `site_id`, `node_id`,
+`instance_id` and `replica_id` all return nothing. The concept is genuinely
+absent, not merely named something else.
+
+It is needed for four jobs:
+
+1. **Suppressing echoes.** Without a provenance stamp, deployment B republishes
+   A's changes as its own, A receives them back as foreign, and a change
+   circulates indefinitely once there are three deployments.
 2. **Per-peer progress.** One cursor per peer. A single global "last synced"
    cannot work when peers go offline at different times.
 3. **Safe generated identifiers** — see §3.
 4. Expressing causality, *if* D2 is ever revisited. Not needed under D3.
 
-It must be stamped into existing rows while there is still one instance; once two
-have diverged without it, authorship cannot be reconstructed because it was never
-recorded.
+Jobs 1 and 3 are **provenance** — a property of a row, saying which deployment
+created it. Job 2 is **participation** — a property of the sync relationship,
+saying who the counterparts are. They carry the same value today, which is why
+conflating them is tempting, but their lifetimes differ: when a deployment is
+decommissioned it leaves the peer registry, while its rows must keep their
+provenance for ever. One field for both forces a choice between orphaning rows
+and rewriting history. So:
 
-What the change log needs: `site_id`, a per-instance monotonic counter, the
-entity uuid, the operation, and enough payload to apply it. A per-peer `peers`
-table holds the last counter seen from each.
+- **`origin_id`** on rows — provenance.
+- **`peers`** — the participant registry and its cursors.
+
+Neither is called `site` or `replica`, and deliberately. Both words already have
+unrelated, load-bearing meanings here:
+
+- **`site`** is the HTTP same-site/cross-site origin concept — `SameSite`,
+  `SameSiteMode`, and the cross-site reasoning in `Auth/JwtBearerSetup.cs:68`
+  and `:246` that governs whether cookie auth is accepted. "Site" in this
+  codebase reads as cookie policy.
+- **`replica`** is `session_replication_role` / `SetReplicaRoleAsync`, the
+  bulk-import setting that `DataAdapters/Sql/Tombstones.cs:20` warns bypasses
+  triggers.
+
+`instance` is avoided for a different reason: in common usage `instance_id`
+denotes *one process run* and invites regeneration on boot. This value must
+survive restarts, upgrades and **database restores**, and must never be reused by
+a different deployment. "Site" remains the right word for the *concept* in prose
+— a separately administered, autonomous, long-lived location — and is used that
+way throughout this document.
+
+`origin_id` must be stamped into existing rows while there is still one
+deployment. Once two have diverged without it, authorship cannot be
+reconstructed, because it was never recorded.
+
+### 4.2 The log
+
+What the change log needs: `origin_id`, a per-deployment monotonic counter, the
+entity uuid, the operation, and enough payload to apply it. The `peers` table
+holds the last counter seen from each counterpart.
+
+A deployment's own `origin_id` comes from config and is checked at startup
+against what the data says: a silently regenerated value would make every local
+row look foreign, which under D3 means every local row becomes read-only.
 
 **Incremental selection is already correct and does not need rebuilding.**
 `since` filters `updated_at`, not `created_at`
@@ -324,39 +363,110 @@ sync between two named instances.
 
 ---
 
+## Objective
+
+**One sentence:** several independently administered dmart deployments, each
+usable while cut off from the others, agreeing about the sections they share once
+they can talk again — without an operator ever hand-carrying a zip.
+
+What that is worth, concretely:
+
+- **A branch office keeps working when the link is down.** Today a remote office
+  either runs against a central server and stops when the network does, or runs
+  its own dmart and diverges permanently with no way back.
+- **Content authored anywhere reaches everywhere.** Head office publishes a
+  catalogue, a schema, a workflow or a solution pack once; every deployment has
+  it without a manual import.
+- **No single point of failure for reads or writes.** Each deployment serves its
+  own users from its own database.
+- **The shared sections converge without a human adjudicating.** Convergence is
+  mechanical: ownership-by-creator means there is never a question of who wins,
+  so reconciliation needs no judgement call.
+
+What it is explicitly **not**: a cluster, a hot standby, a backup strategy, or a
+way to scale one logical dmart across machines. Deployments stay independent and
+separately administered. Backup remains the parquet archive's job.
+
+The success test for the whole programme: **unplug a deployment for a month, keep
+working on it, plug it back in, and have both sides end up correct — including
+deletions, renames and attachments — with no operator intervention and no
+silent loss.**
+
 ## Staging
 
-| Stage | Delivers | Depends on |
-|---|---|---|
-| 0 | `site_id` on every instance, stamped into existing rows; `uuid` added to `deletions` | — |
-| 1 | Change log, per-peer cursors, pull transport, uuid-keyed import, deterministic collision rename | 0; user-identity decision (O2); idempotent history (§7) |
-| 2 | Ownership enforcement — `FOREIGN_ENTRY` refusal on non-owned writes | 1 |
-| 3 | Full-reconcile path for a peer returning past the retention floor | 1 |
+Four phases. Each is independently useful and leaves the system in a working
+state; none requires the next one to exist.
 
-Stage 0 is small and unblocks everything. It is also the only stage whose
-omission is unrecoverable.
+| Phase | Delivers | Useful on its own because | Depends on |
+|---|---|---|---|
+| **0** | `origin_id` on every deployment and stamped into existing rows; `uuid` added to `deletions` | Nothing observable changes — but the data becomes *capable* of carrying provenance, which it can never be made to do retroactively | — |
+| **1** | Change log, `peers` cursors, pull transport, uuid-keyed import, deterministic collision rename | This is replication working end to end. Sections sync, deletions and renames carry correctly. Still trusting everyone to behave | 0; O2; idempotent history (§7) |
+| **2** | Ownership enforcement — a `FOREIGN_ENTRY` refusal on writes to entries another deployment created | Turns the D3 convention into an invariant. Before this, a well-meaning local edit to a foreign entry is silently overwritten on the next pull, with no warning | 1 |
+| **3** | Full-reconcile path for a peer returning past the tombstone retention floor | Bounds the damage from the one failure mode phases 1–2 cannot handle: a deployment offline longer than deletions are kept, where increments are provably incomplete | 1 |
+
+### What each phase is really about
+
+**Phase 0 — make the data capable.** No behaviour change, no feature, nothing a
+user sees. It exists because provenance cannot be backfilled: once two
+deployments have been writing independently without it, no migration can work out
+which one created which row. It is the only phase whose omission is
+*unrecoverable* rather than merely inconvenient, and it is also the smallest.
+
+**Phase 1 — make it work.** The substantive engineering, and the phase where the
+existing machinery pays off: tombstones, the `since` watermark and the overlap
+bargain are already built and correct (§5, §4.2). What is new is the change log,
+the cursors, a transport, and the uuid-keyed import that finding 3 makes
+mandatory. At the end of phase 1 the success test above passes for cooperative
+deployments.
+
+**Phase 2 — make it safe.** Phase 1 converges correctly only if nobody edits an
+entry they do not own. Nothing stops them. The failure is quiet: the edit sticks
+locally, looks saved, and vanishes on the next pull. Phase 2 refuses the write at
+`EntryService` instead, alongside the existing lock gate (§2), so the user is
+told rather than misled. This is the phase that makes D3 real rather than a
+convention written in a document.
+
+**Phase 3 — handle the long absence.** Tombstone retention has to exceed the
+maximum disconnection, and the requirement says weeks. A deployment that returns
+after longer than that cannot be brought up to date by an increment, because the
+deletions it needed have been pruned — and `PruneAsync`'s retention floor means
+this is *detected* rather than silently wrong (§5). Phase 3 is the recovery path:
+fall back to a full state comparison for the affected sections. Without it the
+answer to "the office was offline for three months" is a manual rebuild.
+
+### What is deliberately not in any phase
+
+- Transferable section ownership (the "option B" of D5) — deferred pending O7.
+- Version vectors, conflict detection, conflict resolution UI — excluded by D2.
+- Syncing users, roles, permissions or groups as content — see §6.
+- Cross-deployment cache invalidation, locks or workflow coordination — §6.
 
 ## Open decisions
 
-**O1 — `site_id` format.** A short operator-chosen slug (`baghdad`) is readable
-in logs and in generated shortnames; a UUID is collision-proof without
-coordination. Recommend the slug, validated against the shortname regex, since it
-appears inside generated shortnames and those must stay legal.
+**O1 — `origin_id` name and format.** Naming is settled by §4.1: `origin_id` on
+rows, `peers` for the registry, neither called `site` or `replica` because both
+already mean something else here. What remains is the **format**: a short
+operator-chosen slug (`baghdad`) is readable in logs and inside generated
+shortnames; a UUID is collision-proof without coordination but unreadable
+wherever it is embedded. Recommend the slug, validated against the shortname
+regex — it ends up inside generated shortnames (O3) and those must stay legal —
+with a startup check that the configured value matches what the local data
+claims.
 
 **O2 — User identity across instances.** Replicate the user roster without
-credentials, or map foreign owners to a local placeholder? Blocks stage 1
+credentials, or map foreign owners to a local placeholder? Blocks phase 1
 (finding 6). Recommend replicating shortnames only: a placeholder owner loses the
 authorship the history already records.
 
-**O3 — Generated-shortname format.** Prefix with `site_id`
-(`baghdad-a3f91b02`), or widen the hex and accept probabilistic safety? Recommend
+**O3 — Generated-shortname format.** Prefix with `origin_id`
+(`baghdad_a3f91b02`), or widen the hex and accept probabilistic safety? Recommend
 the prefix: it makes collision impossible rather than unlikely, and the regex
 permits `_` but **not** `-` (`Services/CsvService.cs:204`), so the separator
 must be `_`. **VERIFY** the regex before implementing.
 
-**O4 — Collision rename suffix.** `_{site_id}` is readable; `_{uuid[..8]}` is
-unambiguous. Recommend `_{site_id}`, with the uuid appended only if that is also
-taken.
+**O4 — Collision rename suffix.** `_{origin_id}` is readable; `_{uuid[..8]}` is
+unambiguous. Recommend `_{origin_id}`, with the uuid appended only if that is
+also taken.
 
 **O5 — Transport.** The parquet export/import pair is filesystem- and
 operator-only; the zip pair has HTTP endpoints (`/managed/export`,
@@ -370,7 +480,7 @@ section to be shared without sharing a whole space.
 **O7 — Is D3 sufficient?** Under ownership by creator, an entry created on an
 instance that then goes offline for weeks cannot be corrected anywhere else.
 Confirm that is acceptable for all content, or name the subpaths needing
-transferable ownership (deferred option B) so stage 1 can leave room for it.
+transferable ownership (deferred option B) so phase 1 can leave room for it.
 
 ## Phase 1 verification list
 
@@ -386,5 +496,5 @@ stated as fact.
 
 ## Stopping here
 
-No schema change, no `site_id`, no transport, no core changes. Stage 0 begins
+No schema change, no `origin_id`, no transport, no core changes. Phase 0 begins
 once O1, O2 and O7 are settled.
