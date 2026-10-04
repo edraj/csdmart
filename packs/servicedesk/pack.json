@@ -1,6 +1,7 @@
 {
   "name": "servicedesk",
   "format": 1,
+  "version": "1.0.0",
   "title": "Service desk",
   "summary": "Customer cases on a real workflow, with comments and resolutions.",
   "space": "servicedesk",

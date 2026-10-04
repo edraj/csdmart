@@ -205,6 +205,11 @@ if bad:
     raise SystemExit(1)
 PY
 
+# Publish the RESOLVED pack list (dependencies included) so install.sh does not
+# have to re-derive it. Three phases in install.sh were each re-implementing the
+# same transitive walk in Python; the build already did it properly once.
+printf '%s\n' $selected > "$DIST/selected.txt"
+
 spaces="$(find "$DIST/spaces" -mindepth 1 -maxdepth 1 -type d | wc -l)"
 metas="$(find "$DIST/spaces" -name 'meta.*.json' | wc -l)"
 echo "built:  $spaces space(s), $metas meta file(s) -> $DIST/spaces"

@@ -1,6 +1,7 @@
 {
   "name": "approvals",
   "format": 1,
+  "version": "1.0.0",
   "title": "Approvals",
   "summary": "Multi-step approval requests gated by role, reusing the seeded channel workflow.",
   "space": "approvals",

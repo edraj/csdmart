@@ -27,12 +27,15 @@ ADMIN="${DMART_ADMIN:-dmart}"
 SKIP_GROUPS=0
 REPLACE=0
 PUBLIC=0
+DRY_RUN=0
+FORCE=
 
 usage() {
     cat <<EOF
 Usage: $(basename "$0") [--packs a,b,c] [--scale small|medium|large]
                         [--url http://127.0.0.1:8282] [--admin dmart]
                         [--replace] [--skip-groups] [--public]
+                        [--dry-run] [--force]
 
   --packs        comma-separated pack names; default is every non-optional pack
   --scale        dataset size; default small
@@ -42,6 +45,8 @@ Usage: $(basename "$0") [--packs a,b,c] [--scale small|medium|large]
   --skip-groups  do only the import phase, no API calls
   --public       grant the anonymous user each pack's provides.public_roles,
                  opening its public read / intake surface. Off by default.
+  --dry-run      print the plan and change nothing
+  --force        proceed even when the installed version is newer (a downgrade)
 
 Environment:
   BACKEND_ENV              config.env the CLI should use (required by dmart)
@@ -64,6 +69,8 @@ while [ $# -gt 0 ]; do
         --replace) REPLACE=1; shift ;;
         --skip-groups) SKIP_GROUPS=1; shift ;;
         --public)  PUBLIC=1; shift ;;
+        --dry-run) DRY_RUN=1; shift ;;
+        --force)   FORCE=1; shift ;;
         -h|--help) usage; exit 0 ;;
         *) echo "unknown argument: $1" >&2; usage >&2; exit 2 ;;
     esac
@@ -262,6 +269,56 @@ USERS_PY
     fi
 fi
 
+# ── plan ──────────────────────────────────────────────────────────────────────
+# Decide what may change before changing anything.
+#
+# Without this the import was all-or-nothing: skip every existing row, or (-r)
+# overwrite every one of them. Neither is an update. A pack is someone else's
+# software landing in your database, so the rule the planner enforces is that
+# an update never overwrites or deletes a row YOU changed — it reports those and
+# leaves them alone.
+#
+# Needs the API to read each pack's receipt and the current timestamps. Without
+# a URL there is no baseline, so the install falls back to the old
+# whole-tree behaviour and says so.
+PLAN_DIR="$HERE/dist/plan"
+PLANNED=0
+# The resolved pack list, dependencies included, as build.sh worked it out.
+selected="$(tr '\n' ' ' < "$HERE/dist/selected.txt")"
+if [ -n "$URL" ] && [ -n "${token:-}" ]; then
+    rm -rf "$PLAN_DIR"; mkdir -p "$PLAN_DIR"
+    echo
+    echo "== plan"
+    set +e
+    python3 "$HERE/lib/sync.py" --url "$URL" --token "$token" \
+        --spaces "$SPACES" --packs-root "$HERE" --packs "$selected" \
+        --scale "$SCALE" --out "$PLAN_DIR" ${FORCE:+--force}
+    plan_rc=$?
+    set -e
+    if [ "$plan_rc" != 0 ]; then
+        echo "plan refused — nothing has been changed." >&2
+        exit "$plan_rc"
+    fi
+    PLANNED=1
+else
+    echo
+    echo "== plan: skipped (needs --url and DMART_ADMIN_PASSWORD)"
+    echo "   Without a receipt there is no baseline, so this falls back to"
+    echo "   importing the whole tree. Existing rows are skipped unless"
+    echo "   --replace is given, and --replace overwrites your edits."
+fi
+
+if [ "$DRY_RUN" = 1 ]; then
+    cat <<'EOF'
+
+== dry run
+
+Nothing was changed. The plan above is what `install.sh` would do without
+--dry-run.
+EOF
+    exit 0
+fi
+
 echo
 echo "== import"
 import_args=(import --type=fs)
@@ -274,8 +331,100 @@ import_args=(import --type=fs)
 # a re-run is idempotent for history exactly as it already was for entries —
 # verified at 2 rows across three successive imports. Pass --skip-history by
 # hand if you want the structures without the archive.
-import_args+=("$SPACES")
-"$DMART" "${import_args[@]}"
+# With a plan, import EXACTLY what it chose — adds, safe updates and the
+# attachments that ride with them — and nothing else. -r is right here because
+# the list is already the decided set: every path in it is one the planner
+# established is safe to write. Without a plan, fall back to the whole tree.
+if [ "$PLANNED" = 1 ]; then
+    n_import="$(wc -l < "$PLAN_DIR/import-list.txt" | tr -d ' ')"
+    if [ "$n_import" = 0 ]; then
+        echo "nothing to import — every pack is already at its shipped version"
+    else
+        # --from-list=FILE, not a space-separated value: the parser matches
+        # the `--from-list=` prefix (Program.cs:1506), so a detached argument
+        # would be read as the import target path.
+        import_args+=(-r "--from-list=$PLAN_DIR/import-list.txt" "$SPACES")
+        "$DMART" "${import_args[@]}"
+    fi
+else
+    import_args+=("$SPACES")
+    "$DMART" "${import_args[@]}"
+fi
+
+# ── apply what the plan decided ───────────────────────────────────────────────
+if [ "$PLANNED" = 1 ]; then
+    deletes="$PLAN_DIR/deletes.json"
+    n_del="$(python3 -c 'import json,sys; print(len(json.load(open(sys.argv[1]))))' "$deletes")"
+    if [ "$n_del" != 0 ]; then
+        echo
+        echo "== removing $n_del row(s) the new version dropped"
+        while IFS=$'\t' read -r label body; do
+            [ -n "$label" ] || continue
+            printf '  %-44s ' "$label"
+            curl -sS -m 20 -X POST "$URL/managed/request" \
+                -H 'Content-Type: application/json' \
+                -H "Authorization: Bearer $token" \
+                -d "$body" | python3 "$HERE/lib/report_status.py"
+        done < <(python3 - "$deletes" <<'DEL_PY'
+import json, sys
+for r in json.load(open(sys.argv[1])):
+    body = {"space_name": r["space"], "request_type": "delete", "records": [{
+        "resource_type": r["rt"], "shortname": r["shortname"],
+        "subpath": r["subpath"], "attributes": {}}]}
+    print(f"{r['space']}{r['subpath']}/{r['shortname']}\t" + json.dumps(body))
+DEL_PY
+)
+    fi
+
+    # The receipt is what makes the NEXT update able to tell a pack change from
+    # one of yours, so it is written last — only after the import and the
+    # deletions have actually succeeded. A receipt describing a state that was
+    # never reached would be worse than none at all.
+    echo
+    echo "== recording what is installed"
+    # The folder has to exist before an entry can go in it, and it is created
+    # here rather than shipped because it belongs to the packs machinery
+    # itself, not to any one pack.
+    curl -sS -m 20 -X POST "$URL/managed/request" \
+        -H 'Content-Type: application/json' -H "Authorization: Bearer $token" \
+        -d '{"space_name":"management","request_type":"create","records":[{"resource_type":"folder","shortname":"packs","subpath":"/","attributes":{"is_active":true,"displayname":{"en":"Installed packs"}}}]}' \
+      >/dev/null 2>&1 || true
+    for rfile in "$PLAN_DIR"/receipts/*.json; do
+        [ -f "$rfile" ] || continue
+        rname="$(basename "$rfile" .json)"
+        printf '  %-24s ' "$rname"
+        mk_receipt() { python3 - "$rfile" "$rname" "$1" <<'REC_PY'
+import json, sys
+receipt = json.load(open(sys.argv[1]))
+name = sys.argv[2]
+# `create` first and fall back to `update`: RequestType has no upsert
+# (create/update/patch/update_acl/assign/delete/move), and a receipt has to be
+# written whether or not one is already there.
+print(json.dumps({"space_name": "management", "request_type": sys.argv[3],
+                  "records": [{
+    "resource_type": "content", "shortname": name, "subpath": "packs",
+    "attributes": {
+        "is_active": True,
+        "displayname": {"en": f"{name} {receipt['version']}"},
+        "tags": ["pack_receipt", f"pack:{name}", f"v{receipt['version']}"],
+        "payload": {"content_type": "json", "body": receipt},
+    }}]}))
+REC_PY
+        }
+        send_receipt() {
+            curl -sS -m 30 -X POST "$URL/managed/request" \
+                -H 'Content-Type: application/json' \
+                -H "Authorization: Bearer $token" \
+                -d "$1" | python3 "$HERE/lib/report_status.py"
+        }
+        out="$(send_receipt "$(mk_receipt create)")"
+        case "$out" in
+            success) echo "$out" ;;
+            *already*|*exist*) send_receipt "$(mk_receipt update)" ;;
+            *) echo "$out" ;;
+        esac
+    done
+fi
 
 # ── public surface ────────────────────────────────────────────────────────────
 # OPT-IN. Installing a pack must never quietly open a public surface, so the

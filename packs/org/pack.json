@@ -1,6 +1,7 @@
 {
   "name": "org",
   "format": 1,
+  "version": "1.0.0",
   "title": "Organisation",
   "summary": "Sites, regions and the organisational spine every other pack hangs off.",
   "space": "org",
