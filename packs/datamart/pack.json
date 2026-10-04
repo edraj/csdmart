@@ -25,7 +25,8 @@
     "permissions": [
       "datamart_analyst_read"
     ],
-    "groups": []
+    "groups": [],
+    "public_roles": []
   },
   "scales": [
     "small",

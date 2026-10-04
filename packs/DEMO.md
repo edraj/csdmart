@@ -14,7 +14,10 @@ export DMART_URL=http://127.0.0.1:8282
 export DMART_ADMIN_PASSWORD=...
 export DMART_PACKS_DEMO_PASSWORD=...            # the personas' password
 
-./packs/install.sh                              # 108 rows; clears the authz cache
+# Anonymous intake additionally needs this in config.env, then a restart:
+#   ALLOWED_SUBMIT_MODELS="servicedesk.intake_case"
+
+./packs/install.sh --public                     # 119 rows; opens the public surface
 ./packs/demo.sh                                 # drive the storyline
 ```
 
@@ -101,6 +104,63 @@ Afterwards, `case_000101` has three history rows — `open → in_progress` and
 `sup_south`. Each was written by the engine at transition time and attributed to
 the user who caused it.
 
+## Two public doors, and what each costs
+
+`install.sh --public` opens them; nothing opens by default. Both are in the
+walkthrough, and the refusals around them matter as much as the successes.
+
+**The help centre.** With no token at all, `kb/articles` is readable — all four
+articles by query, and each one individually by a direct `/public/entry` view.
+Nothing else is: `servicedesk/cases`, `servicedesk/intake`, `org/sites` and
+`datamart/kpis` all come back empty for an anonymous caller. The public role
+opens exactly one folder.
+
+That the *view* works is not a given. The obvious permission would carry
+`conditions: ["is_active"]`, and that would pass `/public/query` and then fail
+the `/public/entry` read of the same article — conditions are enforced on
+`view` and exempt on `query`. So `kb_public_read` carries no conditions, and
+everything under `kb/articles` is public by intent rather than by accident.
+
+**The contact form.** `POST /public/submit/servicedesk/ticket/servicedesk_case/intake_case/intake`
+takes a case from someone with no account. It is **create-only**: the same
+caller cannot read back the case they just filed, because the entry is owned by
+`anonymous` and there is no "their own" to query.
+
+It also needs `ALLOWED_SUBMIT_MODELS="servicedesk.intake_case"` in
+`config.env`. That gate is config, not permissions — an empty value closes
+public submit regardless of what the anonymous user is allowed to create, and
+no amount of role granting changes it.
+
+**The cost of the anonymous door** is exactly that ownership. A public
+submission belongs to `anonymous`, so the person who filed it cannot track it.
+That is why the design has a second door.
+
+## The other door: a customer with an account
+
+`customer_erbil` and `customer_basra` hold `servicedesk_customer`. Each creates
+cases **owned by themselves** and sees only those — one case each, out of the
+six-plus sitting in `servicedesk/cases`. Sign in as either and query the folder:
+
+```
+customer_erbil  →  1 record: case_000201
+customer_basra  →  1 record: case_000202
+agent_baghdad   →  6 records
+```
+
+A cross-customer direct read is refused too, so the isolation holds on both the
+query and the view path — by two different mechanisms, which is worth knowing
+when debugging one of them:
+
+| path | what enforces it |
+| --- | --- |
+| `query` | the SQL ACL filter, matching the actor's owner-segment policy pattern against each row's `query_policies` |
+| `view` | `CheckConditions`, which *is* enforced here and achieves `own` only when the row's owner is the actor |
+
+`conditions: ["own"]` is what produces both, despite `CheckConditions` being
+exempt for `query`. Neither customer is in an `org_region_*` group, on purpose:
+a policy pattern is emitted per group as well as for the shortname, so group
+membership would widen what an `own`-scoped query reaches.
+
 ## The personas
 
 Each holds its gating role **directly**. A workflow gate reads `user.Roles` and
@@ -118,6 +178,8 @@ hold the role itself; the `org_region_*` groups carry regional ownership for the
 | `kb_author_najaf` | `kb_author` | central |
 | `analyst_hq` | `datamart_analyst` | central |
 | `editor_hq` | `catalogue_editor` | central |
+| `customer_erbil` | `servicedesk_customer` | *(none — see above)* |
+| `customer_basra` | `servicedesk_customer` | *(none — see above)* |
 
 All share `DMART_PACKS_DEMO_PASSWORD`, which is read from the environment at
 install time and is never committed.

@@ -440,4 +440,43 @@ PERSONAS = [
     dict(sn="editor_hq", name="Catalogue editor, HQ",
          roles=["catalogue_editor"], groups=["org_region_central"],
          msisdn="+9647700000108"),
+    # Customers, not staff. Deliberately in NO group: org_region_* carries
+    # internal ownership, and a customer inheriting it would widen what their
+    # `own`-scoped query can reach (BuildUserQueryPoliciesAsync emits one
+    # owner-segment pattern per group as well as for the shortname).
+    dict(sn="customer_erbil", name="Customer, Erbil",
+         roles=["servicedesk_customer"], groups=[],
+         msisdn="+9647500001842"),
+    dict(sn="customer_basra", name="Customer, Basra",
+         roles=["servicedesk_customer"], groups=[],
+         msisdn="+9647800000917"),
+]
+
+# Cases a signed-in customer raised themselves. Owned by the customer, which is
+# what anonymous intake cannot give you (PLAN.md finding 5: /public/submit owns
+# the entry as `anonymous`), and the reason the approved design has both doors.
+CUSTOMER_CASES = [
+    dict(sn="case_000201", owner="customer_erbil",
+         title="Bill is higher than my plan", category="billing",
+         severity="normal", region="north", site="erb_0142",
+         product="postpaid_pro", msisdn="+9647500001842",
+         on="2026-09-27", reporter="Dara"),
+    dict(sn="case_000202", owner="customer_basra",
+         title="No data after changing my SIM", category="device",
+         severity="normal", region="south", site="bsr_0031",
+         product="prepaid_basic", msisdn="+9647800000917",
+         on="2026-09-29", reporter="Hussein"),
+]
+
+# One case already sitting in the public intake queue, so a fresh install shows
+# the triage view with something in it rather than an empty folder. Owned by
+# `anonymous`, exactly as a real public submission would be.
+INTAKE_CASES = [
+    dict(sn="intake_000301",
+         title="Tower lights off and no service in Mosul left bank",
+         category="no_signal", city="Mosul",
+         contact_name="Layla", msisdn="+9647500000103",
+         description="No service since last night across the whole "
+                     "neighbourhood. The tower lights are off too, which is "
+                     "why I think it is the site and not my phone."),
 ]

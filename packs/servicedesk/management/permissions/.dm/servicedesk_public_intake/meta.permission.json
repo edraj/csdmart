@@ -1,0 +1,21 @@
+{
+  "uuid": "37b633b9-ff71-58b0-a6c6-ce366e9eb8e2",
+  "shortname": "servicedesk_public_intake",
+  "is_active": true,
+  "tags": [],
+  "created_at": "2026-10-01T00:00:00",
+  "updated_at": "2026-10-01T00:00:00",
+  "owner_shortname": "dmart",
+  "subpaths": {
+    "servicedesk": [
+      "intake"
+    ]
+  },
+  "resource_types": [
+    "ticket"
+  ],
+  "actions": [
+    "create"
+  ],
+  "conditions": []
+}

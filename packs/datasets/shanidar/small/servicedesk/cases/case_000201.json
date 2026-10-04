@@ -1,0 +1,10 @@
+{
+  "title": "Bill is higher than my plan",
+  "category": "billing",
+  "severity": "normal",
+  "region": "north",
+  "site": "erb_0142",
+  "product": "postpaid_pro",
+  "customer_msisdn": "+9647500001842",
+  "reported_on": "2026-09-27"
+}

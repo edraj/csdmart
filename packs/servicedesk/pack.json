@@ -15,19 +15,27 @@
   "optional": false,
   "folders": [
     "cases",
+    "intake",
     "workflows",
     "schema"
   ],
   "provides": {
     "roles": [
       "servicedesk_agent",
-      "servicedesk_supervisor"
+      "servicedesk_supervisor",
+      "servicedesk_customer",
+      "servicedesk_public"
     ],
     "permissions": [
       "servicedesk_agent_case",
-      "servicedesk_supervisor_case"
+      "servicedesk_supervisor_case",
+      "servicedesk_customer_own",
+      "servicedesk_public_intake"
     ],
-    "groups": []
+    "groups": [],
+    "public_roles": [
+      "servicedesk_public"
+    ]
   },
   "scales": [
     "small",

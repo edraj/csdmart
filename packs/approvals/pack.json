@@ -24,7 +24,8 @@
     "permissions": [
       "approvals_security_review"
     ],
-    "groups": []
+    "groups": [],
+    "public_roles": []
   },
   "scales": [
     "small",

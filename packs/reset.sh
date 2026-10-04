@@ -76,6 +76,8 @@ m = json.load(open(sys.argv[1]))
 for kind in ("roles", "permissions", "groups"):
     for sn in m["provides"][kind]:
         print(f"    management {kind[:-1]}: {sn}")
+for sn in m["provides"].get("public_roles", []):
+    print(f"    and revokes it from the anonymous user: {sn}")
 PY
 done
 
@@ -89,6 +91,45 @@ token="$(curl -fsS -m 15 -X POST "$URL/user/login" \
     -H 'Content-Type: application/json' \
     -d "$(python3 -c 'import json,os,sys; print(json.dumps({"shortname":sys.argv[1],"password":os.environ["DMART_ADMIN_PASSWORD"]}))' "$ADMIN")" \
   | python3 -c 'import sys,json; d=json.load(sys.stdin); print(d["records"][0]["attributes"]["access_token"])')"
+
+# Take the pack's public roles back off the `anonymous` user before deleting
+# them. Leaving a dangling role name on that user is harmless to dmart — roles
+# is a plain text array with no foreign key — but it makes the next
+# `--public` install's union look like it already worked.
+revoke_public() {
+    local manifest="$1"
+    local roles
+    roles="$(python3 -c '
+import json, sys
+print(" ".join(json.load(open(sys.argv[1]))["provides"].get("public_roles", [])))' "$manifest")"
+    [ -n "$roles" ] || return 0
+    local current
+    current="$(curl -sS -m 20 "$URL/managed/entry/user/management/users/anonymous" \
+        -H "Authorization: Bearer $token" \
+      | python3 -c 'import sys,json
+try:
+    d = json.load(sys.stdin)
+except Exception:
+    print(""); raise SystemExit
+a = d.get("attributes", d)
+print(" ".join(a.get("roles") or []))' || echo "")"
+    local kept
+    kept="$(python3 -c '
+import sys
+have = [r for r in sys.argv[1].split() if r]
+drop = set(sys.argv[2].split())
+print(",".join(r for r in have if r not in drop))' "$current" "$roles")"
+    local body
+    body="$(python3 -c '
+import json, sys
+print(json.dumps({"space_name":"management","request_type":"update","records":[
+  {"resource_type":"user","shortname":"anonymous","subpath":"users",
+   "attributes":{"roles":[r for r in sys.argv[1].split(",") if r]}}]}))' "$kept")"
+    printf '  %-12s %-28s ' "anonymous" "-($roles)"
+    curl -sS -m 20 -X POST "$URL/managed/request" \
+        -H 'Content-Type: application/json' -H "Authorization: Bearer $token" \
+        -d "$body" | python3 "$HERE/lib/report_status.py"
+}
 
 delete_one() {
     local space="$1" rt="$2" subpath="$3" shortname="$4"
@@ -110,6 +151,7 @@ for p in $selected; do
     space="$(python3 -c "import json,sys;print(json.load(open(sys.argv[1]))['space'])" "$manifest")"
     echo
     echo "== $p"
+    revoke_public "$manifest"
     # Overlay first: a permission naming a space that has just been dropped is
     # harmless, but a half-deleted overlay left behind by a failure part-way is
     # the thing that makes a re-install confusing.

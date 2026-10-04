@@ -23,7 +23,8 @@
     "permissions": [
       "comms_editor_write"
     ],
-    "groups": []
+    "groups": [],
+    "public_roles": []
   },
   "scales": [
     "small",

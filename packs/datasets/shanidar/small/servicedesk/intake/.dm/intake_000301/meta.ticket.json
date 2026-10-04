@@ -1,0 +1,29 @@
+{
+  "uuid": "e42e01c6-8c83-581d-a9f4-93b1b8d483ab",
+  "shortname": "intake_000301",
+  "is_active": true,
+  "tags": [
+    "no_signal",
+    "intake"
+  ],
+  "created_at": "2026-10-01T00:00:00",
+  "updated_at": "2026-10-01T00:00:00",
+  "owner_shortname": "anonymous",
+  "displayname": {
+    "en": "Tower lights off and no service in Mosul left bank"
+  },
+  "payload": {
+    "content_type": "json",
+    "body": "intake_000301.json",
+    "schema_shortname": "intake_case"
+  },
+  "workflow_shortname": "servicedesk_case",
+  "state": "open",
+  "is_open": true,
+  "reporter": {
+    "type": "retail",
+    "name": "Layla",
+    "channel": "public_form",
+    "msisdn": "+9647500000103"
+  }
+}

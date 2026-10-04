@@ -26,12 +26,13 @@ URL="${DMART_URL:-}"
 ADMIN="${DMART_ADMIN:-dmart}"
 SKIP_GROUPS=0
 REPLACE=0
+PUBLIC=0
 
 usage() {
     cat <<EOF
 Usage: $(basename "$0") [--packs a,b,c] [--scale small|medium|large]
                         [--url http://127.0.0.1:8282] [--admin dmart]
-                        [--replace] [--skip-groups]
+                        [--replace] [--skip-groups] [--public]
 
   --packs        comma-separated pack names; default is every non-optional pack
   --scale        dataset size; default small
@@ -39,6 +40,8 @@ Usage: $(basename "$0") [--packs a,b,c] [--scale small|medium|large]
   --admin        admin shortname for the API phase; default dmart
   --replace      pass -r to the import (upsert instead of skip-existing)
   --skip-groups  do only the import phase, no API calls
+  --public       grant the anonymous user each pack's provides.public_roles,
+                 opening its public read / intake surface. Off by default.
 
 Environment:
   BACKEND_ENV              config.env the CLI should use (required by dmart)
@@ -60,6 +63,7 @@ while [ $# -gt 0 ]; do
         --admin=*) ADMIN="${1#*=}"; shift ;;
         --replace) REPLACE=1; shift ;;
         --skip-groups) SKIP_GROUPS=1; shift ;;
+        --public)  PUBLIC=1; shift ;;
         -h|--help) usage; exit 0 ;;
         *) echo "unknown argument: $1" >&2; usage >&2; exit 2 ;;
     esac
@@ -267,6 +271,112 @@ import_args=(import --type=fs)
 # the zip path until #324; --type=fs has always honoured it.
 import_args+=(--skip-history "$SPACES")
 "$DMART" "${import_args[@]}"
+
+# ── public surface ────────────────────────────────────────────────────────────
+# OPT-IN. Installing a pack must never quietly open a public surface, so the
+# roles a pack lists under provides.public_roles are granted to the `anonymous`
+# user only with --public.
+#
+# Granting them to `anonymous` is additive and reversible: AdminBootstrap
+# already creates that user holding the `world` role, and
+# ResolvePermissionsAsync resolves every role the user holds. So the seeded
+# `world` permission stays inert and untouched — the pack's own permission does
+# the scoping, and reset.sh takes the role back off.
+if [ "$PUBLIC" = 1 ]; then
+    public_roles="$(python3 - "$HERE" ${PACKS:+--packs="$PACKS"} <<'PUBROLES_PY'
+import json, os, sys
+root = sys.argv[1]
+want = None
+for a in sys.argv[2:]:
+    if a.startswith("--packs="):
+        want = [x for x in a.split("=", 1)[1].split(",") if x]
+names = sorted(d for d in os.listdir(root)
+               if os.path.isfile(os.path.join(root, d, "pack.json")))
+sel, seen = [], set()
+def visit(n):
+    if n in seen or not os.path.isfile(os.path.join(root, n, "pack.json")):
+        return
+    m = json.load(open(os.path.join(root, n, "pack.json")))
+    for d in m["depends"]:
+        visit(d)
+    seen.add(n)
+    sel.append(n)
+for n in (want if want is not None else
+          [x for x in names
+           if not json.load(open(os.path.join(root, x, "pack.json")))["optional"]]):
+    visit(n)
+roles = []
+for n in sel:
+    roles += json.load(open(os.path.join(root, n, "pack.json")))["provides"].get("public_roles", [])
+print(" ".join(sorted(set(roles))))
+PUBROLES_PY
+)"
+    if [ -z "$public_roles" ]; then
+        echo
+        echo "== public surface: none of the selected packs offers one"
+    elif [ -z "$URL" ] || [ -z "${DMART_ADMIN_PASSWORD:-}" ]; then
+        echo
+        echo "== public surface: skipped (needs --url and DMART_ADMIN_PASSWORD)"
+    else
+        echo
+        echo "== public surface (--public): granting the anonymous user $public_roles"
+        if [ -z "${token:-}" ]; then
+            token="$(curl -fsS -m 15 -X POST "$URL/user/login" \
+                -H 'Content-Type: application/json' \
+                -d "$(python3 -c 'import json,os,sys; print(json.dumps({"shortname":sys.argv[1],"password":os.environ["DMART_ADMIN_PASSWORD"]}))' "$ADMIN")" \
+              | python3 -c 'import sys,json; d=json.load(sys.stdin); print(d["records"][0]["attributes"]["access_token"])')"
+        fi
+        # Read the current roles and UNION, rather than overwrite: `anonymous`
+        # already holds `world`, and dropping it would stop the world
+        # permission resolving at all.
+        current="$(curl -sS -m 20 "$URL/managed/entry/user/management/users/anonymous" \
+            -H "Authorization: Bearer $token" \
+          | python3 -c 'import sys,json
+try:
+    d = json.load(sys.stdin)
+except Exception:
+    print(""); raise SystemExit
+a = d.get("attributes", d)
+print(" ".join(a.get("roles") or []))' || echo "")"
+        merged="$(python3 -c '
+import sys
+have = set(sys.argv[1].split())
+add = set(sys.argv[2].split())
+print(",".join(sorted(have | add)))' "$current" "$public_roles")"
+        body="$(python3 -c '
+import json, sys
+print(json.dumps({"space_name":"management","request_type":"update","records":[
+  {"resource_type":"user","shortname":"anonymous","subpath":"users",
+   "attributes":{"roles":[r for r in sys.argv[1].split(",") if r]}}]}))' "$merged")"
+        printf '  %-24s ' "anonymous roles"
+        curl -sS -m 20 -X POST "$URL/managed/request" \
+            -H 'Content-Type: application/json' \
+            -H "Authorization: Bearer $token" \
+            -d "$body" \
+          | python3 "$HERE/lib/report_status.py"
+        echo "  now: $merged"
+
+        # /public/submit is gated by config, not by permissions: an empty
+        # ALLOWED_SUBMIT_MODELS closes it regardless of what the anonymous user
+        # may create (Api/Public/SubmitHandler.cs:IsSubmitAllowed). install.sh
+        # will not rewrite a config file holding secrets, so check and say so.
+        want_pair="servicedesk.intake_case"
+        if echo "$public_roles" | grep -q servicedesk_public; then
+            cfg="${BACKEND_ENV:-$HOME/.dmart/config.env}"
+            if [ -f "$cfg" ] && grep -q "^[[:space:]]*ALLOWED_SUBMIT_MODELS.*$want_pair" "$cfg"; then
+                echo "  public submit:           enabled for $want_pair"
+            else
+                cat <<EOF
+  public submit:           NOT enabled — anonymous intake will be refused
+    /public/submit is gated by config as well as by permissions. Add to
+    $cfg and restart the server:
+
+        ALLOWED_SUBMIT_MODELS="$want_pair"
+EOF
+            fi
+        fi
+    fi
+fi
 
 # The import wrote the roles and permissions straight to the database, which a
 # running server cannot see: its authz cache is a process-local dictionary

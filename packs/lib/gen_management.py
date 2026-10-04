@@ -81,11 +81,34 @@ def perms_for(name, pack):
             WRITE, CONTENT_TYPES, conditions=["own"])
     elif name == "servicedesk":
         out["servicedesk_agent_case"] = permission(
-            "servicedesk_agent_case", space, ["cases"],
+            "servicedesk_agent_case", space, ["cases", "intake"],
             WRITE + ["progress_ticket"], TICKET_TYPES)
         out["servicedesk_supervisor_case"] = permission(
             "servicedesk_supervisor_case", space, all_sub,
             WRITE + ["progress_ticket", "assign", "delete"], TICKET_TYPES)
+        # A signed-in customer creates their OWN case and sees only their own.
+        #
+        # `own` does the row filtering, but not the way it first looks:
+        # CheckConditions is exempt for create and query, so `own` is NOT what
+        # gates the query. BuildUserQueryPoliciesAsync emits a policy pattern
+        # with the actor's shortname (and their groups) in the owner segment —
+        # `<space>:<subpath>:<rt>:<is_active>:<owner>` — and the SQL ACL filter
+        # matches it against each row's own query_policies. That is what makes
+        # a customer's query return their cases and nobody else's.
+        #
+        # `view` is a different path: conditions ARE enforced there, and `own`
+        # is achieved only when the row's owner is the actor. So the two agree.
+        out["servicedesk_customer_own"] = permission(
+            "servicedesk_customer_own", space, ["cases"],
+            ["query", "view", "create", "update"],
+            ["ticket", "comment", "json", "media"], conditions=["own"])
+        # Anonymous intake, scoped to `intake` and `create` ONLY — a public
+        # caller may post a case and may not read anything back, not even the
+        # one they just posted. /public/submit owns the entry as `anonymous`
+        # (PLAN.md finding 5), so there is no "their own" to read.
+        out["servicedesk_public_intake"] = permission(
+            "servicedesk_public_intake", space, ["intake"],
+            ["create"], ["ticket"])
     elif name == "approvals":
         out["approvals_security_review"] = permission(
             "approvals_security_review", space, ["requests"],
@@ -93,6 +116,18 @@ def perms_for(name, pack):
     elif name == "kb":
         out["kb_author_write"] = permission(
             "kb_author_write", space, ["articles"], WRITE, CONTENT_TYPES)
+        # The public help centre: anonymous read of the articles.
+        #
+        # Deliberately NO conditions. `is_active` would be the obvious choice,
+        # but conditions are enforced on `view` and exempt on `query`
+        # (PermissionService.CheckConditions), so an `is_active` world
+        # permission passes /public/query and then FAILS the direct
+        # /public/entry view of the same article — a split that looks like a
+        # bug to whoever hits it. Everything under kb/articles is intended to
+        # be public, so the permission says exactly that.
+        out["kb_public_read"] = permission(
+            "kb_public_read", space, ["articles"],
+            ["query", "view"], ["content", "media", "json"])
     elif name == "datamart":
         out["datamart_analyst_read"] = permission(
             "datamart_analyst_read", space, all_sub, READ, CONTENT_TYPES)
@@ -109,8 +144,11 @@ ROLE_PERMISSIONS = {
     "assets_technician": ["assets_technician_write"],
     "servicedesk_agent": ["servicedesk_agent_case"],
     "servicedesk_supervisor": ["servicedesk_supervisor_case"],
+    "servicedesk_customer": ["servicedesk_customer_own"],
+    "servicedesk_public": ["servicedesk_public_intake"],
     "approvals_security": ["approvals_security_review"],
     "kb_author": ["kb_author_write"],
+    "kb_public": ["kb_public_read"],
     "datamart_analyst": ["datamart_analyst_read"],
     "comms_editor": ["comms_editor_write"],
 }

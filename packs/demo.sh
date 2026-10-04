@@ -173,12 +173,130 @@ step "officer rejects the COW recovery (window_clashes)" \
 
 cat <<'EOF'
 
-== 5. one case stays open
+== 7. what is left open, on purpose
 
-   case_000104 (the Arbaeen capacity reports) is deliberately left `open`. A
-   demo where every ticket is closed has an empty worklist, which is the one
-   view an agent actually lives in.
+   case_000104 (the Arbaeen capacity reports) and the two customer-raised
+   cases stay `open`. A demo where every ticket is closed has an empty
+   worklist, which is the one view an agent actually lives in — and the
+   customer cases are there to be found by their owner, not resolved by this
+   script.
+
+   Note the public form adds one intake case per run, which is what a public
+   form does. Everything else here is idempotent.
 EOF
+
+
+# ── public surface ────────────────────────────────────────────────────────────
+# Only meaningful after `install.sh --public`. Without it the anonymous user
+# holds no pack role and every call below is correctly refused, so the section
+# announces that rather than looking broken.
+pub_get() { curl -sS -m 15 "$URL$1"; }
+pub_query() {
+    curl -sS -m 15 -X POST "$URL/public/query" -H 'Content-Type: application/json' \
+      -d "$(python3 -c '
+import json,sys
+print(json.dumps({"type":"search","space_name":sys.argv[1],"subpath":sys.argv[2],
+                  "search":"","retrieve_total":True,"limit":30}))' "$1" "$2")"
+}
+count_or_block() {
+    python3 -c '
+import json, sys
+raw = sys.stdin.read()
+try:
+    d = json.loads(raw)
+except Exception:
+    print("unreadable: " + raw[:60]); raise SystemExit
+if d.get("status") != "success":
+    print("blocked (" + str((d.get("error") or {}).get("message"))[:48] + ")")
+    raise SystemExit
+rs = sorted(r["shortname"] for r in d.get("records", []))
+print(("%d record(s): %s" % (len(rs), ",".join(rs[:4]))) if rs else "0 records")'
+}
+
+anon_articles="$(pub_query kb articles | count_or_block)"
+case "$anon_articles" in
+    0*|blocked*|unreadable*)
+        cat <<EOF
+
+== 5. public surface: not enabled
+
+   The anonymous user holds no pack role, so the help centre and the intake
+   form are both closed. Re-run with: install.sh --public
+EOF
+        ;;
+    *)
+        cat <<'EOF'
+
+== 5. the public help centre
+
+   No token at all. The kb pack's articles are readable by anyone once
+   --public has granted `kb_public` to the anonymous user; nothing else is.
+EOF
+        printf '  %-46s %s\n' "anonymous reads kb/articles" "$anon_articles"
+        printf '  %-46s %s\n' "anonymous reads one article directly" \
+            "$(pub_get /public/entry/content/kb/articles/no_signal_triage \
+               | python3 -c 'import sys; t=sys.stdin.read(); print("ok" if "\"shortname\"" in t else "blocked")')"
+        for pair in "servicedesk cases" "servicedesk intake" "org sites" "datamart kpis"; do
+            set -- $pair
+            printf '  %-46s %s\n' "anonymous reads $1/$2" "$(pub_query "$1" "$2" | count_or_block)"
+        done
+
+        cat <<'EOF'
+
+   Those four are the point: the public role opens exactly kb/articles and
+   nothing else. `intake` is closed too — a public caller may POST a case and
+   may not read one back, not even the one they just filed.
+
+== 6. anonymous intake, then customer self-service
+
+   Two doors, because they differ in who ends up OWNING the case.
+EOF
+        printf '  %-46s ' "anonymous posts through the public form"
+        curl -sS -m 20 -X POST \
+            "$URL/public/submit/servicedesk/ticket/servicedesk_case/intake_case/intake" \
+            -H 'Content-Type: application/json' \
+            -d '{"title":"No service on the Karbala ring road","category":"no_signal","description":"Out since this morning across the whole street.","contact_msisdn":"+9647700000233","contact_name":"Nasreen","city":"Karbala"}' \
+          | python3 -c '
+import json, sys
+d = json.load(sys.stdin)
+if d.get("status") != "success":
+    e = d.get("error") or {}
+    msg = str(e.get("message"))[:60]
+    if "not allowed" in msg.lower() or "location" in msg.lower():
+        msg += "  (set ALLOWED_SUBMIT_MODELS=servicedesk.intake_case)"
+    print("refused: " + msg); raise SystemExit
+r = d["records"][0]
+print("accepted as %s, owned by %s"
+      % (r.get("shortname"), r["attributes"].get("owner_shortname")))'
+
+        for who in customer_erbil customer_basra; do
+            t="$(login "$who" "$PW" 2>/dev/null || echo)"
+            if [ -z "$t" ]; then
+                printf '  %-46s %s\n' "$who signs in" "no such user (install the servicedesk pack)"
+                continue
+            fi
+            printf '  %-46s ' "$who sees, of all 6+ cases"
+            curl -sS -m 20 -X POST "$URL/managed/query" \
+                -H 'Content-Type: application/json' -H "Authorization: Bearer $t" \
+                -d '{"type":"search","space_name":"servicedesk","subpath":"cases","search":"","retrieve_total":true,"limit":30}' \
+              | count_or_block
+        done
+
+        cat <<'EOF'
+
+   A customer's own cases and no one else's. `own` is doing that, though not
+   the way it reads: conditions are exempt on `query`, so the filtering comes
+   from BuildUserQueryPoliciesAsync emitting an owner-segment policy pattern
+   that the SQL ACL filter matches per row. `view` takes the other path, where
+   the condition IS enforced — so a cross-customer read is refused too.
+
+   And the anonymous submission above is owned by `anonymous`, not by the
+   person who filed it. That is why the approved design has both doors: the
+   public form for someone with no account, an authenticated create for
+   someone who wants to track what they raised.
+EOF
+        ;;
+esac
 
 # ── summary ───────────────────────────────────────────────────────────────────
 if [ -n "${DMART_ADMIN_PASSWORD:-}" ]; then

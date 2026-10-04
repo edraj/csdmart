@@ -1,0 +1,12 @@
+{
+  "uuid": "b49c3b95-d847-5239-8565-00f8bc8016e9",
+  "shortname": "kb_public",
+  "is_active": true,
+  "tags": [],
+  "created_at": "2026-10-01T00:00:00",
+  "updated_at": "2026-10-01T00:00:00",
+  "owner_shortname": "dmart",
+  "permissions": [
+    "kb_public_read"
+  ]
+}
