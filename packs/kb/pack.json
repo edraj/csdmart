@@ -1,6 +1,7 @@
 {
   "name": "kb",
   "format": 1,
+  "version": "1.0.0",
   "title": "Knowledge base",
   "summary": "Markdown articles that cases and products cite.",
   "space": "kb",

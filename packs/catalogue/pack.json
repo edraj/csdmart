@@ -1,6 +1,7 @@
 {
   "name": "catalogue",
   "format": 1,
+  "version": "1.0.0",
   "title": "Product catalogue",
   "summary": "Products, tariffs and bundles, each priced and regioned.",
   "space": "catalogue",

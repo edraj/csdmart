@@ -1,6 +1,7 @@
 {
   "name": "comms",
   "format": 1,
+  "version": "1.0.0",
   "title": "Communications",
   "summary": "Outbound notices and campaign content.",
   "space": "comms",

@@ -58,6 +58,7 @@ export DMART_PACKS_DEMO_PASSWORD=...        # the demo personas' password
 ./packs/install.sh --packs servicedesk      # that pack plus its dependencies
 ./packs/install.sh --packs kb,comms --scale small
 ./packs/install.sh --public                 # also open the public surface
+./packs/install.sh --dry-run                # print the plan, change nothing
 ./packs/demo.sh                             # drive the storyline's workflows
 ./packs/reset.sh --packs kb                 # drop one pack
 ```
@@ -152,6 +153,77 @@ Customer personas are deliberately in **no group**: `org_region_*` carries
 internal ownership, and a customer inheriting one would widen what their
 `own`-scoped query can reach, since a pattern is emitted per group too.
 
+## Versions, and what an update may touch
+
+Each pack carries a `version` in its manifest, separate from `format` (the
+manifest's own shape). `install.sh` stores a **receipt** at
+`management/packs/<name>` after a successful install, recording the version and
+the `updated_at` of every row the pack landed. That receipt is what lets the
+next install tell a pack change from one of yours.
+
+```bash
+./packs/install.sh --packs org --dry-run    # print the plan, change nothing
+./packs/install.sh --packs org              # apply it
+```
+
+The rule the planner enforces, and the reason any of this exists:
+
+> **An update never overwrites or deletes a row you changed.**
+
+A pack is someone else's software landing in your database. If you edited an
+entry it shipped, your edit wins and the update tells you it skipped you.
+
+| the pack | you | what happens |
+| --- | --- | --- |
+| added it | — | **added** |
+| changed it | left it alone | **updated** |
+| changed it | changed it too | **skipped**, and named in the output |
+| left it alone | changed it | **kept** as you have it |
+| dropped it | left it alone | **deleted** |
+| dropped it | changed it | **kept**, and named in the output |
+
+A downgrade is refused outright — `reset.sh` first if you mean it, or
+`--force`.
+
+### How an edit is detected
+
+No checksums and no extra bookkeeping: dmart's own timestamps carry it. The
+importer binds an entry's shipped `updated_at`
+(`ImportExportService.cs:2965`), while any write through `EntryService` replaces
+it with `Now()` (`EntryService.cs:965`). A pack ships fixed timestamps, so for
+any row it owns:
+
+```
+db.updated_at == what the pack shipped   ->  untouched since install
+db.updated_at != what the pack shipped   ->  written through dmart since
+```
+
+**One carve-out worth knowing.** Only *entries* preserve that timestamp. Spaces,
+roles, permissions, groups and users always get `Now()` on write
+(`SpaceRepository.cs:113-114`, `AccessRepository.cs:113-114, 236-237, 340-341`),
+so their timestamps carry no signal at all. They are pack machinery rather than
+content anyone curates, so they are always refreshed from the pack — which is
+also what you want, since a pack's authz should follow the pack. A space is
+never auto-deleted, because dropping one takes everything inside it.
+
+### Installing without a receipt
+
+An install that predates receipts has no baseline. Rather than assume, the
+planner still reads the timestamps: a row already present whose `updated_at`
+differs from what the pack ships is adopted as-is, not overwritten. The cost is
+that a genuine pack change to such a row is also skipped — but with no baseline
+the two are indistinguishable, and protecting you is the right way to be wrong.
+
+### Checking the planner
+
+```bash
+python3 packs/lib/test_plan.py
+```
+
+26 assertions over the table above, including every case I got wrong while
+building it. It is **not** wired into CI — there is no Python step in
+`.github/workflows/ci.yml` — so run it after touching `plan_update.py`.
+
 ## Three constraints the code imposes
 
 These are not design preferences. Each was measured against a running dmart and
@@ -206,6 +278,11 @@ python3 packs/lib/gen_schemas.py       # the content schemas
 python3 packs/lib/gen_workflows.py     # the two state machines
 python3 packs/lib/gen_dataset.py --scale small
 ```
+
+`packs/lib/` also holds the install machinery, which is not generated:
+`plan_update.py` (what an update may touch), `sync.py` (plans every selected
+pack in one pass), `db_state.py` (reads the current timestamps) and
+`test_plan.py` (the planner's self-test).
 
 `packs/lib/shanidar.py` holds the storyline itself — sites, cases, articles,
 personas, and the resolution catalogues. It is the one file to edit to change

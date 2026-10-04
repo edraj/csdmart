@@ -4,6 +4,29 @@
 
 ### Added
 
+- **Solution packs can now be updated, not just installed.** Each pack carries
+  a `version`, and `install.sh` stores a receipt at `management/packs/<name>`
+  recording that version and the `updated_at` of every row it landed. The next
+  install compares the three sides — what the pack shipped before, what it ships
+  now, and what the database holds — and decides per row.
+
+  The rule it enforces: **an update never overwrites or deletes a row the
+  operator changed.** A pack change to an untouched row is applied; a pack
+  change to a row the operator edited is skipped and named in the output; a row
+  the new version dropped is deleted only if untouched. `--dry-run` prints the
+  plan and changes nothing, and a downgrade is refused unless `--force`.
+
+  Detection needs no checksums: the importer binds an entry's shipped
+  `updated_at` while any write through `EntryService` replaces it with `Now()`,
+  so a mismatch against what the pack ships *is* the signal. One carve-out —
+  spaces, roles, permissions, groups and users always take `Now()` on write, so
+  their timestamps carry nothing and they are always refreshed from the pack. A
+  space is never auto-deleted.
+
+  An install that predates receipts has no baseline and still does the safe
+  thing: a row already present whose timestamp differs from the shipped one is
+  adopted rather than overwritten.
+
 - **A twelve-month history archive in the solution packs.** Six cases now ship
   *with* their `history.jsonl` — dated from 2025-11 to 2026-08 and attributed to
   the agent or supervisor who did the work — plus history on a non-ticket entry,

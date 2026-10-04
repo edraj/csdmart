@@ -1,6 +1,7 @@
 {
   "name": "assets",
   "format": 1,
+  "version": "1.0.0",
   "title": "Field assets",
   "summary": "Generators, cabinets and COWs installed at sites, with their technicians.",
   "space": "assets",

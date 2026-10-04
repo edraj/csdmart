@@ -1,6 +1,7 @@
 {
   "name": "datamart",
   "format": 1,
+  "version": "1.0.0",
   "title": "Data mart",
   "summary": "KPI datasets shipped twice: the file as a data_asset, the rows as queryable entries.",
   "space": "datamart",
