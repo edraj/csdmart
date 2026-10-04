@@ -18,6 +18,9 @@ HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 DIST="$HERE/dist"
 PACKS=""
 SCALE="small"
+# Which storyline's data to fold in. One value plus a data module is all a
+# second storyline needs; the machinery above is domain-neutral.
+DATASET="${PACKS_DATASET:-shanidar}"
 CLEAN=1
 
 usage() {
@@ -26,6 +29,7 @@ Usage: $(basename "$0") [--packs a,b,c] [--scale small|medium|large] [--no-clean
 
   --packs    comma-separated pack names; default is every non-optional pack
   --scale    dataset size to include; default small (the only committed one)
+  --dataset  which storyline to fold in; default shanidar
   --no-clean keep an existing dist/ instead of rebuilding it from scratch
 
 Output: $DIST/spaces/ — hand it to \`dmart import --type=fs\`.
@@ -38,6 +42,8 @@ while [ $# -gt 0 ]; do
         --packs=*) PACKS="${1#*=}"; shift ;;
         --scale)   SCALE="$2"; shift 2 ;;
         --scale=*) SCALE="${1#*=}"; shift ;;
+        --dataset)   DATASET="$2"; shift 2 ;;
+        --dataset=*) DATASET="${1#*=}"; shift ;;
         --no-clean) CLEAN=0; shift ;;
         -h|--help) usage; exit 0 ;;
         *) echo "unknown argument: $1" >&2; usage >&2; exit 2 ;;
@@ -116,6 +122,7 @@ PY
 selected="$(resolve_deps)"
 echo "packs:  $selected"
 echo "scale:  $SCALE"
+echo "data:   $DATASET"
 
 if [ "$CLEAN" = 1 ]; then
     rm -rf "$DIST"
@@ -137,7 +144,7 @@ for p in $selected; do
         cp -R "$HERE/$p/management/." "$DIST/spaces/management/"
     fi
     # Dataset rows for this scale, when the pack ships any.
-    ds="$HERE/datasets/shanidar/$SCALE/$p"
+    ds="$HERE/datasets/$DATASET/$SCALE/$p"
     if [ -d "$ds" ]; then
         mkdir -p "$DIST/spaces/$space"
         cp -R "$ds/." "$DIST/spaces/$space/"
@@ -204,6 +211,84 @@ if bad:
     print("\n".join(bad), file=sys.stderr)
     raise SystemExit(1)
 PY
+
+# A pack must not reach outside itself. This is the check that makes a pack from
+# someone else's repo safe to install: without it a pack grants itself whatever
+# it likes, and installing one means handing it your whole instance.
+#
+# Three ways a pack could reach out, all refused here:
+#
+#   1. a permission naming a space other than the pack's own — including
+#      __all_spaces__, which grants everything everywhere
+#   2. a role pointing at a permission the pack does not provide, which would
+#      borrow someone else's grant
+#   3. a role, permission or group whose shortname is not <pack>_ prefixed,
+#      which could OVERWRITE a dmart-seeded row. A pack shipping a role called
+#      `super_admin` would otherwise redefine it on import.
+#
+# `__all_subpaths__` INSIDE the pack's own space is fine and several packs use
+# it — the rule is about which space, not how much of it.
+#
+# Consequence worth knowing: a pack cannot grant read access to a space it
+# merely `links` to. So a servicedesk agent cannot read the kb article a case
+# cites, unless the kb pack grants it or the operator adds a permission by
+# hand. Relaxing the rule to cover declared `links` would fix that and is
+# still reviewable from the manifest — but it is a widening, so it is a
+# decision rather than something to slip in here.
+python3 - "$HERE" $selected <<'SCOPE_PY'
+import json, os, sys
+root, packs = sys.argv[1], sys.argv[2:]
+bad = []
+for name in packs:
+    manifest = os.path.join(root, name, "pack.json")
+    if not os.path.isfile(manifest):
+        continue
+    pack = json.load(open(manifest))
+    own_space = pack["space"]
+    provides = pack.get("provides", {})
+    own_perms = set(provides.get("permissions", []))
+    prefix = name + "_"
+
+    def shipped(kind):
+        d = os.path.join(root, name, "management", kind, ".dm")
+        if not os.path.isdir(d):
+            return []
+        out = []
+        for sn in sorted(os.listdir(d)):
+            meta = os.path.join(d, sn, f"meta.{kind[:-1]}.json")
+            if os.path.isfile(meta):
+                out.append((sn, json.load(open(meta))))
+        return out
+
+    for sn, perm in shipped("permissions"):
+        if not sn.startswith(prefix):
+            bad.append(f"{name}: permission '{sn}' is not '{prefix}'-prefixed "
+                       "— it could overwrite a row this pack does not own")
+        for space in (perm.get("subpaths") or {}):
+            if space == "__all_spaces__":
+                bad.append(f"{name}: permission '{sn}' claims __all_spaces__ "
+                           "— a pack may only grant access to its own space")
+            elif space != own_space:
+                bad.append(f"{name}: permission '{sn}' claims space '{space}', "
+                           f"but the pack owns '{own_space}'")
+    for sn, role in shipped("roles"):
+        if not sn.startswith(prefix):
+            bad.append(f"{name}: role '{sn}' is not '{prefix}'-prefixed "
+                       "— it could overwrite a row this pack does not own")
+        for p in (role.get("permissions") or []):
+            if p not in own_perms:
+                bad.append(f"{name}: role '{sn}' holds permission '{p}', which "
+                           "this pack does not provide")
+    for sn in provides.get("groups", []) + provides.get("public_roles", []):
+        if not sn.startswith(prefix) and not sn.startswith("org_"):
+            bad.append(f"{name}: '{sn}' is not '{prefix}'-prefixed")
+
+if bad:
+    print("refusing to build — a pack reaches outside itself:", file=sys.stderr)
+    for b in bad:
+        print("  " + b, file=sys.stderr)
+    raise SystemExit(1)
+SCOPE_PY
 
 # Publish the RESOLVED pack list (dependencies included) so install.sh does not
 # have to re-derive it. Three phases in install.sh were each re-implementing the

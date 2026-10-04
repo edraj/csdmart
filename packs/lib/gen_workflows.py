@@ -21,17 +21,23 @@ lives in the `management` space and schema lookup is per-space, so pointing at
 it from here would not resolve. An approximate local copy would be worse than
 none — it could reject a valid workflow.
 """
-import json, os, sys, uuid
+import importlib, json, os, sys, uuid
+
+# Which storyline to build. The data module is imported by this name, so a
+# second storyline is a new module plus this value — not a fork of the
+# generators. It also seeds uuid5, so changing it for an EXISTING dataset would
+# re-identify every row in every install of it.
+DATASET = os.environ.get("PACKS_DATASET", "shanidar")
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-import shanidar as S
+S = importlib.import_module(DATASET)
 
 NS = uuid.UUID("6f9619ff-8b86-d011-b42d-00c04fc964ff")
 WHEN = "2026-10-01T00:00:00"
 OWNER = "dmart"
 
 def uid(*parts):
-    return str(uuid.uuid5(NS, "shanidar/" + "/".join(parts)))
+    return str(uuid.uuid5(NS, DATASET + "/" + "/".join(parts)))
 
 def write_json(path, obj):
     os.makedirs(os.path.dirname(path), exist_ok=True)

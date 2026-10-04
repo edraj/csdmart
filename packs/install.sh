@@ -22,6 +22,7 @@ REPO="$(cd "$HERE/.." && pwd)"
 DMART="${DMART_BIN:-$REPO/bin/dmart}"
 PACKS=""
 SCALE="small"
+DATASET="${PACKS_DATASET:-shanidar}"
 URL="${DMART_URL:-}"
 ADMIN="${DMART_ADMIN:-dmart}"
 SKIP_GROUPS=0
@@ -39,6 +40,7 @@ Usage: $(basename "$0") [--packs a,b,c] [--scale small|medium|large]
 
   --packs        comma-separated pack names; default is every non-optional pack
   --scale        dataset size; default small
+  --dataset      which storyline's data and personas to use; default shanidar
   --url          dmart base URL for the API phase; default \$DMART_URL
   --admin        admin shortname for the API phase; default dmart
   --replace      pass -r to the import (upsert instead of skip-existing)
@@ -62,6 +64,8 @@ while [ $# -gt 0 ]; do
         --packs=*) PACKS="${1#*=}"; shift ;;
         --scale)   SCALE="$2"; shift 2 ;;
         --scale=*) SCALE="${1#*=}"; shift ;;
+        --dataset)   DATASET="$2"; shift 2 ;;
+        --dataset=*) DATASET="${1#*=}"; shift ;;
         --url)     URL="$2"; shift 2 ;;
         --url=*)   URL="${1#*=}"; shift ;;
         --admin)   ADMIN="$2"; shift 2 ;;
@@ -90,7 +94,7 @@ fi
 
 build_args=()
 [ -n "$PACKS" ] && build_args+=(--packs "$PACKS")
-build_args+=(--scale "$SCALE")
+build_args+=(--scale "$SCALE" --dataset "$DATASET")
 
 echo "== build"
 "$HERE/build.sh" "${build_args[@]}"
@@ -232,7 +236,7 @@ ROLES_PY
             -d "$(python3 -c 'import json,os,sys; print(json.dumps({"shortname":sys.argv[1],"password":os.environ["DMART_ADMIN_PASSWORD"]}))' "$ADMIN")" \
           | python3 -c 'import sys,json; d=json.load(sys.stdin); print(d["records"][0]["attributes"]["access_token"])')"
     fi
-    personas="$HERE/datasets/shanidar/personas.json"
+    personas="$HERE/datasets/$DATASET/personas.json"
     if [ ! -f "$personas" ]; then
         echo "  no personas.json — run: python3 $HERE/lib/gen_dataset.py --scale small" >&2
     else

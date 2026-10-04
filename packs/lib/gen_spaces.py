@@ -10,10 +10,19 @@ import json, os, uuid, sys
 # Fixed namespace — any constant works, this one is the RFC 4122 example UUID.
 NS = uuid.UUID("6f9619ff-8b86-d011-b42d-00c04fc964ff")
 WHEN = "2026-10-01T00:00:00"
+# Which storyline this generator is building. Everything dataset-specific reads
+# from here, so a second storyline (a school, a restaurant) is a new value plus
+# a new data module — not a fork of the machinery.
+#
+# It feeds the uuid5 seed, so it is NOT cosmetic: changing the value for an
+# existing dataset would re-identify every row in every install of it. Hence
+# the default is the name of the dataset that already exists.
+DATASET = os.environ.get("PACKS_DATASET", "shanidar")
+
 OWNER = "dmart"
 
 def uid(*parts):
-    return str(uuid.uuid5(NS, "shanidar/" + "/".join(parts)))
+    return str(uuid.uuid5(NS, DATASET + "/" + "/".join(parts)))
 
 def write_json(path, obj):
     os.makedirs(os.path.dirname(path), exist_ok=True)
@@ -30,7 +39,7 @@ def space_meta(pack):
         "is_active": True,
         "displayname": {"en": pack["title"]},
         "description": {"en": pack["summary"]},
-        "tags": ["shanidar", "pack:" + pack["name"]],
+        "tags": [DATASET, "pack:" + pack["name"]],
         "created_at": WHEN,
         "updated_at": WHEN,
         "owner_shortname": OWNER,
