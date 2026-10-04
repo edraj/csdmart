@@ -364,6 +364,82 @@ CASES = [
          ]),
 ]
 
+# ── the twelve-month archive ──────────────────────────────────────────────────
+#
+# Cases that were worked and closed before the demo's "now", shipped WITH their
+# history rather than having a script replay them. This is what §2 of the plan
+# promised: the right persona in owner_shortname and the right date in
+# timestamp, so the archive reads as twelve months of operation.
+#
+# It only works because the importer preserves an authored uuid and timestamp.
+# It did not: it called AppendAsync and stamped every row with the import
+# moment, which is why an earlier revision of the packs shipped no history at
+# all. Fixed in #329.
+#
+# These are deliberately SEPARATE from the four live cases. demo.sh drives
+# those through the engine, so the demo shows both: history as authored data,
+# and history as the engine writes it.
+#
+# `events` is (day_offset_from_opened, actor, action), where the action names a
+# transition of the servicedesk_case workflow. The generator turns each into a
+# history row with the diff shape the engine itself writes, and derives the
+# ticket's final state from the last event.
+ARCHIVE_CASES = [
+    dict(sn="case_000011", opened="2025-11-04", title="Shelter overheating, service dropping",
+         category="no_signal", severity="high", region="north", site="mos_0088",
+         product="prepaid_basic", equipment="acn_mos_0088_1",
+         msisdn="+9647500000103", reporter="Layla",
+         events=[(0, "agent_baghdad", "take"),
+                 (3, "agent_baghdad", "resolve", "site_repaired")]),
+    dict(sn="case_000024", opened="2025-12-19", title="Double charge on the December bill",
+         category="billing", severity="normal", region="central", site="bgd_0210",
+         product="postpaid_pro", equipment=None,
+         msisdn="+9647700000233", reporter="Nasreen",
+         events=[(0, "agent_baghdad", "take"),
+                 (1, "agent_baghdad", "resolve", "billing_corrected")]),
+    dict(sn="case_000037", opened="2026-02-11", title="Data slow every evening in Erbil",
+         category="slow_data", severity="normal", region="north", site="erb_0142",
+         product="home_wireless", equipment=None,
+         msisdn="+9647500001842", reporter="Dara",
+         events=[(0, "agent_baghdad", "take"),
+                 (1, "agent_baghdad", "escalate"),
+                 (3, "sup_south", "resolve", "customer_educated")]),
+    dict(sn="case_000052", opened="2026-04-03", title="New SIM not registering on the network",
+         category="device", severity="normal", region="south", site="bsr_0031",
+         product="prepaid_basic", equipment=None,
+         msisdn="+9647800000917", reporter="Hussein",
+         events=[(0, "agent_baghdad", "take"),
+                 (0, "agent_baghdad", "resolve", "fixed_remotely")]),
+    dict(sn="case_000068", opened="2026-06-21", title="Karbala route congested before the season",
+         category="capacity", severity="high", region="central", site="krb_0007",
+         product="prepaid_basic", equipment=None,
+         msisdn="+9647500003301", reporter="Zainab",
+         events=[(0, "agent_baghdad", "take"),
+                 (2, "agent_baghdad", "escalate"),
+                 (11, "sup_south", "resolve", "site_repaired")]),
+    dict(sn="case_000079", opened="2026-08-14", title="No service on the left bank for two days",
+         category="no_signal", severity="critical", region="north", site="mos_0088",
+         product="prepaid_basic", equipment="acn_mos_0088_1",
+         msisdn="+9647500000103", reporter="Layla",
+         events=[(0, "agent_baghdad", "take"),
+                 (1, "agent_baghdad", "escalate"),
+                 (5, "sup_south", "resolve", "equipment_replaced")]),
+]
+
+# History on a NON-ticket entry, because history is not a ticket feature. The
+# erb_0142 generator going faulty is the same event the September maintenance
+# visit and case_000101 both describe — so the three agree, and the generator's
+# own timeline says when it happened.
+EQUIPMENT_HISTORY = {
+    "gen_erb_0142_a": [
+        ("2026-06-02", "tech_north_erbil",
+         {"last_service_on": {"old": "2026-02-28", "new": "2026-06-02"}}),
+        ("2026-09-18", "tech_north_erbil",
+         {"status": {"old": "in_service", "new": "faulty"},
+          "last_service_on": {"old": "2026-06-02", "new": "2026-09-18"}}),
+    ],
+}
+
 REQUESTS = [
     dict(sn="req_erb_0142_starter", site="erb_0142", region="north",
          by="tech_north_erbil", on="2026-09-26", reason="maintenance",

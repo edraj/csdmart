@@ -1,0 +1,2 @@
+{"uuid": "883f47db-3fd0-5437-9e5c-b605f3d6bb77", "shortname": "history", "owner_shortname": "agent_baghdad", "timestamp": "2025-11-04T09:00:00.0000000", "request_headers": {}, "diff": {"state": {"old": "open", "new": "in_progress"}}}
+{"uuid": "7d17345c-5730-5108-84cf-61fcec2c1fda", "shortname": "history", "owner_shortname": "agent_baghdad", "timestamp": "2025-11-07T10:17:00.0000000", "request_headers": {}, "diff": {"state": {"old": "in_progress", "new": "resolved"}, "is_open": {"old": true, "new": false}, "resolution_reason": {"old": null, "new": "site_repaired"}}}

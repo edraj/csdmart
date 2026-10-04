@@ -173,14 +173,26 @@ CLI import leaves it stale.
 and a token, which fixes it without dropping connections. Restarting works too.
 Run the install without `--url` and it tells you to do one or the other.
 
-**Packs ship no history.** Re-importing an archive *appends* its
-`history.jsonl` rows every time rather than upserting them, so a pack installed
-three times would carry three copies of its history. Synthetic history has no
-demo value, so nothing authors one and `build.sh` refuses to build if it finds
-one.
+**Packs ship a twelve-month archive, and it survives a re-install.** Six cases
+arrive with their `history.jsonl` — dated from 2025-11 to 2026-08 and attributed
+to the agent or supervisor who did the work — alongside history on a non-ticket
+entry, the `erb_0142` generator going faulty.
 
-Re-running `install.sh` is otherwise idempotent: entries, folders, spaces, roles
-and permissions are keyed and skipped (`skipped 43 existing, 0 failed`).
+That was impossible until #329. The importer called `AppendAsync`, the path for
+*new* events, so it stamped every imported row with the import moment and
+appended a duplicate on each re-run; an earlier revision of these packs shipped
+no history for exactly that reason. It now restores an authored `uuid` and
+`timestamp` and dedupes on the uuid. Measured: 17 history rows after one
+install, and still 17 after three.
+
+So `build.sh`'s check inverted. It no longer refuses history — it refuses
+history that would *silently lose its dates*, failing on any line missing
+`uuid`, `timestamp` or `owner_shortname`. Such a line falls back to
+`AppendAsync` and gets `now()` with no error, which is the quiet failure worth
+catching.
+
+Re-running `install.sh` is idempotent throughout: entries, folders, spaces,
+roles, permissions and now history are all keyed and skipped.
 
 ## Regenerating
 
@@ -211,9 +223,11 @@ forgets `resolution_required`, and `gen_dataset.py` fails if it ever writes a
 
 ## Verified
 
-Installed on both drivers against a clean, seeded instance: **119 rows, 0
-failed** — 7 spaces, 21 folders, 11 schemas, 2 workflows, 82 entries, 8
-attachments, 11 roles, 11 permissions, 3 groups and 10 personas. Every folder
+Installed on both drivers against a clean, seeded instance: **142 rows, 0
+failed** — 7 spaces, 21 folders, 11 schemas, 2 workflows, 88 entries, 8
+attachments, 17 authored history rows, 11 roles, 11 permissions, 3 groups and
+10 personas. The archive lands dated 2025-11-04 to 2026-09-18, and three
+successive installs leave it at 17 rows. Every folder
 returns a resolved `folder_rendering` payload, so CXB renders all of them. A
 second install skips every existing row. `reset.sh --packs kb` removed exactly
 the `kb` space, role and permission, revoked `kb_public` from the anonymous user

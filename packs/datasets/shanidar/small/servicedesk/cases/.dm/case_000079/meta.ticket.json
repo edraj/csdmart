@@ -1,0 +1,67 @@
+{
+  "uuid": "4e6f1a3a-97f1-5eb6-91e3-20b81c706d08",
+  "shortname": "case_000079",
+  "is_active": true,
+  "tags": [
+    "no_signal",
+    "critical",
+    "north",
+    "archive"
+  ],
+  "created_at": "2026-08-14T09:00:00.0000000",
+  "updated_at": "2026-08-19T11:34:00.0000000",
+  "owner_shortname": "dmart",
+  "displayname": {
+    "en": "No service on the left bank for two days"
+  },
+  "relationships": [
+    {
+      "related_to": {
+        "space_name": "org",
+        "subpath": "sites",
+        "shortname": "mos_0088",
+        "resource_type": "content"
+      },
+      "attributes": {
+        "relation": "served_by"
+      }
+    },
+    {
+      "related_to": {
+        "space_name": "catalogue",
+        "subpath": "products",
+        "shortname": "prepaid_basic",
+        "resource_type": "content"
+      },
+      "attributes": {
+        "relation": "about_product"
+      }
+    },
+    {
+      "related_to": {
+        "space_name": "assets",
+        "subpath": "equipment",
+        "shortname": "acn_mos_0088_1",
+        "resource_type": "content"
+      },
+      "attributes": {
+        "relation": "affects"
+      }
+    }
+  ],
+  "payload": {
+    "content_type": "json",
+    "body": "case_000079.json",
+    "schema_shortname": "case"
+  },
+  "workflow_shortname": "servicedesk_case",
+  "state": "resolved",
+  "is_open": false,
+  "reporter": {
+    "type": "retail",
+    "name": "Layla",
+    "channel": "call_center",
+    "msisdn": "+9647500000103"
+  },
+  "resolution_reason": "equipment_replaced"
+}

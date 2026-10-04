@@ -1,0 +1,12 @@
+{
+  "title": "No service on the left bank for two days",
+  "category": "no_signal",
+  "severity": "critical",
+  "region": "north",
+  "site": "mos_0088",
+  "customer_msisdn": "+9647500000103",
+  "reported_on": "2026-08-14",
+  "product": "prepaid_basic",
+  "equipment": "acn_mos_0088_1",
+  "resolution_code": "equipment_replaced"
+}

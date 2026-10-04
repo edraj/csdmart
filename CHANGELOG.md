@@ -4,6 +4,28 @@
 
 ### Added
 
+- **A twelve-month history archive in the solution packs.** Six cases now ship
+  *with* their `history.jsonl` — dated from 2025-11 to 2026-08 and attributed to
+  the agent or supervisor who did the work — plus history on a non-ticket entry,
+  the `erb_0142` generator going faulty, since history is not a ticket feature.
+
+  This is what `packs/PLAN.md` §2 promised and could not deliver: the importer
+  discarded the authored `uuid` and `timestamp`, so an earlier revision shipped
+  no history at all. With that fixed, the archive lands dated and three
+  successive installs leave it at 17 rows.
+
+  The archive is deliberately separate from the four cases `demo.sh` drives, so
+  the demo shows both kinds of history side by side — authored data, and rows the
+  workflow engine wrote live. Section 8 of the walkthrough separates them by
+  date.
+
+  Each authored transition is checked against the workflow's own transition
+  table at generation time, so the archive cannot drift from the state machine:
+  an event naming a transition `servicedesk_case` does not have, or a closing
+  transition without a resolution reason, fails the build. `build.sh`'s history
+  check inverted accordingly — it no longer refuses history, it refuses history
+  that would silently lose its dates.
+
 - **A public surface for the solution packs, opt-in.** Two packs now ship a
   public face and neither opens by default: `install.sh --public` is what grants
   the roles each pack lists under `provides.public_roles` to dmart's

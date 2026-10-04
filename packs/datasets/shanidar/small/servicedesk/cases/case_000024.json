@@ -1,0 +1,11 @@
+{
+  "title": "Double charge on the December bill",
+  "category": "billing",
+  "severity": "normal",
+  "region": "central",
+  "site": "bgd_0210",
+  "customer_msisdn": "+9647700000233",
+  "reported_on": "2025-12-19",
+  "product": "postpaid_pro",
+  "resolution_code": "billing_corrected"
+}

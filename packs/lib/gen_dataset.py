@@ -34,6 +34,14 @@ def write_json(path, obj):
         json.dump(obj, f, indent=2, ensure_ascii=False)
         f.write("\n")
 
+def write_jsonl(path, rows):
+    """One JSON object per line, which is what Pass 5 reads."""
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    with open(path, "w") as f:
+        for r in rows:
+            json.dump(r, f, ensure_ascii=False)
+            f.write("\n")
+
 def write_text(path, text):
     os.makedirs(os.path.dirname(path), exist_ok=True)
     with open(path, "w") as f:
@@ -264,6 +272,129 @@ def gen_servicedesk_public(root, mult):
             "description": c["description"], "contact_msisdn": c["msisdn"],
             "contact_name": c["contact_name"], "city": c["city"]})
 
+# The workflow's own transition table, mirrored here so the authored history
+# cannot drift from the state machine. gen_workflows.py owns the real thing;
+# this is the subset the archive drives, and the generator fails if an authored
+# event names a transition the workflow does not have.
+CASE_TRANSITIONS = {
+    ("open", "take"):           ("in_progress", None),
+    ("open", "escalate"):       ("escalated", None),
+    ("in_progress", "escalate"): ("escalated", None),
+    ("in_progress", "resolve"): ("resolved", True),
+    ("escalated", "resolve"):   ("resolved", True),
+    ("escalated", "return"):    ("in_progress", None),
+}
+
+def history_line(uuid_key, when, actor, diff):
+    """One history.jsonl row, in the shape the EXPORTER writes — which is also
+    the shape the importer now restores verbatim (uuid and timestamp included).
+
+    The timestamp format is round-trippable ("o"-style, 7 fractional digits):
+    DateTime.TryParse with RoundtripKind reads it back, and the column is
+    `timestamp without time zone`, so no offset is written."""
+    return {
+        "uuid": uid("history", uuid_key),
+        "shortname": "history",
+        "owner_shortname": actor,
+        "timestamp": when,
+        "request_headers": {},
+        "diff": diff,
+    }
+
+def stamp(day, hour, minute):
+    """A story date as a local-naive timestamp. Fixed clock times so the output
+    is byte-identical between runs."""
+    return f"{day}T{hour:02d}:{minute:02d}:00.0000000"
+
+def gen_servicedesk_archive(root, mult):
+    """The twelve-month archive: closed cases shipped WITH their history.
+
+    Each case's final state is DERIVED from its last event rather than written
+    twice, so the meta and the history cannot disagree."""
+    import datetime
+    site_region = {x["sn"]: x["region"] for x in S.SITES}
+    base = f"{root}/servicedesk/cases"
+    for c in S.ARCHIVE_CASES:
+        opened = datetime.date.fromisoformat(c["opened"])
+        state, is_open, reason = "open", True, None
+        rows = []
+        for i, ev in enumerate(c["events"]):
+            offset, actor, action = ev[0], ev[1], ev[2]
+            new_reason = ev[3] if len(ev) > 3 else None
+            key = (state, action)
+            if key not in CASE_TRANSITIONS:
+                raise SystemExit(
+                    f"{c['sn']}: '{action}' is not a transition from '{state}' "
+                    "— the archive would not match servicedesk_case")
+            target, closes = CASE_TRANSITIONS[key]
+            if closes and not new_reason:
+                raise SystemExit(
+                    f"{c['sn']}: '{action}' closes the ticket and needs a "
+                    "resolution reason, exactly as resolution_required demands")
+            if new_reason and new_reason not in dict(S.RESOLUTION_CODES):
+                raise SystemExit(
+                    f"{c['sn']}: '{new_reason}' is not in RESOLUTION_CODES")
+            diff = {"state": {"old": state, "new": target}}
+            if closes:
+                diff["is_open"] = {"old": True, "new": False}
+                diff["resolution_reason"] = {"old": reason, "new": new_reason}
+            when = stamp((opened + datetime.timedelta(days=offset)).isoformat(),
+                         9 + (i % 7), (i * 17) % 60)
+            rows.append(history_line(f"{c['sn']}/{i}", when, actor, diff))
+            state = target
+            if closes:
+                is_open, reason = False, new_reason
+
+        body = {"title": c["title"], "category": c["category"],
+                "severity": c["severity"], "region": c["region"],
+                "site": c["site"], "customer_msisdn": c["msisdn"],
+                "reported_on": c["opened"]}
+        if c.get("product"):
+            body["product"] = c["product"]
+        if c.get("equipment"):
+            body["equipment"] = c["equipment"]
+        if reason:
+            body["resolution_code"] = reason
+        rels = [rel("org", "sites", c["site"], "served_by")]
+        if c.get("product"):
+            rels.append(rel("catalogue", "products", c["product"], "about_product"))
+        if c.get("equipment"):
+            rels.append(rel("assets", "equipment", c["equipment"], "affects"))
+        extra = {
+            "workflow_shortname": "servicedesk_case",
+            "state": state, "is_open": is_open,
+            "reporter": {"type": "retail", "name": c["reporter"],
+                         "channel": "call_center", "msisdn": c["msisdn"]},
+        }
+        if reason:
+            extra["resolution_reason"] = reason
+        m = meta("ticket", "servicedesk", "cases", c["sn"],
+                 schema="case", displayname=c["title"],
+                 tags=[c["category"], c["severity"], c["region"], "archive"],
+                 relationships=rels, extra=extra)
+        # Dated by the story, not by the generator's fixed WHEN: an archived
+        # case created after its own history would read as nonsense.
+        m["created_at"] = rows[0]["timestamp"]
+        m["updated_at"] = rows[-1]["timestamp"]
+        write_json(f"{base}/.dm/{c['sn']}/meta.ticket.json", m)
+        write_json(f"{base}/{c['sn']}.json", body)
+        write_jsonl(f"{base}/.dm/{c['sn']}/history.jsonl", rows)
+
+def gen_equipment_history(root, mult):
+    """History on a non-ticket entry — history is not a ticket feature."""
+    base = f"{root}/assets/equipment"
+    for sn, events in sorted(S.EQUIPMENT_HISTORY.items()):
+        meta_path = f"{base}/.dm/{sn}/meta.content.json"
+        if not os.path.isfile(meta_path):
+            raise SystemExit(f"EQUIPMENT_HISTORY names {sn}, which has no entry")
+        rows = [history_line(f"{sn}/{i}", stamp(day, 10 + i, (i * 23) % 60), actor, diff)
+                for i, (day, actor, diff) in enumerate(events)]
+        write_jsonl(f"{base}/.dm/{sn}/history.jsonl", rows)
+        # The entry's updated_at should not predate its own last revision.
+        m = json.load(open(meta_path))
+        m["updated_at"] = rows[-1]["timestamp"]
+        write_json(meta_path, m)
+
 def gen_approvals(root, mult):
     for r in each(S.REQUESTS, mult, "request"):
         base = f"{root}/approvals/requests"
@@ -403,10 +534,13 @@ def each(items, mult, kind):
 SCALE_MULT = {"small": 1, "medium": 10, "large": 250}
 
 WRITERS = {
-    "org": gen_org, "catalogue": gen_catalogue, "assets": gen_assets,
+    "org": gen_org, "catalogue": gen_catalogue,
+    "assets": lambda root, mult: (gen_assets(root, mult),
+                                   gen_equipment_history(root, mult)),
     "kb": gen_kb,
     "servicedesk": lambda root, mult: (gen_servicedesk(root, mult),
-                                        gen_servicedesk_public(root, mult)),
+                                        gen_servicedesk_public(root, mult),
+                                        gen_servicedesk_archive(root, mult)),
     "approvals": gen_approvals,
     "datamart": gen_datamart, "comms": gen_comms,
 }
@@ -456,13 +590,28 @@ def main():
     })
     print(f"  personas: {len(S.PERSONAS)} -> {os.path.relpath(personas_path, repo_packs)}")
 
-    stray = []
+    # Packs DO ship history now (#329 made the importer preserve an authored
+    # uuid and timestamp, and dedupe on the uuid). What still has to hold is
+    # that every line is readable and carries both fields — a line missing them
+    # silently falls back to "now", which would quietly undo the whole point.
+    bad = []
     for dirpath, _, files in os.walk(root):
-        if "history.jsonl" in files:
-            stray.append(os.path.join(dirpath, "history.jsonl"))
-    if stray:
-        raise SystemExit("generated a history.jsonl, which packs must not ship: "
-                         + ", ".join(stray))
+        if "history.jsonl" not in files:
+            continue
+        hp = os.path.join(dirpath, "history.jsonl")
+        for n, line in enumerate(open(hp), start=1):
+            if not line.strip():
+                continue
+            try:
+                row = json.loads(line)
+            except Exception as exc:
+                bad.append(f"{hp}:{n} unreadable ({exc})")
+                continue
+            for field in ("uuid", "timestamp", "owner_shortname"):
+                if not row.get(field):
+                    bad.append(f"{hp}:{n} missing {field}")
+    if bad:
+        raise SystemExit("authored history is malformed:\n  " + "\n  ".join(bad))
     print(f"  -> {root} (scale={args.scale}, x{mult})")
 
 if __name__ == "__main__":

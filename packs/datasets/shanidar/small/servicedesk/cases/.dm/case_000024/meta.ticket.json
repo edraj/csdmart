@@ -1,0 +1,56 @@
+{
+  "uuid": "448c3c5b-11e8-59f1-a195-6997c9cc4a2c",
+  "shortname": "case_000024",
+  "is_active": true,
+  "tags": [
+    "billing",
+    "normal",
+    "central",
+    "archive"
+  ],
+  "created_at": "2025-12-19T09:00:00.0000000",
+  "updated_at": "2025-12-20T10:17:00.0000000",
+  "owner_shortname": "dmart",
+  "displayname": {
+    "en": "Double charge on the December bill"
+  },
+  "relationships": [
+    {
+      "related_to": {
+        "space_name": "org",
+        "subpath": "sites",
+        "shortname": "bgd_0210",
+        "resource_type": "content"
+      },
+      "attributes": {
+        "relation": "served_by"
+      }
+    },
+    {
+      "related_to": {
+        "space_name": "catalogue",
+        "subpath": "products",
+        "shortname": "postpaid_pro",
+        "resource_type": "content"
+      },
+      "attributes": {
+        "relation": "about_product"
+      }
+    }
+  ],
+  "payload": {
+    "content_type": "json",
+    "body": "case_000024.json",
+    "schema_shortname": "case"
+  },
+  "workflow_shortname": "servicedesk_case",
+  "state": "resolved",
+  "is_open": false,
+  "reporter": {
+    "type": "retail",
+    "name": "Nasreen",
+    "channel": "call_center",
+    "msisdn": "+9647700000233"
+  },
+  "resolution_reason": "billing_corrected"
+}

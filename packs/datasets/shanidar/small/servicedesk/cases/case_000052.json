@@ -1,0 +1,11 @@
+{
+  "title": "New SIM not registering on the network",
+  "category": "device",
+  "severity": "normal",
+  "region": "south",
+  "site": "bsr_0031",
+  "customer_msisdn": "+9647800000917",
+  "reported_on": "2026-04-03",
+  "product": "prepaid_basic",
+  "resolution_code": "fixed_remotely"
+}
