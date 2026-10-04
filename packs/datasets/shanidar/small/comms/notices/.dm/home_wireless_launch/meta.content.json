@@ -1,0 +1,45 @@
+{
+  "uuid": "32d193e3-a3ad-5295-9989-ec7ebccd5f81",
+  "shortname": "home_wireless_launch",
+  "is_active": true,
+  "tags": [
+    "app_push",
+    "sent",
+    "south"
+  ],
+  "created_at": "2026-10-01T00:00:00",
+  "updated_at": "2026-10-01T00:00:00",
+  "owner_shortname": "dmart",
+  "displayname": {
+    "en": "Shanidar Home Wireless is now available in Basra"
+  },
+  "relationships": [
+    {
+      "related_to": {
+        "space_name": "org",
+        "subpath": "sites",
+        "shortname": "bsr_0031",
+        "resource_type": "content"
+      },
+      "attributes": {
+        "relation": "located_in"
+      }
+    },
+    {
+      "related_to": {
+        "space_name": "kb",
+        "subpath": "articles",
+        "shortname": "home_router_setup",
+        "resource_type": "content"
+      },
+      "attributes": {
+        "relation": "uses_article"
+      }
+    }
+  ],
+  "payload": {
+    "content_type": "json",
+    "body": "home_wireless_launch.json",
+    "schema_shortname": "notice"
+  }
+}

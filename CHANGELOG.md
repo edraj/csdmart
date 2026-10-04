@@ -4,6 +4,29 @@
 
 ### Added
 
+- **An MCP persona, scoped by region rather than by subpath.** `ai_ops_south` is
+  an ordinary dmart user holding a read-only `datamart_ai_ops_south` role — MCP
+  has no authorization surface of its own, so an AI client authenticates as a
+  dmart user and every tool runs the same permission walk as any other caller.
+
+  Region is a payload *field*, not a subpath, so the subpath grant cannot
+  express "south only". `filter_fields_values` can, and the permission carries
+  `@payload.body.region:south`. **It only works with explicit subpaths**: the
+  filter is applied by matching the permission's `space:subpath:resource_type`
+  key as a prefix of the request's query policy, so `__all_subpaths__` never
+  matches and the filter is dropped *silently* — measured as 8 rows across all
+  three regions instead of the 2 southern ones. The permission lists its
+  subpaths for that reason.
+
+  Verified: 2 rows, both south; a write refused with `no create access`; and
+  the refusal audited in the request log against `user_shortname:
+  ai_ops_south`.
+
+- **A CI gate for the packs.** A hosted job runs the update planner's 30
+  assertions, checks the committed tree is what the generators produce, and
+  runs `build.sh`'s own scope refusal over all eight packs. No build, no
+  database, standard library only.
+
 - **Two pack plugins, running as scoped service accounts.**
   `shanidar_case_assign` writes a new case's assignee from a routing table;
   `shanidar_kpi_rollup` recomputes a region-month summary whenever a KPI row
@@ -220,6 +243,11 @@
   both modes.
 
 ### Fixed
+
+- **`--scale large` crashed at generation 100.** The generated-clone suffix
+  stripper was `_g\d{2}$`, so at ×250 it could not strip `_g100` and the region
+  lookup died with `KeyError('erb_0142_g100')`. Now `_g\d+$`. The scale works:
+  13,087 files generated in half a second, 6,620 rows imported in seven.
 
 - **A pack update could not see a content change that left the timestamp
   alone.** The planner inferred "the pack changed this row" from the shipped

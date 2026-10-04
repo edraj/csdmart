@@ -473,6 +473,10 @@ DATASETS = [
               "serves the file but does not run SQL inside it."),
 ]
 
+# Outbound notices. Each one answers something that happens elsewhere in the
+# storyline, so the pack reads as the operator's comms log rather than sample
+# rows: the Erbil generator fault, the Arbaeen deployment, the Mosul aircon,
+# a tariff launch, and the two staff notices the field team would actually get.
 NOTICES = [
     dict(sn="erb_0142_power_works", title="Planned power work at Erbil Citadel East",
          channel="sms", audience="region", region="north", site="erb_0142",
@@ -480,6 +484,21 @@ NOTICES = [
     dict(sn="arbaeen_capacity", title="Extra capacity along the Arbaeen route",
          channel="app_push", audience="region", region="central", site="krb_0007",
          article="cow_deployment", on="2026-08-21", status="sent"),
+    dict(sn="mos_0088_service_restored", title="Service restored on the Mosul left bank",
+         channel="sms", audience="region", region="north", site="mos_0088",
+         article=None, on="2026-08-20", status="sent"),
+    dict(sn="home_wireless_launch", title="Shanidar Home Wireless is now available in Basra",
+         channel="app_push", audience="region", region="south", site="bsr_0031",
+         article="home_router_setup", on="2026-09-05", status="sent"),
+    dict(sn="field_power_checklist", title="Reminder: record generator status before leaving site",
+         channel="staff_portal", audience="staff", region="north", site="erb_0142",
+         article="generator_fuel_check", on="2026-09-19", status="sent"),
+    dict(sn="arbaeen_recovery_notice", title="COW recovery window after the pilgrimage",
+         channel="staff_portal", audience="staff", region="central", site="krb_0007",
+         article="cow_deployment", on="2026-10-10", status="scheduled"),
+    dict(sn="bsr_0031_evening_capacity", title="Evening congestion work at Basra Corniche",
+         channel="email", audience="region", region="south", site="bsr_0031",
+         article="home_router_setup", on="2026-10-12", status="draft"),
 ]
 
 # Personas. The roles each one holds DIRECTLY — a workflow gate reads
@@ -520,6 +539,12 @@ PERSONAS = [
     # internal ownership, and a customer inheriting it would widen what their
     # `own`-scoped query can reach (BuildUserQueryPoliciesAsync emits one
     # owner-segment pattern per group as well as for the shortname).
+    # The MCP persona. An ordinary user: MCP has no separate authorization
+    # surface, so an AI client authenticates as this and gets exactly what the
+    # role allows — read-only, and only southern rows.
+    dict(sn="ai_ops_south", name="AI ops assistant, South",
+         roles=["datamart_ai_ops_south"], groups=[],
+         msisdn="+9647800000109"),
     dict(sn="customer_erbil", name="Customer, Erbil",
          roles=["servicedesk_customer"], groups=[],
          msisdn="+9647500001842"),

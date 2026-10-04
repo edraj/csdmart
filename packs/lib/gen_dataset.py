@@ -521,7 +521,10 @@ def gen_comms(root, mult):
 # `_gNN` marks a generated clone. Stripping it recovers the authored shortname,
 # which is how a clone still resolves its region: the region tables are keyed by
 # the authored site names and are not themselves cloned.
-GEN_SUFFIX = re.compile(r"_g\d{2}$")
+# \d+ rather than \d{2}: at --scale large the generation counter reaches three
+# digits, and a two-digit pattern failed to strip `_g100`, so the region lookup
+# raised KeyError('erb_0142_g100') and the whole generation died at g=100.
+GEN_SUFFIX = re.compile(r"_g\d+$")
 
 def base_sn(shortname):
     return GEN_SUFFIX.sub("", shortname)
@@ -539,6 +542,8 @@ def each(items, mult, kind):
     for item in items:
         yield item
     for g in range(2, mult + 1):
+        # :02d is a minimum width, not a maximum — g=100 yields _g100,
+        # which GEN_SUFFIX must and does strip.
         suffix = f"_g{g:02d}"
         for item in items:
             clone = dict(item)

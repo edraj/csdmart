@@ -1,0 +1,12 @@
+{
+  "uuid": "138421d7-2d9d-5d59-b638-ecdfcd104de7",
+  "shortname": "datamart_ai_ops_south",
+  "is_active": true,
+  "tags": [],
+  "created_at": "2026-10-01T00:00:00",
+  "updated_at": "2026-10-01T00:00:00",
+  "owner_shortname": "dmart",
+  "permissions": [
+    "datamart_ai_ops_south_read"
+  ]
+}

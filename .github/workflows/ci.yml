@@ -151,6 +151,43 @@ jobs:
             echo "only docs/assets changed — skipping build and test"
           fi
 
+  # The packs' update planner decides whether a pack install may overwrite an
+  # operator's data, so its logic is worth a gate. Hosted, no build, no
+  # database, and seconds to run — it rides alongside the scope job rather
+  # than queueing behind the self-hosted pool.
+  packs-planner:
+    name: Packs planner self-test
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+
+      # No pip install and no setup-python: the script is standard library
+      # only, precisely so it stays runnable with nothing provisioned.
+      - name: plan_update self-test
+        run: python3 packs/lib/test_plan.py
+
+      # The generated tree is committed, so a generator change that alters its
+      # output must be committed with it. This catches the mismatch that would
+      # otherwise show up as a mystery diff in someone else's PR.
+      - name: generators are deterministic and the tree is current
+        run: |
+          python3 packs/lib/gen_spaces.py     > /dev/null
+          python3 packs/lib/gen_management.py > /dev/null
+          python3 packs/lib/gen_schemas.py    > /dev/null
+          python3 packs/lib/gen_workflows.py  > /dev/null
+          python3 packs/lib/gen_dataset.py --scale small > /dev/null
+          if ! git diff --quiet -- packs/; then
+            echo "::error::packs/ is not what the generators produce — run them and commit the result"
+            git diff --stat -- packs/
+            exit 1
+          fi
+
+      # A pack that reaches outside itself must not merge, so run the build's
+      # own refusal as a gate too. --packs with every pack keeps `comms`
+      # (optional) in scope.
+      - name: every pack stays within its own scope
+        run: ./packs/build.sh --packs org,catalogue,assets,servicedesk,approvals,kb,datamart,comms > /dev/null
+
   build-and-test-matrix:
     needs: changes
     if: needs.changes.outputs.code == 'true'
