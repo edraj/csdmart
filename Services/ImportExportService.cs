@@ -2797,6 +2797,54 @@ public sealed class ImportExportService(
                     Dictionary<string, object>? reqHeaders = null;
                     if (hNode["request_headers"] is JsonObject rh)
                         reqHeaders = rh.Deserialize(DmartJsonContext.Default.DictionaryStringObject);
+
+                    // When the line carries the uuid and timestamp the EXPORTER
+                    // wrote, restore them instead of minting new ones.
+                    //
+                    // AppendAsync is for new events: it binds Guid.NewGuid() and
+                    // TimeUtils.Now(), so importing an export used to rewrite
+                    // every history row's date to the import moment and lose the
+                    // original. A restored backup came back with a year of
+                    // history all stamped the same second.
+                    //
+                    // RestoreAsync already existed for exactly this — the
+                    // Parquet restore path uses it — and preserves both fields.
+                    // Its `ON CONFLICT (uuid) DO NOTHING` also makes the import
+                    // idempotent, which AppendAsync never was: re-importing an
+                    // archive appended a second copy of every row.
+                    //
+                    // A line without both fields still goes through AppendAsync,
+                    // so a hand-written history.jsonl that omits them keeps
+                    // working and simply gets a fresh uuid and the current time.
+                    var rawUuid = hNode["uuid"]?.GetValue<string>();
+                    var rawStamp = hNode["timestamp"]?.GetValue<string>();
+                    if (!string.IsNullOrEmpty(rawUuid)
+                        && !string.IsNullOrEmpty(rawStamp)
+                        && Guid.TryParse(rawUuid, out var hUuid)
+                        && DateTime.TryParse(rawStamp,
+                               System.Globalization.CultureInfo.InvariantCulture,
+                               System.Globalization.DateTimeStyles.RoundtripKind,
+                               out var hStamp))
+                    {
+                        var row = new HistoryRow
+                        {
+                            Uuid = hUuid.ToString(),
+                            SpaceName = spaceName,
+                            Subpath = subpath,
+                            Shortname = sn,
+                            // Local-naive, matching the `timestamp without time
+                            // zone` columns and TimeUtils everywhere else.
+                            Timestamp = hStamp.Kind == DateTimeKind.Utc
+                                ? hStamp.ToLocalTime()
+                                : hStamp,
+                            OwnerShortname = owner,
+                            RequestHeaders = reqHeaders,
+                            Diff = diff,
+                        };
+                        if (await histories.RestoreAsync(row, ct)) st.IncHistories();
+                        continue;
+                    }
+
                     if (session is null)
                         await histories.AppendAsync(spaceName, subpath, sn, owner, reqHeaders, diff, ct);
                     else

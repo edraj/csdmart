@@ -102,6 +102,31 @@
 
 ### Fixed
 
+- **Restoring a dmart export rewrote every history row's timestamp to the
+  restore moment.** `history.jsonl` carries the `uuid` and `timestamp` the
+  exporter wrote, and the importer threw both away: it called
+  `HistoryRepository.AppendAsync`, the path for *new* events, which binds
+  `Guid.NewGuid()` and `TimeUtils.Now()`. So a year of history came back stamped
+  the same second and the original dates were simply gone — a silent loss of
+  fidelity in backup/restore, not just in `dmart import`.
+
+  `RestoreAsync` already existed for exactly this and the Parquet restore path
+  already used it. The zip/fs importer now uses it too whenever the line
+  supplies both fields, falling back to `AppendAsync` otherwise so a
+  hand-written `history.jsonl` without them keeps working.
+
+  Its `ON CONFLICT (uuid) DO NOTHING` also makes history import **idempotent**,
+  which it never was: re-importing an archive used to append a second copy of
+  every row. Measured before the fix as 2 → 4 → 6 on successive imports of one
+  archive; now it stays at 2. Verified end to end: a space exported and restored
+  into a fresh database comes back with all seven history rows identical to the
+  tick.
+
+  Two existing tests asserted the old duplicating behaviour and are updated —
+  one was using "a row was inserted" as a proxy for "the path parsed", the other
+  re-imported the same archive as its control leg and could no longer tell
+  `--skip-history` apart from the dedupe.
+
 - **Six docs files described two materialized views that do not exist.**
   `mv_user_roles` and `mv_role_permissions` appear in `GLOSSARY.md`,
   `docs/architecture.md`, `docs/data-model.md`, `docs/debugging.md`,
