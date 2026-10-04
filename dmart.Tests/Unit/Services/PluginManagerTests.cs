@@ -142,7 +142,7 @@ public class PluginManagerTests
         PluginManager.MatchedFilters(f, Evt("/", ResourceType.Ticket)).ShouldBeFalse();
     }
 
-    // ==================== Schema shortname (content-only) ====================
+    // ==================== Schema shortname ====================
 
     [Fact]
     public void Empty_SchemaShortnames_Matches_All_Schemas()
@@ -163,13 +163,33 @@ public class PluginManagerTests
     }
 
     [Fact]
-    public void NonContent_Ignores_Schema_Filter()
+    public void Ticket_With_Schema_Filter_Gates_On_Schema()
     {
-        // Only Content resources are gated by schema_shortname; Ticket with a
-        // narrow filter list still matches because the predicate skips the check.
-        var f = AllFilter("create") with { SchemaShortnames = new() { "widget" } };
-        PluginManager.MatchedFilters(f, Evt("/", ResourceType.Ticket, schema: "gadget"))
+        // Tickets carry a payload schema too, so a narrow filter list must
+        // reject a ticket whose schema isn't on it.
+        var f = AllFilter("update") with { SchemaShortnames = new() { "order" } };
+        PluginManager.MatchedFilters(f, Evt("/", ResourceType.Ticket, schema: "order"))
             .ShouldBeTrue();
+        PluginManager.MatchedFilters(f, Evt("/", ResourceType.Ticket, schema: "meow"))
+            .ShouldBeFalse();
+    }
+
+    [Fact]
+    public void Content_Without_Schema_Rejected_By_Schema_Filter()
+    {
+        var f = AllFilter("create") with { SchemaShortnames = new() { "widget" } };
+        PluginManager.MatchedFilters(f, Evt("/", ResourceType.Content))
+            .ShouldBeFalse();
+    }
+
+    [Fact]
+    public void SchemaLess_NonContent_Rejected_By_Schema_Filter()
+    {
+        var f = AllFilter("create") with { SchemaShortnames = new() { "widget" } };
+        PluginManager.MatchedFilters(f, Evt("/", ResourceType.Ticket))
+            .ShouldBeFalse();
+        PluginManager.MatchedFilters(f, Evt("/", ResourceType.Folder))
+            .ShouldBeFalse();
     }
 
     // ==================== Legacy-shape detection ====================

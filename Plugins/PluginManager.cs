@@ -344,11 +344,11 @@ public sealed class PluginManager(
     {
         if (!MatchSpaceAndSubpath(filters.Subpaths, e)) return false;
 
-        // Content resources also gate on schema_shortname when the filter
-        // declares schemas. Empty list = "match every schema" (mirrors the
-        // permission engine's empty-list-means-all convention).
-        if (e.ResourceType == ResourceType.Content
-            && filters.SchemaShortnames.Count > 0
+        // Gate on schema_shortname when the filter declares schemas. Empty
+        // list = "match every schema" (mirrors the permission engine's
+        // empty-list-means-all convention). Applies to every resource type;
+        // an event without a schema never matches a non-empty list.
+        if (filters.SchemaShortnames.Count > 0
             && (e.SchemaShortname is null || !filters.SchemaShortnames.Contains(e.SchemaShortname, StringComparer.Ordinal)))
             return false;
 
