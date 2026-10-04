@@ -1,0 +1,12 @@
+{
+  "uuid": "8d46d527-bacf-5757-8caf-bf73adbe0b13",
+  "shortname": "servicedesk_automation",
+  "is_active": true,
+  "tags": [],
+  "created_at": "2026-10-01T00:00:00",
+  "updated_at": "2026-10-01T00:00:00",
+  "owner_shortname": "dmart",
+  "permissions": [
+    "servicedesk_automation_assign"
+  ]
+}

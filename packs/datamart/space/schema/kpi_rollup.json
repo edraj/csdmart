@@ -1,0 +1,55 @@
+{
+  "title": "KPI rollup",
+  "description": "A region-month summary, maintained by the shanidar_kpi_rollup plugin.",
+  "type": "object",
+  "additionalProperties": false,
+  "properties": {
+    "region": {
+      "type": "string",
+      "enum": [
+        "north",
+        "central",
+        "south"
+      ]
+    },
+    "period": {
+      "type": "string",
+      "pattern": "^[0-9]{4}_[0-9]{2}$"
+    },
+    "site_count": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "availability_pct": {
+      "type": "number",
+      "minimum": 0,
+      "maximum": 100
+    },
+    "outage_minutes": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "data_volume_tb": {
+      "type": "number",
+      "minimum": 0
+    },
+    "sources": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "computed_by": {
+      "type": "string"
+    },
+    "computed_at": {
+      "type": "string"
+    }
+  },
+  "required": [
+    "region",
+    "period",
+    "site_count",
+    "availability_pct"
+  ]
+}

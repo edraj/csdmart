@@ -18,9 +18,19 @@ timestamps. So for any pack-shipped entry:
 That is dmart's own semantics doing the work, which is why it is trustworthy —
 there is no second source of truth to drift.
 
-Knowing what the PREVIOUS version shipped is what makes the difference between
-"the pack changed this entry" and "the operator changed it", so the receipt
-records the shipped `updated_at` per entry. See `receipt_from_tree`.
+Those are two different questions and they need two different signals:
+
+    did the OPERATOR change it?   db.updated_at  vs  the shipped updated_at
+    did the PACK change it?       a content hash vs  the hash in the receipt
+
+The second cannot use the timestamp. The pack generators write a FIXED
+`updated_at` so their output stays byte-identical between runs, so editing a
+schema's content moves no timestamp at all — and a planner that asked the
+timestamp would skip the change silently. That is not hypothetical: it is how
+this was found, with a schema edit that never reached the database and a plugin
+failing validation against the old copy.
+
+So the receipt records both per entry. See `receipt_from_tree`.
 
 Outputs a plan with six buckets:
 
@@ -32,11 +42,11 @@ Outputs a plan with six buckets:
     orphan     dropped by the new version, operator changed it   -> leave, report
     unchanged  identical on both sides                           -> nothing
 """
-import argparse, json, os, sys, datetime
+import argparse, hashlib, json, os, sys, datetime
 
 RECEIPT_SPACE = "management"
 RECEIPT_SUBPATH = "packs"
-RECEIPT_FORMAT = 1
+RECEIPT_FORMAT = 2
 
 
 # ── timestamps ────────────────────────────────────────────────────────────────
@@ -168,8 +178,36 @@ def attachment_paths(spaces_root, only_spaces=None):
     return out
 
 
+def content_hash(meta_abs_path, meta_obj):
+    """sha256 over the meta AND its externalized body.
+
+    The body is the half that usually changes — a schema's rules, a case's
+    text — and it lives in a sibling file named by `payload.body`, so hashing
+    the meta alone would miss most real edits. `updated_at` is excluded because
+    it is fixed by the generators and would contribute nothing."""
+    h = hashlib.sha256()
+    stripped = {k: v for k, v in sorted(meta_obj.items())
+                if k not in ("updated_at", "created_at")}
+    h.update(json.dumps(stripped, sort_keys=True, ensure_ascii=False).encode())
+    body = (meta_obj.get("payload") or {}).get("body")
+    if isinstance(body, str) and body:
+        # `{space}/{sub}/.dm/{sn}/meta.x.json` -> `{space}/{sub}/{body}`
+        meta_dir = os.path.dirname(meta_abs_path)          # .../.dm/{sn}
+        candidates = [
+            os.path.join(meta_dir, "..", "..", body),      # entry body
+            os.path.join(meta_dir, "..", "..", "..", body),  # folder body
+            os.path.join(meta_dir, body),                  # attachment body
+        ]
+        for c in candidates:
+            if os.path.isfile(c):
+                with open(c, "rb") as f:
+                    h.update(f.read())
+                break
+    return h.hexdigest()[:32]
+
+
 def scan_tree(spaces_root, only_spaces=None, restrict_to=None):
-    """Every meta path in a built tree -> its identity and shipped updated_at."""
+    """Every meta path in a built tree -> its identity, timestamp and hash."""
     found = {}
     for dirpath, _, names in os.walk(spaces_root):
         for n in names:
@@ -192,6 +230,7 @@ def scan_tree(spaces_root, only_spaces=None, restrict_to=None):
                 "space": ident[0], "subpath": ident[1],
                 "shortname": ident[2], "rt": ident[3],
                 "updated_at": meta.get("updated_at"),
+                "hash": content_hash(abs_path, meta),
             }
     return found
 
@@ -209,7 +248,10 @@ def receipt_from_tree(pack, scale, shipped, now):
         "scale": scale,
         "installed_at": now,
         "provides": pack.get("provides", {}),
-        "entries": {rel: info["updated_at"] for rel, info in sorted(shipped.items())},
+        # format 2: {path: [updated_at, hash]}. format 1 stored the timestamp
+        # alone, which could not tell a pack edit from no edit at all.
+        "entries": {rel: [info["updated_at"], info["hash"]]
+                    for rel, info in sorted(shipped.items())},
     }
 
 
@@ -238,6 +280,18 @@ def build_plan(shipped, receipt, db_state):
     plan = {k: [] for k in
             ("add", "update", "conflict", "kept", "remove", "orphan", "unchanged")}
     was = (receipt or {}).get("entries") or {}
+    receipt_format = (receipt or {}).get("format") or 1
+
+    def recorded(rel):
+        """(updated_at, hash) from the receipt. A format-1 receipt stored only
+        the timestamp, so the hash comes back None and the pack-side comparison
+        falls back to the timestamp — which is all a format-1 receipt can
+        support. The first format-2 install records hashes and the fallback
+        stops being used."""
+        v = was.get(rel)
+        if isinstance(v, list):
+            return (v[0] if v else None), (v[1] if len(v) > 1 else None)
+        return v, None
 
     def db_stamp(info):
         return db_state.get((info["space"], info["subpath"], info["shortname"]))
@@ -285,8 +339,8 @@ def build_plan(shipped, receipt, db_state):
                 plan["kept"].append(dict(row, db=str(existing),
                                          note="no receipt; adopting as-is"))
             continue
-        pack_before = norm_stamp(was[rel])
-        pack_now = norm_stamp(info["updated_at"])
+        stamp_before, hash_before = recorded(rel)
+        pack_before = norm_stamp(stamp_before)
         in_db = norm_stamp(db_stamp(info))
         # Absent from the DB though the receipt claims it: someone deleted it.
         # Re-adding is the least surprising thing an update can do.
@@ -294,14 +348,34 @@ def build_plan(shipped, receipt, db_state):
             plan["add"].append(dict(row, note="was deleted"))
             continue
         operator_touched = in_db != pack_before
-        pack_changed = pack_now != pack_before
+        # The CONTENT decides whether the pack changed it. The generators write
+        # a fixed updated_at, so a timestamp comparison here would miss every
+        # real edit; the hash sees them. A format-1 receipt has no hash, so it
+        # falls back to the timestamp and will under-report — which is why the
+        # first format-2 install re-records everything.
+        if hash_before is not None:
+            pack_changed = info["hash"] != hash_before
+        elif receipt_format < RECEIPT_FORMAT:
+            # A receipt older than this planner has no hashes, so nothing can
+            # be compared and a timestamp fallback would under-report every
+            # content edit made since. Treat the whole pack as changed ONCE, so
+            # the format-2 receipt that follows is a real baseline.
+            #
+            # Safe because an operator-touched row still goes to `conflict`
+            # below rather than being overwritten: the refresh is a re-import
+            # of rows nobody has edited, which is a no-op for the unchanged
+            # ones and a correction for the rest.
+            pack_changed = True
+        else:
+            pack_changed = norm_stamp(info["updated_at"]) != pack_before
         if not detectable(info):
             # Not comparable, so classify by what the PACK did and leave the
             # operator out of it.
             plan["update" if pack_changed else "unchanged"].append(row)
             continue
         if pack_changed and operator_touched:
-            plan["conflict"].append(dict(row, db=str(in_db), shipped=str(pack_now)))
+            plan["conflict"].append(dict(row, db=str(in_db),
+                                            shipped=str(info["updated_at"])))
         elif pack_changed:
             plan["update"].append(row)
         elif operator_touched:
@@ -309,9 +383,10 @@ def build_plan(shipped, receipt, db_state):
         else:
             plan["unchanged"].append(row)
 
-    for rel, stamp in sorted(was.items()):
+    for rel in sorted(was):
         if rel in shipped:
             continue
+        stamp, _ = recorded(rel)
         ident = decode_meta_path(rel)
         if ident is None:
             continue
@@ -341,11 +416,15 @@ def build_plan(shipped, receipt, db_state):
     return plan
 
 
-def render(plan, pack_name, old_version, new_version):
+def render(plan, pack_name, old_version, new_version, refreshing=False):
     lines = []
     head = (f"{pack_name}: {old_version} -> {new_version}"
             if old_version else f"{pack_name}: fresh install of {new_version}")
     lines.append(head)
+    if refreshing:
+        lines.append("  the stored receipt predates content hashing — "
+                     "refreshing every untouched row once to rebuild the "
+                     "baseline; your edits are still protected")
     order = [
         ("add", "will be added"),
         ("update", "will be updated (pack changed it, you did not)"),

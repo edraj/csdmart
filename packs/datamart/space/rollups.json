@@ -1,0 +1,37 @@
+{
+  "shortname_title": "Shortname",
+  "content_schema_shortnames": [
+    "kpi_rollup"
+  ],
+  "index_attributes": [
+    {
+      "key": "shortname",
+      "name": "Shortname"
+    },
+    {
+      "key": "region",
+      "name": "Region"
+    },
+    {
+      "key": "period",
+      "name": "Period"
+    },
+    {
+      "key": "site_count",
+      "name": "Sites"
+    },
+    {
+      "key": "availability_pct",
+      "name": "Availability %"
+    }
+  ],
+  "allow_view": true,
+  "allow_create": false,
+  "allow_update": false,
+  "allow_delete": false,
+  "use_media": false,
+  "filter": [],
+  "content_resource_types": [
+    "content"
+  ]
+}

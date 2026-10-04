@@ -17,6 +17,7 @@
   "folders": [
     "cases",
     "intake",
+    "routing",
     "workflows",
     "schema"
   ],
@@ -25,17 +26,25 @@
       "servicedesk_agent",
       "servicedesk_supervisor",
       "servicedesk_customer",
-      "servicedesk_public"
+      "servicedesk_public",
+      "servicedesk_automation"
     ],
     "permissions": [
       "servicedesk_agent_case",
       "servicedesk_supervisor_case",
       "servicedesk_customer_own",
-      "servicedesk_public_intake"
+      "servicedesk_public_intake",
+      "servicedesk_automation_assign"
     ],
     "groups": [],
     "public_roles": [
       "servicedesk_public"
+    ],
+    "service_accounts": [
+      "servicedesk_svc_assign"
+    ],
+    "plugins": [
+      "shanidar_case_assign"
     ]
   },
   "scales": [

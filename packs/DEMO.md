@@ -17,7 +17,8 @@ export DMART_PACKS_DEMO_PASSWORD=...            # the personas' password
 # Anonymous intake additionally needs this in config.env, then a restart:
 #   ALLOWED_SUBMIT_MODELS="servicedesk.intake_case"
 
-./packs/install.sh --public                     # 119 rows; opens the public surface
+./packs/install.sh --public --plugins           # content, public surface, automations
+# restart dmart once: plugins are scanned only at startup
 ./packs/demo.sh                                 # drive the storyline
 ```
 
@@ -160,6 +161,53 @@ when debugging one of them:
 exempt for `query`. Neither customer is in an `org_region_*` group, on purpose:
 a policy pattern is emitted per group as well as for the shortname, so group
 membership would widen what an `own`-scoped query reaches.
+
+## Two automations that are honestly attributed
+
+`install.sh --plugins` deploys them; nothing runs them by default. Both write
+through the API as their own scoped account, and that is the whole point.
+
+**Create a case anywhere in the north or south** and it comes back assigned:
+
+```
+case_v4_north    assignee=tech_north_erbil
+case_v4_south    assignee=tech_south_basra
+case_v4_central  assignee=(none)          ← nobody covers central, and it says so
+```
+
+Then look at who history credits:
+
+```
+case_v4_north  by servicedesk_svc_assign
+case_v4_south  by servicedesk_svc_assign
+```
+
+Not the person who filed the case. That is the brief's requirement — automation
+appears as its own actor — and it is the reason these go through REST rather
+than dmart's `save_entry` callback, which attributes the write to whoever
+triggered the hook.
+
+**Touch any KPI row** and the regional rollup recomputes:
+
+```
+rollup_north_2026_09   sites=2  avail=96.8  outage=137  by=datamart_svc_rollup
+  sources: ['kpi_erb_0142_2026_09', 'kpi_mos_0088_2026_09']
+```
+
+The arithmetic is checkable: erb_0142 is 97.2 and mos_0088 is 96.4, so the mean
+is 96.8; outages 41 and 96 sum to 137. The `sources` list is there so you can
+check it rather than trust it.
+
+Delete one of those rows and the rollup shrinks to one site, 97.2, 41 — because
+it recomputes from what exists rather than adjusting a running total. Trigger it
+twice and the numbers do not move.
+
+**What neither plugin can do** is as interesting as what they can. Each account
+holds one role, sits in no group, and reaches only the subpaths its plugin
+touches. The first version of the assignment plugin tried to read `org/sites`
+and `management/users`; the build refused to let the pack grant that, so the
+region moved onto the case and the routing table became data at
+`servicedesk/routing/assignment`. Re-routing is now editing an entry.
 
 ## The personas
 

@@ -235,9 +235,9 @@ PY
 # hand. Relaxing the rule to cover declared `links` would fix that and is
 # still reviewable from the manifest — but it is a widening, so it is a
 # decision rather than something to slip in here.
-python3 - "$HERE" $selected <<'SCOPE_PY'
+python3 - "$HERE" "$DATASET" $selected <<'SCOPE_PY'
 import json, os, sys
-root, packs = sys.argv[1], sys.argv[2:]
+root, dataset, packs = sys.argv[1], sys.argv[2], sys.argv[3:]
 bad = []
 for name in packs:
     manifest = os.path.join(root, name, "pack.json")
@@ -282,6 +282,28 @@ for name in packs:
     for sn in provides.get("groups", []) + provides.get("public_roles", []):
         if not sn.startswith(prefix) and not sn.startswith("org_"):
             bad.append(f"{name}: '{sn}' is not '{prefix}'-prefixed")
+    for sa in provides.get("service_accounts", []):
+        if not sa.startswith(prefix):
+            bad.append(f"{name}: service account '{sa}' is not "
+                       f"'{prefix}'-prefixed")
+    # A plugin directory lands in ~/.dmart/plugins, which is shared with every
+    # other pack and with the operator's own plugins, so an unprefixed name can
+    # silently replace somebody else's executable. The dataset name is allowed
+    # as well as the pack name: these two plugins encode Shanidar's regional
+    # routing, so `shanidar_` says more about them than `servicedesk_` would.
+    pdir = os.path.join(root, name, "plugins")
+    declared = set(provides.get("plugins", []))
+    on_disk = set(os.listdir(pdir)) if os.path.isdir(pdir) else set()
+    for pl in sorted(on_disk):
+        if not (pl.startswith(prefix) or pl.startswith(dataset + "_")):
+            bad.append(f"{name}: plugin '{pl}' is prefixed with neither "
+                       f"'{prefix}' nor '{dataset}_'")
+        for required in ("plugin.py", "config.json"):
+            if not os.path.isfile(os.path.join(pdir, pl, required)):
+                bad.append(f"{name}: plugin '{pl}' has no {required}")
+    if on_disk != declared:
+        bad.append(f"{name}: plugins on disk {sorted(on_disk)} do not match "
+                   f"pack.json's {sorted(declared)}")
 
 if bad:
     print("refusing to build — a pack reaches outside itself:", file=sys.stderr)

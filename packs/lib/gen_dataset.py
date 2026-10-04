@@ -401,6 +401,30 @@ def gen_equipment_history(root, mult):
         m["updated_at"] = rows[-1]["timestamp"]
         write_json(meta_path, m)
 
+def gen_servicedesk_routing(root, mult):
+    """The routing table the assignment plugin reads.
+
+    DERIVED from PERSONAS rather than written out, so it cannot name a
+    technician who does not exist. A region with no technician is simply absent,
+    and the plugin treats that as "nobody covers it" — which is the truth for
+    central in this storyline."""
+    by_region = {}
+    for p in S.PERSONAS:
+        if "assets_technician" not in p.get("roles", []):
+            continue
+        for g in p.get("groups", []):
+            if g.startswith("org_region_"):
+                region = g[len("org_region_"):]
+                # Deterministic when two technicians share a region.
+                if region not in by_region or p["sn"] < by_region[region]:
+                    by_region[region] = p["sn"]
+    entry(root, "servicedesk", "routing", "assignment",
+          {"by_region": by_region,
+           "note": "Which technician covers each region. A region that is "
+                   "absent has no cover, and a case there stays unassigned."},
+          schema="routing_table", displayname="Case assignment by region",
+          tags=["routing"])
+
 def gen_approvals(root, mult):
     for r in each(S.REQUESTS, mult, "request"):
         base = f"{root}/approvals/requests"
@@ -546,7 +570,8 @@ WRITERS = {
     "kb": gen_kb,
     "servicedesk": lambda root, mult: (gen_servicedesk(root, mult),
                                         gen_servicedesk_public(root, mult),
-                                        gen_servicedesk_archive(root, mult)),
+                                        gen_servicedesk_archive(root, mult),
+                                        gen_servicedesk_routing(root, mult)),
     "approvals": gen_approvals,
     "datamart": gen_datamart, "comms": gen_comms,
 }

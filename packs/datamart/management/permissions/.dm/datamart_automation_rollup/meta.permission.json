@@ -1,0 +1,25 @@
+{
+  "uuid": "82a8e60c-996c-5745-b0ed-319464c62ebf",
+  "shortname": "datamart_automation_rollup",
+  "is_active": true,
+  "tags": [],
+  "created_at": "2026-10-01T00:00:00",
+  "updated_at": "2026-10-01T00:00:00",
+  "owner_shortname": "dmart",
+  "subpaths": {
+    "datamart": [
+      "kpis",
+      "rollups"
+    ]
+  },
+  "resource_types": [
+    "content"
+  ],
+  "actions": [
+    "query",
+    "view",
+    "create",
+    "update"
+  ],
+  "conditions": []
+}

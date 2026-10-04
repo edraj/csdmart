@@ -4,6 +4,32 @@
 
 ### Added
 
+- **Two pack plugins, running as scoped service accounts.**
+  `shanidar_case_assign` writes a new case's assignee from a routing table;
+  `shanidar_kpi_rollup` recomputes a region-month summary whenever a KPI row
+  changes. `install.sh --plugins` deploys them — off by default, since it writes
+  an executable into `~/.dmart/plugins` and creates an account that writes
+  unattended.
+
+  Each goes through the REST API as its own account rather than using dmart's
+  `save_entry` callback, for two reasons in dmart's source: the callback
+  bypasses `EntryService` (so no validation, relationship integrity, permission
+  check or folder policy) and attributes history to whoever triggered the hook.
+  Verified — the assignment appears in history as `servicedesk_svc_assign`, not
+  as the person who filed the case.
+
+  The strict scope rule forced a better design. The first version read
+  `org/sites` and `management/users`, which a pack may not grant; so the region
+  is taken from the case (where the packs already duplicate it), and who covers
+  a region became data at `servicedesk/routing/assignment`, generated from the
+  personas. Re-routing is now editing an entry rather than an executable.
+
+  Two details recorded in the README: the assignee is a payload field because
+  `collaborators` is only settable via `request_type: "assign"`, which also
+  transfers ownership and would hide a case from the customer who raised it;
+  and the rollup recomputes rather than increments, so repeated or duplicate
+  hook firings cannot double-count.
+
 - **A pack can no longer reach outside itself.** `build.sh` refuses to build a
   pack whose permissions claim `__all_spaces__` or another pack's space, whose
   roles hold a permission it does not provide, or whose roles and permissions
@@ -194,6 +220,21 @@
   both modes.
 
 ### Fixed
+
+- **A pack update could not see a content change that left the timestamp
+  alone.** The planner inferred "the pack changed this row" from the shipped
+  `updated_at`, but the pack generators write a FIXED timestamp so their output
+  stays byte-identical between runs — so editing a schema's rules moved no
+  timestamp and the update silently skipped it. Found the hard way: an edited
+  schema never reached the database, and a plugin then failed validation
+  against the old copy.
+
+  The receipt now records a content hash per entry as well as the timestamp,
+  because the two answer different questions: the hash says whether the *pack*
+  changed a row, the timestamp whether the *operator* did. A receipt written
+  before this (format 1) has no hashes, so the first install after upgrading
+  refreshes every operator-untouched row once to rebuild a real baseline, and
+  says so in the plan.
 
 - **Restoring a dmart export rewrote every history row's timestamp to the
   restore moment.** `history.jsonl` carries the `uuid` and `timestamp` the

@@ -26,7 +26,9 @@
     "groups": [],
     "public_roles": [
       "kb_public"
-    ]
+    ],
+    "service_accounts": [],
+    "plugins": []
   },
   "scales": [
     "small",

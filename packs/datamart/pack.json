@@ -17,17 +17,26 @@
   "folders": [
     "datasets",
     "kpis",
+    "rollups",
     "schema"
   ],
   "provides": {
     "roles": [
-      "datamart_analyst"
+      "datamart_analyst",
+      "datamart_automation"
     ],
     "permissions": [
-      "datamart_analyst_read"
+      "datamart_analyst_read",
+      "datamart_automation_rollup"
     ],
     "groups": [],
-    "public_roles": []
+    "public_roles": [],
+    "service_accounts": [
+      "datamart_svc_rollup"
+    ],
+    "plugins": [
+      "shanidar_kpi_rollup"
+    ]
   },
   "scales": [
     "small",

@@ -35,6 +35,9 @@
     "city": {
       "type": "string",
       "maxLength": 60
+    },
+    "assignee": {
+      "type": "string"
     }
   },
   "required": [

@@ -1,0 +1,12 @@
+{
+  "shortname": "shanidar_kpi_rollup",
+  "is_active": true,
+  "type": "hook",
+  "listen_time": "after",
+  "filters": {
+    "subpaths": { "datamart": ["kpis"] },
+    "resource_types": ["content"],
+    "schema_shortnames": ["kpi_row"],
+    "actions": ["create", "update", "delete"]
+  }
+}

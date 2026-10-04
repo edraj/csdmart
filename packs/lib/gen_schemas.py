@@ -183,8 +183,32 @@ SCHEMAS = {
                 # a closing agent is expected to copy it into both places.
                 "resolution_code": ENUM(*[c for c, _ in SH.RESOLUTION_CODES]),
                 "resolution_note": S(),
+                # Written by the shanidar_case_assign plugin, not by a human.
+                #
+                # Deliberately NOT `collaborators`: that field is only settable
+                # through request_type "assign", which also transfers
+                # owner_shortname — and a customer's view of their own case
+                # depends on owning it, so assigning a technician would hide
+                # the case from the person who raised it. A payload field
+                # routes the work without moving the ownership, and
+                # `@payload.body.assignee:x` filters, which collaborators
+                # would not.
+                "assignee": S(),
             },
             ["title", "category", "severity", "region", "reported_on"]),
+    },
+    "servicedesk_routing": {
+        "routing_table": obj(
+            "Routing table", "Which assignee covers each region. Read by the "
+                             "shanidar_case_assign plugin.",
+            {
+                # region -> assignee shortname. An absent region means nobody
+                # covers it and the plugin leaves the case unassigned, which is
+                # a real state rather than an error.
+                "by_region": dict(type="object", additionalProperties=S()),
+                "note": S(),
+            },
+            ["by_region"]),
     },
     "servicedesk_intake": {
         # The PUBLIC form's shape, separate from `case` on purpose.
@@ -208,6 +232,17 @@ SCHEMAS = {
                 "contact_msisdn": S(pattern=r"^\+9647[0-9]0000[0-9]{4}$"),
                 "contact_name": S(maxLength=80),
                 "city": S(maxLength=60),
+                # Written by the shanidar_case_assign plugin, not by a human.
+                #
+                # Deliberately NOT `collaborators`: that field is only settable
+                # through request_type "assign", which also transfers
+                # owner_shortname — and a customer's view of their own case
+                # depends on owning it, so assigning a technician would hide
+                # the case from the person who raised it. A payload field
+                # routes the work without moving the ownership, and
+                # `@payload.body.assignee:x` filters, which collaborators
+                # would not.
+                "assignee": S(),
             },
             ["title", "category", "contact_msisdn"]),
     },
@@ -240,6 +275,24 @@ SCHEMAS = {
                 "outage_minutes": I(minimum=0),
             },
             ["site", "region", "period", "availability_pct"]),
+        "kpi_rollup": obj(
+            "KPI rollup", "A region-month summary, maintained by the "
+                          "shanidar_kpi_rollup plugin.",
+            {
+                "region": ENUM(*REGIONS),
+                "period": S(pattern=r"^[0-9]{4}_[0-9]{2}$"),
+                "site_count": I(minimum=0),
+                "availability_pct": N(minimum=0, maximum=100),
+                "outage_minutes": I(minimum=0),
+                "data_volume_tb": N(minimum=0),
+                # Which kpi_row entries this was computed from. The plugin
+                # writes it so a reader can check the arithmetic rather than
+                # trust it, and so a stale rollup is visible as a short list.
+                "sources": ARR(S()),
+                "computed_by": S(),
+                "computed_at": S(),
+            },
+            ["region", "period", "site_count", "availability_pct"]),
         "dataset": obj(
             "Dataset", "A published dataset; the file rides as a data_asset.",
             {
@@ -269,7 +322,8 @@ SCHEMAS = {
     },
 }
 
-PACK_OF = {"servicedesk_intake": "servicedesk"}
+PACK_OF = {"servicedesk_intake": "servicedesk",
+           "servicedesk_routing": "servicedesk"}
 
 def main():
     root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))

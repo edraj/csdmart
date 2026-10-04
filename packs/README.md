@@ -58,6 +58,7 @@ export DMART_PACKS_DEMO_PASSWORD=...        # the demo personas' password
 ./packs/install.sh --packs servicedesk      # that pack plus its dependencies
 ./packs/install.sh --packs kb,comms --scale small
 ./packs/install.sh --public                 # also open the public surface
+./packs/install.sh --plugins                # also deploy the plugins
 ./packs/install.sh --dry-run                # print the plan, change nothing
 ./packs/demo.sh                             # drive the storyline's workflows
 ./packs/reset.sh --packs kb                 # drop one pack
@@ -152,6 +153,80 @@ refused as well.
 Customer personas are deliberately in **no group**: `org_region_*` carries
 internal ownership, and a customer inheriting one would widen what their
 `own`-scoped query can reach, since a pattern is emitted per group too.
+
+## Plugins run as scoped service accounts
+
+Two packs ship a plugin, and like the public surface neither is installed by
+default — `install.sh --plugins` deploys them, because writing an executable
+into `~/.dmart/plugins` and creating an account that writes unattended is not
+something an install should do in passing.
+
+| Plugin | Pack | What it does |
+| --- | --- | --- |
+| `shanidar_case_assign` | servicedesk | on a new case, writes `payload.body.assignee` from the region's entry in the routing table |
+| `shanidar_kpi_rollup` | datamart | on any KPI row change, recomputes `rollup_<region>_<period>` |
+
+### Why REST and a service account, not the `save_entry` callback
+
+dmart offers a `save_entry` callback that would be less code. It is the wrong
+tool, for two reasons in dmart's own source rather than in taste:
+
+- it writes straight to `EntryRepository`, bypassing `EntryService` — so no
+  schema validation, no relationship integrity, no permission check and no
+  folder content policy
+- history would be attributed to **whoever triggered the hook**, because
+  `PluginInvocationContext.CurrentActor` is the triggering request's actor. A
+  customer's case would show the customer assigning their own ticket
+
+So each plugin logs in as its own account and goes through the API. Verified:
+the assignment shows up in history as `servicedesk_svc_assign`, not as the
+person who filed the case.
+
+Each account holds only its pack's `<pack>_automation` role, is in **no group**
+(so it inherits no regional ownership), and its permission covers exactly the
+subpaths its plugin touches. `credentials.json` sits beside the executable at
+mode `0600`, written from `$DMART_PACKS_PLUGIN_PASSWORD` at install time and
+never committed.
+
+### What the scope rule forced, and improved
+
+The first version of the assignment plugin looked the site's region up in the
+`org` pack and read `management/users` to find a technician. Its service
+account could read neither — a pack may only reach its own space. Rather than
+widen the grant, the data moved, and both plugins are better for it:
+
+- the **region is already on the case**. The packs duplicate every link into
+  `payload.body` because relationship filtering does not work, and that
+  duplication pays off here — no traversal needed.
+- **who covers a region is policy**, so it lives as data at
+  `servicedesk/routing/assignment`, generated from the personas so it cannot
+  name a technician who does not exist. Re-routing is editing an entry, not an
+  executable.
+- the rollup's **delete path** needs the region of a row that no longer exists;
+  it reads the rollup whose `sources` lists it. The `sources` field earns its
+  keep twice — a reader can check the arithmetic, and a deletion can find its
+  way home.
+
+### Two details worth knowing
+
+**The assignee is a payload field, not `collaborators`.** `collaborators` is
+only settable through `request_type: "assign"`, which also transfers
+`owner_shortname` — and a customer's view of their own case depends on owning
+it, so routing a technician would hide the case from the person who raised it.
+A plain `update` carrying `collaborators` is accepted and silently ignored,
+which is how this was found.
+
+**The rollup recomputes, never increments.** An incremental rollup is wrong in
+three ordinary situations: an update double-counts, a delete cannot be
+subtracted, and a hook that fires twice counts twice. Recomputing is
+idempotent — verified by triggering it repeatedly and getting identical
+numbers, then deleting a row and watching the rollup shrink from two sites to
+one.
+
+**Plugins load once, at startup.** `NativePluginLoader.FindPluginsRoot` is
+hard-wired to `$HOME/.dmart/plugins` with no config override, so activating a
+newly deployed plugin needs a restart — unlike roles and permissions, which
+have `reload-security-data`.
 
 ## A pack cannot reach outside itself
 

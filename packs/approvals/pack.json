@@ -26,7 +26,9 @@
       "approvals_security_review"
     ],
     "groups": [],
-    "public_roles": []
+    "public_roles": [],
+    "service_accounts": [],
+    "plugins": []
   },
   "scales": [
     "small",
