@@ -24,6 +24,12 @@
   Steady state goes from "grows until it breaks" to roughly one release run's
   output plus a week of test results.
 
+  The upload step is also no longer a gate. It is diagnostic — those artifacts
+  are read only when someone post-mortems a red run — so its failure says
+  nothing about whether the code is good, and it should never have been able to
+  fail the required check. While the quota was full it did exactly that to five
+  PRs whose build, full suite and e2e smoke had all passed on both drivers.
+
 ### Added
 
 - **Solution packs can now be updated, not just installed.** Each pack carries

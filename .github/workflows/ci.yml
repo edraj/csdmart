@@ -534,6 +534,14 @@ jobs:
 
       - name: Upload test results
         if: always()
+        # Diagnostic, not a gate. This step failing must not fail the required
+        # check: these artifacts are read only when someone post-mortems a red
+        # run, so a storage or network problem here says nothing about whether
+        # the code is good. It had the opposite effect — when the artifact
+        # quota filled, five PRs went red with the build, the full suite and
+        # the e2e smoke all passing on both drivers, and the real result was
+        # legible only by opening the job and reading the step list.
+        continue-on-error: true
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           # Per-driver name: upload-artifact rejects a duplicate name, so a
