@@ -32,6 +32,26 @@
 
 ### Added
 
+- **A pack can no longer reach outside itself.** `build.sh` refuses to build a
+  pack whose permissions claim `__all_spaces__` or another pack's space, whose
+  roles hold a permission it does not provide, or whose roles and permissions
+  are not `<pack>_` prefixed — the last of which would let a pack ship a role
+  called `super_admin` and **redefine dmart's own on import**. All four attacks
+  are tested; every shipped pack already passes.
+
+  `__all_subpaths__` within a pack's own space stays allowed, and several packs
+  use it: the rule is about which space, not how much of it. The consequence is
+  that a pack cannot grant read access to a space it merely `links` to, so
+  cross-pack reads need an explicit grant.
+
+- **The packs machinery is no longer telecom-specific.** A dataset is one module
+  in `packs/lib/` plus a name: `PACKS_DATASET=school` or `--dataset school`. The
+  name seeds the UUIDs so two storylines never collide.
+  `packs/lib/example_dataset.py` documents every attribute the generators read
+  and ships a one-site storyline that builds, as the starting point for a
+  school, restaurant or ecommerce pack. Output for the existing `shanidar`
+  dataset is byte-identical, so no UUID churn.
+
 - **Solution packs can now be updated, not just installed.** Each pack carries
   a `version`, and `install.sh` stores a receipt at `management/packs/<name>`
   recording that version and the `updated_at` of every row it landed. The next

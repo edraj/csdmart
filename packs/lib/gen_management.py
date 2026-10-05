@@ -13,6 +13,15 @@ import json, os, uuid
 
 NS = uuid.UUID("6f9619ff-8b86-d011-b42d-00c04fc964ff")
 WHEN = "2026-10-01T00:00:00"
+# Which storyline this generator is building. Everything dataset-specific reads
+# from here, so a second storyline (a school, a restaurant) is a new value plus
+# a new data module — not a fork of the machinery.
+#
+# It feeds the uuid5 seed, so it is NOT cosmetic: changing the value for an
+# existing dataset would re-identify every row in every install of it. Hence
+# the default is the name of the dataset that already exists.
+DATASET = os.environ.get("PACKS_DATASET", "shanidar")
+
 OWNER = "dmart"
 
 # The resource types a pack's content actually uses. `comment`, `reaction` and
@@ -23,7 +32,7 @@ CONTENT_TYPES = ["content", "folder", "json", "media", "comment", "reaction",
 TICKET_TYPES = CONTENT_TYPES + ["ticket"]
 
 def uid(*parts):
-    return str(uuid.uuid5(NS, "shanidar/" + "/".join(parts)))
+    return str(uuid.uuid5(NS, DATASET + "/" + "/".join(parts)))
 
 def write_json(path, obj):
     os.makedirs(os.path.dirname(path), exist_ok=True)

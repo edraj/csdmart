@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Write the Shanidar storyline into packs/datasets/shanidar/<scale>/<pack>/.
+"""Write a storyline into packs/datasets/<dataset>/<scale>/<pack>/.
 
 Output is laid out exactly like a pack's own `space/` tree, because build.sh
 copies it straight over the top.
@@ -14,19 +14,25 @@ times would carry three copies; build.sh refuses to build one it finds.
 
 Every cross-entity edge is written twice — as a real `relationships` entry and
 as a scalar `payload.body` key — because relationship filtering does not work.
-See shanidar.py's module docstring.
+See the storyline module's own docstring (shanidar.py for the default).
 """
-import argparse, hashlib, json, os, re, shutil, sys, uuid
+import argparse, hashlib, importlib, json, os, re, shutil, sys, uuid
+
+# Which storyline to build. The data module is imported by this name, so a
+# second storyline is a new module plus this value — not a fork of the
+# generators. It also seeds uuid5, so changing it for an EXISTING dataset would
+# re-identify every row in every install of it.
+DATASET = os.environ.get("PACKS_DATASET", "shanidar")
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-import shanidar as S
+S = importlib.import_module(DATASET)
 
 NS = uuid.UUID("6f9619ff-8b86-d011-b42d-00c04fc964ff")
 WHEN = "2026-10-01T00:00:00"
 OWNER = "dmart"
 
 def uid(*parts):
-    return str(uuid.uuid5(NS, "shanidar/" + "/".join(str(p) for p in parts)))
+    return str(uuid.uuid5(NS, DATASET + "/" + "/".join(str(p) for p in parts)))
 
 def write_json(path, obj):
     os.makedirs(os.path.dirname(path), exist_ok=True)
@@ -552,7 +558,7 @@ def main():
     args = ap.parse_args()
 
     repo_packs = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-    root = f"{repo_packs}/datasets/shanidar/{args.scale}"
+    root = f"{repo_packs}/datasets/{DATASET}/{args.scale}"
     mult = SCALE_MULT[args.scale]
     names = (args.packs.split(",") if args.packs else sorted(WRITERS))
 
@@ -568,7 +574,7 @@ def main():
     # install.sh creates them over the API: a user needs a password, demo
     # passwords come from DMART_PACKS_DEMO_PASSWORD at install time, and
     # nothing of the sort is ever committed.
-    personas_path = f"{repo_packs}/datasets/shanidar/personas.json"
+    personas_path = f"{repo_packs}/datasets/{DATASET}/personas.json"
     write_json(personas_path, {
         "note": "Fictional staff of the fictional Shanidar Telecom. Created by "
                 "install.sh over the API; passwords come from "

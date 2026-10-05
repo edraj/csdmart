@@ -153,6 +153,51 @@ Customer personas are deliberately in **no group**: `org_region_*` carries
 internal ownership, and a customer inheriting one would widen what their
 `own`-scoped query can reach, since a pattern is emitted per group too.
 
+## A pack cannot reach outside itself
+
+`build.sh` refuses to build a pack that grants itself anything it does not own.
+This is the check that makes a pack from someone else's repo safe to install —
+without it, installing one means handing it your whole instance.
+
+Three ways out, all refused:
+
+| the pack tries to | refused because |
+| --- | --- |
+| claim `__all_spaces__` | a pack may only grant access to its own space |
+| name another pack's space | same rule, with the owning space named in the error |
+| ship a role or permission not `<pack>_` prefixed | it could **overwrite** a dmart-seeded row — a pack shipping `super_admin` would redefine it |
+| hold a permission it does not provide | it would borrow a grant belonging to something else |
+
+`__all_subpaths__` *inside* the pack's own space is fine, and several packs use
+it. The rule is about which space, not how much of it.
+
+**One consequence worth knowing.** A pack cannot grant read access to a space it
+merely `links` to, so a servicedesk agent cannot read the kb article a case
+cites unless the kb pack grants it or an operator adds a permission by hand.
+Relaxing the rule to cover a pack's *declared* `links` would fix that and would
+still be reviewable from the manifest — but it is a widening, so it is a
+decision rather than something to slip in.
+
+## A second storyline
+
+Nothing in the machinery is telecom-specific. A dataset is one module in
+`packs/lib/` plus a name:
+
+```bash
+PACKS_DATASET=school python3 packs/lib/gen_dataset.py --scale small
+./packs/install.sh --dataset school
+```
+
+The name also seeds the UUIDs, so two storylines never collide — and renaming
+an existing one would re-identify every row in every install of it, so it is
+chosen once.
+
+[`packs/lib/example_dataset.py`](lib/example_dataset.py) is the contract: every
+attribute the generators read, with a one-region, one-site storyline that
+builds. Copy it to start a school, a restaurant or an ecommerce pack. An empty
+list is a fine answer for a pack you are not populating — the structures still
+install.
+
 ## Versions, and what an update may touch
 
 Each pack carries a `version` in its manifest, separate from `format` (the
