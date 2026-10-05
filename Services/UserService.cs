@@ -603,6 +603,11 @@ public sealed class UserService(
                 Uuid = user.Uuid,
                 ActionType = ActionType.Create,
                 ResourceType = ResourceType.User,
+                // A user row carries a payload schema like any other resource,
+                // and plugin filters gate on schema for every resource type —
+                // an event with none never matches a filter that lists them
+                // (PluginManager.MatchedFilters).
+                SchemaShortname = user.Payload?.SchemaShortname,
                 // Self-registration (explicit or implicit): the actor is the
                 // user being created.
                 UserShortname = user.Shortname,
@@ -1371,6 +1376,9 @@ public sealed class UserService(
                 Shortname = updated.Shortname,
                 ActionType = ActionType.Update,
                 ResourceType = ResourceType.User,
+                // See NotifyCreatedAsync: carried so a schema-filtered hook can
+                // match a user update.
+                SchemaShortname = updated.Payload?.SchemaShortname,
                 UserShortname = shortname,
             };
             afterEvent.Attributes["history_diff"] = historyDiff;

@@ -594,6 +594,11 @@ public sealed class EntryService(
 
         // Build a delete Event from whatever we know (prefer the loaded entry so
         // plugin filters on resource_type/schema_shortname see real values).
+        // The fallback has no schema because there is no payload to read one
+        // from — the entry could not be loaded. A schema-filtered hook will
+        // therefore not observe that case (PluginManager.MatchedFilters rejects
+        // a null schema against a non-empty list), which is the only honest
+        // answer available here.
         var deleteEvent = existing is not null
             ? BuildEvent(existing, ActionType.Delete, actor)
             : new Event

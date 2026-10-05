@@ -2,7 +2,45 @@
 
 ## Unreleased
 
+### Documentation
+
+- **Five of the eleven `actions` a plugin filter can name never fire.** Only
+  `create`, `update`, `delete`, `move`, `lock` and `unlock` are ever used to
+  build an event; `query`, `view`, `attach`, `assign` and `progress_ticket`
+  construct one nowhere in the host. A filter naming them loads without
+  complaint, registers, and then stays silent — indistinguishable from a
+  condition that never matched. `README.md` and `docs/plugins-and-mcp.md` now
+  say which six are real and how that was established. The behaviour is
+  unchanged: making the other five fire means adding dispatch to the query,
+  view, attach and assign paths, and on `query` that is a hook on every read.
+
 ### Fixed
+
+- **A plugin hook's `schema_shortnames` filter was ignored for every resource
+  type but `content`.** A hook narrowed to one ticket schema fired for all of
+  them. The gate now applies to every resource type, and an event carrying no
+  schema never matches a filter that lists them. An empty list still means
+  "every schema", so a hook that declares none is unaffected — which is every
+  plugin shipped in this repo.
+
+- **Lock and unlock events did not describe the resource they were about**, which
+  the change above turned from untidy into load-bearing. `LockService` built its
+  event from the request Locator alone, so:
+
+  - the payload schema was always absent, and a schema-filtered hook therefore
+    silently stopped observing `lock` and `unlock` entirely;
+  - the resource type on a self-unlock was whatever the route said, and the
+    unlock route has no resource-type segment — `LockHandler` hardwires
+    `content`. A hook filtering `resource_types` never matched a self-unlock of
+    anything else, and the `.dm/events.jsonl` audit line misreported the type.
+
+  Both now come from the entry. The force-unlock path already loaded it for the
+  permission gate; that load moved up so the self-release path shares it, which
+  is one query on a path that still skips the holder lookup and both permission
+  walks. User create/update events carry the user row's schema for the same
+  reason. Two cases keep a null schema because nothing else is knowable: a
+  delete whose entry cannot be loaded, and oauth pre-create, which fires before
+  the row exists. Both now say so in place.
 
 - **CI could not upload anything: the Actions artifact storage quota was
   full.** Every run on every branch failed its `Upload test results` step with

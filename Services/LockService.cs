@@ -21,13 +21,31 @@ public sealed class LockService(
     // Event for the lock/unlock before/after pipeline. Mirrors EntryService's
     // BuildEvent shape so the SpaceEventLogger audit line and any hook plugin
     // see the same Locator block they get for ordinary CRUD.
-    private static Event BuildEvent(Locator l, ActionType action, string actor) => new()
+    //
+    // `entry` is the loaded target, when there is one. It supplies two fields
+    // the Locator alone cannot:
+    //
+    //   ResourceType     — the unlock route carries no resource type (Python
+    //                      parity, LockHandler.cs), so its wire Locator always
+    //                      says `content`. Without the entry a hook filtering
+    //                      resource_types never matched an unlock of anything
+    //                      else, and the audit line misreported the type.
+    //   SchemaShortname  — plugin filters gate on schema for EVERY resource
+    //                      type, and an event with no schema never matches a
+    //                      filter that lists them (PluginManager.MatchedFilters).
+    //                      Leaving it null silently withheld lock/unlock from
+    //                      any schema-filtered hook.
+    //
+    // Null entry (a lock outliving its entry) keeps the wire default and a null
+    // schema — all that is knowable at that point.
+    private static Event BuildEvent(Locator l, ActionType action, string actor, Entry? entry) => new()
     {
         SpaceName = l.SpaceName,
         Subpath = l.Subpath,
         Shortname = l.Shortname,
         ActionType = action,
-        ResourceType = l.Type,
+        ResourceType = entry?.ResourceType ?? l.Type,
+        SchemaShortname = entry?.Payload?.SchemaShortname,
         UserShortname = actor,
     };
 
@@ -57,7 +75,7 @@ public sealed class LockService(
         // before_action lets a hook plugin veto the lock (Python's
         // plugin_manager.before_action at the top of lock_entry). A rejection
         // surfaces as a failed Response rather than a 500.
-        if (await BeforeActionAsync(l, ActionType.Lock, actor, ct) is { } lockBefore)
+        if (await BeforeActionAsync(l, ActionType.Lock, actor, entry, ct) is { } lockBefore)
             return lockBefore;
 
         var period = settings.Value.LockPeriod;
@@ -101,7 +119,7 @@ public sealed class LockService(
         // from a same-owner refresh, matching the redis reference's lock/extend.
         var lockType = outcome == LockOutcome.Extended ? "extend" : "lock";
         await WriteHistoryAsync(l, actor, lockType, ct);
-        await plugins.AfterActionAsync(BuildEvent(l, ActionType.Lock, actor), ct);
+        await plugins.AfterActionAsync(BuildEvent(l, ActionType.Lock, actor, entry), ct);
 
         // Include lock_period so clients know how long they can hold the
         // lock before refreshing. Matches Python's /managed/lock response.
@@ -117,6 +135,22 @@ public sealed class LockService(
         if (string.IsNullOrEmpty(actor))
             return Response.Fail(InternalErrorCode.NOT_AUTHENTICATED, "login required", ErrorTypes.Auth);
 
+        // The unlock route carries no resource type (Python parity), so the wire
+        // Locator always says `content`. Resolve the entry once, up front: it
+        // supplies the real resource_type and payload schema for the plugin
+        // event on BOTH paths below, and the permission context on the force
+        // path. Locks may outlive their entry; a missing entry keeps the wire
+        // default and the role/subpath-level check.
+        //
+        // This read is why the fast path is still "fast": what it skips is the
+        // holder lookup and the two permission walks, not every query. Before
+        // it was hoisted here the self-release path built its event from the
+        // wire Locator alone, so a hook filtering on resource_type or schema
+        // never saw a self-unlock of anything but schemaless content.
+        var entry = await entries.GetAsync(l.SpaceName, l.Subpath, l.Shortname, ct);
+        if (entry is not null)
+            l = l with { Type = entry.ResourceType };
+
         // Fast path: the holder releases their own lock — a single
         // owner-predicate DELETE, the pre-enforcement cost, and race-free (it
         // can only ever remove the caller's own row). A self-release is
@@ -125,7 +159,7 @@ public sealed class LockService(
         if (await locks.UnlockAsync(l.SpaceName, l.Subpath, l.Shortname, actor, ct))
         {
             await WriteHistoryAsync(l, actor, "cancel", ct);
-            await plugins.AfterActionAsync(BuildEvent(l, ActionType.Unlock, actor), ct);
+            await plugins.AfterActionAsync(BuildEvent(l, ActionType.Unlock, actor, entry), ct);
             return Response.Ok();
         }
 
@@ -137,22 +171,17 @@ public sealed class LockService(
             return Response.Ok();
 
         // Force path: a lock held by someone else may only be released by a
-        // caller granted the `unlock` action. The unlock route carries no
-        // resource type (Python parity), so resolve the entry's actual type —
-        // otherwise the gate would always ask about the wire default and a
-        // grant scoped to any other resource type could never (or wrongly)
-        // authorize the force. Locks may outlive their entry; a missing entry
-        // keeps the wire default and the role/subpath-level check.
-        var entry = await entries.GetAsync(l.SpaceName, l.Subpath, l.Shortname, ct);
-        if (entry is not null)
-            l = l with { Type = entry.ResourceType };
+        // caller granted the `unlock` action. The gate asks about the entry's
+        // actual type, resolved above — otherwise it would always ask about the
+        // wire default and a grant scoped to any other resource type could
+        // never (or wrongly) authorize the force.
         if (!await perms.CanAsync(actor, "unlock", l,
                 entry is null ? null : PermissionService.FromEntry(entry), null, ct))
             return Response.Fail(InternalErrorCode.NOT_ALLOWED, "no unlock access", ErrorTypes.Auth);
 
         // before_action runs after authorization (EntryService convention); a
         // hook plugin may still veto the force-unlock.
-        if (await BeforeActionAsync(l, ActionType.Unlock, actor, ct) is { } unlockBefore)
+        if (await BeforeActionAsync(l, ActionType.Unlock, actor, entry, ct) is { } unlockBefore)
             return unlockBefore;
 
         // Predicate the force delete on the holder we authorized against — a
@@ -171,17 +200,18 @@ public sealed class LockService(
 
         // Python records LockAction.cancel in the unlock history diff.
         await WriteHistoryAsync(l, actor, "cancel", ct);
-        await plugins.AfterActionAsync(BuildEvent(l, ActionType.Unlock, actor), ct);
+        await plugins.AfterActionAsync(BuildEvent(l, ActionType.Unlock, actor, entry), ct);
         return Response.Ok();
     }
 
     // Fires the before-action pipeline; returns a failed Response when a hook
     // rejects (matching EntryService's guarded BeforeActionAsync), else null.
-    private async Task<Response?> BeforeActionAsync(Locator l, ActionType action, string actor, CancellationToken ct)
+    private async Task<Response?> BeforeActionAsync(Locator l, ActionType action, string actor,
+        Entry? entry, CancellationToken ct)
     {
         try
         {
-            await plugins.BeforeActionAsync(BuildEvent(l, action, actor), ct);
+            await plugins.BeforeActionAsync(BuildEvent(l, action, actor, entry), ct);
             return null;
         }
         catch (Exception ex)

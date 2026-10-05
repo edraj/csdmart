@@ -267,6 +267,19 @@ public static class RequestHandler
                                 Shortname = rec.Shortname,
                                 ActionType = actionType.Value,
                                 ResourceType = rec.ResourceType,
+                                // No SchemaShortname. Plugin filters gate on
+                                // schema for every resource type, and an event
+                                // with none never matches a filter that lists
+                                // them (PluginManager.MatchedFilters), so a
+                                // schema-filtered hook does not observe this
+                                // path. Record has no schema property — it
+                                // would have to be dug out of
+                                // Attributes["payload"], untyped — and of the
+                                // five types handled here only `user` can
+                                // carry one. Worth doing properly if a plugin
+                                // ever needs to filter management writes by
+                                // schema; guessing it from a loose dictionary
+                                // is worse than leaving it null and saying so.
                                 UserShortname = actor,
                             };
                             // Mirror EntryService.UpdateAsync:413 and

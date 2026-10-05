@@ -112,6 +112,31 @@ Each plugin directory has:
 }
 ```
 
+#### Which `actions` actually fire
+
+`ActionType` declares eleven values, but only **six** are ever used to build an
+event the hook pipeline dispatches:
+
+| fires | never fires |
+|---|---|
+| `create`, `update`, `delete`, `move`, `lock`, `unlock` | `query`, `view`, `attach`, `assign`, `progress_ticket` |
+
+A filter naming one of the five on the right **loads without complaint,
+registers for that action, and then never fires** — there is no warning at load
+time and no error at run time, so it is indistinguishable from a hook whose
+condition simply never matched. If a hook seems dead, check this list first.
+
+Verified by enumerating every `Event` construction site: `EntryService`
+(create / update / delete / move), `LockService` (lock / unlock),
+`UserService` and `Auth/OAuth/OAuthUserResolver` (user create / update), and
+`Api/Managed/RequestHandler.cs`, whose `RequestType` → `ActionType` switch maps
+only create / update / patch / delete / move and yields `null` — no event — for
+everything else.
+
+Note also that an empty `actions` list means *every* action, so it registers
+the hook for the five inert values too; that is harmless, and the six real ones
+still fire.
+
 ### Wire protocol
 
 One JSON object per line, in both directions:
