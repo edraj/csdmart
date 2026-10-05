@@ -2,72 +2,6 @@
 
 ## Unreleased
 
-### Documentation
-
-- **Five of the eleven `actions` a plugin filter can name never fire.** Only
-  `create`, `update`, `delete`, `move`, `lock` and `unlock` are ever used to
-  build an event; `query`, `view`, `attach`, `assign` and `progress_ticket`
-  construct one nowhere in the host. A filter naming them loads without
-  complaint, registers, and then stays silent — indistinguishable from a
-  condition that never matched. `README.md` and `docs/plugins-and-mcp.md` now
-  say which six are real and how that was established. The behaviour is
-  unchanged: making the other five fire means adding dispatch to the query,
-  view, attach and assign paths, and on `query` that is a hook on every read.
-
-### Fixed
-
-- **A plugin hook's `schema_shortnames` filter was ignored for every resource
-  type but `content`.** A hook narrowed to one ticket schema fired for all of
-  them. The gate now applies to every resource type, and an event carrying no
-  schema never matches a filter that lists them. An empty list still means
-  "every schema", so a hook that declares none is unaffected — which is every
-  plugin shipped in this repo.
-
-- **Lock and unlock events did not describe the resource they were about**, which
-  the change above turned from untidy into load-bearing. `LockService` built its
-  event from the request Locator alone, so:
-
-  - the payload schema was always absent, and a schema-filtered hook therefore
-    silently stopped observing `lock` and `unlock` entirely;
-  - the resource type on a self-unlock was whatever the route said, and the
-    unlock route has no resource-type segment — `LockHandler` hardwires
-    `content`. A hook filtering `resource_types` never matched a self-unlock of
-    anything else, and the `.dm/events.jsonl` audit line misreported the type.
-
-  Both now come from the entry. The force-unlock path already loaded it for the
-  permission gate; that load moved up so the self-release path shares it, which
-  is one query on a path that still skips the holder lookup and both permission
-  walks. User create/update events carry the user row's schema for the same
-  reason. Two cases keep a null schema because nothing else is knowable: a
-  delete whose entry cannot be loaded, and oauth pre-create, which fires before
-  the row exists. Both now say so in place.
-
-- **CI could not upload anything: the Actions artifact storage quota was
-  full.** Every run on every branch failed its `Upload test results` step with
-  "Artifact storage quota has been hit", which failed the whole required
-  `build-and-test` check even though the build, the test suite and the e2e
-  smoke all passed on both drivers. The org is on the Free plan — 500 MB
-  included — and the repo was holding **9.7 GB across 1,715 artifacts**, because
-  no CI upload set `retention-days` and the default is 90.
-
-  Every upload now sets one. The release artifacts get 1 day, which loses
-  nothing: each is either consumed by a later job in the same run, or a
-  duplicate of a file already attached to the GitHub Release, and release
-  assets are permanent and do not count against this quota. `linux-x64-bin`
-  was already on 1 day for exactly that reason — the other fifteen now match
-  it. Test results get 7 days; nothing consumes them, they exist to
-  post-mortem a red run, and the 90-day default had accumulated ~1,000 of
-  them.
-
-  Steady state goes from "grows until it breaks" to roughly one release run's
-  output plus a week of test results.
-
-  The upload step is also no longer a gate. It is diagnostic — those artifacts
-  are read only when someone post-mortems a red run — so its failure says
-  nothing about whether the code is good, and it should never have been able to
-  fail the required check. While the quota was full it did exactly that to five
-  PRs whose build, full suite and e2e smoke had all passed on both drivers.
-
 ### Added
 
 - **An MCP persona, scoped by region rather than by subpath.** `ai_ops_south` is
@@ -310,6 +244,58 @@
 
 ### Fixed
 
+- **A plugin hook's `schema_shortnames` filter was ignored for every resource
+  type but `content`.** A hook narrowed to one ticket schema fired for all of
+  them. The gate now applies to every resource type, and an event carrying no
+  schema never matches a filter that lists them. An empty list still means
+  "every schema", so a hook that declares none is unaffected — which is every
+  plugin shipped in this repo.
+
+- **Lock and unlock events did not describe the resource they were about**, which
+  the change above turned from untidy into load-bearing. `LockService` built its
+  event from the request Locator alone, so:
+
+  - the payload schema was always absent, and a schema-filtered hook therefore
+    silently stopped observing `lock` and `unlock` entirely;
+  - the resource type on a self-unlock was whatever the route said, and the
+    unlock route has no resource-type segment — `LockHandler` hardwires
+    `content`. A hook filtering `resource_types` never matched a self-unlock of
+    anything else, and the `.dm/events.jsonl` audit line misreported the type.
+
+  Both now come from the entry. The force-unlock path already loaded it for the
+  permission gate; that load moved up so the self-release path shares it, which
+  is one query on a path that still skips the holder lookup and both permission
+  walks. User create/update events carry the user row's schema for the same
+  reason. Two cases keep a null schema because nothing else is knowable: a
+  delete whose entry cannot be loaded, and oauth pre-create, which fires before
+  the row exists. Both now say so in place.
+
+- **CI could not upload anything: the Actions artifact storage quota was
+  full.** Every run on every branch failed its `Upload test results` step with
+  "Artifact storage quota has been hit", which failed the whole required
+  `build-and-test` check even though the build, the test suite and the e2e
+  smoke all passed on both drivers. The org is on the Free plan — 500 MB
+  included — and the repo was holding **9.7 GB across 1,715 artifacts**, because
+  no CI upload set `retention-days` and the default is 90.
+
+  Every upload now sets one. The release artifacts get 1 day, which loses
+  nothing: each is either consumed by a later job in the same run, or a
+  duplicate of a file already attached to the GitHub Release, and release
+  assets are permanent and do not count against this quota. `linux-x64-bin`
+  was already on 1 day for exactly that reason — the other fifteen now match
+  it. Test results get 7 days; nothing consumes them, they exist to
+  post-mortem a red run, and the 90-day default had accumulated ~1,000 of
+  them.
+
+  Steady state goes from "grows until it breaks" to roughly one release run's
+  output plus a week of test results.
+
+  The upload step is also no longer a gate. It is diagnostic — those artifacts
+  are read only when someone post-mortems a red run — so its failure says
+  nothing about whether the code is good, and it should never have been able to
+  fail the required check. While the quota was full it did exactly that to five
+  PRs whose build, full suite and e2e smoke had all passed on both drivers.
+
 - **`--scale large` crashed at generation 100.** The generated-clone suffix
   stripper was `_g\d{2}$`, so at ×250 it could not strip `_g100` and the region
   lookup died with `KeyError('erb_0142_g100')`. Now `_g\d+$`. The scale works:
@@ -342,6 +328,14 @@
   keeps receiving its updates through dnf; the bundled copy is used only when
   none is installed, and then patching it means upgrading dmart. The Fedora
   RPM, `.deb` and `.apk` are unchanged and still depend on the distro package.
+
+- **The `.deb` did not declare `adduser`, which its `postinst` has always
+  needed.** `postinst` calls `addgroup` and `adduser --system`, both from the
+  `adduser` package. It is present on any normal Debian install, but not in
+  minimal images: on `debian:stable-slim` the package unpacked and then failed
+  with `addgroup: not found`, leaving dpkg half-configured and no service user.
+  The control file now depends on it, matching the RPM's
+  `Requires(pre): shadow-utils`.
 
 - **Restoring a dmart export rewrote every history row's timestamp to the
   restore moment.** `history.jsonl` carries the `uuid` and `timestamp` the
@@ -494,6 +488,18 @@
   because `@roxi/routify` peer-requires `@sveltejs/vite-plugin-svelte ^2–^6`
   while catalog is on `^7`. It was also being scanned alongside `yarn.lock`,
   double-counting every dependency finding.
+
+### Documentation
+
+- **Five of the eleven `actions` a plugin filter can name never fire.** Only
+  `create`, `update`, `delete`, `move`, `lock` and `unlock` are ever used to
+  build an event; `query`, `view`, `attach`, `assign` and `progress_ticket`
+  construct one nowhere in the host. A filter naming them loads without
+  complaint, registers, and then stays silent — indistinguishable from a
+  condition that never matched. `README.md` and `docs/plugins-and-mcp.md` now
+  say which six are real and how that was established. The behaviour is
+  unchanged: making the other five fire means adding dispatch to the query,
+  view, attach and assign paths, and on `query` that is a hook on every read.
 
 ## v1.5.17 — 2026-09-26
 
