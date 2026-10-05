@@ -1,0 +1,45 @@
+{
+  "uuid": "eb8755f3-63b2-57a4-bad1-71e3e0d78cf9",
+  "shortname": "bsr_0031_evening_capacity",
+  "is_active": true,
+  "tags": [
+    "email",
+    "draft",
+    "south"
+  ],
+  "created_at": "2026-10-01T00:00:00",
+  "updated_at": "2026-10-01T00:00:00",
+  "owner_shortname": "dmart",
+  "displayname": {
+    "en": "Evening congestion work at Basra Corniche"
+  },
+  "relationships": [
+    {
+      "related_to": {
+        "space_name": "org",
+        "subpath": "sites",
+        "shortname": "bsr_0031",
+        "resource_type": "content"
+      },
+      "attributes": {
+        "relation": "located_in"
+      }
+    },
+    {
+      "related_to": {
+        "space_name": "kb",
+        "subpath": "articles",
+        "shortname": "home_router_setup",
+        "resource_type": "content"
+      },
+      "attributes": {
+        "relation": "uses_article"
+      }
+    }
+  ],
+  "payload": {
+    "content_type": "json",
+    "body": "bsr_0031_evening_capacity.json",
+    "schema_shortname": "notice"
+  }
+}

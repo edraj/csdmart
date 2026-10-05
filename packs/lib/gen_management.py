@@ -40,8 +40,9 @@ def write_json(path, obj):
         json.dump(obj, f, indent=2, ensure_ascii=False)
         f.write("\n")
 
-def permission(shortname, space, subpaths, actions, types, conditions=None):
-    return {
+def permission(shortname, space, subpaths, actions, types, conditions=None,
+               filter_fields_values=None):
+    out = {
         "uuid": uid("permission", shortname),
         "shortname": shortname,
         "is_active": True,
@@ -54,6 +55,17 @@ def permission(shortname, space, subpaths, actions, types, conditions=None):
         "actions": actions,
         "conditions": conditions or [],
     }
+    if filter_fields_values:
+        # Row-level narrowing on top of the subpath grant. The string is merged
+        # into the caller's search clause (QueryService's "filter fields
+        # values" block), so it filters by a payload VALUE — which is how you
+        # scope by region, since region is a field rather than a subpath.
+        #
+        # Admin-managed input by design: the trust note in QueryService is
+        # explicit that these strings are concatenated verbatim, so nothing
+        # outside a pack's own generator should ever compose one.
+        out["filter_fields_values"] = filter_fields_values
+    return out
 
 def role(shortname, permissions):
     return {
@@ -160,6 +172,31 @@ def perms_for(name, pack):
         # with an account rather than the save_entry callback, which has no
         # scope at all — it writes straight through EntryRepository, past
         # validation, permissions and referential integrity.
+        # The MCP persona from §8: an ordinary dmart user with a read-only,
+        # South-scoped role. MCP has no authorization surface of its own — an
+        # MCP client authenticates as a dmart user and every tool runs the same
+        # permission walk as any other caller — so "scoping an AI assistant" is
+        # just this role.
+        #
+        # Region is a payload FIELD, not a subpath, so the subpath grant cannot
+        # express "south only". filter_fields_values can: it is merged into the
+        # caller's search clause, narrowing which rows come back.
+        #
+        # The subpaths are listed EXPLICITLY rather than __all_subpaths__, and
+        # that is load-bearing. filter_fields_values is applied by matching the
+        # permission's own key, `space:subpath:resource_type`, as a PREFIX of
+        # the request's resolved query policy (QueryService's
+        # MergeFilterFieldsValues). With __all_subpaths__ the key reads
+        # `datamart:__all_subpaths__:content`, the policy for a query on /kpis
+        # reads `datamart:kpis:content:…`, the prefix test fails, and the
+        # filter is dropped — silently, so the caller sees EVERY region and
+        # nothing reports a problem. Measured: 8 rows across all three regions
+        # instead of the 2 southern ones.
+        out["datamart_ai_ops_south_read"] = permission(
+            "datamart_ai_ops_south_read", space,
+            ["kpis", "rollups", "datasets"],
+            READ, CONTENT_TYPES,
+            filter_fields_values="@payload.body.region:south")
         out["datamart_automation_rollup"] = permission(
             "datamart_automation_rollup", space, ["kpis", "rollups"],
             ["query", "view", "create", "update"], ["content"])
@@ -184,6 +221,7 @@ ROLE_PERMISSIONS = {
     "kb_public": ["kb_public_read"],
     "datamart_analyst": ["datamart_analyst_read"],
     "datamart_automation": ["datamart_automation_rollup"],
+    "datamart_ai_ops_south": ["datamart_ai_ops_south_read"],
     "comms_editor": ["comms_editor_write"],
 }
 

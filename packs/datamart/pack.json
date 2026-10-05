@@ -23,11 +23,13 @@
   "provides": {
     "roles": [
       "datamart_analyst",
-      "datamart_automation"
+      "datamart_automation",
+      "datamart_ai_ops_south"
     ],
     "permissions": [
       "datamart_analyst_read",
-      "datamart_automation_rollup"
+      "datamart_automation_rollup",
+      "datamart_ai_ops_south_read"
     ],
     "groups": [],
     "public_roles": [],

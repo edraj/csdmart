@@ -98,6 +98,16 @@
       ]
     },
     {
+      "shortname": "ai_ops_south",
+      "displayname": "AI ops assistant, South",
+      "email": "ai_ops_south@example.com",
+      "msisdn": "+9647800000109",
+      "roles": [
+        "datamart_ai_ops_south"
+      ],
+      "groups": []
+    },
+    {
       "shortname": "customer_erbil",
       "displayname": "Customer, Erbil",
       "email": "customer_erbil@example.com",

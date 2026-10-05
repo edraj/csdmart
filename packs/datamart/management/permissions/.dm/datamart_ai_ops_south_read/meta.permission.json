@@ -1,0 +1,32 @@
+{
+  "uuid": "283c3615-6487-5641-8be5-d0b7dd885a3a",
+  "shortname": "datamart_ai_ops_south_read",
+  "is_active": true,
+  "tags": [],
+  "created_at": "2026-10-01T00:00:00",
+  "updated_at": "2026-10-01T00:00:00",
+  "owner_shortname": "dmart",
+  "subpaths": {
+    "datamart": [
+      "kpis",
+      "rollups",
+      "datasets"
+    ]
+  },
+  "resource_types": [
+    "content",
+    "folder",
+    "json",
+    "media",
+    "comment",
+    "reaction",
+    "relationship",
+    "data_asset"
+  ],
+  "actions": [
+    "query",
+    "view"
+  ],
+  "conditions": [],
+  "filter_fields_values": "@payload.body.region:south"
+}
