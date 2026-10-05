@@ -540,6 +540,10 @@ jobs:
           # shared one would fail the second leg to finish.
           name: test-results-${{ matrix.driver }}
           path: dmart.Tests/TestResults/
+          # Nothing consumes these; they exist to post-mortem a red run. A week
+          # is longer than anyone has ever gone back, and the 90-day default
+          # was holding ~1,000 of them.
+          retention-days: 7
 
       - name: Drop the per-runner test database
         # if: always() — the reset at the start of a run only cleans up the

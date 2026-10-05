@@ -2,6 +2,28 @@
 
 ## Unreleased
 
+### Fixed
+
+- **CI could not upload anything: the Actions artifact storage quota was
+  full.** Every run on every branch failed its `Upload test results` step with
+  "Artifact storage quota has been hit", which failed the whole required
+  `build-and-test` check even though the build, the test suite and the e2e
+  smoke all passed on both drivers. The org is on the Free plan — 500 MB
+  included — and the repo was holding **9.7 GB across 1,715 artifacts**, because
+  no CI upload set `retention-days` and the default is 90.
+
+  Every upload now sets one. The release artifacts get 1 day, which loses
+  nothing: each is either consumed by a later job in the same run, or a
+  duplicate of a file already attached to the GitHub Release, and release
+  assets are permanent and do not count against this quota. `linux-x64-bin`
+  was already on 1 day for exactly that reason — the other fifteen now match
+  it. Test results get 7 days; nothing consumes them, they exist to
+  post-mortem a red run, and the 90-day default had accumulated ~1,000 of
+  them.
+
+  Steady state goes from "grows until it breaks" to roughly one release run's
+  output plus a week of test results.
+
 ### Added
 
 - **Solution packs can now be updated, not just installed.** Each pack carries
