@@ -94,6 +94,7 @@ jobs:
           name: ui-dists
           path: ui-dists/*.tar.gz
           if-no-files-found: error
+          retention-days: 1
 
   sbom:
     name: CycloneDX SBOMs + lock-file drift check
@@ -177,6 +178,7 @@ jobs:
           name: sboms
           path: sboms/*.cdx.json
           if-no-files-found: error
+          retention-days: 1
 
   build:
     name: ${{ matrix.rid }}
@@ -698,6 +700,7 @@ jobs:
             dist/out/*.cdx.json
             dist/out/*.sig
             dist/out/*.pem
+          retention-days: 1
           if-no-files-found: error
 
   publish:
