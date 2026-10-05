@@ -1,0 +1,12 @@
+{
+  "uuid": "a3f7429e-e307-5bc4-9eaf-01f28f3de96c",
+  "shortname": "datamart_automation",
+  "is_active": true,
+  "tags": [],
+  "created_at": "2026-10-01T00:00:00",
+  "updated_at": "2026-10-01T00:00:00",
+  "owner_shortname": "dmart",
+  "permissions": [
+    "datamart_automation_rollup"
+  ]
+}

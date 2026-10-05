@@ -83,9 +83,16 @@ FOLDER_CONTENT = {
     ("assets", "maintenance"):     (["maintenance_visit"], ["content"]),
     ("servicedesk", "cases"):      (["case"], ["ticket"]),
     ("servicedesk", "intake"):     (["intake_case"], ["ticket"]),
+    # Routing policy as data, read by the shanidar_case_assign plugin. In the
+    # pack's OWN space on purpose: a plugin's service account may only reach
+    # its own pack, so a routing table anywhere else would be unreadable.
+    ("servicedesk", "routing"):    (["routing_table"], ["content"]),
     ("approvals", "requests"):     (["access_request"], ["ticket"]),
     ("datamart", "datasets"):      (["dataset"], ["content"]),
     ("datamart", "kpis"):          (["kpi_row"], ["content"]),
+    # Written by the shanidar_kpi_rollup plugin, not by hand — hence
+    # allow_create false below for a folder whose content is machine-made.
+    ("datamart", "rollups"):       (["kpi_rollup"], ["content"]),
     ("comms", "notices"):          (["notice"], ["content"]),
 }
 
@@ -100,8 +107,10 @@ INDEX_EXTRA = {
     ("assets", "maintenance"): [("site", "Site"), ("performed_on", "Date"), ("outcome", "Outcome")],
     ("servicedesk", "cases"):  [("state", "State"), ("severity", "Severity"), ("region", "Region")],
     ("servicedesk", "intake"): [("state", "State"), ("category", "Category"), ("city", "City")],
+    ("servicedesk", "routing"):[("displayname", "Table")],
     ("approvals", "requests"): [("state", "State"), ("site", "Site"), ("requested_for", "For")],
     ("datamart", "kpis"):      [("site", "Site"), ("period", "Period"), ("availability_pct", "Availability %")],
+    ("datamart", "rollups"):   [("region", "Region"), ("period", "Period"), ("site_count", "Sites"), ("availability_pct", "Availability %")],
     ("datamart", "datasets"):  [("period", "Period"), ("format", "Format"), ("row_count", "Rows")],
     ("comms", "notices"):      [("channel", "Channel"), ("send_on", "Send on"), ("status", "Status")],
     ("kb", "articles"):        [("displayname", "Title")],
@@ -111,7 +120,9 @@ def folder_body(pack_name, folder):
     # folder_rendering requires index_attributes; everything else is optional.
     # allow_create/update stay false on `schema` and `workflows` so the admin UI
     # does not invite editing pack machinery by hand.
-    machinery = folder in ("schema", "workflows")
+    # `rollups` holds plugin output: hand-editing it would be overwritten
+    # on the next rollup, so the admin UI does not offer to.
+    machinery = folder in ("schema", "workflows", "rollups")
     schemas, types = FOLDER_CONTENT.get((pack_name, folder), ([], []))
     index = [{"key": "shortname", "name": "Shortname"}]
     for key, label in INDEX_EXTRA.get((pack_name, folder), []):

@@ -118,6 +118,20 @@ def perms_for(name, pack):
         out["servicedesk_public_intake"] = permission(
             "servicedesk_public_intake", space, ["intake"],
             ["create"], ["ticket"])
+        # The assignment plugin's service account. Reads the routing table and
+        # the case, writes the assignee: no create, no delete, no
+        # progress_ticket, and nothing outside this space. A plugin that can
+        # only do the one thing it exists for is the argument for REST over the
+        # save_entry callback, which has no scope at all.
+        #
+        # `routing` is read-only in practice — the actions are shared across the
+        # subpaths, and dmart has no per-subpath action list, so `update` on
+        # routing is granted as a side effect. Worth knowing rather than
+        # claiming a tightness the permission model cannot express.
+        out["servicedesk_automation_assign"] = permission(
+            "servicedesk_automation_assign", space,
+            ["cases", "intake", "routing"],
+            ["query", "view", "update"], ["ticket", "content"])
     elif name == "approvals":
         out["approvals_security_review"] = permission(
             "approvals_security_review", space, ["requests"],
@@ -140,6 +154,15 @@ def perms_for(name, pack):
     elif name == "datamart":
         out["datamart_analyst_read"] = permission(
             "datamart_analyst_read", space, all_sub, READ, CONTENT_TYPES)
+        # The rollup plugin's service account. Scoped to exactly what it
+        # writes: it reads the KPI rows and maintains the rollups, and can do
+        # nothing else anywhere. That narrowness is the point of using REST
+        # with an account rather than the save_entry callback, which has no
+        # scope at all — it writes straight through EntryRepository, past
+        # validation, permissions and referential integrity.
+        out["datamart_automation_rollup"] = permission(
+            "datamart_automation_rollup", space, ["kpis", "rollups"],
+            ["query", "view", "create", "update"], ["content"])
     elif name == "comms":
         out["comms_editor_write"] = permission(
             "comms_editor_write", space, ["notices"], WRITE, CONTENT_TYPES)
@@ -155,10 +178,12 @@ ROLE_PERMISSIONS = {
     "servicedesk_supervisor": ["servicedesk_supervisor_case"],
     "servicedesk_customer": ["servicedesk_customer_own"],
     "servicedesk_public": ["servicedesk_public_intake"],
+    "servicedesk_automation": ["servicedesk_automation_assign"],
     "approvals_security": ["approvals_security_review"],
     "kb_author": ["kb_author_write"],
     "kb_public": ["kb_public_read"],
     "datamart_analyst": ["datamart_analyst_read"],
+    "datamart_automation": ["datamart_automation_rollup"],
     "comms_editor": ["comms_editor_write"],
 }
 

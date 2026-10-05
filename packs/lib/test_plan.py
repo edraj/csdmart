@@ -77,9 +77,9 @@ SHIPPED_V1 = "2026-10-01T00:00:00"
 SHIPPED_V2 = "2026-11-20T09:00:00"
 EDITED     = "2026-10-04T07:00:00"
 
-def entry(space, sub, sn, stamp, rt="content"):
+def entry(space, sub, sn, stamp, rt="content", h="H1"):
     return {"space": space, "subpath": sub, "shortname": sn,
-            "rt": rt, "updated_at": stamp}
+            "rt": rt, "updated_at": stamp, "hash": h}
 
 def run(shipped, receipt, db):
     return P.build_plan(shipped, receipt, db)
@@ -99,16 +99,47 @@ plan = run({"org/sites/.dm/a/meta.content.json": entry("org", "/sites", "a", SHI
            None, {("org", "/sites", "a"): EDITED})
 check("adopting an edited row keeps it", counts(plan), {"kept": 1})
 
-receipt = {"version": "1.0.0",
-           "entries": {"org/sites/.dm/a/meta.content.json": SHIPPED_V1}}
+# format 2 stores [updated_at, hash].
+receipt = {"version": "1.0.0", "format": 2,
+           "entries": {"org/sites/.dm/a/meta.content.json": [SHIPPED_V1, "H1"]}}
 
 # The pack changed it, the operator did not: safe to update.
-plan = run({"org/sites/.dm/a/meta.content.json": entry("org", "/sites", "a", SHIPPED_V2)},
+plan = run({"org/sites/.dm/a/meta.content.json": entry("org", "/sites", "a", SHIPPED_V2, h="H2")},
            receipt, {("org", "/sites", "a"): SHIPPED_V1})
 check("pack-only change updates", counts(plan), {"update": 1})
 
+# THE CASE THAT FOUND THE FLAW: the pack edited the content but the generators
+# write a fixed updated_at, so the timestamp did not move. The hash must catch
+# it — a timestamp-only planner called this "unchanged" and silently skipped a
+# schema edit, which then failed validation at runtime.
+plan = run({"org/sites/.dm/a/meta.content.json": entry("org", "/sites", "a", SHIPPED_V1, h="H2")},
+           receipt, {("org", "/sites", "a"): SHIPPED_V1})
+check("content change with an unchanged timestamp still updates",
+      counts(plan), {"update": 1})
+
+# And the converse: identical content must NOT be re-imported just because
+# some timestamp moved.
+plan = run({"org/sites/.dm/a/meta.content.json": entry("org", "/sites", "a", SHIPPED_V2, h="H1")},
+           receipt, {("org", "/sites", "a"): SHIPPED_V1})
+check("same content is left alone", counts(plan), {"unchanged": 1})
+
+# A format-1 receipt has no hashes: fall back to the timestamp rather than
+# treating every row as changed.
+old_receipt = {"version": "1.0.0", "format": 1,
+               "entries": {"org/sites/.dm/a/meta.content.json": SHIPPED_V1}}
+plan = run({"org/sites/.dm/a/meta.content.json": entry("org", "/sites", "a", SHIPPED_V1, h="H9")},
+           old_receipt, {("org", "/sites", "a"): SHIPPED_V1})
+# A format-1 receipt cannot be compared, so the whole pack refreshes ONCE to
+# rebuild the baseline — under-reporting edits forever would be worse.
+check("format-1 receipt refreshes once", counts(plan), {"update": 1})
+
+# ...but an operator-touched row is still protected during that refresh.
+plan = run({"org/sites/.dm/a/meta.content.json": entry("org", "/sites", "a", SHIPPED_V1, h="H9")},
+           old_receipt, {("org", "/sites", "a"): EDITED})
+check("the refresh still protects an edited row", counts(plan), {"conflict": 1})
+
 # Both changed it: the operator wins and the update reports it.
-plan = run({"org/sites/.dm/a/meta.content.json": entry("org", "/sites", "a", SHIPPED_V2)},
+plan = run({"org/sites/.dm/a/meta.content.json": entry("org", "/sites", "a", SHIPPED_V2, h="H2")},
            receipt, {("org", "/sites", "a"): EDITED})
 check("both changed -> conflict, never overwritten", counts(plan), {"conflict": 1})
 
@@ -135,13 +166,15 @@ check("deleted by hand -> re-added", counts(plan), {"add": 1})
 plan = run({"org/.dm/meta.space.json": entry("org", "/", "org", SHIPPED_V1, "space")},
            None, {("org", "/", "org"): EDITED})
 check("a space is not judged by its timestamp", counts(plan), {"unchanged": 1})
-space_receipt = {"version": "1.0.0", "entries": {"org/.dm/meta.space.json": SHIPPED_V1}}
+space_receipt = {"version": "1.0.0", "format": 2,
+                 "entries": {"org/.dm/meta.space.json": [SHIPPED_V1, "H1"]}}
 plan = run({}, space_receipt, {("org", "/", "org"): SHIPPED_V1})
 check("a space is never auto-deleted", counts(plan), {"orphan": 1})
 
 # A role: same non-signal, but dropping one IS safe — a stale grant is worse.
-role_receipt = {"version": "1.0.0",
-                "entries": {"management/roles/.dm/org_viewer/meta.role.json": SHIPPED_V1}}
+role_receipt = {"version": "1.0.0", "format": 2,
+                "entries": {"management/roles/.dm/org_viewer/meta.role.json":
+                            [SHIPPED_V1, "H1"]}}
 plan = run({}, role_receipt, {("management", "/roles", "org_viewer"): EDITED})
 check("a dropped role is removed", counts(plan), {"remove": 1})
 

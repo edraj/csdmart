@@ -25,7 +25,9 @@
       "comms_editor_write"
     ],
     "groups": [],
-    "public_roles": []
+    "public_roles": [],
+    "service_accounts": [],
+    "plugins": []
   },
   "scales": [
     "small",

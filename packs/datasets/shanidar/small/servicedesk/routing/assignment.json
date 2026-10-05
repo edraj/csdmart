@@ -1,0 +1,7 @@
+{
+  "by_region": {
+    "north": "tech_north_erbil",
+    "south": "tech_south_basra"
+  },
+  "note": "Which technician covers each region. A region that is absent has no cover, and a case there stays unassigned."
+}

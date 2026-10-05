@@ -1,0 +1,19 @@
+{
+  "uuid": "7cb159c4-dca2-58c3-9a97-506f00a7736e",
+  "shortname": "assignment",
+  "is_active": true,
+  "tags": [
+    "routing"
+  ],
+  "created_at": "2026-10-01T00:00:00",
+  "updated_at": "2026-10-01T00:00:00",
+  "owner_shortname": "dmart",
+  "displayname": {
+    "en": "Case assignment by region"
+  },
+  "payload": {
+    "content_type": "json",
+    "body": "assignment.json",
+    "schema_shortname": "routing_table"
+  }
+}

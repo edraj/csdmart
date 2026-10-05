@@ -25,7 +25,9 @@
       "org_region_central",
       "org_region_south"
     ],
-    "public_roles": []
+    "public_roles": [],
+    "service_accounts": [],
+    "plugins": []
   },
   "scales": [
     "small",

@@ -126,7 +126,9 @@ def main():
             summary.append(f"{name}: already at {new_v}, nothing to do")
             continue
 
-        print(P.render(plan, name, old_v, new_v))
+        refreshing = bool(receipt) and ((receipt.get("format") or 1)
+                                        < P.RECEIPT_FORMAT)
+        print(P.render(plan, name, old_v, new_v, refreshing=refreshing))
         chosen = [r["path"] for r in plan["add"] + plan["update"]]
         # An attachment rides with its parent. It has no independent identity to
         # plan against, but it IS a separate meta file, so an import driven by

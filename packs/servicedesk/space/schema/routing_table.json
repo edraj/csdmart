@@ -1,0 +1,20 @@
+{
+  "title": "Routing table",
+  "description": "Which assignee covers each region. Read by the shanidar_case_assign plugin.",
+  "type": "object",
+  "additionalProperties": false,
+  "properties": {
+    "by_region": {
+      "type": "object",
+      "additionalProperties": {
+        "type": "string"
+      }
+    },
+    "note": {
+      "type": "string"
+    }
+  },
+  "required": [
+    "by_region"
+  ]
+}

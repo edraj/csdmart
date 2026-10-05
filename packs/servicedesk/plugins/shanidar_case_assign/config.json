@@ -1,0 +1,12 @@
+{
+  "shortname": "shanidar_case_assign",
+  "is_active": true,
+  "type": "hook",
+  "listen_time": "after",
+  "filters": {
+    "subpaths": { "servicedesk": ["cases", "intake"] },
+    "resource_types": ["ticket"],
+    "schema_shortnames": [],
+    "actions": ["create"]
+  }
+}

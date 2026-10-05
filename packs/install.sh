@@ -28,6 +28,7 @@ ADMIN="${DMART_ADMIN:-dmart}"
 SKIP_GROUPS=0
 REPLACE=0
 PUBLIC=0
+PLUGINS=0
 DRY_RUN=0
 FORCE=
 
@@ -47,6 +48,9 @@ Usage: $(basename "$0") [--packs a,b,c] [--scale small|medium|large]
   --skip-groups  do only the import phase, no API calls
   --public       grant the anonymous user each pack's provides.public_roles,
                  opening its public read / intake surface. Off by default.
+  --plugins      create each pack's service account and deploy its plugins to
+                 ~/.dmart/plugins (needs DMART_PACKS_PLUGIN_PASSWORD). Off by
+                 default: it writes an executable into your home directory.
   --dry-run      print the plan and change nothing
   --force        proceed even when the installed version is newer (a downgrade)
 
@@ -73,6 +77,7 @@ while [ $# -gt 0 ]; do
         --replace) REPLACE=1; shift ;;
         --skip-groups) SKIP_GROUPS=1; shift ;;
         --public)  PUBLIC=1; shift ;;
+        --plugins) PLUGINS=1; shift ;;
         --dry-run) DRY_RUN=1; shift ;;
         --force)   FORCE=1; shift ;;
         -h|--help) usage; exit 0 ;;
@@ -533,6 +538,118 @@ print(json.dumps({"space_name":"management","request_type":"update","records":[
 EOF
             fi
         fi
+    fi
+fi
+
+
+# ── plugins ───────────────────────────────────────────────────────────────────
+# A pack's plugins are deployed to ~/.dmart/plugins/<name>/ and each gets a
+# scoped SERVICE ACCOUNT to write through the API as.
+#
+# Why an account rather than dmart's save_entry callback: that callback writes
+# straight through EntryRepository, so it skips schema validation, relationship
+# integrity, the permission walk and the folder content policy — and it
+# attributes history to whoever triggered the hook, so automation would appear
+# as the customer whose case it touched. An account costs a login and gets all
+# of that back, and its permission is scoped to exactly what the plugin writes.
+#
+# Opt-in, like --public: deploying an executable into the operator's home and
+# creating an account that can write unattended is not something an install
+# should do because a pack happened to mention it.
+if [ "$PLUGINS" = 1 ]; then
+    # dmart only ever scans $HOME/.dmart/plugins — NativePluginLoader's
+    # FindPluginsRoot is hard-wired with no config override. DMART_PLUGINS_DIR
+    # exists so a test can point the deploy at a sandbox and run the server
+    # with a matching HOME; an operator leaves it unset.
+    plugin_root="${DMART_PLUGINS_DIR:-$HOME/.dmart/plugins}"
+    if [ -z "$URL" ] || [ -z "${DMART_ADMIN_PASSWORD:-}" ]; then
+        echo
+        echo "== plugins: skipped (needs --url and DMART_ADMIN_PASSWORD)"
+    elif [ -z "${DMART_PACKS_PLUGIN_PASSWORD:-}" ]; then
+        echo
+        echo "== plugins: skipped — set DMART_PACKS_PLUGIN_PASSWORD"
+        echo "   It becomes the service accounts' password and is written to"
+        echo "   credentials.json mode 0600. Never committed."
+    else
+        echo
+        echo "== plugins (service accounts + deploy to $plugin_root)"
+        if [ -z "${token:-}" ]; then
+            token="$(curl -fsS -m 15 -X POST "$URL/user/login" \
+                -H 'Content-Type: application/json' \
+                -d "$(python3 -c 'import json,os,sys; print(json.dumps({"shortname":sys.argv[1],"password":os.environ["DMART_ADMIN_PASSWORD"]}))' "$ADMIN")" \
+              | python3 -c 'import sys,json; d=json.load(sys.stdin); print(d["records"][0]["attributes"]["access_token"])')"
+        fi
+        for p in $selected; do
+            manifest="$HERE/$p/pack.json"
+            [ -f "$manifest" ] || continue
+            # The service account first: the plugin cannot log in without it,
+            # and it holds only this pack's <pack>_automation role.
+            while IFS=$'\t' read -r sa body; do
+                [ -n "$sa" ] || continue
+                printf '  %-28s ' "$sa"
+                out="$(curl -sS -m 20 -X POST "$URL/managed/request" \
+                    -H 'Content-Type: application/json' \
+                    -H "Authorization: Bearer $token" \
+                    -d "$body" | python3 "$HERE/lib/report_status.py")"
+                echo "$out"
+            done < <(python3 - "$manifest" "$p" <<'SA_PY'
+import json, os, sys
+m = json.load(open(sys.argv[1]))
+pack = sys.argv[2]
+pw = os.environ["DMART_PACKS_PLUGIN_PASSWORD"]
+for sa in m["provides"].get("service_accounts", []):
+    body = {"space_name": "management", "request_type": "create", "records": [{
+        "resource_type": "user", "shortname": sa, "subpath": "users",
+        "attributes": {
+            "is_active": True,
+            "displayname": {"en": f"{pack} automation"},
+            # RFC 2606: can never reach a real mailbox.
+            "email": f"{sa}@example.com",
+            # The automation role only — no groups, so it inherits no
+            # regional ownership and its reach is exactly its permission.
+            "roles": [f"{pack}_automation"],
+            "groups": [],
+            "password": pw,
+        }}]}
+    print(sa + "\t" + json.dumps(body))
+SA_PY
+)
+            # Then the executable, its config, and credentials at 0600.
+            for pdir in "$HERE/$p/plugins"/*/; do
+                [ -d "$pdir" ] || continue
+                pname="$(basename "$pdir")"
+                dest="$plugin_root/$pname"
+                mkdir -p "$dest"
+                # dmart runs the file named after the directory, so plugin.py
+                # is installed under the plugin's own name.
+                install -m 0755 "$pdir/plugin.py" "$dest/$pname"
+                install -m 0644 "$pdir/config.json" "$dest/config.json"
+                sa="$(python3 -c '
+import json, sys
+m = json.load(open(sys.argv[1]))
+sas = m["provides"].get("service_accounts", [])
+print(sas[0] if sas else "")' "$manifest")"
+                # 0600 before the content goes in, so the password is never
+                # readable even momentarily.
+                umask 077
+                python3 - "$dest/credentials.json" "$URL" "$sa" <<'CRED_PY'
+import json, os, sys
+path, url, shortname = sys.argv[1], sys.argv[2], sys.argv[3]
+json.dump({"url": url, "shortname": shortname,
+           "password": os.environ["DMART_PACKS_PLUGIN_PASSWORD"]},
+          open(path, "w"), indent=2)
+CRED_PY
+                umask 022
+                chmod 0600 "$dest/credentials.json"
+                printf '  %-28s deployed (%s, creds 0600)\n' "$pname" "$sa"
+            done
+        done
+        cat <<EOF
+
+  Restart dmart to activate them. Plugins are scanned once at startup
+  (NativePluginLoader), so unlike roles and permissions there is no reload
+  endpoint for these.
+EOF
     fi
 fi
 

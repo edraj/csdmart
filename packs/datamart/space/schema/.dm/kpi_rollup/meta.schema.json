@@ -1,0 +1,14 @@
+{
+  "uuid": "c3c47dec-556a-5d02-a631-f2a214db1336",
+  "shortname": "kpi_rollup",
+  "is_active": true,
+  "tags": [],
+  "created_at": "2026-10-01T00:00:00",
+  "updated_at": "2026-10-01T00:00:00",
+  "owner_shortname": "dmart",
+  "payload": {
+    "content_type": "json",
+    "schema_shortname": "meta_schema",
+    "body": "kpi_rollup.json"
+  }
+}
