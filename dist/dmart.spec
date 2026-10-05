@@ -28,7 +28,21 @@ Requires:       jq
 # every password write goes through it, so a missing libargon2 is a server that
 # starts and then fails to authenticate anyone. The shared library is used
 # rather than a vendored copy so security updates arrive through the distro.
+#
+# Except on EL: RHEL 9 ships libargon2 only in EPEL, and a hard Requires made
+# the package uninstallable on every host without it — air-gapped Satellite
+# sites included. There the RPM carries a private copy in %{_libdir}/dmart/,
+# which Auth/Argon2Native falls back to only when no system libargon2 loads,
+# so a host that does have EPEL still gets its updates.
+%if 0%{?rhel}
+# The SRPM rebuild path copies the build host's library (needs EPEL there).
+BuildRequires:  libargon2
+# No /usr/lib/.build-id links: the bundled copy is byte-identical to EPEL's,
+# so its link would conflict with libargon2's on a host that has both.
+%global _build_id_links none
+%else
 Requires:       libargon2
+%endif
 Requires(pre):  shadow-utils
 
 %description
@@ -71,6 +85,15 @@ for so_src in out/libe_sqlite3.so libe_sqlite3.so; do
         break
     fi
 done
+
+%if 0%{?rhel}
+# Bundled libargon2 (see the Requires note above). Fatal when absent, unlike
+# libe_sqlite3: without it every login fails, and there is no Requires behind it.
+# Staged beside the binary by build-rpm.sh; an SRPM rebuild takes the host's.
+argon2_src=libargon2.so.1
+[ -f "$argon2_src" ] || argon2_src=$(readlink -f %{_libdir}/libargon2.so.1)
+install -D -m 0755 "$argon2_src" %{buildroot}%{_libdir}/dmart/libargon2.so.1
+%endif
 
 # Plugin configs
 for dir in plugins/*/; do
@@ -172,6 +195,10 @@ fi
 # missing %files entry fails the build — which is the right failure, since a
 # package without it silently loses the SQLite driver.
 %{_libdir}/libe_sqlite3.so
+%if 0%{?rhel}
+%dir %{_libdir}/dmart
+%{_libdir}/dmart/libargon2.so.1
+%endif
 /usr/lib/dmart/plugins/
 /usr/share/dmart/config.env.sample
 /usr/share/dmart/config.env.packaged

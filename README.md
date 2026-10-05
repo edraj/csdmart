@@ -231,9 +231,11 @@ The Windows and macOS builds have no such dependency — they hash with a manage
 implementation that produces identical output, so a password set on one platform
 verifies on any other.
 
-The packages declare it — `libargon2` (Fedora/RHEL), `libargon2-1`
+The packages declare it — `libargon2` (Fedora), `libargon2-1`
 (Debian/Ubuntu), `argon2-libs` (Alpine) — and the portable tarballs ship
-`libargon2.so.1` beside the binary. The fully static musl build links it in and
+`libargon2.so.1` beside the binary. The RHEL 9 RPM bundles its own copy in
+`/usr/lib64/dmart/`, because RHEL carries libargon2 only in EPEL; a system
+libargon2, when installed, is still preferred over it. The fully static musl build links it in and
 has no runtime dependencies at all. Building from source, install your distro's
 argon2 runtime package.
 
