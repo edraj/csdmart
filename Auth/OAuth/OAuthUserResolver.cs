@@ -71,6 +71,11 @@ public sealed class OAuthUserResolver(
         // — unlike EntryService.CreateAsync, which translates a thrown before-
         // hook into a Result.Fail, Python's OAuth path doesn't let a plugin
         // block login. Don't surprise existing integrations.
+        // No SchemaShortname: this fires BEFORE the row exists (and before we
+        // know whether it will be a create or a link to an existing user), so
+        // there is no payload to read one from. Plugin filters reject an event
+        // with no schema when they list schemas, so a schema-filtered hook does
+        // not observe oauth pre-create — correct by necessity, not an omission.
         var preEvent = new Event
         {
             SpaceName = settings.Value.ManagementSpace,

@@ -13,7 +13,9 @@ namespace Dmart.Models.Core;
 //
 // Empty list semantics (also consistent with permissions):
 //   - ResourceTypes empty    ⇒ match every resource_type
-//   - SchemaShortnames empty ⇒ match every schema (when ResourceType is content)
+//   - SchemaShortnames empty ⇒ match every schema. A NON-empty list gates every
+//     resource type, not just content, and an event carrying no schema at all
+//     never matches it.
 //   - Actions empty          ⇒ match every action
 //
 // Subpath-walk semantics: a filter subpath of "tickets" matches event subpaths

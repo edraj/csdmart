@@ -167,7 +167,9 @@ public class PluginManagerTests
     {
         // Tickets carry a payload schema too, so a narrow filter list must
         // reject a ticket whose schema isn't on it.
-        var f = AllFilter("update") with { SchemaShortnames = new() { "order" } };
+        // The action is immaterial here — MatchedFilters never inspects it;
+        // actions are matched when the hook registers (PluginManager.cs:222).
+        var f = AllFilter("create") with { SchemaShortnames = new() { "order" } };
         PluginManager.MatchedFilters(f, Evt("/", ResourceType.Ticket, schema: "order"))
             .ShouldBeTrue();
         PluginManager.MatchedFilters(f, Evt("/", ResourceType.Ticket, schema: "meow"))

@@ -2,6 +2,34 @@
 
 ## Unreleased
 
+### Fixed
+
+- **A plugin hook's `schema_shortnames` filter was ignored for every resource
+  type but `content`.** A hook narrowed to one ticket schema fired for all of
+  them. The gate now applies to every resource type, and an event carrying no
+  schema never matches a filter that lists them. An empty list still means
+  "every schema", so a hook that declares none is unaffected — which is every
+  plugin shipped in this repo.
+
+- **Lock and unlock events did not describe the resource they were about**, which
+  the change above turned from untidy into load-bearing. `LockService` built its
+  event from the request Locator alone, so:
+
+  - the payload schema was always absent, and a schema-filtered hook therefore
+    silently stopped observing `lock` and `unlock` entirely;
+  - the resource type on a self-unlock was whatever the route said, and the
+    unlock route has no resource-type segment — `LockHandler` hardwires
+    `content`. A hook filtering `resource_types` never matched a self-unlock of
+    anything else, and the `.dm/events.jsonl` audit line misreported the type.
+
+  Both now come from the entry. The force-unlock path already loaded it for the
+  permission gate; that load moved up so the self-release path shares it, which
+  is one query on a path that still skips the holder lookup and both permission
+  walks. User create/update events carry the user row's schema for the same
+  reason. Two cases keep a null schema because nothing else is knowable: a
+  delete whose entry cannot be loaded, and oauth pre-create, which fires before
+  the row exists. Both now say so in place.
+
 ### Added
 
 - **Solution packs can now be updated, not just installed.** Each pack carries
