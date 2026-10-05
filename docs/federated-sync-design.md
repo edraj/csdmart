@@ -34,6 +34,10 @@ off them, and both answers keep this tractable.
 | D6 | **`origin_id` is a readable slug** (`baghdad`), operator-chosen, validated against the shortname regex (settles O1) | Usable inside generated shortnames (O3) and legible in logs. Needs a startup check that the configured slug matches what the local data claims, and peer registration must refuse a slug equal to the local one or an existing peer's — nothing else stops two operators picking the same name |
 | D7 | **Users sync as shortnames only, never credentials; the receiver creates a user only if that shortname does not already exist** (settles O2) | Satisfies the `owner_shortname` FK (finding 6) without moving password hashes. Same shortname is treated as the same person — see the note below |
 | D8 | **No ownership handover** — D3 stands for all content (settles O7). Instead, each peer relationship may carry an **owner map** (`remote shortname → local shortname`) applied on ingest | Transferable ownership stays out of every phase. The map is a refinement of D7, not of D3: it changes who a received entry is *attributed* to, not which deployment may *edit* it |
+| D9 | **A deletion record is a full snapshot**: the entry's uuid, complete meta *and* payload, who deleted it, when, and the request headers minus credentials | Tombstones become uuid-keyed (fixes finding 4) and double as a trash bin and the audit trail for deletes, which today write no history row at all. Rows get much larger, and payload content outlives the entry (§5) |
+| D10 | **Two retentions on deletion records.** Sync retention (weeks or more) ends a record's use for sync; audit retention (default: forever) ends its existence | `prune-tombstones` raises the sync floor and no longer deletes rows; purging audit data becomes a separate, explicit operation |
+| D11 | **The change log is derived, not appended** — `updated_at >= cursor` plus deletion records (settles O8) | Zero added write cost; reuses the parquet incremental machinery and its overlap-not-gap bargain. Idempotent replay is required anyway |
+| D12 | **A sync relationship is scoped to space + subpath** (settles O6) | One section can be shared without exposing a whole space, at the price of more cursors per peer. Matches Python dmart's `sync.py` |
 
 D3 is the cheap variant. It is a genuine offline-first system: every instance
 writes while disconnected. What it gives up is the ability to *correct* an entry
@@ -311,6 +315,30 @@ address — possibly not the one that was deleted.
 Adding `uuid` to `deletions` is a schema change on both engines plus every
 `Tombstones.RecordAsync` call site, since the `INSERT ... SELECT` must project it.
 
+**The record itself (D9).** Every tombstone carries the deleted entry in full —
+uuid, meta and payload — plus the actor, the deletion time and the request
+headers. Headers go through the same filter history already applies, which
+drops `authorization` and `cookie` (**VERIFY** where that filter lives: the
+comment at `Api/User/RegistrationHandler.cs:58` names the rule). Three
+consequences to design for in phase 0:
+
+- **Cascades multiply the cost.** Rule 3 tombstones every descendant, so
+  deleting a folder of 10,000 entries writes 10,000 full snapshots in the
+  delete's transaction. The `INSERT ... SELECT` keeps it one statement, but the
+  rows are now as large as the entries they replace.
+- **Payload outlives the entry.** Deleting content no longer removes it from
+  the database. Anyone who needs it truly gone (personal data, a legal request)
+  needs the audit purge of D10, scoped to the entry.
+- **Undelete becomes possible** but is not designed here. The record is
+  sufficient for it; the endpoint is a separate feature.
+
+**Two retentions (D10).** Sync and audit want different lifetimes, so one table
+carries both. The existing `deletion_retention` floor becomes the *sync*
+floor: `prune-tombstones` raises it, and an increment whose watermark is below
+it still warns and forces a full reconcile (§9, phase 3), but no row is removed.
+Rows are deleted only by a separate audit purge, by age or by entry, which
+defaults to never.
+
 **Retention must exceed the maximum disconnection**, i.e. weeks per the
 requirement, and a reconnect past the floor must force a full-state reconcile
 rather than an increment. The warning exists; the policy and the full-reconcile
@@ -451,7 +479,7 @@ state; none requires the next one to exist.
 
 | Phase | Delivers | Useful on its own because | Depends on |
 |---|---|---|---|
-| **0** | `origin_id` on every deployment and stamped into existing rows; `uuid` added to `deletions` | Nothing observable changes — but the data becomes *capable* of carrying provenance, which it can never be made to do retroactively | — |
+| **0** | `origin_id` on every deployment and stamped into existing rows; `deletions` widened to the D9 snapshot with the D10 split retention | Nothing observable changes — but the data becomes *capable* of carrying provenance, which it can never be made to do retroactively | — |
 | **1** | Change log, `peers` cursors, pull transport, uuid-keyed import, deterministic collision rename | This is replication working end to end. Sections sync, deletions and renames carry correctly. Still trusting everyone to behave | 0; D7/D8 user resolution; idempotent history (§7) |
 | **2** | Ownership enforcement — a `FOREIGN_ENTRY` refusal on writes to entries another deployment created | Turns the D3 convention into an invariant. Before this, a well-meaning local edit to a foreign entry is silently overwritten on the next pull, with no warning | 1 |
 | **3** | Full-reconcile path for a peer returning past the tombstone retention floor | Bounds the damage from the one failure mode phases 1–2 cannot handle: a deployment offline longer than deletions are kept, where increments are provably incomplete | 1 |
@@ -517,25 +545,12 @@ operator-only; the zip pair has HTTP endpoints (`/managed/export`,
 `/managed/import`, `Api/Managed/ImportExportHandler.cs:15`, `:54`). Add an HTTP
 surface to the parquet path, or sync over a new endpoint of its own?
 
-**O6 — Scope of a sync relationship.** Per space, or per space+subpath?
-`sync.py` chose space+subpath. Finer scope means more cursors but allows one
-section to be shared without sharing a whole space.
+**O6 — Scope of a sync relationship.** *Settled: D12 (space + subpath).*
 
 **O7 — Is D3 sufficient?** *Settled: D8. Yes for all content; no ownership
 handover. The owner map handles attribution instead.*
 
-**O8 — Derive the change log, or append to it?** §4.2 assumes a per-deployment
-monotonic counter, which means an append on every mutation — on top of the
-history row the write path already appends when the diff is non-empty
-(`Services/EntryService.cs:528`), and against the grain of `import --fast`, which
-drops indexes precisely to avoid per-row work. The alternative is to **derive**
-the log from `updated_at >= cursor` (indexed by `idx_entries_updated_at`) plus
-the `deletions` table — exactly what the parquet incremental already does, at
-**zero added write cost**. An append-only counter buys cursors with no clock
-involvement; deriving reuses machinery that is already built and already correct,
-and the overlap-not-gap bargain (`ParquetArchiveService.cs:304-306`) already
-makes an `updated_at` cursor safe, given the idempotent replay that is required
-regardless. Recommend deriving, per D5.
+**O8 — Derive the change log, or append to it?** *Settled: D11 (derive).*
 
 ## Phase 1 verification list
 
@@ -552,5 +567,5 @@ stated as fact.
 ## Stopping here
 
 No schema change, no `origin_id`, no transport, no core changes yet. Phase 0 can
-start now that O1, O2 and O7 are settled (D6–D8). O8 is needed before phase 1, and
-§9 before phase 3.
+start now that O1, O2, O6, O7 and O8 are settled (D6–D12). §9 is needed before
+phase 3.
