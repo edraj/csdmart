@@ -501,6 +501,16 @@ not publish. **Same code, plus a fix to the release pipeline.**
   once between two packaging jobs — and cost three reruns before completing by
   luck rather than by fix. Each job now installs into its own `runner.temp`.
 
+### Fixed
+
+- **A change to a composite action did not run the jobs that use it.** Both
+  packaging-scope gates in `ci.yml` listed `.github/workflows/ci.yml` but not
+  `.github/actions/`, so editing `podman-preflight` or `sign-attest` changed
+  what a job does while matching none of the paths that trigger it. The podman
+  preflight had in fact been edited without the container job ever running
+  against it, and its description had gone stale against a runner home that
+  moved on 2026-09-24. Both gates now include `.github/actions/`.
+
 ### Documentation
 
 - **How to install from the dnf, deb and apk repositories** at

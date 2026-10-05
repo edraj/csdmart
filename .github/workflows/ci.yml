@@ -836,7 +836,14 @@ jobs:
           fi
           CHANGED=$(git diff --name-only "$BASE"...HEAD)
           echo "$CHANGED" | sed 's/^/  /'
-          if echo "$CHANGED" | grep -qE '^(dist/dmart\.spec|dist/build-rpm\.sh|dist/dmart\.(service|bash|fish)|dist/config\.env\.packaged|config\.env\.sample|\.github/workflows/ci\.yml)'; then
+          # .github/actions/ is in scope for the same reason ci.yml is: these
+          # jobs call composite actions (podman-preflight, sign-attest), so a
+          # change to one changes what the job does while matching none of the
+          # paths below. The podman preflight was edited without the container
+          # job ever running against it — the gate skipped the only job that
+          # exercises it, and the action's own description had gone stale
+          # against a runner home that moved months earlier.
+          if echo "$CHANGED" | grep -qE '^(dist/dmart\.spec|dist/build-rpm\.sh|dist/dmart\.(service|bash|fish)|dist/config\.env\.packaged|config\.env\.sample|\.github/workflows/ci\.yml|\.github/actions/)'; then
             echo "run=true" >> "$GITHUB_OUTPUT"
             echo "packaging inputs changed — running"
           else
@@ -978,7 +985,7 @@ jobs:
           fi
           CHANGED=$(git diff --name-only "$BASE"...HEAD)
           echo "$CHANGED" | sed 's/^/  /'
-          if echo "$CHANGED" | grep -qE '^(admin_scripts/docker/|dist/build-apk\.sh|dist/apk/|dist/dmart\.(service|bash|fish)|build-ui\.sh|\.github/workflows/ci\.yml)'; then
+          if echo "$CHANGED" | grep -qE '^(admin_scripts/docker/|dist/build-apk\.sh|dist/apk/|dist/dmart\.(service|bash|fish)|build-ui\.sh|\.github/workflows/ci\.yml|\.github/actions/)'; then
             echo "run=true" >> "$GITHUB_OUTPUT"
             echo "packaging inputs changed — running"
           else
