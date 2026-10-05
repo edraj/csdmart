@@ -1,10 +1,30 @@
 name: Podman preflight
 description: >
   Self-heal stale rootless-podman state on the self-hosted runners.
-  The runners keep XDG_RUNTIME_DIR on persistent disk
-  (/home/githubrunner/runners/<name>/runtime), so podman's per-boot
-  runtime state survives host reboots instead of being wiped with a
-  tmpfs. After a reboot every podman command then exits 125 with
+
+  Two corrections, measured on simurgh-base 2026-10-05. The runner home
+  is /opt/actions-runners, not /home/githubrunner/runners — it moved on
+  2026-09-24. And XDG_RUNTIME_DIR does not currently relocate podman's
+  runroot: with it pointing at an existing 0700 directory owned by the
+  service account, `podman info` still reports
+  runroot=/tmp/storage-run-957/containers. The likely reason is that the
+  runroot is recorded in the graphroot when the store is first
+  initialised and inherited from then on, so this may have worked when
+  the store was new. Either way, the runroot lives on tmpfs today.
+
+  What actually keeps it consistent is PrivateTmp=false on the runner
+  units (infra-ansible, roles/github_runner). All three runners share
+  one service account and therefore one graphroot; with a private /tmp
+  each they also had a private runroot, and a job failed whenever it
+  landed on a runner whose runroot disagreed with the shared container
+  database — three runroot inodes for one graphroot, measured. One
+  shared /tmp means one runroot, and staleness then survives only a
+  reboot, which is what this action is for.
+
+  The XDG_RUNTIME_DIR derivation below is left in place: it is inert
+  rather than wrong, and removing it belongs in a change that can
+  reproduce the broken state to test against. After a reboot every
+  podman command exits 125 with
   "current system boot ID differs from cached boot ID" (or, one layer
   earlier, "cannot re-exec process to join the existing user
   namespace") and all container-building jobs fail at their first
