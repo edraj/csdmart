@@ -46,7 +46,8 @@ namespace Dmart.Auth;
 /// (see dmart.csproj) — a musl static-pie has no working dlopen, so the symbols
 /// must be bound at link time exactly as SQLite's are. Every other Linux build
 /// resolves libargon2.so.1 normally, and the Linux packages declare a
-/// dependency on it.
+/// dependency on it — except the EL9 RPM, which bundles a private copy
+/// (see <see cref="Resolve"/>).
 /// </remarks>
 internal static partial class Argon2Native
 {
@@ -54,6 +55,37 @@ internal static partial class Argon2Native
     // the -devel package provides the libargon2.so symlink. Naming the SONAME
     // means dmart needs the runtime package alone.
     private const string Lib = "libargon2.so.1";
+
+    // Where the EL9 RPM installs its bundled copy, relative to the binary:
+    // /usr/bin/dmart -> /usr/lib64/dmart/libargon2.so.1. A private directory,
+    // not %{_libdir} itself, so it cannot collide with EPEL's libargon2.
+    private static readonly string BundledPath =
+        Path.GetFullPath(Path.Combine(AppContext.BaseDirectory, "..", "lib64", "dmart", Lib));
+
+    static Argon2Native()
+    {
+        // The static musl build binds through DirectPInvoke and never consults
+        // a resolver; registering one there is harmless.
+        NativeLibrary.SetDllImportResolver(typeof(Argon2Native).Assembly, Resolve);
+    }
+
+    /// <summary>System library first, bundled copy second.</summary>
+    /// <remarks>
+    /// On RHEL 9 libargon2 lives only in EPEL, which many RHEL sites — air-gapped
+    /// ones especially — do not enable, so a hard RPM dependency made dmart
+    /// uninstallable there. The EL9 RPM therefore ships its own copy. The system
+    /// one still wins when present, so a host that does have EPEL keeps getting
+    /// libargon2 security updates through dnf.
+    /// </remarks>
+    private static IntPtr Resolve(string libraryName, System.Reflection.Assembly assembly, DllImportSearchPath? searchPath)
+    {
+        if (libraryName != Lib) return IntPtr.Zero;
+        if (NativeLibrary.TryLoad(libraryName, assembly, searchPath, out var handle)) return handle;
+        if (NativeLibrary.TryLoad(BundledPath, out handle)) return handle;
+        // Zero falls through to the runtime's own resolution, whose
+        // DllNotFoundException names the library — the error worth seeing.
+        return IntPtr.Zero;
+    }
 
     // ARGON2_OK. The full error enum is negative values; we only distinguish
     // success from failure and report the code.

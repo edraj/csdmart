@@ -186,7 +186,9 @@ if [[ "$TARGET" == "el9" || "$TARGET" == "rhel9" ]]; then
             tail -f /dev/null
         $ENGINE exec --user root "$CONTAINER_NAME" bash -c '
             rpm -Uvh https://packages.microsoft.com/config/rhel/9/packages-microsoft-prod.rpm &&
-            dnf install -y dotnet-sdk-10.0 rpm-build clang zlib-devel git --nobest
+            dnf install -y dotnet-sdk-10.0 rpm-build clang zlib-devel git --nobest &&
+            dnf install -y epel-release &&
+            dnf install -y libargon2
         '
     else
         # Refresh the SDK in the container we are REUSING.
@@ -219,6 +221,12 @@ if [[ "$TARGET" == "el9" || "$TARGET" == "rhel9" ]]; then
             echo "           CI is what will catch it if that is now stale." >&2
         fi
         echo "Building with dotnet $($ENGINE exec "$CONTAINER_NAME" dotnet --version 2>/dev/null || echo unknown)"
+        # A builder created before the EL9 RPM bundled libargon2 lacks it.
+        if ! $ENGINE exec "$CONTAINER_NAME" rpm -q libargon2 >/dev/null 2>&1; then
+            echo "Installing libargon2 (EPEL) into $CONTAINER_NAME..."
+            $ENGINE exec --user root "$CONTAINER_NAME" bash -c \
+                'dnf install -y epel-release && dnf install -y libargon2'
+        fi
     fi
     # Clean previous build output to force recompilation against el9 glibc
     rm -rf bin/Release obj/Release
@@ -303,6 +311,19 @@ cp bin/dmart "$TARDIR/"
 # Not staging it here is what turns that intended guard into a build failure:
 # "File not found: .../usr/lib64/libe_sqlite3.so" at %files time.
 cp bin/libe_sqlite3.so "$TARDIR/"
+# EL only: RHEL ships libargon2 in EPEL alone, so the EL RPM bundles it rather
+# than Requires it (see dmart.spec). Taken from this build host — inside the
+# el9 builder that is EPEL's package, the same bytes dnf would install.
+if [ -n "$(rpm --eval '%{?rhel}')" ]; then
+    ARGON2_SO=$(readlink -f /usr/lib64/libargon2.so.1 2>/dev/null || true)
+    if [ ! -f "$ARGON2_SO" ]; then
+        echo "build-rpm.sh: libargon2.so.1 not found — the EL RPM bundles it." >&2
+        echo "              dnf install epel-release && dnf install libargon2" >&2
+        exit 1
+    fi
+    cp "$ARGON2_SO" "$TARDIR/libargon2.so.1"
+    echo "Bundling $(rpm -qf "$ARGON2_SO") from $ARGON2_SO"
+fi
 
 # Plugin configs
 cp -r plugins/*/ "$TARDIR/plugins/"

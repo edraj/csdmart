@@ -330,6 +330,19 @@
   refreshes every operator-untouched row once to rebuild a real baseline, and
   says so in the plan.
 
+- **The EL9 RPM would not install on RHEL 9 without EPEL.** Since 1.5.8 it
+  declared `Requires: libargon2`, and on RHEL 9 that package exists only in
+  EPEL — so `dnf` refused with `nothing provides libargon2`, and on air-gapped
+  or Satellite-managed hosts where EPEL is not an option there was no way
+  forward. The 1.5.8 note calling it a "Fedora/RHEL" package was wrong for RHEL.
+
+  The EL9 RPM now bundles a private `libargon2.so.1` in `/usr/lib64/dmart/`
+  (EPEL's own build, taken from the builder) and drops the dependency. dmart
+  still loads the system library first, so a host that has EPEL's `libargon2`
+  keeps receiving its updates through dnf; the bundled copy is used only when
+  none is installed, and then patching it means upgrading dmart. The Fedora
+  RPM, `.deb` and `.apk` are unchanged and still depend on the distro package.
+
 - **Restoring a dmart export rewrote every history row's timestamp to the
   restore moment.** `history.jsonl` carries the `uuid` and `timestamp` the
   exporter wrote, and the importer threw both away: it called
