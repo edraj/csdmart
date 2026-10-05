@@ -2,6 +2,18 @@
 
 ## Unreleased
 
+### Documentation
+
+- **Five of the eleven `actions` a plugin filter can name never fire.** Only
+  `create`, `update`, `delete`, `move`, `lock` and `unlock` are ever used to
+  build an event; `query`, `view`, `attach`, `assign` and `progress_ticket`
+  construct one nowhere in the host. A filter naming them loads without
+  complaint, registers, and then stays silent — indistinguishable from a
+  condition that never matched. `README.md` and `docs/plugins-and-mcp.md` now
+  say which six are real and how that was established. The behaviour is
+  unchanged: making the other five fire means adding dispatch to the query,
+  view, attach and assign paths, and on `query` that is a hook on every read.
+
 ### Fixed
 
 - **A plugin hook's `schema_shortnames` filter was ignored for every resource

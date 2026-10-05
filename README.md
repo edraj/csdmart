@@ -547,6 +547,13 @@ cat > ~/.dmart/plugins/my_plugin/config.json << 'EOF'
 EOF
 ```
 
+`ActionType` declares eleven values but only six ever reach the hook
+pipeline: `create`, `update`, `delete`, `move`, `lock`, `unlock`. A filter
+naming `query`, `view`, `attach`, `assign` or `progress_ticket` loads fine and
+then never fires, with no warning either way — see
+[`docs/plugins-and-mcp.md`](./docs/plugins-and-mcp.md) for how that was
+established.
+
 ### Building custom plugins
 
 A plugin is an executable that reads JSON lines from stdin and writes them to
