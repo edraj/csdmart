@@ -31,10 +31,37 @@ off them, and both answers keep this tractable.
 | D3 | **Ownership by creator.** Any instance may create anywhere; each entry is editable only by the instance that created it | Removes every *edit* conflict by construction. Leaves exactly one conflict class — see finding 3 |
 | D4 | **UUID is the sync key.** The tuple stays a uniqueness constraint | Renames and moves replicate as updates, not as delete+create |
 | D5 | Minimum complexity preferred throughout | Section-level ownership with transfer (the "option B" discussed) is deferred, not designed |
+| D6 | **`origin_id` is a readable slug** (`baghdad`), operator-chosen, validated against the shortname regex (settles O1) | Usable inside generated shortnames (O3) and legible in logs. Needs a startup check that the configured slug matches what the local data claims, and peer registration must refuse a slug equal to the local one or an existing peer's — nothing else stops two operators picking the same name |
+| D7 | **Users sync as shortnames only, never credentials; the receiver creates a user only if that shortname does not already exist** (settles O2) | Satisfies the `owner_shortname` FK (finding 6) without moving password hashes. Same shortname is treated as the same person — see the note below |
+| D8 | **No ownership handover** — D3 stands for all content (settles O7). Instead, each peer relationship may carry an **owner map** (`remote shortname → local shortname`) applied on ingest | Transferable ownership stays out of every phase. The map is a refinement of D7, not of D3: it changes who a received entry is *attributed* to, not which deployment may *edit* it |
 
 D3 is the cheap variant. It is a genuine offline-first system: every instance
 writes while disconnected. What it gives up is the ability to *correct* an entry
 created elsewhere while that elsewhere is unreachable.
+
+**D7 and D8 together.** On ingest, a received entry's `owner_shortname` is
+resolved in order:
+
+1. If the peer's owner map has the shortname, use the mapped local user. That
+   user must already exist locally; a map pointing at a missing user is a
+   configuration error reported when the peer is configured, not a user
+   created on the fly.
+2. Otherwise, if a local user with that shortname exists, use it.
+3. Otherwise, create it: shortname only, no password, no roles, no group
+   membership. Sync never grants access. The stub can sign in only after a
+   local admin sets a password (`dmart passwd`), exactly like the passwordless
+   admin a fresh install creates.
+
+Step 2 means **shortname equality is identity**: an unrelated `ahmad` on each
+of two deployments becomes one person on receipt. The owner map is the remedy
+when that is wrong (`ahmad → ahmad_basra`), and it is also how a deployment
+folds a peer's users into its own (`field_agent_7 → basra_ops`).
+
+The map rewrites attribution only. Edit rights still follow `origin_id` (D3,
+phase 2): an entry received from `basra` and mapped to a local owner is still
+editable only on `basra`. **VERIFY** in phase 1 whether history rows carry the
+actor as an FK to `users`; if they do not, history keeps the original shortname
+unmapped, so the record of who actually did the work survives the remapping.
 
 ---
 
@@ -425,7 +452,7 @@ state; none requires the next one to exist.
 | Phase | Delivers | Useful on its own because | Depends on |
 |---|---|---|---|
 | **0** | `origin_id` on every deployment and stamped into existing rows; `uuid` added to `deletions` | Nothing observable changes — but the data becomes *capable* of carrying provenance, which it can never be made to do retroactively | — |
-| **1** | Change log, `peers` cursors, pull transport, uuid-keyed import, deterministic collision rename | This is replication working end to end. Sections sync, deletions and renames carry correctly. Still trusting everyone to behave | 0; O2; idempotent history (§7) |
+| **1** | Change log, `peers` cursors, pull transport, uuid-keyed import, deterministic collision rename | This is replication working end to end. Sections sync, deletions and renames carry correctly. Still trusting everyone to behave | 0; D7/D8 user resolution; idempotent history (§7) |
 | **2** | Ownership enforcement — a `FOREIGN_ENTRY` refusal on writes to entries another deployment created | Turns the D3 convention into an invariant. Before this, a well-meaning local edit to a foreign entry is silently overwritten on the next pull, with no warning | 1 |
 | **3** | Full-reconcile path for a peer returning past the tombstone retention floor | Bounds the damage from the one failure mode phases 1–2 cannot handle: a deployment offline longer than deletions are kept, where increments are provably incomplete | 1 |
 
@@ -461,27 +488,19 @@ answer to "the office was offline for three months" is a manual rebuild.
 
 ### What is deliberately not in any phase
 
-- Transferable section ownership (the "option B" of D5) — deferred pending O7.
+- Transferable section ownership (the "option B" of D5) — not needed (D8). The
+  owner map covers attribution; edit rights stay with the creating deployment.
 - Version vectors, conflict detection, conflict resolution UI — excluded by D2.
-- Syncing users, roles, permissions or groups as content — see §6.
+- Syncing users, roles, permissions or groups as content — see §6. D7 creates
+  bare user stubs only; it never carries credentials, roles or groups.
 - Cross-deployment cache invalidation, locks or workflow coordination — §6.
 
 ## Open decisions
 
-**O1 — `origin_id` name and format.** Naming is settled by §4.1: `origin_id` on
-rows, `peers` for the registry, neither called `site` or `replica` because both
-already mean something else here. What remains is the **format**: a short
-operator-chosen slug (`baghdad`) is readable in logs and inside generated
-shortnames; a UUID is collision-proof without coordination but unreadable
-wherever it is embedded. Recommend the slug, validated against the shortname
-regex — it ends up inside generated shortnames (O3) and those must stay legal —
-with a startup check that the configured value matches what the local data
-claims.
+**O1 — `origin_id` name and format.** *Settled: D6 (readable slug).*
 
-**O2 — User identity across instances.** Replicate the user roster without
-credentials, or map foreign owners to a local placeholder? Blocks phase 1
-(finding 6). Recommend replicating shortnames only: a placeholder owner loses the
-authorship the history already records.
+**O2 — User identity across instances.** *Settled: D7 (shortnames only, create
+if missing), refined by the D8 owner map.*
 
 **O3 — Generated-shortname format.** Prefix with `origin_id`
 (`baghdad_a3f91b02`), or widen the hex and accept probabilistic safety? Recommend
@@ -502,10 +521,8 @@ surface to the parquet path, or sync over a new endpoint of its own?
 `sync.py` chose space+subpath. Finer scope means more cursors but allows one
 section to be shared without sharing a whole space.
 
-**O7 — Is D3 sufficient?** Under ownership by creator, an entry created on an
-instance that then goes offline for weeks cannot be corrected anywhere else.
-Confirm that is acceptable for all content, or name the subpaths needing
-transferable ownership (deferred option B) so phase 1 can leave room for it.
+**O7 — Is D3 sufficient?** *Settled: D8. Yes for all content; no ownership
+handover. The owner map handles attribution instead.*
 
 **O8 — Derive the change log, or append to it?** §4.2 assumes a per-deployment
 monotonic counter, which means an append on every mutation — on top of the
@@ -534,6 +551,6 @@ stated as fact.
 
 ## Stopping here
 
-No schema change, no `origin_id`, no transport, no core changes. Phase 0 begins
-once O1, O2 and O7 are settled. O8 is needed before phase 1, and §9 before
-phase 3.
+No schema change, no `origin_id`, no transport, no core changes yet. Phase 0 can
+start now that O1, O2 and O7 are settled (D6–D8). O8 is needed before phase 1, and
+§9 before phase 3.
