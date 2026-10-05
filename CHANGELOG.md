@@ -2,6 +2,34 @@
 
 ## Unreleased
 
+### Fixed
+
+- **CI could not upload anything: the Actions artifact storage quota was
+  full.** Every run on every branch failed its `Upload test results` step with
+  "Artifact storage quota has been hit", which failed the whole required
+  `build-and-test` check even though the build, the test suite and the e2e
+  smoke all passed on both drivers. The org is on the Free plan — 500 MB
+  included — and the repo was holding **9.7 GB across 1,715 artifacts**, because
+  no CI upload set `retention-days` and the default is 90.
+
+  Every upload now sets one. The release artifacts get 1 day, which loses
+  nothing: each is either consumed by a later job in the same run, or a
+  duplicate of a file already attached to the GitHub Release, and release
+  assets are permanent and do not count against this quota. `linux-x64-bin`
+  was already on 1 day for exactly that reason — the other fifteen now match
+  it. Test results get 7 days; nothing consumes them, they exist to
+  post-mortem a red run, and the 90-day default had accumulated ~1,000 of
+  them.
+
+  Steady state goes from "grows until it breaks" to roughly one release run's
+  output plus a week of test results.
+
+  The upload step is also no longer a gate. It is diagnostic — those artifacts
+  are read only when someone post-mortems a red run — so its failure says
+  nothing about whether the code is good, and it should never have been able to
+  fail the required check. While the quota was full it did exactly that to five
+  PRs whose build, full suite and e2e smoke had all passed on both drivers.
+
 ### Added
 
 - **An MCP persona, scoped by region rather than by subpath.** `ai_ops_south` is
@@ -500,6 +528,16 @@ not publish. **Same code, plus a fix to the release pipeline.**
   It broke the v1.5.15 release twice — once across the two release workflows,
   once between two packaging jobs — and cost three reruns before completing by
   luck rather than by fix. Each job now installs into its own `runner.temp`.
+
+### Fixed
+
+- **A change to a composite action did not run the jobs that use it.** Both
+  packaging-scope gates in `ci.yml` listed `.github/workflows/ci.yml` but not
+  `.github/actions/`, so editing `podman-preflight` or `sign-attest` changed
+  what a job does while matching none of the paths that trigger it. The podman
+  preflight had in fact been edited without the container job ever running
+  against it, and its description had gone stale against a runner home that
+  moved on 2026-09-24. Both gates now include `.github/actions/`.
 
 ### Documentation
 
