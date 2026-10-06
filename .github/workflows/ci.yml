@@ -190,7 +190,21 @@ jobs:
 
   build-and-test-matrix:
     needs: changes
-    if: needs.changes.outputs.code == 'true'
+    # FORK GUARD — repeated on every self-hosted job in this file. A pull
+    # request from a fork never runs on the self-hosted pool, even after a
+    # maintainer approves the run. Those three machines also build and SIGN
+    # releases, and their state persists between jobs (podman storage, the
+    # NuGet cache, the el9 builder container), so one approved malicious PR
+    # could leave something behind that a later signed release picks up.
+    # Repo approval settings gate *whether* a fork's run starts; this gates
+    # *where* it can run, and does not depend on 18 maintainers never
+    # misclicking.
+    #
+    # The required check fails closed on a fork PR (see build-and-test
+    # below), so fork code cannot merge untested. To test it, a maintainer
+    # reviews the change, pushes it to a branch in this repository, and opens
+    # the PR from there.
+    if: needs.changes.outputs.code == 'true' && (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository)
     runs-on: self-hosted
     # Longest observed run is ~9 min; this is a runaway guard, not a target.
     timeout-minutes: 30
@@ -633,12 +647,25 @@ jobs:
     if: always()
     steps:
       - name: Report the matrix result
+        # Via env, not inlined: the head repo name comes from the PR author.
+        env:
+          EVENT: ${{ github.event_name }}
+          HEAD_REPO: ${{ github.event.pull_request.head.repo.full_name }}
+          THIS_REPO: ${{ github.repository }}
         run: |
           RESULT="${{ needs.build-and-test-matrix.result }}"
           CODE="${{ needs.changes.outputs.code }}"
           echo "matrix result: $RESULT (code-affecting change: $CODE)"
           if [ "$RESULT" = "success" ]; then
             exit 0
+          fi
+          # A fork PR skips the self-hosted suite (fork guard, see
+          # build-and-test-matrix), so it has no verdict yet. Fail rather than
+          # pass: the skip says nothing about the code.
+          if [ "$EVENT" = "pull_request" ] && [ "$HEAD_REPO" != "$THIS_REPO" ] && [ "$CODE" = "true" ]; then
+            echo "::error::Pull request from a fork: the test suite does not run on the self-hosted runners for forks."
+            echo "A maintainer can review the change and push it to a branch in this repository, then open a PR from that branch, to get it tested."
+            exit 1
           fi
           # A skip counts as a pass ONLY when the scope job is the reason for
           # it. This job is the single required status check, so accepting
@@ -653,6 +680,8 @@ jobs:
 
   aot-publish:
     runs-on: self-hosted
+    # Fork guard — see build-and-test-matrix.
+    if: (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository)
     # Runaway guard (~6 min typical); without it a hang holds a runner for 6h.
     timeout-minutes: 30
     # Independent of build-and-test: a native-link failure and a test failure
@@ -825,6 +854,8 @@ jobs:
     timeout-minutes: 20
     name: RPM build
     runs-on: self-hosted
+    # Fork guard — see build-and-test-matrix.
+    if: (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository)
     # Packaging was only ever built by release.yml, so a broken spec could sit
     # on master for a whole release cycle and fail at tag time — which is
     # exactly what happened to v1.2.0: TWO bugs shipped together (a %files line
@@ -972,6 +1003,8 @@ jobs:
     timeout-minutes: 25
     name: Container build
     runs-on: self-hosted
+    # Fork guard — see build-and-test-matrix.
+    if: (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository)
     # The container image was only ever built by release.yml, so a broken
     # Dockerfile, entrypoint or APK layout reached a tag before anyone saw it —
     # the same gap that let two RPM bugs ship in v1.2.0.
@@ -1108,6 +1141,8 @@ jobs:
     timeout-minutes: 20
     name: Static musl binary
     runs-on: self-hosted
+    # Fork guard — see build-and-test-matrix.
+    if: (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository)
     # The fully static binary (docs/static-binary.md) is the one artifact with
     # NO runtime dependencies — no libc, no OpenSSL, no libe_sqlite3.so — so it
     # runs on any x86-64 Linux regardless of distro or glibc version.
