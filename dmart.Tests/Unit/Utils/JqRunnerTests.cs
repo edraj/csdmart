@@ -21,6 +21,11 @@ public class JqRunnerTests
     [InlineData("env")]
     [InlineData("$ENV.FOO")]
     [InlineData("input")]
+    // V-20: the input family used to slip past `\binput\b` (no word boundary
+    // before the `s`/`_`), so these must now be rejected too.
+    [InlineData("inputs")]
+    [InlineData("input_filename")]
+    [InlineData("input_line_number")]
     [InlineData("debug")]
     [InlineData("stderr")]
     [InlineData("path(.foo)")]
@@ -29,6 +34,20 @@ public class JqRunnerTests
         JqRunner.ValidateFilter(filter, out var reason).ShouldBeFalse();
         reason.ShouldNotBeNull();
         reason.ShouldContain("disallowed builtins");
+    }
+
+    // V-20: a jq runtime failure must not echo jq's stderr — which carried the
+    // server-side `map(...)` wrapper and a jq engine fingerprint — back to the
+    // (possibly anonymous) caller.
+    [Fact]
+    public void ToFailureResponse_JqError_Does_Not_Leak_Stderr_Or_Wrapper()
+    {
+        const string stderr = "jq: error (at <stdin>:0): map(.secret) is not defined";
+        var resp = JqRunner.ToFailureResponse(JqRunner.FailureKind.JqError, stderr);
+        resp.Error.ShouldNotBeNull();
+        resp.Error!.Message.ShouldNotContain("map(");
+        resp.Error.Message.ShouldNotContain("<stdin>");
+        resp.Error.Message.ShouldNotContain(".secret");
     }
 
     [Fact]

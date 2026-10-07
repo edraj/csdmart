@@ -284,17 +284,23 @@ public sealed class SqliteDialectExecutionTests : IAsyncLifetime
     }
 
     [Fact]
-    public async Task AclFilter_IsSkippedForAttachmentsAndHistories()
+    public async Task AclFilter_UsesParentRecordAclForAttachmentsAndHistories()
     {
-        // Parity with PostgreSQL: Python skips ACL on these tables.
+        await Task.CompletedTask;
+        // V-06: these tables are authorized against their governing record via
+        // correlated EXISTS, using the SQLite parent-split idiom (rtrim/substr).
         foreach (var table in new[] { "attachments", "histories" })
         {
             var sql = new System.Text.StringBuilder();
             var args = new List<NpgsqlParameter>();
             QueryHelper.AppendAclFilter(sql, args, "bob", table,
                 new List<string> { "sp:*" }, SqliteSqlDialect.Instance);
-            sql.ToString().ShouldBeEmpty();
-            args.ShouldBeEmpty();
+            var text = sql.ToString();
+            text.ShouldContain("EXISTS");
+            text.ShouldContain("FROM entries");
+            text.ShouldContain("owner_shortname =");
+            text.ShouldContain("rtrim(");        // SQLite parent-split, not regexp
+            args.ShouldNotBeEmpty();             // owner + policy params were bound
         }
     }
 

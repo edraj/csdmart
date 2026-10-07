@@ -163,8 +163,10 @@ public class SqlEmissionGoldenTests
             ("user-with-mixed-policies", "alice", "entries",
                 new() { "myspace:posts:content:true:alice", "*:legacy:content:true:bob" }),
             ("policy-metachars", "alice", "entries", new() { @"sp:/a_b:100%\x", "sp:/*" }),
-            ("skipped-attachments", "alice", "attachments", new() { "a:*" }),
-            ("skipped-histories", "alice", "histories", new() { "a:*" }),
+            // V-06: attachments/histories are authorized against their parent/
+            // governing record via correlated EXISTS, not skipped.
+            ("parent-acl-attachments", "alice", "attachments", new() { "a:*" }),
+            ("parent-acl-histories", "alice", "histories", new() { "a:*" }),
             ("table-users", "alice", "users", new() { "management:/users:*" }),
         })
         {

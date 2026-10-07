@@ -437,15 +437,25 @@ public sealed class QueryService(
 
     private async Task<Response> QueryAttachmentsAsync(Query q, string? actor, CancellationToken ct)
     {
-        // Python: get_user_query_policies() → if empty return (0, []). Row-level ACL
-        // is skipped for attachments (see AppendAclFilter), but the policy gate remains.
+        // Python: get_user_query_policies() → if empty return (0, []).
         if (!await CanQueryAsync(actor, ResourceType.Content, q.SpaceName, q.Subpath ?? "/", ct))
             return EmptyQueryResponse();
 
-        var pageTask = attachments.QueryAsync(q, ct);
+        // Row-level ACL for attachments is resolved against the PARENT entry
+        // (V-06): a null actor is the internal unrestricted path, a non-null
+        // one (anonymous included) is gated by the same query_policies the
+        // entries plane uses. Bail on an empty policy set, mirroring entries.
+        List<string>? policies = null;
+        if (actor is not null)
+        {
+            policies = await perms.BuildUserQueryPoliciesAsync(actor, q.SpaceName, q.Subpath ?? "/", ct);
+            if (policies.Count == 0) return EmptyQueryResponse();
+        }
+
+        var pageTask = actor is null ? attachments.QueryAsync(q, ct) : attachments.QueryAsync(q, actor, policies, ct);
         var totalTask = SkipTotal(q)
             ? Task.FromResult(-1)
-            : attachments.CountQueryAsync(q, ct);
+            : actor is null ? attachments.CountQueryAsync(q, ct) : attachments.CountQueryAsync(q, actor, policies, ct);
         await Task.WhenAll(pageTask, totalTask);
 
         var records = (await pageTask).Select(AttachmentMapper.ToRecord).ToList();
@@ -458,7 +468,12 @@ public sealed class QueryService(
 
     private async Task<Response> QueryHistoryAsync(Query q, string? actor, CancellationToken ct)
     {
-        // Python blocks anonymous users for history queries.
+        // Python blocks a null (unauthenticated-at-the-handler) actor for
+        // history queries. The public route still reaches here with the literal
+        // "anonymous" actor, which this guard does NOT stop — that was the V-06
+        // hole. Anonymous is now ACL-filtered below against the parent entry
+        // rather than blanket-blocked, so explicitly world-readable history is
+        // still visible while protected history is not.
         if (actor is null)
             return Response.Fail(InternalErrorCode.NOT_AUTHENTICATED,
                 "history queries require authentication", ErrorTypes.Auth);
@@ -466,10 +481,15 @@ public sealed class QueryService(
         if (!await CanQueryAsync(actor, ResourceType.Content, q.SpaceName, q.Subpath ?? "/", ct))
             return EmptyQueryResponse();
 
-        var pageTask = history.QueryHistoryAsync(q, ct);
+        // Row-level ACL via the governing entry (V-06). Mirror entries: bail on
+        // an empty policy set so a caller with no query grant sees nothing.
+        var policies = await perms.BuildUserQueryPoliciesAsync(actor, q.SpaceName, q.Subpath ?? "/", ct);
+        if (policies.Count == 0) return EmptyQueryResponse();
+
+        var pageTask = history.QueryHistoryAsync(q, actor, policies, ct);
         var totalTask = SkipTotal(q)
             ? Task.FromResult(-1)
-            : history.CountHistoryQueryAsync(q, ct);
+            : history.CountHistoryQueryAsync(q, actor, policies, ct);
         await Task.WhenAll(pageTask, totalTask);
 
         var records = (await pageTask).Select(HistoryMapper.ToRecord).ToList();

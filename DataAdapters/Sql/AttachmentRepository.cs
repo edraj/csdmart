@@ -573,6 +573,20 @@ public sealed class AttachmentRepository(IDbConnectionFactory db, ISqlDialect di
     public Task<int> CountQueryAsync(Models.Api.Query q, CancellationToken ct = default)
         => QueryHelper.RunCountAsync(db, "attachments", q, ct);
 
+    // ACL-scoped overloads: restrict rows to attachments whose PARENT entry the
+    // actor can read (V-06). A null actor keeps the internal unrestricted path
+    // above (UniquenessValidator's shortname probe). A non-null actor routes
+    // through AppendAclFilter → AppendParentEntryAclFilter.
+    public Task<List<Attachment>> QueryAsync(
+        Models.Api.Query q, string actor, List<string>? queryPolicies, CancellationToken ct = default)
+        => QueryHelper.RunQueryAsync(db, SelectColumnsNoMedia, q, Hydrate, ct,
+            userShortname: actor, tableName: "attachments", queryPolicies: queryPolicies);
+
+    public Task<int> CountQueryAsync(
+        Models.Api.Query q, string actor, List<string>? queryPolicies, CancellationToken ct = default)
+        => QueryHelper.RunCountAsync(db, "attachments", q, ct,
+            userShortname: actor, queryPolicies: queryPolicies);
+
     private static void AddJsonb(DbCommand cmd, string? json)
         => DbParams.Add(cmd, (object?)json ?? DBNull.Value, SqlValueKind.Json);
 
