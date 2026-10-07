@@ -85,9 +85,17 @@ public class AggregationPrecisionTests : IClassFixture<DmartFactory>
                 if (DmartFactory.UseSqlite)
                 {
                     // SQLite sums through REAL — the dialect documents that as an
-                    // accepted precision degradation, so only assert the reducer
-                    // ran and serialized. Exactness is PostgreSQL's to promise.
-                    raw.ShouldContain("\"sum\":", customMessage: raw);
+                    // accepted precision degradation. Exactness is PostgreSQL's
+                    // to promise, but the VALUE and its wire TYPE are still
+                    // pinned here: a JSON number (never a string) within double
+                    // tolerance of 0.3. The old branch asserted only that a
+                    // "sum" key existed and returned — the exact shape of gap
+                    // that let other SQLite divergences through.
+                    using var doc = System.Text.Json.JsonDocument.Parse(raw);
+                    var sum = doc.RootElement.GetProperty("records")[0]
+                        .GetProperty("attributes").GetProperty("sum");
+                    sum.ValueKind.ShouldBe(System.Text.Json.JsonValueKind.Number, raw);
+                    sum.GetDouble().ShouldBe(0.3, tolerance: 1e-9);
                     return;
                 }
 

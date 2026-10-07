@@ -60,7 +60,10 @@ public sealed class PostgresSqlDialect : ISqlDialect
                 : "";
             expr = $"{column}::jsonb{middle} ->> '{path[^1]}'";
         }
-        return $"CASE WHEN ({expr}) ~ '^-?[0-9]+(\\.[0-9]+)?$' THEN ({expr})::float END {direction}, ({expr}) {direction}";
+        // Explicit NULL placement (PostgreSQL's own defaults, so this changes the
+        // text, not the plan) — see SortNulls for why both engines must spell it.
+        var nulls = SortNulls.For(direction);
+        return $"CASE WHEN ({expr}) ~ '^-?[0-9]+(\\.[0-9]+)?$' THEN ({expr})::float END {direction} {nulls}, ({expr}) {direction} {nulls}";
     }
 
     // Byte-identical to the pre-seam emission in QueryHelper. PostgreSQL can

@@ -44,8 +44,15 @@ public sealed class SqliteSqlDialect : ISqlDialect
     public string JsonSortKeys(string column, IReadOnlyList<string> path, string direction)
     {
         var expr = path.Count == 0 ? column : JsonText(column, path);
-        return $"CASE WHEN typeof({expr}) IN ('integer','real') THEN {expr} END {direction}, "
-             + $"({expr}) {direction}";
+        // Numeric-LOOKING text ("10", "-3", "2.5") takes the numeric branch too,
+        // matching the regex sniff PostgreSQL applies; without it "9","10","100"
+        // sorted 10,100,9 here and 9,10,100 there.
+        var nulls = SortNulls.For(direction);
+        return $"CASE WHEN typeof({expr}) IN ('integer','real') THEN {expr} "
+             + $"WHEN typeof({expr}) = 'text' AND {expr} GLOB '[0-9]*' AND {expr} NOT GLOB '*[^0-9.]*' THEN CAST({expr} AS REAL) "
+             + $"WHEN typeof({expr}) = 'text' AND {expr} GLOB '-[0-9]*' AND substr({expr}, 2) NOT GLOB '*[^0-9.]*' THEN CAST({expr} AS REAL) "
+             + $"END {direction} {nulls}, "
+             + $"({expr}) {direction} {nulls}";
     }
 
     // SQLite covers the counting, extremum, summing and concatenating
@@ -183,7 +190,7 @@ public sealed class SqliteSqlDialect : ISqlDialect
         // Only entries carries the index, matching PostgreSQL, where the
         // pg_trgm GIN is likewise declared on entries alone.
         return string.Equals(targetTable, "entries", StringComparison.Ordinal)
-            ? $"entries.rowid IN (SELECT rowid FROM entries_fts WHERE {column} LIKE {patternPlaceholder})"
+            ? $"entries.rowid IN (SELECT rowid FROM entries_fts WHERE {column} LIKE {patternPlaceholder} ESCAPE '\\')"
             : ILike(column, patternPlaceholder, negated: false);
     }
 
@@ -192,8 +199,17 @@ public sealed class SqliteSqlDialect : ISqlDialect
     // SQLite (no ICU), so accented Latin does not fold the way PostgreSQL's
     // ILIKE folds it — a documented tier limit (audit §9). Arabic is unaffected:
     // the script has no case.
+    //
+    // ESCAPE '\' is REQUIRED: SearchExpressionParser backslash-escapes `_`, `%`
+    // and `\` in every pattern (so a literal `_` in a value can be searched).
+    // PostgreSQL's LIKE/ILIKE treat backslash as the escape character by
+    // default; SQLite's LIKE has NO escape character unless one is declared,
+    // so `ab\_%` demanded a literal backslash and every wildcard search whose
+    // value contained `_` (snake_case codes, shortnames) returned zero rows on
+    // SQLite while matching on PostgreSQL. ArrayAnyLike below already declared
+    // it; this site and the FTS prefilter did not.
     public string ILike(string lhs, string patternPlaceholder, bool negated)
-        => $"lower({lhs}) {(negated ? "NOT LIKE" : "LIKE")} lower({patternPlaceholder})";
+        => $"lower({lhs}) {(negated ? "NOT LIKE" : "LIKE")} lower({patternPlaceholder}) ESCAPE '\\'";
 
     // No cast needed: SQLite compares TEXT-affinity values directly, and an
     // explicit CAST would defeat index use on the column.
@@ -276,10 +292,16 @@ public sealed class SqliteSqlDialect : ISqlDialect
     // Timestamps are stored as fixed-width local wall-clock text (SqliteValues),
     // so a date string compares directly. An epoch-millis value is converted to
     // that same format so the comparison stays lexicographic.
+    //
+    // A non-epoch bound is compared as text, so an ISO `T` separator — the only
+    // way the search grammar can carry a time of day — must be folded to the
+    // stored space: 'T' (0x54) sorts after ' ' (0x20), which made
+    // `@created_at:>=2024-03-01T00:00:00` drop the entire first day on SQLite
+    // while PostgreSQL cast it correctly.
     public string TimestampFrom(string placeholder, bool epochMillis)
         => epochMillis
             ? $"strftime('%Y-%m-%d %H:%M:%f', {placeholder} / 1000.0, 'unixepoch', 'localtime') || '0000'"
-            : placeholder;
+            : $"replace({placeholder}, 'T', ' ')";
 
     // The VIRTUAL generated column, not the json path it derives from —
     // idx_entries_schema_shortname is only selected when the query names the

@@ -538,7 +538,7 @@ public static class QueryHelper
         var allowed = tableName is not null && TableSortColumns.TryGetValue(tableName, out var set)
             ? set
             : SharedSortColumns;
-        return allowed.Contains(token) ? $"{token} {direction}" : null;
+        return allowed.Contains(token) ? $"{token} {direction} {SortNulls.For(direction)}" : null;
     }
 
     // Parse comma-separated sort_by into one ORDER BY clause body (without the
@@ -709,7 +709,11 @@ public static class QueryHelper
             return null;
 
         var args = new List<NpgsqlParameter>();
-        var where = BuildWhereClause(q, args, tableName);
+        // The dialect MUST be threaded through: the 3-arg overload hard-codes
+        // PostgreSQL, which emitted `= ANY($n)` / `@>` / `ILIKE` / `::jsonb` into
+        // every aggregation that carried a filter or search on SQLite — a
+        // SqliteException (HTTP 500) that no SQLite test exercised.
+        var where = BuildWhereClause(q, args, dialect, tableName);
 
         var groupBy = q.AggregationData.GroupBy ?? new();
         var reducers = q.AggregationData.Reducers ?? new();

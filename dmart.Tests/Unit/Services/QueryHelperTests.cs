@@ -1045,7 +1045,8 @@ public class QueryHelperTests
         var q = new Query { Type = QueryType.Search, SpaceName = "t", Subpath = "/",
             SortBy = "created_at,shortname", SortType = SortType.Descending };
         var order = BuildOrder(q, "entries");
-        order.ShouldContain("ORDER BY created_at DESC, shortname DESC");
+        // Explicit NULL placement on every key — see SortNulls.
+        order.ShouldContain("ORDER BY created_at DESC NULLS FIRST, shortname DESC NULLS FIRST");
     }
 
     [Fact]
