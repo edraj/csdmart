@@ -682,7 +682,7 @@ public sealed class UserRepository(
     // (ON CONFLICT DO NOTHING — never clobbers the real admin) so the FK resolves even
     // on a deployment that hasn't bootstrapped an admin yet (a later admin bootstrap
     // repairs the placeholder into the real super_admin).
-    private const string FallbackOwner = "dmart";
+    internal const string FallbackOwner = "dmart";
 
     // Force-delete: reassign the user's STRUCTURAL objects, delete their DATA, then
     // delete the user — all atomically.
@@ -900,6 +900,248 @@ public sealed class UserRepository(
             DbParams.Add(upd, FallbackOwner);
             DbParams.Add(upd, policies, SqlValueKind.TextArray);
             await upd.ExecuteNonQueryAsync(ct);
+        }
+    }
+
+    // Rename a user in place — the user branch of a `move` request. Python's
+    // adapter.move only rewrites the users row, but here owner_shortname on
+    // entries/attachments/spaces/roles/groups/permissions is a deferrable FK →
+    // users(shortname), so every row the user owns must follow the rename in
+    // the same transaction or the COMMIT fails. Also carried over: the user's
+    // own attachments (subpath "<user subpath>/<shortname>"), locks and
+    // history rows. Sessions and the resolved-permissions cache are cleared
+    // instead — they are keyed by the old name, and the client's JWT names it
+    // too, so the user signs in again under the new shortname.
+    //
+    // NOT rewritten (Python doesn't either): user shortnames embedded in JSON —
+    // entry acl / collaborators, relationships.
+    //
+    // Returns false when `from` doesn't exist. A taken `to` surfaces as the
+    // UNIQUE violation on users.shortname; the transaction rolls back intact.
+    public async Task<bool> RenameAsync(string from, string to, CancellationToken ct = default)
+    {
+        var renamed = await db.ExecuteWithRetryAsync(c => RenameOnceAsync(from, to, c), ct);
+        if (renamed)
+        {
+            // A global clear, not Evict: the rename also rewrote owner_shortname
+            // on users/roles/groups/permissions the user owns, which other
+            // actors' cached bundles hold (same reasoning as ForceDeleteAsync).
+            await refresher.RefreshAsync(ct);
+            EvictAuth(from);
+            EvictAuth(to);
+        }
+        return renamed;
+    }
+
+    [SuppressMessage("Security", "CA2100",
+        Justification = "Audited: every sql is a const literal or interpolates only NowExpr/dialect placeholders; user-supplied values bind through positional parameters.")]
+    private async Task<bool> RenameOnceAsync(string from, string to, CancellationToken ct)
+    {
+        await using var conn = await db.OpenAsync(ct);
+        await using var tx = await conn.BeginTransactionAsync(ct);
+
+        string space, subpath, owner;
+        string? ownerGroup;
+        bool isActive;
+        await using (var sel = conn.Command(
+            "SELECT space_name, subpath, is_active, owner_shortname, owner_group_shortname FROM users WHERE shortname = $1", tx))
+        {
+            DbParams.Add(sel, from);
+            await using var reader = await sel.ExecuteReaderAsync(ct);
+            if (!await reader.ReadAsync(ct)) return false;
+            space = reader.GetString(0);
+            subpath = reader.GetString(1);
+            isActive = reader.GetBoolean(2);
+            owner = reader.GetString(3);
+            ownerGroup = reader.IsDBNull(4) ? null : reader.GetString(4);
+        }
+
+        // 1. The user row. A self-owned user keeps owning itself under the new
+        //    name. The old key is tombstoned so an incremental export consumer
+        //    keyed on (space, subpath, shortname) drops it rather than keeping
+        //    a phantom account next to the renamed one.
+        await Tombstones.RecordAsync(conn, tx, "users", "shortname = $1",
+            c => DbParams.Add(c, from), hasResourceType: false, ct);
+        var newOwner = owner == from ? to : owner;
+        await using (var upd = conn.CreateCommand())
+        {
+            upd.Transaction = tx;
+            DbParams.Add(upd, from);
+            DbParams.Add(upd, to);
+            DbParams.Add(upd, newOwner);
+            DbParams.Add(upd, Utils.QueryPolicies.Generate(space, subpath, "user", isActive, newOwner, ownerGroup, null).ToArray(),
+                SqlValueKind.TextArray);
+            upd.CommandText = $"""
+                UPDATE users
+                   SET shortname = $2, owner_shortname = $3, query_policies = $4, updated_at = {NowExpr(upd)}
+                 WHERE shortname = $1
+                """;
+            await upd.ExecuteNonQueryAsync(ct);
+        }
+
+        // 2. Everything the user owns. query_policies embeds the owner, so it is
+        //    regenerated per row (same reasoning as ReassignOwnerAsync).
+        await RenameOwnerAsync(conn, tx, "entries",     null,         from, to, ct);
+        await RenameOwnerAsync(conn, tx, "spaces",      "space",      from, to, ct);
+        await RenameOwnerAsync(conn, tx, "roles",       "role",       from, to, ct);
+        await RenameOwnerAsync(conn, tx, "groups",      "group",      from, to, ct);
+        await RenameOwnerAsync(conn, tx, "permissions", "permission", from, to, ct);
+        await RenameOwnerAsync(conn, tx, "users",       "user",       from, to, ct);
+        await using (var cmd = conn.CreateCommand())
+        {
+            cmd.Transaction = tx;
+            DbParams.Add(cmd, from);
+            DbParams.Add(cmd, to);
+            cmd.CommandText = $"UPDATE attachments SET owner_shortname = $2, updated_at = {NowExpr(cmd)} WHERE owner_shortname = $1";
+            await cmd.ExecuteNonQueryAsync(ct);
+        }
+
+        // 3. Rows keyed on the user's own path: its attachments (and their
+        //    history, whose coords are the attachment's — same as an entry
+        //    move), the lock on the user record, and its history.
+        var oldPrefix = subpath.TrimEnd('/') + "/" + from;
+        var newPrefix = subpath.TrimEnd('/') + "/" + to;
+        foreach (var sql in new[]
+        {
+            "UPDATE attachments SET subpath = $3 WHERE space_name = $1 AND subpath = $2",
+            "UPDATE locks SET subpath = $3 WHERE space_name = $1 AND subpath = $2",
+            "UPDATE histories SET subpath = $3 WHERE space_name = $1 AND subpath = $2",
+        })
+        {
+            await using var cmd = conn.Command(sql, tx);
+            DbParams.Add(cmd, space);
+            DbParams.Add(cmd, oldPrefix);
+            DbParams.Add(cmd, newPrefix);
+            await cmd.ExecuteNonQueryAsync(ct);
+        }
+        foreach (var sql in new[]
+        {
+            "UPDATE locks     SET shortname = $4 WHERE space_name = $1 AND subpath = $2 AND shortname = $3",
+            "UPDATE histories SET shortname = $4 WHERE space_name = $1 AND subpath = $2 AND shortname = $3",
+        })
+        {
+            await using var cmd = conn.Command(sql, tx);
+            DbParams.Add(cmd, space);
+            DbParams.Add(cmd, subpath);
+            DbParams.Add(cmd, from);
+            DbParams.Add(cmd, to);
+            await cmd.ExecuteNonQueryAsync(ct);
+        }
+
+        // 4. Authorship (no FK, but should keep naming the same person).
+        foreach (var sql in new[]
+        {
+            "UPDATE locks     SET owner_shortname = $2 WHERE owner_shortname = $1",
+            "UPDATE histories SET owner_shortname = $2 WHERE owner_shortname = $1",
+        })
+        {
+            await using var cmd = conn.Command(sql, tx);
+            DbParams.Add(cmd, from);
+            DbParams.Add(cmd, to);
+            await cmd.ExecuteNonQueryAsync(ct);
+        }
+
+        // 5. Keyed by the old name — drop rather than carry (see header).
+        foreach (var sql in new[]
+        {
+            "DELETE FROM sessions             WHERE shortname = $1",
+            "DELETE FROM userpermissionscache WHERE user_shortname = $1",
+        })
+        {
+            await using var cmd = conn.Command(sql, tx);
+            DbParams.Add(cmd, from);
+            await cmd.ExecuteNonQueryAsync(ct);
+        }
+
+        await tx.CommitAsync(ct);
+        return true;
+    }
+
+    // Point every row in `table` owned by `from` at `to`.
+    //
+    // Fast path: one set-based UPDATE that rewrites only the owner-scoped
+    // query_policies patterns in place. Of the patterns QueryPolicies.Generate
+    // emits, the owner-scoped literal is the only one ending in ":<owner>" —
+    // the unscoped and __all_subpaths__ forms end in ":true"/":false", the
+    // group-scoped one in ":<owner_group>". So swapping that suffix is exactly
+    // what regenerating with the new owner would produce, without pulling a
+    // single row into the app. That stops holding when the old name could be
+    // mistaken for another suffix: a group named like the user, or a user
+    // literally named "true"/"false". Those rows are left for the slow path.
+    //
+    // Slow path: whatever the fast path skipped, regenerated per row.
+    // `resourceType` null means read it off the row (entries), where a folder
+    // also contributes its own shortname to the patterns — mirrors
+    // QueryPolicies.Generate(Entry). Paged by uuid: an updated row no longer
+    // matches `owner_shortname = from`, so each page is simply the next batch
+    // still owned by the old name.
+    [SuppressMessage("Security", "CA2100",
+        Justification = "Audited: `table` and `resourceType` are hardcoded constants supplied only by RenameOnceAsync (never user input); all user-supplied values bind through positional parameters.")]
+    private static async Task RenameOwnerAsync(
+        DbConnection conn, DbTransaction tx, string table, string? resourceType,
+        string from, string to, CancellationToken ct)
+    {
+        if (from is not ("true" or "false"))
+        {
+            await using var bulk = conn.CreateCommand();
+            bulk.Transaction = tx;
+            DbParams.Add(bulk, from);
+            DbParams.Add(bulk, to);
+            // Suffix compared with right()/substr(), not LIKE: '_' is legal in a
+            // shortname and is a LIKE wildcard.
+            var rewritten = bulk is Microsoft.Data.Sqlite.SqliteCommand
+                ? $"""
+                  (SELECT json_group_array(CASE WHEN substr(p.value, -(length($1) + 1)) = ':' || $1
+                                                THEN substr(p.value, 1, length(p.value) - length($1)) || $2
+                                                ELSE p.value END)
+                     FROM (SELECT value FROM json_each({table}.query_policies) ORDER BY key) AS p)
+                  """
+                : """
+                  ARRAY(SELECT CASE WHEN right(p, length($1) + 1) = ':' || $1
+                                    THEN left(p, length(p) - length($1)) || $2
+                                    ELSE p END
+                          FROM unnest(query_policies) WITH ORDINALITY AS t(p, i) ORDER BY i)
+                  """;
+            bulk.CommandText = $"""
+                UPDATE {table}
+                   SET owner_shortname = $2, query_policies = {rewritten}, updated_at = {NowExpr(bulk)}
+                 WHERE owner_shortname = $1
+                   AND (owner_group_shortname IS NULL OR owner_group_shortname <> $1)
+                """;
+            await bulk.ExecuteNonQueryAsync(ct);
+        }
+
+        const int PageSize = 1000;
+        var typeCol = resourceType is null ? "resource_type" : "''";
+        while (true)
+        {
+            var rows = new List<(Guid Uuid, string Space, string Subpath, bool Active, string? OwnerGroup, string Type, string Shortname)>();
+            await using (var sel = conn.Command(
+                $"SELECT uuid, space_name, subpath, is_active, owner_group_shortname, {typeCol}, shortname FROM {table} WHERE owner_shortname = $1 ORDER BY uuid LIMIT $2", tx))
+            {
+                DbParams.Add(sel, from);
+                DbParams.Add(sel, PageSize);
+                await using var reader = await sel.ExecuteReaderAsync(ct);
+                while (await reader.ReadAsync(ct))
+                    rows.Add((reader.GetGuid(0), reader.GetString(1), reader.GetString(2), reader.GetBoolean(3),
+                              reader.IsDBNull(4) ? null : reader.GetString(4), reader.GetString(5), reader.GetString(6)));
+            }
+            if (rows.Count == 0) return;
+
+            foreach (var row in rows)
+            {
+                var type = resourceType ?? row.Type;
+                var policies = Utils.QueryPolicies.Generate(
+                    row.Space, row.Subpath, type, row.Active, to, row.OwnerGroup,
+                    resourceType is null && type == "folder" ? row.Shortname : null).ToArray();
+                await using var upd = conn.CreateCommand();
+                upd.Transaction = tx;
+                DbParams.Add(upd, row.Uuid);
+                DbParams.Add(upd, to);
+                DbParams.Add(upd, policies, SqlValueKind.TextArray);
+                upd.CommandText = $"UPDATE {table} SET owner_shortname = $2, query_policies = $3, updated_at = {NowExpr(upd)} WHERE uuid = $1";
+                await upd.ExecuteNonQueryAsync(ct);
+            }
         }
     }
 

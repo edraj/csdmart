@@ -200,7 +200,7 @@ public static class RequestHandler
                                 await DispatchDeleteAsync(rec, req.SpaceName, actor, managementSpace, req.Force, req.DryRun,
                                     entries, users, userSvc, access, spaces, attachments, perms, ct),
                             RequestType.Move =>
-                                await DispatchMoveAsync(rec, req.SpaceName, actor, entries, ct),
+                                await DispatchMoveAsync(rec, req.SpaceName, actor, entries, users, perms, history, ct),
                             // Python: Assign sets collaborators on an entry.
                             RequestType.Assign =>
                                 await DispatchAssignAsync(rec, req.SpaceName, actor, entries, users, ct),
@@ -1472,7 +1472,8 @@ public static class RequestHandler
     // ============================================================================
 
     private static async Task<(Response Response, Record UpdatedRecord)> DispatchMoveAsync(
-        Record rec, string space, string actor, EntryService entries, CancellationToken ct)
+        Record rec, string space, string actor, EntryService entries, UserRepository users,
+        PermissionService perms, HistoryRepository history, CancellationToken ct)
     {
         var attrs = rec.Attributes ?? new();
         if (!TryGetString(attrs, "dest_subpath", out var destSubpath)
@@ -1484,12 +1485,79 @@ public static class RequestHandler
         var srcSpace = TryGetString(attrs, "src_space_name", out var ss) && ss is not null ? ss : space;
         var destSpace = TryGetString(attrs, "dest_space_name", out var ds) && ds is not null ? ds : space;
 
+        // Users live in their own table, which EntryService.MoveAsync never
+        // looks at — it would report "source entry missing" for every user.
+        if (rec.ResourceType == ResourceType.User)
+            return await DispatchUserMoveAsync(rec, srcSpace, destSpace, destSubpath!, destShortname!,
+                actor, users, perms, history, ct);
+        if (rec.ResourceType is ResourceType.Role or ResourceType.Group
+            or ResourceType.Permission or ResourceType.Space)
+            return (Response.Fail(InternalErrorCode.NOT_SUPPORTED_TYPE,
+                $"move is not supported for {JsonbHelpers.EnumMember(rec.ResourceType)}", ErrorTypes.Request), rec);
+
         var locator = new Locator(rec.ResourceType, srcSpace, rec.Subpath, rec.Shortname);
         var to = new Locator(rec.ResourceType, destSpace, destSubpath!, destShortname!);
         var result = await entries.MoveAsync(locator, to, actor, ct);
         return result.IsOk
             ? (Response.Ok(), rec with { Subpath = to.Subpath, Shortname = to.Shortname })
             : (Response.Fail(result.ErrorCode!, result.ErrorMessage!, ErrorTypes.Request), rec);
+    }
+
+    // A user move is a rename: users always sit at management:/users, so only
+    // the shortname may change (Python matches users by shortname alone too).
+    // Gated like an entry move — update on the source, create at the target.
+    private static async Task<(Response Response, Record UpdatedRecord)> DispatchUserMoveAsync(
+        Record rec, string srcSpace, string destSpace, string destSubpath, string destShortname,
+        string actor, UserRepository users, PermissionService perms, HistoryRepository history,
+        CancellationToken ct)
+    {
+        Response Fail(int code, string message) => Response.Fail(code, message, ErrorTypes.Request);
+
+        var existing = await users.GetByShortnameAsync(rec.Shortname, ct);
+        if (existing is null)
+            return (Fail(InternalErrorCode.SHORTNAME_DOES_NOT_EXIST, "user not found"), rec);
+        if (existing.IsDeleted)
+            return (Fail(InternalErrorCode.NOT_ALLOWED, "account has been deleted"), rec);
+        if (!string.Equals(srcSpace, existing.SpaceName, StringComparison.Ordinal)
+            || !string.Equals(destSpace, existing.SpaceName, StringComparison.Ordinal)
+            || !string.Equals(destSubpath.Trim('/'), existing.Subpath.Trim('/'), StringComparison.Ordinal))
+            return (Fail(InternalErrorCode.INVALID_DATA,
+                $"a user can only be renamed: space and subpath must stay {existing.SpaceName}:{existing.Subpath}"), rec);
+        if (!Utils.RequestRegex.IsValidShortname(destShortname))
+            return (Fail(InternalErrorCode.INVALID_DATA,
+                $"invalid dest_shortname '{destShortname}': fails {Utils.RequestRegex.ShortnamePattern}"), rec);
+        // The bootstrap admin is also the owner force-delete hands orphaned
+        // objects to; renaming it would make AdminBootstrap recreate a second one.
+        if (string.Equals(existing.Shortname, UserRepository.FallbackOwner, StringComparison.Ordinal))
+            return (Fail(InternalErrorCode.NOT_ALLOWED, $"the '{UserRepository.FallbackOwner}' admin cannot be renamed"), rec);
+
+        var src = new Locator(ResourceType.User, existing.SpaceName, existing.Subpath, existing.Shortname);
+        var to = src with { Shortname = destShortname };
+        if (!await perms.CanUpdateAsync(actor, src, PermissionService.FromUser(existing), null, ct)
+            || !await perms.CanCreateAsync(actor, to, new Dictionary<string, object>(), ct))
+            return (Fail(InternalErrorCode.NOT_ALLOWED, "no move access"), rec);
+
+        if (string.Equals(existing.Shortname, destShortname, StringComparison.Ordinal)
+            || await users.GetByShortnameAsync(destShortname, ct) is not null)
+            return (Fail(InternalErrorCode.SHORTNAME_ALREADY_EXIST, "destination already occupied"), rec);
+
+        try
+        {
+            if (!await users.RenameAsync(existing.Shortname, destShortname, ct))
+                return (Fail(InternalErrorCode.SHORTNAME_DOES_NOT_EXIST, "user not found"), rec);
+        }
+        catch (Exception ex) when (DataAdapters.Sql.DbErrors.IsUniqueViolation(ex))
+        {
+            // Lost a race for the destination name; the rename rolled back.
+            return (Fail(InternalErrorCode.SHORTNAME_ALREADY_EXIST, "destination already occupied"), rec);
+        }
+
+        var diff = new Dictionary<string, object>
+        {
+            ["shortname"] = new Dictionary<string, string> { ["old"] = existing.Shortname, ["new"] = destShortname },
+        };
+        await history.AppendAsync(to.SpaceName, to.Subpath, to.Shortname, actor, requestHeaders: null, diff: diff, ct);
+        return (Response.Ok(), rec with { Subpath = to.Subpath, Shortname = to.Shortname });
     }
 
     // ============================================================================
