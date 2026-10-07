@@ -154,6 +154,7 @@ describe("uploadCsv", () => {
       file,
       isUpdate: true,
       startRow: 18331,
+      headers: {},
     });
 
     expect(r.imported).toBe(1);
@@ -165,7 +166,7 @@ describe("uploadCsv", () => {
 
   it("sends no optional params for a plain create from the top", async () => {
     const post = vi.fn().mockResolvedValue({ data: { status: "success", attributes: { inserted: 1 } } });
-    await uploadCsv(post, { resourceType: "content", spaceName: "s", subpath: "p", schema: "k", file, isUpdate: false, startRow: 1 });
+    await uploadCsv(post, { resourceType: "content", spaceName: "s", subpath: "p", schema: "k", file, isUpdate: false, startRow: 1, headers: {} });
     expect(post.mock.calls[0][2].params).toEqual({});
   });
 
@@ -178,7 +179,7 @@ describe("uploadCsv", () => {
       ({ arrayBuffer: () => Promise.reject(new DOMException("changed", "NotReadableError")) }) as unknown as Blob;
     const post = vi.fn();
 
-    const r = await uploadCsv(post, { resourceType: "content", spaceName: "s", subpath: "p", schema: "k", file: stale, isUpdate: false });
+    const r = await uploadCsv(post, { resourceType: "content", spaceName: "s", subpath: "p", schema: "k", file: stale, isUpdate: false, headers: {} });
 
     expect(post).not.toHaveBeenCalled();
     expect(r.ok).toBe(false);
@@ -189,7 +190,7 @@ describe("uploadCsv", () => {
     const post = vi.fn().mockRejectedValue({
       response: { status: 403, data: { status: "failed", error: { code: 401, message: "no create access" } } },
     });
-    const r = await uploadCsv(post, { resourceType: "content", spaceName: "s", subpath: "p", schema: "k", file, isUpdate: false });
+    const r = await uploadCsv(post, { resourceType: "content", spaceName: "s", subpath: "p", schema: "k", file, isUpdate: false, headers: {} });
     expect(r).toMatchObject({ ok: false, message: "no create access" });
   });
 });
