@@ -82,7 +82,12 @@ public sealed class SqliteConnectionFactory : IDbConnectionFactory
 
         _busyTimeoutMs = 5000;
         _mmapBytes = 256L * 1024 * 1024;
-        _cacheKib = 64 * 1024;
+        // cache_size is PER CONNECTION, and a query request holds two (page +
+        // count) from an uncapped pool: at 64 MiB, eight concurrent requests
+        // could pin ~1 GiB of page cache on a 512 MB board. 8 MiB keeps the
+        // working set of a hot index resident; the 256 MiB mmap above is the
+        // shared OS page cache and costs nothing per connection.
+        _cacheKib = 8 * 1024;
     }
 
     // SQLite always has somewhere to write, so unlike the PostgreSQL factory

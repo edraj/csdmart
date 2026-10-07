@@ -63,7 +63,7 @@ public static class JsonStripEmptiesMiddleware
         return app.Use(async (ctx, next) =>
         {
             var origBody = ctx.Response.Body;
-            var sniffing = new SniffingBodyStream(origBody, ctx.Response);
+            var sniffing = new SniffingBodyStream(origBody, ctx.Response) { MaxBuffer = MaxStripBytes };
             ctx.Response.Body = sniffing;
             try
             {
@@ -208,6 +208,14 @@ internal sealed class SniffingBodyStream : Stream
     // True once a write has happened AND the decision was to buffer. The
     // middleware reads this after next() to know whether to post-process.
     public bool Buffered => _decided && !_passthrough;
+
+    // Largest body worth holding for the strip. Beyond it the response will
+    // never be post-processed, so buffering the rest only cost memory: every
+    // JSON response was fully buffered (then copied) regardless of size — a
+    // limit=1000 page with payloads held 2-3x its size on the LOH before the
+    // first byte left. Once a write would cross this, what is buffered is
+    // handed to the real stream and the remainder streams through.
+    public int MaxBuffer { get; init; } = int.MaxValue;
     public MemoryStream? Buffer => _buffer;
 
     private Stream Target()
@@ -239,13 +247,60 @@ internal sealed class SniffingBodyStream : Stream
     public override void SetLength(long v) => throw new NotSupportedException();
 
     public override void Write(byte[] buffer, int offset, int count)
-        => Target().Write(buffer, offset, count);
+    {
+        var target = Target();
+        if (!_passthrough && _buffer!.Length + count > MaxBuffer)
+        {
+            SpillToInner();
+            target = _inner;
+        }
+        target.Write(buffer, offset, count);
+    }
 
-    public override Task WriteAsync(byte[] buffer, int offset, int count, CancellationToken cancellationToken)
-        => Target().WriteAsync(buffer, offset, count, cancellationToken);
+    public override async Task WriteAsync(byte[] buffer, int offset, int count, CancellationToken cancellationToken)
+    {
+        var target = Target();
+        if (!_passthrough && _buffer!.Length + count > MaxBuffer)
+        {
+            await SpillToInnerAsync(cancellationToken);
+            target = _inner;
+        }
+        await target.WriteAsync(buffer, offset, count, cancellationToken);
+    }
 
-    public override ValueTask WriteAsync(ReadOnlyMemory<byte> buffer, CancellationToken cancellationToken = default)
-        => Target().WriteAsync(buffer, cancellationToken);
+    public override async ValueTask WriteAsync(ReadOnlyMemory<byte> buffer, CancellationToken cancellationToken = default)
+    {
+        var target = Target();
+        if (!_passthrough && _buffer!.Length + buffer.Length > MaxBuffer)
+        {
+            await SpillToInnerAsync(cancellationToken);
+            target = _inner;
+        }
+        await target.WriteAsync(buffer, cancellationToken);
+    }
+
+    // The body outgrew MaxBuffer: switch to passthrough for good. `Buffered`
+    // flips false, so the middleware leaves the response alone, and the bytes
+    // held so far go out unchanged ahead of the rest.
+    private void SpillToInner()
+    {
+        var held = _buffer!;
+        _passthrough = true;
+        _buffer = null;
+        held.Position = 0;
+        held.CopyTo(_inner);
+        held.Dispose();
+    }
+
+    private async Task SpillToInnerAsync(CancellationToken cancellationToken)
+    {
+        var held = _buffer!;
+        _passthrough = true;
+        _buffer = null;
+        held.Position = 0;
+        await held.CopyToAsync(_inner, cancellationToken);
+        await held.DisposeAsync();
+    }
 
     // Only meaningful in passthrough mode; buffered output is flushed by the
     // middleware after stripping. Flushing before any write is a no-op.

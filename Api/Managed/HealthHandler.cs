@@ -4,6 +4,11 @@ using Dmart.Services;
 
 namespace Dmart.Api.Managed;
 
+// Both routes are operator tools and are GLOBAL-ADMIN only. They used to carry
+// nothing beyond the group's RequireAuthorization(): the health check returned
+// shortnames of broken entries/attachments for ANY space to any logged-in user,
+// and reload-security-data let anyone flush the permission and schema caches
+// (a cheap cache-stampede lever).
 public static class HealthHandler
 {
     public static void Map(RouteGroupBuilder g)
@@ -28,7 +33,7 @@ public static class HealthHandler
                     }).ToList(),
                 };
                 return Response.Ok(attributes: attributes);
-            });
+            }).AddEndpointFilter<GlobalAdminFilter>();
 
         g.MapGet("/reload-security-data",
             async (PermissionService perms, SchemaValidator schemas, CancellationToken ct) =>
@@ -38,6 +43,6 @@ public static class HealthHandler
                 // reasonable operator-level signal to rebuild in-memory state.
                 schemas.ClearCache();
                 return Response.Ok();
-            });
+            }).AddEndpointFilter<GlobalAdminFilter>();
     }
 }

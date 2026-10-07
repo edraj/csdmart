@@ -95,6 +95,30 @@ public sealed class McpEndpointTests : IClassFixture<DmartFactory>
         inner.RootElement.GetProperty("accessible").ValueKind.ShouldBe(JsonValueKind.Array);
     }
 
+    // Every other tools/call test runs as the super admin, so nothing proved the
+    // permission engine is actually reached from MCP. A role-less user asking
+    // for another user's row must be refused by the same walk the REST API uses.
+    [FactIfPg]
+    public async Task ToolsCall_As_NonAdmin_Is_Refused_By_The_Permission_Walk()
+    {
+        var user = await _factory.CreateLoggedInUserAsync(roles: new());
+        using var client = user.Client;
+
+        var resp = await client.PostAsync("/mcp", JsonRpc(
+            "tools/call", id: 5,
+            paramsJson: $$$"""{"name":"dmart_read","arguments":{"space_name":"management","subpath":"/users","shortname":"{{{_factory.AdminShortname}}}"}}"""));
+        resp.StatusCode.ShouldBe(HttpStatusCode.OK);
+        var root = await ReadJson(resp);
+        var content = root.GetProperty("result").GetProperty("content")[0];
+        var text = content.GetProperty("text").GetString()!;
+        text.ShouldNotContain("admin@test.local", customMessage: "another user's row must not be readable without a grant");
+        // dmart answers a read the caller has no grant for with an EMPTY
+        // success (deny-is-empty), exactly as the REST query plane does — the
+        // walk ran and hid the row. An admin reading the same locator gets it.
+        using var inner = JsonDocument.Parse(text);
+        inner.RootElement.GetProperty("records").GetArrayLength().ShouldBe(0, text);
+    }
+
     [FactIfPg]
     public async Task ToolsCall_UnknownTool_Returns_JsonRpc_Error()
     {

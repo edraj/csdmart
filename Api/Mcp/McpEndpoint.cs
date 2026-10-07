@@ -100,7 +100,15 @@ public static class McpEndpoint
             catch (OperationCanceledException) { /* client disconnect — clean exit */ }
             finally
             {
-                session.Outbox.Writer.TryComplete();
+                // The outbox is NOT completed here. It used to be, which meant
+                // one dropped SSE stream (proxy idle timeout, network blip —
+                // exactly what the keep-alive exists for) permanently killed the
+                // session's push channel: a reconnect with the same
+                // Mcp-Session-Id read a drained, completed channel and ended at
+                // once, and every later TryEnqueue returned false, so bridge
+                // events and elicitation answers silently dropped until a fresh
+                // `initialize`. The channel lives as long as the session does;
+                // McpSessionStore.Remove completes it.
                 try { await keepAliveTask; } catch { /* ignore */ }
             }
         }).RequireAuthorization();

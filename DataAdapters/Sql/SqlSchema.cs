@@ -877,6 +877,14 @@ public static class SqlSchema
             "ON entries (space_name, subpath)",
         "CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_attachments_space_subpath " +
             "ON attachments (space_name, subpath)",
+        // The default listing shape is `WHERE space_name = $1 AND subpath = $2
+        // ORDER BY updated_at DESC LIMIT n`. With only the pair index above and
+        // a bare updated_at index, every page sorted the WHOLE folder (top-N
+        // heapsort over millions of rows) or walked updated_at backwards
+        // filtering by folder. This composite serves the filter AND the order,
+        // so a page is an index range scan of n rows.
+        "CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_entries_space_subpath_updated " +
+            "ON entries (space_name, subpath, updated_at DESC)",
 
         // Retire the single-column space_name indexes the composites replace
         // (their leading column serves space_name-only scans; one less index

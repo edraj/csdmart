@@ -530,18 +530,15 @@ public class ImportFolderTests : IClassFixture<DmartFactory>
         }
     }
 
-    [FactIfImportSupported]
+    // The CLI rejects the bad argument before touching a database, so the only
+    // precondition is the built binary — skipped visibly when it is absent.
+    [FactIfCliBuilt]
     public void Cli_Import_TypeZip_On_Directory_Exits_Nonzero()
     {
         // Pre-validation in Program.cs: `--type=zip` against a directory
         // target should fail-fast with a clean error message, not let
         // File.OpenRead(dir) throw a raw IO exception further down.
-        var binary = FindDmartBinary();
-        if (binary is null)
-        {
-            Assert.True(true, "dmart binary not built — skipping");
-            return;
-        }
+        var binary = FindDmartBinary()!;
 
         var dir = Path.Combine(Path.GetTempPath(), $"dmart-cli-typezip-{Guid.NewGuid():N}");
         Directory.CreateDirectory(dir);

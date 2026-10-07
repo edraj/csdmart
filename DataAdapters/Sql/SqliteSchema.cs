@@ -476,6 +476,13 @@ public static class SqliteSchema
     -- ============================================================
     CREATE INDEX IF NOT EXISTS idx_entries_space_name          ON entries (space_name);
     CREATE INDEX IF NOT EXISTS idx_entries_subpath             ON entries (subpath);
+    -- SQLite had only single-column indexes here, so a folder listing picked ONE
+    -- of space_name/subpath, filtered the rest, then sorted with a temp b-tree
+    -- on every page. The pair serves the default WHERE; the triple serves the
+    -- default `ORDER BY updated_at DESC` on top of it (mirrors PostgreSQL's
+    -- idx_entries_space_subpath / idx_entries_space_subpath_updated).
+    CREATE INDEX IF NOT EXISTS idx_entries_space_subpath       ON entries (space_name, subpath);
+    CREATE INDEX IF NOT EXISTS idx_entries_space_subpath_updated ON entries (space_name, subpath, updated_at DESC);
     CREATE INDEX IF NOT EXISTS idx_entries_owner_shortname     ON entries (owner_shortname);
     CREATE INDEX IF NOT EXISTS idx_entries_resource_type       ON entries (resource_type);
     CREATE INDEX IF NOT EXISTS idx_entries_slug                ON entries (slug);

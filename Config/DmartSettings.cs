@@ -99,13 +99,22 @@ public sealed class DmartSettings
     // keeps whatever the operator wrote, as with every other knob.
     public int DatabaseMaxAutoPrepare { get; set; } = 200;
     // Seconds to cache the per-request auth lookups (user row + session
-    // validity) in memory. 0 (default) = disabled: every request hits the
-    // database twice before reaching its handler, exactly as before. When
-    // set, a revoked session / deactivated user can keep working for at most
-    // this many seconds on nodes other than the one that processed the
-    // revocation (the processing node evicts immediately). Keep it small —
-    // 1-5s captures most of the win at high request rates.
-    public int AuthCacheTtl { get; set; }
+    // validity) in memory. 0 = disabled: every request hits the database
+    // twice before reaching its handler. The default is 5: a revoked session /
+    // deactivated user can keep working for at most this many seconds on nodes
+    // other than the one that processed the revocation (the processing node
+    // evicts immediately), in exchange for not paying two statements per
+    // request at any load. Set 0 to restore the always-hit-the-DB behaviour.
+    public int AuthCacheTtl { get; set; } = 5;
+
+    // Seconds a resolved (user, permissions) bundle may be served from the
+    // process-local authorization cache before it is re-resolved. The node
+    // that writes a user/role/permission evicts immediately, so a single-node
+    // deployment sees changes at once; this TTL is the only thing bounding
+    // staleness on OTHER replicas behind a load balancer — without it a role
+    // removed on replica A kept granting on replica B until B restarted.
+    // 0 disables the TTL (cache entries live until the next local eviction).
+    public int AuthzCacheTtl { get; set; } = 60;
 
     // AdminPassword is read ONLY by AdminBootstrap when the dmart admin row
     // is being created for the first time (or exists but has no password
@@ -190,13 +199,21 @@ public sealed class DmartSettings
     // that hurts.
     public int UniquenessMaxProbes { get; set; } = 1000;
 
-    // Largest exact value a query `total` will compute. 0 (default) = unlimited,
-    // which is the Python-parity behaviour: every query counts every matching
-    // row. Set it on any deployment with large subpaths — counting is O(matching
+    // Largest exact value a query `total` will compute. Counting is O(matching
     // rows) whatever the indexes look like, so an uncapped `total` is a full
-    // scan of the result set on every page request. Above the cap the response
-    // reports `total` as the cap and sets `total_is_lower_bound`.
-    public int QueryTotalCap { get; set; }
+    // scan of the result set on EVERY page request — measured at ~2.4 s per
+    // request on a 2.59 M-row folder. The default of 100000 keeps totals exact
+    // for every ordinary folder (counting 100k rows is tens of milliseconds)
+    // while bounding the pathological ones; above the cap the response reports
+    // `total` as the cap and sets `total_is_lower_bound: true`, which clients
+    // paging by total must honour. 0 = unlimited (the Python-parity behaviour).
+    public int QueryTotalCap { get; set; } = 100_000;
+
+    // Size at which a space's events.jsonl is rolled over to events.jsonl.1
+    // (one previous generation is kept, so type=events still serves a
+    // continuous window across the boundary). The file used to grow without
+    // bound and every events query read all of it into memory. 0 = never roll.
+    public int EventsLogMaxBytes { get; set; } = 50 * 1024 * 1024;
 
     // What a query means when it omits `retrieve_total` entirely.
     //

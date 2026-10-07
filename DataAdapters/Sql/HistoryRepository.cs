@@ -291,7 +291,10 @@ public sealed class HistoryRepository(IDbConnectionFactory db, ISqlDialect diale
         if (!string.IsNullOrEmpty(actor))
             QueryHelper.AppendParentEntryAclFilter(sql, args, actor!, "histories", queryPolicies, dialect);
 
-        sql.Append("ORDER BY timestamp DESC ");
+        // uuid tie-breaker: rows written in the same millisecond (bulk imports,
+        // lock + processed_by in one request) had no deterministic order under
+        // LIMIT/OFFSET, so one could appear on two pages or on none.
+        sql.Append("ORDER BY timestamp DESC, uuid ");
         args.Add(new() { Value = Math.Max(1, q.Limit) });
         sql.Append($"LIMIT ${args.Count} ");
         args.Add(new() { Value = Math.Max(0, q.Offset) });

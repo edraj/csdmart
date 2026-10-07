@@ -161,22 +161,22 @@ SQL: ORDER BY RANDOM() LIMIT $1 OFFSET $2
   P2: name=<positional> type=<inferred> value=0
 
 ## orderpaging: sort-ascending
-SQL: ORDER BY shortname ASC LIMIT $1 OFFSET $2
+SQL: ORDER BY shortname ASC NULLS LAST LIMIT $1 OFFSET $2
   P1: name=<positional> type=<inferred> value=10
   P2: name=<positional> type=<inferred> value=0
 
 ## orderpaging: sort-descending
-SQL: ORDER BY created_at DESC LIMIT $1 OFFSET $2
+SQL: ORDER BY created_at DESC NULLS FIRST LIMIT $1 OFFSET $2
   P1: name=<positional> type=<inferred> value=10
   P2: name=<positional> type=<inferred> value=0
 
 ## orderpaging: sort-multi
-SQL: ORDER BY shortname ASC, updated_at ASC LIMIT $1 OFFSET $2
+SQL: ORDER BY shortname ASC NULLS LAST, updated_at ASC NULLS LAST LIMIT $1 OFFSET $2
   P1: name=<positional> type=<inferred> value=10
   P2: name=<positional> type=<inferred> value=0
 
 ## orderpaging: sort-json-path
-SQL: ORDER BY CASE WHEN (payload::jsonb -> 'body' ->> 'priority') ~ '^-?[0-9]+(\.[0-9]+)?$' THEN (payload::jsonb -> 'body' ->> 'priority')::float END DESC, (payload::jsonb -> 'body' ->> 'priority') DESC LIMIT $1 OFFSET $2
+SQL: ORDER BY CASE WHEN (payload::jsonb -> 'body' ->> 'priority') ~ '^-?[0-9]+(\.[0-9]+)?$' THEN (payload::jsonb -> 'body' ->> 'priority')::float END DESC NULLS FIRST, (payload::jsonb -> 'body' ->> 'priority') DESC NULLS FIRST LIMIT $1 OFFSET $2
   P1: name=<positional> type=<inferred> value=10
   P2: name=<positional> type=<inferred> value=0
 

@@ -69,7 +69,15 @@ public sealed class McpSessionStore
     public McpSessionState? Get(string id) =>
         _sessions.TryGetValue(id, out var s) ? s : null;
 
-    public bool Remove(string id) => _sessions.TryRemove(id, out _);
+    // Completing the outbox belongs HERE, with the session's lifetime — not in
+    // the SSE reader's exit path, where it outlived one connection and killed
+    // every reconnect (see McpEndpoint's GET /mcp).
+    public bool Remove(string id)
+    {
+        if (!_sessions.TryRemove(id, out var session)) return false;
+        session.Outbox.Writer.TryComplete();
+        return true;
+    }
 
     // Snapshot of all sessions owned by a given user. Used by the event bus
     // bridge to fan out a single dmart event to every MCP session that user

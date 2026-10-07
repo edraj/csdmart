@@ -1309,14 +1309,25 @@ public sealed class ImportExportService(
         var allowSubSharding = fastUnsafeNoFkCheck && sourceKind == ImportSourceKind.Filesystem;
         var shards = BuildShards(spaceGroups, fastUnsafeNoFkCheck ? workers : 1, allowSubSharding);
 
-        // Resume: drop shards the checkpoint says are done. Matches the shard
-        // key AND the bare space name, so a checkpoint written by an older
-        // (per-space) run still short-circuits a now-sub-sharded space.
+        // Resume: drop shards the checkpoint says are done. A WHOLE-space marker
+        // (the bare space name, as an older per-space run or the default path
+        // writes it) is trusted as-is: every entry of that space landed, however
+        // it is partitioned now. A SUB-shard marker is trusted only when its
+        // fingerprint matches the shard as partitioned by THIS run —
+        // `--fast-parallelism`, `--spaces` or files added to the source all
+        // re-bucket entries, so a bare "space#i" key then names a different
+        // entry set, and skipping it silently lost whatever moved into it while
+        // the run reported success.
         if (checkpoint is not null)
         {
             var before = shards.Count;
-            shards = shards.Where(s => !checkpoint.IsTailDone(s.Key)
-                                       && !checkpoint.IsTailDone(BaseSpaceOf(s.Key))).ToList();
+            shards = shards.Where(s =>
+            {
+                if (checkpoint.IsTailDone(BaseSpaceOf(s.Key))) return false;
+                if (!s.Key.Contains('#', StringComparison.Ordinal)) return !checkpoint.IsTailDone(s.Key);
+                var (fingerprint, _, _) = ShardShape(s.Entries, true);
+                return !checkpoint.IsTailDoneWithFingerprint(s.Key, fingerprint);
+            }).ToList();
             if (before > shards.Count)
                 log.LogInformation("import: --resume skipping {Skipped} of {Total} shards (already in checkpoint)",
                     before - shards.Count, before);
@@ -1609,7 +1620,7 @@ public sealed class ImportExportService(
             // Per-shard commit landed. Record it so a future --resume skips this
             // shard. MarkTailDone is lock-protected and atomically rewrites the
             // sidecar.
-            checkpoint?.MarkTailDone(shardKey);
+            checkpoint?.MarkTailDone(shardKey, resume?.Fingerprint);
         }
         catch (OperationCanceledException)
         {
@@ -2025,6 +2036,7 @@ public sealed class ImportExportService(
         ImportCheckpointStore store, string shardKey, string fingerprint,
         int entriesDone, int attachmentsDone)
     {
+        public string Fingerprint => fingerprint;
         public int EntriesDone => entriesDone;
         public int AttachmentsDone => attachmentsDone;
 

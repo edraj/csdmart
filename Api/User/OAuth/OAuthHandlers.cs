@@ -1,3 +1,5 @@
+using System.Security.Cryptography;
+using System.Text;
 using System.Text.Json;
 using Dmart.Auth.OAuth;
 using Dmart.Config;
@@ -39,13 +41,15 @@ public static class OAuthHandlers
     public static void Map(RouteGroupBuilder g)
     {
         // ---- Google ----
-        g.MapGet("/google/callback", async (string? code,
+        g.MapGet("/google/callback", async (string? code, string? state,
             GoogleProvider provider, OAuthUserResolver resolver,
             UserService users, IOptions<DmartSettings> settings,
             HttpContext http, CancellationToken ct) =>
         {
             if (string.IsNullOrEmpty(code))
                 return ProviderError("missing `code` query parameter");
+            if (!ConsumeState(http, state))
+                return ProviderError("missing or mismatched `state` — start the login at /user/google/login");
             if (!provider.IsConfigured)
                 return ProviderError("google oauth not configured");
             var idToken = await provider.ExchangeCodeForIdTokenAsync(code, ct);
@@ -57,6 +61,23 @@ public static class OAuthHandlers
         // OAuth provider redirect callback — throttle per IP so it can't be
         // hammered to amplify outbound code-exchange calls to the provider.
         .RequireRateLimiting("auth-by-ip");
+
+        // GET /google/login — START of the web flow. Mints a state nonce bound to
+        // a short-lived cookie and redirects to Google; the callback above
+        // refuses any `code` that does not carry the matching state. Without
+        // that binding a victim could be navigated to the callback carrying an
+        // attacker's code and be silently logged into the attacker's account
+        // (login-CSRF), so web clients must begin here, not at the provider.
+        g.MapGet("/google/login", (GoogleProvider provider, IOptions<DmartSettings> settings, HttpContext http) =>
+        {
+            if (!provider.IsConfigured) return ProviderError("google oauth not configured");
+            var state = IssueState(http);
+            return Results.Redirect("https://accounts.google.com/o/oauth2/v2/auth"
+                + "?client_id=" + Uri.EscapeDataString(settings.Value.GoogleClientId)
+                + "&redirect_uri=" + Uri.EscapeDataString(settings.Value.GoogleOauthCallback)
+                + "&response_type=code&scope=" + Uri.EscapeDataString("openid email profile")
+                + "&state=" + Uri.EscapeDataString(state));
+        }).RequireRateLimiting("auth-by-ip");
 
         g.MapPost("/google/mobile-login", async (HttpRequest req,
             GoogleProvider provider, OAuthUserResolver resolver,
@@ -76,13 +97,15 @@ public static class OAuthHandlers
         .RequireRateLimiting("auth-by-ip");
 
         // ---- Facebook ----
-        g.MapGet("/facebook/callback", async (string? code,
+        g.MapGet("/facebook/callback", async (string? code, string? state,
             FacebookProvider provider, OAuthUserResolver resolver,
             UserService users, IOptions<DmartSettings> settings,
             HttpContext http, CancellationToken ct) =>
         {
             if (string.IsNullOrEmpty(code))
                 return ProviderError("missing `code` query parameter");
+            if (!ConsumeState(http, state))
+                return ProviderError("missing or mismatched `state` — start the login at /user/facebook/login");
             if (!provider.IsConfigured)
                 return ProviderError("facebook oauth not configured");
             var access = await provider.ExchangeCodeForAccessTokenAsync(code, ct);
@@ -94,6 +117,18 @@ public static class OAuthHandlers
         // OAuth provider redirect callback — throttle per IP so it can't be
         // hammered to amplify outbound code-exchange calls to the provider.
         .RequireRateLimiting("auth-by-ip");
+
+        // GET /facebook/login — same state binding as /google/login.
+        g.MapGet("/facebook/login", (FacebookProvider provider, IOptions<DmartSettings> settings, HttpContext http) =>
+        {
+            if (!provider.IsConfigured) return ProviderError("facebook oauth not configured");
+            var state = IssueState(http);
+            return Results.Redirect("https://www.facebook.com/v18.0/dialog/oauth"
+                + "?client_id=" + Uri.EscapeDataString(settings.Value.FacebookClientId)
+                + "&redirect_uri=" + Uri.EscapeDataString(settings.Value.FacebookOauthCallback)
+                + "&response_type=code&scope=" + Uri.EscapeDataString("email,public_profile")
+                + "&state=" + Uri.EscapeDataString(state));
+        }).RequireRateLimiting("auth-by-ip");
 
         g.MapPost("/facebook/mobile-login", async (HttpRequest req,
             FacebookProvider provider, OAuthUserResolver resolver,
@@ -302,6 +337,40 @@ public static class OAuthHandlers
                    t.ValueKind == JsonValueKind.String ? t.GetString() : null;
         }
         catch { return null; }
+    }
+
+    // ---- web-flow state binding (login-CSRF) ---------------------------------
+    //
+    // SameSite=Lax cookies ride the provider's top-level GET redirect back to
+    // the callback, which is why the Google/Facebook web callbacks are GETs and
+    // why this works without SameSite=None. (Apple's form_post callback is a
+    // cross-site POST, on which a Lax cookie is NOT sent; it is left out of this
+    // binding deliberately and keeps its id_token validation.)
+    private const string StateCookie = "oauth_state";
+
+    private static string IssueState(HttpContext http)
+    {
+        var state = Convert.ToHexString(RandomNumberGenerator.GetBytes(16)).ToLowerInvariant();
+        http.Response.Cookies.Append(StateCookie, state, new CookieOptions
+        {
+            HttpOnly = true,
+            Secure = http.Request.IsHttps,
+            SameSite = SameSiteMode.Lax,
+            MaxAge = TimeSpan.FromMinutes(10),
+            Path = "/user",
+        });
+        return state;
+    }
+
+    // True iff the callback's `state` equals the nonce /login issued. The
+    // cookie is single-use: cleared on every callback, match or not.
+    private static bool ConsumeState(HttpContext http, string? state)
+    {
+        var expected = http.Request.Cookies[StateCookie];
+        http.Response.Cookies.Delete(StateCookie, new CookieOptions { Path = "/user" });
+        if (string.IsNullOrEmpty(state) || string.IsNullOrEmpty(expected)) return false;
+        return CryptographicOperations.FixedTimeEquals(
+            Encoding.UTF8.GetBytes(state), Encoding.UTF8.GetBytes(expected));
     }
 
     private static IResult ProviderError(string message) =>
