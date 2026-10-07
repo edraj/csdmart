@@ -1,5 +1,56 @@
 # Changelog
 
+## Unreleased
+
+### Added
+
+- **`move` renames a user.** A `move` request on a `user` record used to fall
+  through to the entry mover and fail with "source entry missing" for every
+  user. It is now a rename — users always live at `management:/users`, so
+  only the shortname may change — done in one transaction over everything the
+  user owns (entries, attachments, spaces, roles, groups, permissions, with
+  `query_policies` rewritten for the new owner), the rows keyed on the user's
+  own path (its attachments and the history of both) and the locks it holds.
+  Sessions are dropped, so the user signs in again under the new name. Gated
+  like an entry move (`update` on the source, `create` at the target), and
+  the gate answers *before* anything about the target does: a caller without
+  move access learns neither whether the account exists nor whether it was
+  deleted. The `dmart` and `anonymous` sentinels cannot be renamed; a move
+  onto the same name is a no-op success (the shape cxb's bulk move sends).
+  History *authorship* (`histories.owner_shortname`) deliberately stays under
+  the old name — it is an audit record of who did what at the time; the
+  rename itself is recorded as a history row at the new coordinates.
+- **A failing `jq_filter` is logged server-side.** The client has received a
+  generic "jq_filter failed to evaluate" since V-20; jq's stderr now goes to
+  the server log at Warning, tagged with the request's `X-Correlation-ID`, on
+  both jq paths (top-level filter and join sub-query). What is read from jq's
+  stderr — and so what is logged — is capped at 4 KB: `error("x" * 10000000)`
+  passes filter validation and would otherwise write a 10 MB line per request
+  from anonymous `/public/query`. Control characters are escaped so a filter
+  cannot forge log lines.
+
+### Fixed
+
+- **cxb: a new search starts from page 1** instead of keeping the previous
+  page offset, which landed past the end of a smaller result set.
+- **A user move's after-action event is keyed on the destination**, with
+  `src_shortname`/`src_subpath` in attributes as an entry move's is, so
+  webhooks and realtime hooks learn the new name instead of being told about
+  a record that no longer exists.
+- **Renaming a user purges orphan locks and attachments at the destination.**
+  Force-delete removes only what the deleted user *owned*, so another actor's
+  lock on, or comment under, a long-deleted user survived at coordinates
+  nothing lives at (and nothing can reach) and turned a rename onto that name
+  into "destination already occupied" for a user that does not exist. The
+  purged attachments are tombstoned like any other delete. Relocated
+  attachments also get `updated_at` bumped and their old coordinates
+  tombstoned, so an incremental export drops the old key and picks the new one
+  up.
+- **Force-delete's owner reassignment** (spaces/roles/groups/permissions the
+  user owned go to `dmart`) now shares the rename's set-based rewrite and
+  bumps `updated_at` on the reassigned rows, so an incremental export sees the
+  owner change.
+
 ## v1.5.19 — 2026-10-07
 
 ### Changed
