@@ -184,12 +184,10 @@
     async function handleSearch(e?: Event) {
         e?.preventDefault();
         searchListView.set(searchInput);
-        if (searchInput) {
-            $goto("$leaf", { ...$params, search: searchInput });
-        } else {
-            delete $params.search;
-            $goto("$leaf", $params);
-        }
+        // A new search starts from page 1; keeping the old page offset
+        // would land past the end of a smaller result set.
+        const { page: _page, search: _search, ...rest } = $params;
+        $goto("$leaf", searchInput ? { ...rest, search: searchInput } : rest);
     }
 
     let isCSVUploadModalOpen = $state(false);
