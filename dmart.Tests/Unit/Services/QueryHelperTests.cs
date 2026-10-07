@@ -440,18 +440,40 @@ public class QueryHelperTests
         sql.ToString().ShouldContain("owner_shortname =");
     }
 
+    // V-06: attachments/histories no longer skip row ACL. They carry no usable
+    // ACL of their own, so AppendAclFilter authorizes them against the PARENT
+    // entry (attachments) or whichever Metas table holds the history row's
+    // record (histories), via correlated EXISTS subqueries.
     [Fact]
-    public void AclFilter_Skips_Attachments_And_Histories()
+    public void AclFilter_Uses_ParentRecord_Acl_For_Attachments()
     {
         var sql = new System.Text.StringBuilder("WHERE space_name = $1 ");
         var args = new List<NpgsqlParameter> { new() { Value = "test" } };
         QueryHelper.AppendAclFilter(sql, args, "alice", "attachments", null);
-        sql.ToString().ShouldNotContain("owner_shortname");
+        var text = sql.ToString();
+        text.ShouldContain("EXISTS");
+        text.ShouldContain("FROM entries");
+        text.ShouldContain("owner_shortname =");   // the parent entry's ACL
+        // Parent-split of the attachment's own subpath (PostgreSQL idiom).
+        text.ShouldContain("regexp_replace(attachments.subpath");
+    }
 
-        sql = new System.Text.StringBuilder("WHERE space_name = $1 ");
-        args = new List<NpgsqlParameter> { new() { Value = "test" } };
+    [Fact]
+    public void AclFilter_Uses_GoverningRecord_Acl_For_Histories()
+    {
+        var sql = new System.Text.StringBuilder("WHERE space_name = $1 ");
+        var args = new List<NpgsqlParameter> { new() { Value = "test" } };
         QueryHelper.AppendAclFilter(sql, args, "alice", "histories", null);
-        sql.ToString().ShouldNotContain("owner_shortname");
+        var text = sql.ToString();
+        // A history row's record can live in any Metas table — all must be probed.
+        text.ShouldContain("FROM entries");
+        text.ShouldContain("FROM users");
+        text.ShouldContain("FROM roles");
+        text.ShouldContain("FROM permissions");
+        text.ShouldContain("FROM spaces");
+        text.ShouldContain("owner_shortname =");
+        // Attachment-history branch is guarded by the attachment existing.
+        text.ShouldContain("FROM attachments");
     }
 
     [Fact]

@@ -21,8 +21,14 @@ public static class ExecuteTaskHandler
             var resolved = await Dmart.Api.Managed.ExecuteTaskHandler.ResolveFromBodyAsync(
                 task_type, space_name, req, entries, "anonymous", ct);
             if (!resolved.IsOk)
-                return (object?)Response.Fail(resolved.ErrorCode, resolved.ErrorMessage!,
-                    resolved.ErrorType ?? ErrorTypes.Request, resolved.Info);
+                // Collapse every resolution failure to one uniform response on
+                // the anonymous path (V-19). The managed route keeps the
+                // specific code/message for operators, but here distinct errors
+                // — task absent (404) vs present-but-not-a-Query (400 invalid
+                // Query) vs unknown task type — were an existence/shape oracle
+                // and leaked framework type names. One generic answer removes it.
+                return (object?)Response.Fail(InternalErrorCode.SHORTNAME_DOES_NOT_EXIST,
+                    "task not found", ErrorTypes.Request);
             return await Dmart.Api.Managed.ExecuteTaskHandler.ExecuteAndWriteQueryAsync(
                 http.Response, queryService, resolved.Value!, "anonymous", settings.Value.JqTimeout, ct);
         })

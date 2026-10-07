@@ -217,8 +217,20 @@ public static class QueryHelper
         ISqlDialect dialect, Query? scope = null)
     {
         var bind = Binder(args);
-        // Python skips ACL for attachments, histories, and spaces.
-        if (tableName is "attachments" or "histories") return;
+        // attachments/histories carry no usable ACL of their own — histories
+        // has no `acl`/`query_policies` columns at all, and an attachment's
+        // visibility is governed by the entry it hangs off, not by its own row.
+        // Python skips row ACL for them, which let an anonymous /public/query
+        // enumerate attachment and history metadata for entries the caller
+        // could not otherwise read (see V-06). Authorize them against the
+        // PARENT entry instead. A null/empty actor is the internal unrestricted
+        // path (same as the `entries` branch below) — leave it unfiltered.
+        if (tableName is "attachments" or "histories")
+        {
+            if (!string.IsNullOrEmpty(userShortname))
+                AppendParentEntryAclFilter(sql, args, userShortname!, tableName, queryPolicies, dialect);
+            return;
+        }
 
         if (string.IsNullOrEmpty(userShortname)) return;
 
@@ -270,6 +282,114 @@ public static class QueryHelper
 
         sql.Append($"AND ({string.Join(" OR ", conditions)}) ");
     }
+
+    // ====================================================================
+    // PARENT-ENTRY ACL (attachments / histories)  — V-06
+    // ====================================================================
+    //
+    // Neither table can be ACL-filtered on its own row: `histories` has no
+    // `acl`/`query_policies` columns, and an attachment is readable only to the
+    // extent its owning entry is. So we require that the actor can read the
+    // PARENT entry, reusing the exact same owner/acl/query_policies predicate
+    // the `entries` table uses (AppendAclFilter with tableName="entries" — its
+    // bare column names bind to the inner `entries`, shadowing the outer table,
+    // the same scoping AppendInnerSemiJoins relies on).
+    //
+    // The parent is found with the folder-split idiom already proven on both
+    // engines in HealthCheckRepository: the last '/'-separated segment of the
+    // row's subpath is the parent entry's shortname, the prefix is its subpath
+    // ('/' one level under root). Matching entries.shortname/entries.subpath by
+    // equality keeps idx_entries_subpath usable — the split runs on the outer
+    // row's (constant) subpath, not on the entries columns.
+    //
+    //   attachments:  subpath = "<parent subpath>/<parent shortname>", so the
+    //                 split of attachments.subpath IS the parent entry's locator.
+    //                 An attachment only ever hangs off an entry.
+    //   histories:    a history row describes whatever record sits at its own
+    //                 (space, subpath, shortname) — an entry, a user, a role, a
+    //                 permission, a group or a space (every managed update
+    //                 appends one) — OR an attachment (coords = the attachment's).
+    //                 Each Metas table carries its own owner/acl/query_policies,
+    //                 so the row is authorized against whichever table holds its
+    //                 record; the attachment branch instead authorizes the
+    //                 parent entry, guarded by the attachment actually existing
+    //                 so an entry-history row can't borrow a sibling folder's
+    //                 readability.
+    //
+    // Fail-closed: a row whose governing record is absent (e.g. deleted/trashed)
+    // or unreadable yields no EXISTS match and is excluded.
+    private static readonly string[] HistoryRecordTables =
+        ["entries", "users", "roles", "permissions", "groups", "spaces"];
+
+    public static void AppendParentEntryAclFilter(
+        System.Text.StringBuilder sql, List<NpgsqlParameter> args,
+        string userShortname, string tableName, List<string>? queryPolicies,
+        ISqlDialect dialect)
+    {
+        if (string.IsNullOrEmpty(userShortname)) return;   // internal unrestricted
+
+        if (tableName == "attachments")
+        {
+            sql.Append(
+                "AND EXISTS (SELECT 1 FROM entries WHERE "
+                + "entries.space_name = attachments.space_name "
+                + $"AND entries.shortname = {ParentShortnameExpr("attachments.subpath", dialect)} "
+                + $"AND entries.subpath = {ParentSubpathExpr("attachments.subpath", dialect)} ");
+            AppendAclFilter(sql, args, userShortname, "entries", queryPolicies, dialect);
+            sql.Append(") ");
+            return;
+        }
+
+        if (tableName == "histories")
+        {
+            sql.Append("AND (");
+            // One clause per Metas table: the governing record sits at the
+            // history row's own coords in exactly one of them.
+            foreach (var t in HistoryRecordTables)
+            {
+                sql.Append(
+                    $"EXISTS (SELECT 1 FROM {t} WHERE "
+                    + $"{t}.space_name = histories.space_name "
+                    + $"AND {t}.subpath = histories.subpath "
+                    + $"AND {t}.shortname = histories.shortname ");
+                AppendAclFilter(sql, args, userShortname, t, queryPolicies, dialect);
+                sql.Append(") OR ");
+            }
+            // Attachment-history: coords point at an attachment; authorize its
+            // parent entry, guarded by the attachment existing so an entry/user/
+            // role/… history row can't match this on a coincidental split.
+            sql.Append(
+                "EXISTS (SELECT 1 FROM entries WHERE "
+                + "entries.space_name = histories.space_name "
+                + $"AND entries.shortname = {ParentShortnameExpr("histories.subpath", dialect)} "
+                + $"AND entries.subpath = {ParentSubpathExpr("histories.subpath", dialect)} "
+                + "AND EXISTS (SELECT 1 FROM attachments WHERE "
+                + "attachments.space_name = histories.space_name "
+                + "AND attachments.subpath = histories.subpath "
+                + "AND attachments.shortname = histories.shortname) ");
+            AppendAclFilter(sql, args, userShortname, "entries", queryPolicies, dialect);
+            sql.Append(")) ");
+            return;
+        }
+
+        // Unknown table — fail closed rather than silently returning all rows.
+        sql.Append("AND 1 = 0 ");
+    }
+
+    // Parent-folder split of a subpath column, cross-engine. Lifted from the
+    // folder-content check in HealthCheckRepository (tested on PostgreSQL and
+    // SQLite). `col` is ALWAYS a compile-time column reference supplied by this
+    // class, never caller data — no value is interpolated.
+    private static string ParentShortnameExpr(string col, ISqlDialect dialect) => dialect is SqliteSqlDialect
+        ? $"substr({col}, length(rtrim({col}, replace({col}, '/', ''))) + 1)"
+        : $"regexp_replace({col}, '^.*/', '')";
+
+    private static string ParentSubpathExpr(string col, ISqlDialect dialect) => dialect is SqliteSqlDialect
+        ? $"CASE WHEN length(rtrim({col}, replace({col}, '/', ''))) <= 1 THEN '/' "
+          + $"ELSE substr(rtrim({col}, replace({col}, '/', '')), 1, "
+          + $"length(rtrim({col}, replace({col}, '/', ''))) - 1) END"
+        : $"COALESCE(NULLIF(left({col}, greatest(length({col}) - "
+          + $"length(regexp_replace({col}, '^.*/', '')) - 1, 0)), ''), '/')";
 
     // ====================================================================
     // INNER-JOIN SEMI-JOIN PUSHDOWN

@@ -105,11 +105,27 @@ SQL: AND (owner_shortname = $1 OR EXISTS (SELECT 1 FROM unnest(query_policies) A
   P2: name=<positional> type=<inferred> value="sp:/a\_b:100\%\\x"
   P3: name=<positional> type=<inferred> value="sp:/%"
 
-## acl: skipped-attachments
-SQL: <empty>
+## acl: parent-acl-attachments
+SQL: AND EXISTS (SELECT 1 FROM entries WHERE entries.space_name = attachments.space_name AND entries.shortname = regexp_replace(attachments.subpath, '^.*/', '') AND entries.subpath = COALESCE(NULLIF(left(attachments.subpath, greatest(length(attachments.subpath) - length(regexp_replace(attachments.subpath, '^.*/', '')) - 1, 0)), ''), '/') AND (owner_shortname = $1 OR EXISTS (SELECT 1 FROM unnest(query_policies) AS qp WHERE qp LIKE $2 ESCAPE '\') OR acl @> jsonb_build_array(jsonb_build_object('user_shortname', $1, 'allowed_actions', jsonb_build_array('query')))) ) 
+  P1: name=<positional> type=<inferred> value="alice"
+  P2: name=<positional> type=<inferred> value="a:%"
 
-## acl: skipped-histories
-SQL: <empty>
+## acl: parent-acl-histories
+SQL: AND (EXISTS (SELECT 1 FROM entries WHERE entries.space_name = histories.space_name AND entries.subpath = histories.subpath AND entries.shortname = histories.shortname AND (owner_shortname = $1 OR EXISTS (SELECT 1 FROM unnest(query_policies) AS qp WHERE qp LIKE $2 ESCAPE '\') OR acl @> jsonb_build_array(jsonb_build_object('user_shortname', $1, 'allowed_actions', jsonb_build_array('query')))) ) OR EXISTS (SELECT 1 FROM users WHERE users.space_name = histories.space_name AND users.subpath = histories.subpath AND users.shortname = histories.shortname AND (owner_shortname = $3 OR EXISTS (SELECT 1 FROM unnest(query_policies) AS qp WHERE qp LIKE $4 ESCAPE '\') OR acl @> jsonb_build_array(jsonb_build_object('user_shortname', $3, 'allowed_actions', jsonb_build_array('query')))) ) OR EXISTS (SELECT 1 FROM roles WHERE roles.space_name = histories.space_name AND roles.subpath = histories.subpath AND roles.shortname = histories.shortname AND (owner_shortname = $5 OR EXISTS (SELECT 1 FROM unnest(query_policies) AS qp WHERE qp LIKE $6 ESCAPE '\') OR acl @> jsonb_build_array(jsonb_build_object('user_shortname', $5, 'allowed_actions', jsonb_build_array('query')))) ) OR EXISTS (SELECT 1 FROM permissions WHERE permissions.space_name = histories.space_name AND permissions.subpath = histories.subpath AND permissions.shortname = histories.shortname AND (owner_shortname = $7 OR EXISTS (SELECT 1 FROM unnest(query_policies) AS qp WHERE qp LIKE $8 ESCAPE '\') OR acl @> jsonb_build_array(jsonb_build_object('user_shortname', $7, 'allowed_actions', jsonb_build_array('query')))) ) OR EXISTS (SELECT 1 FROM groups WHERE groups.space_name = histories.space_name AND groups.subpath = histories.subpath AND groups.shortname = histories.shortname AND (owner_shortname = $9 OR EXISTS (SELECT 1 FROM unnest(query_policies) AS qp WHERE qp LIKE $10 ESCAPE '\') OR acl @> jsonb_build_array(jsonb_build_object('user_shortname', $9, 'allowed_actions', jsonb_build_array('query')))) ) OR EXISTS (SELECT 1 FROM spaces WHERE spaces.space_name = histories.space_name AND spaces.subpath = histories.subpath AND spaces.shortname = histories.shortname AND (owner_shortname = $11 OR EXISTS (SELECT 1 FROM unnest(query_policies) AS qp WHERE qp LIKE $12 ESCAPE '\') OR acl @> jsonb_build_array(jsonb_build_object('user_shortname', $11, 'allowed_actions', jsonb_build_array('query')))) ) OR EXISTS (SELECT 1 FROM entries WHERE entries.space_name = histories.space_name AND entries.shortname = regexp_replace(histories.subpath, '^.*/', '') AND entries.subpath = COALESCE(NULLIF(left(histories.subpath, greatest(length(histories.subpath) - length(regexp_replace(histories.subpath, '^.*/', '')) - 1, 0)), ''), '/') AND EXISTS (SELECT 1 FROM attachments WHERE attachments.space_name = histories.space_name AND attachments.subpath = histories.subpath AND attachments.shortname = histories.shortname) AND (owner_shortname = $13 OR EXISTS (SELECT 1 FROM unnest(query_policies) AS qp WHERE qp LIKE $14 ESCAPE '\') OR acl @> jsonb_build_array(jsonb_build_object('user_shortname', $13, 'allowed_actions', jsonb_build_array('query')))) )) 
+  P1: name=<positional> type=<inferred> value="alice"
+  P2: name=<positional> type=<inferred> value="a:%"
+  P3: name=<positional> type=<inferred> value="alice"
+  P4: name=<positional> type=<inferred> value="a:%"
+  P5: name=<positional> type=<inferred> value="alice"
+  P6: name=<positional> type=<inferred> value="a:%"
+  P7: name=<positional> type=<inferred> value="alice"
+  P8: name=<positional> type=<inferred> value="a:%"
+  P9: name=<positional> type=<inferred> value="alice"
+  P10: name=<positional> type=<inferred> value="a:%"
+  P11: name=<positional> type=<inferred> value="alice"
+  P12: name=<positional> type=<inferred> value="a:%"
+  P13: name=<positional> type=<inferred> value="alice"
+  P14: name=<positional> type=<inferred> value="a:%"
 
 ## acl: table-users
 SQL: AND (owner_shortname = $1 OR EXISTS (SELECT 1 FROM unnest(query_policies) AS qp WHERE qp LIKE $2 ESCAPE '\') OR acl @> jsonb_build_array(jsonb_build_object('user_shortname', $1, 'allowed_actions', jsonb_build_array('query')))) 

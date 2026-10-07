@@ -249,7 +249,13 @@ public sealed class HistoryRepository(IDbConnectionFactory db, ISqlDialect diale
 
     [SuppressMessage("Security", "CA2100",
         Justification = "Audited: SQL is a StringBuilder of compile-time fragments and $N positional placeholders; user-supplied filter values flow through NpgsqlParameters (args).")]
-    public async Task<List<HistoryRecord>> QueryHistoryAsync(Models.Api.Query q, CancellationToken ct = default)
+    public Task<List<HistoryRecord>> QueryHistoryAsync(Models.Api.Query q, CancellationToken ct = default)
+        => QueryHistoryAsync(q, null, null, ct);
+
+    // ACL-scoped overload: restrict rows to history whose governing entry the
+    // actor can read (V-06). A null actor keeps the internal unrestricted path.
+    public async Task<List<HistoryRecord>> QueryHistoryAsync(
+        Models.Api.Query q, string? actor, List<string>? queryPolicies, CancellationToken ct = default)
     {
         var args = new List<NpgsqlParameter>();
         var sql = new System.Text.StringBuilder(
@@ -282,6 +288,9 @@ public sealed class HistoryRepository(IDbConnectionFactory db, ISqlDialect diale
             sql.Append($"AND timestamp <= ${args.Count} ");
         }
 
+        if (!string.IsNullOrEmpty(actor))
+            QueryHelper.AppendParentEntryAclFilter(sql, args, actor!, "histories", queryPolicies, dialect);
+
         sql.Append("ORDER BY timestamp DESC ");
         args.Add(new() { Value = Math.Max(1, q.Limit) });
         sql.Append($"LIMIT ${args.Count} ");
@@ -311,7 +320,11 @@ public sealed class HistoryRepository(IDbConnectionFactory db, ISqlDialect diale
 
     [SuppressMessage("Security", "CA2100",
         Justification = "Audited: identical pattern to QueryHistoryAsync — StringBuilder of constants + $N placeholders; user values via NpgsqlParameters.")]
-    public async Task<int> CountHistoryQueryAsync(Models.Api.Query q, CancellationToken ct = default)
+    public Task<int> CountHistoryQueryAsync(Models.Api.Query q, CancellationToken ct = default)
+        => CountHistoryQueryAsync(q, null, null, ct);
+
+    public async Task<int> CountHistoryQueryAsync(
+        Models.Api.Query q, string? actor, List<string>? queryPolicies, CancellationToken ct = default)
     {
         var args = new List<NpgsqlParameter>();
         var sql = new System.Text.StringBuilder("SELECT COUNT(*) FROM histories WHERE space_name = $1 ");
@@ -341,6 +354,10 @@ public sealed class HistoryRepository(IDbConnectionFactory db, ISqlDialect diale
             args.Add(new() { Value = q.ToDate.Value });
             sql.Append($"AND timestamp <= ${args.Count} ");
         }
+
+        if (!string.IsNullOrEmpty(actor))
+            QueryHelper.AppendParentEntryAclFilter(sql, args, actor!, "histories", queryPolicies, dialect);
+
         await using var conn = await db.OpenAsync(ct);
         await using var cmd = conn.Command(sql.ToString());
         DbParams.BindAll(cmd, args);

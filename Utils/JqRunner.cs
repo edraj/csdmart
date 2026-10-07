@@ -24,8 +24,14 @@ public static class JqRunner
     //
     // `path(` needs the `\(` so a literal "path(" in a filter triggers the
     // rejection even if it appears inside an expression.
+    // The input family is listed explicitly: `\binput\b` does NOT match
+    // `inputs`, `input_filename` or `input_line_number` (no word boundary
+    // before the `s`/`_`), so they used to slip through (V-06/V-20). They read
+    // from the shared stdin stream and leak the input filename/line — harmless
+    // under the current single-array `map()` invocation, but closed here so a
+    // future caller can't make them reachable.
     private static readonly Regex DangerousBuiltins = new(
-        @"\benv\b|\$ENV\b|\binput\b|\bdebug\b|\bstderr\b|\bpath\(|\bhalt\b|\bhalt_error\b|\bbuiltins\b|\bmodulemeta\b|\bgetpath\b|\$__loc__",
+        @"\benv\b|\$ENV\b|\binput\b|\binputs\b|\binput_filename\b|\binput_line_number\b|\bdebug\b|\bstderr\b|\bpath\(|\bhalt\b|\bhalt_error\b|\bbuiltins\b|\bmodulemeta\b|\bgetpath\b|\$__loc__",
         RegexOptions.IgnoreCase | RegexOptions.Compiled);
 
     // jq's MODULE SYSTEM, which the blocklist above does not cover and which is
@@ -210,8 +216,12 @@ public static class JqRunner
             "jq binary not available on this dmart deployment", ErrorTypes.Request),
         FailureKind.Invalid => Response.Fail(InternalErrorCode.JQ_ERROR,
             "jq_filter validation failed", ErrorTypes.Request),
+        // Deliberately generic: raw jq stderr echoed the server-side `map()`
+        // wrapper and a jq engine fingerprint back to the (possibly anonymous)
+        // caller (V-20). The filter author can reproduce the error locally; the
+        // response must not disclose how the filter is wrapped or run.
         FailureKind.JqError => Response.Fail(InternalErrorCode.JQ_ERROR,
-            $"jq filter failed: {(stderr ?? "unknown error").Trim()}", ErrorTypes.Request),
+            "jq_filter failed to evaluate", ErrorTypes.Request),
         // Backpressure, not the caller's filter: every slot was busy. Server
         // error type so clients retry rather than "fix" a filter that is fine.
         FailureKind.Busy => Response.Fail(InternalErrorCode.JQ_TIMEOUT,

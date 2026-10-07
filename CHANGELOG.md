@@ -1,5 +1,49 @@
 # Changelog
 
+## Unreleased
+
+### Security
+
+- **`/public/query` honours row-level ACL on attachment and history metadata.**
+  An anonymous `type=attachments` or `type=history` query skipped the per-row
+  ACL entirely — the `attachments`/`histories` branch of `QueryHelper
+  .AppendAclFilter` returned early (Python parity), and the `actor is null`
+  guard in `QueryService.QueryHistoryAsync` never fired for the public route,
+  whose actor is the literal `"anonymous"`. At the tree root (`subpath=/`),
+  where the permission walk falls back to space-level access, that exposed the
+  filenames, checksums, content types, owner references and history diff fields
+  of *every* entry in a space with any world-readable content — including
+  entries the caller could never read. Binary payloads were unaffected
+  (`PayloadHandler` runs its own `CanReadAsync`), so the leak was metadata only.
+
+  Both tables now authorize each row against the record it belongs to, reusing
+  the same owner/acl/query_policies predicate the `entries` plane uses: an
+  attachment against its parent entry, a history row against whichever Metas
+  table (entries, users, roles, permissions, groups, spaces) holds its record,
+  or — for attachment history — the parent entry, guarded by the attachment
+  existing. The parent is resolved with the cross-engine folder-split idiom
+  already proven in `HealthCheckRepository`, so `entries` index lookups stay
+  index-friendly. A null actor keeps the internal unrestricted path
+  (UniquenessValidator, export). Verified on PostgreSQL and SQLite: an
+  is_active=false entry's attachment and history no longer appear for an
+  anonymous caller, while a world-readable sibling's still do.
+
+- **`/public/excute` no longer discriminates saved-query existence or shape.**
+  The anonymous task-runner returned a distinct error for "task absent" (404),
+  "present but not a Query" (400 invalid Query) and "unknown task type",
+  echoing framework type names — an existence/shape oracle. Every resolution
+  failure on the public route now returns one uniform `task not found`. The
+  authenticated `/managed/excute` route keeps its specific diagnostics.
+
+- **`jq_filter` failures no longer echo jq's stderr.** A runtime jq error
+  returned the raw stderr — which included the server-side `map(...)` wrapper
+  and a jq engine fingerprint — to the (possibly anonymous) caller. It now
+  returns a generic `jq_filter failed to evaluate`. The builtin denylist also
+  closes the `input` family (`inputs`, `input_filename`, `input_line_number`),
+  which slipped past the `\binput\b` word boundary; they are inert under the
+  single-array `map()` invocation but are now rejected before a future caller
+  can reach them.
+
 ## v1.5.18 — 2026-10-06
 
 ### Added
