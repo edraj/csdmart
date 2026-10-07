@@ -260,11 +260,18 @@ public static class RequestHandler
                             // block on the call. PluginManager catches and logs
                             // hook exceptions itself (PluginManager.cs:252,264);
                             // after-hook failures never fail the originating action.
+                            // A move is keyed on the DESTINATION with the
+                            // source in attributes, as EntryService.MoveAsync
+                            // does: the dispatcher hands back the renamed
+                            // record, and an event keyed on `rec` would name a
+                            // row that no longer exists with no way to learn
+                            // the new name.
+                            var isMove = actionType == ActionType.Move;
                             var afterEvent = new Models.Core.Event
                             {
                                 SpaceName = req.SpaceName,
-                                Subpath = rec.Subpath,
-                                Shortname = rec.Shortname,
+                                Subpath = isMove ? result.UpdatedRecord.Subpath : rec.Subpath,
+                                Shortname = isMove ? result.UpdatedRecord.Shortname : rec.Shortname,
                                 ActionType = actionType.Value,
                                 ResourceType = rec.ResourceType,
                                 // No SchemaShortname. Plugin filters gate on
@@ -288,6 +295,11 @@ public static class RequestHandler
                             // Only set on Update/Patch; Create/Delete have no diff.
                             if (updateDiff is not null && updateDiff.Count > 0)
                                 afterEvent.Attributes["history_diff"] = updateDiff;
+                            if (isMove)
+                            {
+                                afterEvent.Attributes["src_shortname"] = rec.Shortname;
+                                afterEvent.Attributes["src_subpath"] = rec.Subpath;
+                            }
                             await plugins.AfterActionAsync(afterEvent, ct);
                         }
                     }
@@ -1505,7 +1517,10 @@ public static class RequestHandler
 
     // A user move is a rename: users always sit at management:/users, so only
     // the shortname may change (Python matches users by shortname alone too).
-    // Gated like an entry move — update on the source, create at the target.
+    // Gated like an entry move — update on the source, create at the target —
+    // and the gate answers FIRST: whether the account exists, whether it was
+    // deleted and where it really lives are all facts a caller without move
+    // access must not be able to collect one shortname at a time.
     private static async Task<(Response Response, Record UpdatedRecord)> DispatchUserMoveAsync(
         Record rec, string srcSpace, string destSpace, string destSubpath, string destShortname,
         string actor, UserRepository users, PermissionService perms, HistoryRepository history,
@@ -1514,6 +1529,18 @@ public static class RequestHandler
         Response Fail(int code, string message) => Response.Fail(code, message, ErrorTypes.Request);
 
         var existing = await users.GetByShortnameAsync(rec.Shortname, ct);
+        // With a row, authorize against its real coordinates and context
+        // (owner / is_active feed the permission conditions); without one,
+        // against the coordinates the request named — either way a caller the
+        // gate refuses gets the same answer.
+        var src = existing is not null
+            ? new Locator(ResourceType.User, existing.SpaceName, existing.Subpath, existing.Shortname)
+            : new Locator(ResourceType.User, srcSpace, "/" + rec.Subpath.Trim('/'), rec.Shortname);
+        var to = new Locator(ResourceType.User, destSpace, "/" + destSubpath.Trim('/'), destShortname);
+        if (!await perms.CanUpdateAsync(actor, src, existing is null ? null : PermissionService.FromUser(existing), null, ct)
+            || !await perms.CanCreateAsync(actor, to, new Dictionary<string, object>(), ct))
+            return (Fail(InternalErrorCode.NOT_ALLOWED, "no move access"), rec);
+
         if (existing is null)
             return (Fail(InternalErrorCode.SHORTNAME_DOES_NOT_EXIST, "user not found"), rec);
         if (existing.IsDeleted)
@@ -1526,19 +1553,23 @@ public static class RequestHandler
         if (!Utils.RequestRegex.IsValidShortname(destShortname))
             return (Fail(InternalErrorCode.INVALID_DATA,
                 $"invalid dest_shortname '{destShortname}': fails {Utils.RequestRegex.ShortnamePattern}"), rec);
-        // The bootstrap admin is also the owner force-delete hands orphaned
-        // objects to; renaming it would make AdminBootstrap recreate a second one.
+        // Same name, same place: nothing to rename. cxb's bulk move always
+        // sends dest_shortname = shortname (it moves between subpaths, which a
+        // user cannot do), so this is the one shape the UI produces for a user
+        // kept in /users — a success, as it is for an entry, not "occupied".
+        if (string.Equals(existing.Shortname, destShortname, StringComparison.Ordinal))
+            return (Response.Ok(), rec);
+        // Two sentinel rows the server recreates when missing: the bootstrap
+        // admin (also the owner force-delete hands orphaned objects to), and
+        // the anonymous user whose roles are what unauthenticated callers get.
+        // Renaming either leaves a credential-less duplicate behind at the
+        // next restart — and, for anonymous, drops public access until then.
         if (string.Equals(existing.Shortname, UserRepository.FallbackOwner, StringComparison.Ordinal))
             return (Fail(InternalErrorCode.NOT_ALLOWED, $"the '{UserRepository.FallbackOwner}' admin cannot be renamed"), rec);
+        if (string.Equals(existing.Shortname, PermissionService.AnonymousUser, StringComparison.Ordinal))
+            return (Fail(InternalErrorCode.NOT_ALLOWED, $"the '{PermissionService.AnonymousUser}' user cannot be renamed"), rec);
 
-        var src = new Locator(ResourceType.User, existing.SpaceName, existing.Subpath, existing.Shortname);
-        var to = src with { Shortname = destShortname };
-        if (!await perms.CanUpdateAsync(actor, src, PermissionService.FromUser(existing), null, ct)
-            || !await perms.CanCreateAsync(actor, to, new Dictionary<string, object>(), ct))
-            return (Fail(InternalErrorCode.NOT_ALLOWED, "no move access"), rec);
-
-        if (string.Equals(existing.Shortname, destShortname, StringComparison.Ordinal)
-            || await users.GetByShortnameAsync(destShortname, ct) is not null)
+        if (await users.GetByShortnameAsync(destShortname, ct) is not null)
             return (Fail(InternalErrorCode.SHORTNAME_ALREADY_EXIST, "destination already occupied"), rec);
 
         try
