@@ -1,6 +1,8 @@
 using System.Text.Json;
 using Dmart.Models.Api;
 using Dmart.Models.Json;
+using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.Logging;
 
 namespace Dmart.Utils;
 
@@ -46,7 +48,10 @@ public static class JqEnvelope
 
         if (jq.Failure != JqRunner.FailureKind.None)
         {
-            var fail = JqRunner.ToFailureResponse(jq.Failure, jq.Stderr);
+            var log = http.HttpContext.RequestServices.GetRequiredService<ILoggerFactory>()
+                .CreateLogger(typeof(JqEnvelope));
+            var fail = JqRunner.ToFailureResponse(jq.Failure, jq.Stderr, log,
+                http.Headers["X-Correlation-ID"].ToString());
             await JsonSerializer.SerializeAsync(http.Body, fail, DmartJsonContext.Default.Response, ct);
             return;
         }

@@ -200,7 +200,7 @@ public static class RequestHandler
                                 await DispatchDeleteAsync(rec, req.SpaceName, actor, managementSpace, req.Force, req.DryRun,
                                     entries, users, userSvc, access, spaces, attachments, perms, ct),
                             RequestType.Move =>
-                                await DispatchMoveAsync(rec, req.SpaceName, actor, entries, ct),
+                                await DispatchMoveAsync(rec, req.SpaceName, actor, entries, users, perms, history, ct),
                             // Python: Assign sets collaborators on an entry.
                             RequestType.Assign =>
                                 await DispatchAssignAsync(rec, req.SpaceName, actor, entries, users, ct),
@@ -260,11 +260,18 @@ public static class RequestHandler
                             // block on the call. PluginManager catches and logs
                             // hook exceptions itself (PluginManager.cs:252,264);
                             // after-hook failures never fail the originating action.
+                            // A move is keyed on the DESTINATION with the
+                            // source in attributes, as EntryService.MoveAsync
+                            // does: the dispatcher hands back the renamed
+                            // record, and an event keyed on `rec` would name a
+                            // row that no longer exists with no way to learn
+                            // the new name.
+                            var isMove = actionType == ActionType.Move;
                             var afterEvent = new Models.Core.Event
                             {
                                 SpaceName = req.SpaceName,
-                                Subpath = rec.Subpath,
-                                Shortname = rec.Shortname,
+                                Subpath = isMove ? result.UpdatedRecord.Subpath : rec.Subpath,
+                                Shortname = isMove ? result.UpdatedRecord.Shortname : rec.Shortname,
                                 ActionType = actionType.Value,
                                 ResourceType = rec.ResourceType,
                                 // No SchemaShortname. Plugin filters gate on
@@ -288,6 +295,11 @@ public static class RequestHandler
                             // Only set on Update/Patch; Create/Delete have no diff.
                             if (updateDiff is not null && updateDiff.Count > 0)
                                 afterEvent.Attributes["history_diff"] = updateDiff;
+                            if (isMove)
+                            {
+                                afterEvent.Attributes["src_shortname"] = rec.Shortname;
+                                afterEvent.Attributes["src_subpath"] = rec.Subpath;
+                            }
                             await plugins.AfterActionAsync(afterEvent, ct);
                         }
                     }
@@ -1472,7 +1484,8 @@ public static class RequestHandler
     // ============================================================================
 
     private static async Task<(Response Response, Record UpdatedRecord)> DispatchMoveAsync(
-        Record rec, string space, string actor, EntryService entries, CancellationToken ct)
+        Record rec, string space, string actor, EntryService entries, UserRepository users,
+        PermissionService perms, HistoryRepository history, CancellationToken ct)
     {
         var attrs = rec.Attributes ?? new();
         if (!TryGetString(attrs, "dest_subpath", out var destSubpath)
@@ -1484,12 +1497,98 @@ public static class RequestHandler
         var srcSpace = TryGetString(attrs, "src_space_name", out var ss) && ss is not null ? ss : space;
         var destSpace = TryGetString(attrs, "dest_space_name", out var ds) && ds is not null ? ds : space;
 
+        // Users live in their own table, which EntryService.MoveAsync never
+        // looks at — it would report "source entry missing" for every user.
+        if (rec.ResourceType == ResourceType.User)
+            return await DispatchUserMoveAsync(rec, srcSpace, destSpace, destSubpath!, destShortname!,
+                actor, users, perms, history, ct);
+        if (rec.ResourceType is ResourceType.Role or ResourceType.Group
+            or ResourceType.Permission or ResourceType.Space)
+            return (Response.Fail(InternalErrorCode.NOT_SUPPORTED_TYPE,
+                $"move is not supported for {JsonbHelpers.EnumMember(rec.ResourceType)}", ErrorTypes.Request), rec);
+
         var locator = new Locator(rec.ResourceType, srcSpace, rec.Subpath, rec.Shortname);
         var to = new Locator(rec.ResourceType, destSpace, destSubpath!, destShortname!);
         var result = await entries.MoveAsync(locator, to, actor, ct);
         return result.IsOk
             ? (Response.Ok(), rec with { Subpath = to.Subpath, Shortname = to.Shortname })
             : (Response.Fail(result.ErrorCode!, result.ErrorMessage!, ErrorTypes.Request), rec);
+    }
+
+    // A user move is a rename: users always sit at management:/users, so only
+    // the shortname may change (Python matches users by shortname alone too).
+    // Gated like an entry move — update on the source, create at the target —
+    // and the gate answers FIRST: whether the account exists, whether it was
+    // deleted and where it really lives are all facts a caller without move
+    // access must not be able to collect one shortname at a time.
+    private static async Task<(Response Response, Record UpdatedRecord)> DispatchUserMoveAsync(
+        Record rec, string srcSpace, string destSpace, string destSubpath, string destShortname,
+        string actor, UserRepository users, PermissionService perms, HistoryRepository history,
+        CancellationToken ct)
+    {
+        Response Fail(int code, string message) => Response.Fail(code, message, ErrorTypes.Request);
+
+        var existing = await users.GetByShortnameAsync(rec.Shortname, ct);
+        // With a row, authorize against its real coordinates and context
+        // (owner / is_active feed the permission conditions); without one,
+        // against the coordinates the request named — either way a caller the
+        // gate refuses gets the same answer.
+        var src = existing is not null
+            ? new Locator(ResourceType.User, existing.SpaceName, existing.Subpath, existing.Shortname)
+            : new Locator(ResourceType.User, srcSpace, "/" + rec.Subpath.Trim('/'), rec.Shortname);
+        var to = new Locator(ResourceType.User, destSpace, "/" + destSubpath.Trim('/'), destShortname);
+        if (!await perms.CanUpdateAsync(actor, src, existing is null ? null : PermissionService.FromUser(existing), null, ct)
+            || !await perms.CanCreateAsync(actor, to, new Dictionary<string, object>(), ct))
+            return (Fail(InternalErrorCode.NOT_ALLOWED, "no move access"), rec);
+
+        if (existing is null)
+            return (Fail(InternalErrorCode.SHORTNAME_DOES_NOT_EXIST, "user not found"), rec);
+        if (existing.IsDeleted)
+            return (Fail(InternalErrorCode.NOT_ALLOWED, "account has been deleted"), rec);
+        if (!string.Equals(srcSpace, existing.SpaceName, StringComparison.Ordinal)
+            || !string.Equals(destSpace, existing.SpaceName, StringComparison.Ordinal)
+            || !string.Equals(destSubpath.Trim('/'), existing.Subpath.Trim('/'), StringComparison.Ordinal))
+            return (Fail(InternalErrorCode.INVALID_DATA,
+                $"a user can only be renamed: space and subpath must stay {existing.SpaceName}:{existing.Subpath}"), rec);
+        if (!Utils.RequestRegex.IsValidShortname(destShortname))
+            return (Fail(InternalErrorCode.INVALID_DATA,
+                $"invalid dest_shortname '{destShortname}': fails {Utils.RequestRegex.ShortnamePattern}"), rec);
+        // Same name, same place: nothing to rename. cxb's bulk move always
+        // sends dest_shortname = shortname (it moves between subpaths, which a
+        // user cannot do), so this is the one shape the UI produces for a user
+        // kept in /users — a success, as it is for an entry, not "occupied".
+        if (string.Equals(existing.Shortname, destShortname, StringComparison.Ordinal))
+            return (Response.Ok(), rec);
+        // Two sentinel rows the server recreates when missing: the bootstrap
+        // admin (also the owner force-delete hands orphaned objects to), and
+        // the anonymous user whose roles are what unauthenticated callers get.
+        // Renaming either leaves a credential-less duplicate behind at the
+        // next restart — and, for anonymous, drops public access until then.
+        if (string.Equals(existing.Shortname, UserRepository.FallbackOwner, StringComparison.Ordinal))
+            return (Fail(InternalErrorCode.NOT_ALLOWED, $"the '{UserRepository.FallbackOwner}' admin cannot be renamed"), rec);
+        if (string.Equals(existing.Shortname, PermissionService.AnonymousUser, StringComparison.Ordinal))
+            return (Fail(InternalErrorCode.NOT_ALLOWED, $"the '{PermissionService.AnonymousUser}' user cannot be renamed"), rec);
+
+        if (await users.GetByShortnameAsync(destShortname, ct) is not null)
+            return (Fail(InternalErrorCode.SHORTNAME_ALREADY_EXIST, "destination already occupied"), rec);
+
+        try
+        {
+            if (!await users.RenameAsync(existing.Shortname, destShortname, ct))
+                return (Fail(InternalErrorCode.SHORTNAME_DOES_NOT_EXIST, "user not found"), rec);
+        }
+        catch (Exception ex) when (DataAdapters.Sql.DbErrors.IsUniqueViolation(ex))
+        {
+            // Lost a race for the destination name; the rename rolled back.
+            return (Fail(InternalErrorCode.SHORTNAME_ALREADY_EXIST, "destination already occupied"), rec);
+        }
+
+        var diff = new Dictionary<string, object>
+        {
+            ["shortname"] = new Dictionary<string, string> { ["old"] = existing.Shortname, ["new"] = destShortname },
+        };
+        await history.AppendAsync(to.SpaceName, to.Subpath, to.Shortname, actor, requestHeaders: null, diff: diff, ct);
+        return (Response.Ok(), rec with { Subpath = to.Subpath, Shortname = to.Shortname });
     }
 
     // ============================================================================

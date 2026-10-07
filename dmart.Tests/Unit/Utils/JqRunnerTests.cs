@@ -1,6 +1,7 @@
 using System.Text;
 using System.Text.Json;
 using Dmart.Utils;
+using Microsoft.Extensions.Logging;
 using Shouldly;
 using Xunit;
 
@@ -50,6 +51,56 @@ public class JqRunnerTests
         resp.Error.Message.ShouldNotContain(".secret");
     }
 
+    // The caller only sees the generic message, so jq's stderr has to land in
+    // the server log instead — tagged with the request's correlation id, which
+    // the client already holds in its X-Correlation-ID response header.
+    [Fact]
+    public void ToFailureResponse_JqError_Logs_Stderr_And_Correlation_Id()
+    {
+        const string stderr = "jq: error: syntax error, unexpected IDENT at <top-level>";
+        var log = new CapturingLogger();
+
+        var resp = JqRunner.ToFailureResponse(JqRunner.FailureKind.JqError, stderr, log, "cid-7f3a");
+
+        resp.Error!.Message.ShouldBe("jq_filter failed to evaluate");
+        var entry = log.Entries.ShouldHaveSingleItem();
+        entry.Level.ShouldBe(LogLevel.Warning);
+        entry.Message.ShouldContain(stderr, Case.Sensitive);
+        entry.Message.ShouldContain("cid-7f3a", Case.Sensitive);
+    }
+
+    // jq's stderr echoes the caller's filter, and the correlation id is taken
+    // from the caller's own X-Correlation-ID header when one is sent — a newline
+    // in either must not let the caller forge a log line.
+    [Fact]
+    public void ToFailureResponse_JqError_Escapes_Control_Characters_In_Log()
+    {
+        var log = new CapturingLogger();
+
+        JqRunner.ToFailureResponse(JqRunner.FailureKind.JqError,
+            "jq: error\nFORGED stderr line", log, "cid\r\nFORGED cid line");
+
+        var message = log.Entries.ShouldHaveSingleItem().Message;
+        message.ShouldNotContain("\n");
+        message.ShouldNotContain("\r");
+    }
+
+    // stderr is caller-controlled in SIZE as well: a filter can say as much as
+    // it likes in error(). What reaches the log is capped whatever the caller
+    // passed in, so one request cannot write megabytes into the server log.
+    [Fact]
+    public void ToFailureResponse_JqError_Caps_The_Logged_Stderr()
+    {
+        var log = new CapturingLogger();
+
+        JqRunner.ToFailureResponse(JqRunner.FailureKind.JqError,
+            new string('x', JqRunner.MaxStderrBytes * 4), log, "cid");
+
+        var message = log.Entries.ShouldHaveSingleItem().Message;
+        message.Length.ShouldBeLessThan(JqRunner.MaxStderrBytes + 128);
+        message.ShouldContain("[stderr truncated]");
+    }
+
     [Fact]
     public void ValidateFilter_Rejects_Oversize_Filter()
     {
@@ -68,6 +119,21 @@ public class JqRunnerTests
     {
         var r = await JqRunner.RunAsync(".", Encoding.UTF8.GetBytes("[]"), timeoutSeconds: 2);
         return r.Failure != JqRunner.FailureKind.JqMissing;
+    }
+
+    // `error("x" * 1000000)` is 20 chars and passes validation (error is not a
+    // blocked builtin, string repetition is plain jq) but writes ~1 MB to
+    // stderr. The runner keeps the head, drains the rest so jq still runs to
+    // its exit code, and reports the filter's failure as usual.
+    [Fact]
+    public async Task RunAsync_Caps_Stderr_Without_Changing_The_Outcome()
+    {
+        if (!await JqAvailableAsync()) return;
+        var r = await JqRunner.RunAsync("error(\"x\" * 1000000)", Encoding.UTF8.GetBytes("[]"), timeoutSeconds: 10);
+        r.Failure.ShouldBe(JqRunner.FailureKind.JqError);
+        r.Stderr.ShouldNotBeNull();
+        r.Stderr!.Length.ShouldBeLessThanOrEqualTo(JqRunner.MaxStderrBytes + 32);
+        r.Stderr.ShouldEndWith("[stderr truncated]");
     }
 
     [Fact]
@@ -143,5 +209,16 @@ public class JqRunnerTests
     {
         var r = await JqRunner.RunRawAsync("env", Encoding.UTF8.GetBytes("[]"), timeoutSeconds: 2);
         r.Failure.ShouldBe(JqRunner.FailureKind.Invalid);
+    }
+
+    private sealed class CapturingLogger : ILogger
+    {
+        public sealed record Entry(LogLevel Level, string Message);
+        public List<Entry> Entries { get; } = new();
+        public IDisposable? BeginScope<TState>(TState state) where TState : notnull => null;
+        public bool IsEnabled(LogLevel logLevel) => true;
+        public void Log<TState>(LogLevel logLevel, EventId eventId, TState state,
+            Exception? exception, Func<TState, Exception?, string> formatter) =>
+            Entries.Add(new Entry(logLevel, formatter(state, exception)));
     }
 }
