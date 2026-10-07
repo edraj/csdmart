@@ -3572,16 +3572,24 @@ app.MapGroup("/user").WithTags("User").AddEndpointFilter<FailedResponseFilter>()
 app.MapGroup("/info").WithTags("Info").RequireAuthorization().AddEndpointFilter<FailedResponseFilter>().AddEndpointFilter<GlobalAdminFilter>().MapInfo();
 app.MapGroup("/qr").WithTags("QR").AddEndpointFilter<FailedResponseFilter>().MapQr();
 
-// OAuth 2.1 Authorization Server for MCP clients. Discovery + DCR + the
-// authorize/token endpoints live alongside the JWT-protected /mcp route so a
-// single host provides everything an MCP client needs to onboard with
-// zero-config (just the base URL).
-Dmart.Api.Oauth.OAuthEndpoints.MapOAuth(app);
+// Model Context Protocol surface, off by default (DmartSettings.EnableMcp).
+// Both the MCP routes and the OAuth 2.1 authorization server that onboards MCP
+// clients are mapped together or not at all: a deployment with ENABLE_MCP=false
+// exposes neither /mcp nor /oauth/* nor the /.well-known/oauth-* discovery
+// documents — they 404. See DmartSettings.EnableMcp for the rationale.
+if (app.Services.GetRequiredService<IOptions<DmartSettings>>().Value.EnableMcp)
+{
+    // OAuth 2.1 Authorization Server for MCP clients. Discovery + DCR + the
+    // authorize/token endpoints live alongside the JWT-protected /mcp route so a
+    // single host provides everything an MCP client needs to onboard with
+    // zero-config (just the base URL).
+    Dmart.Api.Oauth.OAuthEndpoints.MapOAuth(app);
 
-// Model Context Protocol — hand-rolled, AOT-safe. Routes: POST/GET/DELETE /mcp.
-// Auth is applied per-route inside MapMcp via RequireAuthorization() — the
-// caller's JWT flows through to tool handlers so permissions are enforced.
-Dmart.Api.Mcp.McpEndpoint.MapMcp(app);
+    // Model Context Protocol — hand-rolled, AOT-safe. Routes: POST/GET/DELETE /mcp.
+    // Auth is applied per-route inside MapMcp via RequireAuthorization() — the
+    // caller's JWT flows through to tool handlers so permissions are enforced.
+    Dmart.Api.Mcp.McpEndpoint.MapMcp(app);
+}
 
 // WebSocket server — port of dmart/websocket.py.
 // /ws?token=<jwt>, /send-message/{user}, /broadcast-to-channels, /ws-info

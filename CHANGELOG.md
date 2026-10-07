@@ -2,6 +2,21 @@
 
 ## Unreleased
 
+### Changed
+
+- **The MCP surface is now off by default (`ENABLE_MCP`, default `false`).**
+  With it unset, none of the Model Context Protocol routes are mapped — the
+  `/mcp` endpoints, the OAuth 2.1 authorization server (`/oauth/authorize`,
+  `/oauth/token`, `/oauth/register`) and its `/.well-known/oauth-*` discovery
+  documents are absent (an unmapped route, i.e. `INVALID_ROUTE`/422), not
+  merely gated. MCP tools always run the caller's own permission walk, so
+  exposing them was never a privilege escalation, but a deployment that does
+  not use MCP has no reason to carry the extra internet-reachable surface —
+  including an anonymous (if bounded) Dynamic Client Registration endpoint.
+  **This is a behaviour change:** deployments that use MCP clients must set
+  `ENABLE_MCP=true`. Prefer also restricting those routes to the networks that
+  actually need them.
+
 ### Security
 
 - **`/public/query` honours row-level ACL on attachment and history metadata.**

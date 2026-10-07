@@ -235,6 +235,19 @@ public sealed class DmartSettings
     // docs/superpowers/specs/2026-06-10-sql-inner-join-pushdown-design.md.
     public bool EnableInnerJoinPushdown { get; set; } = true;
 
+    // Master switch for the Model Context Protocol surface. When false (the
+    // default), none of the MCP/OAuth routes are mapped at all — POST/GET/DELETE
+    // /mcp, the OAuth 2.1 authorization server (/oauth/authorize, /oauth/token,
+    // /oauth/register) and its discovery documents (/.well-known/oauth-*) are
+    // absent (404), not merely gated. MCP tools always run the caller's own
+    // permission walk, so exposing them is not itself a privilege escalation —
+    // but a deployment that does not use MCP has no reason to carry the extra
+    // internet-reachable surface (an anonymous, if bounded, Dynamic Client
+    // Registration endpoint among it). Opt in with ENABLE_MCP=true only where
+    // MCP clients are actually used, and prefer restricting those routes to the
+    // networks that need them.
+    public bool EnableMcp { get; set; }
+
     // Per-IP cap on auth-endpoint calls (login/otp-request) in a 60-second
     // window. Complements MaxFailedLoginAttempts (per-account) by stopping
     // username enumeration across many shortnames from one host. Bump for

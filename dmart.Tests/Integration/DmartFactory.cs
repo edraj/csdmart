@@ -142,6 +142,10 @@ public sealed class DmartFactory : WebApplicationFactory<Program>, IAsyncLifetim
                 // LegacyLockoutBackfillTests turns it back on for the one test
                 // that covers the startup path.
                 ["Dmart:RepairLegacyLockoutsOnStart"] = "false",
+                // MCP ships OFF by default (DmartSettings.EnableMcp); the suite
+                // turns it on so the MCP/OAuth endpoint tests have routes to
+                // hit. McpEnableGateTests pins both states on its own factories.
+                ["Dmart:EnableMcp"] = "true",
             };
 
             // If a PostgresConnection is resolved (from env var or config.env),
