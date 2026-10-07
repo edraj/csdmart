@@ -58,6 +58,26 @@ public sealed class QueryService(
         return subpath == "/" && await perms.HasAnyAccessToSpaceAsync(actor, spaceName, ct);
     }
 
+    // No silent caps: a bounded count reports the cap, not the real total, so
+    // say so rather than letting a client read "10000" as exact. Keyed on the
+    // cap+1 sentinel RunCountAsync returns to mean "at least cap". Shared by
+    // the main dispatch and the inner-join pushdown fast path.
+    private static Response BoundTotal(Response response, int totalCap)
+    {
+        if (totalCap > 0 && response.Attributes is { } countAttrs
+            && countAttrs.TryGetValue("total", out var totalObj)
+            && totalObj is int t && t > totalCap)
+        {
+            var bounded = new Dictionary<string, object>(countAttrs, StringComparer.Ordinal)
+            {
+                ["total"] = totalCap,
+                ["total_is_lower_bound"] = true,
+            };
+            return response with { Attributes = bounded };
+        }
+        return response;
+    }
+
     // Python returns (0, []) when the user has no matching query policies — a success
     // with zero records, not an error. This matches that behavior.
     private static Response EmptyQueryResponse() =>
@@ -104,7 +124,13 @@ public sealed class QueryService(
             {
                 if (plan.AlwaysEmpty) return EmptyQueryResponse();
 
-                var fast = await QueryEntriesAsync(q, actor, ct, plan.SemiJoins);
+                // Carry QueryTotalCap here too: this path returned before the
+                // bounded-count handling below, so its COUNT was unbounded and
+                // total_is_lower_bound never set — the 2.4 s/request case the
+                // cap exists to prevent.
+                var fastCap = settings.Value.QueryTotalCap;
+                var fast = BoundTotal(
+                    await QueryEntriesAsync(q with { TotalCap = fastCap }, actor, ct, plan.SemiJoins), fastCap);
                 if (fast.Status != Status.Success || fast.Records is not { Count: > 0 })
                     return fast;  // empty page or failure — nothing to attach
 
@@ -174,20 +200,7 @@ public sealed class QueryService(
             _ => await DispatchTableQuery(dispatchQuery, actor, ct),
         };
 
-        // No silent caps: a bounded count reports the cap, not the real total, so
-        // say so rather than letting a client read "10000" as exact. Keyed on
-        // the cap+1 sentinel RunCountAsync returns to mean "at least cap".
-        if (totalCap > 0 && response.Attributes is { } countAttrs
-            && countAttrs.TryGetValue("total", out var totalObj)
-            && totalObj is int t && t > totalCap)
-        {
-            var bounded = new Dictionary<string, object>(countAttrs, StringComparer.Ordinal)
-            {
-                ["total"] = totalCap,
-                ["total_is_lower_bound"] = true,
-            };
-            response = response with { Attributes = bounded };
-        }
+        response = BoundTotal(response, totalCap);
 
         // Python parity: client-side joins run against the materialized result
         // list. Mirror of dmart_plain/backend/data_adapters/sql/adapter.py:
@@ -534,9 +547,26 @@ public sealed class QueryService(
             return Response.Ok(Array.Empty<Record>(), new() { ["total"] = 0, ["returned"] = 0 });
 
         var path = eventLogger.ResolveLogPath(q.SpaceName);
-        if (!File.Exists(path))
+        // Previous generation first (older), then the live file —
+        // SpaceEventLogger rolls events.jsonl over to events.jsonl.1 at
+        // EventsLogMaxBytes.
+        var paths = new List<string>(2);
+        if (File.Exists(path + ".1")) paths.Add(path + ".1");
+        if (File.Exists(path)) paths.Add(path);
+        if (paths.Count == 0)
             return Response.Ok(Array.Empty<Record>(), new() { ["total"] = 0, ["returned"] = 0 });
 
+        // Bounded retention: a page can only ever need the first offset+limit
+        // rows in sort order, so hold at most ~2x that many parsed records and
+        // trim as the file streams past. The old code materialized a Record
+        // (with cloned JsonElements) for EVERY line of a never-rotated file —
+        // multiple GB for a busy space, and an OOM on a small board when two
+        // such queries overlapped. `total` is still an exact count of matching
+        // lines; only the retained set is bounded.
+        var ascending = q.SortType == Dmart.Models.Enums.SortType.Ascending;
+        var keepCap = Math.Max(1000, settings.Value.MaxQueryLimit);
+        var keep = (int)Math.Min(keepCap, (long)Math.Max(0, q.Offset) + Math.Max(1, q.Limit));
+        var total = 0;
         var matches = new List<(DateTime Ts, Record Rec)>();
         // skippedCorrupt counts lines we silently dropped so we can surface
         // log-file corruption to ops once per query rather than per line —
@@ -544,21 +574,26 @@ public sealed class QueryService(
         // response, but a rotated/truncated file dropping every line should
         // be visible.
         var skippedCorrupt = 0;
-        // Open with FileShare.ReadWrite so a concurrent SpaceEventLogger.LogAsync
-        // append doesn't lock us out while a query is running.
-        await using var fs = new FileStream(path, FileMode.Open, FileAccess.Read,
-            FileShare.ReadWrite | FileShare.Delete);
-        using var reader = new StreamReader(fs);
-        string? line;
-        while ((line = await reader.ReadLineAsync(ct)) is not null)
+        foreach (var file in paths)
         {
-            if (string.IsNullOrWhiteSpace(line)) continue;
-            if (!TryParseEventLine(line, q, out var ts, out var rec))
+            // Open with FileShare.ReadWrite so a concurrent SpaceEventLogger.LogAsync
+            // append (or rollover) doesn't lock us out while a query is running.
+            await using var fs = new FileStream(file, FileMode.Open, FileAccess.Read,
+                FileShare.ReadWrite | FileShare.Delete);
+            using var reader = new StreamReader(fs);
+            string? line;
+            while ((line = await reader.ReadLineAsync(ct)) is not null)
             {
-                skippedCorrupt++;
-                continue;
+                if (string.IsNullOrWhiteSpace(line)) continue;
+                if (!TryParseEventLine(line, q, out var ts, out var rec))
+                {
+                    skippedCorrupt++;
+                    continue;
+                }
+                total++;
+                matches.Add((ts, rec!));
+                if (matches.Count >= keep * 2) TrimEvents(matches, keep, ascending);
             }
-            matches.Add((ts, rec!));
         }
         if (skippedCorrupt > 0)
             logger.LogWarning("events: {Count} unparseable lines skipped in {Path}",
@@ -566,12 +601,7 @@ public sealed class QueryService(
 
         // Default sort: newest-first (Python's default for the events feed).
         // Ascending only when SortType.Ascending is requested explicitly.
-        if (q.SortType == Dmart.Models.Enums.SortType.Ascending)
-            matches.Sort((a, b) => a.Ts.CompareTo(b.Ts));
-        else
-            matches.Sort((a, b) => b.Ts.CompareTo(a.Ts));
-
-        var total = matches.Count;
+        TrimEvents(matches, keep, ascending);
         var page = matches.Skip(q.Offset).Take(q.Limit).Select(t => t.Rec).ToList();
         return Response.Ok(page, new()
         {
@@ -597,6 +627,16 @@ public sealed class QueryService(
     //
     // Internal so the unit suite can drive it without spinning up the full
     // QueryService (which needs PG, perms, and the DI graph).
+    // Sort the retained events in the requested direction and drop everything
+    // past the rows paging can reach. Default is newest-first (Python's default
+    // for the events feed); ascending only when requested explicitly.
+    private static void TrimEvents(List<(DateTime Ts, Record Rec)> matches, int keep, bool ascending)
+    {
+        if (ascending) matches.Sort((a, b) => a.Ts.CompareTo(b.Ts));
+        else matches.Sort((a, b) => b.Ts.CompareTo(a.Ts));
+        if (matches.Count > keep) matches.RemoveRange(keep, matches.Count - keep);
+    }
+
     internal static bool TryParseEventLine(string line, Query q, out DateTime ts, out Record? rec)
     {
         ts = default;

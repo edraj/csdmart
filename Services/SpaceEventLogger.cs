@@ -129,14 +129,23 @@ public sealed class SpaceEventLogger(
         {
             // Cache the "directory created" bit per space — typical hot path
             // is steady-state appends to an existing dir, so skip the stat.
-            // TODO: add log rotation. The per-space events.jsonl grows
-            // unbounded; matches Python upstream but is a real risk in
-            // long-running deployments. Mitigation belongs in this writer
-            // (e.g., size-based rollover to events.jsonl.<n>).
             if (!_dirsCreated.ContainsKey(e.SpaceName))
             {
                 Directory.CreateDirectory(Path.GetDirectoryName(path)!);
                 _dirsCreated[e.SpaceName] = true;
+            }
+            // Size-based rollover (EventsLogMaxBytes): one previous generation
+            // is kept as events.jsonl.1 so QueryEventsAsync still serves a
+            // continuous window across the boundary. Unrotated, this file grew
+            // without bound and type=events had to read ALL of it per request.
+            // We hold the per-space semaphore here, so the move cannot race an
+            // append.
+            var maxBytes = settings.Value.EventsLogMaxBytes;
+            if (maxBytes > 0)
+            {
+                var info = new FileInfo(path);
+                if (info.Exists && info.Length >= maxBytes)
+                    File.Move(path, path + ".1", overwrite: true);
             }
             await File.AppendAllTextAsync(path, line, Encoding.UTF8, ct);
         }

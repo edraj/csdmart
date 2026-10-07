@@ -172,7 +172,7 @@ public class QueryResponseShapeTests : IClassFixture<DmartFactory>
             Limit = 100,
         }, _factory.AdminShortname);
 
-        // Default QueryTotalCap is 0 (unlimited), so nothing should be flagged.
+        // Default QueryTotalCap is 100000 — far above anything seeded here — so nothing should be flagged.
         resp.Attributes!.ShouldNotContainKey("total_is_lower_bound");
     }
 
