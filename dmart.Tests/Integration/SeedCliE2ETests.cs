@@ -22,19 +22,12 @@ namespace Dmart.Tests.Integration;
 //   3. --force re-copies every file (overwrite path).
 public sealed class SeedCliE2ETests
 {
-    [Fact]
+    [FactIfCliBuilt]
     public void Seed_FilesOnly_Extracts_Embedded_Manifest_To_TempDir()
     {
-        var binary = FindDmartBinary();
-        if (binary is null)
-        {
-            // Skip via Assert.True with explanatory message — xUnit doesn't
-            // surface a built-in dynamic-skip from a [Fact] without third-
-            // party traits, and this branch fires only on a clean checkout
-            // that hasn't built the dmart binary yet.
-            Assert.True(true, "dmart binary not built — run `dotnet build -c Release` first");
-            return;
-        }
+        // FactIfCliBuilt skips (visibly) when the binary is absent, so a null
+        // here is impossible rather than a silent pass.
+        var binary = FindDmartBinary()!;
 
         var spacesFolder = Path.Combine(Path.GetTempPath(),
             $"dmart-seed-e2e-{Guid.NewGuid():N}", "spaces");
@@ -85,15 +78,10 @@ public sealed class SeedCliE2ETests
         }
     }
 
-    [Fact]
+    [FactIfCliBuilt]
     public void Seed_Rejects_Unknown_Mode()
     {
-        var binary = FindDmartBinary();
-        if (binary is null)
-        {
-            Assert.True(true, "dmart binary not built — skipping");
-            return;
-        }
+        var binary = FindDmartBinary()!;
 
         var psi = new ProcessStartInfo(binary, "seed bogus-mode")
         {
