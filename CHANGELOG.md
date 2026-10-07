@@ -4,6 +4,19 @@
 
 ### Changed
 
+- **Query totals are bounded by default: `QUERY_TOTAL_CAP` is now `100000`
+  (was `0` = unlimited).** Counting is O(matching rows) whatever the indexes
+  look like, so an exact `total` was a full scan of the result set on *every*
+  page request — measured at ~2.4 s per request on a 2.59 M-row folder. Totals
+  stay exact for every ordinary folder; above the cap the response reports
+  `total` as the cap and `total_is_lower_bound: true`, which clients paging by
+  total must honour (the shipped UIs do not read the flag yet). `0` restores
+  the unlimited behaviour.
+- **Per-request auth lookups are cached for 5 s (`AUTH_CACHE_TTL`, was `0`).**
+  Every authenticated call paid a full `users` row read plus a `sessions` probe
+  before reaching its handler. The node that revokes a session or deactivates a
+  user still evicts immediately; other replicas may honour the old state for at
+  most 5 s. `0` restores the always-hit-the-database behaviour.
 - **The MCP surface is now off by default (`ENABLE_MCP`, default `false`).**
   With it unset, none of the Model Context Protocol routes are mapped — the
   `/mcp` endpoints, the OAuth 2.1 authorization server (`/oauth/authorize`,
@@ -24,6 +37,46 @@
 
 ### Security
 
+- **`apply-alteration` can no longer enumerate other spaces.** The saved
+  `target_query` ran through the repository's actor-less (server-unrestricted)
+  overload — no row ACL, no `MaxQueryLimit` clamp, not even pinned to the
+  route's space — and the handler echoed the `shortname`/`subpath` of every
+  row the caller was then *denied* on. Anyone who could create an alteration
+  anywhere could enumerate, and probe payload values of, every entry in every
+  space. The alteration is now loaded read-gated, the query is pinned to the
+  alteration's own space and executed through `QueryService` under the caller's
+  ACL and limit clamp, so `matched`/`failed` can only name rows the caller
+  could already read.
+- **Operator routes are global-admin only.** `/managed/health/{type}/{space}`
+  (returned broken-entry shortnames for any space), `/managed/reload-security-data`
+  (flushed the permission + schema caches — a cache-stampede lever),
+  `/send-message/{user}`, `/broadcast-to-channels` and `/ws-info` (forge
+  realtime events, push into another user's socket, list who is connected)
+  carried only `RequireAuthorization()`. All now sit behind `GlobalAdminFilter`.
+- **Anonymous multipart uploads obey the submit allow-list.**
+  `/public/resource_with_payload` took `space_name` from the form with no
+  allow-list, and `/public/attach/{space}`'s `request_record` back-compat branch
+  returned *before* the allow-list check. Both now enforce `AllowedSubmitModels`,
+  pin the form space to the route space, force the server-minted shortname and
+  strip caller-supplied `acl`/`owner_group_shortname`/`relationships` — the
+  policy `/public/submit` already applied.
+- **Identifier validation on every create path.** The `RequestRegex` gate lived
+  only in `/managed/request`; the multipart (managed and public) and
+  `/public/submit` paths persisted unvalidated `space_name`/`shortname`/`subpath`.
+  A `/` in a shortname made an attachment's authorizing parent resolve to a
+  different row than the create gate checked. The same gate now runs there too.
+- **Social-SSO web login is bound to a `state` nonce.** The Google and Facebook
+  GET callbacks exchanged any `code` they were handed, so a victim navigated to
+  the callback with an attacker's code was silently logged into the attacker's
+  account (login-CSRF). New `GET /user/{google,facebook}/login` endpoints mint
+  the nonce into a short-lived cookie and redirect to the provider; the
+  callbacks refuse a missing or mismatched `state` before contacting it.
+  **Web clients must start the flow at the new endpoint.** The mobile
+  `id_token`/`access_token` paths and Apple's `form_post` callback are unchanged.
+- **dompurify 3.4.13 → 3.4.16** in both served UIs (two low-severity sanitizer
+  advisories). The other open dependency alerts are all build/lint tooling
+  (`brace-expansion`, `braces`, `vitest`, `postcss-selector-parser`) that never
+  ships to a browser.
 - **`/public/query` honours row-level ACL on attachment and history metadata.**
   An anonymous `type=attachments` or `type=history` query skipped the per-row
   ACL entirely — the `attachments`/`histories` branch of `QueryHelper
@@ -63,6 +116,69 @@
   which slipped past the `\binput\b` word boundary; they are inert under the
   single-array `map()` invocation but are now rejected before a future caller
   can reach them.
+
+### Fixed
+
+- **Aggregation crashed on SQLite whenever it carried a filter.**
+  `BuildAggregationSql` built its WHERE clause through the overload that
+  hard-codes the PostgreSQL dialect, so `filter_types`, `filter_tags`,
+  `search` (or a permission's `filter_fields_values`) emitted `= ANY($n)` /
+  `@>` / `ILIKE` into SQLite — a `SqliteException` and an HTTP 500.
+- **Wildcard searches over values containing `_` returned nothing on SQLite.**
+  The search parser backslash-escapes `_`/`%`, PostgreSQL honours that by
+  default, but SQLite's `LIKE` has no escape character unless one is declared.
+  `ILIKE`-style sites and the FTS prefilter now declare `ESCAPE '\'`, as the
+  policy filter always did.
+- **SQLite dropped the whole first day of a timestamp bound written with an
+  ISO `T` separator** (`@created_at:>=2024-03-01T00:00:00`), because it compared
+  the text against the stored space-separated format. The separator is folded.
+- **NULL placement under `sort_by` was the opposite on each engine** — PostgreSQL
+  treats NULL as largest, SQLite as smallest, so a sort over any nullable
+  column or JSON path paged differently per backend. Every emitted sort key now
+  spells `NULLS FIRST/LAST` (PostgreSQL's defaults, so existing PostgreSQL
+  deployments are unchanged). Numeric-looking text (`"10"`) also sorts
+  numerically on SQLite as it already did on PostgreSQL.
+- **Moving an entry now carries its history.** `MoveOnceAsync` re-keyed
+  entries, attachments and locks but never `histories`, orphaning every
+  pre-move row; once history became parent-ACL filtered those orphans were
+  invisible to everyone, so a move silently truncated the audit trail.
+- **An MCP SSE reconnect no longer gets a dead channel.** `GET /mcp` completed
+  the session's outbox on every exit, so one dropped stream (proxy idle timeout)
+  killed pushes for that session until a fresh `initialize`. The channel now
+  lives as long as the session.
+- **`import --resume` could silently skip entries after re-partitioning.**
+  Sub-shard "done" markers were matched by bare key, so a run with a different
+  `--fast-parallelism`, `--spaces` or source file set reused a `space#i` marker
+  computed over a different entry set. Sub-shard markers now carry the shard's
+  fingerprint and are trusted only when it matches; whole-space markers are
+  unaffected.
+- **Authorization cache entries expire (`AUTHZ_CACHE_TTL`, default 60 s).**
+  Invalidation was process-local with no TTL, so a role removed on one replica
+  kept granting on the others until they restarted. A user write now evicts
+  only that user's bundle instead of clearing every actor.
+- History paging has a `uuid` tie-breaker (same-millisecond rows could land on
+  two pages or none); the inner-join pushdown fast path honours
+  `QueryTotalCap` and sets `total_is_lower_bound` like the main path.
+
+### Performance
+
+- **A composite index serves the default listing.** `WHERE space_name AND
+  subpath ORDER BY updated_at DESC LIMIT n` sorted the whole folder on every
+  page (SQLite had no composite index at all). `idx_entries_space_subpath_updated`
+  on `(space_name, subpath, updated_at DESC)` turns a page into an index range
+  scan; built `CONCURRENTLY` on PostgreSQL.
+- **`events.jsonl` is rolled over and read bounded.** The per-space log grew
+  without bound and `type=events` materialised a `Record` for every line per
+  request. The writer now rolls at `EVENTS_LOG_MAX_BYTES` (default 50 MB, one
+  previous generation kept) and the reader retains only what the page can
+  reach while still counting an exact `total`.
+- **Large JSON responses stream instead of being buffered.** The empty-key
+  strip middleware buffered every JSON body in full (2–3× its size on the LOH)
+  even when it was already past the 1 MB strip limit; it now hands the held
+  bytes through and switches to passthrough the moment a body crosses it.
+- SQLite's per-connection page cache drops from 64 MiB to 8 MiB (a request
+  holds two connections from an uncapped pool; the shared 256 MiB mmap is
+  untouched).
 
 ## v1.5.18 — 2026-10-06
 
