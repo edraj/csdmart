@@ -34,7 +34,7 @@ graph TD
 
 - **Authentication:** JWT Bearer (HS256, Argon2-hashed passwords), plus a full OAuth 2.1 Authorization Server with Google, Facebook, and Apple sign-in.
 
-- **Interoperability:** Built-in MCP server at `/mcp` (Streamable HTTP) and WebSocket endpoints for realtime updates.
+- **Interoperability:** Built-in MCP server at `/mcp` (Streamable HTTP; off by default, enable with `ENABLE_MCP=true`) and WebSocket endpoints for realtime updates.
 
 ### Frontend Stack
 
@@ -209,7 +209,7 @@ REST-like and resource-oriented. Key routers:
 
 - **`/info`**: System information and manifest.
 
-- **`/mcp`**: Model Context Protocol server (Streamable HTTP) exposing DMART tools to AI clients, paired with the OAuth 2.1 Authorization Server for client onboarding.
+- **`/mcp`**: Model Context Protocol server (Streamable HTTP) exposing DMART tools to AI clients, paired with the OAuth 2.1 Authorization Server for client onboarding. Requires `ENABLE_MCP=true`; off by default.
 
 - **`/docs`**: Swagger UI and OpenAPI schema (`/docs/openapi.json`).
 

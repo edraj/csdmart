@@ -24,6 +24,13 @@ public class SettingsTests
         new DmartSettings().EnableInnerJoinPushdown.ShouldBeTrue();
     }
 
+    // MCP ships off: a deployment opts in with ENABLE_MCP=true.
+    [Fact]
+    public void EnableMcp_DefaultsFalse()
+    {
+        new DmartSettings().EnableMcp.ShouldBeFalse();
+    }
+
     [Fact]
     public void Observability_Is_Off_By_Default()
     {

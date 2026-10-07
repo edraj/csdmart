@@ -1,3 +1,6 @@
+using Dmart.Config;
+using Microsoft.Extensions.Options;
+
 namespace Dmart.Auth;
 
 // Periodic background task that removes expired authorization codes from
@@ -7,7 +10,10 @@ namespace Dmart.Auth;
 //
 // Runs every 5 minutes. Lightweight: iterates snapshot keys and removes
 // entries whose ExpiresAt / CreatedAt have passed their TTL.
-public sealed class OAuthStoreSweeper(OAuthCodeStore codeStore, OAuthClientStore clientStore) : IHostedService, IDisposable
+public sealed class OAuthStoreSweeper(
+    OAuthCodeStore codeStore,
+    OAuthClientStore clientStore,
+    IOptions<DmartSettings> settings) : IHostedService, IDisposable
 {
     private Timer? _timer;
 
@@ -21,6 +27,13 @@ public sealed class OAuthStoreSweeper(OAuthCodeStore codeStore, OAuthClientStore
 
     public Task StartAsync(CancellationToken cancellationToken)
     {
+        // With the MCP surface off (DmartSettings.EnableMcp) nothing can ever
+        // populate either store, so there is nothing to sweep: stand down
+        // rather than tick every five minutes over two empty dictionaries. The
+        // service stays registered because the stores are route-handler
+        // parameters and must stay resolvable; this is where "off" takes effect.
+        if (!settings.Value.EnableMcp) return Task.CompletedTask;
+
         _timer = new Timer(_ => Sweep(), null, Interval, Interval);
         return Task.CompletedTask;
     }
