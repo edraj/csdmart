@@ -150,6 +150,34 @@ public static class ResourceWithPayloadHandler
         // re-minted on a collision (entry path) — see RetryOnShortnameCollisionAsync.
         var wasAuto = RequestHandler.IsAutoShortname(record.Shortname);
 
+        // Identifier validation — the same RequestRegex gate /managed/request
+        // applies (RequestHandler.cs:74-103). The multipart path reached
+        // EntryService and the attachment store with no validation at all, so a
+        // shortname containing '/' could make an attachment's authorizing parent
+        // resolve to a different row than the create gate checked, and a
+        // space_name carrying path separators reached SpaceEventLogger's
+        // Path.Combine.
+        if (!Utils.RequestRegex.IsValidSpaceName(spaceName))
+            return Response.Fail(InternalErrorCode.INVALID_SPACE_NAME,
+                $"invalid space_name: '{spaceName}' fails {Utils.RequestRegex.SpaceNamePattern}", ErrorTypes.Request);
+        if (!Utils.RequestRegex.IsValidSubpath(record.Subpath))
+            return Response.Fail(InternalErrorCode.INVALID_DATA,
+                $"invalid subpath: '{record.Subpath}' fails {Utils.RequestRegex.SubpathPattern}", ErrorTypes.Request);
+        if (!wasAuto && !Utils.RequestRegex.IsValidShortname(record.Shortname))
+            return Response.Fail(InternalErrorCode.INVALID_DATA,
+                $"invalid shortname: '{record.Shortname}' fails {Utils.RequestRegex.ShortnamePattern}", ErrorTypes.Request);
+
+        // Anonymous callers never pick their own shortname and never carry an
+        // acl / owner group / relationships of their own — the policy
+        // /public/submit and the Python-contract /public/attach already enforce.
+        // Without it, the back-compat multipart shape let an anonymous caller
+        // squat a name and self-grant an ACL on what it created.
+        if (actor == "anonymous")
+        {
+            record = record with { Shortname = "auto", Attributes = StripAnonymousAttributes(record.Attributes) };
+            wasAuto = true;
+        }
+
         // Read full bytes (acceptable here — dmart also reads the whole file at once
         // because it computes a sha256 over the entire payload before storing).
         byte[] fileBytes;
@@ -192,6 +220,18 @@ public static class ResourceWithPayloadHandler
                 RequestHandler.ResolveAutoShortname(record), spaceName, actor, fileBytes, ext,
                 resourceContentType, checksum, sha, schemaShortname, entries, ct),
             r => r.Error?.Code == InternalErrorCode.SHORTNAME_ALREADY_EXIST);
+    }
+
+    // Fields an anonymous multipart caller must never set on what it creates.
+    private static readonly string[] AnonymousStrippedAttributes =
+        ["acl", "owner_group_shortname", "relationships"];
+
+    private static Dictionary<string, object>? StripAnonymousAttributes(Dictionary<string, object>? attrs)
+    {
+        if (attrs is null) return null;
+        var copy = new Dictionary<string, object>(attrs, StringComparer.Ordinal);
+        foreach (var key in AnonymousStrippedAttributes) copy.Remove(key);
+        return copy;
     }
 
     public static async Task<Response> StoreAttachmentAsync(

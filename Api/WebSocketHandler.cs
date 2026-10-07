@@ -208,7 +208,13 @@ public static class WebSocketHandler
 
         // POST /send-message/{user_shortname} — push to a specific user.
         // Used by plugins (local_notification) to notify a single user.
-        // Authenticated: plugin-to-server calls need a service token.
+        //
+        // All three push/introspection routes below are GLOBAL-ADMIN only. They
+        // used to carry bare RequireAuthorization(), so any self-registered user
+        // could forge realtime events to every subscriber, push arbitrary
+        // payloads into another user's socket, and list who is connected and
+        // what they watch. Plugins and service integrations call these with a
+        // super-admin identity.
         app.MapPost("/send-message/{user_shortname}", async (
             string user_shortname, HttpRequest req, WsConnectionManager mgr) =>
         {
@@ -218,7 +224,10 @@ public static class WebSocketHandler
             return Results.Text(BuildSendResult(sent), "application/json");
         })
         .Accepts<Dmart.Models.Api.WsSendMessageBody>("application/json")
-        .WithTags("WebSocket").RequireAuthorization();
+        .WithTags("WebSocket").RequireAuthorization()
+        // FailedResponseFilter first so the admin filter's NOT_ALLOWED becomes a
+        // real 401 — these routes sit on `app`, outside any group that maps it.
+        .AddEndpointFilter<FailedResponseFilter>().AddEndpointFilter<GlobalAdminFilter>();
 
         // POST /broadcast-to-channels — broadcast to subscribed clients.
         // Used by realtime_updates_notifier plugin after CRUD events.
@@ -240,7 +249,8 @@ public static class WebSocketHandler
             return Results.Text(BuildSendResult(sent), "application/json");
         })
         .Accepts<Dmart.Models.Api.WsBroadcastBody>("application/json")
-        .WithTags("WebSocket").RequireAuthorization();
+        .WithTags("WebSocket").RequireAuthorization()
+        .AddEndpointFilter<FailedResponseFilter>().AddEndpointFilter<GlobalAdminFilter>();
 
         // GET /ws-info — list connected clients + channels (admin debugging).
         app.MapGet("/ws-info", (WsConnectionManager mgr) =>
@@ -264,7 +274,8 @@ public static class WebSocketHandler
                 writer.WriteEndObject();
             }
             return Results.Text(Encoding.UTF8.GetString(stream.ToArray()), "application/json");
-        }).WithTags("WebSocket").RequireAuthorization();
+        }).WithTags("WebSocket").RequireAuthorization()
+          .AddEndpointFilter<FailedResponseFilter>().AddEndpointFilter<GlobalAdminFilter>();
     }
 
     // Authorizes a notification_subscription against the target space+subpath.

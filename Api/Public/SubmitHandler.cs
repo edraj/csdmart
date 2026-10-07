@@ -55,6 +55,12 @@ public static class SubmitHandler
         // Python parity: empty allowed_submit_models means public submit is
         // closed. Operators must explicitly list allowed "space.schema" pairs.
         var key = $"{space}.{schema}";
+        // Same identifier gate as /managed/request: the route segments are
+        // caller data and were persisted unvalidated.
+        if (!Utils.RequestRegex.IsValidSpaceName(space) || !Utils.RequestRegex.IsValidSubpath("/" + subpath.TrimStart('/')))
+            return Response.Fail(InternalErrorCode.INVALID_DATA,
+                "invalid space_name or subpath", ErrorTypes.Request);
+
         if (!IsSubmitAllowed(settings.Value.AllowedSubmitModels, space, schema))
             return Response.Fail(InternalErrorCode.NOT_ALLOWED_LOCATION,
                 "Selected location is not allowed", ErrorTypes.Request);

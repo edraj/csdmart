@@ -23,9 +23,23 @@ public static class AttachHandler
                                   AttachmentRepository attachments,
                                   PermissionService perms,
                                   FolderContentValidator folderContent,
+                                  IOptions<DmartSettings> settings,
                                   ILogger<ResourceWithPayloadMarker> log, CancellationToken ct) =>
-                await ResourceWithPayloadHandler.HandleAsync(req, entries, attachments,
-                    perms, folderContent, "anonymous", log, ct))
+            {
+                // Anonymous writes are confined to the AllowedSubmitModels spaces,
+                // exactly like /public/submit and /public/attach. This route took
+                // space_name straight from the form with no allow-list at all.
+                // (ReadFormAsync is cached on the request, so the shared handler's
+                // own read below costs nothing extra.)
+                if (!req.HasFormContentType)
+                    return Response.Fail(InternalErrorCode.INVALID_DATA, "expected multipart/form-data", ErrorTypes.Request);
+                var form = await req.ReadFormAsync(ct);
+                if (!SpaceAllowed(settings.Value.AllowedSubmitModels, form["space_name"].ToString()))
+                    return Response.Fail(InternalErrorCode.NOT_ALLOWED_LOCATION,
+                        "Selected location is not allowed", ErrorTypes.Request);
+                return await ResourceWithPayloadHandler.HandleAsync(req, entries, attachments,
+                    perms, folderContent, "anonymous", log, ct);
+            })
           .Produces<Response>()
           // Anonymous upload endpoint — throttle per IP against attachment floods.
           .RequireRateLimiting("auth-by-ip")
@@ -53,16 +67,27 @@ public static class AttachHandler
 
         var form = await req.ReadFormAsync(ct);
 
-        // Back-compat: the C# public endpoint originally accepted the same
-        // multipart shape as /resource_with_payload. Keep that path working
-        // while also supporting Python's public /attach contract below.
-        if (form.Files["request_record"] is not null)
-            return await ResourceWithPayloadHandler.HandleAsync(req, entries, attachments,
-                perms, folderContent, "anonymous", log, ct);
-
+        // The allow-list gates BOTH shapes. The back-compat branch below used to
+        // run before this check, so an anonymous caller could write into any
+        // space by choosing the older multipart form.
         if (!SpaceAllowed(settings.AllowedSubmitModels, spaceName))
             return Response.Fail(InternalErrorCode.NOT_ALLOWED_LOCATION,
                 "Selected location is not allowed", ErrorTypes.Request);
+
+        // Back-compat: the C# public endpoint originally accepted the same
+        // multipart shape as /resource_with_payload. Keep that path working
+        // while also supporting Python's public /attach contract below. The
+        // shared handler reads space_name from the form, so pin it to the
+        // (already allow-listed) route space rather than trusting the form.
+        if (form.Files["request_record"] is not null)
+        {
+            var formSpace = form["space_name"].ToString();
+            if (!string.IsNullOrEmpty(formSpace) && !string.Equals(formSpace, spaceName, StringComparison.Ordinal))
+                return Response.Fail(InternalErrorCode.NOT_ALLOWED_LOCATION,
+                    "Selected location is not allowed", ErrorTypes.Request);
+            return await ResourceWithPayloadHandler.HandleAsync(req, entries, attachments,
+                perms, folderContent, "anonymous", log, ct);
+        }
 
         var recordRaw = form["record"].ToString();
         if (string.IsNullOrWhiteSpace(recordRaw))
