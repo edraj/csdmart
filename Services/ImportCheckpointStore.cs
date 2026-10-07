@@ -71,6 +71,12 @@ public sealed class ImportCheckpointStore
     [JsonPropertyName("source_path")]  public string SourcePath  { get; set; } = "";
     [JsonPropertyName("passes_done")]  public List<string> PassesDone { get; set; } = new();
     [JsonPropertyName("tail_done")]    public List<string> TailDone   { get; set; } = new();
+    // Sub-shard completion is keyed by the shard's fingerprint as well: a
+    // "space#i" key only means "done" for the exact entry set it was computed
+    // over (see ImportExportService's resume filter). Older sidecars have only
+    // the bare list above; their sub-shard markers are re-verified, never trusted.
+    [JsonPropertyName("tail_done_fp")]
+    public Dictionary<string, string> TailDoneFingerprints { get; set; } = new(StringComparer.Ordinal);
     [JsonPropertyName("tail_progress")]
     public Dictionary<string, ShardProgress> TailProgress { get; set; } = new(StringComparer.Ordinal);
     [JsonPropertyName("dropped_indexes")]
@@ -145,6 +151,15 @@ public sealed class ImportCheckpointStore
     public bool IsHeadDone() => PassesDone.Contains("head");
 
     public bool IsTailDone(string spaceName) => TailDone.Contains(spaceName);
+
+    public bool IsTailDoneWithFingerprint(string shardKey, string fingerprint)
+    {
+        lock (_lock)
+        {
+            return TailDoneFingerprints.TryGetValue(shardKey, out var fp)
+                && string.Equals(fp, fingerprint, StringComparison.Ordinal);
+        }
+    }
 
     // Committed prefix of an unfinished shard: how many of its entry metas
     // (Pass 3) and attachment metas (Pass 4) an earlier run already committed.
@@ -235,11 +250,12 @@ public sealed class ImportCheckpointStore
         }
     }
 
-    public void MarkTailDone(string spaceName)
+    public void MarkTailDone(string spaceName, string? fingerprint = null)
     {
         lock (_lock)
         {
             if (!TailDone.Contains(spaceName)) TailDone.Add(spaceName);
+            if (fingerprint is not null) TailDoneFingerprints[spaceName] = fingerprint;
             // The shard finished, so its intra-shard offsets are dead weight —
             // dropping them keeps the sidecar from growing a row per shard for
             // the life of the import.

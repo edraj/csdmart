@@ -1163,6 +1163,45 @@ public sealed class EntryRepository(IDbConnectionFactory db)
             await cmd.ExecuteNonQueryAsync(ct);
         }
 
+        // 5. histories: re-key the moved entry's own rows and everything under
+        //    its old prefix (descendant entries' rows, and attachment-history
+        //    rows, whose coords are the attachment's "<parent subpath>/<parent
+        //    shortname>"). This was never done, which orphaned every pre-move
+        //    history row at coordinates nothing lives at any more; once history
+        //    became parent-ACL filtered those orphans were invisible to EVERYONE,
+        //    so a move silently truncated the audit trail. No destination purge
+        //    is needed: histories has no uniqueness over its coordinates.
+        await using (var cmd = conn.Command("""
+            UPDATE histories
+               SET space_name = $4, subpath = $5, shortname = $6
+             WHERE space_name = $1 AND subpath = $2 AND shortname = $3
+            """, tx))
+        {
+            DbParams.Add(cmd, source.SpaceName);
+            DbParams.Add(cmd, source.Subpath);
+            DbParams.Add(cmd, source.Shortname);
+            DbParams.Add(cmd, to.SpaceName);
+            DbParams.Add(cmd, to.Subpath);
+            DbParams.Add(cmd, to.Shortname);
+            await cmd.ExecuteNonQueryAsync(ct);
+        }
+        await using (var cmd = conn.CreateCommand())
+        {
+            DbParams.Add(cmd, source.SpaceName);
+            DbParams.Add(cmd, oldPrefix);
+            cmd.Transaction = tx;
+            cmd.CommandText = $"""
+                UPDATE histories
+                   SET space_name = $3,
+                       subpath = $4 || {SubpathTail(cmd, "subpath", "length($2) + 1")}
+                 WHERE space_name = $1
+                   AND (subpath = $2 OR {SubpathScope.DescendantLike("subpath", "$2")})
+                """;
+            DbParams.Add(cmd, to.SpaceName);
+            DbParams.Add(cmd, newPrefix);
+            await cmd.ExecuteNonQueryAsync(ct);
+        }
+
         await tx.CommitAsync(ct);
         return totalMoved;
     }

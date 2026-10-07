@@ -272,8 +272,9 @@ public sealed class UserRepository(
         cmd.CommandText = $"{UserInsertColumns}\nVALUES {tuple}\n{UserConflictClause}";
 
         await cmd.ExecuteNonQueryAsync(ct);
-        // user.roles may have changed → clear the in-memory permission cache.
-        await refresher.RefreshAsync(ct);
+        // user.roles / groups may have changed — evict only THIS user's bundle:
+        // a global clear sent every active actor back to the database at once.
+        refresher.Evict(u.Shortname);
         EvictAuth(u.Shortname);
     }
 
@@ -611,8 +612,9 @@ public sealed class UserRepository(
             inserted = prior is null;
         }
         await tx.CommitAsync(ct);
-        // user.roles may have changed → clear the in-memory permission cache.
-        await refresher.RefreshAsync(ct);
+        // user.roles / groups may have changed — evict only THIS user's bundle:
+        // a global clear sent every active actor back to the database at once.
+        refresher.Evict(u.Shortname);
         EvictAuth(u.Shortname);
         return (prior, inserted);
     }
@@ -631,7 +633,7 @@ public sealed class UserRepository(
         DbParams.Add(cmd, shortname);
         await cmd.ExecuteNonQueryAsync(ct);
         await tx.CommitAsync(ct);
-        await refresher.RefreshAsync(ct);
+        refresher.Evict(shortname);
         EvictAuth(shortname);
     }
 
@@ -1485,7 +1487,7 @@ public sealed class UserRepository(
         }
 
         await tx.CommitAsync(ct);
-        await refresher.RefreshAsync(ct);
+        refresher.Evict(shortname);
         EvictAuth(shortname);
     }
 
