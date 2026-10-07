@@ -72,6 +72,16 @@ public static class JqRunner
     // Overflow is reported as JqError (the filter is at fault), not Timeout.
     public const int MaxOutputBytes = 32 * 1024 * 1024;
 
+    // Same ceiling for stderr, far lower: stdout is the result, stderr is a
+    // diagnostic that ends up in the server LOG (ToFailureResponse writes it
+    // at Warning). `error("x" * 10000000)` is 22 chars, passes validation, and
+    // would otherwise put a 10 MB line in the log per request — reachable
+    // from anonymous /public/query — and `error(.)` would put whole records
+    // there. Past the cap the pipe is drained and dropped, so jq never blocks
+    // on a full stderr and runs to its exit code as before.
+    public const int MaxStderrBytes = 4 * 1024;
+    private const string StderrTruncatedMarker = " …[stderr truncated]";
+
     // ---- concurrency budget ------------------------------------------------
     //
     // Every run forks a `jq` and buffers its stdout in memory up to
@@ -236,16 +246,21 @@ public static class JqRunner
     /// with the request's correlation id (the X-Correlation-ID the client
     /// already holds). Both values are caller-influenced — stderr echoes the
     /// filter and the id may come from the request header — so control
-    /// characters are escaped.</summary>
+    /// characters are escaped and the stderr is capped at MaxStderrBytes
+    /// (RunProcessAsync already caps what it reads; this holds for any other
+    /// caller too).</summary>
     public static Response ToFailureResponse(
         FailureKind kind, string? stderr, ILogger log, string? correlationId)
     {
         if (kind == FailureKind.JqError)
             log.LogWarning("jq_filter failed to evaluate (correlation_id={CorrelationId}): {Stderr}",
                 RequestLoggingMiddleware.SanitizeForLog(correlationId),
-                RequestLoggingMiddleware.SanitizeForLog(stderr));
+                RequestLoggingMiddleware.SanitizeForLog(CapStderr(stderr)));
         return ToFailureResponse(kind, stderr);
     }
+
+    private static string? CapStderr(string? stderr) =>
+        stderr is { Length: > MaxStderrBytes } ? stderr[..MaxStderrBytes] + StderrTruncatedMarker : stderr;
 
     // Shared subprocess plumbing for RunAsync / RunRawAsync. Returns raw stdout
     // bytes alongside the failure kind and stderr; the two public entry points
@@ -328,7 +343,7 @@ public static class JqRunner
 
             using var stdoutMs = new MemoryStream();
             var stdoutTask = CopyStdoutBoundedAsync(proc, stdoutMs, ct);
-            var stderrTask = proc.StandardError.ReadToEndAsync(ct);
+            var stderrTask = ReadStderrBoundedAsync(proc, ct);
 
             using var timeoutCts = CancellationTokenSource.CreateLinkedTokenSource(ct);
             timeoutCts.CancelAfter(TimeSpan.FromSeconds(timeoutSeconds));
@@ -362,6 +377,29 @@ public static class JqRunner
 
             return (FailureKind.None, stdoutMs.ToArray(), null);
         }
+    }
+
+    // Read jq's stderr, keeping the first MaxStderrBytes. Unlike stdout the
+    // overflow is not a failure — the exit code is — so the rest is read and
+    // discarded rather than killing jq: a diagnostic that happens to be long
+    // must not change the outcome of the filter.
+    private static async Task<string> ReadStderrBoundedAsync(Process proc, CancellationToken ct)
+    {
+        var src = proc.StandardError.BaseStream;
+        var kept = new MemoryStream();
+        var buffer = new byte[8192];
+        var truncated = false;
+        while (true)
+        {
+            var read = await src.ReadAsync(buffer, ct);
+            if (read == 0) break;
+            if (truncated) continue;
+            var room = MaxStderrBytes - (int)kept.Length;
+            if (read > room) { truncated = true; read = room; }
+            if (read > 0) await kept.WriteAsync(buffer.AsMemory(0, read), ct);
+        }
+        var text = Encoding.UTF8.GetString(kept.GetBuffer(), 0, (int)kept.Length);
+        return truncated ? text + StderrTruncatedMarker : text;
     }
 
     // Copy jq's stdout into `dest`, stopping at MaxOutputBytes. Returns false

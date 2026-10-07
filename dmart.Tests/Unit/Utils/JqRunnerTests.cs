@@ -85,6 +85,22 @@ public class JqRunnerTests
         message.ShouldNotContain("\r");
     }
 
+    // stderr is caller-controlled in SIZE as well: a filter can say as much as
+    // it likes in error(). What reaches the log is capped whatever the caller
+    // passed in, so one request cannot write megabytes into the server log.
+    [Fact]
+    public void ToFailureResponse_JqError_Caps_The_Logged_Stderr()
+    {
+        var log = new CapturingLogger();
+
+        JqRunner.ToFailureResponse(JqRunner.FailureKind.JqError,
+            new string('x', JqRunner.MaxStderrBytes * 4), log, "cid");
+
+        var message = log.Entries.ShouldHaveSingleItem().Message;
+        message.Length.ShouldBeLessThan(JqRunner.MaxStderrBytes + 128);
+        message.ShouldContain("[stderr truncated]");
+    }
+
     [Fact]
     public void ValidateFilter_Rejects_Oversize_Filter()
     {
@@ -103,6 +119,21 @@ public class JqRunnerTests
     {
         var r = await JqRunner.RunAsync(".", Encoding.UTF8.GetBytes("[]"), timeoutSeconds: 2);
         return r.Failure != JqRunner.FailureKind.JqMissing;
+    }
+
+    // `error("x" * 1000000)` is 20 chars and passes validation (error is not a
+    // blocked builtin, string repetition is plain jq) but writes ~1 MB to
+    // stderr. The runner keeps the head, drains the rest so jq still runs to
+    // its exit code, and reports the filter's failure as usual.
+    [Fact]
+    public async Task RunAsync_Caps_Stderr_Without_Changing_The_Outcome()
+    {
+        if (!await JqAvailableAsync()) return;
+        var r = await JqRunner.RunAsync("error(\"x\" * 1000000)", Encoding.UTF8.GetBytes("[]"), timeoutSeconds: 10);
+        r.Failure.ShouldBe(JqRunner.FailureKind.JqError);
+        r.Stderr.ShouldNotBeNull();
+        r.Stderr!.Length.ShouldBeLessThanOrEqualTo(JqRunner.MaxStderrBytes + 32);
+        r.Stderr.ShouldEndWith("[stderr truncated]");
     }
 
     [Fact]
