@@ -38,7 +38,8 @@ public sealed class QueryService(
     IDbConnectionFactory db,
     LockRepository locks,
     IOptions<DmartSettings> settings,
-    ILogger<QueryService> logger)
+    ILogger<QueryService> logger,
+    IHttpContextAccessor httpContextAccessor)
 {
     // Permission gate for query methods. Tries "view" first (works for anonymous +
     // authenticated), then "query" — Python exempts the "query" action from
@@ -1318,7 +1319,8 @@ public sealed class QueryService(
                     wrappedFilter, inputBytes, settings.Value.JqTimeout, ct);
 
                 if (jqResult.Failure != JqRunner.FailureKind.None)
-                    return (baseRecords, JqRunner.ToFailureResponse(jqResult.Failure, jqResult.Stderr));
+                    return (baseRecords, JqRunner.ToFailureResponse(jqResult.Failure, jqResult.Stderr, logger,
+                        httpContextAccessor.HttpContext?.Response.Headers["X-Correlation-ID"].ToString()));
 
                 // Python wraps with `map( [ <expr> ] )` so the output is an
                 // outer array aligned 1-to-1 with matchedByBase. Split it and

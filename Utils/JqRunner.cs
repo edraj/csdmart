@@ -2,7 +2,9 @@ using System.Diagnostics;
 using System.Text;
 using System.Text.Json;
 using System.Text.RegularExpressions;
+using Dmart.Middleware;
 using Dmart.Models.Api;
+using Microsoft.Extensions.Logging;
 
 namespace Dmart.Utils;
 
@@ -228,6 +230,22 @@ public static class JqRunner
             "jq is at capacity, retry shortly", ErrorTypes.Internal),
         _ => throw new ArgumentOutOfRangeException(nameof(kind), kind, "None is not a failure"),
     };
+
+    /// <summary>Same mapping, plus the server-side half of V-20: the caller only
+    /// gets the generic message, so jq's stderr is logged here instead, tagged
+    /// with the request's correlation id (the X-Correlation-ID the client
+    /// already holds). Both values are caller-influenced — stderr echoes the
+    /// filter and the id may come from the request header — so control
+    /// characters are escaped.</summary>
+    public static Response ToFailureResponse(
+        FailureKind kind, string? stderr, ILogger log, string? correlationId)
+    {
+        if (kind == FailureKind.JqError)
+            log.LogWarning("jq_filter failed to evaluate (correlation_id={CorrelationId}): {Stderr}",
+                RequestLoggingMiddleware.SanitizeForLog(correlationId),
+                RequestLoggingMiddleware.SanitizeForLog(stderr));
+        return ToFailureResponse(kind, stderr);
+    }
 
     // Shared subprocess plumbing for RunAsync / RunRawAsync. Returns raw stdout
     // bytes alongside the failure kind and stderr; the two public entry points
