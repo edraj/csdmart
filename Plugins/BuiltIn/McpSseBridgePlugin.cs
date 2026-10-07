@@ -5,6 +5,8 @@ using Dmart.DataAdapters.Sql;
 using Dmart.Models.Core;
 using Dmart.Models.Enums;
 using Dmart.Services;
+using Dmart.Config;
+using Microsoft.Extensions.Options;
 
 namespace Dmart.Plugins.BuiltIn;
 
@@ -25,12 +27,19 @@ namespace Dmart.Plugins.BuiltIn;
 public sealed class McpSseBridgePlugin(
     McpSessionStore sessions,
     PermissionService perms,
+    IOptions<DmartSettings> settings,
     ILogger<McpSseBridgePlugin> log) : IHookPlugin
 {
     public string Shortname => "mcp_sse_bridge";
 
     public async Task HookAsync(Event e, CancellationToken ct = default)
     {
+        // MCP surface off (DmartSettings.EnableMcp): no session can exist, so
+        // there is nobody to fan out to. Return before touching the session
+        // store so a disabled deployment pays nothing per write for a bridge
+        // it does not use. (Registration stays unconditional — see Program.cs.)
+        if (!settings.Value.EnableMcp) return;
+
         // Only resource mutations are interesting to MCP clients. Ignore
         // login/logout/query events — they create noise and reveal nothing
         // actionable.

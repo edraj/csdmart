@@ -6,6 +6,11 @@ Cursor, Zed, Continue, VS Code Copilot, ChatGPT, Gemini) as tools + resources
 the model can call **on behalf of the authenticated user**, with dmart's
 existing permission resolver enforcing every read.
 
+**Off by default.** Nothing here — `/mcp`, `/oauth/*`, the `/.well-known/oauth-*`
+discovery documents — is mapped unless the host runs with `ENABLE_MCP=true`;
+without it those paths answer `INVALID_ROUTE` (HTTP 422). Set the flag before
+following any of the connection or curl examples below.
+
 ## Why hand-rolled
 
 The official `ModelContextProtocol` NuGet SDK uses runtime reflection for tool

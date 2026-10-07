@@ -236,16 +236,21 @@ public sealed class DmartSettings
     public bool EnableInnerJoinPushdown { get; set; } = true;
 
     // Master switch for the Model Context Protocol surface. When false (the
-    // default), none of the MCP/OAuth routes are mapped at all — POST/GET/DELETE
-    // /mcp, the OAuth 2.1 authorization server (/oauth/authorize, /oauth/token,
-    // /oauth/register) and its discovery documents (/.well-known/oauth-*) are
-    // absent (404), not merely gated. MCP tools always run the caller's own
-    // permission walk, so exposing them is not itself a privilege escalation —
-    // but a deployment that does not use MCP has no reason to carry the extra
-    // internet-reachable surface (an anonymous, if bounded, Dynamic Client
-    // Registration endpoint among it). Opt in with ENABLE_MCP=true only where
-    // MCP clients are actually used, and prefer restricting those routes to the
-    // networks that need them.
+    // default), none of it exists: the MCP/OAuth routes are not mapped —
+    // POST/GET/DELETE /mcp, the OAuth 2.1 authorization server
+    // (/oauth/authorize, /oauth/token, /oauth/register) and its discovery
+    // documents (/.well-known/oauth-*) are unmapped, so a request to them gets
+    // the canonical INVALID_ROUTE envelope (HTTP 422) rather than an auth
+    // challenge — and OAuthStoreSweeper and the mcp_sse_bridge hook plugin stand
+    // down against this same setting. (The services themselves stay registered:
+    // the route handlers take them as parameters, and a parameter DI cannot
+    // resolve breaks endpoint building for the whole host.)
+    // MCP tools always run the caller's own permission walk, so exposing them is
+    // not itself a privilege escalation — but a deployment that does not use MCP
+    // has no reason to carry the extra internet-reachable surface (an anonymous,
+    // if bounded, Dynamic Client Registration endpoint among it). Opt in with
+    // ENABLE_MCP=true only where MCP clients are actually used, and prefer
+    // restricting those routes to the networks that need them.
     public bool EnableMcp { get; set; }
 
     // Per-IP cap on auth-endpoint calls (login/otp-request) in a 60-second

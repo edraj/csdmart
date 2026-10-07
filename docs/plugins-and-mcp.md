@@ -218,6 +218,11 @@ Exposes dmart as a tool surface to AI agents. Transport:
 `GET/POST /mcp` (JSON-RPC 2.0 over HTTP or SSE). OAuth 2.1 for delegated
 auth so agents can log in as a dmart user without manual JWT paste.
 
+**Off by default.** The whole surface — `/mcp`, `/oauth/*` and the
+`/.well-known/oauth-*` discovery chain described below — is mapped only when the
+host runs with `ENABLE_MCP=true`; otherwise those paths answer `INVALID_ROUTE`
+(HTTP 422). Set the flag before pointing a client at the instance.
+
 ### Protocol surface
 
 ```mermaid

@@ -510,7 +510,8 @@ Official SDKs for talking to the dmart REST API:
 | C# / .NET | [`Dmart.Client`](./dmart.Client/) (ships from this repo) | `dotnet add package Dmart.Client` |
 
 MCP-capable AI agents (Zed, Claude Code, Cursor, …) can connect directly
-to `/mcp` on any dmart instance — no SDK needed. See
+to `/mcp` on any dmart instance that has `ENABLE_MCP=true` set — the surface
+ships off by default, no SDK needed once it is on. See
 [`docs/plugins-and-mcp.md`](./docs/plugins-and-mcp.md).
 
 ## Plugins

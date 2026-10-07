@@ -3035,6 +3035,14 @@ builder.Services.AddSingleton<Dmart.Auth.OAuth.GoogleProvider>();
 builder.Services.AddSingleton<Dmart.Auth.OAuth.FacebookProvider>();
 builder.Services.AddSingleton<Dmart.Auth.OAuth.AppleProvider>();
 builder.Services.AddSingleton<Dmart.Auth.OAuth.OAuthUserResolver>();
+// Always registered, even with ENABLE_MCP=false. The MCP route handlers take
+// these as parameters, and minimal-API endpoint building classifies a
+// parameter as "service" only if DI can resolve it — an unregistered type is
+// re-read as a JSON body, the endpoint fails to build, and that one failure
+// poisons the entire routing table. So the surface is switched off at ONE
+// point the host can rely on after build (the route gate below reads the
+// bound DmartSettings); OAuthStoreSweeper stands down against the same
+// binding. The stores themselves are inert when nothing can reach them.
 builder.Services.AddSingleton<Dmart.Auth.OAuthCodeStore>();
 builder.Services.AddSingleton<Dmart.Auth.OAuthClientStore>();
 builder.Services.AddHostedService<Dmart.Auth.OAuthStoreSweeper>();
@@ -3050,6 +3058,9 @@ builder.Services.AddSingleton<IHookPlugin, AdminNotificationSenderPlugin>();
 builder.Services.AddSingleton<IHookPlugin, SystemNotificationSenderPlugin>();
 builder.Services.AddSingleton<IHookPlugin, LocalNotificationPlugin>();
 builder.Services.AddSingleton<IHookPlugin, SemanticIndexerPlugin>();
+// Same reasoning as the OAuth stores above: McpSessionStore is a route-handler
+// parameter, so it must be resolvable whenever the host boots. The bridge
+// plugin stands down at runtime when EnableMcp is false.
 builder.Services.AddSingleton<IHookPlugin, McpSseBridgePlugin>();
 builder.Services.AddSingleton<Dmart.Api.Mcp.McpSessionStore>();
 builder.Services.AddSingleton<EmbeddingProvider>();
@@ -3403,9 +3414,11 @@ static PathString NormalizedPrefix(string? raw, string fallback)
     if (!p.StartsWith('/')) p = "/" + p;
     return new PathString(p);
 }
-var spaSettings = app.Services.GetRequiredService<IOptions<DmartSettings>>().Value;
-var cxbPath = NormalizedPrefix(spaSettings.CxbUrl, "/cxb");
-var catPath = NormalizedPrefix(spaSettings.CatUrl, "/cat");
+// One resolved settings snapshot for the host-level wiring below (SPA
+// prefixes here, the MCP route gate further down).
+var appSettings = app.Services.GetRequiredService<IOptions<DmartSettings>>().Value;
+var cxbPath = NormalizedPrefix(appSettings.CxbUrl, "/cxb");
+var catPath = NormalizedPrefix(appSettings.CatUrl, "/cat");
 
 // CORS + security headers + OPTIONS preflight
 app.UseDmartResponseHeaders(cxbPath, catPath);
@@ -3572,13 +3585,18 @@ app.MapGroup("/user").WithTags("User").AddEndpointFilter<FailedResponseFilter>()
 app.MapGroup("/info").WithTags("Info").RequireAuthorization().AddEndpointFilter<FailedResponseFilter>().AddEndpointFilter<GlobalAdminFilter>().MapInfo();
 app.MapGroup("/qr").WithTags("QR").AddEndpointFilter<FailedResponseFilter>().MapQr();
 
-// Model Context Protocol surface, off by default (DmartSettings.EnableMcp).
-// Both the MCP routes and the OAuth 2.1 authorization server that onboards MCP
-// clients are mapped together or not at all: a deployment with ENABLE_MCP=false
-// exposes neither /mcp nor /oauth/* nor the /.well-known/oauth-* discovery
-// documents — they 404. See DmartSettings.EnableMcp for the rationale.
-if (app.Services.GetRequiredService<IOptions<DmartSettings>>().Value.EnableMcp)
+// Model Context Protocol surface, off by default — see DmartSettings.EnableMcp
+// for the rationale. This is THE switch: ENABLE_MCP=false leaves /mcp, /oauth/*
+// and /.well-known/oauth-* unmapped — a request gets the INVALID_ROUTE envelope
+// (HTTP 422), not an auth challenge — while OAuthStoreSweeper and
+// McpSseBridgePlugin stand down against the same bound setting.
+// Logged in both states so an upgrade that flips the default leaves a
+// breadcrumb next to the first "Route not found: POST /mcp".
+if (appSettings.EnableMcp)
 {
+    app.Logger.LogInformation(
+        "MCP surface enabled (ENABLE_MCP=true): mapping /mcp and the /oauth/* authorization server");
+
     // OAuth 2.1 Authorization Server for MCP clients. Discovery + DCR + the
     // authorize/token endpoints live alongside the JWT-protected /mcp route so a
     // single host provides everything an MCP client needs to onboard with
@@ -3589,6 +3607,11 @@ if (app.Services.GetRequiredService<IOptions<DmartSettings>>().Value.EnableMcp)
     // Auth is applied per-route inside MapMcp via RequireAuthorization() — the
     // caller's JWT flows through to tool handlers so permissions are enforced.
     Dmart.Api.Mcp.McpEndpoint.MapMcp(app);
+}
+else
+{
+    app.Logger.LogInformation(
+        "MCP surface disabled (ENABLE_MCP=false): /mcp and /oauth/* are not mapped; set ENABLE_MCP=true to expose them");
 }
 
 // WebSocket server — port of dmart/websocket.py.
