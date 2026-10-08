@@ -2,10 +2,13 @@
 // upgrade because there was no config at all. Scope: src/ only; generated
 // routes (.routify/) and build output are ignored.
 //
-// Baseline policy: the recommended TypeScript + Svelte sets, with the rules
-// the codebase does not yet satisfy (explicit any, unused catch bindings)
-// reported as warnings so lint is red only for real defects — leftover
-// console.log, undefined/unused symbols, Svelte compile-level mistakes.
+// Policy: the recommended TypeScript + Svelte sets. Lint is red for real
+// defects — leftover console.log, undefined/unused symbols, Svelte
+// compile-level mistakes — and for an explicit `any`: src/ is fully typed,
+// so a new one is a regression. Type the value, or take `unknown` and narrow
+// it (lib/types.ts holds the shared shapes and guards). The one rule left as
+// a warning is {@html}, which marks each place that renders raw markup so it
+// stays visible for review.
 import js from "@eslint/js";
 import svelte from "eslint-plugin-svelte";
 import globals from "globals";
@@ -23,7 +26,7 @@ export default ts.config(
     rules: {
       "no-console": ["error", { allow: ["warn", "error"] }],
       "no-empty": ["error", { allowEmptyCatch: true }],
-      "@typescript-eslint/no-explicit-any": "warn",
+      "@typescript-eslint/no-explicit-any": "error",
       "@typescript-eslint/no-unused-vars": [
         "error",
         { argsIgnorePattern: "^_", varsIgnorePattern: "^_", caughtErrorsIgnorePattern: "^_" },
