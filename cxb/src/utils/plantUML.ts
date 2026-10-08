@@ -2,8 +2,24 @@ import {encode} from "plantuml-encoder";
 
 const startjsonForPlantUML = '@startjson\n<style>\njsonDiagram {  node {BackGroundColor business}  \nhighlight {BackGroundColor greenyellow}}\n</style>\n#highlight "*" / "*_shortname"\n';
 
+/** Where diagrams are rendered when `website.plantuml_server` is not configured. */
+export const DEFAULT_PLANTUML_SERVER = "https://www.plantuml.com/plantuml";
+
+/**
+ * URL of the rendered SVG for an already-encoded diagram.
+ *
+ * The schema and workflow bodies are sent to this server for rendering, so a
+ * deployment that must keep them in-house points `website.plantuml_server` at
+ * its own instance. A blank or whitespace server falls back to the public one;
+ * trailing slashes are tolerated.
+ */
+export function plantUmlSvgUrl(server: string | null | undefined, encoded: string): string {
+    const base = (server ?? "").trim().replace(/\/+$/, "") || DEFAULT_PLANTUML_SERVER;
+    return `${base}/svg/${encoded}`;
+}
+
 function schemaVisualizationParser(properties) {
-    let output: any = {};
+    const output: any = {};
 
     for (const key in properties) {
         const property = properties[key];
@@ -46,7 +62,7 @@ export function schemaVisualizationEncoder(entry) {
             },
         };
         return currentDiagram.encodedContent();
-    } catch (error) {
+    } catch {
         return {
             name: "",
             content: `${startjsonForPlantUML}\n{"error": "something is wrong with the schema"}\n@endjson`,

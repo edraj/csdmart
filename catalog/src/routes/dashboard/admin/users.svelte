@@ -3,137 +3,177 @@
   import { onMount } from "svelte";
   import { can, permissions } from "@/stores/permissions";
   import { visibleColumns } from "@/lib/access-fields";
-  import {
-    getAllUsers,
-    filterUserByRole,
-    getSpaceContents,
-    updateUserRoles,
-  } from "@/lib/dmart_services";
-  import {
-    errorToastMessage,
-    successToastMessage,
-  } from "@/lib/toasts_messages";
+  import { getAllUsers, filterUserByRole, getSpaceContents, updateUserRoles, getEntity } from "@/lib/dmart_services";
+  import { createEntity } from "@/lib/dmart_services/core";
+  import { toasts } from "@/lib/toast";
+  import { log } from "@/lib/logger";
+  import { setTitle } from "@/lib/title";
+  import { formatDate } from "@/lib/format";
+  import { localized } from "@/lib/catalogItems";
   import { _, locale } from "@/i18n";
   import { formatNumber } from "@/lib/helpers";
-  import { derived as derivedStore } from "svelte/store";
-  import AppModal from "@/components/Modal.svelte";
+  import { MANAGEMENT_SPACE } from "@/lib/constants";
+  import Modal from "@/components/Modal.svelte";
   import { ResourceType, Dmart, RequestType, DmartScope } from "@edraj/tsdmart";
-  import { createEntity } from "@/lib/dmart_services/core";
-  import { getEntity } from "@/lib/dmart_services";
-  import {
-    parseValueByType,
-    getFieldType,
-    setNestedValue,
-  } from "@/lib/schemaTypes";
+  import { parseValueByType, getFieldType, setNestedValue } from "@/lib/schemaTypes";
   import ModalCSVUpload from "@/components/management/Modals/ModalCSVUpload.svelte";
   import ModalCSVDownload from "@/components/management/Modals/ModalCSVDownload.svelte";
   import MetaForm from "@/components/management/forms/MetaForm.svelte";
   import MetaUserForm from "@/components/management/forms/MetaUserForm.svelte";
   import DataTable from "@/components/DataTable.svelte";
+  import PageHeader from "@/components/ui/PageHeader.svelte";
+  import CatalogToolbar from "@/components/ui/CatalogToolbar.svelte";
+  import Card from "@/components/ui/Card.svelte";
+  import Badge from "@/components/ui/Badge.svelte";
+  import IconButton from "@/components/ui/IconButton.svelte";
+  import EmptyState from "@/components/ui/EmptyState.svelte";
+  import ErrorState from "@/components/ui/ErrorState.svelte";
+  import {
+    CheckOutline,
+    CloseOutline,
+    CogOutline,
+    DownloadOutline,
+    EditOutline,
+    PlusOutline,
+    ShieldCheckOutline,
+    TrashBinOutline,
+    UploadOutline,
+    UsersOutline,
+  } from "flowbite-svelte-icons";
 
-  const isRTL = derivedStore(
-    locale,
-    ($locale) => $locale === "ar" || $locale === "ku",
-  );
+  interface UserRow {
+    shortname: string;
+    displayname: string;
+    email: string;
+    roles: string[];
+    is_active: boolean;
+    created_at: string;
+    attributes?: Record<string, unknown>;
+    [key: string]: unknown;
+  }
 
-  let users = $state<any[]>([]);
-  let availableRoles = $state<any[]>([]);
+  interface RoleOption {
+    shortname: string;
+    displayname: string;
+    description: string;
+    permissions: string[];
+  }
+
+  interface PermissionInfo {
+    shortname: string;
+    displayname: string;
+    description: string;
+    actions: string[];
+    resource_types: string[];
+    subpaths: Record<string, unknown>;
+  }
+
+  interface ColumnSetting {
+    key: string;
+    name: string;
+  }
+
+  let users = $state<UserRow[]>([]);
+  let availableRoles = $state<RoleOption[]>([]);
   let isLoading = $state(true);
+  let loadError = $state<unknown>(null);
   let isUpdating = $state(false);
-  let selectedUser = $state<any>(null);
+  let selectedUser = $state<UserRow | null>(null);
   let showRoleModal = $state(false);
   let selectedRoles = $state<string[]>([]);
   let searchTerm = $state("");
-  let filteredUsers = $state<any[]>([]);
   let selectedRoleFilter = $state("");
   let roleSearchTerm = $state("");
-  let filteredRoles = $state<any[]>([]);
-  let showCreateUserModal = $state(false);
+  let showUserModal = $state(false);
   let isEditingUserMode = $state(false);
   let isSavingUser = $state(false);
-  
-  let metaContent = $state<any>({});
+
+  let metaContent = $state<Record<string, unknown>>({});
   let validateMetaForm = $state<(() => boolean) | null>(null);
   let validateRTForm = $state<(() => boolean) | null>(null);
 
-  let folderMetadata = $state<any>(null);
-  let canUploadCSV = $derived((folderMetadata as any)?.attributes?.payload?.body?.allow_upload_csv === true);
-  let canDownloadCSV = $derived((folderMetadata as any)?.attributes?.payload?.body?.allow_csv === true);
-  let indexAttributes = $derived(
-    (folderMetadata as any)?.attributes?.payload?.body?.index_attributes || [],
-  );
+  let folderMetadata = $state<{ attributes?: { payload?: { body?: Record<string, unknown> } } } | null>(null);
+  const folderBody = $derived((folderMetadata?.attributes?.payload?.body ?? {}) as Record<string, unknown>);
+  const canUploadCSV = $derived(folderBody.allow_upload_csv === true);
+  const canDownloadCSV = $derived(folderBody.allow_csv === true);
+  const indexAttributes = $derived((Array.isArray(folderBody.index_attributes) ? folderBody.index_attributes : []) as ColumnSetting[]);
+  const defaultColumns = $derived<ColumnSetting[]>([
+    { key: "displayname", name: $_("users_page.columns.user") },
+    { key: "email", name: $_("users_page.columns.email") },
+    { key: "roles", name: $_("users_page.columns.roles") },
+    { key: "status", name: $_("users_page.columns.status") },
+  ]);
+  const effectiveColumns = $derived(indexAttributes.length > 0 ? indexAttributes : defaultColumns);
 
   let isCSVUploadModalOpen = $state(false);
   let isCSVDownloadModalOpen = $state(false);
 
   let showColumnSettingsModal = $state(false);
-  let editingIndexAttributes = $state<any[]>([]);
+  let editingIndexAttributes = $state<ColumnSetting[]>([]);
   let isSavingColumns = $state(false);
 
   let showBulkEditModal = $state(false);
-  let bulkEditData = $state<Record<string, any>>({});
+  let bulkEditData = $state<Record<string, Record<string, unknown>>>({});
   let isBulkSaving = $state(false);
 
   let showViewUserModal = $state(false);
-  let viewUserData = $state<any>(null);
-  let permissionsMap = $state<Record<string, any>>({});
+  let viewUserData = $state<UserRow | null>(null);
+  let permissionsMap = $state<Record<string, PermissionInfo>>({});
   let permissionsLoaded = $state(false);
 
-  function getAttributeValue(item: any, key: any) {
-    if (!item) return "";
-    if (!key) return "";
+  let selectedItems = $state(new Set<string>());
+  let currentPage = $state(1);
+  let itemsPerPage = $state(20);
+  let totalUsers = $state(0);
+  let totalPages = $state(0);
+
+  $effect(() => setTitle($_("user_management")));
+
+  const filteredRoles = $derived.by(() => {
+    const term = roleSearchTerm.trim().toLowerCase();
+    if (!term) return availableRoles;
+    return availableRoles.filter(
+      (role) =>
+        role.shortname.toLowerCase().includes(term) ||
+        role.displayname.toLowerCase().includes(term) ||
+        role.description.toLowerCase().includes(term),
+    );
+  });
+
+  function getAttributeValue(item: UserRow, key: string): unknown {
+    if (!item || !key) return "";
     if (key === "displayname") return item.displayname || item.shortname;
     if (key === "email") return item.email;
-    if (key === "roles") return item.roles.map((r: any) => getRoleDisplayName(r)).join(", ");
-    if (key === "status") {
-      return item.is_active
-        ? $_("admin_content.status.active")
-        : $_("admin_content.status.inactive");
-    }
-    const findValue = (obj: any, k: any) => {
+    if (key === "roles") return item.roles.map((r) => getRoleDisplayName(r)).join(", ");
+    if (key === "status") return item.is_active ? $_("admin_content.status.active") : $_("admin_content.status.inactive");
+    const findValue = (obj: unknown, k: string): unknown => {
       if (!obj || typeof obj !== "object") return undefined;
-      if (obj[k] !== undefined) return obj[k];
+      const record = obj as Record<string, unknown>;
+      if (record[k] !== undefined) return record[k];
       const tk = k.toLowerCase();
-      const foundKey = Object.keys(obj).find((ok) => ok.toLowerCase() === tk);
-      return foundKey ? obj[foundKey] : undefined;
+      const foundKey = Object.keys(record).find((ok) => ok.toLowerCase() === tk);
+      return foundKey ? record[foundKey] : undefined;
     };
-    
     if (key.includes(".")) {
-      const parts = key.split(".");
-      let current = item;
-      for (const part of parts) {
+      let current: unknown = item;
+      for (const part of key.split(".")) {
         if (current === undefined || current === null) break;
-        if (part === "attributes") {
-           current = item;
-        } else {
-           current = findValue(current, part);
-        }
+        current = part === "attributes" ? item : findValue(current, part);
       }
-      return current !== undefined ? current : "";
+      return current ?? "";
     }
-    
-    let baseVal = findValue(item, key);
-    return baseVal !== undefined ? baseVal : "";
+    return findValue(item, key) ?? "";
   }
 
-  let selectedItems = $state(new Set<string>());
-
-  // function toggleAllItems(e: Event) {
-  //   const checked = (e.target as HTMLInputElement).checked;
-  //   if (checked) {
-  //     filteredUsers.forEach((u) => selectedItems.add(u.shortname));
-  //     selectedItems = new Set(selectedItems);
-  //   } else {
-  //     selectedItems = new Set();
-  //   }
-  // }
+  function cellText(item: UserRow, key: string): string {
+    const value = getAttributeValue(item, key);
+    if (value === null || value === undefined) return "";
+    return typeof value === "object" ? JSON.stringify(value) : String(value);
+  }
 
   function toggleItemSelection(shortname: string) {
-    if (selectedItems.has(shortname)) {
-      selectedItems.delete(shortname);
-    } else {
-      selectedItems.add(shortname);
-    }
+    if (selectedItems.has(shortname)) selectedItems.delete(shortname);
+    else selectedItems.add(shortname);
     selectedItems = new Set(selectedItems);
   }
 
@@ -141,59 +181,42 @@
     selectedItems = new Set();
   }
 
-  let currentPage = $state(1);
-  let itemsPerPage = $state(20);
-  let totalUsers = $state(0);
-  let totalPages = $state(0);
-
   async function loadUsers() {
     try {
       isLoading = true;
-      folderMetadata = await getEntity('users', 'management', '/', ResourceType.folder, DmartScope.managed);
-
-      let usersResponse;
+      loadError = null;
+      folderMetadata = (await getEntity("users", MANAGEMENT_SPACE, "/", ResourceType.folder, DmartScope.managed)) as typeof folderMetadata;
 
       const offset = (currentPage - 1) * itemsPerPage;
-      if (selectedRoleFilter) {
-        usersResponse = await filterUserByRole(
-          selectedRoleFilter,
-          itemsPerPage,
-          offset,
-          searchTerm,
-        );
-      } else {
-        usersResponse = await getAllUsers(
-          itemsPerPage,
-          offset,
-          searchTerm,
-        );
-      }
+      const usersResponse = selectedRoleFilter
+        ? await filterUserByRole(selectedRoleFilter, itemsPerPage, offset, searchTerm)
+        : await getAllUsers(itemsPerPage, offset, searchTerm);
 
       if (usersResponse && usersResponse.status === "success") {
-        users = usersResponse.records.map((user) => ({
-          ...user,
-          shortname: user.shortname,
-          displayname: typeof user.attributes?.displayname === 'object'
-            ? (user.attributes?.displayname?.en || user.attributes?.displayname?.ar || user.attributes?.displayname?.ku || user.shortname)
-            : (user.attributes?.displayname || user.shortname),
-          email: user.attributes?.email || "N/A",
-          roles: Array.isArray(user.attributes?.roles)
-            ? user.attributes.roles.map((r: any) => typeof r === 'string' ? r : (r.shortname || r.name || String(r)))
-            : [],
-          is_active: user.attributes?.is_active ?? true,
-          created_at: user.attributes?.created_at || "N/A",
-        }));
-
-        totalUsers = resolveTotal(usersResponse.attributes?.total, users.length);
+        users = usersResponse.records.map((user): UserRow => {
+          const attrs = (user.attributes ?? {}) as Record<string, unknown>;
+          const rawRoles = attrs.roles;
+          return {
+            ...(user as unknown as Record<string, unknown>),
+            shortname: user.shortname,
+            displayname: localized(attrs.displayname as never, $locale) || user.shortname,
+            email: typeof attrs.email === "string" ? attrs.email : "",
+            roles: Array.isArray(rawRoles)
+              ? rawRoles.map((r) => (typeof r === "string" ? r : ((r as { shortname?: string; name?: string }).shortname ?? (r as { name?: string }).name ?? String(r))))
+              : [],
+            is_active: attrs.is_active !== false,
+            created_at: typeof attrs.created_at === "string" ? attrs.created_at : "",
+            attributes: attrs,
+          };
+        });
+        totalUsers = resolveTotal((usersResponse.attributes as { total?: number })?.total, users.length);
         totalPages = Math.ceil(totalUsers / itemsPerPage);
-
-        filteredUsers = users;
       } else {
-        errorToastMessage($_("failed_to_load_users"));
+        loadError = $_("failed_to_load_users");
       }
     } catch (error) {
-      console.error("Error loading users:", error);
-      errorToastMessage($_("failed_to_load_users"));
+      log.error("Error loading users:", error);
+      loadError = error;
     } finally {
       isLoading = false;
     }
@@ -201,109 +224,77 @@
 
   async function loadRoles() {
     try {
-      const rolesResponse = await getSpaceContents(
-        "management",
-        "roles",
-        DmartScope.managed,
-      );
-
+      const rolesResponse = await getSpaceContents(MANAGEMENT_SPACE, "roles", DmartScope.managed);
       if (rolesResponse.status === "success") {
-        availableRoles = rolesResponse.records.map((role) => ({
-          shortname: role.shortname,
-          displayname: typeof role.attributes?.displayname === 'object'
-            ? (role.attributes?.displayname?.en || role.attributes?.displayname?.ar || role.attributes?.displayname?.ku || role.shortname)
-            : (role.attributes?.displayname || role.shortname),
-          description: typeof role.attributes?.description === 'object'
-            ? (role.attributes?.description?.en || role.attributes?.description?.ar || role.attributes?.description?.ku || `Role: ${role.shortname}`)
-            : (role.attributes?.description || `Role: ${role.shortname}`),
-          permissions: Array.isArray(role.attributes?.permissions) ? role.attributes.permissions : [],
-        }));
+        availableRoles = rolesResponse.records.map((role) => {
+          const attrs = (role.attributes ?? {}) as Record<string, unknown>;
+          return {
+            shortname: role.shortname,
+            displayname: localized(attrs.displayname as never, $locale) || role.shortname,
+            description: localized(attrs.description as never, $locale) || `${$_("role")}: ${role.shortname}`,
+            permissions: Array.isArray(attrs.permissions) ? (attrs.permissions as string[]) : [],
+          };
+        });
       } else {
-        errorToastMessage($_("failed_to_load_roles"));
+        toasts.error($_("failed_to_load_roles"));
       }
     } catch (error) {
-      console.error("Error loading roles:", error);
-      errorToastMessage($_("failed_to_load_roles"));
+      log.error("Error loading roles:", error);
+      toasts.error($_("failed_to_load_roles"));
     }
   }
 
-  let searchDebounceTimer: any = null;
-  function handleSearchInput() {
-    clearTimeout(searchDebounceTimer);
-    searchDebounceTimer = setTimeout(() => {
-      currentPage = 1;
-      loadUsers();
-    }, 400);
+  function search(query: string) {
+    searchTerm = query;
+    currentPage = 1;
+    loadUsers();
   }
 
-  function openEditUserModal(user: any) {
+  function openCreateUserModal() {
+    isEditingUserMode = false;
+    selectedUser = null;
+    metaContent = {};
+    showUserModal = true;
+  }
+
+  function openEditUserModal(user: UserRow) {
     isEditingUserMode = true;
     selectedUser = user;
-    metaContent = {
-      ...$state.snapshot(user.attributes || {}),
-      shortname: user.shortname
-    };
-    showCreateUserModal = true;
+    metaContent = { ...$state.snapshot(user.attributes ?? {}), shortname: user.shortname };
+    showUserModal = true;
   }
 
   function closeUserModal() {
-    showCreateUserModal = false;
+    if (isSavingUser) return;
+    showUserModal = false;
     isEditingUserMode = false;
     selectedUser = null;
     metaContent = {};
   }
 
-  function openRoleModal(user: any) {
+  function openRoleModal(user: UserRow) {
     selectedUser = user;
     selectedRoles = [...user.roles];
-    roleSearchTerm = ""; // Reset search when opening modal
-    filteredRoles = availableRoles; // Initialize filtered roles
+    roleSearchTerm = "";
     showRoleModal = true;
   }
 
   function closeRoleModal() {
+    if (isUpdating) return;
     selectedUser = null;
     selectedRoles = [];
     roleSearchTerm = "";
-    filteredRoles = [];
     showRoleModal = false;
   }
 
-  function toggleRole(roleShortname: any) {
-    const index = selectedRoles.indexOf(roleShortname);
-    if (index > -1) {
-      selectedRoles = selectedRoles.filter((r) => r !== roleShortname);
-    } else {
-      selectedRoles = [...selectedRoles, roleShortname];
-    }
+  function toggleRole(roleShortname: string) {
+    selectedRoles = selectedRoles.includes(roleShortname)
+      ? selectedRoles.filter((r) => r !== roleShortname)
+      : [...selectedRoles, roleShortname];
   }
 
-  function filterAvailableRoles() {
-    if (!roleSearchTerm.trim()) {
-      filteredRoles = availableRoles;
-      return;
-    }
-
-    const term = roleSearchTerm.toLowerCase();
-    filteredRoles = availableRoles.filter(
-      (role) =>
-        role.shortname.toLowerCase().includes(term) ||
-        role.displayname.toLowerCase().includes(term) ||
-        role.description.toLowerCase().includes(term),
-    );
-  }
-
-  
   function handleOpenColumnSettings() {
-    editingIndexAttributes = JSON.parse(JSON.stringify(indexAttributes));
-    if (editingIndexAttributes.length === 0) {
-      editingIndexAttributes = [
-        { key: "displayname", name: "User" },
-        { key: "email", name: "Email" },
-        { key: "roles", name: "Roles" },
-        { key: "status", name: "Status" },
-      ];
-    }
+    editingIndexAttributes = effectiveColumns.map((c) => ({ ...c }));
     showColumnSettingsModal = true;
   }
 
@@ -311,15 +302,16 @@
     editingIndexAttributes = [...editingIndexAttributes, { key: "", name: "" }];
   }
 
-  function removeColumnSetting(index: any) {
+  function removeColumnSetting(index: number) {
     editingIndexAttributes = editingIndexAttributes.filter((_, i) => i !== index);
   }
 
-  async function handleUpdateColumns() {
+  async function handleUpdateColumns(event: SubmitEvent) {
+    event.preventDefault();
     isSavingColumns = true;
     try {
       const response = await Dmart.request({
-        space_name: "management",
+        space_name: MANAGEMENT_SPACE,
         request_type: RequestType.update,
         records: [
           {
@@ -328,213 +320,117 @@
             subpath: "/",
             attributes: {
               payload: {
-                ...(folderMetadata as any)?.attributes?.payload,
+                ...(folderMetadata?.attributes?.payload ?? {}),
                 body: {
-                  ...(folderMetadata as any)?.attributes?.payload?.body,
-                  index_attributes: editingIndexAttributes.filter(
-                    (a) => a?.key?.trim() && a?.name?.trim(),
-                  ),
+                  ...folderBody,
+                  index_attributes: editingIndexAttributes.filter((a) => a.key?.trim() && a.name?.trim()),
                 },
               },
             },
           },
         ],
       });
-
       if (response && response.status === "success") {
+        isSavingColumns = false;
         showColumnSettingsModal = false;
-        successToastMessage($_("toast.folder_updated") || "Folder updated");
+        toasts.success($_("toast.folder_updated"));
         await loadUsers();
       } else {
-        errorToastMessage($_("toast.folder_update_failed") || "Failed to update columns");
+        toasts.error($_("toast.folder_update_failed"));
       }
     } catch (err) {
-      console.error("Error updating columns:", err);
-      errorToastMessage("Failed to update columns");
+      log.error("Error updating columns:", err);
+      toasts.error($_("toast.folder_update_failed"));
     } finally {
       isSavingColumns = false;
     }
   }
 
-  async function handleCSVUpload(parsedFromCSV: any[]) {
-    try {
-      if (!parsedFromCSV || parsedFromCSV.length === 0) {
-        errorToastMessage($_("admin_content.bulk_actions.invalid_csv_data"));
-        return;
-      }
-
-      parsedFromCSV.forEach((item) => {
-        if (item.displayname && typeof item.displayname === "string") {
-          item.displayname = {
-            ar: item.displayname,
-            en: item.displayname,
-            ku: item.displayname,
-          };
-        }
-        if (item.description && typeof item.description === "string") {
-          item.description = {
-            ar: item.description,
-            en: item.description,
-            ku: item.description,
-          };
-        }
-      });
-
-      const response = await Dmart.request({
-        space_name: "management",
-        request_type: (RequestType as any).merge,
-        records: parsedFromCSV,
-      });
-
-      if (response && response.status === "success") {
-        successToastMessage($_("admin_content.bulk_actions.csv_upload_success"));
-        isCSVUploadModalOpen = false;
-        loadUsers();
-      } else {
-        errorToastMessage(
-          response?.error?.message ||
-            $_("admin_content.bulk_actions.csv_upload_failed"),
-        );
-      }
-    } catch (error) {
-      console.error("CSV Upload failed:", error);
-      errorToastMessage($_("admin_content.bulk_actions.csv_upload_failed"));
-    }
-  }
-
-  function handleCSVDownload(itemsToDownload: any) {
-    if (!itemsToDownload || itemsToDownload.length === 0) {
-      errorToastMessage($_("admin_content.bulk_actions.no_items_export"));
-      return;
-    }
-    isCSVDownloadModalOpen = false;
-  }
-
   function openBulkEditModal() {
     isBulkSaving = false;
-    const initialData: Record<string, any> = {};
-    const effectiveColumns = indexAttributes.length > 0 ? indexAttributes : [
-      { key: "displayname", name: "User" },
-      { key: "email", name: "Email" },
-      { key: "roles", name: "Roles" },
-      { key: "status", name: "Status" }
-    ];
-
+    const initialData: Record<string, Record<string, unknown>> = {};
     for (const shortname of selectedItems) {
       const item = users.find((i) => i.shortname === shortname);
-      if (item) {
-        const editData: Record<string, any> = {};
-        for (const col of effectiveColumns) {
-           const key = col.key;
-           const val = getAttributeValue(item, key);
-           editData[key] = val;
-        }
-        initialData[shortname] = editData;
-      }
+      if (!item) continue;
+      const editData: Record<string, unknown> = {};
+      for (const col of effectiveColumns) editData[col.key] = getAttributeValue(item, col.key);
+      initialData[shortname] = editData;
     }
-    bulkEditData = { ...initialData };
+    bulkEditData = initialData;
     showBulkEditModal = true;
   }
-  
+
   function closeBulkEditModal() {
+    if (isBulkSaving) return;
     showBulkEditModal = false;
     bulkEditData = {};
   }
-  
-  function updateBulkEditField(shortname: any, field: any, value: any) {
-    if (bulkEditData[shortname]) {
-      bulkEditData[shortname] = { ...bulkEditData[shortname], [field]: value };
-    }
+
+  function updateBulkEditField(shortname: string, field: string, value: string) {
+    if (bulkEditData[shortname]) bulkEditData[shortname] = { ...bulkEditData[shortname], [field]: value };
   }
 
-  async function handleBulkSave() {
+  async function handleBulkSave(event: SubmitEvent) {
+    event.preventDefault();
     if (Object.keys(bulkEditData).length === 0) return;
     isBulkSaving = true;
-
     try {
       const records = [];
-
       for (const [shortname, editData] of Object.entries(bulkEditData)) {
         const item = users.find((i) => i.shortname === shortname);
-        if (item) {
-          const attributes = { ...(item.attributes || {}) };
-          
-          for (const [key, value] of Object.entries(editData)) {
-            if (key === "shortname") continue;
-            
-            const fieldType = getFieldType(key);
-            const parsedValue = parseValueByType(value, fieldType);
-            
-            const attrKey = key.startsWith("attributes.") ? key.slice(11) : key;
-            setNestedValue(attributes, attrKey, parsedValue);
-          }
-
-          records.push({
-            resource_type: ResourceType.user,
-            shortname: item.shortname,
-            subpath: "/users",
-            attributes,
-          });
+        if (!item) continue;
+        const attributes: Record<string, unknown> = { ...(item.attributes ?? {}) };
+        for (const [key, value] of Object.entries(editData)) {
+          if (key === "shortname") continue;
+          const parsedValue = parseValueByType(value as never, getFieldType(key));
+          const attrKey = key.startsWith("attributes.") ? key.slice(11) : key;
+          setNestedValue(attributes as never, attrKey, parsedValue);
         }
+        records.push({ resource_type: ResourceType.user, shortname: item.shortname, subpath: "/users", attributes });
       }
-
-      const response = await Dmart.request({
-        space_name: "management",
-        request_type: RequestType.update,
-        records,
-      });
-
-      if (response && response.status === 'success') {
-        successToastMessage($_("admin_content.bulk_actions.edit_success", { values: { count: records.length }}));
+      const response = await Dmart.request({ space_name: MANAGEMENT_SPACE, request_type: RequestType.update, records });
+      if (response && response.status === "success") {
+        toasts.success($_("admin_content.bulk_actions.edit_success", { values: { count: records.length } }));
+        isBulkSaving = false;
         closeBulkEditModal();
         selectedItems = new Set();
         await loadUsers();
       } else {
-        errorToastMessage($_("admin_content.bulk_actions.edit_failed", { values: { count: records.length }}));
+        toasts.error($_("admin_content.bulk_actions.edit_failed", { values: { count: records.length } }));
       }
-
     } catch (err) {
-       console.error(err);
-       errorToastMessage($_("admin_content.bulk_actions.edit_failed"));
+      log.error("Bulk edit failed:", err);
+      toasts.error($_("admin_content.bulk_actions.edit_error"));
     } finally {
-       isBulkSaving = false;
+      isBulkSaving = false;
     }
   }
 
   async function saveUserRoles() {
     if (!selectedUser) return;
-
+    const target = selectedUser;
     isUpdating = true;
     try {
-      const success = await updateUserRoles(
-        selectedUser.shortname,
-        selectedRoles,
-      );
+      const success = await updateUserRoles(target.shortname, selectedRoles);
       if (success) {
-        const userIndex = users.findIndex(
-          (u) => u.shortname === selectedUser.shortname,
-        );
-        if (userIndex > -1) {
-          users[userIndex].roles = [...selectedRoles];
-          filteredUsers = users;
-        }
-
-        successToastMessage(`Updated roles for ${selectedUser.displayname}`);
+        const row = users.find((u) => u.shortname === target.shortname);
+        if (row) row.roles = [...selectedRoles];
+        toasts.success($_("users_page.roles_updated", { values: { name: target.displayname } }));
+        isUpdating = false;
         closeRoleModal();
       } else {
-        errorToastMessage($_("failed_to_update_user_roles"));
+        toasts.error($_("failed_to_update_user_roles"));
       }
     } catch (error) {
-      console.error("Error updating user roles:", error);
-      errorToastMessage($_("failed_to_update_user_roles"));
+      log.error("Error updating user roles:", error);
+      toasts.error($_("failed_to_update_user_roles"));
     } finally {
       isUpdating = false;
     }
   }
 
-  function getRoleDisplayName(roleShortname: any) {
-    const role = availableRoles.find((r) => r.shortname === roleShortname);
-    return role ? role.displayname : roleShortname;
+  function getRoleDisplayName(roleShortname: string): string {
+    return availableRoles.find((r) => r.shortname === roleShortname)?.displayname ?? roleShortname;
   }
 
   function goToPage(page: number) {
@@ -544,65 +440,36 @@
     }
   }
 
-  // function nextPage() {
-  //   if (currentPage < totalPages) {
-  //     currentPage++;
-  //     loadUsers();
-  //   }
-  // }
-  //
-  // function previousPage() {
-  //   if (currentPage > 1) {
-  //     currentPage--;
-  //     loadUsers();
-  //   }
-  // }
-
-  async function handleRoleFilterChange() {
-    currentPage = 1;
-    await loadUsers();
-  }
-
   async function loadPermissions() {
     try {
-      const permissionsResponse = await getSpaceContents(
-        "management",
-        "permissions",
-        DmartScope.managed,
-      );
-      if (permissionsResponse.status === "success") {
-        const map: Record<string, any> = {};
-        for (const p of permissionsResponse.records) {
+      const response = await getSpaceContents(MANAGEMENT_SPACE, "permissions", DmartScope.managed);
+      if (response.status === "success") {
+        const map: Record<string, PermissionInfo> = {};
+        for (const p of response.records) {
+          const attrs = (p.attributes ?? {}) as Record<string, unknown>;
           map[p.shortname] = {
             shortname: p.shortname,
-            displayname: typeof p.attributes?.displayname === 'object'
-              ? (p.attributes?.displayname?.en || p.attributes?.displayname?.ar || p.attributes?.displayname?.ku || p.shortname)
-              : (p.attributes?.displayname || p.shortname),
-            description: typeof p.attributes?.description === 'object'
-              ? (p.attributes?.description?.en || p.attributes?.description?.ar || p.attributes?.description?.ku || "")
-              : (p.attributes?.description || ""),
-            actions: Array.isArray(p.attributes?.actions) ? p.attributes.actions : [],
-            resource_types: Array.isArray(p.attributes?.resource_types) ? p.attributes.resource_types : [],
-            subpaths: p.attributes?.subpaths || {},
+            displayname: localized(attrs.displayname as never, $locale) || p.shortname,
+            description: localized(attrs.description as never, $locale),
+            actions: Array.isArray(attrs.actions) ? (attrs.actions as string[]) : [],
+            resource_types: Array.isArray(attrs.resource_types) ? (attrs.resource_types as string[]) : [],
+            subpaths: (attrs.subpaths as Record<string, unknown>) ?? {},
           };
         }
         permissionsMap = map;
         permissionsLoaded = true;
       }
     } catch (error) {
-      console.error("Error loading permissions:", error);
+      log.error("Error loading permissions:", error);
     }
   }
 
-  async function openViewUserModal(user: any) {
+  async function openViewUserModal(user: UserRow) {
     viewUserData = user;
     showViewUserModal = true;
-    // Permissions are only needed for the role/permission breakdown in this
-    // modal — defer the round-trip until the user actually opens it. Guard
-    // avoids refetching on every subsequent open.
-    if (!permissionsLoaded) {
-      await loadPermissions();
-    }
+    // Permissions are only needed for the breakdown in this modal, so the
+    // round-trip waits until it is opened, and happens once.
+    if (!permissionsLoaded) await loadPermissions();
   }
 
   function closeViewUserModal() {
@@ -610,375 +477,233 @@
     viewUserData = null;
   }
 
-  function getRolePermissions(roleShortname: string): any[] {
+  function getRolePermissions(roleShortname: string): PermissionInfo[] {
     const role = availableRoles.find((r) => r.shortname === roleShortname);
-    if (!role || !Array.isArray(role.permissions)) return [];
-    return role.permissions.map((permShortname: string) => {
-      return permissionsMap[permShortname] || { shortname: permShortname, displayname: permShortname };
-    });
+    if (!role) return [];
+    return role.permissions.map(
+      (perm) => permissionsMap[perm] ?? { shortname: perm, displayname: perm, description: "", actions: [], resource_types: [], subpaths: {} },
+    );
   }
 
   onMount(async () => {
-    isLoading = true;
     await Promise.all([loadUsers(), loadRoles()]);
-    isLoading = false;
   });
 
-  async function handleSaveUser() {
+  async function handleSaveUser(event: SubmitEvent) {
+    event.preventDefault();
     if (validateMetaForm && !validateMetaForm()) return;
     if (validateRTForm && !validateRTForm()) return;
-    
+
     isSavingUser = true;
     try {
-      const _metaContent = $state.snapshot(metaContent);
-      const shortname = _metaContent.shortname;
-      delete _metaContent.shortname;
+      const payload = $state.snapshot(metaContent) as Record<string, unknown>;
+      const shortname = payload.shortname as string;
+      delete payload.shortname;
 
       // Blank password fields mean "no credential change" — strip them so an
       // attribute-only edit never sends password/old_password (and a stored
       // hash loaded into the form can never be resubmitted as a password).
-      if (!_metaContent.password) {
-        delete _metaContent.password;
-        delete _metaContent.old_password;
-      } else if (!_metaContent.old_password) {
-        delete _metaContent.old_password;
+      if (!payload.password) {
+        delete payload.password;
+        delete payload.old_password;
+      } else if (!payload.old_password) {
+        delete payload.old_password;
       }
 
+      let ok = false;
       if (isEditingUserMode) {
         const response = await Dmart.request({
-          space_name: "management",
+          space_name: MANAGEMENT_SPACE,
           request_type: RequestType.update,
-          records: [{
-            resource_type: ResourceType.user,
-            shortname: shortname,
-            subpath: "/users",
-            attributes: _metaContent
-          }]
+          records: [{ resource_type: ResourceType.user, shortname, subpath: "/users", attributes: payload }],
         });
-        
-        if (response && response.status === 'success') {
-          successToastMessage($_("user_updated_successfully") || "User updated successfully!");
-          closeUserModal();
-          await loadUsers();
-        } else {
-          errorToastMessage($_("failed_to_update_user") || "Failed to update user.");
-        }
+        ok = !!response && response.status === "success";
       } else {
-        const result = await createEntity(
-          "management",
-          "users",
-          ResourceType.user,
-          _metaContent,
-          shortname
-        );
-        
-        if (result) {
-          successToastMessage($_("user_created_successfully") || "User created successfully!");
-          closeUserModal();
-          await loadUsers();
-        } else {
-          errorToastMessage($_("failed_to_create_user") || "Failed to create user.");
-        }
+        ok = !!(await createEntity(MANAGEMENT_SPACE, "users", ResourceType.user, payload, shortname));
+      }
+
+      if (ok) {
+        toasts.success(isEditingUserMode ? $_("user_updated_successfully") : $_("user_created_successfully"));
+        isSavingUser = false;
+        closeUserModal();
+        await loadUsers();
+      } else {
+        toasts.error(isEditingUserMode ? $_("failed_to_update_user") : $_("failed_to_create_user"));
       }
     } catch (error) {
-      console.error("Error saving user:", error);
-      errorToastMessage(isEditingUserMode ? ($_("failed_to_update_user") || "Failed to update user.") : ($_("failed_to_create_user") || "Failed to create user."));
+      log.error("Error saving user:", error);
+      toasts.error(isEditingUserMode ? $_("failed_to_update_user") : $_("failed_to_create_user"));
     } finally {
       isSavingUser = false;
     }
   }
+
+  const stats = $derived([
+    { label: $_("total_users"), value: totalUsers },
+    { label: $_("active_users"), value: users.filter((u) => u.is_active).length },
+    { label: $_("available_roles"), value: availableRoles.length },
+    { label: $_("users_without_roles"), value: users.filter((u) => u.roles.length === 0).length },
+  ]);
+
+  const inputClass =
+    "w-full px-3 py-2 text-sm rounded-control border border-border bg-surface-2 text-text placeholder:text-text-faint focus:border-primary focus:ring-1 focus:ring-primary";
 </script>
 
-<div class="container" class:rtl={$isRTL}>
-  <div class="page-header">
-    <h1 class="page-title">{$_("user_management")}</h1>
-    <p class="page-subtitle">{$_("manage_users_and_roles")}</p>
-  </div>
-
-  <div class="stats-card mb-4">
-    <h3 class="card-title">{$_("statistics")}</h3>
-    <div class="stats-grid">
-      <div class="stat-item">
-        <div class="stat-number">
-          {formatNumber(totalUsers, $locale ?? "")}
-        </div>
-        <div class="stat-label">{$_("total_users")}</div>
-      </div>
-      <div class="stat-item">
-        <div class="stat-number">
-          {formatNumber(users.filter((u) => u.is_active).length, $locale ?? "")}
-        </div>
-        <div class="stat-label">{$_("active_users")}</div>
-      </div>
-      <div class="stat-item">
-        <div class="stat-number">
-          {formatNumber(availableRoles.length, $locale ?? "")}
-        </div>
-        <div class="stat-label">{$_("available_roles")}</div>
-      </div>
-      <div class="stat-item">
-        <div class="stat-number">
-          {formatNumber(
-            users.filter((u: any) => u.roles.length === 0).length,
-            $locale ?? "",
-          )}
-        </div>
-        <div class="stat-label">{$_("users_without_roles")}</div>
-      </div>
-    </div>
-  </div>
-
-  <div class="card">
-    <div class="card-header">
-      <h2 class="card-title">{$_("users_overview")}</h2>
-      <!-- Bulk Actions -->
-      {#if selectedItems.size > 0}
-        <div class="flex items-center gap-2 mr-4 bg-indigo-50 px-3 py-1.5 rounded-lg border border-indigo-100">
-           <span class="text-sm font-medium text-indigo-700 hidden sm:inline-block">
-             {$_("admin_content.bulk_actions.selected", { values: { count: selectedItems.size } })}
-           </span>
-           <button onclick={openBulkEditModal} class="p-1.5 text-indigo-600 hover:bg-indigo-100 rounded transition-colors group relative" aria-label={$_("admin_content.bulk_actions.edit")}>
-             <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M11 5H6a2 2 0 00-2 2v11a2 2 0 002 2h11a2 2 0 002-2v-5m-1.414-9.414a2 2 0 112.828 2.828L11.828 15H9v-2.828l8.586-8.586z"></path></svg>
-             <span class="absolute -bottom-8 left-1/2 -translate-x-1/2 whitespace-nowrap rounded bg-gray-900 px-2 py-1 text-xs text-white opacity-0 group-hover:opacity-100 transition-opacity">{$_("admin_content.bulk_actions.edit")}</span>
-           </button>
-        </div>
+<div class="mx-auto max-w-7xl px-4 sm:px-6 py-6 sm:py-8">
+  <PageHeader title={$_("user_management")} description={$_("manage_users_and_roles")} icon={UsersOutline}>
+    {#snippet actions()}
+      <IconButton label={$_("admin_content.column_settings.title")} variant="outline" onclick={handleOpenColumnSettings}>
+        <CogOutline size="sm" />
+      </IconButton>
+      {#if canUploadCSV}
+        <IconButton label={$_("users_page.upload_csv")} variant="outline" onclick={() => (isCSVUploadModalOpen = true)}>
+          <UploadOutline size="sm" />
+        </IconButton>
       {/if}
-      <div class="flex items-center gap-2 ml-auto">
-        <button class="p-2 text-gray-500 hover:text-gray-700 hover:bg-gray-100 rounded-full transition-colors" onclick={handleOpenColumnSettings} aria-label={$_("admin_content.column_settings.title")}>
-           <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M10.325 4.317c.426-1.756 2.924-1.756 3.35 0a1.724 1.724 0 002.573 1.066c1.543-.94 3.31.826 2.37 2.37a1.724 1.724 0 001.065 2.572c1.756.426 1.756 2.924 0 3.35a1.724 1.724 0 00-1.066 2.573c.94 1.543-.826 3.31-2.37 2.37a1.724 1.724 0 00-2.572 1.065c-.426 1.756-2.924 1.756-3.35 0a1.724 1.724 0 00-2.573-1.066c-1.543.94-3.31-.826-2.37-2.37a1.724 1.724 0 00-1.065-2.572c-1.756-.426-1.756-2.924 0-3.35a1.724 1.724 0 001.066-2.573c-.94-1.543.826-3.31 2.37-2.37.996.608 2.296.07 2.572-1.065z"></path><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 12a3 3 0 11-6 0 3 3 0 016 0z"></path></svg>
+      {#if canDownloadCSV}
+        <IconButton label={$_("users_page.download_csv")} variant="outline" onclick={() => (isCSVDownloadModalOpen = true)}>
+          <DownloadOutline size="sm" />
+        </IconButton>
+      {/if}
+      {#if $can("create", MANAGEMENT_SPACE, "users", ResourceType.user)}
+        <button type="button" class="app-btn app-btn-primary" onclick={openCreateUserModal}>
+          <PlusOutline size="sm" aria-hidden="true" />
+          {$_("create_user")}
         </button>
-        {#if canUploadCSV}
-          <button class="p-2 text-gray-500 hover:text-gray-700 hover:bg-gray-100 rounded-full transition-colors" onclick={() => isCSVUploadModalOpen = true} aria-label="Upload CSV">
-             <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M7 16a4 4 0 01-.88-7.903A5 5 0 1115.9 6L16 6a5 5 0 011 9.9M15 13l-3-3m0 0l-3 3m3-3v12"></path></svg>
-          </button>
-        {/if}
-        {#if canDownloadCSV}
-          <button class="p-2 text-gray-500 hover:text-gray-700 hover:bg-gray-100 rounded-full transition-colors" onclick={() => isCSVDownloadModalOpen = true} aria-label="Download CSV">
-             <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4"></path></svg>
-          </button>
-        {/if}
-      </div>
-      <div class="filters-container">
-        {#if $can("create", "management", "users", ResourceType.user)}
-        <button class="btn btn-primary" onclick={() => {
-          isEditingUserMode = false;
-          metaContent = {};
-          showCreateUserModal = true;
-        }}>
-          {$_("create_user") || "Create User"}
-        </button>
-        {/if}
-        <div class="search-container">
-          <label for="search-input" class="visually-hidden"></label>
-          <input
-            type="text"
-            class="search-input"
-            placeholder={$_("search_users")}
-            bind:value={searchTerm}
-            oninput={handleSearchInput}
-            title={$_("search_users")}
-            aria-label={$_("search_users")}
-          />
-        </div>
-        <div class="role-filter-container">
-          <select
-            class="role-filter-select"
-            bind:value={selectedRoleFilter}
-            onchange={handleRoleFilterChange}
-            title={$_("all_roles")}
-            aria-label={$_("all_roles")}
-          >
-            <option value="">{$_("all_roles")}</option>
-            {#each availableRoles as role}
-              <option value={role.shortname}>{role.displayname}</option>
-            {/each}
-          </select>
-        </div>
-      </div>
-    </div>
+      {/if}
+    {/snippet}
+  </PageHeader>
 
-    {#if isLoading}
-      <div class="loading-state">
-        <div class="spinner"></div>
-        <span>{$_("loading_users")}</span>
+  <dl class="grid grid-cols-2 lg:grid-cols-4 gap-3 mb-6" aria-label={$_("statistics")}>
+    {#each stats as stat (stat.label)}
+      <div class="rounded-card border border-border bg-surface-2 shadow-card p-4">
+        <dt class="text-xs text-text-muted">{stat.label}</dt>
+        <dd class="text-2xl font-semibold text-text tabular-nums mt-1">{formatNumber(stat.value, $locale ?? "en")}</dd>
       </div>
-    {:else if filteredUsers.length === 0}
-      <div class="empty-state">
-        {#if searchTerm || selectedRoleFilter}
-          <p>{$_("no_users_match_filters")}</p>
-          {#if searchTerm}
-            <p class="filter-info">Search: "{searchTerm}"</p>
-          {/if}
-          {#if selectedRoleFilter}
-            <p class="filter-info">
-              Role: {getRoleDisplayName(selectedRoleFilter)}
-            </p>
-          {/if}
-        {:else}
-          <p>{$_("no_users_found")}</p>
-        {/if}
-      </div>
-    {:else}
-      <DataTable
-        items={filteredUsers}
-        indexAttributes={visibleColumns(indexAttributes, $permissions, "management", "/users", "user")}
-        selectable={true}
-        selectedItems={selectedItems}
-        onSelectAll={(checked) => {
-          if (checked) {
-            filteredUsers.forEach((u) => selectedItems.add(u.shortname));
-            selectedItems = new Set(selectedItems);
-          } else {
-            selectedItems = new Set();
-          }
-        }}
-        onSelectItem={(shortname) => toggleItemSelection(shortname)}
-        onRowClick={(user) => openViewUserModal(user)}
-        loading={isLoading}
-        currentPage={currentPage}
-        totalPages={totalPages}
-        totalItems={totalUsers}
-        itemsPerPage={itemsPerPage}
-        onPageChange={(page) => goToPage(page)}
-        onItemsPerPageChange={(count) => {
-          itemsPerPage = count;
+    {/each}
+  </dl>
+
+  <CatalogToolbar class="mb-4" bind:search={searchTerm} placeholder={$_("search_users")} onSearch={search}>
+    {#snippet filters()}
+      <label for="role-filter" class="sr-only">{$_("all_roles")}</label>
+      <select
+        id="role-filter"
+        bind:value={selectedRoleFilter}
+        onchange={() => {
           currentPage = 1;
           loadUsers();
         }}
-        rtl={$isRTL}
+        class="h-9 ps-3 pe-8 text-sm rounded-control border border-border bg-surface-2 text-text focus:border-primary focus:ring-1 focus:ring-primary"
       >
-        {#snippet cell({ item: user, attr })}
-          {#if attr.key === 'displayname'}
-            <div class="flex flex-col">
-              <span class="inline-flex w-fit items-center px-1.5 py-0.5 rounded text-[10px] font-bold uppercase tracking-wider mb-1.5 bg-blue-100 text-blue-800">user</span>
-              <div class="flex items-center gap-2">
-                <span class="text-lg text-gray-400">
-                  <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5" d="M16 7a4 4 0 11-8 0 4 4 0 018 0zM12 14a7 7 0 00-7 7h14a7 7 0 00-7-7z"></path></svg>
-                </span>
-                <span class="text-sm font-semibold text-gray-900 group-hover:text-indigo-600 transition-colors truncate max-w-xs">{user.displayname}</span>
-              </div>
-            </div>
-          {:else if attr.key === 'email'}
-            <span class="text-sm text-gray-500 font-medium">{user.email}</span>
-          {:else if attr.key === 'roles'}
-            {#if user.roles.length > 0}
-              <div class="flex flex-wrap gap-1">
-                {#each user.roles as role}
-                  <span class="inline-flex items-center px-2 py-0.5 rounded text-xs font-medium bg-blue-50 text-blue-700">{getRoleDisplayName(role)}</span>
-                {/each}
-              </div>
-            {:else}
-              <span class="text-xs text-gray-400 italic">{$_("no_roles_assigned")}</span>
-            {/if}
-          {:else if attr.key === 'status'}
-            <span class="inline-flex items-center px-2.5 py-1 rounded-md text-xs font-medium {user.is_active ? 'bg-emerald-50 text-emerald-700' : 'bg-red-50 text-red-700'}">
-              <span class="w-1.5 h-1.5 rounded-full {user.is_active ? 'bg-emerald-500' : 'bg-red-500'} mr-1.5"></span>
-              {user.is_active ? $_("admin_content.status.active") : $_("admin_content.status.inactive")}
+        <option value="">{$_("all_roles")}</option>
+        {#each availableRoles as role (role.shortname)}
+          <option value={role.shortname}>{role.displayname}</option>
+        {/each}
+      </select>
+    {/snippet}
+  </CatalogToolbar>
+
+  {#if loadError}
+    <ErrorState title={$_("failed_to_load_users")} error={loadError} onRetry={loadUsers} />
+  {:else}
+    <DataTable
+      items={users}
+      indexAttributes={visibleColumns(effectiveColumns, $permissions, MANAGEMENT_SPACE, "/users", "user")}
+      selectable={true}
+      {selectedItems}
+      onSelectAll={(checked) => {
+        selectedItems = checked ? new Set(users.map((u) => u.shortname)) : new Set();
+      }}
+      onSelectItem={toggleItemSelection}
+      onRowClick={(user) => openViewUserModal(user)}
+      rowLabel={(user) => user.displayname}
+      loading={isLoading}
+      {currentPage}
+      {totalPages}
+      totalItems={totalUsers}
+      {itemsPerPage}
+      onPageChange={goToPage}
+      onItemsPerPageChange={(count) => {
+        itemsPerPage = count;
+        currentPage = 1;
+        loadUsers();
+      }}
+      emptyMessage={searchTerm || selectedRoleFilter ? $_("no_users_match_filters") : $_("no_users_found")}
+    >
+      {#snippet cell({ item: user, attr })}
+        {#if attr.key === "displayname"}
+          <span class="font-medium text-text">{user.displayname}</span>
+        {:else if attr.key === "email"}
+          <span class="text-text-muted break-all">{user.email || "—"}</span>
+        {:else if attr.key === "roles"}
+          {#if user.roles.length > 0}
+            <span class="flex flex-wrap gap-1">
+              {#each user.roles as role (role)}
+                <Badge variant="info" size="sm">{getRoleDisplayName(role)}</Badge>
+              {/each}
             </span>
           {:else}
-            <span class="text-sm text-gray-500 font-medium">{getAttributeValue(user, attr.key)}</span>
+            <span class="text-xs text-text-faint italic">{$_("no_roles_assigned")}</span>
           {/if}
-        {/snippet}
+        {:else if attr.key === "status"}
+          <Badge variant={user.is_active ? "success" : "danger"} size="sm">
+            {user.is_active ? $_("admin_content.status.active") : $_("admin_content.status.inactive")}
+          </Badge>
+        {:else if attr.key === "created_at" || attr.key === "updated_at"}
+          <span class="text-text-muted whitespace-nowrap">{formatDate(cellText(user, attr.key), "datetime", $locale)}</span>
+        {:else}
+          <span class="text-text-muted">{cellText(user, attr.key)}</span>
+        {/if}
+      {/snippet}
 
-        {#snippet actions({ item: user })}
-          {#if $can("update", "management", "/users", "user")}
-          <button
-            onclick={(e) => {
-              e.stopPropagation();
-              openEditUserModal(user);
-            }}
-            class="text-[12px] font-semibold text-indigo-500 hover:text-indigo-700 flex items-center gap-1.5"
-          >
-            <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M11 5H6a2 2 0 00-2 2v11a2 2 0 002 2h11a2 2 0 002-2v-5m-1.414-9.414a2 2 0 112.828 2.828L11.828 15H9v-2.828l8.586-8.586z"></path></svg>
-            Edit
-          </button>
-          <button
-            onclick={(e) => {
-              e.stopPropagation();
-              openRoleModal(user);
-            }}
-            class="text-[12px] font-semibold text-amber-500 hover:text-amber-700 flex items-center gap-1.5"
-          >
-            <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M10.325 4.317c.426-1.756 2.924-1.756 3.35 0a1.724 1.724 0 002.573 1.066c1.543-.94 3.31.826 2.37 2.37a1.724 1.724 0 001.065 2.572c1.756.426 1.756 2.924 0 3.35a1.724 1.724 0 00-1.066 2.573c.94 1.543-.826 3.31-2.37 2.37a1.724 1.724 0 00-2.572 1.065c-.426 1.756-2.924 1.756-3.35 0a1.724 1.724 0 00-2.573-1.066c-1.543.94-3.31-.826-2.37-2.37a1.724 1.724 0 00-1.065-2.572c-1.756-.426-1.756-2.924 0-3.35a1.724 1.724 0 001.066-2.573c-.94-1.543.826-3.31 2.37-2.37.996.608 2.296.07 2.572-1.065z"></path><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 12a3 3 0 11-6 0 3 3 0 016 0z"></path></svg>
-            Roles
-          </button>
-          {/if}
-        {/snippet}
+      {#snippet actions({ item: user })}
+        {#if $can("update", MANAGEMENT_SPACE, "/users", "user")}
+          <IconButton label="{$_('edit_user')} {user.displayname}" size="sm" onclick={() => openEditUserModal(user)}>
+            <EditOutline size="sm" />
+          </IconButton>
+          <IconButton label="{$_('manageRolesFor')} {user.displayname}" size="sm" onclick={() => openRoleModal(user)}>
+            <ShieldCheckOutline size="sm" />
+          </IconButton>
+        {/if}
+      {/snippet}
 
-        {#snippet bulkActions({ selectedCount })}
-          <button
-            onclick={clearSelection}
-            class="bulk-btn bulk-btn-secondary"
-          >
-            <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-              <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12" />
-            </svg>
-            {$_("admin_content.bulk_actions.clear_selection")}
-          </button>
-          <button
-            onclick={openBulkEditModal}
-            class="bulk-btn bulk-btn-primary"
-          >
-            <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-              <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M11 5H6a2 2 0 00-2 2v11a2 2 0 002 2h11a2 2 0 002-2v-5m-1.414-9.414a2 2 0 112.828 2.828L11.828 15H9v-2.828l8.586-8.586z"></path>
-            </svg>
-            {$_("admin_content.bulk_actions.edit")}
-          </button>
-        {/snippet}
-      </DataTable>
-    {/if}
-  </div>
-
+      {#snippet bulkActions()}
+        <button type="button" class="app-btn app-btn-secondary app-btn-sm" onclick={clearSelection}>
+          <CloseOutline size="xs" aria-hidden="true" />
+          {$_("admin_content.bulk_actions.clear_selection")}
+        </button>
+        <button type="button" class="app-btn app-btn-primary app-btn-sm" onclick={openBulkEditModal}>
+          <EditOutline size="xs" aria-hidden="true" />
+          {$_("admin_content.bulk_actions.edit")}
+        </button>
+      {/snippet}
+    </DataTable>
+  {/if}
 </div>
 
-{#if showRoleModal}
-  <AppModal
-    title="{$_('manageRolesFor')} {selectedUser?.displayname ?? ''}"
-    ariaLabel={$_('manageRolesFor')}
-    size="2xl"
-    dismissable={!isUpdating}
-    onClose={closeRoleModal}
-  >
-    <p class="text-sm text-gray-600 mb-4">
-      {$_("selectRolesToAssignDescription")}
-    </p>
+{#if showRoleModal && selectedUser}
+  <Modal title="{$_('manageRolesFor')} {selectedUser.displayname}" size="2xl" dismissable={!isUpdating} onClose={closeRoleModal}>
+    <p class="text-sm text-text-muted mb-4">{$_("selectRolesToAssignDescription")}</p>
 
     {#if availableRoles.length === 0}
-      <div class="flex items-start gap-3 p-4 bg-amber-50 border border-amber-200 rounded-xl">
-        <div class="text-amber-500 text-lg leading-none">⚠</div>
-        <div class="text-sm text-amber-800">{$_("noRolesAvailable")}</div>
-      </div>
+      <EmptyState icon={ShieldCheckOutline} title={$_("noRolesAvailable")} />
     {:else}
       <div class="mb-4">
-        <input
-          type="text"
-          class="w-full px-4 py-2.5 text-sm bg-white border border-gray-200 rounded-xl focus:outline-none focus:ring-2 focus:ring-indigo-500 focus:border-transparent placeholder:text-gray-400"
-          placeholder={$_("search_roles") || "Search roles..."}
-          bind:value={roleSearchTerm}
-          oninput={filterAvailableRoles}
-        />
+        <label for="role-search" class="sr-only">{$_("search_roles")}</label>
+        <input id="role-search" type="search" class={inputClass} placeholder={$_("search_roles")} bind:value={roleSearchTerm} />
       </div>
 
       {#if filteredRoles.length === 0}
-        <div class="text-center py-8 text-sm text-gray-500">
-          <p>
-            {$_("no_roles_match_search") || "No roles match your search"}
-          </p>
-        </div>
+        <p class="text-center py-8 text-sm text-text-muted">{$_("no_roles_match_search")}</p>
       {:else}
         <div class="space-y-2">
-          {#each filteredRoles as role}
-            <label class="flex items-start gap-3 p-4 bg-white border border-gray-200 rounded-xl hover:bg-gray-50 cursor-pointer transition-colors">
-              <input
-                type="checkbox"
-                class="mt-0.5 w-4 h-4 text-indigo-600 border-gray-300 rounded focus:ring-indigo-500"
-                checked={selectedRoles.includes(role.shortname)}
-                onchange={() => toggleRole(role.shortname)}
-              />
-              <div class="flex-1 min-w-0">
-                <div class="text-sm font-medium text-gray-900">{role.displayname}</div>
-                <div class="text-xs text-gray-500 mt-0.5">{role.description}</div>
-              </div>
+          {#each filteredRoles as role (role.shortname)}
+            <label class="flex items-start gap-3 p-3 rounded-card border border-border bg-surface hover:bg-surface-3 cursor-pointer transition-colors">
+              <input type="checkbox" class="mt-0.5 accent-primary" checked={selectedRoles.includes(role.shortname)} onchange={() => toggleRole(role.shortname)} />
+              <span class="min-w-0">
+                <span class="block text-sm font-medium text-text">{role.displayname}</span>
+                <span class="block text-xs text-text-muted mt-0.5">{role.description}</span>
+              </span>
             </label>
           {/each}
         </div>
@@ -986,206 +711,126 @@
     {/if}
 
     {#snippet footer()}
-      <button
-        onclick={closeRoleModal}
-        disabled={isUpdating}
-        class="px-5 py-2.5 text-sm font-medium text-gray-700 bg-white border border-gray-200 rounded-xl hover:bg-gray-50 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
-      >
-        {$_("cancel")}
-      </button>
-      {#if $can("update", "management", "users", ResourceType.user)}
-      <button
-        onclick={saveUserRoles}
-        disabled={isUpdating || availableRoles.length === 0}
-        class="px-5 py-2.5 text-sm font-medium text-white bg-indigo-600 rounded-xl hover:bg-indigo-700 disabled:opacity-50 disabled:cursor-not-allowed transition-colors inline-flex items-center gap-2"
-      >
-        {#if isUpdating}
-          <div class="spinner small"></div>
-          {$_("saving")}
-        {:else}
-          {$_("saveChanges")}
-        {/if}
-      </button>
+      <button type="button" class="app-btn app-btn-secondary" onclick={closeRoleModal} disabled={isUpdating}>{$_("cancel")}</button>
+      {#if $can("update", MANAGEMENT_SPACE, "users", ResourceType.user)}
+        <button type="button" class="app-btn app-btn-primary" onclick={saveUserRoles} disabled={isUpdating || availableRoles.length === 0} aria-busy={isUpdating}>
+          {#if isUpdating}
+            <span class="spinner spinner-xs spinner-white" aria-hidden="true"></span>
+            {$_("saving")}
+          {:else}
+            {$_("saveChanges")}
+          {/if}
+        </button>
       {/if}
     {/snippet}
-  </AppModal>
+  </Modal>
 {/if}
 
-{#if showCreateUserModal}
-  <AppModal
-    title={isEditingUserMode ? ($_('edit_user') || 'Edit User') : ($_('create_user') || 'Create User')}
-    ariaLabel={isEditingUserMode ? ($_('edit_user') || 'Edit User') : ($_('create_user') || 'Create User')}
-    size="2xl"
-    dismissable={!isSavingUser}
-    onClose={closeUserModal}
-  >
-    <div class="space-y-4">
-      <MetaForm
-        bind:formData={metaContent}
-        bind:validateFn={validateMetaForm}
-        isCreate={!isEditingUserMode}
-        fullWidth={true}
-      />
-      <MetaUserForm
-        bind:formData={metaContent}
-        bind:validateFn={validateRTForm}
-        isCreate={!isEditingUserMode}
-        fullWidth={true}
-      />
-    </div>
+{#if showUserModal}
+  <Modal title={isEditingUserMode ? $_("edit_user") : $_("create_user")} size="2xl" dismissable={!isSavingUser} onClose={closeUserModal}>
+    <form id="user-form" class="space-y-4" onsubmit={handleSaveUser}>
+      <MetaForm bind:formData={metaContent} bind:validateFn={validateMetaForm} isCreate={!isEditingUserMode} fullWidth={true} />
+      <MetaUserForm bind:formData={metaContent} bind:validateFn={validateRTForm} isCreate={!isEditingUserMode} fullWidth={true} />
+    </form>
 
     {#snippet footer()}
-      <button
-        onclick={closeUserModal}
-        disabled={isSavingUser}
-        class="px-5 py-2.5 text-sm font-medium text-gray-700 bg-white border border-gray-200 rounded-xl hover:bg-gray-50 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
-      >
-        {$_("cancel")}
-      </button>
-      <button
-        onclick={handleSaveUser}
-        disabled={isSavingUser}
-        class="px-5 py-2.5 text-sm font-medium text-white bg-indigo-600 rounded-xl hover:bg-indigo-700 disabled:opacity-50 disabled:cursor-not-allowed transition-colors inline-flex items-center gap-2"
-      >
+      <button type="button" class="app-btn app-btn-secondary" onclick={closeUserModal} disabled={isSavingUser}>{$_("cancel")}</button>
+      <button type="submit" form="user-form" class="app-btn app-btn-primary" disabled={isSavingUser} aria-busy={isSavingUser}>
         {#if isSavingUser}
-          <div class="spinner small"></div>
-          {isEditingUserMode ? ($_("updating") || "Updating...") : ($_("creating") || "Creating...")}
+          <span class="spinner spinner-xs spinner-white" aria-hidden="true"></span>
+          {isEditingUserMode ? $_("updating") : $_("creating")}
         {:else}
-          {isEditingUserMode ? ($_("update_user") || "Update User") : ($_("create_user") || "Create User")}
+          {isEditingUserMode ? $_("update_user") : $_("create_user")}
         {/if}
       </button>
     {/snippet}
-  </AppModal>
+  </Modal>
 {/if}
 
 {#if showViewUserModal && viewUserData}
-  {@const userAttrs = viewUserData.attributes || {}}
-  <AppModal
-    title={viewUserData.displayname || viewUserData.shortname}
-    ariaLabel={$_("view_user.title")}
-    size="3xl"
-    onClose={closeViewUserModal}
-  >
-    <div class="space-y-6">
-      <div class="bg-white rounded-2xl border border-gray-200 p-5">
-        <h3 class="text-sm font-semibold text-gray-900 mb-4">{$_("view_user.user_information")}</h3>
-        <dl class="grid grid-cols-1 sm:grid-cols-2 gap-x-6 gap-y-4">
+  {@const user = viewUserData}
+  {@const userAttrs = (user.attributes ?? {}) as Record<string, unknown>}
+  {@const yesNo = (v: unknown) => (v ? $_("view_user.yes") : $_("view_user.no"))}
+  <Modal title={user.displayname || user.shortname} size="3xl" onClose={closeViewUserModal}>
+    <div class="space-y-5">
+      <Card>
+        <h3 class="text-sm font-semibold text-text mb-4">{$_("view_user.user_information")}</h3>
+        <dl class="grid grid-cols-1 sm:grid-cols-2 gap-x-6 gap-y-3 text-sm">
+          <div><dt class="text-xs text-text-muted">{$_("view_user.shortname")}</dt><dd class="text-text font-mono">{user.shortname}</dd></div>
+          <div><dt class="text-xs text-text-muted">{$_("view_user.display_name")}</dt><dd class="text-text">{user.displayname || "—"}</dd></div>
+          <div><dt class="text-xs text-text-muted">{$_("view_user.email")}</dt><dd class="text-text break-all">{String(userAttrs.email ?? user.email ?? "") || "—"}</dd></div>
+          <div><dt class="text-xs text-text-muted">{$_("view_user.mobile_number")}</dt><dd class="text-text">{String(userAttrs.msisdn ?? "") || "—"}</dd></div>
           <div>
-            <dt class="text-xs font-medium text-gray-500 uppercase tracking-wide">{$_("view_user.shortname")}</dt>
-            <dd class="mt-1 text-sm text-gray-900 font-mono">{viewUserData.shortname}</dd>
-          </div>
-          <div>
-            <dt class="text-xs font-medium text-gray-500 uppercase tracking-wide">{$_("view_user.display_name")}</dt>
-            <dd class="mt-1 text-sm text-gray-900">{viewUserData.displayname || "—"}</dd>
-          </div>
-          <div>
-            <dt class="text-xs font-medium text-gray-500 uppercase tracking-wide">{$_("view_user.email")}</dt>
-            <dd class="mt-1 text-sm text-gray-900 break-all">{userAttrs.email || viewUserData.email || "—"}</dd>
-          </div>
-          <div>
-            <dt class="text-xs font-medium text-gray-500 uppercase tracking-wide">{$_("view_user.mobile_number")}</dt>
-            <dd class="mt-1 text-sm text-gray-900">{userAttrs.msisdn || "—"}</dd>
-          </div>
-          <div>
-            <dt class="text-xs font-medium text-gray-500 uppercase tracking-wide">{$_("view_user.status")}</dt>
-            <dd class="mt-1">
-              <span class="inline-flex items-center px-2.5 py-1 rounded-md text-xs font-medium {viewUserData.is_active ? 'bg-emerald-50 text-emerald-700' : 'bg-red-50 text-red-700'}">
-                <span class="w-1.5 h-1.5 rounded-full {viewUserData.is_active ? 'bg-emerald-500' : 'bg-red-500'} mr-1.5"></span>
-                {viewUserData.is_active ? $_("admin_content.status.active") : $_("admin_content.status.inactive")}
-              </span>
+            <dt class="text-xs text-text-muted">{$_("view_user.status")}</dt>
+            <dd>
+              <Badge variant={user.is_active ? "success" : "danger"} size="sm">
+                {user.is_active ? $_("admin_content.status.active") : $_("admin_content.status.inactive")}
+              </Badge>
             </dd>
           </div>
-          <div>
-            <dt class="text-xs font-medium text-gray-500 uppercase tracking-wide">{$_("view_user.type")}</dt>
-            <dd class="mt-1 text-sm text-gray-900">{userAttrs.type || "—"}</dd>
-          </div>
-          <div>
-            <dt class="text-xs font-medium text-gray-500 uppercase tracking-wide">{$_("view_user.email_verified")}</dt>
-            <dd class="mt-1 text-sm text-gray-900">{userAttrs.is_email_verified ? $_("view_user.yes") : $_("view_user.no")}</dd>
-          </div>
-          <div>
-            <dt class="text-xs font-medium text-gray-500 uppercase tracking-wide">{$_("view_user.phone_verified")}</dt>
-            <dd class="mt-1 text-sm text-gray-900">{userAttrs.is_msisdn_verified ? $_("view_user.yes") : $_("view_user.no")}</dd>
-          </div>
-          <div>
-            <dt class="text-xs font-medium text-gray-500 uppercase tracking-wide">{$_("view_user.force_password_change")}</dt>
-            <dd class="mt-1 text-sm text-gray-900">{userAttrs.force_password_change ? $_("view_user.yes") : $_("view_user.no")}</dd>
-          </div>
-          <div>
-            <dt class="text-xs font-medium text-gray-500 uppercase tracking-wide">{$_("view_user.language")}</dt>
-            <dd class="mt-1 text-sm text-gray-900">{userAttrs.language || "—"}</dd>
-          </div>
+          <div><dt class="text-xs text-text-muted">{$_("view_user.type")}</dt><dd class="text-text">{String(userAttrs.type ?? "") || "—"}</dd></div>
+          <div><dt class="text-xs text-text-muted">{$_("view_user.email_verified")}</dt><dd class="text-text">{yesNo(userAttrs.is_email_verified)}</dd></div>
+          <div><dt class="text-xs text-text-muted">{$_("view_user.phone_verified")}</dt><dd class="text-text">{yesNo(userAttrs.is_msisdn_verified)}</dd></div>
+          <div><dt class="text-xs text-text-muted">{$_("view_user.force_password_change")}</dt><dd class="text-text">{yesNo(userAttrs.force_password_change)}</dd></div>
+          <div><dt class="text-xs text-text-muted">{$_("view_user.language")}</dt><dd class="text-text">{String(userAttrs.language ?? "") || "—"}</dd></div>
           {#if userAttrs.created_at}
-            <div>
-              <dt class="text-xs font-medium text-gray-500 uppercase tracking-wide">{$_("view_user.created_at")}</dt>
-              <dd class="mt-1 text-sm text-gray-900">{userAttrs.created_at}</dd>
-            </div>
+            <div><dt class="text-xs text-text-muted">{$_("view_user.created_at")}</dt><dd class="text-text tabular-nums">{formatDate(userAttrs.created_at, "datetime", $locale)}</dd></div>
           {/if}
           {#if userAttrs.updated_at}
-            <div>
-              <dt class="text-xs font-medium text-gray-500 uppercase tracking-wide">{$_("view_user.updated_at")}</dt>
-              <dd class="mt-1 text-sm text-gray-900">{userAttrs.updated_at}</dd>
-            </div>
+            <div><dt class="text-xs text-text-muted">{$_("view_user.updated_at")}</dt><dd class="text-text tabular-nums">{formatDate(userAttrs.updated_at, "datetime", $locale)}</dd></div>
           {/if}
         </dl>
-      </div>
+      </Card>
 
       {#if Array.isArray(userAttrs.groups) && userAttrs.groups.length > 0}
-        <div class="bg-white rounded-2xl border border-gray-200 p-5">
-          <h3 class="text-sm font-semibold text-gray-900 mb-3">{$_("view_user.groups")}</h3>
+        <Card>
+          <h3 class="text-sm font-semibold text-text mb-3">{$_("view_user.groups")}</h3>
           <div class="flex flex-wrap gap-2">
-            {#each userAttrs.groups as group}
-              <span class="inline-flex items-center px-2.5 py-1 rounded-md text-xs font-medium bg-gray-100 text-gray-700">{group}</span>
+            {#each userAttrs.groups as group (group)}
+              <Badge size="sm">{String(group)}</Badge>
             {/each}
           </div>
-        </div>
+        </Card>
       {/if}
 
-      <div class="bg-white rounded-2xl border border-gray-200 p-5">
-        <h3 class="text-sm font-semibold text-gray-900 mb-3">{$_("view_user.roles_and_permissions")}</h3>
-        {#if !viewUserData.roles || viewUserData.roles.length === 0}
-          <p class="text-sm text-gray-500 italic">{$_("view_user.no_roles_assigned")}</p>
+      <Card>
+        <h3 class="text-sm font-semibold text-text mb-3">{$_("view_user.roles_and_permissions")}</h3>
+        {#if user.roles.length === 0}
+          <p class="text-sm text-text-muted italic">{$_("view_user.no_roles_assigned")}</p>
         {:else}
           <div class="space-y-3">
-            {#each viewUserData.roles as roleShortname}
+            {#each user.roles as roleShortname (roleShortname)}
               {@const rolePerms = getRolePermissions(roleShortname)}
-              <details class="group bg-gray-50/60 rounded-xl border border-gray-200 overflow-hidden" open>
-                <summary class="flex items-center justify-between px-4 py-3 cursor-pointer hover:bg-gray-100 transition-colors">
-                  <div class="flex items-center gap-2 min-w-0">
-                    <svg class="w-4 h-4 text-gray-400 transition-transform group-open:rotate-90 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                      <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 5l7 7-7 7"></path>
-                    </svg>
-                    <span class="text-sm font-medium text-gray-900 truncate">{getRoleDisplayName(roleShortname)}</span>
-                    <span class="text-xs text-gray-500 font-mono">({roleShortname})</span>
-                  </div>
-                  <span class="inline-flex items-center px-2 py-0.5 rounded text-xs font-medium bg-indigo-50 text-indigo-700 shrink-0 ml-2">
-                    {rolePerms.length} {rolePerms.length === 1 ? $_("view_user.permission_singular") : $_("view_user.permission_plural")}
+              <details class="group rounded-card border border-border bg-surface overflow-hidden" open>
+                <summary class="flex items-center justify-between gap-2 px-4 py-3 cursor-pointer hover:bg-surface-3 transition-colors">
+                  <span class="flex items-center gap-2 min-w-0">
+                    <span class="text-sm font-medium text-text truncate">{getRoleDisplayName(roleShortname)}</span>
+                    <span class="text-xs text-text-faint font-mono">({roleShortname})</span>
                   </span>
+                  <Badge variant="primary" size="sm">
+                    {rolePerms.length} {rolePerms.length === 1 ? $_("view_user.permission_singular") : $_("view_user.permission_plural")}
+                  </Badge>
                 </summary>
-                <div class="px-4 py-3 border-t border-gray-200 bg-white">
+                <div class="px-4 py-3 border-t border-border bg-surface-2">
                   {#if rolePerms.length === 0}
-                    <p class="text-xs text-gray-500 italic">{$_("view_user.no_permissions")}</p>
+                    <p class="text-xs text-text-muted italic">{$_("view_user.no_permissions")}</p>
                   {:else}
-                    <ul class="space-y-2">
-                      {#each rolePerms as perm}
-                        <li class="text-sm">
-                          <div class="flex items-start gap-2">
-                            <svg class="w-4 h-4 text-emerald-500 mt-0.5 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                              <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 13l4 4L19 7"></path>
-                            </svg>
-                            <div class="min-w-0 flex-1">
-                              <div class="font-medium text-gray-900">{perm.displayname || perm.shortname}</div>
-                              {#if perm.description}
-                                <div class="text-xs text-gray-500 mt-0.5">{perm.description}</div>
-                              {/if}
-                              {#if Array.isArray(perm.actions) && perm.actions.length > 0}
-                                <div class="flex flex-wrap gap-1 mt-1.5">
-                                  {#each perm.actions as action}
-                                    <span class="inline-flex items-center px-1.5 py-0.5 rounded text-[10px] font-medium bg-blue-50 text-blue-700">{action}</span>
-                                  {/each}
-                                </div>
-                              {/if}
-                            </div>
+                    <ul class="space-y-2 list-none p-0 m-0">
+                      {#each rolePerms as perm (perm.shortname)}
+                        <li class="flex items-start gap-2 text-sm">
+                          <CheckOutline size="sm" class="text-success mt-0.5 shrink-0" aria-hidden="true" />
+                          <div class="min-w-0 flex-1">
+                            <div class="font-medium text-text">{perm.displayname || perm.shortname}</div>
+                            {#if perm.description}
+                              <div class="text-xs text-text-muted mt-0.5">{perm.description}</div>
+                            {/if}
+                            {#if perm.actions.length > 0}
+                              <div class="flex flex-wrap gap-1 mt-1.5">
+                                {#each perm.actions as action (action)}
+                                  <Badge variant="info" size="sm">{action}</Badge>
+                                {/each}
+                              </div>
+                            {/if}
                           </div>
                         </li>
                       {/each}
@@ -1196,410 +841,135 @@
             {/each}
           </div>
         {/if}
-      </div>
+      </Card>
     </div>
 
     {#snippet footer()}
-      <button
-        onclick={closeViewUserModal}
-        class="px-5 py-2.5 text-sm font-medium text-gray-700 bg-white border border-gray-200 rounded-xl hover:bg-gray-50 transition-colors"
-      >
-        {$_("view_user.close")}
-      </button>
-      <button
-        onclick={() => {
-          closeViewUserModal();
-          openEditUserModal(viewUserData);
-        }}
-        class="px-5 py-2.5 text-sm font-medium text-white bg-indigo-600 rounded-xl hover:bg-indigo-700 transition-colors inline-flex items-center gap-2"
-      >
-        <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M11 5H6a2 2 0 00-2 2v11a2 2 0 002 2h11a2 2 0 002-2v-5m-1.414-9.414a2 2 0 112.828 2.828L11.828 15H9v-2.828l8.586-8.586z"></path></svg>
-        {$_("view_user.edit")}
-      </button>
+      <button type="button" class="app-btn app-btn-secondary" onclick={closeViewUserModal}>{$_("view_user.close")}</button>
+      {#if $can("update", MANAGEMENT_SPACE, "/users", "user")}
+        <button
+          type="button"
+          class="app-btn app-btn-primary"
+          onclick={() => {
+            closeViewUserModal();
+            openEditUserModal(user);
+          }}
+        >
+          <EditOutline size="sm" aria-hidden="true" />
+          {$_("view_user.edit")}
+        </button>
+      {/if}
     {/snippet}
-  </AppModal>
+  </Modal>
 {/if}
 
 {#if isCSVUploadModalOpen}
-  {@const _csvUploadProps = { space_name: "management", subpath: "users", isOpen: isCSVUploadModalOpen, onClose: () => (isCSVUploadModalOpen = false), onUpload: handleCSVUpload } as any}
   <ModalCSVUpload
-    {..._csvUploadProps}
+    space_name={MANAGEMENT_SPACE}
+    subpath="users"
+    bind:isOpen={isCSVUploadModalOpen}
+    onUploadSuccess={() => loadUsers()}
   />
 {/if}
 
 {#if isCSVDownloadModalOpen}
-  {@const _csvDownloadProps = { space_name: "management", subpath: "users", indexAttributes, isOpen: isCSVDownloadModalOpen, onClose: () => (isCSVDownloadModalOpen = false), onDownload: handleCSVDownload, contents: users } as any}
   <ModalCSVDownload
-    {..._csvDownloadProps}
+    space_name={MANAGEMENT_SPACE}
+    subpath="users"
+    bind:isOpen={isCSVDownloadModalOpen}
+    {indexAttributes}
+    {folderMetadata}
   />
 {/if}
 
 {#if showColumnSettingsModal}
-  <div class="fixed inset-0 z-60 flex items-center justify-center p-4 bg-black/50 backdrop-blur-sm">
-    <div class="bg-white rounded-3xl shadow-2xl w-full max-w-lg overflow-hidden border border-gray-100 modal-container">
-      <div class="p-6 border-b border-gray-100 flex items-center justify-between bg-white modal-header">
-        <div class="flex items-center gap-3">
-          <div class="w-10 h-10 bg-indigo-50 rounded-xl flex items-center justify-center text-indigo-600">
-            <svg class="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-              <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M10.325 4.317c.426-1.756 2.924-1.756 3.35 0a1.724 1.724 0 002.573 1.066c1.543-.94 3.31.826 2.37 2.37a1.724 1.724 0 001.065 2.572c1.756.426 1.756 2.924 0 3.35a1.724 1.724 0 00-1.066 2.573c.94 1.543-.826 3.31-2.37 2.37a1.724 1.724 0 00-2.572 1.065c-.426 1.756-2.924 1.756-3.35 0a1.724 1.724 0 00-2.573-1.066c-1.543.94-3.31-.826-2.37-2.37a1.724 1.724 0 00-1.065-2.572c-1.756-.426-1.756-2.924 0-3.35a1.724 1.724 0 001.066-2.573c-.94-1.543.826-3.31 2.37-2.37.996.608 2.296.07 2.572-1.065z"></path>
-              <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 12a3 3 0 11-6 0 3 3 0 016 0z"></path>
-            </svg>
-          </div>
-          <h2 class="text-xl font-bold text-gray-900">Column Settings</h2>
-        </div>
-        <button onclick={() => (showColumnSettingsModal = false)} class="p-2 text-gray-400 hover:text-gray-600 hover:bg-gray-50 rounded-lg transition-colors modal-close-btn" aria-label="Close">
-          <svg class="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"></path>
-          </svg>
-        </button>
-      </div>
-
-      <div class="p-6 max-h-[60vh] overflow-y-auto bg-gray-50/30 modal-content">
-        <div class="space-y-4">
-          {#each editingIndexAttributes as attr, i}
-            <div class="flex items-center gap-3 p-4 bg-white rounded-2xl border border-gray-100 shadow-sm">
-              <div class="flex-1 grid grid-cols-2 gap-4">
-                <div class="space-y-1.5">
-                  <!-- svelte-ignore a11y_label_has_associated_control -->
-                  <label class="text-[10px] uppercase font-bold text-gray-400 tracking-wider px-1">Label Name</label>
-                  <input type="text" bind:value={attr.name} placeholder="e.g. Server Name" class="w-full px-4 py-2 bg-gray-50 border-none rounded-xl text-sm focus:ring-2 focus:ring-indigo-500" />
-                </div>
-                <div class="space-y-1.5">
-                  <!-- svelte-ignore a11y_label_has_associated_control -->
-                  <label class="text-[10px] uppercase font-bold text-gray-400 tracking-wider px-1">Data Key</label>
-                  <input type="text" bind:value={attr.key} placeholder="e.g. server_name" class="w-full px-4 py-2 bg-gray-50 border-none rounded-xl text-sm focus:ring-2 focus:ring-indigo-500 font-mono" />
-                </div>
-              </div>
-              <button onclick={() => removeColumnSetting(i)} class="mt-6 p-2 text-red-400 hover:text-red-600 hover:bg-red-50 rounded-lg transition-colors" title="Remove Column">
-                <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                  <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16"></path>
-                </svg>
-              </button>
+  <Modal title={$_("admin_content.column_settings.title")} size="lg" dismissable={!isSavingColumns} onClose={() => (showColumnSettingsModal = false)}>
+    {#snippet icon()}
+      <CogOutline size="lg" />
+    {/snippet}
+    <form id="column-settings-form" onsubmit={handleUpdateColumns} class="space-y-3">
+      {#each editingIndexAttributes as attr, i (i)}
+        <div class="flex items-end gap-3 p-3 rounded-card border border-border bg-surface">
+          <div class="flex-1 grid grid-cols-1 sm:grid-cols-2 gap-3">
+            <div>
+              <label for="col-name-{i}" class="block text-xs text-text-muted mb-1">{$_("users_page.column_label")}</label>
+              <input id="col-name-{i}" type="text" bind:value={attr.name} placeholder={$_("users_page.column_label_placeholder")} class={inputClass} />
             </div>
-          {/each}
+            <div>
+              <label for="col-key-{i}" class="block text-xs text-text-muted mb-1">{$_("users_page.column_key")}</label>
+              <input id="col-key-{i}" type="text" bind:value={attr.key} placeholder={$_("users_page.column_key_placeholder")} class="{inputClass} font-mono" />
+            </div>
+          </div>
+          <IconButton label={$_("users_page.remove_column")} variant="danger" onclick={() => removeColumnSetting(i)}>
+            <TrashBinOutline size="sm" />
+          </IconButton>
         </div>
-
-        <button onclick={addColumnSetting} class="w-full mt-6 py-3 border-2 border-dashed border-gray-200 rounded-2xl text-sm font-medium text-gray-500 hover:border-indigo-300 hover:text-indigo-600 hover:bg-indigo-50/30 transition-all flex items-center justify-center gap-2">
-          <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 4v16m8-8H4"></path>
-          </svg>
-          Add New Column
-        </button>
-      </div>
-
-      <div class="p-6 border-t border-gray-100 flex items-center justify-end gap-3 bg-white modal-footer">
-        <button onclick={() => (showColumnSettingsModal = false)} class="px-6 py-2.5 text-sm font-medium text-gray-600 hover:text-gray-900 transition-colors">
-          {$_("common.cancel")}
-        </button>
-        <button onclick={handleUpdateColumns} disabled={isSavingColumns} class="px-8 py-2.5 bg-indigo-600 text-white rounded-xl text-sm font-semibold hover:bg-indigo-700 shadow-md shadow-indigo-200 disabled:opacity-50 disabled:cursor-not-allowed transition-all flex items-center gap-2">
-          {#if isSavingColumns}
-            <div class="w-4 h-4 border-2 border-white/30 border-t-white rounded-full animate-spin"></div>
-            {$_("common.saving") || "Saving..."}
-          {:else}
-            {$_("common.save_changes") || "Save Changes"}
-          {/if}
-        </button>
-      </div>
-    </div>
-  </div>
+      {/each}
+      <button type="button" class="w-full py-3 rounded-card border-2 border-dashed border-border text-sm font-medium text-text-muted hover:border-primary hover:text-primary transition-colors inline-flex items-center justify-center gap-2 cursor-pointer" onclick={addColumnSetting}>
+        <PlusOutline size="sm" aria-hidden="true" />
+        {$_("users_page.add_column")}
+      </button>
+    </form>
+    {#snippet footer()}
+      <button type="button" class="app-btn app-btn-secondary" onclick={() => (showColumnSettingsModal = false)} disabled={isSavingColumns}>{$_("common.cancel")}</button>
+      <button type="submit" form="column-settings-form" class="app-btn app-btn-primary" disabled={isSavingColumns} aria-busy={isSavingColumns}>
+        {#if isSavingColumns}
+          <span class="spinner spinner-xs spinner-white" aria-hidden="true"></span>
+          {$_("common.saving")}
+        {:else}
+          {$_("common.save_changes")}
+        {/if}
+      </button>
+    {/snippet}
+  </Modal>
 {/if}
 
 {#if showBulkEditModal}
-  <div class="modal-overlay z-100 fixed top-0 left-0 w-full h-full bg-black/50 overflow-auto flex items-center justify-center">
-    <div class="modal-container bg-white p-6 rounded shadow-lg " style="width: 90vw; max-width: 1200px;">
-      <div class="modal-header flex justify-between mb-4">
-         <h3 class="modal-title font-bold text-lg">Bulk Edit ({Object.keys(bulkEditData).length} items)</h3>
-         <button onclick={closeBulkEditModal} class="modal-close-btn" aria-label="Close"><svg class="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"></path></svg></button>
-      </div>
-      <div class="modal-body max-h-[70vh] overflow-y-auto">
-        <table class="w-full text-left border-collapse">
-           <thead>
-             <tr>
-               <th class="px-4 py-3 bg-gray-50 border-b border-gray-200 text-xs font-semibold text-gray-500 uppercase tracking-wider sticky top-0 z-10 w-48 shrink-0">Item</th>
-               {#each (indexAttributes.length > 0 ? indexAttributes : [{key:'displayname',name:'User'},{key:'email',name:'Email'},{key:'roles',name:'Roles'},{key:'status',name:'Status'}]) as attr}
-                 <th class="px-4 py-3 bg-gray-50 border-b border-gray-200 text-xs font-semibold text-gray-500 uppercase tracking-wider sticky top-0 z-10 min-w-50 whitespace-nowrap">{attr.name}</th>
-               {/each}
-             </tr>
-           </thead>
-           <tbody class="divide-y divide-gray-200 text-left">
-             {#each Object.entries(bulkEditData) as [shortname, editData]}
-               <tr>
-                 <td class="px-4 py-3 bg-gray-50/50 font-mono text-xs text-gray-500 border-r border-gray-200 truncate" title={shortname}>{shortname}</td>
-                 {#each (indexAttributes.length > 0 ? indexAttributes : [{key:'displayname',name:'User'},{key:'email',name:'Email'},{key:'roles',name:'Roles'},{key:'status',name:'Status'}]) as attr}
-                   <td class="px-4 py-3">
-                     <input type="text" class="w-full px-3 py-1.5 text-sm border font-medium text-gray-700 bg-white border-gray-300 rounded focus:ring-2 focus:ring-indigo-500 focus:border-indigo-500"
-                        value={editData[attr.key] !== undefined ? editData[attr.key] : ""}
-                        oninput={(e) => updateBulkEditField(shortname, attr.key, (e.target as HTMLInputElement).value)} />
-                   </td>
-                 {/each}
-               </tr>
-             {/each}
-           </tbody>
+  <Modal title={$_("admin_content.bulk_actions.edit_title")} size="4xl" dismissable={!isBulkSaving} onClose={closeBulkEditModal}>
+    <p class="text-sm text-text-muted mb-4">{$_("admin_content.bulk_actions.edit_subtitle", { values: { count: Object.keys(bulkEditData).length } })}</p>
+    <form id="bulk-edit-form" onsubmit={handleBulkSave}>
+      <div class="overflow-auto max-h-[60vh] rounded-card border border-border">
+        <table class="w-full text-sm text-start border-collapse">
+          <thead class="sticky top-0 z-10 bg-surface-3 text-xs text-text-muted">
+            <tr>
+              <th scope="col" class="px-3 py-2 text-start font-semibold">{$_("delete_confirmation.item_label")}</th>
+              {#each effectiveColumns as attr (attr.key)}
+                <th scope="col" class="px-3 py-2 text-start font-semibold whitespace-nowrap min-w-48">{attr.name}</th>
+              {/each}
+            </tr>
+          </thead>
+          <tbody class="divide-y divide-border">
+            {#each Object.entries(bulkEditData) as [shortname, editData] (shortname)}
+              <tr>
+                <td class="px-3 py-2 font-mono text-xs text-text-muted bg-surface">{shortname}</td>
+                {#each effectiveColumns as attr (attr.key)}
+                  <td class="px-3 py-2">
+                    <label for="bulk-{shortname}-{attr.key}" class="sr-only">{attr.name} — {shortname}</label>
+                    <input
+                      id="bulk-{shortname}-{attr.key}"
+                      type="text"
+                      class={inputClass}
+                      value={editData[attr.key] !== undefined && editData[attr.key] !== null ? String(editData[attr.key]) : ""}
+                      oninput={(e) => updateBulkEditField(shortname, attr.key, (e.currentTarget as HTMLInputElement).value)}
+                    />
+                  </td>
+                {/each}
+              </tr>
+            {/each}
+          </tbody>
         </table>
       </div>
-      <div class="modal-footer flex gap-2 justify-end mt-4 text-right">
-        <button onclick={closeBulkEditModal} class="btn btn-secondary px-4 py-2 bg-gray-100 text-gray-800 rounded">Cancel</button>
-        <button onclick={handleBulkSave} disabled={isBulkSaving} class="btn btn-primary px-4 py-2 bg-indigo-600 text-white rounded w-36">{#if isBulkSaving}...{:else}Save Changes{/if}</button>
-      </div>
-    </div>
-  </div>
+    </form>
+    {#snippet footer()}
+      <button type="button" class="app-btn app-btn-secondary" onclick={closeBulkEditModal} disabled={isBulkSaving}>{$_("common.cancel")}</button>
+      <button type="submit" form="bulk-edit-form" class="app-btn app-btn-primary" disabled={isBulkSaving} aria-busy={isBulkSaving}>
+        {#if isBulkSaving}
+          <span class="spinner spinner-xs spinner-white" aria-hidden="true"></span>
+          {$_("admin_content.bulk_actions.saving")}
+        {:else}
+          {$_("admin_content.bulk_actions.save_changes")}
+        {/if}
+      </button>
+    {/snippet}
+  </Modal>
 {/if}
-
-<style>
-  .rtl {
-    direction: rtl;
-  }
-  .filters-container {
-    display: flex;
-    gap: 16px;
-    flex: 1;
-    max-width: 600px;
-    justify-content: flex-end;
-  }
-
-  .role-filter-container {
-    min-width: 200px;
-  }
-
-  .role-filter-select {
-    width: 100%;
-    padding: 10px 16px;
-    border: 2px solid #e5e7eb;
-    border-radius: 8px;
-    font-size: 14px;
-    background: white;
-    cursor: pointer;
-    transition: all 0.2s ease;
-  }
-
-  .role-filter-select:focus {
-    outline: none;
-    border-color: #3b82f6;
-    box-shadow: 0 0 0 3px rgba(59, 130, 246, 0.1);
-  }
-
-  .container {
-    max-width: 1400px;
-    margin: 0 auto;
-    padding: 24px;
-  }
-
-  .page-header {
-    margin-bottom: 32px;
-  }
-
-  .page-title {
-    font-size: 32px;
-    font-weight: 700;
-    color: #111827;
-    margin-bottom: 8px;
-  }
-
-  .page-subtitle {
-    color: #6b7280;
-    font-size: 16px;
-  }
-
-  .card {
-    background: white;
-    border-radius: 12px;
-    box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.1);
-    border: 1px solid #e5e7eb;
-    padding: 24px;
-    margin-bottom: 24px;
-  }
-
-  .card-header {
-    display: flex;
-    justify-content: space-between;
-    align-items: center;
-    margin-bottom: 24px;
-    flex-wrap: wrap;
-    gap: 16px;
-  }
-
-  .card-title {
-    font-size: 20px;
-    font-weight: 600;
-    color: #111827;
-    margin: 0;
-  }
-
-  .search-container {
-    flex: 1;
-    max-width: 300px;
-  }
-
-  .search-input {
-    width: 100%;
-    padding: 10px 16px;
-    border: 2px solid #e5e7eb;
-    border-radius: 8px;
-    font-size: 14px;
-    transition: all 0.2s ease;
-  }
-
-  .search-input:focus {
-    outline: none;
-    border-color: #3b82f6;
-    box-shadow: 0 0 0 3px rgba(59, 130, 246, 0.1);
-  }
-
-  .loading-state {
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    padding: 64px;
-    color: #6b7280;
-  }
-
-  .spinner {
-    width: 32px;
-    height: 32px;
-    border: 3px solid #f3f4f6;
-    border-top: 3px solid #3b82f6;
-    border-radius: 50%;
-    animation: spin 1s linear infinite;
-    margin-right: 12px;
-  }
-
-  .spinner.small {
-    width: 16px;
-    height: 16px;
-    border-width: 2px;
-    margin-right: 8px;
-  }
-
-  @keyframes spin {
-    0% {
-      transform: rotate(0deg);
-    }
-    100% {
-      transform: rotate(360deg);
-    }
-  }
-
-  .empty-state {
-    text-align: center;
-    padding: 64px;
-    color: #6b7280;
-  }
-
-  .btn {
-    padding: 8px 16px;
-    border-radius: 6px;
-    font-weight: 600;
-    font-size: 14px;
-    cursor: pointer;
-    transition: all 0.2s ease;
-    border: none;
-    display: inline-flex;
-    align-items: center;
-    justify-content: center;
-    gap: 8px;
-  }
-
-  .btn:disabled {
-    opacity: 0.6;
-    cursor: not-allowed;
-  }
-
-  .btn-primary {
-    background: #3b82f6;
-    color: white;
-  }
-
-  .btn-primary:hover:not(:disabled) {
-    background: #2563eb;
-    transform: translateY(-1px);
-  }
-
-  .btn-secondary {
-    background: #f3f4f6;
-    color: #374151;
-    border: 1px solid #d1d5db;
-  }
-
-  .btn-secondary:hover:not(:disabled) {
-    background: #e5e7eb;
-  }
-
-  .stats-card {
-    background: white;
-    border-radius: 12px;
-    box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.1);
-    border: 1px solid #e5e7eb;
-    padding: 24px;
-  }
-
-  .stats-grid {
-    display: grid;
-    grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
-    gap: 24px;
-    margin-top: 16px;
-  }
-
-  .stat-item {
-    text-align: center;
-  }
-
-  .stat-number {
-    font-size: 32px;
-    font-weight: 700;
-    color: #3b82f6;
-    margin-bottom: 4px;
-  }
-
-  .stat-label {
-    color: #6b7280;
-    font-size: 14px;
-  }
-
-  /* Modal Styles removed - now using flowbite Modal */
-
-  .modal-header {
-    display: flex;
-    justify-content: space-between;
-    align-items: center;
-    padding: 24px 24px 0 24px;
-    margin-bottom: 16px;
-  }
-
-  .modal-header h3 {
-    font-size: 20px;
-    font-weight: 600;
-    color: #111827;
-    margin: 0;
-  }
-
-  .modal-body {
-    padding: 0 24px 24px 24px;
-  }
-
-  .modal-footer {
-    display: flex;
-    justify-content: flex-end;
-    gap: 12px;
-    padding: 24px;
-    border-top: 1px solid #e5e7eb;
-  }
-
-  @media (max-width: 768px) {
-    .filters-container {
-      flex-direction: column;
-      max-width: none;
-    }
-
-    .role-filter-container {
-      min-width: auto;
-    }
-    .card-header {
-      flex-direction: column;
-      align-items: stretch;
-    }
-
-    .search-container {
-      max-width: none;
-    }
-  }
-</style>

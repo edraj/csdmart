@@ -99,7 +99,6 @@ export class WebSocketService {
 
     this.connectPromise = (async () => {
       try {
-        console.log("[WebSocket] Starting connection...");
         this.updateStatus("connecting");
         this.clearReconnectTimer();
 
@@ -143,11 +142,9 @@ export class WebSocketService {
 
         const wsUrl = `${wsProtocol}//${parsed.host}${wsPath}?token=${encodeURIComponent(this.token)}`;
 
-        console.log("[WebSocket] Connecting to", wsUrl);
         this.ws = new WebSocket(wsUrl);
 
         this.ws.onopen = () => {
-          console.log("[WebSocket] Connection open");
           this.updateStatus("connected");
           this.reconnectAttempts = 0;
           this.resendSubscriptions();
@@ -165,7 +162,6 @@ export class WebSocketService {
         };
 
         this.ws.onclose = () => {
-          console.log("[WebSocket] Connection closed");
           this.ws = null;
           if (this.status === "connecting") {
             resolve(false);
@@ -241,7 +237,6 @@ export class WebSocketService {
   async send(message: WebSocketMessage): Promise<boolean> {
     if (this.status !== "connected") {
       if (this.connectPromise || this.status === "connecting") {
-        console.log("[WebSocket] Send requested while connecting, waiting...");
         const connected = await this.connect();
         if (!connected) return false;
       } else {
@@ -393,7 +388,6 @@ export class WebSocketService {
 
   private updateStatus(status: ConnectionStatus): void {
     if (this.status !== status) {
-      console.log(`[WebSocket] Status: ${this.status} -> ${status}`);
       this.status = status;
       if (this.callbacks.onStatusChange) {
         this.callbacks.onStatusChange(status);
@@ -419,9 +413,6 @@ export class WebSocketService {
     this.updateStatus("disconnected");
     this.reconnectAttempts++;
 
-    console.log(
-      `[WebSocket] Reconnecting in ${this.reconnectDelay}ms (attempt ${this.reconnectAttempts}/${this.maxReconnectAttempts})`,
-    );
 
     this.reconnectTimer = window.setTimeout(() => {
       this.reconnectTimer = null;

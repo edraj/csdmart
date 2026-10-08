@@ -1,51 +1,41 @@
 <script lang="ts">
+  import { log } from "@/lib/logger";
   import { onMount, onDestroy } from "svelte";
   import { sanitizeHtml } from "@/lib/utils/sanitize";
-  import { goto, params } from "@roxi/routify";
+  import { goto as gotoStore, params } from "@roxi/routify";
   import {
     deleteEntity,
     getEntity,
     getMyEntities,
     replaceEntity,
-    getAvatar,
   } from "@/lib/dmart_services";
-  import Avatar from "@/components/Avatar.svelte";
-  import { user } from "@/stores/user";
   import { can } from "@/stores/permissions";
-  import {
-    errorToastMessage,
-    successToastMessage,
-  } from "@/lib/toasts_messages";
+  import { errorToastMessage } from "@/lib/toasts_messages";
   import { ContentType, ResourceType, DmartScope } from "@edraj/tsdmart";
   import { _, locale } from "@/i18n";
-  import { derived as derivedStore, writable } from "svelte/store";
-  import { website } from "@/config";
+  import { setTitle } from "@/lib/title";
+  import { formatDate } from "@/lib/format";
+  import { writable } from "svelte/store";
   import Attachment from "@/components/Attachments.svelte";
   import HtmlEditor from "@/components/editors/HtmlEditor.svelte";
   import MarkdownEditor from "@/components/editors/MarkdownEditor.svelte";
   import { formatNumberInText } from "@/lib/helpers";
-  import { marked } from "marked";
+  import { renderMarkdown } from "@/lib/markdown";
   import JsonEditor from "@/components/editors/JsonEditor.svelte";
   import SchemaForm from "@/components/forms/SchemaForm.svelte";
   import DynamicSchemaBasedForms from "@/components/forms/DynamicSchemaBasedForms.svelte";
   import SchemaViewer from "@/components/forms/SchemaViewer.svelte";
-  // import PostContent from "@/components/post/PostContent.svelte";
   import JsonViewer from "@/components/JsonViewer.svelte";
   import RelationshipModal from "@/components/management/RelationshipModal.svelte";
   import AttachmentModal from "@/components/management/AttachmentModal.svelte";
-  import {
-    PlusOutline,
-    HeartSolid,
-    MessagesSolid,
-    TrashBinSolid,
-  } from "flowbite-svelte-icons";
+  import { PlusOutline } from "flowbite-svelte-icons";
 
-  $goto;
+  // Routify's helpers read the fragment context when first subscribed, and
+  // Svelte 5 subscribes to a `$store` lazily on first read — so a `$gotoStore`
+  // first touched inside an async callback logs "Unable to access context".
+  // Capture the navigate function once, during component init.
+  const goto = $gotoStore;
 
-  const isRTL = derivedStore(
-    locale,
-    ($locale) => $locale === "ar" || $locale === "ku",
-  );
 
   const isLoading = writable(false);
   const itemData = writable<any>(null);
@@ -64,6 +54,8 @@
   const authorRelatedEntries = writable<any[]>([]);
   let authorRelatedEntriesValue: any[] = $state([]);
   let itemDataValue: any = $state(null);
+
+  $effect(() => setTitle(itemDataValue ? getDisplayName(itemDataValue) : itemShortnameValue, spaceNameValue));
   const activeTab = writable("content");
   const showEditModal = writable(false);
   const showRelationshipModal = writable(false);
@@ -103,7 +95,7 @@
         return true;
       }
     } catch (error) {
-      console.error("Error loading dynamic schema:", error);
+      log.error("Error loading dynamic schema:", error);
     } finally {
       loadingDynamicSchema = false;
     }
@@ -132,8 +124,6 @@
 
   let jsonEditFormValue: any = $state({});
   let relationshipsValue: any[] = $state([]);
-
-  let userReactionEntry: any = $state(null);
 
   function getItemContent(item: any) {
     if (!item?.payload) return "";
@@ -178,20 +168,14 @@
     return content || "";
   }
 
-  function handleJsonContentChange(event: any) {
-    jsonEditorContent = event.detail;
+  function handleJsonContentChange(newContent: any) {
+    jsonEditorContent = newContent;
     jsonEditFormValue = jsonEditorContent;
     jsonEditForm.update((form) => ({
       ...form,
       content: jsonEditFormValue,
     }));
   }
-
-  // function handleSchemaContentChange(newContent) {
-  //   schemaEditorContent = newContent;
-  //   editFormValue.content = JSON.stringify(newContent);
-  //   editForm.update((form) => ({ ...form, content: editFormValue.content }));
-  // }
 
   onMount(async () => {
     await initializeContent();
@@ -261,7 +245,7 @@
       authorRelatedEntriesValue = entries;
       authorRelatedEntries.set(entries);
     } catch (err) {
-      console.error("Error fetching author related entries:", err);
+      log.error("Error fetching author related entries:", err);
     }
   }
 
@@ -354,11 +338,11 @@
         htmlEditor = ct === ContentType.json ? "" : content || "";
         markdownContent = ct === ContentType.markdown ? content || "" : "";
       } else {
-        console.error("No valid response found for item:", itemShortnameValue);
+        log.error("No valid response found for item:", itemShortnameValue);
         error.set($_("admin_item_detail.error.item_not_found"));
       }
     } catch (err) {
-      console.error("Error fetching admin item data:", err);
+      log.error("Error fetching admin item data:", err);
       error.set(
         (err as any).message || $_("admin_item_detail.error.failed_load_item"),
       );
@@ -416,11 +400,11 @@
         showEditModal.set(false);
         await loadItemData();
       } else {
-        console.error("Update failed: No response received");
+        log.error("Update failed: No response received");
         error.set($_("admin_item_detail.error.failed_update_item"));
       }
     } catch (err) {
-      console.error("Error updating item:", err);
+      log.error("Error updating item:", err);
       error.set(
         (err as any).message ||
           $_("admin_item_detail.error.failed_update_item"),
@@ -444,13 +428,13 @@
 
       if (success) {
         showDeleteModal.set(false);
-        $goto("/dashboard/admin/[space_name]/[subpath]", {
+        goto("/dashboard/admin/[space_name]/[subpath]", {
           space_name: spaceNameValue,
           subpath: actualSubpathValue,
         });
       }
     } catch (err) {
-      console.error("Error deleting item:", err);
+      log.error("Error deleting item:", err);
       errorToastMessage($_("admin_item_detail.error.delete_failed"));
     } finally {
       isDeleting.set(false);
@@ -480,11 +464,6 @@
     return $_("admin_item_detail.no_description");
   }
 
-  function formatDate(dateString: any) {
-    if (!dateString) return $_("common.not_available");
-    return new Date(dateString).toLocaleString($locale ?? undefined);
-  }
-
   function navigateToBreadcrumb(path: any) {
     const pathSegments = path
       .split("/")
@@ -495,14 +474,14 @@
       pathSegments[0] === "dashboard" &&
       pathSegments[1] === "admin"
     ) {
-      $goto("/dashboard/admin");
+      goto("/dashboard/admin");
     } else if (
       pathSegments.length === 3 &&
       pathSegments[0] === "dashboard" &&
       pathSegments[1] === "admin"
     ) {
       const spaceName = pathSegments[2];
-      $goto(`/dashboard/admin/[space_name]`, {
+      goto(`/dashboard/admin/[space_name]`, {
         space_name: spaceName,
       });
     } else if (
@@ -512,7 +491,7 @@
     ) {
       const spaceName = pathSegments[2];
       const subpath = pathSegments[3];
-      $goto(`/dashboard/admin/[space_name]/[subpath]`, {
+      goto(`/dashboard/admin/[space_name]/[subpath]`, {
         space_name: spaceName,
         subpath: subpath,
       });
@@ -524,7 +503,7 @@
       const spaceName = pathSegments[2];
       const subpath = pathSegments[3];
       const shortname = pathSegments[4];
-      $goto(
+      goto(
         `/dashboard/admin/[space_name]/[subpath]/[shortname]/[resource_type]`,
         {
           space_name: spaceName,
@@ -537,7 +516,7 @@
   }
 
   function goBack() {
-    $goto("/dashboard/admin/[space_name]/[subpath]", {
+    goto("/dashboard/admin/[space_name]/[subpath]", {
       space_name: spaceNameValue,
       subpath: subpathValue,
     });
@@ -562,8 +541,8 @@
   }
 </script>
 
-<div class="min-h-screen bg-gray-50" class:rtl={$isRTL}>
-  <div class="bg-gray-50">
+<div class="min-h-screen bg-surface">
+  <div class="bg-surface">
     <div class="container mx-auto px-6 py-6 max-w-7xl">
       <div
         class="flex flex-col md:flex-row md:items-center justify-between gap-4"
@@ -571,12 +550,12 @@
         <div class="flex items-center gap-4">
           <button
             onclick={goBack}
-            class="w-10 h-10 bg-indigo-50 hover:bg-indigo-100 text-indigo-600 rounded-xl flex items-center justify-center transition-colors shadow-sm"
-            aria-label={`Go back`}
+            class="w-10 h-10 bg-primary-soft hover:bg-primary-soft text-primary rounded-xl flex items-center justify-center transition-colors shadow-sm"
+            aria-label={$_("admin_space.navigation.go_back")}
           >
             <svg
               class="w-5 h-5 shrink-0"
-              class:rotate-180={$isRTL}
+              class:rtl:rotate-180={true}
               fill="none"
               stroke="currentColor"
               viewBox="0 0 24 24"
@@ -592,16 +571,16 @@
 
           <div>
             <nav
-              class="flex text-sm text-gray-500 font-medium mb-1"
-              aria-label="Breadcrumb"
+              class="flex text-sm text-text-muted font-medium mb-1"
+              aria-label={$_("ui.breadcrumb")}
             >
               <ol class="inline-flex items-center space-x-2">
-                {#each $breadcrumbs as crumb, index}
+                {#each $breadcrumbs as crumb, index (index)}
                   <li class="inline-flex items-center">
                     {#if index > 0}
                       <svg
-                        class="w-4 h-4 mx-1 text-gray-400"
-                        class:rotate-180={$isRTL}
+                        class="w-4 h-4 mx-1 text-text-faint"
+                        class:rtl:rotate-180={true}
                         fill="none"
                         stroke="currentColor"
                         viewBox="0 0 24 24"
@@ -617,18 +596,18 @@
                     {#if crumb.path}
                       <button
                         onclick={() => navigateToBreadcrumb(crumb.path)}
-                        class="hover:text-indigo-600 transition-colors"
+                        class="hover:text-primary transition-colors"
                       >
                         {crumb.name}
                       </button>
                     {:else}
-                      <span class="text-gray-900">{crumb.name}</span>
+                      <span class="text-text">{crumb.name}</span>
                     {/if}
                   </li>
                 {/each}
               </ol>
             </nav>
-            <h1 class="text-2xl font-bold text-gray-900">
+            <h1 class="text-2xl font-bold text-text">
               {itemDataValue
                 ? getDisplayName(itemDataValue)
                 : itemShortnameValue}
@@ -640,10 +619,10 @@
           {#if $can("update", $params.space_name, actualSubpathValue, $params.resource_type || ResourceType.content)}
             <button
               onclick={() => showEditModal.set(true)}
-              class="bg-white hover:bg-gray-50 border border-gray-200 text-gray-700 px-3 py-1.5 rounded-xl font-medium transition-colors shadow-sm flex items-center gap-2"
+              class="bg-surface-2 hover:bg-surface border border-border text-text px-3 py-1.5 rounded-xl font-medium transition-colors shadow-sm flex items-center gap-2"
             >
               <svg
-                class="w-4 h-4 text-gray-500"
+                class="w-4 h-4 text-text-muted"
                 fill="none"
                 stroke="currentColor"
                 viewBox="0 0 24 24"
@@ -661,7 +640,7 @@
           {#if $can("delete", $params.space_name, actualSubpathValue, $params.resource_type || ResourceType.content)}
             <button
               onclick={handleDeleteItem}
-              class="bg-red-50 hover:bg-red-100 text-red-600 px-3 py-1.5 rounded-xl font-medium transition-colors shadow-sm flex items-center gap-2"
+              class="bg-danger-soft hover:bg-danger-soft text-danger px-3 py-1.5 rounded-xl font-medium transition-colors shadow-sm flex items-center gap-2"
             >
               <svg
                 class="w-4 h-4"
@@ -690,12 +669,12 @@
         <div class="spinner spinner-lg"></div>
       </div>
     {:else if $error}
-      <div class="text-center py-16" class:text-right={$isRTL}>
+      <div class="text-center py-16">
         <div
-          class="mx-auto w-24 h-24 bg-red-100 rounded-full flex items-center justify-center mb-6"
+          class="mx-auto w-24 h-24 bg-danger-soft rounded-full flex items-center justify-center mb-6"
         >
           <svg
-            class="w-12 h-12 text-red-500"
+            class="w-12 h-12 text-danger"
             fill="none"
             stroke="currentColor"
             viewBox="0 0 24 24"
@@ -708,27 +687,26 @@
             ></path>
           </svg>
         </div>
-        <h3 class="text-xl font-semibold text-gray-900 mb-2">
+        <h3 class="text-xl font-semibold text-text mb-2">
           {$_("admin_item_detail.error.title")}
         </h3>
-        <p class="text-gray-600">{$error}</p>
+        <p class="text-text-muted">{$error}</p>
       </div>
     {:else if $itemData}
       <div
-        class="bg-white rounded-3xl shadow-[0_2px_8px_rgba(0,0,0,0.04)] border border-gray-100 mb-6 overflow-hidden"
+        class="bg-surface-2 rounded-3xl shadow-[0_2px_8px_rgba(0,0,0,0.04)] border border-border mb-6 overflow-hidden"
       >
-        <div class="border-b border-gray-100 bg-gray-50/30">
+        <div class="border-b border-border bg-surface/30">
           <nav
             class="flex px-6 overflow-x-auto hide-scrollbar"
-            class:flex-row-reverse={$isRTL}
           >
             {#if itemDataValue?.payload?.body}
               <button
                 onclick={() => setActiveTab("content")}
                 class="py-4 px-4 font-medium text-sm whitespace-nowrap border-b-2 transition-colors {$activeTab ===
                 'content'
-                  ? 'border-indigo-500 text-indigo-600'
-                  : 'border-transparent text-gray-500 hover:text-gray-900 hover:border-gray-300'}"
+                  ? 'border-primary text-primary'
+                  : 'border-transparent text-text-muted hover:text-text hover:border-border-strong'}"
               >
                 {$_("admin_item_detail.tabs.content")}
               </button>
@@ -737,8 +715,8 @@
               onclick={() => setActiveTab("overview")}
               class="py-4 px-4 font-medium text-sm whitespace-nowrap border-b-2 transition-colors {$activeTab ===
               'overview'
-                ? 'border-indigo-500 text-indigo-600'
-                : 'border-transparent text-gray-500 hover:text-gray-900 hover:border-gray-300'}"
+                ? 'border-primary text-primary'
+                : 'border-transparent text-text-muted hover:text-text hover:border-border-strong'}"
             >
               {$_("admin_item_detail.tabs.overview")}
             </button>
@@ -746,8 +724,8 @@
               onclick={() => setActiveTab("attachments")}
               class="py-4 px-4 font-medium text-sm whitespace-nowrap border-b-2 transition-colors {$activeTab ===
               'attachments'
-                ? 'border-indigo-500 text-indigo-600'
-                : 'border-transparent text-gray-500 hover:text-gray-900 hover:border-gray-300'}"
+                ? 'border-primary text-primary'
+                : 'border-transparent text-text-muted hover:text-text hover:border-border-strong'}"
             >
               {$_("admin_item_detail.tabs.attachments")}
             </button>
@@ -756,8 +734,8 @@
                 onclick={() => setActiveTab("author-entries")}
                 class="py-4 px-4 font-medium text-sm whitespace-nowrap border-b-2 transition-colors {$activeTab ===
                 'author-entries'
-                  ? 'border-indigo-500 text-indigo-600'
-                  : 'border-transparent text-gray-500 hover:text-gray-900 hover:border-gray-300'}"
+                  ? 'border-primary text-primary'
+                  : 'border-transparent text-text-muted hover:text-text hover:border-border-strong'}"
               >
                 {$_("admin_item_detail.tabs.author_entries")}
               </button>
@@ -772,23 +750,23 @@
                 {@const ct = itemDataValue.payload.content_type}
                 {@const body = itemDataValue.payload.body}
 
-                <div class="rounded-2xl border border-gray-100 overflow-hidden">
+                <div class="rounded-2xl border border-border overflow-hidden">
                   <!-- content-type badge -->
                   <div
-                    class="bg-gray-50/60 px-5 py-3 border-b border-gray-100 flex items-center gap-2"
+                    class="bg-surface/60 px-5 py-3 border-b border-border flex items-center gap-2"
                   >
-                    <span class="text-xs font-medium text-gray-500"
+                    <span class="text-xs font-medium text-text-muted"
                       >Content type:</span
                     >
                     <span
-                      class="inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium bg-blue-100 text-blue-800"
+                      class="inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium bg-info-soft text-info"
                       >{ct}</span
                     >
                   </div>
 
                   <div class="p-6">
                     {#if ct === "html"}
-                      <div class="html-preview" class:text-right={$isRTL}>
+                      <div class="html-preview">
                         {@html sanitizeHtml(body)}
                       </div>
                     {:else if ct === "json"}
@@ -818,13 +796,13 @@
                     {:else}
                       <!-- Default parse string as Markdown (covers "markdown", "md", or missing type) -->
                       {#if typeof body === "string"}
-                        <div class="markdown-preview" class:text-right={$isRTL}>
-                          {@html sanitizeHtml(marked(body))}
+                        <div class="markdown-preview">
+                          {@html renderMarkdown(body)}
                         </div>
                       {:else}
                         <!-- Fallback for unexpected non-string bodies without a known type -->
                         <pre
-                          class="bg-gray-50 rounded-xl p-4 text-xs whitespace-pre-wrap text-gray-700">{JSON.stringify(
+                          class="bg-surface rounded-xl p-4 text-xs whitespace-pre-wrap text-text">{JSON.stringify(
                             body,
                           )}</pre>
                       {/if}
@@ -833,11 +811,10 @@
                 </div>
               {:else}
                 <div
-                  class="text-center py-8 text-gray-500"
-                  class:text-right={$isRTL}
+                  class="text-center py-8 text-text-muted"
                 >
                   <svg
-                    class="mx-auto h-12 w-12 text-gray-400"
+                    class="mx-auto h-12 w-12 text-text-faint"
                     fill="none"
                     viewBox="0 0 24 24"
                     stroke="currentColor"
@@ -860,62 +837,52 @@
             <div class="space-y-6">
               <div>
                 <h3
-                  class="text-lg font-semibold text-gray-900 mb-4"
-                  class:text-right={$isRTL}
+                  class="text-lg font-semibold text-text mb-4"
                 >
                   {$_("admin_item_detail.overview.basic_info")}
                 </h3>
                 <div
-                  class="bg-white border border-gray-100 rounded-2xl overflow-hidden"
+                  class="bg-surface-2 border border-border rounded-2xl overflow-hidden"
                 >
                   <table
-                    class="min-w-full divide-y divide-gray-100"
-                    class:rtl={$isRTL}
+                    class="min-w-full divide-y divide-border"
                   >
-                    <tbody class="bg-white divide-y divide-gray-100">
+                    <tbody class="bg-surface-2 divide-y divide-border">
                       <tr>
                         <td
-                          class="px-3 py-1.5 whitespace-nowrap text-sm font-medium text-gray-900 bg-gray-50/50 w-1/4"
-                          class:text-right={$isRTL}
+                          class="px-3 py-1.5 whitespace-nowrap text-sm font-medium text-text bg-surface/50 w-1/4"
                           >{$_("admin_item_detail.fields.uuid")}</td
                         >
                         <td
-                          class="px-3 py-1.5 whitespace-nowrap text-sm text-gray-500 font-mono"
-                          class:text-right={$isRTL}>{itemDataValue.uuid}</td
+                          class="px-3 py-1.5 whitespace-nowrap text-sm text-text-muted font-mono">{itemDataValue.uuid}</td
                         >
                       </tr>
                       <tr>
                         <td
-                          class="px-3 py-1.5 whitespace-nowrap text-sm font-medium text-gray-900 bg-gray-50/50"
-                          class:text-right={$isRTL}
+                          class="px-3 py-1.5 whitespace-nowrap text-sm font-medium text-text bg-surface/50"
                           >{$_("admin_item_detail.fields.shortname")}</td
                         >
                         <td
-                          class="px-3 py-1.5 whitespace-nowrap text-sm text-gray-500"
-                          class:text-right={$isRTL}
+                          class="px-3 py-1.5 whitespace-nowrap text-sm text-text-muted"
                           >{itemDataValue.shortname}</td
                         >
                       </tr>
                       <tr>
                         <td
-                          class="px-3 py-1.5 whitespace-nowrap text-sm font-medium text-gray-900 bg-gray-50/50"
-                          class:text-right={$isRTL}
+                          class="px-3 py-1.5 whitespace-nowrap text-sm font-medium text-text bg-surface/50"
                           >{$_("admin_item_detail.fields.display_name")}</td
                         >
                         <td
-                          class="px-3 py-1.5 whitespace-nowrap text-sm text-gray-500"
-                          class:text-right={$isRTL}
+                          class="px-3 py-1.5 whitespace-nowrap text-sm text-text-muted"
                         >
                           {#if itemDataValue.displayname}
                             <div class="space-y-1">
-                              {#each Object.entries(itemDataValue.displayname) as [lang, name]}
+                              {#each Object.entries(itemDataValue.displayname) as [lang, name] (lang)}
                                 <div
                                   class="flex items-center space-x-2"
-                                  class:space-x-reverse={$isRTL}
-                                  class:flex-row-reverse={$isRTL}
                                 >
                                   <span
-                                    class="inline-flex items-center px-2 py-0.5 rounded text-xs font-medium bg-blue-100 text-blue-800"
+                                    class="inline-flex items-center px-2 py-0.5 rounded text-xs font-medium bg-info-soft text-info"
                                     >{lang}</span
                                   >
                                   <span>{name}</span>
@@ -923,7 +890,7 @@
                               {/each}
                             </div>
                           {:else}
-                            <span class="text-gray-400"
+                            <span class="text-text-faint"
                               >{$_("admin_item_detail.not_set")}</span
                             >
                           {/if}
@@ -931,24 +898,20 @@
                       </tr>
                       <tr>
                         <td
-                          class="px-3 py-1.5 whitespace-nowrap text-sm font-medium text-gray-900 bg-gray-50/50"
-                          class:text-right={$isRTL}
+                          class="px-3 py-1.5 whitespace-nowrap text-sm font-medium text-text bg-surface/50"
                           >{$_("admin_item_detail.fields.description")}</td
                         >
                         <td
-                          class="px-3 py-1.5 text-sm text-gray-500"
-                          class:text-right={$isRTL}
+                          class="px-3 py-1.5 text-sm text-text-muted"
                         >
                           {#if itemDataValue.description}
                             <div class="space-y-1">
-                              {#each Object.entries(itemDataValue.description) as [lang, desc]}
+                              {#each Object.entries(itemDataValue.description) as [lang, desc] (lang)}
                                 <div
                                   class="flex items-start space-x-2"
-                                  class:space-x-reverse={$isRTL}
-                                  class:flex-row-reverse={$isRTL}
                                 >
                                   <span
-                                    class="inline-flex items-center px-2 py-0.5 rounded text-xs font-medium bg-blue-100 text-blue-800 mt-0.5"
+                                    class="inline-flex items-center px-2 py-0.5 rounded text-xs font-medium bg-info-soft text-info mt-0.5"
                                     >{lang}</span
                                   >
                                   <span class="flex-1"
@@ -959,7 +922,7 @@
                               {/each}
                             </div>
                           {:else}
-                            <span class="text-gray-400"
+                            <span class="text-text-faint"
                               >{$_("admin_item_detail.not_set")}</span
                             >
                           {/if}
@@ -967,26 +930,23 @@
                       </tr>
                       <tr>
                         <td
-                          class="px-3 py-1.5 whitespace-nowrap text-sm font-medium text-gray-900 bg-gray-50/50"
-                          class:text-right={$isRTL}
+                          class="px-3 py-1.5 whitespace-nowrap text-sm font-medium text-text bg-surface/50"
                           >{$_("admin_item_detail.fields.status")}</td
                         >
                         <td
-                          class="px-3 py-1.5 whitespace-nowrap text-sm text-gray-500"
-                          class:text-right={$isRTL}
+                          class="px-3 py-1.5 whitespace-nowrap text-sm text-text-muted"
                         >
                           <span
                             class="inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium {itemDataValue.is_active
-                              ? 'bg-green-100 text-green-800'
-                              : 'bg-red-100 text-red-800'}"
-                            class:flex-row-reverse={$isRTL}
+                              ? 'bg-success-soft text-success'
+                              : 'bg-danger-soft text-danger'}"
                           >
                             <div
-                              class="w-1.5 h-1.5 rounded-full mr-1.5 {itemDataValue.is_active
-                                ? 'bg-green-400'
-                                : 'bg-red-400'}"
-                              class:mr-1.5={!$isRTL}
-                              class:ml-1.5={$isRTL}
+                              class="w-1.5 h-1.5 rounded-full me-1.5 {itemDataValue.is_active
+                                ? 'bg-success'
+                                : 'bg-danger'}"
+                              class:me-1.5={true}
+                              
                             ></div>
                             {itemDataValue.is_active
                               ? $_("admin_item_detail.status.active")
@@ -996,69 +956,60 @@
                       </tr>
                       <tr>
                         <td
-                          class="px-3 py-1.5 whitespace-nowrap text-sm font-medium text-gray-900 bg-gray-50/50"
-                          class:text-right={$isRTL}
+                          class="px-3 py-1.5 whitespace-nowrap text-sm font-medium text-text bg-surface/50"
                           >{$_("admin_item_detail.fields.content_type")}</td
                         >
                         <td
-                          class="px-3 py-1.5 whitespace-nowrap text-sm text-gray-500"
-                          class:text-right={$isRTL}
+                          class="px-3 py-1.5 whitespace-nowrap text-sm text-text-muted"
                           >{itemDataValue.payload?.content_type ||
                             $_("admin_item_detail.not_set")}</td
                         >
                       </tr>
                       <tr>
                         <td
-                          class="px-3 py-1.5 whitespace-nowrap text-sm font-medium text-gray-900 bg-gray-50/50"
-                          class:text-right={$isRTL}
+                          class="px-3 py-1.5 whitespace-nowrap text-sm font-medium text-text bg-surface/50"
                           >{$_("admin_item_detail.fields.resource_type")}</td
                         >
                         <td
-                          class="px-3 py-1.5 whitespace-nowrap text-sm text-gray-500"
-                          class:text-right={$isRTL}
+                          class="px-3 py-1.5 whitespace-nowrap text-sm text-text-muted"
                           >{$params.resource_type ||
                             $_("admin_item_detail.not_set")}</td
                         >
                       </tr>
                       <tr>
                         <td
-                          class="px-3 py-1.5 whitespace-nowrap text-sm font-medium text-gray-900 bg-gray-50/50"
-                          class:text-right={$isRTL}
+                          class="px-3 py-1.5 whitespace-nowrap text-sm font-medium text-text bg-surface/50"
                           >{$_("admin_item_detail.fields.schema_shortname")}</td
                         >
                         <td
-                          class="px-3 py-1.5 whitespace-nowrap text-sm text-gray-500"
-                          class:text-right={$isRTL}
+                          class="px-3 py-1.5 whitespace-nowrap text-sm text-text-muted"
                           >{itemDataValue.payload?.schema_shortname ||
                             $_("admin_item_detail.not_set")}</td
                         >
                       </tr>
                       <tr>
                         <td
-                          class="px-3 py-1.5 whitespace-nowrap text-sm font-medium text-gray-900 bg-gray-50/50"
-                          class:text-right={$isRTL}
+                          class="px-3 py-1.5 whitespace-nowrap text-sm font-medium text-text bg-surface/50"
                           >{$_("admin_item_detail.fields.tags")}</td
                         >
                         <td
-                          class="px-3 py-1.5 text-sm text-gray-500"
-                          class:text-right={$isRTL}
+                          class="px-3 py-1.5 text-sm text-text-muted"
                         >
                           {#if itemDataValue.tags && itemDataValue.tags.length > 0}
                             <div
                               class="flex flex-wrap gap-1"
-                              class:justify-end={$isRTL}
                             >
-                              {#each itemDataValue.tags as tag}
+                              {#each itemDataValue.tags as tag (tag)}
                                 {#if tag.trim()}
                                   <span
-                                    class="inline-flex items-center px-2 py-1 rounded-md text-xs font-medium bg-gray-100 text-gray-800"
+                                    class="inline-flex items-center px-2 py-1 rounded-md text-xs font-medium bg-surface-3 text-text"
                                     >{tag}</span
                                   >
                                 {/if}
                               {/each}
                             </div>
                           {:else}
-                            <span class="text-gray-400"
+                            <span class="text-text-faint"
                               >{$_("admin_item_detail.no_tags")}</span
                             >
                           {/if}
@@ -1066,38 +1017,32 @@
                       </tr>
                       <tr>
                         <td
-                          class="px-3 py-1.5 whitespace-nowrap text-sm font-medium text-gray-900 bg-gray-50/50"
-                          class:text-right={$isRTL}
+                          class="px-3 py-1.5 whitespace-nowrap text-sm font-medium text-text bg-surface/50"
                           >{$_("admin_item_detail.fields.owner")}</td
                         >
                         <td
-                          class="px-3 py-1.5 whitespace-nowrap text-sm text-gray-500"
-                          class:text-right={$isRTL}
+                          class="px-3 py-1.5 whitespace-nowrap text-sm text-text-muted"
                           >{itemDataValue.owner_shortname}</td
                         >
                       </tr>
                       <tr>
                         <td
-                          class="px-3 py-1.5 whitespace-nowrap text-sm font-medium text-gray-900 bg-gray-50/50"
-                          class:text-right={$isRTL}
+                          class="px-3 py-1.5 whitespace-nowrap text-sm font-medium text-text bg-surface/50"
                           >{$_("admin_item_detail.fields.created")}</td
                         >
                         <td
-                          class="px-3 py-1.5 whitespace-nowrap text-sm text-gray-500"
-                          class:text-right={$isRTL}
-                          >{formatDate(itemDataValue.created_at)}</td
+                          class="px-3 py-1.5 whitespace-nowrap text-sm text-text-muted"
+                          >{formatDate(itemDataValue.created_at, "datetime", $locale)}</td
                         >
                       </tr>
                       <tr>
                         <td
-                          class="px-3 py-1.5 whitespace-nowrap text-sm font-medium text-gray-900 bg-gray-50/50"
-                          class:text-right={$isRTL}
+                          class="px-3 py-1.5 whitespace-nowrap text-sm font-medium text-text bg-surface/50"
                           >{$_("admin_item_detail.fields.updated")}</td
                         >
                         <td
-                          class="px-3 py-1.5 whitespace-nowrap text-sm text-gray-500"
-                          class:text-right={$isRTL}
-                          >{formatDate(itemDataValue.updated_at)}</td
+                          class="px-3 py-1.5 whitespace-nowrap text-sm text-text-muted"
+                          >{formatDate(itemDataValue.updated_at, "datetime", $locale)}</td
                         >
                       </tr>
                     </tbody>
@@ -1110,21 +1055,18 @@
             <div class="space-y-6">
               <div
                 class="flex items-center justify-between"
-                class:flex-row-reverse={$isRTL}
               >
                 <h3
-                  class="text-lg font-semibold text-gray-900"
-                  class:text-right={$isRTL}
+                  class="text-lg font-semibold text-text"
                 >
                   {$_("admin_item_detail.attachments.title")}
                 </h3>
                 <div
                   class="flex items-center gap-3"
-                  class:flex-row-reverse={$isRTL}
                 >
                   <button
                     onclick={() => showAttachmentModal.set(true)}
-                    class="bg-indigo-600 hover:bg-indigo-700 text-white px-3 py-1.5 rounded-xl font-medium transition-colors shadow-sm flex items-center gap-2"
+                    class="bg-primary hover:bg-primary-hover text-text-on-primary px-3 py-1.5 rounded-xl font-medium transition-colors shadow-sm flex items-center gap-2"
                   >
                     <PlusOutline class="w-4 h-4" />
                     {$_("admin_item_detail.attachments.upload")}
@@ -1133,23 +1075,21 @@
               </div>
 
               {#if itemDataValue.attachments && typeof itemDataValue.attachments === "object"}
-                {#each Object.entries(itemDataValue.attachments) as [type, attachmentsArrRaw]}
+                {#each Object.entries(itemDataValue.attachments) as [type, attachmentsArrRaw] (type)}
                   {#if Array.isArray(attachmentsArrRaw) && attachmentsArrRaw.length > 0}
                     {@const attachmentsArr = attachmentsArrRaw as any[]}
                     <div
-                      class="bg-white border border-gray-100 rounded-2xl overflow-hidden"
+                      class="bg-surface-2 border border-border rounded-2xl overflow-hidden"
                     >
                       <div
-                        class="bg-gray-50/50 px-3 py-1.5 border-b border-gray-100"
+                        class="bg-surface/50 px-3 py-1.5 border-b border-border"
                       >
                         <h4
-                          class="text-md font-medium text-gray-800 capitalize flex items-center gap-2"
-                          class:flex-row-reverse={$isRTL}
-                          class:text-right={$isRTL}
+                          class="text-md font-medium text-text capitalize flex items-center gap-2"
                         >
                           {#if type === "share"}
                             <svg
-                              class="w-5 h-5 text-purple-600"
+                              class="w-5 h-5 text-primary"
                               fill="none"
                               stroke="currentColor"
                               viewBox="0 0 24 24"
@@ -1163,7 +1103,7 @@
                             </svg>
                           {:else if type === "media"}
                             <svg
-                              class="w-5 h-5 text-green-600"
+                              class="w-5 h-5 text-success"
                               fill="none"
                               stroke="currentColor"
                               viewBox="0 0 24 24"
@@ -1177,7 +1117,7 @@
                             </svg>
                           {:else}
                             <svg
-                              class="w-5 h-5 text-gray-600"
+                              class="w-5 h-5 text-text-muted"
                               fill="none"
                               stroke="currentColor"
                               viewBox="0 0 24 24"
@@ -1193,10 +1133,10 @@
 
                           <span
                             class="inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium"
-                            class:bg-green-100={type === "media"}
-                            class:text-green-800={type === "media"}
-                            class:bg-gray-100={type !== "media"}
-                            class:text-gray-800={type !== "media"}
+                            class:bg-success-soft={type === "media"}
+                            class:text-success={type === "media"}
+                            class:bg-surface-3={type !== "media"}
+                            class:text-text={type !== "media"}
                           >
                             {formatNumberInText(
                               attachmentsArr.length,
@@ -1218,20 +1158,19 @@
                       <div class="p-6">
                         {#if type === "share"}
                           <div class="space-y-3">
-                            {#each attachmentsArr as share}
+                            {#each attachmentsArr as share (share.shortname)}
                               <div
-                                class="bg-purple-50 rounded-lg p-4 border border-purple-200"
+                                class="bg-primary-soft rounded-lg p-4 border border-primary/30"
                               >
                                 <div class="flex items-center justify-between">
                                   <div
                                     class="flex items-center space-x-3"
-                                    class:space-x-reverse={$isRTL}
                                   >
                                     <div
-                                      class="w-10 h-10 bg-purple-400 rounded-full flex items-center justify-center"
+                                      class="w-10 h-10 bg-primary rounded-full flex items-center justify-center"
                                     >
                                       <svg
-                                        class="w-5 h-5 text-purple-800"
+                                        class="w-5 h-5 text-primary"
                                         fill="none"
                                         stroke="currentColor"
                                         viewBox="0 0 24 24"
@@ -1250,16 +1189,16 @@
                                         class="flex items-center space-x-2 mb-1"
                                       >
                                         <span
-                                          class="text-sm font-medium text-gray-900"
+                                          class="text-sm font-medium text-text"
                                         >
                                           {share.attributes.owner_shortname ||
                                             "Anonymous"}
                                         </span>
-                                        <span class="text-xs text-gray-500">
+                                        <span class="text-xs text-text-muted">
                                           shared
                                         </span>
                                       </div>
-                                      <p class="text-xs text-gray-500">
+                                      <p class="text-xs text-text-muted">
                                         {new Date(
                                           share.attributes.created_at,
                                         ).toLocaleDateString()} at {new Date(
@@ -1269,12 +1208,12 @@
                                     </div>
                                   </div>
 
-                                  <div class="text-right">
-                                    <p class="text-xs text-gray-400 mb-1">
+                                  <div class="text-end">
+                                    <p class="text-xs text-text-faint mb-1">
                                       ID: {share.shortname}
                                     </p>
                                     <span
-                                      class="inline-flex items-center px-2 py-1 rounded-full text-xs font-medium bg-purple-100 text-purple-800"
+                                      class="inline-flex items-center px-2 py-1 rounded-full text-xs font-medium bg-primary-soft text-primary"
                                     >
                                       {share.resource_type}
                                     </span>
@@ -1283,9 +1222,9 @@
 
                                 {#if share.attributes.payload?.shared_with}
                                   <div
-                                    class="mt-2 pt-2 border-t border-purple-200"
+                                    class="mt-2 pt-2 border-t border-primary/30"
                                   >
-                                    <p class="text-xs text-gray-500">
+                                    <p class="text-xs text-text-muted">
                                       Shared with: {share.attributes.payload
                                         .shared_with}
                                     </p>
@@ -1294,9 +1233,9 @@
 
                                 {#if share.attributes.updated_at !== share.attributes.created_at}
                                   <div
-                                    class="mt-2 pt-2 border-t border-purple-200"
+                                    class="mt-2 pt-2 border-t border-primary/30"
                                   >
-                                    <p class="text-xs text-gray-500">
+                                    <p class="text-xs text-text-muted">
                                       Last updated: {new Date(
                                         share.attributes.updated_at,
                                       ).toLocaleDateString()}
@@ -1322,11 +1261,10 @@
                 {/each}
               {:else}
                 <div
-                  class="text-center py-8 text-gray-500"
-                  class:text-right={$isRTL}
+                  class="text-center py-8 text-text-muted"
                 >
                   <svg
-                    class="mx-auto h-12 w-12 text-gray-400"
+                    class="mx-auto h-12 w-12 text-text-faint"
                     fill="none"
                     viewBox="0 0 24 24"
                     stroke="currentColor"
@@ -1349,61 +1287,53 @@
           {#if $activeTab === "author-entries"}
             <div class="space-y-6">
               <h3
-                class="text-lg font-semibold text-gray-900"
-                class:text-right={$isRTL}
+                class="text-lg font-semibold text-text"
               >
                 {$_("admin_item_detail.author_entries.title")}
               </h3>
 
               {#if authorRelatedEntriesValue && authorRelatedEntriesValue.length > 0}
                 <div
-                  class="bg-white border border-gray-100 rounded-2xl overflow-hidden"
+                  class="bg-surface-2 border border-border rounded-2xl overflow-hidden"
                 >
                   <table
-                    class="min-w-full divide-y divide-gray-100"
-                    class:rtl={$isRTL}
+                    class="min-w-full divide-y divide-border"
                   >
-                    <thead class="bg-gray-50/50">
+                    <thead class="bg-surface/50">
                       <tr>
                         <th
-                          class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider"
-                          class:text-right={$isRTL}
+                          class="px-6 py-3 text-start text-xs font-medium text-text-muted uppercase tracking-wider"
                         >
                           {$_(
                             "admin_item_detail.author_entries.headers.shortname",
                           )}
                         </th>
                         <th
-                          class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider"
-                          class:text-right={$isRTL}
+                          class="px-6 py-3 text-start text-xs font-medium text-text-muted uppercase tracking-wider"
                         >
                           {$_(
                             "admin_item_detail.author_entries.headers.display_name",
                           )}
                         </th>
                         <th
-                          class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider"
-                          class:text-right={$isRTL}
+                          class="px-6 py-3 text-start text-xs font-medium text-text-muted uppercase tracking-wider"
                         >
                           {$_("admin_item_detail.author_entries.headers.space")}
                         </th>
                         <th
-                          class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider"
-                          class:text-right={$isRTL}
+                          class="px-6 py-3 text-start text-xs font-medium text-text-muted uppercase tracking-wider"
                         >
                           {$_("admin_item_detail.author_entries.headers.type")}
                         </th>
                         <th
-                          class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider"
-                          class:text-right={$isRTL}
+                          class="px-6 py-3 text-start text-xs font-medium text-text-muted uppercase tracking-wider"
                         >
                           {$_(
                             "admin_item_detail.author_entries.headers.status",
                           )}
                         </th>
                         <th
-                          class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider"
-                          class:text-right={$isRTL}
+                          class="px-6 py-3 text-start text-xs font-medium text-text-muted uppercase tracking-wider"
                         >
                           {$_(
                             "admin_item_detail.author_entries.headers.created",
@@ -1411,53 +1341,47 @@
                         </th>
                       </tr>
                     </thead>
-                    <tbody class="bg-white divide-y divide-gray-200">
-                      {#each authorRelatedEntriesValue as entry}
+                    <tbody class="bg-surface-2 divide-y divide-border">
+                      {#each authorRelatedEntriesValue as entry (entry.shortname)}
                         <tr>
                           <td
-                            class="px-3 py-1.5 whitespace-nowrap text-sm font-medium text-gray-900"
-                            class:text-right={$isRTL}
+                            class="px-3 py-1.5 whitespace-nowrap text-sm font-medium text-text"
                           >
                             {entry.shortname}
                           </td>
                           <td
-                            class="px-3 py-1.5 whitespace-nowrap text-sm text-gray-500"
-                            class:text-right={$isRTL}
+                            class="px-3 py-1.5 whitespace-nowrap text-sm text-text-muted"
                           >
                             {getDisplayName(entry)}
                           </td>
                           <td
-                            class="px-3 py-1.5 whitespace-nowrap text-sm text-gray-500"
-                            class:text-right={$isRTL}
+                            class="px-3 py-1.5 whitespace-nowrap text-sm text-text-muted"
                           >
                             {entry.space_name || $_("common.not_available")}
                           </td>
                           <td
-                            class="px-3 py-1.5 whitespace-nowrap text-sm text-gray-500"
-                            class:text-right={$isRTL}
+                            class="px-3 py-1.5 whitespace-nowrap text-sm text-text-muted"
                           >
                             <span
-                              class="inline-flex items-center px-2 py-1 rounded-md text-xs font-medium bg-blue-100 text-blue-800"
+                              class="inline-flex items-center px-2 py-1 rounded-md text-xs font-medium bg-info-soft text-info"
                             >
                               {entry.resource_type || "content"}
                             </span>
                           </td>
                           <td
-                            class="px-3 py-1.5 whitespace-nowrap text-sm text-gray-500"
-                            class:text-right={$isRTL}
+                            class="px-3 py-1.5 whitespace-nowrap text-sm text-text-muted"
                           >
                             <span
                               class="inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium {entry.is_active
-                                ? 'bg-green-100 text-green-800'
-                                : 'bg-red-100 text-red-800'}"
-                              class:flex-row-reverse={$isRTL}
+                                ? 'bg-success-soft text-success'
+                                : 'bg-danger-soft text-danger'}"
                             >
                               <div
-                                class="w-1.5 h-1.5 rounded-full mr-1.5 {entry.is_active
-                                  ? 'bg-green-400'
-                                  : 'bg-red-400'}"
-                                class:mr-1.5={!$isRTL}
-                                class:ml-1.5={$isRTL}
+                                class="w-1.5 h-1.5 rounded-full me-1.5 {entry.is_active
+                                  ? 'bg-success'
+                                  : 'bg-danger'}"
+                                class:me-1.5={true}
+                                
                               ></div>
                               {entry.is_active
                                 ? $_("admin_item_detail.status.active")
@@ -1465,10 +1389,9 @@
                             </span>
                           </td>
                           <td
-                            class="px-3 py-1.5 whitespace-nowrap text-sm text-gray-500"
-                            class:text-right={$isRTL}
+                            class="px-3 py-1.5 whitespace-nowrap text-sm text-text-muted"
                           >
-                            {formatDate(entry.created_at)}
+                            {formatDate(entry.created_at, "datetime", $locale)}
                           </td>
                         </tr>
                       {/each}
@@ -1477,11 +1400,10 @@
                 </div>
               {:else}
                 <div
-                  class="text-center py-8 text-gray-500"
-                  class:text-right={$isRTL}
+                  class="text-center py-8 text-text-muted"
                 >
                   <svg
-                    class="mx-auto h-12 w-12 text-gray-400"
+                    class="mx-auto h-12 w-12 text-text-faint"
                     fill="none"
                     viewBox="0 0 24 24"
                     stroke="currentColor"
@@ -1503,12 +1425,12 @@
         </div>
       </div>
     {:else}
-      <div class="text-center py-16" class:text-right={$isRTL}>
+      <div class="text-center py-16">
         <div
-          class="mx-auto w-24 h-24 bg-gray-100 rounded-full flex items-center justify-center mb-6"
+          class="mx-auto w-24 h-24 bg-surface-3 rounded-full flex items-center justify-center mb-6"
         >
           <svg
-            class="w-12 h-12 text-gray-400"
+            class="w-12 h-12 text-text-faint"
             fill="none"
             stroke="currentColor"
             viewBox="0 0 24 24"
@@ -1521,10 +1443,10 @@
             ></path>
           </svg>
         </div>
-        <h3 class="text-xl font-semibold text-gray-900 mb-2">
+        <h3 class="text-xl font-semibold text-text mb-2">
           {$_("admin_item_detail.not_found.title")}
         </h3>
-        <p class="text-gray-600">
+        <p class="text-text-muted">
           {$_("admin_item_detail.not_found.description")}
         </p>
       </div>
@@ -1549,11 +1471,11 @@
       }
     }}
   >
-    <section class="modal-container" class:rtl={$isRTL} role="document">
-      <div class="modal-header" class:rtl={$isRTL}>
+    <section class="modal-container" role="document">
+      <div class="modal-header">
         <div class="header-content">
           <div class="header-text">
-            <h3 class="modal-title" class:text-right={$isRTL}>
+            <h3 class="modal-title">
               {$_("admin_item_detail.edit_modal.title")}
             </h3>
           </div>
@@ -1584,8 +1506,7 @@
           <div class="form-grid-vertical">
             <!-- Display Name Row: 3 columns (EN, AR, KU) -->
             <div class="form-section">
-              <!-- svelte-ignore a11y_label_has_associated_control -->
-              <label class="form-label section-label" class:text-right={$isRTL}>
+              <p class="form-label section-label">
                 <svg
                   class="label-icon"
                   fill="none"
@@ -1600,7 +1521,7 @@
                   />
                 </svg>
                 {$_("admin_item_detail.edit_modal.fields.displayname")}
-              </label>
+              </p>
               <div class="localized-inputs-3col">
                 <div class="localized-field-col">
                   <span class="lang-badge">EN</span>
@@ -1608,7 +1529,7 @@
                     type="text"
                     bind:value={editFormValue.displayname.en}
                     class="form-input"
-                    placeholder="English display name"
+                    placeholder={$_("labels.displayname_lang", { values: { language: $_("english") } })}
                   />
                 </div>
                 <div class="localized-field-col">
@@ -1617,7 +1538,7 @@
                     type="text"
                     bind:value={editFormValue.displayname.ar}
                     class="form-input"
-                    placeholder="Arabic display name"
+                    placeholder={$_("labels.displayname_lang", { values: { language: $_("arabic") } })}
                   />
                 </div>
                 <div class="localized-field-col">
@@ -1626,7 +1547,7 @@
                     type="text"
                     bind:value={editFormValue.displayname.ku}
                     class="form-input"
-                    placeholder="Kurdish display name"
+                    placeholder={$_("labels.displayname_lang", { values: { language: $_("kurdish") } })}
                   />
                 </div>
               </div>
@@ -1634,8 +1555,7 @@
 
             <!-- Description Row: 3 columns (EN, AR, KU) -->
             <div class="form-section">
-              <!-- svelte-ignore a11y_label_has_associated_control -->
-              <label class="form-label section-label" class:text-right={$isRTL}>
+              <p class="form-label section-label">
                 <svg
                   class="label-icon"
                   fill="none"
@@ -1650,14 +1570,14 @@
                   />
                 </svg>
                 {$_("admin_item_detail.edit_modal.fields.description")}
-              </label>
+              </p>
               <div class="localized-inputs-3col">
                 <div class="localized-field-col">
                   <span class="lang-badge">EN</span>
                   <textarea
                     bind:value={editFormValue.description.en}
                     class="form-input form-textarea"
-                    placeholder="English description"
+                    placeholder={$_("labels.description_lang", { values: { language: $_("english") } })}
                     rows="2"
                   ></textarea>
                 </div>
@@ -1666,7 +1586,7 @@
                   <textarea
                     bind:value={editFormValue.description.ar}
                     class="form-input form-textarea"
-                    placeholder="Arabic description"
+                    placeholder={$_("labels.description_lang", { values: { language: $_("arabic") } })}
                     rows="2"
                   ></textarea>
                 </div>
@@ -1675,7 +1595,7 @@
                   <textarea
                     bind:value={editFormValue.description.ku}
                     class="form-input form-textarea"
-                    placeholder="Kurdish description"
+                    placeholder={$_("labels.description_lang", { values: { language: $_("kurdish") } })}
                     rows="2"
                   ></textarea>
                 </div>
@@ -1684,8 +1604,7 @@
 
             <!-- Tags Section with Badge Behavior -->
             <div class="form-section">
-              <!-- svelte-ignore a11y_label_has_associated_control -->
-              <label class="form-label section-label" class:text-right={$isRTL}>
+              <p class="form-label section-label">
                 <svg
                   class="label-icon"
                   fill="none"
@@ -1700,7 +1619,7 @@
                   />
                 </svg>
                 {$_("admin_item_detail.edit_modal.fields.tags")}
-              </label>
+              </p>
               <div class="tag-input-wrapper">
                 <div class="tag-input-row">
                   <input
@@ -1741,14 +1660,14 @@
                 </div>
                 {#if editFormValue.tags.length > 0}
                   <div class="tags-badges-container">
-                    {#each editFormValue.tags as tag, index}
+                    {#each editFormValue.tags as tag, index (index)}
                       <span class="tag-badge">
                         {tag}
                         <button
                           type="button"
                           class="tag-remove-btn"
                           onclick={() => removeTag(index)}
-                          aria-label="Remove tag"
+                          aria-label={$_("route_labels.search_remove_tag")}
                         >
                           <svg
                             class="remove-icon"
@@ -1773,7 +1692,7 @@
 
             <!-- Active Status -->
             <div class="form-section status-section">
-              <div class="status-toggle-simple" class:rtl-toggle={$isRTL}>
+              <div class="status-toggle-simple">
                 <button
                   type="button"
                   class="toggle-switch {editFormValue.is_active
@@ -1782,7 +1701,7 @@
                   onclick={() => {
                     editFormValue.is_active = !editFormValue.is_active;
                   }}
-                  aria-label="Toggle active status"
+                  aria-label={$_("labels.toggle_active")}
                   aria-pressed={editFormValue.is_active}
                 >
                   <div class="toggle-slider"></div>
@@ -1808,8 +1727,6 @@
                 <label
                   for="editContent"
                   class="form-label"
-                  class:text-right={$isRTL}
-                  class:rtl-label={$isRTL}
                 >
                   <svg
                     class="label-icon"
@@ -1838,13 +1755,13 @@
                     {:else if selectedDynamicSchema}
                       <div class="schema-form-wrapper">
                         <div
-                          class="schema-info-bar mb-4 pb-2 border-b border-gray-100"
+                          class="schema-info-bar mb-4 pb-2 border-b border-border"
                         >
-                          <span class="schema-label font-medium text-gray-500"
+                          <span class="schema-label font-medium text-text-muted"
                             >Schema:</span
                           >
                           <span
-                            class="schema-name font-semibold text-gray-900 ml-2"
+                            class="schema-name font-semibold text-text ms-2"
                             >{selectedDynamicSchema.title}</span
                           >
                         </div>
@@ -1864,14 +1781,14 @@
                         <JsonEditor
                           content={jsonEditorContent}
                           isEditMode={true}
-                          on:contentChange={handleJsonContentChange}
+                          onContentChange={handleJsonContentChange}
                         />
                       </div>
                       <div class="json-preview-pane">
                         <h4 class="preview-title">Preview</h4>
                         <JsonViewer
                           data={jsonEditFormValue}
-                          title="JSON Preview"
+                          title={$_("labels.json_preview")}
                           type="json"
                           isAdmin={true}
                           schemaShortname={itemDataValue?.payload
@@ -1897,7 +1814,6 @@
                   {:else}
                     <HtmlEditor
                       bind:content={htmlEditor}
-                      resource_type={$params.resource_type}
                       space_name={spaceNameValue}
                       subpath={actualSubpathValue}
                       parent_shortname={itemShortnameValue}
@@ -1905,7 +1821,6 @@
                       isEditMode={true}
                       attachments={itemDataValue?.attachments || []}
                       changed={() => {
-                        console.log("Content changed:", htmlEditor);
                       }}
                     />
                   {/if}
@@ -1915,12 +1830,12 @@
           </div>
 
           <div class="modal-actions">
-            <div class="actions-container" class:rtl-actions={$isRTL}>
+            <div class="actions-container">
               <button
                 type="button"
                 onclick={() => showEditModal.set(false)}
                 class="cancel-button"
-                aria-label={`Cancel editing item`}
+                aria-label={$_("labels.cancel_editing")}
               >
                 <svg
                   class="button-icon"
@@ -1939,7 +1854,7 @@
               </button>
               <!-- Removed onclick handler from submit button to rely on form onsubmit -->
               <button
-                aria-label={`Save changes`}
+                aria-label={$_("common.save_changes")}
                 type="submit"
                 class="save-button"
               >
@@ -1993,7 +1908,7 @@
 <!-- Delete Confirmation Modal -->
 {#if $showDeleteModal}
   <div
-    class="fixed inset-0 bg-black/50 backdrop-blur-sm z-50 flex items-center justify-center p-4"
+    class="fixed inset-0 bg-[var(--surface-overlay)] backdrop-blur-sm z-50 flex items-center justify-center p-4"
     onclick={(e) => {
       if (e.target === e.currentTarget) showDeleteModal.set(false);
     }}
@@ -2005,21 +1920,18 @@
     aria-labelledby="delete-modal-title"
     tabindex="-1"
   >
-    <!-- svelte-ignore a11y_click_events_have_key_events a11y_no_static_element_interactions -->
     <div
-      class="bg-white rounded-2xl shadow-2xl max-w-md w-full transform transition-all"
-      role="dialog"
-      tabindex="-1"
-      onclick={(e) => e.stopPropagation()}
+      class="bg-surface-2 rounded-2xl shadow-2xl max-w-md w-full transform transition-all"
+      role="document"
     >
       <!-- Modal Header -->
-      <div class="bg-red-50 px-3 py-1.5 border-b border-red-100 rounded-t-2xl">
+      <div class="bg-danger-soft px-3 py-1.5 border-b border-danger/30 rounded-t-2xl">
         <div class="flex items-center gap-3">
           <div
-            class="w-10 h-10 bg-red-100 rounded-full flex items-center justify-center"
+            class="w-10 h-10 bg-danger-soft rounded-full flex items-center justify-center"
           >
             <svg
-              class="w-5 h-5 text-red-600"
+              class="w-5 h-5 text-danger"
               fill="none"
               stroke="currentColor"
               viewBox="0 0 24 24"
@@ -2034,7 +1946,7 @@
           </div>
           <h3
             id="delete-modal-title"
-            class="text-lg font-semibold text-gray-900"
+            class="text-lg font-semibold text-text"
           >
             {$_("admin_item_detail.delete_modal.title")}
           </h3>
@@ -2043,15 +1955,15 @@
 
       <!-- Modal Body -->
       <div class="px-6 py-5">
-        <p class="text-gray-600">
+        <p class="text-text-muted">
           {$_("admin_item_detail.delete_modal.message", {
             values: { name: itemShortnameValue },
           })}
         </p>
-        <div class="mt-4 p-3 bg-amber-50 border border-amber-200 rounded-lg">
+        <div class="mt-4 p-3 bg-warning-soft border border-warning/30 rounded-lg">
           <div class="flex items-start gap-2">
             <svg
-              class="w-5 h-5 text-amber-500 mt-0.5 shrink-0"
+              class="w-5 h-5 text-warning mt-0.5 shrink-0"
               fill="none"
               stroke="currentColor"
               viewBox="0 0 24 24"
@@ -2063,7 +1975,7 @@
                 d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z"
               />
             </svg>
-            <p class="text-sm text-amber-700">
+            <p class="text-sm text-warning">
               {$_("admin_item_detail.delete_modal.warning")}
             </p>
           </div>
@@ -2071,22 +1983,22 @@
       </div>
 
       <!-- Modal Footer -->
-      <div class="px-3 py-1.5 bg-gray-50 rounded-b-2xl flex justify-end gap-3">
+      <div class="px-3 py-1.5 bg-surface rounded-b-2xl flex justify-end gap-3">
         <button
           onclick={() => showDeleteModal.set(false)}
           disabled={$isDeleting}
-          class="px-3 py-1.5 text-gray-700 bg-white border border-gray-300 rounded-xl font-medium hover:bg-gray-50 transition-colors disabled:opacity-50"
+          class="px-3 py-1.5 text-text bg-surface-2 border border-border-strong rounded-xl font-medium hover:bg-surface transition-colors disabled:opacity-50"
         >
           {$_("common.cancel")}
         </button>
         <button
           onclick={confirmDeleteItem}
           disabled={$isDeleting}
-          class="px-3 py-1.5 bg-red-600 hover:bg-red-700 text-white rounded-xl font-medium transition-colors shadow-sm flex items-center gap-2 disabled:opacity-50"
+          class="px-3 py-1.5 bg-danger hover:bg-danger-hover text-text-on-primary rounded-xl font-medium transition-colors shadow-sm flex items-center gap-2 disabled:opacity-50"
         >
           {#if $isDeleting}
             <svg
-              class="animate-spin h-4 w-4 text-white"
+              class="animate-spin h-4 w-4 text-text-on-primary"
               xmlns="http://www.w3.org/2000/svg"
               fill="none"
               viewBox="0 0 24 24"
@@ -2134,7 +2046,7 @@
     height: 100%;
     padding: 1rem;
     overflow-y: auto;
-    background: white;
+    background: var(--color-surface);
     font-family:
       "uthmantn",
       -apple-system,
@@ -2145,7 +2057,7 @@
       Arial,
       sans-serif;
     line-height: 1.6;
-    color: #374151;
+    color: var(--color-text);
     white-space: pre-wrap;
     word-wrap: break-word;
   }
@@ -2167,20 +2079,20 @@
     margin-bottom: 0.5em;
     font-weight: 600;
     line-height: 1.25;
-    color: #111827;
+    color: var(--color-text);
   }
 
   .markdown-preview :global(h1),
   .html-preview :global(h1) {
     font-size: 2em;
     padding-bottom: 0.3em;
-    border-bottom: 1px solid #e5e7eb;
+    border-bottom: 1px solid var(--color-border);
   }
   .markdown-preview :global(h2),
   .html-preview :global(h2) {
     font-size: 1.5em;
     padding-bottom: 0.3em;
-    border-bottom: 1px solid #e5e7eb;
+    border-bottom: 1px solid var(--color-border);
   }
   .markdown-preview :global(h3),
   .html-preview :global(h3) {
@@ -2197,7 +2109,7 @@
   .markdown-preview :global(h6),
   .html-preview :global(h6) {
     font-size: 0.85em;
-    color: #6b7280;
+    color: var(--color-text-muted);
   }
 
   /* Paragraphs and Inline Text */
@@ -2209,7 +2121,7 @@
 
   .markdown-preview :global(a),
   .html-preview :global(a) {
-    color: #2563eb;
+    color: var(--color-primary-hover);
     text-decoration: none;
   }
   .markdown-preview :global(a:hover),
@@ -2229,7 +2141,7 @@
   .html-preview :global(ol) {
     margin-top: 0;
     margin-bottom: 1rem;
-    padding-left: 2em;
+    padding-inline-start: 2em;
   }
   .markdown-preview :global(ul),
   .html-preview :global(ul) {
@@ -2250,8 +2162,8 @@
   .html-preview :global(blockquote) {
     margin: 0 0 1rem;
     padding: 0 1em;
-    color: #6b7280;
-    border-left: 0.25em solid #e5e7eb;
+    color: var(--color-text-muted);
+    border-inline-start: 0.25em solid var(--color-border);
   }
 
   /* Code and Preformatted Text */
@@ -2262,7 +2174,7 @@
     font-size: 85%;
     font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas,
       "Liberation Mono", "Courier New", monospace;
-    background-color: #f3f4f6;
+    background-color: var(--color-surface-3);
     border-radius: 6px;
   }
 
@@ -2272,7 +2184,7 @@
     overflow: auto;
     font-size: 85%;
     line-height: 1.45;
-    background-color: #f3f4f6;
+    background-color: var(--color-surface-3);
     border-radius: 6px;
     margin-bottom: 1rem;
   }
@@ -2302,33 +2214,17 @@
   .markdown-preview :global(table td),
   .html-preview :global(table td) {
     padding: 6px 13px;
-    border: 1px solid #e5e7eb;
+    border: 1px solid var(--color-border);
   }
 
   .markdown-preview :global(table tr:nth-child(2n)),
   .html-preview :global(table tr:nth-child(2n)) {
-    background-color: #f9fafb;
+    background-color: var(--color-surface);
   }
 
   /* RTL Support */
-  .rtl .markdown-preview,
-  .rtl .html-preview {
-    text-align: right;
-  }
 
-  .rtl .markdown-preview :global(ul),
-  .rtl .html-preview :global(ul),
-  .rtl .markdown-preview :global(ol),
-  .rtl .html-preview :global(ol) {
-    padding-left: 0;
-    padding-right: 2em;
-  }
 
-  .rtl .markdown-preview :global(blockquote),
-  .rtl .html-preview :global(blockquote) {
-    border-left: none;
-    border-right: 0.25em solid #e5e7eb;
-  }
 
   .modal-overlay {
     position: fixed;
@@ -2343,7 +2239,7 @@
   }
 
   .modal-container {
-    background: white;
+    background: var(--color-surface);
     border-radius: 1rem;
     box-shadow: 0 25px 50px -12px rgba(0, 0, 0, 0.25);
     width: 100%;
@@ -2366,7 +2262,7 @@
   }
 
   .modal-header {
-    background: linear-gradient(135deg, #2563eb 0%, #1d4ed8 100%);
+    background: linear-gradient(135deg, var(--color-primary-hover) 0%, var(--color-primary-hover) 100%);
     padding: 0.6rem 1.5rem;
     color: white;
   }
@@ -2427,7 +2323,7 @@
     gap: 0.5rem;
     font-size: 0.875rem;
     font-weight: 600;
-    color: #1f2937;
+    color: var(--color-text);
     margin-bottom: 0.75rem;
     cursor: pointer;
   }
@@ -2435,13 +2331,13 @@
   .label-icon {
     width: 1rem;
     height: 1rem;
-    color: #6b7280;
+    color: var(--color-text-muted);
   }
 
   .form-input {
     width: 100%;
     padding: 0.75rem 1rem;
-    border: 2px solid #e5e7eb;
+    border: 2px solid var(--color-border);
     border-radius: 0.75rem;
     background: rgba(249, 250, 251, 0.5);
     font-size: 0.875rem;
@@ -2450,24 +2346,21 @@
   }
 
   .form-input:hover {
-    background: white;
-    border-color: #d1d5db;
+    background: var(--color-surface);
+    border-color: var(--color-border-strong);
   }
 
   .form-input:focus {
-    background: white;
-    border-color: #3b82f6;
+    background: var(--color-surface);
+    border-color: var(--color-primary);
     box-shadow: 0 0 0 3px rgba(59, 130, 246, 0.1);
   }
 
-  .rtl-toggle {
-    justify-content: flex-end;
-  }
 
   .toggle-switch {
     width: 3rem;
     height: 1.5rem;
-    background: #d1d5db;
+    background: var(--color-border-strong);
     border-radius: 9999px;
     box-shadow: inset 0 2px 4px rgba(0, 0, 0, 0.1);
     transition: background-color 0.2s ease;
@@ -2478,7 +2371,7 @@
   }
 
   .toggle-switch.active {
-    background: #3b82f6;
+    background: var(--color-primary);
   }
 
   .toggle-switch:focus {
@@ -2488,10 +2381,10 @@
   .toggle-slider {
     position: absolute;
     top: 2px;
-    left: 2px;
+    inset-inline-start: 2px;
     width: 1.25rem;
     height: 1.25rem;
-    background: white;
+    background: var(--color-surface);
     border-radius: 50%;
     box-shadow: 0 2px 4px rgba(0, 0, 0, 0.2);
     transition: transform 0.2s ease;
@@ -2511,16 +2404,16 @@
     gap: 0.5rem;
     font-size: 0.875rem;
     font-weight: 600;
-    color: #1f2937;
+    color: var(--color-text);
     cursor: pointer;
     margin-bottom: 0.25rem;
   }
 
   .editor-container {
     padding: 12px;
-    border: 2px solid #e5e7eb;
+    border: 2px solid var(--color-border);
     border-radius: 0.75rem;
-    background: white;
+    background: var(--color-surface);
     box-shadow: 0 1px 3px rgba(0, 0, 0, 0.1);
     transition: border-color 0.2s ease;
     min-height: 400px;
@@ -2528,13 +2421,13 @@
   }
 
   .editor-container:hover {
-    border-color: #d1d5db;
+    border-color: var(--color-border-strong);
   }
 
   .modal-actions {
     margin-top: 2.5rem;
     padding-top: 2rem;
-    border-top: 1px solid #e5e7eb;
+    border-top: 1px solid var(--color-border);
   }
 
   .actions-container {
@@ -2559,14 +2452,14 @@
   }
 
   .cancel-button {
-    background: white;
-    color: #374151;
-    border: 2px solid #e5e7eb;
+    background: var(--color-surface);
+    color: var(--color-text);
+    border: 2px solid var(--color-border);
   }
 
   .cancel-button:hover {
-    background: #f9fafb;
-    border-color: #d1d5db;
+    background: var(--color-surface);
+    border-color: var(--color-border-strong);
   }
 
   .cancel-button:focus {
@@ -2574,7 +2467,7 @@
   }
 
   .save-button {
-    background: linear-gradient(135deg, #3b82f6 0%, #2563eb 100%);
+    background: linear-gradient(135deg, var(--color-primary) 0%, var(--color-primary-hover) 100%);
     color: white;
     border: 2px solid transparent;
     box-shadow: 0 4px 6px -1px rgba(59, 130, 246, 0.3);
@@ -2582,7 +2475,7 @@
   }
 
   .save-button:hover {
-    background: linear-gradient(135deg, #2563eb 0%, #1d4ed8 100%);
+    background: linear-gradient(135deg, var(--color-primary-hover) 0%, var(--color-primary-hover) 100%);
     box-shadow: 0 6px 8px -1px rgba(59, 130, 246, 0.4);
     transform: translateY(-1px);
   }
@@ -2598,9 +2491,6 @@
 
   /* RTL Support */
 
-  .rtl .actions-container {
-    direction: rtl;
-  }
 
   /* Mobile Responsiveness */
   @media (max-width: 768px) {
@@ -2648,9 +2538,6 @@
     outline: 2px solid transparent;
     outline-offset: 2px;
   }
-  .rtl {
-    direction: rtl;
-  }
 
   /* JSON Editor with Json Preview */
   .json-editor-with-preview {
@@ -2666,18 +2553,18 @@
   }
 
   .json-preview-pane {
-    border-left: 1px solid #e5e7eb;
-    padding-left: 20px;
+    border-inline-start: 1px solid var(--color-border);
+    padding-inline-start: 20px;
     overflow: auto;
   }
 
   .preview-title {
     font-size: 14px;
     font-weight: 600;
-    color: #374151;
+    color: var(--color-text);
     margin-bottom: 12px;
     padding-bottom: 8px;
-    border-bottom: 1px solid #e5e7eb;
+    border-bottom: 1px solid var(--color-border);
   }
 
   @media (max-width: 1024px) {
@@ -2686,9 +2573,9 @@
     }
 
     .json-preview-pane {
-      border-left: none;
-      border-top: 1px solid #e5e7eb;
-      padding-left: 0;
+      border-inline-start: none;
+      border-top: 1px solid var(--color-border);
+      padding-inline-start: 0;
       padding-top: 20px;
     }
   }
@@ -2709,7 +2596,7 @@
   .section-label {
     font-weight: 600;
     font-size: 14px;
-    color: #374151;
+    color: var(--color-text);
     display: flex;
     align-items: center;
     gap: 8px;
@@ -2741,8 +2628,8 @@
     min-width: 32px;
     height: 28px;
     padding: 0 8px;
-    background: #e5e7eb;
-    color: #374151;
+    background: var(--color-border);
+    color: var(--color-text);
     font-size: 11px;
     font-weight: 600;
     border-radius: 6px;
@@ -2776,7 +2663,7 @@
     align-items: center;
     gap: 6px;
     padding: 8px 16px;
-    background: #3b82f6;
+    background: var(--color-primary);
     color: white;
     border: none;
     border-radius: 8px;
@@ -2788,11 +2675,11 @@
   }
 
   .add-tag-btn:hover:not(:disabled) {
-    background: #2563eb;
+    background: var(--color-primary-hover);
   }
 
   .add-tag-btn:disabled {
-    background: #9ca3af;
+    background: var(--color-text-faint);
     cursor: not-allowed;
   }
 
@@ -2806,7 +2693,7 @@
     flex-wrap: wrap;
     gap: 8px;
     padding-top: 8px;
-    border-top: 1px solid #e5e7eb;
+    border-top: 1px solid var(--color-border);
   }
 
   .tag-badge {
@@ -2814,8 +2701,8 @@
     align-items: center;
     gap: 6px;
     padding: 6px 12px;
-    background: #dbeafe;
-    color: #1e40af;
+    background: var(--color-info-soft);
+    color: var(--color-info);
     font-size: 13px;
     font-weight: 500;
     border-radius: 20px;
@@ -2823,7 +2710,7 @@
   }
 
   .tag-badge:hover {
-    background: #bfdbfe;
+    background: var(--color-info-soft);
   }
 
   .tag-remove-btn {
@@ -2835,7 +2722,7 @@
     padding: 0;
     background: transparent;
     border: none;
-    color: #3b82f6;
+    color: var(--color-primary);
     cursor: pointer;
     border-radius: 50%;
     transition:
@@ -2844,7 +2731,7 @@
   }
 
   .tag-remove-btn:hover {
-    background: #3b82f6;
+    background: var(--color-primary);
     color: white;
   }
 
@@ -2873,7 +2760,7 @@
   .status-toggle-simple .status-label {
     font-weight: 600;
     font-size: 14px;
-    color: #374151;
+    color: var(--color-text);
   }
 
   .status-toggle-simple .status-value {
@@ -2882,10 +2769,10 @@
   }
 
   .status-toggle-simple .status-value.active {
-    color: #059669;
+    color: var(--color-success);
   }
 
   .status-toggle-simple .status-value.inactive {
-    color: #dc2626;
+    color: var(--color-danger);
   }
 </style>

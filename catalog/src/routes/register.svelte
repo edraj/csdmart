@@ -1,12 +1,11 @@
 <script lang="ts">
   import { onDestroy } from "svelte";
-  import { goto } from "@roxi/routify";
-  import { _, locale } from "@/i18n";
+  import { goto as gotoStore } from "@roxi/routify";
+  import { _ } from "@/i18n";
   import { checkExisting, register, requestOtp } from "@/stores/user";
 
   import {
     ArrowLeftOutline,
-    CheckCircleSolid,
     EnvelopeSolid,
     EyeSlashSolid,
     EyeSolid,
@@ -17,8 +16,14 @@
   import { getEntity } from "@/lib/dmart_services";
   import { ResourceType } from "@edraj/tsdmart";
   import { getCurrentScope } from "@/stores/user";
+  import { withBase } from "@/lib/paths";
+  import { setTitle } from "@/lib/title";
 
-  $goto;
+  // Routify's helpers read the fragment context when first subscribed, and
+  // Svelte 5 subscribes to a `$store` lazily on first read — so a `$gotoStore`
+  // first touched inside an async callback logs "Unable to access context".
+  // Capture the navigate function once, during component init.
+  const goto = $gotoStore;
 
   let formData = $state({
     email: "",
@@ -38,14 +43,13 @@
   let showPassword = $state(false);
   let showConfirmPassword = $state(false);
   let isSubmitting = $state(false);
-  let showSuccess = $state(false);
   let showError = $state(false);
   let otpCode = $state("");
   let isOtpStep = $state(false);
   let isVerifyingOtp = $state(false);
   let canResendOtp = $state(false);
   let resendCountdown = $state(60);
-  let resendTimer: any;
+  let resendTimer: ReturnType<typeof setInterval> | undefined;
 
   let showAdditionalFields = $state(false);
 
@@ -65,7 +69,11 @@
   };
   let errors: Errors = $state({});
 
-  const isRTL = $derived($locale === "ar" || $locale === "ku");
+  $effect(() => setTitle(isOtpStep ? $_("VerifyEmail") : $_("CreateAccount")));
+
+  function messageOf(error: unknown): string {
+    return error instanceof Error ? error.message : String(error ?? "");
+  }
 
   function parseConfessors(text: string): string[] {
     if (!text.trim()) return [];
@@ -88,20 +96,7 @@
       return;
     }
 
-    errors = {
-      email: "",
-      phoneNumber: "",
-      password: "",
-      confirmPassword: "",
-      gender: "",
-      age: "",
-      address: "",
-      confessors: "",
-      profession: "",
-      description: "",
-      terms: "",
-      otp: "",
-    };
+    errors = {};
 
     let isValid = true;
 
@@ -168,18 +163,16 @@
       formData.email = trimmedEmail;
       formData.phoneNumber = trimmedPhoneNumber;
       await otpRequest();
-    } catch (error: any) {
-      if (error.message.includes("email")) {
-        errors.email = error.message;
-      } else if (
-        error.message.includes("phone") ||
-        error.message.includes("msisdn")
-      ) {
-        errors.phoneNumber = error.message;
-      } else if (error.message.includes("password")) {
-        errors.password = error.message;
+    } catch (error: unknown) {
+      const message = messageOf(error);
+      if (message.includes("email")) {
+        errors.email = message;
+      } else if (message.includes("phone") || message.includes("msisdn")) {
+        errors.phoneNumber = message;
+      } else if (message.includes("password")) {
+        errors.password = message;
       } else {
-        console.error("Registration error:", error.message);
+        console.error("Registration error:", message);
         showError = true;
       }
     } finally {
@@ -192,8 +185,8 @@
       await requestOtp(formData.email);
       isOtpStep = true;
       startResendTimer();
-    } catch (error: any) {
-      console.error("OTP request error:", error.message);
+    } catch (error: unknown) {
+      console.error("OTP request error:", messageOf(error));
       showError = true;
     }
   }
@@ -223,10 +216,10 @@
         false,
       );
 
-      const role =
-        (defaultRole as any).payload.body.items.find(
-          (item: any) => item.key === "default_user_role",
-        )?.value || "catalog_user_role";
+      const items: Array<{ key?: string; value?: string }> =
+        (defaultRole as { payload?: { body?: { items?: Array<{ key?: string; value?: string }> } } })
+          ?.payload?.body?.items ?? [];
+      const role = items.find((item) => item.key === "default_user_role")?.value || "catalog_user_role";
 
       const profileData = {
         gender: formData.gender,
@@ -249,10 +242,11 @@
         role,
         profileData,
       );
-      $goto("/dashboard");
-    } catch (error: any) {
-      console.error("OTP verification error:", error.message);
-      errors.otp = error.message || $_("OtpVerificationFailed");
+      goto("/dashboard");
+    } catch (error: unknown) {
+      const message = messageOf(error);
+      console.error("OTP verification error:", message);
+      errors.otp = message || $_("OtpVerificationFailed");
     } finally {
       isVerifyingOtp = false;
     }
@@ -265,8 +259,8 @@
       await otpRequest();
       otpCode = "";
       errors.otp = "";
-    } catch (error: any) {
-      console.error("Resend OTP error:", error.message);
+    } catch (error: unknown) {
+      console.error("Resend OTP error:", messageOf(error));
       showError = true;
     }
   }
@@ -275,6 +269,7 @@
     canResendOtp = false;
     resendCountdown = 60;
 
+    clearInterval(resendTimer);
     resendTimer = setInterval(() => {
       resendCountdown--;
       if (resendCountdown <= 0) {
@@ -284,33 +279,18 @@
     }, 1000);
   }
 
-  function togglePasswordVisibility() {
-    showPassword = !showPassword;
-  }
-
-  function toggleConfirmPasswordVisibility() {
-    showConfirmPassword = !showConfirmPassword;
-  }
-
-  function toggleAdditionalFields() {
-    showAdditionalFields = !showAdditionalFields;
-  }
-
-  function goToLogin() {
-    $goto("/login");
-  }
-
-  function goBack() {
-    if (isOtpStep) {
-      isOtpStep = false;
-      otpCode = "";
-      errors.otp = "";
-      if (resendTimer) {
-        clearInterval(resendTimer);
-      }
-    } else {
-      $goto("/");
+  function goBackToForm() {
+    isOtpStep = false;
+    otpCode = "";
+    errors.otp = "";
+    if (resendTimer) {
+      clearInterval(resendTimer);
     }
+  }
+
+  function removeConfessor(index: number) {
+    const next = formData.confessors.filter((_c, i) => i !== index);
+    formData.confessorsText = next.join(", ");
   }
 
   onDestroy(() => {
@@ -323,43 +303,27 @@
 <div class="register-container">
   <div class="register-content">
     <div class="register-header">
-      <div class="header-content">
-        <div class="icon-wrapper">
-          {#if isOtpStep}
-            <LockSolid class="header-icon text-white" />
-          {:else}
-            <UserSolid class="header-icon text-white" />
-          {/if}
-        </div>
-        <h1 class="register-title">
-          {isOtpStep ? $_("VerifyPhoneNumber") : $_("CreateAccount")}
-        </h1>
-        <p class="register-description">
-          {isOtpStep
-            ? $_("EnterOtpSentTo") +
-              " " +
-              formData.phoneNumber +
-              " " +
-              $_("OtpTestCode")
-            : $_("CreateAccountDescription")}
-        </p>
+      <div class="icon-wrapper" aria-hidden="true">
+        {#if isOtpStep}
+          <LockSolid class="header-icon" />
+        {:else}
+          <UserSolid class="header-icon" />
+        {/if}
       </div>
+      <h1 class="register-title">
+        {isOtpStep ? $_("VerifyEmail") : $_("CreateAccount")}
+      </h1>
+      <p class="register-description">
+        {isOtpStep
+          ? `${$_("EnterOtpSentTo")} ${formData.email}`
+          : $_("CreateAccountDescription")}
+      </p>
     </div>
 
-    {#if showSuccess}
-      <div class="success-message" class:rtl={isRTL}>
-        <CheckCircleSolid class="success-icon" />
-        <div class="success-content">
-          <h3 class="success-title">{$_("AccountCreated")}</h3>
-          <p class="success-description">{$_("AccountCreatedDescription")}</p>
-        </div>
-      </div>
-    {/if}
-
     {#if showError}
-      <div class="error-message" class:rtl={isRTL}>
+      <div class="error-message" role="alert">
         <svg
-          class="shrink-0 inline w-4 h-4 me-3"
+          class="shrink-0 w-4 h-4"
           aria-hidden="true"
           xmlns="http://www.w3.org/2000/svg"
           fill="currentColor"
@@ -369,25 +333,23 @@
             d="M10 .5a9.5 9.5 0 1 0 9.5 9.5A9.51 9.51 0 0 0 10 .5ZM9.5 4a1.5 1.5 0 1 1 0 3 1.5 1.5 0 0 1 0-3ZM12 15H8a1 1 0 0 1 0-2h1v-3H8a1 1 0 0 1 0-2h2a1 1 0 0 1 1 1v4h1a1 1 0 0 1 0 2Z"
           />
         </svg>
-        <div class="error-content">
-          <p class="error-text">{$_("RegistrationError")}</p>
-        </div>
+        <p class="error-text">{$_("RegistrationError")}</p>
       </div>
     {/if}
 
     <div class="form-container">
-      <form onsubmit={handleSubmit} class="register-form">
+      <form onsubmit={handleSubmit} class="register-form" novalidate>
         {#if !isOtpStep}
           <!-- Required Fields Section -->
-          <div class="form-section">
-            <h3 class="section-title">
-              <UserSolid class="section-icon" />
+          <fieldset class="form-section">
+            <legend class="section-title">
+              <UserSolid class="section-icon" aria-hidden="true" />
               {$_("RequiredInformation")}
-            </h3>
+            </legend>
 
             <div class="form-group">
-              <label for="email" class="form-label" class:rtl={isRTL}>
-                <EnvelopeSolid class="label-icon" />
+              <label for="email" class="form-label">
+                <EnvelopeSolid class="label-icon" aria-hidden="true" />
                 {$_("Email")}
               </label>
               <input
@@ -397,17 +359,20 @@
                 placeholder={$_("EmailPlaceholder")}
                 class="form-input"
                 class:error={errors.email}
-                class:rtl={isRTL}
                 disabled={isSubmitting}
+                autocomplete="email"
+                inputmode="email"
+                aria-invalid={!!errors.email}
+                aria-describedby={errors.email ? "email-error" : undefined}
               />
               {#if errors.email}
-                <p class="error-text-small" class:rtl={isRTL}>{errors.email}</p>
+                <p id="email-error" class="error-text-small" role="alert">{errors.email}</p>
               {/if}
             </div>
 
             <div class="form-group">
-              <label for="phoneNumber" class="form-label" class:rtl={isRTL}>
-                <PhoneSolid class="label-icon" />
+              <label for="phoneNumber" class="form-label">
+                <PhoneSolid class="label-icon" aria-hidden="true" />
                 {$_("PhoneNumber")}
               </label>
               <input
@@ -417,19 +382,19 @@
                 placeholder={$_("PhoneNumberPlaceholder")}
                 class="form-input"
                 class:error={errors.phoneNumber}
-                class:rtl={isRTL}
                 disabled={isSubmitting}
+                autocomplete="tel"
+                aria-invalid={!!errors.phoneNumber}
+                aria-describedby={errors.phoneNumber ? "phone-error" : undefined}
               />
               {#if errors.phoneNumber}
-                <p class="error-text-small" class:rtl={isRTL}>
-                  {errors.phoneNumber}
-                </p>
+                <p id="phone-error" class="error-text-small" role="alert">{errors.phoneNumber}</p>
               {/if}
             </div>
 
             <div class="form-group">
-              <label for="gender" class="form-label" class:rtl={isRTL}>
-                <svg class="label-icon" fill="currentColor" viewBox="0 0 20 20">
+              <label for="gender" class="form-label">
+                <svg class="label-icon" fill="currentColor" viewBox="0 0 20 20" aria-hidden="true">
                   <path
                     fill-rule="evenodd"
                     d="M10 9a3 3 0 100-6 3 3 0 000 6zm-7 9a7 7 0 1114 0H3z"
@@ -443,27 +408,25 @@
                 bind:value={formData.gender}
                 class="form-input"
                 class:error={errors.gender}
-                class:rtl={isRTL}
                 disabled={isSubmitting}
+                aria-invalid={!!errors.gender}
+                aria-describedby={errors.gender ? "gender-error" : undefined}
               >
                 <option value="">{$_("SelectGender")}</option>
                 <option value="male">{$_("Male")}</option>
                 <option value="female">{$_("Female")}</option>
               </select>
               {#if errors.gender}
-                <p class="error-text-small" class:rtl={isRTL}>
-                  {errors.gender}
-                </p>
+                <p id="gender-error" class="error-text-small" role="alert">{errors.gender}</p>
               {/if}
             </div>
 
             <div class="form-group">
-              <label for="password" class="form-label" class:rtl={isRTL}>
-                <LockSolid class="label-icon" />
+              <label for="password" class="form-label">
+                <LockSolid class="label-icon" aria-hidden="true" />
                 {$_("Password")}
               </label>
-              <div class="password-input-wrapper" class:rtl={isRTL}>
-                <label for="password" class="visually-hidden"></label>
+              <div class="password-input-wrapper">
                 <input
                   id="password"
                   type={showPassword ? "text" : "password"}
@@ -471,37 +434,36 @@
                   placeholder={$_("Password")}
                   class="form-input password-input"
                   class:error={errors.password}
-                  class:rtl={isRTL}
                   disabled={isSubmitting}
+                  autocomplete="new-password"
+                  aria-invalid={!!errors.password}
+                  aria-describedby={errors.password ? "password-error" : undefined}
                 />
                 <button
                   aria-label={$_("TogglePasswordVisibility")}
+                  aria-pressed={showPassword}
                   type="button"
                   class="password-toggle"
-                  onclick={togglePasswordVisibility}
-                  class:rtl={isRTL}
+                  onclick={() => (showPassword = !showPassword)}
                 >
                   {#if showPassword}
-                    <EyeSlashSolid class="toggle-icon" />
+                    <EyeSlashSolid class="toggle-icon" aria-hidden="true" />
                   {:else}
-                    <EyeSolid class="toggle-icon" />
+                    <EyeSolid class="toggle-icon" aria-hidden="true" />
                   {/if}
                 </button>
               </div>
               {#if errors.password}
-                <p class="error-text-small" class:rtl={isRTL}>
-                  {errors.password}
-                </p>
+                <p id="password-error" class="error-text-small" role="alert">{errors.password}</p>
               {/if}
             </div>
 
             <div class="form-group">
-              <label for="confirmPassword" class="form-label" class:rtl={isRTL}>
-                <LockSolid class="label-icon" />
+              <label for="confirmPassword" class="form-label">
+                <LockSolid class="label-icon" aria-hidden="true" />
                 {$_("ConfirmPassword")}
               </label>
-              <div class="password-input-wrapper" class:rtl={isRTL}>
-                <label for="confirmPassword" class="visually-hidden"></label>
+              <div class="password-input-wrapper">
                 <input
                   id="confirmPassword"
                   type={showConfirmPassword ? "text" : "password"}
@@ -509,82 +471,64 @@
                   placeholder={$_("ConfirmPasswordPlaceholder")}
                   class="form-input password-input"
                   class:error={errors.confirmPassword}
-                  class:rtl={isRTL}
                   disabled={isSubmitting}
+                  autocomplete="new-password"
+                  aria-invalid={!!errors.confirmPassword}
+                  aria-describedby={errors.confirmPassword ? "confirm-error" : undefined}
                 />
                 <button
                   aria-label={$_("ToggleConfirmPasswordVisibility")}
+                  aria-pressed={showConfirmPassword}
                   type="button"
                   class="password-toggle"
-                  onclick={toggleConfirmPasswordVisibility}
-                  class:rtl={isRTL}
+                  onclick={() => (showConfirmPassword = !showConfirmPassword)}
                 >
                   {#if showConfirmPassword}
-                    <EyeSlashSolid class="toggle-icon" />
+                    <EyeSlashSolid class="toggle-icon" aria-hidden="true" />
                   {:else}
-                    <EyeSolid class="toggle-icon" />
+                    <EyeSolid class="toggle-icon" aria-hidden="true" />
                   {/if}
                 </button>
               </div>
               {#if errors.confirmPassword}
-                <p class="error-text-small" class:rtl={isRTL}>
-                  {errors.confirmPassword}
-                </p>
+                <p id="confirm-error" class="error-text-small" role="alert">{errors.confirmPassword}</p>
               {/if}
             </div>
-          </div>
+          </fieldset>
 
           <!-- Optional Fields Section -->
           <div class="form-section">
-            <div class="expandable-section-header">
-              <button
-                type="button"
-                class="expand-toggle"
-                onclick={toggleAdditionalFields}
-                class:rtl={isRTL}
+            <button
+              type="button"
+              class="expand-toggle"
+              onclick={() => (showAdditionalFields = !showAdditionalFields)}
+              aria-expanded={showAdditionalFields}
+              aria-controls="additional-fields"
+            >
+              <svg
+                class="expand-icon {showAdditionalFields ? 'expanded' : ''}"
+                fill="none"
+                stroke="currentColor"
+                viewBox="0 0 24 24"
+                aria-hidden="true"
               >
-                <svg
-                  class="expand-icon {showAdditionalFields ? 'expanded' : ''}"
-                  fill="none"
-                  stroke="currentColor"
-                  viewBox="0 0 24 24"
-                >
-                  <path
-                    stroke-linecap="round"
-                    stroke-linejoin="round"
-                    stroke-width="2"
-                    d="M19 9l-7 7-7-7"
-                  />
-                </svg>
-                <span class="expand-text">
-                  {showAdditionalFields
-                    ? $_("HideAdditionalInformation")
-                    : $_("AddAdditionalInformation")}
-                </span>
-                <span class="optional-badge">{$_("Optional")}</span>
-              </button>
-            </div>
+                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 9l-7 7-7-7" />
+              </svg>
+              <span class="expand-text">
+                {showAdditionalFields ? $_("HideAdditionalInformation") : $_("AddAdditionalInformation")}
+              </span>
+              <span class="optional-badge">{$_("Optional")}</span>
+            </button>
 
             {#if showAdditionalFields}
-              <div class="additional-fields">
+              <div class="additional-fields" id="additional-fields">
                 <p class="additional-fields-description">
                   {$_("CompleteProfileDescription")}
                 </p>
 
                 <div class="optional-fields-grid">
-                  <div class="form-group full-width">
-                    <label for="age" class="form-label" class:rtl={isRTL}>
-                      <svg
-                        class="label-icon"
-                        fill="currentColor"
-                        viewBox="0 0 20 20"
-                      >
-                        <path
-                          d="M10 2L3 7v11c0 1.1.9 2 2 2h3v-8h4v8h3c1.1 0 2-.9 2-2V7l-7-5z"
-                        />
-                      </svg>
-                      {$_("Age")}
-                    </label>
+                  <div class="form-group">
+                    <label for="age" class="form-label">{$_("Age")}</label>
                     <input
                       id="age"
                       type="number"
@@ -592,149 +536,61 @@
                       placeholder={$_("AgePlaceholder")}
                       class="form-input"
                       class:error={errors.age}
-                      class:rtl={isRTL}
                       disabled={isSubmitting}
                       min="1"
                       max="150"
+                      aria-invalid={!!errors.age}
+                      aria-describedby={errors.age ? "age-error" : undefined}
                     />
                     {#if errors.age}
-                      <p class="error-text-small" class:rtl={isRTL}>
-                        {errors.age}
-                      </p>
+                      <p id="age-error" class="error-text-small" role="alert">{errors.age}</p>
                     {/if}
                   </div>
 
-                  <div class="form-group full-width">
-                    <label
-                      for="profession"
-                      class="form-label"
-                      class:rtl={isRTL}
-                    >
-                      <svg
-                        class="label-icon"
-                        fill="currentColor"
-                        viewBox="0 0 20 20"
-                      >
-                        <path
-                          fill-rule="evenodd"
-                          d="M6 6V5a3 3 0 013-3h2a3 3 0 013 3v1h2a2 2 0 012 2v3.57A22.952 22.952 0 0110 13a22.95 22.95 0 01-8-1.43V8a2 2 0 012-2h2zm2-1a1 1 0 011-1h2a1 1 0 011 1v1H8V5zm1 5a1 1 0 011-1h.01a1 1 0 110 2H10a1 1 0 01-1-1z"
-                          clip-rule="evenodd"
-                        />
-                        <path
-                          d="M2 13.692V16a2 2 0 002 2h12a2 2 0 002-2v-2.308A24.974 24.974 0 0110 15c-2.796 0-5.487-.46-8-1.308z"
-                        />
-                      </svg>
-                      {$_("Profession")}
-                    </label>
+                  <div class="form-group">
+                    <label for="profession" class="form-label">{$_("Profession")}</label>
                     <input
                       id="profession"
                       type="text"
                       bind:value={formData.profession}
                       placeholder={$_("ProfessionPlaceholder")}
                       class="form-input"
-                      class:error={errors.profession}
-                      class:rtl={isRTL}
                       disabled={isSubmitting}
+                      autocomplete="organization-title"
                     />
-                    {#if errors.profession}
-                      <p class="error-text-small" class:rtl={isRTL}>
-                        {errors.profession}
-                      </p>
-                    {/if}
                   </div>
 
                   <div class="form-group full-width">
-                    <label
-                      for="description"
-                      class="form-label"
-                      class:rtl={isRTL}
-                    >
-                      <svg
-                        class="label-icon"
-                        fill="currentColor"
-                        viewBox="0 0 20 20"
-                      >
-                        <path
-                          fill-rule="evenodd"
-                          d="M18 10a8 8 0 11-16 0 8 8 0 0116 0zm-7-4a1 1 0 11-2 0 1 1 0 012 0zM9 9a1 1 0 000 2v3a1 1 0 001 1h1a1 1 0 100-2v-3a1 1 0 00-1-1H9z"
-                          clip-rule="evenodd"
-                        />
-                      </svg>
-                      {$_("BioDescription")}
-                    </label>
+                    <label for="description" class="form-label">{$_("BioDescription")}</label>
                     <textarea
                       id="description"
                       bind:value={formData.description}
                       placeholder={$_("BioDescriptionPlaceholder")}
                       class="form-textarea"
-                      class:error={errors.description}
-                      class:rtl={isRTL}
                       disabled={isSubmitting}
                       rows="4"
                     ></textarea>
-                    {#if errors.description}
-                      <p class="error-text-small" class:rtl={isRTL}>
-                        {errors.description}
-                      </p>
-                    {/if}
                   </div>
 
                   <div class="form-group full-width">
-                    <label for="address" class="form-label" class:rtl={isRTL}>
-                      <svg
-                        class="label-icon"
-                        fill="currentColor"
-                        viewBox="0 0 20 20"
-                      >
-                        <path
-                          fill-rule="evenodd"
-                          d="M5.05 4.05a7 7 0 119.9 9.9L10 18.9l-4.95-4.95a7 7 0 010-9.9zM10 11a2 2 0 100-4 2 2 0 000 4z"
-                          clip-rule="evenodd"
-                        />
-                      </svg>
-                      {$_("Address")}
-                    </label>
+                    <label for="address" class="form-label">{$_("Address")}</label>
                     <textarea
                       id="address"
                       bind:value={formData.address}
                       placeholder={$_("AddressPlaceholder")}
                       class="form-textarea"
-                      class:error={errors.address}
-                      class:rtl={isRTL}
                       disabled={isSubmitting}
                       rows="3"
+                      autocomplete="street-address"
                     ></textarea>
-                    {#if errors.address}
-                      <p class="error-text-small" class:rtl={isRTL}>
-                        {errors.address}
-                      </p>
-                    {/if}
                   </div>
 
                   <div class="form-group full-width">
-                    <label
-                      for="confessors"
-                      class="form-label"
-                      class:rtl={isRTL}
-                    >
-                      <svg
-                        class="label-icon"
-                        fill="currentColor"
-                        viewBox="0 0 20 20"
-                      >
-                        <path
-                          d="M13 6a3 3 0 11-6 0 3 3 0 016 0zM18 8a2 2 0 11-4 0 2 2 0 014 0zM14 15a4 4 0 00-8 0v3h8v-3z"
-                        />
-                        <path
-                          d="M6 8a2 2 0 11-4 0 2 2 0 014 0zM16 18v-3a5.972 5.972 0 00-.75-2.906A3.005 3.005 0 0119 15v3h-3zM4.75 12.094A5.973 5.973 0 004 15v3H1v-3a3 3 0 013.75-2.906z"
-                        />
-                      </svg>
+                    <label for="confessors" class="form-label">
                       {$_("Confessors")}
                       <span class="field-hint">
                         ({formData.confessors.length}
-                        {formData.confessors.length === 1
-                          ? $_("ConfessorSingular")
-                          : $_("ConfessorPlural")})
+                        {formData.confessors.length === 1 ? $_("ConfessorSingular") : $_("ConfessorPlural")})
                       </span>
                     </label>
                     <textarea
@@ -742,46 +598,34 @@
                       bind:value={formData.confessorsText}
                       placeholder={$_("ConfessorsPlaceholder")}
                       class="form-textarea"
-                      class:error={errors.confessors}
-                      class:rtl={isRTL}
                       disabled={isSubmitting}
                       rows="4"
+                      aria-describedby="confessors-help"
                     ></textarea>
                     {#if formData.confessors.length > 0}
                       <div class="confessors-preview">
                         <p class="preview-title">{$_("ConfessorsList")}:</p>
-                        <div class="confessors-tags">
-                          {#each formData.confessors as confessor, index}
-                            <span class="confessor-tag">
+                        <ul class="confessors-tags">
+                          {#each formData.confessors as confessor, index (`${index}:${confessor}`)}
+                            <li class="confessor-tag">
                               {confessor}
                               <button
                                 type="button"
                                 class="remove-tag"
-                                onclick={() => {
-                                  const newConfessors =
-                                    formData.confessors.filter(
-                                      (_, i) => i !== index,
-                                    );
-                                  formData.confessorsText =
-                                    newConfessors.join(", ");
-                                }}
+                                aria-label="{$_('ui.remove')} {confessor}"
+                                onclick={() => removeConfessor(index)}
                                 disabled={isSubmitting}
                               >
                                 ×
                               </button>
-                            </span>
+                            </li>
                           {/each}
-                        </div>
+                        </ul>
                       </div>
                     {/if}
-                    <p class="field-help-text">
+                    <p class="field-help-text" id="confessors-help">
                       {$_("ConfessorsHelpText")}
                     </p>
-                    {#if errors.confessors}
-                      <p class="error-text-small" class:rtl={isRTL}>
-                        {errors.confessors}
-                      </p>
-                    {/if}
                   </div>
                 </div>
               </div>
@@ -790,53 +634,51 @@
 
           <!-- Terms and Conditions -->
           <div class="form-group">
-            <label for="agreeToTerms" class="checkbox-label" class:rtl={isRTL}>
+            <label for="agreeToTerms" class="checkbox-label">
               <input
                 id="agreeToTerms"
                 type="checkbox"
                 bind:checked={agreeToTerms}
                 class="checkbox-input"
                 disabled={isSubmitting}
+                aria-invalid={!!errors.terms}
+                aria-describedby={errors.terms ? "terms-error" : undefined}
               />
               <span class="checkbox-text">{$_("AgreeToTerms")}</span>
             </label>
             {#if errors.terms}
-              <p class="error-text-small" class:rtl={isRTL}>{errors.terms}</p>
+              <p id="terms-error" class="error-text-small" role="alert">{errors.terms}</p>
             {/if}
           </div>
         {:else}
           <!-- OTP Verification -->
           <div class="form-group">
-            <label for="otpCode" class="form-label" class:rtl={isRTL}>
-              <LockSolid class="label-icon" />
+            <label for="otpCode" class="form-label">
+              <LockSolid class="label-icon" aria-hidden="true" />
               {$_("VerificationCode")}
             </label>
             <input
               id="otpCode"
               type="text"
+              inputmode="numeric"
+              autocomplete="one-time-code"
               bind:value={otpCode}
               placeholder={$_("EnterOtpCode")}
               class="form-input otp-input"
               class:error={errors.otp}
-              class:rtl={isRTL}
               disabled={isVerifyingOtp}
               maxlength="6"
+              aria-invalid={!!errors.otp}
+              aria-describedby={errors.otp ? "otp-error" : undefined}
             />
             {#if errors.otp}
-              <p class="error-text-small" class:rtl={isRTL}>{errors.otp}</p>
+              <p id="otp-error" class="error-text-small" role="alert">{errors.otp}</p>
             {/if}
           </div>
 
-          <div class="resend-otp-container" class:rtl={isRTL}>
+          <div class="resend-otp-container">
             <p class="resend-text">{$_("DidNotReceiveOtp")}</p>
-            <button
-              aria-label={$_("ResendOtpButton")}
-              type="button"
-              class="resend-button"
-              onclick={resendOtp}
-              disabled={!canResendOtp}
-              class:rtl={isRTL}
-            >
+            <button type="button" class="resend-button" onclick={resendOtp} disabled={!canResendOtp}>
               {#if canResendOtp}
                 {$_("ResendOtp")}
               {:else}
@@ -847,47 +689,35 @@
         {/if}
 
         <button
-          aria-label={$_("SubmitForm")}
           type="submit"
           class="submit-button"
-          class:loading={isSubmitting || isVerifyingOtp}
-          class:rtl={isRTL}
           disabled={isSubmitting || isVerifyingOtp}
+          aria-busy={isSubmitting || isVerifyingOtp}
         >
           {#if isSubmitting || isVerifyingOtp}
-            <div class="loading-spinner"></div>
+            <span class="spinner spinner-xs spinner-white" aria-hidden="true"></span>
             {isOtpStep ? $_("VerifyingOtp") : $_("SigningUp")}
           {:else if isOtpStep}
-            <LockSolid class="button-icon" />
+            <LockSolid class="button-icon" aria-hidden="true" />
             {$_("VerifyOtp")}
           {:else}
-            <UserSolid class="button-icon" />
+            <UserSolid class="button-icon" aria-hidden="true" />
             {$_("SendOtp")}
           {/if}
         </button>
       </form>
 
       {#if isOtpStep}
-        <div class="back-link items-center" class:rtl={isRTL}>
-          <button
-            aria-label={$_("GoBack")}
-            class="link-button d-flex align-center"
-            onclick={goBack}
-          >
-            <ArrowLeftOutline class="back-icon mx-2" />
+        <div class="back-link">
+          <button type="button" class="link-button" onclick={goBackToForm}>
+            <ArrowLeftOutline class="back-icon rtl:rotate-180" aria-hidden="true" />
             {$_("BackToForm")}
           </button>
         </div>
       {:else}
-        <div class="login-link" class:rtl={isRTL}>
+        <div class="login-link">
           <span class="login-text">{$_("AlreadyHaveAccount")}</span>
-          <button
-            aria-label={$_("GoToLogin")}
-            class="link-button"
-            onclick={goToLogin}
-          >
-            {$_("SignIn")}
-          </button>
+          <a class="link-button" href={withBase("/login")}>{$_("SignIn")}</a>
         </div>
       {/if}
     </div>
@@ -898,7 +728,7 @@
   .register-container {
     min-height: 100vh;
     background: var(--gradient-page);
-    padding: 2rem 1rem;
+    padding: 2rem var(--space-page-x);
     position: relative;
   }
 
@@ -906,14 +736,10 @@
     content: "";
     position: absolute;
     top: -30%;
-    right: -15%;
+    inset-inline-end: -15%;
     width: 50%;
     height: 60%;
-    background: radial-gradient(
-      circle,
-      rgba(99, 102, 241, 0.06) 0%,
-      transparent 70%
-    );
+    background: radial-gradient(circle, rgba(99, 102, 241, 0.06) 0%, transparent 70%);
     pointer-events: none;
   }
 
@@ -930,15 +756,12 @@
     margin-bottom: 1.5rem;
   }
 
-  .header-content {
-    margin-bottom: 1.5rem;
-  }
-
   .icon-wrapper {
     width: 3.5rem;
     height: 3.5rem;
     background: var(--gradient-brand);
-    border-radius: var(--radius-xl);
+    color: var(--color-text-on-primary);
+    border-radius: var(--radius-card);
     display: flex;
     align-items: center;
     justify-content: center;
@@ -946,60 +769,49 @@
     box-shadow: var(--shadow-brand);
   }
 
+  .icon-wrapper :global(.header-icon) {
+    width: 1.5rem;
+    height: 1.5rem;
+  }
+
   .register-title {
     font-size: 1.75rem;
     font-weight: 700;
-    color: var(--color-gray-900);
+    color: var(--color-text);
     margin-bottom: 0.5rem;
     letter-spacing: -0.02em;
   }
 
   .register-description {
     font-size: 0.9375rem;
-    color: var(--color-gray-500);
+    color: var(--color-text-muted);
     line-height: 1.5;
   }
 
-  .success-message,
   .error-message {
     display: flex;
     align-items: center;
     gap: 0.75rem;
     padding: 0.875rem 1rem;
-    border-radius: var(--radius-lg);
+    border-radius: var(--radius-card);
     margin-bottom: 1.5rem;
+    background: var(--color-danger-bg);
+    border: 1px solid var(--color-danger-border);
+    color: var(--color-danger-fg);
     animation: fadeInDown var(--duration-normal) var(--ease-out);
   }
 
-  .success-message {
-    background: #f0fdf4;
-    border: 1px solid #bbf7d0;
-  }
-
-  .error-message {
-    background: #fef2f2;
-    border: 1px solid #fecaca;
-  }
-
-  .success-title {
-    font-weight: 600;
-    color: #16a34a;
-    margin-bottom: 0.125rem;
-    font-size: 0.875rem;
-  }
-
-  .success-description,
   .error-text {
-    color: var(--color-gray-700);
     font-size: 0.8125rem;
+    font-weight: 500;
   }
 
   .form-container {
-    background: white;
-    border-radius: var(--radius-2xl);
+    background: var(--color-surface-2);
+    border-radius: var(--radius-modal);
     padding: 2rem;
-    box-shadow: var(--shadow-lg);
-    border: 1px solid rgba(255, 255, 255, 0.8);
+    box-shadow: var(--shadow-card);
+    border: 1px solid var(--color-border);
   }
 
   .register-form {
@@ -1012,6 +824,10 @@
     display: flex;
     flex-direction: column;
     gap: 1.25rem;
+    border: 0;
+    padding: 0;
+    margin: 0;
+    min-width: 0;
   }
 
   .section-title {
@@ -1019,15 +835,18 @@
     align-items: center;
     gap: 0.5rem;
     font-weight: 600;
-    color: var(--color-gray-800);
+    color: var(--color-text);
     font-size: 0.9375rem;
     margin-bottom: 0.25rem;
-    padding-bottom: 0.5rem;
-    border-bottom: 1.5px solid var(--color-gray-100);
+    padding: 0 0 0.5rem;
+    border-bottom: 1.5px solid var(--color-border);
+    width: 100%;
   }
 
-  .expandable-section-header {
-    margin-bottom: 0.75rem;
+  .section-title :global(.section-icon) {
+    width: 1rem;
+    height: 1rem;
+    color: var(--color-primary);
   }
 
   .expand-toggle {
@@ -1035,20 +854,20 @@
     align-items: center;
     gap: 0.625rem;
     width: 100%;
-    background: var(--color-gray-50);
-    border: 1.5px solid var(--color-gray-200);
-    border-radius: var(--radius-lg);
+    background: var(--color-surface);
+    border: 1.5px solid var(--color-border);
+    border-radius: var(--radius-control);
     padding: 0.75rem 1rem;
     cursor: pointer;
     transition: all var(--duration-normal) var(--ease-out);
     font-weight: 500;
     font-size: 0.875rem;
-    color: var(--color-gray-700);
+    color: var(--color-text);
   }
 
   .expand-toggle:hover {
-    background: white;
-    border-color: var(--color-gray-300);
+    background: var(--color-surface-2);
+    border-color: var(--color-border-strong);
     box-shadow: var(--shadow-sm);
   }
 
@@ -1056,7 +875,8 @@
     width: 1.125rem;
     height: 1.125rem;
     transition: transform var(--duration-normal) var(--ease-out);
-    color: var(--color-gray-400);
+    color: var(--color-text-faint);
+    flex-shrink: 0;
   }
 
   .expand-icon.expanded {
@@ -1065,16 +885,12 @@
 
   .expand-text {
     flex: 1;
-    text-align: left;
-  }
-
-  .expand-toggle.rtl .expand-text {
-    text-align: right;
+    text-align: start;
   }
 
   .optional-badge {
-    background: var(--color-primary-50);
-    color: var(--color-primary-600);
+    background: var(--color-primary-soft);
+    color: var(--color-primary);
     padding: 0.125rem 0.625rem;
     border-radius: var(--radius-full);
     font-size: 0.6875rem;
@@ -1083,19 +899,19 @@
   }
 
   .additional-fields {
-    background: var(--color-gray-50);
-    border: 1.5px solid var(--color-gray-200);
-    border-radius: var(--radius-lg);
+    background: var(--color-surface);
+    border: 1.5px solid var(--color-border);
+    border-radius: var(--radius-card);
     padding: 1.25rem;
+    margin-top: 0.75rem;
     animation: fadeInUp var(--duration-normal) var(--ease-out);
   }
 
   .additional-fields-description {
-    color: var(--color-gray-500);
+    color: var(--color-text-muted);
     font-size: 0.8125rem;
     margin-bottom: 1.25rem;
     text-align: center;
-    font-style: italic;
   }
 
   .optional-fields-grid {
@@ -1118,6 +934,7 @@
     display: flex;
     flex-direction: column;
     gap: 0.375rem;
+    min-width: 0;
   }
 
   .form-label {
@@ -1125,61 +942,57 @@
     align-items: center;
     gap: 0.375rem;
     font-weight: 500;
-    color: var(--color-gray-700);
+    color: var(--color-text);
     font-size: 0.8125rem;
   }
 
+  .form-label :global(.label-icon),
   .label-icon {
     width: 0.875rem;
     height: 0.875rem;
-    color: var(--color-gray-400);
+    color: var(--color-text-faint);
   }
 
   .field-hint {
     font-size: 0.6875rem;
-    color: var(--color-gray-400);
+    color: var(--color-text-faint);
     font-weight: 400;
-    margin-left: 0.25rem;
+    margin-inline-start: 0.25rem;
   }
 
   .form-input,
   .form-textarea {
     padding: 0.6875rem 0.875rem;
-    border: 1.5px solid var(--color-gray-200);
-    border-radius: var(--radius-lg);
+    border: 1.5px solid var(--color-border);
+    border-radius: var(--radius-control);
     font-size: 0.9375rem;
     transition: all var(--duration-normal) var(--ease-out);
-    background: var(--color-gray-50);
-    color: var(--color-gray-800);
+    background: var(--color-surface);
+    color: var(--color-text);
+    width: 100%;
   }
 
   .form-input::placeholder,
   .form-textarea::placeholder {
-    color: var(--color-gray-400);
+    color: var(--color-text-faint);
   }
 
   .form-input:hover,
   .form-textarea:hover {
-    border-color: var(--color-gray-300);
+    border-color: var(--color-border-strong);
   }
 
   .form-input:focus,
   .form-textarea:focus {
     outline: none;
-    border-color: var(--color-primary-400);
-    box-shadow: 0 0 0 3px rgba(99, 102, 241, 0.1);
-    background: white;
+    border-color: var(--color-primary);
+    box-shadow: 0 0 0 3px var(--color-primary-soft);
+    background: var(--color-surface-2);
   }
 
-  .form-input.error,
-  .form-textarea.error {
-    border-color: var(--color-error);
-    box-shadow: 0 0 0 3px rgba(239, 68, 68, 0.08);
-  }
-
-  .form-input.rtl,
-  .form-textarea.rtl {
-    text-align: right;
+  .form-input.error {
+    border-color: var(--color-danger);
+    box-shadow: 0 0 0 3px var(--color-danger-soft);
   }
 
   .form-textarea {
@@ -1188,18 +1001,23 @@
     font-family: inherit;
   }
 
+  .otp-input {
+    letter-spacing: 0.25em;
+    font-variant-numeric: tabular-nums;
+  }
+
   .confessors-preview {
     margin-top: 0.5rem;
     padding: 0.75rem;
-    background: white;
-    border-radius: var(--radius-md);
-    border: 1px solid var(--color-gray-200);
+    background: var(--color-surface-2);
+    border-radius: var(--radius-control);
+    border: 1px solid var(--color-border);
   }
 
   .preview-title {
     font-size: 0.75rem;
     font-weight: 600;
-    color: var(--color-gray-600);
+    color: var(--color-text-muted);
     margin-bottom: 0.5rem;
   }
 
@@ -1207,14 +1025,17 @@
     display: flex;
     flex-wrap: wrap;
     gap: 0.375rem;
+    list-style: none;
+    margin: 0;
+    padding: 0;
   }
 
   .confessor-tag {
     display: flex;
     align-items: center;
     gap: 0.25rem;
-    background: var(--color-primary-50);
-    color: var(--color-primary-700);
+    background: var(--color-primary-soft);
+    color: var(--color-primary);
     padding: 0.25rem 0.5rem;
     border-radius: var(--radius-full);
     font-size: 0.75rem;
@@ -1224,15 +1045,15 @@
   .remove-tag {
     background: none;
     border: none;
-    color: var(--color-primary-600);
+    color: var(--color-primary);
     cursor: pointer;
     font-weight: bold;
     font-size: 0.875rem;
     line-height: 1;
     padding: 0;
-    margin-left: 0.125rem;
-    width: 0.875rem;
-    height: 0.875rem;
+    margin-inline-start: 0.125rem;
+    width: 1rem;
+    height: 1rem;
     display: flex;
     align-items: center;
     justify-content: center;
@@ -1241,7 +1062,7 @@
   }
 
   .remove-tag:hover:not(:disabled) {
-    background: rgba(99, 102, 241, 0.15);
+    background: var(--color-primary-200);
   }
 
   .remove-tag:disabled {
@@ -1251,9 +1072,8 @@
 
   .field-help-text {
     font-size: 0.6875rem;
-    color: var(--color-gray-400);
+    color: var(--color-text-faint);
     margin-top: 0.25rem;
-    font-style: italic;
   }
 
   .password-input-wrapper {
@@ -1263,34 +1083,29 @@
   }
 
   .password-input {
-    padding-right: 2.75rem;
-    width: 100%;
-  }
-
-  .password-input.rtl {
-    padding-right: 0.875rem;
-    padding-left: 2.75rem;
+    padding-inline-end: 2.75rem;
   }
 
   .password-toggle {
     position: absolute;
-    right: 0.625rem;
+    inset-inline-end: 0.625rem;
     background: none;
     border: none;
     cursor: pointer;
-    color: var(--color-gray-400);
+    color: var(--color-text-faint);
     padding: 0.25rem;
-    border-radius: var(--radius-sm);
+    border-radius: var(--radius-control);
     transition: color var(--duration-fast) ease;
+    display: inline-flex;
   }
 
   .password-toggle:hover {
-    color: var(--color-gray-600);
+    color: var(--color-text);
   }
 
-  .password-toggle.rtl {
-    right: auto;
-    left: 0.625rem;
+  .password-toggle :global(.toggle-icon) {
+    width: 1.125rem;
+    height: 1.125rem;
   }
 
   .checkbox-label {
@@ -1299,14 +1114,15 @@
     gap: 0.625rem;
     cursor: pointer;
     font-size: 0.8125rem;
-    color: var(--color-gray-600);
+    color: var(--color-text-muted);
   }
 
   .checkbox-input {
     width: 1rem;
     height: 1rem;
-    accent-color: var(--color-primary-500);
-    border-radius: var(--radius-sm);
+    accent-color: var(--color-primary);
+    border-radius: var(--radius-control);
+    flex-shrink: 0;
   }
 
   .checkbox-text {
@@ -1315,12 +1131,8 @@
 
   .error-text-small {
     font-size: 0.75rem;
-    color: var(--color-error);
+    color: var(--color-danger);
     font-weight: 500;
-  }
-
-  .error-text-small.rtl {
-    text-align: right;
   }
 
   .submit-button {
@@ -1329,15 +1141,20 @@
     justify-content: center;
     gap: 0.5rem;
     background: var(--gradient-brand);
-    color: white;
+    color: var(--color-text-on-primary);
     font-weight: 600;
     padding: 0.75rem 1.5rem;
-    border-radius: var(--radius-lg);
+    border-radius: var(--radius-control);
     border: none;
     cursor: pointer;
     transition: all var(--duration-normal) var(--ease-out);
     font-size: 0.9375rem;
     box-shadow: var(--shadow-brand);
+  }
+
+  .submit-button :global(.button-icon) {
+    width: 1rem;
+    height: 1rem;
   }
 
   .submit-button:hover:not(:disabled) {
@@ -1356,120 +1173,91 @@
     transform: none;
   }
 
-  .submit-button.rtl {
-    flex-direction: row-reverse;
-  }
-
-  .loading-spinner {
-    width: 1rem;
-    height: 1rem;
-    border: 2px solid rgba(255, 255, 255, 0.3);
-    border-top: 2px solid white;
-    border-radius: 50%;
-    animation: spin 0.8s linear infinite;
-  }
-
-  .login-link {
+  .login-link,
+  .back-link {
     display: flex;
     justify-content: center;
     align-items: center;
+    flex-wrap: wrap;
+    gap: 0.25rem;
     margin-top: 1.5rem;
     padding-top: 1.25rem;
-    border-top: 1px solid var(--color-gray-100);
+    border-top: 1px solid var(--color-border);
   }
 
   .login-text {
-    color: var(--color-gray-500);
+    color: var(--color-text-muted);
     font-size: 0.8125rem;
   }
 
   .link-button {
-    display: flex;
+    display: inline-flex;
     align-items: center;
+    gap: 0.375rem;
     background: none;
     border: none;
-    color: var(--color-primary-500);
+    color: var(--color-primary);
     font-weight: 600;
     cursor: pointer;
     text-decoration: none;
     font-size: 0.8125rem;
-    margin-left: 0.25rem;
     transition: color var(--duration-fast) ease;
   }
 
-  .login-link.rtl .link-button {
-    margin-left: 0;
-    margin-right: 0.25rem;
+  .link-button :global(.back-icon) {
+    width: 1rem;
+    height: 1rem;
   }
 
   .link-button:hover {
-    color: var(--color-primary-700);
+    color: var(--color-primary-hover);
     text-decoration: underline;
   }
 
   .resend-otp-container {
     display: flex;
     align-items: center;
+    flex-wrap: wrap;
     gap: 0.5rem;
     font-size: 0.8125rem;
   }
 
   .resend-text {
-    color: var(--color-gray-500);
+    color: var(--color-text-muted);
   }
 
   .resend-button {
     background: none;
     border: none;
-    color: var(--color-primary-500);
+    color: var(--color-primary);
     font-weight: 600;
     cursor: pointer;
     text-decoration: none;
     font-size: 0.8125rem;
+    font-variant-numeric: tabular-nums;
     transition: color var(--duration-fast) ease;
   }
 
   .resend-button:disabled {
-    color: var(--color-gray-400);
+    color: var(--color-text-faint);
     cursor: not-allowed;
   }
 
   .resend-button:hover:not(:disabled) {
-    color: var(--color-primary-700);
+    color: var(--color-primary-hover);
     text-decoration: underline;
-  }
-
-  .back-link {
-    text-align: center;
-    align-items: center;
-    display: flex;
-    margin-top: 1.5rem;
-    padding-top: 1.25rem;
-    border-top: 1px solid var(--color-gray-100);
-  }
-
-  .visually-hidden {
-    position: absolute !important;
-    width: 1px !important;
-    height: 1px !important;
-    padding: 0 !important;
-    margin: -1px !important;
-    overflow: hidden !important;
-    clip: rect(0, 0, 0, 0) !important;
-    white-space: nowrap !important;
-    border: 0 !important;
   }
 
   @media (max-width: 640px) {
     .register-container {
-      padding: 1rem;
+      padding: 1rem var(--space-page-x);
     }
     .register-title {
       font-size: 1.5rem;
     }
     .form-container {
       padding: 1.5rem;
-      border-radius: var(--radius-xl);
+      border-radius: var(--radius-card);
     }
     .additional-fields {
       padding: 1rem;

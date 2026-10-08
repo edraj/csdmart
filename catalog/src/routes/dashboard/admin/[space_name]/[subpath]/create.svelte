@@ -1,26 +1,35 @@
 <script lang="ts">
+  import { setTitle } from "@/lib/title";
+  import { log } from "@/lib/logger";
   import { onMount } from "svelte";
-  import { marked } from "marked";
-  import { sanitizeHtml } from "@/lib/utils/sanitize";
+  import { renderMarkdown } from "@/lib/markdown";
   import {
     createEntity,
     getTemplates,
   } from "@/lib/dmart_services";
   import { ContentType, ResourceType } from "@edraj/tsdmart";
-  import { goto, params } from "@roxi/routify";
+  import { goto as gotoStore, params } from "@roxi/routify";
   import { _ } from "@/i18n";
 
-  let templates: any[] = [];
-  let selectedTemplate: any = null;
-  let templateFields: any[] = [];
-  let fieldValues: Record<string, any> = {};
-  let previewContent = "";
+  // Routify's helpers read the fragment context when first subscribed, and
+  // Svelte 5 subscribes to a `$store` lazily on first read — so a `$gotoStore`
+  // first touched inside an async callback logs "Unable to access context".
+  // Capture the navigate function once, during component init.
+  const goto = $gotoStore;
 
-  let entityShortname = "";
-  let entityTags: any[] = [];
-  let newTag = "";
-  let isCreating = false;
-  let createMessage = "";
+  let templates: any[] = $state([]);
+
+  $effect(() => setTitle($_("template_generator.title")));
+  let selectedTemplate: any = $state(null);
+  let templateFields: any[] = $state([]);
+  let fieldValues: Record<string, any> = $state({});
+  let previewContent = $state("");
+
+  let entityShortname = $state("");
+  let entityTags: any[] = $state([]);
+  let newTag = $state("");
+  let isCreating = $state(false);
+  let createMessage = $state("");
 
   onMount(async () => {
     const response = await getTemplates();
@@ -212,13 +221,13 @@
 
       if (result) {
         createMessage = `Entity created successfully with shortname: ${result}`;
-        $goto(`/dashboard/admin/${$params.space_name}/templates`);
+        goto(`/dashboard/admin/${$params.space_name}/templates`);
         resetForm();
       } else {
         createMessage = "Failed to create entity";
       }
     } catch (error) {
-      console.error("Error creating entity:", error);
+      log.error("Error creating entity:", error);
       createMessage = "Error creating entity: " + (error as any).message;
     } finally {
       isCreating = false;
@@ -235,24 +244,26 @@
     newTag = "";
   }
 
-  $: if (selectedTemplate && Object.keys(fieldValues).length > 0) {
-    updatePreview();
-  }
+  $effect(() => {
+    if (selectedTemplate && Object.keys(fieldValues).length > 0) {
+      updatePreview();
+    }
+  });
 </script>
 
 <div class="container">
-  <h1>Template Form Generator</h1>
+  <h1>{$_("template_generator.title")}</h1>
 
   <div class="form-section">
     <div class="field-group">
-      <label for="template-select">Select Template</label>
+      <label for="template-select">{$_("template_generator.select_template")}</label>
       <select
         id="template-select"
         bind:value={selectedTemplate}
-        on:change={handleTemplateSelect}
+        onchange={handleTemplateSelect}
       >
-        <option value="">-- Choose a template --</option>
-        {#each templates as template}
+        <option value="">{$_("template_generator.choose_template")}</option>
+        {#each templates as template (template.uuid)}
           <option value={template.uuid}>
             {template.attributes.payload.body.title}
           </option>
@@ -261,8 +272,8 @@
     </div>
 
     {#if templateFields.length > 0}
-      <h3>Fill Template Fields</h3>
-      {#each templateFields as field}
+      <h3>{$_("template_generator.fill_fields")}</h3>
+      {#each templateFields as field (field.name)}
         <div class="field-group">
           <label for={field.name}>
             {field.name} ({field.type})
@@ -275,11 +286,11 @@
               rows={field.type === "list" || field.type === "object" || field.type === "list_object" ? 5 : 3}
             ></textarea>
             {#if field.type === "list"}
-              <small class="field-hint">Enter values separated by commas</small>
+              <small class="field-hint">{$_("json_editor.csv_placeholder")}</small>
             {:else if field.type === "object"}
-              <small class="field-hint">Enter valid JSON object</small>
+              <small class="field-hint">{$_("template_generator.hint_json_object")}</small>
             {:else if field.type === "list_object"}
-              <small class="field-hint">Enter valid JSON array of objects</small>
+              <small class="field-hint">{$_("template_generator.hint_json_array")}</small>
             {/if}
           {:else if getFieldType(field.type) === "checkbox"}
             <input
@@ -302,10 +313,10 @@
 
   {#if selectedTemplate}
     <div class="create-section">
-      <h3>Create New Entity</h3>
+      <h3>{$_("template_generator.create_entity")}</h3>
 
       <div class="field-group">
-        <label for="entity-shortname">Shortname</label>
+        <label for="entity-shortname">{$_("fields.shortname")}</label>
         <input
           id="entity-shortname"
           type="text"
@@ -315,14 +326,17 @@
       </div>
 
       <div class="field-group">
-        <!-- svelte-ignore a11y_label_has_associated_control -->
-        <label>Tags</label>
+        <p class="field-label">{$_("admin_space.config.fields.tags")}</p>
         <div class="tags-container">
-          {#each entityTags as tag}
+          {#each entityTags as tag (tag)}
             <span class="tag">
               {tag}
-              <!-- svelte-ignore a11y_click_events_have_key_events a11y_no_static_element_interactions -->
-              <span class="remove-tag" on:click={() => removeTag(tag)}>×</span>
+              <button
+                type="button"
+                class="remove-tag"
+                aria-label={$_("entry_edit.remove_tag")}
+                onclick={() => removeTag(tag)}>×</button
+              >
             </span>
           {/each}
         </div>
@@ -331,12 +345,12 @@
             class="tag-input"
             type="text"
             bind:value={newTag}
-            on:keypress={handleTagKeypress}
+            onkeypress={handleTagKeypress}
             placeholder={$_("route_labels.placeholder_add_tag")}
           />
           <button
             class="add-tag-btn"
-            on:click={addTag}
+            onclick={addTag}
             disabled={!newTag.trim()}
           >
             Add Tag
@@ -346,7 +360,7 @@
 
       <button
         class="create-button"
-        on:click={handleCreate}
+        onclick={handleCreate}
         disabled={isCreating || !selectedTemplate}
       >
         {#if isCreating}
@@ -369,23 +383,23 @@
 
   {#if selectedTemplate}
     <div class="preview-section">
-      <h3>Preview</h3>
+      <h3>{$_("labels.preview")}</h3>
 
       <div class="two-column">
         <div>
-          <h4>Raw Content</h4>
+          <h4>{$_("template_generator.raw_content")}</h4>
           {#if previewContent}
             <div class="preview-content">{previewContent}</div>
           {:else}
-            <div class="empty-state">Fill in the fields to see preview</div>
+            <div class="empty-state">{$_("template_generator.preview_hint")}</div>
           {/if}
         </div>
 
         <div>
-          <h4>Rendered Markdown</h4>
+          <h4>{$_("template_generator.rendered_markdown")}</h4>
           {#if previewContent}
             <div class="markdown-preview">
-              {@html sanitizeHtml(marked(previewContent))}
+              {@html renderMarkdown(previewContent)}
             </div>
           {:else}
             <div class="empty-state">
@@ -408,7 +422,7 @@
   }
 
   .form-section {
-    background: #f8f9fa;
+    background: var(--color-surface);
     padding: 20px;
     border-radius: 8px;
     margin-bottom: 20px;
@@ -422,7 +436,7 @@
     display: block;
     margin-bottom: 5px;
     font-weight: 600;
-    color: #333;
+    color: var(--color-text);
     text-transform: capitalize;
   }
 
@@ -431,7 +445,7 @@
   textarea {
     width: 100%;
     padding: 10px;
-    border: 1px solid #ddd;
+    border: 1px solid var(--color-border);
     border-radius: 4px;
     font-size: 14px;
     box-sizing: border-box;
@@ -441,7 +455,7 @@
   input:focus,
   textarea:focus {
     outline: none;
-    border-color: #007bff;
+    border-color: var(--color-primary);
     box-shadow: 0 0 0 2px rgba(0, 123, 255, 0.25);
   }
 
@@ -451,22 +465,22 @@
   }
 
   .preview-section {
-    background: white;
-    border: 1px solid #ddd;
+    background: var(--color-surface);
+    border: 1px solid var(--color-border);
     border-radius: 8px;
     padding: 20px;
   }
 
   .preview-section h3 {
     margin-top: 0;
-    color: #333;
-    border-bottom: 2px solid #eee;
+    color: var(--color-text);
+    border-bottom: 2px solid var(--color-border);
     padding-bottom: 10px;
   }
 
   .preview-content {
-    background: #f8f9fa;
-    border: 1px solid #e9ecef;
+    background: var(--color-surface);
+    border: 1px solid var(--color-surface-3);
     border-radius: 4px;
     padding: 15px;
     margin: 10px 0;
@@ -477,15 +491,15 @@
   }
 
   .markdown-preview {
-    background: white;
-    border: 1px solid #e9ecef;
+    background: var(--color-surface);
+    border: 1px solid var(--color-surface-3);
     border-radius: 4px;
     padding: 15px;
     line-height: 1.6;
   }
 
   .markdown-preview :global(h1) {
-    border-bottom: 1px solid #eaecef;
+    border-bottom: 1px solid var(--color-border);
     padding-bottom: 10px;
   }
 
@@ -517,23 +531,28 @@
 
   .tag {
     display: inline-block;
-    background: #007bff;
+    background: var(--color-primary);
     color: white;
     padding: 4px 8px;
     border-radius: 12px;
     font-size: 12px;
-    margin-right: 8px;
+    margin-inline-end: 8px;
     margin-bottom: 8px;
   }
 
   .tag .remove-tag {
-    margin-left: 6px;
+    margin-inline-start: 6px;
+    padding: 0;
+    border: none;
+    background: none;
+    color: inherit;
+    font: inherit;
     cursor: pointer;
     font-weight: bold;
   }
 
   .tag .remove-tag:hover {
-    color: #ffcccc;
+    color: var(--color-danger-soft);
   }
 
   .tags-container {
@@ -552,7 +571,7 @@
   }
 
   .add-tag-btn {
-    background: #28a745;
+    background: var(--color-success);
     color: white;
     border: none;
     padding: 10px 15px;
@@ -562,24 +581,24 @@
   }
 
   .add-tag-btn:hover {
-    background: #218838;
+    background: var(--color-success);
   }
 
   .add-tag-btn:disabled {
-    background: #6c757d;
+    background: var(--color-text-muted);
     cursor: not-allowed;
   }
 
   .create-section {
-    background: #e8f5e8;
-    border: 1px solid #c3e6cb;
+    background: var(--color-success-soft);
+    border: 1px solid var(--color-success-soft);
     border-radius: 8px;
     padding: 20px;
     margin-top: 20px;
   }
 
   .create-button {
-    background: #007bff;
+    background: var(--color-primary);
     color: white;
     border: none;
     padding: 12px 24px;
@@ -592,11 +611,11 @@
   }
 
   .create-button:hover:not(:disabled) {
-    background: #0056b3;
+    background: var(--color-primary-hover);
   }
 
   .create-button:disabled {
-    background: #6c757d;
+    background: var(--color-text-muted);
     cursor: not-allowed;
   }
 
@@ -608,26 +627,26 @@
   }
 
   .create-message.success {
-    background: #d4edda;
-    color: #155724;
-    border: 1px solid #c3e6cb;
+    background: var(--color-success-soft);
+    color: var(--color-success);
+    border: 1px solid var(--color-success-soft);
   }
 
   .create-message.error {
-    background: #f8d7da;
-    color: #721c24;
-    border: 1px solid #f5c6cb;
+    background: var(--color-danger-soft);
+    color: var(--color-danger);
+    border: 1px solid var(--color-danger-soft);
   }
 
   .loading {
     display: inline-block;
     width: 16px;
     height: 16px;
-    border: 2px solid #ffffff;
+    border: 2px solid var(--color-surface-2);
     border-radius: 50%;
     border-top-color: transparent;
     animation: spin 1s ease-in-out infinite;
-    margin-right: 8px;
+    margin-inline-end: 8px;
   }
 
   @media (max-width: 768px) {
@@ -638,10 +657,10 @@
 
   .empty-state {
     text-align: center;
-    color: #6c757d;
+    color: var(--color-text-muted);
     font-style: italic;
     padding: 40px;
-    background: #f8f9fa;
+    background: var(--color-surface);
     border-radius: 4px;
   }
 
@@ -649,7 +668,7 @@
     display: block;
     margin-top: 6px;
     font-size: 12px;
-    color: #6c757d;
+    color: var(--color-text-muted);
     font-style: italic;
   }
 </style>

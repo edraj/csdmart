@@ -23,18 +23,18 @@
 
 <style>
   .chat-header {
-    background: var(--surface-card);
-    border-bottom: 1px solid var(--color-gray-200);
+    background: var(--color-surface-2);
+    border-bottom: 1px solid var(--color-border);
     padding: 1rem 1.5rem;
     display: flex;
     justify-content: space-between;
     align-items: center;
-    box-shadow: var(--shadow-sm);
+    box-shadow: var(--shadow-card);
   }
 
   .chat-header h1 {
     margin: 0;
-    color: var(--color-gray-800);
+    color: var(--color-text);
     font-size: 1.5rem;
   }
 
@@ -49,13 +49,13 @@
   }
 
   .connection-status.connected {
-    background: #dcfce7;
-    color: #166534;
+    background: var(--color-success-soft);
+    color: var(--color-success);
   }
 
   .connection-status.disconnected {
-    background: #fecaca;
-    color: var(--color-error);
+    background: var(--color-danger-soft);
+    color: var(--color-danger);
   }
 
   .status-indicator {
@@ -70,6 +70,6 @@
   }
 
   .disconnected .status-indicator {
-    background: var(--color-error);
+    background: var(--color-danger);
   }
 </style>

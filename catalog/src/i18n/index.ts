@@ -1,16 +1,27 @@
-import {_, addMessages, date, getLocaleFromNavigator, init, locale, number, time,} from "svelte-i18n";
+import {_, date, getLocaleFromNavigator, init, isLoading, locale, number, register, time, waitLocale,} from "svelte-i18n";
 import {website} from "@/config";
 import {derived} from "svelte/store";
-import ar from "./ar.json";
-import en from "./en.json";
-import ku from "./ku.json";
+import {resolvePreferredLocale} from "@/lib/preferredLocale";
+// Each locale is its own chunk, fetched when first needed. Importing all
+// three statically put ~298 kB of translations into the entry chunk of every
+// cold load (en 70 kB, ar 92 kB, ku 136 kB minified) for a visitor who reads
+// exactly one of them.
+register("ar", () => import("./ar.json"));
+register("en", () => import("./en.json"));
+register("ku", () => import("./ku.json"));
 
-addMessages("ar", ar);
-addMessages("en", en);
-addMessages("ku", ku);
+const available_locales = ["ar", "en", "ku"];
 
-let l17ns = { ar: ar, en: en, ku: ku };
-let available_locales = ["ar", "en", "ku"];
+// English is the fallback for a key missing from the active locale: it is the
+// source language every key is written in first. (It used to be the
+// deployment's default_language, so a Kurdish visitor saw Arabic for any gap.)
+const FALLBACK_LOCALE = "en";
+
+const rtl = ["ar", "ku"]; // Arabic, Kurdish (Sorani)
+
+function directionOf(l: string | null | undefined): "rtl" | "ltr" {
+  return l && rtl.includes(l) ? "rtl" : "ltr";
+}
 
 /**
  * Switches the application locale reactively (no page reload).
@@ -33,7 +44,7 @@ function switchLocale(_locale: string) {
           user.locale = _locale;
           localStorage.setItem("user", JSON.stringify(user));
         }
-      } catch (e) {
+      } catch {
         // Ignore parse errors
       }
     }
@@ -42,71 +53,59 @@ function switchLocale(_locale: string) {
 }
 
 /**
- * Determines the preferred locale based on localStorage and browser settings
- * @returns The preferred locale code as a string
+ * Determines the locale to start in: an earlier explicit choice, else the
+ * deployment's default_language, else the browser language, else English.
+ * Nothing is persisted here — only switchLocale records a choice, so a later
+ * change to default_language still applies to visitors who never picked one.
  */
 function getPreferredLocale(): string {
-  let preferred_locale = "en";
-
-  if (typeof localStorage !== "undefined") {
-    const stored = localStorage.getItem("preferred_locale");
-    try {
-      preferred_locale = JSON.parse(stored || '"en"');
-    } catch {
-      preferred_locale = "en";
-    }
-  }
-
-  if (preferred_locale && preferred_locale in website.languages) {
-    return preferred_locale;
-  }
-
-  let fallback: string = "";
-  let _locale = getLocaleFromNavigator();
-  let _locale_found = false;
-
-  for (const key in website.languages) {
-    if (fallback.trim().length === 0) {
-      fallback = key;
-    }
-    if (!_locale_found && _locale && _locale.startsWith(key)) {
-      _locale = key;
-      _locale_found = true;
-    }
-  }
-
-  if (!_locale_found) {
-    _locale = fallback || "en";
-  }
-
-  if (typeof localStorage !== "undefined") {
-    localStorage.setItem("preferred_locale", JSON.stringify(_locale));
-  }
-
-  return _locale!;
+  const stored =
+    typeof localStorage !== "undefined"
+      ? localStorage.getItem("preferred_locale")
+      : null;
+  return resolvePreferredLocale({
+    stored,
+    defaultLanguage: website.default_language,
+    languages: website.languages,
+    navigatorLocale: getLocaleFromNavigator(),
+  });
 }
 
+let documentSynced = false;
+
 /**
- * Initializes the internationalization system with the preferred locale
+ * Initializes the internationalization system with the preferred locale and
+ * keeps <html lang dir> in step with every later switch. Resolves once the
+ * initial locale (and its fallback) have loaded — mount the app after that,
+ * or the first paint shows raw keys.
  */
-function setupI18n() {
+function setupI18n(): Promise<void> {
   let _locale: string = getPreferredLocale();
 
-  if (!(_locale in l17ns) && website.default_language) {
+  if (!available_locales.includes(_locale) && website.default_language) {
     _locale = website.default_language;
   }
 
   init({
     initialLocale: _locale,
-    fallbackLocale: website.default_language,
+    fallbackLocale: FALLBACK_LOCALE,
   });
+
+  if (!documentSynced && typeof document !== "undefined") {
+    documentSynced = true;
+    locale.subscribe(($locale) => {
+      if (!$locale) return;
+      document.documentElement.lang = $locale;
+      document.documentElement.dir = directionOf($locale);
+    });
+  }
+  return waitLocale();
 }
 
-const rtl = ["ar", "ku"]; // Arabic, Farsi, Urdu, Kurdish
-
-const dir = derived(locale, ($locale) =>
-  rtl.indexOf($locale ? $locale : "") >= 0 ? "rtl" : "ltr"
-);
+const dir = derived(locale, ($locale) => directionOf($locale));
+// Twenty-five components used to derive this themselves from `locale`, each
+// with its own copy of the RTL list. One place, driven by `dir`.
+const isRTL = derived(dir, ($dir) => $dir === "rtl");
 const isLocaleLoaded = derived(
   locale,
   ($locale) => typeof $locale === "string"
@@ -115,12 +114,15 @@ const isLocaleLoaded = derived(
 export {
   _,
   dir,
+  isRTL,
   setupI18n,
   time,
   date,
   number,
   locale,
   isLocaleLoaded,
+  isLoading,
   switchLocale,
   available_locales,
+  FALLBACK_LOCALE,
 };

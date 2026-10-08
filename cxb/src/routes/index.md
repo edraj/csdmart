@@ -1,17 +1,16 @@
 <script lang="ts">
 import {StarSolid,FolderSolid,BriefcaseSolid,LayersSolid,CubeSolid} from 'flowbite-svelte-icons';
 </script>
-<div class="prose">
-<div class="flex flex-row" style="width: 98vw">
-<div class="flex-col p-6">
+<div class="prose dark:prose-invert max-w-none px-4 sm:px-6 py-6 grid grid-cols-1 md:grid-cols-2 gap-x-10">
+<div class="min-w-0">
 
 # What is DMART?
-> DMART is an open-source general-purpose low-code data platform that is capable of assimilating and servcing a wide variety of data.
+> DMART is an open-source general-purpose low-code data platform that is capable of assimilating and servicing a wide variety of data.
 > DMART offers a number of unique features that simplify the setup of your backend.
 
 ----
 
-# <span class="flex"><StarSolid class="mx-2" size="xl"/>Features</span>
+# <span class="flex items-center gap-2"><StarSolid size="xl" aria-hidden="true"/>Features</span>
 
 - Unified API (Data-as-a-Service) that can readily and directly service Web and mobile frontends. OpenAPI-compatible [JSON API](https://api.dmart.cc/docs)
 - Built-in user management
@@ -22,7 +21,7 @@ import {StarSolid,FolderSolid,BriefcaseSolid,LayersSolid,CubeSolid} from 'flowbi
 
 ----
 
-# <span class="flex"><FolderSolid class="mx-2" size="xl"/> Design principals</span>
+# <span class="flex items-center gap-2"><FolderSolid size="xl" aria-hidden="true"/>Design principles</span>
 
 - Entry-based, business-oriented data definitions (no need for relational modeling and physical RDBMS table structure).
 - Entries are extensible by meta-data and arbitrary attachments
@@ -33,25 +32,22 @@ import {StarSolid,FolderSolid,BriefcaseSolid,LayersSolid,CubeSolid} from 'flowbi
 
 ----
 
-# <span class="flex"><CubeSolid class="mx-2" size="xl"/> Drivers</span>
+# <span class="flex items-center gap-2"><CubeSolid size="xl" aria-hidden="true"/>Drivers</span>
 
 - Python: [pydmart](https://pypi.org/project/pydmart/)
 - Flutter/Dart: [dmart](https://pub.dev/packages/dmart)
 - Typescript: [@edraj/tsdmart](https://www.npmjs.com/package/@edraj/tsdmart)
 
 </div>
-<div class="flex-col p-6">
+<div class="min-w-0">
 
+# <span class="flex items-center gap-2"><BriefcaseSolid size="xl" aria-hidden="true"/>Use cases</span>
 
-# <span class="flex"><BriefcaseSolid class="mx-2" size="xl"/> Usecases</span>
-
-One initial category of usecases targets organizations and individuals to establish their online presence: Provision a website that is indexed by search engines, manage users, be able to recieve/send messages/emails and allow users to ineract with published content.
-
-[Universal online presnce](/presence_usecases)
+One initial category of use cases targets organizations and individuals to establish their online presence: provision a website that is indexed by search engines, manage users, be able to receive/send messages/emails and allow users to interact with published content.
 
 ----
 
-# <span class="flex"><LayersSolid class="mx-2" size="xl"/> Technology stack</span>
+# <span class="flex items-center gap-2"><LayersSolid size="xl" aria-hidden="true"/>Technology stack</span>
 
 ## Backend
 
@@ -81,6 +77,5 @@ One initial category of usecases targets organizations and individuals to establ
 - 0 warnings / 0 errors Release build under Roslyn analyzers; trimming + AOT enforced in CI
 - Load testing with vegeta / ab / Apache JMeter
 
-</div>
 </div>
 </div>

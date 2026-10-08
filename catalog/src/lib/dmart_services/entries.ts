@@ -122,67 +122,66 @@ export function streamEntitiesAcrossSpaces(
     };
 }
 
-export async function getMyEntities(shortname: string = "") {
-    const result = await getSpaces(false, DmartScope.managed, [
-        MESSAGES_SPACE,
+/** Newest entries per space that getMyEntities() returns. */
+export const MY_ENTITIES_LIMIT_PER_SPACE = 100;
 
-    ]);
-    const spaces = result.records.map((space) => space.shortname);
-
-    const promises = spaces.map(async (space) => {
-        let currentUser = get(user);
-        const search = `@owner_shortname:${shortname || currentUser.shortname}`;
-
-        const queryRequest: QueryRequest = {
-            filter_shortnames: [],
-            type: QueryType.subpath,
-            space_name: space,
-            subpath: "/",
-            exact_subpath: false,
-            sort_by: "created_at",
-            sort_type: SortType.ascending,
-            search,
-            retrieve_json_payload: true,
-            retrieve_attachments: true,
-        };
-
-        const response: ApiQueryResponse = (await Dmart.query(queryRequest))!;
-        return response?.records ?? [];
-    });
-
-    const allRecordsArrays = await Promise.all(promises);
-
-    return allRecordsArrays.flat();
-}
-
-
-
-export async function getEntityAttachmentsCount(
-    shortname: string,
-    spaceName: string,
-    subpath: string
+/**
+ * Everything the current user (or `shortname`) owns, across every visible
+ * space: one bounded, metadata-only query per space through the same 6-wide
+ * worker pool as streamEntitiesAcrossSpaces (review perf #14). The list page
+ * shows titles, tags, state and dates, so neither payload nor attachments
+ * are requested.
+ */
+export async function getMyEntities(
+    shortname: string = "",
+    options: { limitPerSpace?: number; maxConcurrent?: number } = {},
 ) {
-    let cleanSubpath = subpath ? (subpath.startsWith("/") ? subpath.substring(1) : subpath) : "";
-    if (cleanSubpath === "__root__") cleanSubpath = "";
-    const targetSubpath = cleanSubpath ? `${cleanSubpath}/${shortname}` : shortname;
+    const result = await getSpaces(false, DmartScope.managed, [MESSAGES_SPACE]);
+    const spaces = result.records.map((space) => space.shortname);
+    const owner = shortname || get(user).shortname;
+    const limit = options.limitPerSpace ?? MY_ENTITIES_LIMIT_PER_SPACE;
+    const maxConcurrent = Math.max(1, options.maxConcurrent ?? 6);
 
-    const query: QueryRequest = {
-        filter_shortnames: [],
-        type: QueryType.attachments_aggregation,
-        space_name: spaceName,
-        subpath: targetSubpath,
-        limit: 100,
-        sort_by: "shortname",
-        sort_type: SortType.ascending,
-        offset: 0,
-        search: "",
-        retrieve_json_payload: true,
-        retrieve_attachments: true,
+    const results: ApiQueryResponse["records"][] = new Array(spaces.length);
+    let cursor = 0;
+    const worker = async () => {
+        while (true) {
+            const i = cursor++;
+            if (i >= spaces.length) return;
+            const queryRequest: QueryRequest = {
+                filter_shortnames: [],
+                type: QueryType.subpath,
+                space_name: spaces[i],
+                subpath: "/",
+                exact_subpath: false,
+                sort_by: "updated_at",
+                sort_type: SortType.descending,
+                search: `@owner_shortname:${owner}`,
+                limit,
+                offset: 0,
+                retrieve_json_payload: false,
+                retrieve_attachments: false,
+            };
+            try {
+                const response = await Dmart.query(queryRequest);
+                results[i] = response?.records ?? [];
+            } catch (error) {
+                log.error(`Could not list entries in space "${spaces[i]}":`, error);
+                results[i] = [];
+            }
+        }
     };
-    const response = await Dmart.query(query, getCurrentScope());
+    await Promise.all(Array.from({ length: Math.min(maxConcurrent, spaces.length) }, worker));
 
-    return response?.records ?? [];
+    return results.flat();
 }
+
+
+
+// getEntityAttachmentsCount used to live here: one attachments-aggregation
+// query per card on the space page. The browse pages now count comments,
+// reactions and media from the `attachments` the listing query already
+// returns (lib/catalogItems attachmentCounts), so nothing calls it.
 
 export async function attachAttachmentsToEntity(
     shortname: string,
@@ -226,6 +225,42 @@ export async function attachAttachmentsToEntity(
     return response.status === "success" && response.records.length > 0;
 }
 
+/**
+ * Free-text search inside ONE space (the space browse page). Folders and
+ * schemas are excluded the same way the page's main listing excludes them,
+ * and the server applies the sort so results match the listing's order.
+ */
+export async function searchInSpace(
+    spaceName: string,
+    search: string,
+    limit: number = 20,
+    sortBy: string = "created_at",
+    sortType: SortType = SortType.descending,
+    scope: DmartScope = getCurrentScope()
+) {
+    const queryRequest: QueryRequest = {
+        filter_shortnames: [],
+        type: QueryType.search,
+        space_name: spaceName,
+        subpath: "/",
+        exact_subpath: false,
+        sort_by: sortBy,
+        sort_type: sortType,
+        search: `${search} -@shortname:schema -@resource_type:folder|schema`,
+        limit,
+        offset: 0,
+        retrieve_json_payload: true,
+        retrieve_attachments: true,
+    };
+    const response: ApiQueryResponse = (await Dmart.query(queryRequest, scope))!;
+    return response?.records ?? [];
+}
+
+/**
+ * Free-text search across every visible space (the catalog index page). Each
+ * record is tagged with the `space_name` it came from — the query response
+ * does not carry it, and without it a result cannot be linked to.
+ */
 export async function searchInCatalog(search: string = "", limit: number = 20, offset: number = 0) {
     const result = await getSpaces(false, getCurrentScope());
     const spaces = result.records.map((space) => space.shortname);
@@ -250,7 +285,10 @@ export async function searchInCatalog(search: string = "", limit: number = 20, o
             queryRequest,
             getCurrentScope()
         ))!;
-        return response?.records ?? [];
+        return (response?.records ?? []).map((record) => ({
+            ...record,
+            space_name: space,
+        }));
     });
 
     const allRecordsArrays = await Promise.all(promises);

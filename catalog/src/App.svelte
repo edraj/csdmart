@@ -8,7 +8,7 @@
 </script>
 
 <script lang="ts">
-  import { setupI18n, dir, locale } from "./i18n";
+  import { dir, locale } from "./i18n";
 
   function findRoute(routers: any, paths: any): any {
     if (paths.length === 0) {
@@ -100,14 +100,8 @@
 
   const router = prepareRouter();
 
-  setupI18n();
-
-  // Keep document direction and html lang in sync with the active locale
-  // so RTL/LTR layout flips immediately on switch without a page reload.
-  $: if (typeof document !== "undefined") {
-    document.dir = $dir;
-    document.documentElement.lang = $locale ?? "en";
-  }
+  // Also subscribes `locale` to <html lang dir>, so RTL/LTR flips on switch
+  // without a reload (see i18n/index.ts).
 </script>
 
 <div id="routify-app">

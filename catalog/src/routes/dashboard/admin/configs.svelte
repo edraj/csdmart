@@ -1,20 +1,32 @@
 <script lang="ts">
   import { onMount } from "svelte";
-  import {
-    createEntity,
-    getEntity,
-    getSpaceContents,
-    setDefaultUserRole,
-  } from "@/lib/dmart_services";
-  import {
-    errorToastMessage,
-    successToastMessage,
-  } from "@/lib/toasts_messages";
+  import { createEntity, getEntity, getSpaceContents, setDefaultUserRole } from "@/lib/dmart_services";
+  import { toasts } from "@/lib/toast";
+  import { log } from "@/lib/logger";
+  import { setTitle } from "@/lib/title";
+  import { localized } from "@/lib/catalogItems";
+  import { APPLICATIONS_SPACE, MANAGEMENT_SPACE } from "@/lib/constants";
   import { ResourceType, DmartScope } from "@edraj/tsdmart";
-  import { _ } from "@/i18n";
-  import { Modal } from "flowbite-svelte";
+  import { _, locale } from "@/i18n";
+  import { CogOutline, ExclamationCircleOutline } from "flowbite-svelte-icons";
+  import Modal from "@/components/Modal.svelte";
+  import PageHeader from "@/components/ui/PageHeader.svelte";
+  import Card from "@/components/ui/Card.svelte";
+  import Badge from "@/components/ui/Badge.svelte";
+  import EmptyState from "@/components/ui/EmptyState.svelte";
+  import LoadingState from "@/components/ui/LoadingState.svelte";
 
-  let availableRoles = $state<any[]>([]);
+  interface RoleOption {
+    shortname: string;
+    displayname: string;
+    description: string;
+  }
+
+  interface WebConfig {
+    payload?: { body?: { items?: Array<{ key: string; value?: string }> } };
+  }
+
+  let availableRoles = $state<RoleOption[]>([]);
   let selectedDefaultRole = $state("");
   let currentDefaultRole = $state("");
   let isLoading = $state(true);
@@ -23,138 +35,119 @@
   let showAutoFixModal = $state(false);
   let isAutoFixing = $state(false);
 
+  $effect(() => setTitle($_("systemConfiguration")));
+
   async function loadRoles() {
     try {
-      const rolesResponse = await getSpaceContents(
-        "management",
-        "roles",
-        DmartScope.managed,
-      );
-
+      const rolesResponse = await getSpaceContents(MANAGEMENT_SPACE, "roles", DmartScope.managed);
       if (rolesResponse.status === "success") {
-        availableRoles = rolesResponse.records.map((role) => ({
-          shortname: role.shortname,
-          displayname: role.attributes?.displayname?.en || role.shortname,
-          description:
-            role.attributes?.description?.en ||
-            `${$_("role")}: ${role.shortname}`,
-        }));
+        availableRoles = rolesResponse.records.map((role) => {
+          const attrs = role.attributes as { displayname?: unknown; description?: unknown };
+          return {
+            shortname: role.shortname,
+            displayname: localized(attrs?.displayname as never, $locale) || role.shortname,
+            description: localized(attrs?.description as never, $locale) || `${$_("role")}: ${role.shortname}`,
+          };
+        });
       } else {
-        errorToastMessage($_("failedToLoadAvailableRoles"));
+        toasts.error($_("failedToLoadAvailableRoles"));
       }
     } catch (error) {
-      console.error("Error loading roles:", error);
-      errorToastMessage($_("failedToLoadRoles"));
+      log.error("Error loading roles:", error);
+      toasts.error($_("failedToLoadRoles"));
     }
   }
 
   async function loadCurrentDefaultRole() {
     try {
-      const defaultRole = await getEntity(
+      const defaultRole = (await getEntity(
         "web_config",
-        "applications",
+        APPLICATIONS_SPACE,
         DmartScope.public,
         ResourceType.content,
         DmartScope.managed,
         true,
         false,
-      );
+      )) as unknown as WebConfig | null;
 
       if (defaultRole) {
-        currentDefaultRole = (defaultRole as any).payload.body.items.find(
-          (item: any) => item.key === "default_user_role",
-        )?.value;
-        selectedDefaultRole =
-          (defaultRole as any).payload.body.items.find(
-            (item: any) => item.key === "default_user_role",
-          )?.value || "";
-      } else {
-        if (availableRoles.length > 0) {
-          selectedDefaultRole = availableRoles[0].shortname;
-        }
+        const value = defaultRole.payload?.body?.items?.find((item) => item.key === "default_user_role")?.value ?? "";
+        currentDefaultRole = value;
+        selectedDefaultRole = value;
+      } else if (availableRoles.length > 0) {
+        selectedDefaultRole = availableRoles[0].shortname;
       }
-    } catch (error: any) {
-      if (
-        error.code === 220 ||
-        error.message?.includes("Cannot read properties of undefined")
-      ) {
+    } catch (error) {
+      const err = error as { code?: number; message?: string };
+      if (err.code === 220 || err.message?.includes("Cannot read properties of undefined")) {
         showAutoFixModal = true;
         return;
       }
-
-      errorToastMessage($_("failedToLoadCurrentDefaultRole"));
+      toasts.error($_("failedToLoadCurrentDefaultRole"));
     }
   }
 
   async function autoFixConfiguration() {
     isAutoFixing = true;
     try {
-      const attributes: any = {
-        displayname: { en: "web_config" },
-        description: { en: "", ar: "", ku: "" },
-        is_active: true,
-        tags: [],
-        relationships: [],
-        payload: {
-          content_type: "json",
-          schema_shortname: "configuration",
-          body: {
-            items: [
-              {
-                key: "default_user_role",
-              },
-            ],
-          },
-        },
-      };
-
       const result = await createEntity(
-        "applications",
+        APPLICATIONS_SPACE,
         DmartScope.public,
         ResourceType.content,
-        attributes,
+        {
+          displayname: { en: "web_config" },
+          description: { en: "", ar: "", ku: "" },
+          is_active: true,
+          tags: [],
+          relationships: [],
+          payload: {
+            content_type: "json",
+            schema_shortname: "configuration",
+            body: { items: [{ key: "default_user_role" }] },
+          },
+        },
         "web_config",
       );
 
       if (result) {
         showAutoFixModal = false;
-        successToastMessage($_("configurationEntityCreatedSuccessfully"));
-
+        toasts.success($_("configurationEntityCreatedSuccessfully"));
         await loadCurrentDefaultRole();
       } else {
-        errorToastMessage($_("failedToCreateConfigurationEntity"));
+        toasts.error($_("failedToCreateConfigurationEntity"));
       }
     } catch (error) {
-      console.error("Error creating configuration entity:", error);
-      errorToastMessage($_("failedToCreateConfigurationEntity"));
+      log.error("Error creating configuration entity:", error);
+      toasts.error($_("failedToCreateConfigurationEntity"));
     } finally {
       isAutoFixing = false;
     }
   }
 
-  async function saveDefaultRole() {
+  async function saveDefaultRole(event: SubmitEvent) {
+    event.preventDefault();
     if (!selectedDefaultRole) {
-      errorToastMessage($_("pleaseSelectDefaultRole"));
+      toasts.error($_("pleaseSelectDefaultRole"));
       return;
     }
-
     isSaving = true;
     try {
       const success = await setDefaultUserRole(selectedDefaultRole);
       if (success) {
         currentDefaultRole = selectedDefaultRole;
-
-        successToastMessage($_("defaultUserRoleUpdatedSuccessfully"));
+        toasts.success($_("defaultUserRoleUpdatedSuccessfully"));
       } else {
-        errorToastMessage($_("failedToSaveDefaultUserRole"));
+        toasts.error($_("failedToSaveDefaultUserRole"));
       }
     } catch (error) {
-      console.error("Error saving default role:", error);
-      errorToastMessage($_("failedToSaveDefaultUserRole"));
+      log.error("Error saving default role:", error);
+      toasts.error($_("failedToSaveDefaultUserRole"));
     } finally {
       isSaving = false;
     }
   }
+
+  const selectedRole = $derived(availableRoles.find((r) => r.shortname === selectedDefaultRole));
 
   onMount(async () => {
     isLoading = true;
@@ -164,484 +157,95 @@
   });
 </script>
 
-<Modal
-  title={$_("configurationMissing")}
-  bind:open={showAutoFixModal}
-  size="lg"
-  class="bg-white"
-  headerClass="text-gray-900"
-  placement="center"
-  autoclose={false}
->
-  <div class="alert alert-warning">
-    <div class="alert-icon">⚠</div>
-    <div>
-      <strong>{$_("configurationEntityNotFound")}</strong>
-      <p>
-        {$_("systemConfigurationEntityMissingDescription")}
-      </p>
+{#if showAutoFixModal}
+  <Modal title={$_("configurationMissing")} size="lg" dismissable={!isAutoFixing} onClose={() => (showAutoFixModal = false)}>
+    {#snippet icon()}
+      <ExclamationCircleOutline size="lg" class="text-warning" />
+    {/snippet}
+    <div class="rounded-card border border-warning/40 bg-warning-soft p-4 mb-4 text-sm text-text">
+      <strong class="block mb-1">{$_("configurationEntityNotFound")}</strong>
+      <p class="m-0 text-text-muted">{$_("systemConfigurationEntityMissingDescription")}</p>
     </div>
-  </div>
-  <p>
-    {$_("autoCreateConfigurationEntityQuestion")}
-  </p>
-  {#snippet footer()}
-    <button
-      aria-label={$_("route_labels.aria_cancel_fixing_configuration")}
-      class="btn btn-secondary"
-      onclick={() => (showAutoFixModal = false)}
-      disabled={isAutoFixing}
-    >
-      {$_("cancel")}
-    </button>
-    <button
-      aria-label={$_("route_labels.aria_create_configuration_entity")}
-      class="btn btn-primary"
-      onclick={autoFixConfiguration}
-      disabled={isAutoFixing}
-    >
-      {#if isAutoFixing}
-        <div class="spinner small"></div>
-        {$_("creating")}...
-      {:else}
-        {$_("autoFix")}
-      {/if}
-    </button>
-  {/snippet}
-</Modal>
+    <p class="text-sm text-text">{$_("autoCreateConfigurationEntityQuestion")}</p>
+    {#snippet footer()}
+      <button type="button" class="app-btn app-btn-secondary" onclick={() => (showAutoFixModal = false)} disabled={isAutoFixing}>
+        {$_("cancel")}
+      </button>
+      <button type="button" class="app-btn app-btn-primary" onclick={autoFixConfiguration} disabled={isAutoFixing} aria-busy={isAutoFixing}>
+        {#if isAutoFixing}
+          <span class="spinner spinner-xs spinner-white" aria-hidden="true"></span>
+          {$_("creating")}
+        {:else}
+          {$_("autoFix")}
+        {/if}
+      </button>
+    {/snippet}
+  </Modal>
+{/if}
 
-<div class="container">
-  <div class="page-header">
-    <h1 class="page-title">{$_("systemConfiguration")}</h1>
-    <p class="page-subtitle">
-      {$_("systemConfigurationSubtitle")}
-    </p>
-  </div>
+<div class="mx-auto max-w-4xl px-4 sm:px-6 py-6 sm:py-8">
+  <PageHeader title={$_("systemConfiguration")} description={$_("systemConfigurationSubtitle")} icon={CogOutline} />
 
-  <div class="card">
-    <h2 class="card-title">{$_("userDefaultRole")}</h2>
-    <p class="card-description">
-      {$_("userDefaultRoleDescription")}
-    </p>
+  <Card>
+    <h2 class="text-lg font-semibold text-text mb-1">{$_("userDefaultRole")}</h2>
+    <p class="text-sm text-text-muted mb-6">{$_("userDefaultRoleDescription")}</p>
 
     {#if isLoading}
-      <div class="loading-state">
-        <div class="spinner"></div>
-        <span>{$_("loadingConfiguration")}</span>
-      </div>
+      <LoadingState label={$_("loadingConfiguration")} />
     {:else if availableRoles.length === 0}
-      <div class="alert alert-warning">
-        <div class="alert-icon">⚠</div>
-        <div>
-          <strong>{$_("noRolesAvailable")}:</strong>
-          {$_("createRolesFirstMessage")}
-        </div>
-      </div>
+      <EmptyState icon={CogOutline} title={$_("noRolesAvailable")} hint={$_("createRolesFirstMessage")} />
     {:else}
-      <div class="config-section">
-        <div class="current-config">
+      <form class="space-y-6" onsubmit={saveDefaultRole}>
+        <div>
           {#if currentDefaultRole}
-            <div class="status-indicator status-info">
-              <span>ℹ</span>
-              <span
-                >{$_("currentDefaultRole")}:
-                <strong>{currentDefaultRole}</strong></span
-              >
-            </div>
+            <Badge variant="info">{$_("currentDefaultRole")}: <strong>{currentDefaultRole}</strong></Badge>
           {:else}
-            <div class="status-indicator status-warning">
-              <span>⚠</span>
-              <span>{$_("noDefaultRoleConfigured")}</span>
-            </div>
+            <Badge variant="warning">{$_("noDefaultRoleConfigured")}</Badge>
           {/if}
         </div>
 
-        <div class="role-selection">
-          <label class="form-label" for="default-role-select">
-            {$_("selectDefaultRole")}
-          </label>
+        <div class="max-w-md space-y-3">
+          <label for="default-role-select" class="block text-sm font-medium text-text">{$_("selectDefaultRole")}</label>
           <select
             id="default-role-select"
-            class="form-select"
+            class="w-full h-9 ps-3 pe-8 text-sm rounded-control border border-border bg-surface-2 text-text focus:border-primary focus:ring-1 focus:ring-primary"
             bind:value={selectedDefaultRole}
           >
             <option value="">{$_("selectRoleOption")}</option>
-            {#each availableRoles as role}
+            {#each availableRoles as role (role.shortname)}
               <option value={role.shortname}>{role.displayname}</option>
             {/each}
           </select>
 
-          {#if selectedDefaultRole}
-            <div class="role-info">
-              {#each availableRoles as role}
-                {#if role.shortname === selectedDefaultRole}
-                  <div class="role-details">
-                    <h4>{role.displayname}</h4>
-                    <p>{role.description}</p>
-                  </div>
-                {/if}
-              {/each}
+          {#if selectedRole}
+            <div class="rounded-card border border-border bg-surface p-4">
+              <h4 class="text-sm font-semibold text-text mb-1">{selectedRole.displayname}</h4>
+              <p class="text-sm text-text-muted m-0">{selectedRole.description}</p>
             </div>
           {/if}
         </div>
 
-        <div class="action-bar">
+        <div class="flex flex-wrap items-center gap-3">
           <button
-            aria-label={$_("route_labels.aria_save_default_role")}
-            class="btn btn-primary"
-            onclick={saveDefaultRole}
-            disabled={isSaving ||
-              !selectedDefaultRole ||
-              selectedDefaultRole === currentDefaultRole}
+            type="submit"
+            class="app-btn app-btn-primary"
+            disabled={isSaving || !selectedDefaultRole || selectedDefaultRole === currentDefaultRole}
+            aria-busy={isSaving}
           >
             {#if isSaving}
-              <div class="spinner small"></div>
-              {$_("saving")}...
+              <span class="spinner spinner-xs spinner-white" aria-hidden="true"></span>
+              {$_("saving")}
             {:else}
               {$_("saveConfiguration")}
             {/if}
           </button>
-
-          {#if selectedDefaultRole !== currentDefaultRole && currentDefaultRole}
-            <button
-              aria-label={$_("route_labels.aria_reset_current_default_role")}
-              class="btn btn-secondary"
-              onclick={() => (selectedDefaultRole = currentDefaultRole)}
-              disabled={isSaving}
-            >
+          {#if currentDefaultRole && selectedDefaultRole !== currentDefaultRole}
+            <button type="button" class="app-btn app-btn-secondary" onclick={() => (selectedDefaultRole = currentDefaultRole)} disabled={isSaving}>
               {$_("resetToCurrent")}
             </button>
           {/if}
         </div>
-      </div>
+      </form>
     {/if}
-  </div>
+  </Card>
 </div>
-
-<style>
-  .alert {
-    display: flex;
-    gap: 12px;
-    padding: 12px;
-    border-radius: 6px;
-    margin-bottom: 15px;
-  }
-
-  .alert-warning {
-    background-color: #fef3c7;
-    border: 1px solid #f59e0b;
-    color: #92400e;
-  }
-
-  .alert-icon {
-    font-size: 1.1rem;
-    flex-shrink: 0;
-  }
-
-  .alert strong {
-    display: block;
-    margin-bottom: 4px;
-  }
-
-  .alert p {
-    margin: 0;
-    font-size: 0.9rem;
-  }
-
-  .btn {
-    padding: 8px 16px;
-    border-radius: 6px;
-    border: 1px solid transparent;
-    font-size: 0.875rem;
-    font-weight: 500;
-    cursor: pointer;
-    transition: all 0.2s;
-    display: inline-flex;
-    align-items: center;
-    gap: 6px;
-  }
-
-  .btn:disabled {
-    opacity: 0.6;
-    cursor: not-allowed;
-  }
-
-  .btn-primary {
-    background-color: #3b82f6;
-    color: white;
-    border-color: #3b82f6;
-  }
-
-  .btn-primary:hover:not(:disabled) {
-    background-color: #2563eb;
-    border-color: #2563eb;
-  }
-
-  .btn-secondary {
-    background-color: white;
-    color: #374151;
-    border-color: #d1d5db;
-  }
-
-  .btn-secondary:hover:not(:disabled) {
-    background-color: #f9fafb;
-    border-color: #9ca3af;
-  }
-
-  .spinner {
-    width: 16px;
-    height: 16px;
-    border: 2px solid #e5e7eb;
-    border-top: 2px solid #3b82f6;
-    border-radius: 50%;
-    animation: spin 1s linear infinite;
-  }
-
-  .spinner.small {
-    width: 14px;
-    height: 14px;
-  }
-
-  @keyframes spin {
-    0% {
-      transform: rotate(0deg);
-    }
-    100% {
-      transform: rotate(360deg);
-    }
-  }
-  .container {
-    max-width: 1200px;
-    margin: 0 auto;
-    padding: 24px;
-  }
-
-  .page-header {
-    margin-bottom: 32px;
-  }
-
-  .page-title {
-    font-size: 32px;
-    font-weight: 700;
-    color: #111827;
-    margin-bottom: 8px;
-  }
-
-  .page-subtitle {
-    color: #6b7280;
-    font-size: 16px;
-  }
-
-  .card {
-    background: white;
-    border-radius: 12px;
-    box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.1);
-    border: 1px solid #e5e7eb;
-    padding: 24px;
-    margin-bottom: 24px;
-  }
-
-  .card-title {
-    font-size: 20px;
-    font-weight: 600;
-    color: #111827;
-    margin-bottom: 8px;
-  }
-
-  .card-description {
-    color: #6b7280;
-    font-size: 14px;
-    margin-bottom: 24px;
-    line-height: 1.5;
-  }
-
-  .loading-state {
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    padding: 64px;
-    color: #6b7280;
-  }
-
-  .spinner {
-    width: 32px;
-    height: 32px;
-    border: 3px solid #f3f4f6;
-    border-top: 3px solid #3b82f6;
-    border-radius: 50%;
-    animation: spin 1s linear infinite;
-    margin-right: 12px;
-  }
-
-  .spinner.small {
-    width: 16px;
-    height: 16px;
-    border-width: 2px;
-    margin-right: 8px;
-  }
-
-  @keyframes spin {
-    0% {
-      transform: rotate(0deg);
-    }
-    100% {
-      transform: rotate(360deg);
-    }
-  }
-
-  .alert {
-    padding: 16px;
-    border-radius: 8px;
-    margin-bottom: 24px;
-    display: flex;
-    align-items: flex-start;
-    gap: 12px;
-  }
-
-  .alert-warning {
-    background: #fffbeb;
-    border: 1px solid #fed7aa;
-    color: #92400e;
-  }
-
-  .alert-icon {
-    width: 20px;
-    height: 20px;
-    flex-shrink: 0;
-    margin-top: 2px;
-  }
-
-  .config-section {
-    display: flex;
-    flex-direction: column;
-    gap: 24px;
-  }
-
-  .current-config {
-    display: flex;
-    flex-wrap: wrap;
-    gap: 16px;
-    align-items: center;
-  }
-
-  .status-indicator {
-    display: flex;
-    align-items: center;
-    gap: 8px;
-    font-size: 14px;
-    padding: 8px 12px;
-    border-radius: 6px;
-  }
-
-  .status-warning {
-    color: #d97706;
-    background: #fffbeb;
-    border: 1px solid #fed7aa;
-  }
-
-  .status-info {
-    color: #2563eb;
-    background: #eff6ff;
-    border: 1px solid #bfdbfe;
-  }
-
-  .role-selection {
-    display: flex;
-    flex-direction: column;
-    gap: 16px;
-  }
-
-  .form-label {
-    font-weight: 600;
-    color: #374151;
-    font-size: 14px;
-  }
-
-  .form-select {
-    width: 100%;
-    max-width: 400px;
-    padding: 12px 16px;
-    border: 2px solid #e5e7eb;
-    border-radius: 8px;
-    font-size: 14px;
-    background: white;
-    cursor: pointer;
-    transition: all 0.2s ease;
-  }
-
-  .form-select:focus {
-    outline: none;
-    border-color: #3b82f6;
-    box-shadow: 0 0 0 3px rgba(59, 130, 246, 0.1);
-  }
-
-  .role-info {
-    max-width: 400px;
-  }
-
-  .role-details {
-    padding: 16px;
-    background: #f9fafb;
-    border-radius: 8px;
-    border: 1px solid #e5e7eb;
-  }
-
-  .role-details h4 {
-    font-weight: 600;
-    color: #111827;
-    margin-bottom: 8px;
-    font-size: 16px;
-  }
-
-  .role-details p {
-    color: #6b7280;
-    font-size: 14px;
-    line-height: 1.5;
-    margin: 0;
-  }
-
-  .action-bar {
-    display: flex;
-    gap: 12px;
-    align-items: center;
-  }
-
-  .btn {
-    padding: 12px 24px;
-    border-radius: 8px;
-    font-weight: 600;
-    font-size: 14px;
-    cursor: pointer;
-    transition: all 0.2s ease;
-    border: none;
-    display: inline-flex;
-    align-items: center;
-    justify-content: center;
-    gap: 8px;
-  }
-
-  .btn:disabled {
-    opacity: 0.6;
-    cursor: not-allowed;
-  }
-
-  .btn-primary {
-    background: #3b82f6;
-    color: white;
-  }
-
-  .btn-primary:hover:not(:disabled) {
-    background: #2563eb;
-    transform: translateY(-1px);
-  }
-
-  .btn-secondary {
-    background: #f3f4f6;
-    color: #374151;
-    border: 1px solid #d1d5db;
-  }
-
-  .btn-secondary:hover:not(:disabled) {
-    background: #e5e7eb;
-  }
-</style>

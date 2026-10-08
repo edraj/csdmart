@@ -94,7 +94,7 @@ export async function updateGroup(
 }
 
 export async function getUserGroups(
-    userShortname: string
+    _userShortname: string
 ): Promise<ApiQueryResponse> {
     return await searchEntities(
         MESSAGES_SPACE,

@@ -1,6 +1,6 @@
 <script lang="ts">
+  import { log } from "@/lib/logger";
   import { _ } from "@/i18n";
-  import { Button } from "flowbite-svelte";
   import Modal from "@/components/Modal.svelte";
   import { ResourceType } from "@edraj/tsdmart";
   import {
@@ -11,10 +11,9 @@
     UploadOutline,
     CheckCircleSolid,
     CloseCircleSolid,
-    FileOutline,
   } from "flowbite-svelte-icons";
-  import { getFileExtension, isImageFile } from "@/lib/fileUtils";
-  import { createAttachment } from "@/lib/dmart_services";
+  import { getFileExtension } from "@shared/file-extension";
+  import { isImageFile } from "@/lib/fileUtils";
   import { AUTO_UUID_RULE, resolveAutoShortname } from "@/lib/helpers";
 
   interface Translation {
@@ -63,7 +62,6 @@
     isOpen = $bindable(false),
     space_name,
     subpath,
-    resource_type,
     parent_shortname,
     onAttachmentCreated,
   }: {
@@ -269,7 +267,7 @@
             : f,
         );
         errorCount++;
-        console.error("Error uploading file:", fileItem.file.name, error);
+        log.error(`Error uploading file ${fileItem.file.name}:`, error);
       }
     }
 
@@ -308,27 +306,16 @@
     }
   }
 
-  function getStatusIcon(status: FileUploadItem["status"]) {
-    switch (status) {
-      case "success":
-        return CheckCircleSolid;
-      case "error":
-        return CloseCircleSolid;
-      default:
-        return null;
-    }
-  }
-
   function getStatusColor(status: FileUploadItem["status"]): string {
     switch (status) {
       case "success":
-        return "border-green-500 bg-green-50";
+        return "border-success bg-success-soft";
       case "error":
-        return "border-red-500 bg-red-50";
+        return "border-danger bg-danger-soft";
       case "uploading":
-        return "border-blue-500 bg-blue-50";
+        return "border-info bg-info-soft";
       default:
-        return "border-gray-200 bg-white";
+        return "border-border bg-surface-2";
     }
   }
 
@@ -356,17 +343,17 @@
   {/snippet}
   <div class="space-y-6">
     <!-- File Upload Area -->
-    <div class="p-6 bg-gray-50 rounded-xl">
+    <div class="p-6 bg-surface rounded-xl">
       <div class="text-center mb-6">
         <div
-          class="mx-auto w-16 h-16 bg-gray-100 rounded-full flex items-center justify-center mb-4"
+          class="mx-auto w-16 h-16 bg-surface-3 rounded-full flex items-center justify-center mb-4"
         >
-          <UploadOutline class="w-8 h-8 text-gray-600" />
+          <UploadOutline class="w-8 h-8 text-text-muted" />
         </div>
-        <h4 class="text-lg font-semibold text-black">
+        <h4 class="text-lg font-semibold text-text">
           {$_("attachment_modal.upload_title")}
         </h4>
-        <p class="text-sm text-gray-600 mt-1">
+        <p class="text-sm text-text-muted mt-1">
           {$_("attachment_modal.upload_description")}
         </p>
       </div>
@@ -383,11 +370,11 @@
         />
         <label
           for="file-upload"
-          class="flex flex-col items-center justify-center w-full max-w-md h-32 border-2 border-gray-300 border-dashed rounded-lg cursor-pointer bg-white hover:bg-gray-50 transition-colors"
+          class="flex flex-col items-center justify-center w-full max-w-md h-32 border-2 border-border-strong border-dashed rounded-lg cursor-pointer bg-surface-2 hover:bg-surface transition-colors"
         >
           <div class="flex flex-col items-center justify-center pt-5 pb-6">
             <svg
-              class="w-8 h-8 mb-4 text-gray-400"
+              class="w-8 h-8 mb-4 text-text-faint"
               aria-hidden="true"
               xmlns="http://www.w3.org/2000/svg"
               fill="none"
@@ -401,15 +388,15 @@
                 d="M13 13h3a3 3 0 0 0 0-6h-.025A5.56 5.56 0 0 0 16 6.5 5.5 5.5 0 0 0 5.207 5.021C5.137 5.017 5.071 5 5 5a4 4 0 0 0 0 8h2.167M10 15V6m0 0L8 8m2-2 2 2"
               />
             </svg>
-            <p class="mb-2 text-sm text-gray-600">
-              <span class="font-semibold text-black"
+            <p class="mb-2 text-sm text-text-muted">
+              <span class="font-semibold text-text"
                 >{$_("attachment_modal.click_to_upload")}</span
               >
-              <span class="text-gray-600"
+              <span class="text-text-muted"
                 >{$_("attachment_modal.or_drag_drop")}</span
               >
             </p>
-            <p class="text-xs text-gray-500">
+            <p class="text-xs text-text-muted">
               {$_("attachment_modal.supported_formats")}
             </p>
           </div>
@@ -420,7 +407,7 @@
       {#if selectedFiles.length > 0}
         <div class="mt-6">
           <div class="flex items-center justify-between mb-3">
-            <h5 class="text-sm font-medium text-black">
+            <h5 class="text-sm font-medium text-text">
               {$_("attachment_modal.selected_files", {
                 values: { count: selectedFiles.length },
               })}
@@ -428,7 +415,7 @@
             {#if !isUploading}
               <button
                 onclick={() => resetForm()}
-                class="text-xs text-red-600 hover:text-red-800 font-medium"
+                class="text-xs text-danger hover:text-danger font-medium"
               >
                 {$_("attachment_modal.clear_all")}
               </button>
@@ -446,10 +433,10 @@
               >
                 <!-- Preview (left) -->
                 <div
-                  class="relative shrink-0 w-40 min-h-[10rem] bg-gray-100 border-r border-gray-200 flex items-center justify-center"
+                  class="relative shrink-0 w-40 min-h-[10rem] bg-surface-3 border-e border-border flex items-center justify-center"
                 >
                   {#if isImageFile(fileItem.file.name)}
-                    <img
+                    <img loading="lazy" decoding="async"
                       src={getFileThumbnailUrl(fileItem.file)}
                       alt={fileItem.file.name}
                       class="w-full h-full object-cover"
@@ -460,7 +447,7 @@
                     >
                       <span class="text-4xl">{getFileIcon(fileItem.file)}</span>
                       <span
-                        class="text-[10px] font-medium text-gray-500 uppercase mt-1"
+                        class="text-[10px] font-medium text-text-muted uppercase mt-1"
                       >
                         {getFileExtension(fileItem.file.name)}
                       </span>
@@ -468,46 +455,46 @@
                   {/if}
                   {#if fileItem.status === "uploading"}
                     <div
-                      class="absolute inset-0 bg-black/40 flex items-center justify-center"
+                      class="absolute inset-0 bg-[var(--surface-overlay)] flex items-center justify-center"
                     >
                       <div
-                        class="w-8 h-8 border-[3px] border-white border-t-transparent rounded-full animate-spin"
+                        class="w-8 h-8 border-[3px] border-text-on-primary/40 border-t-transparent rounded-full animate-spin"
                       ></div>
                     </div>
                   {:else if fileItem.status === "success"}
                     <div
-                      class="absolute inset-0 bg-emerald-500/25 flex items-center justify-center"
+                      class="absolute inset-0 bg-success-soft flex items-center justify-center"
                     >
                       <CheckCircleSolid
-                        class="w-10 h-10 text-emerald-700 drop-shadow"
+                        class="w-10 h-10 text-success drop-shadow"
                       />
                     </div>
                   {:else if fileItem.status === "error"}
                     <div
-                      class="absolute inset-0 bg-red-500/25 flex items-center justify-center"
+                      class="absolute inset-0 bg-danger-soft flex items-center justify-center"
                     >
                       <CloseCircleSolid
-                        class="w-10 h-10 text-red-700 drop-shadow"
+                        class="w-10 h-10 text-danger drop-shadow"
                       />
                     </div>
                   {/if}
                 </div>
 
                 <!-- Body (right) -->
-                <div class="flex-1 min-w-0 flex flex-col gap-3 p-4 pr-10">
+                <div class="flex-1 min-w-0 flex flex-col gap-3 p-4 pe-10">
                   <div class="min-w-0">
                     <p
-                      class="text-sm font-semibold text-black truncate"
+                      class="text-sm font-semibold text-text truncate"
                       title={fileItem.file.name}
                     >
                       {fileItem.file.name}
                     </p>
-                    <p class="text-[11px] text-gray-500">
+                    <p class="text-[11px] text-text-muted">
                       {(fileItem.file.size / 1024).toFixed(1)} KB
                     </p>
                     {#if fileItem.status === "error" && fileItem.errorMessage}
                       <p
-                        class="text-[11px] text-red-600 mt-1 truncate"
+                        class="text-[11px] text-danger mt-1 truncate"
                         title={fileItem.errorMessage}
                       >
                         {fileItem.errorMessage}
@@ -518,7 +505,7 @@
                   <div>
                     <label
                       for="attach-shortname-{fileItem.id}"
-                      class="block text-[11px] font-semibold text-gray-600 mb-1"
+                      class="block text-[11px] font-semibold text-text-muted mb-1"
                     >
                       {$_("create_entry.attachments.shortname_label", {
                         default: "Shortname",
@@ -539,12 +526,12 @@
                         "create_entry.attachments.shortname_placeholder",
                         { default: "Leave empty to auto-generate" },
                       )}
-                      class="w-full rounded-md border border-gray-200 bg-white px-2.5 py-1.5 text-xs focus:ring-2 focus:ring-indigo-500 disabled:bg-gray-50 disabled:text-gray-500"
+                      class="w-full rounded-md border border-border bg-surface-2 px-2.5 py-1.5 text-xs focus:ring-2 focus:ring-primary disabled:bg-surface disabled:text-text-muted"
                     />
                   </div>
 
                   <div>
-                    <div class="block text-[11px] font-semibold text-gray-600 mb-1">
+                    <div class="block text-[11px] font-semibold text-text-muted mb-1">
                       {$_("create_entry.attachments.displayname_label", {
                         default: "Display Name",
                       })}
@@ -552,7 +539,7 @@
                     <div class="grid grid-cols-1 sm:grid-cols-3 gap-2">
                       <input
                         type="text"
-                        placeholder="English"
+                        placeholder={$_("english")}
                         value={fileItem.displayname.en}
                         oninput={(e) =>
                           updateFileTranslation(
@@ -563,7 +550,7 @@
                           )}
                         disabled={fileItem.status === "uploading" ||
                           fileItem.status === "success"}
-                        class="w-full rounded-md border border-gray-200 bg-white px-2.5 py-1.5 text-xs focus:ring-2 focus:ring-indigo-500 disabled:bg-gray-50 disabled:text-gray-500"
+                        class="w-full rounded-md border border-border bg-surface-2 px-2.5 py-1.5 text-xs focus:ring-2 focus:ring-primary disabled:bg-surface disabled:text-text-muted"
                       />
                       <input
                         type="text"
@@ -579,7 +566,7 @@
                           )}
                         disabled={fileItem.status === "uploading" ||
                           fileItem.status === "success"}
-                        class="w-full rounded-md border border-gray-200 bg-white px-2.5 py-1.5 text-xs focus:ring-2 focus:ring-indigo-500 disabled:bg-gray-50 disabled:text-gray-500"
+                        class="w-full rounded-md border border-border bg-surface-2 px-2.5 py-1.5 text-xs focus:ring-2 focus:ring-primary disabled:bg-surface disabled:text-text-muted"
                       />
                       <input
                         type="text"
@@ -595,13 +582,13 @@
                           )}
                         disabled={fileItem.status === "uploading" ||
                           fileItem.status === "success"}
-                        class="w-full rounded-md border border-gray-200 bg-white px-2.5 py-1.5 text-xs focus:ring-2 focus:ring-indigo-500 disabled:bg-gray-50 disabled:text-gray-500"
+                        class="w-full rounded-md border border-border bg-surface-2 px-2.5 py-1.5 text-xs focus:ring-2 focus:ring-primary disabled:bg-surface disabled:text-text-muted"
                       />
                     </div>
                   </div>
 
                   <div>
-                    <div class="block text-[11px] font-semibold text-gray-600 mb-1">
+                    <div class="block text-[11px] font-semibold text-text-muted mb-1">
                       {$_("create_entry.attachments.description_label", {
                         default: "Description",
                       })}
@@ -609,7 +596,7 @@
                     <div class="grid grid-cols-1 sm:grid-cols-3 gap-2">
                       <textarea
                         rows="2"
-                        placeholder="English"
+                        placeholder={$_("english")}
                         value={fileItem.description.en}
                         oninput={(e) =>
                           updateFileTranslation(
@@ -620,7 +607,7 @@
                           )}
                         disabled={fileItem.status === "uploading" ||
                           fileItem.status === "success"}
-                        class="w-full rounded-md border border-gray-200 bg-white px-2.5 py-1.5 text-xs focus:ring-2 focus:ring-indigo-500 disabled:bg-gray-50 disabled:text-gray-500"
+                        class="w-full rounded-md border border-border bg-surface-2 px-2.5 py-1.5 text-xs focus:ring-2 focus:ring-primary disabled:bg-surface disabled:text-text-muted"
                       ></textarea>
                       <textarea
                         rows="2"
@@ -636,7 +623,7 @@
                           )}
                         disabled={fileItem.status === "uploading" ||
                           fileItem.status === "success"}
-                        class="w-full rounded-md border border-gray-200 bg-white px-2.5 py-1.5 text-xs focus:ring-2 focus:ring-indigo-500 disabled:bg-gray-50 disabled:text-gray-500"
+                        class="w-full rounded-md border border-border bg-surface-2 px-2.5 py-1.5 text-xs focus:ring-2 focus:ring-primary disabled:bg-surface disabled:text-text-muted"
                       ></textarea>
                       <textarea
                         rows="2"
@@ -652,7 +639,7 @@
                           )}
                         disabled={fileItem.status === "uploading" ||
                           fileItem.status === "success"}
-                        class="w-full rounded-md border border-gray-200 bg-white px-2.5 py-1.5 text-xs focus:ring-2 focus:ring-indigo-500 disabled:bg-gray-50 disabled:text-gray-500"
+                        class="w-full rounded-md border border-border bg-surface-2 px-2.5 py-1.5 text-xs focus:ring-2 focus:ring-primary disabled:bg-surface disabled:text-text-muted"
                       ></textarea>
                     </div>
                   </div>
@@ -660,10 +647,10 @@
                   <div>
                     <label
                       for="attach-tags-{fileItem.id}"
-                      class="block text-[11px] font-semibold text-gray-600 mb-1"
+                      class="block text-[11px] font-semibold text-text-muted mb-1"
                     >
                       Tags
-                      <span class="normal-case font-normal text-gray-400">
+                      <span class="normal-case font-normal text-text-faint">
                         (comma-separated)
                       </span>
                     </label>
@@ -678,8 +665,8 @@
                         )}
                       disabled={fileItem.status === "uploading" ||
                         fileItem.status === "success"}
-                      placeholder="tag1, tag2"
-                      class="w-full rounded-md border border-gray-200 bg-white px-2.5 py-1.5 text-xs focus:ring-2 focus:ring-indigo-500 disabled:bg-gray-50 disabled:text-gray-500"
+                      placeholder={$_("labels.tags_placeholder")}
+                      class="w-full rounded-md border border-border bg-surface-2 px-2.5 py-1.5 text-xs focus:ring-2 focus:ring-primary disabled:bg-surface disabled:text-text-muted"
                     />
                   </div>
                 </div>
@@ -688,7 +675,7 @@
                 {#if fileItem.status !== "uploading" && fileItem.status !== "success"}
                   <button
                     onclick={() => removeFile(fileItem.id)}
-                    class="absolute top-2 right-2 shrink-0 w-7 h-7 rounded-full flex items-center justify-center text-gray-400 bg-white/90 hover:text-red-600 hover:bg-red-50 shadow-sm"
+                    class="absolute top-2 end-2 shrink-0 w-7 h-7 rounded-full flex items-center justify-center text-text-faint bg-surface-2/90 hover:text-danger hover:bg-danger-soft shadow-sm"
                     title={$_("attachment_modal.remove_file")}
                     aria-label={$_("attachment_modal.remove_file")}
                   >
@@ -717,73 +704,52 @@
   </div>
 
   {#snippet footer()}
-    <Button
-      color="alternative"
+    <button
+      type="button"
+      class="app-btn app-btn-secondary"
       onclick={() => {
         resetForm();
         isOpen = false;
       }}
       disabled={isUploading}
-      class="bg-white text-black border-gray-300 hover:bg-gray-50"
     >
       {$_("common.cancel")}
-    </Button>
-    <Button
-      color="blue"
+    </button>
+    <button
+      type="button"
+      class="app-btn app-btn-primary"
       onclick={handleFileUpload}
       disabled={selectedFiles.length === 0 ||
         isUploading ||
         selectedFiles.every((f) => f.status === "success")}
-      class="bg-black hover:bg-gray-800 text-white border-black"
+      aria-busy={isUploading}
     >
       {#if isUploading}
-        <svg
-          class="animate-spin -ml-1 mr-2 h-4 w-4 text-white"
-          xmlns="http://www.w3.org/2000/svg"
-          fill="none"
-          viewBox="0 0 24 24"
-        >
-          <circle
-            class="opacity-25"
-            cx="12"
-            cy="12"
-            r="10"
-            stroke="currentColor"
-            stroke-width="4"
-          />
-          <path
-            class="opacity-75"
-            fill="currentColor"
-            d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"
-          />
-        </svg>
-        {$_("common.uploading")}...
+        <span class="spinner spinner-xs spinner-white" aria-hidden="true"></span>
+        {$_("common.uploading")}
       {:else}
-        <UploadOutline class="w-4 h-4 mr-2" />
+        <UploadOutline size="sm" aria-hidden="true" />
         {$_("attachment_modal.upload_button")}
         {#if selectedFiles.length > 0}
-          <span class="ml-1"
-            >({selectedFiles.filter((f) => f.status !== "success")
-              .length})</span
-          >
+          <span class="tabular-nums">({selectedFiles.filter((f) => f.status !== "success").length})</span>
         {/if}
       {/if}
-    </Button>
+    </button>
   {/snippet}
 </Modal>
 {/if}
 
 <style>
   :global(.attachment-modal) {
-    background-color: white !important;
+    background-color: var(--color-surface) !important;
   }
 
   :global(.attachment-modal .modal-content) {
-    background-color: white !important;
+    background-color: var(--color-surface) !important;
   }
 
   :global(.attachment-modal h3) {
-    color: black !important;
+    color: var(--color-text) !important;
   }
 
   .border-3 {

@@ -1,7 +1,7 @@
 <script lang="ts">
+  import { _ } from "@/i18n";
     import { resolveSchemaDef } from "@/lib/jsonSchema";
 
-    // @ts-ignore - $props is a Svelte 5 rune
     let { content = {} }: { content?: any } = $props();
 
     // Normalise: content can be a JSON string or an object
@@ -17,17 +17,17 @@
     });
 
     const typeColors: Record<string, string> = {
-        string: "bg-green-100 text-green-800",
-        number: "bg-blue-100 text-blue-800",
-        integer: "bg-blue-100 text-blue-800",
-        boolean: "bg-purple-100 text-purple-800",
-        object: "bg-orange-100 text-orange-800",
-        array: "bg-yellow-100 text-yellow-800",
-        null: "bg-gray-100 text-gray-600",
+        string: "bg-success-soft text-success",
+        number: "bg-info-soft text-info",
+        integer: "bg-info-soft text-info",
+        boolean: "bg-primary-soft text-primary",
+        object: "bg-warning-soft text-warning",
+        array: "bg-warning-soft text-warning",
+        null: "bg-surface-3 text-text-muted",
     };
 
     function typeColor(type: string) {
-        return typeColors[type] ?? "bg-gray-100 text-gray-700";
+        return typeColors[type] ?? "bg-surface-3 text-text-muted";
     }
 
     function getProperties(s: any, root: any): any[] {
@@ -127,7 +127,7 @@
                     </tr>
                 </thead>
                 <tbody>
-                    {#each props as prop}
+                    {#each props as prop (prop.name)}
                         <tr class="prop-row">
                             <td class="prop-name-cell">
                                 <span class="prop-name">{prop.name}</span>
@@ -158,16 +158,16 @@
                                 {/if}
                                 {#if prop.constraints.length > 0}
                                     <div class="constraints">
-                                        {#each prop.constraints as c}
+                                        {#each prop.constraints as c (c)}
                                             <code class="constraint">{c}</code>
                                         {/each}
                                     </div>
                                 {/if}
                                 {#if prop.type === "object" && prop.properties}
                                     <details class="nested-schema">
-                                        <summary>Nested properties</summary>
+                                        <summary>{$_("schema_editor.nested_properties")}</summary>
                                         <div class="nested-list">
-                                            {#each Object.entries(prop.properties) as [subName, subDef]}
+                                            {#each Object.entries(prop.properties) as [subName, subDef] (subName)}
                                                 <div class="nested-row">
                                                     <span class="prop-name"
                                                         >{subName}</span
@@ -223,7 +223,7 @@
         {/if}
     {:else}
         <div class="variants-container">
-            {#each variants as variant, i}
+            {#each variants as variant, i (i)}
                 <details class="variant-block" open={i === 0}>
                     <summary class="variant-summary">
                         <span class="variant-title">{variant.title}</span>
@@ -253,9 +253,9 @@
 <style>
     .schema-viewer {
         border-radius: 12px;
-        border: 1px solid #e5e7eb;
+        border: 1px solid var(--color-border);
         overflow: hidden;
-        background: white;
+        background: var(--color-surface);
     }
 
     .viewer-header {
@@ -264,20 +264,20 @@
         justify-content: space-between;
         gap: 1rem;
         padding: 1rem 1.25rem;
-        background: #f9fafb;
-        border-bottom: 1px solid #e5e7eb;
+        background: var(--color-surface);
+        border-bottom: 1px solid var(--color-border);
     }
 
     .schema-title {
         font-size: 1rem;
         font-weight: 600;
-        color: #111827;
+        color: var(--color-text);
         margin: 0 0 0.25rem;
     }
 
     .schema-description {
         font-size: 0.8125rem;
-        color: #6b7280;
+        color: var(--color-text-muted);
         margin: 0;
     }
 
@@ -286,8 +286,8 @@
         display: inline-flex;
         align-items: center;
         padding: 0.25rem 0.75rem;
-        background: #dbeafe;
-        color: #1e40af;
+        background: var(--color-info-soft);
+        color: var(--color-info);
         border-radius: 9999px;
         font-size: 0.75rem;
         font-weight: 600;
@@ -305,22 +305,22 @@
     }
 
     .props-table thead tr {
-        background: #f3f4f6;
+        background: var(--color-surface-3);
     }
 
     .props-table th {
         padding: 0.6rem 1rem;
-        text-align: left;
+        text-align: start;
         font-size: 0.75rem;
         font-weight: 600;
-        color: #6b7280;
+        color: var(--color-text-muted);
         text-transform: uppercase;
         letter-spacing: 0.05em;
-        border-bottom: 1px solid #e5e7eb;
+        border-bottom: 1px solid var(--color-border);
     }
 
     .prop-row {
-        border-bottom: 1px solid #f3f4f6;
+        border-bottom: 1px solid var(--color-surface-3);
         transition: background 0.15s;
     }
 
@@ -329,7 +329,7 @@
     }
 
     .prop-row:hover {
-        background: #f9fafb;
+        background: var(--color-surface);
     }
 
     .props-table td {
@@ -344,7 +344,7 @@
     .prop-name {
         display: block;
         font-weight: 600;
-        color: #1f2937;
+        color: var(--color-text);
         font-family: ui-monospace, "Cascadia Code", "Source Code Pro", Menlo,
             monospace;
         font-size: 0.8125rem;
@@ -353,7 +353,7 @@
     .prop-title {
         display: block;
         font-size: 0.75rem;
-        color: #6b7280;
+        color: var(--color-text-muted);
         margin-top: 2px;
     }
 
@@ -369,8 +369,8 @@
 
     .items-type {
         font-size: 0.75rem;
-        color: #9ca3af;
-        margin-left: 0.25rem;
+        color: var(--color-text-faint);
+        margin-inline-start: 0.25rem;
     }
 
     .required-badge {
@@ -380,8 +380,8 @@
         border-radius: 6px;
         font-size: 0.75rem;
         font-weight: 500;
-        background: #fef2f2;
-        color: #dc2626;
+        background: var(--color-danger-soft);
+        color: var(--color-danger);
     }
 
     .optional-badge {
@@ -391,8 +391,8 @@
         border-radius: 6px;
         font-size: 0.75rem;
         font-weight: 500;
-        background: #f3f4f6;
-        color: #6b7280;
+        background: var(--color-surface-3);
+        color: var(--color-text-muted);
     }
 
     .details-cell {
@@ -401,7 +401,7 @@
 
     .prop-desc {
         margin: 0 0 0.4rem;
-        color: #4b5563;
+        color: var(--color-text-muted);
         font-size: 0.8125rem;
         line-height: 1.4;
     }
@@ -415,11 +415,11 @@
     .constraint {
         display: inline-block;
         padding: 0.1rem 0.4rem;
-        background: #f1f5f9;
-        border: 1px solid #e2e8f0;
+        background: var(--color-surface-3);
+        border: 1px solid var(--color-border);
         border-radius: 4px;
         font-size: 0.72rem;
-        color: #475569;
+        color: var(--color-text-muted);
     }
 
     .nested-schema {
@@ -428,7 +428,7 @@
 
     .nested-schema summary {
         font-size: 0.75rem;
-        color: #6b7280;
+        color: var(--color-text-muted);
         cursor: pointer;
         user-select: none;
     }
@@ -436,7 +436,7 @@
     .nested-list {
         margin-top: 0.4rem;
         padding: 0.5rem;
-        background: #f9fafb;
+        background: var(--color-surface);
         border-radius: 6px;
         display: flex;
         flex-direction: column;
@@ -455,7 +455,7 @@
         align-items: center;
         justify-content: center;
         padding: 2.5rem 1rem;
-        color: #9ca3af;
+        color: var(--color-text-faint);
         gap: 0.75rem;
         text-align: center;
     }
@@ -463,7 +463,7 @@
     .empty-icon {
         width: 2.5rem;
         height: 2.5rem;
-        color: #d1d5db;
+        color: var(--color-border-strong);
     }
 
     .empty-state p {
@@ -477,7 +477,7 @@
     }
 
     .variant-block {
-        border-bottom: 1px solid #e5e7eb;
+        border-bottom: 1px solid var(--color-border);
     }
 
     .variant-block:last-child {
@@ -492,31 +492,31 @@
         padding: 0.75rem 1.25rem;
         cursor: pointer;
         user-select: none;
-        background: #f9fafb;
+        background: var(--color-surface);
     }
 
     .variant-title {
         font-size: 0.875rem;
         font-weight: 600;
-        color: #1f2937;
+        color: var(--color-text);
     }
 
     .variant-count {
         font-size: 0.75rem;
-        color: #6b7280;
+        color: var(--color-text-muted);
     }
 
     .variant-description {
         margin: 0;
         padding: 0 1.25rem 0.5rem;
         font-size: 0.8125rem;
-        color: #6b7280;
+        color: var(--color-text-muted);
     }
 
     .variant-empty {
         margin: 0;
         padding: 0.75rem 1.25rem 1rem;
         font-size: 0.8125rem;
-        color: #9ca3af;
+        color: var(--color-text-faint);
     }
 </style>

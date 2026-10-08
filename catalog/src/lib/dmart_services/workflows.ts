@@ -28,7 +28,7 @@ export async function getWorkflow(shortname: string, space_name: string = "catal
             true,
             true
         );
-    } catch (e) {
+    } catch {
         log.error(`Failed to fetch workflow ${shortname}`);
         return null;
     }

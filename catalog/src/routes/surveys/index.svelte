@@ -1,1061 +1,355 @@
 <script lang="ts">
   import { onMount } from "svelte";
-  import { goto } from "@roxi/routify";
-  import {
-    getSurveys,
-    submitSurveyResponse,
-    hasUserRespondedToSurvey,
-    getUserSurveyResponses,
-  } from "@/lib/dmart_services";
+  import { goto as gotoStore } from "@roxi/routify";
+  import { getSurveys, submitSurveyResponse } from "@/lib/dmart_services";
+  import { APPLICATIONS_SPACE } from "@/lib/constants";
   import { DmartScope } from "@edraj/tsdmart";
-  import { _ } from "@/i18n";
-  import {
-    errorToastMessage,
-    successToastMessage,
-  } from "@/lib/toasts_messages";
+  import { _, locale } from "@/i18n";
+  import { localized } from "@/lib/catalogItems";
+  import { setTitle } from "@/lib/title";
+  import { log } from "@/lib/logger";
+  import { toasts } from "@/lib/toast";
+  import { user } from "@/stores/user";
+  import { ChevronRightOutline, ClipboardListOutline, PlusOutline } from "flowbite-svelte-icons";
+  import Modal from "@/components/Modal.svelte";
+  import PageHeader from "@/components/ui/PageHeader.svelte";
+  import Badge from "@/components/ui/Badge.svelte";
+  import EmptyState from "@/components/ui/EmptyState.svelte";
+  import ErrorState from "@/components/ui/ErrorState.svelte";
+  import LoadingState from "@/components/ui/LoadingState.svelte";
 
-  $goto;
+  // Routify's helpers read the fragment context when first subscribed, and
+  // Svelte 5 subscribes to a `$store` lazily on first read — so a `$gotoStore`
+  // first touched inside an async callback logs "Unable to access context".
+  // Capture the navigate function once, during component init.
+  const goto = $gotoStore;
 
-  let surveys = $state<any[]>([]);
+  interface SurveyOption {
+    id: string;
+    label: string;
+    value: string;
+  }
+
+  interface SurveyQuestion {
+    id: string;
+    question: string;
+    type: "input" | "text" | "single" | "multi" | "select";
+    required?: boolean;
+    options?: SurveyOption[];
+  }
+
+  type Answer = string | string[];
+
+  interface Survey {
+    shortname: string;
+    displayname: unknown;
+    description: unknown;
+    questions: SurveyQuestion[];
+    owner_shortname: string;
+    /** The current user's earlier answers, when they already responded. */
+    myResponse: Record<string, Answer> | null;
+  }
+
+  let surveys = $state<Survey[]>([]);
   let isLoading = $state(true);
-  let error = $state("");
-  let responses: Record<string, any> = $state({});
-  let submittingResponses: Record<string, any> = $state({});
-  let userResponses: Record<string, any> = $state({});
-  let selectedSurvey: any = $state(null);
+  let error = $state<unknown>(null);
+  let responses = $state<Record<string, Record<string, Answer>>>({});
+  let submitting = $state<Record<string, boolean>>({});
+  let selectedSurvey = $state<Survey | null>(null);
   let showSurveyModal = $state(false);
+
+  $effect(() => setTitle($_("surveys.title")));
 
   onMount(async () => {
     await loadSurveys();
   });
 
+  function titleOf(survey: Survey): string {
+    return localized(survey.displayname as never, $locale) || $_("surveys.untitled_survey");
+  }
+
+  function descriptionOf(survey: Survey): string {
+    return localized(survey.description as never, $locale);
+  }
+
   async function loadSurveys() {
     try {
       isLoading = true;
-      error = "";
+      error = null;
 
-      const result = await getSurveys("applications", DmartScope.managed, 100, 0, false);
+      // The listing already carries each survey's response attachments, so
+      // whether I responded (and what I answered) needs no request per survey.
+      const result = await getSurveys(APPLICATIONS_SPACE, DmartScope.managed, 100, 0, false);
+      const me = $user?.shortname;
 
-      if (result && result.records) {
-        surveys = result.records.map((record: any) => ({
+      surveys = (result?.records ?? []).map((record): Survey => {
+        const attrs = (record.attributes ?? {}) as Record<string, unknown>;
+        const body = ((attrs.payload as { body?: Record<string, unknown> } | undefined)?.body ?? {}) as Record<string, unknown>;
+        const attachments = ((record as unknown as { attachments?: { json?: unknown[] } }).attachments?.json ?? []) as Array<{
+          attributes?: { owner_shortname?: string; payload?: { body?: Record<string, Answer> } };
+        }>;
+        const mine = me ? attachments.find((a) => a.attributes?.owner_shortname === me) : undefined;
+        return {
           shortname: record.shortname,
-          title: record.attributes?.displayname?.en || "Untitled Survey",
-          description: record.attributes?.description?.en || "",
-          questions: record.attributes?.payload?.body?.questions || [],
-          owner_shortname: record?.attributes?.owner_shortname,
-        }));
-
-        for (const survey of surveys) {
-          const hasResponded = await hasUserRespondedToSurvey(survey.shortname);
-          userResponses[survey.shortname] = hasResponded;
-        }
-        userResponses = { ...userResponses };
-      }
+          displayname: attrs.displayname,
+          description: attrs.description,
+          questions: Array.isArray(body.questions) ? (body.questions as SurveyQuestion[]) : [],
+          owner_shortname: typeof attrs.owner_shortname === "string" ? attrs.owner_shortname : "",
+          myResponse: mine?.attributes?.payload?.body ?? null,
+        };
+      });
     } catch (err) {
-      console.error("Error loading surveys:", err);
-      error = $_("surveys.failed_to_load");
+      log.error("Error loading surveys:", err);
+      error = err;
     } finally {
       isLoading = false;
     }
   }
 
-  function initializeResponse(surveyShortname: string, questions: any[]) {
-    if (!responses[surveyShortname]) {
-      responses[surveyShortname] = {};
-        questions.forEach((question: any) => {
-        if (question.type === "multi") {
-          responses[surveyShortname][question.id] = [];
-        } else {
-          responses[surveyShortname][question.id] = "";
-        }
-      });
-      responses = { ...responses };
+  function answersFor(survey: Survey): Record<string, Answer> {
+    if (!responses[survey.shortname]) {
+      const initial: Record<string, Answer> = {};
+      for (const q of survey.questions) initial[q.id] = q.type === "multi" ? [] : "";
+      responses[survey.shortname] = { ...initial, ...(survey.myResponse ?? {}) };
     }
+    return responses[survey.shortname];
   }
 
-  function handleSingleChoice(
-    surveyShortname: string,
-    questionId: string,
-    value: string
-  ) {
-    if (!responses[surveyShortname]) {
-      responses[surveyShortname] = {};
-    }
-    responses[surveyShortname][questionId] = value;
-    responses = { ...responses };
+  function setAnswer(survey: Survey, questionId: string, value: Answer) {
+    answersFor(survey)[questionId] = value;
   }
 
-  function handleMultiChoice(
-    surveyShortname: string,
-    questionId: string,
-    optionValue: string,
-    checked: boolean
-  ) {
-    if (!responses[surveyShortname]) {
-      responses[surveyShortname] = {};
-    }
-    if (!responses[surveyShortname][questionId]) {
-      responses[surveyShortname][questionId] = [];
-    }
-
-    const currentValues = responses[surveyShortname][questionId];
-    if (checked) {
-      if (!currentValues.includes(optionValue)) {
-        currentValues.push(optionValue);
-      }
-    } else {
-      const index = currentValues.indexOf(optionValue);
-      if (index > -1) {
-        currentValues.splice(index, 1);
-      }
-    }
-    responses = { ...responses };
+  function toggleMulti(survey: Survey, questionId: string, option: string, checked: boolean) {
+    const current = answersFor(survey)[questionId];
+    const list = Array.isArray(current) ? [...current] : [];
+    const i = list.indexOf(option);
+    if (checked && i < 0) list.push(option);
+    if (!checked && i >= 0) list.splice(i, 1);
+    setAnswer(survey, questionId, list);
   }
 
-  function handleTextInput(
-    surveyShortname: string,
-    questionId: string,
-    value: string
-  ) {
-    if (!responses[surveyShortname]) {
-      responses[surveyShortname] = {};
-    }
-    responses[surveyShortname][questionId] = value;
-    responses = { ...responses };
+  function isEmpty(answer: Answer | undefined): boolean {
+    return answer === undefined || (Array.isArray(answer) ? answer.length === 0 : answer.toString().trim() === "");
   }
 
-  async function submitResponse(survey: any) {
-    const surveyResponses = responses[survey.shortname];
-    if (!surveyResponses) {
-      errorToastMessage($_("surveys.answer_one_question"));
-      return;
-    }
+  async function submitResponse(event: SubmitEvent) {
+    event.preventDefault();
+    const survey = selectedSurvey;
+    if (!survey) return;
+    const answers = answersFor(survey);
 
     for (const question of survey.questions) {
-      if (
-        question.required &&
-        (!surveyResponses[question.id] ||
-          (Array.isArray(surveyResponses[question.id]) &&
-            surveyResponses[question.id].length === 0) ||
-          surveyResponses[question.id].toString().trim() === "")
-      ) {
-        errorToastMessage(
-          $_("surveys.answer_required") + `: ${question.question}`
-        );
+      if (question.required && isEmpty(answers[question.id])) {
+        toasts.error(`${$_("surveys.answer_required")}: ${question.question}`);
         return;
       }
     }
+    if (survey.questions.every((q) => isEmpty(answers[q.id]))) {
+      toasts.error($_("surveys.answer_one_question"));
+      return;
+    }
 
     try {
-      submittingResponses[survey.shortname] = true;
-      submittingResponses = { ...submittingResponses };
-
-      const result = await submitSurveyResponse(
-        survey.shortname,
-        surveyResponses
-      );
-
-      if (result) {
-        const wasFirstTime = !userResponses[survey.shortname];
-
-        if (wasFirstTime) {
-          successToastMessage($_("surveys.response_success"));
-        } else {
-          successToastMessage($_("surveys.response_updated"));
-        }
-
-        userResponses[survey.shortname] = true;
-        userResponses = { ...userResponses };
-      } else {
-        throw new Error("Failed to submit response");
-      }
+      submitting[survey.shortname] = true;
+      const result = await submitSurveyResponse(survey.shortname, answers);
+      if (!result) throw new Error("Failed to submit response");
+      toasts.success(survey.myResponse ? $_("surveys.response_updated") : $_("surveys.response_success"));
+      survey.myResponse = { ...answers };
+      closeSurveyModal();
     } catch (err) {
-      console.error("Error submitting response:", err);
-      errorToastMessage($_("surveys.response_error"));
+      log.error("Error submitting response:", err);
+      toasts.error($_("surveys.response_error"));
     } finally {
-      submittingResponses[survey.shortname] = false;
-      submittingResponses = { ...submittingResponses };
+      submitting[survey.shortname] = false;
     }
   }
 
-  // function formatDate(dateString: string) {
-  //   return new Date(dateString).toLocaleDateString();
-  // }
-
-  async function openSurveyModal(survey: any) {
+  function openSurveyModal(survey: Survey) {
     selectedSurvey = survey;
-
-    initializeResponse(survey.shortname, survey.questions);
-
-    if (userResponses[survey.shortname]) {
-      try {
-        const existingResponses = await getUserSurveyResponses(
-          survey.shortname
-        );
-        if (existingResponses) {
-          responses[survey.shortname] = { ...existingResponses };
-          responses = { ...responses };
-        }
-      } catch (err) {
-        console.error("Error loading existing responses:", err);
-      }
-    }
-
+    answersFor(survey);
     showSurveyModal = true;
   }
 
   function closeSurveyModal() {
+    if (selectedSurvey && submitting[selectedSurvey.shortname]) return;
     showSurveyModal = false;
     selectedSurvey = null;
   }
+
+  const inputClass =
+    "w-full px-3 py-2 text-sm rounded-control border border-border bg-surface-2 text-text placeholder:text-text-faint focus:border-primary focus:ring-1 focus:ring-primary disabled:opacity-60";
 </script>
 
-<svelte:head>
-  <title>{$_("route_labels.surveys_title")}</title>
-</svelte:head>
+<div class="mx-auto max-w-5xl px-4 sm:px-6 py-6 sm:py-8">
+  <PageHeader title={$_("surveys.title")} description={$_("surveys.description")} icon={ClipboardListOutline}>
+    {#snippet actions()}
+      <button type="button" class="app-btn app-btn-secondary" onclick={() => goto("/surveys/manage")}>
+        {$_("surveys.manage_button")}
+      </button>
+      <button type="button" class="app-btn app-btn-primary" onclick={() => goto("/surveys/create")}>
+        <PlusOutline size="sm" aria-hidden="true" />
+        {$_("surveys.create_button")}
+      </button>
+    {/snippet}
+  </PageHeader>
 
-<div class="surveys-page">
-  <div class="page-header">
-    <div class="header-content">
-      <h1 class="page-title">{$_("surveys.title")}</h1>
-      <p class="page-description">
-        {$_("surveys.description")}
-      </p>
-      <div class="header-actions">
-        <button
-          class="btn btn-secondary"
-          onclick={() => $goto("/surveys/manage")}
-        >
-          {$_("surveys.manage_button")}
-        </button>
-        <button
-          class="btn btn-primary"
-          onclick={() => $goto("/surveys/create")}
-        >
-          {$_("surveys.create_button")}
-        </button>
-      </div>
-    </div>
-  </div>
-
-  <div class="page-content">
-    {#if error}
-      <div class="alert alert-error">
-        <svg class="alert-icon" fill="currentColor" viewBox="0 0 20 20">
-          <path
-            fill-rule="evenodd"
-            d="M10 18a8 8 0 100-16 8 8 0 000 16zM8.707 7.293a1 1 0 00-1.414 1.414L8.586 10l-1.293 1.293a1 1 0 101.414 1.414L10 11.414l1.293 1.293a1 1 0 001.414-1.414L11.414 10l1.293-1.293a1 1 0 00-1.414-1.414L10 8.586 8.707 7.293z"
-            clip-rule="evenodd"
-          />
-        </svg>
-        <span>{error}</span>
-        <button class="btn btn-sm btn-secondary" onclick={loadSurveys}>
-          {$_("surveys.retry")}
-        </button>
-      </div>
-    {/if}
-
-    {#if isLoading}
-      <div class="loading-container">
-        <div class="loading-spinner"></div>
-        <p>{$_("surveys.loading")}</p>
-      </div>
-    {:else if surveys.length === 0}
-      <div class="empty-state">
-        <svg
-          class="empty-icon"
-          fill="none"
-          stroke="currentColor"
-          viewBox="0 0 24 24"
-        >
-          <path
-            stroke-linecap="round"
-            stroke-linejoin="round"
-            stroke-width="2"
-            d="M9 5H7a2 2 0 00-2 2v10a2 2 0 002 2h8a2 2 0 002-2V7a2 2 0 00-2-2h-2M9 5a2 2 0 002 2h2a2 2 0 002-2M9 5a2 2 0 012-2h2a2 2 0 012 2m-3 7h3m-3 4h3m-6-4h.01M9 16h.01"
-          />
-        </svg>
-        <h3>{$_("surveys.no_surveys_available")}</h3>
-        <p>{$_("surveys.no_surveys_moment")}</p>
-        <button
-          class="btn btn-primary"
-          onclick={() => $goto("/surveys/create")}
-        >
-          {$_("surveys.create_first")}
-        </button>
-      </div>
-    {:else}
-      <div class="surveys-list">
-        {#each surveys as survey (survey.shortname)}
-          <div
-            class="survey-item"
-            role="button"
-            tabindex="0"
+  {#if isLoading}
+    <LoadingState label={$_("surveys.loading")} />
+  {:else if error}
+    <ErrorState title={$_("surveys.failed_to_load")} {error} onRetry={loadSurveys} />
+  {:else if surveys.length === 0}
+    <EmptyState icon={ClipboardListOutline} title={$_("surveys.no_surveys_available")} hint={$_("surveys.no_surveys_moment")}>
+      <button type="button" class="app-btn app-btn-primary app-btn-sm" onclick={() => goto("/surveys/create")}>
+        <PlusOutline size="sm" aria-hidden="true" />
+        {$_("surveys.create_first")}
+      </button>
+    </EmptyState>
+  {:else}
+    <ul class="space-y-3 list-none p-0 m-0">
+      {#each surveys as survey (survey.shortname)}
+        <li>
+          <button
+            type="button"
+            class="w-full text-start flex items-center gap-4 p-4 sm:p-5 rounded-card border border-border bg-surface-2 shadow-card transition-[box-shadow,border-color] hover:shadow-modal hover:border-border-strong focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-primary cursor-pointer"
             onclick={() => openSurveyModal(survey)}
-            onkeydown={(e) => e.key === "Enter" && openSurveyModal(survey)}
           >
-            <div class="survey-info">
-              <h3 class="survey-title">{survey.title}</h3>
-              {#if survey.description}
-                <p class="survey-description">{survey.description}</p>
+            <span class="flex-1 min-w-0">
+              <span class="block text-lg font-semibold text-text">{titleOf(survey)}</span>
+              {#if descriptionOf(survey)}
+                <span class="block text-sm text-text-muted mt-0.5 line-clamp-2">{descriptionOf(survey)}</span>
               {/if}
-              <div class="survey-meta">
-                <span class="survey-author">By: {survey.owner_shortname}</span>
-                <span class="survey-questions"
-                  >{survey.questions.length} questions</span
-                >
-                {#if userResponses[survey.shortname]}
-                  <span class="response-status"
-                    >✓ {$_("surveys.already_responded")}</span
-                  >
+              <span class="flex flex-wrap items-center gap-x-4 gap-y-1 mt-2 text-sm text-text-faint">
+                <span>{$_("surveys.author")}: <span class="text-text-muted">{survey.owner_shortname}</span></span>
+                <span class="tabular-nums">{$_("surveys.question_count", { values: { count: survey.questions.length } })}</span>
+                {#if survey.myResponse}
+                  <Badge variant="success" size="sm">{$_("surveys.already_responded")}</Badge>
                 {/if}
-              </div>
-            </div>
-            <div class="survey-actions">
-              <svg
-                class="chevron-icon"
-                fill="none"
-                stroke="currentColor"
-                viewBox="0 0 24 24"
-              >
-                <path
-                  stroke-linecap="round"
-                  stroke-linejoin="round"
-                  stroke-width="2"
-                  d="M9 5l7 7-7 7"
-                />
-              </svg>
-            </div>
-          </div>
-        {/each}
-      </div>
-    {/if}
-  </div>
+              </span>
+            </span>
+            <ChevronRightOutline size="md" class="shrink-0 text-text-faint rtl:rotate-180" aria-hidden="true" />
+          </button>
+        </li>
+      {/each}
+    </ul>
+  {/if}
 </div>
 
-<!-- Survey Modal -->
 {#if showSurveyModal && selectedSurvey}
-  <div
-    class="modal-overlay"
-    role="button"
-    tabindex="0"
-    onclick={closeSurveyModal}
-    onkeydown={(e) => e.key === "Escape" && closeSurveyModal()}
-  >
-    <div
-      class="modal-content"
-      role="dialog"
-      tabindex="-1"
-      onclick={(e) => e.stopPropagation()}
-      onkeydown={(e) => e.stopPropagation()}
-    >
-      <div class="modal-header">
-        <div class="modal-title-section">
-          <h2 class="modal-title">{selectedSurvey.title}</h2>
-          {#if userResponses[selectedSurvey.shortname]}
-            <span class="response-status-badge">{$_("surveys.responded")}</span>
-          {/if}
-        </div>
-        <button
-          class="modal-close"
-          onclick={closeSurveyModal}
-          aria-label={$_("surveys.close_modal")}
-        >
-          <svg fill="none" stroke="currentColor" viewBox="0 0 24 24">
-            <path
-              stroke-linecap="round"
-              stroke-linejoin="round"
-              stroke-width="2"
-              d="M6 18L18 6M6 6l12 12"
-            />
-          </svg>
-        </button>
-      </div>
-
-      {#if selectedSurvey.description}
-        <p class="modal-description">{selectedSurvey.description}</p>
+  {@const survey = selectedSurvey}
+  {@const answers = answersFor(survey)}
+  {@const locked = !!survey.myResponse}
+  {@const busy = !!submitting[survey.shortname]}
+  <Modal title={titleOf(survey)} size="3xl" dismissable={!busy} onClose={closeSurveyModal}>
+    {#snippet headerActions()}
+      {#if locked}
+        <Badge variant="success" size="sm">{$_("surveys.already_responded")}</Badge>
       {/if}
+    {/snippet}
 
-      <div class="modal-body">
-        <div class="survey-content">
-          {#each selectedSurvey.questions as question, index (question.id)}
-            <div class="question-container">
-              <div class="question-header">
-                <h4 class="question-text">
-                  {index + 1}. {question.question}
-                  {#if question.required}
-                    <span class="required-indicator">*</span>
-                  {/if}
-                </h4>
-              </div>
+    {#if descriptionOf(survey)}
+      <p class="text-sm text-text-muted mb-5">{descriptionOf(survey)}</p>
+    {/if}
 
-              <div class="answer-container">
-                {#if question.type === "input"}
-                  <input
-                    type="text"
-                    class="form-input"
-                    placeholder={$_("surveys.type_your_answer")}
-                    value={responses[selectedSurvey.shortname]?.[question.id] ||
-                      ""}
-                    disabled={userResponses[selectedSurvey.shortname]}
-                    oninput={(e) =>
-                      handleTextInput(
-                        selectedSurvey.shortname,
-                        question.id,
-                        (e.target as HTMLInputElement).value
-                      )}
-                  />
-                {:else if question.type === "text"}
-                  <textarea
-                    class="form-textarea"
-                    placeholder={$_("surveys.type_your_answer")}
-                    rows="4"
-                    value={responses[selectedSurvey.shortname]?.[question.id] ||
-                      ""}
-                    disabled={userResponses[selectedSurvey.shortname]}
-                    oninput={(e) =>
-                      handleTextInput(
-                        selectedSurvey.shortname,
-                        question.id,
-                        (e.target as HTMLInputElement).value
-                      )}
-                  ></textarea>
-                {:else if question.type === "single"}
-                  <div class="radio-group">
-                    {#each question.options as option (option.id)}
-                      <label class="radio-option">
-                        <input
-                          type="radio"
-                          name="question-{selectedSurvey.shortname}-{question.id}"
-                          value={option.value}
-                          checked={responses[selectedSurvey.shortname]?.[
-                            question.id
-                          ] === option.value}
-                          disabled={userResponses[selectedSurvey.shortname]}
-                          onchange={() =>
-                            handleSingleChoice(
-                              selectedSurvey.shortname,
-                              question.id,
-                              option.label
-                            )}
-                        />
-                        <span class="radio-label">{option.label}</span>
-                      </label>
-                    {/each}
-                  </div>
-                {:else if question.type === "multi"}
-                  <div class="checkbox-group">
-                    {#each question.options as option (option.id)}
-                      <label class="checkbox-option">
-                        <input
-                          type="checkbox"
-                          value={option.value}
-                          checked={responses[selectedSurvey.shortname]?.[
-                            question.id
-                          ]?.includes(option.label) || false}
-                          disabled={userResponses[selectedSurvey.shortname]}
-                          onchange={(e) =>
-                            handleMultiChoice(
-                              selectedSurvey.shortname,
-                              question.id,
-                              option.label,
-                              (e.target as HTMLInputElement).checked
-                            )}
-                        />
-                        <span class="checkbox-label">{option.label}</span>
-                      </label>
-                    {/each}
-                  </div>
-                {:else if question.type === "select"}
-                  <select
-                    class="form-select"
-                    value={responses[selectedSurvey.shortname]?.[question.id] ||
-                      ""}
-                    disabled={userResponses[selectedSurvey.shortname]}
-                    onchange={(e) =>
-                      handleSingleChoice(
-                        selectedSurvey.shortname,
-                        question.id,
-                        (e.target as HTMLInputElement).value
-                      )}
-                  >
-                    <option value="">{$_("surveys.choose_an_option")}</option>
-                    {#each question.options as option (option.id)}
-                      <option value={option.label}>{option.label}</option>
-                    {/each}
-                  </select>
-                {/if}
-              </div>
-            </div>
-          {/each}
-        </div>
-      </div>
-
-      <div class="modal-footer">
-        {#if userResponses[selectedSurvey.shortname]}
-          <div class="response-submitted">
-            ✓ {$_("surveys.response_submitted")}
-          </div>
-          <button class="btn btn-secondary" onclick={closeSurveyModal}>
-            {$_("common.close")}
-          </button>
-        {:else}
-          <button class="btn btn-secondary" onclick={closeSurveyModal}>
-            {$_("common.cancel")}
-          </button>
-          <button
-            class="btn btn-primary"
-            onclick={() => submitResponse(selectedSurvey)}
-            disabled={submittingResponses[selectedSurvey.shortname]}
-          >
-            {#if submittingResponses[selectedSurvey.shortname]}
-              <svg class="spinner" viewBox="0 0 24 24">
-                <circle
-                  cx="12"
-                  cy="12"
-                  r="10"
-                  stroke="currentColor"
-                  stroke-width="4"
-                  fill="none"
-                  stroke-dasharray="32"
-                  stroke-dashoffset="32"
-                >
-                  <animate
-                    attributeName="stroke-dasharray"
-                    dur="2s"
-                    values="0 32;16 16;0 32;0 32"
-                    repeatCount="indefinite"
-                  />
-                  <animate
-                    attributeName="stroke-dashoffset"
-                    dur="2s"
-                    values="0;-16;-32;-32"
-                    repeatCount="indefinite"
-                  />
-                </circle>
-              </svg>
-              {$_("surveys.submitting")}
+    <form id="survey-response-form" class="space-y-6" onsubmit={submitResponse}>
+      {#each survey.questions as question, index (question.id)}
+        {@const fieldId = `q-${survey.shortname}-${question.id}`}
+        {#if question.type === "input" || question.type === "text" || question.type === "select"}
+          <div>
+            <label for={fieldId} class="block text-sm font-medium text-text mb-2">
+              {index + 1}. {question.question}
+              {#if question.required}<span class="text-danger" aria-hidden="true">*</span>{/if}
+            </label>
+            {#if question.type === "input"}
+              <input
+                id={fieldId}
+                type="text"
+                class={inputClass}
+                placeholder={$_("surveys.type_your_answer")}
+                value={typeof answers[question.id] === "string" ? answers[question.id] : ""}
+                disabled={locked}
+                required={question.required}
+                oninput={(e) => setAnswer(survey, question.id, (e.currentTarget as HTMLInputElement).value)}
+              />
+            {:else if question.type === "text"}
+              <textarea
+                id={fieldId}
+                class="{inputClass} resize-y min-h-24"
+                placeholder={$_("surveys.type_your_answer")}
+                rows="4"
+                value={typeof answers[question.id] === "string" ? answers[question.id] : ""}
+                disabled={locked}
+                required={question.required}
+                oninput={(e) => setAnswer(survey, question.id, (e.currentTarget as HTMLTextAreaElement).value)}
+              ></textarea>
             {:else}
-              {$_("surveys.submit_response")}
+              <select
+                id={fieldId}
+                class={inputClass}
+                value={typeof answers[question.id] === "string" ? answers[question.id] : ""}
+                disabled={locked}
+                required={question.required}
+                onchange={(e) => setAnswer(survey, question.id, (e.currentTarget as HTMLSelectElement).value)}
+              >
+                <option value="">{$_("surveys.choose_an_option")}</option>
+                {#each question.options ?? [] as option (option.id)}
+                  <option value={option.label}>{option.label}</option>
+                {/each}
+              </select>
             {/if}
-          </button>
+          </div>
+        {:else}
+          <fieldset class="border-0 p-0 m-0 min-w-0">
+            <legend class="text-sm font-medium text-text mb-2">
+              {index + 1}. {question.question}
+              {#if question.required}<span class="text-danger" aria-hidden="true">*</span>{/if}
+            </legend>
+            <div class="flex flex-col gap-1">
+              {#each question.options ?? [] as option (option.id)}
+                {@const checked =
+                  question.type === "multi"
+                    ? Array.isArray(answers[question.id]) && (answers[question.id] as string[]).includes(option.label)
+                    : answers[question.id] === option.label}
+                <label class="flex items-center gap-2 p-2 rounded-control hover:bg-surface-3 cursor-pointer text-sm text-text">
+                  <input
+                    type={question.type === "multi" ? "checkbox" : "radio"}
+                    name={fieldId}
+                    value={option.label}
+                    {checked}
+                    disabled={locked}
+                    class="accent-primary"
+                    onchange={(e) =>
+                      question.type === "multi"
+                        ? toggleMulti(survey, question.id, option.label, (e.currentTarget as HTMLInputElement).checked)
+                        : setAnswer(survey, question.id, option.label)}
+                  />
+                  <span>{option.label}</span>
+                </label>
+              {/each}
+            </div>
+          </fieldset>
         {/if}
-      </div>
-    </div>
-  </div>
+      {/each}
+    </form>
+
+    {#snippet footer()}
+      {#if locked}
+        <span class="me-auto text-sm font-medium text-success">{$_("surveys.response_submitted")}</span>
+        <button type="button" class="app-btn app-btn-secondary" onclick={closeSurveyModal}>
+          {$_("common.close")}
+        </button>
+      {:else}
+        <button type="button" class="app-btn app-btn-secondary" onclick={closeSurveyModal} disabled={busy}>
+          {$_("common.cancel")}
+        </button>
+        <button type="submit" form="survey-response-form" class="app-btn app-btn-primary" disabled={busy} aria-busy={busy}>
+          {#if busy}
+            <span class="spinner spinner-xs spinner-white" aria-hidden="true"></span>
+            {$_("surveys.submitting")}
+          {:else}
+            {$_("surveys.submit_response")}
+          {/if}
+        </button>
+      {/if}
+    {/snippet}
+  </Modal>
 {/if}
-
-<style>
-  .surveys-page {
-    min-height: 100vh;
-    background: var(--gradient-page);
-  }
-
-  .page-header {
-    background: white;
-    border-bottom: 1px solid var(--color-gray-200);
-    padding: 2rem 0;
-  }
-
-  .header-content {
-    max-width: 1200px;
-    margin: 0 auto;
-    padding: 0 2rem;
-    display: flex;
-    justify-content: space-between;
-    align-items: center;
-    gap: 2rem;
-  }
-
-  .header-actions {
-    display: flex;
-    gap: 1rem;
-    align-items: center;
-  }
-
-  .page-title {
-    font-size: 2rem;
-    font-weight: 700;
-    color: var(--color-gray-900);
-    margin: 0 0 0.5rem 0;
-  }
-
-  .page-description {
-    font-size: 1.125rem;
-    color: var(--color-gray-500);
-    margin: 0;
-  }
-
-  .page-content {
-    max-width: 1200px;
-    margin: 0 auto;
-    padding: 2rem;
-  }
-
-  .alert {
-    display: flex;
-    align-items: center;
-    gap: 0.75rem;
-    padding: 1rem;
-    border-radius: var(--radius-md);
-    margin-bottom: 2rem;
-    font-weight: 500;
-  }
-
-  .alert-error {
-    background-color: #fef2f2;
-    color: #dc2626;
-    border: 1px solid #fecaca;
-  }
-
-  .alert-icon {
-    width: 1.25rem;
-    height: 1.25rem;
-    flex-shrink: 0;
-  }
-
-  .loading-container {
-    display: flex;
-    flex-direction: column;
-    align-items: center;
-    justify-content: center;
-    padding: 4rem 2rem;
-    gap: 1rem;
-    color: var(--color-gray-500);
-  }
-
-  .loading-spinner {
-    width: 2rem;
-    height: 2rem;
-    border: 3px solid var(--color-gray-200);
-    border-top: 3px solid var(--color-primary-500);
-    border-radius: 50%;
-    animation: spin 1s linear infinite;
-  }
-
-  .empty-state {
-    display: flex;
-    flex-direction: column;
-    align-items: center;
-    justify-content: center;
-    padding: 4rem 2rem;
-    text-align: center;
-    color: var(--color-gray-500);
-  }
-
-  .empty-icon {
-    width: 4rem;
-    height: 4rem;
-    margin-bottom: 1rem;
-    color: var(--color-gray-400);
-  }
-
-  .empty-state h3 {
-    font-size: 1.25rem;
-    font-weight: 600;
-    color: var(--color-gray-900);
-    margin: 0 0 0.5rem 0;
-  }
-
-  .empty-state p {
-    margin: 0 0 2rem 0;
-    max-width: 400px;
-  }
-
-  .surveys-list {
-    display: flex;
-    flex-direction: column;
-    gap: 1rem;
-  }
-
-  .survey-item {
-    background: var(--surface-card);
-    border-radius: var(--radius-lg);
-    padding: 1.5rem;
-    border: 1px solid var(--color-gray-100);
-    box-shadow: var(--shadow-sm);
-    cursor: pointer;
-    transition: all var(--duration-normal) var(--ease-out);
-    display: flex;
-    justify-content: space-between;
-    align-items: center;
-    gap: 1rem;
-  }
-
-  .survey-item:hover {
-    transform: translateY(-2px);
-    box-shadow: var(--shadow-lg);
-    border-color: var(--color-primary-200);
-  }
-
-  .survey-info {
-    flex: 1;
-  }
-
-  .survey-title {
-    font-size: 1.25rem;
-    font-weight: 600;
-    color: var(--color-gray-900);
-    margin: 0 0 0.5rem 0;
-  }
-
-  .survey-description {
-    color: var(--color-gray-500);
-    margin: 0 0 0.75rem 0;
-    line-height: 1.5;
-    font-size: 0.875rem;
-  }
-
-  .survey-meta {
-    display: flex;
-    gap: 1rem;
-    font-size: 0.875rem;
-    color: var(--color-gray-500);
-    flex-wrap: wrap;
-  }
-
-  .survey-questions {
-    color: #3b82f6;
-    font-weight: 500;
-  }
-
-  .chevron-icon {
-    width: 1.25rem;
-    height: 1.25rem;
-    color: var(--color-gray-400);
-    transition: color 0.2s ease;
-  }
-
-  .survey-item:hover .chevron-icon {
-    color: #3b82f6;
-  }
-
-  /* Modal Styles */
-  .modal-overlay {
-    position: fixed;
-    top: 0;
-    left: 0;
-    right: 0;
-    bottom: 0;
-    background: rgba(0, 0, 0, 0.5);
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    z-index: 1000;
-    padding: 1rem;
-  }
-
-  .modal-content {
-    background: var(--surface-card);
-    border-radius: var(--radius-xl);
-    max-width: 800px;
-    width: 100%;
-    max-height: 90vh;
-    overflow: hidden;
-    display: flex;
-    flex-direction: column;
-    box-shadow: var(--shadow-xl);
-  }
-
-  .modal-header {
-    padding: 1.5rem;
-    border-bottom: 1px solid var(--color-gray-200);
-    display: flex;
-    justify-content: space-between;
-    align-items: center;
-    gap: 1rem;
-  }
-
-  .modal-title-section {
-    display: flex;
-    align-items: center;
-    gap: 1rem;
-    flex: 1;
-  }
-
-  .modal-title {
-    font-size: 1.5rem;
-    font-weight: 600;
-    color: var(--color-gray-900);
-    margin: 0;
-  }
-
-  .response-status-badge {
-    background: var(--color-success);
-    color: white;
-    padding: 0.25rem 0.75rem;
-    border-radius: var(--radius-xl);
-    font-size: 0.875rem;
-    font-weight: 500;
-  }
-
-  .modal-close {
-    background: none;
-    border: none;
-    cursor: pointer;
-    padding: 0.5rem;
-    color: var(--color-gray-500);
-    border-radius: var(--radius-md);
-    transition: background var(--duration-fast) ease, color var(--duration-fast) ease;
-  }
-
-  .modal-close:hover {
-    background: var(--color-gray-100);
-    color: var(--color-gray-700);
-  }
-
-  .modal-close svg {
-    width: 1.25rem;
-    height: 1.25rem;
-  }
-
-  .modal-description {
-    margin: 20px 0 20px 0;
-    padding: 0 1.5rem;
-    color: var(--color-gray-500);
-    line-height: 1.6;
-  }
-
-  .modal-body {
-    flex: 1;
-    overflow-y: auto;
-    padding: 1.5rem;
-  }
-
-  .modal-footer {
-    padding: 1.5rem;
-    border-top: 1px solid var(--color-gray-200);
-    display: flex;
-    justify-content: flex-end;
-    gap: 1rem;
-    align-items: center;
-  }
-
-  .response-submitted {
-    color: var(--color-success);
-    font-weight: 600;
-    display: flex;
-    align-items: center;
-    gap: 0.5rem;
-  }
-
-  .survey-content {
-    padding: 0;
-  }
-
-  .question-container {
-    margin-bottom: 2rem;
-  }
-
-  .question-container:last-child {
-    margin-bottom: 0;
-  }
-
-  .question-header {
-    margin-bottom: 1rem;
-  }
-
-  .question-text {
-    font-size: 1rem;
-    font-weight: 500;
-    color: var(--color-gray-900);
-    margin: 0;
-    line-height: 1.5;
-  }
-
-  .required-indicator {
-    color: #dc2626;
-    margin-left: 0.25rem;
-  }
-
-  .answer-container {
-    margin-top: 0.75rem;
-  }
-
-  .form-input,
-  .form-textarea,
-  .form-select {
-    width: 100%;
-    padding: 0.75rem;
-    border: 1px solid var(--color-gray-300);
-    border-radius: 8px;
-    font-size: 0.875rem;
-    transition:
-      border-color 0.2s ease,
-      box-shadow 0.2s ease;
-    background: white;
-    font-family: inherit;
-  }
-
-  .form-input:focus,
-  .form-textarea:focus,
-  .form-select:focus {
-    outline: none;
-    border-color: var(--color-primary-400);
-    box-shadow: 0 0 0 3px rgba(99, 102, 241, 0.1);
-  }
-
-  .form-textarea {
-    resize: vertical;
-    min-height: 100px;
-  }
-
-  .radio-group,
-  .checkbox-group {
-    display: flex;
-    flex-direction: column;
-    gap: 0.75rem;
-  }
-
-  .radio-option,
-  .checkbox-option {
-    display: flex;
-    align-items: center;
-    gap: 0.5rem;
-    cursor: pointer;
-    padding: 0.5rem;
-    border-radius: 6px;
-    transition: background-color 0.2s ease;
-  }
-
-  .radio-option:hover,
-  .checkbox-option:hover {
-    background-color: var(--color-gray-50);
-  }
-
-  .radio-label,
-  .checkbox-label {
-    color: var(--color-gray-700);
-    font-size: 0.875rem;
-    line-height: 1.5;
-  }
-
-  .btn {
-    padding: 0.75rem 1.5rem;
-    border: none;
-    border-radius: var(--radius-lg);
-    font-size: 0.875rem;
-    font-weight: 600;
-    cursor: pointer;
-    transition: all var(--duration-normal) var(--ease-out);
-    display: inline-flex;
-    align-items: center;
-    gap: 0.5rem;
-    justify-content: center;
-  }
-
-  .btn:disabled {
-    opacity: 0.6;
-    cursor: not-allowed;
-  }
-
-  .btn-sm {
-    padding: 0.5rem 1rem;
-    font-size: 0.8125rem;
-  }
-
-  .btn-primary {
-    background: var(--gradient-brand);
-    color: white;
-    box-shadow: var(--shadow-brand);
-  }
-
-  .btn-primary:hover:not(:disabled) {
-    background: var(--gradient-brand-hover);
-    transform: translateY(-1px);
-    box-shadow: var(--shadow-brand-lg);
-  }
-
-  .btn-secondary {
-    background: var(--color-gray-500);
-    color: white;
-  }
-
-  .btn-secondary:hover:not(:disabled) {
-    background: var(--color-gray-600);
-  }
-
-  .spinner {
-    width: 1rem;
-    height: 1rem;
-    animation: spin 1s linear infinite;
-  }
-
-  @keyframes spin {
-    from {
-      transform: rotate(0deg);
-    }
-    to {
-      transform: rotate(360deg);
-    }
-  }
-
-  /* Response Status Styles */
-  .response-status {
-    color: var(--color-success);
-    font-weight: 600;
-    font-size: 0.875rem;
-  }
-
-  .btn-secondary {
-    background-color: var(--color-gray-500);
-    color: white;
-  }
-
-  .btn-secondary:hover {
-    background-color: #4b5563;
-  }
-
-  /* Mobile Responsive */
-  @media (max-width: 768px) {
-    .header-content {
-      flex-direction: column;
-      align-items: flex-start;
-      padding: 0 1rem;
-    }
-
-    .page-content {
-      padding: 1rem;
-    }
-
-    .page-title {
-      font-size: 1.5rem;
-    }
-
-    .page-description {
-      font-size: 1rem;
-    }
-
-    .survey-item {
-      flex-direction: column;
-      align-items: stretch;
-      text-align: left;
-    }
-
-    .survey-meta {
-      flex-direction: column;
-      gap: 0.5rem;
-    }
-
-    .modal-content {
-      margin: 0.5rem;
-      max-height: 95vh;
-    }
-
-    .modal-header,
-    .modal-body,
-    .modal-footer {
-      padding: 1rem;
-    }
-
-    .modal-footer {
-      flex-direction: column;
-      gap: 0.75rem;
-    }
-
-    .radio-group,
-    .checkbox-group {
-      gap: 0.5rem;
-    }
-  }
-</style>

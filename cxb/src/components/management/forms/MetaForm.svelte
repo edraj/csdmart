@@ -1,44 +1,38 @@
 <script lang="ts">
-    import {
-        Accordion,
-        AccordionItem,
-        Alert,
-        Button,
-        Card,
-        Checkbox,
-        Input,
-        Label,
-        Modal,
-        Textarea
-    } from 'flowbite-svelte';
-    import {goto, params} from "@roxi/routify";
-    import {Dmart, RequestType, ResourceType} from "@edraj/tsdmart";
-
-    $goto
+    import { Accordion, AccordionItem, Button, Checkbox, Input, Label, Textarea } from "flowbite-svelte";
+    import { PenOutline } from "flowbite-svelte-icons";
+    import { goto, params } from "@roxi/routify";
+    import { Dmart, RequestType, ResourceType } from "@edraj/tsdmart";
+    import ConfirmDialog from "@/components/ui/ConfirmDialog.svelte";
+    import IconButton from "@/components/ui/IconButton.svelte";
+    import { errorMessage } from "@/utils/errorMessage";
+    import { _ } from "@/i18n";
 
     let {
         isCreate,
         formData = $bindable(),
-        validateFn = $bindable()
+        // eslint-disable-next-line @typescript-eslint/no-unused-vars, no-useless-assignment -- $bindable() written back to the parent, never read here
+        validateFn = $bindable(),
     } = $props();
 
+    const uid = $props.id();
 
     function toStringOrNull(value: any): string | null {
         if (value === null || value === undefined) return null;
-        if (typeof value === 'string') {
+        if (typeof value === "string") {
             // Detect and unwrap stringified i18n objects from previous corrupted saves
-            if (value.startsWith('{"en":') || value.startsWith('{\"en\":')) {
+            if (value.startsWith('{"en":')) {
                 try {
                     const parsed = JSON.parse(value);
-                    if (typeof parsed === 'object' && parsed !== null && 'en' in parsed) {
+                    if (typeof parsed === "object" && parsed !== null && "en" in parsed) {
                         return toStringOrNull(parsed.en);
                     }
                 } catch {}
             }
             return value || null;
         }
-        if (typeof value === 'object') {
-            if ('en' in value) return toStringOrNull(value.en);
+        if (typeof value === "object") {
+            if ("en" in value) return toStringOrNull(value.en);
             return null;
         }
         return null;
@@ -52,19 +46,19 @@
         displayname: {
             en: toStringOrNull(formData.displayname?.en),
             ar: toStringOrNull(formData.displayname?.ar),
-            ku: toStringOrNull(formData.displayname?.ku)
+            ku: toStringOrNull(formData.displayname?.ku),
         },
         description: {
             en: toStringOrNull(formData.description?.en),
             ar: toStringOrNull(formData.description?.ar),
-            ku: toStringOrNull(formData.description?.ku)
+            ku: toStringOrNull(formData.description?.ku),
         },
-    }
-    if(formData.is_active === undefined || formData.is_active === null){
+    };
+    if (formData.is_active === undefined || formData.is_active === null) {
         formData.is_active = true;
     }
 
-    let form;
+    let form: HTMLFormElement;
     $effect(() => {
         validateFn = validate;
     });
@@ -78,36 +72,38 @@
         return isValid;
     }
 
-    let isShortnameUpdateOpen = $state(false);
+    // ── Rename (a move), not a second save: lives behind a named icon button
+    //    and its own dialog so it is never mistaken for the toolbar's Save. ──
+    let isRenameOpen = $state(false);
     let newShortname = $state("");
-    let isUpdatingShortname = $state(false);
-    let shortnameUpdateError: string | null = $state(null);
+    let isRenaming = $state(false);
+    let renameError: unknown = $state(null);
 
-    function handleShortnameModalUpdate() {
+    function askRename() {
         newShortname = formData.shortname;
-        isShortnameUpdateOpen = true;
+        renameError = null;
+        isRenameOpen = true;
     }
 
-    async function updateShortname() {
+    async function rename() {
         if (!newShortname || newShortname === formData.shortname) return;
         if (!newShortname.match(/^[a-zA-Z0-9_]+$/)) {
-            shortnameUpdateError = "Shortname can only contain alphanumeric characters, underscores.";
+            renameError = $_("shortname_pattern_hint");
             return;
         }
 
-
-        isUpdatingShortname = true;
+        isRenaming = true;
+        renameError = null;
 
         try {
-            const resourceType = $params.resource_type
-                || ($params.subpath && ResourceType.folder)
-                || ResourceType.space;
-            let newSubpath = resourceType === ResourceType.folder
-                ? ($params.subpath.split("-").slice(0, -1).join("/") || '/')
-                : $params.subpath;
+            const resourceType = $params.resource_type || ($params.subpath && ResourceType.folder) || ResourceType.space;
+            let newSubpath =
+                resourceType === ResourceType.folder
+                    ? $params.subpath.split("-").slice(0, -1).join("/") || "/"
+                    : $params.subpath;
 
-            if(resourceType === ResourceType.space){
-                newSubpath = '/';
+            if (resourceType === ResourceType.space) {
+                newSubpath = "/";
             }
 
             newSubpath = newSubpath.replaceAll("-", "/");
@@ -134,155 +130,147 @@
                 ],
             });
 
+            isRenameOpen = false;
             let url = "/management/content";
-            let gotoPayload: any = {
+            let gotoPayload: Record<string, string> = {
                 space_name: $params.space_name,
-            }
+            };
             if (resourceType === ResourceType.space) {
-                window.location.href = newShortname;
-            } else {
-                if(resourceType === ResourceType.folder) {
-                    url += '/[space_name]/[subpath]';
-                    gotoPayload = {
-                        ...gotoPayload,
-                        subpath: `${newSubpath.replaceAll("-", "/")}-${newShortname}`,
-                    }
-                } else {
-                    url += `/[space_name]/[subpath]/[shortname]/[resource_type]`;
-                    gotoPayload = {
-                        ...gotoPayload,
-                        subpath: newSubpath.replaceAll("-", "/"),
-                        shortname: newShortname,
-                        resource_type: resourceType,
-                    }
-                }
+                $goto("/management/content/[space_name]", { space_name: newShortname });
+                return;
             }
-            $goto(`${url}`, gotoPayload);
-        } catch (error: any) {
-            shortnameUpdateError = error.response.data.error?.info[0]?.failed[0].error || error.response.data.error?.message || "An error occurred while updating the shortname.";
+            if (resourceType === ResourceType.folder) {
+                url += "/[space_name]/[subpath]";
+                gotoPayload = {
+                    ...gotoPayload,
+                    subpath: `${newSubpath.replaceAll("-", "/")}-${newShortname}`,
+                };
+            } else {
+                url += `/[space_name]/[subpath]/[shortname]/[resource_type]`;
+                gotoPayload = {
+                    ...gotoPayload,
+                    subpath: newSubpath.replaceAll("-", "/"),
+                    shortname: newShortname,
+                    resource_type: resourceType,
+                };
+            }
+            $goto(url, gotoPayload);
+        } catch (error: unknown) {
+            const e = error as { response?: { data?: { error?: { info?: Array<{ failed?: Array<{ error?: string }> }> } } } };
+            renameError = e?.response?.data?.error?.info?.[0]?.failed?.[0]?.error ?? errorMessage(error, $_("rename_failed"));
         } finally {
-            isUpdatingShortname = false;
+            isRenaming = false;
         }
     }
 
+    const help = "mt-1 text-xs text-text-muted";
 </script>
 
-<Card class="w-full max-w-4xl mx-auto p-4 my-2">
-    <form bind:this={form} class="space-y-4">
-        <h2 class="text-2xl font-bold mb-4">Meta Information</h2>
-        <div class="mb-4">
-            <Label for="shortname" class="mb-2">
-                {#if isCreate}<span class="text-red-500 text-lg" style="vertical-align: center">*</span>{/if}
-                Shortname
+<div class="w-full max-w-4xl mx-auto rounded-card border border-border bg-surface-2 shadow-card p-4 sm:p-5 my-2">
+    <form bind:this={form} class="space-y-4" onsubmit={(e) => e.preventDefault()}>
+        <h2 class="text-lg font-semibold text-text">{$_("meta_information")}</h2>
+
+        <div>
+            <Label for="{uid}-shortname" class="mb-1.5">
+                {#if isCreate}<span class="text-danger" aria-hidden="true">*</span>{/if}
+                {$_("shortname")}
             </Label>
-            <div class="flex">
-                <Input required id="shortname"
-                       class="rounded-l-none"
-                       placeholder="Short name"
-                       bind:value={formData.shortname}
-                       disabled={!isCreate} />
-                <Button color="alternative" class="rounded-l-none border-l-0"
-                        onclick={() => isCreate ? (formData.shortname = "auto") : handleShortnameModalUpdate()}>
-                    {isCreate ? 'Auto' : 'Update'}
-                </Button>
+            <div class="flex items-center gap-2">
+                <Input
+                    required
+                    id="{uid}-shortname"
+                    class="grow"
+                    placeholder={$_("shortname")}
+                    bind:value={formData.shortname}
+                    disabled={!isCreate}
+                    pattern={isCreate ? "[a-zA-Z0-9_]+" : undefined}
+                />
+                {#if isCreate}
+                    <Button color="alternative" size="sm" onclick={() => (formData.shortname = "auto")}>{$_("auto")}</Button>
+                {:else}
+                    <IconButton label={$_("rename_shortname")} variant="outline" onclick={askRename}>
+                        <PenOutline size="sm" />
+                    </IconButton>
+                {/if}
             </div>
             {#if isCreate}
-                <p class="text-xs text-gray-500 mt-1">
-                    A shortname (use 'auto' for auto generated shortname)
-                </p>
+                <p class={help}>{$_("shortname_help")}</p>
             {/if}
         </div>
 
-        <div class="mb-4">
+        <div>
             <div class="flex items-center gap-2">
-                <Checkbox id="is_active" bind:checked={formData.is_active} />
-                <Label for="is_active" class="mb-0">Active</Label>
+                <Checkbox id="{uid}-is_active" bind:checked={formData.is_active} />
+                <Label for="{uid}-is_active" class="mb-0">{$_("active_label")}</Label>
             </div>
-            <p class="text-xs text-gray-500 mt-1">Whether this item is currently active</p>
+            <p class={help}>{$_("is_active_help")}</p>
         </div>
 
-        <div class="mb-4">
-            <Label for="slug" class="mb-2">Slug</Label>
-            <Input id="slug" placeholder="url-friendly-name" bind:value={formData.slug} />
-            <p class="text-xs text-gray-500 mt-1">A URL-friendly version of the short name</p>
+        <div>
+            <Label for="{uid}-slug" class="mb-1.5">{$_("slug")}</Label>
+            <Input id="{uid}-slug" placeholder="url-friendly-name" bind:value={formData.slug} />
+            <p class={help}>{$_("slug_help")}</p>
         </div>
 
-        <Accordion>
+        <Accordion flush>
             <AccordionItem>
-                {#snippet header()}Displayname and Description Translations{/snippet}
-                <div class="p-4 space-y-4">
-                    <div class="mb-4">
-                        <Label class="mb-2">Display name</Label>
+                {#snippet header()}{$_("translations")}{/snippet}
+                <div class="py-2 space-y-4">
+                    <fieldset>
+                        <legend class="text-sm font-medium text-text mb-2">{$_("displayname")}</legend>
                         <div class="grid grid-cols-1 md:grid-cols-3 gap-4">
                             <div>
-                                <Label class="text-sm">English</Label>
-                                <Input bind:value={formData.displayname.en} />
+                                <Label for="{uid}-displayname-en" class="text-sm mb-1">{$_("english")}</Label>
+                                <Input id="{uid}-displayname-en" bind:value={formData.displayname.en} />
                             </div>
                             <div>
-                                <Label class="text-sm">Arabic</Label>
-                                <Input bind:value={formData.displayname.ar} />
+                                <Label for="{uid}-displayname-ar" class="text-sm mb-1">{$_("arabic")}</Label>
+                                <Input id="{uid}-displayname-ar" dir="auto" bind:value={formData.displayname.ar} />
                             </div>
                             <div>
-                                <Label class="text-sm">Kurdish</Label>
-                                <Input bind:value={formData.displayname.ku} />
+                                <Label for="{uid}-displayname-ku" class="text-sm mb-1">{$_("kurdish")}</Label>
+                                <Input id="{uid}-displayname-ku" dir="auto" bind:value={formData.displayname.ku} />
                             </div>
                         </div>
-                    </div>
+                    </fieldset>
 
-                    <div class="mb-4">
-                        <Label class="mb-2">Description</Label>
+                    <fieldset>
+                        <legend class="text-sm font-medium text-text mb-2">{$_("description")}</legend>
                         <div class="grid grid-cols-1 md:grid-cols-3 gap-4">
                             <div>
-                                <Label class="text-sm">English</Label>
-                                <Textarea bind:value={formData.description.en} rows={3} />
+                                <Label for="{uid}-description-en" class="text-sm mb-1">{$_("english")}</Label>
+                                <Textarea id="{uid}-description-en" bind:value={formData.description.en} rows={3} />
                             </div>
                             <div>
-                                <Label class="text-sm">Arabic</Label>
-                                <Textarea bind:value={formData.description.ar} rows={3} />
+                                <Label for="{uid}-description-ar" class="text-sm mb-1">{$_("arabic")}</Label>
+                                <Textarea id="{uid}-description-ar" dir="auto" bind:value={formData.description.ar} rows={3} />
                             </div>
                             <div>
-                                <Label class="text-sm">Kurdish</Label>
-                                <Textarea bind:value={formData.description.ku} rows={3} />
+                                <Label for="{uid}-description-ku" class="text-sm mb-1">{$_("kurdish")}</Label>
+                                <Textarea id="{uid}-description-ku" dir="auto" bind:value={formData.description.ku} rows={3} />
                             </div>
                         </div>
-                    </div>
+                    </fieldset>
                 </div>
             </AccordionItem>
         </Accordion>
     </form>
-</Card>
+</div>
 
-<Modal bind:open={isShortnameUpdateOpen} size="md" title="Update Shortname">
-    <div class="space-y-4">
-        <p class="text-sm text-gray-500">
-            Changing the shortname will move this resource to a new location. This may affect existing references to this item.
-        </p>
-
-        {#if shortnameUpdateError}
-            <Alert color="red" class="mb-4">
-                {#snippet icon()}<span class="text-red-500">!</span>{/snippet}
-                {shortnameUpdateError}
-            </Alert>
-        {/if}
-
-        <div>
-            <Label for="new-shortname">New Shortname</Label>
-            <Input
-                    id="new-shortname"
-                    placeholder={formData.shortname}
-                    bind:value={newShortname}
-            />
-        </div>
-
-        <div class="flex justify-end gap-2 mt-4">
-            <Button color="alternative" onclick={() => isShortnameUpdateOpen = false}>Cancel</Button>
-            <Button
-                    class="bg-primary"
-                    disabled={!newShortname || newShortname === formData.shortname || isUpdatingShortname}
-                    onclick={updateShortname}
-            >
-                {isUpdatingShortname ? "Updating..." : "Update Shortname"}
-            </Button>
-        </div>
+<ConfirmDialog
+    bind:open={isRenameOpen}
+    variant="primary"
+    title={$_("rename_shortname")}
+    body={$_("rename_shortname_help")}
+    confirmLabel={$_("rename")}
+    loading={isRenaming}
+    loadingLabel={$_("renaming")}
+    error={renameError}
+    onConfirm={rename}
+>
+    <div>
+        <Label for="{uid}-new-shortname" class="mb-1.5">{$_("new_shortname")}</Label>
+        <Input id="{uid}-new-shortname" placeholder={formData.shortname} bind:value={newShortname} pattern="[a-zA-Z0-9_]+" />
+        <p class="mt-1 text-xs text-text-muted">{$_("shortname_pattern_hint")}</p>
     </div>
-</Modal>
+</ConfirmDialog>

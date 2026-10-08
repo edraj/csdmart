@@ -1,18 +1,28 @@
 <script lang="ts">
-    import {Alert, Button, Card, Fileupload, Label, Modal, Select, Textarea} from "flowbite-svelte";
-    import {ContentType, Dmart, QueryType, RequestType, ResourceAttachmentType, ResourceType} from "@edraj/tsdmart";
-    import {JSONEditor, Mode} from "svelte-jsoneditor";
+    import { Button, Fileupload, Label, Modal, Select, Spinner, Textarea } from "flowbite-svelte";
+    import {
+        ContentType,
+        Dmart,
+        QueryType,
+        RequestType,
+        ResourceAttachmentType,
+        ResourceType,
+        type ActionRequest,
+        type ActionRequestRecord,
+    } from "@edraj/tsdmart";
+    import LazyJsonEditor from "@/components/ui/LazyJsonEditor.svelte";
+    import ErrorState from "@/components/ui/ErrorState.svelte";
     import HtmlEditor from "@/components/management/editors/HtmlEditor.svelte";
     import MarkdownEditor from "@/components/management/editors/MarkdownEditor.svelte";
-    import {Level, showToast} from "@/utils/toast";
-    import {jsonToFile} from "@/utils/jsonToFile";
-    import {currentEntry} from "@/stores/global";
-    import {jsonEditorContentParser} from "@/utils/jsonEditor";
+    import { Level, showToast } from "@/utils/toast";
+    import { jsonEditorContentParser } from "@/utils/jsonEditor";
     import Prism from "@/components/Prism.svelte";
-    import {removeEmpty} from "@/utils/compare";
+    import { removeEmpty } from "@/utils/compare";
     import MetaForm from "@/components/management/forms/MetaForm.svelte";
-    import {untrack} from "svelte";
-    import type {ActionRequestRecord, ActionRequest} from "@edraj/tsdmart";
+    import { untrack } from "svelte";
+    import { errorMessage } from "@/utils/errorMessage";
+    import { limitJsonForDisplay } from "@/utils/displayJson";
+    import { _ } from "@/i18n";
 
     let {
         meta = $bindable({}),
@@ -24,18 +34,32 @@
         parentResourceType,
         subpath = $bindable(""),
         parent_shortname = $bindable(""),
+        refreshEntry,
+    }: {
+        meta?: any;
+        payload?: any;
+        isOpen?: boolean;
+        isUpdateMode?: boolean;
+        selectedAttachment?: any;
+        space_name?: string;
+        parentResourceType: ResourceType;
+        subpath?: string;
+        parent_shortname?: string;
+        refreshEntry?: () => Promise<void> | void;
     } = $props();
 
-    let resourceType = $state(ResourceAttachmentType.media);
-    let contentType = $state(ContentType.image);
+    const uid = $props.id();
+
+    let resourceType = $state<ResourceAttachmentType>(ResourceAttachmentType.media);
+    let contentType = $state<ContentType>(ContentType.image);
     let payloadFiles = $state<FileList | null>(null);
     let content: any = $state(payload);
     let selectedSchema = $state("");
     let trueResourceType = $state<ResourceAttachmentType | null>(null);
     let isLoading = $state(false);
-    let errorModalMessage = $state(null);
-    let errorContent = $state(null);
-
+    let errorModalMessage = $state<string | null>(null);
+    let errorContent = $state<unknown>(null);
+    const errorPreview = $derived(errorContent ? limitJsonForDisplay(errorContent) : null);
 
     $effect(() => {
         if (isOpen && selectedAttachment && isUpdateMode) {
@@ -45,7 +69,7 @@
         }
     });
 
-    function initializeFormWithAttachment(attachment) {
+    function initializeFormWithAttachment(attachment: any) {
         if (!attachment) return;
 
         const _attachment = structuredClone($state.snapshot(attachment));
@@ -58,32 +82,35 @@
             description: _attachment.attributes.description,
         };
 
-        if (_attachment.resource_type === ResourceType.json ||
+        if (
+            _attachment.resource_type === ResourceType.json ||
             (_attachment.resource_type === ResourceType.media &&
-                [ContentType.text, ContentType.json, ContentType.markdown, ContentType.html].includes(_attachment?.attributes?.payload?.content_type)) ||
-            _attachment.resource_type === ResourceType.comment) {
-
-            resourceType = ResourceAttachmentType[_attachment.resource_type];
+                [ContentType.text, ContentType.json, ContentType.markdown, ContentType.html].includes(
+                    _attachment?.attributes?.payload?.content_type,
+                )) ||
+            _attachment.resource_type === ResourceType.comment
+        ) {
+            resourceType = ResourceAttachmentType[_attachment.resource_type as keyof typeof ResourceAttachmentType];
             contentType = _attachment?.attributes?.payload?.content_type;
 
             if (_attachment.resource_type === ResourceType.json) {
-                content = {json: _attachment.attributes.payload.body};
+                content = { json: _attachment.attributes.payload.body };
             } else {
-                if (typeof _attachment.attributes.payload.body === 'string') {
+                if (typeof _attachment.attributes.payload.body === "string") {
                     content = _attachment.attributes.payload.body;
                 } else {
-                    content = {body: _attachment.attributes.payload.body};
+                    content = { body: _attachment.attributes.payload.body };
                 }
             }
         } else {
-            trueResourceType = ResourceAttachmentType[_attachment.resource_type];
+            trueResourceType = ResourceAttachmentType[_attachment.resource_type as keyof typeof ResourceAttachmentType];
             resourceType = trueResourceType!;
 
             const metaAttachment = structuredClone(_attachment);
             if (metaAttachment?.attributes?.payload?.body) {
                 delete metaAttachment.attributes.payload.body;
             }
-            content = {json: metaAttachment, text: undefined};
+            content = { json: metaAttachment, text: undefined };
         }
     }
 
@@ -93,27 +120,54 @@
         payloadFiles = null;
         content = {};
         selectedSchema = "";
+        errorModalMessage = null;
+        errorContent = null;
         meta = {
             shortname: "",
             is_active: true,
             displayname: {
                 en: "",
                 ar: "",
-                ku: ""
+                ku: "",
             },
             description: {
                 en: "",
                 ar: "",
-                ku: ""
-            }
+                ku: "",
+            },
         };
     }
 
-    async function upload(event) {
+    const attachmentSubpath = $derived(
+        parentResourceType === ResourceType.folder ? subpath : `${subpath}/${parent_shortname}`.replaceAll("//", "/"),
+    );
+
+    const isFileUpload = $derived(
+        [ResourceAttachmentType.csv, ResourceAttachmentType.jsonl, ResourceAttachmentType.sqlite, ResourceAttachmentType.parquet].includes(
+            resourceType,
+        ) ||
+            (resourceType === ResourceAttachmentType.media &&
+                [ContentType.image, ContentType.pdf, ContentType.audio, ContentType.video, ContentType.apk, ContentType.python].includes(
+                    contentType,
+                )),
+    );
+
+    async function upload(event: SubmitEvent) {
         event.preventDefault();
-        isLoading = true;
         errorModalMessage = null;
         errorContent = null;
+
+        // The meta form is bound but lives in its own <form>, so the outer
+        // submit does not run its constraint validation — ask it explicitly.
+        if (typeof validateMetaForm === "function" && !validateMetaForm()) {
+            errorModalMessage = $_("fill_required_meta");
+            return;
+        }
+        if (isFileUpload && !isUpdateMode && !payloadFiles?.length) {
+            errorModalMessage = $_("file_required");
+            return;
+        }
+        isLoading = true;
 
         try {
             if (isUpdateMode && resourceType === ResourceAttachmentType.json && trueResourceType !== null) {
@@ -124,9 +178,7 @@
             if (resourceType == ResourceAttachmentType.comment) {
                 response = await Dmart.request({
                     space_name,
-                    request_type: isUpdateMode
-                        ? RequestType.update
-                        : RequestType.create,
+                    request_type: isUpdateMode ? RequestType.update : RequestType.create,
                     records: [
                         removeEmpty({
                             resource_type: ResourceType.comment,
@@ -141,54 +193,44 @@
                                     content_type: ContentType.json,
                                     body: {
                                         state: "commented",
-                                        body: isUpdateMode ? content.body : content
-                                    }
-                                }
+                                        body: isUpdateMode ? content.body : content,
+                                    },
+                                },
                             },
                         }) as ActionRequestRecord,
                     ],
                 });
-            } else if (
-                [
-                    ResourceAttachmentType.csv,
-                    ResourceAttachmentType.jsonl,
-                    ResourceAttachmentType.sqlite,
-                    ResourceAttachmentType.parquet,
-                ].includes(resourceType)
-            ) {
-
-                if(isUpdateMode === false) {
-                    response = await Dmart.uploadWithPayload(
-                        {
-                            space_name,
-                            subpath: parentResourceType === ResourceType.folder ? subpath : subpath + "/" + parent_shortname,
-                            shortname: meta.shortname,
-                            resource_type: ResourceType[resourceType],
-                            payload_file: ResourceType[resourceType] === ResourceType.json
-                                ? jsonToFile(content)
-                                : payloadFiles![0],
-                            attributes: {
-                                slug: meta.slug,
-                                displayname: meta.displayname,
-                                description: meta.description,
-                                is_active: true,
-                                payload: {
-                                    content_type: ContentType[resourceType],
-                                    schema_shortname: selectedSchema,
-                                    body: {}
-                                },
-                            }
-                        }
-                    );
+            } else if (isFileUpload) {
+                if (isUpdateMode === false) {
+                    const isDataAsset = resourceType !== ResourceAttachmentType.media;
+                    response = await Dmart.uploadWithPayload({
+                        space_name,
+                        subpath: attachmentSubpath,
+                        shortname: meta.shortname,
+                        resource_type: ResourceType[resourceType as keyof typeof ResourceType],
+                        payload_file: payloadFiles![0],
+                        attributes: removeEmpty({
+                            slug: meta.slug,
+                            displayname: meta.displayname,
+                            description: meta.description,
+                            is_active: true,
+                            payload: isDataAsset
+                                ? {
+                                      content_type: ContentType[resourceType as keyof typeof ContentType],
+                                      schema_shortname: selectedSchema,
+                                      body: {},
+                                  }
+                                : { content_type: contentType, body: {} },
+                        }) as Record<string, unknown>,
+                    });
                 } else {
+                    // Only the metadata of a binary attachment can change here.
                     response = await Dmart.request({
                         space_name,
-                        request_type: isUpdateMode
-                            ? RequestType.update
-                            : RequestType.create,
+                        request_type: RequestType.update,
                         records: [
                             removeEmpty({
-                                resource_type: ResourceType.comment,
+                                resource_type: ResourceType[resourceType as keyof typeof ResourceType],
                                 shortname: meta.shortname,
                                 subpath: `${subpath}/${parent_shortname}`.replaceAll("//", "/"),
                                 attributes: {
@@ -201,77 +243,15 @@
                         ],
                     });
                 }
-            } else if (
-                [
-                    ContentType.image,
-                    ContentType.pdf,
-                    ContentType.audio,
-                    ContentType.video,
-                    ContentType.apk,
-                ].includes(contentType)
-            ) {
-                if(isUpdateMode === false) {
-                    response = await Dmart.uploadWithPayload(
-                        {
-                            space_name,
-                            subpath: parentResourceType === ResourceType.folder ? subpath : subpath + "/" + parent_shortname,
-                            shortname: meta.shortname,
-                            resource_type: ResourceType[resourceType],
-                            payload_file: ResourceType[resourceType] === ResourceType.json
-                                ? jsonToFile(content)
-                                : payloadFiles![0],
-                            attributes: removeEmpty({
-                                slug: meta.slug,
-                                displayname: meta.displayname,
-                                description: meta.description,
-                                is_active: true,
-                                payload: {
-                                    content_type: contentType,
-                                    body: {}
-                                },
-                            })
-                        }
-                    );
-                } else {
-                    response = await Dmart.request({
-                        space_name,
-                        request_type: isUpdateMode
-                            ? RequestType.update
-                            : RequestType.create,
-                        records: [
-                            removeEmpty({
-                                resource_type: ResourceType.comment,
-                                shortname: meta.shortname,
-                                subpath: `${subpath}/${parent_shortname}`.replaceAll("//", "/"),
-                                attributes: {
-                                    slug: meta.slug,
-                                    displayname: meta.displayname,
-                                    description: meta.description,
-                                    is_active: true,
-                                },
-                            }) as ActionRequestRecord,
-                        ],
-                    });
-                }
-            } else if (
-                [
-                    ContentType.json,
-                    ContentType.text,
-                    ContentType.html,
-                    ContentType.markdown,
-                    ContentType,
-                ].includes(contentType)
-            ) {
+            } else {
                 response = await Dmart.request({
                     space_name,
-                    request_type: isUpdateMode
-                        ? RequestType.update
-                        : RequestType.create,
+                    request_type: isUpdateMode ? RequestType.update : RequestType.create,
                     records: [
                         removeEmpty({
-                            resource_type: ResourceType[resourceType],
+                            resource_type: ResourceType[resourceType as keyof typeof ResourceType],
                             shortname: meta.shortname,
-                            subpath: parentResourceType === ResourceType.folder ? subpath : `${subpath}/${parent_shortname}`,
+                            subpath: attachmentSubpath,
                             attributes: {
                                 slug: meta.slug,
                                 displayname: meta.displayname,
@@ -280,9 +260,7 @@
                                 payload: {
                                     content_type: contentType,
                                     schema_shortname:
-                                        resourceType == ResourceAttachmentType.json && selectedSchema
-                                            ? selectedSchema
-                                            : null,
+                                        resourceType == ResourceAttachmentType.json && selectedSchema ? selectedSchema : null,
                                     body:
                                         resourceType == ResourceAttachmentType.json
                                             ? jsonEditorContentParser($state.snapshot(content))
@@ -295,37 +273,33 @@
             }
 
             if (response.status === "success") {
-                showToast(Level.info);
+                showToast(Level.info, isUpdateMode ? $_("attachment_updated") : $_("attachment_uploaded"));
                 isOpen = false;
                 resetModal();
-                $currentEntry?.refreshEntry();
+                await refreshEntry?.();
             } else {
                 showToast(Level.warn);
             }
-        } catch (e: any) {
-            const errorData = e?.response?.data || e?.message || "An unexpected error occurred";
-            showToast(Level.warn, errorData);
+        } catch (e: unknown) {
+            const errorData = (e as { response?: { data?: unknown } })?.response?.data ?? errorMessage(e, $_("something_went_wrong"));
+            showToast(Level.warn, errorMessage(e, $_("something_went_wrong")));
             errorContent = errorData;
         } finally {
             isLoading = false;
         }
     }
 
-    function handleRenderMenu(menuItems) {
-        return menuItems;
-    }
-
-    let validateMetaForm = $state<any>(undefined);
+    let validateMetaForm = $state<(() => boolean) | undefined>(undefined);
 
     async function updateMeta() {
         errorModalMessage = null;
         errorContent = null;
-        let _payloadContent = jsonEditorContentParser($state.snapshot(content));
+        const _payloadContent = jsonEditorContentParser($state.snapshot(content));
 
-        _payloadContent.subpath = parentResourceType === ResourceType.folder ? subpath : `${subpath}/${parent_shortname}`;
-        _payloadContent.attributes.slug = meta.slug
-        _payloadContent.attributes.displayname = meta.displayname
-        _payloadContent.attributes.description = meta.description
+        _payloadContent.subpath = attachmentSubpath;
+        _payloadContent.attributes.slug = meta.slug;
+        _payloadContent.attributes.displayname = meta.displayname;
+        _payloadContent.attributes.description = meta.description;
         const request_dict: ActionRequest = {
             space_name,
             request_type: RequestType.update,
@@ -335,16 +309,16 @@
         try {
             const response = await Dmart.request(request_dict);
             if (response.status === "success") {
-                showToast(Level.info);
+                showToast(Level.info, $_("attachment_updated"));
                 isOpen = false;
                 resetModal();
-                $currentEntry?.refreshEntry();
+                await refreshEntry?.();
             } else {
                 showToast(Level.warn);
             }
-        } catch (e: any) {
-            showToast(Level.warn, e.response?.data || "Error updating metadata");
-            errorContent = e.response?.data || "Error updating metadata";
+        } catch (e: unknown) {
+            showToast(Level.warn, errorMessage(e, $_("attachment_update_failed")));
+            errorContent = (e as { response?: { data?: unknown } })?.response?.data ?? errorMessage(e, $_("attachment_update_failed"));
         } finally {
             isLoading = false;
         }
@@ -355,196 +329,159 @@
             if (resourceType === ResourceAttachmentType.json) {
                 untrack(() => {
                     contentType = ContentType.json;
-                    content = {json: {}};
-                })
+                    content = { json: {} };
+                });
             } else if (resourceType === ResourceAttachmentType.comment) {
                 untrack(() => {
                     content = "";
-                })
+                });
             } else if (resourceType === ResourceAttachmentType.media) {
                 untrack(() => {
                     contentType = ContentType.image;
                     content = "";
-                })
+                });
             } else {
                 untrack(() => {
                     content = {};
-                })
+                });
             }
         }
     });
+
+    // The schema dropdown only needs shortnames.
+    const schemaOptions = Dmart.query({
+        space_name,
+        type: QueryType.search,
+        subpath: "/schema",
+        search: "",
+        retrieve_json_payload: false,
+        limit: 99,
+    }).then((schemas) => (schemas?.records ?? []).map((e) => e.shortname));
+
+    const fileAccept: Partial<Record<string, string>> = {
+        [ContentType.image]: "image/png, image/jpeg, image/webp, image/svg+xml",
+        [ContentType.pdf]: "application/pdf",
+        [ContentType.apk]: ".apk",
+        [ContentType.audio]: "audio/*",
+        [ContentType.video]: "video/*",
+        [ContentType.python]: ".py",
+        [ResourceAttachmentType.csv]: ".csv",
+        [ResourceAttachmentType.jsonl]: ".jsonl",
+        [ResourceAttachmentType.sqlite]: ".sqlite,.sqlite3,.db,.db3,.s3db,.sl3",
+        [ResourceAttachmentType.parquet]: ".parquet",
+    };
+
+    const title = $derived(
+        isUpdateMode
+            ? resourceType === ResourceAttachmentType.json && trueResourceType !== null
+                ? $_("edit_attachment_metadata")
+                : $_("edit_attachment_content")
+            : $_("add_attachment"),
+    );
+    const submitLabel = $derived(
+        isUpdateMode
+            ? resourceType === ResourceAttachmentType.json && trueResourceType !== null
+                ? $_("update_metadata")
+                : $_("update_content")
+            : $_("upload"),
+    );
 </script>
 
-<Modal bind:open={isOpen} size="xl">
-    <form onsubmit={upload}>
-        <div class="flex justify-between items-center px-4 pt-4 border-b rounded-t">
-            <h3 class="text-xl font-semibold text-gray-900">
-                {#if isUpdateMode}
-                    {#if resourceType === ResourceAttachmentType.json && trueResourceType !== null}
-                        Edit Attachment Metadata
-                    {:else}
-                        Edit Attachment Content
-                    {/if}
-                {:else}
-                    Add Attachment
-                {/if}
-            </h3>
-        </div>
+<Modal bind:open={isOpen} size="xl" {title} class="rounded-modal shadow-modal">
+    <form onsubmit={upload} class="space-y-4">
+        {#if errorModalMessage}
+            <ErrorState compact message={errorModalMessage} />
+        {/if}
 
-        <div class="p-4 w-full overflow-y-auto">
-            {#if errorModalMessage}
-                <Alert color="red">
-                    <span class="font-medium">{errorModalMessage}</span>
-                </Alert>
-            {/if}
-            <div class="flex flex-col">
-                <MetaForm bind:formData={meta} bind:validateFn={validateMetaForm} isCreate={!isUpdateMode}/>
-                <Card class="w-full max-w-4xl mx-auto p-4 my-2">
-                    <div>
-                        <Label for="resourceType">Attachment Typee</Label>
-                        <Select id="resourceType" bind:value={resourceType} disabled={isUpdateMode}>
-                            {#each Object.values(ResourceAttachmentType).filter(type => type !== ResourceAttachmentType.alteration) as type}
-                                <option value={type}>{type}</option>
-                            {/each}
-                        </Select>
-                    </div>
-                    {resourceType}
-                    {#if resourceType === ResourceAttachmentType.media}
-                        <div>
-                            <Label for="contentType">Content Type</Label>
-                            <Select id="contentType" bind:value={contentType} disabled={isUpdateMode}>
-                                {#each Object.values(ContentType).filter(c => ![ContentType.json, ContentType.csv, ContentType.jsonl, ContentType.sqlite, ContentType.parquet].includes(c)) as type}
-                                    <option value={type}>{type}</option>
-                                {/each}
-                            </Select>
-                        </div>
+        <MetaForm bind:formData={meta} bind:validateFn={validateMetaForm} isCreate={!isUpdateMode} />
 
-                        <hr class="my-4"/>
-
-                        {#if contentType === ContentType.image}
-                            <div>
-                                <Label for="imageFile">Image File</Label>
-                                <Fileupload id="imageFile" type="file" accept="image/png, image/jpeg, image/webp, image/svg+xml" clearable
-                                            bind:files={payloadFiles}/>
-                            </div>
-                        {:else if contentType === ContentType.pdf}
-                            <div>
-                                <Label for="pdfFile">PDF File</Label>
-                                <Fileupload id="pdfFile" type="file" accept="application/pdf" clearable
-                                            bind:files={payloadFiles}/>
-                            </div>
-                        {:else if contentType === ContentType.apk}
-                            <div>
-                                <Label for="apkFile">APK File</Label>
-                                <Fileupload id="apkFile" type="file" accept=".apk" clearable bind:files={payloadFiles}/>
-                            </div>
-                        {:else if contentType === ContentType.audio}
-                            <div>
-                                <Label for="audioFile">Audio File</Label>
-                                <Fileupload id="audioFile" type="file" accept="audio/*" clearable
-                                            bind:files={payloadFiles}/>
-                            </div>
-                        {:else if contentType === ContentType.python}
-                            <div>
-                                <Label for="pythonFile">Python File</Label>
-                                <Fileupload id="pythonFile" type="file" accept=".py" clearable bind:files={payloadFiles}/>
-                            </div>
-                        {:else if contentType === ContentType.markdown}
-                            <div>
-                                <MarkdownEditor bind:content={content}/>
-                            </div>
-                        {:else if contentType === ContentType.html}
-                            <div>
-                                <HtmlEditor bind:content={content}/>
-                            </div>
-                        {:else}
-                            <div>
-                                <Textarea bind:value={content}/>
-                            </div>
-                        {/if}
-                    {:else if resourceType === ResourceAttachmentType.json}
-                        {#if content.json || content.text}
-                            <div>
-                                <JSONEditor onRenderMenu={handleRenderMenu} mode={Mode.text} bind:content={content}/>
-                            </div>
-                        {/if}
-                    {:else if resourceType === ResourceAttachmentType.comment}
-                        <div>
-                            {#if isUpdateMode}
-                                <Textarea bind:value={content.body}/>
-                            {:else }
-                                <Textarea bind:value={content}/>
-                            {/if}
-                        </div>
-                    {:else if resourceType === ResourceAttachmentType.csv}
-                        <div>
-                            <Label for="csvFile">CSV File</Label>
-                            <Fileupload id="csvFile" type="file" accept=".csv" clearable bind:files={payloadFiles}/>
-
-                            <div class="mt-3">
-                                <Label for="csvSchema">Schema</Label>
-                                <Select id="csvSchema" bind:value={selectedSchema} disabled={isUpdateMode}>
-                                    <option value="">None</option>
-                                    {#await Dmart.query({
-                                        space_name,
-                                        type: QueryType.search,
-                                        subpath: "/schema",
-                                        search: "",
-                                        retrieve_json_payload: true,
-                                        limit: 99
-                                    }) then schemas}
-                                        {#each (schemas?.records ?? []).map(e => e.shortname) as schema}
-                                            <option value={schema}>{schema}</option>
-                                        {/each}
-                                    {/await}
-                                </Select>
-                            </div>
-                        </div>
-                    {:else if resourceType === ResourceAttachmentType.jsonl}
-                        <div>
-                            <Label for="jsonlFile">JSONL File</Label>
-                            <Fileupload id="jsonlFile" type="file" accept=".jsonl" clearable bind:files={payloadFiles}/>
-                        </div>
-                    {:else if resourceType === ResourceAttachmentType.sqlite}
-                        <div>
-                            <Label for="sqliteFile">SQLite File</Label>
-                            <Fileupload id="sqliteFile" type="file" accept=".sqlite,.sqlite3,.db,.db3,.s3db,.sl3" clearable
-                                        bind:files={payloadFiles}/>
-                        </div>
-                    {:else if resourceType === ResourceAttachmentType.parquet}
-                        <div>
-                            <Label for="parquetFile">Parquet File</Label>
-                            <Fileupload id="parquetFile" type="file" accept=".parquet" clearable bind:files={payloadFiles}/>
-                        </div>
-                    {/if}
-                </Card>
+        <div class="w-full max-w-4xl mx-auto rounded-card border border-border bg-surface-2 shadow-card p-4 sm:p-5 space-y-4">
+            <div>
+                <Label for="{uid}-resourceType" class="mb-1.5">{$_("attachment_type")}</Label>
+                <Select id="{uid}-resourceType" bind:value={resourceType} disabled={isUpdateMode}>
+                    {#each Object.values(ResourceAttachmentType).filter((type) => type !== ResourceAttachmentType.alteration) as type (type)}
+                        <option value={type}>{type}</option>
+                    {/each}
+                </Select>
             </div>
 
-            {#if errorContent}
-                <div class="mt-3">
-                    <Prism code={errorContent} language={"json"}/>
+            {#if resourceType === ResourceAttachmentType.media}
+                <div>
+                    <Label for="{uid}-contentType" class="mb-1.5">{$_("content_type")}</Label>
+                    <Select id="{uid}-contentType" bind:value={contentType} disabled={isUpdateMode}>
+                        {#each Object.values(ContentType).filter((c) => ![ContentType.json, ContentType.csv, ContentType.jsonl, ContentType.sqlite, ContentType.parquet].includes(c)) as type (type)}
+                            <option value={type}>{type}</option>
+                        {/each}
+                    </Select>
                 </div>
+
+                {#if fileAccept[contentType]}
+                    <div>
+                        <Label for="{uid}-file" class="mb-1.5">{$_("file")}</Label>
+                        <Fileupload id="{uid}-file" accept={fileAccept[contentType]} clearable bind:files={payloadFiles} />
+                    </div>
+                {:else if contentType === ContentType.markdown}
+                    <MarkdownEditor bind:content />
+                {:else if contentType === ContentType.html}
+                    <HtmlEditor bind:content />
+                {:else}
+                    <div>
+                        <Label for="{uid}-text" class="mb-1.5">{$_("content")}</Label>
+                        <Textarea id="{uid}-text" bind:value={content} rows={8} dir="auto" />
+                    </div>
+                {/if}
+            {:else if resourceType === ResourceAttachmentType.json}
+                {#if content.json || content.text}
+                    <LazyJsonEditor mode="text" bind:content />
+                {/if}
+            {:else if resourceType === ResourceAttachmentType.comment}
+                <div>
+                    <Label for="{uid}-comment" class="mb-1.5">{$_("comment")}</Label>
+                    {#if isUpdateMode}
+                        <Textarea id="{uid}-comment" bind:value={content.body} rows={6} dir="auto" />
+                    {:else}
+                        <Textarea id="{uid}-comment" bind:value={content} rows={6} dir="auto" />
+                    {/if}
+                </div>
+            {:else if fileAccept[resourceType]}
+                <div>
+                    <Label for="{uid}-datafile" class="mb-1.5">{$_("file")}</Label>
+                    <Fileupload id="{uid}-datafile" accept={fileAccept[resourceType]} clearable bind:files={payloadFiles} />
+                </div>
+                {#if resourceType === ResourceAttachmentType.csv}
+                    <div>
+                        <Label for="{uid}-csvSchema" class="mb-1.5">{$_("schema")}</Label>
+                        <Select id="{uid}-csvSchema" bind:value={selectedSchema} disabled={isUpdateMode}>
+                            <option value="">{$_("none")}</option>
+                            {#await schemaOptions then schemas}
+                                {#each schemas as schema (schema)}
+                                    <option value={schema}>{schema}</option>
+                                {/each}
+                            {/await}
+                        </Select>
+                    </div>
+                {/if}
             {/if}
         </div>
 
-        <div class="flex justify-end space-x-2 p-4 border-t">
-            <Button color="alternative" onclick={()=>{isOpen=false}} disabled={isLoading}>
-                Cancel
+        {#if errorPreview}
+            <ErrorState compact title={$_("something_went_wrong")} message={typeof errorContent === "string" ? errorContent : undefined}>
+                {#if typeof errorContent !== "string"}
+                    <div class="max-h-60 overflow-auto"><Prism code={errorPreview.value as object | string} language="json" /></div>
+                {/if}
+            </ErrorState>
+        {/if}
+
+        <div class="flex items-center justify-end gap-2 pt-4 border-t border-border">
+            <Button color="alternative" onclick={() => (isOpen = false)} disabled={isLoading}>
+                {$_("cancel")}
             </Button>
-            <Button color="blue" type="submit" class={isLoading ? "cursor-not-allowed" : "cursor-pointer"}
-                    disabled={isLoading}>
+            <Button color="primary" type="submit" disabled={isLoading}>
                 {#if isLoading}
-                    {isUpdateMode ? "Updating..." : "Uploading..."}
+                    <Spinner class="me-2" size="4" />
+                    {isUpdateMode ? $_("updating") : $_("uploading")}
                 {:else}
-                    {#if isUpdateMode}
-                        {#if resourceType === ResourceAttachmentType.json && trueResourceType !== null}
-                            Update Metadata
-                        {:else}
-                            Update Content
-                        {/if}
-                    {:else}
-                        Upload
-                    {/if}
+                    {submitLabel}
                 {/if}
             </Button>
         </div>

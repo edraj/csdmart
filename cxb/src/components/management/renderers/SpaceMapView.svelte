@@ -1,4 +1,10 @@
 <script lang="ts">
+    import { ArchiveOutline, FolderOutline } from "flowbite-svelte-icons";
+    import Badge from "@/components/ui/Badge.svelte";
+    import EmptyState from "@/components/ui/EmptyState.svelte";
+    import LoadingState from "@/components/ui/LoadingState.svelte";
+    import { _ } from "@/i18n";
+
     type SubpathInfo = {
         resource_types: string[];
         actions: string[];
@@ -15,28 +21,21 @@
         loading: boolean;
     } = $props();
 
-    const ACTION_COLORS: Record<string, string> = {
-        create: "bg-green-100 text-green-800",
-        update: "bg-blue-100 text-blue-800",
-        delete: "bg-red-100 text-red-800",
-        query: "bg-cyan-100 text-cyan-800",
-        view: "bg-cyan-100 text-cyan-800",
-        replace: "bg-orange-100 text-orange-800",
-        move: "bg-yellow-100 text-yellow-800",
-        attach: "bg-lime-100 text-lime-800",
+    type Tone = "neutral" | "primary" | "success" | "danger" | "warning" | "info";
+
+    const ACTION_TONES: Record<string, Tone> = {
+        create: "success",
+        update: "info",
+        delete: "danger",
+        query: "neutral",
+        view: "neutral",
+        replace: "warning",
+        move: "warning",
+        attach: "primary",
     };
 
-    const CONDITION_COLORS: Record<string, string> = {
-        own: "bg-yellow-100 text-yellow-800",
-        is_active: "bg-yellow-100 text-yellow-800",
-    };
-
-    function actionColor(action: string): string {
-        return ACTION_COLORS[action] ?? "bg-gray-100 text-gray-700";
-    }
-
-    function conditionColor(cond: string): string {
-        return CONDITION_COLORS[cond] ?? "bg-yellow-100 text-yellow-800";
+    function actionTone(action: string): Tone {
+        return ACTION_TONES[action] ?? "neutral";
     }
 
     function pretty(v: unknown): string {
@@ -56,154 +55,73 @@
 </script>
 
 {#if loading}
-    <div class="flex items-center gap-3 p-6 text-gray-500">
-        <svg
-            class="animate-spin h-5 w-5 text-blue-500"
-            xmlns="http://www.w3.org/2000/svg"
-            fill="none"
-            viewBox="0 0 24 24"
-        >
-            <circle
-                class="opacity-25"
-                cx="12"
-                cy="12"
-                r="10"
-                stroke="currentColor"
-                stroke-width="4"
-            ></circle>
-            <path
-                class="opacity-75"
-                fill="currentColor"
-                d="M4 12a8 8 0 018-8v8H4z"
-            ></path>
-        </svg>
-        <span>Loading permission map…</span>
-    </div>
+    <LoadingState label={$_("loading_permission_map")} />
 {:else if Object.keys(spaceMap).length === 0}
-    <div class="p-6 text-center text-gray-400 border border-dashed rounded-lg">
-        No space permissions found.
-    </div>
+    <EmptyState title={$_("no_space_permissions")} />
 {:else}
     <div class="space-y-4">
-        {#each entries(spaceMap) as [space, subpathMap]}
-            <div
-                class="border border-gray-200 rounded-xl shadow-sm overflow-hidden"
-            >
-                <!-- Space header -->
-                <div
-                    class="flex items-center gap-2 px-4 py-3 bg-gradient-to-r from-blue-50 to-indigo-50 border-b border-gray-200"
-                >
-                    <span class="text-xl">📦</span>
-                    <span class="font-bold text-blue-800 text-base"
-                        >{space}</span
-                    >
-                    <span class="ml-auto text-xs text-gray-400"
-                        >{Object.keys(subpathMap).length} subpath{Object.keys(
-                            subpathMap,
-                        ).length !== 1
-                            ? "s"
-                            : ""}</span
-                    >
-                </div>
+        {#each entries(spaceMap) as [space, subpathMap] (space)}
+            <section class="rounded-card border border-border bg-surface-2 shadow-card overflow-hidden">
+                <header class="flex items-center gap-2 px-4 py-3 bg-surface border-b border-border">
+                    <ArchiveOutline size="sm" class="text-primary" aria-hidden="true" />
+                    <h3 class="font-semibold text-text text-base">{space}</h3>
+                    <span class="ms-auto text-xs text-text-faint tabular-nums">
+                        {$_("n_subpaths", { values: { count: Object.keys(subpathMap).length } })}
+                    </span>
+                </header>
 
-                <!-- Subpaths -->
-                <div class="divide-y divide-gray-100">
-                    {#each entries(subpathMap) as [subpath, info]}
+                <div class="divide-y divide-border">
+                    {#each entries(subpathMap) as [subpath, info] (subpath)}
                         <div class="px-5 py-3 space-y-1.5">
                             <div class="flex items-center gap-2">
-                                <span class="text-base">📁</span>
-                                <span
-                                    class="font-mono text-sm font-semibold text-gray-700"
-                                    >{subpath}</span
-                                >
+                                <FolderOutline size="sm" class="text-text-faint" aria-hidden="true" />
+                                <span class="font-mono text-sm font-semibold text-text">{subpath}</span>
                             </div>
 
-                            <!-- Resource types -->
                             {#if info.resource_types.length > 0}
-                                <div
-                                    class="flex flex-wrap items-center gap-1 ml-6"
-                                >
-                                    <span class="text-xs text-gray-400 mr-1"
-                                        >Types:</span
-                                    >
-                                    {#each info.resource_types as rt}
-                                        <span
-                                            class="bg-purple-100 text-purple-800 text-xs px-2 py-0.5 rounded-full font-medium"
-                                            >{rt}</span
-                                        >
+                                <div class="flex flex-wrap items-center gap-1 ms-6">
+                                    <span class="text-xs text-text-faint me-1">{$_("types")}:</span>
+                                    {#each info.resource_types as rt (rt)}
+                                        <Badge variant="primary" size="sm">{rt}</Badge>
                                     {/each}
                                 </div>
                             {/if}
 
-                            <!-- Actions -->
                             {#if info.actions.length > 0}
-                                <div
-                                    class="flex flex-wrap items-center gap-1 ml-6"
-                                >
-                                    <span class="text-xs text-gray-400 mr-1"
-                                        >Actions:</span
-                                    >
-                                    {#each info.actions as action}
-                                        <span
-                                            class="{actionColor(
-                                                action,
-                                            )} text-xs px-2 py-0.5 rounded-full font-medium"
-                                            >{action}</span
-                                        >
+                                <div class="flex flex-wrap items-center gap-1 ms-6">
+                                    <span class="text-xs text-text-faint me-1">{$_("actions")}:</span>
+                                    {#each info.actions as action (action)}
+                                        <Badge variant={actionTone(action)} size="sm">{action}</Badge>
                                     {/each}
                                 </div>
                             {/if}
 
-                            <!-- Conditions -->
                             {#if isTruthy(info.conditions)}
-                                <div
-                                    class="flex flex-wrap items-center gap-1 ml-6"
-                                >
-                                    <span class="text-xs text-gray-400 mr-1"
-                                        >Conditions:</span
-                                    >
-                                    {#each info.conditions as cond}
-                                        <span
-                                            class="{conditionColor(
-                                                cond,
-                                            )} text-xs px-2 py-0.5 rounded-full font-medium"
-                                            >{cond}</span
-                                        >
+                                <div class="flex flex-wrap items-center gap-1 ms-6">
+                                    <span class="text-xs text-text-faint me-1">{$_("conditions")}:</span>
+                                    {#each info.conditions as cond (cond)}
+                                        <Badge variant="warning" size="sm">{cond}</Badge>
                                     {/each}
                                 </div>
                             {/if}
 
-                            <!-- Allowed fields values -->
                             {#if isTruthy(info.allowed_fields_values)}
-                                <div class="ml-6">
-                                    <span
-                                        class="text-xs text-gray-400 block mb-0.5"
-                                        >Allowed Fields Values:</span
-                                    >
-                                    <pre
-                                        class="text-xs bg-green-50 border border-green-200 rounded p-2 overflow-auto max-h-32 text-green-900 font-mono">{pretty(
-                                            info.allowed_fields_values,
-                                        )}</pre>
+                                <div class="ms-6">
+                                    <span class="text-xs text-text-faint block mb-0.5">{$_("allowed_fields_values")}:</span>
+                                    <pre class="text-xs bg-surface border border-border rounded-control p-2 overflow-auto max-h-32 text-text font-mono" dir="ltr">{pretty(info.allowed_fields_values)}</pre>
                                 </div>
                             {/if}
 
-                            <!-- Filter fields values -->
                             {#if isTruthy(info.filter_fields_values)}
-                                <div class="ml-6">
-                                    <span
-                                        class="text-xs text-gray-400 block mb-0.5"
-                                        >Filter Fields Values:</span
-                                    >
-                                    <pre
-                                        class="text-xs bg-sky-50 border border-sky-200 rounded p-2 overflow-auto max-h-32 text-sky-900 font-mono">{pretty(
-                                            info.filter_fields_values,
-                                        )}</pre>
+                                <div class="ms-6">
+                                    <span class="text-xs text-text-faint block mb-0.5">{$_("filter_fields_values")}:</span>
+                                    <pre class="text-xs bg-surface border border-border rounded-control p-2 overflow-auto max-h-32 text-text font-mono" dir="ltr">{pretty(info.filter_fields_values)}</pre>
                                 </div>
                             {/if}
                         </div>
                     {/each}
                 </div>
-            </div>
+            </section>
         {/each}
     </div>
 {/if}

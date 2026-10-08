@@ -8,13 +8,15 @@
  * while signed out — then found Dmart.axiosDmartInstance undefined on a direct
  * load or a refresh, and every request died as a swallowed TypeError.
  *
- * Behaviour is a verbatim move of the old management-layout setup: same
- * baseURL/withCredentials/timeout and the same response interceptor. Two
- * conditions in that interceptor are load-bearing and must not be widened:
+ * Authentication is cookie-only: the server sets an HttpOnly `auth_token`
+ * cookie at login and accepts it on every route (same-origin requests pass its
+ * CSRF gate via Fetch Metadata), so the instance sends credentials and no
+ * bearer token is kept in web storage. Two conditions in the response
+ * interceptor are load-bearing and must not be widened:
  *
  *   - `[47, 48, 49]` only. Account lockout (code 110) also arrives as HTTP
  *     401; reacting to it would sign the user out spuriously.
- *   - a truthy `authToken` only. Without it, an expected 401 on a
+ *   - a locally signed-in user only. Without it, an expected 401 on a
  *     password-reset page (where the visitor has no session at all) would
  *     reload the page out from under the form.
  *
@@ -37,6 +39,32 @@ import { debouncedShowToast } from "@/utils/debounce";
 let instance: AxiosInstance | null = null;
 let isRedirectingToLogin = false;
 
+// Keys the SDK and the user store write for a session. "authToken" is the
+// pre-cookie-only token key: never written any more, still removed so an
+// upgraded browser does not keep a token on disk.
+const SESSION_KEYS = ["user", "permissions", "roles", "authToken"];
+
+/**
+ * Whether this browser believes it has a session, read from the persisted user
+ * record (which holds no secret). The server is the authority — this only
+ * decides whether a 401 is a session expiry worth reacting to.
+ */
+export function hasLocalSession(): boolean {
+  if (typeof localStorage === "undefined") return false;
+  try {
+    const stored = JSON.parse(localStorage.getItem("user") || "null");
+    return stored?.signedin === true;
+  } catch {
+    return false;
+  }
+}
+
+/** Forget the local session so the layouts render the Login form. */
+export function clearLocalSession(): void {
+  if (typeof localStorage === "undefined") return;
+  for (const key of SESSION_KEYS) localStorage.removeItem(key);
+}
+
 export function ensureDmartAxios(): AxiosInstance {
   if (instance) return instance;
 
@@ -49,10 +77,9 @@ export function ensureDmartAxios(): AxiosInstance {
     timeout: website.backend_timeout,
   });
 
-  // No request interceptor: unlike catalog, cxb never had one — the bearer
-  // token is handed to the SDK with Dmart.setToken() from the management
-  // layout, which is the only place that needs an authenticated call. Adding
-  // one here would change behaviour rather than preserve it.
+  // No request interceptor: the auth_token cookie travels with every request
+  // thanks to withCredentials, and the SDK's own `headers` object carries the
+  // bearer token for the page that just logged in.
   dmartAxios.interceptors.response.use(
     (request) => {
       return request;
@@ -68,13 +95,10 @@ export function ensureDmartAxios(): AxiosInstance {
         error.response?.status === 401 &&
         [47, 48, 49].includes(error.response?.data?.error?.code) &&
         !isRedirectingToLogin &&
-        localStorage.getItem("authToken")
+        hasLocalSession()
       ) {
         isRedirectingToLogin = true;
-        localStorage.removeItem("authToken");
-        localStorage.removeItem("user");
-        localStorage.removeItem("permissions");
-        localStorage.removeItem("roles");
+        clearLocalSession();
         window.location.reload();
       }
       return Promise.reject(error);

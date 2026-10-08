@@ -1,6 +1,7 @@
 <script lang="ts">
+  import { log } from "@/lib/logger";
   import Modal from "@/components/Modal.svelte";
-  import { _, locale } from "@/i18n";
+  import { _ } from "@/i18n";
   import { onMount } from "svelte";
   import {
     Dmart,
@@ -14,7 +15,6 @@
     successToastMessage,
     errorToastMessage,
   } from "@/lib/toasts_messages";
-  import { derived as derivedStore } from "svelte/store";
 
   type CopyMoveAction = "copy" | "move";
 
@@ -42,10 +42,6 @@
     onDone,
   }: Props = $props();
 
-  const isRTL = derivedStore(
-    locale,
-    ($locale) => $locale === "ar" || $locale === "ku",
-  );
 
   let spacesList = $state<any[]>([]);
   let folderList = $state<string[]>(["/"]);
@@ -72,7 +68,7 @@
       const spacesResponse = await getSpaces(false, DmartScope.managed);
       spacesList = spacesResponse.records ?? [];
     } catch (err) {
-      console.error("Error loading spaces:", err);
+      log.error("Error loading spaces:", err);
     }
     selectedSpace = sourceSpace || spacesList[0]?.shortname || "";
     selectedSubpath = defaultSubpath || "/";
@@ -109,7 +105,7 @@
       paths.sort((a: string, b: string) => a.localeCompare(b));
       folderList = ["/", ...paths];
     } catch (err) {
-      console.error("Error loading folders:", err);
+      log.error("Error loading folders:", err);
       folderList = ["/"];
     }
   }
@@ -214,7 +210,7 @@
         errorToastMessage(errorMessage || "Copy failed");
       }
     } catch (err: any) {
-      console.error(`${action} error:`, err);
+      log.error(`${action} error:`, err);
       errorMessage =
         err?.response?.data?.error?.message ||
         err?.message ||
@@ -235,7 +231,7 @@
   dismissable={!isSubmitting}
 >
   <div class="space-y-4">
-  <p class="text-sm text-gray-500">
+  <p class="text-sm text-text-muted">
     {#if isMove}
       The {records.length === 1 ? "item" : "items"} will be relocated to the
       destination. The source entries will no longer appear in this folder.
@@ -246,19 +242,19 @@
   </p>
 
   {#if errorMessage}
-    <div class="rounded-lg border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-700">
+    <div class="rounded-lg border border-danger/30 bg-danger-soft px-3 py-2 text-sm text-danger">
       {errorMessage}
     </div>
   {/if}
 
   <div class="grid grid-cols-1 gap-3">
     <div>
-      <label for="copy-space" class="block text-xs font-semibold text-gray-600 uppercase tracking-wide mb-1">
+      <label for="copy-space" class="block text-xs font-semibold text-text-muted uppercase tracking-wide mb-1">
         Destination space
       </label>
       <select
         id="copy-space"
-        class="w-full rounded-lg border border-gray-200 bg-white px-3 py-2 text-sm focus:ring-2 focus:ring-indigo-500"
+        class="w-full rounded-lg border border-border bg-surface-2 px-3 py-2 text-sm focus:ring-2 focus:ring-primary"
         value={selectedSpace}
         onchange={handleSpaceChange}
         disabled={isSubmitting}
@@ -266,35 +262,35 @@
         {#if spacesList.length === 0}
           <option value="">Loading…</option>
         {/if}
-        {#each spacesList as space}
+        {#each spacesList as space (space.shortname)}
           <option value={space.shortname}>{space.shortname}</option>
         {/each}
       </select>
     </div>
 
     <div>
-      <label for="copy-subpath" class="block text-xs font-semibold text-gray-600 uppercase tracking-wide mb-1">
+      <label for="copy-subpath" class="block text-xs font-semibold text-text-muted uppercase tracking-wide mb-1">
         Destination subpath
       </label>
       <select
         id="copy-subpath"
-        class="w-full rounded-lg border border-gray-200 bg-white px-3 py-2 text-sm focus:ring-2 focus:ring-indigo-500 font-mono"
+        class="w-full rounded-lg border border-border bg-surface-2 px-3 py-2 text-sm focus:ring-2 focus:ring-primary font-mono"
         bind:value={selectedSubpath}
         disabled={isSubmitting || folderList.length === 0}
       >
-        {#each folderList as folder}
+        {#each folderList as folder (folder)}
           <option value={folder}>{folder}</option>
         {/each}
       </select>
     </div>
   </div>
 
-  <div class="rounded-xl border border-gray-100 bg-gray-50 px-4 py-3 text-xs text-gray-600 max-h-40 overflow-y-auto">
-    <div class="font-semibold text-gray-700 mb-1">Items ({records.length})</div>
-    <ul class="space-y-0.5 font-mono {$isRTL ? 'text-right' : ''}">
-      {#each records as r}
+  <div class="rounded-xl border border-border bg-surface px-4 py-3 text-xs text-text-muted max-h-40 overflow-y-auto">
+    <div class="font-semibold text-text mb-1">Items ({records.length})</div>
+    <ul class="space-y-0.5 font-mono">
+      {#each records as r (r.shortname)}
         <li class="truncate">
-          <span class="text-gray-400">[{r.resource_type}]</span>
+          <span class="text-text-faint">[{r.resource_type}]</span>
           {r.shortname}
         </li>
       {/each}
@@ -305,7 +301,7 @@
   {#snippet footer()}
     <button
       onclick={onClose}
-      class="rounded-xl border border-gray-200 bg-white px-5 py-2.5 text-sm font-medium text-gray-700 hover:bg-gray-50 disabled:opacity-60"
+      class="rounded-xl border border-border bg-surface-2 px-5 py-2.5 text-sm font-medium text-text hover:bg-surface disabled:opacity-60"
       disabled={isSubmitting}
     >
       Cancel
@@ -314,11 +310,11 @@
       onclick={handleSubmit}
       disabled={isSubmitting || !selectedSpace || records.length === 0}
       class="inline-flex items-center gap-2 rounded-xl {isMove
-        ? 'bg-amber-600 hover:bg-amber-700'
-        : 'bg-indigo-600 hover:bg-indigo-700'} px-6 py-2.5 text-sm font-semibold text-white shadow-md disabled:opacity-60"
+        ? 'bg-warning hover:bg-warning'
+        : 'bg-primary hover:bg-primary-hover'} px-6 py-2.5 text-sm font-semibold text-text-on-primary shadow-md disabled:opacity-60"
     >
       {#if isSubmitting}
-        <span class="h-4 w-4 animate-spin rounded-full border-2 border-white/40 border-t-white"></span>
+        <span class="h-4 w-4 animate-spin rounded-full border-2 border-text-on-primary/40 border-t-white"></span>
         {submittingLabel}
       {:else}
         {actionLabel}

@@ -17,6 +17,10 @@ export interface User {
 }
 
 const KEY = "user";
+// Pre-cookie-only builds persisted the bearer token under this key. It is never
+// written any more; it is only removed so an upgraded browser does not keep a
+// token on disk.
+const LEGACY_TOKEN_KEY = "authToken";
 
 const fallback_locale = Locale.ar;
 function guess_locale(): Locale {
@@ -29,8 +33,7 @@ function guess_locale(): Locale {
   return fallback_locale;
 }
 
-let signedout: User = { signedin: false, locale: guess_locale() };
-export let user: Writable<User>;
+const signedout: User = { signedin: false, locale: guess_locale() };
 
 // Load the user information from store, if it exists
 let initialUser: User = signedout;
@@ -45,30 +48,34 @@ if (typeof localStorage !== "undefined") {
         initialUser = signedout;
     }
 }
-user = writable<User>(initialUser);
+export const user: Writable<User> = writable<User>(initialUser);
 
 export async function signin(username: string, password: string) {
   const response = await Dmart.login(username, password);
 
   if (response.status === "success" && response.records.length > 0) {
     const account = response.records[0];
-    const auth = account.attributes.access_token;
-    authToken.set(auth);
+    // In memory only for this page. The HttpOnly cookie the server set on the
+    // same response is what authenticates every later request, including the
+    // ones made after the reload that follows login.
+    authToken.set(account.attributes.access_token ?? "");
 
-    if (typeof localStorage !== 'undefined')
-      localStorage.setItem("authToken", auth);
-
+    // The login record carries the token inside `attributes`; the persisted
+    // copy of the account must not.
+    const { access_token: _access, refresh_token: _refresh, ...safeAttributes } =
+      (account.attributes ?? {}) as Record<string, unknown>;
     const _user: User = {
       signedin: true,
       locale: guess_locale(),
       shortname: account.shortname,
       localized_displayname: account.attributes?.displayname?.en,
-      account: account,
+      account: { ...account, attributes: safeAttributes },
     };
     user.set(_user);
     if (typeof localStorage !== 'undefined') {
       localStorage.setItem(KEY, JSON.stringify(_user));
       localStorage.setItem("rowPerPage", "15");
+      localStorage.removeItem(LEGACY_TOKEN_KEY);
     }
   } else {
     user.set(signedout);
@@ -91,7 +98,7 @@ export async function signout() {
   } finally {
     localStorage.removeItem(KEY);
     localStorage.removeItem("rowPerPage");
-    localStorage.removeItem("authToken");
+    localStorage.removeItem(LEGACY_TOKEN_KEY);
     // Written by the SDK's getProfile(); stale privilege data must not
     // outlive the session or it drives the next user's UI gating.
     localStorage.removeItem("permissions");
@@ -99,14 +106,4 @@ export async function signout() {
     authToken.set("");
     user.set(signedout);
   }
-}
-
-export function switchLocale(locale: Locale) {
-  user.update((user) => {
-    user.locale = locale;
-    signedout.locale = locale; // remember the locale value in case we logout
-    if (typeof localStorage !== 'undefined')
-      localStorage.setItem(KEY, JSON.stringify(user));
-    return user;
-  });
 }

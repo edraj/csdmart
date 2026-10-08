@@ -1,33 +1,27 @@
 <script lang="ts">
-    import {
-        Accordion,
-        AccordionItem,
-        Button,
-        Card,
-        Helper,
-        Input,
-        Label,
-        Select,
-        Spinner,
-        Textarea
-    } from 'flowbite-svelte';
-    import {PlusOutline} from 'flowbite-svelte-icons';
-    import {RequestType, ResourceType} from '@edraj/tsdmart';
-    import {onMount} from "svelte";
-    import {getChildren, getChildrenAndSubChildren, getSpaces} from "@/lib/dmart_services";
-    import {Level, showToast} from "@/utils/toast";
+    import { Accordion, AccordionItem, Input, Label, Select, Textarea } from "flowbite-svelte";
+    import { CloseOutline, PlusOutline } from "flowbite-svelte-icons";
+    import { RequestType, ResourceType } from "@edraj/tsdmart";
+    import { onMount } from "svelte";
+    import { getChildren, getChildrenAndSubChildren, getSpaces } from "@/lib/dmart_services";
+    import { spaces as spacesStore } from "@/stores/management/spaces";
+    import IconButton from "@/components/ui/IconButton.svelte";
+    import LoadingState from "@/components/ui/LoadingState.svelte";
+    import { _ } from "@/i18n";
 
     let {
         formData = $bindable(),
+        // eslint-disable-next-line @typescript-eslint/no-unused-vars, no-useless-assignment -- $bindable() written back to the parent, never read here
         validateFn = $bindable(),
-        readOnly = false
+        readOnly = false,
     }: {
-        formData: any,
-        validateFn: () => boolean
-        readOnly: boolean,
+        formData: any;
+        validateFn: () => boolean;
+        readOnly: boolean;
     } = $props();
 
-    let form;
+    const uid = $props.id();
+    let form: HTMLFormElement;
 
     formData = {
         ...formData,
@@ -37,47 +31,43 @@
         conditions: formData.conditions || [],
         restricted_fields: formData.restricted_fields || [],
         allowed_fields_values: formData.allowed_fields_values || {},
-        filter_fields_values: formData.filter_fields_values || ''
+        filter_fields_values: formData.filter_fields_values || "",
     };
 
-    const resourceTypeOptions = Object.keys(ResourceType).map(key => ({
+    const resourceTypeOptions = Object.keys(ResourceType).map((key) => ({
         name: key,
-        value: ResourceType[key]
+        value: ResourceType[key as keyof typeof ResourceType],
     }));
 
-    const requestTypeOptions = Object.keys(RequestType).map(key => ({
+    const requestTypeOptions = Object.keys(RequestType).map((key) => ({
         name: key,
-        value: RequestType[key]
+        value: RequestType[key as keyof typeof RequestType] as string,
     }));
-    requestTypeOptions.unshift({
-        name: 'view',
-        value: 'view',
-    });
-    requestTypeOptions.unshift({
-        name: 'query',
-        value: 'query',
-    });
+    requestTypeOptions.unshift({ name: "view", value: "view" });
+    requestTypeOptions.unshift({ name: "query", value: "query" });
 
-    let selectedResourceType = $state('');
-    let selectedAction = $state('');
-    let newCondition = $state('');
-    let newRestrictedField = $state('');
+    let selectedResourceType = $state("");
+    let selectedAction = $state("");
+    let newCondition = $state("");
+    let newRestrictedField = $state("");
 
-    let spaces: {name: string; value: string}[] = $state([]);
-    let subpaths: {name: string; value: string}[] = $state([]);
-    let selectedSpace = $state('');
-    let selectedSubpath = $state('');
-    let loadingSpaces = $state(true);
+    let subpaths: { name: string; value: string }[] = $state([]);
+    let selectedSpace = $state("");
+    let selectedSubpath = $state("");
+    let loadingSpaces = $state(false);
     let loadingSubpaths = $state(false);
 
+    // The spaces store is filled once at boot; request only when it is empty.
+    const spaces = $derived([
+        { name: "__all_spaces__", value: "__all_spaces__" },
+        ...($spacesStore ?? []).map((space) => ({ name: space.shortname, value: space.shortname })),
+    ]);
+
     onMount(async () => {
+        if (readOnly || $spacesStore !== null) return;
+        loadingSpaces = true;
         try {
-            const spacesResponse = await getSpaces();
-            spaces = (spacesResponse.records ?? []).map(space => ({ name: space.shortname, value: space.shortname }));
-            spaces.unshift({
-                name: '__all_spaces__',
-                value: '__all_spaces__'
-            });
+            await getSpaces();
         } catch (error) {
             console.error("Failed to load spaces:", error);
         } finally {
@@ -85,71 +75,65 @@
         }
     });
 
-
     function addResourceType() {
         if (selectedResourceType && !formData.resource_types.includes(selectedResourceType)) {
             formData.resource_types = [...formData.resource_types, selectedResourceType];
-            selectedResourceType = '';
+            selectedResourceType = "";
         }
     }
 
-    function removeResourceType(item) {
-        formData.resource_types = formData.resource_types.filter(i => i !== item);
+    function removeResourceType(item: string) {
+        formData.resource_types = formData.resource_types.filter((i: string) => i !== item);
     }
 
     function addAction() {
         if (selectedAction && !formData.actions.includes(selectedAction)) {
             formData.actions = [...formData.actions, selectedAction];
-            selectedAction = '';
+            selectedAction = "";
         }
     }
 
-    function removeAction(item) {
-        formData.actions = formData.actions.filter(i => i !== item);
+    function removeAction(item: string) {
+        formData.actions = formData.actions.filter((i: string) => i !== item);
     }
 
     function addCondition() {
         if (newCondition && !formData.conditions.includes(newCondition)) {
             formData.conditions = [...formData.conditions, newCondition];
-            newCondition = '';
+            newCondition = "";
         }
     }
 
-    function removeCondition(item) {
-        formData.conditions = formData.conditions.filter(i => i !== item);
+    function removeCondition(item: string) {
+        formData.conditions = formData.conditions.filter((i: string) => i !== item);
     }
 
     function addRestrictedField() {
         if (newRestrictedField && !formData.restricted_fields.includes(newRestrictedField)) {
             formData.restricted_fields = [...formData.restricted_fields, newRestrictedField];
-            newRestrictedField = '';
+            newRestrictedField = "";
         }
     }
 
-    async function loadSubpaths(spaceName) {
+    function removeRestrictedField(item: string) {
+        formData.restricted_fields = formData.restricted_fields.filter((i: string) => i !== item);
+    }
+
+    async function loadSubpaths(spaceName: string) {
         if (!spaceName) return;
 
         loadingSubpaths = true;
         try {
-            const subpathsResponse = []
-            const childSubpaths = await getChildren(spaceName, '/');
+            const subpathsResponse: string[] = [];
+            const childSubpaths = await getChildren(spaceName, "/");
             await getChildrenAndSubChildren(subpathsResponse, spaceName, "", childSubpaths);
-            subpaths = subpathsResponse.map(record => ({
-                name: record,
-                value: record
-            }));
+            subpaths = subpathsResponse.map((record) => ({ name: record, value: record }));
         } catch (error) {
             console.error("Failed to load subpaths:", error);
             subpaths = [];
         } finally {
-            subpaths.unshift({
-                name: '__all_subpaths__',
-                value: '__all_subpaths__'
-            });
-            subpaths.unshift({
-                name: '/',
-                value: '/'
-            });
+            subpaths.unshift({ name: "__all_subpaths__", value: "__all_subpaths__" });
+            subpaths.unshift({ name: "/", value: "/" });
             loadingSubpaths = false;
         }
     }
@@ -162,62 +146,47 @@
         }
 
         if (!formData.subpaths[selectedSpace].includes(selectedSubpath)) {
-            formData.subpaths[selectedSpace] = [
-                ...formData.subpaths[selectedSpace],
-                selectedSubpath
-            ];
+            formData.subpaths[selectedSpace] = [...formData.subpaths[selectedSpace], selectedSubpath];
         }
 
-        selectedSubpath = '';
+        selectedSubpath = "";
     }
 
-    function removeSubpath(space, subpath) {
-        formData.subpaths[space] = formData.subpaths[space].filter(p => p !== subpath);
+    function removeSubpath(space: string, subpath: string) {
+        formData.subpaths[space] = formData.subpaths[space].filter((p: string) => p !== subpath);
 
         // Remove the space key if no subpaths remain
         if (formData.subpaths[space].length === 0) {
-            const { [space]: _, ...rest } = formData.subpaths;
+            const { [space]: _removed, ...rest } = formData.subpaths;
             formData.subpaths = rest;
         }
     }
 
-    function removeRestrictedField(item) {
-        formData.restricted_fields = formData.restricted_fields.filter(i => i !== item);
+    // ── Allowed fields values: a JSON text box kept in sync while it parses ─
+    let jsonEditorContent = $state("");
+    try {
+        jsonEditorContent = JSON.stringify(formData.allowed_fields_values, null, 2);
+    } catch {
+        jsonEditorContent = "{}";
     }
 
-    let jsonEditorContent = $state('');
-
-    function updateJsonEditor() {
+    const jsonError = $derived.by(() => {
         try {
-            jsonEditorContent = JSON.stringify(formData.allowed_fields_values, null, 2);
-        } catch (e) {
-            jsonEditorContent = '{}';
+            JSON.parse(jsonEditorContent);
+            return null;
+        } catch {
+            return $_("invalid_json");
         }
-    }
-
-    function saveJsonEditor() {
-        try {
-            if (formData) formData.allowed_fields_values = JSON.parse(jsonEditorContent);
-        } catch (e) {
-            alert('Invalid JSON format');
-        }
-    }
-
-    updateJsonEditor();
+    });
 
     function validate() {
-        try {
-            if (formData) formData.allowed_fields_values = JSON.parse(jsonEditorContent);
-        } catch (e) {
-            showToast(Level.warn, 'Invalid JSON format in Allowed Fields Values', 'Please correct the JSON syntax.');
+        if (jsonError) {
+            return false;
         }
-
         const isValid = form.checkValidity();
-
         if (!isValid) {
-            form.reportValidity()
+            form.reportValidity();
         }
-
         return isValid;
     }
 
@@ -225,13 +194,10 @@
         validateFn = validate;
     });
 
-    // Keep formData in sync with the JSON editor on every edit so the value is
-    // committed without requiring the "Apply Changes" click. The entry edit
-    // page's Save flow snapshots formData directly and cannot safely invoke
-    // this sub-form's validate() (the form may be unmounted, leaving a stale
-    // closure over an undefined formData). Invalid JSON is left uncommitted
-    // until corrected; the guard protects the brief windows where the bound
-    // prop is not yet/no longer available.
+    // Commit the JSON on every edit that parses, so the value is saved without
+    // an extra "apply" click. The entry edit page's Save flow snapshots formData
+    // directly and cannot safely invoke this sub-form's validate() (the form
+    // may be unmounted). Invalid JSON is left uncommitted until corrected.
     $effect(() => {
         if (readOnly || !formData) return;
         try {
@@ -247,295 +213,231 @@
         }
     });
 
-    let subpathEntries: any = $derived(Object.entries(formData.subpaths));
+    const subpathEntries: [string, string[]][] = $derived(Object.entries(formData.subpaths));
+
+    const chip = "inline-flex items-center gap-1 rounded-full ps-3 pe-1 py-0.5 text-sm";
+    const emptyBox = "mt-2 p-3 rounded-card border border-dashed border-border text-center text-sm text-text-muted";
 </script>
 
-<Card class="w-full max-w-4xl mx-auto p-4  my-2">
-    <h2 class="text-2xl font-bold mb-4">Permission Settings</h2>
+<div class="w-full max-w-4xl mx-auto rounded-card border border-border bg-surface-2 shadow-card p-4 sm:p-5 my-2">
+    <h2 class="text-lg font-semibold text-text mb-4">{$_("permission_settings")}</h2>
 
-    <form bind:this={form} class="space-y-4">
-        <div class="mb-4">
-            <Label class="mb-2">
-                Resource Types
-            </Label>
+    <form bind:this={form} class="space-y-5" onsubmit={(e) => e.preventDefault()}>
+        <div>
+            <Label for="{uid}-resource-type" class="mb-1.5">{$_("resource_types")}</Label>
             {#if !readOnly}
-                <div class="flex space-x-2">
-                    <Select
-                            class="flex-grow"
-                            placeholder="Select resource type"
-                            items={resourceTypeOptions}
-                            bind:value={selectedResourceType} />
-                    <Button class="bg-primary" size="sm" onclick={addResourceType}>
-                        <PlusOutline size="md" />
-                    </Button>
+                <div class="flex gap-2">
+                    <Select id="{uid}-resource-type" class="grow" placeholder={$_("select_resource_type")} items={resourceTypeOptions} bind:value={selectedResourceType} />
+                    <IconButton label={$_("add")} variant="outline" onclick={addResourceType} disabled={!selectedResourceType}>
+                        <PlusOutline size="sm" />
+                    </IconButton>
                 </div>
             {/if}
 
             {#if formData.resource_types.length > 0}
-                <div class="mt-2 flex flex-wrap gap-2">
-                    {#each formData.resource_types as item}
-                        <div class="bg-blue-100 text-blue-800 px-3 py-1 rounded-full flex items-center">
+                <ul class="mt-2 flex flex-wrap gap-2" aria-label={$_("resource_types")}>
+                    {#each formData.resource_types as item (item)}
+                        <li class="{chip} bg-primary-soft text-primary {readOnly ? 'pe-3' : ''}">
                             <span>{item}</span>
                             {#if !readOnly}
-                                <button class="ml-2 text-blue-600" type="button" onclick={() => removeResourceType(item)}>
-                                    ×
-                                </button>
+                                <IconButton size="sm" label={$_("remove_item", { values: { name: item } })} class="text-primary hover:bg-primary/10" onclick={() => removeResourceType(item)}>
+                                    <CloseOutline size="xs" />
+                                </IconButton>
                             {/if}
-                        </div>
+                        </li>
                     {/each}
-                </div>
+                </ul>
             {:else}
-                <div class="mt-2 p-2 border border-dashed rounded-lg text-center text-gray-500">
-                    No resource types added
-                </div>
+                <p class={emptyBox}>{$_("no_resource_types_added")}</p>
             {/if}
         </div>
 
-        <div class="mb-4">
-            <Label class="mb-2">
-                Actions
-            </Label>
+        <div>
+            <Label for="{uid}-action" class="mb-1.5">{$_("actions")}</Label>
             {#if !readOnly}
-                <div class="flex space-x-2">
-                    <Select
-                            class="flex-grow"
-                            placeholder="Select action"
-                            items={requestTypeOptions}
-                            bind:value={selectedAction} />
-                    <Button class="bg-primary" size="sm" onclick={addAction}>
-                        <PlusOutline size="md" />
-                    </Button>
+                <div class="flex gap-2">
+                    <Select id="{uid}-action" class="grow" placeholder={$_("select_action")} items={requestTypeOptions} bind:value={selectedAction} />
+                    <IconButton label={$_("add")} variant="outline" onclick={addAction} disabled={!selectedAction}>
+                        <PlusOutline size="sm" />
+                    </IconButton>
                 </div>
             {/if}
 
             {#if formData.actions.length > 0}
-                <div class="mt-2 flex flex-wrap gap-2">
-                    {#each formData.actions as item}
-                        <div class="bg-green-100 text-green-800 px-3 py-1 rounded-full flex items-center">
+                <ul class="mt-2 flex flex-wrap gap-2" aria-label={$_("actions")}>
+                    {#each formData.actions as item (item)}
+                        <li class="{chip} bg-success-soft text-success {readOnly ? 'pe-3' : ''}">
                             <span>{item}</span>
                             {#if !readOnly}
-                                <button class="ml-2 text-green-600" type="button" onclick={() => removeAction(item)}>
-                                    ×
-                                </button>
+                                <IconButton size="sm" label={$_("remove_item", { values: { name: item } })} class="text-success hover:bg-success/10" onclick={() => removeAction(item)}>
+                                    <CloseOutline size="xs" />
+                                </IconButton>
                             {/if}
-                        </div>
+                        </li>
                     {/each}
-                </div>
+                </ul>
             {:else}
-                <div class="mt-2 p-2 border border-dashed rounded-lg text-center text-gray-500">
-                    No actions added
-                </div>
+                <p class={emptyBox}>{$_("no_actions_added")}</p>
             {/if}
         </div>
 
-        <Accordion>
+        <Accordion flush>
             <AccordionItem>
-                {#snippet header()}
-        <span>
-            Subpaths
-        </span>
-                {/snippet}
-                <div class="p-4 space-y-4">
+                {#snippet header()}<span>{$_("subpaths")}</span>{/snippet}
+                <div class="py-2 space-y-4">
                     {#if !readOnly}
-                        <div class="mb-4">
-                            <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
-                                <div>
-                                    <Label class="mb-2">Space</Label>
-                                    {#if loadingSpaces}
-                                        <div class="flex items-center gap-2">
-                                            <Spinner size="4" />
-                                            <span class="text-gray-500">Loading spaces...</span>
-                                        </div>
-                                    {:else}
-                                        <Select
-                                                class="flex-grow"
-                                                placeholder="Select space"
-                                                items={spaces}
-                                                bind:value={selectedSpace}
-                                        />
-                                    {/if}
-                                </div>
+                        <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
+                            <div>
+                                <Label for="{uid}-space" class="mb-1.5">{$_("space")}</Label>
+                                {#if loadingSpaces}
+                                    <LoadingState variant="skeleton" rows={1} />
+                                {:else}
+                                    <Select id="{uid}-space" placeholder={$_("select_space")} items={spaces} bind:value={selectedSpace} />
+                                {/if}
+                            </div>
 
-                                <div>
-                                    <Label class="mb-2">Subpath</Label>
-                                    {#if loadingSubpaths}
-                                        <div class="flex items-center gap-2">
-                                            <Spinner size="4" />
-                                            <span class="text-gray-500">Loading subpaths...</span>
-                                        </div>
-                                    {:else}
-                                        <div class="flex space-x-2">
-                                            <Select
-                                                    class="flex-grow"
-                                                    placeholder="Select subpath"
-                                                    items={subpaths}
-                                                    bind:value={selectedSubpath}
-                                                    disabled={!selectedSpace}
-                                            />
-                                            <Button class="bg-primary" size="sm" onclick={addSubpathToSpace} disabled={!selectedSpace || !selectedSubpath}>
-                                                <PlusOutline size="md" />
-                                            </Button>
-                                        </div>
-                                    {/if}
-                                </div>
+                            <div>
+                                <Label for="{uid}-subpath" class="mb-1.5">{$_("subpath")}</Label>
+                                {#if loadingSubpaths}
+                                    <LoadingState variant="skeleton" rows={1} />
+                                {:else}
+                                    <div class="flex gap-2">
+                                        <Select id="{uid}-subpath" class="grow" placeholder={$_("select_subpath")} items={subpaths} bind:value={selectedSubpath} disabled={!selectedSpace} />
+                                        <IconButton label={$_("add")} variant="outline" onclick={addSubpathToSpace} disabled={!selectedSpace || !selectedSubpath}>
+                                            <PlusOutline size="sm" />
+                                        </IconButton>
+                                    </div>
+                                {/if}
                             </div>
                         </div>
                     {/if}
-                    {#if Object.keys(formData.subpaths).length > 0}
-                        <div class="mt-4 border rounded-lg p-4 bg-gray-50">
-                            {#each subpathEntries as [space, paths]}
-                                <div class="mb-4">
-                                    <div class="font-medium text-gray-700 mb-2">{space}</div>
-                                    <div class="flex flex-wrap gap-2">
-                                        {#each paths as path}
-                                            <div class="bg-purple-100 text-purple-800 px-3 py-1 rounded-full flex items-center">
-                                                <span>{path}</span>
+                    {#if subpathEntries.length > 0}
+                        <div class="rounded-card border border-border bg-surface p-4 space-y-4">
+                            {#each subpathEntries as [space, paths] (space)}
+                                <div>
+                                    <p class="font-medium text-text mb-2">{space}</p>
+                                    <ul class="flex flex-wrap gap-2" aria-label={space}>
+                                        {#each paths as path (path)}
+                                            <li class="{chip} bg-info-soft text-info {readOnly ? 'pe-3' : ''}">
+                                                <span class="font-mono text-xs">{path}</span>
                                                 {#if !readOnly}
-                                                    <button
-                                                            class="ml-2 text-purple-600 hover:text-purple-800"
-                                                            type="button"
-                                                            onclick={() => removeSubpath(space, path)}
-                                                    >
-                                                        ×
-                                                    </button>
+                                                    <IconButton size="sm" label={$_("remove_item", { values: { name: path } })} class="text-info hover:bg-info/10" onclick={() => removeSubpath(space, path)}>
+                                                        <CloseOutline size="xs" />
+                                                    </IconButton>
                                                 {/if}
-                                            </div>
+                                            </li>
                                         {/each}
-                                    </div>
+                                    </ul>
                                 </div>
                             {/each}
                         </div>
                     {:else}
-                        <div class="mt-2 p-4 border border-dashed rounded-lg text-center text-gray-500">
-                            No spaces or subpaths added
-                        </div>
+                        <p class={emptyBox}>{$_("no_subpaths_added")}</p>
                     {/if}
                 </div>
             </AccordionItem>
 
             <AccordionItem>
-                {#snippet header()}<span>Conditions</span>{/snippet}
-                <div class="p-4 space-y-4">
-                    <div class="mb-4">
-                        {#if !readOnly}
-                            <div class="flex space-x-2">
-                                <Select
-                                        class="flex-grow"
-                                        placeholder="Select condition"
-                                        items={[
-                                            { name: "own", value: "own" },
-                                            { name: "is_active", value: "is_active" }
-                                        ]}
-                                        bind:value={newCondition} />
-                                <Button class="bg-primary" size="sm" onclick={addCondition}>
-                                    <PlusOutline size="md" />
-                                </Button>
-                            </div>
-                        {/if}
-
-                        {#if formData.conditions.length > 0}
-                            <div class="mt-2 flex flex-wrap gap-2">
-                                {#each formData.conditions as item}
-                                    <div class="bg-yellow-100 text-yellow-800 px-3 py-1 rounded-full flex items-center">
-                                        <span>{item}</span>
-                                        {#if !readOnly}
-                                            <button class="ml-2 text-yellow-600" type="button" onclick={() => removeCondition(item)}>
-                                                ×
-                                            </button>
-                                        {/if}
-                                    </div>
-                                {/each}
-                            </div>
-                        {:else}
-                            <div class="mt-2 p-2 border border-dashed rounded-lg text-center text-gray-500">
-                                No conditions added
-                            </div>
-                        {/if}
-                    </div>
-                </div>
-            </AccordionItem>
-
-            <AccordionItem>
-                {#snippet header()}
-                    <span>
-                        Restricted Fields
-                    </span>
-                {/snippet}
-                <div class="p-4 space-y-4">
-                    <div class="mb-4">
-                        {#if !readOnly}
-                            <div class="flex space-x-2">
-                                <Input placeholder="Add restricted field" bind:value={newRestrictedField} />
-                                <Button class="bg-primary" size="sm" onclick={addRestrictedField}>
-                                    <PlusOutline size="md" />
-                                </Button>
-                            </div>
-                        {/if}
-
-                        {#if formData.restricted_fields.length > 0}
-                            <div class="mt-2 flex flex-wrap gap-2">
-                                {#each formData.restricted_fields as item}
-                                    <div class="bg-red-100 text-red-800 px-3 py-1 rounded-full flex items-center">
-                                        <span>{item}</span>
-                                        {#if !readOnly}
-                                            <button class="ml-2 text-red-600" type="button" onclick={() => removeRestrictedField(item)}>
-                                                ×
-                                            </button>
-                                        {/if}
-                                    </div>
-                                {/each}
-                            </div>
-                        {:else}
-                            <div class="mt-2 p-2 border border-dashed rounded-lg text-center text-gray-500">
-                                No restricted fields added
-                            </div>
-                        {/if}
-                    </div>
-                </div>
-            </AccordionItem>
-
-            <AccordionItem>
-                {#snippet header()}
-                    <span>
-                        Allowed Fields Values
-                    </span>
-                {/snippet}
-                <div class="p-4 space-y-4">
-                    <div class="mb-4">
-                        <Label>JSON Editor</Label>
-                        <Helper class="mb-2">Edit the JSON object directly</Helper>
-                        <div class="flex flex-col">
-                            <Textarea
-                                    rows={10}
-                                    class="font-mono"
-                                    bind:value={jsonEditorContent}
+                {#snippet header()}<span>{$_("conditions")}</span>{/snippet}
+                <div class="py-2">
+                    {#if !readOnly}
+                        <div class="flex gap-2">
+                            <Select
+                                id="{uid}-condition"
+                                class="grow"
+                                placeholder={$_("select_condition")}
+                                items={[
+                                    { name: "own", value: "own" },
+                                    { name: "is_active", value: "is_active" },
+                                ]}
+                                bind:value={newCondition}
+                                aria-label={$_("conditions")}
                             />
-                            <div class="flex justify-end mt-2">
-                                <Button size="sm" onclick={saveJsonEditor}>Apply Changes</Button>
-                            </div>
+                            <IconButton label={$_("add")} variant="outline" onclick={addCondition} disabled={!newCondition}>
+                                <PlusOutline size="sm" />
+                            </IconButton>
                         </div>
-                    </div>
+                    {/if}
+
+                    {#if formData.conditions.length > 0}
+                        <ul class="mt-2 flex flex-wrap gap-2" aria-label={$_("conditions")}>
+                            {#each formData.conditions as item (item)}
+                                <li class="{chip} bg-warning-soft text-warning {readOnly ? 'pe-3' : ''}">
+                                    <span>{item}</span>
+                                    {#if !readOnly}
+                                        <IconButton size="sm" label={$_("remove_item", { values: { name: item } })} class="text-warning hover:bg-warning/10" onclick={() => removeCondition(item)}>
+                                            <CloseOutline size="xs" />
+                                        </IconButton>
+                                    {/if}
+                                </li>
+                            {/each}
+                        </ul>
+                    {:else}
+                        <p class={emptyBox}>{$_("no_conditions_added")}</p>
+                    {/if}
                 </div>
             </AccordionItem>
 
             <AccordionItem>
-                {#snippet header()}
-                    <span>
-                        Filter Fields Values
-                    </span>
-                {/snippet}
-                <div class="p-4 space-y-4">
-                    <div class="mb-4">
-                        <Label>Filter Fields Values</Label>
-                        <Helper class="mb-2">Optional string to filter field values</Helper>
-                        <Input
-                            placeholder="Enter filter fields values"
-                            bind:value={formData.filter_fields_values}
-                            disabled={readOnly}
-                        />
-                    </div>
+                {#snippet header()}<span>{$_("restricted_fields")}</span>{/snippet}
+                <div class="py-2">
+                    {#if !readOnly}
+                        <div class="flex gap-2">
+                            <Input id="{uid}-restricted" class="grow" placeholder={$_("add_restricted_field")} bind:value={newRestrictedField} aria-label={$_("restricted_fields")} />
+                            <IconButton label={$_("add")} variant="outline" onclick={addRestrictedField} disabled={!newRestrictedField}>
+                                <PlusOutline size="sm" />
+                            </IconButton>
+                        </div>
+                    {/if}
+
+                    {#if formData.restricted_fields.length > 0}
+                        <ul class="mt-2 flex flex-wrap gap-2" aria-label={$_("restricted_fields")}>
+                            {#each formData.restricted_fields as item (item)}
+                                <li class="{chip} bg-danger-soft text-danger {readOnly ? 'pe-3' : ''}">
+                                    <span>{item}</span>
+                                    {#if !readOnly}
+                                        <IconButton size="sm" label={$_("remove_item", { values: { name: item } })} class="text-danger hover:bg-danger/10" onclick={() => removeRestrictedField(item)}>
+                                            <CloseOutline size="xs" />
+                                        </IconButton>
+                                    {/if}
+                                </li>
+                            {/each}
+                        </ul>
+                    {:else}
+                        <p class={emptyBox}>{$_("no_restricted_fields_added")}</p>
+                    {/if}
+                </div>
+            </AccordionItem>
+
+            <AccordionItem>
+                {#snippet header()}<span>{$_("allowed_fields_values")}</span>{/snippet}
+                <div class="py-2">
+                    <Label for="{uid}-allowed-json" class="mb-1.5">{$_("allowed_fields_values")}</Label>
+                    <p class="mb-2 text-xs text-text-muted">{$_("allowed_fields_values_help")}</p>
+                    <Textarea
+                        id="{uid}-allowed-json"
+                        rows={10}
+                        class="font-mono text-sm"
+                        dir="ltr"
+                        bind:value={jsonEditorContent}
+                        disabled={readOnly}
+                        aria-invalid={!!jsonError}
+                        aria-describedby={jsonError ? `${uid}-allowed-json-error` : undefined}
+                    />
+                    {#if jsonError}
+                        <p id="{uid}-allowed-json-error" class="mt-1 text-sm text-danger" role="alert">{jsonError}</p>
+                    {/if}
+                </div>
+            </AccordionItem>
+
+            <AccordionItem>
+                {#snippet header()}<span>{$_("filter_fields_values")}</span>{/snippet}
+                <div class="py-2">
+                    <Label for="{uid}-filter" class="mb-1.5">{$_("filter_fields_values")}</Label>
+                    <p class="mb-2 text-xs text-text-muted">{$_("filter_fields_values_help")}</p>
+                    <Input id="{uid}-filter" placeholder={$_("filter_fields_values")} bind:value={formData.filter_fields_values} disabled={readOnly} />
                 </div>
             </AccordionItem>
         </Accordion>
     </form>
-</Card>
+</div>

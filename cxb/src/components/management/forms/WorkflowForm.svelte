@@ -1,14 +1,9 @@
 <script lang="ts">
-    import {
-        Accordion,
-        AccordionItem,
-        Button,
-        Card,
-        Input,
-        Label,
-    } from "flowbite-svelte";
+    import { Accordion, AccordionItem, Button, Input, Label } from "flowbite-svelte";
     import { PlusOutline, TrashBinOutline } from "flowbite-svelte-icons";
-    import RoleSelector from "./RoleSelector.svelte";
+    import IconButton from "@/components/ui/IconButton.svelte";
+    import ShortnamePicker from "./ShortnamePicker.svelte";
+    import { _ } from "@/i18n";
 
     let {
         content = $bindable({}),
@@ -16,15 +11,17 @@
         content: any;
     } = $props();
 
+    const uid = $props.id();
+
     content = {
         name: content.name || "",
-        states: (content.states || []).map((state) => ({
+        states: (content.states || []).map((state: any) => ({
             ...state,
-            next: (state.next || []).map((t) => ({ ...t, roles: t.roles || [] })),
+            next: (state.next || []).map((t: any) => ({ ...t, roles: t.roles || [] })),
             resolutions: state.resolutions || [],
         })),
         illustration: content.illustration || "",
-        initial_state: (content.initial_state || []).map((is) => ({
+        initial_state: (content.initial_state || []).map((is: any) => ({
             ...is,
             roles: is.roles || [],
         })),
@@ -45,331 +42,188 @@
         ];
     }
 
-    function removeState(event, index: number) {
-        event.stopPropagation();
-        content.states = content.states.filter((_, i) => i !== index);
+    function removeState(index: number) {
+        content.states = content.states.filter((_: unknown, i: number) => i !== index);
     }
 
     function addNextTransition(stateIndex: number) {
-        content.states[stateIndex].next = [
-            ...content.states[stateIndex].next,
-            { roles: [], state: "", action: "" },
-        ];
+        content.states[stateIndex].next = [...content.states[stateIndex].next, { roles: [], state: "", action: "" }];
     }
 
     function removeNextTransition(stateIndex: number, transitionIndex: number) {
-        content.states[stateIndex].next = content.states[
-            stateIndex
-        ].next.filter((_, i) => i !== transitionIndex);
+        content.states[stateIndex].next = content.states[stateIndex].next.filter((_: unknown, i: number) => i !== transitionIndex);
     }
 
     function addResolution(stateIndex: number) {
-        content.states[stateIndex].resolutions = [
-            ...content.states[stateIndex].resolutions,
-            { ar: "", en: "", ku: "", key: "" },
-        ];
+        content.states[stateIndex].resolutions = [...content.states[stateIndex].resolutions, { ar: "", en: "", ku: "", key: "" }];
     }
 
     function removeResolution(stateIndex: number, resolutionIndex: number) {
-        content.states[stateIndex].resolutions = content.states[
-            stateIndex
-        ].resolutions.filter((_, i) => i !== resolutionIndex);
+        content.states[stateIndex].resolutions = content.states[stateIndex].resolutions.filter(
+            (_: unknown, i: number) => i !== resolutionIndex,
+        );
     }
 
     function addInitialState() {
         if (content.initial_state === undefined) {
             content.initial_state = [];
         }
-        content.initial_state = [
-            ...content.initial_state,
-            { name: "", roles: [] },
-        ];
+        content.initial_state = [...content.initial_state, { name: "", roles: [] }];
     }
 
     function removeInitialState(index: number) {
-        content.initial_state = content.initial_state.filter(
-            (_, i) => i !== index,
-        );
+        content.initial_state = content.initial_state.filter((_: unknown, i: number) => i !== index);
     }
+
+    const card = "rounded-card border border-border bg-surface-2 shadow-card p-4";
+    const inner = "rounded-card border border-border bg-surface p-3 space-y-3";
 </script>
 
-<Card class="p-4 max-w-4xl mx-auto my-2">
-    <h1 class="text-2xl font-bold mb-4">Workflow Form</h1>
+<div class="w-full max-w-4xl mx-auto {card} sm:p-5 my-2 space-y-6">
+    <h2 class="text-lg font-semibold text-text">{$_("workflow_form")}</h2>
 
-    <div>
-        <Label for="workflowName" class="mb-2">Workflow Name</Label>
-        <Input
-            id="workflowName"
-            bind:value={content.name}
-            placeholder="Enter workflow name"
-            required
-        />
+    <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
+        <div>
+            <Label for="{uid}-workflowName" class="mb-1.5">{$_("workflow_name")}</Label>
+            <Input id="{uid}-workflowName" bind:value={content.name} placeholder={$_("workflow_name")} required />
+        </div>
+
+        <div>
+            <Label for="{uid}-illustration" class="mb-1.5">{$_("illustration")}</Label>
+            <Input id="{uid}-illustration" bind:value={content.illustration} placeholder={$_("illustration_help")} />
+        </div>
     </div>
 
-    <div>
-        <Label for="illustration" class="mb-2">Illustration</Label>
-        <Input
-            id="illustration"
-            bind:value={content.illustration}
-            placeholder="Enter illustration name or path"
-        />
-    </div>
+    <section class="rounded-card border border-border p-4 space-y-4">
+        <h3 class="text-base font-semibold text-text">{$_("initial_states")}</h3>
+        {#each content.initial_state as initialState, index (index)}
+            <div class={inner}>
+                <div class="flex justify-between items-center gap-2">
+                    <h4 class="font-medium text-text">{$_("initial_state_n", { values: { n: index + 1 } })}</h4>
+                    <IconButton size="sm" variant="danger" label={$_("remove_item", { values: { name: initialState.name || String(index + 1) } })} onclick={() => removeInitialState(index)}>
+                        <TrashBinOutline size="sm" />
+                    </IconButton>
+                </div>
 
-    <Card class="p-4 max-w-4xl mx-auto">
-        <h3 class="text-xl font-semibold mb-2">Initial States</h3>
-        <div class="space-y-4">
-            {#each content.initial_state as initialState, index}
-                <Card class="p-4 w-full">
-                    <div class="flex justify-between items-center mb-2">
-                        <h4 class="text-lg font-medium">
-                            Initial State {index + 1}
-                        </h4>
-                        <Button
-                            class="cursor-pointer text-red-500"
-                            outline
-                            size="xs"
-                            onclick={() => removeInitialState(index)}
-                        >
-                            <TrashBinOutline class="mr-1" />Remove
-                        </Button>
+                <div>
+                    <Label for="{uid}-initialState{index}Name" class="mb-1.5">{$_("name")}</Label>
+                    <Input id="{uid}-initialState{index}Name" bind:value={initialState.name} placeholder={$_("initial_state_name")} />
+                </div>
+
+                <ShortnamePicker bind:selected={initialState.roles} subpath="/roles" label={$_("roles")} />
+            </div>
+        {/each}
+
+        <Button size="sm" color="alternative" onclick={addInitialState}>
+            <PlusOutline size="sm" class="me-1.5" aria-hidden="true" />
+            {$_("add_initial_state")}
+        </Button>
+    </section>
+
+    <section class="rounded-card border border-border p-4 space-y-4">
+        <h3 class="text-base font-semibold text-text">{$_("states")}</h3>
+        {#each content.states as state, stateIndex (stateIndex)}
+            <Accordion flush>
+                <AccordionItem>
+                    {#snippet header()}
+                        <span>{state.name || $_("state_n", { values: { n: stateIndex + 1 } })}</span>
+                    {/snippet}
+
+                    <div class="py-2 space-y-4">
+                        <!-- Remove lives in the panel, not inside the accordion's own button. -->
+                        <div class="flex justify-end">
+                            <Button size="xs" color="red" outline onclick={() => removeState(stateIndex)}>
+                                <TrashBinOutline size="xs" class="me-1" aria-hidden="true" />
+                                {$_("remove_state")}
+                            </Button>
+                        </div>
+
+                        <div class="grid grid-cols-1 sm:grid-cols-2 gap-4">
+                            <div>
+                                <Label for="{uid}-state{stateIndex}Name" class="mb-1.5">{$_("name")}</Label>
+                                <Input id="{uid}-state{stateIndex}Name" bind:value={state.name} placeholder={$_("state_name_help")} />
+                            </div>
+                            <div>
+                                <Label for="{uid}-state{stateIndex}Id" class="mb-1.5">{$_("state_id")}</Label>
+                                <Input id="{uid}-state{stateIndex}Id" bind:value={state.state} placeholder={$_("state_id_help")} dir="ltr" />
+                            </div>
+                        </div>
+
+                        <div class="space-y-3">
+                            <h4 class="font-medium text-text">{$_("next_transitions")}</h4>
+                            {#each state.next as transition, transitionIndex (transitionIndex)}
+                                <div class={inner}>
+                                    <div class="flex justify-between items-center gap-2">
+                                        <h5 class="font-medium text-text">{$_("transition_n", { values: { n: transitionIndex + 1 } })}</h5>
+                                        <IconButton size="sm" variant="danger" label={$_("remove_item", { values: { name: String(transitionIndex + 1) } })} onclick={() => removeNextTransition(stateIndex, transitionIndex)}>
+                                            <TrashBinOutline size="sm" />
+                                        </IconButton>
+                                    </div>
+
+                                    <div class="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                                        <div>
+                                            <Label for="{uid}-s{stateIndex}-t{transitionIndex}-state" class="mb-1.5">{$_("next_state")}</Label>
+                                            <Input id="{uid}-s{stateIndex}-t{transitionIndex}-state" bind:value={transition.state} placeholder={$_("state_id_help")} dir="ltr" />
+                                        </div>
+                                        <div>
+                                            <Label for="{uid}-s{stateIndex}-t{transitionIndex}-action" class="mb-1.5">{$_("action")}</Label>
+                                            <Input id="{uid}-s{stateIndex}-t{transitionIndex}-action" bind:value={transition.action} placeholder={$_("action_name")} dir="ltr" />
+                                        </div>
+                                    </div>
+
+                                    <ShortnamePicker bind:selected={transition.roles} subpath="/roles" label={$_("roles")} />
+                                </div>
+                            {/each}
+                            <Button size="sm" color="alternative" onclick={() => addNextTransition(stateIndex)}>
+                                <PlusOutline size="sm" class="me-1.5" aria-hidden="true" />
+                                {$_("add_transition")}
+                            </Button>
+                        </div>
+
+                        <div class="space-y-3">
+                            <h4 class="font-medium text-text">{$_("resolutions")}</h4>
+                            {#each state.resolutions as resolution, resolutionIndex (resolutionIndex)}
+                                <div class={inner}>
+                                    <div class="flex justify-between items-center gap-2">
+                                        <h5 class="font-medium text-text">{$_("resolution_n", { values: { n: resolutionIndex + 1 } })}</h5>
+                                        <IconButton size="sm" variant="danger" label={$_("remove_item", { values: { name: resolution.key || String(resolutionIndex + 1) } })} onclick={() => removeResolution(stateIndex, resolutionIndex)}>
+                                            <TrashBinOutline size="sm" />
+                                        </IconButton>
+                                    </div>
+
+                                    <div class="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                                        <div>
+                                            <Label for="{uid}-s{stateIndex}-r{resolutionIndex}-key" class="mb-1.5">{$_("key")}</Label>
+                                            <Input id="{uid}-s{stateIndex}-r{resolutionIndex}-key" bind:value={resolution.key} placeholder={$_("resolution_key")} dir="ltr" />
+                                        </div>
+                                        <div>
+                                            <Label for="{uid}-s{stateIndex}-r{resolutionIndex}-en" class="mb-1.5">{$_("english")}</Label>
+                                            <Input id="{uid}-s{stateIndex}-r{resolutionIndex}-en" bind:value={resolution.en} />
+                                        </div>
+                                        <div>
+                                            <Label for="{uid}-s{stateIndex}-r{resolutionIndex}-ar" class="mb-1.5">{$_("arabic")}</Label>
+                                            <Input id="{uid}-s{stateIndex}-r{resolutionIndex}-ar" bind:value={resolution.ar} dir="auto" />
+                                        </div>
+                                        <div>
+                                            <Label for="{uid}-s{stateIndex}-r{resolutionIndex}-ku" class="mb-1.5">{$_("kurdish")}</Label>
+                                            <Input id="{uid}-s{stateIndex}-r{resolutionIndex}-ku" bind:value={resolution.ku} dir="auto" />
+                                        </div>
+                                    </div>
+                                </div>
+                            {/each}
+                            <Button size="sm" color="alternative" onclick={() => addResolution(stateIndex)}>
+                                <PlusOutline size="sm" class="me-1.5" aria-hidden="true" />
+                                {$_("add_resolution")}
+                            </Button>
+                        </div>
                     </div>
+                </AccordionItem>
+            </Accordion>
+        {/each}
 
-                    <div class="space-y-3">
-                        <div>
-                            <Label for={`initialState${index}Name`}>Name</Label>
-                            <Input
-                                id={`initialState${index}Name`}
-                                bind:value={initialState.name}
-                                placeholder="Initial state name"
-                            />
-                        </div>
-
-                        <div>
-                            <RoleSelector
-                                bind:selectedRoles={initialState.roles}
-                            />
-                        </div>
-                    </div>
-                </Card>
-            {/each}
-
-            <Button
-                onclick={addInitialState}
-                class="cursor-pointer mt-2 text-primary"
-                outline
-            >
-                <PlusOutline class="mr-1" />Add Initial State
-            </Button>
-        </div>
-    </Card>
-
-    <Card class="p-4 max-w-4xl mx-auto">
-        <h3 class="text-xl font-semibold mb-2">States</h3>
-        <div class="space-y-4">
-            {#each content.states as state, stateIndex}
-                <Accordion>
-                    <AccordionItem>
-                        {#snippet header()}
-                            <span
-                                class="flex justify-between items-center w-full"
-                            >
-                                <span
-                                    >{state.name ||
-                                        `State ${stateIndex + 1}`}</span
-                                >
-                                <Button
-                                    class="cursor-pointer text-red-500 hover:text-red-500 "
-                                    size="xs"
-                                    onclick={(e) => removeState(e, stateIndex)}
-                                >
-                                    <TrashBinOutline />
-                                </Button>
-                            </span>
-                        {/snippet}
-
-                        <div class="p-2 space-y-4">
-                            <div class="grid grid-cols-2 gap-4">
-                                <div>
-                                    <Label for={`state${stateIndex}Name`}
-                                        >Name</Label
-                                    >
-                                    <Input
-                                        id={`state${stateIndex}Name`}
-                                        bind:value={state.name}
-                                        placeholder="Human-readable state name"
-                                    />
-                                </div>
-                                <div>
-                                    <Label for={`state${stateIndex}Id`}
-                                        >State ID</Label
-                                    >
-                                    <Input
-                                        id={`state${stateIndex}Id`}
-                                        bind:value={state.state}
-                                        placeholder="Internal state identifier"
-                                    />
-                                </div>
-                            </div>
-
-                            <!-- Next Transitions -->
-                            <div class="mt-4">
-                                <Label class="text-lg">Next Transitions</Label>
-                                <div class="space-y-3">
-                                    {#each state.next as transition, transitionIndex}
-                                        <Card class="p-3">
-                                            <div
-                                                class="flex justify-between items-center mb-2"
-                                            >
-                                                <h5 class="font-medium">
-                                                    Transition {transitionIndex +
-                                                        1}
-                                                </h5>
-                                                <Button
-                                                    class="cursor-pointer text-red-500 hover:text-red-500"
-                                                    size="xs"
-                                                    onclick={() =>
-                                                        removeNextTransition(
-                                                            stateIndex,
-                                                            transitionIndex,
-                                                        )}
-                                                >
-                                                    <TrashBinOutline />
-                                                </Button>
-                                            </div>
-
-                                            <div class="grid grid-cols-2 gap-3">
-                                                <div>
-                                                    <Label>Next State</Label>
-                                                    <Input
-                                                        bind:value={
-                                                            transition.state
-                                                        }
-                                                        placeholder="Next state identifier"
-                                                    />
-                                                </div>
-                                                <div>
-                                                    <Label>Action</Label>
-                                                    <Input
-                                                        bind:value={
-                                                            transition.action
-                                                        }
-                                                        placeholder="Action name"
-                                                    />
-                                                </div>
-                                            </div>
-
-                                            <div class="mt-2">
-                                                <RoleSelector
-                                                    bind:selectedRoles={
-                                                        transition.roles
-                                                    }
-                                                />
-                                            </div>
-                                        </Card>
-                                    {/each}
-                                    <Button
-                                        class="cursor-pointer text-primary hover:text-primar"
-                                        outline
-                                        size="sm"
-                                        onclick={() =>
-                                            addNextTransition(stateIndex)}
-                                    >
-                                        <PlusOutline class="mr-1" />Add
-                                        Transition
-                                    </Button>
-                                </div>
-                            </div>
-
-                            <!-- Resolutions -->
-                            <div class="mt-4">
-                                <Label class="text-lg">Resolutions</Label>
-                                <div class="space-y-3">
-                                    {#each state.resolutions as resolution, resolutionIndex}
-                                        <Card class="p-3">
-                                            <div
-                                                class="flex justify-between items-center mb-2"
-                                            >
-                                                <h5 class="font-medium">
-                                                    Resolution {resolutionIndex +
-                                                        1}
-                                                </h5>
-                                                <Button
-                                                    class="cursor-pointer text-red-500 hover:text-red-500"
-                                                    size="xs"
-                                                    onclick={() =>
-                                                        removeResolution(
-                                                            stateIndex,
-                                                            resolutionIndex,
-                                                        )}
-                                                >
-                                                    <TrashBinOutline />
-                                                </Button>
-                                            </div>
-
-                                            <div class="grid grid-cols-2 gap-3">
-                                                <div>
-                                                    <Label>Key</Label>
-                                                    <Input
-                                                        bind:value={
-                                                            resolution.key
-                                                        }
-                                                        placeholder="Resolution key"
-                                                    />
-                                                </div>
-                                                <div>
-                                                    <Label>English</Label>
-                                                    <Input
-                                                        bind:value={
-                                                            resolution.en
-                                                        }
-                                                        placeholder="English translation"
-                                                    />
-                                                </div>
-                                                <div>
-                                                    <Label>Arabic</Label>
-                                                    <Input
-                                                        bind:value={
-                                                            resolution.ar
-                                                        }
-                                                        placeholder="Arabic translation"
-                                                    />
-                                                </div>
-                                                <div>
-                                                    <Label>Kurdish</Label>
-                                                    <Input
-                                                        bind:value={
-                                                            resolution.ku
-                                                        }
-                                                        placeholder="Kurdish translation"
-                                                    />
-                                                </div>
-                                            </div>
-                                        </Card>
-                                    {/each}
-                                    <Button
-                                        class="cursor-pointer text-primary hover:text-primar"
-                                        outline
-                                        size="sm"
-                                        onclick={() =>
-                                            addResolution(stateIndex)}
-                                    >
-                                        <PlusOutline class="mr-1" />Add
-                                        Resolution
-                                    </Button>
-                                </div>
-                            </div>
-                        </div>
-                    </AccordionItem>
-                </Accordion>
-            {/each}
-
-            <Button
-                outline
-                onclick={addState}
-                class="mt-2 cursor-pointer text-primary hover:text-primary"
-            >
-                <PlusOutline class="mr-1" />Add State
-            </Button>
-        </div>
-    </Card>
-</Card>
+        <Button size="sm" color="alternative" onclick={addState}>
+            <PlusOutline size="sm" class="me-1.5" aria-hidden="true" />
+            {$_("add_state")}
+        </Button>
+    </section>
+</div>

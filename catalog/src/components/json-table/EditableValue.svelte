@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { _ } from "@/i18n";
   import type { JsonTableTheme, JsonPrimitive } from "./types";
 
   interface Props {
@@ -96,21 +97,27 @@
   });
 </script>
 
-<!-- svelte-ignore a11y_click_events_have_key_events -->
-<!-- svelte-ignore a11y_no_static_element_interactions -->
 <span
   class="ev-wrap"
   class:ev-hover={!editing && hover}
+  role="button"
+  tabindex="0"
   onclick={handleClick}
+  onkeydown={(e) => {
+    if (!editing && (e.key === "Enter" || e.key === " ")) {
+      e.preventDefault();
+      handleClick();
+    }
+  }}
   onmouseenter={() => hover = true}
   onmouseleave={() => hover = false}
+  onfocus={() => hover = true}
+  onblur={() => hover = false}
   style:--ev-hover-bg={t.hoverBg}
   style:cursor={editing ? "default" : typeof value === "boolean" ? "pointer" : "text"}
 >
   {#if typeof value === "boolean" && !editing}
-    <!-- svelte-ignore a11y_click_events_have_key_events -->
-    <!-- svelte-ignore a11y_no_static_element_interactions -->
-    <span class="ev-text" style:color onclick={handleBoolToggle}>{displayText}</span>
+    <button type="button" class="ev-text ev-control" style:color onclick={handleBoolToggle}>{displayText}</button>
   {:else}
     <span
       class="ev-text"
@@ -123,18 +130,18 @@
   {/if}
 
   {#if !editing && hover}
-    <!-- svelte-ignore a11y_click_events_have_key_events -->
-    <!-- svelte-ignore a11y_no_static_element_interactions -->
-    <span
-      class="ev-copy"
+    <button
+      type="button"
+      class="ev-copy ev-control"
       class:ev-copied={copied}
       style:--copy-color={copied ? t.string : t.idxColor}
       style:--copy-bg={t.themeName === "dark" ? "rgba(255,255,255,0.04)" : "rgba(0,0,0,0.04)"}
       onclick={handleCopy}
-      title="Copy value"
+      title={$_("labels.copy_value")}
+      aria-label={$_("labels.copy_value")}
     >
       {copied ? "✓" : "⎘"}
-    </span>
+    </button>
   {/if}
 
   {#if editing}
@@ -199,8 +206,8 @@
   .ev-input {
     position: absolute;
     top: -2px;
-    left: -2px;
-    right: -2px;
+    inset-inline-start: -2px;
+    inset-inline-end: -2px;
     bottom: -2px;
     background: var(--edit-bg);
     border: 1.5px solid var(--edit-border);
@@ -214,5 +221,14 @@
     resize: none;
     white-space: pre-wrap;
     overflow-wrap: anywhere;
+  }
+  .ev-control {
+    background: none;
+    border: 0;
+    padding: 0;
+    margin: 0;
+    font: inherit;
+    color: inherit;
+    cursor: pointer;
   }
 </style>

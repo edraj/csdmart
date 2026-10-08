@@ -1,19 +1,10 @@
 <script lang="ts">
-    import { Label, Select, Card } from "flowbite-svelte";
-    import {
-        ContentType,
-        Dmart,
-        QueryType,
-        ResourceType,
-    } from "@edraj/tsdmart";
+    import { Label, Select } from "flowbite-svelte";
+    import { ContentType, Dmart, QueryType, ResourceType } from "@edraj/tsdmart";
     import FolderForm from "@/components/management/forms/FolderForm.svelte";
-    import { JSONEditor, Mode } from "svelte-jsoneditor";
-    import {
-        currentEntry,
-        InputMode,
-        resourcesWithFormAndJson,
-        resourceTypeWithNoPayload,
-    } from "@/stores/global";
+    import LazyJsonEditor from "@/components/ui/LazyJsonEditor.svelte";
+    import LoadingState from "@/components/ui/LoadingState.svelte";
+    import { currentEntry, InputMode, resourcesWithFormAndJson, resourceTypeWithNoPayload } from "@/stores/global";
     import SchemaForm from "@/components/management/forms/SchemaForm.svelte";
     import WorkflowForm from "@/components/management/forms/WorkflowForm.svelte";
     import DynamicSchemaBasedForms from "@/components/management/forms/DynamicSchemaBasedForms.svelte";
@@ -21,10 +12,12 @@
     import HtmlEditor from "@/components/management/editors/HtmlEditor.svelte";
     import MarkdownEditor from "@/components/management/editors/MarkdownEditor.svelte";
     import { fetchWorkflows } from "@/lib/dmart_services";
+    import { getPayloadSchema } from "@/utils/entryManagement";
     import { params } from "@roxi/routify";
     import { untrack } from "svelte";
     import { generateObjectFromSchema } from "@/utils/renderer/rendererUtils";
     import { jsonEditorContentParser } from "@/utils/jsonEditor";
+    import { _ } from "@/i18n";
 
     let {
         isCreate = true,
@@ -34,67 +27,75 @@
         selectedWorkflow = $bindable(),
         selectedInputMode = $bindable(),
         content = $bindable(),
+        // eslint-disable-next-line @typescript-eslint/no-unused-vars, no-useless-assignment -- $bindable() written back to the parent, never read here
         errorContent = $bindable(),
     } = $props();
 
+    const uid = $props.id();
     const subpath = $params.subpath;
+    const spaceName: string = $params.space_name;
 
-    let contentTypeOptions = [
+    const contentTypeOptions = [
         { name: "JSON", value: "json" },
         { name: "HTML", value: "html" },
         { name: "Markdown", value: "markdown" },
-        { name: "Text", value: "text" },
+        { name: $_("text"), value: "text" },
     ];
 
-    function handleRenderMenu(items: any, _context: any) {
-        items = items.filter(
-            (item) => !["tree", "text", "table"].includes(item.text),
-        );
-        const separator = {
-            separator: true,
-        };
-
+    function handleRenderMenu(items: any[]) {
+        items = items.filter((item) => !["tree", "text", "table"].includes(item.text));
         const itemsWithoutSpace = items.slice(0, items.length - 2);
-        return itemsWithoutSpace.concat([
-            separator,
-            {
-                space: true,
-            },
-        ]);
+        return itemsWithoutSpace.concat([{ separator: true }, { space: true }]);
     }
 
-    let isFolderFormReady = $state(false);
-    async function setFolderSchemaContent() {
+    const folderPreference = $currentEntry?.entry?.payload?.body;
+
+    // ── The selected schema's body: one request for the one schema in use.
+    //    The dropdown itself only ever needed shortnames. ─────────────────
+    let selectedSchemaContent: any = $state(null);
+    let schemaSeq = 0;
+
+    async function applySchema(shortname: string | null | undefined) {
+        const seq = ++schemaSeq;
+        if (!shortname) {
+            selectedSchemaContent = null;
+            if (isCreate && selectedResourceType !== ResourceType.folder) {
+                content = { json: {} };
+            }
+            return;
+        }
         try {
-            isFolderFormReady = false;
-            const _schemaContent = await Dmart.retrieveEntry({
-                resource_type: ResourceType.schema,
-                space_name: "management",
-                subpath: "schema",
-                shortname: "folder_rendering",
-                retrieve_json_payload: true,
-                retrieve_attachments: false,
-                validate_schema: true,
-            });
-            content = {
-                json:
-                    _schemaContent &&
-                    generateObjectFromSchema(_schemaContent?.payload?.body),
-            };
-        } catch (e: any) {
-            errorContent = e.response.data;
-            isFolderFormReady = false;
-        } finally {
-            isFolderFormReady = true;
+            const result = await getPayloadSchema(shortname, spaceName);
+            if (seq !== schemaSeq) return;
+            const body = result?.payload?.body ?? null;
+            selectedSchemaContent = body;
+            if (isCreate) {
+                if (selectedResourceType === ResourceType.content && shortname === "translation") {
+                    content = { json: [] };
+                } else {
+                    content = { json: body ? generateObjectFromSchema(body) : {} };
+                }
+            }
+        } catch (e: unknown) {
+            if (seq !== schemaSeq) return;
+            selectedSchemaContent = null;
+            errorContent = (e as { response?: { data?: unknown }; message?: string })?.response?.data ?? (e as Error)?.message;
         }
     }
 
+    const isFolderFormReady = $derived(selectedResourceType === ResourceType.folder && selectedSchemaContent !== null);
+
+    // A folder's payload is always described by folder_rendering.
+    if (selectedResourceType === ResourceType.folder) {
+        selectedSchema = "folder_rendering";
+    }
+
+    // Create mode: picking a resource type resets the schema and the content.
     $effect(() => {
         if (isCreate && selectedResourceType) {
             untrack(() => {
-                isFolderFormReady = false;
                 if (selectedResourceType === ResourceType.folder) {
-                    setFolderSchemaContent();
+                    selectedSchema = "folder_rendering";
                 } else {
                     selectedSchema = null;
                     content = { json: {} };
@@ -103,146 +104,52 @@
         }
     });
 
-    const folderPreference = $currentEntry?.entry?.payload?.body;
-
-    let tmpSchemas: any[] = [];
-    let selectedSchemaContent: any = $state(null);
+    // Whatever schema is selected (by the dropdown, the resource type or the
+    // entry being edited), load it once; nothing else fetches schema bodies.
+    $effect(() => {
+        if (contentType !== ContentType.json && selectedResourceType !== ResourceType.folder) return;
+        const shortname = selectedSchema;
+        untrack(() => {
+            void applySchema(shortname);
+        });
+    });
 
     let mismatchedProperties = $derived.by(() => {
-        if (
-            !selectedSchemaContent?.properties ||
-            !content ||
-            typeof content !== "object" ||
-            Array.isArray(content)
-        ) {
+        if (!selectedSchemaContent?.properties || !content || typeof content !== "object" || Array.isArray(content)) {
             return [];
         }
-        const schemaKeys = new Set(
-            Object.keys(selectedSchemaContent.properties),
-        );
+        const schemaKeys = new Set(Object.keys(selectedSchemaContent.properties));
         const payloadKeys = Object.keys(content);
         return payloadKeys.filter((key) => !schemaKeys.has(key));
     });
 
-    // svelte-ignore state_referenced_locally
-    if (!isCreate) {
-        Dmart.query({
-            space_name: $params.space_name,
-            type: QueryType.search,
-            subpath: "/schema",
-            search: "@shortname:" + selectedSchema,
-            retrieve_json_payload: true,
-            limit: 100,
-        }).then((schemas) => {
-            if (schemas && schemas.records && schemas.records.length > 0) {
-                tmpSchemas = schemas.records;
-                const _schemaContent = tmpSchemas.find(
-                    (t) => t.shortname === selectedSchema,
-                );
-                if (_schemaContent) {
-                    selectedSchemaContent =
-                        _schemaContent.attributes.payload.body;
-                }
-            } else {
-                selectedSchemaContent = null;
-            }
-        });
-    }
-    if (selectedResourceType === ResourceType.folder) {
-        Dmart.retrieveEntry({
-            resource_type: ResourceType.schema,
-            space_name: "management",
-            subpath: "schema",
-            shortname: "folder_rendering",
-            retrieve_json_payload: true,
-            retrieve_attachments: true,
-            validate_schema: true,
-        })
-            .then((result) => {
-                selectedSchema = "folder_rendering";
-                selectedSchemaContent = result?.payload?.body;
-                isFolderFormReady = true;
-            })
-            .catch((e) => {
-                errorContent = e.response.data;
-                isFolderFormReady = false;
-            });
-    }
+    // Dropdown options: shortnames only, no payload.
+    const schemaOptions = Dmart.query({
+        space_name: spaceName,
+        type: QueryType.search,
+        subpath: "/schema",
+        search: "",
+        retrieve_json_payload: false,
+        limit: 100,
+    }).then((schemas) => parseQuerySchemaResponse(schemas));
 
-    $effect(() => {
-        if (contentType === ContentType.json) {
-            if (tmpSchemas && selectedSchema) {
-                untrack(async () => {
-                    const _schemaContent = tmpSchemas.find(
-                        (t) => t.shortname === selectedSchema,
-                    );
-
-                    if (_schemaContent === undefined) {
-                        return;
-                    } else {
-                        selectedSchemaContent =
-                            _schemaContent.attributes.payload.body;
-                    }
-
-                    if (isCreate) {
-                        if (
-                            selectedResourceType === ResourceType.content &&
-                            selectedSchema === "translation"
-                        ) {
-                            content = {
-                                json: [],
-                            };
-                        } else {
-                            content = {
-                                json:
-                                    _schemaContent &&
-                                    generateObjectFromSchema(
-                                        selectedSchemaContent,
-                                    ),
-                            };
-                        }
-                    }
-                });
-            } else if (isCreate) {
-                untrack(() => {
-                    selectedSchemaContent = null;
-                    content = { json: {} };
-                });
-            }
-        }
-    });
-
-    function parseQuerySchemaResponse(schemas) {
+    function parseQuerySchemaResponse(schemas: { records?: Array<{ shortname: string }> } | null) {
         const records = schemas?.records ?? [];
-        tmpSchemas = records;
 
-        let result: string[] = [];
+        let result: string[];
         const _schemas = records.map((e) => e.shortname);
         if (selectedResourceType === ResourceType.folder) {
             result = ["folder_rendering", ..._schemas];
         } else {
-            result = _schemas.filter(
-                (e: any) => !["meta_schema", "folder_rendering"].includes(e),
-            );
+            result = _schemas.filter((e) => !["meta_schema", "folder_rendering"].includes(e));
         }
-        let r = result.map((e: any) => ({
-            name: e,
-            value: e,
-        }));
+        let r: { name: string; value: string | null }[] = result.map((e) => ({ name: e, value: e }));
 
-        if (
-            folderPreference &&
-            folderPreference?.content_schema_shortnames?.length
-        ) {
-            r = r.filter((s) =>
-                folderPreference.content_schema_shortnames.includes(s.value),
-            );
+        if (folderPreference && folderPreference?.content_schema_shortnames?.length) {
+            r = r.filter((s) => folderPreference.content_schema_shortnames.includes(s.value));
         }
 
-        r.unshift({
-            name: "None",
-            value: null,
-        });
+        r.unshift({ name: $_("none"), value: null });
         return r;
     }
 
@@ -252,72 +159,58 @@
                 untrack(() => {
                     try {
                         content = {
-                            text: JSON.stringify(
-                                jsonEditorContentParser(
-                                    $state.snapshot(content),
-                                ),
-                                null,
-                                2,
-                            ),
+                            text: JSON.stringify(jsonEditorContentParser($state.snapshot(content)), null, 2),
                         };
-                    } catch (e) {}
+                    } catch {}
                 });
             } else if (selectedInputMode === InputMode.form) {
                 untrack(() => {
                     try {
                         content = {
-                            json: jsonEditorContentParser(
-                                $state.snapshot(content),
-                            ),
+                            json: jsonEditorContentParser($state.snapshot(content)),
                         };
-                    } catch (e) {}
+                    } catch {}
                 });
             }
         }
     });
 </script>
 
-<Card class="w-full max-w-4xl mx-auto p-4 my-2">
+<div class="w-full max-w-4xl mx-auto space-y-4">
     {#if !resourceTypeWithNoPayload.includes(selectedResourceType)}
         {#if isCreate && !["workflows", "schema"].includes(subpath) && ![ResourceType.folder, ResourceType.role, ResourceType.permission].includes(selectedResourceType)}
             {#if selectedResourceType === ResourceType.content}
-                <Label class="mt-3">
-                    Content Type
+                <div>
+                    <Label for="{uid}-content-type" class="mb-1.5">{$_("content_type")}</Label>
                     <Select
-                        class="mt-2"
+                        id="{uid}-content-type"
                         items={contentTypeOptions}
                         value={contentType}
-                        onchange={(e: any) => {
-                            if (e.target.value !== "json") {
+                        onchange={(e: Event) => {
+                            const value = (e.target as HTMLSelectElement).value;
+                            if (value !== "json") {
                                 content = "";
                             } else {
                                 content = { json: {} };
                             }
-                            contentType = e.target.value;
+                            contentType = value;
                         }}
                     />
-                </Label>
+                </div>
             {/if}
 
             {#if contentType === "json" || selectedResourceType !== ResourceType.content}
-                <Label class="mt-3">
-                    Schema
-                    {#await Dmart.query( { space_name: $params.space_name, type: QueryType.search, subpath: "/schema", search: "", retrieve_json_payload: true, limit: 100 }, )}
-                        <div role="status" class="max-w-sm animate-pulse">
-                            <div
-                                class="h-3 bg-gray-200 rounded-full dark:bg-gray-700 mx-2 my-2.5"
-                            ></div>
-                        </div>
-                    {:then schemas}
-                        <Select
-                            class="mt-2"
-                            items={parseQuerySchemaResponse(schemas)}
-                            bind:value={selectedSchema}
-                        />
+                <div>
+                    <Label for="{uid}-schema" class="mb-1.5">{$_("schema")}</Label>
+                    {#await schemaOptions}
+                        <LoadingState variant="skeleton" rows={1} />
+                    {:then items}
+                        <Select id="{uid}-schema" {items} bind:value={selectedSchema} />
                     {/await}
-                </Label>
+                </div>
             {/if}
         {/if}
+
         {#if selectedResourceType === ResourceType.folder && isFolderFormReady}
             {#if selectedInputMode === InputMode.form}
                 {#if isCreate}
@@ -328,35 +221,24 @@
                     <FolderForm bind:content />
                 {/if}
             {:else if isCreate && selectedInputMode === InputMode.json}
-                <JSONEditor
-                    onRenderMenu={handleRenderMenu}
-                    mode={Mode.text}
-                    bind:content
-                />
+                <LazyJsonEditor onRenderMenu={handleRenderMenu} mode="text" bind:content />
             {/if}
         {/if}
 
         {#if isCreate && selectedResourceType === ResourceType.ticket}
-            <Label class="mt-3">
-                Workflow shortname
-                {#await fetchWorkflows($params.space_name)}
-                    <div role="status" class="max-w-sm animate-pulse">
-                        <div
-                            class="h-3 bg-gray-200 rounded-full dark:bg-gray-700 mx-2 my-2.5"
-                        ></div>
-                    </div>
+            <div>
+                <Label for="{uid}-workflow" class="mb-1.5">{$_("workflow_shortname")}</Label>
+                {#await fetchWorkflows(spaceName)}
+                    <LoadingState variant="skeleton" rows={1} />
                 {:then workflows}
                     <Select
-                        class="mt-2"
-                        items={workflows.map((w) => ({
-                            name: w.shortname,
-                            value: w.shortname,
-                        }))}
+                        id="{uid}-workflow"
+                        items={workflows.map((w) => ({ name: w.shortname, value: w.shortname }))}
                         bind:value={selectedWorkflow}
-                        placeholder="Select Workflow"
+                        placeholder={$_("select_workflow")}
                     />
                 {/await}
-            </Label>
+            </div>
         {/if}
 
         {#if selectedResourceType === ResourceType.schema}
@@ -369,11 +251,7 @@
                     <SchemaForm bind:content />
                 {/if}
             {:else if isCreate && selectedInputMode === InputMode.json}
-                <JSONEditor
-                    onRenderMenu={handleRenderMenu}
-                    mode={Mode.text}
-                    bind:content
-                />
+                <LazyJsonEditor onRenderMenu={handleRenderMenu} mode="text" bind:content />
             {/if}
         {/if}
 
@@ -389,26 +267,12 @@
             {/if}
         {/if}
 
-        <!--{#if selectedResourceType === ResourceType.content && selectedSchema === "configuration"}-->
-        <!--    <ConfigForm bind:entries={content.json.items}/>-->
         {#if selectedResourceType === ResourceType.content && selectedSchema === "translation"}
             {#if selectedSchemaContent}
                 {#if isCreate}
-                    <TranslationForm
-                        bind:entries={content.json}
-                        columns={Object.keys(
-                            selectedSchemaContent.properties.items.items
-                                .properties,
-                        )}
-                    />
+                    <TranslationForm bind:entries={content.json} columns={Object.keys(selectedSchemaContent.properties.items.items.properties)} />
                 {:else}
-                    <TranslationForm
-                        bind:entries={content}
-                        columns={Object.keys(
-                            selectedSchemaContent.properties.items.items
-                                .properties,
-                        )}
-                    />
+                    <TranslationForm bind:entries={content} columns={Object.keys(selectedSchemaContent.properties.items.items.properties)} />
                 {/if}
             {/if}
         {:else if selectedResourceType === ResourceType.content && contentType === "html"}
@@ -416,69 +280,44 @@
         {:else if selectedResourceType === ResourceType.content && contentType === "markdown"}
             <MarkdownEditor bind:content />
         {:else if selectedResourceType === ResourceType.content && contentType === "text"}
-            <textarea class="w-full h-full my-2" bind:value={content}></textarea>
+            <div>
+                <Label for="{uid}-text" class="mb-1.5">{$_("content")}</Label>
+                <textarea
+                    id="{uid}-text"
+                    class="w-full min-h-48 rounded-control border border-border bg-surface-2 text-text p-2.5 text-sm focus:ring-primary focus:border-primary"
+                    dir="auto"
+                    bind:value={content}
+                ></textarea>
+            </div>
         {:else}
             {#if !isCreate && mismatchedProperties.length > 0}
-                <div
-                    class="bg-blue-50 border-l-4 border-blue-400 p-4 my-2 w-full mx-auto dark:bg-blue-900/20 dark:border-blue-500"
-                >
-                    <div class="flex">
-                        <div class="ml-3">
-                            <p
-                                class="text-sm text-blue-700 font-medium dark:text-blue-400"
-                            >
-                                {mismatchedProperties.length} propert{mismatchedProperties.length ===
-                                1
-                                    ? "y is"
-                                    : "ies are"} not declared in this schema.
-                            </p>
-                            <p
-                                class="text-sm text-blue-600 mt-1 dark:text-blue-300"
-                            >
-                                They are still shown below and preserved when you
-                                save:
-                            </p>
-                            <ul
-                                class="list-disc list-inside text-sm text-blue-800 mt-1 dark:text-blue-200"
-                            >
-                                {#each mismatchedProperties as prop}
-                                    <li>
-                                        <code
-                                            class="bg-blue-100 px-1 rounded dark:bg-blue-800"
-                                            >{prop}</code
-                                        >
-                                    </li>
-                                {/each}
-                            </ul>
-                        </div>
-                    </div>
+                <div class="rounded-card border border-info/30 bg-info-soft p-4" role="note">
+                    <p class="text-sm font-medium text-text">
+                        {$_("undeclared_properties", { values: { count: mismatchedProperties.length } })}
+                    </p>
+                    <p class="text-sm text-text-muted mt-1">{$_("undeclared_properties_hint")}</p>
+                    <ul class="list-disc list-inside text-sm text-text mt-1">
+                        {#each mismatchedProperties as prop (prop)}
+                            <li><code class="font-mono text-xs bg-surface-2 border border-border px-1 rounded-control">{prop}</code></li>
+                        {/each}
+                    </ul>
                 </div>
             {/if}
-            <div class="my-2">
+            <div>
                 {#if resourcesWithFormAndJson.includes(selectedResourceType)}
                     {#if selectedInputMode === InputMode.form}
                         {#if isCreate}
                             {#if content.json}
-                                <DynamicSchemaBasedForms
-                                    schema={selectedSchemaContent}
-                                    bind:content={content.json}
-                                />
+                                <DynamicSchemaBasedForms schema={selectedSchemaContent} bind:content={content.json} />
                             {/if}
                         {:else}
-                            <DynamicSchemaBasedForms
-                                schema={selectedSchemaContent}
-                                bind:content
-                            />
+                            <DynamicSchemaBasedForms schema={selectedSchemaContent} bind:content />
                         {/if}
                     {:else if isCreate && selectedInputMode === InputMode.json}
-                        <JSONEditor
-                            onRenderMenu={handleRenderMenu}
-                            mode={Mode.text}
-                            bind:content
-                        />
+                        <LazyJsonEditor onRenderMenu={handleRenderMenu} mode="text" bind:content />
                     {/if}
                 {/if}
             </div>
         {/if}
     {/if}
-</Card>
+</div>

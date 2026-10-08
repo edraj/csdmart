@@ -1,42 +1,25 @@
 <script lang="ts">
-    import {
-        Accordion,
-        AccordionItem,
-        Badge,
-        Card,
-        Checkbox,
-        Helper,
-        Input,
-        Label,
-        Select,
-        Textarea
-    } from 'flowbite-svelte';
-    import {SearchOutline} from 'flowbite-svelte-icons';
-    import {onMount} from 'svelte';
-    import {Dmart, QueryType} from '@edraj/tsdmart';
-    import {canClearLockout, readFailedAttempts, resolveAttemptCount} from '@shared/user-lockout';
+    import { Accordion, AccordionItem, Checkbox, Input, Label, Select, Textarea } from "flowbite-svelte";
+    import { canClearLockout, readFailedAttempts, resolveAttemptCount } from "@shared/user-lockout";
+    import Badge from "@/components/ui/Badge.svelte";
+    import ShortnamePicker from "./ShortnamePicker.svelte";
+    import { _ } from "@/i18n";
 
     let {
         formData = $bindable(),
+        // eslint-disable-next-line @typescript-eslint/no-unused-vars, no-useless-assignment -- $bindable() written back to the parent, never read here
         validateFn = $bindable(),
-        isCreate = false
+        isCreate = false,
     } = $props();
 
-    let form;
+    const uid = $props.id();
 
-    let availableRoles: any[] = $state([]);
-    let loadingRoles = $state(true);
-    let filteredRoles: {key: string; value: string}[] = $state([]);
-    let rolesSearchTerm = $state('');
-    let showRolesDropdown = $state(false);
-    let rolesDropdownRef: HTMLDivElement | null = $state(null);
+    // Kept as script constants: a literal `{` in a markup attribute would
+    // otherwise need `{'{'}` escapes.
+    const EMAIL_PATTERN = "[a-z0-9._%+-]+@[a-z0-9.-]+\\.[a-z]{2,6}$";
+    const MSISDN_PATTERN = "^\\+?\\d{7,15}$";
 
-    let availableGroups: any[] = $state([]);
-    let loadingGroups = $state(true);
-    let filteredGroups: {key: string; value: string}[] = $state([]);
-    let groupsSearchTerm = $state('');
-    let showGroupsDropdown = $state(false);
-    let groupsDropdownRef: HTMLDivElement | null = $state(null);
+    let form: HTMLFormElement;
 
     // Read the counter BEFORE it is stripped below. It is the account lockout:
     // the lock leaves is_active set, so this is the only thing that says an
@@ -53,7 +36,7 @@
         is_email_verified: formData.is_email_verified || false,
         is_msisdn_verified: formData.is_msisdn_verified || false,
         force_password_change: formData.force_password_change || false,
-        type: formData.type || 'mobile',
+        type: formData.type || "mobile",
         language: formData.language || null,
         roles: formData.roles || [],
         groups: formData.groups || [],
@@ -73,8 +56,8 @@
         // increments an in-flight brute-force run landed in between. Stripped
         // unless the admin explicitly asks to clear it below (JSON.stringify
         // drops undefined keys, which is how `password` is handled too).
-        attempt_count: undefined
-    }
+        attempt_count: undefined,
+    };
 
     // The unlock gesture. Deliberately NOT is_active: a locked account is still
     // active (the lock is counter-only), and this form emits is_active on every
@@ -85,110 +68,12 @@
         formData.attempt_count = resolveAttemptCount(failedAttempts, resetAttempts);
     }
 
-    const userTypeOptions = ["bot", "mobile", "web", "admin", "api"]
-        .map(type => ({ name: type.charAt(0).toUpperCase() + type.slice(1), value: type }));
-
-    async function getRoles() {
-        try {
-            const rolesResponse: any = await Dmart.query({
-                space_name: 'management',
-                subpath: '/roles',
-                type: QueryType.search,
-                search: '',
-                limit: 100,
-            });
-            if (rolesResponse) {
-                availableRoles = rolesResponse.records ?? [];
-                updateFilteredRoles();
-            }
-        } catch (error) {
-            console.error('Failed to load roles:', error);
-        } finally {
-            loadingRoles = false;
-        }
-    }
-
-    async function getGroups() {
-        try {
-            const groupsResponse: any = await Dmart.query({
-                space_name: 'management',
-                subpath: '/groups',
-                type: QueryType.search,
-                search: '',
-                limit: 100,
-            });
-            if (groupsResponse) {
-                availableGroups = groupsResponse.records ?? [];
-                updateFilteredGroups();
-            }
-        } catch (error) {
-            console.error('Failed to load groups:', error);
-        } finally {
-            loadingGroups = false;
-        }
-    }
-
-    onMount(() => {
-        getRoles();
-        getGroups();
-
-        const handleClickOutside = (event) => {
-            if (rolesDropdownRef && !rolesDropdownRef.contains(event.target)) {
-                showRolesDropdown = false;
-            }
-            if (groupsDropdownRef && !groupsDropdownRef.contains(event.target)) {
-                showGroupsDropdown = false;
-            }
-        };
-        document.addEventListener('click', handleClickOutside);
-        return () => {
-            document.removeEventListener('click', handleClickOutside);
-        };
-    });
-
-    function updateFilteredRoles() {
-        filteredRoles = availableRoles
-            .filter(role => role.shortname.toLowerCase().includes(rolesSearchTerm.toLowerCase()))
-            .map(role => ({ key: role.shortname, value: role.shortname }));
-    }
-
-    function toggleRole(event, role) {
-        event.stopPropagation();
-        const index = formData.roles.indexOf(role.value);
-        if (index === -1) {
-            formData.roles = [...formData.roles, role.value];
-        } else {
-            formData.roles = formData.roles.filter(r => r !== role.value);
-        }
-    }
-
-    function removeRole(role) {
-        formData.roles = formData.roles.filter(r => r !== role);
-    }
-
-    function updateFilteredGroups() {
-        filteredGroups = availableGroups
-            .filter(group => group.shortname.toLowerCase().includes(groupsSearchTerm.toLowerCase()))
-            .map(group => ({ key: group.shortname, value: group.shortname }));
-    }
-
-    function toggleGroup(event, group) {
-        event.stopPropagation();
-        const index = formData.groups.indexOf(group.value);
-        if (index === -1) {
-            formData.groups = [...formData.groups, group.value];
-        } else {
-            formData.groups = formData.groups.filter(g => g !== group.value);
-        }
-    }
-
-    function removeGroup(group) {
-        formData.groups = formData.groups.filter(g => g !== group);
-    }
+    // User types are server identifiers; shown as they are.
+    const userTypeOptions = ["bot", "mobile", "web", "admin", "api"].map((type) => ({ name: type, value: type }));
 
     function validate() {
         const isValid = form.checkValidity();
-        isEmailValid = validateEmail(formData.email)
+        isEmailValid = validateEmail(formData.email);
 
         if (!isValid || !isEmailValid) {
             form.reportValidity();
@@ -200,23 +85,6 @@
     $effect(() => {
         validateFn = validate;
     });
-
-    $effect(() => {
-        if(rolesSearchTerm){
-            updateFilteredRoles();
-        } else {
-            filteredRoles = availableRoles.map(role => ({ key: role.shortname, value: role.shortname }));
-        }
-    });
-
-    $effect(() => {
-        if(groupsSearchTerm){
-            updateFilteredGroups();
-        } else {
-            filteredGroups = availableGroups.map(group => ({ key: group.shortname, value: group.shortname }));
-        }
-    });
-
 
     let isEmailValid = $state(true);
     let emailTouched = $state(false);
@@ -230,260 +98,115 @@
             isEmailValid = validateEmail(formData.email);
         }
     });
-</script>
-<Card class="w-full max-w-4xl mx-auto p-4 my-2">
-    <h2 class="text-2xl font-bold mb-4">User Information</h2>
 
-    <form bind:this={form} class="space-y-4">
-        <div class="mb-4">
-            <Label for="email" class="mb-2">Email</Label>
+    const help = "mt-1 text-xs text-text-muted";
+</script>
+
+<div class="w-full max-w-4xl mx-auto rounded-card border border-border bg-surface-2 shadow-card p-4 sm:p-5 my-2">
+    <h2 class="text-lg font-semibold text-text mb-4">{$_("user_information")}</h2>
+
+    <form bind:this={form} class="space-y-4" onsubmit={(e) => e.preventDefault()}>
+        <div>
+            <Label for="{uid}-email" class="mb-1.5">{$_("email")}</Label>
             <Input
-                id="email"
+                id="{uid}-email"
                 type="email"
                 placeholder="user@example.com"
-                pattern="[a-z0-9._%+-]+@[a-z0-9.-]+\.[a-z]{'{'}2,6{'}'}$"
+                pattern={EMAIL_PATTERN}
                 bind:value={formData.email}
-                class={!isEmailValid ? "border-red-500" : ""}
-                onblur={() => emailTouched = true}
+                color={!isEmailValid && emailTouched ? "red" : undefined}
+                aria-invalid={!isEmailValid && emailTouched}
+                aria-describedby={!isEmailValid && emailTouched ? `${uid}-email-error` : undefined}
+                onblur={() => (emailTouched = true)}
             />
             {#if !isEmailValid && emailTouched}
-                <Helper class="mt-1 text-red-600">Please enter a valid email address</Helper>
+                <p id="{uid}-email-error" class="mt-1 text-sm text-danger" role="alert">{$_("invalid_email")}</p>
             {/if}
         </div>
 
-        <div class="mb-4">
-            <Label for="msisdn" class="mb-2">Mobile Number (MSISDN)</Label>
-            <Input
-                    id="msisdn"
-                    placeholder="+964723456789 / 0712345678"
-                    bind:value={formData.msisdn}
-                    pattern="^\+?\d{'{'}7,15{'}'}$" />
+        <div>
+            <Label for="{uid}-msisdn" class="mb-1.5">{$_("msisdn_label")}</Label>
+            <Input id="{uid}-msisdn" placeholder="+964723456789" bind:value={formData.msisdn} pattern={MSISDN_PATTERN} dir="ltr" />
         </div>
 
         {#if !isCreate}
-            <div class="mb-4">
-                <Label class="mb-2">Failed Login Attempts</Label>
+            <div>
+                <p class="text-sm font-medium text-text mb-1.5">{$_("failed_login_attempts")}</p>
                 <div class="flex items-center gap-3">
-                    <Badge color={showClearLockout ? 'red' : 'green'}>{failedAttempts}</Badge>
+                    <Badge variant={showClearLockout ? "danger" : "success"}>{failedAttempts}</Badge>
                     {#if showClearLockout}
-                        <Checkbox id="reset_attempt_count" bind:checked={resetAttempts} onchange={applyAttemptReset} />
-                        <Label for="reset_attempt_count" class="ml-1">Clear on save</Label>
+                        <Checkbox id="{uid}-reset_attempt_count" bind:checked={resetAttempts} onchange={applyAttemptReset} />
+                        <Label for="{uid}-reset_attempt_count" class="mb-0">{$_("clear_on_save")}</Label>
                     {/if}
                 </div>
-                <Helper class="mt-1">
-                    The account lockout is this counter — once it reaches the server's
-                    MAX_FAILED_LOGIN_ATTEMPTS the user cannot log in until it is cleared
-                    or the cool-down elapses. Saving other fields leaves it alone; tick
-                    the box to unlock the account.
-                </Helper>
+                <p class={help}>{$_("failed_login_attempts_help")}</p>
             </div>
         {/if}
 
-        <div class="grid grid-cols-1 md:grid-cols-3 gap-4 mb-4">
-            <div class="flex items-center">
-                <Checkbox id="force_password_change" bind:checked={formData.force_password_change} />
-                <Label for="force_password_change" class="ml-2">Force Password Change</Label>
+        <div class="grid grid-cols-1 md:grid-cols-3 gap-4">
+            <div class="flex items-center gap-2">
+                <Checkbox id="{uid}-force_password_change" bind:checked={formData.force_password_change} />
+                <Label for="{uid}-force_password_change" class="mb-0">{$_("force_password_change")}</Label>
             </div>
-            <div class="flex items-center">
-                <Checkbox id="is_email_verified" bind:checked={formData.is_email_verified} />
-                <Label for="is_email_verified" class="ml-2">Email Verified</Label>
+            <div class="flex items-center gap-2">
+                <Checkbox id="{uid}-is_email_verified" bind:checked={formData.is_email_verified} />
+                <Label for="{uid}-is_email_verified" class="mb-0">{$_("email_verified")}</Label>
             </div>
-            <div class="flex items-center">
-                <Checkbox id="is_msisdn_verified" bind:checked={formData.is_msisdn_verified} />
-                <Label for="is_msisdn_verified" class="ml-2">Phone Number Verified</Label>
-            </div>
-        </div>
-
-        <div class="grid grid-cols-1 md:grid-cols-2 gap-4 mb-4">
-            <div>
-                <Label for="user_type" class="mb-2">User Type</Label>
-                <Select id="user_type" items={userTypeOptions} bind:value={formData.type} />
-            </div>
-            <div>
-                <Label for="language" class="mb-2">Preferred Language</Label>
-                <Input id="language" bind:value={formData.language} />
+            <div class="flex items-center gap-2">
+                <Checkbox id="{uid}-is_msisdn_verified" bind:checked={formData.is_msisdn_verified} />
+                <Label for="{uid}-is_msisdn_verified" class="mb-0">{$_("phone_verified")}</Label>
             </div>
         </div>
 
-        <Accordion>
+        <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
+            <div>
+                <Label for="{uid}-user_type" class="mb-1.5">{$_("user_type")}</Label>
+                <Select id="{uid}-user_type" items={userTypeOptions} bind:value={formData.type} />
+            </div>
+            <div>
+                <Label for="{uid}-language" class="mb-1.5">{$_("preferred_language")}</Label>
+                <Input id="{uid}-language" bind:value={formData.language} placeholder="en" />
+            </div>
+        </div>
+
+        <Accordion flush>
             <AccordionItem>
-                {#snippet header()}Roles and Groups{/snippet}
-                <div class="p-4 space-y-4">
-                    <!-- Roles section -->
-                    <div class="mb-4">
-                        <Label class="mb-2">Roles</Label>
-
-                        {#if loadingRoles}
-                            <div role="status" class="max-w-sm animate-pulse">
-                                <div class="h-3 bg-gray-200 rounded-full dark:bg-gray-700 mx-2 my-2.5"></div>
-                            </div>
-                        {:else}
-                            <div bind:this={rolesDropdownRef}>
-                                <div class="relative mb-2">
-                                    <div class="absolute inset-y-0 left-0 flex items-center pl-3 pointer-events-none">
-                                        <SearchOutline class="w-4 h-4 text-gray-500" />
-                                    </div>
-                                    <Input
-                                            class="pl-10"
-                                            placeholder="Search roles..."
-                                            bind:value={rolesSearchTerm}
-                                            onfocus={() => showRolesDropdown = true}
-                                    />
-                                </div>
-
-                                <div class="flex space-x-2">
-                                    <div class="relative flex-grow">
-                                        {#if showRolesDropdown && filteredRoles.length > 0}
-                                            <div class="absolute w-full mt-1 bg-white border border-gray-200 rounded-lg shadow-lg z-10 max-h-60 overflow-auto">
-                                                {#each filteredRoles as role}
-                                                    <!-- svelte-ignore a11y_no_static_element_interactions -->
-                                                    <!-- svelte-ignore a11y_click_events_have_key_events -->
-                                                    <div
-                                                            class="px-4 py-2 hover:bg-gray-100 cursor-pointer flex items-center justify-between"
-                                                            onclick={(e) => toggleRole(e, role)}
-                                                    >
-                                                        <span>{role.key}</span>
-                                                        {#if formData.roles.includes(role.value)}
-                                                            <Badge color="blue">Selected</Badge>
-                                                        {/if}
-                                                    </div>
-                                                {/each}
-                                            </div>
-                                        {/if}
-                                    </div>
-                                </div>
-                            </div>
-
-                            {#if formData.roles.length > 0}
-                                <div class="mt-4">
-                                    <Label class="mb-2">Added Roles</Label>
-                                    <div class="border rounded-lg p-4 bg-gray-50">
-                                        <div class="flex flex-wrap gap-2">
-                                            {#each formData.roles as role}
-                                                <div class="bg-blue-100 text-blue-800 px-3 py-1 rounded-full flex items-center">
-                                                    <span>{role}</span>
-                                                    <button
-                                                            class="ml-2 text-blue-600 hover:text-blue-800"
-                                                            onclick={() => removeRole(role)}
-                                                            type="button">
-                                                        ×
-                                                    </button>
-                                                </div>
-                                            {/each}
-                                        </div>
-                                    </div>
-                                </div>
-                            {:else}
-                                <div class="mt-4 p-4 border border-dashed rounded-lg text-center text-gray-500">
-                                    No roles added
-                                </div>
-                            {/if}
-                        {/if}
-                    </div>
-
-                    <!-- Groups section - modified to match roles -->
-                    <div class="mb-4">
-                        <Label class="mb-2">Groups</Label>
-
-                        {#if loadingGroups}
-                            <div role="status" class="max-w-sm animate-pulse">
-                                <div class="h-3 bg-gray-200 rounded-full dark:bg-gray-700 mx-2 my-2.5"></div>
-                            </div>
-                        {:else}
-                            <div bind:this={groupsDropdownRef}>
-                                <div class="relative mb-2">
-                                    <div class="absolute inset-y-0 left-0 flex items-center pl-3 pointer-events-none">
-                                        <SearchOutline class="w-4 h-4 text-gray-500" />
-                                    </div>
-                                    <Input
-                                            class="pl-10"
-                                            placeholder="Search groups..."
-                                            bind:value={groupsSearchTerm}
-                                            onfocus={() => showGroupsDropdown = true}
-                                    />
-                                </div>
-
-                                <div class="flex space-x-2">
-                                    <div class="relative flex-grow">
-                                        {#if showGroupsDropdown && filteredGroups.length > 0}
-                                            <div class="absolute w-full mt-1 bg-white border border-gray-200 rounded-lg shadow-lg z-10 max-h-60 overflow-auto">
-                                                {#each filteredGroups as group}
-                                                    <!-- svelte-ignore a11y_no_static_element_interactions -->
-                                                    <!-- svelte-ignore a11y_click_events_have_key_events -->
-                                                    <div
-                                                            class="px-4 py-2 hover:bg-gray-100 cursor-pointer flex items-center justify-between"
-                                                            onclick={(e) => toggleGroup(e, group)}
-                                                    >
-                                                        <span>{group.key}</span>
-                                                        {#if formData.groups.includes(group.value)}
-                                                            <Badge color="blue">Selected</Badge>
-                                                        {/if}
-                                                    </div>
-                                                {/each}
-                                            </div>
-                                        {/if}
-                                    </div>
-                                </div>
-                            </div>
-
-                            {#if formData.groups.length > 0}
-                                <div class="mt-4">
-                                    <Label class="mb-2">Added Groups</Label>
-                                    <div class="border rounded-lg p-4 bg-gray-50">
-                                        <div class="flex flex-wrap gap-2">
-                                            {#each formData.groups as group}
-                                                <div class="bg-gray-100 text-gray-800 px-3 py-1 rounded-full flex items-center">
-                                                    <span>{group}</span>
-                                                    <button
-                                                            class="ml-2 text-blue-600 hover:text-blue-800"
-                                                            onclick={() => removeGroup(group)}
-                                                            type="button">
-                                                        ×
-                                                    </button>
-                                                </div>
-                                            {/each}
-                                        </div>
-                                    </div>
-                                </div>
-                            {:else}
-                                <div class="mt-4 p-4 border border-dashed rounded-lg text-center text-gray-500">
-                                    No groups added
-                                </div>
-                            {/if}
-                        {/if}
-                    </div>
+                {#snippet header()}{$_("roles_and_groups")}{/snippet}
+                <div class="py-2 space-y-6">
+                    <ShortnamePicker bind:selected={formData.roles} subpath="/roles" label={$_("roles")} emptyText={$_("no_roles_added")} />
+                    <ShortnamePicker bind:selected={formData.groups} subpath="/groups" label={$_("groups")} emptyText={$_("no_groups_added")} />
                 </div>
             </AccordionItem>
 
             <AccordionItem>
-                {#snippet header()}Social and External IDs{/snippet}
-                <div class="p-4 space-y-4">
-                    <div class="mb-4">
-                        <Label for="firebase_token" class="mb-2">Firebase Token</Label>
-                        <Textarea id="firebase_token" placeholder="Firebase authentication token" bind:value={formData.firebase_token} rows={2} />
+                {#snippet header()}{$_("social_and_external_ids")}{/snippet}
+                <div class="py-2 space-y-4">
+                    <div>
+                        <Label for="{uid}-firebase_token" class="mb-1.5">{$_("firebase_token")}</Label>
+                        <Textarea id="{uid}-firebase_token" bind:value={formData.firebase_token} rows={2} dir="ltr" />
                     </div>
 
-                    <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
+                    <div class="grid grid-cols-1 md:grid-cols-3 gap-4">
                         <div>
-                            <Label for="google_id" class="mb-2">Google ID</Label>
-                            <Input id="google_id" bind:value={formData.google_id} />
+                            <Label for="{uid}-google_id" class="mb-1.5">{$_("google_id")}</Label>
+                            <Input id="{uid}-google_id" bind:value={formData.google_id} dir="ltr" />
                         </div>
                         <div>
-                            <Label for="facebook_id" class="mb-2">Facebook ID</Label>
-                            <Input id="facebook_id" bind:value={formData.facebook_id} />
+                            <Label for="{uid}-facebook_id" class="mb-1.5">{$_("facebook_id")}</Label>
+                            <Input id="{uid}-facebook_id" bind:value={formData.facebook_id} dir="ltr" />
                         </div>
                         <div>
-                            <Label for="apple_id" class="mb-2">Apple ID</Label>
-                            <Input id="apple_id" bind:value={formData.apple_id} />
+                            <Label for="{uid}-apple_id" class="mb-1.5">{$_("apple_id")}</Label>
+                            <Input id="{uid}-apple_id" bind:value={formData.apple_id} dir="ltr" />
                         </div>
                     </div>
 
                     <div>
-                        <Label for="social_avatar_url" class="mb-2">Social Profile Image URL</Label>
-                        <Input id="social_avatar_url" type="url" bind:value={formData.social_avatar_url} />
+                        <Label for="{uid}-social_avatar_url" class="mb-1.5">{$_("social_avatar_url")}</Label>
+                        <Input id="{uid}-social_avatar_url" type="url" bind:value={formData.social_avatar_url} dir="ltr" />
                     </div>
                 </div>
             </AccordionItem>
         </Accordion>
     </form>
-</Card>
+</div>

@@ -1,414 +1,184 @@
 <script lang="ts">
   import { onMount } from "svelte";
   import { Dmart, QueryType } from "@edraj/tsdmart";
-  import { writable } from "svelte/store";
   import { _ } from "@/i18n";
+  import { log } from "@/lib/logger";
+  import { MANAGEMENT_SPACE } from "@/lib/constants";
+  import { CloseOutline, SearchOutline } from "flowbite-svelte-icons";
+  import Badge from "@/components/ui/Badge.svelte";
+  import LoadingState from "@/components/ui/LoadingState.svelte";
+
+  interface RoleFormData {
+    permissions?: string[];
+    [key: string]: unknown;
+  }
 
   let {
     formData = $bindable(),
+    // eslint-disable-next-line no-useless-assignment -- $bindable() prop: assigned here, read by the parent through bind:validateFn
     validateFn = $bindable(),
     fullWidth = false,
   }: {
-    formData: any;
+    formData: RoleFormData;
     validateFn: () => boolean;
     fullWidth?: boolean;
   } = $props();
 
-  let availablePermissions = writable<any[]>([]);
-  let loading = writable(true);
-  let filteredPermissions = writable<any[]>([]);
-  let searchTerm = writable("");
-  let showDropdown = writable(false);
-  let dropdownWrapperRef: any = $state(null);
+  const uid = $props.id();
+
+  let availablePermissions = $state<string[]>([]);
+  let loading = $state(true);
+  let searchTerm = $state("");
+  let showDropdown = $state(false);
+  let dropdownWrapperRef = $state<HTMLDivElement | null>(null);
 
   if (!formData.permissions) {
     formData.permissions = [];
   }
 
+  const selected = $derived(formData.permissions ?? []);
+  const filteredPermissions = $derived.by(() => {
+    const term = searchTerm.trim().toLowerCase();
+    return term ? availablePermissions.filter((p) => p.toLowerCase().includes(term)) : availablePermissions;
+  });
+
   async function getPermissions() {
     try {
-      const response: any = await Dmart.query({
-        space_name: "management",
+      const response = await Dmart.query({
+        space_name: MANAGEMENT_SPACE,
         subpath: "/permissions",
         type: QueryType.search,
         search: "",
         limit: 100,
+        retrieve_json_payload: false,
+        retrieve_attachments: false,
       });
-      if (response) {
-        availablePermissions.set(response.records);
-        updateFilteredPermissions();
-      }
+      availablePermissions = (response?.records ?? []).map((perm) => perm.shortname);
     } catch (error) {
-      console.error("Failed to load permissions:", error);
+      log.error("Failed to load permissions:", error);
     } finally {
-      loading.set(false);
+      loading = false;
     }
   }
 
   onMount(() => {
     getPermissions();
-
-    const handleClickOutside = (event: any) => {
-      if (dropdownWrapperRef && !dropdownWrapperRef.contains(event.target)) {
-        showDropdown.set(false);
+    const handleClickOutside = (event: MouseEvent) => {
+      if (dropdownWrapperRef && !dropdownWrapperRef.contains(event.target as Node)) {
+        showDropdown = false;
       }
     };
     document.addEventListener("click", handleClickOutside);
-    return () => {
-      document.removeEventListener("click", handleClickOutside);
-    };
+    return () => document.removeEventListener("click", handleClickOutside);
   });
 
-  function updateFilteredPermissions() {
-    searchTerm.subscribe((term) => {
-      availablePermissions.subscribe((perms) => {
-        filteredPermissions.set(
-          perms
-            .filter((perm) =>
-              perm.shortname.toLowerCase().includes(term.toLowerCase()),
-            )
-            .map((perm) => ({ key: perm.shortname, value: perm.shortname })),
-        );
-      });
-    });
+  function togglePermission(permission: string) {
+    const current = formData.permissions ?? [];
+    formData.permissions = current.includes(permission)
+      ? current.filter((p) => p !== permission)
+      : [...current, permission];
   }
 
-  function togglePermission(event: any, permission: any) {
-    event.stopPropagation();
-
-    const index = formData.permissions.indexOf(permission.value);
-    if (index === -1) {
-      formData.permissions = [...formData.permissions, permission.value];
-    } else {
-      formData.permissions = formData.permissions.filter(
-        (p: any) => p !== permission.value,
-      );
-    }
-  }
-
-  function removePermission(permission: any) {
-    formData.permissions = formData.permissions.filter((p: any) => p !== permission);
+  function removePermission(permission: string) {
+    formData.permissions = (formData.permissions ?? []).filter((p) => p !== permission);
   }
 
   function validate() {
-    return formData.permissions.length !== 0;
+    return (formData.permissions ?? []).length !== 0;
   }
 
+  // eslint-disable-next-line @typescript-eslint/no-unused-vars, no-useless-assignment -- $bindable() prop: assigned here, read by the parent through bind:validateFn
   validateFn = validate;
-
-  searchTerm.subscribe((term) => {
-    if (term) {
-      updateFilteredPermissions();
-    } else {
-      availablePermissions.subscribe((perms) => {
-        filteredPermissions.set(
-          perms.map((perm) => ({ key: perm.shortname, value: perm.shortname })),
-        );
-      });
-    }
-  });
 </script>
 
-<div class={fullWidth ? "card card-full" : "card"}>
-  <h2 class="card-title">{$_("rolePermissions")}</h2>
+<div class={fullWidth ? "" : "rounded-card border border-border bg-surface-2 shadow-card p-4 sm:p-5"}>
+  <h2 class="text-lg font-semibold text-text mb-4">{$_("rolePermissions")}</h2>
 
-  <div class="form-group">
-    <label class="form-label" for="permissions-search">
-      <span class="required">*</span>
+  <div>
+    <label for="{uid}-permissions-search" class="block text-sm font-medium text-text mb-1.5">
+      <span class="text-danger" aria-hidden="true">*</span>
       {$_("permissions.permissions")}
     </label>
 
-    {#if $loading}
-      <div class="loading-skeleton">
-        <div class="skeleton-line"></div>
-      </div>
+    {#if loading}
+      <LoadingState variant="skeleton" rows={2} />
     {:else}
-      <div class="dropdown-wrapper" bind:this={dropdownWrapperRef}>
-        <div class="search-container">
-          <div class="search-input-wrapper">
-            <div class="search-icon">
-              <svg
-                width="16"
-                height="16"
-                viewBox="0 0 24 24"
-                fill="none"
-                stroke="currentColor"
-                stroke-width="2"
-              >
-                <circle cx="11" cy="11" r="8"></circle>
-                <path d="m21 21-4.35-4.35"></path>
-              </svg>
-            </div>
-            <label for="permissions-search"></label>
-            <input
-              id="permissions-search"
-              class="search-input"
-              placeholder={$_("searchPermissionsPlaceholder")}
-              bind:value={$searchTerm}
-              onfocus={() => showDropdown.set(true)}
-              onkeydown={(e) => {
-                if (e.key === "Enter") {
-                  showDropdown.set(false);
-                }
-              }}
-            />
-          </div>
+      <div class="relative" bind:this={dropdownWrapperRef}>
+        <div class="relative">
+          <SearchOutline size="sm" class="absolute start-3 top-1/2 -translate-y-1/2 text-text-faint pointer-events-none" aria-hidden="true" />
+          <input
+            id="{uid}-permissions-search"
+            type="search"
+            class="w-full h-9 ps-9 pe-3 text-sm rounded-control border border-border bg-surface-2 text-text placeholder:text-text-faint focus:border-primary focus:ring-1 focus:ring-primary"
+            placeholder={$_("searchPermissionsPlaceholder")}
+            bind:value={searchTerm}
+            role="combobox"
+            aria-expanded={showDropdown}
+            aria-controls="{uid}-permissions-list"
+            aria-autocomplete="list"
+            onfocus={() => (showDropdown = true)}
+            onkeydown={(e) => {
+              if (e.key === "Enter") {
+                e.preventDefault();
+                showDropdown = false;
+              }
+              if (e.key === "Escape") showDropdown = false;
+            }}
+          />
         </div>
 
-        {#if $showDropdown && $filteredPermissions.length > 0}
-          <div class="dropdown">
-            {#each $filteredPermissions as permission}
-              <button
-                class="dropdown-item"
-                aria-label={`${$_("toggle")} ${permission.key}`}
-                onclick={(e) => togglePermission(e, permission)}
-              >
-                <span>{permission.key}</span>
-                {#if formData.permissions.includes(permission.value)}
-                  <span class="selected-badge">{$_("selected")}</span>
-                {/if}
-              </button>
+        {#if showDropdown && filteredPermissions.length > 0}
+          <ul
+            id="{uid}-permissions-list"
+            role="listbox"
+            aria-multiselectable="true"
+            class="absolute start-0 end-0 mt-1 z-10 max-h-60 overflow-y-auto rounded-card border border-border bg-surface-2 shadow-modal list-none p-1 m-0"
+          >
+            {#each filteredPermissions as permission (permission)}
+              {@const isSelected = selected.includes(permission)}
+              <li>
+                <button
+                  type="button"
+                  role="option"
+                  aria-selected={isSelected}
+                  class="w-full flex items-center justify-between gap-2 px-3 py-2 text-sm text-start text-text rounded-control hover:bg-surface-3 cursor-pointer"
+                  onclick={() => togglePermission(permission)}
+                >
+                  <span>{permission}</span>
+                  {#if isSelected}
+                    <Badge variant="primary" size="sm">{$_("selected")}</Badge>
+                  {/if}
+                </button>
+              </li>
             {/each}
-          </div>
+          </ul>
         {/if}
       </div>
     {/if}
 
-    {#if formData.permissions.length > 0}
-      <div class="permissions-display">
-        <!-- svelte-ignore a11y_label_has_associated_control -->
-        <label class="form-label">{$_("addedPermissions")}</label>
-        <div class="permissions-container">
-          <div class="permissions-list">
-            {#each formData.permissions as permission}
-              <div class="permission-tag">
-                <span>{permission}</span>
-                <button
-                  class="remove-btn"
-                  aria-label={`${$_("remove")} ${permission}`}
-                  onclick={() => removePermission(permission)}
-                  type="button"
-                >
-                  ×
-                </button>
-              </div>
-            {/each}
-          </div>
-        </div>
+    {#if selected.length > 0}
+      <div class="mt-4">
+        <p class="text-sm font-medium text-text mb-2" id="{uid}-added-label">{$_("addedPermissions")}</p>
+        <ul class="flex flex-wrap gap-2 list-none p-0 m-0" aria-labelledby="{uid}-added-label">
+          {#each selected as permission (permission)}
+            <li class="inline-flex items-center gap-1 ps-3 pe-1 py-1 rounded-full text-sm bg-primary-soft text-primary">
+              <span>{permission}</span>
+              <button
+                type="button"
+                class="w-6 h-6 inline-flex items-center justify-center rounded-full hover:bg-primary hover:text-text-on-primary transition-colors cursor-pointer"
+                aria-label="{$_('remove')} {permission}"
+                onclick={() => removePermission(permission)}
+              >
+                <CloseOutline size="xs" aria-hidden="true" />
+              </button>
+            </li>
+          {/each}
+        </ul>
       </div>
     {:else}
-      <div class="empty-state">{$_("noPermissionsAdded")}</div>
+      <p class="mt-4 py-6 px-4 text-sm text-center text-text-muted rounded-card border-2 border-dashed border-border">
+        {$_("noPermissionsAdded")}
+      </p>
     {/if}
   </div>
 </div>
-
-<style>
-  .card {
-    background: white;
-    border-radius: 12px;
-    box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.1);
-    border: 1px solid #e5e7eb;
-    padding: 24px;
-    margin-bottom: 24px;
-    max-width: 1200px;
-    margin-left: auto;
-    margin-right: auto;
-  }
-
-  /* Flattened variant for embedding inside a modal section (full width, no card chrome). */
-  .card-full {
-    max-width: 100%;
-    width: 100%;
-    margin: 0;
-    padding: 0;
-    border: none;
-    box-shadow: none;
-    background: transparent;
-    border-radius: 0;
-  }
-
-  .card-title {
-    font-size: 24px;
-    font-weight: 700;
-    color: #111827;
-    margin-bottom: 24px;
-  }
-
-  .form-group {
-    margin-bottom: 24px;
-  }
-
-  .form-label {
-    display: block;
-    font-weight: 600;
-    color: #374151;
-    margin-bottom: 8px;
-    font-size: 14px;
-  }
-
-  .required {
-    color: #ef4444;
-    font-size: 18px;
-    vertical-align: middle;
-    margin-right: 4px;
-  }
-
-  .loading-skeleton {
-    padding: 16px 0;
-  }
-
-  .skeleton-line {
-    height: 12px;
-    background: #e5e7eb;
-    border-radius: 6px;
-    animation: pulse 2s cubic-bezier(0.4, 0, 0.6, 1) infinite;
-    margin: 10px 8px;
-  }
-
-  @keyframes pulse {
-    0%,
-    100% {
-      opacity: 1;
-    }
-    50% {
-      opacity: 0.5;
-    }
-  }
-
-  .search-container {
-    margin-bottom: 16px;
-    position: relative;
-  }
-
-  .search-input-wrapper {
-    position: relative;
-  }
-
-  .search-icon {
-    position: absolute;
-    left: 12px;
-    top: 50%;
-    transform: translateY(-50%);
-    color: #6b7280;
-    pointer-events: none;
-  }
-
-  .search-input {
-    width: 100%;
-    padding: 12px 16px 12px 44px;
-    border: none;
-    border-radius: 8px;
-    font-size: 14px;
-    background: #f9fafb;
-    transition: all 0.2s ease;
-  }
-
-  .search-input:focus {
-    outline: none;
-    box-shadow: 0 0 0 2px rgba(99, 102, 241, 0.2);
-  }
-
-  /* Anchors the absolutely-positioned dropdown to the input width, not the viewport. */
-  .dropdown-wrapper {
-    position: relative;
-  }
-
-  .dropdown {
-    position: absolute;
-    left: 0;
-    right: 0;
-    width: 100%;
-    margin-top: 4px;
-    background: white;
-    border: 1px solid #e5e7eb;
-    border-radius: 8px;
-    box-shadow: 0 10px 15px -3px rgba(0, 0, 0, 0.1);
-    z-index: 10;
-    max-height: 240px;
-    overflow-y: auto;
-  }
-
-  .dropdown-item {
-    padding: 12px 16px;
-    cursor: pointer;
-    display: flex;
-    align-items: center;
-    justify-content: space-between;
-    transition: background-color 0.2s ease;
-    border-bottom: 1px solid #f3f4f6;
-  }
-
-  .dropdown-item:last-child {
-    border-bottom: none;
-  }
-
-  .dropdown-item:hover {
-    background: #f9fafb;
-  }
-
-  .selected-badge {
-    background: #dbeafe;
-    color: #1e40af;
-    padding: 4px 8px;
-    border-radius: 12px;
-    font-size: 12px;
-    font-weight: 600;
-  }
-
-  .permissions-display {
-    margin-top: 24px;
-  }
-
-  .permissions-container {
-    padding: 16px 0;
-  }
-
-  .permissions-list {
-    display: flex;
-    flex-wrap: wrap;
-    gap: 8px;
-  }
-
-  .permission-tag {
-    background: #dbeafe;
-    color: #1e40af;
-    padding: 8px 12px;
-    border-radius: 20px;
-    display: flex;
-    align-items: center;
-    gap: 8px;
-    font-size: 14px;
-  }
-
-  .remove-btn {
-    background: none;
-    border: none;
-    color: #1e40af;
-    cursor: pointer;
-    font-size: 18px;
-    line-height: 1;
-    padding: 0;
-    width: 20px;
-    height: 20px;
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    border-radius: 50%;
-    transition: all 0.2s ease;
-  }
-
-  .remove-btn:hover {
-    background: #1e40af;
-    color: white;
-  }
-
-  .empty-state {
-    margin-top: 16px;
-    padding: 32px 16px;
-    border: 2px dashed #d1d5db;
-    border-radius: 8px;
-    text-align: center;
-    color: #6b7280;
-    font-size: 14px;
-  }
-</style>

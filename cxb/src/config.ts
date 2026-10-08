@@ -9,6 +9,10 @@ interface WebsiteConfig {
   backend: string;
   backend_timeout: number;
   delay_total_count?: boolean;
+  // Base URL of the PlantUML server that renders schema and workflow diagrams.
+  // Diagram bodies are sent to it, so point this at an in-house instance when
+  // they must not leave the network. Default: the public plantuml.com server.
+  plantuml_server?: string;
   theme?: {
     type: "solid" | "gradient";
     value: string;
@@ -29,7 +33,8 @@ const defaultConfig: WebsiteConfig = {
   languages: { ar: "العربية", en: "English" },
   backend: "",
   backend_timeout: 30000,
-  delay_total_count: false
+  delay_total_count: false,
+  plantuml_server: "https://www.plantuml.com/plantuml",
 };
 
 const loadConfig = async (): Promise<WebsiteConfig> => {

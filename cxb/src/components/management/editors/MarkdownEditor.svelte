@@ -1,167 +1,165 @@
 <script lang="ts">
-    import {Button, Card, TabItem, Tabs} from "flowbite-svelte";
-    import {createEventDispatcher} from "svelte";
-    import {marked} from "marked";
-    import DOMPurify from "dompurify";
-    import {mangle} from "marked-mangle";
-    import {gfmHeadingId} from "marked-gfm-heading-id";
+    import { TabItem, Tabs } from "flowbite-svelte";
+    import LoadingState from "@/components/ui/LoadingState.svelte";
+    import { renderMarkdown } from "@/utils/markdown";
+    import { _ } from "@/i18n";
 
-    const dispatch = createEventDispatcher();
-  marked.use(mangle());
-  marked.use(gfmHeadingId({
-    prefix: "my-prefix-",
-  }));
+    // Markdown source with a preview tab. `marked` and DOMPurify are loaded by
+    // renderMarkdown() the first time the preview is shown, and configured once
+    // for the whole session there (not per editor instance).
+    let {
+        content = $bindable(""),
+    }: {
+        content: string;
+    } = $props();
 
-  let {
-    content = $bindable("")
-  } : {
-    content: string,
-    handleSave?: () => void
-  } = $props();
+    if (typeof content !== "string") {
+        content = "";
+    }
 
-  if (typeof(content) !== "string"){
-    content = "";
-  }
+    let textarea: HTMLTextAreaElement | undefined = $state();
+    let start = 0,
+        end = 0;
+    function handleSelect() {
+        if (!textarea) return;
+        start = textarea.selectionStart;
+        end = textarea.selectionEnd;
+    }
 
-  let textarea;
-  let start = 0, end = 0;
-  function handleSelect() {
-    start = textarea.selectionStart;
-    end = textarea.selectionEnd;
-  }
-
-  const listViewInsert = "{% ListView \n" +
-          "   type=\"subpath\"\n" +
-          "   space_name=\"\" \n" +
-          "   subpath=\"/\" \n" +
-          "   is_clickable=false %}\n" +
-          "{% /ListView %}\n";
-  const tableInsert = `| Header 1 | Header 2 |
+    const listViewInsert =
+        "{% ListView \n" +
+        '   type="subpath"\n' +
+        '   space_name="" \n' +
+        '   subpath="/" \n' +
+        "   is_clickable=false %}\n" +
+        "{% /ListView %}\n";
+    const tableInsert = `| Header 1 | Header 2 |
 |----------|----------|
 |  Cell1   |  Cell2   |`;
 
-  function handleKeyDown(event) {
-    if (event.ctrlKey) {
-      if (['b','i','t'].includes(event.key)) {
-        event.preventDefault();
-        switch (event.key) {
-          case 'b':
-            handleFormatting("**")
-            break;
-          case 'i':
-            handleFormatting("_")
-            break;
-          case 't':
-            handleFormatting("~~")
-            break;
+    function handleKeyDown(event: KeyboardEvent) {
+        if (event.ctrlKey && ["b", "i", "t"].includes(event.key)) {
+            event.preventDefault();
+            switch (event.key) {
+                case "b":
+                    handleFormatting("**");
+                    break;
+                case "i":
+                    handleFormatting("_");
+                    break;
+                case "t":
+                    handleFormatting("~~");
+                    break;
+            }
         }
-      }
-    }
-  }
-
-  function handleFormatting(format: any, isWrap = true, isPerLine = false){
-    if (isWrap && start === 0 && end === 0) {
-      return
-    }
-    if (isWrap) {
-      textarea.value = textarea.value.substring(0, start) + format + textarea.value.substring(start, end) + format + textarea.value.substring(end);
-    }
-    else {
-      start = textarea.selectionStart;
-      end = textarea.selectionEnd;
-      if (isPerLine){
-        const lines = textarea.value.split('\n');
-        let lineStart = textarea.value.substring(0, start).split('\n').length - 1;
-        let lineEnd = textarea.value.substring(0, end).split('\n').length - 1;
-
-        if (textarea.value[end] === '\n') {
-          lineEnd--;
-        }
-
-        for (let i = lineStart; i <= lineEnd; i++) {
-          lines[i] = `${format} ` + lines[i];
-        }
-
-        textarea.value = lines.join('\n');
-      }
-      else {
-        let lineStart = textarea.value.lastIndexOf('\n', start - 1) + 1;
-        let lineEnd = textarea.value.indexOf('\n', end);
-        if (lineEnd === -1) {
-          lineEnd = textarea.value.length;
-        }
-        textarea.value = textarea.value.substring(0, lineStart) + `${format} ` + textarea.value.substring(lineStart, lineEnd) + textarea.value.substring(lineEnd);
-      }
     }
 
-    start = 0;
-    end = 0;
-    content = structuredClone(textarea.value);
-  }
+    function handleFormatting(format: string, isWrap = true, isPerLine = false) {
+        if (!textarea) return;
+        if (isWrap && start === 0 && end === 0) {
+            return;
+        }
+        if (isWrap) {
+            textarea.value =
+                textarea.value.substring(0, start) +
+                format +
+                textarea.value.substring(start, end) +
+                format +
+                textarea.value.substring(end);
+        } else {
+            start = textarea.selectionStart;
+            end = textarea.selectionEnd;
+            if (isPerLine) {
+                const lines = textarea.value.split("\n");
+                const lineStart = textarea.value.substring(0, start).split("\n").length - 1;
+                let lineEnd = textarea.value.substring(0, end).split("\n").length - 1;
+
+                if (textarea.value[end] === "\n") {
+                    lineEnd--;
+                }
+
+                for (let i = lineStart; i <= lineEnd; i++) {
+                    lines[i] = `${format} ` + lines[i];
+                }
+
+                textarea.value = lines.join("\n");
+            } else {
+                const lineStart = textarea.value.lastIndexOf("\n", start - 1) + 1;
+                let lineEnd = textarea.value.indexOf("\n", end);
+                if (lineEnd === -1) {
+                    lineEnd = textarea.value.length;
+                }
+                textarea.value =
+                    textarea.value.substring(0, lineStart) +
+                    `${format} ` +
+                    textarea.value.substring(lineStart, lineEnd) +
+                    textarea.value.substring(lineEnd);
+            }
+        }
+
+        start = 0;
+        end = 0;
+        content = textarea.value;
+    }
+
+    type Tool = { key: string; glyph: string; run: () => void; strong?: boolean };
+    const tools: Tool[] = [
+        { key: "editor_bold", glyph: "B", strong: true, run: () => handleFormatting("**") },
+        { key: "editor_italic", glyph: "I", run: () => handleFormatting("_") },
+        { key: "editor_strike", glyph: "S", run: () => handleFormatting("~~") },
+        { key: "editor_bullet_list", glyph: "•", run: () => handleFormatting("*", false, true) },
+        { key: "editor_ordered_list", glyph: "1.", run: () => handleFormatting("1.", false, true) },
+        { key: "editor_heading_1", glyph: "H1", run: () => handleFormatting("#", false) },
+        { key: "editor_heading_2", glyph: "H2", run: () => handleFormatting("##", false) },
+        { key: "editor_heading_3", glyph: "H3", run: () => handleFormatting("###", false) },
+        { key: "editor_table", glyph: "⊞", run: () => handleFormatting(tableInsert, false) },
+        { key: "editor_list_view", glyph: "☰", run: () => handleFormatting(listViewInsert, false) },
+    ];
+
+    const tabActive = "px-3 py-2 text-sm font-medium border-b-2 border-primary text-primary bg-transparent rounded-none";
+    const tabInactive =
+        "px-3 py-2 text-sm font-medium border-b-2 border-transparent text-text-muted hover:text-text hover:border-border-strong bg-transparent rounded-none";
 </script>
 
-<Card class="h-full max-w-full pt-1">
+<div class="rounded-card border border-border bg-surface-2 shadow-card">
+    <div class="flex flex-wrap gap-0.5 p-2 border-b border-border bg-surface rounded-t-card" role="toolbar" aria-label={$_("editor_toolbar")}>
+        {#each tools as tool (tool.key)}
+            <button
+                type="button"
+                class="inline-flex items-center justify-center min-w-8 h-8 px-1.5 rounded-control text-xs text-text-muted hover:text-text hover:bg-surface-3 cursor-pointer {tool.strong ? 'font-bold' : 'font-medium'}"
+                aria-label={$_(tool.key)}
+                title={$_(tool.key)}
+                onclick={tool.run}
+            >
+                <span aria-hidden="true">{tool.glyph}</span>
+            </button>
+        {/each}
+    </div>
 
-  <div class="flex flex-wrap justify-end mt-2 pt-2">
-    <Button size="xs" color="light" class="mx-1" onclick={() => handleFormatting("**")}>
-      <strong>B</strong>
-    </Button>
-    <Button size="xs" color="light" class="mx-1" onclick={() => handleFormatting("_")}>
-      <i>I</i>
-    </Button>
-    <Button size="xs" color="light" class="mx-1" onclick={() => handleFormatting("~~")}>
-      <del>S</del>
-    </Button>
-    <Button size="xs" color="light" class="mx-1" onclick={() => handleFormatting("*", false, true)}>
-      <span>ul</span>
-    </Button>
-    <Button size="xs" color="light" class="mx-1" onclick={() => handleFormatting("1.", false, true)}>
-      <span>li</span>
-    </Button>
-    <Button size="xs" color="light" class="mx-1" onclick={() => handleFormatting("#", false)}>
-      <span>H1</span>
-    </Button>
-    <Button size="xs" color="light" class="mx-1" onclick={() => handleFormatting("##", false)}>
-      <span>H2</span>
-    </Button>
-    <Button size="xs" color="light" class="mx-1" onclick={() => handleFormatting("###", false)}>
-      <span>H3</span>
-    </Button>
-    <Button size="xs" color="light" class="mx-1" onclick={() => handleFormatting(tableInsert, false)}>
-      <span>table</span>
-    </Button>
-    <Button size="xs" color="light" class="mx-1" onclick={() => handleFormatting(listViewInsert, false)}>
-      <span>list view</span>
-    </Button>
-  </div>
-
-  <Tabs>
-    <TabItem open title="Editor">
-      <div class="w-full">
-        <textarea
-            bind:this={textarea}
-            onselect={handleSelect}
-            onkeydown={handleKeyDown}
-            rows="22"
-            maxlength="4096"
-            class="w-full font-mono bg-white border border-gray-300 rounded-lg p-2.5 focus:ring-blue-500 focus:border-blue-500"
-            bind:value={content}
-            oninput={() => dispatch("changed")}
-            onblur={(e) => {
-              e.preventDefault();
-              textarea.focus();
-            }}
-        ></textarea>
-      </div>
-    </TabItem>
-    <TabItem title="Preview">
-      <div class="w-full">
-        <article class="prose">
-          <!-- marked does NOT strip HTML, and `content` can be a server-loaded
-               payload — sanitize before injecting. -->
-          {@html DOMPurify.sanitize(marked(content) as string)}
-        </article>
-      </div>
-    </TabItem>
-  </Tabs>
-</Card>
+    <Tabs tabStyle="underline" divider={false} class="px-2 border-b border-border space-x-0 rtl:space-x-reverse" classes={{ content: "p-3 bg-transparent dark:bg-transparent rounded-none mt-0" }}>
+        <TabItem open title={$_("editor")} activeClass={tabActive} inactiveClass={tabInactive}>
+            <label for="markdown-source" class="sr-only">{$_("editor")}</label>
+            <textarea
+                id="markdown-source"
+                bind:this={textarea}
+                onselect={handleSelect}
+                onkeydown={handleKeyDown}
+                rows="22"
+                maxlength="4096"
+                dir="auto"
+                class="w-full font-mono text-sm bg-surface-2 text-text border border-border rounded-control p-2.5 focus:ring-primary focus:border-primary"
+                bind:value={content}
+            ></textarea>
+        </TabItem>
+        <TabItem title={$_("preview")} activeClass={tabActive} inactiveClass={tabInactive}>
+            {#await renderMarkdown(content)}
+                <LoadingState variant="skeleton" rows={5} />
+            {:then html}
+                <article class="prose dark:prose-invert max-w-none">
+                    <!-- eslint-disable-next-line svelte/no-at-html-tags -- sanitised by renderMarkdown -->
+                    {@html html}
+                </article>
+            {/await}
+        </TabItem>
+    </Tabs>
+</div>

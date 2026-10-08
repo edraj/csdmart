@@ -62,7 +62,7 @@
   <!-- Attachment Preview -->
   {#if selectedAttachments.length > 0}
     <div class="attachment-preview-container">
-      {#each selectedAttachments as file, index}
+      {#each selectedAttachments as file, index (index)}
         <div class="attachment-preview-item">
           {#if file.type.startsWith("audio/") && file.name.includes("voice_message_")}
             <div class="voice-message-icon">🎤</div>
@@ -71,7 +71,7 @@
               <div class="file-size">{formatFileSize(file.size)}</div>
             </div>
           {:else if getPreviewUrl(file)}
-            <img
+            <img loading="lazy" decoding="async"
               src={getPreviewUrl(file)}
               alt={file.name}
               class="preview-image"
@@ -191,8 +191,8 @@
 
 <style>
   .message-input-container {
-    background: var(--surface-card);
-    border-top: 1px solid var(--color-gray-200);
+    background: var(--color-surface-2);
+    border-top: 1px solid var(--color-border);
     padding: 1rem;
   }
 
@@ -210,9 +210,9 @@
     align-items: center;
     gap: 0.5rem;
     padding: 0.5rem;
-    background: var(--color-gray-50);
-    border: 1px solid var(--color-gray-200);
-    border-radius: var(--radius-md);
+    background: var(--color-surface);
+    border: 1px solid var(--color-border);
+    border-radius: var(--radius-control);
     position: relative;
     max-width: 200px;
   }
@@ -220,7 +220,7 @@
   .preview-image {
     width: 40px;
     height: 40px;
-    border-radius: var(--radius-sm);
+    border-radius: var(--radius-control);
     object-fit: cover;
   }
 
@@ -242,7 +242,7 @@
   .file-name {
     font-size: 0.875rem;
     font-weight: 500;
-    color: var(--color-gray-700);
+    color: var(--color-text);
     white-space: nowrap;
     overflow: hidden;
     text-overflow: ellipsis;
@@ -250,14 +250,14 @@
 
   .file-size {
     font-size: 0.75rem;
-    color: var(--color-gray-500);
+    color: var(--color-text-muted);
   }
 
   .remove-attachment-btn {
     position: absolute;
     top: -5px;
-    right: -5px;
-    background: var(--color-error);
+    inset-inline-end: -5px;
+    background: var(--color-danger);
     color: white;
     border: none;
     border-radius: var(--radius-full);
@@ -272,16 +272,16 @@
   }
 
   .remove-attachment-btn:hover {
-    background: #dc2626;
+    background: var(--color-danger);
   }
 
   .message-input {
     display: flex;
     align-items: flex-end;
     gap: 0.5rem;
-    background: var(--color-gray-50);
-    border: 1px solid var(--color-gray-200);
-    border-radius: var(--radius-xl);
+    background: var(--color-surface);
+    border: 1px solid var(--color-border);
+    border-radius: var(--radius-card);
     padding: 0.5rem;
     transition: border-color var(--duration-fast) ease;
   }
@@ -306,7 +306,7 @@
 
   .attachment-btn:hover,
   .voice-btn:hover {
-    background: var(--color-gray-200);
+    background: var(--color-border);
   }
 
   .attachment-btn:disabled,
@@ -325,15 +325,15 @@
     display: flex;
     align-items: center;
     gap: 0.5rem;
-    background: #fee2e2;
+    background: var(--color-danger-soft);
     padding: 0.5rem;
-    border-radius: var(--radius-xl);
+    border-radius: var(--radius-card);
   }
 
   .recording-dot {
     width: 8px;
     height: 8px;
-    background: var(--color-error);
+    background: var(--color-danger);
     border-radius: var(--radius-full);
     animation: pulse 1s infinite;
   }
@@ -341,7 +341,7 @@
   .recording-duration {
     font-size: 0.875rem;
     font-weight: 500;
-    color: var(--color-error);
+    color: var(--color-danger);
   }
 
   .stop-recording-btn,
@@ -389,7 +389,7 @@
   }
 
   .send-btn:disabled {
-    background: var(--color-gray-400);
+    background: var(--color-text-faint);
     cursor: not-allowed;
   }
 
@@ -402,11 +402,6 @@
     animation: spin 1s linear infinite;
   }
 
-  @keyframes spin {
-    to {
-      transform: rotate(360deg);
-    }
-  }
 
   @keyframes pulse {
     0%,

@@ -1,50 +1,84 @@
 <script lang="ts">
   import { onMount } from "svelte";
-  import { _ } from "@/i18n";
-  import {
-    getReports,
-    getReportDetails,
-    replyToReport,
-    updateReportStatus,
-  } from "@/lib/dmart_services";
+  import { _, locale } from "@/i18n";
+  import { formatDate } from "@/lib/format";
+  import { setTitle } from "@/lib/title";
+  import { log } from "@/lib/logger";
+  import { getReports, getReportDetails, replyToReport } from "@/lib/dmart_services";
   import { getWorkflow } from "@/lib/dmart_services/workflows";
-  import {
-    successToastMessage,
-    errorToastMessage,
-  } from "@/lib/toasts_messages";
-  import { formatDate } from "@/lib/helpers";
-  import { Modal } from "flowbite-svelte";
-  import { InboxOutline } from "flowbite-svelte-icons";
+  import { toasts } from "@/lib/toast";
+  import { FlagOutline, InboxOutline, PaperPlaneOutline } from "flowbite-svelte-icons";
+  import Modal from "@/components/Modal.svelte";
+  import PageHeader from "@/components/ui/PageHeader.svelte";
+  import CatalogToolbar from "@/components/ui/CatalogToolbar.svelte";
+  import Card from "@/components/ui/Card.svelte";
+  import Badge from "@/components/ui/Badge.svelte";
+  import EmptyState from "@/components/ui/EmptyState.svelte";
+  import ErrorState from "@/components/ui/ErrorState.svelte";
+  import LoadingState from "@/components/ui/LoadingState.svelte";
 
-  let reports = $state<any[]>([]);
+  interface Reply {
+    timestamp: string;
+    admin_shortname: string;
+    reply: string;
+  }
+
+  interface ReportData {
+    title: string;
+    description: string;
+    report_type?: string;
+    reported_entry?: string;
+    reported_entry_title?: string;
+    reported_space?: string;
+    reported_subpath?: string;
+    created_at?: string;
+    replies: Reply[];
+  }
+
+  interface Report {
+    shortname: string;
+    attributes: { state?: string; owner_shortname?: string; created_at?: string; [key: string]: unknown };
+    attachments?: unknown;
+    reportData: ReportData;
+  }
+
+  interface WorkflowState {
+    state: string;
+    name?: string;
+    next?: Array<{ action: string; state?: string }>;
+  }
+
+  interface Workflow {
+    initial_state?: Array<{ name?: string; state?: string }>;
+    states?: WorkflowState[];
+  }
+
+  let reports = $state<Report[]>([]);
   let isLoading = $state(true);
-  let selectedReport: any = $state(null);
+  let loadError = $state<unknown>(null);
+  let selectedReport = $state<Report | null>(null);
   let showReplyModal = $state(false);
   let adminReply = $state("");
   let isSubmittingReply = $state(false);
   let selectedAction = $state("no_action");
-  let workflow: any = $state(null);
-  let statusFilters = $state<any[]>([
-    { value: "all", label: $_("reports.admin.filters.all") || "All Reports" },
-  ]);
-  let availableTransitions = $state<any[]>([]);
-
+  let workflow = $state<Workflow | null>(null);
+  let availableTransitions = $state<Array<{ action: string }>>([]);
   let selectedStatusFilter = $state("all");
 
-  function formatRelativeTime(dateString: any) {
-    if (!dateString) return "Unknown";
-    const date = new Date(dateString);
-    const now = new Date();
-    const diffInSeconds = Math.floor((now.getTime() - date.getTime()) / 1000);
+  $effect(() => setTitle($_("reports.admin.title")));
 
-    if (diffInSeconds < 60) return "Just now";
-    if (diffInSeconds < 3600) return `${Math.floor(diffInSeconds / 60)}m ago`;
-    if (diffInSeconds < 86400)
-      return `${Math.floor(diffInSeconds / 3600)}h ago`;
-    if (diffInSeconds < 2592000)
-      return `${Math.floor(diffInSeconds / 86400)}d ago`;
-    return formatDate(dateString);
-  }
+  // Labels resolve at render time so a language switch re-labels the filter.
+  const statusFilters = $derived.by(() => {
+    const filters: Array<{ value: string; label: string }> = [{ value: "all", label: $_("reports.admin.filters.all") }];
+    for (const s of workflow?.initial_state ?? []) {
+      const value = s.name ?? s.state;
+      if (value && !filters.some((f) => f.value === value)) filters.push({ value, label: value });
+    }
+    for (const s of workflow?.states ?? []) {
+      if (!filters.some((f) => f.value === s.state)) filters.push({ value: s.state, label: s.name || s.state });
+    }
+    return filters;
+  });
 
   onMount(async () => {
     await Promise.all([loadReports(), loadWorkflow()]);
@@ -53,169 +87,131 @@
   async function loadWorkflow() {
     try {
       const response = await getWorkflow("report_workflow", "catalog");
-
-      if (response && response?.payload?.body) {
-        workflow = response.payload.body;
-        const dynamicFilters: any[] = [];
-
-        // Add initial states to filters
-        if (workflow.initial_state) {
-          workflow.initial_state.forEach((s: any) => {
-            dynamicFilters.push({
-              value: s.name,
-              label: s.name.charAt(0).toUpperCase() + s.name.slice(1),
-            });
-          });
-        }
-
-        // Add other states to filters
-        if (workflow.states) {
-          workflow.states.forEach((s: any) => {
-            if (!dynamicFilters.find((f: any) => f.value === s.state)) {
-              dynamicFilters.push({
-                value: s.state,
-                label: s.name || s.state,
-              });
-            }
-          });
-        }
-
-        statusFilters = [
-          {
-            value: "all",
-            label: $_("reports.admin.filters.all") || "All Reports",
-          },
-          ...dynamicFilters,
-        ];
-      }
+      if (response?.payload?.body) workflow = response.payload.body as Workflow;
     } catch (err) {
-      console.error("Error loading workflow:", err);
+      log.error("Error loading workflow:", err);
     }
   }
 
-  function getRepliesFromAttachments(attachments: any) {
+  function getRepliesFromAttachments(attachments: unknown): Reply[] {
     if (!attachments) return [];
-    let allAttachments: any[] = [];
+    let all: Array<Record<string, unknown>> = [];
     if (Array.isArray(attachments)) {
-      allAttachments = attachments;
-    } else {
-      // Dmart often returns attachments as a dictionary
-      Object.values(attachments).forEach((val: any) => {
-        if (Array.isArray(val)) {
-          allAttachments.push(...val);
-        } else if (val && typeof val === "object") {
-          allAttachments.push(val);
-        }
-      });
+      all = attachments as Array<Record<string, unknown>>;
+    } else if (typeof attachments === "object") {
+      for (const val of Object.values(attachments as Record<string, unknown>)) {
+        if (Array.isArray(val)) all.push(...(val as Array<Record<string, unknown>>));
+        else if (val && typeof val === "object") all.push(val as Record<string, unknown>);
+      }
     }
+    return all
+      .filter((a) => a.resource_type === "comment")
+      .map((a) => {
+        const attrs = (a.attributes ?? {}) as Record<string, unknown>;
+        const payload = (attrs.payload ?? (a.payload as unknown)) as { body?: { body?: unknown } } | undefined;
+        return {
+          timestamp: String(attrs.created_at ?? a.created_at ?? ""),
+          admin_shortname: String(attrs.owner_shortname ?? a.owner_shortname ?? ""),
+          reply: typeof payload?.body?.body === "string" ? payload.body.body : "",
+        };
+      });
+  }
 
-    return allAttachments
-      .filter((a: any) => a.resource_type === "comment")
-      .map((a: any) => ({
-        timestamp: a.attributes?.created_at || a.created_at,
-        admin_shortname: a.attributes?.owner_shortname || a.owner_shortname,
-        reply: a.attributes?.payload?.body?.body || a.payload?.body?.body || "No content",
-      }));
+  function toReport(raw: Record<string, unknown>): Report {
+    const attributes = (raw.attributes ?? {}) as Report["attributes"];
+    const body = ((attributes.payload as { body?: Record<string, unknown> } | undefined)?.body ?? {}) as Record<string, unknown>;
+    const displayname = attributes.displayname as Record<string, string> | undefined;
+    const description = attributes.description as Record<string, string> | undefined;
+    const str = (v: unknown) => (typeof v === "string" ? v : undefined);
+    return {
+      shortname: String(raw.shortname),
+      attributes,
+      attachments: raw.attachments,
+      reportData: {
+        title: str(body.title) ?? displayname?.en ?? "",
+        description: str(body.description) ?? description?.en ?? "",
+        report_type: str(body.report_type),
+        reported_entry: str(body.entry) ?? str(body.reported_entry),
+        reported_entry_title: str(body.reported_entry_title),
+        reported_space: str(body.space_name) ?? str(body.reported_space),
+        reported_subpath: str(body.subpath) ?? str(body.reported_subpath),
+        created_at: str(body.created_at),
+        replies: getRepliesFromAttachments(raw.attachments),
+      },
+    };
   }
 
   async function loadReports() {
     try {
       isLoading = true;
-      const response = await getReports(
-        selectedStatusFilter === "all" ? undefined : selectedStatusFilter,
-      );
-      reports = response.records.map((report: any) => {
-        const attributes = report.attributes || {};
-        const reportData = attributes.payload?.body || {};
-
-        const replies = getRepliesFromAttachments(report["attachments"]);
-
-        return {
-          ...report,
-          reportData: {
-            ...reportData,
-            replies: replies,
-            title: reportData.title || attributes.displayname?.en || "No Title",
-            description:
-              reportData.description ||
-              attributes.description?.en ||
-              "No Description",
-            reported_entry: reportData.entry || reportData.reported_entry,
-            reported_space: reportData.space_name || reportData.reported_space,
-            reported_subpath: reportData.subpath || reportData.reported_subpath,
-          },
-        };
-      });
+      loadError = null;
+      const response = await getReports(selectedStatusFilter === "all" ? undefined : selectedStatusFilter);
+      reports = ((response?.records ?? []) as unknown as Array<Record<string, unknown>>).map(toReport);
     } catch (err) {
-      console.error("Error loading reports:", err);
-      errorToastMessage(
-        $_("reports.admin.error.loading_failed") || "Failed to load reports",
-      );
+      log.error("Error loading reports:", err);
+      loadError = err;
     } finally {
       isLoading = false;
     }
   }
 
-  async function openReplyModal(report: any) {
+  function stateOf(report: Report): string {
+    return report.attributes?.state || "Pending";
+  }
+
+  function isInitialState(report: Report): boolean {
+    const state = stateOf(report).toLowerCase();
+    if (!workflow?.initial_state) return state === "pending";
+    return workflow.initial_state.some((s) => s.name?.toLowerCase() === state || s.state?.toLowerCase() === state);
+  }
+
+  function workflowStateOf(report: Report): WorkflowState | undefined {
+    const state = stateOf(report).toLowerCase();
+    return workflow?.states?.find((s) => s.state?.toLowerCase() === state);
+  }
+
+  function isEndState(report: Report): boolean {
+    const s = workflowStateOf(report);
+    return !!s && (!s.next || s.next.length === 0);
+  }
+
+  function stateLabel(report: Report): string {
+    return workflowStateOf(report)?.name || stateOf(report);
+  }
+
+  function stateTone(report: Report): "neutral" | "danger" | "success" {
+    if (isInitialState(report)) return "neutral";
+    if (isEndState(report)) return "danger";
+    return workflowStateOf(report) ? "success" : "neutral";
+  }
+
+  async function openReplyModal(report: Report) {
     try {
-      const detailedReport = await getReportDetails(report.shortname);
-      const attributes = detailedReport?.attributes || report.attributes || {};
-      const reportData = attributes.payload?.body || report.reportData || {};
-
-      const replies = getRepliesFromAttachments(
-        detailedReport?.["attachments"] || report["attachments"],
-      );
-
-      selectedReport = {
-        ...report,
-        reportData: {
-          ...reportData,
-          replies: replies,
-          title: reportData.title || attributes.displayname?.en || "No Title",
-          description:
-            reportData.description ||
-            attributes.description?.en ||
-            "No Description",
-          reported_entry: reportData.entry || reportData.reported_entry,
-          reported_space: reportData.space_name || reportData.reported_space,
-          reported_subpath: reportData.subpath || reportData.reported_subpath,
-        },
-      };
+      const detailed = (await getReportDetails(report.shortname)) as unknown as Record<string, unknown> | null;
+      selectedReport = detailed ? toReport({ ...detailed, shortname: report.shortname }) : report;
       showReplyModal = true;
       adminReply = "";
       selectedAction = "no_action";
-
-      // Get available transitions for the current state
-      if (workflow && workflow.states) {
-        console.log({ workflow})
-        const currentState = workflow.states.find(
-          (s: any) => s.state === (selectedReport.attributes.state || "Pending"),
-        );
-        availableTransitions = currentState?.next || [];
-      } else {
-        availableTransitions = [];
-      }
+      availableTransitions = workflowStateOf(selectedReport)?.next ?? [];
     } catch (err) {
-      console.error("Error loading report details:", err);
-      errorToastMessage(
-        $_("reports.admin.error.loading_details_failed") ||
-          "Failed to load report details",
-      );
+      log.error("Error loading report details:", err);
+      toasts.error($_("reports.admin.error.loading_details_failed"));
     }
   }
 
   function closeReplyModal() {
+    if (isSubmittingReply) return;
     showReplyModal = false;
     selectedReport = null;
     adminReply = "";
     selectedAction = "no_action";
   }
 
-  async function submitReply() {
+  async function submitReply(event: SubmitEvent) {
+    event.preventDefault();
+    if (!selectedReport) return;
     if (!adminReply.trim()) {
-      errorToastMessage(
-        $_("reports.admin.validation.reply_required") || "Please enter a reply",
-      );
+      toasts.error($_("reports.admin.validation.reply_required"));
       return;
     }
 
@@ -226,635 +222,214 @@
         adminReply,
         selectedAction !== "no_action" ? selectedAction : undefined,
       );
-
+      isSubmittingReply = false;
       if (success) {
-        successToastMessage(
-          $_("reports.admin.success.reply_sent") || "Reply sent successfully",
-        );
+        toasts.success($_("reports.admin.success.reply_sent"));
         closeReplyModal();
         await loadReports();
       } else {
-        errorToastMessage(
-          $_("reports.admin.error.reply_failed") || "Failed to send reply",
-        );
+        toasts.error($_("reports.admin.error.reply_failed"));
       }
     } catch (err) {
-      console.error("Error submitting reply:", err);
-      errorToastMessage(
-        $_("reports.admin.error.reply_failed") || "Failed to send reply",
-      );
+      log.error("Error submitting reply:", err);
+      toasts.error($_("reports.admin.error.reply_failed"));
     } finally {
       isSubmittingReply = false;
     }
   }
 
-  async function updateStatus(reportShortname: any, newStatus: any) {
-    try {
-      const success = await updateReportStatus(reportShortname, newStatus);
-      if (success) {
-        successToastMessage(
-          $_("reports.admin.success.status_updated") ||
-            "Status updated successfully",
-        );
-        await loadReports();
-      } else {
-        errorToastMessage(
-          $_("reports.admin.error.status_update_failed") ||
-            "Failed to update status",
-        );
-      }
-    } catch (err) {
-      console.error("Error updating status:", err);
-      errorToastMessage(
-        $_("reports.admin.error.status_update_failed") ||
-          "Failed to update status",
-      );
-    }
+  function changeFilter(value: string) {
+    selectedStatusFilter = value;
+    loadReports();
   }
-
-  function getReportStyle(report: any) {
-    const state =
-      report.attributes?.state || report.reportData?.status || "Pending";
-    const normalizedState = state.toLowerCase();
-
-    // Default style
-    let style = {
-      color: "bg-gray-50 text-gray-500",
-      icon: "🔍",
-      label: state,
-      isEndState: false,
-    };
-
-    if (workflow) {
-      // Check if it's an initial state
-      const isInitial = isInitialState(report);
-      if (isInitial) {
-        style = {
-          ...style,
-          color: "bg-gray-50 text-gray-500",
-          icon: "📥",
-          label: state,
-        };
-      } else {
-        const stateObj = workflow.states?.find(
-          (s: any) => s.state?.toLowerCase() === normalizedState,
-        );
-        if (stateObj) {
-          const isEnd = !stateObj.next || stateObj.next.length === 0;
-          if (isEnd) {
-            style = {
-              ...style,
-              color: "bg-red-50 text-red-600",
-              label: stateObj.name || state,
-              isEndState: true,
-            };
-          } else {
-            style = {
-              ...style,
-              color: "bg-green-50 text-green-600",
-              label: stateObj.name || state,
-            };
-          }
-        }
-      }
-    }
-    return { ...style };
-  }
-
-  function isInitialState(report: any) {
-    if (!workflow || !workflow.initial_state)
-      return report.attributes.state === "Pending";
-    const normalizedState = (report.attributes.state || "Pending").toLowerCase();
-    const initialStates = Array.isArray(workflow.initial_state)
-      ? workflow.initial_state
-      : [workflow.initial_state];
-    return initialStates.some(
-      (s: any) =>
-        s.name?.toLowerCase() === normalizedState ||
-        s.state?.toLowerCase() === normalizedState,
-    );
-  }
-
-  $effect(() => {
-    if (selectedStatusFilter) {
-      loadReports();
-    }
-  });
 </script>
 
-<div class="admin-reports-page bg-gray-50 min-h-screen">
-  <div class="container mx-auto px-4 py-8 pt-12 max-w-7xl">
-    <!-- Header -->
-    <div class="page-header text-center mb-10">
-      <h1 class="page-title text-3xl font-bold text-gray-900 mb-2">
-        {$_("reports.admin.title") || "Reports Management"}
-      </h1>
-      <p class="page-description text-gray-500">
-        {$_("reports.admin.description") || "Review and manage user reports"}
-      </p>
-    </div>
+<div class="mx-auto max-w-6xl px-4 sm:px-6 py-6 sm:py-8">
+  <PageHeader title={$_("reports.admin.title")} description={$_("reports.admin.description")} icon={FlagOutline} />
 
-    <!-- Filters -->
-    <div class="filters-section flex justify-center mb-10">
-      <div class="filter-group flex flex-col items-center gap-2">
-        <label
-          for="status-filter"
-          class="filter-label text-xs font-medium text-gray-400"
-        >
-          {$_("reports.admin.filter_by_status") || "Filter by Status"}
-        </label>
-        <select
-          id="status-filter"
-          bind:value={selectedStatusFilter}
-          class="filter-select px-6 py-2 border-0 bg-white rounded-full shadow-sm text-sm font-medium text-gray-700 cursor-pointer focus:outline-none focus:ring-2 focus:ring-blue-100"
-        >
-          {#each statusFilters as filter}
-            <option value={filter.value}>{filter.label}</option>
-          {/each}
-        </select>
-      </div>
-    </div>
-
-    <!-- Reports List -->
-    {#if isLoading}
-      <div class="loading-state">
-        <div class="spinner spinner-md"></div>
-        <p class="loading-text">
-          {$_("reports.admin.loading") || "Loading reports..."}
-        </p>
-      </div>
-    {:else if reports.length === 0}
-      <div class="empty-state">
-        <div class="empty-icon-container">
-          <InboxOutline class="w-16 h-16 text-gray-300" />
-        </div>
-        <h3 class="empty-title">
-          {$_("reports.admin.empty.title") || "No Reports Found"}
-        </h3>
-        <p class="empty-message">
-          {selectedStatusFilter === "all"
-            ? $_("reports.admin.empty.no_reports") ||
-              "No reports have been submitted yet."
-            : $_("reports.admin.empty.no_reports_filter") ||
-              `No ${selectedStatusFilter} reports found.`}
-        </p>
-        {#if selectedStatusFilter !== "all"}
-          <button
-            class="clear-filters-btn mt-6"
-            onclick={() => (selectedStatusFilter = "all")}
-          >
-            {$_("reports.admin.actions.clear_filters") || "Clear All Filters"}
-          </button>
-        {/if}
-      </div>
-    {:else}
-      <div class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
-        {#each reports as report}
-          {@const { color, icon, label, isEndState } = getReportStyle(report)}
-          <!-- svelte-ignore a11y_click_events_have_key_events -->
-          <!-- svelte-ignore a11y_no_static_element_interactions -->
-          <div
-            class="bg-white rounded-2xl border border-gray-100 p-6 flex flex-col shadow-sm hover:shadow-md transition-shadow cursor-default"
-            tabindex="0"
-            role="button"
-            onkeypress={(e) => {
-              if (e.key === "Enter" && isInitialState(report)) {
-                openReplyModal(report);
-              }
-            }}
-            onclick={(e) => {
-              // Only open if clicking on the card itself, not the buttons
-              if (e.target === e.currentTarget && isInitialState(report))
-                openReplyModal(report);
-            }}
-          >
-            <div class="flex justify-between items-start mb-4">
-                <div class="flex items-center gap-2">
-                  <span
-                    class="type-text text-sm font-bold">{report.reportData.report_type?.replace("_", " ") ||
-                      "General"}</span
-                  >
-                </div>
-                {#if !isEndState}
-                  <div class="report-status">
-                    <span
-                      class="status-badge px-3 py-1 text-xs font-semibold rounded-full capitalize {color}"
-                    >
-                      {#if icon}<span class="mr-1">{icon}</span>{/if}
-                      {label}
-                    </span>
-                  </div>
-                {/if}
-              </div>
-
-            <div class="report-content flex-grow">
-              <h3 class="report-title text-lg font-bold text-gray-900 mb-1">
-                {report.reportData.title}
-              </h3>
-              <p
-                class="report-description text-gray-500 text-sm mb-4 line-clamp-3"
-              >
-                {report.reportData.description}
-              </p>
-
-              <div class="reported-entry-info bg-gray-50 rounded-xl p-4 mb-4">
-                <h4
-                  class="reported-entry-title text-xs font-medium text-gray-400 mb-2"
-                >
-                  {$_("reports.admin.reported_entry") || "Reported Entry"}
-                </h4>
-                <div class="reported-entry-details flex flex-col gap-1">
-                  <span class="entry-title text-sm font-bold text-gray-900"
-                    >{report.reportData.reported_entry_title}</span
-                  >
-                  <span class="entry-id text-xs text-gray-400"
-                    >({report.reportData.reported_entry})</span
-                  >
-                  <span class="entry-space text-xs text-gray-400"
-                    >in {report.reportData.reported_space}</span
-                  >
-                </div>
-              </div>
-
-              <div class="report-meta flex flex-col gap-2 mb-4">
-                <div class="meta-item text-xs text-gray-400">
-                  {$_("reports.admin.reported_by") || "Reported by"}:
-                  <span class="font-bold text-gray-600 ml-1"
-                    >{report.attributes.owner_shortname}</span
-                  >
-                </div>
-                <div class="meta-item text-xs text-gray-400">
-                  {$_("reports.admin.reported_at") || "Reported"}:
-                  <span class="font-medium text-gray-500 ml-1"
-                    >{formatRelativeTime(
-                      report.reportData.created_at ||
-                        report.attributes.created_at,
-                    )}</span
-                  >
-                </div>
-              </div>
-
-              {#if report.reportData.replies && report.reportData.replies.length > 0}
-                <div class="replies-section mt-4 pt-4 border-t border-gray-100">
-                  <h4
-                    class="replies-title text-xs font-bold text-gray-800 mb-3"
-                  >
-                    {$_("reports.admin.notes") || "Admin Notes"}
-                  </h4>
-                  {#each report.reportData.replies as reply}
-                    <div class="reply-item bg-gray-50 rounded-xl p-3 mb-2">
-                      <div
-                        class="reply-header flex justify-between items-center mb-1"
-                      >
-                        <span
-                          class="reply-admin text-xs font-bold text-gray-700"
-                          >{reply.admin_shortname}</span
-                        >
-                        <span class="reply-time text-[10px] text-gray-400"
-                          >{formatRelativeTime(reply.timestamp)}</span
-                        >
-                      </div>
-                      <p class="reply-content text-xs text-gray-500 m-0">
-                        {reply.reply}
-                      </p>
-                    </div>
-                  {/each}
-                </div>
-              {/if}
-            </div>
-
-            <div
-              class="report-actions mt-auto pt-4 flex gap-2 flex-wrap text-sm font-semibold"
-            >
-              {#if workflow}
-                {@const stateObj = workflow.states?.find(
-                  (s: any) =>
-                    s.state?.toLowerCase() ===
-                    (report.attributes.state || "Pending").toLowerCase(),
-                )}
-                 {@const isInitial = isInitialState(report)}
-                {@const isEndState =
-                  stateObj && (!stateObj.next || stateObj.next.length === 0)}
-
-                {#if isEndState}
-                  <span class="text-red-500 cursor-default">
-                    {stateObj.name || report.attributes.state}
-                  </span>
-                {:else if isInitial || stateObj}
-                  <button
-                    class="action-btn text-blue-500 hover:text-blue-600 bg-transparent p-0 border-0"
-                    onclick={() => openReplyModal(report)}
-                  >
-                    {$_("reports.admin.actions.reply") || "Take action"}
-                  </button>
-                {:else}
-                  <span class="text-gray-400 cursor-default">
-                    {report.attributes.state || "Pending"}
-                  </span>
-                {/if}
-              {:else}
-                <button
-                  class="action-btn text-blue-500 hover:text-blue-600 bg-transparent p-0 border-0"
-                  onclick={() => openReplyModal(report)}
-                >
-                  {$_("reports.admin.actions.reply") || "Take action"}
-                </button>
-              {/if}
-            </div>
-          </div>
+  <CatalogToolbar class="mb-6">
+    {#snippet filters()}
+      <label for="status-filter" class="text-sm text-text-muted">{$_("reports.admin.filter_by_status")}</label>
+      <select
+        id="status-filter"
+        value={selectedStatusFilter}
+        onchange={(e) => changeFilter((e.currentTarget as HTMLSelectElement).value)}
+        class="h-9 ps-3 pe-8 text-sm rounded-control border border-border bg-surface-2 text-text focus:border-primary focus:ring-1 focus:ring-primary"
+      >
+        {#each statusFilters as filter (filter.value)}
+          <option value={filter.value}>{filter.label}</option>
         {/each}
-      </div>
-    {/if}
-  </div>
+      </select>
+    {/snippet}
+  </CatalogToolbar>
+
+  {#if isLoading && reports.length === 0}
+    <LoadingState label={$_("reports.admin.loading")} />
+  {:else if loadError}
+    <ErrorState title={$_("reports.admin.error.loading_failed")} error={loadError} onRetry={loadReports} />
+  {:else if reports.length === 0}
+    <EmptyState
+      icon={InboxOutline}
+      title={$_("reports.admin.empty.title")}
+      hint={selectedStatusFilter === "all" ? $_("reports.admin.empty.no_reports") : $_("reports.admin.empty.no_reports_filter")}
+    >
+      {#if selectedStatusFilter !== "all"}
+        <button type="button" class="app-btn app-btn-secondary app-btn-sm" onclick={() => changeFilter("all")}>
+          {$_("reports.admin.actions.clear_filters")}
+        </button>
+      {/if}
+    </EmptyState>
+  {:else}
+    <LoadingState variant="overlay" loading={isLoading}>
+      <ul class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6 list-none p-0 m-0">
+        {#each reports as report (report.shortname)}
+          {@const ended = isEndState(report)}
+          <li class="flex">
+            <Card class="w-full flex flex-col">
+              <div class="flex items-start justify-between gap-2 mb-3">
+                <span class="text-sm font-semibold text-text capitalize">
+                  {report.reportData.report_type?.replace(/_/g, " ") || $_("reports.admin.type_general")}
+                </span>
+                <Badge variant={stateTone(report)} size="sm">{stateLabel(report)}</Badge>
+              </div>
+
+              <h3 class="text-lg font-semibold text-text mb-1">{report.reportData.title || $_("reports.admin.untitled")}</h3>
+              <p class="text-sm text-text-muted mb-4 line-clamp-3">{report.reportData.description}</p>
+
+              <div class="rounded-control bg-surface-3 p-3 mb-4">
+                <h4 class="text-xs font-medium text-text-faint mb-1">{$_("reports.admin.reported_entry")}</h4>
+                <div class="flex flex-col gap-0.5 text-sm">
+                  <span class="font-semibold text-text break-words">{report.reportData.reported_entry_title || report.reportData.reported_entry}</span>
+                  {#if report.reportData.reported_entry_title}
+                    <span class="text-xs text-text-faint break-all">({report.reportData.reported_entry})</span>
+                  {/if}
+                  {#if report.reportData.reported_space}
+                    <span class="text-xs text-text-faint">
+                      {$_("reports.admin.in_space", { values: { space: report.reportData.reported_space } })}
+                    </span>
+                  {/if}
+                </div>
+              </div>
+
+              <dl class="text-xs text-text-faint space-y-1 mb-4">
+                <div class="flex gap-1">
+                  <dt>{$_("reports.admin.reported_by")}:</dt>
+                  <dd class="font-semibold text-text-muted">{report.attributes.owner_shortname}</dd>
+                </div>
+                <div class="flex gap-1 tabular-nums">
+                  <dt>{$_("reports.admin.reported_at")}:</dt>
+                  <dd class="text-text-muted">
+                    {formatDate(report.reportData.created_at || report.attributes.created_at, "relative", $locale)}
+                  </dd>
+                </div>
+              </dl>
+
+              {#if report.reportData.replies.length > 0}
+                <div class="mt-auto pt-4 border-t border-border">
+                  <h4 class="text-xs font-semibold text-text mb-2">{$_("reports.admin.notes")}</h4>
+                  <ul class="space-y-2 list-none p-0 m-0">
+                    {#each report.reportData.replies as reply, i (i)}
+                      <li class="rounded-control bg-surface-3 p-3">
+                        <div class="flex justify-between items-center gap-2 mb-1">
+                          <span class="text-xs font-semibold text-text">{reply.admin_shortname}</span>
+                          <span class="text-xs text-text-faint tabular-nums">{formatDate(reply.timestamp, "relative", $locale)}</span>
+                        </div>
+                        <p class="text-xs text-text-muted m-0 whitespace-pre-wrap">{reply.reply || $_("reports.admin.no_content")}</p>
+                      </li>
+                    {/each}
+                  </ul>
+                </div>
+              {/if}
+
+              <div class="mt-auto pt-4 flex flex-wrap gap-2">
+                {#if ended}
+                  <span class="text-sm text-danger">{stateLabel(report)}</span>
+                {:else}
+                  <button type="button" class="app-btn app-btn-secondary app-btn-sm" onclick={() => openReplyModal(report)}>
+                    {$_("reports.admin.actions.reply")}
+                  </button>
+                {/if}
+              </div>
+            </Card>
+          </li>
+        {/each}
+      </ul>
+    </LoadingState>
+  {/if}
 </div>
 
-<!-- Reply Modal -->
-<Modal
-  title={$_("reports.admin.reply_modal.title") || "Reply to Report"}
-  bind:open={showReplyModal}
-  size="lg"
-  class="bg-white"
-  headerClass="text-gray-900"
-  placement="center"
-  autoclose={false}
->
-  {#if selectedReport}
-    <!-- Report Summary -->
-    <div class="report-summary">
-      <h3 class="summary-title">{selectedReport.reportData.title}</h3>
-      <p class="summary-description">
-        {selectedReport.reportData.description}
-      </p>
-      <div class="summary-meta">
-        <span
-          ><strong>Entry:</strong>
-          {selectedReport.reportData.reported_entry_title}</span
-        >
-        <span
-          ><strong>Type:</strong>
-          {selectedReport.reportData.report_type}</span
-        >
-      </div>
+{#if showReplyModal && selectedReport}
+  {@const report = selectedReport}
+  <Modal title={$_("reports.admin.reply_modal.title")} size="lg" dismissable={!isSubmittingReply} onClose={closeReplyModal}>
+    <div class="rounded-control border border-border bg-surface-3 p-4 mb-5">
+      <h3 class="text-base font-semibold text-text mb-1">{report.reportData.title}</h3>
+      <p class="text-sm text-text-muted mb-3">{report.reportData.description}</p>
+      <dl class="text-sm text-text-muted space-y-1">
+        <div class="flex gap-1">
+          <dt class="font-medium text-text">{$_("reports.admin.reported_entry")}:</dt>
+          <dd>{report.reportData.reported_entry_title || report.reportData.reported_entry}</dd>
+        </div>
+        {#if report.reportData.report_type}
+          <div class="flex gap-1">
+            <dt class="font-medium text-text">{$_("reports.modal.report_type")}:</dt>
+            <dd class="capitalize">{report.reportData.report_type.replace(/_/g, " ")}</dd>
+          </div>
+        {/if}
+      </dl>
     </div>
 
-    <!-- Reply Form -->
-    <form
-      id="reply-form"
-      onsubmit={(e) => {
-        e.preventDefault();
-        submitReply();
-      }}
-      class="reply-form"
-    >
-      <div class="form-group">
-        <label for="adminReply" class="form-label">
-          {$_("reports.admin.reply_modal.your_notes") || "Your Notes"} *
+    <form id="reply-form" onsubmit={submitReply} class="space-y-4">
+      <div>
+        <label for="adminReply" class="block text-sm font-medium text-text mb-1.5">
+          {$_("reports.admin.reply_modal.your_notes")} <span class="text-danger" aria-hidden="true">*</span>
         </label>
         <textarea
           id="adminReply"
           bind:value={adminReply}
-          class="form-textarea"
-          placeholder={$_("reports.admin.reply_modal.notes_placeholder") ||
-            "Enter your notes to this report..."}
+          class="w-full px-3 py-2 text-sm rounded-control border border-border bg-surface-2 text-text placeholder:text-text-faint focus:border-primary focus:ring-1 focus:ring-primary resize-y min-h-24"
+          placeholder={$_("reports.admin.reply_modal.notes_placeholder")}
           rows="4"
           required
+          data-autofocus
         ></textarea>
       </div>
 
-      <div class="form-group">
-        <label for="actionSelect" class="form-label">
-          {$_("reports.admin.reply_modal.action") || "Action to Take"}
+      <div>
+        <label for="actionSelect" class="block text-sm font-medium text-text mb-1.5">
+          {$_("reports.admin.reply_modal.action")}
         </label>
         <select
           id="actionSelect"
           bind:value={selectedAction}
-          class="form-select"
+          class="w-full h-9 ps-3 pe-8 text-sm rounded-control border border-border bg-surface-2 text-text focus:border-primary focus:ring-1 focus:ring-primary"
         >
-          <option value="no_action"
-            >{$_("reports.admin.actions.no_action") ||
-              "No Action Required"}</option
-          >
-          {#each availableTransitions as transition}
+          <option value="no_action">{$_("reports.admin.actions.no_action")}</option>
+          {#each availableTransitions as transition (transition.action)}
             <option value={transition.action}>{transition.action}</option>
           {/each}
         </select>
       </div>
     </form>
-  {/if}
 
-  {#snippet footer()}
-    <button
-      type="button"
-      class="cancel-button"
-      onclick={closeReplyModal}
-      disabled={isSubmittingReply}
-    >
-      {$_("common.cancel") || "Cancel"}
-    </button>
-    <button
-      type="submit"
-      form="reply-form"
-      class="submit-button"
-      disabled={isSubmittingReply || !adminReply.trim()}
-    >
-      {#if isSubmittingReply}
-        <div class="spinner spinner-sm spinner-white"></div>
-        {$_("reports.admin.reply_modal.sending") || "Sending..."}
-      {:else}
-        {$_("reports.admin.reply_modal.send_reply") || "Send Reply"}
-      {/if}
-    </button>
-  {/snippet}
-</Modal>
-
-<style>
-  /* Modal Styles removed - now using flowbite Modal */
-
-  .report-summary {
-    background-color: #f9fafb;
-    border: 1px solid #e5e7eb;
-    border-radius: 0.5rem;
-    padding: 1rem;
-    margin-bottom: 1.5rem;
-  }
-
-  .summary-title {
-    font-size: 1rem;
-    font-weight: 600;
-    color: #111827;
-    margin-bottom: 0.5rem;
-  }
-
-  .summary-description {
-    color: #6b7280;
-    margin-bottom: 0.75rem;
-  }
-
-  .summary-meta {
-    display: flex;
-    flex-direction: column;
-    gap: 0.25rem;
-    font-size: 0.875rem;
-    color: #6b7280;
-  }
-
-  .reply-form {
-    display: flex;
-    flex-direction: column;
-    gap: 1.25rem;
-  }
-
-  .form-group {
-    display: flex;
-    flex-direction: column;
-  }
-
-  .form-label {
-    font-size: 0.875rem;
-    font-weight: 500;
-    color: #374151;
-    margin-bottom: 0.5rem;
-  }
-
-  .form-textarea,
-  .form-select {
-    border: 1px solid #d1d5db;
-    border-radius: 0.375rem;
-    padding: 0.75rem;
-    font-size: 0.875rem;
-    transition:
-      border-color 0.2s,
-      box-shadow 0.2s;
-  }
-
-  .form-textarea:focus,
-  .form-select:focus {
-    outline: none;
-    border-color: #3b82f6;
-    box-shadow: 0 0 0 3px rgba(59, 130, 246, 0.1);
-  }
-
-  .form-textarea {
-    resize: vertical;
-    min-height: 4rem;
-  }
-
-  .cancel-button,
-  .submit-button {
-    padding: 0.75rem 1.5rem;
-    border-radius: 0.375rem;
-    font-size: 0.875rem;
-    font-weight: 500;
-    cursor: pointer;
-    transition: all 0.2s;
-    display: flex;
-    align-items: center;
-    gap: 0.5rem;
-  }
-
-  .cancel-button {
-    background-color: white;
-    color: #374151;
-    border: 1px solid #d1d5db;
-  }
-
-  .cancel-button:hover:not(:disabled) {
-    background-color: #f9fafb;
-  }
-
-  .submit-button {
-    background-color: #3b82f6;
-    color: white;
-    border: 1px solid #3b82f6;
-  }
-
-  .submit-button:hover:not(:disabled) {
-    background-color: #2563eb;
-    border-color: #2563eb;
-  }
-
-  .submit-button:disabled,
-  .cancel-button:disabled {
-    opacity: 0.5;
-    cursor: not-allowed;
-  }
-
-  @media (max-width: 768px) {
-    .cancel-button,
-    .submit-button {
-      width: 100%;
-      justify-content: center;
-    }
-  }
-
-  .empty-state {
-    display: flex;
-    flex-direction: column;
-    align-items: center;
-    justify-content: center;
-    text-align: center;
-    padding: 6rem 2rem;
-    border-radius: 2rem;
-    border: 1px dashed #e5e7eb;
-  }
-
-  .empty-icon-container {
-    width: 5rem;
-    height: 5rem;
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    background-color: #f9fafb;
-    border-radius: 1.5rem;
-    margin-bottom: 1.5rem;
-  }
-
-  .empty-title {
-    font-size: 1.5rem;
-    font-weight: 700;
-    color: #111827;
-    margin-bottom: 0.5rem;
-  }
-
-  .empty-message {
-    font-size: 1rem;
-    color: #6b7280;
-    max-width: 24rem;
-    margin: 0 auto;
-  }
-
-  .clear-filters-btn {
-    padding: 0.625rem 1.25rem;
-    background-color: white;
-    color: #3b82f6;
-    border: 1px solid #e5e7eb;
-    border-radius: 9999px;
-    font-size: 0.875rem;
-    font-weight: 600;
-    transition: all 0.2s;
-    cursor: pointer;
-  }
-
-  .clear-filters-btn:hover {
-    background-color: #f9fafb;
-    border-color: #3b82f6;
-    transform: translateY(-1px);
-    box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.1);
-  }
-
-  .loading-state {
-    display: flex;
-    flex-direction: column;
-    align-items: center;
-    justify-content: center;
-    padding: 6rem 2rem;
-    text-align: center;
-  }
-
-  .loading-text {
-    margin-top: 1rem;
-    font-size: 1rem;
-    color: #6b7280;
-    font-weight: 500;
-  }
-</style>
+    {#snippet footer()}
+      <button type="button" class="app-btn app-btn-secondary" onclick={closeReplyModal} disabled={isSubmittingReply}>
+        {$_("common.cancel")}
+      </button>
+      <button
+        type="submit"
+        form="reply-form"
+        class="app-btn app-btn-primary"
+        disabled={isSubmittingReply || !adminReply.trim()}
+        aria-busy={isSubmittingReply}
+      >
+        {#if isSubmittingReply}
+          <span class="spinner spinner-xs spinner-white" aria-hidden="true"></span>
+          {$_("reports.admin.reply_modal.sending")}
+        {:else}
+          <PaperPlaneOutline size="sm" aria-hidden="true" />
+          {$_("reports.admin.reply_modal.send_reply")}
+        {/if}
+      </button>
+    {/snippet}
+  </Modal>
+{/if}

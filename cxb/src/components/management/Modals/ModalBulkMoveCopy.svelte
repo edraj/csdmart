@@ -1,32 +1,45 @@
 <script lang="ts">
-    import {Button, Label, Modal, Select, Spinner} from "flowbite-svelte";
-    import {Dmart, RequestType, ResourceType} from "@edraj/tsdmart";
-    import {Level, showToast} from "@/utils/toast";
-    import {currentListView} from "@/stores/global";
-    import {bulkBucket} from "@/stores/management/bulk_bucket";
-    import {spaces} from "@/stores/management/spaces";
-    import {getChildren, getChildrenAndSubChildren} from "@/lib/dmart_services";
+    import { Button, Label, Modal, Select, Spinner } from "flowbite-svelte";
+    import { Dmart, RequestType } from "@edraj/tsdmart";
+    import { Level, showToast } from "@/utils/toast";
+    import { currentListView } from "@/stores/global";
+    import { bulkBucket } from "@/stores/management/bulk_bucket";
+    import { spaces } from "@/stores/management/spaces";
+    import { getChildren, getChildrenAndSubChildren, getSpaces } from "@/lib/dmart_services";
+    import { recordSubpath } from "@/utils/subpath";
+    import { errorMessage } from "@/utils/errorMessage";
+    import LoadingState from "@/components/ui/LoadingState.svelte";
+    import { _ } from "@/i18n";
 
     let {
         space_name,
         subpath,
-        isOpen=$bindable(false),
-        actionType = "move" // "move" or "copy"
-    }:{
-        space_name:string,
-        subpath:string,
-        isOpen:boolean,
-        actionType: string
+        isOpen = $bindable(false),
+        actionType = "move", // "move" or "copy"
+    }: {
+        space_name: string;
+        subpath: string;
+        isOpen: boolean;
+        actionType: "move" | "copy";
     } = $props();
+
+    const uid = $props.id();
+    const isMove = $derived(actionType === "move");
 
     let selectedSpace = $state("");
     let selectedSubpath = $state("/");
     let isActionLoading = $state(false);
-    let subpathOptions = $state([{name: "/", value: "/"}]);
+    let isLoadingSubpaths = $state(false);
+    let subpathOptions = $state([{ name: "/", value: "/" }]);
 
     $effect(() => {
         if (isOpen) {
             selectedSpace = space_name;
+            if ($spaces === null) {
+                getSpaces().catch(() => {
+                    /* the select stays on the current space */
+                });
+            }
         }
     });
 
@@ -37,27 +50,27 @@
         }
     });
 
-    async function fetchSubpaths(space) {
+    async function fetchSubpaths(space: string) {
         if (!space) return;
+        isLoadingSubpaths = true;
         try {
             const response = await getChildren(space, "/", 100);
-            let options = [{name: "/", value: "/"}];
+            const options = [{ name: "/", value: "/" }];
 
-            const subpaths = [];
+            const subpaths: string[] = [];
             await getChildrenAndSubChildren(subpaths, space, "", response);
             subpaths.sort();
 
-            subpaths.forEach(path => {
-                options.push({
-                    name: path,
-                    value: path
-                });
+            subpaths.forEach((path) => {
+                options.push({ name: path, value: path });
             });
 
             subpathOptions = options;
-        } catch (e) {
-            console.error("Failed to fetch subpaths", e);
-            subpathOptions = [{name: "/", value: "/"}];
+        } catch (e: unknown) {
+            showToast(Level.warn, errorMessage(e, $_("subpaths_load_failed")));
+            subpathOptions = [{ name: "/", value: "/" }];
+        } finally {
+            isLoadingSubpaths = false;
         }
     }
 
@@ -67,11 +80,12 @@
         isActionLoading = true;
         try {
             const records: any[] = [];
-            const isMove = actionType === "move";
 
-            $bulkBucket.forEach(b => {
+            $bulkBucket.forEach((b) => {
                 if (isMove) {
-                    const srcSubpath = subpath || "/";
+                    // The record's own subpath, not the list's: on a non-exact
+                    // list the selected rows may live in several subpaths.
+                    const srcSubpath = recordSubpath(b, subpath);
 
                     const moveAttrb = {
                         src_space_name: space_name,
@@ -80,7 +94,7 @@
 
                         dest_space_name: selectedSpace,
                         dest_subpath: selectedSubpath,
-                        dest_shortname: b.shortname
+                        dest_shortname: b.shortname,
                     };
 
                     records.push({
@@ -91,7 +105,7 @@
                     });
                 } else {
                     const attrs = { ...b.attributes };
-                    if ('uuid' in attrs) delete attrs.uuid;
+                    if ("uuid" in attrs) delete attrs.uuid;
 
                     records.push({
                         resource_type: b.resource_type,
@@ -112,49 +126,56 @@
             });
 
             if (response?.status === "success") {
-                showToast(Level.info, `Entries ${isMove ? "moved" : "copied"} successfully`);
+                showToast(Level.info, isMove ? $_("entries_moved") : $_("entries_copied"));
                 await $currentListView?.fetchPageRecords();
                 bulkBucket.set([]);
                 isOpen = false;
             } else {
-                showToast(Level.warn, `Failed to ${actionType} entries`);
+                showToast(Level.warn, isMove ? $_("entries_move_failed") : $_("entries_copy_failed"));
             }
-        } catch (e) {
-            showToast(Level.warn, `Error during bulk ${actionType}`);
-            console.error(e);
+        } catch (e: unknown) {
+            showToast(Level.warn, errorMessage(e, isMove ? $_("entries_move_failed") : $_("entries_copy_failed")));
         } finally {
             isActionLoading = false;
         }
     }
 
-    let spaceOptions = $derived($spaces?.map(s => ({name: s.shortname, value: s.shortname})) ?? []);
-
+    const spaceOptions = $derived($spaces?.map((s) => ({ name: s.shortname, value: s.shortname })) ?? []);
 </script>
 
-<Modal bind:open={isOpen} size="md" title={`Bulk ${actionType === "move" ? "Move" : "Copy"}`}>
+<Modal
+    bind:open={isOpen}
+    size="md"
+    title={isMove
+        ? $_("bulk_move_n", { values: { count: $bulkBucket.length } })
+        : $_("bulk_copy_n", { values: { count: $bulkBucket.length } })}
+    class="rounded-modal shadow-modal"
+>
     <div class="space-y-4">
-        <Label>
-            Destination Space
-            <Select class="mt-2" items={spaceOptions} bind:value={selectedSpace} />
-        </Label>
+        <div>
+            <Label for="{uid}-space" class="mb-1.5">{$_("destination_space")}</Label>
+            <Select id="{uid}-space" items={spaceOptions} bind:value={selectedSpace} />
+        </div>
 
-        <Label>
-            Destination Subpath (All Folders)
-            <Select class="mt-2" items={subpathOptions} bind:value={selectedSubpath} />
-        </Label>
+        <div>
+            <Label for="{uid}-subpath" class="mb-1.5">{$_("destination_subpath")}</Label>
+            {#if isLoadingSubpaths}
+                <LoadingState variant="skeleton" rows={1} />
+            {:else}
+                <Select id="{uid}-subpath" items={subpathOptions} bind:value={selectedSubpath} />
+            {/if}
+        </div>
     </div>
 
-    {#snippet footer()}
-        <div class="flex justify-between w-full">
-            <Button color="alternative" onclick={() => isOpen = false}>Cancel</Button>
-            <Button class="bg-primary" onclick={handleBulkAction} disabled={isActionLoading}>
-                {#if isActionLoading}
-                    <Spinner size="4" class="mr-2" />
-                    {actionType === "move" ? "Moving..." : "Copying..."}
-                {:else}
-                    {actionType === "move" ? "Move" : "Copy"}
-                {/if}
-            </Button>
-        </div>
-    {/snippet}
+    <div class="flex items-center justify-end gap-2 mt-6">
+        <Button color="alternative" onclick={() => (isOpen = false)} disabled={isActionLoading}>{$_("cancel")}</Button>
+        <Button color="primary" onclick={handleBulkAction} disabled={isActionLoading || isLoadingSubpaths}>
+            {#if isActionLoading}
+                <Spinner size="4" class="me-2" />
+                {isMove ? $_("moving") : $_("copying")}
+            {:else}
+                {isMove ? $_("move") : $_("copy")}
+            {/if}
+        </Button>
+    </div>
 </Modal>

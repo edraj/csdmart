@@ -1,71 +1,62 @@
-<script>
-    import SpaceSubpathItemsSidebar from "@/components/management/SpaceSubpathItemsSidebar.svelte";
-    import { Drawer, Button, CloseButton } from "flowbite-svelte";
+<script lang="ts">
+    import { CloseButton, Drawer } from "flowbite-svelte";
     import { BarsOutline } from "flowbite-svelte-icons";
-    import { sineIn } from "svelte/easing";
+    import { params } from "@roxi/routify";
+    import SpaceSubpathItemsSidebar from "@/components/management/SpaceSubpathItemsSidebar.svelte";
+    import IconButton from "@/components/ui/IconButton.svelte";
+    import { _, dir } from "@/i18n";
+
 
     let drawerOpen = $state(false);
-    let transitionParams = {
-        x: -320,
-        duration: 200,
-        easing: sineIn,
-    };
 </script>
 
 <div class="flex h-full relative">
-    <!-- Desktop Sidebar -->
-    <div
-        class="hidden md:block w-64 border-r border-gray-200 h-full flex-shrink-0 overflow-y-auto"
-    >
+    <!-- Desktop sidebar -->
+    <aside class="hidden md:block w-64 border-e border-border bg-surface-2 h-full shrink-0 overflow-y-auto">
         <SpaceSubpathItemsSidebar />
-    </div>
+    </aside>
 
-    <!-- Mobile Drawer -->
+    <!-- Phone: the same tree in a drawer -->
     <Drawer
-        {transitionParams}
+        placement={$dir === "rtl" ? "right" : "left"}
         bind:open={drawerOpen}
-        dismissable={false}
-        id="sidebar-drawer"
-        class="w-64 !max-w-none !h-[100dvh] !max-h-none !m-0 !rounded-none !p-0 md:hidden z-[100] bg-gray-50 dark:bg-gray-800 [&>div]:!p-0"
+        id="content-sidebar-drawer"
+        class="md:hidden w-72 bg-surface-2 text-text p-0"
     >
-        <div class="flex flex-col h-full w-full">
-            <div
-                class="flex items-center justify-between p-4 border-b border-gray-200 flex-shrink-0"
-            >
-                <h5
-                    class="text-base font-semibold text-gray-500 uppercase dark:text-gray-400"
-                >
-                    Navigation
-                </h5>
-                <CloseButton
-                    onclick={() => (drawerOpen = false)}
-                    class="dark:text-white"
-                />
+        <div class="flex flex-col h-full">
+            <div class="flex items-center justify-between px-4 h-14 border-b border-border shrink-0">
+                <h2 class="text-sm font-semibold text-text-muted truncate">{$_("folders")}</h2>
+                <CloseButton onclick={() => (drawerOpen = false)} aria-label={$_("close")} />
             </div>
             <div class="flex-1 overflow-y-auto">
-                <SpaceSubpathItemsSidebar />
+                <SpaceSubpathItemsSidebar onNavigate={() => (drawerOpen = false)} />
             </div>
         </div>
     </Drawer>
 
-    <!-- Main Content -->
-    <div class="flex-1 overflow-auto flex flex-col h-full w-full">
-        <!-- Mobile Header (Hamburger Menu) -->
-        <div
-            class="md:hidden flex items-center p-4 border-b border-gray-200 bg-white z-10 sticky top-0"
-        >
-            <Button
+    <!-- Main content -->
+    <div class="flex-1 overflow-auto flex flex-col h-full w-full min-w-0">
+        <div class="md:hidden flex items-center gap-3 px-4 h-12 border-b border-border bg-surface-2 sticky top-0 z-10">
+            <IconButton
+                label={$_("open_folder_tree")}
+                variant="outline"
+                expanded={drawerOpen}
+                controls="content-sidebar-drawer"
                 onclick={() => (drawerOpen = true)}
-                class="mr-4 p-2"
-                outline
-                color="alternative"
             >
-                <BarsOutline class="w-5 h-5" />
-            </Button>
-            <span class="font-bold text-lg">Content Navigation</span>
+                <BarsOutline size="sm" />
+            </IconButton>
+            <span class="font-semibold text-sm truncate">{$params.space_name}</span>
         </div>
 
-        <div class="flex-1 overflow-auto md:p-0 w-full pb-8 md:pb-8">
+        <div class="flex-1 overflow-auto w-full pb-8">
+            <!-- Routify 3.6 renders route components with `let:` directives
+                 (RenderFragment.svelte), so the child route arrives as a Svelte 4 slot;
+                 a layout that renders {@render children()} throws
+                 invalid_default_snippet at runtime. svelte-check flags the slot as
+                 deprecated; ESLint's compile pass does not, hence both comments. -->
+            <!-- eslint-disable-next-line svelte/no-unused-svelte-ignore -- only svelte-check emits slot_element_deprecated here -->
+            <!-- svelte-ignore slot_element_deprecated -->
             <slot />
         </div>
     </div>

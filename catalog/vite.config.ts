@@ -1,10 +1,9 @@
 import tailwindcss from "@tailwindcss/vite";
 import { defineConfig } from "vite";
-import { mdsvex } from "mdsvex";
 import routify from "@roxi/routify/vite-plugin";
 import { svelte, vitePreprocess } from "@sveltejs/vite-plugin-svelte";
 import * as path from "path";
-import svelteMd from "vite-plugin-svelte-md";
+import { compression } from "vite-plugin-compression2";
 
 const production = process.env.NODE_ENV === "production";
 
@@ -28,7 +27,6 @@ export default defineConfig(({ command }) => ({
   },
   plugins: [
     tailwindcss(),
-    svelteMd(),
     routify({
       forceLogging: true,
       render: { ssg: false, ssr: false },
@@ -40,25 +38,19 @@ export default defineConfig(({ command }) => ({
     svelte({
       exclude: ["node_modules/flowbite-svelte"],
       compilerOptions: { dev: !production },
-      extensions: [".md", ".svelte"],
-      preprocess: [
-        vitePreprocess(),
-        mdsvex({
-          extension: "md",
-          remarkPlugins: [
-          ],
-        }),
-      ],
+      preprocess: [vitePreprocess()],
       onwarn: (warning, defaultHandler) => {
-        // Ignore a11y_click_events_have_key_events warning from sveltestrap
-        if (
-          warning.code?.startsWith("a11y") || // warning.filename?.startsWith("/node_modules/svelte-jsoneditor")
-          warning.filename?.startsWith("/node_modules")
-        )
-          return;
-        if (typeof defaultHandler != "undefined") defaultHandler(warning);
+        // Only third-party code is exempt. Every a11y warning in this tree is
+        // now fixed; a new one must be visible, not muted (the old filter
+        // silenced all a11y_* codes, which is how the debt accumulated).
+        if (warning.filename?.startsWith("/node_modules")) return;
+        if (typeof defaultHandler !== "undefined") defaultHandler(warning);
       },
     }),
+    // Build-time .br/.gz next to every hashed asset. The server
+    // (Middleware/SpaAssets.cs) serves them as-is to clients that accept the
+    // encoding instead of compressing each chunk on every request.
+    compression({ threshold: 1024, include: /assets\/.*\.(js|css|svg|json)$/ }),
   ],
   build: {
     cssCodeSplit: true,
@@ -90,9 +82,15 @@ export default defineConfig(({ command }) => ({
         entryFileNames: "assets/js/[name]-[hash].js",
         manualChunks(id) {
           if (!id.includes("node_modules")) return;
-          if (id.includes("/flowbite")) return "vendor-flowbite";
           if (id.includes("/@roxi/routify/")) return "vendor-routify";
-          return "vendor";
+          // Only the packages every page needs share a chunk. The old
+          // catch-all "vendor" (430 kB, preloaded everywhere) also held
+          // typewriter-editor, marked and DOMPurify — defeating the lazy
+          // imports that are supposed to keep them off the first paint —
+          // and one flowbite chunk carried every component used anywhere.
+          // Everything else follows the route that imports it.
+          if (/\/node_modules\/(svelte|@edraj\/tsdmart|axios|svelte-i18n)\//.test(id)) return "vendor";
+          return undefined;
         },
       },
     },

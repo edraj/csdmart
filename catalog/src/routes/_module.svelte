@@ -1,20 +1,29 @@
 <script lang="ts">
   import DashboardHeader from "@/components/DashboardHeader.svelte";
-  import { signout, user } from "@/stores/user";
+  import { getCurrentScope, signout, user } from "@/stores/user";
   import { onMount } from "svelte";
-  import { Dmart } from "@edraj/tsdmart";
+  import { Dmart, type DmartScope } from "@edraj/tsdmart";
+  import { goto as gotoStore } from "@roxi/routify";
   import { website } from "@/config";
   import { resolveAxiosBaseUrl } from "@shared/backend-url";
   import axios from "axios";
   import { get } from "svelte/store";
   import { initGlobalWebSocket } from "@/stores/websocket";
   import { isPublicRoute } from "@/lib/constants";
-  import { stripBasePrefix, withBasePrefix } from "@/lib/basePath";
+  import { stripBase } from "@/lib/paths";
 
+  // Routify's helpers read the fragment context when first subscribed, and
+  // Svelte 5 subscribes to a `$store` lazily on first read — so a `$gotoStore`
+  // first touched inside an async callback logs "Unable to access context".
+  // Capture the navigate function once, during component init.
+  const goto = $gotoStore;
+
+  // In-app navigation, not `window.location.href = …`: a full reload here
+  // re-fetched index.html, config.json and the profile and re-parsed ~1 MB of
+  // JS on every sign-in and every expired session (perf review #29).
   function redirectTo(path: string) {
-    const target = withBasePrefix(path);
-    if (window.location.pathname !== target) {
-      window.location.href = target;
+    if (stripBase(window.location.pathname) !== path) {
+      goto(path);
     }
   }
 
@@ -50,9 +59,8 @@
       if (error.response?.status === 401 && [47, 48, 49].includes(errorCode)) {
         // Route literals are app-relative; window.location.pathname carries
         // the <base href> prefix (e.g. "/cat/"). Strip it before comparing.
-        const currentPath = stripBasePrefix(window.location.pathname);
+        const currentPath = stripBase(window.location.pathname);
         if (!isPublicRoute(currentPath)) {
-          console.log(`401 Unauthorized (code ${errorCode}) - redirecting to login`);
           redirectTo("/login");
         }
         await signout();
@@ -64,8 +72,18 @@
 
   Dmart.setAxiosInstance(dmartAxios as any);
 
+  // The bearer token reaches the server through the request interceptor
+  // above (and the HttpOnly cookie), never through Dmart.setToken(), so the
+  // SDK believes it is anonymous and routes every call that omits a scope to
+  // `public/*` — which is why the admin pages could not list users, roles or
+  // permissions after a reload. Its default scope follows the session
+  // instead: managed when signed in, public for visitors. Callers that pass
+  // a scope explicitly are unaffected. (The SDK types the method private; it
+  // is a plain static the SDK itself calls through `Dmart.defaultScope()`.)
+  (Dmart as unknown as { defaultScope: () => DmartScope }).defaultScope = getCurrentScope;
+
   onMount(async () => {
-    const currentPath = stripBasePrefix(window.location.pathname);
+    const currentPath = stripBase(window.location.pathname);
 
     if (isPublicRoute(currentPath)) {
       return;
@@ -101,7 +119,6 @@
         return;
       }
 
-
       // Connect global WebSocket for real-time notifications and chat.
       // Skipped when enable_websocket is explicitly false in config.json,
       // which keeps getWebSocketService() returning null so all WS-using
@@ -118,13 +135,13 @@
         // non-admins through the guarded admin subtree on every login.
         redirectTo("/dashboard");
       }
-    } catch (error: any) {
+    } catch (error: unknown) {
       // Expired/revoked token, or the server is unreachable. Both end the
       // same way for a route that requires a session: sign out and show the
       // login form. (A network blip therefore costs the user their local
       // session — same as before this migration, when a failed /info/me was
       // treated identically.)
-      console.warn("Session probe failed:", error?.message ?? error);
+      console.warn("Session probe failed:", error instanceof Error ? error.message : error);
       await signout();
       redirectTo("/login");
     }
@@ -133,7 +150,7 @@
 
 <div class="app-shell">
   <DashboardHeader />
-  <main class="app-main">
+  <main class="app-main" id="main">
     <slot />
   </main>
 </div>
@@ -150,5 +167,4 @@
     flex: 1;
     animation: fadeIn var(--duration-normal) var(--ease-out);
   }
-
 </style>

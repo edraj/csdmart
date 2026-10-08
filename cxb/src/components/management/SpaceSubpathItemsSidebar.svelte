@@ -1,61 +1,96 @@
 <script lang="ts">
-    import {
-        Button,
-        ListPlaceholder,
-        Modal,
-        Sidebar,
-        SidebarGroup,
-        SidebarItem,
-        Spinner,
-    } from "flowbite-svelte";
     import { CodeForkSolid } from "flowbite-svelte-icons";
-    import { JSONEditor, Mode } from "svelte-jsoneditor";
-    import Prism from "@/components/Prism.svelte";
-    import { Dmart, RequestType, ResourceType, type ApiResponseRecord } from "@edraj/tsdmart";
+    import { untrack } from "svelte";
+    import { SvelteSet } from "svelte/reactivity";
+    import { ResourceType } from "@edraj/tsdmart";
+    import { activeRoute, params, url } from "@roxi/routify";
     import { Level, showToast } from "@/utils/toast";
-    import { getChildren, getSpaces } from "@/lib/dmart_services";
-    import { jsonEditorContentParser } from "@/utils/jsonEditor";
+    import { getChildren } from "@/lib/dmart_services";
     import SpacesSubpathItemsSidebar from "./SpacesSubpathItemsSidebar.svelte";
-    import { params } from "@roxi/routify";
-    import MetaForm from "./forms/MetaForm.svelte";
     import { spaces } from "@/stores/management/spaces";
     import { spaceChildren } from "@/stores/global";
-    import { removeEmpty } from "@/utils/compare";
+    import { normalizeSubpath, sidebarCacheKey } from "@/utils/subpath";
+    import { hasMoreRecords } from "@/utils/paging";
+    import { errorMessage } from "@/utils/errorMessage";
+    import { localizedText } from "@/utils/localized";
+    import { _ } from "@/i18n";
 
-    let expandedSpaces = $state(new Set());
+    // The folder tree for one space. Keyboard and screen-reader friendly:
+    // every node is a link, every expander a named button, nothing nested.
+    let { onNavigate }: { onNavigate?: () => void } = $props();
+
+    // One page of folder children per tree node; "Load more" appends the next.
+    const CHILDREN_PAGE_SIZE = 50;
+
+    // Reactive set: `.add()`/`.delete()` re-render the tree without copying.
+    const expandedSpaces = new SvelteSet<string>();
     $spaceChildren.refresh = loadChildren;
+
+    function publishChildren() {
+        // New Map instances so every subscriber (this tree, the entry renderer
+        // that invalidates after creating a folder) sees the change.
+        $spaceChildren = {
+            ...$spaceChildren,
+            data: new Map($spaceChildren.data),
+            hasMore: new Map($spaceChildren.hasMore),
+        };
+    }
+
     export async function loadChildren(
-        spaceName,
+        spaceName: string,
         subpath = "/",
         invalidate = false,
     ) {
-        const cacheKey = `${spaceName}:${subpath}`;
+        const cacheKey = sidebarCacheKey(spaceName, subpath);
 
         if (invalidate || !$spaceChildren.data.has(cacheKey)) {
             try {
-                const children = await getChildren(spaceName, subpath, 50, 0, [
+                const children = await getChildren(spaceName, subpath, CHILDREN_PAGE_SIZE, 0, [
                     ResourceType.folder,
                 ]);
-
-                $spaceChildren.data.set(cacheKey, children.records || []);
-            } catch (error) {
-                console.error(
-                    `Failed to load children for ${spaceName}${subpath}:`,
-                    error,
+                const records = children.records ?? [];
+                $spaceChildren.data.set(cacheKey, records);
+                $spaceChildren.hasMore.set(
+                    cacheKey,
+                    hasMoreRecords(children.attributes?.total, records.length, records.length, CHILDREN_PAGE_SIZE),
                 );
+            } catch (error: unknown) {
+                showToast(Level.warn, errorMessage(error, $_("subpaths_load_failed")));
                 $spaceChildren.data.set(cacheKey, []);
+                $spaceChildren.hasMore.set(cacheKey, false);
             }
-            $spaceChildren.data = new Map($spaceChildren.data);
+            publishChildren();
         }
         return $spaceChildren.data.get(cacheKey) || [];
     }
 
+    async function loadMoreChildren(spaceName: string, subpath = "/") {
+        const cacheKey = sidebarCacheKey(spaceName, subpath);
+        const loaded = $spaceChildren.data.get(cacheKey) ?? [];
+        try {
+            const children = await getChildren(spaceName, subpath, CHILDREN_PAGE_SIZE, loaded.length, [
+                ResourceType.folder,
+            ]);
+            const page = children.records ?? [];
+            const seen = new Set(loaded.map((r) => r.shortname));
+            const merged = [...loaded, ...page.filter((r) => !seen.has(r.shortname))];
+            $spaceChildren.data.set(cacheKey, merged);
+            $spaceChildren.hasMore.set(
+                cacheKey,
+                hasMoreRecords(children.attributes?.total, merged.length, page.length, CHILDREN_PAGE_SIZE),
+            );
+        } catch (error: unknown) {
+            showToast(Level.warn, errorMessage(error, $_("subpaths_load_failed")));
+        }
+        publishChildren();
+    }
+
     async function toggleExpanded(
-        spaceName,
+        spaceName: string,
         subpath = "/",
-        forceExpand = null,
+        forceExpand: boolean | null = null,
     ) {
-        const key = `${spaceName}:${subpath}`;
+        const key = sidebarCacheKey(spaceName, subpath);
         if (expandedSpaces.has(key)) {
             if (forceExpand === true) {
                 return;
@@ -68,200 +103,53 @@
             expandedSpaces.add(key);
             await loadChildren(spaceName, subpath);
         }
-        expandedSpaces = $state.snapshot(expandedSpaces);
     }
 
-    function isExpanded(spaceName, subpath = "/") {
-        return expandedSpaces.has(`${spaceName}:${subpath}`);
+    function isExpanded(spaceName: string, subpath = "/") {
+        return expandedSpaces.has(sidebarCacheKey(spaceName, subpath));
     }
 
-    function getChildrenForSpace(spaceName, subpath = "/") {
-        return $spaceChildren.data.get(`${spaceName}:${subpath}`) || [];
+    function getChildrenForSpace(spaceName: string, subpath = "/") {
+        return $spaceChildren.data.get(sidebarCacheKey(spaceName, subpath)) || [];
     }
 
-    let viewMetaModal = $state(false);
-    let editModal = $state(false);
-    let deleteModal = $state(false);
-    let addSpaceModal = $state(false);
-    let selectedSpace: ApiResponseRecord | null = $state(null);
-    let modelError: string | null = $state(null);
-
-    let spaceFormData = $state({
-        shortname: "",
-        is_active: true,
-        slug: "",
-        displayname: {
-            en: "",
-            ar: "",
-            ku: "",
-        },
-        description: {
-            en: "",
-            ar: "",
-            ku: "",
-        },
-    });
-    let validateSpaceForm = $state(() => true);
-
-    let isActionLoading = $state(false);
-
-    let jeContent = $state({ json: undefined });
-
-    async function createSpace() {
-        if (!validateSpaceForm()) {
-            return;
-        }
-
-        if (spaceFormData.shortname.trim()) {
-            try {
-                isActionLoading = true;
-                modelError = null;
-                const attributes = {
-                    is_active: spaceFormData.is_active,
-                    slug: spaceFormData.slug,
-                    displayname: spaceFormData.displayname,
-                    description: spaceFormData.description,
-                };
-                await Dmart.request({
-                    space_name: spaceFormData.shortname.trim(),
-                    request_type: RequestType.create,
-                    records: [
-                        {
-                            resource_type: ResourceType.space,
-                            shortname: spaceFormData.shortname.trim(),
-                            subpath: "/",
-                            attributes: removeEmpty(attributes),
-                        },
-                    ],
-                });
-                showToast(
-                    Level.info,
-                    `Space "${spaceFormData.shortname.trim()}" created successfully!`,
-                );
-                await getSpaces();
-                addSpaceModal = false;
-            } catch (error: any) {
-                modelError = error.response.data;
-            } finally {
-                isActionLoading = false;
-            }
-        }
+    function hasMoreChildren(spaceName: string, subpath = "/") {
+        return $spaceChildren.hasMore.get(sidebarCacheKey(spaceName, subpath)) === true;
     }
 
-    async function saveChanges() {
-        if (selectedSpace) {
-            let record;
-            try {
-                record = jsonEditorContentParser(jeContent);
-            } catch (e) {
-                modelError = "Invalid JSON format";
-                return;
-            }
-            delete record.uuid;
-            try {
-                isActionLoading = true;
-                modelError = null;
-                await Dmart.request({
-                    space_name: selectedSpace.shortname,
-                    request_type: RequestType.update,
-                    records: [
-                        {
-                            resource_type: ResourceType.space,
-                            shortname: selectedSpace.shortname,
-                            subpath: "/",
-                            attributes: record.attributes,
-                        },
-                    ],
-                });
-                editModal = false;
-                showToast(
-                    Level.info,
-                    `Space "${selectedSpace.shortname}" updated successfully!`,
-                );
-                await getSpaces();
-            } catch (error: any) {
-                modelError = error;
-            } finally {
-                isActionLoading = false;
-            }
-        }
-    }
+    const spaceName = $derived($params.space_name as string);
+    const currentSpace = $derived(($spaces ?? []).find((space) => space.shortname === spaceName));
+    const spaceLabel = $derived(localizedText(currentSpace?.attributes?.displayname, spaceName));
+    // The space root is "current" only when no folder is open.
+    const atRoot = $derived(normalizeSubpath($activeRoute?.params?.subpath) === "/");
 
-    async function deleteSpace() {
-        if (selectedSpace) {
-            try {
-                isActionLoading = true;
-                modelError = null;
-                await Dmart.request({
-                    space_name: selectedSpace.shortname,
-                    request_type: RequestType.delete,
-                    records: [
-                        {
-                            resource_type: ResourceType.space,
-                            shortname: selectedSpace.shortname,
-                            subpath: "/",
-                            attributes: {},
-                        },
-                    ],
-                });
-                showToast(
-                    Level.info,
-                    `Space "${selectedSpace.shortname}" has been deleted successfully!`,
-                );
-                deleteModal = false;
-                selectedSpace = null;
-                await getSpaces();
-            } catch (error: any) {
-                modelError = error;
-            } finally {
-                isActionLoading = false;
-            }
-        }
-    }
-
-    let currentSpaceNameLabel = $state($params.space_name);
-    async function getCurrentSpaceNameLabel() {
-        if (!$spaces) return;
-        const currentSpace = $spaces.filter(
-            (space) => space.shortname === $params.space_name,
-        );
-        currentSpaceNameLabel =
-            currentSpace.length === 1
-                ? currentSpace[0].attributes?.displayname?.en ||
-                  $params.space_name
-                : $params.space_name;
-    }
+    // Load the root level for the current space, and again when the route
+    // moves to another space while this tree stays mounted.
     $effect(() => {
-        if ($spaces) {
-            getCurrentSpaceNameLabel();
-        }
+        const name = spaceName;
+        untrack(() => {
+            void loadChildren(name);
+        });
     });
-
-    loadChildren($params.space_name);
 </script>
 
-<Sidebar
-    position="static"
-    class="h-full w-full [&_aside]:w-full [&_aside]:bg-transparent [&_aside]:border-0 [&_aside]:shadow-none"
->
-    <SidebarGroup>
-        <SidebarItem
-            label={currentSpaceNameLabel}
-            href={"/management/content/" + $params.space_name}
-        >
-            {#snippet icon()}
-                <div class="flex items-center gap-2">
-                    <CodeForkSolid
-                        size="md"
-                        class="text-gray-500"
-                        style="transform: rotate(180deg); position: relative; z-index: 5;"
-                    />
-                </div>
-            {/snippet}
-        </SidebarItem>
-        {#each $spaceChildren.data.get(`${$params.space_name}:/`) || [] as child (child.shortname)}
+<nav class="py-3 px-2 text-sm" aria-label={$_("folders")}>
+    <ul class="flex flex-col gap-0.5">
+        <li>
+            <a
+                href={$url("/management/content/[space_name]", { space_name: spaceName })}
+                onclick={onNavigate}
+                aria-current={atRoot ? "page" : undefined}
+                class="flex items-center gap-2 h-9 px-2 rounded-control font-semibold text-text hover:bg-surface-3
+                    aria-[current=page]:bg-primary-soft aria-[current=page]:text-primary transition-colors"
+            >
+                <CodeForkSolid size="md" class="shrink-0 text-text-faint" aria-hidden="true" />
+                <span class="truncate">{spaceLabel}</span>
+            </a>
+        </li>
+        {#each getChildrenForSpace(spaceName, "/") as child (child.shortname)}
             <SpacesSubpathItemsSidebar
-                spaceName={$params.space_name}
+                {spaceName}
                 parentPath="/"
                 item={child}
                 depth={1}
@@ -270,116 +158,22 @@
                 {toggleExpanded}
                 {isExpanded}
                 {getChildrenForSpace}
+                {hasMoreChildren}
+                loadMore={loadMoreChildren}
+                {onNavigate}
             />
         {/each}
-    </SidebarGroup>
-</Sidebar>
-
-<Modal bind:open={addSpaceModal} size="xl" title="Add New Space">
-    <div class="space-y-4">
-        <MetaForm
-            bind:formData={spaceFormData}
-            bind:validateFn={validateSpaceForm}
-            isCreate={true}
-        />
-
-        {#if modelError}
-            <div class="mt-4">
-                <p class="text-red-600 font-medium mb-2">Error:</p>
-                <div class="max-h-60 overflow-auto">
-                    <Prism code={modelError} />
-                </div>
-            </div>
+        {#if hasMoreChildren(spaceName, "/")}
+            <li>
+                <button
+                    type="button"
+                    class="w-full text-start text-sm text-primary h-8 px-2 rounded-control hover:bg-surface-3 cursor-pointer"
+                    style="padding-inline-start: 2.25rem"
+                    onclick={() => loadMoreChildren(spaceName, "/")}
+                >
+                    {$_("load_more")}
+                </button>
+            </li>
         {/if}
-    </div>
-
-    <div class="flex justify-between w-full mt-4">
-        <Button color="alternative" onclick={() => (addSpaceModal = false)}
-            >Cancel</Button
-        >
-        <Button class="bg-primary" onclick={createSpace}>
-            {#if isActionLoading}
-                <Spinner class="me-3" size="4" color="blue" />
-                Creating ...
-            {:else}
-                Create
-            {/if}
-        </Button>
-    </div>
-</Modal>
-
-<Modal bind:open={viewMetaModal} size="xl" title="Space Metadata" autoclose>
-    <div>
-        {#if selectedSpace}
-            <JSONEditor content={jeContent} readOnly={true} />
-        {/if}
-    </div>
-</Modal>
-
-<Modal bind:open={editModal} size="xl" title="Edit Space">
-    <div>
-        {#if selectedSpace}
-            <JSONEditor
-                bind:content={jeContent}
-                readOnly={false}
-                mode={Mode.text}
-            />
-        {/if}
-
-        {#if modelError}
-            <div class="mt-4">
-                <p class="text-red-600 font-medium mb-2">Error:</p>
-                <div class="max-h-60 overflow-auto">
-                    <Prism code={modelError} />
-                </div>
-            </div>
-        {/if}
-    </div>
-    <div class="flex justify-between w-full">
-        <Button color="alternative" onclick={() => (editModal = false)}
-            >Cancel</Button
-        >
-        <Button class="bg-primary" onclick={saveChanges}>
-            {#if isActionLoading}
-                <Spinner class="me-3" size="4" color="blue" />
-                Saving Changes ...
-            {:else}
-                Save Changes
-            {/if}
-        </Button>
-    </div>
-</Modal>
-
-<Modal bind:open={deleteModal} size="md" title="Confirm Deletion">
-    {#if selectedSpace}
-        <p class="text-center mb-6">
-            Are you sure you want to delete the space <span class="font-bold"
-                >{selectedSpace.shortname}</span
-            >?<br />
-            This action cannot be undone.
-        </p>
-    {/if}
-
-    {#if modelError}
-        <div class="mt-4">
-            <p class="text-red-600 font-medium mb-2">Error:</p>
-            <div class="max-h-60 overflow-auto">
-                <Prism code={modelError} />
-            </div>
-        </div>
-    {/if}
-
-    <div class="flex justify-between w-full">
-        <Button color="alternative" onclick={() => (deleteModal = false)}
-            >Cancel</Button
-        >
-        <Button color="red" onclick={deleteSpace}>
-            {#if isActionLoading}
-                <Spinner class="me-3" size="4" color="blue" />
-                Deleting ...
-            {:else}
-                Delete
-            {/if}
-        </Button>
-    </div>
-</Modal>
+    </ul>
+</nav>

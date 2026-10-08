@@ -1,4 +1,4 @@
-<script context="module" lang="ts">
+<script module lang="ts">
     // User-level override of .routify/components/[...404].svelte. Exists so
     // svelte-check sees a typed `route` parameter instead of implicitly `any`
     // in the auto-generated file. Routify picks up the root-level catch-all
@@ -12,25 +12,32 @@
 </script>
 
 <script lang="ts">
-    export let url: string;
+    import { QuestionCircleOutline } from "flowbite-svelte-icons";
+    import EmptyState from "@/components/ui/EmptyState.svelte";
+    import { _ } from "@/i18n";
+    import { withBase } from "@/lib/paths";
+    import { setTitle } from "@/lib/title";
+
+    let { url }: { url: string } = $props();
+
+    $effect(() => setTitle($_("not_found.title")));
 </script>
 
 <div class="four04">
-    <h1>404 - Page Not Found</h1>
-    <p>
-        The page <code>{url}</code> could not be found. Please check the URL or go back
-        to the <a href="/">homepage</a>.
-    </p>
+    <EmptyState
+        icon={QuestionCircleOutline}
+        title={$_("not_found.title")}
+        hint={$_("not_found.message", { values: { url } })}
+    >
+        <!-- Root-absolute "/" would leave the <base href="/cat/"> deployment. -->
+        <a class="app-btn app-btn-primary" href={withBase("/")}>{$_("not_found.go_home")}</a>
+    </EmptyState>
 </div>
 
 <style>
-    div.four04 {
-        display: flex;
-        align-items: center;
-        flex-direction: column;
-        text-align: center;
-    }
-    div.four04 > * {
-        margin-top: 1em;
+    .four04 {
+        max-width: 36rem;
+        margin: 0 auto;
+        padding: clamp(2rem, 8vw, 5rem) var(--space-page-x);
     }
 </style>

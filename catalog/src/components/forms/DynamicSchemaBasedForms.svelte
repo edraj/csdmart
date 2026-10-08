@@ -115,7 +115,7 @@
 <div class="form-container">
   {#if schema && schema.properties}
     <div class="form-content">
-      {#each Object.keys(schema.properties) as propName}
+      {#each Object.keys(schema.properties) as propName (propName)}
         {@const property = schema.properties[propName]}
         {#if !isFieldRestricted($permissions, propName, space, subpath, resourceType)}
         <div class="field-group">
@@ -176,7 +176,7 @@
                 class="form-select"
               >
                 <option value="">{$_("SelectAnOption")}</option>
-                {#each constrainEnumOptions(property.enum, $permissions, propName, space, subpath, resourceType, content[propName]) as option}
+                {#each constrainEnumOptions(property.enum, $permissions, propName, space, subpath, resourceType, content[propName]) as option (option)}
                   <option value={option}>{option}</option>
                 {/each}
               </select>
@@ -260,12 +260,12 @@
 
               {#if content[propName] && content[propName].length > 0}
                 <div class="array-items">
-                  {#each content[propName] as item, index}
+                  {#each content[propName] as item, index (index)}
                     <div class="array-item">
                       <div class="array-item-content">
                         {#if property.items?.type === "object" && property.items?.properties && Object.keys(property.items.properties).length > 0}
                           <div class="object-fields">
-                            {#each Object.keys(property.items!.properties) as itemPropName}
+                            {#each Object.keys(property.items!.properties) as itemPropName (itemPropName)}
                               {@const itemProperty =
                                 property.items!.properties[itemPropName]}
                               <div class="object-field">
@@ -337,7 +337,7 @@
                                       class="form-select form-input-small"
                                     >
                                       <option value="">{$_("SelectAnOption")}</option>
-                                      {#each itemProperty.enum as option}
+                                      {#each itemProperty.enum as option (option)}
                                         <option value={option}>{option}</option>
                                       {/each}
                                     </select>
@@ -438,7 +438,7 @@
                           </div>
                         {:else if typeof item === "object" && item !== null}
                           <div class="object-fields">
-                            {#each Object.keys(item) as itemKey}
+                            {#each Object.keys(item) as itemKey (itemKey)}
                               <div class="object-field">
                                 <label
                                   for={`${propName}-${index}-${itemKey}`}
@@ -530,7 +530,7 @@
                 <h3 class="object-title">{property.title || propName}</h3>
               </div>
               <div class="object-content">
-                {#each Object.keys(property.properties) as nestedPropName}
+                {#each Object.keys(property.properties) as nestedPropName (nestedPropName)}
                   {@const nestedProperty = property.properties[nestedPropName]}
                   <div class="object-field">
                     <label
@@ -617,7 +617,7 @@
   .field-label {
     font-size: 14px;
     font-weight: 600;
-    color: #374151;
+    color: var(--color-text);
     display: flex;
     align-items: center;
     gap: 4px;
@@ -625,14 +625,14 @@
   }
 
   .required-indicator {
-    color: #ef4444;
+    color: var(--color-danger);
     font-size: 16px;
     font-weight: 700;
   }
 
   .field-description {
     font-size: 12px;
-    color: #6b7280;
+    color: var(--color-text-muted);
     margin: 0 0 8px 0;
     line-height: 1.4;
   }
@@ -642,12 +642,12 @@
   .form-textarea {
     width: 100%;
     padding: 12px 16px;
-    border: 2px solid #e5e7eb;
+    border: 2px solid var(--color-border);
     border-radius: 8px;
     font-size: 14px;
     transition: all 0.2s ease;
-    background: #ffffff;
-    color: #374151;
+    background: var(--color-surface-2);
+    color: var(--color-text);
     box-sizing: border-box;
   }
 
@@ -655,14 +655,14 @@
   .form-select:focus,
   .form-textarea:focus {
     outline: none;
-    border-color: #3b82f6;
+    border-color: var(--color-primary);
     box-shadow: 0 0 0 3px rgba(59, 130, 246, 0.1);
   }
 
   .form-input:hover,
   .form-select:hover,
   .form-textarea:hover {
-    border-color: #d1d5db;
+    border-color: var(--color-border-strong);
   }
 
   .form-input-small {
@@ -686,28 +686,28 @@
   .form-checkbox {
     width: 18px;
     height: 18px;
-    border: 2px solid #d1d5db;
+    border: 2px solid var(--color-border-strong);
     border-radius: 4px;
     cursor: pointer;
     transition: all 0.2s ease;
   }
 
   .form-checkbox:checked {
-    background-color: #3b82f6;
-    border-color: #3b82f6;
+    background-color: var(--color-primary);
+    border-color: var(--color-primary);
   }
 
   .checkbox-label {
     font-size: 14px;
-    color: #6b7280;
+    color: var(--color-text-muted);
     font-weight: 500;
   }
 
   .array-container {
-    border: 2px solid #f1f5f9;
+    border: 2px solid var(--color-surface-3);
     border-radius: 12px;
     padding: 20px;
-    background: #fafbfc;
+    background: var(--color-surface-2);
   }
 
   .array-header {
@@ -716,13 +716,13 @@
     align-items: center;
     margin-bottom: 16px;
     padding-bottom: 12px;
-    border-bottom: 1px solid #e5e7eb;
+    border-bottom: 1px solid var(--color-border);
   }
 
   .array-title {
     font-size: 16px;
     font-weight: 600;
-    color: #374151;
+    color: var(--color-text);
     margin: 0;
   }
 
@@ -733,8 +733,8 @@
   }
 
   .array-item {
-    background: #ffffff;
-    border: 1px solid #e5e7eb;
+    background: var(--color-surface-2);
+    border: 1px solid var(--color-border);
     border-radius: 8px;
     padding: 16px;
     display: flex;
@@ -745,7 +745,7 @@
   }
 
   .array-item:hover {
-    border-color: #d1d5db;
+    border-color: var(--color-border-strong);
     box-shadow: 0 2px 4px rgba(0, 0, 0, 0.05);
   }
 
@@ -758,28 +758,28 @@
   }
 
   .object-container {
-    border: 2px solid #f1f5f9;
+    border: 2px solid var(--color-surface-3);
     border-radius: 12px;
     overflow: hidden;
-    background: #fafbfc;
+    background: var(--color-surface-2);
   }
 
   .object-header {
-    background: linear-gradient(135deg, #f8fafc, #f1f5f9);
+    background: linear-gradient(135deg, var(--color-surface), var(--color-surface-3));
     padding: 16px 20px;
-    border-bottom: 1px solid #e5e7eb;
+    border-bottom: 1px solid var(--color-border);
   }
 
   .object-title {
     font-size: 16px;
     font-weight: 600;
-    color: #374151;
+    color: var(--color-text);
     margin: 0;
   }
 
   .object-content {
     padding: 20px;
-    background: #ffffff;
+    background: var(--color-surface-2);
   }
 
   .object-fields {
@@ -797,7 +797,7 @@
   .object-field-label {
     font-size: 13px;
     font-weight: 600;
-    color: #4b5563;
+    color: var(--color-text-muted);
     margin-bottom: 4px;
   }
 
@@ -827,21 +827,21 @@
   }
 
   .btn-primary {
-    background: linear-gradient(135deg, #3b82f6, #2563eb);
-    color: #ffffff;
+    background: linear-gradient(135deg, var(--color-primary), var(--color-primary-hover));
+    color: var(--color-surface-2);
   }
 
   .btn-primary:hover {
-    background: linear-gradient(135deg, #2563eb, #1d4ed8);
+    background: linear-gradient(135deg, var(--color-primary-hover), var(--color-primary-hover));
   }
 
   .btn-danger {
-    background: linear-gradient(135deg, #ef4444, #dc2626);
-    color: #ffffff;
+    background: linear-gradient(135deg, var(--color-danger), var(--color-danger));
+    color: var(--color-surface-2);
   }
 
   .btn-danger:hover {
-    background: linear-gradient(135deg, #dc2626, #b91c1c);
+    background: linear-gradient(135deg, var(--color-danger), var(--color-danger-hover));
   }
 
   .btn-icon {
@@ -853,14 +853,14 @@
   .empty-state {
     text-align: center;
     padding: 48px 24px;
-    background: #f8fafc;
+    background: var(--color-surface);
     border-radius: 12px;
-    border: 2px dashed #cbd5e1;
+    border: 2px dashed var(--color-border-strong);
   }
 
   .empty-message {
     font-size: 16px;
-    color: #64748b;
+    color: var(--color-text-muted);
     margin: 0;
     font-weight: 500;
   }

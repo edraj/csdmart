@@ -3,6 +3,9 @@
   <head>
     <meta charset="UTF-8" />
     <base href="/cat/" />
+    <!-- config.json is the first thing main.ts waits for; start it with the HTML
+         instead of after the module graph has loaded and run. -->
+    <link rel="preload" href="./config.json" as="fetch" crossorigin />
     <link rel="icon" type="image/svg+xml" href="./vite.svg" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <meta

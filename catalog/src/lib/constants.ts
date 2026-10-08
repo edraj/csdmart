@@ -11,6 +11,12 @@ export const MANAGEMENT_SPACE = "management";
 export const PERSONAL_SPACE = "personal";
 export const MESSAGES_SPACE = "messages";
 
+// --- Well-known subpaths ---
+// Contact-form submissions live under applications/contacts; author profiles
+// under <space>/authors.
+export const CONTACTS_SUBPATH = "contacts";
+export const AUTHORS_SUBPATH = "authors";
+
 // --- Default Query Limits ---
 export const DEFAULT_QUERY_LIMIT = 100;
 export const MAX_QUERY_LIMIT = 1000;
@@ -45,6 +51,7 @@ export const ALWAYS_PUBLIC_ROUTES: PublicRoute[] = [
 // website.enable_public_view is true (the public browsing experience).
 export const PUBLIC_VIEW_ROUTES: PublicRoute[] = [
   "/contact",
+  "/community",
   "/help",
   "/privacy",
   "/home",

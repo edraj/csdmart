@@ -323,6 +323,19 @@ jobs:
           yarn --cwd cxb test || rc=1
           exit $rc
 
+      - name: Frontend type-check and lint (catalog + cxb)
+        # svelte-check with the real tsconfig (so .ts files are covered and
+        # a11y warnings count) plus eslint. These were never run in CI, which
+        # is how 60+ accessibility and typing problems accumulated unnoticed.
+        # Both SPAs run even if the first fails, same reasoning as above.
+        run: |
+          rc=0
+          yarn --cwd catalog run check || rc=1
+          yarn --cwd cxb run check || rc=1
+          yarn --cwd catalog lint || rc=1
+          yarn --cwd cxb lint || rc=1
+          exit $rc
+
       - name: Write PostgreSQL config
         if: matrix.driver == 'postgresql'
         # Built from the checked-in sample, NOT copied off the runner host.

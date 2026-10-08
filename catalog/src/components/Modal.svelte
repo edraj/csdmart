@@ -1,7 +1,6 @@
 <script lang="ts">
   import type { Snippet } from "svelte";
-  import { locale, _ } from "@/i18n";
-  import { derived as derivedStore } from "svelte/store";
+  import { _ } from "@/i18n";
 
   type ModalSize = "sm" | "md" | "lg" | "xl" | "2xl" | "3xl" | "4xl";
 
@@ -33,11 +32,6 @@
     children,
   }: Props = $props();
 
-  const isRTL = derivedStore(
-    locale,
-    (val: any) => val === "ar" || val === "ku",
-  );
-
   const SIZE_MAX_WIDTH: Record<ModalSize, string> = {
     sm: "24rem",
     md: "28rem",
@@ -48,6 +42,21 @@
     "4xl": "56rem",
   };
 
+  const uid = $props.id();
+  const titleId = `${uid}-title`;
+
+  let panel: HTMLDivElement | undefined = $state();
+
+  const FOCUSABLE =
+    'a[href], button:not([disabled]), input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex="-1"])';
+
+  function focusables(): HTMLElement[] {
+    if (!panel) return [];
+    return Array.from(panel.querySelectorAll<HTMLElement>(FOCUSABLE)).filter(
+      (el) => el.offsetParent !== null || el === document.activeElement,
+    );
+  }
+
   function requestClose() {
     if (!dismissable) return;
     onClose();
@@ -57,18 +66,43 @@
     if (e.target === e.currentTarget) requestClose();
   }
 
+  // Escape closes; Tab and Shift+Tab stay inside the panel.
   function handleKeydown(e: KeyboardEvent) {
     if (e.key === "Escape") {
       e.stopPropagation();
       requestClose();
+      return;
+    }
+    if (e.key !== "Tab") return;
+    const els = focusables();
+    if (els.length === 0) {
+      e.preventDefault();
+      panel?.focus();
+      return;
+    }
+    const first = els[0];
+    const last = els[els.length - 1];
+    const active = document.activeElement;
+    if (e.shiftKey && (active === first || active === panel)) {
+      e.preventDefault();
+      last.focus();
+    } else if (!e.shiftKey && active === last) {
+      e.preventDefault();
+      first.focus();
     }
   }
 
+  // Lock page scroll, move focus in (data-autofocus wins, then the first
+  // control, then the panel itself) and give it back on close.
   $effect(() => {
+    const previouslyFocused = document.activeElement as HTMLElement | null;
     const previousOverflow = document.body.style.overflow;
     document.body.style.overflow = "hidden";
+    const auto = panel?.querySelector<HTMLElement>("[data-autofocus]");
+    (auto ?? focusables()[0] ?? panel)?.focus();
     return () => {
       document.body.style.overflow = previousOverflow;
+      previouslyFocused?.focus?.();
     };
   });
 
@@ -77,37 +111,38 @@
   );
 </script>
 
-<!-- svelte-ignore a11y_no_noninteractive_element_interactions -->
-<!-- svelte-ignore a11y_click_events_have_key_events -->
 <div
-  class="fixed inset-0 z-[60] flex items-center justify-center p-4 bg-black/50 backdrop-blur-sm app-modal-backdrop"
-  class:rtl={$isRTL}
+  class="fixed inset-0 z-[60] flex items-center justify-center p-4 bg-[var(--surface-overlay)] backdrop-blur-sm app-modal-backdrop"
   onclick={handleBackdropClick}
   onkeydown={handleKeydown}
   role="dialog"
   aria-modal="true"
-  aria-label={ariaLabel || title || "Dialog"}
+  aria-labelledby={title ? titleId : undefined}
+  aria-label={title ? undefined : ariaLabel || $_("ui.dialog")}
   tabindex="-1"
 >
   <div
-    class="bg-white rounded-[24px] shadow-2xl w-full overflow-hidden border border-gray-100 flex flex-col max-h-[90vh] app-modal-container"
+    bind:this={panel}
+    class="bg-surface-2 text-text rounded-modal shadow-modal w-full overflow-hidden border border-border flex flex-col max-h-[90vh] outline-none app-modal-container"
     style="max-width: {SIZE_MAX_WIDTH[size]}"
     role="document"
+    tabindex="-1"
   >
     {#if hasHeader}
       <div
-        class="p-6 border-b border-gray-100 flex items-center justify-between bg-white shrink-0 app-modal-header"
+        class="px-5 py-4 border-b border-border flex items-center justify-between gap-3 shrink-0 app-modal-header"
       >
         <div class="flex items-center gap-3 min-w-0 flex-1">
           {#if icon}
             <div
-              class="w-10 h-10 bg-indigo-50 rounded-xl flex items-center justify-center text-indigo-600 shrink-0"
+              class="w-10 h-10 bg-primary-soft rounded-card flex items-center justify-center text-primary shrink-0"
+              aria-hidden="true"
             >
               {@render icon()}
             </div>
           {/if}
           {#if title}
-            <h2 class="text-xl font-bold text-gray-900 truncate">{title}</h2>
+            <h2 id={titleId} class="text-lg font-semibold text-text truncate">{title}</h2>
           {/if}
         </div>
         <div class="flex items-center gap-2 shrink-0">
@@ -117,15 +152,17 @@
           {#if showClose && dismissable}
             <button
               onclick={requestClose}
-              aria-label={$_("common.close") || "Close"}
-              class="p-2 text-gray-400 hover:text-gray-600 hover:bg-gray-50 rounded-lg transition-colors"
+              aria-label={$_("common.close")}
+              title={$_("common.close")}
+              class="p-2 text-text-muted hover:text-text hover:bg-surface-3 rounded-control transition-colors"
               type="button"
             >
               <svg
-                class="w-6 h-6"
+                class="w-5 h-5"
                 fill="none"
                 stroke="currentColor"
                 viewBox="0 0 24 24"
+                aria-hidden="true"
               >
                 <path
                   stroke-linecap="round"
@@ -141,9 +178,7 @@
     {/if}
 
     <div
-      class="p-6 bg-gray-50/30 flex-1 app-modal-content {contentScroll
-        ? 'overflow-y-auto'
-        : ''}"
+      class="p-5 flex-1 app-modal-content {contentScroll ? 'overflow-y-auto' : ''}"
     >
       {#if children}
         {@render children()}
@@ -152,16 +187,10 @@
 
     {#if footer}
       <div
-        class="p-6 border-t border-gray-100 flex items-center justify-end gap-3 bg-white shrink-0 app-modal-footer"
+        class="px-5 py-4 border-t border-border flex flex-wrap items-center justify-end gap-2 bg-surface shrink-0 app-modal-footer"
       >
         {@render footer()}
       </div>
     {/if}
   </div>
 </div>
-
-<style>
-  .rtl {
-    direction: rtl;
-  }
-</style>

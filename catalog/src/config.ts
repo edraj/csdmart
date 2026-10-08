@@ -8,7 +8,6 @@ export interface WebsiteConfig {
   languages: Record<string, string>;
   backend: string;
   backend_timeout?: number;
-  delay_total_count?: boolean;
   enable_websocket?: boolean;
   enable_messaging?: boolean;
   enable_surveys?: boolean;
@@ -37,7 +36,6 @@ const defaultConfig: WebsiteConfig = {
   // right value depends on how the user reached the page.
   backend: "",
   backend_timeout: 30000,
-  delay_total_count: false,
   enable_websocket: true,
   enable_messaging: false,
   enable_surveys: false,

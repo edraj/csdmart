@@ -1,6 +1,6 @@
 <script lang="ts">
-  import { Button, Heading, Input, Label, Spinner } from "flowbite-svelte";
-  import { goto } from "@roxi/routify";
+  import { Button, Input, Label, Spinner } from "flowbite-svelte";
+  import { goto, url } from "@roxi/routify";
   import { onMount } from "svelte";
   import { _ } from "@/i18n";
   import {
@@ -12,8 +12,6 @@
     setResetTarget,
   } from "@/lib/password_reset";
   import { ensureDmartAxios } from "@/lib/dmart_axios";
-
-  $goto;
 
   let rawIdentifier: string = $state("");
   let isSubmitting: boolean = $state(false);
@@ -61,47 +59,47 @@
   }
 </script>
 
-<div class="flex justify-center items-center h-svh">
-  <div class="w-full max-w-md p-8">
-    <Heading class="text-primary" tag="h2">{$_("reset_password")}</Heading>
-    <p class="mt-2 text-sm opacity-75">{$_("reset_password_intro")}</p>
+<div class="flex justify-center items-center min-h-[calc(100svh-3.5rem)] px-4 bg-surface text-text">
+  <div class="w-full max-w-md py-8">
+    <h1 class="text-2xl font-semibold text-text">{$_("reset_password")}</h1>
+    <p class="mt-2 text-sm text-text-muted">{$_("reset_password_intro")}</p>
 
     {#if startOver}
-      <p class="text-amber-600 mt-4">{$_("reset_start_over")}</p>
+      <p class="mt-4 text-sm text-warning" role="status">{$_("reset_start_over")}</p>
     {/if}
 
-    <form onsubmit={handleSubmit} class="mt-8">
-      <Label for="identifier">{$_("email_or_phone")}</Label>
-      <Input
-        id="identifier"
-        type="text"
-        placeholder={$_("email_or_phone")}
-        bind:value={rawIdentifier}
-        color={fieldError ? "red" : "default"}
-        autocomplete="username"
-        aria-describedby={fieldError ? "identifier-error" : undefined}
-        required
-      />
-      {#if fieldError}
-        <p id="identifier-error" class="text-red-600 mt-2">{fieldError}</p>
-      {/if}
+    <form onsubmit={handleSubmit} class="mt-8 space-y-5">
+      <div>
+        <Label for="identifier" class="mb-2">{$_("email_or_phone")}</Label>
+        <Input
+          id="identifier"
+          type="text"
+          placeholder={$_("email_or_phone")}
+          bind:value={rawIdentifier}
+          color={fieldError ? "red" : "default"}
+          autocomplete="username"
+          aria-describedby={fieldError ? "identifier-error" : undefined}
+          required
+        />
+        {#if fieldError}
+          <p id="identifier-error" class="text-sm text-danger mt-2">{fieldError}</p>
+        {/if}
+      </div>
 
-      <div class="mt-6"></div>
-      <Button type="submit" class="w-full bg-primary" disabled={isSubmitting}
-              style="cursor: pointer">
+      <Button type="submit" color="primary" class="w-full" disabled={isSubmitting}>
         {#if isSubmitting}
-          <Spinner class="me-3" size="4" color="blue" />
+          <Spinner class="me-3" size="4" />
         {/if}
         {$_("send_reset_code")}
       </Button>
 
       {#if formError}
-        <p class="text-red-600 mt-2">{formError}</p>
+        <p class="text-sm text-danger" role="alert">{formError}</p>
       {/if}
     </form>
 
     <div class="mt-6 text-center">
-      <Button color="light" onclick={() => $goto("/management")} style="cursor: pointer">
+      <Button color="alternative" href={$url("/management")}>
         {$_("back_to_login")}
       </Button>
     </div>

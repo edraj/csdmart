@@ -1,18 +1,11 @@
 <script lang="ts">
-  import { marked } from "marked";
-  import { mangle } from "marked-mangle";
-  import { sanitizeHtml } from "@/lib/utils/sanitize";
-  import { gfmHeadingId } from "marked-gfm-heading-id";
+  import { log } from "@/lib/logger";
+  import { _ } from "@/i18n";
+  import { renderMarkdown } from "@/lib/markdown";
   import { Dmart } from "@edraj/tsdmart";
-  import { getFileExtension, isImageFile } from "@/lib/fileUtils";
+  import { getFileExtension } from "@shared/file-extension";
+  import { isImageFile } from "@/lib/fileUtils";
   import { attachmentMarkdown } from "@/lib/markdownInsert";
-
-  marked.use(mangle());
-  marked.use(
-    gfmHeadingId({
-      prefix: "my-prefix-",
-    }),
-  );
 
   interface FieldType {
     value: string;
@@ -139,7 +132,7 @@
     }
   }
 
-  function handleDragLeave(event: DragEvent) {
+  function handleDragLeave() {
     isDraggingOver = false;
   }
 
@@ -157,7 +150,7 @@
         onDropKey(key);
       }
     } catch (e) {
-      console.error("Error handling drop:", e);
+      log.error("Error handling drop:", e);
     }
   }
 
@@ -300,7 +293,7 @@
   }
 
   export function getContent() {
-    return marked(content);
+    return renderMarkdown(content);
   }
 
   // Tab switching functionality
@@ -318,15 +311,6 @@
     }
   });
 
-  //   if (typeof window !== "undefined") {
-  //     window.addEventListener("click", (e) => {
-  //       const target = e.target as HTMLElement;
-  //       if (target.classList && target.classList.contains("tab-btn")) {
-  //         const tabName = target.dataset.tab;
-  //         switchTab(tabName);
-  //       }
-  //     });
-  //   }
 </script>
 
 <div class="markdown-editor-container">
@@ -335,21 +319,21 @@
       <button
         class="toolbar-btn"
         onclick={() => handleFormatting("**")}
-        title="Bold"
+        title={$_("html_editor.toolbar.bold")} aria-label={$_("html_editor.toolbar.bold")}
       >
         <strong>B</strong>
       </button>
       <button
         class="toolbar-btn"
         onclick={() => handleFormatting("_")}
-        title="Italic"
+        title={$_("html_editor.toolbar.italic")} aria-label={$_("html_editor.toolbar.italic")}
       >
         <i>I</i>
       </button>
       <button
         class="toolbar-btn"
         onclick={() => handleFormatting("~~")}
-        title="Strikethrough"
+        title={$_("html_editor.toolbar.strike")} aria-label={$_("html_editor.toolbar.strike")}
       >
         <del>S</del>
       </button>
@@ -359,14 +343,14 @@
       <button
         class="toolbar-btn"
         onclick={() => handleFormatting("*", false, true)}
-        title="Bullet List"
+        title={$_("html_editor.toolbar.unordered_list")} aria-label={$_("html_editor.toolbar.unordered_list")}
       >
         <span>•</span>
       </button>
       <button
         class="toolbar-btn"
         onclick={() => handleFormatting("1.", false, true)}
-        title="Numbered List"
+        title={$_("html_editor.toolbar.ordered_list")} aria-label={$_("html_editor.toolbar.ordered_list")}
       >
         <span>1.</span>
       </button>
@@ -376,21 +360,21 @@
       <button
         class="toolbar-btn"
         onclick={() => handleFormatting("#", false)}
-        title="Heading 1"
+        title={$_("html_editor.toolbar.heading_1")} aria-label={$_("html_editor.toolbar.heading_1")}
       >
         <span>H1</span>
       </button>
       <button
         class="toolbar-btn"
         onclick={() => handleFormatting("##", false)}
-        title="Heading 2"
+        title={$_("html_editor.toolbar.heading_2")} aria-label={$_("html_editor.toolbar.heading_2")}
       >
         <span>H2</span>
       </button>
       <button
         class="toolbar-btn"
         onclick={() => handleFormatting("###", false)}
-        title="Heading 3"
+        title={$_("markdown_editor.heading_3")} aria-label={$_("markdown_editor.heading_3")}
       >
         <span>H3</span>
       </button>
@@ -400,14 +384,14 @@
       <button
         class="toolbar-btn"
         onclick={() => handleFormatting(tableInsert, false)}
-        title="Insert Table"
+        title={$_("markdown_editor.insert_table")} aria-label={$_("markdown_editor.insert_table")}
       >
         <span>⊞</span>
       </button>
       <button
         class="toolbar-btn"
         onclick={() => handleFormatting(listViewInsert, false)}
-        title="Insert List View"
+        title={$_("markdown_editor.insert_list_view")} aria-label={$_("markdown_editor.insert_list_view")}
       >
         <span>☰</span>
       </button>
@@ -418,7 +402,7 @@
         <button
           class="toolbar-btn"
           onclick={() => (showAttachments = true)}
-          title="Insert attachment"
+          title={$_("html_editor.toolbar.attachments")} aria-label={$_("html_editor.toolbar.attachments")}
         >
           <span>📎</span>
         </button>
@@ -431,40 +415,39 @@
           <button
             class="toolbar-btn dynamic-btn"
             onclick={toggleDynamicMenu}
-            title="Insert Dynamic Content"
+            title={$_("markdown_editor.insert_dynamic")} aria-label={$_("markdown_editor.insert_dynamic")}
             class:active={showDynamicMenu}
           >
             <span>{`{ }`}</span>
           </button>
           
           {#if showDynamicMenu}
-            <!-- svelte-ignore a11y_click_events_have_key_events a11y_no_noninteractive_element_interactions -->
             <div 
               class="dynamic-menu" 
               onclick={(e) => e.stopPropagation()}
               onkeydown={handleMenuKeyDown}
               role="dialog"
-              aria-label="Dynamic content insertion"
+              aria-label={$_("markdown_editor.dynamic_region")}
               tabindex="-1"
             >
               <div class="dynamic-menu-header">
-                <span>Insert Dynamic Field</span>
+                <span>{$_("markdown_editor.insert_dynamic_field")}</span>
               </div>
               <div class="dynamic-menu-body">
                 <div class="field-input-group">
-                  <label for="field-name">Field Name</label>
+                  <label for="field-name">{$_("json_editor.field_name_label")}</label>
                   <input
                     id="field-name"
                     type="text"
                     bind:value={dynamicFieldName}
-                    placeholder="e.g., username, price, description"
+                    placeholder={$_("markdown_editor.field_name_placeholder")}
                     onkeydown={handleMenuKeyDown}
                   />
                 </div>
                 <div class="field-input-group">
-                  <label for="field-type">Field Type</label>
+                  <label for="field-type">{$_("json_editor.field_type_label")}</label>
                   <select id="field-type" bind:value={selectedFieldType}>
-                    {#each fieldTypes as type}
+                    {#each fieldTypes as type (type.value)}
                       <option value={type.value} title={type.description}>
                         {type.label}
                       </option>
@@ -472,7 +455,7 @@
                   </select>
                 </div>
                 <div class="field-preview">
-                  <code>{'{{'}{dynamicFieldName ? `${dynamicFieldName}:${selectedFieldType}` : 'field_name:type'}{'}}'}</code>
+                  <code>&#123;&#123;{dynamicFieldName ? `${dynamicFieldName}:${selectedFieldType}` : 'field_name:type'}&#125;&#125;</code>
                 </div>
               </div>
               <div class="dynamic-menu-footer">
@@ -525,7 +508,7 @@
           class="markdown-textarea {isDraggingOver ? 'drag-over' : ''}"
           bind:value={content}
           oninput={() => handleSave()}
-          placeholder="Write your content in Markdown..."
+          placeholder={$_("markdown_editor.content_placeholder")}
         ></textarea>
       </div>
       <div
@@ -533,7 +516,7 @@
         data-panel="preview"
       >
         <div class="markdown-preview">
-          {@html sanitizeHtml(marked(content))}
+          {@html renderMarkdown(content)}
         </div>
       </div>
     </div>
@@ -541,14 +524,16 @@
 </div>
 
 {#if showAttachments}
-  <!-- svelte-ignore a11y_click_events_have_key_events a11y_no_noninteractive_element_interactions -->
   <div
     class="md-attachments-overlay"
     role="dialog"
     aria-modal="true"
-    aria-label="Insert attachment"
+    aria-label={$_("html_editor.toolbar.attachments")}
     tabindex="-1"
     onclick={handleAttachmentsModalClick}
+    onkeydown={(e) => {
+      if (e.key === "Escape") closeAttachments();
+    }}
   >
     <!-- The inner stopPropagation exists so a click on the panel does not reach
          the overlay's close handler; role=presentation says it carries no
@@ -559,15 +544,15 @@
       onclick={(e) => e.stopPropagation()}
     >
       <div class="md-attachments-header">
-        <h3>Insert attachment</h3>
+        <h3>{$_("html_editor.toolbar.attachments")}</h3>
         <button
           class="md-attachments-close"
-          aria-label="Close attachments"
+          aria-label={$_("html_editor.close_attachments")}
           onclick={closeAttachments}>✕</button
         >
       </div>
       <div class="md-attachments-grid">
-        {#each mediaAttachments as attachment}
+        {#each mediaAttachments as attachment (attachment.shortname)}
           <button
             type="button"
             class="md-attachment-item"
@@ -600,7 +585,7 @@
     z-index: 1000;
   }
   .md-attachments-modal {
-    background: var(--md-surface, #fff);
+    background: var(--md-surface, var(--color-surface-2));
     color: inherit;
     border-radius: 8px;
     width: min(560px, 92vw);
@@ -663,10 +648,10 @@
     height: 100%;
     display: flex;
     flex-direction: column;
-    background: white;
+    background: var(--color-surface);
     border-radius: 0.75rem;
     overflow: hidden;
-    border: 1px solid #e5e7eb;
+    border: 1px solid var(--color-border);
   }
 
   .editor-toolbar {
@@ -674,8 +659,8 @@
     align-items: center;
     gap: 0.5rem;
     padding: 0.75rem 1rem;
-    background: #f9fafb;
-    border-bottom: 1px solid #e5e7eb;
+    background: var(--color-surface);
+    border-bottom: 1px solid var(--color-border);
     flex-wrap: wrap;
   }
 
@@ -684,11 +669,11 @@
     align-items: center;
     gap: 0.25rem;
     padding: 0 0.5rem;
-    border-right: 1px solid #d1d5db;
+    border-inline-end: 1px solid var(--color-border-strong);
   }
 
   .toolbar-group:last-child {
-    border-right: none;
+    border-inline-end: none;
   }
 
   .toolbar-btn {
@@ -697,10 +682,10 @@
     justify-content: center;
     width: 2rem;
     height: 2rem;
-    background: white;
-    border: 1px solid #d1d5db;
+    background: var(--color-surface);
+    border: 1px solid var(--color-border-strong);
     border-radius: 0.375rem;
-    color: #374151;
+    color: var(--color-text);
     font-size: 0.875rem;
     font-weight: 500;
     cursor: pointer;
@@ -708,12 +693,12 @@
   }
 
   .toolbar-btn:hover {
-    background: #f3f4f6;
-    border-color: #9ca3af;
+    background: var(--color-surface-3);
+    border-color: var(--color-text-faint);
   }
 
   .toolbar-btn:active {
-    background: #e5e7eb;
+    background: var(--color-border);
   }
 
   .editor-tabs {
@@ -725,15 +710,15 @@
 
   .tab-buttons {
     display: flex;
-    background: #f9fafb;
-    border-bottom: 1px solid #e5e7eb;
+    background: var(--color-surface);
+    border-bottom: 1px solid var(--color-border);
   }
 
   .tab-btn {
     padding: 0.75rem 1.5rem;
     background: transparent;
     border: none;
-    color: #6b7280;
+    color: var(--color-text-muted);
     font-weight: 500;
     cursor: pointer;
     transition: all 0.2s ease;
@@ -741,14 +726,14 @@
   }
 
   .tab-btn:hover {
-    color: #374151;
-    background: #f3f4f6;
+    color: var(--color-text);
+    background: var(--color-surface-3);
   }
 
   .tab-btn.active {
-    color: #2563eb;
-    background: white;
-    border-bottom-color: #2563eb;
+    color: var(--color-primary-hover);
+    background: var(--color-surface);
+    border-bottom-color: var(--color-primary-hover);
   }
 
   .tab-content {
@@ -760,8 +745,8 @@
   .tab-panel {
     position: absolute;
     top: 0;
-    left: 0;
-    right: 0;
+    inset-inline-start: 0;
+    inset-inline-end: 0;
     bottom: 0;
     opacity: 0;
     visibility: hidden;
@@ -791,21 +776,21 @@
       sans-serif;
     font-size: 0.875rem;
     line-height: 1.6;
-    background: white;
-    color: #374151;
+    background: var(--color-surface);
+    color: var(--color-text);
     transition: background-color 0.2s ease;
   }
 
   .markdown-textarea.drag-over {
-    background: #eff6ff;
-    box-shadow: inset 0 0 0 3px #3b82f6;
+    background: var(--color-info-soft);
+    box-shadow: inset 0 0 0 3px var(--color-primary);
   }
 
   .markdown-preview {
     height: 100%;
     padding: 1rem;
     overflow-y: auto;
-    background: white;
+    background: var(--color-surface);
     font-family:
       "uthmantn",
       -apple-system,
@@ -816,15 +801,15 @@
       Arial,
       sans-serif;
     line-height: 1.6;
-    color: #374151;
+    color: var(--color-text);
   }
 
   .markdown-preview :global(h1) {
     font-size: 1.875rem;
     font-weight: 700;
     margin: 1.5rem 0 1rem 0;
-    color: #1f2937;
-    border-bottom: 2px solid #e5e7eb;
+    color: var(--color-text);
+    border-bottom: 2px solid var(--color-border);
     padding-bottom: 0.5rem;
   }
 
@@ -832,14 +817,14 @@
     font-size: 1.5rem;
     font-weight: 600;
     margin: 1.25rem 0 0.75rem 0;
-    color: #1f2937;
+    color: var(--color-text);
   }
 
   .markdown-preview :global(h3) {
     font-size: 1.25rem;
     font-weight: 600;
     margin: 1rem 0 0.5rem 0;
-    color: #1f2937;
+    color: var(--color-text);
   }
 
   .markdown-preview :global(p) {
@@ -849,7 +834,7 @@
   .markdown-preview :global(ul),
   .markdown-preview :global(ol) {
     margin: 0.75rem 0;
-    padding-left: 1.5rem;
+    padding-inline-start: 1.5rem;
   }
 
   .markdown-preview :global(ul) {
@@ -867,13 +852,13 @@
   .markdown-preview :global(blockquote) {
     margin: 1rem 0;
     padding: 0.75rem 1rem;
-    background: #f9fafb;
-    border-left: 4px solid #d1d5db;
-    color: #6b7280;
+    background: var(--color-surface);
+    border-inline-start: 4px solid var(--color-border-strong);
+    color: var(--color-text-muted);
   }
 
   .markdown-preview :global(code) {
-    background: #f3f4f6;
+    background: var(--color-surface-3);
     padding: 0.125rem 0.25rem;
     border-radius: 0.25rem;
     font-family: "uthmantn", "Monaco", "Menlo", "Ubuntu Mono", monospace;
@@ -881,8 +866,8 @@
   }
 
   .markdown-preview :global(pre) {
-    background: #1f2937;
-    color: #f9fafb;
+    background: var(--color-text);
+    color: var(--color-surface);
     padding: 1rem;
     border-radius: 0.5rem;
     overflow-x: auto;
@@ -904,12 +889,12 @@
   .markdown-preview :global(th),
   .markdown-preview :global(td) {
     padding: 0.5rem 0.75rem;
-    border: 1px solid #d1d5db;
-    text-align: left;
+    border: 1px solid var(--color-border-strong);
+    text-align: start;
   }
 
   .markdown-preview :global(th) {
-    background: #f9fafb;
+    background: var(--color-surface);
     font-weight: 600;
   }
 
@@ -936,18 +921,18 @@
   }
 
   .dynamic-btn.active {
-    background: #2563eb;
+    background: var(--color-primary-hover);
     color: white;
-    border-color: #2563eb;
+    border-color: var(--color-primary-hover);
   }
 
   .dynamic-menu {
     position: absolute;
     top: calc(100% + 8px);
-    right: 0;
+    inset-inline-end: 0;
     width: 280px;
-    background: white;
-    border: 1px solid #e5e7eb;
+    background: var(--color-surface);
+    border: 1px solid var(--color-border);
     border-radius: 0.5rem;
     box-shadow: 0 10px 15px -3px rgba(0, 0, 0, 0.1), 0 4px 6px -2px rgba(0, 0, 0, 0.05);
     z-index: 100;
@@ -956,11 +941,11 @@
 
   .dynamic-menu-header {
     padding: 0.75rem 1rem;
-    background: #f9fafb;
-    border-bottom: 1px solid #e5e7eb;
+    background: var(--color-surface);
+    border-bottom: 1px solid var(--color-border);
     font-weight: 600;
     font-size: 0.875rem;
-    color: #374151;
+    color: var(--color-text);
   }
 
   .dynamic-menu-body {
@@ -979,7 +964,7 @@
   .field-input-group label {
     font-size: 0.75rem;
     font-weight: 500;
-    color: #6b7280;
+    color: var(--color-text-muted);
     text-transform: uppercase;
     letter-spacing: 0.025em;
   }
@@ -987,30 +972,30 @@
   .field-input-group input,
   .field-input-group select {
     padding: 0.5rem 0.75rem;
-    border: 1px solid #d1d5db;
+    border: 1px solid var(--color-border-strong);
     border-radius: 0.375rem;
     font-size: 0.875rem;
-    background: white;
-    color: #374151;
+    background: var(--color-surface);
+    color: var(--color-text);
     transition: border-color 0.15s ease, box-shadow 0.15s ease;
   }
 
   .field-input-group input:focus,
   .field-input-group select:focus {
     outline: none;
-    border-color: #2563eb;
+    border-color: var(--color-primary-hover);
     box-shadow: 0 0 0 3px rgba(37, 99, 235, 0.1);
   }
 
   .field-preview {
     padding: 0.5rem 0.75rem;
-    background: #f3f4f6;
+    background: var(--color-surface-3);
     border-radius: 0.375rem;
     font-size: 0.8125rem;
   }
 
   .field-preview code {
-    color: #2563eb;
+    color: var(--color-primary-hover);
     font-family: "Monaco", "Menlo", "Ubuntu Mono", monospace;
   }
 
@@ -1019,8 +1004,8 @@
     justify-content: flex-end;
     gap: 0.5rem;
     padding: 0.75rem 1rem;
-    background: #f9fafb;
-    border-top: 1px solid #e5e7eb;
+    background: var(--color-surface);
+    border-top: 1px solid var(--color-border);
   }
 
   .btn-insert,
@@ -1035,28 +1020,28 @@
   }
 
   .btn-insert {
-    background: #2563eb;
+    background: var(--color-primary-hover);
     color: white;
   }
 
   .btn-insert:hover:not(:disabled) {
-    background: #1d4ed8;
+    background: var(--color-primary-hover);
   }
 
   .btn-insert:disabled {
-    background: #d1d5db;
+    background: var(--color-border-strong);
     cursor: not-allowed;
   }
 
   .btn-cancel {
-    background: white;
-    color: #6b7280;
-    border: 1px solid #d1d5db;
+    background: var(--color-surface);
+    color: var(--color-text-muted);
+    border: 1px solid var(--color-border-strong);
   }
 
   .btn-cancel:hover {
-    background: #f3f4f6;
-    color: #374151;
+    background: var(--color-surface-3);
+    color: var(--color-text);
   }
 
   @media (max-width: 768px) {
@@ -1088,11 +1073,11 @@
     .dynamic-menu {
       position: fixed;
       top: 50%;
-      left: 50%;
+      inset-inline-start: 50%;
       transform: translate(-50%, -50%);
       width: calc(100vw - 2rem);
       max-width: 320px;
-      right: auto;
+      inset-inline-end: auto;
     }
   }
 </style>

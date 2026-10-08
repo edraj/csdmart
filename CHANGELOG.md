@@ -2,6 +2,50 @@
 
 ## Unreleased
 
+### Changed
+
+- **Both frontends were overhauled on one design system.** `cxb` (admin) and
+  `catalog` (public) now share the same idea of a page: design tokens
+  (surfaces, borders, text, semantic colours with soft variants, radius,
+  shadows) with a complete dark palette — cxb's `.dark` class, catalog's
+  `[data-theme]` plus the OS preference with a light/dark/system toggle —
+  and a small ui kit in each (`PageHeader`, `Toolbar`/`CatalogToolbar`,
+  `Card`, `Badge`, `EmptyState`, `ErrorState` with retry, `LoadingState` that
+  keeps existing rows under an overlay, `ConfirmDialog`, `IconButton`,
+  `Pagination`/`DropdownMenu`). Every page was rebuilt on it: cxb's shell,
+  login (stacks on phones), spaces, sidebars, list view (a real table with
+  sentence-case headers, formatted dates, row links, selection), entry
+  tabs, forms, modals, renderers and tools pages; catalog's header
+  (accessible language menu, theme toggle, phone drawer), breadcrumbs, 404,
+  auth/profile pages and the four browse pages (which went from 7,438 to
+  2,646 lines). Native `alert`/`confirm`/`prompt` are gone in favour of
+  dialogs and toasts; destructive actions name what they delete ("Delete 3
+  entries") and confirm through one dialog.
+- **Arabic is a real UI now.** cxb translated 14 of 77 components (switching
+  to AR flipped the direction and nothing else); every user-visible string
+  in both SPAs goes through the translation layer, physical direction
+  classes were replaced by logical ones (`ms-`/`me-`/`margin-inline`…),
+  `<html lang dir>` follow the locale, first-time visitors get
+  `default_language`, and the locale files are at parity — cxb en/ar
+  719 keys each, catalog en/ar/ku 1,790 each, both pinned by a test (same
+  keys, same ICU placeholders, no English left as an Arabic value). Catalog
+  gained 61 Arabic and 121 Kurdish Sorani translations and lost 458
+  unreferenced keys; its fallback locale is English.
+- **Accessibility.** No nested interactive elements, every icon-only
+  control named, cards and rows that navigate are links (middle-click and
+  open-in-new-tab work), inputs labelled, dialogs with focus trap and
+  Escape, `aria-pressed`/`aria-current`/`aria-sort` where state exists; the
+  build-time suppression of every a11y warning in both `vite.config.ts` is
+  gone and svelte-check runs with `--fail-on-warnings`.
+- **cxb keeps the session in the HttpOnly cookie only.** The access token
+  is no longer written to localStorage (nor the second copy inside the
+  persisted user record); the cookie already authenticated every route
+  including `/ws`.
+- **cxb: the Form tab's "Update" button next to the shortname was a rename,
+  not a save** — it is an explicit "Rename shortname" dialog now; the
+  PlantUML server is configurable (`website.plantuml_server`) instead of
+  hard-wired to plantuml.com.
+
 ### Fixed
 
 - **Seventeen `JsonDocument.Parse(…).RootElement` sites no longer leak a pooled
@@ -16,6 +60,107 @@
   boolean constants, jq result parsing, MCP tool/registry descriptors, schema
   seeding at start-up, the CLI's response parsing and `--version`/manifest
   printing, and `JsonMerge`.
+- **catalog could not reach its own server unless it ran on `:8282`** —
+  `public/config.json` shipped that backend; it is `""` now. With no
+  config.json on disk the server used to hand the bundle's file to the
+  browser verbatim, where the global empty-property strip removed the
+  `backend` key; the embedded file is now the last source in the lookup
+  chain and goes through the same rewrite, so both SPAs always receive the
+  request origin unless an admin configured a backend.
+- **cxb bulk operations sent the wrong subpath** (delete/move used the
+  list's subpath for every record, restore mis-sliced the leading slash so
+  the destination space became "trash", trashing a folder sent `-a` for
+  `/a/b`); one `utils/subpath.ts` with tests behind every path builder.
+- **cxb CSV export was not CSV** (`JSON.stringify` of the `text/csv` body,
+  and the list's `offset`/`limit` copied in so "download all" skipped rows).
+- **cxb list paging**: changing rows-per-page kept the page number, emptying
+  the last page stranded the user on "This folder is empty" with no pager,
+  a failed query left the skeleton forever, a slow old response could
+  overwrite a newer one, delayed counters could show "1 to -1 of -1", the
+  History pager's offset arithmetic was wrong, "1 of 0 pages" on empty.
+- **cxb**: password field capped at 24 characters (the server accepts
+  longer); health-check page fetched "management" instead of the checked
+  space; tools' subpath lookup used the shortname instead of the full path;
+  form validators were bound but never run on save; breadcrumb crash on
+  duplicate path segments; schema column keyed as owner; sidebar cache keys
+  written and read in two spellings (new folders invisible until reload);
+  `error.response.data` without optional chaining in six catch blocks;
+  unsaved-changes guard did not cover in-app navigation; an entry nobody
+  touched prompted "Leave site?" after opening its Form tab; Routify
+  layouts and links regressed during the overhaul and were caught in the
+  browser walk (layouts must keep `<slot />`; links take a node path and
+  params).
+- **catalog**: the folder listing's "Report" only showed `prompt()` and
+  `alert()` and never called the API; every share link and breadcrumb
+  404'd (missing resource-type segment, no `/catalogs` prefix, root-absolute
+  hrefs escaping `<base href="/cat/">`); sorting re-sorted only the 20
+  loaded rows while the server sorted by shortname ("newest first" could
+  never show the newest); search queried every space and opened results in
+  the current one, parked the page on an error screen on failure and let
+  stale responses win; reporting from a sub-folder clobbered the listing's
+  subpath; unknown totals showed "folder empty" and hid the search box;
+  tag-mode Load-more checked the wrong flag; retry/CSV-upload refresh
+  appended instead of resetting; one failing space zeroed every space's
+  stats; `isOwner` compared the wrong field; the entry page's error state
+  showed nothing and reactions reloaded the whole page; first-time visitors
+  always got English; the entry description rendered raw markdown; fake
+  "🔥 Hot" badge, "1 min read" and always-on status dot; "New post" had no
+  handler and the Category filter nothing behind it; the admin pages could
+  not list users, roles or permissions after a reload because the SDK was
+  never told about the session and sent those queries to the public scope.
+- **Lint and types**: cxb 244 and catalog 563 ESLint errors to 0 (keyed
+  each-blocks, 57 bare `$goto;` statements, unused symbols, stale
+  svelte-ignores, Svelte 4 syntax); 1,650 lines of never-imported catalog
+  components, 250 lines of never-opened cxb modals, debug pages ("Welcome
+  to the Svelte App", "We shouldn't be here"), 48 `console.log`s (two
+  logged chat content, one the WebSocket URL with the token) removed; four
+  helpers that had drifted between the SPAs live once in `ui-shared/`.
+
+### Performance
+
+- **Hashed SPA assets are cached for a year and served pre-compressed.**
+  Both embedded SPAs' static files carried no `Cache-Control`, so every
+  visit re-validated ~40 files and every 400 kB chunk was compressed on
+  the fly. `assets/*` are `public, max-age=31536000, immutable`, entry
+  points are `no-cache`, and the builds emit `.br`/`.gz` that the server
+  sends as-is to clients that accept them.
+- **cxb: a content page pulls ~90 kB of JavaScript instead of ~1.2 MB.**
+  svelte-jsoneditor (421 kB) and @codemirror (410 kB) have no static
+  importer left; marked, DOMPurify, typewriter-editor and plantuml-encoder
+  load only when their editor/diagram opens; every entry tab's component
+  is code-split and mounted only when active (hidden tabs no longer fetch
+  schemas, roles, groups, permissions, history and spaces on every view);
+  flowbite is split per route instead of one chunk each; `config.json` is
+  preloaded. Every list click used to re-fetch the folder entry and rebuild
+  the whole entry view, and a cold load built every page twice — both gone.
+  The `SELECT *` per data-asset attachment (result never read) is gone; the
+  tools' preview is bounded (100 entries / 200 kB); the dirty check runs on
+  a timer instead of per keystroke.
+- **catalog: entry chunk 324 kB → 35 kB, vendor chunk 430 kB → 184 kB.**
+  The three locale JSONs are lazy chunks instead of ~298 kB in the entry;
+  the catch-all vendor chunk no longer defeats the lazy editor import. A
+  20-item listing made 40–60 requests (two avatar lookups per card, one
+  attachment-count aggregation per item, a re-render after each); avatars
+  are cached per shortname with one lookup per page and counts come from
+  the attachments already in the response. The landing page's per-space
+  counters and tags run in parallel without payloads; sign-in and expiry
+  redirects navigate instead of reloading the app; `marked` is configured
+  once per session instead of per component (its extension chain grew for
+  the life of the page); images are lazy with cookie auth instead of
+  fetched into blobs up front.
+
+### Tooling
+
+- Both SPAs have real `check` (svelte-check with the project tsconfig) and
+  `lint` (ESLint 10 flat configs with the Svelte and TypeScript plugins)
+  scripts, and CI runs them after the unit tests — cxb's check used
+  `--no-tsconfig` and skipped every `.ts` file, catalog's lint crashed for
+  lack of a config, cxb had none. Dependabot: brace-expansion,
+  postcss-selector-parser, vitest and @vitest/mocker moved to patched
+  versions (4 of the 11 open alerts; the rest are build-only with no
+  upstream fix). Dead tooling removed (babel configs, cxb's never-run
+  `.github` workflow, an unregistered service worker, localhost sitemap,
+  unused markdown pipelines and dependencies).
 
 ## v1.5.20 — 2026-10-07
 

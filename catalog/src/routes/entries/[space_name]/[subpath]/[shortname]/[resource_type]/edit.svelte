@@ -1,5 +1,7 @@
 <script lang="ts">
-  import { goto, params } from "@roxi/routify";
+  import { setTitle } from "@/lib/title";
+  import { log } from "@/lib/logger";
+  import { goto as gotoStore, params } from "@roxi/routify";
   import { onMount } from "svelte";
   import HtmlEditor from "@/components/editors/HtmlEditor.svelte";
   import TemplateEditor from "@/components/editors/TemplateEditor.svelte";
@@ -35,10 +37,13 @@
     UploadOutline,
   } from "flowbite-svelte-icons";
   import { _, locale } from "@/i18n";
-  import { derived as derivedStore } from "svelte/store";
   import { formatNumberInText } from "@/lib/helpers";
 
-  $goto;
+  // Routify's helpers read the fragment context when first subscribed, and
+  // Svelte 5 subscribes to a `$store` lazily on first read — so a `$gotoStore`
+  // first touched inside an async callback logs "Unable to access context".
+  // Capture the navigate function once, during component init.
+  const goto = $gotoStore;
 
   let entity: any = $state(null);
   let isLoading = $state(false);
@@ -84,10 +89,6 @@
   let schemaFormData: Record<string, any> = $state({});
   let loadingSchema = $state(false);
 
-  const isRTL = derivedStore(
-    locale,
-    (val: any) => val === "ar" || val === "ku"
-  );
 
   function getItemContent(item: any) {
     if (!item?.payload) return "";
@@ -120,8 +121,8 @@
     content = newContent;
   }
 
-  function handleJsonContentChange(event: any) {
-    jsonEditorContent = event.detail;
+  function handleJsonContentChange(newContent: any) {
+    jsonEditorContent = newContent;
   }
 
   function handleLabelClick() {
@@ -225,9 +226,6 @@
       $params.resource_type,
       entityData
     );
-    // const msg = isPublish
-    //   ? $_("entry_edit.published")
-    //   : $_("entry_edit.updated");
 
     if (response) {
       successToastMessage($_("entry_edit.success"));
@@ -250,7 +248,7 @@
         }
       }
       setTimeout(() => {
-        $goto("/entries/[space_name]/[subpath]/[shortname]/[resource_type]", {
+        goto("/entries/[space_name]/[subpath]/[shortname]/[resource_type]", {
           space_name: $params.space_name,
           subpath: $params.subpath,
           shortname: $params.shortname,
@@ -258,14 +256,10 @@
         });
       }, 500);
     } else {
-      errorToastMessage($_("entry_edit.error"));
+      errorToastMessage($_("entry_edit.update_failed"));
       isLoading = false;
     }
   }
-
-  // function getContent() {
-  //   return htmlEditor;
-  // }
 
   async function loadSchemaForEntry(schemaShortname: string) {
     loadingSchema = true;
@@ -286,7 +280,7 @@
         }
       }
     } catch (error) {
-      console.error("Error loading schema:", error);
+      log.error("Error loading schema:", error);
     } finally {
       loadingSchema = false;
     }
@@ -386,23 +380,6 @@
     }
   }
 
-  // function getExistingAttachments() {
-  //   if (!entity?.attachments) return [];
-  //
-  //   const allAttachments: any[] = [];
-  //   Object.keys(entity.attachments).forEach((key: any) => {
-  //     if (Array.isArray(entity.attachments[key])) {
-  //       entity.attachments[key].forEach((attachment: any) => {
-  //         if (attachment.resource_type === ResourceType.media) {
-  //           allAttachments.push(attachment);
-  //         }
-  //       });
-  //     }
-  //   });
-  //
-  //   return allAttachments;
-  // }
-
   function getLocalizedDisplayName(entity: any) {
     if (!entity?.displayname) return entity?.shortname || "";
 
@@ -419,6 +396,8 @@
       ""
     );
   }
+
+  $effect(() => setTitle($_("entry_edit.edit_title")));
 </script>
 
 {#if isLoadingPage}
@@ -429,7 +408,7 @@
     </div>
   </div>
 {:else if entity}
-  <div class="page-container" class:rtl={$isRTL}>
+  <div class="page-container">
     <div class="content-wrapper">
       <!-- Header -->
       <div class="header">
@@ -437,7 +416,7 @@
           aria-label={$_("entry_edit.navigation.back_to_entry")}
           class="back-button"
           onclick={() =>
-            $goto(
+            goto(
               "/entries/[space_name]/[subpath]/[shortname]/[resource_type]",
               { shortname: $params.shortname }
             )}
@@ -460,7 +439,7 @@
             <div class="status-icon">
               <FileCheckSolid class="icon" />
             </div>
-            <div class="status-info" class:text-right={$isRTL}>
+            <div class="status-info">
               <div class="status-badge-container">
                 <span class="status-badge {statusInfo.class}">
                   {statusInfo.text}
@@ -479,7 +458,7 @@
             <div class="action-icon">
               <FileCheckSolid class="icon" />
             </div>
-            <div class="action-text" class:text-right={$isRTL}>
+            <div class="action-text">
               <h3>{$_("entry_edit.update_entry")}</h3>
               <p>{$_("entry_edit.update_description")}</p>
             </div>
@@ -529,7 +508,6 @@
               bind:value={title}
               onblur={handleInputBlur}
               class="title-input"
-              class:text-right={$isRTL}
               placeholder={$_("entry_edit.title_placeholder")}
             />
           {:else}
@@ -569,7 +547,6 @@
               bind:value={newTag}
               placeholder={$_("entry_edit.add_tag_placeholder")}
               class="tag-input"
-              class:text-right={$isRTL}
               onkeydown={(e) => {
                 if (e.key === "Enter") addTag();
               }}
@@ -585,8 +562,8 @@
           </div>
 
           {#if tags.length > 0}
-            <div class="tags-container" class:flex-row-reverse={$isRTL}>
-              {#each tags as tag, index}
+            <div class="tags-container">
+              {#each tags as tag, index (index)}
                 <div class="tag-item">
                   <TagOutline class="tag-icon" />
                   <span class="tag-text">{tag}</span>
@@ -641,8 +618,7 @@
                 <TemplateEditor
                   content={templateEditorContent}
                   space_name={$params.space_name}
-                  on:contentChange={(e) =>
-                    handleTemplateContentChange(e.detail)}
+                  onContentChange={handleTemplateContentChange}
                 />
               {:else if entity?.payload?.content_type === "json"}
                 <div class="json-edit-with-preview">
@@ -650,14 +626,14 @@
                     <JsonEditor
                       content={jsonEditorContent}
                       isEditMode={true}
-                      on:contentChange={handleJsonContentChange}
+                      onContentChange={handleJsonContentChange}
                     />
                   </div>
                   <div class="preview-section">
                     <h4 class="preview-heading">Preview</h4>
                     <JsonViewer 
                       data={jsonEditorContent} 
-                      title="JSON Preview"
+                      title={$_("labels.json_preview")}
                       schemaShortname={entity?.payload?.schema_shortname}
                       spaceName={$params.space_name}
                       subpath={$params.subpath}
@@ -669,7 +645,6 @@
               {:else}
                 <HtmlEditor
                   bind:content={htmlEditor}
-                  resource_type={$params.resource_type}
                   space_name={$params.space_name}
                   subpath={$params.subpath}
                   parent_shortname={entity.shortname}
@@ -689,13 +664,13 @@
         </div>
       </div>
 
-      {#if entity.attachments?.media && entity.attachments.media.length > 0}
+      {#if (entity.attachments?.media?.length ?? 0) > 0}
         <div class="section">
           <div class="section-header">
             <PaperClipOutline class="section-icon" />
             <h2>
               {$_("entry_edit.current_attachments")} ({formatNumberInText(
-                entity.attachments.media.length,
+                (entity.attachments?.media?.length ?? 0),
                 $locale ?? ""
               )})
             </h2>
@@ -706,7 +681,7 @@
               space_name={$params.space_name}
               subpath={$params.subpath}
               parent_shortname={entity.shortname}
-              attachments={entity.attachments.media}
+              attachments={entity.attachments?.media ?? []}
               isOwner={true}
             />
           </div>
@@ -743,12 +718,12 @@
         <div class="section-content">
           {#if attachments.length > 0}
             <div class="attachments-list">
-              {#each attachments as attachment, index}
+              {#each attachments as attachment, index (index)}
                 <div class="attachment-row">
                   <div class="attachment-preview">
                     {#if getPreviewUrl(attachment.file)}
                       {#if attachment.file.type.startsWith("image/") || attachment.file.type.startsWith("video/") || attachment.file.type === "application/pdf"}
-                        <img
+                        <img loading="lazy" decoding="async"
                           src={getPreviewUrl(attachment.file) || "/placeholder.svg"}
                           alt={attachment.file.name || "no-image"}
                           class="attachment-image"
@@ -765,7 +740,7 @@
                     {/if}
                   </div>
                   <div class="attachment-body">
-                    <div class="attachment-info" class:text-right={$isRTL}>
+                    <div class="attachment-info">
                       <p class="attachment-name">{attachment.file.name}</p>
                       <p class="attachment-size">
                         {(attachment.file.size / 1024).toFixed(1)} KB
@@ -799,7 +774,7 @@
                             type="text"
                             class="metadata-input"
                             bind:value={attachments[index].displayname.en}
-                            placeholder="English"
+                            placeholder={$_("english")}
                           />
                           <input
                             type="text"
@@ -828,7 +803,7 @@
                             class="metadata-input"
                             rows="2"
                             bind:value={attachments[index].description.en}
-                            placeholder="English"
+                            placeholder={$_("english")}
                           ></textarea>
                           <textarea
                             class="metadata-input"
@@ -879,7 +854,7 @@
       </div>
       <h2>{$_("entry_edit.error.not_found_title")}</h2>
       <p>{$_("entry_edit.error.not_found_message")}</p>
-      <button class="back-button" onclick={() => $goto("/entries")}>
+      <button class="back-button" onclick={() => goto("/entries")}>
         {$_("entry_edit.back_to_entries")}
       </button>
     </div>
@@ -887,29 +862,26 @@
 {/if}
 
 <style>
-  .rtl {
-    direction: rtl;
-  }
 
   :root {
-    --primary-color: #2563eb;
-    --primary-light: #3b82f6;
-    --primary-dark: #1d4ed8;
-    --secondary-color: #64748b;
-    --success-color: #10b981;
-    --danger-color: #ef4444;
-    --warning-color: #f59e0b;
-    --gray-50: #f8fafc;
-    --gray-100: #f1f5f9;
-    --gray-200: #e2e8f0;
-    --gray-300: #cbd5e1;
-    --gray-400: #94a3b8;
-    --gray-500: #64748b;
-    --gray-600: #475569;
-    --gray-700: #334155;
-    --gray-800: #1e293b;
-    --gray-900: #0f172a;
-    --white: #ffffff;
+    --primary-color: var(--color-primary-hover);
+    --primary-light: var(--color-primary);
+    --primary-dark: var(--color-primary-hover);
+    --secondary-color: var(--color-text-muted);
+    --success-color: var(--color-success);
+    --danger-color: var(--color-danger);
+    --warning-color: var(--color-warning);
+    --gray-50: var(--color-surface);
+    --gray-100: var(--color-surface-3);
+    --gray-200: var(--color-border);
+    --gray-300: var(--color-border-strong);
+    --gray-400: var(--color-text-faint);
+    --gray-500: var(--color-text-muted);
+    --gray-600: var(--color-text-muted);
+    --gray-700: var(--color-text);
+    --gray-800: var(--color-text);
+    --gray-900: var(--color-text);
+    --white: var(--color-surface-2);
     --shadow-sm: 0 1px 2px 0 rgba(0, 0, 0, 0.05);
     --shadow-md: 0 4px 6px -1px rgba(0, 0, 0, 0.1),
       0 2px 4px -1px rgba(0, 0, 0, 0.06);
@@ -964,7 +936,7 @@
     width: 6rem;
     height: 6rem;
     background: var(--danger-color);
-    color: var(--white);
+    color: white;
     border-radius: 50%;
     display: flex;
     align-items: center;
@@ -1023,9 +995,9 @@
     align-items: center;
     gap: 0.5rem;
     padding: 0.75rem 1.5rem;
-    background: var(--white);
+    background: var(--color-surface);
     border: 1px solid var(--gray-200);
-    border-radius: var(--radius-lg);
+    border-radius: var(--radius-card);
     color: var(--gray-600);
     font-weight: 500;
     transition: all 0.2s ease;
@@ -1037,7 +1009,7 @@
     border-color: var(--gray-300);
     color: var(--gray-800);
     transform: translateY(-1px);
-    box-shadow: var(--shadow-md);
+    box-shadow: var(--shadow-card);
   }
 
   .status-badge {
@@ -1046,18 +1018,18 @@
     gap: 0.5rem;
     padding: 0.5rem 1rem;
     background: var(--primary-color);
-    color: var(--white);
-    border-radius: var(--radius-xl);
+    color: white;
+    border-radius: var(--radius-card);
     font-size: 0.875rem;
     font-weight: 500;
   }
 
   .status-section {
-    background: var(--white);
-    border-radius: var(--radius-xl);
+    background: var(--color-surface);
+    border-radius: var(--radius-card);
     padding: 2rem;
     margin-bottom: 2rem;
-    box-shadow: var(--shadow-md);
+    box-shadow: var(--shadow-card);
     border: 1px solid var(--gray-200);
   }
 
@@ -1071,7 +1043,7 @@
     width: 3rem;
     height: 3rem;
     background: var(--primary-color);
-    color: var(--white);
+    color: white;
     border-radius: 50%;
     display: flex;
     align-items: center;
@@ -1091,43 +1063,43 @@
     background: var(--gray-100);
     color: var(--gray-700);
     padding: 0.5rem 0.75rem;
-    border-radius: var(--radius-xl);
+    border-radius: var(--radius-card);
     font-size: 0.875rem;
     font-weight: 500;
   }
 
   .status-badge.status-pending {
-    background: #fef3c7;
-    color: #92400e;
+    background: var(--color-warning-soft);
+    color: var(--color-warning);
     padding: 0.5rem 0.75rem;
-    border-radius: var(--radius-xl);
+    border-radius: var(--radius-card);
     font-size: 0.875rem;
     font-weight: 500;
   }
 
   .status-badge.status-published {
-    background: #d1fae5;
-    color: #065f46;
+    background: var(--color-success-soft);
+    color: var(--color-success);
     padding: 0.5rem 0.75rem;
-    border-radius: var(--radius-xl);
+    border-radius: var(--radius-card);
     font-size: 0.875rem;
     font-weight: 500;
   }
 
   .status-badge.status-rejected {
-    background: #fee2e2;
-    color: #991b1b;
+    background: var(--color-danger-soft);
+    color: var(--color-danger);
     padding: 0.5rem 0.75rem;
-    border-radius: var(--radius-xl);
+    border-radius: var(--radius-card);
     font-size: 0.875rem;
     font-weight: 500;
   }
 
   .status-badge.status-active {
-    background: #dbeafe;
-    color: #1e40af;
+    background: var(--color-info-soft);
+    color: var(--color-info);
     padding: 0.5rem 0.75rem;
-    border-radius: var(--radius-xl);
+    border-radius: var(--radius-card);
     font-size: 0.875rem;
     font-weight: 500;
   }
@@ -1139,11 +1111,11 @@
   }
 
   .action-section {
-    background: var(--white);
-    border-radius: var(--radius-xl);
+    background: var(--color-surface);
+    border-radius: var(--radius-card);
     padding: 2rem;
     margin-bottom: 2rem;
-    box-shadow: var(--shadow-md);
+    box-shadow: var(--shadow-card);
     border: 1px solid var(--gray-200);
   }
 
@@ -1164,7 +1136,7 @@
     width: 3rem;
     height: 3rem;
     background: var(--primary-color);
-    color: var(--white);
+    color: white;
     border-radius: 50%;
     display: flex;
     align-items: center;
@@ -1196,7 +1168,7 @@
     align-items: center;
     gap: 0.5rem;
     padding: 0.75rem 1.5rem;
-    border-radius: var(--radius-lg);
+    border-radius: var(--radius-card);
     font-weight: 500;
     transition: all 0.2s ease;
     cursor: pointer;
@@ -1212,18 +1184,18 @@
   .draft-button:hover:not(:disabled) {
     background: var(--gray-200);
     transform: translateY(-1px);
-    box-shadow: var(--shadow-md);
+    box-shadow: var(--shadow-card);
   }
 
   .publish-button {
     background: var(--primary-color);
-    color: var(--white);
+    color: white;
   }
 
   .publish-button:hover:not(:disabled) {
     background: var(--primary-dark);
     transform: translateY(-1px);
-    box-shadow: var(--shadow-lg);
+    box-shadow: var(--shadow-modal);
   }
 
   .draft-button:disabled,
@@ -1233,10 +1205,10 @@
   }
 
   .section {
-    background: var(--white);
-    border-radius: var(--radius-xl);
+    background: var(--color-surface);
+    border-radius: var(--radius-card);
     margin-bottom: 2rem;
-    box-shadow: var(--shadow-md);
+    box-shadow: var(--shadow-card);
     border: 1px solid var(--gray-200);
     overflow: hidden;
   }
@@ -1272,7 +1244,7 @@
     width: 100%;
     padding: 1rem 1.5rem;
     border: 2px solid var(--gray-200);
-    border-radius: var(--radius-lg);
+    border-radius: var(--radius-card);
     font-size: 1.5rem;
     font-weight: 600;
     color: var(--gray-800);
@@ -1288,7 +1260,7 @@
   .title-display {
     padding: 1rem 1.5rem;
     border: 2px solid transparent;
-    border-radius: var(--radius-lg);
+    border-radius: var(--radius-card);
     font-size: 1.5rem;
     font-weight: 600;
     color: var(--gray-800);
@@ -1302,9 +1274,9 @@
 
   .title-display:hover {
     border-color: var(--primary-color);
-    background: var(--white);
+    background: var(--color-surface);
     transform: translateY(-1px);
-    box-shadow: var(--shadow-md);
+    box-shadow: var(--shadow-card);
   }
 
   .title-placeholder {
@@ -1321,7 +1293,7 @@
     flex: 1;
     padding: 0.75rem 1rem;
     border: 1px solid var(--gray-200);
-    border-radius: var(--radius-lg);
+    border-radius: var(--radius-card);
     font-size: 0.875rem;
     transition: all 0.2s ease;
     outline: none;
@@ -1338,9 +1310,9 @@
     gap: 0.5rem;
     padding: 0.75rem 1.5rem;
     background: var(--primary-color);
-    color: var(--white);
+    color: white;
     border: none;
-    border-radius: var(--radius-lg);
+    border-radius: var(--radius-card);
     font-weight: 500;
     cursor: pointer;
     transition: all 0.2s ease;
@@ -1349,7 +1321,7 @@
   .add-tag-button:hover:not(:disabled) {
     background: var(--primary-dark);
     transform: translateY(-1px);
-    box-shadow: var(--shadow-md);
+    box-shadow: var(--shadow-card);
   }
 
   .add-tag-button:disabled {
@@ -1370,7 +1342,7 @@
     padding: 0.5rem 0.75rem;
     background: var(--gray-100);
     border: 1px solid var(--gray-200);
-    border-radius: var(--radius-xl);
+    border-radius: var(--radius-card);
     font-size: 0.875rem;
     color: var(--gray-700);
     transition: all 0.2s ease;
@@ -1380,7 +1352,7 @@
   .tag-item:hover {
     background: var(--gray-200);
     transform: translateY(-1px);
-    box-shadow: var(--shadow-sm);
+    box-shadow: var(--shadow-card);
   }
 
   .tag-icon {
@@ -1395,7 +1367,7 @@
 
   .tag-remove {
     background: var(--danger-color);
-    color: var(--white);
+    color: white;
     border: none;
     border-radius: 50%;
     width: 1.25rem;
@@ -1405,11 +1377,11 @@
     justify-content: center;
     cursor: pointer;
     transition: all 0.2s ease;
-    margin-left: 0.25rem;
+    margin-inline-start: 0.25rem;
   }
 
   .tag-remove:hover {
-    background: #dc2626;
+    background: var(--color-danger);
     transform: scale(1.1);
   }
 
@@ -1433,7 +1405,7 @@
 
   .editor-container {
     border: 1px solid var(--gray-200);
-    border-radius: var(--radius-lg);
+    border-radius: var(--radius-card);
     overflow: hidden;
     height: 500px;
   }
@@ -1445,7 +1417,7 @@
     justify-content: center;
     height: 500px;
     background: var(--gray-50);
-    border-radius: var(--radius-lg);
+    border-radius: var(--radius-card);
     color: var(--gray-600);
   }
 
@@ -1460,9 +1432,9 @@
     gap: 0.5rem;
     padding: 0.75rem 1.5rem;
     background: var(--primary-color);
-    color: var(--white);
+    color: white;
     border: none;
-    border-radius: var(--radius-lg);
+    border-radius: var(--radius-card);
     font-weight: 500;
     cursor: pointer;
     transition: all 0.2s ease;
@@ -1471,7 +1443,7 @@
   .add-files-button:hover {
     background: var(--primary-dark);
     transform: translateY(-1px);
-    box-shadow: var(--shadow-md);
+    box-shadow: var(--shadow-card);
   }
 
   .attachments-list {
@@ -1481,9 +1453,9 @@
   }
 
   .attachment-row {
-    background: var(--white);
+    background: var(--color-surface);
     border: 1px solid var(--gray-200);
-    border-radius: var(--radius-lg);
+    border-radius: var(--radius-card);
     overflow: hidden;
     transition: all 0.2s ease;
     position: relative;
@@ -1494,7 +1466,7 @@
 
   .attachment-row:hover {
     border-color: var(--primary-color);
-    box-shadow: var(--shadow-md);
+    box-shadow: var(--shadow-card);
   }
 
   .attachment-preview {
@@ -1505,7 +1477,7 @@
     position: relative;
     overflow: hidden;
     background: var(--gray-50);
-    border-right: 1px solid var(--gray-200);
+    border-inline-end: 1px solid var(--gray-200);
   }
 
   .attachment-image,
@@ -1518,7 +1490,7 @@
   .video-overlay {
     position: absolute;
     top: 50%;
-    left: 50%;
+    inset-inline-start: 50%;
     transform: translate(-50%, -50%);
     background: rgba(0, 0, 0, 0.6);
     border-radius: 50%;
@@ -1532,7 +1504,7 @@
   .play-icon {
     width: 1.5rem;
     height: 1.5rem;
-    color: var(--white);
+    color: white;
   }
 
   .file-preview {
@@ -1551,7 +1523,7 @@
   }
 
   .file-icon.pdf {
-    color: #dc2626;
+    color: var(--color-danger);
   }
 
   .attachment-body {
@@ -1566,7 +1538,7 @@
   .attachment-info {
     padding: 0;
     border-top: none;
-    padding-right: 2.5rem;
+    padding-inline-end: 2.5rem;
   }
 
   .attachment-name {
@@ -1611,7 +1583,7 @@
     border-radius: var(--radius-md, 0.5rem);
     font-size: 0.8125rem;
     color: var(--gray-800);
-    background: var(--white);
+    background: var(--color-surface);
     transition: border-color 0.15s ease, box-shadow 0.15s ease;
     resize: vertical;
     font-family: inherit;
@@ -1632,9 +1604,9 @@
   .remove-attachment {
     position: absolute;
     top: 0.5rem;
-    right: 0.5rem;
+    inset-inline-end: 0.5rem;
     background: var(--danger-color);
-    color: var(--white);
+    color: white;
     border: none;
     border-radius: 50%;
     width: 2rem;
@@ -1652,7 +1624,7 @@
   }
 
   .remove-attachment:hover {
-    background: #dc2626;
+    background: var(--color-danger);
     transform: scale(1.1);
   }
 
@@ -1661,7 +1633,7 @@
     padding: 4rem 2rem;
     background: var(--gray-50);
     border: 2px dashed var(--gray-200);
-    border-radius: var(--radius-lg);
+    border-radius: var(--radius-card);
     color: var(--gray-500);
     display: flex;
     flex-direction: column;
@@ -1728,7 +1700,7 @@
       width: 100%;
       height: 9rem;
       min-height: 0;
-      border-right: none;
+      border-inline-end: none;
       border-bottom: 1px solid var(--gray-200);
     }
 
@@ -1756,17 +1728,17 @@
   }
 
   .preview-section {
-    border-left: 1px solid #e5e7eb;
-    padding-left: 24px;
+    border-inline-start: 1px solid var(--color-border);
+    padding-inline-start: 24px;
   }
 
   .preview-heading {
     font-size: 14px;
     font-weight: 600;
-    color: #374151;
+    color: var(--color-text);
     margin-bottom: 16px;
     padding-bottom: 8px;
-    border-bottom: 1px solid #e5e7eb;
+    border-bottom: 1px solid var(--color-border);
   }
 
   @media (max-width: 1024px) {
@@ -1775,9 +1747,9 @@
     }
 
     .preview-section {
-      border-left: none;
-      border-top: 1px solid #e5e7eb;
-      padding-left: 0;
+      border-inline-start: none;
+      border-top: 1px solid var(--color-border);
+      padding-inline-start: 0;
       padding-top: 24px;
     }
   }
@@ -1795,7 +1767,7 @@
     justify-content: center;
     height: 500px;
     background: var(--gray-50);
-    border-radius: var(--radius-lg);
+    border-radius: var(--radius-card);
     color: var(--gray-600);
   }
 
@@ -1813,22 +1785,22 @@
     align-items: center;
     gap: 0.5rem;
     padding: 0.75rem 1rem;
-    background: linear-gradient(135deg, #dbeafe 0%, #bfdbfe 100%);
-    border: 1px solid #3b82f6;
-    border-radius: var(--radius-lg);
+    background: linear-gradient(135deg, var(--color-info-soft) 0%, var(--color-info-soft) 100%);
+    border: 1px solid var(--color-primary);
+    border-radius: var(--radius-card);
     margin-bottom: 1.5rem;
   }
 
   .schema-label {
     font-size: 0.875rem;
     font-weight: 600;
-    color: #1e40af;
+    color: var(--color-info);
   }
 
   .schema-name {
     font-size: 0.875rem;
     font-weight: 500;
-    color: #1e3a8a;
+    color: var(--color-info);
   }
 
   @media (max-width: 768px) {

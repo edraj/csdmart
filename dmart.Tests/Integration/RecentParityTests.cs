@@ -290,25 +290,31 @@ public class RecentParityTests : IClassFixture<DmartFactory>
         spaResp.Content.Headers.ContentType!.MediaType.ShouldBe("text/html");
     }
 
-    [Fact]
-    public async Task Catalog_ConfigJson_Injects_Backend()
+    [Theory]
+    [InlineData("/cxb")]
+    [InlineData("/cat")]
+    public async Task SpaConfigJson_Injects_Backend(string spaUrl)
     {
         var client = _factory.CreateClient();
-        // Skip if the catalog bundle isn't built (config.json ships with it).
-        var probe = await client.GetAsync("/cat/index.html");
+        // Skip if the bundle isn't built (config.json ships with it).
+        var probe = await client.GetAsync($"{spaUrl}/index.html");
         if (probe.StatusCode == HttpStatusCode.NotFound) return;
 
-        var resp = await client.GetAsync("/cat/config.json");
+        var resp = await client.GetAsync($"{spaUrl}/config.json");
         resp.StatusCode.ShouldBe(HttpStatusCode.OK);
         resp.Content.Headers.ContentType!.MediaType.ShouldBe("application/json");
 
         var json = await resp.Content.ReadAsStringAsync();
-        // backend must be present; CatalogMiddleware auto-fills it from the
-        // request origin when the source file has no value (shipped default).
+        // backend must be present and concrete. Both bundles ship `"backend": ""`
+        // (same-origin), and no config.json exists on disk in the test host, so
+        // this exercises the embedded fallback: the SPA middleware must run the
+        // shipped file through the same rewrite as an on-disk one. Served as a
+        // plain static file the key would be gone — JsonStripEmptiesMiddleware
+        // removes "" properties from every JSON response.
         using var doc = JsonDocument.Parse(json);
         doc.RootElement.TryGetProperty("backend", out var backend).ShouldBeTrue();
         backend.ValueKind.ShouldBe(JsonValueKind.String);
-        backend.GetString().ShouldNotBeNullOrEmpty();
+        backend.GetString().ShouldBe($"{client.BaseAddress!.Scheme}://{client.BaseAddress.Authority}");
 
         // Legacy `websocket` field must be dropped (SPA derives ws URL from backend).
         doc.RootElement.TryGetProperty("websocket", out _).ShouldBeFalse();

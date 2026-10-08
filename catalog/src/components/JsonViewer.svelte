@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { _ } from "@/i18n";
   /**
    * JsonViewer.svelte
    *
@@ -79,7 +80,6 @@
   let {
     data = {},
     title = "View",
-    type = "json",
     isAdmin = false,
     schema = undefined,
     schemaShortname = undefined,
@@ -93,7 +93,9 @@
   }: Props = $props();
 
   /* ── State ── */
-  let editData: any = $state(null);
+  // Starts as a copy of `data` and follows it when the prop changes; edits
+  // write to it in place (writable $derived).
+  let editData: any = $derived(safeClone(data));
   let saving: boolean = $state(false);
   let saveFlash: boolean = $state(false);
   let showRawPayload: boolean = $state(false);
@@ -117,11 +119,6 @@
       }
     }
   }
-
-  // Initialize editData from data
-  $effect(() => {
-    editData = safeClone(data);
-  });
 
   // Auto-fetch schema from DMART when schemaShortname is provided
   $effect(() => {
@@ -253,7 +250,7 @@
   {#if saveFlash}
     <div class="jv-flash">
       <span>✓</span>
-      <span>Changes saved successfully</span>
+      <span>{$_("json_viewer.saved")}</span>
     </div>
   {/if}
 
@@ -302,8 +299,8 @@
 
 <style>
   .json-viewer {
-    background: var(--jv-bg, #ffffff);
-    border: 1px solid var(--jv-border, #e5e7eb);
+    background: var(--jv-bg, var(--color-surface-2));
+    border: 1px solid var(--jv-border, var(--color-border));
     border-radius: 8px;
     overflow: hidden;
     margin: 1rem 0;
@@ -314,8 +311,8 @@
     align-items: center;
     justify-content: space-between;
     padding: 12px 16px;
-    background: #f8fafc;
-    border-bottom: 1px solid #e5e7eb;
+    background: var(--color-surface);
+    border-bottom: 1px solid var(--color-border);
   }
 
   .jv-toolbar-left, .jv-toolbar-right {
@@ -328,8 +325,8 @@
     display: inline-flex;
     align-items: center;
     padding: 4px 10px;
-    background: #dbeafe;
-    color: #1e40af;
+    background: var(--color-info-soft);
+    color: var(--color-info);
     border-radius: 9999px;
     font-size: 11px;
     font-weight: 600;
@@ -337,23 +334,23 @@
   }
 
   .jv-badge-edit {
-    background: #fef3c7;
-    color: #92400e;
+    background: var(--color-warning-soft);
+    color: var(--color-warning);
   }
 
   .jv-badge-loading {
-    background: #f3e8ff;
-    color: #7c3aed;
+    background: var(--color-primary-soft);
+    color: var(--color-primary-hover);
     font-weight: 500;
     text-transform: none;
   }
 
   .jv-toolbar-btn {
     padding: 6px 12px;
-    border: 1px solid #cbd5e1;
+    border: 1px solid var(--color-border-strong);
     border-radius: 6px;
     background: transparent;
-    color: #475569;
+    color: var(--color-text-muted);
     font-size: 12px;
     font-weight: 500;
     cursor: pointer;
@@ -361,15 +358,15 @@
   }
 
   .jv-toolbar-btn:hover {
-    background: #e2e8f0;
+    background: var(--color-border);
   }
 
   .jv-flash {
     padding: 8px 16px;
-    background: #e8f5e9;
-    border-bottom: 1px solid #a5d6a7;
+    background: var(--color-success-soft);
+    border-bottom: 1px solid var(--color-success);
     font-size: 12px;
-    color: #2e7d32;
+    color: var(--color-success);
     display: flex;
     align-items: center;
     gap: 8px;
@@ -381,16 +378,16 @@
   }
 
   .jv-code-panel {
-    border-top: 1px solid #e5e7eb;
+    border-top: 1px solid var(--color-border);
   }
 
   .jv-code-header {
     padding: 8px 16px;
-    background: #f1f5f9;
-    border-bottom: 1px solid #e5e7eb;
+    background: var(--color-surface-3);
+    border-bottom: 1px solid var(--color-border);
     font-size: 11px;
     font-weight: 600;
-    color: #64748b;
+    color: var(--color-text-muted);
     text-transform: uppercase;
     letter-spacing: 0.05em;
   }
@@ -398,8 +395,8 @@
   .jv-code-block {
     margin: 0;
     padding: 16px;
-    background: #1e293b;
-    color: #e2e8f0;
+    background: var(--color-text);
+    color: var(--color-border);
     font-family: ui-monospace, "Cascadia Code", "Source Code Pro", Menlo, monospace;
     font-size: 12px;
     line-height: 1.5;
@@ -411,8 +408,8 @@
   .jv-save-bar {
     position: fixed;
     bottom: 0;
-    left: 0;
-    right: 0;
+    inset-inline-start: 0;
+    inset-inline-end: 0;
     z-index: 50;
     animation: slideUp 0.25s cubic-bezier(0.4, 0, 0.2, 1);
   }
@@ -437,7 +434,7 @@
 
   .jv-save-label {
     font-size: 13px;
-    color: #6b7280;
+    color: var(--color-text-muted);
   }
 
   .jv-save-actions {
@@ -450,7 +447,7 @@
     border: 1px solid rgba(0, 0, 0, 0.12);
     border-radius: 6px;
     background: transparent;
-    color: #374151;
+    color: var(--color-text);
     cursor: pointer;
     font-size: 13px;
     font-weight: 500;
@@ -465,8 +462,8 @@
     padding: 7px 20px;
     border: none;
     border-radius: 6px;
-    background: #4a6fa5;
-    color: #ffffff;
+    background: var(--color-primary);
+    color: var(--color-surface-2);
     cursor: pointer;
     font-size: 13px;
     font-weight: 600;
@@ -474,7 +471,7 @@
   }
 
   .jv-btn-save:hover:not(:disabled) {
-    background: #3d5e90;
+    background: var(--color-primary);
   }
 
   .jv-btn-save:disabled, .jv-btn-discard:disabled {

@@ -1,7 +1,7 @@
 <script lang="ts">
   import { onMount } from "svelte";
-  import { goto } from "@roxi/routify";
-  import { _, locale } from "@/i18n";
+  import { goto as gotoStore } from "@roxi/routify";
+  import { _ } from "@/i18n";
   import { EnvelopeSolid, LockSolid } from "flowbite-svelte-icons";
   import {
     clearResetTarget,
@@ -11,8 +11,14 @@
     requestPasswordReset,
     setResetTarget,
   } from "@/lib/dmart_services/password_reset";
+  import { withBase } from "@/lib/paths";
+  import { setTitle } from "@/lib/title";
 
-  $goto;
+  // Routify's helpers read the fragment context when first subscribed, and
+  // Svelte 5 subscribes to a `$store` lazily on first read — so a `$gotoStore`
+  // first touched inside an async callback logs "Unable to access context".
+  // Capture the navigate function once, during component init.
+  const goto = $gotoStore;
 
   let rawIdentifier = $state("");
   let isSubmitting = $state(false);
@@ -20,11 +26,11 @@
   let formError = $state("");
   let startOver = $state(false);
 
-  const isRTL = $derived($locale === "ar" || $locale === "ku");
-
   onMount(() => {
     startOver = consumeResetStartOver();
   });
+
+  $effect(() => setTitle($_("ResetPassword")));
 
   async function handleSubmit(event: Event) {
     event.preventDefault();
@@ -51,7 +57,7 @@
       // Stamp the issue time so step 2's resend countdown reflects the
       // server's cooldown rather than restarting on every mount.
       markResetCodeIssued();
-      $goto("/reset-password/confirm");
+      goto("/reset-password/confirm");
     } catch {
       // Transport failure or the auth-by-ip rate limiter.
       formError = $_("ResetFailed");
@@ -64,23 +70,23 @@
 <div class="auth-container">
   <div class="auth-content">
     <div class="auth-header">
-      <div class="icon-wrapper"><LockSolid class="text-white w-6 h-6" /></div>
+      <div class="icon-wrapper" aria-hidden="true"><LockSolid class="w-6 h-6" /></div>
       <h1 class="auth-title">{$_("ResetPassword")}</h1>
       <p class="auth-description">{$_("ResetPasswordIntro")}</p>
     </div>
 
     {#if startOver}
-      <div class="notice-message" class:rtl={isRTL} role="status">{$_("ResetStartOver")}</div>
+      <div class="notice-message" role="status">{$_("ResetStartOver")}</div>
     {/if}
 
     {#if formError}
-      <div class="error-message" class:rtl={isRTL} role="alert">{formError}</div>
+      <div class="error-message" role="alert">{formError}</div>
     {/if}
 
-    <form onsubmit={handleSubmit} class="auth-form">
+    <form onsubmit={handleSubmit} class="auth-form" novalidate>
       <div class="form-group">
-        <label for="identifier" class="form-label" class:rtl={isRTL}>
-          <EnvelopeSolid class="label-icon" />
+        <label for="identifier" class="form-label">
+          <EnvelopeSolid class="label-icon" aria-hidden="true" />
           {$_("EmailOrPhone")}
         </label>
         <input
@@ -90,31 +96,28 @@
           placeholder={$_("EmailOrPhone")}
           class="form-input"
           class:error={fieldError}
-          class:rtl={isRTL}
           disabled={isSubmitting}
           autocomplete="username"
           aria-invalid={!!fieldError}
           aria-describedby={fieldError ? "identifier-error" : undefined}
         />
         {#if fieldError}
-          <p id="identifier-error" class="error-text-small" class:rtl={isRTL} role="alert">
+          <p id="identifier-error" class="error-text-small" role="alert">
             {fieldError}
           </p>
         {/if}
       </div>
 
-      <button type="submit" class="submit-button" class:rtl={isRTL} disabled={isSubmitting}>
+      <button type="submit" class="submit-button" disabled={isSubmitting} aria-busy={isSubmitting}>
         {#if isSubmitting}
-          <div class="loading-spinner"></div>
+          <span class="spinner spinner-xs spinner-white" aria-hidden="true"></span>
         {/if}
         {$_("SendResetCode")}
       </button>
     </form>
 
-    <div class="back-link" class:rtl={isRTL}>
-      <button class="link-button" onclick={() => $goto("/login")}>
-        {$_("BackToLogin")}
-      </button>
+    <div class="back-link">
+      <a class="link-button" href={withBase("/login")}>{$_("BackToLogin")}</a>
     </div>
   </div>
 </div>
@@ -126,14 +129,15 @@
     align-items: center;
     justify-content: center;
     background: var(--gradient-page);
-    padding: 2rem 1rem;
+    padding: 2rem var(--space-page-x);
   }
   .auth-content {
     width: 100%;
     max-width: 28rem;
-    background: var(--color-gray-50);
-    border-radius: 1rem;
-    box-shadow: 0 10px 30px rgba(0, 0, 0, 0.08);
+    background: var(--color-surface-2);
+    border: 1px solid var(--color-border);
+    border-radius: var(--radius-modal);
+    box-shadow: var(--shadow-card);
     padding: 2rem;
   }
   .auth-header {
@@ -146,17 +150,19 @@
     justify-content: center;
     width: 3rem;
     height: 3rem;
-    border-radius: 9999px;
-    background: var(--color-primary-500);
+    border-radius: var(--radius-full);
+    background: var(--color-primary);
+    color: var(--color-text-on-primary);
     margin-bottom: 0.75rem;
   }
   .auth-title {
     font-size: 1.5rem;
     font-weight: 700;
+    color: var(--color-text);
   }
   .auth-description {
     font-size: 0.875rem;
-    opacity: 0.75;
+    color: var(--color-text-muted);
     margin-top: 0.375rem;
   }
   .auth-form {
@@ -175,52 +181,50 @@
     gap: 0.375rem;
     font-size: 0.875rem;
     font-weight: 500;
+    color: var(--color-text);
   }
-  .form-label.rtl,
-  .error-text-small.rtl,
-  .submit-button.rtl,
-  .error-message.rtl,
-  .notice-message.rtl,
-  .back-link.rtl {
-    direction: rtl;
+  .form-label :global(.label-icon) {
+    width: 0.875rem;
+    height: 0.875rem;
+    color: var(--color-text-faint);
   }
   .form-input {
     width: 100%;
     padding: 0.625rem 0.75rem;
-    border: 1px solid var(--color-gray-300);
-    border-radius: 0.5rem;
-    background: transparent;
+    border: 1.5px solid var(--color-border);
+    border-radius: var(--radius-control);
+    background: var(--color-surface);
+    color: var(--color-text);
   }
   .form-input:focus {
-    outline: 2px solid var(--color-primary-500);
-    outline-offset: 1px;
+    outline: none;
+    border-color: var(--color-primary);
+    box-shadow: 0 0 0 3px var(--color-primary-soft);
   }
   .form-input.error {
-    border-color: var(--color-error);
-  }
-  .form-input.rtl {
-    direction: rtl;
-    text-align: right;
+    border-color: var(--color-danger);
   }
   .error-text-small {
     font-size: 0.8125rem;
-    color: var(--color-error);
+    color: var(--color-danger);
   }
   .error-message {
-    padding: 0.75rem;
-    border-radius: 0.5rem;
-    background: rgba(220, 38, 38, 0.08);
-    color: var(--color-error);
+    padding: 0.75rem 1rem;
+    border-radius: var(--radius-card);
+    background: var(--color-danger-bg);
+    border: 1px solid var(--color-danger-border);
+    color: var(--color-danger-fg);
     font-size: 0.875rem;
     margin-bottom: 1rem;
   }
   /* "Your reset session ended, start again" is information, not a failure —
      giving it the red error treatment reads as though something broke. */
   .notice-message {
-    padding: 0.75rem;
-    border-radius: 0.5rem;
-    background: rgba(160, 86, 10, 0.1);
-    color: var(--color-warning, #a0560a);
+    padding: 0.75rem 1rem;
+    border-radius: var(--radius-card);
+    background: var(--color-warning-bg);
+    border: 1px solid var(--color-warning-border);
+    color: var(--color-warning-fg);
     font-size: 0.875rem;
     margin-bottom: 1rem;
   }
@@ -232,28 +236,18 @@
     width: 100%;
     padding: 0.6875rem;
     border: none;
-    border-radius: 0.5rem;
-    background: var(--color-primary-500);
-    color: #fff;
+    border-radius: var(--radius-control);
+    background: var(--color-primary);
+    color: var(--color-text-on-primary);
     font-weight: 600;
     cursor: pointer;
+  }
+  .submit-button:hover:not(:disabled) {
+    background: var(--color-primary-hover);
   }
   .submit-button:disabled {
     opacity: 0.6;
     cursor: not-allowed;
-  }
-  .loading-spinner {
-    width: 1rem;
-    height: 1rem;
-    border: 2px solid rgba(255, 255, 255, 0.4);
-    border-top-color: #fff;
-    border-radius: 9999px;
-    animation: spin 0.7s linear infinite;
-  }
-  @keyframes spin {
-    to {
-      transform: rotate(360deg);
-    }
   }
   .back-link {
     text-align: center;
@@ -262,8 +256,13 @@
   .link-button {
     background: none;
     border: none;
-    color: var(--color-primary-500);
+    color: var(--color-primary);
     font-weight: 600;
     cursor: pointer;
+    text-decoration: none;
+    font-size: 0.875rem;
+  }
+  .link-button:hover {
+    text-decoration: underline;
   }
 </style>

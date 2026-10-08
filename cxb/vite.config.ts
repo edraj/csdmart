@@ -1,3 +1,4 @@
+import { compression } from "vite-plugin-compression2";
 import {defineConfig} from "vite";
 import {mdsvex} from "mdsvex";
 import routify from "@roxi/routify/vite-plugin";
@@ -77,6 +78,9 @@ export default defineConfig(({command}) => ({
     },
   },
   plugins: [
+    // Build-time .br/.gz next to every hashed asset; Middleware/SpaAssets.cs
+    // serves them as-is to clients that accept the encoding.
+    compression({ threshold: 1024, include: /assets\/.*\.(js|css|svg|json)$/ }),
     prismAddonImportPlugin(),
     routifyStripDevLogsPlugin(),
     tailwindcss(),
@@ -115,19 +119,11 @@ export default defineConfig(({command}) => ({
         }) as any
       ],
       onwarn: (warning, defaultHandler) => {
-        const ignoredWarnings = [
-          'non_reactive_update',
-          'state_referenced_locally',
-          'element_invalid_self_closing_tag',
-          'event_directive_deprecated',
-          'css_unused_selector'
-        ];
-        if (
-            warning.code?.startsWith("a11y") ||
-            warning.filename?.startsWith("/node_modules") ||
-            ignoredWarnings.includes(warning.code)
-        )
-          return;
+        // Only third-party code is exempt. Every a11y and reactivity warning
+        // in this tree is now fixed; a new one must be visible, not muted
+        // (the old list silenced all a11y_* plus five Svelte 5 migration
+        // codes, which is how the debt accumulated unnoticed).
+        if (warning.filename?.startsWith("/node_modules")) return;
         if (typeof defaultHandler !== "undefined") defaultHandler(warning);
       },
     }),
@@ -151,7 +147,12 @@ export default defineConfig(({command}) => ({
             // Skip packages that produce empty chunks after tree-shaking
             const skipChunks = [
               '@popperjs', 'date-fns', 'fast-deep-equal', 'fast-uri',
-              'jmespath', 'json-schema-traverse', 'jsonpath-plus'
+              'jmespath', 'json-schema-traverse', 'jsonpath-plus',
+              // Not one chunk each: a per-package chunk for these two holds
+              // every component/icon used anywhere in the app and is pulled
+              // in by the first route. Left to the default splitting, each
+              // route carries only what it renders.
+              'flowbite-svelte', 'flowbite-svelte-icons',
             ];
             if (skipChunks.includes(pkg)) return;
             return pkg;

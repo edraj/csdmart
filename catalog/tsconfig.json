@@ -1,5 +1,6 @@
 {
   "compilerOptions": {
+    "noEmit": true,
     "module": "es2022",
     "moduleResolution": "bundler",
     "target": "es2022",
@@ -36,7 +37,6 @@
     "src/**/*.ts",
     "src/**/*.js",
     "src/**/*.svelte",
-    ".routify/**.js",
     "test/**/*.ts",
     "test/**/*.js"
   ],

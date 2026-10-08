@@ -200,7 +200,7 @@ export async function getMessageByShortname(
                         };
                     }
                 }
-            } catch (e) {
+            } catch {
                 // Continue to next location
             }
         }
@@ -212,51 +212,76 @@ export async function getMessageByShortname(
     }
 }
 
+// Conversation partners, cached per user for the session (review perf #9).
+//
+// The lookup used to fetch 1,000 messages with payload and attachments to
+// collect a set of sender names, and ran again on every keystroke of the
+// user search. Now: one request per user (metadata only — the sender of a
+// message in my protected folder is its owner_shortname), the result kept
+// until a new conversation starts, and the search box filters the cached
+// list locally.
+const partnersCache = new Map<string, Promise<string[]>>();
+
+/** Forget the cached partner list (all users, or one). */
+export function invalidateConversationPartners(currentUserShortname?: string): void {
+    if (currentUserShortname === undefined) partnersCache.clear();
+    else partnersCache.delete(currentUserShortname);
+}
+
 /**
- * Get all conversation partners for a user
- * Fetches from /people/currentUser/protected to find who sent messages to current user
- * Also needs to check where current user sent messages (from other users' folders)
- * 
- * For now, we check the current user's protected folder to find senders
+ * Record a partner the page just learned about (a message sent to someone
+ * new, or received from someone new over the websocket) without a refetch.
  */
-export async function getConversationPartners(currentUserShortname: string) {
-    try {
-        // Get messages in current user's protected folder
-        // These are messages sent TO currentUser BY others
-        const response = await searchEntities(
-            PERSONAL_SPACE,
-            getUserProtectedSubpath(currentUserShortname),
-            "",
-            1000,
-            0,
-            "created_at",
-            SortType.descending,
-            DmartScope.managed,
-            true,
-            true,
-            true
-        );
+export async function noteConversationPartner(
+    currentUserShortname: string,
+    partnerShortname: string,
+): Promise<void> {
+    if (!partnerShortname || partnerShortname === currentUserShortname) return;
+    const pending = partnersCache.get(currentUserShortname);
+    if (!pending) return;
+    const partners = await pending.catch(() => null);
+    if (partners && !partners.includes(partnerShortname)) partners.push(partnerShortname);
+}
 
-        const partnerShortnames = new Set<string>();
+/**
+ * Everyone who has sent the current user a direct message. Messages sent to
+ * me live in /people/<me>/protected and their owner is the sender, so the
+ * query needs neither payload nor attachments.
+ */
+export function getConversationPartners(currentUserShortname: string): Promise<string[]> {
+    const hit = partnersCache.get(currentUserShortname);
+    if (hit) return hit;
 
-        if (response && response.status === "success" && response.records) {
-            response.records.forEach((record) => {
-                const payload = record.attributes.payload?.body;
-                if (!payload) return;
+    const pending: Promise<string[]> = (async () => {
+        try {
+            const response = await searchEntities(
+                PERSONAL_SPACE,
+                getUserProtectedSubpath(currentUserShortname),
+                "",
+                1000,
+                0,
+                "created_at",
+                SortType.descending,
+                DmartScope.managed,
+                false,
+                false,
+                true
+            );
 
-                // The sender is the owner_shortname or in the payload.sender
-                const sender = payload.sender;
-                if (sender && sender !== currentUserShortname) {
-                    partnerShortnames.add(sender);
-                }
-            });
+            const partners = new Set<string>();
+            for (const record of response?.records ?? []) {
+                const sender = record.attributes?.owner_shortname;
+                if (sender && sender !== currentUserShortname) partners.add(sender);
+            }
+            return Array.from(partners);
+        } catch (error) {
+            log.error("Error fetching conversation partners:", error);
+            partnersCache.delete(currentUserShortname);
+            return [];
         }
-
-        return Array.from(partnerShortnames);
-    } catch (error) {
-        log.error("Error fetching conversation partners:", error);
-        return [];
-    }
+    })();
+    partnersCache.set(currentUserShortname, pending);
+    return pending;
 }
 
 /**

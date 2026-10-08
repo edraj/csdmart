@@ -94,13 +94,25 @@ public static class CatalogMiddleware
                     if (!string.IsNullOrEmpty(p) && File.Exists(p))
                     {
                         var bytes = await File.ReadAllBytesAsync(p);
-                        var rewritten = RewriteConfig(bytes, ctx);
-                        ctx.Response.ContentType = "application/json";
-                        ctx.Response.Headers["Cache-Control"] = "no-cache";
-                        ctx.Response.ContentLength = rewritten.Length;
-                        await ctx.Response.Body.WriteAsync(rewritten);
+                        await WriteConfig(RewriteConfig(bytes, ctx), ctx);
                         return;
                     }
+                }
+
+                // No config on disk: the bundle's own config.json goes through
+                // the same rewrite so `backend` is always a concrete origin.
+                // Served as a plain static file it would reach the browser
+                // without the key at all — the shipped value is "" (meaning
+                // same-origin) and JsonStripEmptiesMiddleware removes empty
+                // string properties from every JSON response.
+                var shipped = fileProvider.GetFileInfo("config.json");
+                if (shipped.Exists)
+                {
+                    using var ms = new MemoryStream();
+                    await using (var stream = shipped.CreateReadStream())
+                        await stream.CopyToAsync(ms);
+                    await WriteConfig(RewriteConfig(ms.ToArray(), ctx), ctx);
+                    return;
                 }
             }
             await next();
@@ -118,18 +130,17 @@ public static class CatalogMiddleware
                 ctx.Response.StatusCode = 200;
                 ctx.Response.ContentType = "text/html; charset=utf-8";
                 ctx.Response.ContentLength = indexHtmlBytes.Length;
+                SpaAssets.MarkNoCache(ctx.Response);
                 await ctx.Response.Body.WriteAsync(indexHtmlBytes);
                 return;
             }
             await next();
         });
 
-        // Serve static files at {catUrl} (everything except index.html above).
-        app.UseStaticFiles(new StaticFileOptions
-        {
-            FileProvider = fileProvider,
-            RequestPath = catUrl,
-        });
+        // Serve static files at {catUrl} (everything except index.html above):
+        // immutable caching for hashed assets, pre-compressed variants when the
+        // build shipped them — see SpaAssets.
+        app.UseSpaStaticFiles(fileProvider, catUrl);
 
         // SPA fallback — {catUrl}/* without file extension → rewritten index.html.
         app.Use(async (ctx, next) =>
@@ -143,6 +154,7 @@ public static class CatalogMiddleware
             {
                 ctx.Response.StatusCode = 200;
                 ctx.Response.ContentType = "text/html; charset=utf-8";
+                SpaAssets.MarkNoCache(ctx.Response);
                 await ctx.Response.Body.WriteAsync(indexHtmlBytes);
             }
         });
@@ -150,9 +162,18 @@ public static class CatalogMiddleware
         return app;
     }
 
+    private static async Task WriteConfig(byte[] body, HttpContext ctx)
+    {
+        ctx.Response.ContentType = "application/json";
+        SpaAssets.MarkNoCache(ctx.Response);
+        ctx.Response.ContentLength = body.Length;
+        await ctx.Response.Body.WriteAsync(body);
+    }
+
     // Same auto-fill logic as CxbMiddleware.RewriteCxbConfig: insert
     // backend=<request-origin> when the admin hasn't configured one,
     // preserve any non-empty value verbatim, drop the legacy websocket field.
+
     private static byte[] RewriteConfig(byte[] source, HttpContext ctx)
     {
         var requestOrigin = $"{ctx.Request.Scheme}://{ctx.Request.Host.Value}";

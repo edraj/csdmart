@@ -6,7 +6,7 @@ import {
     ResourceType,
 } from "@edraj/tsdmart";
 import { log } from "@/lib/logger";
-import { APPLICATIONS_SPACE, MANAGEMENT_SPACE } from "@/lib/constants";
+import { MANAGEMENT_SPACE } from "@/lib/constants";
 
 /**
  * Resources the app depends on at runtime. They are bootstrapped on demand;

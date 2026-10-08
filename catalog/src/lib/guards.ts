@@ -8,10 +8,10 @@
 import { get } from "svelte/store";
 import { permissions } from "@/stores/permissions";
 import { canAccessAdminSection, checkAccess } from "@/lib/access";
-import { withBasePrefix } from "@/lib/basePath";
+import { withBase } from "@/lib/paths";
 
 function redirectTo(path: string): void {
-  const target = withBasePrefix(path);
+  const target = withBase(path);
   if (window.location.pathname !== target) {
     window.location.href = target;
   }

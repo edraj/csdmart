@@ -1,25 +1,5 @@
 import {ContentType, ResourceType} from "@edraj/tsdmart";
-
-/**
- * Formats a date string into YYYY-MM-DD HH:MM format
- * @param dateString - The date string to format
- * @returns Formatted date string in YYYY-MM-DD HH:MM format
- */
-export function formatDate(dateString: string): string {
-  const date = new Date(dateString);
-
-  if (isNaN(date.getTime())) {
-    return "N/A";
-  }
-
-  const yyyy = date.getFullYear();
-  const mm = String(date.getMonth() + 1).padStart(2, "0");
-  const dd = String(date.getDate()).padStart(2, "0");
-  const hh = String(date.getHours()).padStart(2, "0");
-  const MM = String(date.getMinutes()).padStart(2, "0");
-
-  return `${yyyy}-${mm}-${dd} ${hh}:${MM}`;
-}
+import { generateUUID } from "@shared/uuid";
 
 /**
  * Truncates a string to 100 characters and adds ellipsis if longer
@@ -137,17 +117,6 @@ export function getParentPath(path: string): string {
 
 export const AUTO_UUID_RULE = "auto";
 
-export function generateUuidV4(): string {
-  if (typeof crypto !== "undefined" && typeof crypto.randomUUID === "function") {
-    return crypto.randomUUID();
-  }
-  return "xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx".replace(/[xy]/g, (c) => {
-    const r = (Math.random() * 16) | 0;
-    const v = c === "x" ? r : (r & 0x3) | 0x8;
-    return v.toString(16);
-  });
-}
-
 /**
  * Mirrors Python DMart's `Meta.from_record` auto-uuid behavior:
  * when `shortname == "auto"`, the shortname is replaced with the first 8
@@ -161,7 +130,7 @@ export function resolveAutoShortname(
   if (shortname !== AUTO_UUID_RULE) {
     return { shortname, uuid: null };
   }
-  const uuid = generateUuidV4();
+  const uuid = generateUUID();
   const resolved = uuid.slice(0, 8);
   if (attributes) {
     attributes.uuid = uuid;

@@ -1,212 +1,217 @@
 <script lang="ts">
-    import {Accordion, AccordionItem, Button, Card, Checkbox, Input, Label, Select} from "flowbite-svelte";
-    import {transformFormToJson, transformJsonToForm} from "@/utils/editors/schemaEditorUtils";
+    import { Accordion, AccordionItem, Button, Checkbox, Input, Label, Select } from "flowbite-svelte";
+    import { PlusOutline, TrashBinOutline } from "flowbite-svelte-icons";
+    import { transformFormToJson, transformJsonToForm } from "@/utils/editors/schemaEditorUtils";
     import {
         addArrayItem,
         addProperty,
         createDefaultSchemaContent,
         removeProperty,
         schemaTypes,
-        toggleRequired
+        toggleRequired,
     } from "@/utils/schemaFormUtils";
-
+    import Badge from "@/components/ui/Badge.svelte";
+    import IconButton from "@/components/ui/IconButton.svelte";
+    import { _ } from "@/i18n";
 
     let {
         content = $bindable({}),
-    } : {
-        content: any
+    }: {
+        content: any;
     } = $props();
+
+    const uid = $props.id();
 
     if (!content || Object.keys(content).length === 0) {
         content = createDefaultSchemaContent();
     }
 
-    let formContent = $state(transformJsonToForm(
-        $state.snapshot(content)
-    ));
+    let formContent = $state(transformJsonToForm($state.snapshot(content)));
 
     function handleAddProperty(parentPath = "") {
         formContent = addProperty(formContent, parentPath);
     }
 
-    function handleAddArrayItem(parentPath) {
+    function handleAddArrayItem(parentPath: string) {
         formContent = addArrayItem(formContent, parentPath);
     }
 
-    function handleRemoveProperty(path, index) {
+    function handleRemoveProperty(path: string, index: number) {
         formContent = removeProperty(formContent, path, index);
     }
 
-    function handleToggleRequired(propertyName) {
+    function handleToggleRequired(propertyName: string) {
         formContent = toggleRequired(formContent, propertyName);
     }
 
-    function isRequired(propertyName) {
+    function isRequired(propertyName: string) {
         return formContent.required && formContent.required.includes(propertyName);
     }
 
     $effect(() => {
-        const schemaContent = transformFormToJson(structuredClone(
-            $state.snapshot(formContent)
-        ));
+        const schemaContent = transformFormToJson(structuredClone($state.snapshot(formContent)));
         content = schemaContent;
     });
 
+    const section = "rounded-card border border-border bg-surface p-3 space-y-3";
 </script>
 
-<Card class="p-4 max-w-4xl mx-auto my-2">
-    <h2 class="text-xl font-bold mb-4">Schema Editor</h2>
-
-    <!-- Save button removed as changes are applied automatically -->
+<div class="w-full max-w-4xl mx-auto rounded-card border border-border bg-surface-2 shadow-card p-4 sm:p-5 my-2">
+    <h2 class="text-lg font-semibold text-text mb-4">{$_("schema_editor")}</h2>
 
     <div class="space-y-6">
-        <!-- Schema Metadata -->
         <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
             <div>
-                <Label for="schema-title">Schema Title</Label>
-                <Input id="schema-title" placeholder="Schema title" bind:value={formContent.title} />
+                <Label for="{uid}-schema-title" class="mb-1.5">{$_("schema_title")}</Label>
+                <Input id="{uid}-schema-title" placeholder={$_("schema_title")} bind:value={formContent.title} />
             </div>
             <div>
-                <Label for="schema-description">Schema Description</Label>
-                <Input id="schema-description" placeholder="Schema description" bind:value={formContent.description} />
+                <Label for="{uid}-schema-description" class="mb-1.5">{$_("schema_description")}</Label>
+                <Input id="{uid}-schema-description" placeholder={$_("schema_description")} bind:value={formContent.description} />
             </div>
         </div>
 
-        <!-- Properties -->
-        <div class="border p-4 rounded-lg">
-            <div class="flex justify-between items-center mb-4">
-                <h3 class="font-semibold">Properties</h3>
-                <Button size="xs" color="blue" onclick={() => handleAddProperty()}>Add Property</Button>
+        <div class="rounded-card border border-border p-4">
+            <div class="flex justify-between items-center mb-4 gap-2">
+                <h3 class="font-semibold text-text">{$_("properties")}</h3>
+                <Button size="xs" color="primary" onclick={() => handleAddProperty()}>
+                    <PlusOutline size="xs" class="me-1" aria-hidden="true" />
+                    {$_("add_property")}
+                </Button>
             </div>
 
             {#if formContent.properties && formContent.properties.length > 0}
                 <Accordion flush>
-                    {#each formContent.properties as property, index}
+                    {#each formContent.properties as property, index (property.id ?? index)}
                         <AccordionItem>
                             {#snippet header()}
-                                <span class="font-medium">{property.name || 'New Property'}</span>
-                                {#if property.type}
-                                    <span class="ml-2 text-xs bg-blue-100 text-blue-800 px-2 py-0.5 rounded">{property.type}</span>
-                                {/if}
-                                {#if isRequired(property.name)}
-                                    <span class="ml-2 text-xs bg-red-100 text-red-800 px-2 py-0.5 rounded">Required</span>
-                                {/if}
+                                <span class="inline-flex items-center gap-2">
+                                    <span class="font-medium">{property.name || $_("new_property")}</span>
+                                    {#if property.type}
+                                        <Badge variant="info" size="sm">{property.type}</Badge>
+                                    {/if}
+                                    {#if isRequired(property.name)}
+                                        <Badge variant="danger" size="sm">{$_("required")}</Badge>
+                                    {/if}
+                                </span>
                             {/snippet}
 
-                            <div class="p-2 space-y-4">
+                            <div class="py-2 space-y-4">
                                 <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
                                     <div>
-                                        <Label for={`property-name-${index}`}>Property Name</Label>
-                                        <Input id={`property-name-${index}`} placeholder="Property name" bind:value={property.name} />
+                                        <Label for="{uid}-property-name-{index}" class="mb-1.5">{$_("property_name")}</Label>
+                                        <Input id="{uid}-property-name-{index}" placeholder={$_("property_name")} bind:value={property.name} />
                                     </div>
                                     <div>
-                                        <Label for={`property-type-${index}`}>Property Type</Label>
-                                        <Select id={`property-type-${index}`} bind:value={property.type}>
-                                            {#each schemaTypes as type}
-                                                <option value={type.value}>{type.name}</option>
+                                        <Label for="{uid}-property-type-{index}" class="mb-1.5">{$_("property_type")}</Label>
+                                        <Select id="{uid}-property-type-{index}" bind:value={property.type}>
+                                            {#each schemaTypes as type (type.value)}
+                                                <option value={type.value}>{type.value}</option>
                                             {/each}
                                         </Select>
                                     </div>
                                     <div>
-                                        <Label for={`property-title-${index}`}>Title</Label>
-                                        <Input id={`property-title-${index}`} placeholder="Title" bind:value={property.title} />
+                                        <Label for="{uid}-property-title-{index}" class="mb-1.5">{$_("title")}</Label>
+                                        <Input id="{uid}-property-title-{index}" placeholder={$_("title")} bind:value={property.title} />
                                     </div>
                                     <div>
-                                        <Label for={`property-description-${index}`}>Description</Label>
-                                        <Input id={`property-description-${index}`} placeholder="Description" bind:value={property.description} />
+                                        <Label for="{uid}-property-description-{index}" class="mb-1.5">{$_("description")}</Label>
+                                        <Input id="{uid}-property-description-{index}" placeholder={$_("description")} bind:value={property.description} />
                                     </div>
                                 </div>
 
-                                <!-- Type-specific options -->
-                                {#if property.type === 'string'}
+                                {#if property.type === "string"}
                                     <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
                                         <div>
-                                            <Label for={`property-minLength-${index}`}>Min Length</Label>
-                                            <Input id={`property-minLength-${index}`} type="number" placeholder="Min length" bind:value={property.minLength} />
+                                            <Label for="{uid}-property-minLength-{index}" class="mb-1.5">{$_("min_length")}</Label>
+                                            <Input id="{uid}-property-minLength-{index}" type="number" bind:value={property.minLength} />
                                         </div>
                                         <div>
-                                            <Label for={`property-maxLength-${index}`}>Max Length</Label>
-                                            <Input id={`property-maxLength-${index}`} type="number" placeholder="Max length" bind:value={property.maxLength} />
+                                            <Label for="{uid}-property-maxLength-{index}" class="mb-1.5">{$_("max_length")}</Label>
+                                            <Input id="{uid}-property-maxLength-{index}" type="number" bind:value={property.maxLength} />
                                         </div>
                                         <div>
-                                            <Label for={`property-pattern-${index}`}>Pattern (regex)</Label>
-                                            <Input id={`property-pattern-${index}`} placeholder="Pattern" bind:value={property.pattern} />
+                                            <Label for="{uid}-property-pattern-{index}" class="mb-1.5">{$_("pattern_regex")}</Label>
+                                            <Input id="{uid}-property-pattern-{index}" dir="ltr" bind:value={property.pattern} />
                                         </div>
                                         <div>
-                                            <Label for={`property-format-${index}`}>Format</Label>
-                                            <Select id={`property-format-${index}`} bind:value={property.format}>
-                                                <option value="">None</option>
-                                                <option value="date-time">Date-Time</option>
-                                                <option value="date">Date</option>
-                                                <option value="time">Time</option>
-                                                <option value="email">Email</option>
-                                                <option value="uri">URI</option>
+                                            <Label for="{uid}-property-format-{index}" class="mb-1.5">{$_("format")}</Label>
+                                            <Select id="{uid}-property-format-{index}" bind:value={property.format}>
+                                                <option value="">{$_("none")}</option>
+                                                <option value="date-time">date-time</option>
+                                                <option value="date">date</option>
+                                                <option value="time">time</option>
+                                                <option value="email">email</option>
+                                                <option value="uri">uri</option>
                                             </Select>
                                         </div>
                                     </div>
-                                {:else if property.type === 'number' || property.type === 'integer'}
+                                {:else if property.type === "number" || property.type === "integer"}
                                     <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
                                         <div>
-                                            <Label for={`property-minimum-${index}`}>Minimum</Label>
-                                            <Input id={`property-minimum-${index}`} type="number" placeholder="Minimum value" bind:value={property.minimum} />
+                                            <Label for="{uid}-property-minimum-{index}" class="mb-1.5">{$_("minimum")}</Label>
+                                            <Input id="{uid}-property-minimum-{index}" type="number" bind:value={property.minimum} />
                                         </div>
                                         <div>
-                                            <Label for={`property-maximum-${index}`}>Maximum</Label>
-                                            <Input id={`property-maximum-${index}`} type="number" placeholder="Maximum value" bind:value={property.maximum} />
+                                            <Label for="{uid}-property-maximum-{index}" class="mb-1.5">{$_("maximum")}</Label>
+                                            <Input id="{uid}-property-maximum-{index}" type="number" bind:value={property.maximum} />
                                         </div>
                                         <div>
-                                            <Label for={`property-multipleOf-${index}`}>Multiple Of</Label>
-                                            <Input id={`property-multipleOf-${index}`} type="number" placeholder="Multiple of" bind:value={property.multipleOf} />
+                                            <Label for="{uid}-property-multipleOf-{index}" class="mb-1.5">{$_("multiple_of")}</Label>
+                                            <Input id="{uid}-property-multipleOf-{index}" type="number" bind:value={property.multipleOf} />
                                         </div>
                                     </div>
-                                {:else if property.type === 'array'}
-                                    <div class="border p-3 rounded-md bg-gray-50">
-                                        <div class="flex justify-between items-center mb-2">
-                                            <h4 class="font-medium">Array Items</h4>
-                                            <Button size="xs" color="blue" onclick={() => handleAddArrayItem(`properties.${index}`)}>Configure Items</Button>
+                                {:else if property.type === "array"}
+                                    <div class={section}>
+                                        <div class="flex justify-between items-center gap-2">
+                                            <h4 class="font-medium text-text">{$_("array_items")}</h4>
+                                            <Button size="xs" color="alternative" onclick={() => handleAddArrayItem(`properties.${index}`)}>{$_("configure_items")}</Button>
                                         </div>
 
                                         {#if property.items}
-                                            <div class="p-2 space-y-3">
+                                            <div class="space-y-3">
                                                 <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
                                                     <div>
-                                                        <Label for={`items-type-${index}`}>Items Type</Label>
-                                                        <Select id={`items-type-${index}`} bind:value={property.items.type}>
-                                                            {#each schemaTypes as type}
-                                                                <option value={type.value}>{type.name}</option>
+                                                        <Label for="{uid}-items-type-{index}" class="mb-1.5">{$_("items_type")}</Label>
+                                                        <Select id="{uid}-items-type-{index}" bind:value={property.items.type}>
+                                                            {#each schemaTypes as type (type.value)}
+                                                                <option value={type.value}>{type.value}</option>
                                                             {/each}
                                                         </Select>
                                                     </div>
 
-                                                    {#if property.items.type === 'object' && property.items.properties}
-                                                        <div class="col-span-2">
-                                                            <Label>Object Properties</Label>
-                                                            <div class="border p-2 rounded-md mt-1">
-                                                                <Button size="xs" color="blue" onclick={() => handleAddProperty(`properties.${index}.items`)}>Add Object Property</Button>
+                                                    {#if property.items.type === "object" && property.items.properties}
+                                                        <div class="md:col-span-2">
+                                                            <p class="text-sm font-medium text-text mb-1.5">{$_("object_properties")}</p>
+                                                            <div class="rounded-card border border-border p-2 space-y-2">
+                                                                <Button size="xs" color="alternative" onclick={() => handleAddProperty(`properties.${index}.items`)}>
+                                                                    <PlusOutline size="xs" class="me-1" aria-hidden="true" />
+                                                                    {$_("add_object_property")}
+                                                                </Button>
 
-                                                                {#if property.items.properties.length > 0}
-                                                                    {#each property.items.properties as itemProperty, itemIndex}
-                                                                        <div class="mt-2 p-2 bg-white rounded border">
-                                                                            <div class="grid grid-cols-1 md:grid-cols-2 gap-2">
-                                                                                <div>
-                                                                                    <Label for={`item-property-name-${index}-${itemIndex}`}>Name</Label>
-                                                                                    <Input id={`item-property-name-${index}-${itemIndex}`} placeholder="Property name" bind:value={itemProperty.name} />
-                                                                                </div>
-                                                                                <div>
-                                                                                    <Label for={`item-property-type-${index}-${itemIndex}`}>Type</Label>
-                                                                                    <Select id={`item-property-type-${index}-${itemIndex}`} bind:value={itemProperty.type}>
-                                                                                        {#each schemaTypes as type}
-                                                                                            <option value={type.value}>{type.name}</option>
-                                                                                        {/each}
-                                                                                    </Select>
-                                                                                </div>
+                                                                {#each property.items.properties as itemProperty, itemIndex (itemProperty.id ?? itemIndex)}
+                                                                    <div class="p-2 rounded-card bg-surface-2 border border-border">
+                                                                        <div class="grid grid-cols-1 md:grid-cols-2 gap-2">
+                                                                            <div>
+                                                                                <Label for="{uid}-item-property-name-{index}-{itemIndex}" class="mb-1.5">{$_("name")}</Label>
+                                                                                <Input id="{uid}-item-property-name-{index}-{itemIndex}" placeholder={$_("property_name")} bind:value={itemProperty.name} />
                                                                             </div>
-                                                                            <div class="mt-2 flex justify-end">
-                                                                                <Button size="xs" color="red" onclick={() => handleRemoveProperty(`properties.${index}.items.properties`, itemIndex)}>Remove</Button>
+                                                                            <div>
+                                                                                <Label for="{uid}-item-property-type-{index}-{itemIndex}" class="mb-1.5">{$_("type")}</Label>
+                                                                                <Select id="{uid}-item-property-type-{index}-{itemIndex}" bind:value={itemProperty.type}>
+                                                                                    {#each schemaTypes as type (type.value)}
+                                                                                        <option value={type.value}>{type.value}</option>
+                                                                                    {/each}
+                                                                                </Select>
                                                                             </div>
                                                                         </div>
-                                                                    {/each}
-                                                                {/if}
+                                                                        <div class="mt-2 flex justify-end">
+                                                                            <IconButton size="sm" variant="danger" label={$_("remove_item", { values: { name: itemProperty.name || String(itemIndex + 1) } })} onclick={() => handleRemoveProperty(`properties.${index}.items.properties`, itemIndex)}>
+                                                                                <TrashBinOutline size="sm" />
+                                                                            </IconButton>
+                                                                        </div>
+                                                                    </div>
+                                                                {/each}
                                                             </div>
                                                         </div>
                                                     {/if}
@@ -214,43 +219,48 @@
 
                                                 <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
                                                     <div>
-                                                        <Label for={`array-minItems-${index}`}>Min Items</Label>
-                                                        <Input id={`array-minItems-${index}`} type="number" placeholder="Min items" bind:value={property.minItems} />
+                                                        <Label for="{uid}-array-minItems-{index}" class="mb-1.5">{$_("min_items")}</Label>
+                                                        <Input id="{uid}-array-minItems-{index}" type="number" bind:value={property.minItems} />
                                                     </div>
                                                     <div>
-                                                        <Label for={`array-maxItems-${index}`}>Max Items</Label>
-                                                        <Input id={`array-maxItems-${index}`} type="number" placeholder="Max items" bind:value={property.maxItems} />
+                                                        <Label for="{uid}-array-maxItems-{index}" class="mb-1.5">{$_("max_items")}</Label>
+                                                        <Input id="{uid}-array-maxItems-{index}" type="number" bind:value={property.maxItems} />
                                                     </div>
                                                 </div>
                                             </div>
                                         {/if}
                                     </div>
-                                {:else if property.type === 'object'}
-                                    <div class="border p-3 rounded-md bg-gray-50">
-                                        <div class="flex justify-between items-center mb-2">
-                                            <h4 class="font-medium">Object Properties</h4>
-                                            <Button size="xs" color="blue" onclick={() => handleAddProperty(`properties.${index}`)}>Add Object Property</Button>
+                                {:else if property.type === "object"}
+                                    <div class={section}>
+                                        <div class="flex justify-between items-center gap-2">
+                                            <h4 class="font-medium text-text">{$_("object_properties")}</h4>
+                                            <Button size="xs" color="alternative" onclick={() => handleAddProperty(`properties.${index}`)}>
+                                                <PlusOutline size="xs" class="me-1" aria-hidden="true" />
+                                                {$_("add_object_property")}
+                                            </Button>
                                         </div>
 
                                         {#if property.properties && property.properties.length > 0}
-                                            {#each property.properties as nestedProperty, nestedIndex}
-                                                <div class="mt-2 p-2 bg-white rounded border">
+                                            {#each property.properties as nestedProperty, nestedIndex (nestedProperty.id ?? nestedIndex)}
+                                                <div class="p-2 rounded-card bg-surface-2 border border-border">
                                                     <div class="grid grid-cols-1 md:grid-cols-2 gap-2">
                                                         <div>
-                                                            <Label for={`nested-property-name-${index}-${nestedIndex}`}>Name</Label>
-                                                            <Input id={`nested-property-name-${index}-${nestedIndex}`} placeholder="Property name" bind:value={nestedProperty.name} />
+                                                            <Label for="{uid}-nested-property-name-{index}-{nestedIndex}" class="mb-1.5">{$_("name")}</Label>
+                                                            <Input id="{uid}-nested-property-name-{index}-{nestedIndex}" placeholder={$_("property_name")} bind:value={nestedProperty.name} />
                                                         </div>
                                                         <div>
-                                                            <Label for={`nested-property-type-${index}-${nestedIndex}`}>Type</Label>
-                                                            <Select id={`nested-property-type-${index}-${nestedIndex}`} bind:value={nestedProperty.type}>
-                                                                {#each schemaTypes as type}
-                                                                    <option value={type.value}>{type.name}</option>
+                                                            <Label for="{uid}-nested-property-type-{index}-{nestedIndex}" class="mb-1.5">{$_("type")}</Label>
+                                                            <Select id="{uid}-nested-property-type-{index}-{nestedIndex}" bind:value={nestedProperty.type}>
+                                                                {#each schemaTypes as type (type.value)}
+                                                                    <option value={type.value}>{type.value}</option>
                                                                 {/each}
                                                             </Select>
                                                         </div>
                                                     </div>
                                                     <div class="mt-2 flex justify-end">
-                                                        <Button size="xs" color="red" onclick={() => handleRemoveProperty(`properties.${index}.properties`, nestedIndex)}>Remove</Button>
+                                                        <IconButton size="sm" variant="danger" label={$_("remove_item", { values: { name: nestedProperty.name || String(nestedIndex + 1) } })} onclick={() => handleRemoveProperty(`properties.${index}.properties`, nestedIndex)}>
+                                                            <TrashBinOutline size="sm" />
+                                                        </IconButton>
                                                     </div>
                                                 </div>
                                             {/each}
@@ -258,21 +268,23 @@
                                     </div>
                                 {/if}
 
-                                <div class="flex items-center mt-4">
-                                    <Checkbox id={`property-required-${index}`} checked={isRequired(property.name)} onclick={() => handleToggleRequired(property.name)} />
-                                    <Label for={`property-required-${index}`} class="ml-2">Required</Label>
-                                </div>
-
-                                <div class="flex justify-end mt-2">
-                                    <Button size="xs" color="red" onclick={() => handleRemoveProperty('properties', index)}>Remove Property</Button>
+                                <div class="flex items-center justify-between gap-2 pt-2">
+                                    <div class="flex items-center gap-2">
+                                        <Checkbox id="{uid}-property-required-{index}" checked={isRequired(property.name)} onchange={() => handleToggleRequired(property.name)} />
+                                        <Label for="{uid}-property-required-{index}" class="mb-0 font-normal">{$_("required")}</Label>
+                                    </div>
+                                    <Button size="xs" color="red" outline onclick={() => handleRemoveProperty("properties", index)}>
+                                        <TrashBinOutline size="xs" class="me-1" aria-hidden="true" />
+                                        {$_("remove_property")}
+                                    </Button>
                                 </div>
                             </div>
                         </AccordionItem>
                     {/each}
                 </Accordion>
             {:else}
-                <p class="text-gray-500 text-center py-4">No properties defined. Click "Add Property" to start.</p>
+                <p class="text-sm text-text-muted text-center py-4">{$_("no_properties_hint")}</p>
             {/if}
         </div>
     </div>
-</Card>
+</div>

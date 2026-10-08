@@ -1,531 +1,166 @@
 <script lang="ts">
-  import { _ } from "@/i18n";
-  import { marked } from "marked";
-  import { mangle } from "marked-mangle";
-  import { gfmHeadingId } from "marked-gfm-heading-id";
-  import { getPostContent } from "@/lib/utils/postUtils";
+  import { _, locale } from "@/i18n";
+  import { renderMarkdown } from "@/lib/markdown";
   import { sanitizeHtml } from "@/lib/utils/sanitize";
-
-  import { getSpaceSchema } from "@/lib/dmart_services";
+  import { getPostContent } from "@/lib/utils/postUtils";
+  import { localized, type Localized } from "@/lib/catalogItems";
   import { getTemplate } from "@/lib/dmart_services/templates";
   import { getCurrentScope } from "@/stores/user";
-
+  import { APPLICATIONS_SPACE } from "@/lib/constants";
   import JsonViewer from "@/components/JsonViewer.svelte";
+  import ErrorState from "@/components/ui/ErrorState.svelte";
+  import LoadingState from "@/components/ui/LoadingState.svelte";
+  import MarkdownBody from "./MarkdownBody.svelte";
 
-  marked.use(mangle());
-  marked.use(
-    gfmHeadingId({
-      prefix: "my-prefix-",
-    }),
-  );
+  // The body of an entry: HTML as-is (sanitized), JSON through the viewer,
+  // anything else as Markdown through the one shared renderer in
+  // lib/markdown (no per-mount marked.use(), review perf #32). A
+  // template-based entry fetches its template and fills the placeholders.
+  interface TemplateBody {
+    template: string;
+    data: Record<string, unknown>;
+  }
 
-  let { postData, spaceName = "", isAdmin = false } = $props();
+  interface PostContentData {
+    displayname?: Localized;
+    space_name?: string;
+    payload?: { content_type?: string; schema_shortname?: string; body?: unknown };
+    [key: string]: unknown;
+  }
 
-  let schema: any = $state(null);
-  let isLoadingSchema = $state(false);
-  let loadedSchemaShortname = "";
-  
-  // Template rendering state
-  let templateContent: string = $state("");
-  let isLoadingTemplate: boolean = $state(false);
-  let templateError: string = $state("");
-  let loadedTemplateKey: string = $state(""); // Track which template was loaded
-  
-  // Check if this is a template-based entry
-  const isTemplateEntry = $derived(
-    postData?.payload?.schema_shortname === "templates" &&
-    postData?.payload?.body?.template &&
-    postData?.payload?.body?.data
-  );
-  
-  // const currentTemplateKey = $derived(
-  //   isTemplateEntry 
-  //     ? `${spaceName}-${postData?.payload?.body?.template}`
-  //     : ""
-  // );
-  
-  // Load template content when it's a template entry
-  $effect(() => {
-    if (isTemplateEntry && spaceName && !isLoadingTemplate) {
-      const templateShortname = postData?.payload?.body?.template;
-      const templateData = postData?.payload?.body?.data;
-      const contentKey = `${spaceName}-${templateShortname}-${templateData ? Object.values(templateData).join(',') : ''}`;
-      if (contentKey !== loadedTemplateKey) {
-        loadTemplateContent(contentKey);
-      }
-    }
+  let {
+    postData,
+    spaceName = "",
+    isAdmin = false,
+  }: { postData: PostContentData | null; spaceName?: string; isAdmin?: boolean } = $props();
+
+  const payload = $derived(postData?.payload);
+  const diagramLabel = $derived($_("post_detail.markdown.diagram_source"));
+
+  const templateBody = $derived.by((): TemplateBody | null => {
+    if (payload?.schema_shortname !== "templates") return null;
+    const body = payload.body;
+    if (!body || typeof body !== "object") return null;
+    const { template, data } = body as Partial<TemplateBody>;
+    if (typeof template !== "string" || !template || !data || typeof data !== "object") return null;
+    return { template, data };
   });
-  
-  async function loadTemplateContent(contentKey: string) {
-    if (!isTemplateEntry || !spaceName || isLoadingTemplate) return;
-    
+  const isTemplateEntry = $derived(templateBody !== null);
+  const isJson = $derived(payload?.content_type === "json");
+  const hasContent = $derived(isTemplateEntry || !!getPostContent(postData));
+
+  // Markdown/HTML body → sanitized HTML, recomputed only when the body or the
+  // caption's language changes.
+  const bodyHtml = $derived.by(() => {
+    if (!payload || payload.body === null || payload.body === undefined || isJson || isTemplateEntry) return "";
+    const body = payload.body;
+    if (payload.content_type === "html") return typeof body === "string" ? sanitizeHtml(body) : "";
+    if (typeof body === "string") return renderMarkdown(body, { diagramLabel });
+    return "";
+  });
+
+  // ---- Template-based entries ----
+  let templateHtml = $state("");
+  let isLoadingTemplate = $state(false);
+  let templateError = $state("");
+  let loadedTemplateKey = "";
+
+  $effect(() => {
+    const body = templateBody;
+    if (!body || !spaceName) return;
+    const key = `${spaceName}\u0000${body.template}\u0000${JSON.stringify(body.data)}`;
+    if (key === loadedTemplateKey) return;
+    loadedTemplateKey = key;
+    void loadTemplateContent(body, key);
+  });
+
+  async function loadTemplateContent(body: TemplateBody, key: string) {
     isLoadingTemplate = true;
     templateError = "";
-    templateContent = "";
-    
+    templateHtml = "";
     try {
-      const templateShortname = postData.payload.body.template;
-      const templateData = postData.payload.body.data;
-      
-      // Try to get template from current space first
-      let template = await getTemplate(spaceName, templateShortname, getCurrentScope());
-      
-      // If not found in current space, try applications space
+      // The current space first, then the shared applications space.
+      let template = await getTemplate(spaceName, body.template, getCurrentScope());
+      if (!template) template = await getTemplate(APPLICATIONS_SPACE, body.template, getCurrentScope());
+      if (key !== loadedTemplateKey) return;
       if (!template) {
-        template = await getTemplate("applications", templateShortname, getCurrentScope());
-      }
-      
-      if (!template) {
-        templateError = `Template "${templateShortname}" not found`;
+        templateError = $_("post_detail.template.not_found", { values: { name: body.template } });
         return;
       }
-      
-      // Get the template content
-      let content = template.attributes?.payload?.body?.content || "";
-      
-      if (!content) {
-        templateError = "Template content is empty";
+      const content: unknown = template.attributes?.payload?.body?.content;
+      if (typeof content !== "string" || !content) {
+        templateError = $_("post_detail.template.empty");
         return;
       }
-      
-      // Replace placeholders with data
-      const renderedContent = renderTemplateWithData(content, templateData);
-      
-      // Parse markdown to HTML
-      templateContent = await marked.parse(renderedContent) as string;
-      
-      // Mark this template as loaded to prevent duplicate loads
-      loadedTemplateKey = contentKey;
-    } catch (error) {
-      console.error("Error loading template:", error);
-      templateError = "Failed to load template content";
-    } finally {
-      isLoadingTemplate = false;
-    }
-  }
-  
-  function renderTemplateWithData(templateContent: string, data: Record<string, any>): string {
-    if (!templateContent || !data) return templateContent;
-    
-    let result = templateContent;
-    
-    // Replace {{fieldName:type}} patterns with actual data
-    const placeholderRegex = /\{\{(\w+)(?::(\w+))?\}\}/g;
-    
-    result = result.replace(placeholderRegex, (match, fieldName, fieldType) => {
-      const value = data[fieldName];
-      
-      if (value === undefined || value === null) {
-        return match; // Keep placeholder if data not found
-      }
-      
-      return String(value);
-    });
-    
-    return result;
-  }
-
-  $effect(() => {
-    const contentType = postData?.payload?.content_type;
-    const schemaShortname = postData?.payload?.schema_shortname;
-    const body = postData?.payload?.body;
-    const space = spaceName;
-
-    if (contentType === "json") {
-      if (schemaShortname && space) {
-        if (schemaShortname !== loadedSchemaShortname) {
-          loadSchema(schemaShortname);
-        }
-      } else if (typeof body === "object" && body !== null && !Array.isArray(body)) {
-        loadedSchemaShortname = "";
-        schema = generateSimpleSchema(body);
-      } else {
-        loadedSchemaShortname = "";
-        schema = null;
-      }
-    } else {
-      loadedSchemaShortname = "";
-      schema = null;
-    }
-  });
-
-  function generateSimpleSchema(data: any): any {
-    if (typeof data !== "object" || data === null || Array.isArray(data)) {
-      return null;
-    }
-
-    const properties: any = {};
-    for (const [key, value] of Object.entries(data)) {
-      let type = "string";
-      if (typeof value === "number") type = "number";
-      else if (typeof value === "boolean") type = "boolean";
-      else if (Array.isArray(value)) type = "array";
-      else if (typeof value === "object" && value !== null) type = "object";
-
-      properties[key] = {
-        type,
-        title: key
-          .split("_")
-          .map((word) => word.charAt(0).toUpperCase() + word.slice(1))
-          .join(" "),
-      };
-    }
-
-    return {
-      type: "object",
-      properties,
-    };
-  }
-
-  async function loadSchema(schemaShortname: string) {
-    if (isLoadingSchema) return;
-
-    loadedSchemaShortname = schemaShortname;
-    isLoadingSchema = true;
-    try {
-      const response = await getSpaceSchema(spaceName, getCurrentScope());
-      if (response?.status === "success" && response?.records && response.records.length > 0) {
-        const record = response.records.find((r: any) => r.shortname === schemaShortname) || response.records[0];
-        schema = record.attributes?.payload?.body;
-      } else if (typeof postData?.payload?.body === "object" && postData?.payload?.body !== null) {
-        schema = generateSimpleSchema(postData.payload.body);
-      }
+      templateHtml = renderMarkdown(renderTemplateWithData(content, body.data), { diagramLabel });
     } catch (err) {
-      console.error("Error loading schema for PostContent:", err);
-      if (typeof postData?.payload?.body === "object" && postData?.payload?.body !== null) {
-        schema = generateSimpleSchema(postData.payload.body);
-      }
+      console.error("Error loading template:", err);
+      if (key === loadedTemplateKey) templateError = $_("post_detail.template.load_failed");
     } finally {
-      isLoadingSchema = false;
+      if (key === loadedTemplateKey) isLoadingTemplate = false;
     }
   }
 
-  function renderContent(postData: any): string {
-    if (!postData?.payload?.body) {
-      return "";
-    }
-
-    const contentType = postData.payload.content_type;
-    const body = postData.payload.body;
-
-    // Handle template-based entries
-    if (isTemplateEntry && templateContent) {
-      return templateContent; // Already parsed HTML
-    }
-
-    if (contentType === "html") {
-      return body;
-    } else if (contentType === "json") {
-      if (typeof body === "object" && body !== null) {
-        return `<pre class="bg-gray-50 rounded-xl p-4 text-sm overflow-x-auto text-gray-700 leading-relaxed">${JSON.stringify(body, null, 2)}</pre>`;
-      } else {
-        return body;
-      }
-    } else {
-      // By default, parse string body as Markdown (covers "markdown", "md", or missing type)
-      if (typeof body === "string") {
-        return marked.parse(body) as string;
-      }
-      // Fallback for unexpected non-string bodies without a known type
-      return `<pre class="bg-gray-50 rounded-xl p-4 text-sm whitespace-pre-wrap text-gray-700">${JSON.stringify(body)}</pre>`;
-    }
+  // Replace {{fieldName}} / {{fieldName:type}} with the entry's data; a
+  // placeholder with no value is left as written.
+  function renderTemplateWithData(templateContent: string, data: Record<string, unknown>): string {
+    return templateContent.replace(/\{\{(\w+)(?::(\w+))?\}\}/g, (match, fieldName: string) => {
+      const value = data[fieldName];
+      return value === undefined || value === null ? match : String(value);
+    });
   }
+
+  const jsonTitle = $derived(localized(postData?.displayname, $locale) || $_("post_detail.content_type.json"));
 </script>
 
-{#if getPostContent(postData) || isTemplateEntry}
-  <section class="content-section mx-6 my-4">
-
-    <div class="post-content">
-      <div class="content-text">
-        <div class="content-display bg-white p-6">
-          <div class="markdown-preview">
-            {#if isTemplateEntry}
-              {#if isLoadingTemplate}
-                <div class="template-loading">
-                  <div class="spinner"></div>
-                  <span>Loading template...</span>
-                </div>
-              {:else if templateError}
-                <div class="template-error">
-                  <p class="error-message">{templateError}</p>
-                  <div class="fallback-data">
-                    <h4>Template: {postData.payload.body.template}</h4>
-                    <dl>
-                      {#each Object.entries(postData.payload.body.data || {}) as [key, value]}
-                        <dt>{key}:</dt>
-                        <dd>{value}</dd>
-                      {/each}
-                    </dl>
-                  </div>
-                  <pre class="fallback-content">{JSON.stringify(postData.payload.body, null, 2)}</pre>
-                </div>
-              {:else}
-                {@html sanitizeHtml(renderContent(postData))}
-              {/if}
-            {:else if postData?.payload?.content_type === "json"}
-              <JsonViewer 
-                data={postData.payload.body} 
-                title={postData?.displayname?.en || "JSON Content"}
-                {isAdmin}
-                schemaShortname={postData.payload?.schema_shortname}
-                spaceName={postData?.space_name}
-              />
-            {:else}
-              {@html sanitizeHtml(renderContent(postData))}
-            {/if}
-          </div>
+{#if hasContent}
+  <section class="mt-6">
+    {#if templateBody}
+      {#if isLoadingTemplate}
+        <LoadingState label={$_("post_detail.template.loading")} />
+      {:else if templateError}
+        <ErrorState compact message={templateError} />
+        <div class="mt-4 rounded-card border border-border bg-surface p-4 text-sm">
+          <p class="font-semibold text-text">
+            {$_("post_detail.template.label", { values: { name: templateBody.template } })}
+          </p>
+          <dl class="mt-2 grid grid-cols-[auto_1fr] gap-x-4 gap-y-1">
+            {#each Object.entries(templateBody.data) as [key, value] (key)}
+              <dt class="font-medium text-text-muted">{key}</dt>
+              <dd class="text-text break-words">{typeof value === "object" ? JSON.stringify(value) : String(value)}</dd>
+            {/each}
+          </dl>
         </div>
-      </div>
-    </div>
+      {:else}
+        <MarkdownBody html={templateHtml} />
+      {/if}
+    {:else if isJson}
+      <JsonViewer
+        data={payload?.body}
+        title={jsonTitle}
+        {isAdmin}
+        schemaShortname={payload?.schema_shortname}
+        spaceName={postData?.space_name}
+      />
+    {:else if bodyHtml}
+      <MarkdownBody html={bodyHtml} />
+    {:else if payload?.body !== undefined}
+      <pre class="fallback">{JSON.stringify(payload.body, null, 2)}</pre>
+    {/if}
   </section>
 {/if}
 
 <style>
-  .markdown-preview {
-    height: 100%;
+  .fallback {
+    background: var(--color-surface-3);
+    border: 1px solid var(--color-border);
+    border-radius: var(--radius-card);
     padding: 1rem;
-    overflow-y: auto;
-    background: white;
-    font-family:
-      "uthmantn",
-      -apple-system,
-      BlinkMacSystemFont,
-      "Segoe UI",
-      Roboto,
-      "Helvetica Neue",
-      Arial,
-      sans-serif;
-    line-height: 1.6;
-    color: #374151;
-  }
-
-  .content-section {
-    margin-bottom: 32px;
-  }
-
-  .post-content {
-    background: #ffffff;
-    overflow: hidden;
-    box-shadow: 0 1px 3px rgba(0, 0, 0, 0.1);
-  }
-
-  .content-text {
-    padding: 0;
-  }
-
-  :global(.content-text .prose) {
-    max-width: none;
-  }
-
-  :global(.content-text pre) {
-    overflow-x: auto;
+    font-size: var(--font-size-sm);
+    color: var(--color-text);
     white-space: pre-wrap;
-    word-wrap: break-word;
-  }
-
-  /* Enhanced markdown styles */
-  .markdown-preview :global(h1) {
-    font-size: 1.875rem;
-    font-weight: 700;
-    margin: 1.5rem 0 1rem 0;
-    color: #1f2937;
-    border-bottom: 2px solid #e5e7eb;
-    padding-bottom: 0.5rem;
-  }
-
-  .markdown-preview :global(h2) {
-    font-size: 1.5rem;
-    font-weight: 600;
-    margin: 1.25rem 0 0.75rem 0;
-    color: #1f2937;
-  }
-
-  .markdown-preview :global(h3) {
-    font-size: 1.25rem;
-    font-weight: 600;
-    margin: 1rem 0 0.5rem 0;
-    color: #1f2937;
-  }
-
-  .markdown-preview :global(h4),
-  .markdown-preview :global(h5),
-  .markdown-preview :global(h6) {
-    color: #1e293b;
-    font-weight: 600;
-    margin-top: 0.5rem;
-    margin-bottom: 0.5rem;
-  }
-
-  .markdown-preview :global(p) {
-    margin: 0.75rem 0;
-  }
-
-  .markdown-preview :global(ul),
-  .markdown-preview :global(ol) {
-    margin: 0.75rem 0;
-    padding-left: 1.5rem;
-  }
-
-  .markdown-preview :global(ul) {
-    list-style-type: disc;
-  }
-
-  .markdown-preview :global(ol) {
-    list-style-type: decimal;
-  }
-
-  .markdown-preview :global(li) {
-    margin: 0.25rem 0;
-  }
-
-  .markdown-preview :global(code) {
-    background: #f3f4f6;
-    padding: 0.125rem 0.25rem;
-    border-radius: 0.25rem;
-    font-family: "uthmantn", "Monaco", "Menlo", "Ubuntu Mono", monospace;
-    font-size: 0.875rem;
-  }
-
-  .markdown-preview :global(pre) {
-    background: #1f2937;
-    color: #f9fafb;
-    padding: 1rem;
-    border-radius: 0.5rem;
-    overflow-x: auto;
-    margin: 1rem 0;
-  }
-
-  .markdown-preview :global(pre code) {
-    background: transparent;
-    padding: 0;
-    color: inherit;
-  }
-
-  .markdown-preview :global(table) {
-    width: 100%;
-    border-collapse: collapse;
-    margin: 1rem 0;
-  }
-
-  .markdown-preview :global(th),
-  .markdown-preview :global(td) {
-    padding: 0.5rem 0.75rem;
-    border: 1px solid #d1d5db;
-    text-align: left;
-  }
-
-  .markdown-preview :global(th) {
-    background: #f9fafb;
-    font-weight: 600;
-  }
-
-  .markdown-preview :global(strong) {
-    font-weight: 600;
-  }
-
-  .markdown-preview :global(em) {
-    font-style: italic;
-  }
-
-  .markdown-preview :global(del) {
-    text-decoration: line-through;
-  }
-
-  .markdown-preview :global(a) {
-    color: #3b82f6;
-    text-decoration: underline;
-  }
-
-  .markdown-preview :global(blockquote) {
-    border-left: 4px solid #3b82f6;
-    padding-left: 1rem;
-    margin: 1.5rem 0;
-    font-style: italic;
-    color: #64748b;
-  }
-
-  .markdown-preview :global(br) {
-    margin-bottom: 0.5rem;
-  }
-
-  .markdown-preview :global(img) {
-    max-width: 100%;
-    height: auto;
-    border-radius: 0.5rem;
-    margin: 1rem 0;
-    display: block;
-  }
-
-  /* Template loading and error states */
-  .template-loading {
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    gap: 0.75rem;
-    padding: 2rem;
-    color: #6b7280;
-  }
-
-  .template-loading .spinner {
-    width: 1.5rem;
-    height: 1.5rem;
-    border: 2px solid #e5e7eb;
-    border-top-color: #3b82f6;
-    border-radius: 50%;
-    animation: spin 1s linear infinite;
-  }
-
-  @keyframes spin {
-    to {
-      transform: rotate(360deg);
-    }
-  }
-
-  .template-error {
-    padding: 1rem;
-  }
-
-  .template-error .error-message {
-    color: #dc2626;
-    font-weight: 500;
-    margin-bottom: 1rem;
-  }
-
-  .template-error .fallback-data {
-    background: #f9fafb;
-    border: 1px solid #e5e7eb;
-    padding: 1rem;
-    border-radius: 0.5rem;
-    margin-bottom: 1rem;
-  }
-
-  .template-error .fallback-data h4 {
-    margin: 0 0 0.75rem 0;
-    color: #374151;
-    font-size: 1rem;
-  }
-
-  .template-error .fallback-data dl {
-    margin: 0;
-  }
-
-  .template-error .fallback-data dt {
-    font-weight: 600;
-    color: #4b5563;
-    margin-top: 0.5rem;
-  }
-
-  .template-error .fallback-data dd {
-    margin-left: 0;
-    color: #6b7280;
-    margin-top: 0.25rem;
-  }
-
-  .template-error .fallback-content {
-    background: #f3f4f6;
-    padding: 1rem;
-    border-radius: 0.5rem;
-    font-size: 0.875rem;
-    color: #6b7280;
+    overflow-wrap: anywhere;
+    direction: ltr;
+    text-align: start;
   }
 </style>

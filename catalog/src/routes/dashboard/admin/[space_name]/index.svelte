@@ -1,61 +1,79 @@
 <script lang="ts">
   import { onMount } from "svelte";
-  import { Modal } from "flowbite-svelte";
-  import { goto, params } from "@roxi/routify";
-  import {
-    deleteEntity,
-    editSpace,
-    getSpaces,
-    getSpaceHideFolders,
-    buildHideFoldersSearch,
-    mergeSearch,
-  } from "@/lib/dmart_services";
+  import { goto as gotoStore, params } from "@roxi/routify";
+  import { deleteEntity, editSpace, getSpaces, getSpaceHideFolders, buildHideFoldersSearch, mergeSearch } from "@/lib/dmart_services";
   import { _, locale } from "@/i18n";
-  import { derived as derivedStore } from "svelte/store";
+  import { formatDate } from "@/lib/format";
+  import { localized } from "@/lib/catalogItems";
+  import { setTitle } from "@/lib/title";
+  import { log } from "@/lib/logger";
+  import { toasts } from "@/lib/toast";
+  import { encodeSubpath, withBase } from "@/lib/paths";
   import { Dmart, RequestType, DmartScope, ResourceType, QueryType, SortType } from "@edraj/tsdmart";
   import FolderForm from "@/components/forms/FolderForm.svelte";
   import MetaForm from "@/components/forms/MetaForm.svelte";
+  import Modal from "@/components/Modal.svelte";
+  import PageHeader from "@/components/ui/PageHeader.svelte";
+  import CatalogToolbar, { type SortOrder } from "@/components/ui/CatalogToolbar.svelte";
+  import Card from "@/components/ui/Card.svelte";
+  import Badge from "@/components/ui/Badge.svelte";
+  import IconButton from "@/components/ui/IconButton.svelte";
+  import ConfirmDialog from "@/components/ui/ConfirmDialog.svelte";
+  import EmptyState from "@/components/ui/EmptyState.svelte";
+  import ErrorState from "@/components/ui/ErrorState.svelte";
+  import LoadingState from "@/components/ui/LoadingState.svelte";
   import {
-    errorToastMessage,
-    successToastMessage,
-  } from "@/lib/toasts_messages";
-  import DeleteConfirmationDialog from "@/components/DeleteConfirmationDialog.svelte";
+    CogOutline,
+    EditOutline,
+    FileLinesOutline,
+    FolderOutline,
+    FolderPlusOutline,
+    ImageOutline,
+    TrashBinOutline,
+    UserOutline,
+  } from "flowbite-svelte-icons";
 
-  $goto;
+  // Routify's helpers read the fragment context when first subscribed, and
+  // Svelte 5 subscribes to a `$store` lazily on first read — so a `$gotoStore`
+  // first touched inside an async callback logs "Unable to access context".
+  // Capture the navigate function once, during component init.
+  const goto = $gotoStore;
 
-  const isRTL = derivedStore(
-    locale,
-    (val: any) => val === "ar" || val === "ku",
-  );
+  interface ContentRecord {
+    shortname: string;
+    subpath: string;
+    resource_type: string;
+    attributes?: {
+      is_active?: boolean;
+      owner_shortname?: string;
+      created_at?: string;
+      updated_at?: string;
+      displayname?: unknown;
+      description?: unknown;
+      payload?: { body?: Record<string, unknown> };
+    };
+  }
+
+  type SortKey = "name" | "created" | "updated" | "owner";
 
   let isLoading = $state(false);
-  let allContents = $state<any[]>([]);
-  let displayedContents = $state<any[]>([]);
-  let error: any = $state(null);
+  let allContents = $state<ContentRecord[]>([]);
+  let error = $state<unknown>(null);
   let spaceName = $state("");
+  let spaceDisplayName = $state("");
   let spaceHideFolders = $state<string[]>([]);
-  let actualSubpath = $state("");
   let isEditMode = $state(false);
-  let selectedFolderForEdit: any = $state(null);
 
-  // Search and Filter State
+  // Search and filter state
   let searchQuery = $state("");
   let selectedType = $state("all");
   let selectedStatus = $state("all");
-  let sortBy = $state("name");
-  let sortOrder = $state("asc");
-  let isSearchActive = $state(false);
-  let searchTimeout: any = null;
+  let sortBy = $state<SortKey>("name");
+  let sortOrder = $state<SortOrder>("asc");
 
-  function handleSearchInput() {
-    clearTimeout(searchTimeout);
-    searchTimeout = setTimeout(() => {
-      loadContents();
-    }, 1500);
-  }
+  $effect(() => setTitle(spaceDisplayName || spaceName, $_("route_labels.admin_dashboard_title")));
 
-  // Filter Options
-  const typeOptions = [
+  const typeOptions = $derived([
     { value: "all", label: $_("admin_dashboard.filters.all") },
     { value: "folder", label: $_("admin_dashboard.filters.folder") },
     { value: "content", label: $_("admin_dashboard.filters.content") },
@@ -63,24 +81,23 @@
     { value: "ticket", label: $_("admin_dashboard.filters.ticket") },
     { value: "user", label: $_("admin_dashboard.filters.user") },
     { value: "media", label: $_("admin_dashboard.filters.media") },
-  ];
+  ]);
 
-  const statusOptions = [
+  const statusOptions = $derived([
     { value: "all", label: $_("admin_dashboard.filters.all") },
     { value: "active", label: $_("admin_dashboard.filters.active") },
     { value: "inactive", label: $_("admin_dashboard.filters.inactive") },
-  ];
+  ]);
 
-  const sortOptions = [
+  const sortOptions = $derived([
     { value: "name", label: $_("admin_dashboard.sort.name") },
     { value: "created", label: $_("admin_dashboard.sort.created") },
     { value: "updated", label: $_("admin_dashboard.sort.updated") },
     { value: "owner", label: $_("admin_dashboard.sort.owner") },
-  ];
+  ]);
 
-  // Modal States
-  let showCreateFolderModal = $state(false);
-  let folderContent = $state({
+  // Folder modal state
+  const emptyFolder = () => ({
     title: "",
     content: "",
     is_active: true,
@@ -103,16 +120,17 @@
     expand_children: false,
     disable_filter: false,
   });
-  let isCreatingFolder = $state(false);
+  let showFolderModal = $state(false);
+  let folderContent = $state(emptyFolder());
+  let isSavingFolder = $state(false);
+  let metaContent = $state<Record<string, unknown>>({});
+  let validateMetaForm = $state<(() => boolean) | null>(null);
 
-  let metaContent: any = $state({});
-  let validateMetaForm: any = $state(null);
-
-  // Space Config modal state
+  // Space settings modal state
   let showSpaceConfigModal = $state(false);
   let isLoadingSpaceConfig = $state(false);
   let isSavingSpaceConfig = $state(false);
-  let spaceConfigError: string | null = $state(null);
+  let spaceConfigError = $state("");
   type SpaceConfigForm = {
     is_active: boolean;
     displayname: { en: string; ar: string; ku: string };
@@ -151,41 +169,53 @@
     hide_folders: "",
     active_plugins: "",
   });
-  let spaceConfig: SpaceConfigForm = $state(emptySpaceConfig());
+  let spaceConfig = $state<SpaceConfigForm>(emptySpaceConfig());
+
+  const flagFields: Array<{ key: "is_active" | "hide_space" | "indexing_enabled" | "capture_misses" | "check_health"; label: () => string }> = [
+    { key: "is_active", label: () => $_("admin_space.config.fields.active") },
+    { key: "hide_space", label: () => $_("admin_space.config.fields.hide_space") },
+    { key: "indexing_enabled", label: () => $_("admin_space.config.fields.indexing_enabled") },
+    { key: "capture_misses", label: () => $_("admin_space.config.fields.capture_misses") },
+    { key: "check_health", label: () => $_("admin_space.config.fields.check_health") },
+  ];
+  const listFields: Array<{ key: "tags" | "languages" | "mirrors" | "hide_folders" | "active_plugins"; label: () => string; hint?: () => string }> = [
+    { key: "tags", label: () => $_("admin_space.config.fields.tags") },
+    { key: "languages", label: () => $_("admin_space.config.fields.languages"), hint: () => $_("admin_space.config.languages_hint") },
+    { key: "mirrors", label: () => $_("admin_space.config.fields.mirrors") },
+    { key: "hide_folders", label: () => $_("admin_space.config.fields.hide_folders"), hint: () => $_("admin_space.config.hide_folders_hint") },
+    { key: "active_plugins", label: () => $_("admin_space.config.fields.active_plugins") },
+  ];
+  const languageFields: Array<{ key: "en" | "ar" | "ku"; label: () => string }> = [
+    { key: "en", label: () => $_("english") },
+    { key: "ar", label: () => $_("arabic") },
+    { key: "ku", label: () => $_("kurdish") },
+  ];
 
   function stringToArray(value: string): string[] {
-    return value
-      .split(",")
-      .map((v) => v.trim())
-      .filter((v) => v.length > 0);
+    return value.split(",").map((v) => v.trim()).filter((v) => v.length > 0);
   }
 
   function arrayToString(value: unknown): string {
     return Array.isArray(value) ? value.join(", ") : "";
   }
 
+  function nullIfEmpty(value: string): string | null {
+    const trimmed = value.trim();
+    return trimmed.length > 0 ? trimmed : null;
+  }
+
   async function openSpaceConfigModal() {
-    spaceConfigError = null;
+    spaceConfigError = "";
     isLoadingSpaceConfig = true;
     showSpaceConfigModal = true;
     try {
       const response = await getSpaces(true, DmartScope.managed);
-      const match = response.records.find(
-        (record: any) => record.shortname === spaceName,
-      );
-      const attrs: any = match?.attributes ?? {};
+      const match = response.records.find((record) => record.shortname === spaceName);
+      const attrs = (match?.attributes ?? {}) as Record<string, any>;
       spaceConfig = {
         is_active: attrs.is_active ?? true,
-        displayname: {
-          en: attrs.displayname?.en ?? "",
-          ar: attrs.displayname?.ar ?? "",
-          ku: attrs.displayname?.ku ?? "",
-        },
-        description: {
-          en: attrs.description?.en ?? "",
-          ar: attrs.description?.ar ?? "",
-          ku: attrs.description?.ku ?? "",
-        },
+        displayname: { en: attrs.displayname?.en ?? "", ar: attrs.displayname?.ar ?? "", ku: attrs.displayname?.ku ?? "" },
+        description: { en: attrs.description?.en ?? "", ar: attrs.description?.ar ?? "", ku: attrs.description?.ku ?? "" },
         slug: attrs.slug ?? null,
         ordinal: Number.isFinite(attrs.ordinal) ? attrs.ordinal : 0,
         icon: attrs.icon ?? "",
@@ -202,8 +232,8 @@
         active_plugins: arrayToString(attrs.active_plugins),
       };
     } catch (err) {
-      console.error("Error loading space config:", err);
-      spaceConfigError = "Failed to load space meta. Try again.";
+      log.error("Error loading space config:", err);
+      spaceConfigError = $_("admin_space.config.load_failed");
       spaceConfig = emptySpaceConfig();
     } finally {
       isLoadingSpaceConfig = false;
@@ -211,20 +241,17 @@
   }
 
   function closeSpaceConfigModal() {
+    if (isSavingSpaceConfig) return;
     showSpaceConfigModal = false;
-    spaceConfigError = null;
+    spaceConfigError = "";
   }
 
-  function nullIfEmpty(value: string): string | null {
-    const trimmed = value.trim();
-    return trimmed.length > 0 ? trimmed : null;
-  }
-
-  async function handleSaveSpaceConfig() {
-    spaceConfigError = null;
+  async function handleSaveSpaceConfig(event: SubmitEvent) {
+    event.preventDefault();
+    spaceConfigError = "";
     isSavingSpaceConfig = true;
     try {
-      const attributes: Record<string, any> = {
+      await editSpace(spaceName, {
         is_active: spaceConfig.is_active,
         displayname: {
           en: nullIfEmpty(spaceConfig.displayname.en),
@@ -250,22 +277,16 @@
         active_plugins: stringToArray(spaceConfig.active_plugins),
         ordinal: Number(spaceConfig.ordinal) || 0,
         slug: spaceConfig.slug,
-      };
-
-      await editSpace(spaceName, attributes);
+      });
       spaceHideFolders = stringToArray(spaceConfig.hide_folders);
-      successToastMessage(
-        $_("admin_space.config.save_success") || "Space settings saved",
-      );
+      spaceDisplayName = localized(spaceConfig.displayname, $locale) || spaceName;
+      toasts.success($_("admin_space.config.save_success"));
+      isSavingSpaceConfig = false;
       closeSpaceConfigModal();
       await loadContents();
     } catch (err) {
-      console.error("Error saving space config:", err);
-      spaceConfigError = "Failed to save space settings. Please try again.";
-      errorToastMessage(
-        $_("admin_space.config.save_failed") ||
-          "Failed to save space settings",
-      );
+      log.error("Error saving space config:", err);
+      spaceConfigError = $_("admin_space.config.save_error");
     } finally {
       isSavingSpaceConfig = false;
     }
@@ -273,240 +294,159 @@
 
   onMount(async () => {
     spaceName = $params.space_name;
-    actualSubpath = $params.subpath || "/";
-    spaceHideFolders = await getSpaceHideFolders(spaceName, DmartScope.managed);
+    // The list does not wait for the (cached) spaces lookup: the first page
+    // loads at once and the hidden folders are removed as soon as they are known.
+    const spacesPromise = getSpaces(true, DmartScope.managed).catch(() => null);
+    const hidePromise = getSpaceHideFolders(spaceName, DmartScope.managed);
     await loadContents();
+    spaceHideFolders = await hidePromise;
+    if (spaceHideFolders.length > 0) {
+      allContents = allContents.filter((item) => !spaceHideFolders.includes(item.shortname));
+    }
+    const spacesResponse = await spacesPromise;
+    const match = spacesResponse?.records.find((r) => r.shortname === spaceName);
+    spaceDisplayName = localized((match?.attributes as { displayname?: unknown } | undefined)?.displayname as never, $locale) || spaceName;
   });
 
   async function loadContents() {
     isLoading = true;
+    error = null;
     try {
       const response = await Dmart.query(
         {
           type: QueryType.search,
           space_name: spaceName,
           subpath: "/",
-          search: mergeSearch(
-            searchQuery,
-            buildHideFoldersSearch(spaceHideFolders),
-          ),
+          search: mergeSearch(searchQuery, buildHideFoldersSearch(spaceHideFolders)),
           limit: 100,
           sort_by: "shortname",
           sort_type: SortType.ascending,
           offset: 0,
           retrieve_json_payload: true,
-          retrieve_attachments: true,
+          retrieve_attachments: false,
           exact_subpath: true,
         },
-        DmartScope.managed
+        DmartScope.managed,
       );
-      if (response && response.records) {
-        allContents = response.records;
-        applyFilters();
-      } else {
-        allContents = [];
-        displayedContents = [];
-      }
+      allContents = ((response?.records ?? []) as unknown as ContentRecord[]).filter(
+        (item) => !spaceHideFolders.includes(item.shortname),
+      );
     } catch (err) {
-      console.error("Error fetching space contents:", err);
-      error = $_("admin_space.error.failed_load_contents");
+      log.error("Error fetching space contents:", err);
+      error = err;
     } finally {
       isLoading = false;
     }
   }
 
-  function applyFilters() {
-    let filtered = [...allContents];
-
-    if (selectedType !== "all") {
-      filtered = filtered.filter((item) => item.resource_type === selectedType);
-    }
-
-    if (selectedStatus !== "all") {
-      filtered = filtered.filter((item) => {
-        const isActive = item.attributes?.is_active;
-        return selectedStatus === "active" ? isActive : !isActive;
-      });
-    }
-
-    filtered.sort((a, b) => {
-      let aValue, bValue;
-
-      switch (sortBy) {
-        case "name":
-          aValue = getDisplayName(a).toLowerCase();
-          bValue = getDisplayName(b).toLowerCase();
-          break;
-        case "type":
-          aValue = a.resource_type || "";
-          bValue = b.resource_type || "";
-          break;
-        case "created":
-          aValue = new Date(a.attributes?.created_at || 0);
-          bValue = new Date(b.attributes?.updated_at || 0);
-          break;
-        case "updated":
-          aValue = new Date(a.attributes?.updated_at || 0);
-          bValue = new Date(b.attributes?.updated_at || 0);
-          break;
-        case "owner":
-          aValue = (a.attributes?.owner_shortname || "").toLowerCase();
-          bValue = (b.attributes?.owner_shortname || "").toLowerCase();
-          break;
-        default:
-          aValue = getDisplayName(a).toLowerCase();
-          bValue = getDisplayName(b).toLowerCase();
-      }
-
-      if (aValue < bValue) return sortOrder === "asc" ? -1 : 1;
-      if (aValue > bValue) return sortOrder === "asc" ? 1 : -1;
-      return 0;
-    });
-
-    displayedContents = filtered;
-    isSearchActive =
-      searchQuery.trim() !== "" ||
-      selectedType !== "all" ||
-      selectedStatus !== "all";
+  function getDisplayName(item: ContentRecord): string {
+    return localized(item.attributes?.displayname as never, $locale) || item.shortname;
   }
 
+  function getDescription(item: ContentRecord): string {
+    return localized(item.attributes?.description as never, $locale);
+  }
+
+  function sortValue(item: ContentRecord): string | number {
+    switch (sortBy) {
+      case "created":
+        return new Date(item.attributes?.created_at || 0).getTime();
+      case "updated":
+        return new Date(item.attributes?.updated_at || 0).getTime();
+      case "owner":
+        return (item.attributes?.owner_shortname || "").toLowerCase();
+      default:
+        return getDisplayName(item).toLowerCase();
+    }
+  }
+
+  const displayedContents = $derived.by(() => {
+    let filtered = allContents;
+    if (selectedType !== "all") filtered = filtered.filter((item) => item.resource_type === selectedType);
+    if (selectedStatus !== "all") {
+      filtered = filtered.filter((item) => (selectedStatus === "active" ? !!item.attributes?.is_active : !item.attributes?.is_active));
+    }
+    const dir = sortOrder === "asc" ? 1 : -1;
+    return [...filtered].sort((a, b) => {
+      const av = sortValue(a);
+      const bv = sortValue(b);
+      return av < bv ? -dir : av > bv ? dir : 0;
+    });
+  });
+
+  const filtersActive = $derived(searchQuery.trim() !== "" || selectedType !== "all" || selectedStatus !== "all");
+
   function clearFilters() {
+    const hadSearch = searchQuery.trim() !== "";
     searchQuery = "";
     selectedType = "all";
     selectedStatus = "all";
     sortBy = "name";
     sortOrder = "asc";
-    loadContents();
+    if (hadSearch) loadContents();
   }
 
-  function toggleSortOrder() {
-    sortOrder = sortOrder === "asc" ? "desc" : "asc";
-    applyFilters();
+  function isNavigable(item: ContentRecord): boolean {
+    return item.resource_type === "folder" || item.subpath !== "/";
   }
 
-  $effect(() => {
-    applyFilters();
-  });
+  function subpathOf(item: ContentRecord): string {
+    return item.subpath === "/" ? item.shortname : `${item.subpath}/${item.shortname}`;
+  }
 
-  function handleItemClick(item: any) {
-    if (item.resource_type === "folder" || item.subpath !== "/") {
-      const subpath =
-        item.subpath === "/"
-          ? item.shortname
-          : `${item.subpath}/${item.shortname}`;
-      $goto(`/dashboard/admin/[space_name]/[subpath]`, {
-        space_name: spaceName,
-        subpath: subpath,
-      });
+  function hrefFor(item: ContentRecord): string | undefined {
+    if (!isNavigable(item)) return undefined;
+    return withBase(`/dashboard/admin/${encodeURIComponent(spaceName)}/${encodeSubpath(subpathOf(item))}`);
+  }
+
+  function handleItemClick(item: ContentRecord, event: MouseEvent) {
+    if (!isNavigable(item)) return;
+    event.preventDefault();
+    goto("/dashboard/admin/[space_name]/[subpath]", { space_name: spaceName, subpath: encodeSubpath(subpathOf(item)) });
+  }
+
+  function iconFor(type: string) {
+    switch (type) {
+      case "folder":
+        return FolderOutline;
+      case "user":
+        return UserOutline;
+      case "media":
+        return ImageOutline;
+      default:
+        return FileLinesOutline;
     }
   }
 
   function handleCreateFolder() {
     isEditMode = false;
-    selectedFolderForEdit = null;
-    folderContent = {
-      title: "",
-      content: "",
-      is_active: true,
-      tags: [],
-      index_attributes: [],
-      sort_by: "created_at",
-      sort_type: "descending",
-      content_resource_types: [],
-      content_schema_shortnames: [],
-      workflow_shortnames: [],
-      allow_view: true,
-      allow_create: true,
-      allow_update: true,
-      allow_delete: false,
-      allow_create_category: false,
-      allow_csv: false,
-      allow_upload_csv: false,
-      use_media: false,
-      stream: false,
-      expand_children: false,
-      disable_filter: false,
-    };
-    showCreateFolderModal = true;
+    metaContent = {};
+    folderContent = emptyFolder();
+    showFolderModal = true;
   }
 
-  function handleEditFolder(item: any) {
+  function handleEditFolder(item: ContentRecord) {
     isEditMode = true;
-    selectedFolderForEdit = item;
-
     metaContent = {
       shortname: item.shortname,
       displayname: item.attributes?.displayname || {},
       description: item.attributes?.description || {},
     };
-
-    const existingContent = item.attributes?.payload?.body || {};
-    folderContent = {
-      title: existingContent.title || "",
-      content: existingContent.content || "",
-      is_active:
-        existingContent.is_active !== undefined
-          ? existingContent.is_active
-          : true,
-      tags: existingContent.tags || [],
-      index_attributes: existingContent.index_attributes || [],
-      sort_by: existingContent.sort_by || "created_at",
-      sort_type: existingContent.sort_type || "descending",
-      content_resource_types: existingContent.content_resource_types || [],
-      content_schema_shortnames:
-        existingContent.content_schema_shortnames || [],
-      workflow_shortnames: existingContent.workflow_shortnames || [],
-      allow_view:
-        existingContent.allow_view !== undefined
-          ? existingContent.allow_view
-          : true,
-      allow_create:
-        existingContent.allow_create !== undefined
-          ? existingContent.allow_create
-          : true,
-      allow_update:
-        existingContent.allow_update !== undefined
-          ? existingContent.allow_update
-          : true,
-      allow_delete:
-        existingContent.allow_delete !== undefined
-          ? existingContent.allow_delete
-          : false,
-      allow_create_category:
-        existingContent.allow_create_category !== undefined
-          ? existingContent.allow_create_category
-          : false,
-      allow_csv:
-        existingContent.allow_csv !== undefined
-          ? existingContent.allow_csv
-          : false,
-      allow_upload_csv:
-        existingContent.allow_upload_csv !== undefined
-          ? existingContent.allow_upload_csv
-          : false,
-      use_media:
-        existingContent.use_media !== undefined
-          ? existingContent.use_media
-          : false,
-      stream:
-        existingContent.stream !== undefined ? existingContent.stream : false,
-      expand_children:
-        existingContent.expand_children !== undefined
-          ? existingContent.expand_children
-          : false,
-      disable_filter:
-        existingContent.disable_filter !== undefined
-          ? existingContent.disable_filter
-          : false,
-    };
-
-    showCreateFolderModal = true;
+    const existing = (item.attributes?.payload?.body ?? {}) as Record<string, unknown>;
+    const defaults = emptyFolder();
+    folderContent = { ...defaults, ...(existing as Partial<typeof defaults>) } as typeof defaults;
+    showFolderModal = true;
   }
 
-  async function handleSaveFolder(event: any) {
-    event.preventDefault();
-    isCreatingFolder = true;
+  function closeFolderModal() {
+    if (isSavingFolder) return;
+    showFolderModal = false;
+  }
 
+  async function handleSaveFolder(event: SubmitEvent) {
+    event.preventDefault();
+    if (validateMetaForm && !validateMetaForm()) return;
+    isSavingFolder = true;
     try {
       const response = await Dmart.request({
         space_name: spaceName,
@@ -514,937 +454,360 @@
         records: [
           {
             resource_type: ResourceType.folder,
-            shortname: metaContent.shortname || "auto",
+            shortname: (metaContent.shortname as string) || "auto",
             subpath: "/",
             attributes: {
               displayname: metaContent.displayname,
               description: metaContent.description,
-              payload: {
-                body: folderContent,
-                content_type: "json",
-              },
+              payload: { body: $state.snapshot(folderContent), content_type: "json" },
               is_active: true,
             },
           },
         ],
       });
-
-      if (response) {
-        showCreateFolderModal = false;
-        if (isEditMode) {
-          successToastMessage($_("toast.folder_updated"));
-        } else {
-          successToastMessage($_("toast.folder_created"));
-        }
-        await loadContents();
-      } else {
-        const errorMessage = isEditMode
-          ? $_("toast.folder_update_failed")
-          : $_("toast.folder_create_failed");
-        errorToastMessage(errorMessage);
-      }
+      if (!response) throw new Error("empty response");
+      isSavingFolder = false;
+      showFolderModal = false;
+      toasts.success(isEditMode ? $_("toast.folder_updated") : $_("toast.folder_created"));
+      await loadContents();
     } catch (err) {
-      console.error(
-        `Error ${isEditMode ? "updating" : "creating"} folder:`,
-        err,
-      );
-      const errorMessage = isEditMode
-        ? $_("toast.folder_update_failed")
-        : $_("toast.folder_create_failed");
-      errorToastMessage(errorMessage + ": " + (err as any).message);
+      log.error(`Error ${isEditMode ? "updating" : "creating"} folder:`, err);
+      toasts.error(isEditMode ? $_("toast.folder_update_failed") : $_("toast.folder_create_failed"));
     } finally {
-      isCreatingFolder = false;
+      isSavingFolder = false;
     }
   }
 
-  // Delete confirmation dialog state
+  // Delete confirmation
   let showDeleteDialog = $state(false);
-  let itemToDelete: any = $state(null);
-  let isDeletingItem = $state(false);
+  let itemToDelete = $state<ContentRecord | null>(null);
+  let forceDelete = $state(false);
 
-  function openDeleteDialog(item: any, event: Event) {
-    event.stopPropagation();
+  function openDeleteDialog(item: ContentRecord) {
     itemToDelete = item;
+    forceDelete = false;
     showDeleteDialog = true;
   }
 
-  function closeDeleteDialog() {
-    showDeleteDialog = false;
-    itemToDelete = null;
-    isDeletingItem = false;
-  }
-
-  async function handleConfirmDelete(force: boolean) {
+  async function performDelete() {
     if (!itemToDelete) return;
-
-    isDeletingItem = true;
-    try {
-      const success = await deleteEntity(
-        itemToDelete.shortname,
-        spaceName,
-        actualSubpath,
-        itemToDelete.resource_type,
-        force,
-      );
-      if (success) {
-        successToastMessage($_("toast.item_deleted"));
-        await loadContents();
-        closeDeleteDialog();
-      } else {
-        errorToastMessage($_("toast.item_delete_failed"));
-      }
-    } catch (err) {
-      console.error("Error deleting item:", err);
-      errorToastMessage($_("toast.item_delete_failed") + ": " + (err as any).message);
-    } finally {
-      isDeletingItem = false;
-    }
+    const ok = await deleteEntity(itemToDelete.shortname, spaceName, "/", itemToDelete.resource_type as ResourceType, forceDelete);
+    if (!ok) throw new Error($_("toast.item_delete_failed"));
   }
 
-  function getItemIcon(item: any): string {
-    switch (item.resource_type) {
-      case "folder":
-        return "📁";
-      case "content":
-        return "📄";
-      case "post":
-        return "📝";
-      case "ticket":
-        return "🎫";
-      case "user":
-        return "👤";
-      case "media":
-        return "🖼️";
-      default:
-        return "📋";
-    }
-  }
-
-  // function getResourceTypeColor(resourceType: string): string {
-  //   switch (resourceType) {
-  //     case "folder":
-  //       return "bg-blue-100 text-blue-800";
-  //     case "content":
-  //       return "bg-green-100 text-green-800";
-  //     case "post":
-  //       return "bg-purple-100 text-purple-800";
-  //     case "ticket":
-  //       return "bg-orange-100 text-orange-800";
-  //     case "user":
-  //       return "bg-indigo-100 text-indigo-800";
-  //     case "media":
-  //       return "bg-pink-100 text-pink-800";
-  //     default:
-  //       return "bg-gray-100 text-gray-800";
-  //   }
-  // }
-
-  function getDisplayName(item: any): string {
-    if (item.attributes?.displayname) {
-      return (
-        item.attributes.displayname[$locale ?? ""] ||
-        item.attributes.displayname.en ||
-        item.attributes.displayname.ar ||
-        item.shortname
-      );
-    }
-    return item.shortname || "Unnamed Item";
-  }
-
-  function getDescription(item: any): string {
-    if (item.attributes?.description) {
-      return (
-        item.attributes.description[$locale ?? ""] ||
-        item.attributes.description.en ||
-        item.attributes.description.ar ||
-        "No description available"
-      );
-    }
-    return "No description available";
-  }
-
-  function formatDate(dateString: string): string {
-    if (!dateString) return $_("common.not_available");
-    return new Date(dateString).toLocaleDateString($locale ?? "");
-  }
-
-  function goBack() {
-    $goto("/dashboard/admin");
+  async function afterDelete() {
+    toasts.success($_("toast.item_deleted"));
+    itemToDelete = null;
+    await loadContents();
   }
 </script>
 
-<div class="min-h-screen bg-gray-50" class:rtl={$isRTL}>
-  <div class="bg-white border-b border-gray-100 max-w-375 mx-auto rounded-[14px] px-4" class:rtl={$isRTL}>
-    <div class="mx-auto py-8 max-w-375">
-      <div class="flex items-start justify-between">
-        <button
-          onclick={goBack}
-          class="flex items-center text-gray-500 hover:text-gray-900 transition-colors duration-200 text-sm font-medium pt-1"
-          class:flex-row-reverse={$isRTL}
-          aria-label={$_("admin_space.navigation.go_back")}
-        >
-          <svg
-            class="w-4 h-4 mr-2"
-            class:mr-2={!$isRTL}
-            class:ml-2={$isRTL}
-            class:rotate-180={$isRTL}
-            fill="none"
-            stroke="currentColor"
-            viewBox="0 0 24 24"
-          >
-            <path
-              stroke-linecap="round"
-              stroke-linejoin="round"
-              stroke-width="2"
-              d="M10 19l-7-7m0 0l7-7m-7 7h18"
-            ></path>
-          </svg>
-        </button>
+<div class="mx-auto max-w-6xl px-4 sm:px-6 py-6 sm:py-8">
+  <PageHeader
+    title={spaceDisplayName || spaceName}
+    description={$_("admin_space.subtitle", { values: { name: spaceName } })}
+    icon={FolderOutline}
+    backHref="/dashboard/admin"
+    backLabel={$_("admin_space.navigation.go_back")}
+  >
+    {#snippet actions()}
+      <IconButton label={$_("admin_space.config.title")} variant="outline" onclick={openSpaceConfigModal}>
+        <CogOutline size="sm" />
+      </IconButton>
+      <button type="button" class="app-btn app-btn-primary" onclick={handleCreateFolder}>
+        <FolderPlusOutline size="sm" aria-hidden="true" />
+        {$_("admin_space.create_folder")}
+      </button>
+    {/snippet}
+  </PageHeader>
 
-        <div
-          class="flex-1 ml-6 text-left"
-          class:mr-6={$isRTL}
-          class:text-right={$isRTL}
-        >
-          <h1 class="text-[26px] leading-7.5 font-bold text-gray-900 mb-1">
-            <span class="capitalize">{spaceName}</span> Space
-          </h1>
-          <!--          <p class="text-[14px] font-medium text-indigo-400">-->
-          <!--            Full administrative access to manage all content-->
-          <!--          </p>-->
-        </div>
-
-        <button
-          onclick={openSpaceConfigModal}
-          class="mr-2 p-2.5 rounded-xl text-gray-500 hover:text-indigo-600 hover:bg-indigo-50 transition-colors duration-200 flex items-center justify-center"
-          aria-label="Space settings"
-          title="Space settings"
-        >
-          <svg
-            class="w-5 h-5"
-            fill="none"
-            stroke="currentColor"
-            viewBox="0 0 24 24"
-          >
-            <path
-              stroke-linecap="round"
-              stroke-linejoin="round"
-              stroke-width="2"
-              d="M10.325 4.317c.426-1.756 2.924-1.756 3.35 0a1.724 1.724 0 002.573 1.066c1.543-.94 3.31.826 2.37 2.37a1.724 1.724 0 001.065 2.572c1.756.426 1.756 2.924 0 3.35a1.724 1.724 0 00-1.066 2.573c.94 1.543-.826 3.31-2.37 2.37a1.724 1.724 0 00-2.572 1.065c-.426 1.756-2.924 1.756-3.35 0a1.724 1.724 0 00-2.573-1.066c-1.543.94-3.31-.826-2.37-2.37a1.724 1.724 0 00-1.065-2.572c-1.756-.426-1.756-2.924 0-3.35a1.724 1.724 0 001.066-2.573c-.94-1.543.826-3.31 2.37-2.37.996.608 2.296.07 2.572-1.065z"
-            />
-            <path
-              stroke-linecap="round"
-              stroke-linejoin="round"
-              stroke-width="2"
-              d="M15 12a3 3 0 11-6 0 3 3 0 016 0z"
-            />
-          </svg>
-        </button>
-
-        <button
-          onclick={handleCreateFolder}
-          class="bg-indigo-500 hover:bg-indigo-600 text-white px-5 py-2.5 rounded-xl text-sm font-medium transition-colors duration-200 flex items-center justify-center gap-1.5 shadow-sm"
-        >
-          <svg
-            class="w-4 h-4"
-            fill="none"
-            stroke="currentColor"
-            viewBox="0 0 24 24"
-          >
-            <path
-              stroke-linecap="round"
-              stroke-linejoin="round"
-              stroke-width="2"
-              d="M12 4v16m8-8H4"
-            ></path>
-          </svg>
-          Create Folder
-        </button>
-      </div>
-    </div>
-  </div>
-
-  <div class="mx-auto pb-12 max-w-375">
-    {#if isLoading}
-      <div class="flex items-center justify-center py-32">
-        <div class="spinner spinner-lg"></div>
-      </div>
-    {:else if error}
-      <div class="text-center py-16" class:text-right={$isRTL}>
-        <div
-          class="mx-auto w-24 h-24 bg-red-100 rounded-full flex items-center justify-center mb-6"
-        >
-          <svg
-            class="w-12 h-12 text-red-500"
-            fill="none"
-            stroke="currentColor"
-            viewBox="0 0 24 24"
-          >
-            <path
-              stroke-linecap="round"
-              stroke-linejoin="round"
-              stroke-width="2"
-              d="M12 8v4m0 4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z"
-            ></path>
-          </svg>
-        </div>
-        <h3 class="text-xl font-semibold text-gray-900 mb-2">
-          {$_("admin_space.error.title")}
-        </h3>
-        <p class="text-gray-600">{error}</p>
-      </div>
-    {:else if allContents.length === 0}
-      <div class="text-center py-16" class:text-right={$isRTL}>
-        <div
-          class="mx-auto w-24 h-24 bg-gray-100 rounded-full flex items-center justify-center mb-6"
-        >
-          <svg
-            class="w-12 h-12 text-gray-400"
-            fill="none"
-            stroke="currentColor"
-            viewBox="0 0 24 24"
-          >
-            <path
-              stroke-linecap="round"
-              stroke-linejoin="round"
-              stroke-width="2"
-              d="M9 13h6m-3-3v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16"
-            ></path>
-          </svg>
-        </div>
-        <h3 class="text-xl font-semibold text-gray-900 mb-2">
-          {$_("admin_space.empty.title")}
-        </h3>
-        <p class="text-gray-600">
-          {$_("admin_space.empty.description")}
-        </p>
-      </div>
-    {:else}
-      <!-- Search and Filter Section (compact) -->
-      <div
-        class="bg-white rounded-[20px] shadow-[0_2px_8px_rgba(0,0,0,0.04)] border border-gray-100 p-4 mb-8 mt-4"
-      >
-        <div
-          class="flex flex-col md:flex-row md:items-center justify-between gap-3"
-        >
-          <!-- Search input -->
-          <div class="relative flex-1 min-w-0">
-            <div
-              class="absolute inset-y-0 left-0 pl-4 flex items-center pointer-events-none"
-            >
-              <svg
-                class="h-5 w-5 text-gray-400"
-                fill="none"
-                stroke="currentColor"
-                viewBox="0 0 24 24"
-              >
-                <path
-                  stroke-linecap="round"
-                  stroke-linejoin="round"
-                  stroke-width="2"
-                  d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z"
-                ></path>
-              </svg>
-            </div>
-            <label for="search-input" class="sr-only">Search Spaces</label>
-            <input
-              id="search-input"
-              type="text"
-              bind:value={searchQuery}
-              oninput={handleSearchInput}
-              placeholder={$_("route_labels.placeholder_search_by_name_desc")}
-              class="block w-full pl-11 pr-10 py-2.5 bg-gray-50 border-none rounded-xl text-sm focus:ring-2 focus:ring-indigo-500 focus:bg-white transition-colors"
-              title={$_("route_labels.placeholder_search_by_name_desc")}
-              aria-label="Search Spaces"
-            />
-            {#if searchQuery}
-              <button
-                onclick={() => {
-                  searchQuery = "";
-                  loadContents();
-                }}
-                aria-label="Clear search"
-                title="Clear search"
-                class="absolute inset-y-0 right-0 pr-3 flex items-center"
-              >
-                <svg
-                  class="h-5 w-5 text-gray-400 hover:text-gray-600 transition-colors"
-                  fill="none"
-                  stroke="currentColor"
-                  viewBox="0 0 24 24"
-                >
-                  <path
-                    stroke-linecap="round"
-                    stroke-linejoin="round"
-                    stroke-width="2"
-                    d="M6 18L18 6M6 6l12 12"
-                  ></path>
-                </svg>
-              </button>
-            {/if}
-          </div>
-
-          <!-- Inline filters + sort + toggle -->
-          <div class="flex flex-wrap items-center gap-3">
-            <select
-              id="type-filter"
-              bind:value={selectedType}
-              onchange={applyFilters}
-              class="bg-gray-50 border-none text-sm font-medium text-gray-700 rounded-xl px-4 py-2.5 focus:ring-2 focus:ring-indigo-500 cursor-pointer"
-              title="Type"
-              aria-label="Type"
-            >
-              {#each typeOptions as option}
-                <option value={option.value}>{option.label}</option>
-              {/each}
-            </select>
-
-            <select
-              id="status-filter"
-              bind:value={selectedStatus}
-              onchange={applyFilters}
-              class="bg-gray-50 border-none text-sm font-medium text-gray-700 rounded-xl px-4 py-2.5 focus:ring-2 focus:ring-indigo-500 cursor-pointer"
-              title={$_("catalog_contents.filters.status")}
-              aria-label={$_("catalog_contents.filters.status")}
-            >
-              {#each statusOptions as option}
-                <option value={option.value}>{option.label}</option>
-              {/each}
-            </select>
-
-            <select
-              id="sort-by"
-              bind:value={sortBy}
-              onchange={applyFilters}
-              class="bg-gray-50 border-none text-sm font-medium text-gray-700 rounded-xl px-4 py-2.5 focus:ring-2 focus:ring-indigo-500 cursor-pointer"
-              title={$_("catalog_contents.filters.sort_by")}
-              aria-label={$_("catalog_contents.filters.sort_by")}
-            >
-              {#each sortOptions as option}
-                <option value={option.value}>{option.label}</option>
-              {/each}
-            </select>
-
-            <button
-              onclick={toggleSortOrder}
-              class="p-2.5 bg-gray-50 text-gray-500 hover:text-gray-900 hover:bg-gray-100 rounded-xl transition-colors"
-              title={$_("search_filters.toggle_sort")}
-              aria-label={$_("search_filters.toggle_sort")}
-            >
-              <svg
-                class="w-5 h-5 {sortOrder === 'desc'
-                  ? 'rotate-180'
-                  : ''} transition-transform duration-200"
-                fill="none"
-                stroke="currentColor"
-                viewBox="0 0 24 24"
-              >
-                <path
-                  stroke-linecap="round"
-                  stroke-linejoin="round"
-                  stroke-width="2"
-                  d="M7 16V4m0 0L3 8m4-4l4 4m6 0v12m0 0l4-4m-4 4l-4-4"
-                ></path>
-              </svg>
-            </button>
-          </div>
-        </div>
-      </div>
-
-      <!-- Results -->
-      {#if displayedContents.length === 0 && isSearchActive}
-        <div class="text-center py-12">
-          <svg
-            class="mx-auto w-12 h-12 text-gray-300 mb-4"
-            fill="none"
-            stroke="currentColor"
-            viewBox="0 0 24 24"
-          >
-            <path
-              stroke-linecap="round"
-              stroke-linejoin="round"
-              stroke-width="2"
-              d="M9.172 16.172a4 4 0 015.656 0M9 12h6m-6-4h6m2 5.291A7.962 7.962 0 0112 15c-2.34 0-4.291-1.007-5.691-2.709M15 17h5l-1.405-1.405A2.032 2.032 0 0118 14.158V11a6.002 6.002 0 00-4-5.659V5a2 2 0 10-4 0v.341C7.67 6.165 6 8.388 6 11v3.159c0 .538-.214 1.055-.595 1.436L4 17h5m6 0v1a3 3 0 11-6 0v-1m6 0H9"
-            ></path>
-          </svg>
-          <h3 class="text-lg font-medium text-gray-900 mb-2">
-            {$_("search_filters.no_results.title")}
-          </h3>
-          <p class="text-gray-500 mb-4">
-            {$_("search_filters.no_results.description")}
-          </p>
-          <button
-            onclick={clearFilters}
-            class="inline-flex items-center px-4 py-2 border border-transparent text-sm font-medium rounded-md text-indigo-600 bg-indigo-50 hover:bg-indigo-100 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-indigo-500"
-          >
+  {#if isLoading && allContents.length === 0}
+    <LoadingState />
+  {:else if error}
+    <ErrorState title={$_("admin_space.error.title")} {error} onRetry={loadContents} />
+  {:else if allContents.length === 0 && !filtersActive}
+    <EmptyState icon={FolderOutline} title={$_("admin_space.empty.title")} hint={$_("admin_space.empty.description")}>
+      <button type="button" class="app-btn app-btn-primary app-btn-sm" onclick={handleCreateFolder}>
+        <FolderPlusOutline size="sm" aria-hidden="true" />
+        {$_("admin_space.create_folder")}
+      </button>
+    </EmptyState>
+  {:else}
+    <CatalogToolbar
+      class="mb-6"
+      bind:search={searchQuery}
+      placeholder={$_("route_labels.placeholder_search_by_name_desc")}
+      onSearch={() => loadContents()}
+      bind:sort={sortBy}
+      {sortOptions}
+      bind:order={sortOrder}
+    >
+      {#snippet filters()}
+        <label for="type-filter" class="sr-only">{$_("ui.resource_type")}</label>
+        <select id="type-filter" bind:value={selectedType} class="h-9 ps-3 pe-8 text-sm rounded-control border border-border bg-surface-2 text-text focus:border-primary focus:ring-1 focus:ring-primary">
+          {#each typeOptions as option (option.value)}
+            <option value={option.value}>{option.label}</option>
+          {/each}
+        </select>
+        <label for="status-filter" class="sr-only">{$_("catalog_contents.filters.status")}</label>
+        <select id="status-filter" bind:value={selectedStatus} class="h-9 ps-3 pe-8 text-sm rounded-control border border-border bg-surface-2 text-text focus:border-primary focus:ring-1 focus:ring-primary">
+          {#each statusOptions as option (option.value)}
+            <option value={option.value}>{option.label}</option>
+          {/each}
+        </select>
+        {#if filtersActive}
+          <button type="button" class="app-btn app-btn-ghost app-btn-sm" onclick={clearFilters}>
             {$_("search_filters.clear_filters")}
           </button>
-        </div>
-      {:else}
-        <div class="grid gap-6 md:grid-cols-2 lg:grid-cols-3">
-          {#each displayedContents as item}
-            <div
-              class="bg-white rounded-[20px] shadow-[0_2px_8px_rgba(0,0,0,0.04)] border border-gray-100 p-6 hover:shadow-[0_8px_24px_rgba(0,0,0,0.06)] hover:border-indigo-100 cursor-pointer transition-all duration-300 group flex flex-col h-full"
-              onclick={() => handleItemClick(item)}
-              role="button"
-              tabindex="0"
-              onkeydown={(e) => {
-                if (e.key === "Enter" || e.key === " ") {
-                  handleItemClick(item);
-                }
-              }}
-            >
-              <!-- Card Header: Icon, Title, and Actions -->
-              <div
-                class="flex items-start justify-between mb-4"
-                class:flex-row-reverse={$isRTL}
+        {/if}
+      {/snippet}
+    </CatalogToolbar>
+
+    {#if displayedContents.length === 0}
+      <EmptyState title={$_("search_filters.no_results.title")} hint={$_("search_filters.no_results.description")}>
+        <button type="button" class="app-btn app-btn-secondary app-btn-sm" onclick={clearFilters}>
+          {$_("search_filters.clear_filters")}
+        </button>
+      </EmptyState>
+    {:else}
+      <LoadingState variant="overlay" loading={isLoading}>
+        <ul class="grid gap-4 md:grid-cols-2 lg:grid-cols-3 list-none p-0 m-0">
+          {#each displayedContents as item (`${item.subpath}/${item.shortname}`)}
+            {@const Icon = iconFor(item.resource_type)}
+            {@const href = hrefFor(item)}
+            <li class="relative flex">
+              <Card
+                class="w-full flex flex-col"
+                {href}
+                onclick={href ? (e: MouseEvent) => handleItemClick(item, e) : undefined}
               >
-                <div
-                  class="flex gap-4 min-w-0 flex-1"
-                  class:flex-row-reverse={$isRTL}
-                >
-                  <div
-                    class="w-12 h-12 bg-blue-50 text-blue-500 rounded-xl flex items-center justify-center shrink-0 text-2xl"
-                  >
-                    {getItemIcon(item)}
-                  </div>
-                  <div class="flex-1 min-w-0" class:text-right={$isRTL}>
-                    <h3
-                      class="text-base font-bold text-gray-900 truncate"
-                      title={getDisplayName(item)}
-                    >
-                      {getDisplayName(item)}
-                    </h3>
-                    <p
-                      class="text-sm text-gray-500 mt-1 mb-2 line-clamp-2 min-h-10"
-                    >
-                      {getDescription(item) !== "No description available"
-                        ? getDescription(item)
-                        : "No description provided."}
+                <div class="flex items-start gap-3 mb-3 {item.resource_type === 'folder' ? 'pe-20' : ''}">
+                  <span class="w-10 h-10 rounded-control bg-primary-soft text-primary flex items-center justify-center shrink-0" aria-hidden="true">
+                    <Icon size="md" />
+                  </span>
+                  <div class="min-w-0 flex-1">
+                    <h3 class="text-base font-semibold text-text truncate">{getDisplayName(item)}</h3>
+                    <p class="text-sm text-text-muted mt-0.5 line-clamp-2 min-h-10">
+                      {getDescription(item) || $_("admin_space.no_description")}
                     </p>
                   </div>
                 </div>
-
-                {#if item.resource_type === "folder"}
-                  <div class="relative pt-1 pl-2">
-                    <button
-                      onclick={(e) => {
-                        e.stopPropagation();
-                        handleEditFolder(item);
-                      }}
-                      class="p-2 text-gray-400 hover:text-indigo-600 hover:bg-indigo-50 rounded-lg transition-colors bg-gray-50 mb-1 block opacity-0 group-hover:opacity-100 focus:opacity-100"
-                      title="Edit folder"
-                    >
-                      <svg
-                        class="w-4 h-4"
-                        fill="none"
-                        stroke="currentColor"
-                        viewBox="0 0 24 24"
-                      >
-                        <path
-                          stroke-linecap="round"
-                          stroke-linejoin="round"
-                          stroke-width="2"
-                          d="M11 5H6a2 2 0 00-2 2v11a2 2 0 002 2h11a2 2 0 002-2v-5m-1.414-9.414a2 2 0 112.828 2.828L11.828 15H9v-2.828l8.586-8.586z"
-                        ></path>
-                      </svg>
-                    </button>
-                    <button
-                      onclick={(e) => openDeleteDialog(item, e)}
-                      class="p-2 text-gray-400 hover:text-red-600 hover:bg-red-50 rounded-lg transition-colors bg-gray-50 block opacity-0 group-hover:opacity-100 focus:opacity-100"
-                      title="Delete folder"
-                    >
-                      <svg
-                        class="w-4 h-4"
-                        fill="none"
-                        stroke="currentColor"
-                        viewBox="0 0 24 24"
-                      >
-                        <path
-                          stroke-linecap="round"
-                          stroke-linejoin="round"
-                          stroke-width="2"
-                          d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16"
-                        ></path>
-                      </svg>
-                    </button>
+                <div class="mt-auto pt-3 border-t border-border flex items-center justify-between gap-2">
+                  <div class="flex items-center gap-2">
+                    <Badge variant={item.attributes?.is_active ? "success" : "danger"} size="sm">
+                      {item.attributes?.is_active ? $_("status.active") : $_("status.inactive")}
+                    </Badge>
+                    <Badge size="sm">{item.resource_type}</Badge>
                   </div>
-                {/if}
+                  {#if item.attributes?.created_at}
+                    <span class="text-xs text-text-faint tabular-nums">{formatDate(item.attributes.created_at, "date", $locale)}</span>
+                  {/if}
+                </div>
+              </Card>
+              {#if item.resource_type === "folder"}
+                <!-- Siblings of the card link, never nested inside it. -->
+                <div class="absolute top-3 end-3 flex gap-1">
+                  <IconButton label="{$_('admin_space.edit_folder')} {getDisplayName(item)}" size="sm" variant="outline" onclick={() => handleEditFolder(item)}>
+                    <EditOutline size="sm" />
+                  </IconButton>
+                  <IconButton label="{$_('admin_space.delete_folder')} {getDisplayName(item)}" size="sm" variant="danger" onclick={() => openDeleteDialog(item)}>
+                    <TrashBinOutline size="sm" />
+                  </IconButton>
+                </div>
+              {/if}
+            </li>
+          {/each}
+        </ul>
+      </LoadingState>
+    {/if}
+  {/if}
+</div>
+
+{#if showFolderModal}
+  <Modal
+    title={isEditMode ? $_("admin_space.modal.edit.title") : $_("admin_space.modal.create.title")}
+    size="3xl"
+    dismissable={!isSavingFolder}
+    onClose={closeFolderModal}
+  >
+    <p class="text-sm text-text-muted mb-5">
+      {isEditMode ? $_("admin_space.modal.edit.subtitle") : $_("admin_space.modal.create.subtitle")}
+    </p>
+
+    <form id="folder-form" onsubmit={handleSaveFolder} class="space-y-6">
+      <section>
+        <h4 class="text-base font-semibold text-text">{$_("admin_space.modal.basic_info.title")}</h4>
+        <p class="text-sm text-text-muted mb-3">{$_("admin_space.modal.basic_info.description")}</p>
+        <MetaForm bind:formData={metaContent} bind:validateFn={validateMetaForm} isCreate={!isEditMode} fullWidth={true} />
+      </section>
+
+      <section>
+        <h4 class="text-base font-semibold text-text">{$_("admin_space.modal.folder_config.title")}</h4>
+        <p class="text-sm text-text-muted mb-3">{$_("admin_space.modal.folder_config.description")}</p>
+        <FolderForm bind:content={folderContent} space_name={spaceName} fullWidth={true} />
+      </section>
+    </form>
+
+    {#snippet footer()}
+      <button type="button" class="app-btn app-btn-secondary" onclick={closeFolderModal} disabled={isSavingFolder}>
+        {$_("admin_space.modal.cancel")}
+      </button>
+      <button type="submit" form="folder-form" class="app-btn app-btn-primary" disabled={isSavingFolder} aria-busy={isSavingFolder}>
+        {#if isSavingFolder}
+          <span class="spinner spinner-xs spinner-white" aria-hidden="true"></span>
+          {isEditMode ? $_("admin_space.modal.updating") : $_("admin_space.modal.creating")}
+        {:else}
+          {isEditMode ? $_("admin_space.modal.updatebtn") : $_("admin_space.modal.createbtn")}
+        {/if}
+      </button>
+    {/snippet}
+  </Modal>
+{/if}
+
+{#if showSpaceConfigModal}
+  <Modal title={$_("admin_space.config.title")} size="2xl" dismissable={!isSavingSpaceConfig} onClose={closeSpaceConfigModal}>
+    {#snippet icon()}
+      <CogOutline size="lg" />
+    {/snippet}
+    <p class="text-sm text-text-muted mb-4">{$_("admin_space.config.subtitle", { values: { name: spaceName } })}</p>
+
+    {#if isLoadingSpaceConfig}
+      <LoadingState />
+    {:else}
+      {#if spaceConfigError}
+        <ErrorState compact message={spaceConfigError} class="mb-4" />
+      {/if}
+
+      <form id="space-config-form" class="space-y-5" onsubmit={handleSaveSpaceConfig}>
+        <fieldset class="border-0 p-0 m-0 min-w-0">
+          <legend class="text-xs font-medium text-text-muted mb-2">{$_("admin_space.config.flags")}</legend>
+          <div class="grid grid-cols-1 sm:grid-cols-2 gap-2">
+            {#each flagFields as field (field.key)}
+              <label class="flex items-center gap-2 text-sm text-text cursor-pointer">
+                <input type="checkbox" class="accent-primary" bind:checked={spaceConfig[field.key]} />
+                {field.label()}
+              </label>
+            {/each}
+          </div>
+        </fieldset>
+
+        <fieldset class="border-0 p-0 m-0 min-w-0">
+          <legend class="text-xs font-medium text-text-muted mb-2">{$_("fields.displayname")}</legend>
+          <div class="grid grid-cols-1 sm:grid-cols-3 gap-2">
+            {#each languageFields as lang (lang.key)}
+              <div>
+                <label for="space-cfg-dn-{lang.key}" class="sr-only">{$_("fields.displayname")} ({lang.label()})</label>
+                <input id="space-cfg-dn-{lang.key}" type="text" placeholder={lang.label()} bind:value={spaceConfig.displayname[lang.key]} class="config-input" />
               </div>
+            {/each}
+          </div>
+        </fieldset>
 
-              <div class="grow"></div>
-
-              <div
-                class="mt-2 pt-4 border-t border-gray-100 flex items-center justify-between"
-              >
-                <span
-                  class="inline-flex items-center px-2.5 py-1 rounded-md text-xs font-medium {item
-                    .attributes?.is_active
-                    ? 'bg-emerald-50 text-emerald-700'
-                    : 'bg-red-50 text-red-700'}"
-                >
-                  <span
-                    class="w-1.5 h-1.5 rounded-full {item.attributes?.is_active
-                      ? 'bg-emerald-500'
-                      : 'bg-red-500'} mr-1.5"
-                  ></span>
-                  {item.attributes?.is_active
-                    ? $_("status.active")
-                    : $_("status.inactive")}
-                </span>
-
-                {#if item.attributes?.created_at}
-                  <span class="text-xs text-gray-400 font-medium">
-                    {formatDate(item.attributes.created_at)}
-                  </span>
-                {/if}
+        <fieldset class="border-0 p-0 m-0 min-w-0">
+          <legend class="text-xs font-medium text-text-muted mb-2">{$_("fields.description")}</legend>
+          <div class="grid grid-cols-1 sm:grid-cols-3 gap-2">
+            {#each languageFields as lang (lang.key)}
+              <div>
+                <label for="space-cfg-desc-{lang.key}" class="sr-only">{$_("fields.description")} ({lang.label()})</label>
+                <textarea id="space-cfg-desc-{lang.key}" rows="2" placeholder={lang.label()} bind:value={spaceConfig.description[lang.key]} class="config-input"></textarea>
               </div>
+            {/each}
+          </div>
+        </fieldset>
+
+        <div class="grid grid-cols-1 sm:grid-cols-2 gap-3">
+          <div>
+            <label for="space-cfg-slug" class="config-label">{$_("fields.slug")}</label>
+            <input id="space-cfg-slug" type="text" bind:value={spaceConfig.slug} class="config-input" />
+          </div>
+          <div>
+            <label for="space-cfg-ordinal" class="config-label">{$_("admin_space.config.fields.ordinal")}</label>
+            <input id="space-cfg-ordinal" type="number" bind:value={spaceConfig.ordinal} class="config-input" />
+          </div>
+          <div class="sm:col-span-2">
+            <label for="space-cfg-icon" class="config-label">{$_("admin_space.config.fields.icon")}</label>
+            <input id="space-cfg-icon" type="text" bind:value={spaceConfig.icon} class="config-input" />
+          </div>
+          <div class="sm:col-span-2">
+            <label for="space-cfg-signature" class="config-label">{$_("admin_space.config.fields.root_registration_signature")}</label>
+            <input id="space-cfg-signature" type="text" bind:value={spaceConfig.root_registration_signature} class="config-input" />
+          </div>
+          <div class="sm:col-span-2">
+            <label for="space-cfg-website" class="config-label">{$_("admin_space.config.fields.primary_website")}</label>
+            <input id="space-cfg-website" type="url" placeholder="https://…" bind:value={spaceConfig.primary_website} class="config-input" />
+          </div>
+        </div>
+
+        <div class="space-y-3">
+          {#each listFields as field (field.key)}
+            <div>
+              <label for="space-cfg-{field.key}" class="config-label">
+                {field.label()}
+                <span class="font-normal text-text-faint">({field.hint ? field.hint() : $_("admin_space.config.comma_separated")})</span>
+              </label>
+              <input id="space-cfg-{field.key}" type="text" bind:value={spaceConfig[field.key]} class="config-input" />
             </div>
           {/each}
         </div>
-      {/if}
-    {/if}
-  </div>
-</div>
-
-<Modal
-  title={isEditMode
-    ? $_("admin_space.modal.edit.title")
-    : $_("admin_space.modal.create.title")}
-  bind:open={showCreateFolderModal}
-  size="lg"
-  class="bg-white dark:bg-white max-h-[90vh]"
-  headerClass="text-gray-900 dark:text-gray-900"
-  bodyClass="bg-white dark:bg-white text-gray-700 p-4 md:p-5 space-y-4 overflow-y-auto overscroll-contain max-h-[70vh]"
-  footerClass="bg-white dark:bg-white flex items-center p-4 md:p-5 space-x-3 rtl:space-x-reverse rounded-b-lg shrink-0"
-  placement="center"
-  autoclose={false}
->
-  <p class="text-sm text-gray-500 -mt-2 mb-4">
-    {isEditMode
-      ? $_("admin_space.modal.edit.subtitle")
-      : $_("admin_space.modal.create.subtitle")}
-  </p>
-
-  <div class="form-section">
-    <div class="section-header" class:text-right={$isRTL}>
-      <h4 class="section-title">
-        {$_("admin_space.modal.basic_info.title")}
-      </h4>
-      <p class="section-description">
-        {$_("admin_space.modal.basic_info.description")}
-      </p>
-    </div>
-    <MetaForm
-      bind:formData={metaContent}
-      bind:validateFn={validateMetaForm}
-      isCreate={!isEditMode}
-      fullWidth={true}
-    />
-  </div>
-
-  <div class="form-section mt-6">
-    <div class="section-header" class:text-right={$isRTL}>
-      <h4 class="section-title">
-        {$_("admin_space.modal.folder_config.title")}
-      </h4>
-      <p class="section-description">
-        {$_("admin_space.modal.folder_config.description")}
-      </p>
-    </div>
-    <FolderForm
-      bind:content={folderContent}
-      space_name={spaceName}
-      on:foo={handleSaveFolder}
-      fullWidth={true}
-    />
-  </div>
-
-  {#snippet footer()}
-    <button
-      onclick={() => (showCreateFolderModal = false)}
-      class="btn btn-secondary"
-      disabled={isCreatingFolder}
-    >
-      {$_("admin_space.modal.cancel")}
-    </button>
-    <button
-      onclick={handleSaveFolder}
-      class="btn btn-primary"
-      disabled={isCreatingFolder}
-    >
-      {#if isCreatingFolder}
-        <div class="spinner spinner-sm spinner-white"></div>
-        {isEditMode
-          ? $_("admin_space.modal.updating")
-          : $_("admin_space.modal.creating")}
-      {:else}
-        {isEditMode
-          ? $_("admin_space.modal.updatebtn")
-          : $_("admin_space.modal.createbtn")}
-      {/if}
-    </button>
-  {/snippet}
-</Modal>
-
-<Modal
-  title="Space Settings"
-  bind:open={showSpaceConfigModal}
-  size="lg"
-  class="bg-white dark:bg-white"
-  headerClass="text-gray-900 dark:text-gray-900"
-  bodyClass="bg-white dark:bg-white text-gray-700 p-4 md:p-5 space-y-4 overflow-y-auto overscroll-contain"
-  footerClass="bg-white dark:bg-white flex items-center p-4 md:p-5 space-x-3 rtl:space-x-reverse rounded-b-lg shrink-0"
-  placement="center"
-  autoclose={false}
->
-  <p class="text-sm text-gray-500 -mt-2 mb-4">
-    Update the metadata for <span class="font-semibold capitalize">{spaceName}</span>.
-  </p>
-
-  {#if isLoadingSpaceConfig}
-    <div class="flex items-center justify-center py-10">
-      <div class="spinner spinner-md"></div>
-    </div>
-  {:else}
-    {#if spaceConfigError}
-      <div class="mb-4 rounded-lg border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-700">
-        {spaceConfigError}
-      </div>
+      </form>
     {/if}
 
-    <div class="space-y-5 max-h-[70vh] overflow-y-auto pr-2">
-      <!-- Flags -->
-      <div class="grid grid-cols-2 gap-3">
-        <label class="flex items-center gap-2 text-sm text-gray-700">
-          <input type="checkbox" bind:checked={spaceConfig.is_active} class="rounded" />
-          Active
-        </label>
-        <label class="flex items-center gap-2 text-sm text-gray-700">
-          <input type="checkbox" bind:checked={spaceConfig.hide_space} class="rounded" />
-          Hide space
-        </label>
-        <label class="flex items-center gap-2 text-sm text-gray-700">
-          <input type="checkbox" bind:checked={spaceConfig.indexing_enabled} class="rounded" />
-          Indexing enabled
-        </label>
-        <label class="flex items-center gap-2 text-sm text-gray-700">
-          <input type="checkbox" bind:checked={spaceConfig.capture_misses} class="rounded" />
-          Capture misses
-        </label>
-        <label class="flex items-center gap-2 text-sm text-gray-700">
-          <input type="checkbox" bind:checked={spaceConfig.check_health} class="rounded" />
-          Check health
-        </label>
-      </div>
+    {#snippet footer()}
+      <button type="button" class="app-btn app-btn-secondary" onclick={closeSpaceConfigModal} disabled={isSavingSpaceConfig}>
+        {$_("common.cancel")}
+      </button>
+      <button type="submit" form="space-config-form" class="app-btn app-btn-primary" disabled={isSavingSpaceConfig || isLoadingSpaceConfig} aria-busy={isSavingSpaceConfig}>
+        {#if isSavingSpaceConfig}
+          <span class="spinner spinner-xs spinner-white" aria-hidden="true"></span>
+          {$_("common.saving")}
+        {:else}
+          {$_("common.save_changes")}
+        {/if}
+      </button>
+    {/snippet}
+  </Modal>
+{/if}
 
-      <!-- Display name -->
-      <div>
-        <label for="space-cfg-dn-en" class="block text-xs font-semibold text-gray-600 uppercase tracking-wide mb-1">Display name</label>
-        <div class="grid grid-cols-3 gap-2">
-          <input id="space-cfg-dn-en" type="text" placeholder="English" bind:value={spaceConfig.displayname.en} class="w-full rounded-lg border border-gray-200 px-3 py-2 text-sm focus:ring-2 focus:ring-indigo-500" />
-          <input type="text" placeholder="Arabic" bind:value={spaceConfig.displayname.ar} class="w-full rounded-lg border border-gray-200 px-3 py-2 text-sm focus:ring-2 focus:ring-indigo-500" />
-          <input type="text" placeholder="Kurdish" bind:value={spaceConfig.displayname.ku} class="w-full rounded-lg border border-gray-200 px-3 py-2 text-sm focus:ring-2 focus:ring-indigo-500" />
-        </div>
-      </div>
-
-      <!-- Description -->
-      <div>
-        <label for="space-cfg-desc-en" class="block text-xs font-semibold text-gray-600 uppercase tracking-wide mb-1">Description</label>
-        <div class="grid grid-cols-3 gap-2">
-          <textarea id="space-cfg-desc-en" rows="2" placeholder="English" bind:value={spaceConfig.description.en} class="w-full rounded-lg border border-gray-200 px-3 py-2 text-sm focus:ring-2 focus:ring-indigo-500"></textarea>
-          <textarea rows="2" placeholder="Arabic" bind:value={spaceConfig.description.ar} class="w-full rounded-lg border border-gray-200 px-3 py-2 text-sm focus:ring-2 focus:ring-indigo-500"></textarea>
-          <textarea rows="2" placeholder="Kurdish" bind:value={spaceConfig.description.ku} class="w-full rounded-lg border border-gray-200 px-3 py-2 text-sm focus:ring-2 focus:ring-indigo-500"></textarea>
-        </div>
-      </div>
-
-      <!-- Scalars -->
-      <div class="grid grid-cols-2 gap-3">
-        <div>
-          <label for="space-cfg-slug" class="block text-xs font-semibold text-gray-600 uppercase tracking-wide mb-1">Slug</label>
-          <input id="space-cfg-slug" type="text" bind:value={spaceConfig.slug} class="w-full rounded-lg border border-gray-200 px-3 py-2 text-sm focus:ring-2 focus:ring-indigo-500" />
-        </div>
-        <div>
-          <label for="space-cfg-ordinal" class="block text-xs font-semibold text-gray-600 uppercase tracking-wide mb-1">Ordinal</label>
-          <input id="space-cfg-ordinal" type="number" bind:value={spaceConfig.ordinal} class="w-full rounded-lg border border-gray-200 px-3 py-2 text-sm focus:ring-2 focus:ring-indigo-500" />
-        </div>
-        <div class="col-span-2">
-          <label for="space-cfg-icon" class="block text-xs font-semibold text-gray-600 uppercase tracking-wide mb-1">Icon</label>
-          <input id="space-cfg-icon" type="text" bind:value={spaceConfig.icon} class="w-full rounded-lg border border-gray-200 px-3 py-2 text-sm focus:ring-2 focus:ring-indigo-500" />
-        </div>
-        <div class="col-span-2">
-          <label for="space-cfg-signature" class="block text-xs font-semibold text-gray-600 uppercase tracking-wide mb-1">Root registration signature</label>
-          <input id="space-cfg-signature" type="text" bind:value={spaceConfig.root_registration_signature} class="w-full rounded-lg border border-gray-200 px-3 py-2 text-sm focus:ring-2 focus:ring-indigo-500" />
-        </div>
-        <div class="col-span-2">
-          <label for="space-cfg-website" class="block text-xs font-semibold text-gray-600 uppercase tracking-wide mb-1">Primary website</label>
-          <input id="space-cfg-website" type="text" placeholder="https://..." bind:value={spaceConfig.primary_website} class="w-full rounded-lg border border-gray-200 px-3 py-2 text-sm focus:ring-2 focus:ring-indigo-500" />
-        </div>
-      </div>
-
-      <!-- Lists (comma-separated) -->
-      <div class="space-y-3">
-        <div>
-          <label for="space-cfg-tags" class="block text-xs font-semibold text-gray-600 uppercase tracking-wide mb-1">Tags <span class="normal-case font-normal text-gray-400">(comma-separated)</span></label>
-          <input id="space-cfg-tags" type="text" bind:value={spaceConfig.tags} class="w-full rounded-lg border border-gray-200 px-3 py-2 text-sm focus:ring-2 focus:ring-indigo-500" />
-        </div>
-        <div>
-          <label for="space-cfg-languages" class="block text-xs font-semibold text-gray-600 uppercase tracking-wide mb-1">Languages <span class="normal-case font-normal text-gray-400">(comma-separated, e.g. english, arabic)</span></label>
-          <input id="space-cfg-languages" type="text" bind:value={spaceConfig.languages} class="w-full rounded-lg border border-gray-200 px-3 py-2 text-sm focus:ring-2 focus:ring-indigo-500" />
-        </div>
-        <div>
-          <label for="space-cfg-mirrors" class="block text-xs font-semibold text-gray-600 uppercase tracking-wide mb-1">Mirrors <span class="normal-case font-normal text-gray-400">(comma-separated)</span></label>
-          <input id="space-cfg-mirrors" type="text" bind:value={spaceConfig.mirrors} class="w-full rounded-lg border border-gray-200 px-3 py-2 text-sm focus:ring-2 focus:ring-indigo-500" />
-        </div>
-        <div>
-          <label for="space-cfg-hide-folders" class="block text-xs font-semibold text-gray-600 uppercase tracking-wide mb-1">Hidden folders <span class="normal-case font-normal text-gray-400">(shortnames, comma-separated)</span></label>
-          <input id="space-cfg-hide-folders" type="text" bind:value={spaceConfig.hide_folders} class="w-full rounded-lg border border-gray-200 px-3 py-2 text-sm focus:ring-2 focus:ring-indigo-500" />
-        </div>
-        <div>
-          <label for="space-cfg-plugins" class="block text-xs font-semibold text-gray-600 uppercase tracking-wide mb-1">Active plugins <span class="normal-case font-normal text-gray-400">(comma-separated)</span></label>
-          <input id="space-cfg-plugins" type="text" bind:value={spaceConfig.active_plugins} class="w-full rounded-lg border border-gray-200 px-3 py-2 text-sm focus:ring-2 focus:ring-indigo-500" />
-        </div>
-      </div>
-    </div>
-  {/if}
-
-  {#snippet footer()}
-    <button
-      onclick={closeSpaceConfigModal}
-      class="btn btn-secondary"
-      disabled={isSavingSpaceConfig}
-    >
-      Cancel
-    </button>
-    <button
-      onclick={handleSaveSpaceConfig}
-      class="btn btn-primary"
-      disabled={isSavingSpaceConfig || isLoadingSpaceConfig}
-    >
-      {#if isSavingSpaceConfig}
-        <div class="spinner spinner-sm spinner-white"></div>
-        Saving...
-      {:else}
-        Save changes
-      {/if}
-    </button>
-  {/snippet}
-</Modal>
-
-<DeleteConfirmationDialog
+<ConfirmDialog
   bind:open={showDeleteDialog}
-  title={$_("delete")}
-  itemName={itemToDelete ? getDisplayName(itemToDelete) : ""}
-  itemType={itemToDelete?.resource_type || "item"}
-  isDeleting={isDeletingItem}
-  onConfirm={handleConfirmDelete}
-  onCancel={closeDeleteDialog}
-/>
+  title={$_("delete_confirmation.title", { values: { type: itemToDelete?.resource_type ?? $_("delete_confirmation.item_label") } })}
+  body={itemToDelete ? `${getDisplayName(itemToDelete)}\n${$_("delete_confirmation.warning")}` : ""}
+  variant="danger"
+  action={performDelete}
+  onConfirm={afterDelete}
+  onCancel={() => (itemToDelete = null)}
+>
+  <label class="flex items-start gap-2 text-sm text-text cursor-pointer">
+    <input type="checkbox" class="mt-0.5 accent-primary" bind:checked={forceDelete} />
+    <span>
+      {$_("force_delete")}
+      <span class="block text-xs text-text-muted">{$_("force_delete_help")}</span>
+    </span>
+  </label>
+</ConfirmDialog>
 
 <style>
-  .rtl {
-    direction: rtl;
+  .config-label {
+    display: block;
+    margin-bottom: 0.25rem;
+    font-size: 0.75rem;
+    font-weight: 500;
+    color: var(--color-text-muted);
   }
 
-  .line-clamp-2 {
-    display: -webkit-box;
-    -webkit-line-clamp: 2;
-    line-clamp: 2;
-    -webkit-box-orient: vertical;
-    overflow: hidden;
-  }
-
-  .form-section {
-    display: flex;
-    flex-direction: column;
-    gap: 1rem;
-  }
-
-  .section-header {
-    border-bottom: 1px solid #e5e7eb;
-    padding-bottom: 0.75rem;
-  }
-
-  .section-title {
-    font-size: 1.125rem;
-    font-weight: 600;
-    color: #111827;
-    margin: 0 0 0.25rem 0;
-  }
-
-  .section-description {
+  .config-input {
+    width: 100%;
+    padding: 0.5rem 0.75rem;
     font-size: 0.875rem;
-    color: #6b7280;
-    margin: 0;
+    border: 1px solid var(--color-border);
+    border-radius: var(--radius-control);
+    background: var(--color-surface-2);
+    color: var(--color-text);
   }
 
-  .btn {
-    padding: 0.75rem 1.5rem;
-    font-size: 0.875rem;
-    font-weight: 600;
-    border-radius: 10px;
-    border: none;
-    cursor: pointer;
-    transition: all 0.2s ease;
-    display: flex;
-    align-items: center;
-    gap: 0.5rem;
-    min-width: 120px;
-    justify-content: center;
-  }
-
-  .btn:disabled {
-    cursor: not-allowed;
-    opacity: 0.6;
-  }
-
-  .btn-secondary {
-    background: #f8fafc;
-    color: #475569;
-    border: 2px solid #e2e8f0;
-  }
-
-  .btn-secondary:hover:not(:disabled) {
-    background: #f1f5f9;
-    border-color: #cbd5e1;
-    transform: translateY(-1px);
-  }
-
-  .btn-primary {
-    background: linear-gradient(135deg, #3b82f6 0%, #2563eb 100%);
-    color: white;
-    box-shadow: 0 4px 14px 0 rgba(59, 130, 246, 0.3);
-  }
-
-  .btn-primary:hover:not(:disabled) {
-    background: linear-gradient(135deg, #2563eb 0%, #1d4ed8 100%);
-    transform: translateY(-2px);
-    box-shadow: 0 6px 20px 0 rgba(59, 130, 246, 0.4);
-  }
-
-  @keyframes fadeIn {
-    from {
-      opacity: 0;
-    }
-    to {
-      opacity: 1;
-    }
-  }
-
-  @keyframes slideIn {
-    from {
-      opacity: 0;
-      transform: scale(0.95) translateY(-20px);
-    }
-    to {
-      opacity: 1;
-      transform: scale(1) translateY(0);
-    }
-  }
-
-  @keyframes spin {
-    to {
-      transform: rotate(360deg);
-    }
+  .config-input:focus {
+    outline: none;
+    border-color: var(--color-primary);
+    box-shadow: 0 0 0 3px var(--color-primary-soft);
   }
 </style>

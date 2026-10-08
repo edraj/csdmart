@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { _ } from "@/i18n";
     import {Dmart, QueryType, ResourceType} from "@edraj/tsdmart";
     import {warningToastMessage, successToastMessage} from "@/lib/toasts_messages";
     import Modal from "@/components/Modal.svelte";
@@ -27,8 +28,8 @@
         availableSpaces = [] 
     }: Props = $props();
 
-    let selectedSpace = $state("");
-    $effect(() => { selectedSpace = space_name; });
+    // Follows the prop until the user picks another space (writable $derived).
+    let selectedSpace = $derived(space_name);
     let selectedResourceType = $state(ResourceType.content);
     let selectedSchema = $state<string | null>(null);
     let payloadFiles: File[] = $state([]);
@@ -63,11 +64,9 @@
         if (schemas === null) {
             return [];
         }
-        let result = [];
-        const _schemas = schemas.records.map((e: any) => e.shortname);
-        result = _schemas.filter(
-            (e: any) => !["meta_schema", "folder_rendering"].includes(e)
-        );
+        const result = schemas.records
+            .map((e: any) => e.shortname)
+            .filter((e: any) => !["meta_schema", "folder_rendering"].includes(e));
 
         let r = result.map((e: any) => ({
             name: e,
@@ -182,7 +181,7 @@
 {#if isOpen}
   <Modal
     onClose={() => (isOpen = false)}
-    title="Upload CSV"
+    title={$_("users_page.upload_csv")}
     ariaLabel="Upload CSV"
     size="xl"
   >
@@ -195,13 +194,13 @@
     <div class="space-y-4">
             {#if availableSpaces.length > 0}
                 <div class="space-y-1.5">
-                    <label for="space" class="block text-[10px] uppercase font-bold text-gray-400 tracking-wider px-1">Space</label>
+                    <label for="space" class="block text-[10px] uppercase font-bold text-text-faint tracking-wider px-1">{$_("fields.space")}</label>
                     <select 
                         id="space"
-                        class="w-full px-4 py-2 bg-gray-50 border border-gray-200 rounded-xl text-sm focus:ring-2 focus:ring-indigo-500 text-gray-900" 
+                        class="w-full px-4 py-2 bg-surface border border-border rounded-xl text-sm focus:ring-2 focus:ring-primary text-text" 
                         bind:value={selectedSpace}
                     >
-                        {#each parseSpacesForSelect(availableSpaces) as space}
+                        {#each parseSpacesForSelect(availableSpaces) as space (space.value)}
                             <option value={space.value}>{space.name}</option>
                         {/each}
                     </select>
@@ -209,10 +208,10 @@
             {/if}
 
             <div class="space-y-1.5">
-                <label for="resourceType" class="block text-[10px] uppercase font-bold text-gray-400 tracking-wider px-1">Resource Type</label>
+                <label for="resourceType" class="block text-[10px] uppercase font-bold text-text-faint tracking-wider px-1">{$_("relationship_modal.fields.resource_type")}</label>
                 <select 
                     id="resourceType"
-                    class="w-full px-4 py-2 bg-gray-50 border border-gray-200 rounded-xl text-sm focus:ring-2 focus:ring-indigo-500 text-gray-900 {resourceTypeError ? 'ring-2 ring-red-500' : ''}" 
+                    class="w-full px-4 py-2 bg-surface border border-border rounded-xl text-sm focus:ring-2 focus:ring-primary text-text {resourceTypeError ? 'ring-2 ring-danger' : ''}" 
                     bind:value={selectedResourceType} 
                     onchange={() => resourceTypeError = false}
                 >
@@ -221,12 +220,12 @@
                     <option value={ResourceType.ticket}>{ResourceType.ticket.toString()}</option>
                 </select>
                 {#if resourceTypeError}
-                    <p class="text-red-500 text-xs mt-1 px-1">Resource type is required</p>
+                    <p class="text-danger text-xs mt-1 px-1">{$_("csv_modal.resource_type_required")}</p>
                 {/if}
             </div>
 
             <div class="space-y-1.5">
-                <label for="schema" class="block text-[10px] uppercase font-bold text-gray-400 tracking-wider px-1">Schema</label>
+                <label for="schema" class="block text-[10px] uppercase font-bold text-text-faint tracking-wider px-1">{$_("templates.form.schema_label")}</label>
                 {#await Dmart.query({
                     space_name: selectedSpace,
                     type: QueryType.search,
@@ -235,34 +234,34 @@
                     retrieve_json_payload: true,
                     limit: 100
                 })}
-                    <div role="status" class="w-full animate-pulse h-10 bg-gray-200 rounded-xl"></div>
+                    <div role="status" class="w-full animate-pulse h-10 bg-surface-3 rounded-xl"></div>
                 {:then schemas}
                     <select 
                         id="schema"
-                        class="w-full px-4 py-2 bg-gray-50 border border-gray-200 rounded-xl text-sm focus:ring-2 focus:ring-indigo-500 text-gray-900 {schemaError ? 'ring-2 ring-red-500' : ''}" 
+                        class="w-full px-4 py-2 bg-surface border border-border rounded-xl text-sm focus:ring-2 focus:ring-primary text-text {schemaError ? 'ring-2 ring-danger' : ''}" 
                         bind:value={selectedSchema} 
                         onchange={() => schemaError = false}
                     >
-                        {#each parseQuerySchemaResponse(schemas) as schema}
+                        {#each parseQuerySchemaResponse(schemas) as schema (schema.value)}
                             <option value={schema.value}>{schema.name}</option>
                         {/each}
                     </select>
                     {#if schemaError}
-                        <p class="text-red-500 text-xs mt-1 px-1">Schema is required</p>
+                        <p class="text-danger text-xs mt-1 px-1">{$_("csv_modal.schema_required")}</p>
                     {/if}
                 {:catch}
-                    <p class="text-red-500 text-sm mt-2 px-1">Failed to load schemas</p>
+                    <p class="text-danger text-sm mt-2 px-1">{$_("errors.loading_schemas")}</p>
                 {/await}
             </div>
 
             <div class="space-y-1.5">
-                <label for="csvFile" class="block text-[10px] uppercase font-bold text-gray-400 tracking-wider px-1">CSV File</label>
+                <label for="csvFile" class="block text-[10px] uppercase font-bold text-text-faint tracking-wider px-1">{$_("csv_modal.csv_file")}</label>
                 <input 
                     id="csvFile"
                     type="file" 
                     accept=".csv" 
                     onchange={handleFileChange} 
-                    class="w-full px-4 py-2 bg-gray-50 border border-gray-200 rounded-xl text-sm focus:ring-2 focus:ring-indigo-500 text-gray-900 file:mr-4 file:py-2 file:px-4 file:rounded-xl file:border-0 file:text-sm file:font-semibold file:bg-indigo-50 file:text-indigo-700 hover:file:bg-indigo-100" 
+                    class="w-full px-4 py-2 bg-surface border border-border rounded-xl text-sm focus:ring-2 focus:ring-primary text-text file:me-4 file:py-2 file:px-4 file:rounded-xl file:border-0 file:text-sm file:font-semibold file:bg-primary-soft file:text-primary hover:file:bg-primary-soft" 
                 />
             </div>
 
@@ -271,11 +270,11 @@
                     id="isUpdate"
                     type="checkbox"
                     bind:checked={isUpdate}
-                    class="mt-1 w-4 h-4 text-indigo-600 bg-gray-50 border border-gray-200 rounded focus:ring-indigo-500 focus:ring-2"
+                    class="mt-1 w-4 h-4 text-primary bg-surface border border-border rounded focus:ring-primary focus:ring-2"
                 />
                 <div class="flex-1">
-                    <label for="isUpdate" class="text-[10px] uppercase font-bold text-gray-400 tracking-wider cursor-pointer block">Update entries</label>
-                    <p class="text-xs text-gray-500 mt-1">
+                    <label for="isUpdate" class="text-[10px] uppercase font-bold text-text-faint tracking-wider cursor-pointer block">{$_("csv_modal.update_entries")}</label>
+                    <p class="text-xs text-text-muted mt-1">
                         {#if isUpdate}
                             Will update existing entries with matching shortname
                         {:else}
@@ -286,7 +285,7 @@
             </div>
 
             {#if result}
-                <div class="mt-4 p-4 border border-red-300 bg-red-50 text-red-800 rounded-lg max-h-80 overflow-y-auto">
+                <div class="mt-4 p-4 border border-danger bg-danger-soft text-danger rounded-lg max-h-80 overflow-y-auto">
                     <h4 class="font-semibold">
                         {formatCount(result.imported)}
                         {sent?.isUpdate ? "updated" : "imported"}, {formatCount(result.failedCount)} failed
@@ -298,12 +297,12 @@
                         <button
                             onclick={continueUpload}
                             disabled={isUploading}
-                            class="mt-2 px-4 py-1.5 bg-indigo-600 text-white rounded-lg text-xs font-semibold hover:bg-indigo-700 disabled:opacity-50 disabled:cursor-not-allowed"
+                            class="mt-2 px-4 py-1.5 bg-primary text-text-on-primary rounded-lg text-xs font-semibold hover:bg-primary-hover disabled:opacity-50 disabled:cursor-not-allowed"
                         >
                             Continue from row {formatCount(result.resumeRow)}
                         </button>
                     {/if}
-                    {#each failureGroups.slice(0, MAX_GROUPS) as group}
+                    {#each failureGroups.slice(0, MAX_GROUPS) as group (group.error)}
                         <div class="mt-3">
                             <p class="text-sm font-medium break-words">
                                 {group.error}
@@ -312,7 +311,7 @@
                                 </span>
                             </p>
                             <ul class="mt-1 text-xs space-y-0.5">
-                                {#each group.rows.slice(0, MAX_ROWS_PER_GROUP) as failure}
+                                {#each group.rows.slice(0, MAX_ROWS_PER_GROUP) as failure (failure.row)}
                                     <li class="break-all">{describeCsvFailureRow(failure)}</li>
                                 {/each}
                                 {#if group.rows.length > MAX_ROWS_PER_GROUP}
@@ -333,17 +332,17 @@
     {#snippet footer()}
       <button
         onclick={() => (isOpen = false)}
-        class="px-6 py-2.5 text-sm font-medium text-gray-600 hover:text-gray-900 hover:bg-gray-50 rounded-xl transition-colors border border-transparent"
+        class="px-6 py-2.5 text-sm font-medium text-text-muted hover:text-text hover:bg-surface rounded-xl transition-colors border border-transparent"
       >
         Cancel
       </button>
       <button
         onclick={handleCSVUpload}
         disabled={isUploading}
-        class="px-8 py-2.5 bg-indigo-600 text-white rounded-xl text-sm font-semibold hover:bg-indigo-700 shadow-md shadow-indigo-200 disabled:opacity-50 disabled:cursor-not-allowed transition-all flex items-center gap-2"
+        class="px-8 py-2.5 bg-primary text-text-on-primary rounded-xl text-sm font-semibold hover:bg-primary-hover shadow-md shadow-card disabled:opacity-50 disabled:cursor-not-allowed transition-all flex items-center gap-2"
       >
         {#if isUploading}
-          <div class="w-4 h-4 border-2 border-white/30 border-t-white rounded-full animate-spin"></div>
+          <div class="w-4 h-4 border-2 border-text-on-primary/30 border-t-white rounded-full animate-spin"></div>
           Uploading...
         {:else}
           Upload

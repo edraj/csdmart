@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { _ } from "@/i18n";
   let {
     content = $bindable({}),
   }: {
@@ -95,33 +96,33 @@
 </script>
 
 <div class="card main-card">
-  <h1 class="title">Workflow Form</h1>
+  <h1 class="title">{$_("workflow_form.title")}</h1>
 
   <div class="form-group">
-    <label for="workflowName" class="label">Workflow Name</label>
+    <label for="workflowName" class="label">{$_("workflow_form.name")}</label>
     <input
       id="workflowName"
       class="input"
       bind:value={content.name}
-      placeholder="Enter workflow name"
+      placeholder={$_("workflow_form.name_placeholder")}
       required
     />
   </div>
 
   <div class="form-group">
-    <label for="illustration" class="label">Illustration</label>
+    <label for="illustration" class="label">{$_("workflow_form.illustration")}</label>
     <input
       id="illustration"
       class="input"
       bind:value={content.illustration}
-      placeholder="Enter illustration name or path"
+      placeholder={$_("workflow_form.illustration_placeholder")}
     />
   </div>
 
   <div class="card section-card">
-    <h3 class="section-title">Initial States</h3>
+    <h3 class="section-title">{$_("workflow_form.initial_states")}</h3>
     <div class="space-y">
-      {#each content.initial_state as initialState, index}
+      {#each content.initial_state as initialState, index (index)}
         <div class="card inner-card">
           <div class="card-header">
             <h4 class="card-title">Initial State {index + 1}</h4>
@@ -148,28 +149,27 @@
 
           <div class="space-y">
             <div class="form-group">
-              <label for={`initialState${index}Name`} class="label">Name</label>
+              <label for={`initialState${index}Name`} class="label">{$_("name")}</label>
               <input
                 id={`initialState${index}Name`}
                 class="input"
                 bind:value={initialState.name}
-                placeholder="Initial state name"
+                placeholder={$_("workflow_form.initial_state_placeholder")}
               />
             </div>
 
             <div class="form-group">
-              <!-- svelte-ignore a11y_label_has_associated_control -->
-              <label class="label">Roles</label>
-              {#each initialState.roles as role, roleIndex}
+              <p class="label">{$_("roles")}</p>
+              {#each initialState.roles as _role, roleIndex (roleIndex)}
                 <div class="input-group">
                   <input
                     class="input"
                     bind:value={initialState.roles[roleIndex]}
-                    placeholder="Role name"
+                    placeholder={$_("workflow_form.role_placeholder")}
                   />
                   <button
                     class="btn btn-danger btn-icon"
-                    aria-label="Remove role"
+                    aria-label={$_("workflow_form.remove_role")}
                     onclick={() => removeRole(initialState, roleIndex)}
                   >
                     <svg
@@ -227,11 +227,10 @@
   </div>
 
   <div class="card section-card">
-    <h3 class="section-title">States</h3>
+    <h3 class="section-title">{$_("workflow_form.states")}</h3>
     <div class="space-y">
-      {#each content.states as state, stateIndex}
+      {#each content.states as state, stateIndex (stateIndex)}
         <div class="accordion">
-          <!-- svelte-ignore a11y_click_events_have_key_events a11y_no_static_element_interactions -->
           <div
             class="accordion-header"
             role="button"
@@ -245,7 +244,7 @@
             <div class="accordion-actions">
               <button
                 class="btn btn-danger btn-icon"
-                aria-label="Remove state"
+                aria-label={$_("workflow_form.remove_state")}
                 onclick={(e) => removeState(e, stateIndex)}
               >
                 <svg
@@ -285,34 +284,33 @@
               <div class="grid-2">
                 <div class="form-group">
                   <label for={`state${stateIndex}Name`} class="label"
-                    >Name</label
+                    >{$_("name")}</label
                   >
                   <input
                     id={`state${stateIndex}Name`}
                     class="input"
                     bind:value={state.name}
-                    placeholder="Human-readable state name"
+                    placeholder={$_("workflow_form.state_name_placeholder")}
                   />
                 </div>
                 <div class="form-group">
                   <label for={`state${stateIndex}Id`} class="label"
-                    >State ID</label
+                    >{$_("workflow_form.state_id")}</label
                   >
                   <input
                     id={`state${stateIndex}Id`}
                     class="input"
                     bind:value={state.state}
-                    placeholder="Internal state identifier"
+                    placeholder={$_("workflow_form.state_id_placeholder")}
                   />
                 </div>
               </div>
 
               <!-- Next Transitions -->
               <div class="subsection">
-                <!-- svelte-ignore a11y_label_has_associated_control -->
-                <label class="subsection-title">Next Transitions</label>
+                <p class="subsection-title">{$_("workflow_form.next_transitions")}</p>
                 <div class="space-y">
-                  {#each state.next as transition, transitionIndex}
+                  {#each state.next as transition, transitionIndex (transitionIndex)}
                     <div class="card transition-card">
                       <div class="card-header">
                         <h5 class="card-subtitle">
@@ -320,7 +318,7 @@
                         </h5>
                         <button
                           class="btn btn-danger btn-icon"
-                          aria-label="Remove transition"
+                          aria-label={$_("workflow_form.remove_transition")}
                           onclick={() =>
                             removeNextTransition(stateIndex, transitionIndex)}
                         >
@@ -342,38 +340,37 @@
 
                       <div class="grid-2">
                         <div class="form-group">
-                          <label class="label" for="next-state-{stateIndex}-{transitionIndex}">Next State</label>
+                          <label class="label" for="next-state-{stateIndex}-{transitionIndex}">{$_("workflow_form.next_state")}</label>
                           <input
                             id="next-state-{stateIndex}-{transitionIndex}"
                             class="input"
                             bind:value={transition.state}
-                            placeholder="Next state identifier"
+                            placeholder={$_("workflow_form.next_state_placeholder")}
                           />
                         </div>
                         <div class="form-group">
-                          <label class="label" for="action-{stateIndex}-{transitionIndex}">Action</label>
+                          <label class="label" for="action-{stateIndex}-{transitionIndex}">{$_("workflow_form.action")}</label>
                           <input
                             id="action-{stateIndex}-{transitionIndex}"
                             class="input"
                             bind:value={transition.action}
-                            placeholder="Action name"
+                            placeholder={$_("workflow_form.action_placeholder")}
                           />
                         </div>
                       </div>
 
                       <div class="form-group">
-                        <!-- svelte-ignore a11y_label_has_associated_control -->
-                        <label class="label">Roles</label>
-                        {#each transition.roles as role, roleIndex}
+                        <p class="label">{$_("roles")}</p>
+                        {#each transition.roles as _role, roleIndex (roleIndex)}
                           <div class="input-group">
                             <input
                               class="input"
                               bind:value={transition.roles[roleIndex]}
-                              placeholder="Role name"
+                              placeholder={$_("workflow_form.role_placeholder")}
                             />
                             <button
                               class="btn btn-danger btn-icon"
-                              aria-label="Remove role"
+                              aria-label={$_("workflow_form.remove_role")}
                               onclick={() => removeRole(transition, roleIndex)}
                             >
                               <svg
@@ -438,10 +435,9 @@
 
               <!-- Resolutions -->
               <div class="subsection">
-                <!-- svelte-ignore a11y_label_has_associated_control -->
-                <label class="subsection-title">Resolutions</label>
+                <p class="subsection-title">{$_("workflow_form.resolutions")}</p>
                 <div class="space-y">
-                  {#each state.resolutions as resolution, resolutionIndex}
+                  {#each state.resolutions as resolution, resolutionIndex (resolutionIndex)}
                     <div class="card transition-card">
                       <div class="card-header">
                         <h5 class="card-subtitle">
@@ -449,7 +445,7 @@
                         </h5>
                         <button
                           class="btn btn-danger btn-icon"
-                          aria-label="Remove resolution"
+                          aria-label={$_("workflow_form.remove_resolution")}
                           onclick={() =>
                             removeResolution(stateIndex, resolutionIndex)}
                         >
@@ -471,39 +467,39 @@
 
                       <div class="grid-2">
                         <div class="form-group">
-                          <label class="label" for="res-key-{stateIndex}-{resolutionIndex}">Key</label>
+                          <label class="label" for="res-key-{stateIndex}-{resolutionIndex}">{$_("workflow_form.key")}</label>
                           <input
                             id="res-key-{stateIndex}-{resolutionIndex}"
                             class="input"
                             bind:value={resolution.key}
-                            placeholder="Resolution key"
+                            placeholder={$_("workflow_form.resolution_key_placeholder")}
                           />
                         </div>
                         <div class="form-group">
-                          <label class="label" for="res-en-{stateIndex}-{resolutionIndex}">English</label>
+                          <label class="label" for="res-en-{stateIndex}-{resolutionIndex}">{$_("english")}</label>
                           <input
                             id="res-en-{stateIndex}-{resolutionIndex}"
                             class="input"
                             bind:value={resolution.en}
-                            placeholder="English translation"
+                            placeholder={$_("labels.translation_lang", { values: { language: $_("english") } })}
                           />
                         </div>
                         <div class="form-group">
-                          <label class="label" for="res-ar-{stateIndex}-{resolutionIndex}">Arabic</label>
+                          <label class="label" for="res-ar-{stateIndex}-{resolutionIndex}">{$_("arabic")}</label>
                           <input
                             id="res-ar-{stateIndex}-{resolutionIndex}"
                             class="input"
                             bind:value={resolution.ar}
-                            placeholder="Arabic translation"
+                            placeholder={$_("labels.translation_lang", { values: { language: $_("arabic") } })}
                           />
                         </div>
                         <div class="form-group">
-                          <label class="label" for="res-ku-{stateIndex}-{resolutionIndex}">Kurdish</label>
+                          <label class="label" for="res-ku-{stateIndex}-{resolutionIndex}">{$_("kurdish")}</label>
                           <input
                             id="res-ku-{stateIndex}-{resolutionIndex}"
                             class="input"
                             bind:value={resolution.ku}
-                            placeholder="Kurdish translation"
+                            placeholder={$_("labels.translation_lang", { values: { language: $_("kurdish") } })}
                           />
                         </div>
                       </div>
@@ -556,8 +552,8 @@
   }
 
   .card {
-    background: white;
-    border: 1px solid #e5e7eb;
+    background: var(--color-surface);
+    border: 1px solid var(--color-border);
     border-radius: 8px;
     padding: 16px;
   }
@@ -582,21 +578,21 @@
     font-size: 24px;
     font-weight: bold;
     margin: 0 0 16px 0;
-    color: #111827;
+    color: var(--color-text);
   }
 
   .section-title {
     font-size: 20px;
     font-weight: 600;
     margin: 0 0 12px 0;
-    color: #111827;
+    color: var(--color-text);
   }
 
   .subsection-title {
     font-size: 18px;
     font-weight: 500;
     margin: 16px 0 8px 0;
-    color: #374151;
+    color: var(--color-text);
     display: block;
   }
 
@@ -604,14 +600,14 @@
     font-size: 18px;
     font-weight: 500;
     margin: 0;
-    color: #111827;
+    color: var(--color-text);
   }
 
   .card-subtitle {
     font-size: 14px;
     font-weight: 500;
     margin: 0;
-    color: #374151;
+    color: var(--color-text);
   }
 
   .card-header {
@@ -630,13 +626,13 @@
     margin-bottom: 6px;
     font-size: 14px;
     font-weight: 500;
-    color: #374151;
+    color: var(--color-text);
   }
 
   .input {
     width: 100%;
     padding: 8px 12px;
-    border: 1px solid #d1d5db;
+    border: 1px solid var(--color-border-strong);
     border-radius: 6px;
     font-size: 14px;
     transition:
@@ -646,12 +642,12 @@
 
   .input:focus {
     outline: none;
-    border-color: #3b82f6;
+    border-color: var(--color-primary);
     box-shadow: 0 0 0 3px rgba(59, 130, 246, 0.1);
   }
 
   .input::placeholder {
-    color: #9ca3af;
+    color: var(--color-text-faint);
   }
 
   .input-group {
@@ -693,23 +689,23 @@
   }
 
   .btn-secondary {
-    background: white;
-    border-color: #3b82f6;
-    color: #3b82f6;
+    background: var(--color-surface);
+    border-color: var(--color-primary);
+    color: var(--color-primary);
   }
 
   .btn-secondary:hover {
-    background: #eff6ff;
+    background: var(--color-info-soft);
   }
 
   .btn-danger {
-    background: white;
-    border-color: #ef4444;
-    color: #ef4444;
+    background: var(--color-surface);
+    border-color: var(--color-danger);
+    color: var(--color-danger);
   }
 
   .btn-danger:hover {
-    background: #fef2f2;
+    background: var(--color-danger-soft);
   }
 
   .icon {
@@ -731,11 +727,11 @@
   .subsection {
     margin-top: 16px;
     padding-top: 16px;
-    border-top: 1px solid #e5e7eb;
+    border-top: 1px solid var(--color-border);
   }
 
   .accordion {
-    border: 1px solid #e5e7eb;
+    border: 1px solid var(--color-border);
     border-radius: 8px;
     overflow: hidden;
   }
@@ -745,18 +741,18 @@
     justify-content: space-between;
     align-items: center;
     padding: 12px 16px;
-    background: #f9fafb;
+    background: var(--color-surface);
     cursor: pointer;
     transition: background 0.2s;
   }
 
   .accordion-header:hover {
-    background: #f3f4f6;
+    background: var(--color-surface-3);
   }
 
   .accordion-title {
     font-weight: 500;
-    color: #111827;
+    color: var(--color-text);
   }
 
   .accordion-actions {
@@ -767,7 +763,7 @@
 
   .accordion-content {
     padding: 16px;
-    border-top: 1px solid #e5e7eb;
+    border-top: 1px solid var(--color-border);
   }
 
   .chevron {

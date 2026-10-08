@@ -93,7 +93,7 @@ export function convertObjectToArray(obj: Record<string, any>): Record<string, a
     const arr: any[] = [];
 
     for (const key in obj) {
-        if (key !== "id" && obj.hasOwnProperty(key)) {
+        if (key !== "id" && Object.prototype.hasOwnProperty.call(obj, key)) {
             const item = { name: key, ...obj[key] };
             if (item.title === undefined){
                 item.title = "";

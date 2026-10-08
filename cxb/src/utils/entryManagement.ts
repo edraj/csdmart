@@ -2,6 +2,12 @@ import { Dmart, RequestType, ResourceType, type ResponseEntry, type ActionReques
 import { removeEmpty } from "@/utils/renderer/schemaEntryRenderer";
 import { Level, showToast } from "@/utils/toast";
 import { jsonEditorContentParser } from "@/utils/jsonEditor";
+import { normalizeSubpath, parentOf, trashDestination } from "@/utils/subpath";
+import { get } from "svelte/store";
+import { _ } from "@/i18n";
+
+/** The active locale's message, for a module that has no component context. */
+const t = (key: string) => get(_)(key);
 
 /**
  * Gets the parent subpath from a given path
@@ -58,8 +64,8 @@ export async function saveEntry(
     let content;
     try {
         content = jsonEditorContentParser(jeContent);
-    } catch (error) {
-        return { success: false, errorMessage: "Invalid JSON format" };
+    } catch {
+        return { success: false, errorMessage: t("invalid_json") };
     }
 
     const shortname = content.shortname;
@@ -115,7 +121,7 @@ export async function saveEntry(
                 attributes: content as Record<string, any>
             }]
         });
-        showToast(Level.info, `Entry has been updated successfully!`);
+        showToast(Level.info, t("entry_updated"));
         return { success: true };
     } catch (error: any) {
         return { success: false, errorMessage: error.response?.data || error.message };
@@ -132,14 +138,11 @@ export async function deleteEntry(
     resource_type: ResourceType,
     force: boolean = false
 ): Promise<{ success: boolean; errorMessage?: string }> {
-    let targetSubpath: string;
-    if (resource_type === ResourceType.folder) {
-        const arr = subpath.split("/");
-        arr[arr.length - 1] = "";
-        targetSubpath = arr.join("/");
-    } else {
-        targetSubpath = subpath;
-    }
+    // The renderer's `subpath` is the folder's OWN path for a folder entry, and
+    // the containing path for anything else; a request always names the parent.
+    const targetSubpath = resource_type === ResourceType.folder
+        ? parentOf(subpath)
+        : normalizeSubpath(subpath);
 
     try {
         const body: ActionRequest & { force?: boolean } = {
@@ -149,16 +152,16 @@ export async function deleteEntry(
             records: [{
                 resource_type: resource_type,
                 shortname: entry.shortname,
-                subpath: targetSubpath || '/',
+                subpath: targetSubpath,
                 attributes: {}
             }]
         };
         await Dmart.request(body);
-        showToast(Level.info, `Entry deleted successfully`);
+        showToast(Level.info, t("entry_deleted"));
         return { success: true };
     } catch (error: any) {
-        showToast(Level.warn, `Failed to delete the entry!`);
-        return { success: false, errorMessage: error.response?.data?.error };
+        showToast(Level.warn, t("entry_delete_failed"));
+        return { success: false, errorMessage: error?.response?.data?.error ?? error?.message };
     }
 }
 
@@ -174,16 +177,17 @@ export async function moveEntryToTrash(
 ): Promise<{ success: boolean; errorMessage?: string }> {
     try {
         const moveResourceType = resource_type;
+        // Same convention as deleteEntry: a folder's `subpath` is its own path.
         const moveNewSubpath = moveResourceType === ResourceType.folder
-            ? (subpath.split("/").slice(0, -1).join("-") || '/')
-            : subpath;
+            ? parentOf(subpath)
+            : normalizeSubpath(subpath);
 
         const moveAttrb = {
             src_space_name: space_name,
             src_subpath: moveNewSubpath,
             src_shortname: entry.shortname,
             dest_space_name: 'personal',
-            dest_subpath: `/people/${userShortname}/trash/${space_name}/${moveNewSubpath}`.replaceAll('//', '/'),
+            dest_subpath: trashDestination(userShortname, space_name, moveNewSubpath),
             dest_shortname: entry.shortname,
         };
 
@@ -199,11 +203,11 @@ export async function moveEntryToTrash(
                 },
             ],
         });
-        showToast(Level.info, `Entry deleted successfully`);
+        showToast(Level.info, t("entry_trashed"));
         return { success: true };
     } catch (error: any) {
-        showToast(Level.warn, `Failed to delete the entry!`);
-        return { success: false, errorMessage: error.message };
+        showToast(Level.warn, t("entry_trash_failed"));
+        return { success: false, errorMessage: error?.response?.data?.error?.message ?? error?.message };
     }
 }
 
@@ -228,16 +232,17 @@ export async function bulkMoveEntryToTrash(
     try {
         const records = entries.map((entry) => {
             const moveResourceType = entry.resource_type;
-            const moveNewSubpath = moveResourceType === ResourceType.folder
-                ? (entry.subpath.split("/").slice(0, -1).join("-") || '/')
-                : entry.subpath;
+            // A list record's `subpath` is already the containing path — for a
+            // folder record as much as for a content one — so it is sent as is.
+            // Trimming it produced `-a` for `/a/b` and `/` for `/a`.
+            const moveNewSubpath = normalizeSubpath(entry.subpath);
 
             const moveAttrb = {
                 src_space_name: space_name,
                 src_subpath: moveNewSubpath,
                 src_shortname: entry.shortname,
                 dest_space_name: 'personal',
-                dest_subpath: `/people/${userShortname}/trash/${space_name}/${moveNewSubpath}`.replaceAll('//', '/'),
+                dest_subpath: trashDestination(userShortname, space_name, moveNewSubpath),
                 dest_shortname: entry.shortname,
             };
 
@@ -254,10 +259,10 @@ export async function bulkMoveEntryToTrash(
             request_type: RequestType.move,
             records: records,
         });
-        showToast(Level.info, `Entries moved to trash successfully`);
+        showToast(Level.info, t("entries_trashed"));
         return { success: true };
     } catch (error: any) {
-        showToast(Level.warn, `Failed to move entries to trash!`);
-        return { success: false, errorMessage: error.message };
+        showToast(Level.warn, t("entries_trash_failed"));
+        return { success: false, errorMessage: error?.response?.data?.error?.message ?? error?.message };
     }
 }

@@ -1,1537 +1,514 @@
 <script lang="ts">
-  import { onMount, onDestroy } from "svelte";
-  import {
-    createSpace,
-    deleteSpace,
-    editSpace,
-    getSpaces,
-    searchInCatalog,
-  } from "@/lib/dmart_services";
-  import { goto } from "@roxi/routify";
+  import { onMount } from "svelte";
+  import { createSpace, deleteSpace, editSpace, getSpaces, searchInCatalog } from "@/lib/dmart_services";
+  import { goto as gotoStore } from "@roxi/routify";
   import { _, locale } from "@/i18n";
-  import { user } from "@/stores/user";
+  import { formatDate } from "@/lib/format";
+  import { localized } from "@/lib/catalogItems";
+  import { setTitle } from "@/lib/title";
+  import { log } from "@/lib/logger";
+  import { toasts } from "@/lib/toast";
+  import { confirm } from "@/lib/confirm";
+  import { MANAGEMENT_SPACE } from "@/lib/constants";
   import MetaForm from "@/components/forms/MetaForm.svelte";
-  import AppModal from "@/components/Modal.svelte";
-  import { Modal } from "flowbite-svelte";
-  import { PlusOutline } from "flowbite-svelte-icons";
-  import { derived as derivedStore } from "svelte/store";
-  import { formatNumberInText } from "@/lib/helpers";
+  import Modal from "@/components/Modal.svelte";
+  import DataTable from "@/components/DataTable.svelte";
+  import Avatar from "@/components/Avatar.svelte";
+  import PageHeader from "@/components/ui/PageHeader.svelte";
+  import CatalogToolbar, { type SortOrder } from "@/components/ui/CatalogToolbar.svelte";
+  import Badge from "@/components/ui/Badge.svelte";
+  import IconButton from "@/components/ui/IconButton.svelte";
+  import EmptyState from "@/components/ui/EmptyState.svelte";
+  import ErrorState from "@/components/ui/ErrorState.svelte";
+  import LoadingState from "@/components/ui/LoadingState.svelte";
+  import { CogOutline, EditOutline, LayersOutline, PlusOutline, TrashBinOutline } from "flowbite-svelte-icons";
   import { DmartScope } from "@edraj/tsdmart";
-  import {
-    successToastMessage,
-    errorToastMessage,
-  } from "@/lib/toasts_messages";
+  import type { Translation } from "@edraj/tsdmart/dmart.model";
+  import { encodeSubpath, withBase } from "@/lib/paths";
 
-  $goto;
+  // Routify's helpers read the fragment context when first subscribed, and
+  // Svelte 5 subscribes to a `$store` lazily on first read — so a `$gotoStore`
+  // first touched inside an async callback logs "Unable to access context".
+  // Capture the navigate function once, during component init.
+  const goto = $gotoStore;
+
+  interface SpaceRecord {
+    shortname: string;
+    subpath?: string;
+    resource_type?: string;
+    attributes?: {
+      space_name?: string;
+      is_active?: boolean;
+      owner_shortname?: string;
+      created_at?: string;
+      updated_at?: string;
+      displayname?: unknown;
+      description?: unknown;
+      payload?: { body?: { title?: string; content?: string } | string };
+    };
+  }
+
+  type SortKey = "name" | "created" | "updated" | "owner";
+  type StatusFilter = "all" | "active" | "inactive";
+
   let isLoading = $state(true);
-  let spaces = $state<any[]>([]);
-  let displayedSpaces = $state<any[]>([]);
-  let debounceTimer: any;
-  let error: any = $state(null);
-  const isRTL = derivedStore(
-    locale,
-    ($locale: any) => $locale === "ar" || $locale === "ku",
-  );
+  let spaces = $state<SpaceRecord[]>([]);
+  let error = $state<unknown>(null);
+
   let showCreateModal = $state(false);
-  let newSpaceName = $state("");
-  let newDisplayName = $state("");
-  let newDescription = $state("");
   let isCreating = $state(false);
-  let createError: any = $state(null);
+  let createError = $state("");
+  let metaContent = $state<Record<string, unknown>>({});
+  let validateMetaForm = $state<(() => boolean) | null>(null);
 
   let showEditModal = $state(false);
-  let editingSpace: any = $state(null);
-  let editSpaceName = $state("");
-  let editDisplayName = $state("");
-  let editDescription = $state("");
+  let editingSpace = $state<SpaceRecord | null>(null);
   let editIsActive = $state(true);
   let isEditing = $state(false);
-  let editError: any = $state(null);
-
-  let showDeleteModal = $state(false);
-  let deletingSpace: any = $state(null);
-  let isDeleting = $state(false);
-
-  let metaContent: any = $state({});
-  let validateMetaForm: any = $state(null);
-
-  let editMetaContent: any = $state({});
-  let validateEditMetaForm: any = $state(null);
+  let editError = $state("");
+  let editMetaContent = $state<Record<string, unknown>>({});
+  let validateEditMetaForm = $state<(() => boolean) | null>(null);
 
   let searchQuery = $state("");
-  let selectedStatus = $state("all");
-  let sortBy = $state("name");
-  let sortOrder = $state("asc");
-  let isSearchActive = $state(false);
-
-  let searchResults = $state<any[]>([]);
+  let selectedStatus = $state<StatusFilter>("all");
+  let sortBy = $state<SortKey>("name");
+  let sortOrder = $state<SortOrder>("asc");
+  let searchResults = $state<SpaceRecord[] | null>(null);
   let isSearching = $state(false);
-    let searchTimeout: any;
 
-  const statusOptions = [
+  $effect(() => setTitle($_("route_labels.admin_dashboard_title")));
+
+  const statusOptions = $derived<Array<{ value: StatusFilter; label: string }>>([
     { value: "all", label: $_("admin_dashboard.filters.all") },
     { value: "active", label: $_("admin_dashboard.filters.active") },
     { value: "inactive", label: $_("admin_dashboard.filters.inactive") },
-  ];
+  ]);
 
-  const sortOptions = [
+  const sortOptions = $derived([
     { value: "name", label: $_("admin_dashboard.sort.name") },
     { value: "created", label: $_("admin_dashboard.sort.created") },
     { value: "updated", label: $_("admin_dashboard.sort.updated") },
     { value: "owner", label: $_("admin_dashboard.sort.owner") },
-  ];
-  onMount(async () => {
+  ]);
+
+  const indexAttributes = $derived([
+    { key: "displayname", name: $_("admin_dashboard.columns.space") },
+    { key: "is_active", name: $_("admin_dashboard.columns.status") },
+    { key: "owner_shortname", name: $_("admin_dashboard.columns.owner") },
+    { key: "created_at", name: $_("admin_dashboard.columns.created") },
+  ]);
+
+  onMount(loadSpaces);
+
+  async function loadSpaces() {
+    isLoading = true;
+    error = null;
     try {
       const response = await getSpaces(false, DmartScope.managed);
-      spaces = response.records || [];
-      performSearch("");
+      spaces = (response.records ?? []) as unknown as SpaceRecord[];
     } catch (err) {
-      console.error("Error fetching spaces:", err);
-      error = "Failed to load spaces";
+      log.error("Error fetching spaces:", err);
+      error = err;
     } finally {
       isLoading = false;
     }
-  });
+  }
 
   async function performSearch(query: string) {
-    if (!query.trim()) {
-      searchResults = [];
-      applyFilters();
+    const q = query.trim();
+    if (!q) {
+      searchResults = null;
       return;
     }
-
     isSearching = true;
     try {
-      const results = await searchInCatalog(query.trim());
-
-      searchResults = results;
-
-      const sortedResults = [...searchResults];
-      sortedResults.sort((a: any, b: any) => {
-        let aValue: any, bValue: any;
-
-        switch (sortBy) {
-          case "name":
-            aValue = getDisplayName(a).toLowerCase();
-            bValue = getDisplayName(b).toLowerCase();
-            break;
-          case "created":
-            aValue = new Date(a.attributes?.created_at || 0);
-            bValue = new Date(b.attributes?.created_at || 0);
-            break;
-          case "updated":
-            aValue = new Date(a.attributes?.updated_at || 0);
-            bValue = new Date(b.attributes?.updated_at || 0);
-            break;
-          case "owner":
-            aValue = (a.attributes?.owner_shortname || "").toLowerCase();
-            bValue = (b.attributes?.owner_shortname || "").toLowerCase();
-            break;
-          default:
-            aValue = getDisplayName(a).toLowerCase();
-            bValue = getDisplayName(b).toLowerCase();
-        }
-
-        if (aValue < bValue) return sortOrder === "asc" ? -1 : 1;
-        if (aValue > bValue) return sortOrder === "asc" ? 1 : -1;
-        return 0;
-      });
-
-      displayedSpaces = sortedResults;
-      isSearchActive = true;
+      searchResults = (await searchInCatalog(q)) as unknown as SpaceRecord[];
     } catch (err) {
-      console.error("Error performing search:", err);
+      log.error("Error performing search:", err);
       searchResults = [];
-      displayedSpaces = [];
     } finally {
       isSearching = false;
     }
   }
 
-  function handleRecordClick(record: any) {
-    if (record.resource_type === "space") {
-      handleSpaceClick(record);
-      return;
-    }
-    const encodedSubpath = encodeURIComponent(record.subpath);
-
-    $goto(
-      "/dashboard/admin/[space_name]/[subpath]/[shortname]/[resource_type]",
-      {
-        space_name: record.attributes?.space_name,
-        subpath: encodedSubpath,
-        shortname: record.shortname,
-        resource_type: record.resource_type,
-      },
+  function getDisplayName(space: SpaceRecord): string {
+    const body = space.attributes?.payload?.body;
+    return (
+      localized(space.attributes?.displayname as never, $locale) ||
+      (typeof body === "object" && body?.title) ||
+      space.shortname ||
+      $_("admin_dashboard.unnamed_space")
     );
   }
 
-  function handleSearchInput() {
-    performSearch(searchQuery);
+  function getDescription(space: SpaceRecord): string {
+    const fromAttr = localized(space.attributes?.description as never, $locale);
+    if (fromAttr) return cleanHtmlContent(fromAttr);
+    const body = space.attributes?.payload?.body;
+    if (typeof body === "object" && typeof body?.content === "string") return cleanHtmlContent(body.content);
+    if (typeof body === "string") return cleanHtmlContent(body);
+    return "";
   }
 
-  export function debounce(fn: () => void, delay = 1000) {
-    clearTimeout(debounceTimer);
-    debounceTimer = window.setTimeout(fn, delay);
+  function cleanHtmlContent(htmlContent: string): string {
+    const tempDiv = document.createElement("div");
+    tempDiv.innerHTML = htmlContent;
+    const text = (tempDiv.textContent || "").replace(/\s+/g, " ").trim();
+    return text.length > 200 ? text.substring(0, 200) + "…" : text;
   }
 
-  function applyFilters() {
-    if (searchQuery.trim()) {
-      return;
+  function sortValue(space: SpaceRecord): string | number {
+    switch (sortBy) {
+      case "created":
+        return new Date(space.attributes?.created_at || 0).getTime();
+      case "updated":
+        return new Date(space.attributes?.updated_at || 0).getTime();
+      case "owner":
+        return (space.attributes?.owner_shortname || "").toLowerCase();
+      default:
+        return getDisplayName(space).toLowerCase();
     }
+  }
 
-    let filtered = [...spaces];
-
-    if (selectedStatus !== "all") {
-      filtered = filtered.filter((space: any) => {
-        const isActive = space.attributes?.is_active;
-        return selectedStatus === "active" ? isActive : !isActive;
-      });
-    }
-
-    filtered.sort((a: any, b: any) => {
-      let aValue: any, bValue: any;
-
-      switch (sortBy) {
-        case "name":
-          aValue = getDisplayName(a).toLowerCase();
-          bValue = getDisplayName(b).toLowerCase();
-          break;
-        case "created":
-          aValue = new Date(a.attributes?.created_at || 0);
-          bValue = new Date(b.attributes?.created_at || 0);
-          break;
-        case "updated":
-          aValue = new Date(a.attributes?.updated_at || 0);
-          bValue = new Date(b.attributes?.updated_at || 0);
-          break;
-        case "owner":
-          aValue = (a.attributes?.owner_shortname || "").toLowerCase();
-          bValue = (b.attributes?.owner_shortname || "").toLowerCase();
-          break;
-        default:
-          aValue = getDisplayName(a).toLowerCase();
-          bValue = getDisplayName(b).toLowerCase();
-      }
-
-      if (aValue < bValue) return sortOrder === "asc" ? -1 : 1;
-      if (aValue > bValue) return sortOrder === "asc" ? 1 : -1;
-      return 0;
+  const displayedSpaces = $derived.by(() => {
+    const source = searchResults ?? spaces;
+    const filtered =
+      searchResults || selectedStatus === "all"
+        ? [...source]
+        : source.filter((s) => (selectedStatus === "active" ? !!s.attributes?.is_active : !s.attributes?.is_active));
+    const dir = sortOrder === "asc" ? 1 : -1;
+    return filtered.sort((a, b) => {
+      const av = sortValue(a);
+      const bv = sortValue(b);
+      return av < bv ? -dir : av > bv ? dir : 0;
     });
+  });
 
-    displayedSpaces = filtered;
-    isSearchActive = selectedStatus !== "all";
-  }
+  const activeCount = $derived(spaces.filter((s) => s.attributes?.is_active).length);
+  const filtersActive = $derived(!!searchResults || selectedStatus !== "all");
 
   function clearFilters() {
     searchQuery = "";
     selectedStatus = "all";
     sortBy = "name";
     sortOrder = "asc";
-    searchResults = [];
-    applyFilters();
+    searchResults = null;
   }
 
-  function toggleSortOrder() {
-    sortOrder = sortOrder === "asc" ? "desc" : "asc";
-    if (searchQuery.trim()) {
-      performSearch(searchQuery);
-    } else {
-      applyFilters();
+  function hrefFor(record: SpaceRecord): string {
+    if (record.resource_type === "space" || !record.resource_type) {
+      return withBase(`/dashboard/admin/${encodeURIComponent(record.shortname)}`);
     }
+    return withBase(
+      `/dashboard/admin/${encodeURIComponent(record.attributes?.space_name ?? "")}/${encodeSubpath(record.subpath)}/${encodeURIComponent(record.shortname)}/${encodeURIComponent(record.resource_type)}`,
+    );
   }
 
-  $effect(() => {
-    if (!searchQuery.trim()) {
-      searchResults = [];
-      applyFilters();
+  function handleRecordClick(record: SpaceRecord, event?: MouseEvent | KeyboardEvent) {
+    event?.preventDefault?.();
+    if (record.resource_type === "space" || !record.resource_type) {
+      goto("/dashboard/admin/[space_name]", { space_name: record.shortname });
+      return;
     }
-  });
-
-  // $effect(() => {
-  //   if (searchQuery.trim()) {
-  //     performSearch(searchQuery);
-  //   } else {
-  //     applyFilters();
-  //   }
-  // });
-
-  function handleSpaceClick(space: any) {
-    $goto(`/dashboard/admin/[space_name]`, {
-      space_name: space.shortname,
+    // Dash-encoded like every other [subpath] link; the target page decodes
+    // dashes, so a percent-encoded "/" would reach the API verbatim.
+    goto("/dashboard/admin/[space_name]/[subpath]/[shortname]/[resource_type]", {
+      space_name: record.attributes?.space_name ?? "",
+      subpath: encodeSubpath(record.subpath),
+      shortname: record.shortname,
+      resource_type: record.resource_type,
     });
   }
 
   function openCreateModal() {
+    metaContent = {};
+    createError = "";
     showCreateModal = true;
-    newSpaceName = "";
-    newDisplayName = "";
-    newDescription = "";
-    createError = null;
   }
 
   function closeCreateModal() {
+    if (isCreating) return;
     showCreateModal = false;
-    newSpaceName = "";
-    newDisplayName = "";
-    newDescription = "";
-    createError = null;
+    createError = "";
   }
 
-  function openEditModal(space: any) {
+  function openEditModal(space: SpaceRecord) {
     editingSpace = space;
-    editSpaceName = space.shortname;
-    editDisplayName = getDisplayName(space);
-    editDescription = getDescription(space);
     editIsActive = space.attributes?.is_active ?? true;
-
     editMetaContent = {
       shortname: space.shortname,
-      displayname: space.attributes?.displayname || {
-        [$locale ?? ""]: getDisplayName(space),
-        en: getDisplayName(space),
-      },
-      description: space.attributes?.description || {
-        [$locale ?? ""]: getDescription(space),
-        en: getDescription(space),
-      },
+      displayname: space.attributes?.displayname || { en: getDisplayName(space) },
+      description: space.attributes?.description || { en: getDescription(space) },
     };
-
+    editError = "";
     showEditModal = true;
-    editError = null;
   }
 
   function closeEditModal() {
+    if (isEditing) return;
     showEditModal = false;
     editingSpace = null;
-    editSpaceName = "";
-    editDisplayName = "";
-    editDescription = "";
-    editIsActive = true;
-    editMetaContent = {};
-    editError = null;
+    editError = "";
   }
 
-  function openDeleteModal(space: any) {
-    deletingSpace = space;
-    showDeleteModal = true;
-  }
-
-  function closeDeleteModal() {
-    showDeleteModal = false;
-    deletingSpace = null;
-  }
-
-  async function handleCreateSpace() {
-    if (!validateMetaForm()) {
-      createError = "Please fill all required fields in the meta form.";
+  async function handleCreateSpace(event: SubmitEvent) {
+    event.preventDefault();
+    if (!validateMetaForm?.()) {
+      createError = $_("admin_dashboard.messages.fill_required");
       return;
     }
-
     isCreating = true;
-    createError = null;
-
+    createError = "";
     try {
-      const { shortname, displayname, description } = metaContent;
-      const create = await createSpace({
-        shortname,
-        displayname,
-        description,
-      });
-
+      const { shortname, displayname, description } = metaContent as {
+        shortname: string;
+        displayname: Translation;
+        description: Translation;
+      };
+      const create = await createSpace({ shortname, displayname, description });
       if (create === undefined) {
-        createError = "Please give a valid shortname for the space.";
+        createError = $_("admin_dashboard.messages.invalid_shortname");
         return;
       }
-
-      const response = await getSpaces(false, DmartScope.managed);
-
-      spaces = response.records || [];
-
+      isCreating = false;
       closeCreateModal();
+      toasts.success($_("admin_dashboard.messages.created", { values: { name: shortname } }));
+      await loadSpaces();
     } catch (err) {
-      console.error("Error creating space:", err);
-      createError = "Failed to create space. Please try again.";
+      log.error("Error creating space:", err);
+      createError = $_("admin_dashboard.messages.create_failed");
     } finally {
       isCreating = false;
     }
   }
 
-  async function handleEditSpace() {
-    if (!validateEditMetaForm()) {
-      editError = "Please fill all required fields in the meta form.";
+  async function handleEditSpace(event: SubmitEvent) {
+    event.preventDefault();
+    if (!editingSpace) return;
+    if (!validateEditMetaForm?.()) {
+      editError = $_("admin_dashboard.messages.fill_required");
       return;
     }
-
     isEditing = true;
-    editError = null;
-
+    editError = "";
     try {
       const { displayname, description } = editMetaContent;
-
-      await editSpace(editingSpace.shortname, {
-        is_active: editIsActive,
-        displayname,
-        description,
-      });
-
-      const response = await getSpaces(false, DmartScope.managed);
-      spaces = response.records || [];
-
+      await editSpace(editingSpace.shortname, { is_active: editIsActive, displayname, description });
+      isEditing = false;
       closeEditModal();
+      toasts.success($_("admin_dashboard.messages.updated"));
+      await loadSpaces();
     } catch (err) {
-      console.error("Error editing space:", err);
-      editError = "Failed to update space. Please try again.";
+      log.error("Error editing space:", err);
+      editError = $_("admin_dashboard.messages.update_failed");
     } finally {
       isEditing = false;
     }
   }
 
-  async function handleDeleteSpace() {
-    if (!deletingSpace) return;
-
-    isDeleting = true;
-
-    try {
-      await deleteSpace(deletingSpace.shortname);
-      successToastMessage(`Space "${deletingSpace.shortname}" deleted successfully`);
-
-      const response = await getSpaces(false, DmartScope.managed);
-      spaces = response.records || [];
-
-      closeDeleteModal();
-    } catch (err) {
-      console.error("Error deleting space:", err);
-      errorToastMessage(`Failed to delete space "${deletingSpace.shortname}"`);
-    } finally {
-      isDeleting = false;
-    }
+  async function handleDeleteSpace(space: SpaceRecord) {
+    const deleted = await confirm({
+      title: $_("admin_dashboard.modal.delete.title"),
+      body: `${$_("admin_dashboard.modal.delete.space_label")}: ${getDisplayName(space)} (${space.shortname})\n\n${$_("admin_dashboard.modal.delete.warning")}`,
+      variant: "danger",
+      confirmLabel: $_("admin_dashboard.modal.delete.button"),
+      action: () => deleteSpace(space.shortname),
+    });
+    if (!deleted) return;
+    toasts.success($_("admin_dashboard.messages.deleted", { values: { name: space.shortname } }));
+    await loadSpaces();
   }
-
-  function getDisplayName(space: any): string {
-    const displayname = space.attributes?.displayname;
-    if (displayname) {
-      return (
-        displayname[$locale ?? ""] ||
-        displayname.en ||
-        displayname.ar ||
-        space.attributes?.payload?.body?.title ||
-        space.shortname
-      );
-    }
-    return (
-      space.attributes?.payload?.body?.title ||
-      space.shortname ||
-      "Unnamed Space"
-    );
-  }
-
-  function getDescription(space: any): string {
-    const description = space.attributes?.description;
-
-    if (description) {
-      const selectedDescription =
-        description[$locale ?? ""] ||
-        description.en ||
-        description.ar ||
-        space.attributes?.payload?.body?.content ||
-        "No description available";
-
-      return cleanHtmlContent(selectedDescription);
-    }
-
-    if (
-      space.resource_type === "ticket" &&
-      space.attributes?.payload?.body?.content
-    ) {
-      return cleanHtmlContent(space.attributes.payload.body.content);
-    }
-
-    if (space.attributes?.payload?.body) {
-      const htmlContent = space.attributes.payload.body;
-      if (typeof htmlContent === "string") {
-        return cleanHtmlContent(htmlContent);
-      }
-    }
-
-    return "No description available";
-  }
-
-  function cleanHtmlContent(htmlContent: string): string {
-    if (typeof htmlContent !== "string") {
-      return "No description available";
-    }
-
-    const tempDiv = document.createElement("div");
-    tempDiv.innerHTML = htmlContent;
-
-    let textContent = tempDiv.textContent || tempDiv.innerText || "";
-
-    textContent = textContent
-      .replace(/&nbsp;/g, " ")
-      .replace(/&amp;/g, "&")
-      .replace(/&lt;/g, "<")
-      .replace(/&gt;/g, ">")
-      .replace(/&quot;/g, '"')
-      .replace(/&#39;/g, "'")
-      .replace(/\s+/g, " ")
-      .trim();
-
-    return textContent.length > 200
-      ? textContent.substring(0, 200) + "..."
-      : textContent;
-  }
-
-  function formatDate(dateString: string): string {
-    if (!dateString) return "N/A";
-    return new Date(dateString).toLocaleDateString();
-  }
-
-  onDestroy(() => {
-    if (debounceTimer) {
-      clearTimeout(debounceTimer);
-    }
-  });
 </script>
 
-<div class="min-h-screen bg-gray-50" class:rtl={$isRTL}>
-  <div class="bg-gray-50">
-    <div class="container mx-auto px-4 py-8 max-w-375">
-      <div class="flex items-center justify-end">
-        <button
-          onclick={() => $goto("/dashboard/admin/settings")}
-          class="inline-flex items-center gap-2 px-4 py-2 text-sm font-medium text-gray-700 bg-white border border-gray-200 rounded-lg hover:bg-gray-50 transition-colors"
-        >
-          <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M10.325 4.317c.426-1.756 2.924-1.756 3.35 0a1.724 1.724 0 002.573 1.066c1.543-.94 3.31.826 2.37 2.37a1.724 1.724 0 001.065 2.572c1.756.426 1.756 2.924 0 3.35a1.724 1.724 0 00-1.066 2.573c.94 1.543-.826 3.31-2.37 2.37a1.724 1.724 0 00-2.572 1.065c-.426 1.756-2.924 1.756-3.35 0a1.724 1.724 0 00-2.573-1.066c-1.543.94-3.31-.826-2.37-2.37a1.724 1.724 0 00-1.065-2.572c-1.756-.426-1.756-2.924 0-3.35a1.724 1.724 0 001.066-2.573c-.94-1.543.826-3.31 2.37-2.37.996.608 2.296.07 2.572-1.065z"></path>
-            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 12a3 3 0 11-6 0 3 3 0 016 0z"></path>
-          </svg>
-          {$_("admin_settings.title")}
-        </button>
-      </div>
-      <div class="text-center">
-        <h1 class="text-2xl font-bold text-gray-900 mb-2">
-          {$_("route_labels.admin_dashboard_title")}
-        </h1>
-        <p class="text-sm text-gray-500 max-w-3xl mx-auto">
-          {$_("route_labels.admin_dashboard_welcome")}
-        </p>
-      </div>
+<div class="mx-auto max-w-6xl px-4 sm:px-6 py-6 sm:py-8">
+  <PageHeader
+    title={$_("route_labels.admin_dashboard_title")}
+    description={$_("route_labels.admin_dashboard_welcome")}
+    icon={LayersOutline}
+  >
+    {#snippet actions()}
+      <a href={withBase("/dashboard/admin/settings")} class="app-btn app-btn-secondary">
+        <CogOutline size="sm" aria-hidden="true" />
+        {$_("admin_settings.title")}
+      </a>
+      <button type="button" class="app-btn app-btn-primary" onclick={openCreateModal}>
+        <PlusOutline size="sm" aria-hidden="true" />
+        {$_("admin_dashboard.modal.create.button")}
+      </button>
+    {/snippet}
+  </PageHeader>
+
+  {#if isLoading}
+    <LoadingState label={$_("loading.spaces")} />
+  {:else if error}
+    <ErrorState title={$_("admin_dashboard.error.title")} {error} onRetry={loadSpaces} />
+  {:else if spaces.length === 0}
+    <EmptyState icon={LayersOutline} title={$_("admin_dashboard.empty.title")} hint={$_("admin_dashboard.empty.description")}>
+      <button type="button" class="app-btn app-btn-primary app-btn-sm" onclick={openCreateModal}>
+        <PlusOutline size="sm" aria-hidden="true" />
+        {$_("admin_dashboard.actions.create_first")}
+      </button>
+    </EmptyState>
+  {:else}
+    <div class="flex flex-wrap items-center gap-2 mb-4" role="group" aria-label={$_("statistics")}>
+      <Badge>{$_("admin_dashboard.stats.total", { values: { count: spaces.length } })}</Badge>
+      <Badge variant="success">{$_("admin_dashboard.stats.active", { values: { count: activeCount } })}</Badge>
     </div>
-  </div>
 
-  <div class="mx-auto  pb-8 max-w-375">
-    {#if isLoading}
-      <div class="flex justify-center py-16">
-        <div class="spinner spinner-lg"></div>
-      </div>
-    {:else if error}
-      <div class="text-center py-16">
-        <div
-          class="mx-auto w-16 h-16 bg-red-50 rounded-full flex items-center justify-center mb-4"
+    <CatalogToolbar
+      class="mb-4"
+      bind:search={searchQuery}
+      placeholder={$_("route_labels.placeholder_search_by_name_desc")}
+      onSearch={performSearch}
+      onClear={() => (searchResults = null)}
+      bind:sort={sortBy}
+      {sortOptions}
+      bind:order={sortOrder}
+    >
+      {#snippet filters()}
+        <label for="status-filter" class="sr-only">{$_("catalog_contents.filters.status")}</label>
+        <select
+          id="status-filter"
+          bind:value={selectedStatus}
+          class="h-9 ps-3 pe-8 text-sm rounded-control border border-border bg-surface-2 text-text focus:border-primary focus:ring-1 focus:ring-primary"
         >
-          <svg
-            class="w-8 h-8 text-red-500"
-            fill="none"
-            stroke="currentColor"
-            viewBox="0 0 24 24"
-          >
-            <path
-              stroke-linecap="round"
-              stroke-linejoin="round"
-              stroke-width="2"
-              d="M12 8v4m0 4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z"
-            ></path>
-          </svg>
-        </div>
-        <h3 class="text-lg font-medium text-gray-900 mb-1">
-          {$_("admin_dashboard.error.title")}
-        </h3>
-        <p class="text-sm text-gray-500">{error}</p>
-      </div>
-    {:else if spaces.length === 0}
-      <div class="text-center py-16">
-        <div
-          class="mx-auto w-16 h-16 bg-gray-50 rounded-full flex items-center justify-center mb-4"
-        >
-          <svg
-            class="w-8 h-8 text-gray-400"
-            fill="none"
-            stroke="currentColor"
-            viewBox="0 0 24 24"
-          >
-            <path
-              stroke-linecap="round"
-              stroke-linejoin="round"
-              stroke-width="1.5"
-              d="M19 11H5m14 0a2 2 0 012 2v6a2 2 0 01-2 2H5a2 2 0 01-2-2v-6a2 2 0 012-2m14 0V9a2 2 0 00-2-2M5 11V9a2 2 0 012-2m0 0V5a2 2 0 012-2h6a2 2 0 012 2v2M7 7h10"
-            ></path>
-          </svg>
-        </div>
-        <h3 class="text-lg font-medium text-gray-900 mb-1">
-          {$_("admin_dashboard.empty.title")}
-        </h3>
-        <p class="text-sm text-gray-500 mb-6">
-          {$_("admin_dashboard.empty.description")}
-        </p>
-        <button
-          onclick={openCreateModal}
-          class="inline-flex items-center px-4 py-2 bg-indigo-500 text-white text-sm font-medium rounded-lg hover:bg-indigo-600 transition-colors duration-200"
-          aria-label={$_("admin_dashboard.actions.create_first")}
-        >
-          <svg
-            class="w-4 h-4 mr-2"
-            fill="none"
-            stroke="currentColor"
-            viewBox="0 0 24 24"
-          >
-            <path
-              stroke-linecap="round"
-              stroke-linejoin="round"
-              stroke-width="2"
-              d="M12 4v16m8-8H4"
-            ></path>
-          </svg>
-          {$_("admin_dashboard.actions.create_first")}
-        </button>
-      </div>
-    {:else}
-      <div class="mb-8 flex justify-center gap-4">
-        <!-- Total Spaces -->
-        <div
-          class="bg-white rounded-[20px] shadow-[0_2px_8px_rgba(0,0,0,0.04)] border border-gray-100 p-4 w-60 py-6"
-        >
-          <div class="flex items-center gap-4">
-            <div
-              class="w-10 h-10 bg-purple-50 rounded-xl flex items-center justify-center shrink-0 ml-2"
-            >
-              <svg
-                class="w-5 h-5 text-purple-500"
-                fill="none"
-                viewBox="0 0 24 24"
-                stroke="currentColor"
-              >
-                <path
-                  stroke-linecap="round"
-                  stroke-linejoin="round"
-                  stroke-width="2"
-                  d="M4 6a2 2 0 012-2h2a2 2 0 012 2v2a2 2 0 01-2 2H6a2 2 0 01-2-2V6zM14 6a2 2 0 012-2h2a2 2 0 012 2v2a2 2 0 01-2 2h-2a2 2 0 01-2-2V6zM4 16a2 2 0 012-2h2a2 2 0 012 2v2a2 2 0 01-2 2H6a2 2 0 01-2-2v-2zM14 16a2 2 0 012-2h2a2 2 0 012 2v2a2 2 0 01-2 2h-2a2 2 0 01-2-2v-2z"
-                />
-              </svg>
-            </div>
-            <div>
-              <p class="text-xs font-medium text-gray-400">Total Spaces</p>
-              <p class="text-xl font-bold text-gray-900 mt-0.5">
-                {formatNumberInText(spaces.length, $locale ?? "")}
-              </p>
-            </div>
-          </div>
-        </div>
+          {#each statusOptions as option (option.value)}
+            <option value={option.value}>{option.label}</option>
+          {/each}
+        </select>
+        {#if filtersActive}
+          <button type="button" class="app-btn app-btn-ghost app-btn-sm" onclick={clearFilters}>
+            {$_("search_filters.clear_filters")}
+          </button>
+        {/if}
+      {/snippet}
+    </CatalogToolbar>
 
-        <!-- Active Spaces -->
-        <div
-          class="bg-white rounded-[20px] shadow-[0_2px_8px_rgba(0,0,0,0.04)] border border-gray-100 p-4 w-60 py-6"
-        >
-          <div class="flex items-center gap-4">
-            <div
-              class="w-10 h-10 bg-emerald-50 rounded-xl flex items-center justify-center shrink-0 ml-2"
-            >
-              <svg
-                class="w-5 h-5 text-emerald-500"
-                fill="none"
-                viewBox="0 0 24 24"
-                stroke="currentColor"
-              >
-                <path
-                  stroke-linecap="round"
-                  stroke-linejoin="round"
-                  stroke-width="2"
-                  d="M9 12l2 2 4-4m6 2a9 9 0 11-18 0 9 9 0 0118 0z"
-                />
-              </svg>
-            </div>
-            <div>
-              <p class="text-xs font-medium text-gray-400">Active Spaces</p>
-              <p class="text-xl font-bold text-gray-900 mt-0.5">
-                {formatNumberInText(
-                  spaces.filter((s: any) => s.attributes?.is_active).length,
-                  $locale ?? "",
-                )}
-              </p>
-            </div>
-          </div>
-        </div>
-      </div>
-
-      <div
-        class="bg-white rounded-2xl shadow-[0_2px_8px_rgba(0,0,0,0.04)] border border-gray-100 overflow-hidden"
-      >
-        <div class="p-6 pb-4">
-          <div class="flex items-center justify-between mb-6">
-            <div>
-              <h2 class="text-base font-semibold text-gray-900">
-                Manage Spaces ({formatNumberInText(
-                  displayedSpaces.length,
-                  $locale ?? "",
-                )})
-              </h2>
-              <!--              <p class="text-xs text-gray-400 mt-1">-->
-              <!--                Administrative access to all spaces-->
-              <!--              </p>-->
-            </div>
-            <button
-              onclick={openCreateModal}
-              class="inline-flex items-center px-4 py-2 bg-indigo-500 text-white text-sm font-medium rounded-lg hover:bg-indigo-600 transition-colors duration-200"
-            >
-              <svg
-                class="w-4 h-4 mr-1.5"
-                fill="none"
-                stroke="currentColor"
-                viewBox="0 0 24 24"
-              >
-                <path
-                  stroke-linecap="round"
-                  stroke-linejoin="round"
-                  stroke-width="2"
-                  d="M12 4v16m8-8H4"
-                ></path>
-              </svg>
-              Create Space
-            </button>
-          </div>
-
-          <!-- Filters row -->
-          <div class="flex items-end gap-4 mb-2">
-            <!-- Search Input -->
-            <div class="flex-1 max-w-sm">
-              <label
-                for="search"
-                class="block text-xs font-medium text-gray-400 mb-1.5"
-              >
-                Search Spaces
-              </label>
-              <div class="relative">
-                <div
-                  class="absolute inset-y-0 left-0 pl-3 flex items-center pointer-events-none"
-                >
-                  <svg
-                    class="h-4 w-4 text-gray-300"
-                    fill="none"
-                    stroke="currentColor"
-                    viewBox="0 0 24 24"
-                  >
-                    <path
-                      stroke-linecap="round"
-                      stroke-linejoin="round"
-                      stroke-width="2"
-                      d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z"
-                    ></path>
-                  </svg>
-                </div>
-                <input
-                  id="search"
-                  type="text"
-                  bind:value={searchQuery}
-                  oninput={() => debounce(handleSearchInput)}
-                  placeholder={$_(
-                    "route_labels.placeholder_search_by_name_desc",
-                  )}
-                  class="block w-full pl-9 pr-8 py-2 text-sm border-none bg-gray-50 rounded-lg text-gray-900 placeholder-gray-400 focus:ring-2 focus:ring-indigo-500"
-                  title={$_("route_labels.placeholder_search_by_name_desc")}
-                  aria-label="Search Spaces"
-                />
-                {#if isSearching}
-                  <div class="absolute inset-y-0 right-2 flex items-center">
-                    <div class="spinner spinner-xs"></div>
-                  </div>
-                {:else if searchQuery}
-                  <button
-                    onclick={() => {
-                      searchQuery = "";
-                      searchResults = [];
-                    }}
-                    aria-label="Clear search"
-                    class="absolute inset-y-0 right-2 flex items-center text-gray-400 hover:text-gray-600"
-                  >
-                    <svg
-                      class="h-4 w-4"
-                      fill="none"
-                      stroke="currentColor"
-                      viewBox="0 0 24 24"
-                    >
-                      <path
-                        stroke-linecap="round"
-                        stroke-linejoin="round"
-                        stroke-width="2"
-                        d="M6 18L18 6M6 6l12 12"
-                      ></path>
-                    </svg>
-                  </button>
-                {/if}
-              </div>
-            </div>
-
-            <!-- Status Filter -->
-            <div class="w-32">
-              <label
-                for="status-filter"
-                class="block text-xs font-medium text-gray-400 mb-1.5 ml-1"
-              >
-                Status
-              </label>
-              <select
-                id="status-filter"
-                bind:value={selectedStatus}
-                onchange={applyFilters}
-                class="block w-full px-3 py-2 text-sm border-none bg-gray-50 rounded-lg text-gray-700 focus:ring-2 focus:ring-indigo-500"
-                title={$_("catalog_contents.filters.status")}
-                aria-label={$_("catalog_contents.filters.status")}
-              >
-                {#each statusOptions as option}
-                  <option value={option.value}
-                    >{option.label === "All"
-                      ? option.label
-                      : option.label}</option
-                  >
-                {/each}
-              </select>
-            </div>
-
-            <!-- Sort Option -->
-            <div class="w-32">
-              <label
-                for="sort-by"
-                class="block text-xs font-medium text-gray-400 mb-1.5 ml-1"
-              >
-                Sort By
-              </label>
-              <select
-                id="sort-by"
-                bind:value={sortBy}
-                onchange={() => applyFilters()}
-                class="block w-full px-3 py-2 text-sm border-none bg-gray-50 rounded-lg text-gray-700 focus:ring-2 focus:ring-indigo-500"
-                title={$_("catalog_contents.filters.sort_by")}
-                aria-label={$_("catalog_contents.filters.sort_by")}
-              >
-                {#each sortOptions as option}
-                  <option value={option.value}
-                    >{option.label === "Name"
-                      ? option.label
-                      : option.label}</option
-                  >
-                {/each}
-              </select>
-            </div>
-
-            <!-- Sort Direction Toggle -->
-            <div class="pb-px">
-              <button
-                onclick={toggleSortOrder}
-                class="h-9 w-9 flex items-center justify-center bg-gray-50 rounded-lg text-gray-500 hover:bg-gray-100 transition-colors focus:ring-2 focus:ring-indigo-500"
-                title={$_("search_filters.toggle_sort")}
-                aria-label={$_("search_filters.toggle_sort")}
-              >
-                <svg
-                  class="w-4 h-4 {sortOrder === 'desc'
-                    ? 'rotate-180'
-                    : ''} transition-transform duration-200"
-                  fill="none"
-                  stroke="currentColor"
-                  viewBox="0 0 24 24"
-                >
-                  <path
-                    stroke-linecap="round"
-                    stroke-linejoin="round"
-                    stroke-width="2"
-                    d="M7 16V4m0 0L3 8m4-4l4 4m6 0v12m0 0l4-4m-4 4l-4-4"
-                  ></path>
-                </svg>
-              </button>
-            </div>
-          </div>
-
-          {#if isSearchActive}
-            <div class="mt-4 flex items-center justify-between">
-              <div class="text-sm text-gray-600">
-                {#if searchQuery.trim()}
-                  Showing {displayedSpaces.length} search results
-                  {$_("search_filters.results_for", {
-                    values: { query: searchQuery },
-                  })}
-                {:else}
-                  {$_("search_filters.results_count", {
-                    values: {
-                      displayed: displayedSpaces.length,
-                      total: spaces.length,
-                    },
-                  })}
-                {/if}
-              </div>
-              <button
-                onclick={clearFilters}
-                class="inline-flex items-center px-3 py-1.5 border border-gray-300 shadow-sm text-sm font-medium rounded-md text-gray-700 bg-white hover:bg-gray-50 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-purple-500"
-                aria-label={$_("search_filters.clear_filters")}
-              >
-                <svg
-                  class="w-4 h-4 mr-1.5"
-                  fill="none"
-                  stroke="currentColor"
-                  viewBox="0 0 24 24"
-                >
-                  <path
-                    stroke-linecap="round"
-                    stroke-linejoin="round"
-                    stroke-width="2"
-                    d="M6 18L18 6M6 6l12 12"
-                  ></path>
-                </svg>
-                {$_("search_filters.clear_filters")}
-              </button>
-            </div>
-          {/if}
-        </div>
-        <div class="px-6 pb-6">
-          {#if displayedSpaces.length === 0 && (isSearchActive || searchQuery.trim())}
-            <div class="text-center py-12">
-              <svg
-                class="mx-auto w-12 h-12 text-gray-300 mb-4"
-                fill="none"
-                stroke="currentColor"
-                viewBox="0 0 24 24"
-              >
-                <path
-                  stroke-linecap="round"
-                  stroke-linejoin="round"
-                  stroke-width="1.5"
-                  d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z"
-                ></path>
-              </svg>
-              <h3 class="text-sm font-medium text-gray-900 mb-1">
-                {searchQuery.trim()
-                  ? `No spaces found for "${searchQuery}"`
-                  : $_("search_filters.no_results.title")}
-              </h3>
-              <p class="text-xs text-gray-500 mb-4">
-                {searchQuery.trim()
-                  ? "Try adjusting your search terms or browse all spaces"
-                  : $_("search_filters.no_results.description")}
-              </p>
-              <button
-                onclick={clearFilters}
-                class="inline-flex items-center px-4 py-2 border border-transparent text-sm font-medium rounded-lg text-indigo-600 bg-indigo-50 hover:bg-indigo-100 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-indigo-500"
-              >
-                {searchQuery.trim()
-                  ? "Clear search"
-                  : $_("search_filters.no_results.action")}
-              </button>
-            </div>
-          {:else}
-            <div class="overflow-x-auto">
-              <table class="w-full">
-                <thead>
-                  <tr class="border-b border-gray-100">
-                    <th
-                      class="px-2 py-3 text-left text-[10px] font-bold text-gray-400 tracking-wider w-2/5 uppercase"
-                    >
-                      SPACE
-                    </th>
-                    <th
-                      class="px-2 py-3 text-left text-[10px] font-bold text-gray-400 tracking-wider w-1/6 uppercase"
-                    >
-                      STATUS
-                    </th>
-                    <th
-                      class="px-2 py-3 text-left text-[10px] font-bold text-gray-400 tracking-wider w-1/6 uppercase"
-                    >
-                      OWNER
-                    </th>
-                    <th
-                      class="px-2 py-3 text-left text-[10px] font-bold text-gray-400 tracking-wider w-1/6 uppercase"
-                    >
-                      CREATED
-                    </th>
-                    <th
-                      class="px-2 py-3 text-right text-[10px] font-bold text-gray-400 tracking-wider w-auto uppercase"
-                    >
-                      ACTIONS
-                    </th>
-                  </tr>
-                </thead>
-                <tbody class="divide-y divide-gray-50">
-                  {#each displayedSpaces as space}
-                    <tr
-                      class="group cursor-pointer hover:bg-yellow-50 transition-colors"
-                      onclick={() => handleRecordClick(space)}
-                      role="button"
-                      tabindex="0"
-                      onkeydown={(e) => {
-                        if (e.key === "Enter" || e.key === " ") {
-                          handleRecordClick(space);
-                        }
-                      }}
-                    >
-                      <td class="px-2 py-4">
-                        <div class="flex items-start">
-                          <div class="flex-shrink-0 mt-0.5">
-                            <div
-                              class="h-8 w-8 rounded-[10px] bg-indigo-500 flex items-center justify-center shadow-sm"
-                              style="background-color: {[
-                                '#6366f1',
-                                '#8b5cf6',
-                                '#ec4899',
-                                '#f59e0b',
-                                '#10b981',
-                              ][space.shortname.length % 5]}"
-                            >
-                              <span class="text-white font-medium text-sm">
-                                {space.shortname
-                                  ? space.shortname.charAt(0).toUpperCase()
-                                  : "S"}
-                              </span>
-                            </div>
-                          </div>
-                          <div class="ml-3 min-w-0">
-                            <div
-                              class="text-[13px] font-semibold text-gray-900 truncate"
-                            >
-                              {getDisplayName(space)}
-                            </div>
-                            <div
-                              class="text-[11px] text-gray-400 truncate mt-0.5"
-                            >
-                              {getDescription(space)}
-                            </div>
-                          </div>
-                        </div>
-                      </td>
-                      <td class="px-2 py-4">
-                        <span
-                          class="inline-flex items-center px-2 py-0.5 rounded-full text-[10px] font-medium {space
-                            .attributes?.is_active
-                            ? 'bg-emerald-50 text-emerald-600'
-                            : 'bg-rose-50 text-rose-600'}"
-                        >
-                          <span
-                            class="w-1.5 h-1.5 rounded-full mr-1.5 {space
-                              .attributes?.is_active
-                              ? 'bg-emerald-400'
-                              : 'bg-rose-400'}"
-                          ></span>
-                          {space.attributes?.is_active ? "Active" : "Inactive"}
-                        </span>
-                      </td>
-                      <td class="px-2 py-4">
-                        <div class="flex items-center">
-                          <div
-                            class="w-5 h-5 bg-gray-100 rounded-full flex items-center justify-center mr-2 border border-gray-200"
-                          >
-                            <span class="text-[10px] font-medium text-gray-500">
-                              {space.attributes?.owner_shortname
-                                ? space.attributes.owner_shortname
-                                    .charAt(0)
-                                    .toUpperCase()
-                                : "U"}
-                            </span>
-                          </div>
-                          <span class="text-[12px] text-gray-500">
-                            {space.attributes?.owner_shortname ||
-                              $_("common.unknown")}
-                          </span>
-                        </div>
-                      </td>
-                      <td class="px-2 py-4 text-[12px] text-gray-400">
-                        {formatDate(space.attributes?.created_at)}
-                      </td>
-                      <td class="px-2 py-4">
-                        <div class="flex items-center justify-end gap-3">
-                          <button
-                            onclick={(e) => {
-                              e.stopPropagation();
-                              handleSpaceClick(space);
-                            }}
-                            class="inline-flex items-center text-[12px] font-medium text-indigo-500 hover:text-indigo-600"
-                          >
-                            <svg
-                              class="w-3.5 h-3.5 mr-1"
-                              fill="none"
-                              stroke="currentColor"
-                              viewBox="0 0 24 24"
-                            >
-                              <path
-                                stroke-linecap="round"
-                                stroke-linejoin="round"
-                                stroke-width="2"
-                                d="M10.325 4.317c.426-1.756 2.924-1.756 3.35 0a1.724 1.724 0 002.573 1.066c1.543-.94 3.31.826 2.37 2.37a1.724 1.724 0 001.065 2.572c1.756.426 1.756 2.924 0 3.35a1.724 1.724 0 00-1.066 2.573c.94 1.543-.826 3.31-2.37 2.37a1.724 1.724 0 00-2.572 1.065c-.426 1.756-2.924 1.756-3.35 0a1.724 1.724 0 00-2.573-1.066c-1.543.94-3.31-.826-2.37-2.37a1.724 1.724 0 00-1.065-2.572c-1.756-.426-1.756-2.924 0-3.35a1.724 1.724 0 001.066-2.573c-.94-1.543.826-3.31 2.37-2.37.996.608 2.296.07 2.572-1.065z"
-                              ></path>
-                              <path
-                                stroke-linecap="round"
-                                stroke-linejoin="round"
-                                stroke-width="2"
-                                d="M15 12a3 3 0 11-6 0 3 3 0 016 0z"
-                              ></path>
-                            </svg>
-                            Manage
-                          </button>
-                          <button
-                            onclick={(e) => {
-                              e.stopPropagation();
-                              openEditModal(space);
-                            }}
-                            class="inline-flex items-center text-[12px] font-medium text-blue-500 hover:text-blue-600"
-                          >
-                            <svg
-                              class="w-3.5 h-3.5 mr-1"
-                              fill="none"
-                              stroke="currentColor"
-                              viewBox="0 0 24 24"
-                            >
-                              <path
-                                stroke-linecap="round"
-                                stroke-linejoin="round"
-                                stroke-width="2"
-                                d="M11 5H6a2 2 0 00-2 2v11a2 2 0 002 2h11a2 2 0 002-2v-5m-1.414-9.414a2 2 0 112.828 2.828L11.828 15H9v-2.828l8.586-8.586z"
-                              ></path>
-                            </svg>
-                            Edit
-                          </button>
-                          {#if space.shortname !== "management"}
-                            <button
-                              onclick={(e) => {
-                                e.stopPropagation();
-                                openDeleteModal(space);
-                              }}
-                              class="inline-flex items-center text-[12px] font-medium text-rose-500 hover:text-rose-600"
-                            >
-                              <svg
-                                class="w-3.5 h-3.5 mr-1"
-                                fill="none"
-                                stroke="currentColor"
-                                viewBox="0 0 24 24"
-                              >
-                                <path
-                                  stroke-linecap="round"
-                                  stroke-linejoin="round"
-                                  stroke-width="2"
-                                  d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16"
-                                ></path>
-                              </svg>
-                              Delete
-                            </button>
-                          {/if}
-                        </div>
-                      </td>
-                    </tr>
-                  {/each}
-                </tbody>
-              </table>
-            </div>
-          {/if}
-        </div>
-      </div>
+    {#if filtersActive}
+      <p class="text-sm text-text-muted mb-3" aria-live="polite">
+        {#if searchResults}
+          {$_("admin_dashboard.search_results", { values: { count: displayedSpaces.length, query: searchQuery } })}
+        {:else}
+          {$_("search_filters.results_count", { values: { displayed: displayedSpaces.length, total: spaces.length } })}
+        {/if}
+      </p>
     {/if}
-  </div>
+
+    <DataTable
+      items={displayedSpaces}
+      {indexAttributes}
+      loading={isSearching}
+      rowHref={hrefFor}
+      rowLabel={getDisplayName}
+      onRowClick={handleRecordClick}
+      totalItems={displayedSpaces.length}
+      itemsPerPage={displayedSpaces.length || 1}
+      emptyMessage={searchResults ? $_("search_filters.no_results.description") : undefined}
+    >
+      {#snippet cell({ item, attr })}
+        {#if attr.key === "displayname"}
+          <div class="flex items-center gap-3 min-w-0">
+            <Avatar alt={item.shortname} size="32" />
+            <div class="min-w-0">
+              <div class="font-medium text-text truncate">{getDisplayName(item)}</div>
+              {#if getDescription(item)}
+                <div class="text-xs text-text-faint truncate max-w-xs">{getDescription(item)}</div>
+              {/if}
+            </div>
+          </div>
+        {:else if attr.key === "is_active"}
+          <Badge variant={item.attributes?.is_active ? "success" : "danger"} size="sm">
+            {item.attributes?.is_active ? $_("admin_dashboard.filters.active") : $_("admin_dashboard.filters.inactive")}
+          </Badge>
+        {:else if attr.key === "owner_shortname"}
+          <span class="text-text-muted">{item.attributes?.owner_shortname || $_("common.unknown")}</span>
+        {:else if attr.key === "created_at"}
+          <span class="text-text-muted whitespace-nowrap">{formatDate(item.attributes?.created_at, "date", $locale)}</span>
+        {/if}
+      {/snippet}
+
+      {#snippet actions({ item })}
+        {#if item.resource_type === "space" || !item.resource_type}
+          <IconButton label="{$_('admin_dashboard.actions.manage')} {getDisplayName(item)}" size="sm" href={hrefFor(item)}>
+            <CogOutline size="sm" />
+          </IconButton>
+          <IconButton label="{$_('admin_dashboard.actions.edit')} {getDisplayName(item)}" size="sm" onclick={() => openEditModal(item)}>
+            <EditOutline size="sm" />
+          </IconButton>
+          {#if item.shortname !== MANAGEMENT_SPACE}
+            <IconButton label="{$_('admin_dashboard.modal.delete.button')} {getDisplayName(item)}" size="sm" variant="danger" onclick={() => handleDeleteSpace(item)}>
+              <TrashBinOutline size="sm" />
+            </IconButton>
+          {/if}
+        {:else}
+          <Badge size="sm">{item.resource_type}</Badge>
+        {/if}
+      {/snippet}
+    </DataTable>
+  {/if}
 </div>
 
-<!-- Create Space Modal -->
 {#if showCreateModal}
-  <AppModal
-    onClose={closeCreateModal}
-    title={$_("admin_dashboard.modal.create.title")}
-    ariaLabel={$_("admin_dashboard.modal.create.title")}
-    size="lg"
-    dismissable={!isCreating}
-  >
+  <Modal onClose={closeCreateModal} title={$_("admin_dashboard.modal.create.title")} size="lg" dismissable={!isCreating}>
     {#snippet icon()}
-      <PlusOutline class="w-6 h-6" />
+      <PlusOutline size="lg" />
     {/snippet}
 
-    <p class="text-sm text-gray-600 mb-4">
-      {$_("admin_dashboard.modal.create.description")}
-    </p>
-    <MetaForm
-      bind:formData={metaContent}
-      bind:validateFn={validateMetaForm}
-      isCreate={true}
-      fullWidth={true}
-    />
-
+    <p class="text-sm text-text-muted mb-4">{$_("admin_dashboard.modal.create.description")}</p>
+    <form id="create-space-form" onsubmit={handleCreateSpace}>
+      <MetaForm bind:formData={metaContent} bind:validateFn={validateMetaForm} isCreate={true} fullWidth={true} />
+    </form>
     {#if createError}
-      <div class="error-message mt-4">
-        <p class="error-text">{createError}</p>
-      </div>
+      <ErrorState compact message={createError} class="mt-4" />
     {/if}
 
     {#snippet footer()}
-      <button
-        onclick={closeCreateModal}
-        class="btn btn-secondary"
-        disabled={isCreating}
-      >
+      <button type="button" class="app-btn app-btn-secondary" onclick={closeCreateModal} disabled={isCreating}>
         {$_("admin_dashboard.modal.cancel")}
       </button>
-      <button
-        onclick={handleCreateSpace}
-        disabled={isCreating || !metaContent.shortname}
-        class="btn btn-primary"
-      >
+      <button type="submit" form="create-space-form" class="app-btn app-btn-primary" disabled={isCreating || !metaContent.shortname} aria-busy={isCreating}>
         {#if isCreating}
-          <div class="spinner"></div>
+          <span class="spinner spinner-xs spinner-white" aria-hidden="true"></span>
           {$_("admin_dashboard.modal.creating")}
         {:else}
           {$_("admin_dashboard.modal.create.button")}
         {/if}
       </button>
     {/snippet}
-  </AppModal>
+  </Modal>
 {/if}
 
-<!-- Edit Space Modal -->
-<Modal
-  title="✏️ {$_('admin_dashboard.modal.edit.title')}"
-  bind:open={showEditModal}
-  size="lg"
-  class="bg-white"
-  headerClass="text-gray-900"
-  placement="center"
-  autoclose={false}
->
-  <p class="text-sm text-gray-600 mb-4">
-    {$_("admin_dashboard.modal.edit.description")}
-  </p>
-  <MetaForm
-    bind:formData={editMetaContent}
-    bind:validateFn={validateEditMetaForm}
-    isCreate={false}
-    fullWidth={true}
-  />
+{#if showEditModal && editingSpace}
+  <Modal onClose={closeEditModal} title={$_("admin_dashboard.modal.edit.title")} size="lg" dismissable={!isEditing}>
+    {#snippet icon()}
+      <EditOutline size="lg" />
+    {/snippet}
 
-  <div class="form-group mt-4">
-    <div class="form-checkbox">
-      <label for="editIsActive"></label>
-      <input type="checkbox" bind:checked={editIsActive} id="editIsActive" />
-      <label for="editIsActive">
+    <p class="text-sm text-text-muted mb-4">{$_("admin_dashboard.modal.edit.description")}</p>
+    <form id="edit-space-form" onsubmit={handleEditSpace} class="space-y-4">
+      <MetaForm bind:formData={editMetaContent} bind:validateFn={validateEditMetaForm} isCreate={false} fullWidth={true} />
+
+      <label class="flex items-center gap-2 p-3 rounded-control border border-border bg-surface text-sm text-text cursor-pointer">
+        <input type="checkbox" class="accent-primary" bind:checked={editIsActive} />
         {$_("admin_dashboard.modal.edit.space_active")}
       </label>
-    </div>
-  </div>
+    </form>
+    {#if editError}
+      <ErrorState compact message={editError} class="mt-4" />
+    {/if}
 
-  {#if editError}
-    <div class="error-message mt-4">
-      <p class="error-text">{editError}</p>
-    </div>
-  {/if}
-
-  {#snippet footer()}
-    <button
-      onclick={closeEditModal}
-      class="btn btn-secondary"
-      disabled={isEditing}
-    >
-      {$_("admin_dashboard.modal.cancel")}
-    </button>
-    <button
-      onclick={handleEditSpace}
-      disabled={isEditing || !editMetaContent.shortname}
-      class="btn btn-edit"
-    >
-      {#if isEditing}
-        <div class="spinner"></div>
-        {$_("admin_dashboard.modal.updating")}
-      {:else}
-        {$_("admin_dashboard.modal.edit.button")}
-      {/if}
-    </button>
-  {/snippet}
-</Modal>
-
-<!-- Delete Space Modal -->
-<Modal
-  title="⚠️ {$_('admin_dashboard.modal.delete.title')}"
-  bind:open={showDeleteModal}
-  size="lg"
-  class="bg-white"
-  headerClass="text-gray-900"
-  placement="center"
-  autoclose={false}
->
-  <div class="delete-warning">
-    <div class="delete-warning-header">
-      <div class="delete-icon">⚠️</div>
-      <div>
-        <h4>{$_("admin_dashboard.modal.delete.confirm")}</h4>
-        <p>{$_("admin_dashboard.modal.delete.irreversible")}</p>
-      </div>
-    </div>
-  </div>
-
-  <div class="space-details">
-    <p>
-      <strong>{$_("admin_dashboard.modal.delete.space_label")}:</strong>
-      {deletingSpace ? getDisplayName(deletingSpace) : ""}
-    </p>
-    <p>
-      <strong>{$_("admin_dashboard.modal.delete.shortname_label")}:</strong>
-      {deletingSpace ? deletingSpace.shortname : ""}
-    </p>
-  </div>
-
-  <div class="delete-final-warning">
-    {$_("admin_dashboard.modal.delete.warning")}
-  </div>
-
-  {#snippet footer()}
-    <button
-      onclick={closeDeleteModal}
-      class="btn btn-secondary"
-      disabled={isDeleting}
-    >
-      {$_("admin_dashboard.modal.cancel")}
-    </button>
-    <button
-      onclick={handleDeleteSpace}
-      disabled={isDeleting}
-      class="btn btn-danger"
-    >
-      {#if isDeleting}
-        <div class="spinner"></div>
-        {$_("admin_dashboard.modal.deleting")}
-      {:else}
-        {$_("admin_dashboard.modal.delete.button")}
-      {/if}
-    </button>
-  {/snippet}
-</Modal>
-
-<style>
-  .rtl {
-    direction: rtl;
-  }
-
-  .form-group {
-    margin-bottom: 1.5rem;
-  }
-  .form-checkbox {
-    display: flex;
-    align-items: center;
-    gap: 0.5rem;
-    padding: 0.75rem;
-    background: #f8fafc;
-    border: 2px solid #e2e8f0;
-    border-radius: 8px;
-    transition: all 0.2s ease;
-  }
-
-  .form-checkbox:hover {
-    background: #f1f5f9;
-    border-color: #cbd5e1;
-  }
-
-  .form-checkbox input[type="checkbox"] {
-    width: 1rem;
-    height: 1rem;
-    border-radius: 4px;
-    border: 2px solid #d1d5db;
-    background: white;
-    accent-color: #8b5cf6;
-  }
-
-  .form-checkbox label {
-    font-size: 0.875rem;
-    font-weight: 500;
-    color: #374151;
-    cursor: pointer;
-    margin: 0;
-  }
-
-  .error-message {
-    padding: 0.75rem 1rem;
-    background: linear-gradient(135deg, #fef2f2 0%, #fee2e2 100%);
-    border: 1px solid #fca5a5;
-    border-radius: 8px;
-    margin-bottom: 1rem;
-  }
-
-  .error-text {
-    font-size: 0.875rem;
-    color: #dc2626;
-    margin: 0;
-    display: flex;
-    align-items: center;
-    gap: 0.5rem;
-  }
-
-  .error-text::before {
-    content: "⚠️";
-    font-size: 1rem;
-  }
-
-  .delete-warning {
-    background: linear-gradient(135deg, #fef2f2 0%, #fee2e2 100%);
-    border: 1px solid #fca5a5;
-    border-radius: 12px;
-    padding: 1rem;
-    margin-bottom: 1rem;
-  }
-
-  .delete-warning-header {
-    display: flex;
-    align-items: center;
-    gap: 0.75rem;
-    margin-bottom: 0.75rem;
-  }
-
-  .delete-icon {
-    width: 3rem;
-    height: 3rem;
-    background: linear-gradient(135deg, #fee2e2 0%, #fca5a5 100%);
-    border-radius: 50%;
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    font-size: 1.5rem;
-  }
-
-  .delete-warning h4 {
-    font-size: 1.125rem;
-    font-weight: 600;
-    color: #991b1b;
-    margin: 0;
-  }
-
-  .delete-warning p {
-    font-size: 0.875rem;
-    color: #7f1d1d;
-    margin: 0;
-  }
-
-  .space-details {
-    background: #f8fafc;
-    border: 1px solid #e2e8f0;
-    border-radius: 8px;
-    padding: 0.75rem;
-    margin: 1rem 0;
-  }
-
-  .space-details p {
-    font-size: 0.875rem;
-    margin: 0.25rem 0;
-  }
-
-  .space-details strong {
-    color: #374151;
-  }
-
-  .delete-final-warning {
-    font-size: 0.875rem;
-    color: #dc2626;
-    font-weight: 500;
-    text-align: center;
-    padding: 0.75rem;
-    background: #fef2f2;
-    border-radius: 8px;
-    border: 1px solid #fca5a5;
-  }
-
-  .btn {
-    padding: 0.75rem 1.5rem;
-    font-size: 0.875rem;
-    font-weight: 600;
-    border-radius: 10px;
-    border: none;
-    cursor: pointer;
-    transition: all 0.2s ease;
-    display: flex;
-    align-items: center;
-    gap: 0.5rem;
-    min-width: 100px;
-    justify-content: center;
-  }
-
-  .btn:disabled {
-    cursor: not-allowed;
-    opacity: 0.6;
-  }
-
-  .btn-secondary {
-    background: #f8fafc;
-    color: #475569;
-    border: 2px solid #e2e8f0;
-  }
-
-  .btn-secondary:hover:not(:disabled) {
-    background: #f1f5f9;
-    border-color: #cbd5e1;
-    transform: translateY(-1px);
-  }
-
-  .btn-primary {
-    background: linear-gradient(135deg, #8b5cf6 0%, #7c3aed 100%);
-    color: white;
-    box-shadow: 0 4px 14px 0 rgba(139, 92, 246, 0.3);
-  }
-
-  .btn-primary:hover:not(:disabled) {
-    background: linear-gradient(135deg, #7c3aed 0%, #6d28d9 100%);
-    transform: translateY(-2px);
-    box-shadow: 0 6px 20px 0 rgba(139, 92, 246, 0.4);
-  }
-
-  .btn-edit {
-    background: linear-gradient(135deg, #3b82f6 0%, #2563eb 100%);
-    color: white;
-    box-shadow: 0 4px 14px 0 rgba(59, 130, 246, 0.3);
-  }
-
-  .btn-edit:hover:not(:disabled) {
-    background: linear-gradient(135deg, #2563eb 0%, #1d4ed8 100%);
-    transform: translateY(-2px);
-    box-shadow: 0 6px 20px 0 rgba(59, 130, 246, 0.4);
-  }
-
-  .btn-danger {
-    background: linear-gradient(135deg, #ef4444 0%, #dc2626 100%);
-    color: white;
-    box-shadow: 0 4px 14px 0 rgba(239, 68, 68, 0.3);
-  }
-
-  .btn-danger:hover:not(:disabled) {
-    background: linear-gradient(135deg, #dc2626 0%, #b91c1c 100%);
-    transform: translateY(-2px);
-    box-shadow: 0 6px 20px 0 rgba(239, 68, 68, 0.4);
-  }
-
-  .spinner {
-    width: 1rem;
-    height: 1rem;
-    border: 2px solid transparent;
-    border-top: 2px solid currentColor;
-    border-radius: 50%;
-    animation: spin 1s linear infinite;
-  }
-
-  @keyframes fadeIn {
-    from {
-      opacity: 0;
-    }
-    to {
-      opacity: 1;
-    }
-  }
-
-  @keyframes slideIn {
-    from {
-      opacity: 0;
-      transform: scale(0.95) translateY(-20px);
-    }
-    to {
-      opacity: 1;
-      transform: scale(1) translateY(0);
-    }
-  }
-
-  @keyframes spin {
-    to {
-      transform: rotate(360deg);
-    }
-  }
-</style>
+    {#snippet footer()}
+      <button type="button" class="app-btn app-btn-secondary" onclick={closeEditModal} disabled={isEditing}>
+        {$_("admin_dashboard.modal.cancel")}
+      </button>
+      <button type="submit" form="edit-space-form" class="app-btn app-btn-primary" disabled={isEditing} aria-busy={isEditing}>
+        {#if isEditing}
+          <span class="spinner spinner-xs spinner-white" aria-hidden="true"></span>
+          {$_("admin_dashboard.modal.updating")}
+        {:else}
+          {$_("admin_dashboard.modal.edit.button")}
+        {/if}
+      </button>
+    {/snippet}
+  </Modal>
+{/if}

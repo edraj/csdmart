@@ -1,8 +1,9 @@
 <script lang="ts">
-    import { Card } from "flowbite-svelte";
     import { onMount } from "svelte";
     import FormField from "./FormField.svelte";
+    import EmptyState from "@/components/ui/EmptyState.svelte";
     import { unionKeys } from "@/utils/renderer/rendererUtils";
+    import { _ } from "@/i18n";
 
     let {
         content = $bindable({}),
@@ -20,7 +21,7 @@
 
     // Seed create-time defaults from the schema. Only ever *adds* missing keys,
     // so any prop already present in the data (declared or not) is preserved.
-    function initializeContent(properties) {
+    function initializeContent(properties: Record<string, any>) {
         for (const key in properties) {
             const prop = properties[key];
 
@@ -49,32 +50,26 @@
     let isArrayContent = $derived(Array.isArray(content));
     let topLevelKeys = $derived(unionKeys(schema, content));
     let hasContent = $derived(
-        isArrayContent ||
-            (content !== null &&
-                typeof content === "object" &&
-                topLevelKeys.length > 0),
+        isArrayContent || (content !== null && typeof content === "object" && topLevelKeys.length > 0),
     );
 </script>
 
-<Card class="p-4 max-w-4xl mx-auto my-2">
+<div class="w-full max-w-4xl mx-auto rounded-card border border-border bg-surface-2 shadow-card p-4 sm:p-5 my-2">
     {#if hasContent}
         {#if schema?.title || schema?.description}
-            {#if schema?.title}
-                <h2 class="text-xl font-bold mb-1">{schema.title}</h2>
-            {/if}
-            {#if schema?.description}
-                <p class="text-gray-600 mb-4">{schema.description}</p>
-            {/if}
+            <div class="mb-4">
+                {#if schema?.title}
+                    <h2 class="text-lg font-semibold text-text">{schema.title}</h2>
+                {/if}
+                {#if schema?.description}
+                    <p class="text-sm text-text-muted mt-1">{schema.description}</p>
+                {/if}
+            </div>
         {/if}
 
-        <div class="space-y-6">
+        <div class="space-y-4">
             {#if isArrayContent}
-                <FormField
-                    name={schema?.title || "Items"}
-                    bind:value={content}
-                    {schema}
-                    idPath="root"
-                />
+                <FormField name={schema?.title || $_("items")} bind:value={content} {schema} idPath="root" />
             {:else}
                 {#each topLevelKeys as key (key)}
                     <FormField
@@ -89,6 +84,6 @@
             {/if}
         </div>
     {:else}
-        <p class="text-gray-500 text-center py-4">No data to display.</p>
+        <EmptyState title={$_("no_data_to_display")} />
     {/if}
-</Card>
+</div>

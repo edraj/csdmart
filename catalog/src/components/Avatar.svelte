@@ -1,17 +1,25 @@
 <script lang="ts">
-  export let src = "";
-  export let alt = "Avatar";
-  export let size: string | number = "200";
+  // A user's picture, or their initials on a stable per-name colour when there
+  // is none (or it fails to load). `alt` is the person's name; leave it empty
+  // when the name is printed right next to the avatar so screen readers do
+  // not hear it twice.
+  let {
+    src = "",
+    alt = "",
+    size = 200,
+    class: className = "",
+  }: { src?: string | null; alt?: string; size?: string | number; class?: string } = $props();
 
-  let imgFailed = false;
-  let hasValidSrc = false;
+  let imgFailed = $state(false);
 
-  $: hasValidSrc = !!src && src.trim() !== "";
-  $: showImage = hasValidSrc && !imgFailed;
-  $: sizePx = typeof size === "number" ? size : parseInt(String(size), 10) || 200;
+  const hasValidSrc = $derived(!!src && src.trim() !== "");
+  const showImage = $derived(hasValidSrc && !imgFailed);
+  const sizePx = $derived(
+    typeof size === "number" ? size : parseInt(String(size), 10) || 200,
+  );
 
-  function getInitials(name : String) {
-    if (!name || name === "Avatar") return "?";
+  function getInitials(name: string) {
+    if (!name) return "?";
     const parts = name.trim().split(/[\s._-]+/).filter(Boolean);
     if (parts.length >= 2) {
       return (parts[0].charAt(0) + parts[1].charAt(0)).toUpperCase();
@@ -19,17 +27,13 @@
     return name.substring(0, 2).toUpperCase();
   }
 
-  function handleError() {
-    imgFailed = true;
-  }
-
   const colors = [
-    "#6366f1", "#8b5cf6", "#ec4899", "#f43f5e",
-    "#f97316", "#eab308", "#22c55e", "#14b8a6",
-    "#06b6d4", "#3b82f6",
+    "#4f46e5", "#7c3aed", "#db2777", "#e11d48",
+    "#ea580c", "#ca8a04", "#16a34a", "#0d9488",
+    "#0891b2", "#2563eb",
   ];
 
-  function getColor(name : String) {
+  function getColor(name: string) {
     if (!name) return colors[0];
     let hash = 0;
     for (let i = 0; i < name.length; i++) {
@@ -41,18 +45,22 @@
 
 {#if showImage}
   <img
-    class="avatar"
+    class="avatar {className}"
     {src}
     {alt}
     height={sizePx}
     width={sizePx}
-    on:error={handleError}
+    loading="lazy"
+    decoding="async"
+    onerror={() => (imgFailed = true)}
   />
 {:else}
   <div
-    class="avatar-initials"
+    class="avatar-initials {className}"
     style="--avatar-size: {sizePx}px; --avatar-bg: {getColor(alt)};"
-    title={alt}
+    role={alt ? "img" : undefined}
+    aria-label={alt || undefined}
+    aria-hidden={alt ? undefined : "true"}
   >
     {getInitials(alt)}
   </div>
@@ -62,6 +70,7 @@
   .avatar {
     border-radius: 50%;
     object-fit: cover;
+    flex-shrink: 0;
   }
 
   .avatar-initials {
@@ -73,7 +82,7 @@
     display: flex;
     align-items: center;
     justify-content: center;
-    color: #1f2937;
+    color: var(--color-text-on-primary);
     font-weight: var(--font-weight-semibold);
     letter-spacing: 0.02em;
     user-select: none;

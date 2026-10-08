@@ -1,24 +1,27 @@
 <script lang="ts">
-    import {
-        Alert,
-        Button,
-        Card,
-        Input,
-        Label,
-        Select,
-        TextPlaceholder,
-    } from "flowbite-svelte";
+    import { Button, Input, Label, Select } from "flowbite-svelte";
     import { Dmart, ResourceType } from "@edraj/tsdmart";
     import { Level, showToast } from "@/utils/toast";
-    import { untrack } from "svelte";
+    import LoadingState from "@/components/ui/LoadingState.svelte";
+    import { errorMessage as describeError } from "@/utils/errorMessage";
+    import { localizedText } from "@/utils/localized";
+    import { _ } from "@/i18n";
 
+    // Self-contained: the form progresses the ticket itself through
+    // Dmart.progressTicket, so it has no state to hand back to its parent.
     let {
         space_name,
         subpath,
         shortname,
         meta,
-        formData = $bindable(),
+    }: {
+        space_name: string;
+        subpath: string;
+        shortname: string;
+        meta: { workflow_shortname?: string; state?: string; is_open?: boolean };
     } = $props();
+
+    const uid = $props.id();
 
     let userRoles: string[] = [];
     try {
@@ -28,7 +31,6 @@
     }
 
     let ticket_status: string | null = $state(null);
-    let ticket_action: string | null = $state(null);
     let resolution: string | null = $state(null);
     let comment = $state("");
 
@@ -36,13 +38,17 @@
     let ticketStates: any[] = $state([]);
     let ticketResolutions: any[] = $state([]);
     let errorMessage = $state("");
+    // The action belongs to whichever state is selected; nothing else sets it.
+    const ticket_action: string | null = $derived(
+        ticketStates?.filter((e) => e.state === ticket_status)[0]?.action || null,
+    );
 
     async function get_ticket_payload() {
         const response = await Dmart.retrieveEntry({
             resource_type: ResourceType.content,
             space_name,
             subpath: "workflows",
-            shortname: meta.workflow_shortname,
+            shortname: meta.workflow_shortname ?? "",
             retrieve_json_payload: true,
             retrieve_attachments: false,
             validate_schema: true,
@@ -50,9 +56,7 @@
         const payload = response?.payload?.body ?? null;
         ticketPayload = payload;
         if (payload) {
-            ticketStates =
-                payload.states.filter((e) => e.state === meta.state)[0]
-                    ?.next || [];
+            ticketStates = payload.states.filter((e: any) => e.state === meta.state)[0]?.next || [];
         }
     }
 
@@ -60,42 +64,16 @@
     const ticketPromise = get_ticket_payload();
 
     $effect(() => {
-        ticket_action =
-            ticketStates?.filter((e) => e.state === ticket_status)[0]?.action ||
-            null;
-    });
-
-    $effect(() => {
         if (ticketStates.length) {
             ticketResolutions =
-                ticketPayload?.states?.filter((e: any) => e.state === ticket_status)[0]
-                    ?.resolutions || [];
+                ticketPayload?.states?.filter((e: any) => e.state === ticket_status)[0]?.resolutions || [];
         }
-    });
-
-    $effect(() => {
-        const _resolution = resolution;
-        const _ticket_action = ticket_action;
-        const _comment = comment;
-        untrack(() => {
-            if (_resolution) {
-                formData.resolution = _resolution;
-            }
-            if (_ticket_action) {
-                formData.action = _ticket_action;
-            }
-            if (_comment) {
-                formData.comment = _comment;
-            }
-        });
     });
 
     /**
      * Progresses a ticket with the given data
      */
-    async function progressTicket(
-        e,
-    ): Promise<{ success: boolean; errorMessage?: string }> {
+    async function progressTicket(e: SubmitEvent): Promise<{ success: boolean; errorMessage?: string }> {
         e.preventDefault();
         errorMessage = "";
         try {
@@ -107,49 +85,37 @@
                 resolution: resolution ?? undefined,
                 comment,
             });
-            showToast(Level.info, `Ticket has been updated successfully!`);
+            showToast(Level.info, $_("ticket_updated"));
             return { success: true };
-        } catch (error: any) {
-            showToast(Level.warn, `Failed to update the ticket!`);
-            if(error?.response?.data?.error?.message){
-                errorMessage = error?.response?.data?.error?.message
-            } else {
-                errorMessage = error.message;
-            }
-
-            return { success: false, errorMessage: error.message };
+        } catch (error: unknown) {
+            showToast(Level.warn, $_("ticket_update_failed"));
+            errorMessage = describeError(error, $_("ticket_update_failed"));
+            return { success: false, errorMessage };
         }
+    }
+
+    function roleAllowed(e: { roles?: string[] }): boolean {
+        return !e.roles || e.roles.some((el) => userRoles.includes(el));
     }
 </script>
 
-<Card class="p-4 max-w-4xl mx-auto my-2">
-    <h1 class="text-2xl font-bold mb-4">Ticket Form</h1>
+<div class="w-full max-w-4xl mx-auto rounded-card border border-border bg-surface-2 shadow-card p-4 sm:p-5 my-2">
+    <h2 class="text-lg font-semibold text-text mb-4">{$_("ticket_form")}</h2>
 
     {#if meta.is_open}
         <form class="flex flex-col space-y-4" onsubmit={progressTicket}>
             {#await ticketPromise}
-                <TextPlaceholder class="m-5" size="lg" style="width: 100%" />
-                <TextPlaceholder class="m-5" size="lg" style="width: 100%" />
-            {:then _}
+                <LoadingState variant="skeleton" rows={3} />
+            {:then _ready}
                 {#if ticketStates.length}
-                    <div class="mb-4">
-                        <Label for="status" class="block mb-2">State</Label>
-                        <Select id="status" bind:value={ticket_status}>
-                            <option value={null}>Select an action</option>
-                            {#each ticketStates as e}
-                                <option
-                                    value={e.state}
-                                    disabled={!e.roles.some((el) =>
-                                        userRoles.includes(el),
-                                    )}
-                                >
+                    <div>
+                        <Label for="{uid}-status" class="mb-1.5">{$_("state")}</Label>
+                        <Select id="{uid}-status" bind:value={ticket_status}>
+                            <option value={null}>{$_("select_an_action")}</option>
+                            {#each ticketStates as e (e.state)}
+                                <option value={e.state} disabled={!roleAllowed(e)}>
                                     {e.state}
-                                    {e.roles &&
-                                    !e.roles.some((el) =>
-                                        userRoles.includes(el),
-                                    )
-                                        ? `(${e.roles})`
-                                        : ""}
+                                    {roleAllowed(e) ? "" : `(${e.roles})`}
                                 </option>
                             {/each}
                         </Select>
@@ -158,19 +124,15 @@
 
                 {#key ticket_status}
                     {#if ticketResolutions.length !== 0}
-                        <div class="mb-4">
-                            <Label for="resolution" class="block mb-2"
-                                >Resolution</Label
-                            >
-                            <Select id="resolution" bind:value={resolution}>
-                                <option value={null}>Select resolution</option>
-                                {#each ticketResolutions as res}
+                        <div>
+                            <Label for="{uid}-resolution" class="mb-1.5">{$_("resolution")}</Label>
+                            <Select id="{uid}-resolution" bind:value={resolution}>
+                                <option value={null}>{$_("select_resolution")}</option>
+                                {#each ticketResolutions as res (typeof res === "string" ? res : res.key)}
                                     {#if typeof res === "string"}
                                         <option value={res}>{res}</option>
                                     {:else}
-                                        <option value={res.key}
-                                            >{res?.en}</option
-                                        >
+                                        <option value={res.key}>{localizedText(res, res.key)}</option>
                                     {/if}
                                 {/each}
                             </Select>
@@ -179,40 +141,25 @@
                 {/key}
 
                 {#if ticket_status && !!ticketPayload?.states?.filter((e: any) => e.state === ticket_status)[0]?.next === false}
-                    <div class="mb-4">
-                        <Label for="comment" class="block mb-2">Comment</Label>
-                        <Input
-                            id="comment"
-                            type="text"
-                            placeholder="Comment..."
-                            bind:value={comment}
-                        />
+                    <div>
+                        <Label for="{uid}-comment" class="mb-1.5">{$_("comment")}</Label>
+                        <Input id="{uid}-comment" type="text" placeholder={$_("comment")} bind:value={comment} />
                     </div>
                 {/if}
 
-                <div class="mb-4 flex flex-col items-end">
-                    <Button
-                        type="submit"
-                        class="bg-primary text-white hover:bg-primary-700"
-                    >
-                        Submit
-                    </Button>
+                <div class="flex flex-col items-end gap-2">
+                    <Button type="submit" color="primary" size="sm">{$_("submit")}</Button>
                     {#if errorMessage}
-                        <div class="text-red-500 text-sm mt-2 font-medium">
-                            {errorMessage}
-                        </div>
+                        <p class="text-danger text-sm font-medium" role="alert">{errorMessage}</p>
                     {/if}
                 </div>
-
-                <!--            <div class="mb-4">-->
-                <!--                <Label for="transfer" class="block mb-2">Transfer</Label>-->
-                <!--                <Input id="transfer" type="text" placeholder="Transfer to..." bind:value={to_shortname} />-->
-                <!--            </div>-->
+            {:catch error}
+                <p class="text-danger text-sm" role="alert">{describeError(error, $_("entry_load_failed"))}</p>
             {/await}
         </form>
     {:else}
-        <Alert color="blue" class="mb-4 text-lg text-center">
-            This ticket is closed. You cannot perform any actions on it.
-        </Alert>
+        <p class="rounded-card border border-info/30 bg-info-soft text-text px-4 py-3 text-sm" role="status">
+            {$_("ticket_closed")}
+        </p>
     {/if}
-</Card>
+</div>

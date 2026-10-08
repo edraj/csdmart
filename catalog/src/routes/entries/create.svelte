@@ -1,19 +1,16 @@
 <script lang="ts">
-  import { goto, params } from "@roxi/routify";
+  import { log } from "@/lib/logger";
+  import { goto as gotoStore, params } from "@roxi/routify";
   import HtmlEditor from "@/components/editors/HtmlEditor.svelte";
-  import { sanitizeHtml } from "@/lib/utils/sanitize";
   import {
     attachAttachmentsToEntity,
     createEntity,
     getEntityByShortname,
     getSpaceFolders,
-    getSpaces,
     getSpaceSchema,
   } from "@/lib/dmart_services";
   import {
     getTemplateFromSchemaAttachment,
-    hasTemplateAttachment,
-    hasMarkdownTemplateAttachment,
     getMarkdownTemplateFromSchemaAttachment,
   } from "@/lib/dmart_services/templates";
   import {
@@ -38,32 +35,25 @@
     TrashBinSolid,
     UploadOutline,
   } from "flowbite-svelte-icons";
-  import { _, locale } from "@/i18n";
-  import { derived as derivedStore } from "svelte/store";
+  import { _ } from "@/i18n";
+  import { setTitle } from "@/lib/title";
   import { onMount } from "svelte";
   import { ResourceType, DmartScope } from "@edraj/tsdmart";
   import { roles } from "@/stores/user";
   import { isSuperAdmin } from "@/lib/access";
   import MarkdownEditor from "@/components/editors/MarkdownEditor.svelte";
   import DynamicSchemaBasedForms from "@/components/forms/DynamicSchemaBasedForms.svelte";
-  import { marked } from "marked";
-  import { mangle } from "marked-mangle";
-  import { gfmHeadingId } from "marked-gfm-heading-id";
-
-  marked.use(mangle());
-  marked.use(
-    gfmHeadingId({
-      prefix: "my-prefix-",
-    }),
-  );
+  import { renderMarkdown } from "@/lib/markdown";
   // Touch both Routify helpers at root level so Svelte 5 binds the
   // routify context before any async work (onMount, $effect) reads them.
   // Without this Routify logs "Unable to access context" on navigation.
-  $goto;
-  $params;
+  // Routify's helpers read the fragment context when first subscribed, and
+  // Svelte 5 subscribes to a `$store` lazily on first read — so a `$gotoStore`
+  // first touched inside an async callback logs "Unable to access context".
+  // Capture the navigate function once, during component init.
+  const goto = $gotoStore;
 
   let isLoading = $state(false);
-  let content = "";
   let resource_type = $state(ResourceType.content);
   let itemResourceType: any;
   let isAdmin = $state(false);
@@ -89,7 +79,7 @@
   let shortname = $state("");
   let slug = $state("");
   let shortnameError = $state("");
-  const shortnamePattern = "^[a-zA-Z\\u0621-\\u064a0-9\\u0660-\\u0669\\u064b-\\u065f_]{1,64}$";
+  const shortnamePattern = "^[\\u064b-\\u065fa-zA-Z\\u0621-\\u064a0-9\\u0660-\\u0669_]{1,64}$";
 
   function validateShortnameInput(value: string): boolean {
     if (!value || value === "auto") return true;
@@ -107,11 +97,8 @@
   }
 
   let selectedSpace = $state("");
-  let spaces = $state<any[]>([]);
   let subpathHierarchy = $state<any[]>([]);
   let currentPath = $state("");
-  let loadingSpaces = $state(false);
-  let loadingSubpaths = $state(false);
 
   const canCreateEntry = $derived(
     shortname.trim().length > 0 && !shortnameError
@@ -152,17 +139,10 @@
   let markdownEditorRef: any = $state(null);
   let htmlEditorRef: any = $state(null);
   let markdownContent = $state("");
-  let schemas: any;
   let entity: any;
 
-  const isRTL = derivedStore(
-    locale,
-    ($locale: any) => $locale === "ar" || $locale === "ku",
-  );
 
-  let rolesValue: any;
   roles.subscribe((value: any) => {
-    rolesValue = value;
     isAdmin = isSuperAdmin(value);
   });
 
@@ -207,7 +187,7 @@
       }
     } catch (error) {
       errorToastMessage("Failed to load poll schema");
-      console.error("Error loading poll schema:", error);
+      log.error("Error loading poll schema:", error);
     } finally {
       loadingPollSchema = false;
     }
@@ -232,20 +212,10 @@
       }
     } catch (error) {
       errorToastMessage("Failed to load schemas");
-      console.error("Error loading schemas:", error);
+      log.error("Error loading schemas:", error);
       availableSchemas = [];
     } finally {
       loadingSchemas = false;
-    }
-  }
-
-  async function handleSpaceChange(event: any) {
-    selectedSpace = event.target.value;
-    if (selectedSpace) {
-      await initializeSubpathHierarchy(selectedSpace);
-      if (entryType === "structured") {
-        await loadSchemasForSpace();
-      }
     }
   }
 
@@ -290,23 +260,13 @@
   });
 
   async function loadSpaces() {
-    loadingSpaces = true;
     try {
-      const response = await getSpaces(false, DmartScope.managed, ["management"]);
-
-      spaces = (response?.records ?? []).map((space: any) => ({
-        value: space?.shortname,
-        name: space?.attributes?.displayname?.en || space?.shortname,
-      }));
-
       if (selectedSpace) {
         await initializeSubpathHierarchy(selectedSpace);
       }
     } catch (error) {
       errorToastMessage($_("create_entry.error.load_spaces_failed"));
-      console.error("Error loading spaces:", error);
-    } finally {
-      loadingSpaces = false;
+      log.error("Error loading spaces:", error);
     }
   }
 
@@ -337,7 +297,6 @@
   async function loadSubpathLevel(spaceName: any, parentPath: any, level: any) {
     if (!spaceName) return;
 
-    loadingSubpaths = true;
     try {
       // Fetch the parent folder ITSELF in parallel with its children. The
       // children query (getSpaceFolders) feeds the next-level dropdown; the
@@ -409,9 +368,7 @@
       updateCanCreateEntry();
     } catch (error) {
       errorToastMessage($_("create_entry.error.load_subpaths_failed"));
-      console.error("Error loading subpaths:", error);
-    } finally {
-      loadingSubpaths = false;
+      log.error("Error loading subpaths:", error);
     }
   }
 
@@ -423,26 +380,6 @@
     schema_shortname = lastLevel.schema_shortname;
     allowedSchemaShortnames = lastLevel.content_schema_shortnames || [];
     currentPath = lastLevel.path;
-  }
-
-  async function handleSubpathChange(level: any, folderValue: any) {
-    const levelData = subpathHierarchy[level];
-    if (!levelData) return;
-
-    levelData.selectedFolder = folderValue;
-
-    if (folderValue) {
-      const selectedFolder = levelData.folders.find(
-        (f: any) => f.value === folderValue,
-      );
-      if (selectedFolder) {
-        const newPath = selectedFolder.fullPath;
-        await loadSubpathLevel(selectedSpace, `/${newPath}`, level + 1);
-      }
-    } else {
-      subpathHierarchy = subpathHierarchy.slice(0, level + 1);
-      updateCanCreateEntry();
-    }
   }
 
   let tags = $state<any[]>([]);
@@ -487,14 +424,8 @@
 
   let attachments = $state<AttachmentEntry[]>([]);
 
-  const uploadingCount = $derived(
-    attachments.filter((a) => a.status === "uploading").length,
-  );
   const uploadedCount = $derived(
     attachments.filter((a) => a.status === "success").length,
-  );
-  const isUploadingAttachments = $derived(
-    attachments.some((a) => a.status === "uploading"),
   );
   const showUploadBanner = $derived(
     attachments.length > 0 &&
@@ -899,7 +830,7 @@
           } else {
             attachments[i] = { ...attachments[i], status: "success" };
           }
-        } catch (err) {
+        } catch {
           attachments[i] = { ...attachments[i], status: "error" };
           errorToastMessage(
             $_("create_entry.error.attachment_failed", {
@@ -975,7 +906,7 @@
       if (!seen.has(fieldName)) {
         seen.add(fieldName);
 
-        let inputType = "text";
+        let inputType: string;
         let placeholder = `Enter ${fieldName.replace(/_/g, " ")}`;
 
         switch (fieldType.toLowerCase()) {
@@ -1121,9 +1052,9 @@
   function navigateToBreadcrumb(crumb: Crumb) {
     if (!crumb.route) return;
     if (crumb.params) {
-      $goto(crumb.route, crumb.params);
+      goto(crumb.route, crumb.params);
     } else {
-      $goto(crumb.route);
+      goto(crumb.route);
     }
   }
 
@@ -1131,7 +1062,7 @@
     if (parentCrumb) {
       navigateToBreadcrumb(parentCrumb);
     } else {
-      $goto("/entries");
+      goto("/entries");
     }
   }
 
@@ -1157,7 +1088,7 @@
         // but also overwrites selectedSubpath — restore the correct value after
         updateCanCreateEntry();
         currentPath = normalizedSubpath;
-      } catch (e) {
+      } catch {
         currentPath = normalizedSubpath;
       }
     }
@@ -1167,15 +1098,17 @@
     await loadSpaces();
     await loadPrefilledData();
   });
+
+  $effect(() => setTitle($_("my_entries.create_new")));
 </script>
 
-<div class="page-container" class:rtl={$isRTL}>
+<div class="page-container">
   <div class="content-wrapper">
     <div class="create-header">
       <div class="create-header-inner">
         <button
           onclick={goBack}
-          class="w-10 h-10 bg-indigo-50 hover:bg-indigo-100 text-indigo-600 rounded-xl flex items-center justify-center transition-colors shadow-sm"
+          class="w-10 h-10 bg-primary-soft hover:bg-primary-soft text-primary rounded-xl flex items-center justify-center transition-colors shadow-sm"
           aria-label={$_("entry_detail.navigation.back_to_folder") || "Go back"}
           type="button"
         >
@@ -1198,15 +1131,15 @@
             {$_("my_entries.create_new")}
           </h1>
           <nav
-            class="flex text-sm text-gray-500 font-medium mb-1"
-            aria-label="Breadcrumb"
+            class="flex text-sm text-text-muted font-medium mb-1"
+            aria-label={$_("ui.breadcrumb")}
           >
             <ol class="inline-flex items-center space-x-2">
-              {#each breadcrumbs as crumb, index}
+              {#each breadcrumbs as crumb, index (index)}
                 <li class="inline-flex items-center">
                   {#if index > 0}
                     <svg
-                      class="w-4 h-4 mx-1 text-gray-400"
+                      class="w-4 h-4 mx-1 text-text-faint"
                       fill="none"
                       stroke="currentColor"
                       viewBox="0 0 24 24"
@@ -1318,11 +1251,11 @@
     <div class="section">
       <div class="section-header">
         <FileCheckSolid class="section-icon" />
-        <h2>Entry Details</h2>
+        <h2>{$_("create_entry.details")}</h2>
       </div>
       <div class="section-content details-content">
         <div class="form-row">
-          <span class="form-row-label">Type</span>
+          <span class="form-row-label">{$_("ui.resource_type")}</span>
           <div class="entry-type-selector compact">
             {#if !allowedSchemaShortnames.length}
               <label class="entry-type-option">
@@ -1348,8 +1281,8 @@
                 onchange={handleEntryTypeChange}
               />
               <span class="entry-type-label">
-                <strong>Structured Entry</strong>
-                <small>Form data merged with markdown template preview</small>
+                <strong>{$_("create_entry.structured_entry")}</strong>
+                <small>{$_("create_entry.structured_hint")}</small>
               </span>
             </label>
           </div>
@@ -1372,7 +1305,7 @@
                   <option value=""
                     >{$_("create_entry.schema.choose_option")}</option
                   >
-                  {#each filteredSchemas as schema}
+                  {#each filteredSchemas as schema (schema.shortname)}
                     <option value={schema.shortname}>{schema.title}</option>
                   {/each}
                 </select>
@@ -1425,7 +1358,7 @@
                 type="button"
                 class="shortname-auto-btn"
                 onclick={() => (shortname = "auto")}
-                title="Use auto-generated shortname"
+                title={$_("labels.auto_shortname")}
               >
                 Auto
               </button>
@@ -1486,7 +1419,7 @@
 
             {#if tags.length > 0}
               <div class="tags-container">
-                {#each tags as tag, index}
+                {#each tags as tag, index (index)}
                   <div class="tag-item">
                     <TagOutline class="tag-icon" />
                     <span class="tag-text">{tag}</span>
@@ -1543,7 +1476,6 @@
                 bind:content={htmlEditor}
                 uid="main-editor"
                 {attachments}
-                {resource_type}
                 subpath={$params.subpath}
                 space_name={selectedSpace}
                 parent_shortname={shortname}
@@ -1582,7 +1514,7 @@
                 <option value=""
                   >{$_("create_entry.schema.choose_option")}</option
                 >
-                {#each filteredSchemas as schema}
+                {#each filteredSchemas as schema (schema.shortname)}
                   <option value={schema.shortname}>{schema.title}</option>
                 {/each}
               </select>
@@ -1647,7 +1579,7 @@
               </div>
               <div class="template-data-card-body">
                 <div class="template-form">
-                  {#each parseTemplateFields(schemaBasedTemplate.schema) as field}
+                  {#each parseTemplateFields(schemaBasedTemplate.schema) as field (field.name)}
                     <div class="form-field">
                       <label for="schema-template-{field.name}" class="field-label">
                         {field.label}
@@ -1662,13 +1594,13 @@
                           {#if !templateFormData[field.name]}
                             {templateFormData[field.name] = [''], ''}
                           {/if}
-                          {#each templateFormData[field.name] as item, index (index)}
+                          {#each templateFormData[field.name] as _item, index (index)}
                             <div class="list-input-row">
                               <input
                                 type="text"
                                 bind:value={templateFormData[field.name][index]}
                                 class="field-input list-input"
-                                placeholder={`Item ${index + 1}`}
+                                placeholder={$_("labels.item_n", { values: { n: index + 1 } })}
                               />
                               <button
                                 type="button"
@@ -1676,7 +1608,8 @@
                                 onclick={() => {
                                   templateFormData[field.name] = templateFormData[field.name].filter((_: any, i: any) => i !== index);
                                 }}
-                                title="Remove item"
+                                title={$_("labels.remove_item")}
+                                aria-label={$_("labels.remove_item")}
                               >
                                 ✕
                               </button>
@@ -1705,11 +1638,11 @@
                         ></textarea>
                         {#if field.originalType === "object"}
                           <small class="field-hint"
-                            >Enter valid JSON object</small
+                            >{$_("template_generator.hint_json_object")}</small
                           >
                         {:else if field.originalType === "list_object"}
                           <small class="field-hint"
-                            >Enter valid JSON array of objects</small
+                            >{$_("template_generator.hint_json_array")}</small
                           >
                         {/if}
                       {:else if field.type === "checkbox"}
@@ -1744,7 +1677,7 @@
                 {$_("create_entry.template.preview_title")}
               </h3>
               <div class="template-preview markdown-preview">
-                {@html sanitizeHtml(marked(generateContentFromSchemaTemplate()))}
+                {@html renderMarkdown(generateContentFromSchemaTemplate())}
               </div>
             </div>
           </div>
@@ -1792,7 +1725,7 @@
                     </div>
                     <div class="template-data-card-body">
                       <div class="template-form">
-                        {#each parseTemplateFields(schemaBasedTemplate.schema) as field}
+                        {#each parseTemplateFields(schemaBasedTemplate.schema) as field (field.name)}
                           <div class="form-field">
                             <label for="structured-template-{field.name}" class="field-label">
                               {field.label}
@@ -1806,13 +1739,13 @@
                                 {#if !templateFormData[field.name]}
                                   {templateFormData[field.name] = [''], ''}
                                 {/if}
-                                {#each templateFormData[field.name] as item, index (index)}
+                                {#each templateFormData[field.name] as _item, index (index)}
                                   <div class="list-input-row">
                                     <input
                                       type="text"
                                       bind:value={templateFormData[field.name][index]}
                                       class="field-input list-input"
-                                      placeholder={`Item ${index + 1}`}
+                                      placeholder={$_("labels.item_n", { values: { n: index + 1 } })}
                                     />
                                     <button
                                       type="button"
@@ -1820,7 +1753,8 @@
                                       onclick={() => {
                                         templateFormData[field.name] = templateFormData[field.name].filter((_: any, i: any) => i !== index);
                                       }}
-                                      title="Remove item"
+                                      title={$_("labels.remove_item")}
+                                aria-label={$_("labels.remove_item")}
                                     >
                                       ✕
                                     </button>
@@ -1846,9 +1780,9 @@
                                 rows={field.originalType === "object" || field.originalType === "list_object" ? 5 : 3}
                               ></textarea>
                               {#if field.originalType === "object"}
-                                <small class="field-hint">Enter valid JSON object</small>
+                                <small class="field-hint">{$_("template_generator.hint_json_object")}</small>
                               {:else if field.originalType === "list_object"}
-                                <small class="field-hint">Enter valid JSON array of objects</small>
+                                <small class="field-hint">{$_("template_generator.hint_json_array")}</small>
                               {/if}
                             {:else if field.type === "checkbox"}
                               <div class="checkbox-wrapper">
@@ -1887,7 +1821,7 @@
                 </div>
                 <div class="section-content">
                   <div class="template-preview markdown-preview">
-                    {@html sanitizeHtml(marked(generateContentFromSchemaTemplate()))}
+                    {@html renderMarkdown(generateContentFromSchemaTemplate())}
                   </div>
                 </div>
               </div>
@@ -1935,7 +1869,7 @@
           {:else}
             <div class="empty-state">
               <FileCheckSolid class="empty-icon" />
-              <p>Failed to load poll schema</p>
+              <p>{$_("create_entry.poll_schema_failed")}</p>
             </div>
           {/if}
         </div>
@@ -1973,12 +1907,12 @@
         <div class="section-content">
           {#if attachments.length > 0}
             <div class="attachments-list">
-              {#each attachments as attachment, index}
+              {#each attachments as attachment, index (index)}
                 <div class="attachment-row" data-status={attachment.status}>
                   <div class="attachment-preview">
                     {#if getPreviewUrl(attachment.file)}
                       {#if attachment.file.type.startsWith("image/")}
-                        <img
+                        <img loading="lazy" decoding="async"
                           src={getPreviewUrl(attachment.file) || "/placeholder.svg"}
                           alt={attachment.file.name || "no-image"}
                           class="attachment-image"
@@ -2009,15 +1943,15 @@
                       </div>
                     {/if}
                     {#if attachment.status === "uploading"}
-                      <div class="attachment-status-overlay uploading" aria-label="Uploading">
+                      <div class="attachment-status-overlay uploading" aria-label={$_("labels.uploading")}>
                         <span class="attachment-spinner" aria-hidden="true"></span>
                       </div>
                     {:else if attachment.status === "success"}
-                      <div class="attachment-status-overlay success" aria-label="Uploaded">
+                      <div class="attachment-status-overlay success" aria-label={$_("labels.uploaded")}>
                         <CheckCircleSolid class="status-icon" />
                       </div>
                     {:else if attachment.status === "error"}
-                      <div class="attachment-status-overlay error" aria-label="Upload failed">
+                      <div class="attachment-status-overlay error" aria-label={$_("labels.upload_failed")}>
                         <CloseCircleSolid class="status-icon" />
                       </div>
                     {/if}
@@ -2046,7 +1980,7 @@
                             type="text"
                             class="metadata-input"
                             bind:value={attachments[index].displayname.en}
-                            placeholder="English"
+                            placeholder={$_("english")}
                           />
                           <input
                             type="text"
@@ -2071,7 +2005,7 @@
                             class="metadata-input"
                             rows="2"
                             bind:value={attachments[index].description.en}
-                            placeholder="English"
+                            placeholder={$_("english")}
                           ></textarea>
                           <textarea
                             class="metadata-input"
@@ -2130,17 +2064,17 @@
   }
 
   .create-page-title {
-    font-family: var(--font-display);
+    font-family: var(--font-sans);
     font-weight: 700;
     font-size: clamp(1.5rem, 3vw, 1.75rem);
     line-height: 1.2;
     letter-spacing: -0.02em;
-    color: var(--color-gray-900);
+    color: var(--color-text);
   }
 
   .create-breadcrumb-link {
     font-size: 0.875rem;
-    color: var(--color-gray-400);
+    color: var(--color-text-faint);
     cursor: pointer;
     transition: color var(--duration-fast) var(--ease-out);
     background: none;
@@ -2155,55 +2089,39 @@
   .create-breadcrumb-current {
     font-size: 0.875rem;
     font-weight: 500;
-    color: var(--color-gray-900);
+    color: var(--color-text);
   }
 
-  .rtl {
-    direction: rtl;
-  }
 
-  .rtl .selector-label {
-    text-align: right;
-  }
 
-  .rtl .destination-select {
-    text-align: right;
-  }
 
-  .rtl .tag-input {
-    text-align: right;
-  }
 
-  .rtl .tag-remove {
-    margin-left: 0;
-    margin-right: 0.25rem;
-  }
 
   .selector-label {
     font-weight: 600;
-    color: #374151;
+    color: var(--color-text);
     font-size: 0.875rem;
   }
 
   :root {
-    --primary-color: #2563eb;
-    --primary-light: #3b82f6;
-    --primary-dark: #1d4ed8;
-    --secondary-color: #64748b;
-    --success-color: #10b981;
-    --danger-color: #ef4444;
-    --warning-color: #f59e0b;
-    --gray-50: #f8fafc;
-    --gray-100: #f1f5f9;
-    --gray-200: #e2e8f0;
-    --gray-300: #cbd5e1;
-    --gray-400: #94a3b8;
-    --gray-500: #64748b;
-    --gray-600: #475569;
-    --gray-700: #334155;
-    --gray-800: #1e293b;
-    --gray-900: #0f172a;
-    --white: #ffffff;
+    --primary-color: var(--color-primary-hover);
+    --primary-light: var(--color-primary);
+    --primary-dark: var(--color-primary-hover);
+    --secondary-color: var(--color-text-muted);
+    --success-color: var(--color-success);
+    --danger-color: var(--color-danger);
+    --warning-color: var(--color-warning);
+    --gray-50: var(--color-surface);
+    --gray-100: var(--color-surface-3);
+    --gray-200: var(--color-border);
+    --gray-300: var(--color-border-strong);
+    --gray-400: var(--color-text-faint);
+    --gray-500: var(--color-text-muted);
+    --gray-600: var(--color-text-muted);
+    --gray-700: var(--color-text);
+    --gray-800: var(--color-text);
+    --gray-900: var(--color-text);
+    --white: var(--color-surface-2);
     --shadow-sm: 0 1px 2px 0 rgba(0, 0, 0, 0.05);
     --shadow-md: 0 4px 6px -1px rgba(0, 0, 0, 0.1),
       0 2px 4px -1px rgba(0, 0, 0, 0.06);
@@ -2248,11 +2166,11 @@
   }
 
   .action-section {
-    background: var(--white);
-    border-radius: var(--radius-xl);
+    background: var(--color-surface);
+    border-radius: var(--radius-card);
     padding: 2rem;
     margin-bottom: 2rem;
-    box-shadow: var(--shadow-md);
+    box-shadow: var(--shadow-card);
     border: 1px solid var(--gray-200);
   }
 
@@ -2273,7 +2191,7 @@
     width: 3rem;
     height: 3rem;
     background: var(--primary-color);
-    color: var(--white);
+    color: white;
     border-radius: 50%;
     display: flex;
     align-items: center;
@@ -2305,7 +2223,7 @@
     align-items: center;
     gap: 0.5rem;
     padding: 0.75rem 1.5rem;
-    border-radius: var(--radius-lg);
+    border-radius: var(--radius-card);
     font-weight: 500;
     transition: all 0.2s ease;
     cursor: pointer;
@@ -2321,18 +2239,18 @@
   .draft-button:hover:not(:disabled) {
     background: var(--gray-200);
     transform: translateY(-1px);
-    box-shadow: var(--shadow-md);
+    box-shadow: var(--shadow-card);
   }
 
   .publish-button {
     background: var(--primary-color);
-    color: var(--white);
+    color: white;
   }
 
   .publish-button:hover:not(:disabled) {
     background: var(--primary-dark);
     transform: translateY(-1px);
-    box-shadow: var(--shadow-lg);
+    box-shadow: var(--shadow-modal);
   }
 
   .draft-button:disabled,
@@ -2342,10 +2260,10 @@
   }
 
   .section {
-    background: var(--white);
-    border-radius: var(--radius-xl);
+    background: var(--color-surface);
+    border-radius: var(--radius-card);
     margin-bottom: 2rem;
-    box-shadow: var(--shadow-md);
+    box-shadow: var(--shadow-card);
     border: 1px solid var(--gray-200);
     overflow: hidden;
   }
@@ -2403,12 +2321,12 @@
     width: 100%;
     padding: 0.625rem 0.875rem;
     border: 1px solid var(--gray-200);
-    border-radius: var(--radius-lg);
+    border-radius: var(--radius-card);
     font-size: 0.95rem;
     color: var(--gray-800);
     transition: all 0.2s ease;
     outline: none;
-    background: var(--white);
+    background: var(--color-surface);
   }
 
   .form-row-input:focus {
@@ -2427,9 +2345,9 @@
     display: flex;
     align-items: stretch;
     border: 1px solid var(--gray-200);
-    border-radius: var(--radius-lg);
+    border-radius: var(--radius-card);
     overflow: hidden;
-    background: var(--white);
+    background: var(--color-surface);
     transition:
       border-color 0.2s ease,
       box-shadow 0.2s ease;
@@ -2459,7 +2377,7 @@
     padding: 0 1rem;
     background: var(--gray-100);
     border: none;
-    border-left: 1px solid var(--gray-200);
+    border-inline-start: 1px solid var(--gray-200);
     color: var(--primary-color);
     font-size: 0.8125rem;
     font-weight: 700;
@@ -2473,8 +2391,8 @@
 
   .shortname-auto-btn:hover {
     background: var(--primary-color);
-    color: #fff;
-    border-left-color: var(--primary-color);
+    color: var(--color-surface-2);
+    border-inline-start-color: var(--primary-color);
   }
 
   .shortname-help {
@@ -2514,7 +2432,7 @@
     flex: 1;
     padding: 0.75rem 1rem;
     border: 1px solid var(--gray-200);
-    border-radius: var(--radius-lg);
+    border-radius: var(--radius-card);
     font-size: 0.875rem;
     transition: all 0.2s ease;
     outline: none;
@@ -2531,9 +2449,9 @@
     gap: 0.5rem;
     padding: 0.75rem 1.5rem;
     background: var(--primary-color);
-    color: var(--white);
+    color: white;
     border: none;
-    border-radius: var(--radius-lg);
+    border-radius: var(--radius-card);
     font-weight: 500;
     cursor: pointer;
     transition: all 0.2s ease;
@@ -2542,7 +2460,7 @@
   .add-tag-button:hover:not(:disabled) {
     background: var(--primary-dark);
     transform: translateY(-1px);
-    box-shadow: var(--shadow-md);
+    box-shadow: var(--shadow-card);
   }
 
   .add-tag-button:disabled {
@@ -2563,7 +2481,7 @@
     padding: 0.5rem 0.75rem;
     background: var(--gray-100);
     border: 1px solid var(--gray-200);
-    border-radius: var(--radius-xl);
+    border-radius: var(--radius-card);
     font-size: 0.875rem;
     color: var(--gray-700);
     transition: all 0.2s ease;
@@ -2573,7 +2491,7 @@
   .tag-item:hover {
     background: var(--gray-200);
     transform: translateY(-1px);
-    box-shadow: var(--shadow-sm);
+    box-shadow: var(--shadow-card);
   }
 
   .tag-text {
@@ -2582,7 +2500,7 @@
 
   .tag-remove {
     background: var(--danger-color);
-    color: var(--white);
+    color: white;
     border: none;
     border-radius: 50%;
     width: 1.25rem;
@@ -2592,11 +2510,11 @@
     justify-content: center;
     cursor: pointer;
     transition: all 0.2s ease;
-    margin-left: 0.25rem;
+    margin-inline-start: 0.25rem;
   }
 
   .tag-remove:hover {
-    background: #dc2626;
+    background: var(--color-danger);
     transform: scale(1.1);
   }
 
@@ -2617,7 +2535,7 @@
 
   .editor-container {
     border: 1px solid var(--gray-200);
-    border-radius: var(--radius-lg);
+    border-radius: var(--radius-card);
     overflow: hidden;
     height: 500px;
   }
@@ -2628,9 +2546,9 @@
     gap: 0.5rem;
     padding: 0.75rem 1.5rem;
     background: var(--primary-color);
-    color: var(--white);
+    color: white;
     border: none;
-    border-radius: var(--radius-lg);
+    border-radius: var(--radius-card);
     font-weight: 500;
     cursor: pointer;
     transition: all 0.2s ease;
@@ -2639,7 +2557,7 @@
   .add-files-button:hover {
     background: var(--primary-dark);
     transform: translateY(-1px);
-    box-shadow: var(--shadow-md);
+    box-shadow: var(--shadow-card);
   }
 
   .attachments-list {
@@ -2649,9 +2567,9 @@
   }
 
   .attachment-row {
-    background: var(--white);
+    background: var(--color-surface);
     border: 1px solid var(--gray-200);
-    border-radius: var(--radius-lg);
+    border-radius: var(--radius-card);
     overflow: hidden;
     transition: all 0.2s ease;
     position: relative;
@@ -2662,7 +2580,7 @@
 
   .attachment-row:hover {
     border-color: var(--primary-color);
-    box-shadow: var(--shadow-md);
+    box-shadow: var(--shadow-card);
   }
 
   .attachment-preview {
@@ -2673,7 +2591,7 @@
     position: relative;
     overflow: hidden;
     background: var(--gray-50);
-    border-right: 1px solid var(--gray-200);
+    border-inline-end: 1px solid var(--gray-200);
   }
 
   .attachment-image,
@@ -2686,7 +2604,7 @@
   .video-overlay {
     position: absolute;
     top: 50%;
-    left: 50%;
+    inset-inline-start: 50%;
     transform: translate(-50%, -50%);
     background: rgba(0, 0, 0, 0.6);
     border-radius: 50%;
@@ -2718,7 +2636,7 @@
   .attachment-info {
     padding: 0;
     border-top: none;
-    padding-right: 2.5rem;
+    padding-inline-end: 2.5rem;
   }
 
   .attachment-name {
@@ -2769,7 +2687,7 @@
     border-radius: var(--radius-md, 0.5rem);
     font-size: 0.8125rem;
     color: var(--gray-800);
-    background: var(--white);
+    background: var(--color-surface);
     transition: border-color 0.15s ease, box-shadow 0.15s ease;
     resize: vertical;
     font-family: inherit;
@@ -2796,12 +2714,12 @@
 
   .attachment-status-overlay.success {
     background: rgba(16, 185, 129, 0.35);
-    color: #047857;
+    color: var(--color-success);
   }
 
   .attachment-status-overlay.error {
     background: rgba(239, 68, 68, 0.35);
-    color: #b91c1c;
+    color: var(--color-danger-hover);
   }
 
   .attachment-status-overlay :global(.status-icon) {
@@ -2814,7 +2732,7 @@
     width: 1.75rem;
     height: 1.75rem;
     border: 3px solid rgba(255, 255, 255, 0.35);
-    border-top-color: #ffffff;
+    border-top-color: var(--color-surface-2);
     border-radius: 50%;
     animation: attachment-spin 0.75s linear infinite;
   }
@@ -2847,7 +2765,7 @@
     );
     border: 1px solid rgba(99, 102, 241, 0.25);
     border-radius: var(--radius-lg, 0.75rem);
-    color: var(--primary-color, #4f46e5);
+    color: var(--primary-color, var(--color-primary));
   }
 
   .attachments-upload-banner-spinner {
@@ -2855,7 +2773,7 @@
     width: 1.5rem;
     height: 1.5rem;
     border: 3px solid rgba(99, 102, 241, 0.25);
-    border-top-color: var(--primary-color, #4f46e5);
+    border-top-color: var(--primary-color, var(--color-primary));
     border-radius: 50%;
     animation: attachment-spin 0.75s linear infinite;
   }
@@ -2871,7 +2789,7 @@
   .attachments-upload-banner-text strong {
     font-size: 0.875rem;
     font-weight: 600;
-    color: var(--primary-color, #4f46e5);
+    color: var(--primary-color, var(--color-primary));
   }
 
   .attachments-upload-banner-progress {
@@ -2884,7 +2802,7 @@
 
   .attachments-upload-banner-progress-fill {
     height: 100%;
-    background: var(--primary-color, #4f46e5);
+    background: var(--primary-color, var(--color-primary));
     border-radius: 999px;
     transition: width 0.25s ease;
   }
@@ -2892,9 +2810,9 @@
   .remove-attachment {
     position: absolute;
     top: 0.5rem;
-    right: 0.5rem;
+    inset-inline-end: 0.5rem;
     background: var(--danger-color);
-    color: var(--white);
+    color: white;
     border: none;
     border-radius: 50%;
     width: 2rem;
@@ -2917,7 +2835,7 @@
   }
 
   .remove-attachment:hover {
-    background: #dc2626;
+    background: var(--color-danger);
     transform: scale(1.1);
   }
 
@@ -2926,7 +2844,7 @@
     padding: 4rem 2rem;
     background: var(--gray-50);
     border: 2px dashed var(--gray-200);
-    border-radius: var(--radius-lg);
+    border-radius: var(--radius-card);
     color: var(--gray-500);
     display: flex;
     flex-direction: column;
@@ -2981,7 +2899,7 @@
       width: 100%;
       height: 9rem;
       min-height: 0;
-      border-right: none;
+      border-inline-end: none;
       border-bottom: 1px solid var(--gray-200);
     }
 
@@ -2994,7 +2912,7 @@
     display: flex;
     align-items: center;
     gap: 1rem;
-    margin-left: auto;
+    margin-inline-start: auto;
   }
 
   .editor-selector-label {
@@ -3006,7 +2924,7 @@
   .editor-toggle {
     display: flex;
     background: var(--gray-100);
-    border-radius: var(--radius-lg);
+    border-radius: var(--radius-card);
     padding: 0.25rem;
     border: 1px solid var(--gray-200);
   }
@@ -3018,7 +2936,7 @@
     padding: 0.5rem 1rem;
     background: transparent;
     border: none;
-    border-radius: var(--radius-md);
+    border-radius: var(--radius-control);
     color: var(--gray-600);
     font-size: 0.875rem;
     font-weight: 500;
@@ -3031,9 +2949,9 @@
   }
 
   .editor-toggle-btn.active {
-    background: var(--white);
+    background: var(--color-surface);
     color: var(--primary-color);
-    box-shadow: var(--shadow-sm);
+    box-shadow: var(--shadow-card);
   }
 
   .editor-icon {
@@ -3044,7 +2962,7 @@
     .editor-selector {
       flex-direction: column;
       gap: 0.5rem;
-      margin-left: 0;
+      margin-inline-start: 0;
       margin-top: 1rem;
     }
 
@@ -3083,7 +3001,7 @@
     gap: 0.75rem;
     padding: 1rem;
     border: 2px solid var(--gray-200);
-    border-radius: var(--radius-lg);
+    border-radius: var(--radius-card);
     cursor: pointer;
     transition: all 0.2s ease;
   }
@@ -3131,7 +3049,7 @@
   .schema-info {
     padding: 1rem;
     background: var(--gray-50);
-    border-radius: var(--radius-lg);
+    border-radius: var(--radius-card);
     border: 1px solid var(--gray-200);
   }
 
@@ -3190,16 +3108,16 @@
   }
 
   .required-indicator {
-    color: var(--color-error);
-    margin-left: 0.25rem;
+    color: var(--color-danger);
+    margin-inline-start: 0.25rem;
   }
 
   .field-input {
     padding: 0.75rem;
-    border: 2px solid #d1d5db;
+    border: 2px solid var(--color-border-strong);
     border-radius: 0.5rem;
-    background-color: white;
-    color: #374151;
+    background-color: var(--color-surface);
+    color: var(--color-text);
     font-size: 0.875rem;
     transition: all 0.2s ease;
     width: 100%;
@@ -3208,13 +3126,13 @@
 
   .field-input:focus {
     outline: none;
-    border-color: #3b82f6;
+    border-color: var(--color-primary);
     box-shadow: 0 0 0 3px rgba(59, 130, 246, 0.15);
-    background-color: white;
+    background-color: var(--color-surface);
   }
 
   .field-input:hover {
-    border-color: #9ca3af;
+    border-color: var(--color-text-faint);
   }
 
   .field-textarea {
@@ -3232,7 +3150,7 @@
     cursor: pointer;
     width: 20px;
     height: 20px;
-    accent-color: #3b82f6;
+    accent-color: var(--color-primary);
   }
 
   .checkbox-wrapper {
@@ -3244,7 +3162,7 @@
 
   .checkbox-label {
     font-size: 0.875rem;
-    color: #374151;
+    color: var(--color-text);
   }
 
   .list-input-container {
@@ -3277,34 +3195,34 @@
   }
 
   .list-btn-remove {
-    background: #fee2e2;
-    color: #dc2626;
+    background: var(--color-danger-soft);
+    color: var(--color-danger);
     width: 36px;
     height: 36px;
     padding: 0;
   }
 
   .list-btn-remove:hover {
-    background: #fecaca;
+    background: var(--color-danger-soft);
   }
 
   .list-btn-add {
-    background: #eff6ff;
-    color: #2563eb;
-    border: 2px dashed #bfdbfe;
+    background: var(--color-info-soft);
+    color: var(--color-primary-hover);
+    border: 2px dashed var(--color-info-soft);
     margin-top: 0.25rem;
     align-self: flex-start;
   }
 
   .list-btn-add:hover {
-    background: #dbeafe;
-    border-color: #93c5fd;
+    background: var(--color-info-soft);
+    border-color: var(--color-info-soft);
   }
 
   .field-hint {
     display: block;
     margin-top: 0.375rem;
-    color: #6b7280;
+    color: var(--color-text-muted);
     font-size: 0.75rem;
     font-style: italic;
   }
@@ -3317,8 +3235,8 @@
   }
 
   .template-data-card {
-    background: white;
-    border: 1px solid #e5e7eb;
+    background: var(--color-surface);
+    border: 1px solid var(--color-border);
     border-radius: 0.75rem;
     box-shadow: 0 1px 3px rgba(0, 0, 0, 0.1);
     margin-top: 1.5rem;
@@ -3326,16 +3244,16 @@
   }
 
   .template-data-card-header {
-    background: #f9fafb;
+    background: var(--color-surface);
     padding: 1rem 1.25rem;
-    border-bottom: 1px solid #e5e7eb;
+    border-bottom: 1px solid var(--color-border);
   }
 
   .template-data-card-header .template-data-title {
     margin: 0;
     font-size: 1rem;
     font-weight: 600;
-    color: #374151;
+    color: var(--color-text);
   }
 
   .template-data-card-body {
@@ -3356,7 +3274,7 @@
   }
 
   .template-preview.markdown-preview {
-    background: white;
+    background: var(--color-surface);
     border: 1px solid var(--color-border);
     border-radius: 0.5rem;
     padding: 1rem;
@@ -3370,15 +3288,15 @@
       Arial,
       sans-serif;
     line-height: 1.6;
-    color: #374151;
+    color: var(--color-text);
   }
 
   .template-preview.markdown-preview :global(h1) {
     font-size: 1.875rem;
     font-weight: 700;
     margin: 1.5rem 0 1rem 0;
-    color: #1f2937;
-    border-bottom: 2px solid #e5e7eb;
+    color: var(--color-text);
+    border-bottom: 2px solid var(--color-border);
     padding-bottom: 0.5rem;
   }
 
@@ -3386,14 +3304,14 @@
     font-size: 1.5rem;
     font-weight: 600;
     margin: 1.25rem 0 0.75rem 0;
-    color: #1f2937;
+    color: var(--color-text);
   }
 
   .template-preview.markdown-preview :global(h3) {
     font-size: 1.25rem;
     font-weight: 600;
     margin: 1rem 0 0.5rem 0;
-    color: #1f2937;
+    color: var(--color-text);
   }
 
   .template-preview.markdown-preview :global(p) {
@@ -3403,7 +3321,7 @@
   .template-preview.markdown-preview :global(ul),
   .template-preview.markdown-preview :global(ol) {
     margin: 0.75rem 0;
-    padding-left: 1.5rem;
+    padding-inline-start: 1.5rem;
   }
 
   .template-preview.markdown-preview :global(ul) {
@@ -3421,13 +3339,13 @@
   .template-preview.markdown-preview :global(blockquote) {
     margin: 1rem 0;
     padding: 0.75rem 1rem;
-    background: #f9fafb;
-    border-left: 4px solid #d1d5db;
-    color: #6b7280;
+    background: var(--color-surface);
+    border-inline-start: 4px solid var(--color-border-strong);
+    color: var(--color-text-muted);
   }
 
   .template-preview.markdown-preview :global(code) {
-    background: #f3f4f6;
+    background: var(--color-surface-3);
     padding: 0.125rem 0.25rem;
     border-radius: 0.25rem;
     font-family: "Monaco", "Menlo", "Ubuntu Mono", monospace;
@@ -3435,8 +3353,8 @@
   }
 
   .template-preview.markdown-preview :global(pre) {
-    background: #1f2937;
-    color: #f9fafb;
+    background: var(--color-text);
+    color: var(--color-surface);
     padding: 1rem;
     border-radius: 0.5rem;
     overflow-x: auto;
@@ -3458,28 +3376,28 @@
   .template-preview.markdown-preview :global(th),
   .template-preview.markdown-preview :global(td) {
     padding: 0.5rem 0.75rem;
-    border: 1px solid #d1d5db;
-    text-align: left;
+    border: 1px solid var(--color-border-strong);
+    text-align: start;
   }
 
   .template-preview.markdown-preview :global(th) {
-    background: #f9fafb;
+    background: var(--color-surface);
     font-weight: 600;
   }
 
 
   /* Schema-based Template Info Box */
   .template-info-box {
-    background: linear-gradient(135deg, #dbeafe 0%, #bfdbfe 100%);
-    border: 1px solid #3b82f6;
-    border-radius: var(--radius-lg);
+    background: linear-gradient(135deg, var(--color-info-soft) 0%, var(--color-info-soft) 100%);
+    border: 1px solid var(--color-primary);
+    border-radius: var(--radius-card);
     padding: 1rem 1.25rem;
     margin-bottom: 1.5rem;
   }
 
   .template-info-text {
     margin: 0;
-    color: #1e40af;
+    color: var(--color-info);
     font-size: 0.875rem;
     font-weight: 500;
     line-height: 1.5;

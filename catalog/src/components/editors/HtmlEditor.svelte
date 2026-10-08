@@ -1,14 +1,15 @@
 <script lang="ts">
   import { Dmart } from "@edraj/tsdmart";
   import { onMount } from "svelte";
-  import { getFileExtension } from "../../lib/fileUtils";
+  import { getFileExtension } from "@shared/file-extension";
+  import { _ } from "@/i18n";
+  import Modal from "@/components/Modal.svelte";
 
   let {
     uid = "",
     content = $bindable(""),
     isEditMode = false,
     attachments,
-    resource_type,
     space_name,
     subpath,
     parent_shortname,
@@ -28,6 +29,12 @@
   }
 
   let showAttachments = $state(false);
+  // The link/image toolbar buttons used to call prompt(); they open this
+  // small dialog instead (review #34).
+  let urlDialog = $state<"link" | "image" | null>(null);
+  let urlValue = $state("");
+  const instanceId = $props.id();
+  const urlFormId = `htmleditor-url-${instanceId}`;
   let maindiv: HTMLDivElement;
   let editor: any;
 
@@ -176,93 +183,91 @@
     const attachmentsGroup = document.createElement("div");
     attachmentsGroup.className = "toolbar-group";
 
-    addToolbarButton(textFormatGroup, "Bold", "B", () =>
+    addToolbarButton(textFormatGroup, $_("html_editor.toolbar.bold"), "B", () =>
       editor.formatText("bold"),
     );
-    addToolbarButton(textFormatGroup, "Italic", "I", () =>
+    addToolbarButton(textFormatGroup, $_("html_editor.toolbar.italic"), "I", () =>
       editor.formatText("italic"),
     );
-    addToolbarButton(textFormatGroup, "Underline", "U", () =>
+    addToolbarButton(textFormatGroup, $_("html_editor.toolbar.underline"), "U", () =>
       editor.formatText("underline"),
     );
-    addToolbarButton(textFormatGroup, "Strike", "S", () =>
+    addToolbarButton(textFormatGroup, $_("html_editor.toolbar.strike"), "S", () =>
       editor.formatText("strike"),
     );
-    addToolbarButton(textFormatGroup, "Superscript", "x²", () =>
+    addToolbarButton(textFormatGroup, $_("html_editor.toolbar.superscript"), "x²", () =>
       editor.formatText("superscript"),
     );
-    addToolbarButton(textFormatGroup, "Subscript", "x₂", () =>
+    addToolbarButton(textFormatGroup, $_("html_editor.toolbar.subscript"), "x₂", () =>
       editor.formatText("subscript"),
     );
-    addToolbarButton(textFormatGroup, "Remove Format", "X", () =>
+    addToolbarButton(textFormatGroup, $_("html_editor.toolbar.remove_format"), "X", () =>
       editor.removeFormat(),
     );
 
-    addToolbarButton(lineFormatGroup, "Heading 1", "H1", () =>
+    addToolbarButton(lineFormatGroup, $_("html_editor.toolbar.heading_1"), "H1", () =>
       editor.formatLine({ header: 1 }),
     );
-    addToolbarButton(lineFormatGroup, "Heading 2", "H2", () =>
+    addToolbarButton(lineFormatGroup, $_("html_editor.toolbar.heading_2"), "H2", () =>
       editor.formatLine({ header: 2 }),
     );
-    addToolbarButton(lineFormatGroup, "Paragraph", "¶", () =>
+    addToolbarButton(lineFormatGroup, $_("html_editor.toolbar.paragraph"), "¶", () =>
       editor.formatLine("paragraph"),
     );
-    addToolbarButton(lineFormatGroup, "Blockquote", '""', () =>
+    addToolbarButton(lineFormatGroup, $_("html_editor.toolbar.blockquote"), '""', () =>
       editor.formatLine("blockquote"),
     );
-    addToolbarButton(lineFormatGroup, "Ordered List", "1.", () =>
+    addToolbarButton(lineFormatGroup, $_("html_editor.toolbar.ordered_list"), "1.", () =>
       editor.formatLine({ list: "ordered" }),
     );
-    addToolbarButton(lineFormatGroup, "Unordered List", "•", () =>
+    addToolbarButton(lineFormatGroup, $_("html_editor.toolbar.unordered_list"), "•", () =>
       editor.formatLine({ list: "bullet" }),
     );
-    addToolbarButton(lineFormatGroup, "Horizontal Rule", "—", () =>
+    addToolbarButton(lineFormatGroup, $_("html_editor.toolbar.horizontal_rule"), "—", () =>
       editor.formatLine("hr"),
     );
 
-    addToolbarButton(alignmentGroup, "Align Left", "↤", () =>
+    addToolbarButton(alignmentGroup, $_("html_editor.toolbar.align_left"), "↤", () =>
       editor.formatLine("align-left"),
     );
-    addToolbarButton(alignmentGroup, "Align Center", "↔", () =>
+    addToolbarButton(alignmentGroup, $_("html_editor.toolbar.align_center"), "↔", () =>
       editor.formatLine("align-center"),
     );
-    addToolbarButton(alignmentGroup, "Align Right", "↦", () =>
+    addToolbarButton(alignmentGroup, $_("html_editor.toolbar.align_right"), "↦", () =>
       editor.formatLine("align-right"),
     );
-    addToolbarButton(alignmentGroup, "Justify", "☰", () =>
+    addToolbarButton(alignmentGroup, $_("html_editor.toolbar.justify"), "☰", () =>
       editor.formatLine("align-justify"),
     );
 
-    addToolbarButton(insertGroup, "Link", "🔗", () => {
-      const url = prompt("Enter URL:");
-      if (url) editor.formatText({ link: url });
-    });
+    addToolbarButton(insertGroup, $_("html_editor.toolbar.link"), "🔗", () =>
+      openUrlDialog("link"),
+    );
 
-    addToolbarButton(insertGroup, "Image", "🖼", () => {
-      const url = prompt("Enter image URL:");
-      if (url) editor.insert({ image: url });
-    });
+    addToolbarButton(insertGroup, $_("html_editor.toolbar.image"), "🖼", () =>
+      openUrlDialog("image"),
+    );
 
     if (isEditMode && attachments?.media?.length > 0) {
-      addToolbarButton(attachmentsGroup, "Attachments", "📎", (event: any) => {
+      addToolbarButton(attachmentsGroup, $_("html_editor.toolbar.attachments"), "📎", (event: any) => {
         event.preventDefault();
         event.stopPropagation();
         showAttachments = true;
       });
     }
 
-    addToolbarButton(historyGroup, "Undo", "↶", () =>
+    addToolbarButton(historyGroup, $_("html_editor.toolbar.undo"), "↶", () =>
       editor.modules.history.undo(),
     );
-    addToolbarButton(historyGroup, "Redo", "↷", () =>
+    addToolbarButton(historyGroup, $_("html_editor.toolbar.redo"), "↷", () =>
       editor.modules.history.redo(),
     );
 
-    addToolbarButton(directionGroup, "LTR", "LTR", () => {
+    addToolbarButton(directionGroup, $_("html_editor.toolbar.ltr"), "LTR", () => {
       maindiv.dir = "ltr";
       editor.formatLine({ direction: "ltr" });
     });
-    addToolbarButton(directionGroup, "RTL", "RTL", () => {
+    addToolbarButton(directionGroup, $_("html_editor.toolbar.rtl"), "RTL", () => {
       maindiv.dir = "rtl";
       editor.formatLine({ direction: "rtl" });
     });
@@ -354,10 +359,25 @@
     showAttachments = false;
   }
 
-  function handleModalClick(event: any) {
-    if (event.target === event.currentTarget) {
-      closeAttachments();
-    }
+  function openUrlDialog(kind: "link" | "image") {
+    urlValue = "";
+    urlDialog = kind;
+  }
+
+  function closeUrlDialog() {
+    urlDialog = null;
+  }
+
+  function applyUrl(event: SubmitEvent) {
+    event.preventDefault();
+    const url = urlValue.trim();
+    const kind = urlDialog;
+    if (!url || !kind || !editor) return;
+    // Restore the editor's selection context before formatting.
+    maindiv.focus();
+    if (kind === "link") editor.formatText({ link: url });
+    else editor.insert({ image: url });
+    urlDialog = null;
   }
 
   $effect(() => {
@@ -385,65 +405,68 @@
 </div>
 
 {#if showAttachments}
-  <!-- svelte-ignore a11y_click_events_have_key_events -->
-  <div
-    class="attachments-overlay"
-    role="dialog"
-    aria-modal="true"
-    tabindex="-1"
-    onclick={handleModalClick}
-  >
-    <!-- svelte-ignore a11y_no_noninteractive_tabindex a11y_click_events_have_key_events a11y_no_static_element_interactions -->
-    <div
-      class="attachments-modal"
-      role="presentation"
-      tabindex="0"
-      onclick={(e) => e.stopPropagation()}
-    >
-      <div class="attachments-header">
-        <h3 class="attachments-title">Item Attachments</h3>
-        <button
-          class="attachments-close"
-          aria-label={`Close attachments`}
-          onclick={closeAttachments}
-        >
-          ✕
-        </button>
-      </div>
-      <div class="attachments-content">
-        {#if attachments?.media?.length > 0}
-          <div class="attachments-grid">
-            {#each attachments.media as attachment}
-              <div class="attachment-item">
-                <div class="attachment-info">
-                  <div class="attachment-icon">📎</div>
-                  <div class="attachment-details">
-                    <div class="attachment-name">
-                      {attachment.shortname || "Unnamed"}
-                    </div>
-                    <div class="attachment-type">
-                      {attachment.resource_type || "Unknown type"}
-                    </div>
-                  </div>
+  <Modal title={$_("html_editor.attachments_title")} size="2xl" onClose={closeAttachments}>
+    {#if attachments?.media?.length > 0}
+      <div class="attachments-grid">
+        {#each attachments.media as attachment (attachment.shortname)}
+          <div class="attachment-item">
+            <div class="attachment-info">
+              <div class="attachment-icon" aria-hidden="true">📎</div>
+              <div class="attachment-details">
+                <div class="attachment-name">
+                  {attachment.shortname || $_("html_editor.unnamed")}
                 </div>
-                <button
-                  class="attachment-insert-btn"
-                  onclick={() => insertAttachment(attachment)}
-                >
-                  Insert
-                </button>
+                <div class="attachment-type">
+                  {attachment.resource_type || $_("common.unknown")}
+                </div>
               </div>
-            {/each}
+            </div>
+            <button
+              type="button"
+              class="app-btn app-btn-primary app-btn-sm"
+              onclick={() => insertAttachment(attachment)}
+            >
+              {$_("html_editor.insert")}
+            </button>
           </div>
-        {:else}
-          <div class="no-attachments">
-            <div class="no-attachments-icon">📎</div>
-            <p>No attachments found for this item</p>
-          </div>
-        {/if}
+        {/each}
       </div>
-    </div>
-  </div>
+    {:else}
+      <div class="no-attachments">
+        <div class="no-attachments-icon" aria-hidden="true">📎</div>
+        <p>{$_("html_editor.no_attachments")}</p>
+      </div>
+    {/if}
+  </Modal>
+{/if}
+
+{#if urlDialog}
+  <Modal
+    title={urlDialog === "link" ? $_("html_editor.link_title") : $_("html_editor.image_title")}
+    size="md"
+    onClose={closeUrlDialog}
+  >
+    <form id={urlFormId} onsubmit={applyUrl} class="url-form">
+      <label for="{urlFormId}-input" class="url-label">{$_("html_editor.url_label")}</label>
+      <input
+        id="{urlFormId}-input"
+        type="url"
+        class="url-input"
+        bind:value={urlValue}
+        placeholder={$_("html_editor.url_placeholder")}
+        required
+        data-autofocus
+      />
+    </form>
+    {#snippet footer()}
+      <button type="button" class="app-btn app-btn-secondary" onclick={closeUrlDialog}>
+        {$_("ui.cancel")}
+      </button>
+      <button type="submit" form={urlFormId} class="app-btn app-btn-primary">
+        {$_("html_editor.insert")}
+      </button>
+    {/snippet}
+  </Modal>
 {/if}
 
 <style>
@@ -451,8 +474,8 @@
     height: 100%;
     max-width: 100%;
     padding: 0.75rem;
-    background: #ffffff;
-    border: 1px solid #e5e7eb;
+    background: var(--color-surface-2);
+    border: 1px solid var(--color-border);
     border-radius: 0.5rem;
     box-shadow: 0 1px 3px 0 rgba(0, 0, 0, 0.05);
     display: flex;
@@ -461,7 +484,7 @@
 
   .editor-content {
     max-width: 100%;
-    color: #1f2937;
+    color: var(--color-text);
     line-height: 1.75;
     flex: 1;
     display: flex;
@@ -482,11 +505,11 @@
     min-height: 200px;
     max-height: 400px;
     overflow-y: auto;
-    border: 1px solid #e5e7eb;
+    border: 1px solid var(--color-border);
     border-radius: 0.375rem;
     padding: 1rem;
-    background-color: #ffffff;
-    color: #374151;
+    background-color: var(--color-surface-2);
+    color: var(--color-text);
     outline: none;
     transition:
       border-color 0.15s ease-in-out,
@@ -495,7 +518,7 @@
   }
 
   .editor-container:focus-within {
-    border-color: #3b82f6;
+    border-color: var(--color-primary);
     box-shadow: 0 0 0 3px rgba(59, 130, 246, 0.1);
   }
 
@@ -503,8 +526,8 @@
     font-size: 1.875rem;
     font-weight: 700;
     margin: 1.5rem 0 1rem 0;
-    color: #1f2937;
-    border-bottom: 2px solid #e5e7eb;
+    color: var(--color-text);
+    border-bottom: 2px solid var(--color-border);
     padding-bottom: 0.5rem;
   }
 
@@ -512,14 +535,14 @@
     font-size: 1.5rem;
     font-weight: 600;
     margin: 1.25rem 0 0.75rem 0;
-    color: #1f2937;
+    color: var(--color-text);
   }
 
   .editor-container :global(h3) {
     font-size: 1.25rem;
     font-weight: 600;
     margin: 1rem 0 0.5rem 0;
-    color: #1f2937;
+    color: var(--color-text);
   }
 
   .editor-container :global(p) {
@@ -529,7 +552,7 @@
   .editor-container :global(ul),
   .editor-container :global(ol) {
     margin: 0.75rem 0;
-    padding-left: 1.5rem;
+    padding-inline-start: 1.5rem;
   }
 
   .editor-container :global(ul) {
@@ -547,13 +570,13 @@
   .editor-container :global(blockquote) {
     margin: 1rem 0;
     padding: 0.75rem 1rem;
-    background: #f9fafb;
-    border-left: 4px solid #d1d5db;
-    color: #6b7280;
+    background: var(--color-surface);
+    border-inline-start: 4px solid var(--color-border-strong);
+    color: var(--color-text-muted);
   }
 
   .editor-container :global(code) {
-    background: #f3f4f6;
+    background: var(--color-surface-3);
     padding: 0.125rem 0.25rem;
     border-radius: 0.25rem;
     font-family: "uthmantn", "Monaco", "Menlo", "Ubuntu Mono", monospace;
@@ -561,8 +584,8 @@
   }
 
   .editor-container :global(pre) {
-    background: #1f2937;
-    color: #f9fafb;
+    background: var(--color-text);
+    color: var(--color-surface);
     padding: 1rem;
     border-radius: 0.5rem;
     overflow-x: auto;
@@ -584,12 +607,12 @@
   .editor-container :global(th),
   .editor-container :global(td) {
     padding: 0.5rem 0.75rem;
-    border: 1px solid #d1d5db;
-    text-align: left;
+    border: 1px solid var(--color-border-strong);
+    text-align: start;
   }
 
   .editor-container :global(th) {
-    background: #f9fafb;
+    background: var(--color-surface);
     font-weight: 600;
   }
 
@@ -611,17 +634,17 @@
   }
 
   .editor-container::-webkit-scrollbar-track {
-    background: #f1f5f9;
+    background: var(--color-surface-3);
     border-radius: 4px;
   }
 
   .editor-container::-webkit-scrollbar-thumb {
-    background: #cbd5e1;
+    background: var(--color-border-strong);
     border-radius: 4px;
   }
 
   .editor-container::-webkit-scrollbar-thumb:hover {
-    background: #94a3b8;
+    background: var(--color-text-faint);
   }
 
   :global(.editor-toolbar) {
@@ -629,8 +652,8 @@
     flex-wrap: wrap;
     gap: 0.5rem;
     padding: 0.75rem;
-    background: #f8fafc;
-    border: 1px solid #e2e8f0;
+    background: var(--color-surface);
+    border: 1px solid var(--color-border);
     border-bottom: none;
     border-radius: 0.375rem 0.375rem 0 0;
     margin-bottom: 0;
@@ -640,8 +663,8 @@
     display: flex;
     gap: 0.25rem;
     padding: 0.25rem;
-    background: #ffffff;
-    border: 1px solid #e2e8f0;
+    background: var(--color-surface-2);
+    border: 1px solid var(--color-border);
     border-radius: 0.375rem;
   }
 
@@ -655,7 +678,7 @@
     background: transparent;
     border: 1px solid transparent;
     border-radius: 0.25rem;
-    color: #4b5563;
+    color: var(--color-text-muted);
     font-size: 0.875rem;
     font-weight: 500;
     cursor: pointer;
@@ -663,78 +686,14 @@
   }
 
   :global(.toolbar-button:hover) {
-    background: #f1f5f9;
-    border-color: #cbd5e1;
-    color: #1e293b;
+    background: var(--color-surface-3);
+    border-color: var(--color-border-strong);
+    color: var(--color-text);
   }
 
   :global(.toolbar-button:active) {
-    background: #e2e8f0;
+    background: var(--color-border);
     transform: translateY(1px);
-  }
-
-  .attachments-overlay {
-    position: fixed;
-    inset: 0;
-    background: rgba(0, 0, 0, 0.5);
-    backdrop-filter: blur(4px);
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    z-index: 60;
-    padding: 1rem;
-  }
-
-  .attachments-modal {
-    background: white;
-    border-radius: 0.75rem;
-    box-shadow:
-      0 20px 25px -5px rgba(0, 0, 0, 0.1),
-      0 10px 10px -5px rgba(0, 0, 0, 0.04);
-    max-width: 32rem;
-    width: 100%;
-    max-height: 80vh;
-    overflow: hidden;
-    display: flex;
-    flex-direction: column;
-  }
-
-  .attachments-header {
-    display: flex;
-    align-items: center;
-    justify-content: space-between;
-    padding: 1.5rem;
-    border-bottom: 1px solid #e5e7eb;
-    background: #f8fafc;
-  }
-
-  .attachments-title {
-    font-size: 1.125rem;
-    font-weight: 600;
-    color: #1f2937;
-    margin: 0;
-  }
-
-  .attachments-close {
-    background: none;
-    border: none;
-    font-size: 1.25rem;
-    color: #6b7280;
-    cursor: pointer;
-    padding: 0.25rem;
-    border-radius: 0.25rem;
-    transition: all 0.15s ease-in-out;
-  }
-
-  .attachments-close:hover {
-    background: #e5e7eb;
-    color: #374151;
-  }
-
-  .attachments-content {
-    padding: 1.5rem;
-    overflow-y: auto;
-    flex: 1;
   }
 
   .attachments-grid {
@@ -748,15 +707,15 @@
     align-items: center;
     justify-content: space-between;
     padding: 1rem;
-    border: 1px solid #e5e7eb;
+    border: 1px solid var(--color-border);
     border-radius: 0.5rem;
-    background: #f9fafb;
+    background: var(--color-surface);
     transition: all 0.15s ease-in-out;
   }
 
   .attachment-item:hover {
-    background: #f3f4f6;
-    border-color: #d1d5db;
+    background: var(--color-surface-3);
+    border-color: var(--color-border-strong);
   }
 
   .attachment-info {
@@ -768,7 +727,7 @@
 
   .attachment-icon {
     font-size: 1.5rem;
-    color: #6b7280;
+    color: var(--color-text-muted);
   }
 
   .attachment-details {
@@ -777,41 +736,51 @@
 
   .attachment-name {
     font-weight: 500;
-    color: #1f2937;
+    color: var(--color-text);
     margin-bottom: 0.25rem;
   }
 
   .attachment-type {
     font-size: 0.875rem;
-    color: #6b7280;
-  }
-
-  .attachment-insert-btn {
-    background: #3b82f6;
-    color: white;
-    border: none;
-    padding: 0.5rem 1rem;
-    border-radius: 0.375rem;
-    font-size: 0.875rem;
-    font-weight: 500;
-    cursor: pointer;
-    transition: all 0.15s ease-in-out;
-  }
-
-  .attachment-insert-btn:hover {
-    background: #2563eb;
-    transform: translateY(-1px);
+    color: var(--color-text-muted);
   }
 
   .no-attachments {
     text-align: center;
     padding: 2rem;
-    color: #6b7280;
+    color: var(--color-text-muted);
   }
 
   .no-attachments-icon {
     font-size: 3rem;
     margin-bottom: 1rem;
     opacity: 0.5;
+  }
+  .url-form {
+    display: flex;
+    flex-direction: column;
+    gap: 0.5rem;
+  }
+
+  .url-label {
+    font-size: 0.875rem;
+    font-weight: 500;
+    color: var(--color-text);
+  }
+
+  .url-input {
+    width: 100%;
+    padding: 0.5rem 0.75rem;
+    font-size: 0.875rem;
+    border: 1px solid var(--color-border);
+    border-radius: var(--radius-control);
+    background: var(--color-surface-2);
+    color: var(--color-text);
+  }
+
+  .url-input:focus {
+    outline: none;
+    border-color: var(--color-primary);
+    box-shadow: 0 0 0 3px var(--color-primary-soft);
   }
 </style>
