@@ -1,15 +1,12 @@
 <script lang="ts">
   import { goto as gotoStore } from "@roxi/routify";
-  import { _, isRTL } from "@/i18n";
-  import {
-    EyeSlashSolid,
-    EyeSolid,
-    LockSolid,
-    UserSolid,
-  } from "flowbite-svelte-icons";
+  import { _ } from "@/i18n";
+  import { EyeSlashSolid, EyeSolid, LockSolid, UserSolid } from "flowbite-svelte-icons";
   import { loginBy, signin } from "@/stores/user";
   import { onMount } from "svelte";
   import { consumeResetDone } from "@/lib/dmart_services/password_reset";
+  import { withBase } from "@/lib/paths";
+  import { setTitle } from "@/lib/title";
 
   // Routify's helpers read the fragment context when first subscribed, and
   // Svelte 5 subscribes to a `$store` lazily on first read — so a `$gotoStore`
@@ -29,9 +26,7 @@
     resetSuccess = consumeResetDone();
   });
 
-  function goToResetPassword() {
-    goto("/reset-password");
-  }
+  $effect(() => setTitle($_("SignIn")));
 
   function isEmail(input: string): boolean {
     return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(input);
@@ -65,27 +60,16 @@
       isSubmitting = false;
     }
   }
-
-  function togglePasswordVisibility() {
-    showPassword = !showPassword;
-  }
-
-  function goToRegister() {
-    goto("/register");
-  }
-
 </script>
 
 <div class="login-container">
   <div class="login-content">
     <div class="login-header">
-      <div class="header-content">
-        <div class="icon-wrapper">
-          <UserSolid class="header-icon text-white w-6 h-6" />
-        </div>
-        <h1 class="login-title">{$_("WelcomeBack")}</h1>
-        <p class="login-description">{$_("PleaseSignInToContinue")}</p>
+      <div class="icon-wrapper" aria-hidden="true">
+        <UserSolid class="w-6 h-6" />
       </div>
+      <h1 class="login-title">{$_("WelcomeBack")}</h1>
+      <p class="login-description">{$_("PleaseSignInToContinue")}</p>
     </div>
 
     {#if resetSuccess}
@@ -93,9 +77,9 @@
     {/if}
 
     {#if showError}
-      <div class="error-message" class:rtl={$isRTL} role="alert">
+      <div class="error-message" role="alert">
         <svg
-          class="shrink-0 inline w-4 h-4 me-3"
+          class="shrink-0 w-4 h-4"
           aria-hidden="true"
           xmlns="http://www.w3.org/2000/svg"
           fill="currentColor"
@@ -105,17 +89,15 @@
             d="M10 .5a9.5 9.5 0 1 0 9.5 9.5A9.51 9.51 0 0 0 10 .5ZM9.5 4a1.5 1.5 0 1 1 0 3 1.5 1.5 0 0 1 0-3ZM12 15H8a1 1 0 0 1 0-2h1v-3H8a1 1 0 0 1 0-2h2a1 1 0 0 1 1 1v4h1a1 1 0 0 1 0 2Z"
           />
         </svg>
-        <div class="error-content">
-          <p class="error-text">{$_("InvalidCredentials")}</p>
-        </div>
+        <p class="error-text">{$_("InvalidCredentials")}</p>
       </div>
     {/if}
 
     <div class="form-container">
-      <form onsubmit={handleSubmit} class="login-form">
+      <form onsubmit={handleSubmit} class="login-form" novalidate>
         <div class="form-group">
-          <label for="identifier" class="form-label" class:rtl={$isRTL}>
-            <UserSolid class="label-icon" />
+          <label for="identifier" class="form-label">
+            <UserSolid class="label-icon" aria-hidden="true" />
             {$_("Username")} / {$_("Email")}
           </label>
           <input
@@ -125,31 +107,24 @@
             placeholder={$_("Username") + " " + $_("or") + " " + $_("Email")}
             class="form-input"
             class:error={errors.identifier}
-            class:rtl={$isRTL}
             disabled={isSubmitting}
+            autocomplete="username"
             aria-invalid={!!errors.identifier}
-            aria-describedby={errors.identifier
-              ? "identifier-error"
-              : undefined}
+            aria-describedby={errors.identifier ? "identifier-error" : undefined}
           />
           {#if errors.identifier}
-            <p
-              id="identifier-error"
-              class="error-text-small"
-              class:rtl={$isRTL}
-              role="alert"
-            >
+            <p id="identifier-error" class="error-text-small" role="alert">
               {errors.identifier}
             </p>
           {/if}
         </div>
 
         <div class="form-group">
-          <label for="password" class="form-label" class:rtl={$isRTL}>
-            <LockSolid class="label-icon" />
+          <label for="password" class="form-label">
+            <LockSolid class="label-icon" aria-hidden="true" />
             {$_("Password")}
           </label>
-          <div class="password-input-wrapper" class:rtl={$isRTL}>
+          <div class="password-input-wrapper">
             <input
               id="password"
               type={showPassword ? "text" : "password"}
@@ -157,33 +132,27 @@
               placeholder={$_("Password")}
               class="form-input password-input"
               class:error={errors.password}
-              class:rtl={$isRTL}
               disabled={isSubmitting}
+              autocomplete="current-password"
               aria-invalid={!!errors.password}
               aria-describedby={errors.password ? "password-error" : undefined}
             />
             <button
-              aria-label={$_("Password")}
+              aria-label={$_("TogglePasswordVisibility")}
               aria-pressed={showPassword}
               type="button"
               class="password-toggle"
-              onclick={togglePasswordVisibility}
-              class:rtl={$isRTL}
+              onclick={() => (showPassword = !showPassword)}
             >
               {#if showPassword}
-                <EyeSlashSolid class="toggle-icon" />
+                <EyeSlashSolid class="toggle-icon" aria-hidden="true" />
               {:else}
-                <EyeSolid class="toggle-icon" />
+                <EyeSolid class="toggle-icon" aria-hidden="true" />
               {/if}
             </button>
           </div>
           {#if errors.password}
-            <p
-              id="password-error"
-              class="error-text-small"
-              class:rtl={$isRTL}
-              role="alert"
-            >
+            <p id="password-error" class="error-text-small" role="alert">
               {errors.password}
             </p>
           {/if}
@@ -192,39 +161,29 @@
         <button
           type="submit"
           class="submit-button"
-          class:loading={isSubmitting}
-          class:rtl={$isRTL}
           disabled={isSubmitting}
-          aria-label="Sign in"
+          aria-busy={isSubmitting}
         >
           {#if isSubmitting}
-            <div class="loading-spinner"></div>
+            <span class="spinner spinner-xs spinner-white" aria-hidden="true"></span>
             {$_("SigningIn")}
           {:else}
-            <UserSolid class="button-icon" />
+            <UserSolid class="button-icon" aria-hidden="true" />
             {$_("SignIn")}
           {/if}
         </button>
       </form>
 
-      <div class="register-link" class:rtl={$isRTL}>
+      <div class="register-link">
         <span class="register-text">{$_("DontHaveAccount")}</span>
-        <button
-          aria-label="Go to register"
-          class="link-button"
-          onclick={goToRegister}
-        >
-          {$_("Register")}
-        </button>
+        <a class="link-button" href={withBase("/register")}>{$_("Register")}</a>
       </div>
 
-      <div class="forgot-link" class:rtl={$isRTL}>
-        <button class="link-button" onclick={goToResetPassword}>
-          {$_("ForgotPassword")}
-        </button>
+      <div class="forgot-link">
+        <a class="link-button" href={withBase("/reset-password")}>{$_("ForgotPassword")}</a>
       </div>
 
-      <div class="terms-text" class:rtl={$isRTL}>
+      <div class="terms-text">
         <p>{$_("TermsAndConditions")}</p>
       </div>
     </div>
@@ -238,7 +197,7 @@
     align-items: center;
     justify-content: center;
     background: var(--gradient-page);
-    padding: 2rem 1rem;
+    padding: 2rem var(--space-page-x);
     position: relative;
     overflow: hidden;
   }
@@ -247,14 +206,10 @@
     content: "";
     position: absolute;
     top: -40%;
-    right: -20%;
+    inset-inline-end: -20%;
     width: 60%;
     height: 80%;
-    background: radial-gradient(
-      circle,
-      rgba(99, 102, 241, 0.06) 0%,
-      transparent 70%
-    );
+    background: radial-gradient(circle, rgba(99, 102, 241, 0.06) 0%, transparent 70%);
     pointer-events: none;
   }
 
@@ -262,14 +217,10 @@
     content: "";
     position: absolute;
     bottom: -30%;
-    left: -15%;
+    inset-inline-start: -15%;
     width: 50%;
     height: 60%;
-    background: radial-gradient(
-      circle,
-      rgba(139, 92, 246, 0.05) 0%,
-      transparent 70%
-    );
+    background: radial-gradient(circle, rgba(139, 92, 246, 0.05) 0%, transparent 70%);
     pointer-events: none;
   }
 
@@ -286,35 +237,30 @@
     margin-bottom: 2rem;
   }
 
-  .header-content {
-    margin-bottom: 1.5rem;
-  }
-
   .icon-wrapper {
     width: 3.5rem;
     height: 3.5rem;
     background: var(--gradient-brand);
-    border-radius: var(--radius-xl);
+    color: var(--color-text-on-primary);
+    border-radius: var(--radius-card);
     display: flex;
     align-items: center;
     justify-content: center;
     margin: 0 auto 1.25rem auto;
-    box-shadow:
-      var(--shadow-brand),
-      0 0 24px rgba(99, 102, 241, 0.15);
+    box-shadow: var(--shadow-brand);
   }
 
   .login-title {
     font-size: 1.75rem;
     font-weight: 700;
-    color: var(--color-gray-900);
+    color: var(--color-text);
     margin-bottom: 0.5rem;
     letter-spacing: -0.02em;
   }
 
   .login-description {
     font-size: 0.9375rem;
-    color: var(--color-gray-500);
+    color: var(--color-text-muted);
     line-height: 1.5;
   }
 
@@ -323,40 +269,35 @@
     align-items: center;
     gap: 0.75rem;
     padding: 0.875rem 1rem;
-    border-radius: var(--radius-lg);
+    border-radius: var(--radius-card);
     margin-bottom: 1.5rem;
-    background: #fef2f2;
-    border: 1px solid #fecaca;
+    background: var(--color-danger-bg);
+    border: 1px solid var(--color-danger-border);
+    color: var(--color-danger-fg);
     animation: fadeInDown var(--duration-normal) var(--ease-out);
   }
 
-  .error-message.rtl {
-    flex-direction: row-reverse;
-  }
-
   .success-message {
-    padding: 0.75rem;
-    border-radius: 0.5rem;
-    background: rgba(16, 122, 54, 0.1);
-    color: var(--color-success, #107a36);
+    padding: 0.75rem 1rem;
+    border-radius: var(--radius-card);
+    background: var(--color-success-bg);
+    border: 1px solid var(--color-success-border);
+    color: var(--color-success-fg);
     font-size: 0.875rem;
     margin-bottom: 1rem;
   }
 
   .error-text {
-    color: var(--color-gray-700);
     font-size: 0.8125rem;
     font-weight: 500;
   }
 
   .form-container {
-    background: white;
-    border-radius: var(--radius-2xl);
+    background: var(--color-surface-2);
+    border-radius: var(--radius-modal);
     padding: 2rem;
-    box-shadow:
-      var(--shadow-lg),
-      0 0 0 1px rgba(0, 0, 0, 0.03);
-    border: 1px solid rgba(255, 255, 255, 0.8);
+    box-shadow: var(--shadow-card);
+    border: 1px solid var(--color-border);
     animation: fadeInUp var(--duration-slow) var(--ease-out) 0.1s both;
   }
 
@@ -377,46 +318,44 @@
     align-items: center;
     gap: 0.375rem;
     font-weight: 500;
-    color: var(--color-gray-700);
+    color: var(--color-text);
     font-size: 0.8125rem;
   }
 
-  .form-label.rtl {
-    flex-direction: row-reverse;
+  .form-label :global(.label-icon) {
+    width: 0.875rem;
+    height: 0.875rem;
+    color: var(--color-text-faint);
   }
 
   .form-input {
     padding: 0.6875rem 0.875rem;
-    border: 1.5px solid var(--color-gray-200);
-    border-radius: var(--radius-lg);
+    border: 1.5px solid var(--color-border);
+    border-radius: var(--radius-control);
     font-size: 0.9375rem;
     transition: all var(--duration-normal) var(--ease-out);
-    background: var(--color-gray-50);
-    color: var(--color-gray-800);
+    background: var(--color-surface);
+    color: var(--color-text);
   }
 
   .form-input::placeholder {
-    color: var(--color-gray-400);
+    color: var(--color-text-faint);
   }
 
   .form-input:hover {
-    border-color: var(--color-gray-300);
+    border-color: var(--color-border-strong);
   }
 
   .form-input:focus {
     outline: none;
-    border-color: var(--color-primary-400);
-    box-shadow: 0 0 0 3px rgba(99, 102, 241, 0.1);
-    background: white;
+    border-color: var(--color-primary);
+    box-shadow: 0 0 0 3px var(--color-primary-soft);
+    background: var(--color-surface-2);
   }
 
   .form-input.error {
-    border-color: var(--color-error);
-    box-shadow: 0 0 0 3px rgba(239, 68, 68, 0.08);
-  }
-
-  .form-input.rtl {
-    text-align: right;
+    border-color: var(--color-danger);
+    box-shadow: 0 0 0 3px var(--color-danger-soft);
   }
 
   .password-input-wrapper {
@@ -426,44 +365,36 @@
   }
 
   .password-input {
-    padding-right: 2.75rem;
+    padding-inline-end: 2.75rem;
     width: 100%;
-  }
-
-  .password-input.rtl {
-    padding-right: 0.875rem;
-    padding-left: 2.75rem;
   }
 
   .password-toggle {
     position: absolute;
-    right: 0.625rem;
+    inset-inline-end: 0.625rem;
     background: none;
     border: none;
     cursor: pointer;
-    color: var(--color-gray-400);
+    color: var(--color-text-faint);
     padding: 0.25rem;
-    border-radius: var(--radius-sm);
+    border-radius: var(--radius-control);
     transition: color var(--duration-fast) ease;
+    display: inline-flex;
   }
 
   .password-toggle:hover {
-    color: var(--color-gray-600);
+    color: var(--color-text);
   }
 
-  .password-toggle.rtl {
-    right: auto;
-    left: 0.625rem;
+  .password-toggle :global(.toggle-icon) {
+    width: 1.125rem;
+    height: 1.125rem;
   }
 
   .error-text-small {
     font-size: 0.75rem;
-    color: var(--color-error);
+    color: var(--color-danger);
     font-weight: 500;
-  }
-
-  .error-text-small.rtl {
-    text-align: right;
   }
 
   .submit-button {
@@ -472,16 +403,21 @@
     justify-content: center;
     gap: 0.5rem;
     background: var(--gradient-brand);
-    color: white;
+    color: var(--color-text-on-primary);
     font-weight: 600;
     padding: 0.75rem 1.5rem;
-    border-radius: var(--radius-lg);
+    border-radius: var(--radius-control);
     border: none;
     cursor: pointer;
     transition: all var(--duration-normal) var(--ease-out);
     font-size: 0.9375rem;
     box-shadow: var(--shadow-brand);
     margin-top: 0.25rem;
+  }
+
+  .submit-button :global(.button-icon) {
+    width: 1rem;
+    height: 1rem;
   }
 
   .submit-button:hover:not(:disabled) {
@@ -501,24 +437,11 @@
     transform: none;
   }
 
-  .submit-button.rtl {
-    flex-direction: row-reverse;
-  }
-
-  .loading-spinner {
-    width: 1rem;
-    height: 1rem;
-    border: 2px solid rgba(255, 255, 255, 0.3);
-    border-top: 2px solid white;
-    border-radius: 50%;
-    animation: spin 0.8s linear infinite;
-  }
-
   .register-link {
     text-align: center;
     margin-top: 1.5rem;
     padding-top: 1.25rem;
-    border-top: 1px solid var(--color-gray-100);
+    border-top: 1px solid var(--color-border);
   }
 
   /* Its own row below the register row, but deliberately without a second
@@ -529,30 +452,24 @@
   }
 
   .register-text {
-    color: var(--color-gray-500);
+    color: var(--color-text-muted);
     font-size: 0.8125rem;
   }
 
   .link-button {
     background: none;
     border: none;
-    color: var(--color-primary-500);
+    color: var(--color-primary);
     font-weight: 600;
     cursor: pointer;
     text-decoration: none;
     font-size: 0.8125rem;
-    margin-left: 0.25rem;
+    margin-inline-start: 0.25rem;
     transition: color var(--duration-fast) ease;
   }
 
-  .register-link.rtl .link-button,
-  .forgot-link.rtl .link-button {
-    margin-left: 0;
-    margin-right: 0.25rem;
-  }
-
   .link-button:hover {
-    color: var(--color-primary-700);
+    color: var(--color-primary-hover);
     text-decoration: underline;
   }
 
@@ -560,19 +477,14 @@
     text-align: center;
     margin-top: 1rem;
     font-size: 0.6875rem;
-    color: var(--color-gray-400);
+    color: var(--color-text-faint);
     line-height: 1.5;
-  }
-
-  .terms-text.rtl {
-    text-align: center;
   }
 
   @media (max-width: 640px) {
     .login-container {
-      padding: 1rem;
+      padding: 3rem var(--space-page-x) 1rem;
       align-items: flex-start;
-      padding-top: 3rem;
     }
 
     .login-title {
@@ -581,7 +493,7 @@
 
     .form-container {
       padding: 1.5rem;
-      border-radius: var(--radius-xl);
+      border-radius: var(--radius-card);
     }
   }
 </style>

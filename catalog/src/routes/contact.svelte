@@ -1,14 +1,15 @@
 <script lang="ts">
-    import {_, isRTL} from "@/i18n";
-    import {
-        ArrowLeftOutline,
-        CheckCircleSolid,
-        EnvelopeSolid,
-        MailBoxOutline,
-        MessagesSolid,
-        UserSolid,
-    } from "flowbite-svelte-icons";
-    import {contactUs} from "@/stores/user";
+  import { _ } from "@/i18n";
+  import {
+    ArrowLeftOutline,
+    CheckCircleSolid,
+    EnvelopeSolid,
+    MailBoxOutline,
+    MessagesSolid,
+    UserSolid,
+  } from "flowbite-svelte-icons";
+  import { contactUs } from "@/stores/user";
+  import { setTitle } from "@/lib/title";
 
   let name = $state("");
   let email = $state("");
@@ -17,10 +18,12 @@
   let isSubmitting = $state(false);
   let showSuccess = $state(false);
   let showError = $state(false);
-  let errors: Record<string, any> = $state({});
+  let errors: { name?: string; message?: string } = $state({});
+
+  const MESSAGE_MAX = 1000;
 
   function validateForm() {
-    const newErrors: Record<string, any> = {};
+    const newErrors: { name?: string; message?: string } = {};
 
     if (!name.trim()) {
       newErrors.name = $_("NameRequired");
@@ -30,7 +33,7 @@
       newErrors.message = $_("MessageRequired");
     } else if (message.trim().length < 10) {
       newErrors.message = $_("MessageTooShort");
-    } else if (message.trim().length > 1000) {
+    } else if (message.trim().length > MESSAGE_MAX) {
       newErrors.message = $_("MessageTooLong");
     }
 
@@ -38,7 +41,7 @@
     return Object.keys(newErrors).length === 0;
   }
 
-  async function handleSubmit(event: any) {
+  async function handleSubmit(event: Event) {
     event.preventDefault();
 
     if (!validateForm()) {
@@ -71,25 +74,20 @@
     }
   }
 
+  $effect(() => setTitle($_("ContactUs")));
 </script>
 
 <div class="contact-container">
   <div class="contact-content">
     <div class="contact-header">
-      <button
-        aria-label="Go back"
-        onclick={() => history.back()}
-        class="btn-back"
-      >
-        <ArrowLeftOutline
-          class="w-4 h-4 rtl:rotate-180"
-        />
+      <button type="button" onclick={() => history.back()} class="btn-back">
+        <ArrowLeftOutline class="w-4 h-4 rtl:rotate-180" aria-hidden="true" />
         {$_("Back")}
       </button>
 
       <div class="header-content">
-        <div class="icon-wrapper">
-          <MessagesSolid class="header-icon text-white w-6 h-6" />
+        <div class="icon-wrapper" aria-hidden="true">
+          <MessagesSolid class="header-icon w-6 h-6" />
         </div>
         <h1 class="contact-title">{$_("ContactUs")}</h1>
         <h2 class="contact-subtitle">{$_("ContactUsTitle")}</h2>
@@ -98,8 +96,8 @@
     </div>
 
     {#if showSuccess}
-      <div class="success-message" class:rtl={$isRTL}>
-        <CheckCircleSolid class="success-icon" />
+      <div class="success-message" role="status">
+        <CheckCircleSolid class="success-icon" aria-hidden="true" />
         <div class="success-content">
           <h3 class="success-title">{$_("MessageSent")}</h3>
           <p class="success-description">{$_("MessageSentDescription")}</p>
@@ -108,9 +106,9 @@
     {/if}
 
     {#if showError}
-      <div class="error-message" class:rtl={$isRTL}>
+      <div class="error-message" role="alert">
         <svg
-          class="shrink-0 inline w-4 h-4 me-3"
+          class="shrink-0 inline w-4 h-4"
           aria-hidden="true"
           xmlns="http://www.w3.org/2000/svg"
           fill="currentColor"
@@ -127,10 +125,10 @@
     {/if}
 
     <div class="form-container">
-      <form onsubmit={handleSubmit} class="contact-form">
+      <form onsubmit={handleSubmit} class="contact-form" novalidate>
         <div class="form-group">
-          <label for="name" class="form-label" class:rtl={$isRTL}>
-            <UserSolid class="label-icon" />
+          <label for="name" class="form-label">
+            <UserSolid class="label-icon" aria-hidden="true" />
             {$_("YourName")}
           </label>
           <input
@@ -140,16 +138,18 @@
             placeholder={$_("YourNamePlaceholder")}
             class="form-input"
             class:error={errors.name}
-            class:rtl={$isRTL}
             disabled={isSubmitting}
+            autocomplete="name"
+            aria-invalid={!!errors.name}
+            aria-describedby={errors.name ? "name-error" : undefined}
           />
           {#if errors.name}
-            <p class="error-text-small" class:rtl={$isRTL}>{errors.name}</p>
+            <p id="name-error" class="error-text-small" role="alert">{errors.name}</p>
           {/if}
         </div>
         <div class="form-group">
-          <label for="subject" class="form-label" class:rtl={$isRTL}>
-            <UserSolid class="label-icon" />
+          <label for="subject" class="form-label">
+            <UserSolid class="label-icon" aria-hidden="true" />
             {$_("YourSubject")}
           </label>
           <input
@@ -158,37 +158,29 @@
             bind:value={subject}
             placeholder={$_("YourSubjectPlaceholder")}
             class="form-input"
-            class:error={errors.subject}
-            class:rtl={$isRTL}
             disabled={isSubmitting}
           />
-          {#if errors.subject}
-            <p class="error-text-small" class:rtl={$isRTL}>{errors.subject}</p>
-          {/if}
         </div>
         <div class="form-group">
-          <label for="email" class="form-label" class:rtl={$isRTL}>
-            <MailBoxOutline class="label-icon" />
+          <label for="email" class="form-label">
+            <MailBoxOutline class="label-icon" aria-hidden="true" />
             {$_("YourEmail")}
           </label>
           <input
             id="email"
-            type="text"
+            type="email"
             bind:value={email}
             placeholder={$_("YourEmailPlaceholder")}
             class="form-input"
-            class:error={errors.email}
-            class:rtl={$isRTL}
             disabled={isSubmitting}
+            autocomplete="email"
+            inputmode="email"
           />
-          {#if errors.email}
-            <p class="error-text-small" class:rtl={$isRTL}>{errors.email}</p>
-          {/if}
         </div>
 
         <div class="form-group">
-          <label for="message" class="form-label" class:rtl={$isRTL}>
-            <EnvelopeSolid class="label-icon" />
+          <label for="message" class="form-label">
+            <EnvelopeSolid class="label-icon" aria-hidden="true" />
             {$_("YourMessage")}
           </label>
           <textarea
@@ -198,32 +190,32 @@
             rows="6"
             class="form-textarea"
             class:error={errors.message}
-            class:rtl={$isRTL}
             disabled={isSubmitting}
+            aria-invalid={!!errors.message}
+            aria-describedby="message-count {errors.message ? 'message-error' : ''}"
           ></textarea>
-          <div class="character-count" class:rtl={$isRTL}>
-            <span class:over-limit={message.length > 1000}>
-              {message.length}/1000
+          <div class="character-count" id="message-count">
+            <span class:over-limit={message.length > MESSAGE_MAX}>
+              {message.length}/{MESSAGE_MAX}
             </span>
           </div>
           {#if errors.message}
-            <p class="error-text-small" class:rtl={$isRTL}>{errors.message}</p>
+            <p id="message-error" class="error-text-small" role="alert">{errors.message}</p>
           {/if}
         </div>
 
         <button
-          aria-label="Send message"
           type="submit"
           class="submit-button"
           class:loading={isSubmitting}
-          class:rtl={$isRTL}
           disabled={isSubmitting}
+          aria-busy={isSubmitting}
         >
           {#if isSubmitting}
-            <div class="loading-spinner"></div>
+            <span class="spinner spinner-xs spinner-white" aria-hidden="true"></span>
             {$_("SendingMessage")}
           {:else}
-            <EnvelopeSolid class="button-icon" />
+            <EnvelopeSolid class="button-icon" aria-hidden="true" />
             {$_("SendMessage")}
           {/if}
         </button>
@@ -232,14 +224,10 @@
 
     <div class="additional-info">
       <div class="info-card">
-        <MessagesSolid class="info-icon" />
+        <MessagesSolid class="info-icon" aria-hidden="true" />
         <div class="info-content">
           <h3 class="info-title">{$_("Welcome")}</h3>
-          <p class="info-description">
-            {$isRTL
-              ? "نحن نقدر ملاحظاتك ونسعى لتحسين تجربتك معنا باستمرار."
-              : "We value your feedback and strive to continuously improve your experience with us."}
-          </p>
+          <p class="info-description">{$_("ContactUsFeedback")}</p>
         </div>
       </div>
     </div>
@@ -250,7 +238,7 @@
   .contact-container {
     min-height: 100vh;
     background: var(--gradient-page);
-    padding: 2rem 1rem;
+    padding: 2rem var(--space-page-x);
   }
 
   .contact-content {
@@ -264,7 +252,13 @@
     margin-bottom: 1.5rem;
   }
 
+  .contact-header .btn-back {
+    float: inline-start;
+  }
+
   .header-content {
+    clear: both;
+    padding-top: 0.5rem;
     margin-bottom: 1.5rem;
   }
 
@@ -272,7 +266,8 @@
     width: 3.5rem;
     height: 3.5rem;
     background: var(--gradient-brand);
-    border-radius: var(--radius-xl);
+    color: var(--color-text-on-primary);
+    border-radius: var(--radius-card);
     display: flex;
     align-items: center;
     justify-content: center;
@@ -283,7 +278,7 @@
   .contact-title {
     font-size: 2rem;
     font-weight: 700;
-    color: var(--color-gray-900);
+    color: var(--color-text);
     margin-bottom: 0.375rem;
     letter-spacing: -0.02em;
   }
@@ -291,13 +286,13 @@
   .contact-subtitle {
     font-size: 1.25rem;
     font-weight: 600;
-    color: var(--color-gray-700);
+    color: var(--color-text-muted);
     margin-bottom: 0.75rem;
   }
 
   .contact-description {
     font-size: 0.9375rem;
-    color: var(--color-gray-500);
+    color: var(--color-text-muted);
     line-height: 1.6;
   }
 
@@ -306,32 +301,32 @@
     align-items: center;
     gap: 0.75rem;
     padding: 0.875rem 1rem;
-    border-radius: var(--radius-lg);
+    border-radius: var(--radius-card);
     margin-bottom: 1.5rem;
     animation: fadeInDown var(--duration-normal) var(--ease-out);
   }
 
-  .success-message { background: #f0fdf4; border: 1px solid #bbf7d0; }
-  .error-message { background: #fef2f2; border: 1px solid #fecaca; }
+  .success-message { background: var(--color-success-bg); border: 1px solid var(--color-success-border); }
+  .error-message { background: var(--color-danger-bg); border: 1px solid var(--color-danger-border); color: var(--color-danger-fg); }
+
+  .success-message :global(.success-icon) { width: 1.25rem; height: 1.25rem; color: var(--color-success); flex-shrink: 0; }
 
   .success-title {
     font-weight: 600;
-    color: var(--color-success);
+    color: var(--color-success-fg);
     margin-bottom: 0.125rem;
     font-size: 0.875rem;
   }
 
-  .success-description, .error-text {
-    color: var(--color-gray-700);
-    font-size: 0.8125rem;
-  }
+  .success-description { color: var(--color-text-muted); font-size: 0.8125rem; }
+  .error-text { color: var(--color-danger-fg); font-size: 0.8125rem; font-weight: 500; }
 
   .form-container {
-    background: white;
-    border-radius: var(--radius-2xl);
+    background: var(--color-surface-2);
+    border-radius: var(--radius-modal);
     padding: 2rem;
-    box-shadow: var(--shadow-lg);
-    border: 1px solid rgba(255, 255, 255, 0.8);
+    box-shadow: var(--shadow-card);
+    border: 1px solid var(--color-border);
     margin-bottom: 1.5rem;
   }
 
@@ -352,45 +347,43 @@
     align-items: center;
     gap: 0.375rem;
     font-weight: 500;
-    color: var(--color-gray-700);
+    color: var(--color-text);
     font-size: 0.8125rem;
   }
 
+  .form-label :global(.label-icon) { width: 0.875rem; height: 0.875rem; color: var(--color-text-faint); }
+
   .form-input, .form-textarea {
     padding: 0.6875rem 0.875rem;
-    border: 1.5px solid var(--color-gray-200);
-    border-radius: var(--radius-lg);
+    border: 1.5px solid var(--color-border);
+    border-radius: var(--radius-control);
     font-size: 0.9375rem;
     transition: all var(--duration-normal) var(--ease-out);
-    background: var(--color-gray-50);
-    color: var(--color-gray-800);
+    background: var(--color-surface);
+    color: var(--color-text);
   }
 
-  .form-input::placeholder, .form-textarea::placeholder { color: var(--color-gray-400); }
-  .form-input:hover, .form-textarea:hover { border-color: var(--color-gray-300); }
+  .form-input::placeholder, .form-textarea::placeholder { color: var(--color-text-faint); }
+  .form-input:hover, .form-textarea:hover { border-color: var(--color-border-strong); }
 
   .form-input:focus, .form-textarea:focus {
     outline: none;
-    border-color: var(--color-primary-400);
-    box-shadow: 0 0 0 3px rgba(99, 102, 241, 0.1);
-    background: white;
+    border-color: var(--color-primary);
+    box-shadow: 0 0 0 3px var(--color-primary-soft);
+    background: var(--color-surface-2);
   }
 
   .form-input.error, .form-textarea.error {
-    border-color: var(--color-error);
-    box-shadow: 0 0 0 3px rgba(239, 68, 68, 0.08);
+    border-color: var(--color-danger);
+    box-shadow: 0 0 0 3px var(--color-danger-soft);
   }
-
-  .form-input.rtl, .form-textarea.rtl { text-align: right; }
 
   .form-textarea { resize: vertical; min-height: 100px; font-family: inherit; }
 
-  .character-count { font-size: 0.6875rem; color: var(--color-gray-400); text-align: right; }
-  .character-count.rtl { text-align: left; }
-  .over-limit { color: var(--color-error); font-weight: 600; }
+  .character-count { font-size: 0.6875rem; color: var(--color-text-faint); text-align: end; font-variant-numeric: tabular-nums; }
+  .over-limit { color: var(--color-danger); font-weight: 600; }
 
-  .error-text-small { font-size: 0.75rem; color: var(--color-error); font-weight: 500; }
-  .error-text-small.rtl { text-align: right; }
+  .error-text-small { font-size: 0.75rem; color: var(--color-danger); font-weight: 500; }
 
   .submit-button {
     display: flex;
@@ -398,10 +391,10 @@
     justify-content: center;
     gap: 0.5rem;
     background: var(--gradient-brand);
-    color: white;
+    color: var(--color-text-on-primary);
     font-weight: 600;
     padding: 0.75rem 1.5rem;
-    border-radius: var(--radius-lg);
+    border-radius: var(--radius-control);
     border: none;
     cursor: pointer;
     transition: all var(--duration-normal) var(--ease-out);
@@ -409,6 +402,8 @@
     box-shadow: var(--shadow-brand);
     margin-top: 0.25rem;
   }
+
+  .submit-button :global(.button-icon) { width: 1rem; height: 1rem; }
 
   .submit-button:hover:not(:disabled) {
     background: var(--gradient-brand-hover);
@@ -419,36 +414,29 @@
   .submit-button:active:not(:disabled) { transform: translateY(0); }
   .submit-button:disabled { opacity: 0.6; cursor: not-allowed; transform: none; }
 
-  .loading-spinner {
-    width: 1rem;
-    height: 1rem;
-    border: 2px solid rgba(255, 255, 255, 0.3);
-    border-top: 2px solid white;
-    border-radius: 50%;
-    animation: spin 0.8s linear infinite;
-  }
-
   .additional-info { margin-top: 1.5rem; }
 
   .info-card {
-    background: white;
-    border-radius: var(--radius-xl);
+    background: var(--color-surface-2);
+    border-radius: var(--radius-card);
     padding: 1.25rem;
-    box-shadow: var(--shadow-sm);
-    border: 1px solid var(--color-gray-100);
+    box-shadow: var(--shadow-card);
+    border: 1px solid var(--color-border);
     display: flex;
     align-items: center;
     gap: 0.875rem;
   }
 
-  .info-title { font-weight: 600; color: var(--color-gray-800); margin-bottom: 0.25rem; font-size: 0.9375rem; }
-  .info-description { color: var(--color-gray-500); font-size: 0.8125rem; line-height: 1.5; }
+  .info-card :global(.info-icon) { width: 1.5rem; height: 1.5rem; color: var(--color-primary); flex-shrink: 0; }
+
+  .info-title { font-weight: 600; color: var(--color-text); margin-bottom: 0.25rem; font-size: 0.9375rem; }
+  .info-description { color: var(--color-text-muted); font-size: 0.8125rem; line-height: 1.5; }
 
   @media (max-width: 640px) {
-    .contact-container { padding: 1rem; }
+    .contact-container { padding: 1rem var(--space-page-x); }
     .contact-title { font-size: 1.5rem; }
     .contact-subtitle { font-size: 1.0625rem; }
-    .form-container { padding: 1.5rem; border-radius: var(--radius-xl); }
+    .form-container { padding: 1.5rem; border-radius: var(--radius-card); }
     .info-card { flex-direction: column; text-align: center; }
   }
 </style>

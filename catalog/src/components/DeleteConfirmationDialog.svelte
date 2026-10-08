@@ -1,8 +1,11 @@
 <script lang="ts">
-  import Modal from "@/components/Modal.svelte";
+  import { ExclamationCircleOutline } from "flowbite-svelte-icons";
+  import ConfirmDialog from "@/components/ui/ConfirmDialog.svelte";
+  import Badge from "@/components/ui/Badge.svelte";
   import { _ } from "@/i18n";
-  import { ExclamationCircleSolid } from "flowbite-svelte-icons";
 
+  // The delete dialog used by the dashboard pages. Same props as before; now a
+  // thin layer over ui/ConfirmDialog (tokens, focus trap, Escape/overlay).
   interface Props {
     open?: boolean;
     title?: string;
@@ -30,115 +33,57 @@
     if (open) forceDelete = false;
   });
 
-  function handleConfirm() {
-    onConfirm(showForce && forceDelete);
-  }
-
-  function handleCancel() {
-    onCancel();
-  }
-
   const displayTitle = $derived(
     title || $_("delete_confirmation.title", { values: { type: itemType } }),
   );
+  const uid = $props.id();
 </script>
 
-{#if open}
-  <Modal
-    title={displayTitle}
-    ariaLabel={displayTitle}
-    size="md"
-    dismissable={!isDeleting}
-    onClose={handleCancel}
-  >
-    {#snippet icon()}
-      <ExclamationCircleSolid class="w-6 h-6 text-red-600" />
-    {/snippet}
+<ConfirmDialog
+  bind:open
+  title={displayTitle}
+  variant="danger"
+  loading={isDeleting}
+  loadingLabel={$_("deleting")}
+  confirmLabel={$_("delete")}
+  cancelLabel={$_("cancel")}
+  onConfirm={() => onConfirm(showForce && forceDelete)}
+  {onCancel}
+>
+  <p class="text-sm text-text-muted">{$_("delete_confirmation.irreversible")}</p>
 
-    <div class="space-y-4">
-      <p class="text-sm text-gray-500">
-        {$_("delete_confirmation.irreversible")}
-      </p>
-
-      <div
-        class="flex items-start gap-4 rounded-xl border border-red-200 bg-red-50 px-4 py-3"
-      >
-        <div
-          class="flex h-10 w-10 shrink-0 items-center justify-center rounded-full bg-red-100 text-red-600"
-        >
-          <svg
-            class="h-5 w-5"
-            fill="none"
-            stroke="currentColor"
-            viewBox="0 0 24 24"
-          >
-            <path
-              stroke-linecap="round"
-              stroke-linejoin="round"
-              stroke-width="2"
-              d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z"
-            />
-          </svg>
-        </div>
-        <div class="flex-1">
-          <h4 class="text-sm font-semibold text-red-800">
-            {$_("delete_confirmation.confirm")}
-          </h4>
-          <p class="mt-1 text-sm text-red-700">
-            {$_("delete_confirmation.warning")}
-          </p>
-        </div>
-      </div>
-
-      <div
-        class="rounded-xl border border-gray-200 bg-gray-50 px-4 py-3 text-sm"
-      >
-        <span class="font-semibold text-gray-700"
-          >{$_("delete_confirmation.item_label")}:</span
-        >
-        <span class="ml-1 break-all text-gray-900">{itemName}</span>
-        {#if itemType}
-          <span
-            class="ml-2 inline-flex items-center rounded-md bg-gray-200 px-2 py-0.5 text-[11px] font-medium uppercase tracking-wide text-gray-600"
-          >
-            {itemType}
-          </span>
-        {/if}
-      </div>
-
-      {#if showForce}
-        <label class="flex items-start gap-2 rounded-xl border border-amber-200 bg-amber-50 px-4 py-3 text-sm cursor-pointer">
-          <input type="checkbox" bind:checked={forceDelete} disabled={isDeleting} class="mt-0.5" />
-          <span>
-            <span class="font-semibold text-amber-800">{$_("force_delete")}</span>
-            <span class="block text-amber-700">{$_("force_delete_help")}</span>
-          </span>
-        </label>
-      {/if}
+  <div class="flex items-start gap-3 rounded-card border border-danger/30 bg-danger-soft px-4 py-3">
+    <ExclamationCircleOutline size="md" class="shrink-0 mt-0.5 text-danger" aria-hidden="true" />
+    <div class="flex-1 min-w-0">
+      <h4 class="text-sm font-semibold text-text">{$_("delete_confirmation.confirm")}</h4>
+      <p class="mt-1 text-sm text-text-muted">{$_("delete_confirmation.warning")}</p>
     </div>
+  </div>
 
-    {#snippet footer()}
-      <button
-        onclick={handleCancel}
-        class="rounded-xl border border-gray-200 bg-white px-5 py-2.5 text-sm font-medium text-gray-700 hover:bg-gray-50 disabled:opacity-60"
+  <div class="rounded-card border border-border bg-surface px-4 py-3 text-sm flex flex-wrap items-center gap-2">
+    <span class="font-semibold text-text-muted">{$_("delete_confirmation.item_label")}:</span>
+    <span class="break-all text-text">{itemName}</span>
+    {#if itemType}
+      <Badge size="sm">{itemType}</Badge>
+    {/if}
+  </div>
+
+  {#if showForce}
+    <label
+      for="{uid}-force"
+      class="flex items-start gap-2 rounded-card border border-warning/40 bg-warning-soft px-4 py-3 text-sm cursor-pointer"
+    >
+      <input
+        id="{uid}-force"
+        type="checkbox"
+        bind:checked={forceDelete}
         disabled={isDeleting}
-      >
-        {$_("cancel")}
-      </button>
-      <button
-        onclick={handleConfirm}
-        disabled={isDeleting}
-        class="inline-flex items-center gap-2 rounded-xl bg-red-600 px-6 py-2.5 text-sm font-semibold text-white hover:bg-red-700 shadow-md shadow-red-200 disabled:opacity-60"
-      >
-        {#if isDeleting}
-          <span
-            class="h-4 w-4 animate-spin rounded-full border-2 border-white/40 border-t-white"
-          ></span>
-          {$_("deleting")}
-        {:else}
-          {$_("delete")}
-        {/if}
-      </button>
-    {/snippet}
-  </Modal>
-{/if}
+        class="mt-0.5 accent-[var(--color-warning)]"
+      />
+      <span>
+        <span class="font-semibold text-text">{$_("force_delete")}</span>
+        <span class="block text-text-muted">{$_("force_delete_help")}</span>
+      </span>
+    </label>
+  {/if}
+</ConfirmDialog>

@@ -251,7 +251,24 @@
       },
       "placeholders": {
         "add_tag": "أضف وسم + Enter"
-      }
+      },
+      "csv_upload_failed": "فشل رفع ملف CSV",
+      "csv_upload_success": "تم رفع ملف CSV بنجاح",
+      "invalid_csv_data": "يحتوي ملف CSV على بيانات غير صالحة",
+      "no_items_export": "لا توجد عناصر للتصدير",
+      "selected": "{count} محدد",
+      "copy": "نسخ",
+      "copy_title": "نسخ العناصر",
+      "copy_subtitle": "اختر المساحة والمسار الفرعي الوجهة",
+      "copying": "جارٍ النسخ...",
+      "copy_success": "تم نسخ {count} عنصر بنجاح",
+      "copy_failed": "فشل نسخ {count} عنصر",
+      "move": "نقل",
+      "move_title": "نقل العناصر",
+      "move_subtitle": "اختر المساحة والمسار الفرعي الوجهة",
+      "moving": "جارٍ النقل...",
+      "move_success": "تم نقل {count} عنصر بنجاح",
+      "move_failed": "فشل نقل {count} عنصر"
     },
     "breadcrumb": {
       "admin": "الإدارة"
@@ -324,7 +341,10 @@
       "active": "نشط",
       "inactive": "غير نشط"
     },
-    "title": "محتويات {name}"
+    "title": "محتويات {name}",
+    "column_settings": {
+      "title": "إعدادات الأعمدة"
+    }
   },
   "admin_dashboard": {
     "actions": {
@@ -427,12 +447,17 @@
       "title": "المرفقات",
       "total_count": "{count} مرفق إجمالي",
       "type_count": "مرفقات {type} ({count})",
-      "zero_count": "0 مرفقات"
+      "zero_count": "0 مرفقات",
+      "upload": "رفع"
     },
     "author_entries": {
       "headers": {
         "space": "المساحة",
-        "type": "النوع"
+        "type": "النوع",
+        "shortname": "الاسم المختصر",
+        "display_name": "اسم العرض",
+        "status": "الحالة",
+        "created": "تاريخ الإنشاء"
       },
       "no_entries": "لم يتم العثور على مدخلات مؤلف ذات صلة",
       "title": "مدخلات المؤلف ذات الصلة"
@@ -475,7 +500,8 @@
       "failed_load_item": "فشل في تحميل بيانات العنصر",
       "failed_update_item": "فشل في تحديث العنصر",
       "item_not_found": "العنصر غير موجود",
-      "title": "خطأ في تحميل العنصر"
+      "title": "خطأ في تحميل العنصر",
+      "delete_failed": "فشل حذف العنصر"
     },
     "fields": {
       "created": "تاريخ الإنشاء",
@@ -566,6 +592,10 @@
     },
     "navigation": {
       "go_back": "العودة"
+    },
+    "config": {
+      "save_failed": "فشل حفظ إعدادات المساحة",
+      "save_success": "تم حفظ إعدادات المساحة"
     }
   },
   "all_roles": "جميع الأدوار",
@@ -599,7 +629,8 @@
     "empty": {
       "folder_empty": "يبدو أن هذا المجلد فارغ.",
       "no_matches": "لا يوجد محتوى يطابق معايير البحث الخاصة بك.",
-      "title": "لم يتم العثور على محتوى"
+      "title": "لم يتم العثور على محتوى",
+      "space_empty": "لا تحتوي هذه المساحة على محتوى بعد"
     },
     "error": {
       "title": "خطأ في تحميل المحتويات",
@@ -609,7 +640,15 @@
       "clear_all": "مسح جميع المرشحات",
       "sort_by": "ترتيب حسب",
       "title": "البحث والتصفية",
-      "toggle_sort": "تبديل ترتيب الفرز"
+      "toggle_sort": "تبديل ترتيب الفرز",
+      "expand_filters": "مزيد من عوامل التصفية",
+      "collapse_filters": "عوامل تصفية أقل",
+      "type": "النوع",
+      "all_types": "كل الأنواع",
+      "status": "الحالة",
+      "all_statuses": "الكل",
+      "active": "نشط",
+      "inactive": "غير نشط"
     },
     "infinite_scroll": {
       "end_of_results": "لقد وصلت إلى النهاية!",
@@ -618,7 +657,8 @@
       "showing_count": "عرض {displayed} عنصر",
       "showing_items": "عرض {displayed} من {total} عنصر",
       "showing_of": "عرض {displayed} من {total} عنصر",
-      "total_items": "المجموع: {count} عنصر"
+      "total_items": "المجموع: {count} عنصر",
+      "items_per_load": "عدد العناصر لكل تحميل"
     },
     "loading": "جاري تحميل المحتوى...",
     "pagination": {
@@ -627,7 +667,7 @@
     },
     "results": {
       "for_query": "لـ \"{query}\"",
-      "with_tags": "مع الوسوم "
+      "with_tags": "مع {count} من الوسوم"
     },
     "search": {
       "clear": "مسح البحث",
@@ -721,7 +761,10 @@
     "update": "تحديث",
     "updating": "جارٍ التحديث...",
     "uploading": "جارٍ الرفع...",
-    "yes": "نعم"
+    "yes": "نعم",
+    "back_to": "العودة إلى",
+    "list": "القائمة",
+    "copy_link": "نسخ الرابط"
   },
   "community": {
     "features": {
@@ -854,7 +897,8 @@
       "select_template": "يرجى اختيار قالب!"
     },
     "navigation": {
-      "back_to_entries": "العودة إلى مقالاتي"
+      "back_to_entries": "العودة إلى مقالاتي",
+      "back_to_folder": "العودة إلى المجلد"
     },
     "schema": {
       "choose_option": "اختر مخططًا...",
@@ -963,13 +1007,19 @@
       "no_comments": "لا توجد تعليقات بعد",
       "placeholder": "شارك أفكارك...",
       "submit": "إرسال التعليق",
-      "title": "التعليقات"
+      "title": "التعليقات",
+      "delete_comment": "حذف التعليق"
     },
     "reactions": {
       "add_error": "فشل في إضافة التفاعل!",
       "add_success": "تم إضافة التفاعل بنجاح",
       "remove_error": "فشل في إزالة التفاعل!",
       "remove_success": "تم إزالة التفاعل بنجاح"
+    },
+    "contributors": "المساهمون",
+    "navigation": {
+      "back_to_folder": "العودة إلى المجلد",
+      "edit_entry": "تعديل الإدخال"
     }
   },
   "entry_edit": {
@@ -988,7 +1038,8 @@
     "entry_title": "عنوان الإدخال",
     "error": {
       "not_found_message": "الإدخال الذي تحاول تحريره غير موجود أو تم حذفه.",
-      "not_found_title": "الإدخال غير موجود"
+      "not_found_title": "الإدخال غير موجود",
+      "_val": "تعذّر حفظ الإدخال"
     },
     "loading": "جاري تحميل الإدخال للتحرير...",
     "loading_editor": "جاري تحميل المحرر...",
@@ -1018,7 +1069,18 @@
     "title_placeholder": "أدخل عنوان إدخالك...",
     "update_description": "احفظ تغييراتك أو انشر إدخالك المحدث",
     "update_entry": "تحديث إدخالك",
-    "updated": "محدث"
+    "updated": "محدث",
+    "attachments": {
+      "add_files": "إضافة ملفات"
+    },
+    "buttons": {
+      "publish_now": "نشر الآن",
+      "save_draft": "حفظ كمسودة"
+    },
+    "navigation": {
+      "back_to_entry": "العودة إلى الإدخال"
+    },
+    "remove_attachment": "إزالة المرفق"
   },
   "error": {
     "_val": "خطأ",
@@ -1137,7 +1199,8 @@
       "button": "احصل على الدعم",
       "description": "لا تستطيع العثور على ما تبحث عنه؟ فريق الدعم لدينا هنا لمساعدتك في أي أسئلة أو مشاكل.",
       "title": "ما زلت تحتاج مساعدة؟"
-    }
+    },
+    "json_editor": "حرّر JSON مباشرة"
   },
   "inactive": "غير نشط",
   "kurdish": "الكردية",
@@ -1148,7 +1211,8 @@
   },
   "loading": {
     "spaces": "جاري تحميل المساحات...",
-    "subpaths": "جاري تحميل المسارات الفرعية..."
+    "subpaths": "جاري تحميل المسارات الفرعية...",
+    "_val": "جارٍ التحميل…"
   },
   "loadingConfiguration": "جاري تحميل التكوين...",
   "loadingMessages": "جاري تحميل الرسائل...",
@@ -1227,7 +1291,8 @@
     "websocket_init_failed": "فشل تهيئة اتصال WebSocket",
     "type_a_message": "اكتب رسالة...",
     "update_group": "تحديث المجموعة",
-    "voice_message": "رسالة صوتية"
+    "voice_message": "رسالة صوتية",
+    "you": "أنت"
   },
   "modal": {
     "update_shortname": {
@@ -1328,7 +1393,9 @@
     },
     "login_required": {
       "message": "يجب عليك تسجيل الدخول لترك تعليق.",
-      "title": "يجب تسجيل الدخول"
+      "title": "يجب تسجيل الدخول",
+      "cancel": "إلغاء",
+      "login": "تسجيل الدخول"
     },
     "media": {
       "title": "الوسائط والملفات ({count})"
@@ -1342,7 +1409,8 @@
     },
     "sections": {
       "description": "الوصف",
-      "relationships": "العلاقات"
+      "relationships": "العلاقات",
+      "comments": "التعليقات"
     },
     "comments": {
       "add_error": "حدث خطأ أثناء إضافة تعليقك.",
@@ -1364,7 +1432,8 @@
       "reply_failed": "فشل في إضافة الرد. حاول مرة أخرى.",
       "reply_placeholder": "اكتب ردك هنا...",
       "submit": "نشر التعليق",
-      "submit_reply": "نشر الرد"
+      "submit_reply": "نشر الرد",
+      "placeholder": "شاركنا رأيك…"
     },
     "reactions": {
       "add_failed": "فشل في إضافة التفاعل. حاول مرة أخرى.",
@@ -1587,7 +1656,6 @@
   "statistics": "الإحصائيات",
   "status": {
     "_val": "الحالة",
-    "name": "الحالة",
     "active": "نشط",
     "inactive": "غير نشط"
   },
@@ -1919,7 +1987,11 @@
     "answer_type_text": "مربع نص",
     "questions": "الأسئلة",
     "survey_description": "وصف الاستبيان",
-    "survey_title": "عنوان الاستبيان"
+    "survey_title": "عنوان الاستبيان",
+    "question_count": "سؤال/أسئلة",
+    "select_space": "اختر مساحة",
+    "space": "المساحة",
+    "survey_details": "تفاصيل الاستبيان"
   },
   "survey_manage": {
     "back_to_surveys": "العودة إلى الاستبيانات",
@@ -1944,7 +2016,9 @@
     "title": "إدارة استبياناتي",
     "total_responses": "إجمالي الإجابات",
     "your_answer": "إجابتك",
-    "your_surveys": "استبياناتك"
+    "your_surveys": "استبياناتك",
+    "more": "المزيد",
+    "view_all": "عرض الكل"
   },
   "surveys": {
     "_val": "الاستبيانات",
@@ -2051,5 +2125,140 @@
     "go_home": "الذهاب إلى الصفحة الرئيسية",
     "message": "تعذّر العثور على الصفحة {url}. تحقّق من العنوان أو عد إلى الصفحة الرئيسية.",
     "title": "الصفحة غير موجودة"
+  },
+  "ui": {
+    "search": "بحث",
+    "clear_search": "مسح البحث",
+    "sort_by": "ترتيب حسب",
+    "sort_ascending": "تصاعدي",
+    "sort_descending": "تنازلي",
+    "toggle_sort_order": "تبديل اتجاه الترتيب",
+    "toolbar": "شريط الأدوات",
+    "loading": "جارٍ التحميل…",
+    "retry": "إعادة المحاولة",
+    "something_went_wrong": "حدث خطأ ما",
+    "nothing_here": "لا يوجد شيء هنا بعد",
+    "confirm": "تأكيد",
+    "cancel": "إلغاء",
+    "delete": "حذف",
+    "remove": "إزالة",
+    "dialog": "مربع حوار",
+    "working": "جارٍ التنفيذ…",
+    "link_copied": "تم نسخ الرابط",
+    "copy_failed": "تعذّر نسخ الرابط",
+    "breadcrumb": "مسار التنقل",
+    "close_menu": "إغلاق القائمة",
+    "main_menu": "القائمة الرئيسية",
+    "notifications_new": "إشعارات جديدة",
+    "change_language": "تغيير اللغة"
+  },
+  "theme": {
+    "light": "فاتح",
+    "dark": "داكن",
+    "system": "حسب النظام",
+    "change": "تغيير المظهر"
+  },
+  "media": {
+    "load_failed": "تعذّر تحميل الصورة",
+    "download": "تنزيل {name}",
+    "document": "مستند"
+  },
+  "menu": "القائمة",
+  "nav": {
+    "home": "الرئيسية"
+  },
+  "ContactUsFeedback": "نحن نقدّر ملاحظاتك ونسعى لتحسين تجربتك معنا باستمرار.",
+  "VerifyEmail": "تحقّق من بريدك الإلكتروني",
+  "profile": {
+    "title": "ملفي الشخصي",
+    "loading": "جارٍ تحميل ملفك الشخصي…",
+    "info": "معلومات الملف الشخصي",
+    "display_name": "اسم العرض",
+    "email": "البريد الإلكتروني",
+    "mobile": "رقم الهاتف",
+    "bio": "نبذة",
+    "additional_details": "تفاصيل إضافية",
+    "account": "الحساب",
+    "active": "نشط",
+    "inactive": "غير نشط",
+    "password": "كلمة المرور",
+    "password_hint": "غيّر كلمة المرور التي تسجّل الدخول بها",
+    "change": "تغيير",
+    "save_changes": "حفظ التغييرات",
+    "saving": "جارٍ الحفظ…",
+    "change_photo": "تغيير صورة الملف الشخصي",
+    "required": "مطلوب",
+    "password_changed": "تم تغيير كلمة المرور",
+    "updated": "تم تحديث الملف الشخصي",
+    "photo_updated": "تم تحديث صورة الملف الشخصي",
+    "errors": {
+      "schema_load_failed": "تعذّر تحميل مخطط الملف الشخصي",
+      "passwords_do_not_match": "كلمتا المرور الجديدتان غير متطابقتين",
+      "password_too_short": "يجب أن تتكوّن كلمة المرور الجديدة من 8 أحرف على الأقل",
+      "password_same": "يجب أن تختلف كلمة المرور الجديدة عن الحالية",
+      "password_change_failed": "تعذّر تغيير كلمة المرور",
+      "display_name_required": "اسم العرض مطلوب للغة {language}",
+      "description_required": "النبذة مطلوبة للغة {language}",
+      "update_failed": "تعذّر تحديث الملف الشخصي",
+      "invalid_image": "يرجى اختيار ملف صورة",
+      "image_too_large": "يجب أن يكون حجم الصورة أقل من 5 ميغابايت",
+      "photo_update_failed": "تعذّر تحديث صورة الملف الشخصي"
+    }
+  },
+  "Gender": "الجنس",
+  "GenderRequired": "يرجى اختيار الجنس",
+  "InvalidAge": "يرجى إدخال عمر صحيح (1–150)",
+  "Refresh": "تحديث",
+  "ThisFieldIsRequired": "هذا الحقل مطلوب",
+  "edit_user": "تعديل المستخدم",
+  "failed_to_update_user": "فشل تحديث المستخدم",
+  "update_user": "تحديث المستخدم",
+  "user_updated_successfully": "تم تحديث المستخدم",
+  "updating": "جارٍ التحديث…",
+  "relationship_modal": {
+    "title": "إدارة العلاقات",
+    "new_title": "علاقة جديدة",
+    "edit_title": "تعديل العلاقة",
+    "add_relationship": "إضافة علاقة",
+    "no_relationships": "لم يتم تعريف أي علاقات بعد.",
+    "save_success": "تم حفظ العلاقات بنجاح!",
+    "save_error": "فشل حفظ العلاقات",
+    "confirm_delete": "هل أنت متأكد من حذف هذه العلاقة؟",
+    "fields": {
+      "space_name": "اسم المساحة",
+      "subpath": "المسار الفرعي",
+      "shortname": "الاسم المختصر",
+      "resource_type": "نوع المورد",
+      "schema_shortname": "الاسم المختصر للمخطط (اختياري)",
+      "attributes": "الخصائص"
+    },
+    "select_space": "اختر مساحة",
+    "select_entry": "اختر إدخالًا",
+    "loading_subpaths": "جارٍ تحميل المسارات الفرعية...",
+    "loading_entries": "جارٍ تحميل الإدخالات...",
+    "schema_placeholder": "الاسم المختصر للمخطط (اختياري)",
+    "json_format_hint": "أدخل JSON بصيغة صحيحة"
+  },
+  "attachment_modal": {
+    "title": "رفع المرفقات",
+    "upload_title": "رفع الملفات",
+    "upload_description": "ارفع ملفات لإرفاقها بهذا العنصر",
+    "click_to_upload": "انقر للرفع",
+    "or_drag_drop": " أو اسحب وأفلت",
+    "supported_formats": "جميع أنواع الملفات مدعومة",
+    "selected_files": "تم تحديد {count} ملف",
+    "no_files_selected": "لم يتم تحديد ملفات",
+    "upload_button": "رفع",
+    "upload_success": "تم رفع {count} ملف بنجاح",
+    "upload_error": "فشل رفع {count} ملف",
+    "upload_failed": "فشل الرفع. يرجى المحاولة مرة أخرى.",
+    "all_upload_success": "تم رفع جميع الملفات ({count}) بنجاح",
+    "partial_upload_success": "نجح {success}، فشل {failed}",
+    "all_upload_failed": "فشل رفع جميع الملفات ({count})",
+    "clear_all": "مسح الكل",
+    "remove_file": "إزالة الملف",
+    "fields": {
+      "attachment_type": "نوع المرفق"
+    }
   }
 }

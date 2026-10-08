@@ -1,62 +1,27 @@
-import {toast} from "@zerodevx/svelte-toast";
+// Legacy names kept for the many existing call sites; all four delegate to
+// lib/toast.ts so colours come from the design tokens (light and dark).
+// New code should import { toasts } from "@/lib/toast".
+import { toasts } from "@/lib/toast";
 
-/**
- * Displays a success toast message with green styling
- * @param message - The success message to display
- */
-export function successToastMessage(message: string){
-    toast.push(message, {
-        theme: {
-            '--toastColor': 'mintcream',
-            '--toastBarBackground': 'rgba(72,187,120)',
-            '--toastBackground': 'rgb(0,150,0)'
-        }
-    })
+/** Success toast. */
+export function successToastMessage(message: string) {
+  toasts.success(message);
+}
+
+/** Warning toast. */
+export function warningToastMessage(message: string) {
+  toasts.warning(message);
+}
+
+/** Info toast. */
+export function infoToastMessage(message: string) {
+  toasts.info(message);
 }
 
 /**
- * Displays a warning toast message with orange/amber styling
- * @param message - The warning message to display
+ * Error toast.
+ * @param noClose - If true, the toast stays until dismissed.
  */
-export function warningToastMessage(message: string){
-    toast.push(message, {
-        theme: {
-            '--toastColor': 'mintcream',
-            '--toastBarBackground': 'rgba(245,158,11)',
-            '--toastBackground': 'rgb(217,119,6)'
-        }
-    })
-}
-
-/**
- * Displays an info toast message with blue styling
- * @param message - The info message to display
- */
-export function infoToastMessage(message: string){
-    toast.push(message, {
-        theme: {
-            '--toastColor': 'mintcream',
-            '--toastBarBackground': 'rgba(59,130,246)',
-            '--toastBackground': 'rgb(37,99,235)'
-        }
-    })
-}
-
-/**
- * Displays an error toast message with red styling
- * @param message - The error message to display
- * @param noClose - If true, the toast will not auto-close (default: false)
- */
-export function errorToastMessage(message: string, noClose: boolean = false){
-    const option: { theme: Record<string, string>; initial?: number } = {
-        theme: {
-            '--toastColor': 'mintcream',
-            '--toastBarBackground': 'rgba(187,72,72)',
-            '--toastBackground': 'rgb(150,0,0)'
-        }
-    }
-    if (noClose){
-        option.initial = 0
-    }
-    toast.push(message, option)
+export function errorToastMessage(message: string, noClose: boolean = false) {
+  toasts.error(message, { sticky: noClose });
 }

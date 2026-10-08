@@ -187,11 +187,11 @@
   "action_cannot_be_undone": "This action cannot be undone.",
   "actions": {
     "_val": "Actions",
-    "back_to_contents": "العودة إلى المحتويات",
-    "go_back": "العودة",
+    "back_to_contents": "Back to contents",
+    "go_back": "Go back",
     "name": "Actions",
-    "open": "فتح",
-    "view": "عرض",
+    "open": "Open",
+    "view": "View",
     "visit": "Visit"
   },
   "active": "Active",
@@ -263,7 +263,12 @@
       },
       "placeholders": {
         "add_tag": "Add tag + Enter"
-      }
+      },
+      "csv_upload_failed": "CSV upload failed",
+      "csv_upload_success": "CSV uploaded successfully",
+      "invalid_csv_data": "The CSV file contains invalid data",
+      "no_items_export": "There are no items to export",
+      "selected": "{count} selected"
     },
     "breadcrumb": {
       "admin": "Admin"
@@ -279,10 +284,10 @@
     "error": {
       "create_folder_error": "Error creating folder",
       "create_folder_failed": "Failed to create folder",
-      "create_schema_error": "خطأ في إنشاء المخطط",
-      "create_schema_failed": "فشل إنشاء المخطط",
-      "create_workflow_error": "خطأ في إنشاء سير العمل",
-      "create_workflow_failed": "فشل إنشاء سير العمل",
+      "create_schema_error": "Error creating the schema",
+      "create_schema_failed": "Failed to create the schema",
+      "create_workflow_error": "Error creating the workflow",
+      "create_workflow_failed": "Failed to create the workflow",
       "failed_load_contents": "Failed to load contents. Please try again.",
       "title": "Error loading contents",
       "try_again": "Try Again"
@@ -336,7 +341,10 @@
       "active": "Active",
       "inactive": "Inactive"
     },
-    "title": "Contents of {name}"
+    "title": "Contents of {name}",
+    "column_settings": {
+      "title": "Column settings"
+    }
   },
   "admin_dashboard": {
     "actions": {
@@ -445,7 +453,11 @@
     "author_entries": {
       "headers": {
         "space": "Space",
-        "type": "Type"
+        "type": "Type",
+        "shortname": "Shortname",
+        "display_name": "Display name",
+        "status": "Status",
+        "created": "Created"
       },
       "no_entries": "No author related entries found",
       "title": "Author Related Entries"
@@ -488,7 +500,8 @@
       "failed_load_item": "Failed to load item data",
       "failed_update_item": "Failed to update item",
       "item_not_found": "Item not found",
-      "title": "Error Loading Item"
+      "title": "Error Loading Item",
+      "delete_failed": "Failed to delete the item"
     },
     "fields": {
       "created": "Created",
@@ -579,6 +592,10 @@
     },
     "navigation": {
       "go_back": "Go back"
+    },
+    "config": {
+      "save_failed": "Failed to save the space configuration",
+      "save_success": "Space configuration saved"
     }
   },
   "all_roles": "All Roles",
@@ -612,7 +629,8 @@
     "empty": {
       "folder_empty": "This folder appears to be empty.",
       "no_matches": "No content matches your search criteria.",
-      "title": "No Content Found"
+      "title": "No Content Found",
+      "space_empty": "This space has no content yet"
     },
     "error": {
       "title": "Error Loading Contents",
@@ -743,7 +761,10 @@
     "update": "Update",
     "updating": "Updating...",
     "uploading": "Uploading...",
-    "yes": "Yes"
+    "yes": "Yes",
+    "back_to": "Back to",
+    "list": "List",
+    "copy_link": "Copy link"
   },
   "relationship_modal": {
     "title": "Manage Relationships",
@@ -1032,13 +1053,19 @@
       "no_comments": "No comments yet",
       "placeholder": "Share your thoughts...",
       "submit": "Submit comment",
-      "title": "Comments"
+      "title": "Comments",
+      "delete_comment": "Delete comment"
     },
     "reactions": {
       "add_error": "Failed to add reaction!",
       "add_success": "Reaction added successfully",
       "remove_error": "Failed to remove reaction!",
       "remove_success": "Reaction removed successfully"
+    },
+    "contributors": "Contributors",
+    "navigation": {
+      "back_to_folder": "Back to folder",
+      "edit_entry": "Edit entry"
     }
   },
   "entry_edit": {
@@ -1057,7 +1084,8 @@
     "entry_title": "Entry Title",
     "error": {
       "not_found_message": "The entry you're trying to edit doesn't exist or has been removed.",
-      "not_found_title": "Entry Not Found"
+      "not_found_title": "Entry Not Found",
+      "_val": "Could not save the entry"
     },
     "loading": "Loading entry for editing...",
     "loading_editor": "Loading editor...",
@@ -1087,17 +1115,28 @@
     "title_placeholder": "Enter your entry title...",
     "update_description": "Save your changes or publish your updated entry",
     "update_entry": "Update Your Entry",
-    "updated": "updated"
+    "updated": "updated",
+    "attachments": {
+      "add_files": "Add files"
+    },
+    "buttons": {
+      "publish_now": "Publish now",
+      "save_draft": "Save draft"
+    },
+    "navigation": {
+      "back_to_entry": "Back to entry"
+    },
+    "remove_attachment": "Remove attachment"
   },
   "error": {
     "_val": "Error",
-    "failed_load_catalogs": "فشل في تحميل الكتالوجات",
-    "failed_load_post": "فشل في تحميل بيانات المنشور",
-    "failed_load_space_contents": "فشل في تحميل محتويات المساحة",
-    "invalid_response": "هيكل الاستجابة غير صالح",
-    "loading_catalogs_title": "خطأ في تحميل الكتالوجات",
-    "loading_contents_title": "خطأ في تحميل المحتويات",
-    "loading_post_title": "خطأ في تحميل المنشور"
+    "failed_load_catalogs": "Failed to load the catalogs",
+    "failed_load_post": "Failed to load the post",
+    "failed_load_space_contents": "Failed to load the space contents",
+    "invalid_response": "Invalid response from the server",
+    "loading_catalogs_title": "Error loading catalogs",
+    "loading_contents_title": "Error loading contents",
+    "loading_post_title": "Error loading the post"
   },
   "errorFetchingMessages": "An error occurred while fetching messages",
   "errors": {
@@ -1206,7 +1245,8 @@
       "button": "Get Support",
       "description": "Can't find what you're looking for? Our support team is here to help you with any questions or issues.",
       "title": "Still Need Help?"
-    }
+    },
+    "json_editor": "Edit the raw JSON directly"
   },
   "inactive": "Inactive",
   "kurdish": "Kurdish",
@@ -1217,7 +1257,8 @@
   },
   "loading": {
     "spaces": "Loading spaces...",
-    "subpaths": "Loading subpaths..."
+    "subpaths": "Loading subpaths...",
+    "_val": "Loading…"
   },
   "loadingConfiguration": "Loading configuration...",
   "loadingMessages": "Loading messages...",
@@ -1296,7 +1337,8 @@
     "websocket_init_failed": "Failed to initialize WebSocket connection",
     "type_a_message": "Type a message...",
     "update_group": "Update Group",
-    "voice_message": "Voice Message"
+    "voice_message": "Voice Message",
+    "you": "You"
   },
   "modal": {
     "update_shortname": {
@@ -1397,7 +1439,9 @@
     },
     "login_required": {
       "message": "You must be logged in to leave a comment.",
-      "title": "Login Required"
+      "title": "Login Required",
+      "cancel": "Cancel",
+      "login": "Sign in"
     },
     "media": {
       "title": "Media & Files ({count})"
@@ -1411,7 +1455,8 @@
     },
     "sections": {
       "description": "Description",
-      "relationships": "Relationships"
+      "relationships": "Relationships",
+      "comments": "Comments"
     },
     "comments": {
       "add_error": "An error occurred while adding your comment.",
@@ -1433,7 +1478,8 @@
       "reply_failed": "Failed to add reply. Please try again.",
       "reply_placeholder": "Write a reply...",
       "submit": "Post Comment",
-      "submit_reply": "Submit Reply"
+      "submit_reply": "Submit Reply",
+      "placeholder": "Share your thoughts…"
     },
     "reactions": {
       "add_failed": "Failed to add reaction. Please try again.",
@@ -1987,7 +2033,11 @@
     "answer_type_text": "Text Area",
     "questions": "Questions",
     "survey_description": "Survey Description",
-    "survey_title": "Survey Title"
+    "survey_title": "Survey Title",
+    "question_count": "question(s)",
+    "select_space": "Select a space",
+    "space": "Space",
+    "survey_details": "Survey details"
   },
   "survey_manage": {
     "back_to_surveys": "Back to Surveys",
@@ -2012,7 +2062,9 @@
     "title": "Manage My Surveys",
     "total_responses": "Total Responses",
     "your_answer": "Your answer",
-    "your_surveys": "Your Surveys"
+    "your_surveys": "Your Surveys",
+    "more": "more",
+    "view_all": "View all"
   },
   "surveys": {
     "_val": "Surveys",
@@ -2021,12 +2073,12 @@
     "answer_required": "Please answer the required question",
     "author": "By",
     "choose_an_option": "Choose an option...",
-    "close": "إغلاق",
+    "close": "Close",
     "close_modal": "Close modal",
     "create_button": "Create New Survey",
     "create_first": "Create the first survey",
-    "create_first_description": "ابدأ بإنشاء الاستبيان الأول لجمع تعليقات قيمة.",
-    "create_first_survey": "إنشاء أول استبيان",
+    "create_first_description": "Start by creating your first survey to collect valuable feedback.",
+    "create_first_survey": "Create your first survey",
     "created": "Created",
     "description": "Participate in surveys and share your opinions",
     "failed_to_load": "Failed to load surveys. Please try again.",
@@ -2037,7 +2089,7 @@
     "no_surveys_available": "No surveys available",
     "no_surveys_description": "There are no surveys to participate in at the moment.",
     "no_surveys_moment": "There are no surveys to participate in at the moment.",
-    "not_answered": "لم يتم الإجابة",
+    "not_answered": "Not answered",
     "question_number": "Question {number}",
     "required_indicator": "*",
     "responded": "✓ Responded",
@@ -2119,5 +2171,94 @@
     "go_home": "Go to homepage",
     "message": "The page {url} could not be found. Check the address or go back to the homepage.",
     "title": "Page not found"
-  }
+  },
+  "ui": {
+    "search": "Search",
+    "clear_search": "Clear search",
+    "sort_by": "Sort by",
+    "sort_ascending": "Ascending",
+    "sort_descending": "Descending",
+    "toggle_sort_order": "Toggle sort order",
+    "toolbar": "Toolbar",
+    "loading": "Loading…",
+    "retry": "Retry",
+    "something_went_wrong": "Something went wrong",
+    "nothing_here": "Nothing here yet",
+    "confirm": "Confirm",
+    "cancel": "Cancel",
+    "delete": "Delete",
+    "remove": "Remove",
+    "dialog": "Dialog",
+    "working": "Working…",
+    "link_copied": "Link copied",
+    "copy_failed": "Could not copy the link",
+    "breadcrumb": "Breadcrumb",
+    "close_menu": "Close menu",
+    "main_menu": "Main menu",
+    "notifications_new": "New notifications",
+    "change_language": "Change language"
+  },
+  "theme": {
+    "light": "Light",
+    "dark": "Dark",
+    "system": "System",
+    "change": "Change theme"
+  },
+  "media": {
+    "load_failed": "Failed to load image",
+    "download": "Download {name}",
+    "document": "Document"
+  },
+  "menu": "Menu",
+  "nav": {
+    "home": "Home"
+  },
+  "ContactUsFeedback": "We value your feedback and strive to continuously improve your experience with us.",
+  "VerifyEmail": "Verify your email",
+  "profile": {
+    "title": "My profile",
+    "loading": "Loading your profile…",
+    "info": "Profile info",
+    "display_name": "Display name",
+    "email": "Email",
+    "mobile": "Mobile",
+    "bio": "Bio",
+    "additional_details": "Additional details",
+    "account": "Account",
+    "active": "Active",
+    "inactive": "Inactive",
+    "password": "Password",
+    "password_hint": "Change the password you sign in with",
+    "change": "Change",
+    "save_changes": "Save changes",
+    "saving": "Saving…",
+    "change_photo": "Change profile photo",
+    "required": "required",
+    "password_changed": "Password changed",
+    "updated": "Profile updated",
+    "photo_updated": "Profile photo updated",
+    "errors": {
+      "schema_load_failed": "Could not load the profile schema",
+      "passwords_do_not_match": "The new passwords do not match",
+      "password_too_short": "The new password must be at least 8 characters",
+      "password_same": "The new password must differ from the current one",
+      "password_change_failed": "Could not change the password",
+      "display_name_required": "A display name is required for {language}",
+      "description_required": "A bio is required for {language}",
+      "update_failed": "Could not update the profile",
+      "invalid_image": "Please choose an image file",
+      "image_too_large": "The image must be smaller than 5 MB",
+      "photo_update_failed": "Could not update the profile photo"
+    }
+  },
+  "Gender": "Gender",
+  "GenderRequired": "Please select your gender",
+  "InvalidAge": "Please enter a valid age (1–150)",
+  "Refresh": "Refresh",
+  "ThisFieldIsRequired": "This field is required",
+  "edit_user": "Edit user",
+  "failed_to_update_user": "Failed to update the user",
+  "update_user": "Update user",
+  "user_updated_successfully": "User updated",
+  "updating": "Updating…"
 }

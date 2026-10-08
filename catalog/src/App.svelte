@@ -100,14 +100,9 @@
 
   const router = prepareRouter();
 
+  // Also subscribes `locale` to <html lang dir>, so RTL/LTR flips on switch
+  // without a reload (see i18n/index.ts).
   setupI18n();
-
-  // Keep document direction and html lang in sync with the active locale
-  // so RTL/LTR layout flips immediately on switch without a page reload.
-  $: if (typeof document !== "undefined") {
-    document.dir = $dir;
-    document.documentElement.lang = $locale ?? "en";
-  }
 </script>
 
 <div id="routify-app">

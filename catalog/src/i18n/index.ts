@@ -13,6 +13,17 @@ addMessages("ku", ku);
 const l17ns = { ar: ar, en: en, ku: ku };
 const available_locales = ["ar", "en", "ku"];
 
+// English is the fallback for a key missing from the active locale: it is the
+// source language every key is written in first. (It used to be the
+// deployment's default_language, so a Kurdish visitor saw Arabic for any gap.)
+const FALLBACK_LOCALE = "en";
+
+const rtl = ["ar", "ku"]; // Arabic, Kurdish (Sorani)
+
+function directionOf(l: string | null | undefined): "rtl" | "ltr" {
+  return l && rtl.includes(l) ? "rtl" : "ltr";
+}
+
 /**
  * Switches the application locale reactively (no page reload).
  * Persists the preference, updates the stored user locale, and lets
@@ -61,8 +72,11 @@ function getPreferredLocale(): string {
   });
 }
 
+let documentSynced = false;
+
 /**
- * Initializes the internationalization system with the preferred locale
+ * Initializes the internationalization system with the preferred locale and
+ * keeps <html lang dir> in step with every later switch.
  */
 function setupI18n() {
   let _locale: string = getPreferredLocale();
@@ -73,15 +87,20 @@ function setupI18n() {
 
   init({
     initialLocale: _locale,
-    fallbackLocale: website.default_language,
+    fallbackLocale: FALLBACK_LOCALE,
   });
+
+  if (!documentSynced && typeof document !== "undefined") {
+    documentSynced = true;
+    locale.subscribe(($locale) => {
+      if (!$locale) return;
+      document.documentElement.lang = $locale;
+      document.documentElement.dir = directionOf($locale);
+    });
+  }
 }
 
-const rtl = ["ar", "ku"]; // Arabic, Farsi, Urdu, Kurdish
-
-const dir = derived(locale, ($locale) =>
-  rtl.indexOf($locale ? $locale : "") >= 0 ? "rtl" : "ltr"
-);
+const dir = derived(locale, ($locale) => directionOf($locale));
 // Twenty-five components used to derive this themselves from `locale`, each
 // with its own copy of the RTL list. One place, driven by `dir`.
 const isRTL = derived(dir, ($dir) => $dir === "rtl");
@@ -102,4 +121,5 @@ export {
   isLocaleLoaded,
   switchLocale,
   available_locales,
+  FALLBACK_LOCALE,
 };

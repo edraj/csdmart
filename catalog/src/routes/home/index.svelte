@@ -1,5 +1,4 @@
-<script>
-  import { goto as gotoStore } from "@roxi/routify";
+<script lang="ts">
   import {
     BellSolid,
     EditSolid,
@@ -11,65 +10,20 @@
   } from "flowbite-svelte-icons";
   import { _ } from "@/i18n";
   import { withBase } from "@/lib/paths";
+  import { setTitle } from "@/lib/title";
 
-  // Routify's helpers read the fragment context when first subscribed, and
-  // Svelte 5 subscribes to a `$store` lazily on first read — so a `$gotoStore`
-  // first touched inside an async callback logs "Unable to access context".
-  // Capture the navigate function once, during component init.
-  const goto = $gotoStore;
+  // Labels are $derived so a locale switch re-renders them; built once at
+  // init they stayed in the first language (review #28).
+  const features = $derived([
+    { icon: HeartSolid, title: $_("InteractiveEngagement"), description: $_("InteractiveEngagementDesc") },
+    { icon: BellSolid, title: $_("RealtimeNotifications"), description: $_("RealtimeNotificationsDesc") },
+    { icon: UserSolid, title: $_("PersonalProfile"), description: $_("PersonalProfileDesc") },
+    { icon: EyeSolid, title: $_("PublicBrowseMode"), description: $_("PublicBrowseModeDesc") },
+    { icon: EditSolid, title: $_("ContentManagement"), description: $_("ContentManagementDesc") },
+    { icon: MessageCaptionSolid, title: $_("RichDiscussions"), description: $_("RichDiscussionsDesc") },
+  ]);
 
-  const features = [
-    {
-      icon: HeartSolid,
-      title: $_("InteractiveEngagement"),
-      description: $_("InteractiveEngagementDesc"),
-    },
-    {
-      icon: BellSolid,
-      title: $_("RealtimeNotifications"),
-      description: $_("RealtimeNotificationsDesc"),
-    },
-    {
-      icon: UserSolid,
-      title: $_("PersonalProfile"),
-      description: $_("PersonalProfileDesc"),
-    },
-    {
-      icon: EyeSolid,
-      title: $_("PublicBrowseMode"),
-      description: $_("PublicBrowseModeDesc"),
-    },
-    {
-      icon: EditSolid,
-      title: $_("ContentManagement"),
-      description: $_("ContentManagementDesc"),
-    },
-    {
-      icon: MessageCaptionSolid,
-      title: $_("RichDiscussions"),
-      description: $_("RichDiscussionsDesc"),
-    },
-  ];
-
-  function handleStartExploring() {
-    goto("/dashboard");
-  }
-
-  function handleSignIn() {
-    goto("/login");
-  }
-
-  function handleRegister() {
-    goto("/register");
-  }
-
-  function handleExploreAsGuest() {
-    goto("/dashboard");
-  }
-
-  function handleContactUs() {
-    goto("/contact");
-  }
+  $effect(() => setTitle($_("nav.home")));
 </script>
 
 <div class="home-container">
@@ -85,15 +39,9 @@
         </p>
 
         <div class="hero-buttons">
-          <button class="btn-primary" onclick={handleStartExploring}>
-            {$_("StartExploring")}
-          </button>
-          <button class="btn-secondary" onclick={handleSignIn}>
-            {$_("SignIn")}
-          </button>
-          <button class="btn-secondary" onclick={handleRegister}>
-            {$_("CreateAccount")}
-          </button>
+          <a class="btn-primary" href={withBase("/dashboard")}>{$_("StartExploring")}</a>
+          <a class="btn-secondary" href={withBase("/login")}>{$_("SignIn")}</a>
+          <a class="btn-secondary" href={withBase("/register")}>{$_("CreateAccount")}</a>
         </div>
       </div>
     </div>
@@ -111,8 +59,8 @@
       <div class="features-grid">
         {#each features as feature (feature.title)}
           <div class="feature-card">
-            <div class="feature-icon">
-              <feature.icon class="icon" color="white" />
+            <div class="feature-icon" aria-hidden="true">
+              <feature.icon class="icon" color="currentColor" />
             </div>
             <h3 class="feature-title">
               {feature.title}
@@ -134,20 +82,11 @@
       </p>
 
       <div class="cta-buttons">
-        <button class="btn-cta-secondary" onclick={handleExploreAsGuest}>
-          {$_("ExploreAsGuest")}
-        </button>
-        <button
-          aria-label={$_("CTADescription")}
-          class="btn-cta-secondary flex items-center"
-          onclick={handleContactUs}
-        >
-          <MessagesOutline
-            aria-label={$_("CTADescription")}
-            class="button-icon mr-2"
-          />
+        <a class="btn-cta-secondary" href={withBase("/dashboard")}>{$_("ExploreAsGuest")}</a>
+        <a class="btn-cta-secondary" href={withBase("/contact")}>
+          <MessagesOutline class="button-icon" aria-hidden="true" />
           {$_("ContactUs")}
-        </button>
+        </a>
       </div>
     </div>
   </section>
@@ -162,19 +101,15 @@
           </p>
         </div>
 
-        <div class="footer-column">
+        <nav class="footer-column" aria-label={$_("Support")}>
           <h4 class="footer-column-title">{$_("Support")}</h4>
           <ul class="footer-links">
             <li><a href={withBase("/help")}>{$_("HelpCenter")}</a></li>
             <li><a href={withBase("/community")}>{$_("Community")}</a></li>
-            <li>
-              <button onclick={handleContactUs} class="footer-link-button"
-                >{$_("ContactUs")}</button
-              >
-            </li>
+            <li><a href={withBase("/contact")}>{$_("ContactUs")}</a></li>
             <li><a href={withBase("/privacy")}>{$_("Privacy")}</a></li>
           </ul>
-        </div>
+        </nav>
       </div>
 
       <div class="footer-bottom">
@@ -187,7 +122,7 @@
 <style>
   .home-container {
     min-height: 100vh;
-    background: var(--surface-page);
+    background: var(--color-surface);
   }
 
   /* ─── Hero ─── */
@@ -202,14 +137,10 @@
     content: "";
     position: absolute;
     top: -20%;
-    right: -10%;
+    inset-inline-end: -10%;
     width: 50%;
     height: 70%;
-    background: radial-gradient(
-      circle,
-      rgba(99, 102, 241, 0.08) 0%,
-      transparent 65%
-    );
+    background: radial-gradient(circle, rgba(99, 102, 241, 0.08) 0%, transparent 65%);
     pointer-events: none;
   }
 
@@ -217,14 +148,10 @@
     content: "";
     position: absolute;
     bottom: -15%;
-    left: -5%;
+    inset-inline-start: -5%;
     width: 40%;
     height: 50%;
-    background: radial-gradient(
-      circle,
-      rgba(139, 92, 246, 0.06) 0%,
-      transparent 65%
-    );
+    background: radial-gradient(circle, rgba(139, 92, 246, 0.06) 0%, transparent 65%);
     pointer-events: none;
   }
 
@@ -243,12 +170,11 @@
   .hero-title {
     font-size: clamp(2.25rem, 5vw, 3.5rem);
     font-weight: 800;
-    color: var(--color-gray-900);
+    color: var(--color-text);
     margin-bottom: 1.25rem;
     line-height: 1.1;
     letter-spacing: -0.03em;
-    opacity: 0;
-    animation: fadeInUp 0.7s var(--ease-out) forwards;
+    animation: fadeInUp 0.7s var(--ease-out) both;
   }
 
   .gradient-text {
@@ -261,14 +187,12 @@
 
   .hero-description {
     font-size: clamp(1rem, 2vw, 1.1875rem);
-    color: var(--color-gray-500);
+    color: var(--color-text-muted);
     margin-bottom: 2.5rem;
     max-width: 42rem;
-    margin-left: auto;
-    margin-right: auto;
+    margin-inline: auto;
     line-height: 1.65;
-    opacity: 0;
-    animation: fadeInUp 0.7s var(--ease-out) 0.15s forwards;
+    animation: fadeInUp 0.7s var(--ease-out) 0.15s both;
   }
 
   .hero-buttons {
@@ -278,8 +202,7 @@
     justify-content: center;
     align-items: center;
     margin-bottom: 0;
-    opacity: 0;
-    animation: fadeInUp 0.7s var(--ease-out) 0.3s forwards;
+    animation: fadeInUp 0.7s var(--ease-out) 0.3s both;
   }
 
   @media (min-width: 640px) {
@@ -288,17 +211,27 @@
     }
   }
 
-  .btn-primary {
-    background: var(--gradient-brand);
-    color: white;
+  .btn-primary,
+  .btn-secondary,
+  .btn-cta-secondary {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    gap: 0.5rem;
     font-weight: 600;
     padding: 0.75rem 1.75rem;
-    border-radius: var(--radius-lg);
-    border: none;
+    border-radius: var(--radius-control);
     cursor: pointer;
+    text-decoration: none;
     transition: all var(--duration-normal) var(--ease-out);
-    box-shadow: var(--shadow-brand);
     font-size: 0.9375rem;
+  }
+
+  .btn-primary {
+    background: var(--gradient-brand);
+    color: var(--color-text-on-primary);
+    border: none;
+    box-shadow: var(--shadow-brand);
   }
 
   .btn-primary:hover {
@@ -312,20 +245,14 @@
   }
 
   .btn-secondary {
-    background: white;
-    color: var(--color-gray-700);
-    font-weight: 600;
-    padding: 0.75rem 1.75rem;
-    border-radius: var(--radius-lg);
-    border: 1.5px solid var(--color-gray-200);
-    cursor: pointer;
-    transition: all var(--duration-normal) var(--ease-out);
-    font-size: 0.9375rem;
+    background: var(--color-surface-2);
+    color: var(--color-text);
+    border: 1.5px solid var(--color-border);
   }
 
   .btn-secondary:hover {
-    background: var(--color-gray-50);
-    border-color: var(--color-gray-300);
+    background: var(--color-surface-3);
+    border-color: var(--color-border-strong);
     transform: translateY(-1px);
     box-shadow: var(--shadow-sm);
   }
@@ -333,7 +260,7 @@
   /* ─── Features ─── */
   .features-section {
     padding: var(--space-section-y) 0;
-    background: white;
+    background: var(--color-surface-2);
   }
 
   .features-content {
@@ -350,14 +277,14 @@
   .features-title {
     font-size: clamp(1.75rem, 3.5vw, 2.25rem);
     font-weight: 800;
-    color: var(--color-gray-900);
+    color: var(--color-text);
     margin-bottom: 0.75rem;
     letter-spacing: -0.02em;
   }
 
   .features-description {
     font-size: 1.0625rem;
-    color: var(--color-gray-500);
+    color: var(--color-text-muted);
     max-width: 30rem;
     margin: 0 auto;
     line-height: 1.6;
@@ -370,11 +297,11 @@
   }
 
   .feature-card {
-    background: white;
+    background: var(--color-surface-2);
     padding: 1.75rem;
-    border-radius: var(--radius-xl);
-    box-shadow: var(--shadow-sm);
-    border: 1px solid var(--color-gray-100);
+    border-radius: var(--radius-card);
+    box-shadow: var(--shadow-card);
+    border: 1px solid var(--color-border);
     transition:
       transform var(--duration-slow) var(--ease-out),
       box-shadow var(--duration-slow) var(--ease-out),
@@ -383,17 +310,16 @@
 
   .feature-card:hover {
     transform: translateY(-4px);
-    box-shadow:
-      var(--shadow-lg),
-      0 0 0 1px var(--color-primary-100);
-    border-color: var(--color-primary-200);
+    box-shadow: var(--shadow-lg);
+    border-color: var(--color-primary-300);
   }
 
   .feature-icon {
     width: 2.75rem;
     height: 2.75rem;
     background: var(--gradient-brand);
-    border-radius: var(--radius-lg);
+    color: var(--color-text-on-primary);
+    border-radius: var(--radius-control);
     display: flex;
     align-items: center;
     justify-content: center;
@@ -404,12 +330,12 @@
   .feature-title {
     font-size: 1.0625rem;
     font-weight: 700;
-    color: var(--color-gray-800);
+    color: var(--color-text);
     margin-bottom: 0.5rem;
   }
 
   .feature-description {
-    color: var(--color-gray-500);
+    color: var(--color-text-muted);
     line-height: 1.6;
     font-size: 0.9375rem;
   }
@@ -426,14 +352,10 @@
     content: "";
     position: absolute;
     top: -50%;
-    right: -20%;
+    inset-inline-end: -20%;
     width: 60%;
     height: 100%;
-    background: radial-gradient(
-      circle,
-      rgba(255, 255, 255, 0.08) 0%,
-      transparent 60%
-    );
+    background: radial-gradient(circle, rgba(255, 255, 255, 0.08) 0%, transparent 60%);
     pointer-events: none;
   }
 
@@ -449,7 +371,7 @@
   .cta-title {
     font-size: clamp(1.75rem, 3.5vw, 2.25rem);
     font-weight: 800;
-    color: white;
+    color: var(--color-text-on-primary);
     margin-bottom: 1rem;
     letter-spacing: -0.02em;
   }
@@ -459,8 +381,7 @@
     color: rgba(255, 255, 255, 0.85);
     margin-bottom: 2rem;
     max-width: 30rem;
-    margin-left: auto;
-    margin-right: auto;
+    margin-inline: auto;
     line-height: 1.6;
   }
 
@@ -480,29 +401,28 @@
 
   .btn-cta-secondary {
     background: rgba(255, 255, 255, 0.12);
-    color: white;
-    font-weight: 600;
-    padding: 0.75rem 1.75rem;
-    border-radius: var(--radius-lg);
+    color: var(--color-text-on-primary);
     border: 1.5px solid rgba(255, 255, 255, 0.4);
-    cursor: pointer;
-    transition: all var(--duration-normal) var(--ease-out);
-    font-size: 0.9375rem;
     backdrop-filter: blur(4px);
   }
 
   .btn-cta-secondary:hover {
-    background: white;
-    color: var(--color-primary-600);
-    border-color: white;
+    background: var(--color-surface-2);
+    color: var(--color-primary);
+    border-color: var(--color-surface-2);
     transform: translateY(-1px);
     box-shadow: 0 8px 20px rgba(0, 0, 0, 0.15);
+  }
+
+  .btn-cta-secondary :global(.button-icon) {
+    width: 1.125rem;
+    height: 1.125rem;
   }
 
   /* ─── Footer ─── */
   .footer-section {
     background: var(--color-gray-900);
-    color: white;
+    color: var(--color-gray-50);
   }
 
   .footer-content {
@@ -531,7 +451,7 @@
   .brand-name {
     font-size: 1.375rem;
     font-weight: 800;
-    background: linear-gradient(135deg, #93c5fd 0%, #c4b5fd 100%);
+    background: linear-gradient(135deg, var(--color-primary-300) 0%, var(--color-accent-400) 100%);
     -webkit-background-clip: text;
     background-clip: text;
     -webkit-text-fill-color: transparent;
@@ -566,21 +486,15 @@
     margin-bottom: 0.5rem;
   }
 
-  .footer-links a,
-  .footer-link-button {
+  .footer-links a {
     color: var(--color-gray-400);
     text-decoration: none;
     transition: color var(--duration-fast) ease;
     font-size: 0.9375rem;
-    background: none;
-    border: none;
-    cursor: pointer;
-    padding: 0;
   }
 
-  .footer-links a:hover,
-  .footer-link-button:hover {
-    color: white;
+  .footer-links a:hover {
+    color: var(--color-gray-50);
   }
 
   .footer-bottom {

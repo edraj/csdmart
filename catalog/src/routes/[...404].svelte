@@ -12,29 +12,32 @@
 </script>
 
 <script lang="ts">
+    import { QuestionCircleOutline } from "flowbite-svelte-icons";
+    import EmptyState from "@/components/ui/EmptyState.svelte";
     import { _ } from "@/i18n";
     import { withBase } from "@/lib/paths";
+    import { setTitle } from "@/lib/title";
 
     let { url }: { url: string } = $props();
+
+    $effect(() => setTitle($_("not_found.title")));
 </script>
 
 <div class="four04">
-    <h1>{$_("not_found.title")}</h1>
-    <p>
-        {$_("not_found.message", { values: { url } })}
-    </p>
-    <!-- Root-absolute "/" would leave the <base href="/cat/"> deployment. -->
-    <a href={withBase("/")}>{$_("not_found.go_home")}</a>
+    <EmptyState
+        icon={QuestionCircleOutline}
+        title={$_("not_found.title")}
+        hint={$_("not_found.message", { values: { url } })}
+    >
+        <!-- Root-absolute "/" would leave the <base href="/cat/"> deployment. -->
+        <a class="app-btn app-btn-primary" href={withBase("/")}>{$_("not_found.go_home")}</a>
+    </EmptyState>
 </div>
 
 <style>
-    div.four04 {
-        display: flex;
-        align-items: center;
-        flex-direction: column;
-        text-align: center;
-    }
-    div.four04 > * {
-        margin-top: 1em;
+    .four04 {
+        max-width: 36rem;
+        margin: 0 auto;
+        padding: clamp(2rem, 8vw, 5rem) var(--space-page-x);
     }
 </style>

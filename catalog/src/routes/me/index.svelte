@@ -1,7 +1,5 @@
 <script lang="ts">
-  import { preventDefault, run } from "svelte/legacy";
-
-  import { onMount } from "svelte";
+  import { onMount, untrack } from "svelte";
   import {
     getAvatar,
     getProfile,
@@ -11,721 +9,528 @@
     updateProfile,
   } from "@/lib/dmart_services";
   import { DmartScope } from "@edraj/tsdmart";
-  import {
-    errorToastMessage,
-    successToastMessage,
-  } from "@/lib/toasts_messages";
+  import { toasts } from "@/lib/toast";
   import Avatar from "@/components/Avatar.svelte";
+  import Badge from "@/components/ui/Badge.svelte";
+  import Card from "@/components/ui/Card.svelte";
+  import LoadingState from "@/components/ui/LoadingState.svelte";
+  import PageHeader from "@/components/ui/PageHeader.svelte";
   import { _, locale } from "@/i18n";
-  import { writable } from "svelte/store";
+  import { website } from "@/config";
+  import { MANAGEMENT_SPACE } from "@/lib/constants";
+  import { setTitle } from "@/lib/title";
   import DynamicSchemaBasedForms from "@/components/forms/DynamicSchemaBasedForms.svelte";
+  import { CameraPhotoOutline, LockOutline, UserOutline, EditOutline } from "flowbite-svelte-icons";
+  import type { Schema } from "@/lib/types";
 
-  let isLoading = writable(true);
-  let isUploadingAvatar = writable(false);
-  let user = writable<any>(null);
-  let avatar = writable<any>(null);
+  type Localized = Record<string, string | undefined>;
+  interface ProfileRecord {
+    shortname: string;
+    attributes: {
+      displayname?: Localized;
+      description?: Localized;
+      email?: string;
+      msisdn?: string;
+      is_active?: boolean;
+      payload?: { content_type?: string; schema_shortname?: string; body?: Record<string, unknown> };
+    };
+  }
 
-  let displayname = writable("");
-  let description = writable("");
-  let email = writable("");
-  let msisdn = writable("");
-  let fileInput = writable<any>(null);
+  let isLoading = $state(true);
+  let isUploadingAvatar = $state(false);
+  let isSaving = $state(false);
+  let profile: ProfileRecord | null = $state(null);
+  let avatar: string | null = $state(null);
 
-  let userSchema = writable<any>(null);
-  let profileData = writable<Record<string, any>>({});
-  let loadingSchema = writable(false);
+  let displayname = $state("");
+  let description = $state("");
+  let email = $state("");
+  let msisdn = $state("");
+  let fileInput: HTMLInputElement | undefined = $state();
 
-  let oldPassword = writable("");
-  let newPassword = writable("");
-  let confirmPassword = writable("");
-  let isChangingPassword = writable(false);
-  let showChangePassword = writable(false);
+  let userSchema: Schema | null = $state(null);
+  let profileData: Record<string, unknown> = $state({});
+  let loadingSchema = $state(false);
+
+  let oldPassword = $state("");
+  let newPassword = $state("");
+  let confirmPassword = $state("");
+  let isChangingPassword = $state(false);
+  let showChangePassword = $state(false);
+
+  const currentLocale = $derived($locale ?? website.default_language);
+  const languageName = $derived(website.languages[currentLocale] ?? currentLocale);
+
+  $effect(() => setTitle($_("profile.title")));
 
   onMount(async () => {
-    isLoading.set(true);
-    const u = await getProfile()
-    user.set(u);
-    const currentUser = $user;
-
-    displayname.set(currentUser?.attributes?.displayname?.[$locale ?? ""] ?? "");
-    if (!$displayname && $locale === "en") {
-      displayname.set(currentUser.attributes.email);
+    isLoading = true;
+    try {
+      const u = (await getProfile()) as ProfileRecord | null;
+      profile = u;
+      if (u) {
+        email = u.attributes?.email ?? "";
+        msisdn = u.attributes?.msisdn ?? "";
+        avatar = await getAvatar(u.shortname);
+        await loadUserSchema(u);
+      }
+    } finally {
+      isLoading = false;
     }
-    description.set(currentUser.attributes?.description?.[$locale ?? ""] ?? "");
-    email.set(currentUser.attributes?.email ?? "");
-    msisdn.set(currentUser.attributes?.msisdn ?? "");
-
-    avatar.set(await getAvatar(currentUser.shortname));
-
-    await loadUserSchema();
-
-    isLoading.set(false);
   });
 
-  async function loadUserSchema() {
-    loadingSchema.set(true);
+  // The editable name/bio follow the active locale: each language has its own
+  // value in the record, so switching language edits that language's text.
+  $effect(() => {
+    const u = profile;
+    const loc = currentLocale;
+    if (!u) return;
+    untrack(() => {
+      displayname = u.attributes?.displayname?.[loc] ?? "";
+      if (!displayname && loc === "en") {
+        displayname = u.attributes?.email ?? "";
+      }
+      description = u.attributes?.description?.[loc] ?? "";
+    });
+  });
+
+  async function loadUserSchema(u: ProfileRecord) {
+    loadingSchema = true;
     try {
-      const response = await getSpaceSchema("management", DmartScope.managed);
+      const response = await getSpaceSchema(MANAGEMENT_SPACE, DmartScope.managed);
 
       if (response?.status === "success" && response?.records) {
-        const currentUser: any = $user;
-        const schemaShortname = currentUser?.attributes?.payload?.schema_shortname;
+        const schemaShortname = u.attributes?.payload?.schema_shortname;
+        const userSchemaRecord = schemaShortname
+          ? response.records.find((record) => record.shortname === schemaShortname)
+          : undefined;
 
-        let userSchemaRecord;
-        if (schemaShortname) {
-          userSchemaRecord = response.records.find(
-            (record) => record.shortname === schemaShortname,
-          );
-        }
-
-        if (userSchemaRecord && userSchemaRecord.attributes?.payload?.body) {
-          userSchema.set(userSchemaRecord.attributes.payload.body);
-
-          const existingProfileData =
-            currentUser?.attributes?.payload?.body || {};
-          profileData.set(existingProfileData);
+        if (userSchemaRecord?.attributes?.payload?.body) {
+          userSchema = userSchemaRecord.attributes.payload.body as Schema;
+          profileData = (u.attributes?.payload?.body as Record<string, unknown> | undefined) ?? {};
         }
       }
     } catch (error) {
       console.error("Error loading user schema:", error);
-      errorToastMessage("Failed to load profile schema");
+      toasts.error($_("profile.errors.schema_load_failed"));
     } finally {
-      loadingSchema.set(false);
+      loadingSchema = false;
     }
   }
 
-  async function handlePasswordChange(event: any) {
+  async function handlePasswordChange(event: Event) {
     event.preventDefault();
+    if (!profile) return;
 
-    if ($newPassword !== $confirmPassword) {
-      errorToastMessage("New passwords do not match");
+    if (newPassword !== confirmPassword) {
+      toasts.error($_("profile.errors.passwords_do_not_match"));
       return;
     }
 
-    if ($newPassword.length < 8) {
-      errorToastMessage("New password must be at least 8 characters long");
+    if (newPassword.length < 8) {
+      toasts.error($_("profile.errors.password_too_short"));
       return;
     }
 
-    if ($oldPassword === $newPassword) {
-      errorToastMessage(
-        "New password must be different from the current password",
-      );
+    if (oldPassword === newPassword) {
+      toasts.error($_("profile.errors.password_same"));
       return;
     }
 
-    isChangingPassword.set(true);
+    isChangingPassword = true;
 
     try {
       const response = await updatePassword({
-        shortname: $user.shortname,
-        password: $newPassword,
-        oldPassword: $oldPassword,
+        shortname: profile.shortname,
+        password: newPassword,
+        oldPassword: oldPassword,
       });
 
       if (response) {
-        successToastMessage("Password changed successfully");
-        oldPassword.set("");
-        newPassword.set("");
-        confirmPassword.set("");
-        showChangePassword.set(false);
+        toasts.success($_("profile.password_changed"));
+        oldPassword = "";
+        newPassword = "";
+        confirmPassword = "";
+        showChangePassword = false;
       } else {
-        errorToastMessage("Failed to change password");
+        toasts.error($_("profile.errors.password_change_failed"));
       }
     } catch (error) {
       console.error("Error changing password:", error);
-      errorToastMessage("An error occurred while changing your password");
+      toasts.error($_("profile.errors.password_change_failed"));
     } finally {
-      isChangingPassword.set(false);
+      isChangingPassword = false;
     }
   }
 
-  async function handleSubmit(event: any) {
+  async function handleSubmit(event: Event) {
     event.preventDefault();
+    if (!profile || isSaving) return;
 
-    if (!$displayname.trim()) {
-      errorToastMessage(
-        `Display name is required for ${$locale === "ar" ? "Arabic" : $locale === "en" ? "English" : ($locale ?? "").toUpperCase()}`,
-      );
+    if (!displayname.trim()) {
+      toasts.error($_("profile.errors.display_name_required", { values: { language: languageName } }));
       return;
     }
 
-    if (!$description.trim()) {
-      errorToastMessage(
-        `Description is required for ${$locale === "ar" ? "Arabic" : $locale === "en" ? "English" : ($locale ?? "").toUpperCase()}`,
-      );
+    if (!description.trim()) {
+      toasts.error($_("profile.errors.description_required", { values: { language: languageName } }));
       return;
     }
 
-    const updatedDisplayname = { ...$user.attributes.displayname };
-    const updatedDescription = { ...$user.attributes.description };
+    const updatedDisplayname: Localized = { ...profile.attributes.displayname };
+    const updatedDescription: Localized = { ...profile.attributes.description };
 
-    updatedDisplayname[$locale ?? ""] = $displayname.trim();
-    updatedDescription[$locale ?? ""] = $description.trim();
+    updatedDisplayname[currentLocale] = displayname.trim();
+    updatedDescription[currentLocale] = description.trim();
 
-    // Include profile data in the update
-    const response = await updateProfile({
-      shortname: $user.shortname,
-      displayname: updatedDisplayname,
-      description: updatedDescription,
-      email: $email,
-      msisdn: $msisdn,
-      payload: {
-        content_type: "json",
-        body: $profileData,
-      },
-    } as any);
+    isSaving = true;
+    try {
+      // Include profile data in the update
+      const response = await updateProfile({
+        shortname: profile.shortname,
+        displayname: updatedDisplayname,
+        description: updatedDescription,
+        email,
+        msisdn,
+        payload: {
+          content_type: "json",
+          body: profileData,
+        },
+      } as Parameters<typeof updateProfile>[0]);
 
-    if (response) {
-      successToastMessage("Profile updated successfully");
-      $user.attributes.displayname = updatedDisplayname;
-      $user.attributes.description = updatedDescription;
-      // Update user with new profile data
-      if (!$user.attributes.payload) {
-        $user.attributes.payload = {};
+      if (response) {
+        toasts.success($_("profile.updated"));
+        profile.attributes.displayname = updatedDisplayname;
+        profile.attributes.description = updatedDescription;
+        profile.attributes.payload = { ...(profile.attributes.payload ?? {}), body: profileData };
+      } else {
+        toasts.error($_("profile.errors.update_failed"));
       }
-      $user.attributes.payload.body = $profileData;
-    } else {
-      errorToastMessage("Error updating profile");
+    } catch (error) {
+      console.error("Error updating profile:", error);
+      toasts.error($_("profile.errors.update_failed"));
+    } finally {
+      isSaving = false;
     }
-  }
-
-  function triggerFileInput() {
-    $fileInput?.click();
   }
 
   async function handleAvatarChange(event: Event) {
     const target = event.target as HTMLInputElement;
     const file = target.files?.[0];
 
-    if (!file) return;
+    if (!file || !profile) return;
 
     if (!file.type.startsWith("image/")) {
-      errorToastMessage("Please select a valid image file");
+      toasts.error($_("profile.errors.invalid_image"));
       return;
     }
 
     const maxSize = 5 * 1024 * 1024;
     if (file.size > maxSize) {
-      errorToastMessage("File size must be less than 5MB");
+      toasts.error($_("profile.errors.image_too_large"));
       return;
     }
 
-    isUploadingAvatar.set(true);
+    isUploadingAvatar = true;
 
     try {
-      const success = await setAvatar($user.shortname, file);
+      const success = await setAvatar(profile.shortname, file);
 
       if (success) {
-        avatar.set(await getAvatar($user.shortname));
-        successToastMessage("Profile picture updated successfully");
+        avatar = await getAvatar(profile.shortname);
+        toasts.success($_("profile.photo_updated"));
       } else {
-        errorToastMessage("Failed to update profile picture");
+        toasts.error($_("profile.errors.photo_update_failed"));
       }
     } catch (error) {
       console.error("Error updating avatar:", error);
-      errorToastMessage(
-        "An error occurred while updating your profile picture",
-      );
+      toasts.error($_("profile.errors.photo_update_failed"));
     } finally {
-      isUploadingAvatar.set(false);
+      isUploadingAvatar = false;
       target.value = "";
     }
   }
 
-  run(() => {
-    if ($user && $locale) {
-      displayname.set($user?.attributes?.displayname?.[$locale ?? ""] ?? "");
+  function cancelPasswordChange() {
+    showChangePassword = false;
+    oldPassword = "";
+    newPassword = "";
+    confirmPassword = "";
+  }
 
-      if (!$displayname && $locale === "en") {
-        displayname.set($user.attributes.email);
-      }
-
-      description.set($user.attributes?.description?.[$locale ?? ""] ?? "");
-    }
-  });
+  const inputClass =
+    "w-full px-4 py-2.5 bg-surface border border-border rounded-control text-sm text-text placeholder:text-text-faint focus:bg-surface-2 focus:border-primary focus:ring-1 focus:ring-primary transition-colors";
+  const labelClass = "block text-sm font-medium text-text";
 </script>
 
 <div class="profile-page">
   <div class="container">
-      {#if $isLoading}
-      <div class="loading-container">
-        <div class="loading-content">
-          <div class="spinner spinner-lg"></div>
-          <p class="loading-text">Loading your profile...</p>
-        </div>
-      </div>
-    {:else}
-      <div class="max-w-3xl mx-auto space-y-6">
-        <!-- Top Profile Card -->
-        <div
-          class="bg-white rounded-2xl shadow-sm border border-gray-100 p-6 flex items-center justify-between"
-        >
-          <div class="flex items-center gap-6">
-            <div class="relative group">
-              <div
-                class="w-20 h-20 rounded-full overflow-hidden border border-gray-100 shadow-sm relative"
+    {#if isLoading}
+      <LoadingState label={$_("profile.loading")} />
+    {:else if profile}
+      <PageHeader title={$_("profile.title")} description={"@" + profile.shortname} />
+
+      <div class="space-y-6">
+        <!-- Identity card -->
+        <Card>
+          <div class="flex flex-wrap items-center gap-5">
+            <div class="relative shrink-0">
+              <Avatar src={avatar} size={80} class="border border-border shadow-card" />
+              <button
+                type="button"
+                class="avatar-overlay"
+                aria-label={$_("profile.change_photo")}
+                title={$_("profile.change_photo")}
+                onclick={() => fileInput?.click()}
+                disabled={isUploadingAvatar}
+                aria-busy={isUploadingAvatar}
               >
-                <Avatar src={$avatar} size="80" />
-                <div
-                  class="absolute inset-0 bg-black/50 opacity-0 group-hover:opacity-100 transition-opacity flex items-center justify-center cursor-pointer"
-                  onclick={triggerFileInput}
-                  onkeydown={(e) => e.key === "Enter" && triggerFileInput()}
-                  role="button"
-                  tabindex="0"
-                >
-                  {#if $isUploadingAvatar}
-                    <div class="spinner spinner-sm spinner-white"></div>
-                  {:else}
-                    <svg
-                      class="w-6 h-6 text-white"
-                      fill="none"
-                      stroke="currentColor"
-                      viewBox="0 0 24 24"
-                    >
-                      <path
-                        stroke-linecap="round"
-                        stroke-linejoin="round"
-                        stroke-width="2"
-                        d="M3 9a2 2 0 012-2h.93a2 2 0 001.664-.89l.812-1.22A2 2 0 0110.07 4h3.86a2 2 0 011.664.89l.812 1.22A2 2 0 0118.07 7H19a2 2 0 012 2v9a2 2 0 01-2 2H5a2 2 0 01-2-2V9z"
-                      />
-                      <path
-                        stroke-linecap="round"
-                        stroke-linejoin="round"
-                        stroke-width="2"
-                        d="M15 13a3 3 0 11-6 0 3 3 0 016 0z"
-                      />
-                    </svg>
-                  {/if}
-                </div>
-              </div>
+                {#if isUploadingAvatar}
+                  <span class="spinner spinner-sm spinner-white" aria-hidden="true"></span>
+                {:else}
+                  <CameraPhotoOutline size="md" aria-hidden="true" />
+                {/if}
+              </button>
               <input
-                bind:this={$fileInput}
+                bind:this={fileInput}
                 type="file"
                 accept="image/*"
-                class="hidden"
+                class="sr-only"
+                tabindex="-1"
+                aria-hidden="true"
                 onchange={handleAvatarChange}
-                disabled={$isUploadingAvatar}
+                disabled={isUploadingAvatar}
               />
             </div>
 
-            <div>
-              <h2 class="text-xl font-bold text-gray-900">
-                {$displayname || $user.shortname}
+            <div class="min-w-0 grow">
+              <h2 class="text-xl font-semibold text-text truncate">
+                {displayname || profile.shortname}
               </h2>
-              <p class="text-sm text-gray-500 font-medium">
-                @{$user.shortname}
-              </p>
+              <p class="text-sm text-text-muted font-medium">@{profile.shortname}</p>
             </div>
+
+            {#if profile.attributes.is_active !== undefined}
+              <Badge variant={profile.attributes.is_active ? "success" : "neutral"}>
+                {profile.attributes.is_active ? $_("profile.active") : $_("profile.inactive")}
+              </Badge>
+            {/if}
           </div>
+        </Card>
 
-          <div class="flex items-center gap-6">
+        <!-- Profile Info -->
+        <Card>
+          <h3 class="section-heading">
+            <UserOutline size="md" class="text-primary" aria-hidden="true" />
+            {$_("profile.info")}
+          </h3>
 
-            <div class="text-center pt-1">
-              <p
-                class="text-xs text-gray-400 font-medium tracking-wider uppercase mb-1"
-              >
-                Status
-              </p>
-              <span
-                class="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-xs font-semibold bg-green-50 text-green-600"
-              >
-                <span class="w-1.5 h-1.5 rounded-full bg-green-500"></span>
-                Active
-              </span>
-            </div>
-          </div>
-        </div>
-
-        <!-- Main Content -->
-        <div class="space-y-6">
-          <!-- Profile Info -->
-          <div
-            class="bg-white rounded-2xl shadow-sm border border-gray-100 p-6"
-          >
-            <div class="flex items-center gap-2 mb-6">
-              <svg
-                class="w-5 h-5 text-indigo-600"
-                fill="none"
-                stroke="currentColor"
-                viewBox="0 0 24 24"
-              >
-                <path
-                  stroke-linecap="round"
-                  stroke-linejoin="round"
-                  stroke-width="2"
-                  d="M16 7a4 4 0 11-8 0 4 4 0 018 0zM12 14a7 7 0 00-7 7h14a7 7 0 00-7-7z"
+          <form id="profile-form" onsubmit={handleSubmit} class="space-y-5" novalidate>
+            <div class="grid grid-cols-1 md:grid-cols-2 gap-5">
+              <div class="space-y-1.5">
+                <label for="displayname" class={labelClass}>
+                  {$_("profile.display_name")}
+                  <span class="text-danger" aria-hidden="true">*</span>
+                  <span class="sr-only">({$_("profile.required")})</span>
+                </label>
+                <input
+                  id="displayname"
+                  type="text"
+                  required
+                  bind:value={displayname}
+                  class={inputClass}
+                  placeholder={$_("DisplayNamePlaceholder")}
+                  dir="auto"
+                  autocomplete="name"
                 />
-              </svg>
-              <h3 class="text-lg font-semibold text-gray-900">Profile Info</h3>
+              </div>
+
+              <div class="space-y-1.5">
+                <label for="email" class={labelClass}>{$_("profile.email")}</label>
+                <input
+                  id="email"
+                  type="email"
+                  bind:value={email}
+                  class={inputClass}
+                  placeholder={$_("EmailPlaceholder")}
+                  autocomplete="email"
+                  inputmode="email"
+                />
+              </div>
+
+              <div class="space-y-1.5 md:col-span-2">
+                <label for="msisdn" class={labelClass}>{$_("profile.mobile")}</label>
+                <input
+                  id="msisdn"
+                  type="tel"
+                  bind:value={msisdn}
+                  class={inputClass}
+                  placeholder={$_("MobileNumberPlaceholder")}
+                  autocomplete="tel"
+                />
+              </div>
+
+              <div class="space-y-1.5 md:col-span-2">
+                <label for="description" class={labelClass}>
+                  {$_("profile.bio")}
+                  <span class="text-danger" aria-hidden="true">*</span>
+                  <span class="sr-only">({$_("profile.required")})</span>
+                </label>
+                <textarea
+                  id="description"
+                  required
+                  bind:value={description}
+                  rows="4"
+                  class="{inputClass} resize-y"
+                  placeholder={$_("route_labels.placeholder_tell_us_about_yourself")}
+                  dir="auto"
+                ></textarea>
+              </div>
+            </div>
+          </form>
+        </Card>
+
+        <!-- Dynamic Profile Fields -->
+        {#if userSchema}
+          <Card>
+            <h3 class="section-heading">
+              <EditOutline size="md" class="text-primary" aria-hidden="true" />
+              {$_("profile.additional_details")}
+            </h3>
+
+            {#if loadingSchema}
+              <LoadingState variant="skeleton" rows={4} />
+            {:else}
+              <DynamicSchemaBasedForms
+                bind:content={profileData}
+                schema={userSchema}
+                space={MANAGEMENT_SPACE}
+                subpath="users"
+                resourceType="user"
+              />
+            {/if}
+          </Card>
+        {/if}
+
+        <!-- Account -->
+        <Card>
+          <h3 class="section-heading">
+            <LockOutline size="md" class="text-primary" aria-hidden="true" />
+            {$_("profile.account")}
+          </h3>
+
+          <div class="space-y-4">
+            <div class="flex flex-wrap items-center justify-between gap-3 p-4 bg-surface rounded-card border border-border">
+              <div class="flex items-center gap-3 min-w-0">
+                <LockOutline size="md" class="text-text-faint shrink-0" aria-hidden="true" />
+                <div class="min-w-0">
+                  <h4 class="text-sm font-semibold text-text">{$_("profile.password")}</h4>
+                  <p class="text-xs text-text-muted mt-0.5">{$_("profile.password_hint")}</p>
+                </div>
+              </div>
+              <button
+                type="button"
+                class="app-btn app-btn-secondary app-btn-sm"
+                aria-expanded={showChangePassword}
+                aria-controls="password-form"
+                onclick={() => (showChangePassword ? cancelPasswordChange() : (showChangePassword = true))}
+              >
+                {showChangePassword ? $_("Cancel") : $_("profile.change")}
+              </button>
             </div>
 
-            <form
-              id="profile-form"
-              onsubmit={preventDefault(handleSubmit)}
-              class="space-y-6"
-            >
-              <div class="grid grid-cols-1 md:grid-cols-2 gap-6">
-                <div class="space-y-2">
-                  <label
-                    for="displayname"
-                    class="block text-sm font-medium text-gray-700"
-                  >
-                    Display Name <span class="text-red-500">*</span>
-                  </label>
+            {#if showChangePassword}
+              <form
+                id="password-form"
+                onsubmit={handlePasswordChange}
+                class="p-5 bg-surface border border-border rounded-card space-y-4"
+              >
+                <div class="space-y-1.5">
+                  <label for="oldPassword" class={labelClass}>{$_("CurrentPassword")}</label>
                   <input
-                    id="displayname"
-                    type="text"
+                    id="oldPassword"
+                    type="password"
                     required
-                    bind:value={$displayname}
-                    class="w-full px-4 py-3 bg-gray-50 border border-transparent rounded-2xl text-sm focus:bg-white focus:border-indigo-500 focus:ring-1 focus:ring-indigo-500 transition-colors"
-                    placeholder={$_("DisplayNamePlaceholder")}
-                    dir={$locale === "ar" || $locale === "ku" ? "rtl" : "ltr"}
+                    bind:value={oldPassword}
+                    class={inputClass}
+                    disabled={isChangingPassword}
+                    autocomplete="current-password"
                   />
                 </div>
 
-                <div class="space-y-2">
-                  <label
-                    for="email"
-                    class="block text-sm font-medium text-gray-700"
-                  >
-                    Email
-                  </label>
-                  <!-- Figma design uses an icon inside the input. I will use a simple wrapper. -->
-                  <div class="relative">
-                    <div
-                      class="absolute inset-y-0 left-0 pl-3 flex items-center pointer-events-none"
-                    >
-                      <svg
-                        class="h-5 w-5 text-gray-400"
-                        fill="none"
-                        viewBox="0 0 24 24"
-                        stroke="currentColor"
-                      >
-                        <path
-                          stroke-linecap="round"
-                          stroke-linejoin="round"
-                          stroke-width="2"
-                          d="M3 8l7.89 5.26a2 2 0 002.22 0L21 8M5 19h14a2 2 0 002-2V7a2 2 0 00-2-2H5a2 2 0 00-2 2v10a2 2 0 002 2z"
-                        />
-                      </svg>
-                    </div>
+                <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
+                  <div class="space-y-1.5">
+                    <label for="newPassword" class={labelClass}>{$_("NewPassword")}</label>
                     <input
-                      id="email"
-                      type="email"
-                      bind:value={$email}
-                      class="w-full pl-10 pr-4 py-3 bg-gray-50 border border-transparent rounded-2xl text-sm focus:bg-white focus:border-indigo-500 focus:ring-1 focus:ring-indigo-500 transition-colors"
-                      placeholder={$_("EmailPlaceholder")}
+                      id="newPassword"
+                      type="password"
+                      required
+                      minlength="8"
+                      bind:value={newPassword}
+                      class={inputClass}
+                      disabled={isChangingPassword}
+                      autocomplete="new-password"
+                    />
+                  </div>
+
+                  <div class="space-y-1.5">
+                    <label for="confirmPassword" class={labelClass}>{$_("ConfirmNewPassword")}</label>
+                    <input
+                      id="confirmPassword"
+                      type="password"
+                      required
+                      bind:value={confirmPassword}
+                      class={inputClass}
+                      disabled={isChangingPassword}
+                      autocomplete="new-password"
                     />
                   </div>
                 </div>
 
-                <div class="space-y-2 md:col-span-2">
-                  <label
-                    for="msisdn"
-                    class="block text-sm font-medium text-gray-700"
+                <div class="pt-1 flex flex-wrap gap-3">
+                  <button
+                    type="submit"
+                    disabled={isChangingPassword}
+                    aria-busy={isChangingPassword}
+                    class="app-btn app-btn-primary"
                   >
-                    Mobile
-                  </label>
-                  <div class="relative">
-                    <div
-                      class="absolute inset-y-0 left-0 pl-3 flex items-center pointer-events-none"
-                    >
-                      <svg
-                        class="h-5 w-5 text-gray-400"
-                        fill="none"
-                        viewBox="0 0 24 24"
-                        stroke="currentColor"
-                      >
-                        <path
-                          stroke-linecap="round"
-                          stroke-linejoin="round"
-                          stroke-width="2"
-                          d="M3 5a2 2 0 012-2h3.28a1 1 0 01.948.684l1.498 4.493a1 1 0 01-.502 1.21l-2.257 1.13a11.042 11.042 0 005.516 5.516l1.13-2.257a1 1 0 011.21-.502l4.493 1.498a1 1 0 01.684.949V19a2 2 0 01-2 2h-1C9.716 21 3 14.284 3 6V5z"
-                        />
-                      </svg>
-                    </div>
-                    <input
-                      id="msisdn"
-                      type="tel"
-                      bind:value={$msisdn}
-                      class="w-full pl-10 pr-4 py-3 bg-gray-50 border border-transparent rounded-2xl text-sm focus:bg-white focus:border-indigo-500 focus:ring-1 focus:ring-indigo-500 transition-colors"
-                      placeholder={$_("MobileNumberPlaceholder")}
-                    />
-                  </div>
-                </div>
-
-                <div class="space-y-2 md:col-span-2">
-                  <label
-                    for="description"
-                    class="block text-sm font-medium text-gray-700"
-                  >
-                    Bio <span class="text-red-500">*</span>
-                  </label>
-                  <textarea
-                    id="description"
-                    required
-                    bind:value={$description}
-                    rows="4"
-                    class="w-full px-4 py-3 bg-gray-50 border border-transparent rounded-2xl text-sm resize-y focus:bg-white focus:border-indigo-500 focus:ring-1 focus:ring-indigo-500 transition-colors"
-                    placeholder={$_("route_labels.placeholder_tell_us_about_yourself")}
-                    dir={$locale === "ar" || $locale === "ku" ? "rtl" : "ltr"}
-                  ></textarea>
-                </div>
-              </div>
-            </form>
-          </div>
-
-          <!-- Dynamic Profile Fields -->
-          {#if $userSchema}
-            <div
-              class="bg-white rounded-2xl shadow-sm border border-gray-100 p-6"
-            >
-              <div class="flex items-center gap-2 mb-6">
-                <svg
-                  class="w-5 h-5 text-indigo-600"
-                  fill="none"
-                  stroke="currentColor"
-                  viewBox="0 0 24 24"
-                >
-                  <path
-                    stroke-linecap="round"
-                    stroke-linejoin="round"
-                    stroke-width="2"
-                    d="M13 10V3L4 14h7v7l9-11h-7z"
-                  />
-                </svg>
-                <h3 class="text-lg font-semibold text-gray-900">
-                  Additional Details
-                </h3>
-              </div>
-
-              <div class="space-y-6">
-                {#if $loadingSchema}
-                  <div class="flex justify-center py-8">
-                    <div class="spinner spinner-md"></div>
-                  </div>
-                {:else}
-                  <DynamicSchemaBasedForms
-                    bind:content={$profileData}
-                    schema={$userSchema}
-                    space="management"
-                    subpath="users"
-                    resourceType="user"
-                  />
-                {/if}
-              </div>
-            </div>
-          {/if}
-
-          <!-- Account Settings -->
-          {#if $user}
-            <div
-              class="bg-white rounded-2xl shadow-sm border border-gray-100 p-6"
-            >
-              <div class="flex items-center gap-2 mb-6">
-                <svg
-                  class="w-5 h-5 text-indigo-600"
-                  fill="none"
-                  stroke="currentColor"
-                  viewBox="0 0 24 24"
-                >
-                  <path
-                    stroke-linecap="round"
-                    stroke-linejoin="round"
-                    stroke-width="2"
-                    d="M12 15v2m-6 4h12a2 2 0 002-2v-6a2 2 0 00-2-2H6a2 2 0 00-2 2v6a2 2 0 002 2zm10-10V7a4 4 0 00-8 0v4h8z"
-                  />
-                </svg>
-                <h3 class="text-lg font-semibold text-gray-900">Account</h3>
-              </div>
-
-              <div class="space-y-6">
-                <!-- Status Row -->
-                <div
-                  class="flex items-center justify-between p-4 bg-gray-50 rounded-xl border border-gray-100"
-                >
-                  <div class="flex items-center gap-3">
-                    <svg
-                      class="w-5 h-5 text-gray-400"
-                      fill="none"
-                      stroke="currentColor"
-                      viewBox="0 0 24 24"
-                    >
-                      <path
-                        stroke-linecap="round"
-                        stroke-linejoin="round"
-                        stroke-width="2"
-                        d="M9 12l2 2 4-4m5.618-4.016A11.955 11.955 0 0112 2.944a11.955 11.955 0 01-8.618 3.04A12.02 12.02 0 003 9c0 5.591 3.824 10.29 9 11.622 5.176-1.332 9-6.03 9-11.622 0-1.042-.133-2.052-.382-3.016z"
-                      />
-                    </svg>
-                    <div>
-                      <h4 class="text-sm font-semibold text-gray-900">
-                        Account Status
-                      </h4>
-                      <p class="text-xs text-gray-500 mt-0.5">
-                        Active and verified
-                      </p>
-                    </div>
-                  </div>
-                  <span
-                    class="inline-flex items-center gap-1.5 px-3 py-1 rounded-full text-xs font-semibold bg-green-50 text-green-600"
-                  >
-                    <span class="w-1.5 h-1.5 rounded-full bg-green-500"
-                    ></span>
-                    Active
-                  </span>
-                </div>
-
-                <!-- Password Row -->
-                <div
-                  class="flex items-center justify-between p-4 bg-gray-50 rounded-xl border border-gray-100"
-                >
-                  <div class="flex items-center gap-3">
-                    <svg
-                      class="w-5 h-5 text-gray-400"
-                      fill="none"
-                      stroke="currentColor"
-                      viewBox="0 0 24 24"
-                    >
-                      <path
-                        stroke-linecap="round"
-                        stroke-linejoin="round"
-                        stroke-width="2"
-                        d="M12 15v2m-6 4h12a2 2 0 002-2v-6a2 2 0 00-2-2H6a2 2 0 00-2 2v6a2 2 0 002 2zm10-10V7a4 4 0 00-8 0v4h8z"
-                      />
-                    </svg>
-                    <div>
-                      <h4 class="text-sm font-semibold text-gray-900">
-                        Password
-                      </h4>
-                      <p class="text-xs text-gray-500 mt-0.5">Protected</p>
-                    </div>
-                  </div>
+                    {#if isChangingPassword}
+                      <span class="spinner spinner-xs spinner-white" aria-hidden="true"></span>
+                      {$_("ChangingPassword")}
+                    {:else}
+                      {$_("ChangePassword")}
+                    {/if}
+                  </button>
                   <button
                     type="button"
-                    class="px-4 py-2 text-sm font-semibold text-indigo-600 bg-indigo-50 hover:bg-indigo-100 rounded-lg transition-colors"
-                    onclick={() => showChangePassword.set(!$showChangePassword)}
+                    onclick={cancelPasswordChange}
+                    class="app-btn app-btn-secondary"
+                    disabled={isChangingPassword}
                   >
-                    {$showChangePassword ? "Cancel" : "Change"}
+                    {$_("Cancel")}
                   </button>
                 </div>
-
-                {#if $showChangePassword}
-                  <form
-                    onsubmit={preventDefault(handlePasswordChange)}
-                    class="p-5 bg-gray-50 border border-gray-100 rounded-xl space-y-4 shadow-inner"
-                  >
-                    <div>
-                      <label
-                        for="oldPassword"
-                        class="block text-sm font-medium text-gray-700 mb-1"
-                      >
-                        {$_("CurrentPassword")}
-                      </label>
-                      <input
-                        id="oldPassword"
-                        type="password"
-                        required
-                        bind:value={$oldPassword}
-                        class="w-full px-4 py-3 bg-white border border-gray-200 rounded-xl text-sm focus:border-indigo-500 focus:ring-1 focus:ring-indigo-500 transition-colors"
-                        disabled={$isChangingPassword}
-                      />
-                    </div>
-
-                    <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
-                      <div>
-                        <label
-                          for="newPassword"
-                          class="block text-sm font-medium text-gray-700 mb-1"
-                        >
-                          {$_("NewPassword")}
-                        </label>
-                        <input
-                          id="newPassword"
-                          type="password"
-                          required
-                          minlength="8"
-                          bind:value={$newPassword}
-                          class="w-full px-4 py-3 bg-white border border-gray-200 rounded-xl text-sm focus:border-indigo-500 focus:ring-1 focus:ring-indigo-500 transition-colors"
-                          disabled={$isChangingPassword}
-                        />
-                      </div>
-
-                      <div>
-                        <label
-                          for="confirmPassword"
-                          class="block text-sm font-medium text-gray-700 mb-1"
-                        >
-                          {$_("ConfirmNewPassword")}
-                        </label>
-                        <input
-                          id="confirmPassword"
-                          type="password"
-                          required
-                          bind:value={$confirmPassword}
-                          class="w-full px-4 py-3 bg-white border border-gray-200 rounded-xl text-sm focus:border-indigo-500 focus:ring-1 focus:ring-indigo-500 transition-colors"
-                          disabled={$isChangingPassword}
-                        />
-                      </div>
-                    </div>
-
-                    <div class="pt-2 flex gap-3">
-                      <button
-                        type="submit"
-                        disabled={$isChangingPassword}
-                        class="px-5 py-2.5 bg-indigo-600 hover:bg-indigo-700 text-white text-sm font-semibold rounded-xl flex items-center justify-center gap-2 transition-colors disabled:opacity-50"
-                      >
-                        {#if $isChangingPassword}
-                          <div class="spinner spinner-sm spinner-white"></div>
-                          {$_("ChangingPassword")}
-                        {:else}
-                          {$_("ChangePassword")}
-                        {/if}
-                      </button>
-                      <button
-                        type="button"
-                        onclick={() => {
-                          showChangePassword.set(false);
-                          oldPassword.set("");
-                          newPassword.set("");
-                          confirmPassword.set("");
-                        }}
-                        class="px-5 py-2.5 bg-white border border-gray-200 hover:bg-gray-50 text-gray-700 text-sm font-semibold rounded-xl transition-colors"
-                        disabled={$isChangingPassword}
-                      >
-                        {$_("Cancel")}
-                      </button>
-                    </div>
-                  </form>
-                {/if}
-              </div>
-            </div>
-          {/if}
-
-          <!-- Submit Action -->
-          <div class="pt-4">
-            <button
-              type="submit"
-              form="profile-form"
-              class="w-full py-4 px-6 bg-indigo-600 hover:bg-indigo-700 text-white rounded-xl shadow-sm text-base font-semibold flex items-center justify-center gap-2 transition-colors focus:ring-2 focus:ring-offset-2 focus:ring-indigo-500"
-            >
-              <svg
-                class="w-5 h-5"
-                fill="none"
-                stroke="currentColor"
-                viewBox="0 0 24 24"
-              >
-                <path
-                  stroke-linecap="round"
-                  stroke-linejoin="round"
-                  stroke-width="2"
-                  d="M8 7H5a2 2 0 00-2 2v9a2 2 0 002 2h14a2 2 0 002-2V9a2 2 0 00-2-2h-3m-1 4l-3 3m0 0l-3-3m3 3V4"
-                />
-              </svg>
-              Save Changes
-            </button>
+              </form>
+            {/if}
           </div>
+        </Card>
+
+        <!-- Save -->
+        <div class="flex justify-end">
+          <button
+            type="submit"
+            form="profile-form"
+            class="app-btn app-btn-primary app-btn-lg w-full sm:w-auto"
+            disabled={isSaving}
+            aria-busy={isSaving}
+          >
+            {#if isSaving}
+              <span class="spinner spinner-xs spinner-white" aria-hidden="true"></span>
+              {$_("profile.saving")}
+            {:else}
+              {$_("profile.save_changes")}
+            {/if}
+          </button>
         </div>
       </div>
     {/if}
@@ -735,48 +540,46 @@
 <style>
   .profile-page {
     min-height: 100vh;
-    padding: 2rem 1rem;
+    padding: 1.5rem var(--space-page-x) 3rem;
   }
 
   .container {
-    max-width: 1200px;
+    max-width: 48rem;
     margin: 0 auto;
-    padding: 0 1rem;
   }
 
-  /* Loading State */
-  .loading-container {
+  .section-heading {
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+    font-size: 1.125rem;
+    font-weight: 600;
+    color: var(--color-text);
+    margin-bottom: 1.25rem;
+  }
+
+  .avatar-overlay {
+    position: absolute;
+    inset: 0;
+    border-radius: 50%;
+    border: 0;
     display: flex;
     align-items: center;
     justify-content: center;
-    min-height: 60vh;
+    background: rgba(15, 23, 42, 0.55);
+    color: var(--color-text-on-primary);
+    cursor: pointer;
+    opacity: 0;
+    transition: opacity var(--duration-fast) ease;
   }
 
-  .loading-content {
-    display: flex;
-    flex-direction: column;
-    align-items: center;
-    gap: 1rem;
+  .avatar-overlay:hover,
+  .avatar-overlay:focus-visible,
+  .avatar-overlay[aria-busy="true"] {
+    opacity: 1;
   }
 
-  .loading-text {
-    color: var(--color-gray-500);
-    font-size: 0.9375rem;
-    font-weight: 500;
-  }
-
-  /* Utilities */
-  .hidden {
-    display: none !important;
-  }
-
-  @keyframes pulse {
-    0%,
-    100% {
-      opacity: 1;
-    }
-    50% {
-      opacity: 0.5;
-    }
+  .avatar-overlay:disabled {
+    cursor: progress;
   }
 </style>
