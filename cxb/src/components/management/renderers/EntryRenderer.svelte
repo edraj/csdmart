@@ -92,6 +92,12 @@
         originalJeContent = jsonEditorContentParser($state.snapshot(jeContent));
     }, EDITOR_INIT_DELAY);
     let isJEDirty = $state(false);
+    // Set by a real input/change event inside the tabs (or the JSON editor).
+    // Mounting the Form tab writes normalised defaults (empty slug, empty
+    // translations…) back into the bound entry, which the deep compare would
+    // otherwise report as unsaved changes the user never made.
+    let userEdited = $state(false);
+    const markEdited = () => { userEdited = true; };
 
     let errorMessage: unknown = $state(null);
     const errorPreview = $derived(errorMessage ? limitJsonForDisplay(errorMessage) : null);
@@ -447,6 +453,7 @@
             }))!;
         }
         jeContent = { json: $state.snapshot(entry) };
+        userEdited = false;
         entryRelationships = entry.relationships || [];
         clearTimeout(_initTimer);
         _initTimer = setTimeout(() => {
@@ -519,7 +526,7 @@
     function computeDirty() {
         dirtyTimer = null;
         try {
-            isJEDirty = !isDeepEqual(
+            isJEDirty = userEdited && !isDeepEqual(
                 jsonEditorContentParser($state.snapshot(jeContent)),
                 $state.snapshot(originalJeContent),
             );
@@ -676,6 +683,7 @@
         </div>
     </div>
 
+    <div class="contents" oninputcapture={markEdited} onchangecapture={markEdited}>
     <Tabs
         tabStyle="underline"
         bind:selected={activeTab}
@@ -917,6 +925,7 @@
             {/key}
         </TabItem>
     </Tabs>
+    </div>
 </div>
 
 <ConfirmDialog
