@@ -48,6 +48,14 @@
 
 ### Fixed
 
+- **`GET /user/google/login` and `/user/facebook/login` refuse to start the
+  web flow when the callback URL is not configured.** A deployment set up
+  for the mobile id-token flow has a client id and no
+  `GOOGLE_OAUTH_CALLBACK`; the web start used to redirect to Google with an
+  empty `redirect_uri`, and the user got Google's "Missing required
+  parameter: redirect_uri" page. The start now answers with the name of
+  the missing setting (it must be the absolute URL of the provider callback,
+  registered with the provider as an authorized redirect URI).
 - **Seventeen `JsonDocument.Parse(…).RootElement` sites no longer leak a pooled
   buffer per call.** A `JsonDocument` rents its backing buffer from the
   `ArrayPool` and returns it only on `Dispose`; the chained form never disposes,
