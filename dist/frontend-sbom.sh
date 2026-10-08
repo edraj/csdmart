@@ -95,16 +95,23 @@ yarn install --frozen-lockfile >/dev/null 2>&1 || yarn install >/dev/null 2>&1
 # .map emission differs — so the module set is identical to what release.yml's
 # build-ui job produces. Built here rather than reused from that job because the
 # two run in parallel and neither can see the other's output.
+# Only the workspaces the binary embeds. The yarn workspace list is wider than
+# what ships: `e2e` (the Playwright suite) is a workspace too, has no build and
+# never reaches a user, and inventorying it would both fail the build step and
+# overstate what ships. dmart.csproj's EmbeddedResource entries are the
+# authority on which app bundles are in the binary.
 APPS="$(python3 - <<'PY'
-import json
+import json, re
 try:
     ws = json.load(open("package.json")).get("workspaces") or []
-    print(" ".join(ws.get("packages", []) if isinstance(ws, dict) else ws))
+    ws = ws.get("packages", []) if isinstance(ws, dict) else ws
+    embedded = set(re.findall(r'Include="([^"/]+)/dist/client/\*\*"', open("dmart.csproj").read()))
+    print(" ".join(w for w in ws if w in embedded))
 except Exception:
     print("")
 PY
 )"
-[ -n "$APPS" ] || { echo "frontend-sbom.sh: no workspaces in package.json" >&2; exit 1; }
+[ -n "$APPS" ] || { echo "frontend-sbom.sh: no workspace in package.json is embedded by dmart.csproj" >&2; exit 1; }
 
 for app in $APPS; do
 	[ -f "$app/package.json" ] || continue
