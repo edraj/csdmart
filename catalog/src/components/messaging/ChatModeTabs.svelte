@@ -31,7 +31,7 @@
 <style>
   .chat-mode-tabs {
     display: flex;
-    border-bottom: 1px solid #e2e8f0;
+    border-bottom: 1px solid var(--color-border);
     background: white;
   }
 
@@ -42,20 +42,20 @@
     padding: 1rem;
     font-size: 0.875rem;
     font-weight: 500;
-    color: #6b7280;
+    color: var(--color-text-muted);
     cursor: pointer;
     border-bottom: 2px solid transparent;
     transition: all 0.2s;
   }
 
   .tab-btn:hover {
-    color: #374151;
-    background: #f8fafc;
+    color: var(--color-text);
+    background: var(--color-surface);
   }
 
   .tab-btn.active {
-    color: #3b82f6;
-    border-bottom-color: #3b82f6;
-    background: #f8fafc;
+    color: var(--color-primary);
+    border-bottom-color: var(--color-primary);
+    background: var(--color-surface);
   }
 </style>

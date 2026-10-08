@@ -122,37 +122,58 @@ export function streamEntitiesAcrossSpaces(
     };
 }
 
-export async function getMyEntities(shortname: string = "") {
-    const result = await getSpaces(false, DmartScope.managed, [
-        MESSAGES_SPACE,
+/** Newest entries per space that getMyEntities() returns. */
+export const MY_ENTITIES_LIMIT_PER_SPACE = 100;
 
-    ]);
+/**
+ * Everything the current user (or `shortname`) owns, across every visible
+ * space: one bounded, metadata-only query per space through the same 6-wide
+ * worker pool as streamEntitiesAcrossSpaces (review perf #14). The list page
+ * shows titles, tags, state and dates, so neither payload nor attachments
+ * are requested.
+ */
+export async function getMyEntities(
+    shortname: string = "",
+    options: { limitPerSpace?: number; maxConcurrent?: number } = {},
+) {
+    const result = await getSpaces(false, DmartScope.managed, [MESSAGES_SPACE]);
     const spaces = result.records.map((space) => space.shortname);
+    const owner = shortname || get(user).shortname;
+    const limit = options.limitPerSpace ?? MY_ENTITIES_LIMIT_PER_SPACE;
+    const maxConcurrent = Math.max(1, options.maxConcurrent ?? 6);
 
-    const promises = spaces.map(async (space) => {
-        const currentUser = get(user);
-        const search = `@owner_shortname:${shortname || currentUser.shortname}`;
+    const results: ApiQueryResponse["records"][] = new Array(spaces.length);
+    let cursor = 0;
+    const worker = async () => {
+        while (true) {
+            const i = cursor++;
+            if (i >= spaces.length) return;
+            const queryRequest: QueryRequest = {
+                filter_shortnames: [],
+                type: QueryType.subpath,
+                space_name: spaces[i],
+                subpath: "/",
+                exact_subpath: false,
+                sort_by: "updated_at",
+                sort_type: SortType.descending,
+                search: `@owner_shortname:${owner}`,
+                limit,
+                offset: 0,
+                retrieve_json_payload: false,
+                retrieve_attachments: false,
+            };
+            try {
+                const response = await Dmart.query(queryRequest);
+                results[i] = response?.records ?? [];
+            } catch (error) {
+                log.error(`Could not list entries in space "${spaces[i]}":`, error);
+                results[i] = [];
+            }
+        }
+    };
+    await Promise.all(Array.from({ length: Math.min(maxConcurrent, spaces.length) }, worker));
 
-        const queryRequest: QueryRequest = {
-            filter_shortnames: [],
-            type: QueryType.subpath,
-            space_name: space,
-            subpath: "/",
-            exact_subpath: false,
-            sort_by: "created_at",
-            sort_type: SortType.ascending,
-            search,
-            retrieve_json_payload: true,
-            retrieve_attachments: true,
-        };
-
-        const response: ApiQueryResponse = (await Dmart.query(queryRequest))!;
-        return response?.records ?? [];
-    });
-
-    const allRecordsArrays = await Promise.all(promises);
-
-    return allRecordsArrays.flat();
+    return results.flat();
 }
 
 

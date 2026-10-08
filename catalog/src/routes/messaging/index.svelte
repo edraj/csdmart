@@ -8,6 +8,7 @@
     getMessagesBetweenUsers,
     getMessageByShortname,
     getConversationPartners,
+    noteConversationPartner,
     getUsersByShortnames,
     attachAttachmentsToEntity,
     fetchOnlineUsers,
@@ -18,7 +19,7 @@
     getGroupMessageByShortname,
     updateGroup,
   } from "@/lib/dmart_services";
-  import { _, isRTL } from "@/i18n";
+  import { _ } from "@/i18n";
   import {
     successToastMessage,
     errorToastMessage,
@@ -48,18 +49,28 @@
     getGroupCacheKey,
     isUserGroupAdmin,
     canUserAccessGroup,
+    purgeLegacyMessageStorage,
   } from "@/lib/utils/messagingUtils";
+  import { setTitle } from "@/lib/title";
+  import { log } from "@/lib/logger";
   import { getWebSocketService } from "@/lib/services/websocket";
   import { wsConnected, wsStatus } from "@/stores/websocket";
 
   let isConnected = $derived($wsConnected);
-  let connectionStatus = $state("Disconnected");
+  let connectionStatus = $state("");
+
+  $effect(() => setTitle($_("messaging.title")));
   let removeWsListener: (() => void) | null = null;
 
   // Sync connection status from global WebSocket store
   $effect(() => {
     const status = $wsStatus;
-    connectionStatus = status.charAt(0).toUpperCase() + status.slice(1);
+    connectionStatus =
+      status === "connected"
+        ? $_("notifications_page.connection.connected")
+        : status === "connecting"
+          ? $_("notifications_page.connection.connecting")
+          : $_("notifications_page.connection.disconnected");
   });
 
   let currentUser: any = $state(null);
@@ -109,6 +120,8 @@
 
 
   onMount(async () => {
+    // Conversations used to be persisted to localStorage; drop any left over.
+    purgeLegacyMessageStorage();
     await initializeChat();
   });
 
@@ -164,13 +177,12 @@
       currentUser = $user;
 
       if (!currentUser?.shortname) {
-        console.warn("[Lifecycle] initializeChat: No user shortname yet, deferring connection to $effect");
-        connectionStatus = "Waiting for user...";
+        connectionStatus = $_("messaging.waiting_for_user");
         return;
       }
       await Promise.all([loadUsers(), loadGroups()]);
     } catch (error) {
-      console.error("[Lifecycle] initializeChat error:", error);
+      log.error("[Lifecycle] initializeChat error:", error);
       connectionStatus = $_("messaging.toast_failed_initialize");
     }
   }
@@ -451,7 +463,7 @@
                   scrollToBottom(chatContainer);
                 }
               } catch (error) {
-                console.error("Error refreshing group message:", error);
+                log.error("Error refreshing group message:", error);
               }
             }, 1500);
           } catch (attachmentError) {
@@ -492,11 +504,11 @@
 
         setTimeout(() => scrollToBottom(chatContainer), 100);
       } else {
-        console.error("❌ [Group Message] API returned no response");
+        log.error("❌ [Group Message] API returned no response");
         groupMessages = groupMessages.filter((msg) => msg.id !== tempId);
       }
     } catch (error) {
-      console.error("❌ [Group Message] Error sending message:", error);
+      log.error("❌ [Group Message] Error sending message:", error);
 
       groupMessages = groupMessages.filter((msg) => msg.id !== tempId);
     } finally {
@@ -569,7 +581,7 @@
           );
       }
     } catch (error) {
-      console.error("Failed to load users for group editing:", error);
+      log.error("Failed to load users for group editing:", error);
     }
 
     showGroupEditForm = true;
@@ -773,7 +785,7 @@
                 }
               }
             } catch (error) {
-              console.error("Error fetching attachment message:", error);
+              log.error("Error fetching attachment message:", error);
               if (selectedUser?.shortname === partnerShortname && chatMode === "direct") {
                 messages = messages.filter((msg) => msg.id !== tempMessage.id);
               }
@@ -862,6 +874,9 @@
   }
 
   function updateDirectMessageCache(partnerShortname: any, newMessage: any) {
+    // A message to or from someone new makes them a conversation partner
+    // without refetching the partner list (perf #9).
+    if (currentUser?.shortname) void noteConversationPartner(currentUser.shortname, partnerShortname);
     const existingMessages = conversationMessages.get(partnerShortname) || [];
     const messageExists = existingMessages.some((msg: any) => msg.id === newMessage.id);
     if (!messageExists) {
@@ -953,7 +968,7 @@
         }
       }
     } catch (error) {
-      console.error("❌ [FetchMsg] Error fetching message:", error);
+      log.error("❌ [FetchMsg] Error fetching message:", error);
     }
   }
 
@@ -1139,7 +1154,7 @@
                   scrollToBottom(chatContainer);
                 }
               } catch (error) {
-                console.error("Error refreshing message:", error);
+                log.error("Error refreshing message:", error);
               }
             }, 1500);
           } catch (attachmentError) {
@@ -1169,7 +1184,7 @@
         if (wsRef) {
           await wsRef.send(wsMessage);
         } else {
-          console.warn("[SendMsg] No WS service, skipping WS send");
+          log.warn("[SendMsg] No WS service, skipping WS send");
         }
       } else {
         messages = messages.filter((msg) => msg.id !== tempId);
@@ -1349,7 +1364,7 @@
   }
 </script>
 
-<div class="chat-container" class:rtl={$isRTL}>
+<div class="chat-container">
   <ChatHeader {isConnected} {connectionStatus} />
 
   <div class="chat-content">
@@ -1396,7 +1411,7 @@
           <div class="chat-user-info">
             <div class="user-avatar small mx-3">
               {#if selectedUser.avatar}
-                <img
+                <img loading="lazy" decoding="async"
                   src={selectedUser.avatar || "/placeholder.svg"}
                   alt={selectedUser.name}
                 />
@@ -1455,7 +1470,7 @@
                   {:else if message.uploadFailed}
                     <div class="upload-failed">
                       <span class="error-icon">⚠️</span>
-                      <span>Upload failed</span>
+                      <span>{$_("labels.upload_failed")}</span>
                     </div>
                   {/if}
 
@@ -1505,7 +1520,7 @@
                               </audio>
                             </div>
                           {:else if getPreviewUrl(file)}
-                            <img
+                            <img loading="lazy" decoding="async"
                               src={getPreviewUrl(file)}
                               alt={file.name}
                               class="attachment-image"
@@ -1559,7 +1574,7 @@
           <div class="chat-group-info">
             <div class="group-avatar small">
               {#if selectedGroup.avatar}
-                <img src={selectedGroup.avatar} alt={selectedGroup.name} />
+                <img loading="lazy" decoding="async" src={selectedGroup.avatar} alt={selectedGroup.name} />
               {:else}
                 <div class="avatar-placeholder group">
                   {selectedGroup.name.charAt(0).toUpperCase()}
@@ -1591,8 +1606,8 @@
               <button
                 class="edit-group-btn"
                 onclick={openGroupEditForm}
-                aria-label="Edit group"
-                title="Edit group settings"
+                aria-label={$_("messaging.edit_group_settings")}
+                title={$_("messaging.edit_group_settings")}
               >
                 ✏️
               </button>
@@ -1616,7 +1631,7 @@
             <div class="loading">{$_("messaging.loading_messages")}</div>
           {:else if groupMessages.length === 0}
             <div class="no-messages">
-              <p>No messages in this group yet</p>
+              <p>{$_("messaging.no_group_messages")}</p>
             </div>
           {:else}
             {#each groupMessages as message (message.id)}
@@ -1628,7 +1643,7 @@
                   <div class="message-sender-info">
                     <div class="sender-avatar tiny">
                       {#if senderUser?.avatar}
-                        <img
+                        <img loading="lazy" decoding="async"
                           src={senderUser.avatar}
                           alt={getUserDisplayName(message.senderId)}
                         />
@@ -1663,7 +1678,7 @@
                   {:else if message.uploadFailed}
                     <div class="upload-failed">
                       <span class="error-icon">⚠️</span>
-                      <span>Upload failed</span>
+                      <span>{$_("labels.upload_failed")}</span>
                     </div>
                   {/if}
 
@@ -1768,7 +1783,7 @@
     height: 100vh;
     display: flex;
     flex-direction: column;
-    background: var(--color-gray-50);
+    background: var(--color-surface);
   }
 
   .chat-content {
@@ -1781,7 +1796,7 @@
   .users-sidebar {
     width: 320px;
     background: white;
-    border-right: 1px solid #e2e8f0;
+    border-inline-end: 1px solid var(--color-border);
     display: flex;
     flex-direction: column;
     order: 1;
@@ -1796,21 +1811,13 @@
   }
 
   /* RTL Layout */
-  .chat-container.rtl .users-sidebar {
-    border-right: none;
-    border-left: 1px solid #e2e8f0;
-    order: 2;
-  }
 
-  .chat-container.rtl .chat-area {
-    order: 1;
-  }
 
   /* Messages and Chat Area Styles */
 
   .chat-user-header {
     padding: 1rem 1.5rem;
-    border-bottom: 1px solid #e2e8f0;
+    border-bottom: 1px solid var(--color-border);
     background: white;
     display: flex;
     justify-content: space-between;
@@ -1823,17 +1830,13 @@
   }
 
   .chat-user-info > div:last-child {
-    margin-left: 0.75rem;
+    margin-inline-start: 0.75rem;
   }
 
-  .chat-container.rtl .chat-user-info > div:last-child {
-    margin-left: 0;
-    margin-right: 0.75rem;
-  }
 
   .chat-user-name {
     font-weight: 600;
-    color: #1e293b;
+    color: var(--color-text);
     margin-bottom: 0.125rem;
   }
 
@@ -1845,7 +1848,7 @@
     flex: 1;
     overflow-y: auto;
     padding: 1rem;
-    background: #f8fafc;
+    background: var(--color-surface);
   }
 
   .loading-older-messages {
@@ -1854,16 +1857,16 @@
     justify-content: center;
     gap: 0.5rem;
     padding: 1rem;
-    color: #64748b;
+    color: var(--color-text-muted);
     font-size: 0.875rem;
   }
 
   .loading-older-messages .loading-spinner {
     width: 16px;
     height: 16px;
-    border: 2px solid #e2e8f0;
+    border: 2px solid var(--color-border);
     border-radius: 50%;
-    border-top-color: #64748b;
+    border-top-color: var(--color-text-muted);
     animation: spin 1s ease-in-out infinite;
   }
 
@@ -1913,8 +1916,8 @@
     display: flex;
     align-items: center;
     justify-content: center;
-    background: #e2e8f0;
-    color: #475569;
+    background: var(--color-border);
+    color: var(--color-text-muted);
     font-size: 0.6rem;
     font-weight: 600;
   }
@@ -1928,49 +1931,33 @@
   .message-sender {
     font-size: 0.75rem;
     font-weight: 600;
-    color: #475569;
+    color: var(--color-text-muted);
     margin: 0;
   }
 
   .message-content.own-content {
-    background: #3b82f6;
+    background: var(--color-primary);
     color: white;
-    border-bottom-right-radius: 4px;
+    border-end-end-radius: 4px;
   }
 
   .message.group-message .message-timestamp {
     font-size: 0.625rem;
-    color: #94a3b8;
+    color: var(--color-text-faint);
     margin: 0;
   }
 
   .own-timestamp {
     align-self: flex-end;
-    text-align: right;
+    text-align: end;
     margin-top: 0.25rem;
   }
 
   /* RTL adjustments for group messages */
-  .chat-container.rtl .message.group-message.own {
-    align-items: flex-start;
-  }
 
-  .chat-container.rtl .message.group-message:not(.own) {
-    align-items: flex-end;
-  }
 
-  .chat-container.rtl .message-sender-info {
-    flex-direction: row-reverse;
-  }
 
-  .chat-container.rtl .sender-details {
-    text-align: right;
-  }
 
-  .chat-container.rtl .own-timestamp {
-    align-self: flex-start;
-    text-align: left;
-  }
 
   /* Default LTR message alignment */
   .message.own {
@@ -1982,13 +1969,7 @@
   }
 
   /* RTL message alignment */
-  .chat-container.rtl .message.own {
-    justify-content: flex-start;
-  }
 
-  .chat-container.rtl .message:not(.own) {
-    justify-content: flex-end;
-  }
 
   .message-content {
     max-width: 70%;
@@ -1999,7 +1980,7 @@
   }
 
   .message.own .message-content {
-    background: #0ea5e9;
+    background: var(--color-info);
     color: white;
   }
 
@@ -2029,7 +2010,7 @@
   .file-name {
     font-size: 0.875rem;
     font-weight: 500;
-    color: #1e293b;
+    color: var(--color-text);
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;
@@ -2037,7 +2018,7 @@
 
   .file-size {
     font-size: 0.75rem;
-    color: #64748b;
+    color: var(--color-text-muted);
   }
 
   .voice-message-preview {
@@ -2045,8 +2026,8 @@
     align-items: center;
     gap: 0.75rem;
     padding: 0.75rem;
-    background: #f0f9ff;
-    border: 1px solid #bae6fd;
+    background: var(--color-info-soft);
+    border: 1px solid var(--color-info-soft);
     border-radius: 0.5rem;
     max-width: 280px;
   }
@@ -2058,9 +2039,9 @@
     align-items: center;
     justify-content: center;
     font-size: 1.5rem;
-    background: #e0f2fe;
+    background: var(--color-info-soft);
     border-radius: 0.25rem;
-    color: #0284c7;
+    color: var(--color-primary);
   }
 
   .voice-message-info {
@@ -2071,7 +2052,7 @@
   .voice-message-label {
     font-size: 0.875rem;
     font-weight: 500;
-    color: #0284c7;
+    color: var(--color-primary);
     margin-bottom: 0.125rem;
   }
 
@@ -2132,7 +2113,7 @@
     max-height: 200px;
     object-fit: cover;
     border-radius: 8px;
-    border: 1px solid #e2e8f0;
+    border: 1px solid var(--color-border);
   }
 
   .message-attachments :global(.attachment-preview video) {
@@ -2141,7 +2122,7 @@
     max-height: 200px;
     max-width: 280px;
     border-radius: 8px;
-    border: 1px solid #e2e8f0;
+    border: 1px solid var(--color-border);
   }
 
   .message-attachments :global(.media-overlay) {
@@ -2163,7 +2144,7 @@
   .message-attachments :global(.unsupported-file) {
     height: 80px;
     background: rgba(248, 250, 252, 0.5);
-    border: 1px solid #e2e8f0;
+    border: 1px solid var(--color-border);
     border-radius: 8px;
   }
 
@@ -2180,7 +2161,7 @@
     max-height: 200px;
     object-fit: cover;
     border-radius: 0.5rem;
-    border: 1px solid #e2e8f0;
+    border: 1px solid var(--color-border);
   }
 
   .attachment-file {
@@ -2188,15 +2169,12 @@
     align-items: center;
     gap: 0.75rem;
     padding: 0.75rem;
-    background: #f8fafc;
-    border: 1px solid #e2e8f0;
+    background: var(--color-surface);
+    border: 1px solid var(--color-border);
     border-radius: 0.5rem;
     max-width: 250px;
   }
 
-  .chat-container.rtl .attachment-file {
-    direction: rtl;
-  }
 
   .file-icon-display {
     font-size: 1.5rem;
@@ -2214,9 +2192,6 @@
     min-width: 0;
   }
 
-  .chat-container.rtl .file-details {
-    text-align: right;
-  }
 
   .temp-attachment {
     opacity: 0.7;
@@ -2227,7 +2202,7 @@
     height: 16px;
     border: 2px solid #ffffff40;
     border-radius: 50%;
-    border-top-color: #ffffff;
+    border-top-color: var(--color-surface-2);
     animation: spin 1s ease-in-out infinite;
   }
 
@@ -2236,16 +2211,16 @@
     display: flex;
     align-items: center;
     justify-content: center;
-    background: #f8fafc;
+    background: var(--color-surface);
   }
 
   .no-chat-message {
     text-align: center;
-    color: #64748b;
+    color: var(--color-text-muted);
   }
 
   .no-chat-message h3 {
-    color: #1e293b;
+    color: var(--color-text);
     margin-bottom: 0.5rem;
   }
 
@@ -2254,7 +2229,7 @@
     align-items: center;
     justify-content: center;
     padding: 2rem;
-    color: #64748b;
+    color: var(--color-text-muted);
   }
 
   .upload-status {
@@ -2265,7 +2240,7 @@
     background: rgba(59, 130, 246, 0.1);
     border-radius: 0.5rem;
     font-size: 0.875rem;
-    color: #3b82f6;
+    color: var(--color-primary);
     margin-bottom: 0.5rem;
   }
 
@@ -2274,7 +2249,7 @@
     height: 16px;
     border: 2px solid #3b82f640;
     border-radius: 50%;
-    border-top-color: #3b82f6;
+    border-top-color: var(--color-primary);
     animation: spin 1s ease-in-out infinite;
   }
 
@@ -2286,7 +2261,7 @@
     background: rgba(239, 68, 68, 0.1);
     border-radius: 0.5rem;
     font-size: 0.875rem;
-    color: #ef4444;
+    color: var(--color-danger);
     margin-bottom: 0.5rem;
   }
 
@@ -2313,7 +2288,7 @@
     display: flex;
     align-items: center;
     padding: 1rem;
-    border-bottom: 1px solid #e5e7eb;
+    border-bottom: 1px solid var(--color-border);
     background: white;
     justify-content: space-between;
   }
@@ -2326,30 +2301,30 @@
   .group-avatar.small {
     width: 32px;
     height: 32px;
-    margin-right: 0.75rem;
+    margin-inline-end: 0.75rem;
   }
 
   .chat-group-name {
     font-weight: 600;
-    color: #1f2937;
+    color: var(--color-text);
     margin-bottom: 0.125rem;
   }
 
   .chat-group-status {
     font-size: 0.875rem;
-    color: #6b7280;
+    color: var(--color-text-muted);
   }
 
   .group-participants-preview {
     font-size: 0.75rem;
-    color: #94a3b8;
+    color: var(--color-text-faint);
     margin-top: 0.25rem;
     font-style: italic;
   }
 
   .message-sender {
     font-size: 0.75rem;
-    color: #6b7280;
+    color: var(--color-text-muted);
     margin-bottom: 0.25rem;
     font-weight: 500;
   }
@@ -2378,10 +2353,6 @@
       height: 60vh;
     }
 
-    .chat-container.rtl .users-sidebar,
-    .chat-container.rtl .chat-area {
-      order: unset;
-    }
   }
 
   /* Group Edit Styles */

@@ -1,237 +1,154 @@
 <script lang="ts">
   import { RequestType, ResourceType } from "@edraj/tsdmart";
   import { onMount } from "svelte";
-  import { _ } from "svelte-i18n";
-  import {
-    getChildren,
-    getChildrenAndSubChildren,
-    getSpaces,
-  } from "@/lib/dmart_services";
-  import { errorToastMessage } from "@/lib/toasts_messages";
+  import { _ } from "@/i18n";
+  import { getChildren, getChildrenAndSubChildren, getSpaces } from "@/lib/dmart_services";
+  import { toasts } from "@/lib/toast";
+  import { log } from "@/lib/logger";
+  import { ChevronDownOutline, CloseOutline, PlusOutline } from "flowbite-svelte-icons";
+  import IconButton from "@/components/ui/IconButton.svelte";
+
+  interface PermissionFormData {
+    subpaths: Record<string, string[]>;
+    resource_types: string[];
+    actions: string[];
+    conditions: string[];
+    restricted_fields: string[];
+    allowed_fields_values: Record<string, unknown>;
+    [key: string]: unknown;
+  }
 
   let {
     formData = $bindable(),
     // eslint-disable-next-line @typescript-eslint/no-unused-vars, no-useless-assignment -- $bindable() prop: assigned here, read by the parent through bind:validateFn
     validateFn = $bindable(),
   }: {
-    formData: any;
+    formData: Partial<PermissionFormData>;
     validateFn: () => boolean;
   } = $props();
 
-  let form: any;
+  const uid = $props.id();
+  let form = $state<HTMLFormElement | null>(null);
 
   formData = {
     ...formData,
-    subpaths: formData.subpaths || {},
-    resource_types: formData.resource_types || [],
-    actions: formData.actions || [],
-    conditions: formData.conditions || [],
-    restricted_fields: formData.restricted_fields || [],
-    allowed_fields_values: formData.allowed_fields_values || {},
+    subpaths: formData.subpaths ?? {},
+    resource_types: formData.resource_types ?? [],
+    actions: formData.actions ?? [],
+    conditions: formData.conditions ?? [],
+    restricted_fields: formData.restricted_fields ?? [],
+    allowed_fields_values: formData.allowed_fields_values ?? {},
   };
 
-  const resourceTypeOptions = Object.keys(ResourceType).map((key) => ({
-    name: key,
-    value: (ResourceType as any)[key],
-  }));
-
-  const requestTypeOptions = Object.keys(RequestType).map((key) => ({
-    name: key,
-    value: (RequestType as any)[key],
-  }));
-  requestTypeOptions.unshift({
-    name: "view",
-    value: "view",
-  });
-  requestTypeOptions.unshift({
-    name: "query",
-    value: "query",
-  });
+  const resourceTypeOptions = Object.entries(ResourceType).map(([name, value]) => ({ name, value: String(value) }));
+  const requestTypeOptions = [
+    { name: "query", value: "query" },
+    { name: "view", value: "view" },
+    ...Object.entries(RequestType).map(([name, value]) => ({ name, value: String(value) })),
+  ];
 
   let selectedResourceType = $state("");
   let selectedAction = $state("");
   let newCondition = $state("");
   let newRestrictedField = $state("");
 
-  let spaces = $state<any[]>([]);
-  let subpaths = $state<any[]>([]);
+  let spaces = $state<string[]>([]);
+  let subpaths = $state<string[]>([]);
   let selectedSpace = $state("");
   let selectedSubpath = $state("");
   let loadingSpaces = $state(true);
   let loadingSubpaths = $state(false);
 
-  let accordionStates = $state({
+  type Section = "subpaths" | "conditions" | "restrictedFields" | "allowedFields";
+  let openSections = $state<Record<Section, boolean>>({
     subpaths: false,
     conditions: false,
     restrictedFields: false,
     allowedFields: false,
   });
 
+  let jsonEditorContent = $state(JSON.stringify(formData.allowed_fields_values ?? {}, null, 2));
+
   onMount(async () => {
     try {
       const spacesResponse = await getSpaces(true);
-      spaces = spacesResponse.records.map((space) => ({
-        name: space.shortname,
-        value: space.shortname,
-      }));
-      spaces.unshift({
-        name: "__all_spaces__",
-        value: "__all_spaces__",
-      });
+      spaces = ["__all_spaces__", ...spacesResponse.records.map((space) => space.shortname)];
     } catch (error) {
-      console.error("Failed to load spaces:", error);
+      log.error("Failed to load spaces:", error);
     } finally {
       loadingSpaces = false;
     }
   });
 
-  function addResourceType() {
-    if (
-      selectedResourceType &&
-      !formData.resource_types.includes(selectedResourceType)
-    ) {
-      formData.resource_types = [
-        ...formData.resource_types,
-        selectedResourceType,
-      ];
-      selectedResourceType = "";
-    }
+  function addTo(key: "resource_types" | "actions" | "conditions" | "restricted_fields", value: string) {
+    const clean = value.trim();
+    const list = formData[key] ?? [];
+    if (clean && !list.includes(clean)) formData[key] = [...list, clean];
   }
 
-  function removeResourceType(item: any) {
-    formData.resource_types = formData.resource_types.filter((i: any) => i !== item);
+  function removeFrom(key: "resource_types" | "actions" | "conditions" | "restricted_fields", value: string) {
+    formData[key] = (formData[key] ?? []).filter((i) => i !== value);
   }
 
-  function addAction() {
-    if (selectedAction && !formData.actions.includes(selectedAction)) {
-      formData.actions = [...formData.actions, selectedAction];
-      selectedAction = "";
-    }
-  }
-
-  function removeAction(item: any) {
-    formData.actions = formData.actions.filter((i: any) => i !== item);
-  }
-
-  function addCondition() {
-    if (newCondition && !formData.conditions.includes(newCondition)) {
-      formData.conditions = [...formData.conditions, newCondition];
-      newCondition = "";
-    }
-  }
-
-  function removeCondition(item: any) {
-    formData.conditions = formData.conditions.filter((i: any) => i !== item);
-  }
-
-  function addRestrictedField() {
-    if (
-      newRestrictedField &&
-      !formData.restricted_fields.includes(newRestrictedField)
-    ) {
-      formData.restricted_fields = [
-        ...formData.restricted_fields,
-        newRestrictedField,
-      ];
-      newRestrictedField = "";
-    }
-  }
-
-  async function loadSubpaths(spaceName: any) {
+  async function loadSubpaths(spaceName: string) {
     if (!spaceName) return;
-
     loadingSubpaths = true;
+    const found: string[] = [];
     try {
-      const subpathsResponse: any[] = [];
       const childSubpaths = await getChildren(spaceName, "/");
-      await getChildrenAndSubChildren(
-        subpathsResponse,
-        spaceName,
-        "",
-        childSubpaths,
-      );
-      subpaths = subpathsResponse.map((record) => ({
-        name: record,
-        value: record,
-      }));
+      await getChildrenAndSubChildren(found, spaceName, "", childSubpaths);
     } catch (error) {
-      console.error("Failed to load subpaths:", error);
-      subpaths = [];
+      log.error("Failed to load subpaths:", error);
     } finally {
-      subpaths.unshift({
-        name: "__all_subpaths__",
-        value: "__all_subpaths__",
-      });
-      subpaths.unshift({
-        name: "/",
-        value: "/",
-      });
+      subpaths = ["/", "__all_subpaths__", ...found];
       loadingSubpaths = false;
     }
   }
 
   function addSubpathToSpace() {
     if (!selectedSpace || !selectedSubpath) return;
-
-    if (!formData.subpaths[selectedSpace]) {
-      formData.subpaths[selectedSpace] = [];
+    const current = formData.subpaths ?? {};
+    const list = current[selectedSpace] ?? [];
+    if (!list.includes(selectedSubpath)) {
+      formData.subpaths = { ...current, [selectedSpace]: [...list, selectedSubpath] };
     }
-
-    if (!formData.subpaths[selectedSpace].includes(selectedSubpath)) {
-      formData.subpaths[selectedSpace] = [
-        ...formData.subpaths[selectedSpace],
-        selectedSubpath,
-      ];
-    }
-
     selectedSubpath = "";
   }
 
-  function removeSubpath(space: any, subpath: any) {
-    formData.subpaths[space] = formData.subpaths[space].filter(
-      (p: any) => p !== subpath,
-    );
+  function removeSubpath(space: string, subpath: string) {
+    const current = { ...(formData.subpaths ?? {}) };
+    const remaining = (current[space] ?? []).filter((p) => p !== subpath);
+    if (remaining.length === 0) delete current[space];
+    else current[space] = remaining;
+    formData.subpaths = current;
+  }
 
-    if (formData.subpaths[space].length === 0) {
-      const { [space]: _, ...rest } = formData.subpaths;
-      formData.subpaths = rest;
+  function applyJson(): boolean {
+    try {
+      formData.allowed_fields_values = JSON.parse(jsonEditorContent || "{}");
+      return true;
+    } catch {
+      return false;
     }
   }
-
-  function removeRestrictedField(item: any) {
-    formData.restricted_fields = formData.restricted_fields.filter(
-      (i: any) => i !== item,
-    );
-  }
-
-  let jsonEditorContent = $state("");
 
   function saveJsonEditor() {
-    try {
-      formData.allowed_fields_values = JSON.parse(jsonEditorContent);
-    } catch {
-      alert($_("errors.invalid_json"));
-    }
+    if (!applyJson()) toasts.error($_("errors.invalid_json"));
   }
 
   function validate() {
-    try {
-      formData.allowed_fields_values = JSON.parse(jsonEditorContent);
-    } catch {
-      errorToastMessage($_("validation.json_syntax_error"));
+    if (!applyJson()) {
+      toasts.error($_("validation.json_syntax_error"));
+      return false;
     }
-
+    if (!form) return true;
     const isValid = form.checkValidity();
-
-    if (!isValid) {
-      form.reportValidity();
-    }
-
+    if (!isValid) form.reportValidity();
     return isValid;
   }
 
-  function toggleAccordion(section: string) {
-    (accordionStates as any)[section] = !(accordionStates as any)[section];
+  function toggleSection(section: Section) {
+    openSections[section] = !openSections[section];
   }
 
   $effect(() => {
@@ -239,430 +156,207 @@
   });
 
   $effect(() => {
-    if (selectedSpace) {
-      loadSubpaths(selectedSpace);
-    }
+    if (selectedSpace) loadSubpaths(selectedSpace);
   });
 
-  const subpathEntries = $derived(Object.entries(formData.subpaths));
+  const subpathEntries = $derived(Object.entries(formData.subpaths ?? {}));
 
-  // Reactive declarations for selectedResourceType, selectedAction, newCondition, newRestrictedField, and jsonEditorContent
+  const selectClass =
+    "h-9 ps-3 pe-8 text-sm rounded-control border border-border bg-surface-2 text-text focus:border-primary focus:ring-1 focus:ring-primary disabled:opacity-60";
+  const inputClass =
+    "h-9 px-3 text-sm rounded-control border border-border bg-surface-2 text-text placeholder:text-text-faint focus:border-primary focus:ring-1 focus:ring-primary";
+
+  const sections: Array<{ id: Section; label: () => string }> = [
+    { id: "subpaths", label: () => $_("sections.subpaths") },
+    { id: "conditions", label: () => $_("sections.conditions") },
+    { id: "restrictedFields", label: () => $_("sections.restricted_fields") },
+    { id: "allowedFields", label: () => $_("sections.allowed_fields_values") },
+  ];
 </script>
 
-<div class="permission-card">
-  <h2 class="form-title text-xl font-semibold text-gray-900 mb-6">
-    Permission Settings
-  </h2>
-
-  <form bind:this={form}>
-    <div class="form-group mb-6">
-      <label
-        class="form-label text-sm font-medium text-gray-700 mb-2 block"
-        for="resourceTypeSelect">{$_("permissions.resource_types")}</label
-      >
-      <div class="input-group flex gap-3">
-        <select
-          class="form-select bg-gray-50 border-0 rounded-lg flex-1"
-          bind:value={selectedResourceType}
-          id="resourceTypeSelect"
+{#snippet tagList(items: string[], onRemove: (item: string) => void, tone: "primary" | "warning" | "danger" | "neutral" = "primary")}
+  {#if items.length > 0}
+    <ul class="flex flex-wrap gap-2 mt-3 list-none p-0 m-0">
+      {#each items as item (item)}
+        <li
+          class="inline-flex items-center gap-1 ps-3 pe-1 py-1 rounded-full text-xs font-medium
+ {tone === 'primary' ? 'bg-primary-soft text-primary' : tone === 'warning' ? 'bg-warning-soft text-warning' : tone === 'danger' ? 'bg-danger-soft text-danger' : 'bg-surface-3 text-text-muted'}"
         >
+          <span>{item}</span>
+          <button
+            type="button"
+            class="w-5 h-5 inline-flex items-center justify-center rounded-full hover:bg-surface-2/60 cursor-pointer"
+            aria-label="{$_('remove')} {item}"
+            onclick={() => onRemove(item)}
+          >
+            <CloseOutline size="xs" aria-hidden="true" />
+          </button>
+        </li>
+      {/each}
+    </ul>
+  {/if}
+{/snippet}
+
+<div>
+  <h2 class="text-lg font-semibold text-text mb-5">{$_("permission_form.title")}</h2>
+
+  <form bind:this={form} onsubmit={(e) => e.preventDefault()}>
+    <div class="mb-6">
+      <label class="block text-sm font-medium text-text mb-1.5" for="{uid}-resourceType">{$_("permissions.resource_types")}</label>
+      <div class="flex gap-2">
+        <select class="{selectClass} flex-1" bind:value={selectedResourceType} id="{uid}-resourceType">
           <option value="">{$_("options.select_resource_type")}</option>
           {#each resourceTypeOptions as option (option.value)}
             <option value={option.value}>{option.name}</option>
           {/each}
         </select>
-        <button
-          aria-label="Add resource type"
-          type="button"
-          class="btn btn-primary bg-indigo-500 hover:bg-indigo-600 text-white rounded-full w-10 h-10 flex items-center justify-center p-0"
-          onclick={addResourceType}>+</button
-        >
+        <IconButton label={$_("permission_form.add_resource_type")} variant="outline" onclick={() => { addTo("resource_types", selectedResourceType); selectedResourceType = ""; }} disabled={!selectedResourceType}>
+          <PlusOutline size="sm" />
+        </IconButton>
       </div>
-
-      {#if formData.resource_types.length > 0}
-        <div class="tag-container flex flex-wrap gap-2 mt-3">
-          {#each formData.resource_types as item (item)}
-            <div
-              class="tag bg-blue-50 text-blue-500 px-3 py-1.5 rounded-full text-xs font-medium flex items-center gap-2"
-            >
-              <span>{item}</span>
-              <button
-                aria-label={`Remove resource type ${item}`}
-                type="button"
-                class="tag-remove hover:text-blue-700"
-                onclick={() => removeResourceType(item)}>×</button
-              >
-            </div>
-          {/each}
-        </div>
-      {/if}
+      {@render tagList(formData.resource_types ?? [], (item) => removeFrom("resource_types", item), "primary")}
     </div>
 
-    <div class="form-group mb-8">
-      <label
-        class="form-label text-sm font-medium text-gray-700 mb-2 block"
-        for="actionSelect">{$_("permissions.actions")}</label
-      >
-      <div class="input-group flex gap-3">
-        <select
-          class="form-select bg-gray-50 border-0 rounded-lg flex-1"
-          bind:value={selectedAction}
-          id="actionSelect"
-        >
+    <div class="mb-6">
+      <label class="block text-sm font-medium text-text mb-1.5" for="{uid}-action">{$_("permissions.actions")}</label>
+      <div class="flex gap-2">
+        <select class="{selectClass} flex-1" bind:value={selectedAction} id="{uid}-action">
           <option value="">{$_("options.select_action")}</option>
           {#each requestTypeOptions as option (option.value)}
             <option value={option.value}>{option.name}</option>
           {/each}
         </select>
-        <button
-          aria-label="Add action"
-          type="button"
-          class="btn btn-primary bg-indigo-500 hover:bg-indigo-600 text-white rounded-full w-10 h-10 flex items-center justify-center p-0"
-          onclick={addAction}>+</button
-        >
+        <IconButton label={$_("permission_form.add_action")} variant="outline" onclick={() => { addTo("actions", selectedAction); selectedAction = ""; }} disabled={!selectedAction}>
+          <PlusOutline size="sm" />
+        </IconButton>
       </div>
-
-      {#if formData.actions.length > 0}
-        <div class="tag-container flex flex-wrap gap-2 mt-3">
-          {#each formData.actions as item (item)}
-            <div
-              class="tag bg-orange-50 text-orange-500 px-3 py-1.5 rounded-full text-xs font-medium flex items-center gap-2"
-            >
-              <span>{item}</span>
-              <button
-                aria-label={`Remove action ${item}`}
-                type="button"
-                class="tag-remove hover:text-orange-700"
-                onclick={() => removeAction(item)}>×</button
-              >
-            </div>
-          {/each}
-        </div>
-      {/if}
+      {@render tagList(formData.actions ?? [], (item) => removeFrom("actions", item), "warning")}
     </div>
 
-    <div
-      class="accordion border-0 border-t border-gray-100 rounded-none overflow-hidden mt-6 pt-2"
-    >
-      <div class="accordion-item border-b border-gray-100">
-        <div
-          class="accordion-header bg-transparent py-4 px-0 cursor-pointer flex justify-between items-center text-sm font-semibold text-gray-900"
-          role="button"
-          tabindex="0"
-          onclick={() => toggleAccordion("subpaths")}
-          onkeydown={(e) => {
-            if (e.key === "Enter") toggleAccordion("subpaths");
-          }}
-        >
-          <span>{$_("sections.subpaths")}</span>
-          <svg
-            class="w-4 h-4 text-gray-400 transition-transform duration-200"
-            class:rotate-180={accordionStates.subpaths}
-            fill="none"
-            stroke="currentColor"
-            viewBox="0 0 24 24"
-            ><path
-              stroke-linecap="round"
-              stroke-linejoin="round"
-              stroke-width="2"
-              d="M19 9l-7 7-7-7"
-            ></path></svg
-          >
-        </div>
-        {#if accordionStates.subpaths}
-          <div class="accordion-content bg-transparent px-0 pb-4 pt-2">
-            <div class="grid grid-cols-2 gap-4">
-              <div class="form-group mb-0">
-                <label
-                  class="form-label text-xs font-medium text-gray-500 mb-1"
-                  for="spaceSelect">{$_("fields.space")}</label
-                >
-                {#if loadingSpaces}
-                  <div
-                    class="loading-container flex items-center gap-2 text-sm text-gray-500"
-                  >
-                    <div class="spinner w-4 h-4 border-2"></div>
-                    <span>{$_("loading.spaces")}</span>
-                  </div>
-                {:else}
-                  <select
-                    class="form-select bg-gray-50 border-0 rounded-lg w-full"
-                    bind:value={selectedSpace}
-                    id="spaceSelect"
-                  >
-                    <option value="">{$_("options.select_space")}</option>
-                    {#each spaces as space (space.value)}
-                      <option value={space.value}>{space.name}</option>
-                    {/each}
-                  </select>
-                {/if}
-              </div>
-
-              <div class="form-group mb-0">
-                <label
-                  class="form-label text-xs font-medium text-gray-500 mb-1"
-                  for="subpathSelect">{$_("fields.subpath")}</label
-                >
-                {#if loadingSubpaths}
-                  <div
-                    class="loading-container flex items-center gap-2 text-sm text-gray-500"
-                  >
-                    <div class="spinner w-4 h-4 border-2"></div>
-                    <span>{$_("loading.subpaths")}</span>
-                  </div>
-                {:else}
-                  <div class="input-group flex gap-3">
-                    <select
-                      class="form-select bg-gray-50 border-0 rounded-lg flex-1"
-                      bind:value={selectedSubpath}
-                      disabled={!selectedSpace}
-                      id="subpathSelect"
-                    >
-                      <option value="">{$_("options.select_subpath")}</option>
-                      {#each subpaths as subpath (subpath.value)}
-                        <option value={subpath.value}>{subpath.name}</option>
-                      {/each}
-                    </select>
-                    <button
-                      aria-label={`Add subpath ${selectedSubpath} to space ${selectedSpace}`}
-                      type="button"
-                      class="btn btn-primary bg-indigo-500 hover:bg-indigo-600 text-white rounded-full w-10 h-10 flex items-center justify-center p-0"
-                      onclick={addSubpathToSpace}
-                      disabled={!selectedSpace || !selectedSubpath}>+</button
-                    >
-                  </div>
-                {/if}
-              </div>
-            </div>
-
-            {#if Object.keys(formData.subpaths).length > 0}
-              <div
-                class="subpath-display bg-gray-50 border border-gray-100 rounded-lg p-4 mt-4"
-              >
-                {#each subpathEntries as [space, paths] (space)}
-                  <div class="subpath-space mb-4 last:mb-0">
-                    <div
-                      class="subpath-space-title text-sm font-semibold text-blue-500 mb-2"
-                    >
-                      {space}
-                    </div>
-                    <div class="tag-container flex flex-wrap gap-2">
-                      {#each Array.isArray(paths) ? paths : [] as path (path)}
-                        <div
-                          class="tag bg-white text-blue-600 border border-blue-100 px-3 py-1 rounded-full text-xs font-medium flex items-center gap-2"
-                        >
-                          <span>{path}</span>
-                          <button
-                            aria-label={`Remove subpath ${path} from space ${space}`}
-                            type="button"
-                            class="tag-remove hover:text-blue-800"
-                            onclick={() => removeSubpath(space, path)}>×</button
-                          >
-                        </div>
-                      {/each}
-                    </div>
-                  </div>
-                {/each}
-              </div>
-            {/if}
-          </div>
-        {/if}
-      </div>
-
-      <div class="accordion-item border-b border-gray-100">
-        <div
-          class="accordion-header bg-transparent py-4 px-0 cursor-pointer flex justify-between items-center text-sm font-semibold text-gray-900"
-          role="button"
-          tabindex="0"
-          onclick={() => toggleAccordion("conditions")}
-          onkeydown={(e) => {
-            if (e.key === "Enter") toggleAccordion("conditions");
-          }}
-        >
-          <span>{$_("sections.conditions")}</span>
-          <svg
-            class="w-4 h-4 text-gray-400 transition-transform duration-200"
-            class:rotate-180={accordionStates.conditions}
-            fill="none"
-            stroke="currentColor"
-            viewBox="0 0 24 24"
-            ><path
-              stroke-linecap="round"
-              stroke-linejoin="round"
-              stroke-width="2"
-              d="M19 9l-7 7-7-7"
-            ></path></svg
-          >
-        </div>
-        {#if accordionStates.conditions}
-          <div class="accordion-content bg-transparent px-0 pb-4 pt-2">
-            <div class="input-group flex gap-3">
-              <select
-                class="form-select bg-gray-50 border-0 rounded-lg flex-1"
-                bind:value={newCondition}
-              >
-                <option value="">{$_("options.select_condition")}</option>
-                <option value="own">{$_("conditions.own")}</option>
-                <option value="is_active">{$_("conditions.is_active")}</option>
-              </select>
-              <button
-                aria-label={`Add condition ${newCondition}`}
-                type="button"
-                class="btn btn-primary bg-indigo-500 hover:bg-indigo-600 text-white rounded-full w-10 h-10 flex items-center justify-center p-0"
-                onclick={addCondition}>+</button
-              >
-            </div>
-
-            {#if formData.conditions.length > 0}
-              <div class="tag-container flex flex-wrap gap-2 mt-3">
-                {#each formData.conditions as item (item)}
-                  <div
-                    class="tag bg-amber-50 text-amber-600 px-3 py-1.5 rounded-full text-xs font-medium flex items-center gap-2"
-                  >
-                    <span>{item}</span>
-                    <button
-                      aria-label={`Remove condition ${item}`}
-                      type="button"
-                      class="tag-remove hover:text-amber-800"
-                      onclick={() => removeCondition(item)}>×</button
-                    >
-                  </div>
-                {/each}
-              </div>
-            {/if}
-          </div>
-        {/if}
-      </div>
-
-      <div class="accordion-item border-b border-gray-100">
-        <div
-          class="accordion-header bg-transparent py-4 px-0 cursor-pointer flex justify-between items-center text-sm font-semibold text-gray-900"
-          role="button"
-          tabindex="0"
-          onclick={() => toggleAccordion("restrictedFields")}
-          onkeydown={(e) => {
-            if (e.key === "Enter") toggleAccordion("restrictedFields");
-          }}
-        >
-          <span>{$_("sections.restricted_fields")}</span>
-          <svg
-            class="w-4 h-4 text-gray-400 transition-transform duration-200"
-            class:rotate-180={accordionStates.restrictedFields}
-            fill="none"
-            stroke="currentColor"
-            viewBox="0 0 24 24"
-            ><path
-              stroke-linecap="round"
-              stroke-linejoin="round"
-              stroke-width="2"
-              d="M19 9l-7 7-7-7"
-            ></path></svg
-          >
-        </div>
-        {#if accordionStates.restrictedFields}
-          <div class="accordion-content bg-transparent px-0 pb-4 pt-2">
-            <div class="input-group flex gap-3">
-              <label for="restrictedFieldInput" class="hidden" tabindex="-1"
-              ></label>
-              <input
-                type="text"
-                class="form-input bg-gray-50 border-0 rounded-lg flex-1 px-4 py-2"
-                placeholder={$_("placeholders.restricted_field")}
-                bind:value={newRestrictedField}
-                id="restrictedFieldInput"
-              />
-              <button
-                aria-label={`Add restricted field ${newRestrictedField}`}
-                type="button"
-                class="btn btn-primary bg-indigo-500 hover:bg-indigo-600 text-white rounded-full w-10 h-10 flex items-center justify-center p-0"
-                onclick={addRestrictedField}>+</button
-              >
-            </div>
-
-            {#if formData.restricted_fields.length > 0}
-              <div class="tag-container flex flex-wrap gap-2 mt-3">
-                {#each formData.restricted_fields as item (item)}
-                  <div
-                    class="tag bg-red-50 text-red-500 px-3 py-1.5 rounded-full text-xs font-medium flex items-center gap-2"
-                  >
-                    <span>{item}</span>
-                    <button
-                      aria-label={`Remove restricted field ${item}`}
-                      type="button"
-                      class="tag-remove hover:text-red-700"
-                      onclick={() => removeRestrictedField(item)}>×</button
-                    >
-                  </div>
-                {/each}
-              </div>
-            {/if}
-          </div>
-        {/if}
-      </div>
-
-      <div class="accordion-item">
-        <div
-          class="accordion-header bg-transparent py-4 px-0 cursor-pointer flex justify-between items-center text-sm font-semibold text-gray-900"
-          role="button"
-          tabindex="0"
-          onclick={() => toggleAccordion("allowedFields")}
-          onkeydown={(e) => {
-            if (e.key === "Enter") toggleAccordion("allowedFields");
-          }}
-        >
-          <span>{$_("sections.allowed_fields_values")}</span>
-          <svg
-            class="w-4 h-4 text-gray-400 transition-transform duration-200"
-            class:rotate-180={accordionStates.allowedFields}
-            fill="none"
-            stroke="currentColor"
-            viewBox="0 0 24 24"
-            ><path
-              stroke-linecap="round"
-              stroke-linejoin="round"
-              stroke-width="2"
-              d="M19 9l-7 7-7-7"
-            ></path></svg
-          >
-        </div>
-        {#if accordionStates.allowedFields}
-          <div class="accordion-content bg-transparent px-0 pb-4 pt-2">
-            <label
-              class="form-label text-xs font-medium text-gray-500 mb-1 block"
-              for="jsonEditor"
-              tabindex="-1">{$_("fields.json_editor")}</label
+    <div class="border-t border-border divide-y divide-border">
+      {#each sections as section (section.id)}
+        <div>
+          <h3 class="m-0">
+            <button
+              type="button"
+              class="w-full flex items-center justify-between gap-3 py-3 text-sm font-semibold text-text cursor-pointer"
+              aria-expanded={openSections[section.id]}
+              aria-controls="{uid}-{section.id}"
+              onclick={() => toggleSection(section.id)}
             >
-            <div class="helper-text text-xs text-gray-400 mb-2">
-              {$_("help.json_editor")}
+              <span>{section.label()}</span>
+              <ChevronDownOutline size="sm" class="text-text-faint transition-transform {openSections[section.id] ? 'rotate-180' : ''}" aria-hidden="true" />
+            </button>
+          </h3>
+
+          {#if openSections[section.id]}
+            <div id="{uid}-{section.id}" class="pb-4 pt-1">
+              {#if section.id === "subpaths"}
+                <div class="grid grid-cols-1 sm:grid-cols-2 gap-4">
+                  <div>
+                    <label class="block text-xs font-medium text-text-muted mb-1" for="{uid}-space">{$_("fields.space")}</label>
+                    {#if loadingSpaces}
+                      <div class="flex items-center gap-2 text-sm text-text-muted h-9">
+                        <span class="spinner spinner-xs" aria-hidden="true"></span>
+                        <span>{$_("loading.spaces")}</span>
+                      </div>
+                    {:else}
+                      <select class="{selectClass} w-full" bind:value={selectedSpace} id="{uid}-space">
+                        <option value="">{$_("options.select_space")}</option>
+                        {#each spaces as space (space)}
+                          <option value={space}>{space}</option>
+                        {/each}
+                      </select>
+                    {/if}
+                  </div>
+
+                  <div>
+                    <label class="block text-xs font-medium text-text-muted mb-1" for="{uid}-subpath">{$_("fields.subpath")}</label>
+                    {#if loadingSubpaths}
+                      <div class="flex items-center gap-2 text-sm text-text-muted h-9">
+                        <span class="spinner spinner-xs" aria-hidden="true"></span>
+                        <span>{$_("loading.subpaths")}</span>
+                      </div>
+                    {:else}
+                      <div class="flex gap-2">
+                        <select class="{selectClass} flex-1" bind:value={selectedSubpath} disabled={!selectedSpace} id="{uid}-subpath">
+                          <option value="">{$_("options.select_subpath")}</option>
+                          {#each subpaths as subpath (subpath)}
+                            <option value={subpath}>{subpath}</option>
+                          {/each}
+                        </select>
+                        <IconButton label={$_("permission_form.add_subpath")} variant="outline" onclick={addSubpathToSpace} disabled={!selectedSpace || !selectedSubpath}>
+                          <PlusOutline size="sm" />
+                        </IconButton>
+                      </div>
+                    {/if}
+                  </div>
+                </div>
+
+                {#if subpathEntries.length > 0}
+                  <div class="rounded-card border border-border bg-surface p-4 mt-4 space-y-3">
+                    {#each subpathEntries as [space, paths] (space)}
+                      <div>
+                        <div class="text-sm font-semibold text-primary mb-1">{space}</div>
+                        {@render tagList(Array.isArray(paths) ? paths : [], (path) => removeSubpath(space, path), "neutral")}
+                      </div>
+                    {/each}
+                  </div>
+                {/if}
+              {:else if section.id === "conditions"}
+                <div class="flex gap-2">
+                  <label for="{uid}-condition" class="sr-only">{$_("options.select_condition")}</label>
+                  <select class="{selectClass} flex-1" bind:value={newCondition} id="{uid}-condition">
+                    <option value="">{$_("options.select_condition")}</option>
+                    <option value="own">{$_("conditions.own")}</option>
+                    <option value="is_active">{$_("conditions.is_active")}</option>
+                  </select>
+                  <IconButton label={$_("permission_form.add_condition")} variant="outline" onclick={() => { addTo("conditions", newCondition); newCondition = ""; }} disabled={!newCondition}>
+                    <PlusOutline size="sm" />
+                  </IconButton>
+                </div>
+                {@render tagList(formData.conditions ?? [], (item) => removeFrom("conditions", item), "warning")}
+              {:else if section.id === "restrictedFields"}
+                <div class="flex gap-2">
+                  <label for="{uid}-restricted" class="sr-only">{$_("placeholders.restricted_field")}</label>
+                  <input
+                    type="text"
+                    class="{inputClass} flex-1"
+                    placeholder={$_("placeholders.restricted_field")}
+                    bind:value={newRestrictedField}
+                    id="{uid}-restricted"
+                    onkeydown={(e) => {
+                      if (e.key === "Enter") {
+                        e.preventDefault();
+                        addTo("restricted_fields", newRestrictedField);
+                        newRestrictedField = "";
+                      }
+                    }}
+                  />
+                  <IconButton label={$_("permission_form.add_restricted_field")} variant="outline" onclick={() => { addTo("restricted_fields", newRestrictedField); newRestrictedField = ""; }} disabled={!newRestrictedField.trim()}>
+                    <PlusOutline size="sm" />
+                  </IconButton>
+                </div>
+                {@render tagList(formData.restricted_fields ?? [], (item) => removeFrom("restricted_fields", item), "danger")}
+              {:else}
+                <label class="block text-xs font-medium text-text-muted mb-1" for="{uid}-json">{$_("fields.json_editor")}</label>
+                <p class="text-xs text-text-faint mb-2">{$_("help.json_editor")}</p>
+                <textarea
+                  class="w-full min-h-48 p-3 font-mono text-sm rounded-control border border-border bg-surface-2 text-text focus:border-primary focus:ring-1 focus:ring-primary"
+                  bind:value={jsonEditorContent}
+                  id="{uid}-json"
+                  spellcheck="false"
+                ></textarea>
+                <div class="flex justify-end mt-2">
+                  <button type="button" class="app-btn app-btn-secondary app-btn-sm" onclick={saveJsonEditor}>
+                    {$_("buttons.apply_changes")}
+                  </button>
+                </div>
+              {/if}
             </div>
-            <textarea
-              class="textarea w-full bg-gray-50 border-0 rounded-lg p-4 font-mono text-sm min-h-[200px]"
-              bind:value={jsonEditorContent}
-              id="jsonEditor"
-            ></textarea>
-            <div class="flex justify-end mt-3">
-              <button
-                aria-label="Apply changes to JSON editor"
-                type="button"
-                class="btn btn-secondary bg-gray-200 hover:bg-gray-300 text-gray-700 rounded-lg px-4 py-2"
-                onclick={saveJsonEditor}>{$_("buttons.apply_changes")}</button
-              >
-            </div>
-          </div>
-        {/if}
-      </div>
+          {/if}
+        </div>
+      {/each}
     </div>
   </form>
 </div>
-
-<style>
-  .spinner {
-    width: 20px;
-    height: 20px;
-    border: 2px solid #f3f4f6;
-    border-top: 2px solid #3b82f6;
-    border-radius: 50%;
-    animation: spin 1s linear infinite;
-  }
-
-</style>

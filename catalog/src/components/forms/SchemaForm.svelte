@@ -426,7 +426,7 @@
                             <div class="form-grid">
                               <div class="form-group">
                                 <label for={`items-type-${index}`}
-                                  >Items Type</label
+                                  >{$_("schema_editor.items_type")}</label
                                 >
                                 <select
                                   id={`items-type-${index}`}
@@ -679,7 +679,7 @@
   .schema-title {
     font-size: 1.5rem;
     font-weight: 600;
-    color: #111827;
+    color: var(--color-text);
     margin: 0 0 1.5rem 0;
     padding: 1.5rem 2rem 0;
   }
@@ -714,14 +714,14 @@
   .form-group label {
     font-size: 0.875rem;
     font-weight: 500;
-    color: #374151;
+    color: var(--color-text);
     margin: 0;
   }
 
   .form-group input,
   .form-group select {
     padding: 0.75rem;
-    border: 1px solid #d1d5db;
+    border: 1px solid var(--color-border-strong);
     border-radius: 8px;
     font-size: 0.875rem;
     transition:
@@ -733,7 +733,7 @@
   .form-group input:focus,
   .form-group select:focus {
     outline: none;
-    border-color: #3b82f6;
+    border-color: var(--color-primary);
     box-shadow: 0 0 0 3px rgba(59, 130, 246, 0.1);
   }
 
@@ -751,7 +751,7 @@
 
   /* Properties Section */
   .properties-section {
-    border: 1px solid #e5e7eb;
+    border: 1px solid var(--color-border);
     border-radius: 12px;
     overflow: hidden;
   }
@@ -761,14 +761,14 @@
     justify-content: space-between;
     align-items: center;
     padding: 1.5rem;
-    background: linear-gradient(135deg, #fafafa 0%, #ffffff 100%);
-    border-bottom: 1px solid #f3f4f6;
+    background: linear-gradient(135deg, var(--color-surface-2) 0%, var(--color-surface-2) 100%);
+    border-bottom: 1px solid var(--color-surface-3);
   }
 
   .section-header h3 {
     font-size: 1.125rem;
     font-weight: 600;
-    color: #111827;
+    color: var(--color-text);
     margin: 0;
   }
 
@@ -792,40 +792,40 @@
   }
 
   .btn-primary {
-    background: #3b82f6;
+    background: var(--color-primary);
     color: white;
   }
 
   .btn-primary:hover {
-    background: #2563eb;
+    background: var(--color-primary-hover);
     transform: translateY(-1px);
   }
 
   .btn-secondary {
-    background: #6b7280;
+    background: var(--color-text-muted);
     color: white;
   }
 
   .btn-secondary:hover {
-    background: #4b5563;
+    background: var(--color-text-muted);
   }
 
   .btn-danger {
-    background: #ef4444;
+    background: var(--color-danger);
     color: white;
   }
 
   .btn-danger:hover {
-    background: #dc2626;
+    background: var(--color-danger);
   }
 
   /* Accordion */
   .accordion {
-    border-top: 1px solid #f3f4f6;
+    border-top: 1px solid var(--color-surface-3);
   }
 
   .accordion-item {
-    border-bottom: 1px solid #f3f4f6;
+    border-bottom: 1px solid var(--color-surface-3);
   }
 
   .accordion-header {
@@ -839,11 +839,11 @@
     cursor: pointer;
     transition: background-color 0.2s ease;
     font-size: inherit;
-    text-align: left;
+    text-align: start;
   }
 
   .accordion-header:hover {
-    background: #f9fafb;
+    background: var(--color-surface);
   }
 
   .property-info {
@@ -854,7 +854,7 @@
 
   .property-name {
     font-weight: 500;
-    color: #111827;
+    color: var(--color-text);
   }
 
   .badge {
@@ -865,23 +865,23 @@
   }
 
   .badge-type {
-    background-color: #dbeafe;
-    color: #1e40af;
+    background-color: var(--color-info-soft);
+    color: var(--color-info);
   }
 
   .badge-required {
-    background-color: #fee2e2;
-    color: #dc2626;
+    background-color: var(--color-danger-soft);
+    color: var(--color-danger);
   }
 
   .chevron {
     transition: transform 0.2s ease;
-    color: #6b7280;
+    color: var(--color-text-muted);
   }
 
   .accordion-content {
-    background: #fafafa;
-    border-top: 1px solid #e5e7eb;
+    background: var(--color-surface-2);
+    border-top: 1px solid var(--color-border);
   }
 
   .property-form {
@@ -893,7 +893,7 @@
 
   /* Type Options */
   .type-options {
-    border: 1px solid #e5e7eb;
+    border: 1px solid var(--color-border);
     border-radius: 8px;
     padding: 1rem;
     background: white;
@@ -902,17 +902,17 @@
   .type-options h4 {
     font-size: 1rem;
     font-weight: 600;
-    color: #374151;
+    color: var(--color-text);
     margin: 0 0 1rem 0;
   }
 
   /* Array and Object Sections */
   .array-section,
   .object-section {
-    border: 1px solid #d1d5db;
+    border: 1px solid var(--color-border-strong);
     border-radius: 8px;
     padding: 1rem;
-    background: #f9fafb;
+    background: var(--color-surface);
   }
 
   .array-header,
@@ -922,7 +922,7 @@
     align-items: center;
     margin-bottom: 1rem;
     font-weight: 500;
-    color: #374151;
+    color: var(--color-text);
   }
 
   .array-content {
@@ -933,7 +933,7 @@
 
   .nested-section {
     margin-top: 1rem;
-    border: 1px solid #e5e7eb;
+    border: 1px solid var(--color-border);
     border-radius: 6px;
     padding: 1rem;
     background: white;
@@ -945,7 +945,7 @@
     align-items: center;
     margin-bottom: 1rem;
     font-weight: 500;
-    color: #374151;
+    color: var(--color-text);
   }
 
   .nested-items {
@@ -955,10 +955,10 @@
   }
 
   .nested-item {
-    border: 1px solid #e5e7eb;
+    border: 1px solid var(--color-border);
     border-radius: 6px;
     padding: 1rem;
-    background: #fefefe;
+    background: var(--color-surface-2);
   }
 
   .item-actions {
@@ -972,7 +972,7 @@
     display: flex;
     justify-content: space-between;
     align-items: center;
-    border-top: 1px solid #e5e7eb;
+    border-top: 1px solid var(--color-border);
     padding-top: 1rem;
   }
 
@@ -989,7 +989,7 @@
   .checkbox-group label {
     margin: 0;
     font-size: 0.875rem;
-    color: #374151;
+    color: var(--color-text);
     cursor: pointer;
   }
 
@@ -1002,7 +1002,7 @@
   .empty-state {
     text-align: center;
     padding: 3rem 1.5rem;
-    color: #6b7280;
+    color: var(--color-text-muted);
   }
 
   .empty-state p {

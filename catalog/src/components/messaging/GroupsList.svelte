@@ -68,7 +68,7 @@
         >
           <div class="group-avatar">
             {#if group.avatar}
-              <img src={group.avatar} alt={group.name} />
+              <img loading="lazy" decoding="async" src={group.avatar} alt={group.name} />
             {:else}
               <div class="avatar-placeholder group">
                 {group.name.charAt(0).toUpperCase()}
@@ -101,7 +101,7 @@
 
   .groups-header {
     padding: 1rem;
-    border-bottom: 1px solid #e2e8f0;
+    border-bottom: 1px solid var(--color-border);
     display: flex;
     justify-content: space-between;
     align-items: center;
@@ -111,7 +111,7 @@
   .groups-header h3 {
     margin: 0;
     font-size: 1rem;
-    color: #374151;
+    color: var(--color-text);
   }
 
   .groups-header-actions {
@@ -120,7 +120,7 @@
   }
 
   .create-group-btn {
-    background: #10b981;
+    background: var(--color-success);
     color: white;
     border: none;
     padding: 0.5rem 0.75rem;
@@ -132,12 +132,12 @@
   }
 
   .create-group-btn:hover {
-    background: #059669;
+    background: var(--color-success);
   }
 
   .refresh-btn {
     background: transparent;
-    border: 1px solid #e2e8f0;
+    border: 1px solid var(--color-border);
     padding: 0.5rem;
     border-radius: 0.25rem;
     cursor: pointer;
@@ -146,7 +146,7 @@
   }
 
   .refresh-btn:hover {
-    background: #f8fafc;
+    background: var(--color-surface);
   }
 
   .refresh-btn:disabled {
@@ -157,14 +157,14 @@
   .groups-list {
     flex: 1;
     overflow-y: auto;
-    background: #f8fafc;
+    background: var(--color-surface);
   }
 
   .group-item {
     display: flex;
     align-items: center;
     padding: 1rem;
-    border-bottom: 1px solid #e2e8f0;
+    border-bottom: 1px solid var(--color-border);
     cursor: pointer;
     transition: background-color 0.2s;
     background: white;
@@ -172,16 +172,16 @@
   }
 
   .group-item:hover {
-    background: #f8fafc;
+    background: var(--color-surface);
   }
 
   .group-item.selected {
-    background: #eff6ff;
-    border-left: 3px solid #3b82f6;
+    background: var(--color-info-soft);
+    border-inline-start: 3px solid var(--color-primary);
   }
 
   .group-avatar {
-    margin-right: 1rem;
+    margin-inline-end: 1rem;
   }
 
   .group-avatar img,
@@ -193,7 +193,7 @@
   }
 
   .avatar-placeholder.group {
-    background: linear-gradient(135deg, #f093fb 0%, #f5576c 100%);
+    background: var(--color-primary);
     color: white;
     display: flex;
     align-items: center;
@@ -209,13 +209,13 @@
 
   .group-name {
     font-weight: 600;
-    color: #1f2937;
+    color: var(--color-text);
     margin-bottom: 0.25rem;
   }
 
   .group-description {
     font-size: 0.875rem;
-    color: #6b7280;
+    color: var(--color-text-muted);
     margin-bottom: 0.25rem;
     white-space: nowrap;
     overflow: hidden;
@@ -224,14 +224,14 @@
 
   .group-participants {
     font-size: 0.75rem;
-    color: #9ca3af;
+    color: var(--color-text-faint);
   }
 
   .loading,
   .no-groups {
     padding: 2rem;
     text-align: center;
-    color: #6b7280;
+    color: var(--color-text-muted);
   }
 
   .no-groups-message {

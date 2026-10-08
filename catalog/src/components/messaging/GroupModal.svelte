@@ -209,21 +209,21 @@
     margin: 0 0 0.5rem 0;
     font-size: 1rem;
     font-weight: 600;
-    color: #374151;
+    color: var(--color-text);
   }
 
   label {
     display: block;
     margin-bottom: 0.5rem;
     font-weight: 500;
-    color: #374151;
+    color: var(--color-text);
   }
 
   input,
   textarea {
     width: 100%;
     padding: 0.75rem;
-    border: 1px solid #d1d5db;
+    border: 1px solid var(--color-border-strong);
     border-radius: 0.5rem;
     font-size: 1rem;
     transition: border-color 0.2s;
@@ -232,7 +232,7 @@
   input:focus,
   textarea:focus {
     outline: none;
-    border-color: #3b82f6;
+    border-color: var(--color-primary);
     box-shadow: 0 0 0 3px rgba(59, 130, 246, 0.1);
   }
 
@@ -240,7 +240,7 @@
   .available-users-list {
     max-height: 200px;
     overflow-y: auto;
-    border: 1px solid #e2e8f0;
+    border: 1px solid var(--color-border);
     border-radius: 0.5rem;
     padding: 0.5rem;
   }
@@ -257,22 +257,22 @@
 
   .participant-item:hover,
   .available-user-item:hover {
-    background: #f8fafc;
+    background: var(--color-surface);
   }
 
   .participant-item.current-user {
-    background: #eff6ff;
-    border: 1px solid #dbeafe;
+    background: var(--color-info-soft);
+    border: 1px solid var(--color-info-soft);
   }
 
   .participant-name,
   .user-name {
     font-weight: 500;
-    color: #374151;
+    color: var(--color-text);
   }
 
   .admin-badge {
-    background: #10b981;
+    background: var(--color-success);
     color: white;
     padding: 0.125rem 0.5rem;
     border-radius: 1rem;
@@ -281,7 +281,7 @@
   }
 
   .remove-participant-btn {
-    background: #ef4444;
+    background: var(--color-danger);
     color: white;
     border: none;
     padding: 0.25rem 0.5rem;
@@ -292,11 +292,11 @@
   }
 
   .remove-participant-btn:hover {
-    background: #dc2626;
+    background: var(--color-danger);
   }
 
   .add-user-btn {
-    background: #10b981;
+    background: var(--color-success);
     color: white;
     border: none;
     padding: 0.25rem 0.5rem;
@@ -307,7 +307,7 @@
   }
 
   .add-user-btn:hover {
-    background: #059669;
+    background: var(--color-success);
   }
 
   .selected-participants {
@@ -320,14 +320,14 @@
     display: flex;
     align-items: center;
     gap: 0.5rem;
-    background: #eff6ff;
+    background: var(--color-info-soft);
     padding: 0.25rem 0.5rem;
     border-radius: 1rem;
     font-size: 0.875rem;
   }
 
   .remove-btn {
-    background: #ef4444;
+    background: var(--color-danger);
     color: white;
     border: none;
     border-radius: 50%;
@@ -341,7 +341,7 @@
   }
 
   .no-users-message {
-    color: #6b7280;
+    color: var(--color-text-muted);
     font-style: italic;
     text-align: center;
     padding: 1rem;
@@ -360,27 +360,27 @@
   .cancel-btn {
     background: transparent;
     border: 1px solid transparent;
-    color: #4b5563;
+    color: var(--color-text-muted);
   }
 
   .cancel-btn:hover {
-    background: #f3f4f6;
-    color: #111827;
+    background: var(--color-surface-3);
+    color: var(--color-text);
   }
 
   .save-btn {
-    background: #4f46e5;
+    background: var(--color-primary);
     color: white;
     border: none;
     box-shadow: 0 2px 8px rgba(79, 70, 229, 0.2);
   }
 
   .save-btn:hover:not(:disabled) {
-    background: #4338ca;
+    background: var(--color-primary-hover);
   }
 
   .save-btn:disabled {
-    background: #9ca3af;
+    background: var(--color-text-faint);
     box-shadow: none;
     cursor: not-allowed;
   }

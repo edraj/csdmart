@@ -2,7 +2,16 @@
   import type { Snippet } from "svelte";
   import { _, locale } from "@/i18n";
   import { formatNumber } from "@/lib/helpers";
-  import SkeletonBlock from "@/components/SkeletonBlock.svelte";
+  import { ELLIPSIS, pageRange, pageWindow } from "@/lib/pagination";
+  import { ChevronLeftOutline, ChevronRightOutline } from "flowbite-svelte-icons";
+  import EmptyState from "@/components/ui/EmptyState.svelte";
+  import LoadingState from "@/components/ui/LoadingState.svelte";
+
+  // The one list table: sticky sentence-case header, keyboard-focusable rows
+  // (a real link or button in the first cell, the whole row clickable with the
+  // mouse), tabular numerals, selection with bulk actions, and a pager with
+  // named prev/next and aria-current. A refresh overlays the rows instead of
+  // blanking them.
 
   interface IndexAttribute {
     key: string;
@@ -38,7 +47,11 @@
     selectedItems?: Set<string>;
     onSelectAll?: (checked: boolean) => void;
     onSelectItem?: (id: string) => void;
-    onRowClick?: (item: any, event: MouseEvent) => void;
+    onRowClick?: (item: any, event: MouseEvent | KeyboardEvent) => void;
+    /** When given, the row's primary control is a real link to this URL (withBase applied by the caller). */
+    rowHref?: (item: any) => string | undefined;
+    /** Accessible name of the row's link/button; defaults to the first attribute's value or the id. */
+    rowLabel?: (item: any) => string;
     loading?: boolean;
     emptyMessage?: string;
     currentPage?: number;
@@ -48,6 +61,7 @@
     onPageChange?: (page: number) => void;
     onItemsPerPageChange?: (count: number) => void;
     itemsPerPageOptions?: number[];
+    /** Kept for existing callers; direction now follows <html dir>. */
     rtl?: boolean;
     name?: string;
     sortKey?: string | null;
@@ -68,6 +82,8 @@
     onSelectAll,
     onSelectItem,
     onRowClick,
+    rowHref,
+    rowLabel,
     loading = false,
     emptyMessage,
     currentPage = 1,
@@ -77,7 +93,6 @@
     onPageChange,
     onItemsPerPageChange,
     itemsPerPageOptions = [10, 25, 50, 100],
-    rtl = false,
     name,
     sortKey = null,
     sortDirection = "asc",
@@ -89,6 +104,8 @@
     emptyState,
   }: Props = $props();
 
+  const uid = $props.id();
+
   let internalSortKey = $state<string | null>(null);
   let internalSortDirection = $state<SortDirection>("asc");
 
@@ -97,48 +114,33 @@
     internalSortDirection = sortDirection;
   });
 
-  const defaultIndexAttributes: IndexAttribute[] = [
-    { key: "shortname", name: "Shortname" },
-    { key: "is_active", name: "Status" },
-    { key: "created_at", name: "Created At" },
-    { key: "updated_at", name: "Updated At" },
-  ];
+  const defaultIndexAttributes = $derived<IndexAttribute[]>([
+    { key: "shortname", name: $_("data_table.columns.shortname") },
+    { key: "is_active", name: $_("data_table.columns.status") },
+    { key: "created_at", name: $_("data_table.columns.created_at") },
+    { key: "updated_at", name: $_("data_table.columns.updated_at") },
+  ]);
 
   const effectiveIndexAttributes = $derived(
-    indexAttributes &&
-      indexAttributes.length > 0 &&
-      indexAttributes.some((attr) => attr && Object.keys(attr).length > 0)
+    indexAttributes && indexAttributes.length > 0 && indexAttributes.some((attr) => attr && Object.keys(attr).length > 0)
       ? indexAttributes
       : defaultIndexAttributes,
   );
 
-  const allSelected = $derived(
-    selectedItems.size > 0 && selectedItems.size === items.length,
-  );
-
-  const someSelected = $derived(
-    selectedItems.size > 0 && selectedItems.size < items.length,
-  );
-
+  const allSelected = $derived(selectedItems.size > 0 && selectedItems.size === items.length);
+  const someSelected = $derived(selectedItems.size > 0 && selectedItems.size < items.length);
   const showPagination = $derived(totalPages > 1);
+  const interactiveRows = $derived(!!onRowClick || !!rowHref);
 
-  const actionsLabel = $derived(
-    name
-      ? name in { en: 1, ar: 1, ku: 1 }
-        ? ($_(name) || "")
-        : name
-      : ($_("actions.name") || ""),
-  );
+  const actionsLabel = $derived(name ? (name in { en: 1, ar: 1, ku: 1 } ? $_(name) || "" : name) : $_("actions.name") || "");
 
   function getAttributeName(attr: IndexAttribute): string {
     if (typeof attr.name === "string") {
-      if (attr.name in { en: 1, ar: 1, ku: 1 }) {
-        return $_(attr.name + ".name") || "";
-      }
+      if (attr.name in { en: 1, ar: 1, ku: 1 }) return $_(attr.name + ".name") || "";
       return attr.name;
     }
     if (typeof attr.name === "object" && attr.name !== null) {
-      return attr.name.en || attr.name.ar || attr.name.ku || "";
+      return attr.name[$locale ?? ""] || attr.name.en || attr.name.ar || attr.name.ku || "";
     }
     return "";
   }
@@ -147,68 +149,47 @@
     return item.shortname || item.id || String(items.indexOf(item));
   }
 
-  function handleSelectAll(e: Event) {
-    const checked = (e.target as HTMLInputElement).checked;
-    onSelectAll?.(checked);
+  function labelOf(item: any): string {
+    if (rowLabel) return rowLabel(item);
+    const first = effectiveIndexAttributes[0];
+    const value = first ? getNestedValue(item, first.key) : null;
+    return value == null || typeof value === "object" ? getItemId(item) : String(value);
   }
 
-  function handleSelectItem(id: string) {
-    onSelectItem?.(id);
+  function handleSelectAll(e: Event) {
+    onSelectAll?.((e.target as HTMLInputElement).checked);
   }
 
   function handleRowClick(item: any, event: MouseEvent) {
+    // Clicks on the row's own controls (checkbox, actions, the primary link)
+    // handle themselves; a click on the rest of the row opens the item.
+    const target = event.target as HTMLElement;
+    if (target.closest("a, button, input, select, textarea, [data-row-stop]")) return;
     onRowClick?.(item, event);
   }
 
   function goToPage(page: number) {
-    if (page >= 1 && page <= totalPages) {
-      onPageChange?.(page);
-    }
-  }
-
-  function nextPage() {
-    if (currentPage < totalPages) {
-      onPageChange?.(currentPage + 1);
-    }
-  }
-
-  function previousPage() {
-    if (currentPage > 1) {
-      onPageChange?.(currentPage - 1);
-    }
+    if (page >= 1 && page <= totalPages && page !== currentPage) onPageChange?.(page);
   }
 
   function handleItemsPerPageChange(e: Event) {
-    const value = parseInt((e.target as HTMLSelectElement).value, 10);
-    onItemsPerPageChange?.(value);
+    onItemsPerPageChange?.(parseInt((e.target as HTMLSelectElement).value, 10));
   }
 
   function handleSortClick(attr: IndexAttribute) {
     if (!attr.sortable) return;
-    const nextDir: SortDirection =
-      internalSortKey === attr.key && internalSortDirection === "asc"
-        ? "desc"
-        : "asc";
+    const nextDir: SortDirection = internalSortKey === attr.key && internalSortDirection === "asc" ? "desc" : "asc";
     internalSortKey = attr.key;
     internalSortDirection = nextDir;
     onSortChange?.(attr.key, nextDir);
-  }
-
-  function handleSortKeydown(e: KeyboardEvent, attr: IndexAttribute) {
-    if (!attr.sortable) return;
-    if (e.key === "Enter" || e.key === " ") {
-      e.preventDefault();
-      handleSortClick(attr);
-    }
   }
 
   function getNestedValue(obj: any, key: string): any {
     if (obj == null) return null;
     if (key in obj) return obj[key];
     if (obj.attributes && key in obj.attributes) return obj.attributes[key];
-    const parts = key.split(".");
     let cur: any = obj;
-    for (const part of parts) {
+    for (const part of key.split(".")) {
       if (cur == null) return null;
       cur = cur[part];
     }
@@ -228,555 +209,288 @@
     return sa.localeCompare(sb, undefined, { sensitivity: "base" });
   }
 
+  // Client-side sort only when the page does not sort on the server.
   const displayItems = $derived.by(() => {
     if (!internalSortKey || onSortChange) return items;
     const key = internalSortKey;
     const dir = internalSortDirection === "desc" ? -1 : 1;
-    return [...items].sort(
-      (a, b) => compareValues(getNestedValue(a, key), getNestedValue(b, key)) * dir,
-    );
+    return [...items].sort((a, b) => compareValues(getNestedValue(a, key), getNestedValue(b, key)) * dir);
   });
 
-  const paginationStart = $derived(
-    totalItems === 0 ? 0 : (currentPage - 1) * itemsPerPage + 1,
-  );
-
-  const paginationEnd = $derived(
-    Math.min(currentPage * itemsPerPage, totalItems),
-  );
+  const range = $derived(pageRange(currentPage, itemsPerPage, totalItems));
+  const pages = $derived(pageWindow(currentPage, totalPages));
+  const num = (n: number) => formatNumber(n, $locale || "en");
 </script>
 
-<div class="data-table-container" class:rtl>
+<div class="w-full">
   {#if selectable && selectedItems.size > 0 && bulkActions}
-    <div class="bulk-actions-bar" class:rtl>
-      <div class="bulk-actions-content">
-        <div class="bulk-actions-info">
-          <span class="bulk-actions-count">
-            {selectedItems.size}
-            {$_("admin_content.bulk_actions.items_selected")}
-          </span>
-        </div>
-        <div class="bulk-actions-buttons">
-          {@render bulkActions({ selectedCount: selectedItems.size })}
-        </div>
+    <div class="flex flex-wrap items-center justify-between gap-3 mb-3 px-4 py-3 rounded-card border border-primary/40 bg-primary-soft" role="region" aria-label={$_("data_table.selection")}>
+      <span class="text-sm font-semibold text-text tabular-nums">
+        {num(selectedItems.size)}
+        {$_("admin_content.bulk_actions.items_selected")}
+      </span>
+      <div class="flex flex-wrap items-center gap-2">
+        {@render bulkActions({ selectedCount: selectedItems.size })}
       </div>
     </div>
   {/if}
 
-  <div class="data-table-card">
-    {#if loading}
+  <div class="rounded-card border border-border bg-surface-2 shadow-card overflow-hidden">
+    {#if loading && items.length === 0}
       {#if loadingState}
         {@render loadingState({ items })}
       {:else}
-        <div class="skeleton-rows" aria-busy="true" aria-label={$_("loading") || "Loading..."}>
-          {#each Array(5) as _skeletonRow, i (i)}
-            <div class="skeleton-row">
-              <SkeletonBlock width="28%" height="0.875rem" />
-              <SkeletonBlock width="18%" height="0.875rem" />
-              <SkeletonBlock width="22%" height="0.875rem" />
-              <SkeletonBlock width="16%" height="0.875rem" />
-              <SkeletonBlock width="10%" height="1.25rem" radius="var(--radius-full)" />
-            </div>
-          {/each}
+        <div class="p-5">
+          <LoadingState variant="skeleton" rows={5} />
         </div>
       {/if}
     {:else if items.length === 0}
       {#if emptyState}
         {@render emptyState({ items })}
       {:else}
-        <div class="empty-state">
-          <div class="empty-state-icon">
-            <svg
-              class="w-8 h-8"
-              fill="none"
-              stroke="currentColor"
-              viewBox="0 0 24 24"
-            >
-              <path
-                stroke-linecap="round"
-                stroke-linejoin="round"
-                stroke-width="2"
-                d="M9 13h6m-3-3v6m5 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z"
-              />
-            </svg>
-          </div>
-          <h3 class="empty-state-title">
-            {$_("admin_content.empty.title") || "No items found"}
-          </h3>
-          <p class="empty-state-description">
-            {emptyMessage || $_("admin_content.empty.description") || "There are no items to display."}
-          </p>
-        </div>
+        <EmptyState
+          class="border-0 rounded-none"
+          title={$_("admin_content.empty.title")}
+          hint={emptyMessage || $_("admin_content.empty.description")}
+        />
       {/if}
     {:else}
-      <div class="overflow-x-auto">
-        <table class="w-full text-left border-collapse">
-          <thead>
-            <tr class="border-b border-gray-100">
-              {#if selectable}
-                <th class="px-4 py-4 w-12">
-                  <input
-                    type="checkbox"
-                    checked={allSelected}
-                    indeterminate={someSelected}
-                    onchange={handleSelectAll}
-                    class="w-4 h-4 text-indigo-600 border-gray-300 rounded focus:ring-indigo-500 cursor-pointer"
-                    aria-label={$_("admin_content.bulk_actions.select_all")}
-                  />
-                </th>
-              {/if}
-              {#each effectiveIndexAttributes as attr (attr.key)}
-                <th
-                  class="px-6 py-4 text-xs font-semibold text-gray-500 uppercase tracking-wider"
-                  aria-sort={attr.sortable && internalSortKey === attr.key
-                    ? internalSortDirection === "asc"
-                      ? "ascending"
-                      : "descending"
-                    : attr.sortable
-                      ? "none"
-                      : undefined}
-                >
-                  {#if attr.sortable}
-                    <button
-                      type="button"
-                      class="th-sort-btn"
-                      class:is-active={internalSortKey === attr.key}
-                      onclick={() => handleSortClick(attr)}
-                      onkeydown={(e) => handleSortKeydown(e, attr)}
-                    >
-                      <span>{getAttributeName(attr)}</span>
-                      <span class="th-sort-indicator" aria-hidden="true">
-                        {#if internalSortKey === attr.key}
-                          {#if internalSortDirection === "asc"}
-                            <svg viewBox="0 0 12 12" width="10" height="10"><path d="M6 3l4 5H2z" fill="currentColor"/></svg>
-                          {:else}
-                            <svg viewBox="0 0 12 12" width="10" height="10"><path d="M6 9l4-5H2z" fill="currentColor"/></svg>
-                          {/if}
-                        {:else}
-                          <svg viewBox="0 0 12 12" width="10" height="10" opacity="0.35"><path d="M6 3l3 4H3zM6 9l3-4H3z" fill="currentColor"/></svg>
-                        {/if}
-                      </span>
-                    </button>
-                  {:else}
-                    {getAttributeName(attr)}
-                  {/if}
-                </th>
-              {/each}
-              <th class="px-6 py-4 text-right text-xs font-semibold text-gray-500 uppercase tracking-wider">
-                {actionsLabel}
-              </th>
-            </tr>
-          </thead>
-          <tbody class="divide-y divide-gray-100 bg-white">
-            {#each displayItems as item, index (item.shortname ?? item.id ?? index)}
-              {@const itemId = getItemId(item)}
-              <tr
-                class="data-table-row hover:bg-yellow-50/70 transition-colors group cursor-pointer {selectable && selectedItems.has(itemId) ? 'bg-indigo-50/30' : ''}"
-                onclick={(e) => handleRowClick(item, e)}
-              >
+      <LoadingState variant="overlay" {loading}>
+        <div class="overflow-auto max-h-[70vh]">
+          <table class="w-full text-sm text-start border-collapse tabular-nums">
+            <thead class="sticky top-0 z-10 bg-surface-3 text-xs text-text-muted">
+              <tr>
                 {#if selectable}
-                  <td class="px-3 py-1.5" onclick={(e) => e.stopPropagation()}>
+                  <th scope="col" class="px-4 py-3 w-12">
                     <input
                       type="checkbox"
-                      checked={selectedItems.has(itemId)}
-                      onchange={() => handleSelectItem(itemId)}
-                      class="w-4 h-4 text-indigo-600 border-gray-300 rounded focus:ring-indigo-500 cursor-pointer"
-                      aria-label={$_("admin_content.bulk_actions.select_item", { values: { name: itemId } })}
+                      checked={allSelected}
+                      indeterminate={someSelected}
+                      onchange={handleSelectAll}
+                      class="w-4 h-4 accent-primary rounded cursor-pointer"
+                      aria-label={$_("admin_content.bulk_actions.select_all")}
                     />
-                  </td>
+                  </th>
                 {/if}
                 {#each effectiveIndexAttributes as attr (attr.key)}
-                  <td class="px-4 py-1.5">
-                    {@render cell({ item, attr, index })}
-                  </td>
-                {/each}
-                <td class="px-4 py-1.5">
-                  <div class="flex items-center justify-end gap-4">
-                    {@render actions({ item, index })}
-                  </div>
-                </td>
-              </tr>
-            {/each}
-          </tbody>
-        </table>
-      </div>
-
-      {#if showPagination || items.length > 0}
-        <div class="data-table-pagination">
-          <div class="flex items-center justify-between gap-4">
-            <div class="flex items-center gap-2">
-              <span class="text-sm text-gray-500">
-                {$_("admin_content.pagination.items_per_page") || "Items per page"}
-              </span>
-              <select
-                value={itemsPerPage}
-                onchange={handleItemsPerPageChange}
-                class="bg-white border border-gray-200 text-sm font-medium text-gray-700 rounded-lg pl-3 pr-8 py-1.5 focus:ring-2 focus:ring-indigo-500 focus:border-indigo-500 cursor-pointer"
-              >
-                {#each itemsPerPageOptions as option (option)}
-                  <option value={option}>{option}</option>
-                {/each}
-              </select>
-            </div>
-
-            {#if showPagination}
-              <div class="text-sm text-gray-500 hidden sm:block">
-                {$_("admin_content.pagination.showing", {
-                  values: {
-                    start: formatNumber(paginationStart, $locale || "en"),
-                    end: formatNumber(paginationEnd, $locale || "en"),
-                    total: formatNumber(totalItems, $locale || "en"),
-                  },
-                })}
-              </div>
-
-              <div class="flex items-center gap-2 pagination-controls">
-                <button
-                  onclick={previousPage}
-                  disabled={currentPage === 1}
-                  class="pagination-btn"
-                  aria-label={$_("admin_content.pagination.previous")}
-                >
-                  <svg
-                    class="w-4 h-4"
-                    fill="none"
-                    stroke="currentColor"
-                    viewBox="0 0 24 24"
-                    aria-hidden="true"
+                  <th
+                    scope="col"
+                    class="px-4 py-3 text-start font-semibold whitespace-nowrap"
+                    aria-sort={attr.sortable && internalSortKey === attr.key
+                      ? internalSortDirection === "asc"
+                        ? "ascending"
+                        : "descending"
+                      : attr.sortable
+                        ? "none"
+                        : undefined}
                   >
-                    <path
-                      stroke-linecap="round"
-                      stroke-linejoin="round"
-                      stroke-width="2"
-                      d="M15 19l-7-7 7-7"
-                    />
-                  </svg>
-                </button>
-
-                <span class="pagination-compact" aria-hidden="true">
-                  {formatNumber(currentPage, $locale || "en")} / {formatNumber(totalPages, $locale || "en")}
-                </span>
-
-                <div class="flex items-center gap-1 pagination-pages">
-                  {#if totalPages <= 7}
-                    {#each Array(totalPages) as _, i (i)}
+                    {#if attr.sortable}
                       <button
-                        class="pagination-page-btn {currentPage === i + 1 ? 'pagination-page-btn-active' : ''}"
-                        onclick={() => goToPage(i + 1)}
+                        type="button"
+                        class="inline-flex items-center gap-1.5 bg-transparent border-0 p-0 font-semibold text-inherit cursor-pointer hover:text-text rounded-control
+ {internalSortKey === attr.key ? 'text-primary' : ''}"
+                        onclick={() => handleSortClick(attr)}
                       >
-                        {formatNumber(i + 1, $locale || "en")}
+                        <span>{getAttributeName(attr)}</span>
+                        <span class="inline-flex w-3.5 h-3.5 items-center justify-center" aria-hidden="true">
+                          {#if internalSortKey === attr.key}
+                            {#if internalSortDirection === "asc"}
+                              <svg viewBox="0 0 12 12" width="10" height="10"><path d="M6 3l4 5H2z" fill="currentColor" /></svg>
+                            {:else}
+                              <svg viewBox="0 0 12 12" width="10" height="10"><path d="M6 9l4-5H2z" fill="currentColor" /></svg>
+                            {/if}
+                          {:else}
+                            <svg viewBox="0 0 12 12" width="10" height="10" opacity="0.35"><path d="M6 3l3 4H3zM6 9l3-4H3z" fill="currentColor" /></svg>
+                          {/if}
+                        </span>
                       </button>
-                    {/each}
+                    {:else}
+                      {getAttributeName(attr)}
+                    {/if}
+                  </th>
+                {/each}
+                <th scope="col" class="px-4 py-3 text-end font-semibold whitespace-nowrap">{actionsLabel}</th>
+              </tr>
+            </thead>
+            <tbody class="divide-y divide-border">
+              {#each displayItems as item, index (item.shortname ?? item.id ?? index)}
+                {@const itemId = getItemId(item)}
+                {@const href = rowHref?.(item)}
+                <tr
+                  class="group transition-colors {interactiveRows ? 'cursor-pointer hover:bg-surface-3' : ''}
+ {selectable && selectedItems.has(itemId) ? 'bg-primary-soft/40' : ''}"
+                  onclick={interactiveRows ? (e) => handleRowClick(item, e) : undefined}
+                >
+                  {#if selectable}
+                    <td class="px-4 py-2">
+                      <input
+                        type="checkbox"
+                        checked={selectedItems.has(itemId)}
+                        onchange={() => onSelectItem?.(itemId)}
+                        class="w-4 h-4 accent-primary rounded cursor-pointer"
+                        aria-label={$_("admin_content.bulk_actions.select_item", { values: { name: itemId } })}
+                      />
+                    </td>
+                  {/if}
+                  {#each effectiveIndexAttributes as attr, col (attr.key)}
+                    <td class="px-4 py-2 text-text {col === 0 && interactiveRows ? 'relative' : ''}">
+                      {#if col === 0 && interactiveRows}
+                        <!-- The row's real control for keyboard and screen-reader users. -->
+                        {#if href}
+                          <a {href} class="row-control" aria-label={labelOf(item)} onclick={(e) => onRowClick?.(item, e)}>
+                            <span class="sr-only">{labelOf(item)}</span>
+                          </a>
+                        {:else}
+                          <button type="button" class="row-control" aria-label={labelOf(item)} onclick={(e) => onRowClick?.(item, e)}>
+                            <span class="sr-only">{labelOf(item)}</span>
+                          </button>
+                        {/if}
+                      {/if}
+                      {@render cell({ item, attr, index })}
+                    </td>
+                  {/each}
+                  <td class="px-4 py-2" data-row-stop>
+                    <div class="flex items-center justify-end gap-2">
+                      {@render actions({ item, index })}
+                    </div>
+                  </td>
+                </tr>
+              {/each}
+            </tbody>
+          </table>
+        </div>
+      </LoadingState>
+
+      <div class="flex flex-wrap items-center justify-between gap-3 px-4 py-3 border-t border-border bg-surface text-sm text-text-muted">
+        <div class="flex items-center gap-2">
+          <label for="{uid}-per-page">{$_("admin_content.pagination.items_per_page")}</label>
+          <select
+            id="{uid}-per-page"
+            value={itemsPerPage}
+            onchange={handleItemsPerPageChange}
+            class="h-8 ps-2 pe-7 text-sm rounded-control border border-border bg-surface-2 text-text focus:border-primary focus:ring-1 focus:ring-primary"
+          >
+            {#each itemsPerPageOptions as option (option)}
+              <option value={option}>{num(option)}</option>
+            {/each}
+          </select>
+        </div>
+
+        {#if showPagination}
+          <span class="hidden sm:block tabular-nums">
+            {$_("admin_content.pagination.showing", {
+              values: { start: num(range.start), end: num(range.end), total: num(totalItems) },
+            })}
+          </span>
+
+          <nav class="flex items-center gap-1" aria-label={$_("data_table.pagination")}>
+            <button
+              type="button"
+              class="pager-btn"
+              onclick={() => goToPage(currentPage - 1)}
+              disabled={currentPage <= 1}
+              aria-label={$_("admin_content.pagination.previous")}
+            >
+              <ChevronLeftOutline size="sm" class="rtl:rotate-180" aria-hidden="true" />
+            </button>
+
+            <span class="sm:hidden px-2 tabular-nums" aria-current="page">
+              {num(currentPage)} / {num(totalPages)}
+            </span>
+
+            <ul class="hidden sm:flex items-center gap-1 list-none p-0 m-0">
+              {#each pages as page, i (typeof page === "number" ? page : `e${i}`)}
+                <li>
+                  {#if page === ELLIPSIS}
+                    <span class="px-1 text-text-faint" aria-hidden="true">{ELLIPSIS}</span>
                   {:else}
                     <button
-                      class="pagination-page-btn {currentPage === 1 ? 'pagination-page-btn-active' : ''}"
-                      onclick={() => goToPage(1)}
+                      type="button"
+                      class="pager-btn {page === currentPage ? 'pager-btn-active' : ''}"
+                      aria-current={page === currentPage ? "page" : undefined}
+                      aria-label={$_("data_table.go_to_page", { values: { page: num(page) } })}
+                      onclick={() => goToPage(page)}
                     >
-                      {formatNumber(1, $locale || "en")}
-                    </button>
-
-                    {#if currentPage > 3}
-                      <span class="pagination-ellipsis">...</span>
-                    {/if}
-
-                    {#each Array(totalPages) as _, i (i)}
-                      {#if i + 1 > 1 && i + 1 < totalPages && Math.abs(currentPage - (i + 1)) <= 1}
-                        <button
-                          class="pagination-page-btn {currentPage === i + 1 ? 'pagination-page-btn-active' : ''}"
-                          onclick={() => goToPage(i + 1)}
-                        >
-                          {formatNumber(i + 1, $locale || "en")}
-                        </button>
-                      {/if}
-                    {/each}
-
-                    {#if currentPage < totalPages - 2}
-                      <span class="pagination-ellipsis">...</span>
-                    {/if}
-
-                    <button
-                      class="pagination-page-btn {currentPage === totalPages ? 'pagination-page-btn-active' : ''}"
-                      onclick={() => goToPage(totalPages)}
-                    >
-                      {formatNumber(totalPages, $locale || "en")}
+                      {num(page)}
                     </button>
                   {/if}
-                </div>
+                </li>
+              {/each}
+            </ul>
 
-                <button
-                  onclick={nextPage}
-                  disabled={currentPage === totalPages}
-                  class="pagination-btn"
-                  aria-label={$_("admin_content.pagination.next")}
-                >
-                  <svg
-                    class="w-4 h-4"
-                    fill="none"
-                    stroke="currentColor"
-                    viewBox="0 0 24 24"
-                  >
-                    <path
-                      stroke-linecap="round"
-                      stroke-linejoin="round"
-                      stroke-width="2"
-                      d="M9 5l7 7-7 7"
-                    />
-                  </svg>
-                </button>
-              </div>
-            {:else}
-              <div class="text-sm text-gray-500">
-                {$_("admin_content.pagination.total_items", {
-                  values: { total: formatNumber(totalItems, $locale || "en") },
-                })}
-              </div>
-            {/if}
-          </div>
-        </div>
-      {/if}
+            <button
+              type="button"
+              class="pager-btn"
+              onclick={() => goToPage(currentPage + 1)}
+              disabled={currentPage >= totalPages}
+              aria-label={$_("admin_content.pagination.next")}
+            >
+              <ChevronRightOutline size="sm" class="rtl:rotate-180" aria-hidden="true" />
+            </button>
+          </nav>
+        {:else}
+          <span class="tabular-nums">
+            {$_("admin_content.pagination.total_items", { values: { total: num(totalItems || items.length) } })}
+          </span>
+        {/if}
+      </div>
     {/if}
   </div>
 </div>
 
 <style>
-  .rtl {
-    direction: rtl;
+  /* The focusable control that stands for the whole first cell. */
+  .row-control {
+    position: absolute;
+    inset: 0;
+    display: block;
+    background: transparent;
+    border: 0;
+    padding: 0;
+    cursor: pointer;
+    border-radius: var(--radius-control);
   }
 
-  .data-table-container {
-    width: 100%;
-  }
-
-  .data-table-card {
-    background: var(--surface-card);
-    border-radius: var(--radius-2xl);
-    box-shadow: var(--shadow-sm);
-    border: 1px solid var(--color-gray-100);
-    overflow: hidden;
-  }
-
-  .skeleton-rows {
-    padding: 1.5rem 1.75rem;
-    display: flex;
-    flex-direction: column;
-    gap: 1.125rem;
-  }
-
-  .skeleton-row {
-    display: flex;
-    align-items: center;
-    gap: 1.25rem;
-    padding: 0.5rem 0;
-  }
-
-  .skeleton-row :global(.skeleton-block) {
-    flex-shrink: 0;
-  }
-
-  .empty-state {
-    text-align: center;
-    padding: 4rem;
-  }
-
-  .empty-state-icon {
-    width: 4rem;
-    height: 4rem;
-    background: var(--color-gray-50);
-    border-radius: var(--radius-xl);
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    margin: 0 auto 1rem;
-    color: var(--color-gray-400);
-  }
-
-  .empty-state-title {
-    font-size: 1.125rem;
-    font-weight: 700;
-    color: var(--color-gray-900);
-    margin-bottom: 0.5rem;
-  }
-
-  .empty-state-description {
-    color: var(--color-gray-500);
-    margin-bottom: 1.5rem;
-  }
-
-  .data-table-row {
-    transition: background-color var(--duration-fast) ease;
-  }
-
-  .data-table-row:hover td:last-child > div {
-    opacity: 1 !important;
-  }
-
-  .data-table-row:focus-visible {
-    outline: 2px solid var(--color-primary-400);
+  .row-control:focus-visible {
+    outline: 2px solid var(--color-primary);
     outline-offset: -2px;
   }
 
-  .th-sort-btn {
+  .pager-btn {
     display: inline-flex;
     align-items: center;
-    gap: 0.375rem;
-    background: none;
-    border: none;
-    padding: 0;
-    margin: 0;
-    color: inherit;
-    font: inherit;
-    text-transform: inherit;
-    letter-spacing: inherit;
+    justify-content: center;
+    min-width: 2rem;
+    height: 2rem;
+    padding: 0 0.5rem;
+    font-size: 0.875rem;
+    font-weight: 500;
+    color: var(--color-text-muted);
+    background: var(--color-surface-2);
+    border: 1px solid var(--color-border);
+    border-radius: var(--radius-control);
     cursor: pointer;
-    border-radius: var(--radius-sm);
+    transition: background var(--duration-fast) var(--ease-out), color var(--duration-fast) var(--ease-out);
   }
 
-  .th-sort-btn:hover {
-    color: var(--color-gray-800);
+  .pager-btn:hover:not(:disabled) {
+    background: var(--color-surface-3);
+    color: var(--color-text);
   }
 
-  .th-sort-btn.is-active {
-    color: var(--color-primary-600);
-  }
-
-  .th-sort-btn:focus-visible {
-    outline: 2px solid var(--color-primary-400);
-    outline-offset: 2px;
-  }
-
-  .th-sort-indicator {
-    display: inline-flex;
-    align-items: center;
-    justify-content: center;
-    width: 0.875rem;
-    height: 0.875rem;
-  }
-
-  .data-table-pagination {
-    padding: 1rem;
-    border-top: 1px solid var(--color-gray-100);
-    background: var(--color-gray-50);
-  }
-
-  .pagination-btn {
-    padding: 0.5rem;
-    background: var(--surface-card);
-    border: 1px solid var(--color-gray-200);
-    border-radius: var(--radius-md);
-    color: var(--color-gray-500);
-    transition: all var(--duration-normal) var(--ease-out);
-    display: flex;
-    align-items: center;
-    justify-content: center;
-  }
-
-  .pagination-btn:hover:not(:disabled) {
-    background: var(--color-gray-50);
-    color: var(--color-primary-600);
-    border-color: var(--color-primary-100);
-  }
-
-  .pagination-btn:disabled {
+  .pager-btn:disabled {
     opacity: 0.4;
     cursor: not-allowed;
   }
 
-  .pagination-page-btn {
-    width: 2rem;
-    height: 2rem;
-    border-radius: var(--radius-md);
-    font-size: 0.875rem;
-    font-weight: 500;
-    background: var(--surface-card);
-    border: 1px solid var(--color-gray-200);
-    color: var(--color-gray-500);
-    transition: all var(--duration-normal) var(--ease-out);
-    display: flex;
-    align-items: center;
-    justify-content: center;
+  .pager-btn-active {
+    background: var(--color-primary);
+    border-color: var(--color-primary);
+    color: var(--color-text-on-primary);
   }
 
-  .pagination-page-btn:hover {
-    background: var(--color-gray-50);
-    color: var(--color-primary-600);
-  }
-
-  .pagination-page-btn-active {
-    background: var(--color-primary-600) !important;
-    color: white !important;
-    border-color: var(--color-primary-600) !important;
-    box-shadow: var(--shadow-brand);
-  }
-
-  .pagination-ellipsis {
-    padding: 0 0.25rem;
-    color: var(--color-gray-400);
-  }
-
-  .pagination-compact {
-    display: none;
-    padding: 0 0.375rem;
-    font-size: 0.8125rem;
-    font-weight: 500;
-    color: var(--color-gray-600);
-    white-space: nowrap;
-  }
-
-  @media (max-width: 640px) {
-    .pagination-pages { display: none; }
-    .pagination-compact { display: inline-flex; }
-    .data-table-pagination .flex.items-center.justify-between {
-      gap: 0.5rem;
-    }
-  }
-
-  .bulk-actions-bar {
-    background: var(--surface-card);
-    border: 1px solid var(--color-gray-200);
-    border-radius: var(--radius-lg);
-    padding: 0.875rem 1.25rem;
-    margin-bottom: 1rem;
-    box-shadow: var(--shadow-md);
-  }
-
-  .bulk-actions-bar.rtl {
-    direction: rtl;
-  }
-
-  .bulk-actions-content {
-    display: flex;
-    align-items: center;
-    justify-content: space-between;
-    gap: 16px;
-    flex-wrap: wrap;
-  }
-
-  .bulk-actions-info {
-    display: flex;
-    align-items: center;
-    gap: 12px;
-  }
-
-  .bulk-actions-count {
-    color: var(--color-gray-800);
-    font-weight: 600;
-    font-size: 0.9375rem;
-  }
-
-  .bulk-actions-buttons {
-    display: flex;
-    align-items: center;
-    gap: 12px;
-  }
-
-  @media (max-width: 640px) {
-    .bulk-actions-content {
-      flex-direction: column;
-      align-items: stretch;
-    }
-
-    .bulk-actions-buttons {
-      justify-content: stretch;
-    }
+  .pager-btn-active:hover:not(:disabled) {
+    background: var(--color-primary-hover);
+    color: var(--color-text-on-primary);
   }
 </style>

@@ -84,7 +84,7 @@
     </svg>
     <input
       type="text"
-      placeholder="Search users..."
+      placeholder={$_("search_users")}
       bind:value={searchQuery}
       oninput={handleSearchInput}
       class="search-input"
@@ -93,7 +93,7 @@
       <button
         class="search-clear"
         onclick={clearSearch}
-        aria-label="Clear search"
+        aria-label={$_("ui.clear_search")}
       >
         ✕
       </button>
@@ -107,7 +107,7 @@
       <div class="no-users">
         {#if searchQuery.trim()}
           <div class="no-users-message">
-            <p>No users match your search</p>
+            <p>{$_("messaging.no_users_found")}</p>
           </div>
         {:else if showAllUsers}
           <div class="no-users-message">
@@ -135,7 +135,7 @@
         >
           <div class="user-avatar mx-3">
             {#if user.avatar}
-              <img src={user.avatar} alt={user.name} />
+              <img loading="lazy" decoding="async" src={user.avatar} alt={user.name} />
             {:else}
               <div class="avatar-placeholder">
                 {user.name.charAt(0).toUpperCase()}
@@ -170,7 +170,7 @@
 
   .users-header {
     padding: 1rem;
-    border-bottom: 1px solid #e2e8f0;
+    border-bottom: 1px solid var(--color-border);
     display: flex;
     justify-content: space-between;
     align-items: center;
@@ -180,7 +180,7 @@
   .users-header h3 {
     margin: 0;
     font-size: 1rem;
-    color: #374151;
+    color: var(--color-text);
   }
 
   .users-header-actions {
@@ -191,7 +191,7 @@
   .toggle-view-btn,
   .refresh-btn {
     background: transparent;
-    border: 1px solid #e2e8f0;
+    border: 1px solid var(--color-border);
     padding: 0.5rem;
     border-radius: 0.25rem;
     cursor: pointer;
@@ -201,7 +201,7 @@
 
   .toggle-view-btn:hover,
   .refresh-btn:hover {
-    background: #f8fafc;
+    background: var(--color-surface);
   }
 
   .refresh-btn:disabled {
@@ -212,49 +212,49 @@
   .search-box {
     position: relative;
     padding: 0.5rem 1rem;
-    border-bottom: 1px solid #e2e8f0;
+    border-bottom: 1px solid var(--color-border);
     background: white;
   }
 
   .search-icon {
     position: absolute;
-    left: 1.5rem;
+    inset-inline-start: 1.5rem;
     top: 50%;
     transform: translateY(-50%);
     width: 1rem;
     height: 1rem;
-    color: #9ca3af;
+    color: var(--color-text-faint);
     pointer-events: none;
   }
 
   .search-input {
     width: 100%;
     padding: 0.5rem 2rem 0.5rem 2.25rem;
-    border: 1px solid #e2e8f0;
+    border: 1px solid var(--color-border);
     border-radius: 0.5rem;
     font-size: 0.875rem;
-    background: #f8fafc;
+    background: var(--color-surface);
     outline: none;
     transition: border-color 0.2s;
   }
 
   .search-input:focus {
-    border-color: #3b82f6;
+    border-color: var(--color-primary);
     background: white;
   }
 
   .search-input::placeholder {
-    color: #9ca3af;
+    color: var(--color-text-faint);
   }
 
   .search-clear {
     position: absolute;
-    right: 1.5rem;
+    inset-inline-end: 1.5rem;
     top: 50%;
     transform: translateY(-50%);
     background: none;
     border: none;
-    color: #9ca3af;
+    color: var(--color-text-faint);
     cursor: pointer;
     font-size: 0.75rem;
     padding: 0.25rem;
@@ -262,20 +262,20 @@
   }
 
   .search-clear:hover {
-    color: #374151;
+    color: var(--color-text);
   }
 
   .users-list {
     flex: 1;
     overflow-y: auto;
-    background: #f8fafc;
+    background: var(--color-surface);
   }
 
   .user-item {
     display: flex;
     align-items: center;
     padding: 1rem;
-    border-bottom: 1px solid #e2e8f0;
+    border-bottom: 1px solid var(--color-border);
     cursor: pointer;
     transition: background-color 0.2s;
     background: white;
@@ -283,17 +283,17 @@
   }
 
   .user-item:hover {
-    background: #f8fafc;
+    background: var(--color-surface);
   }
 
   .user-item.selected {
-    background: #eff6ff;
-    border-left: 3px solid #3b82f6;
+    background: var(--color-info-soft);
+    border-inline-start: 3px solid var(--color-primary);
   }
 
   .user-avatar {
     position: relative;
-    margin-right: 1rem;
+    margin-inline-end: 1rem;
   }
 
   .user-avatar img,
@@ -305,7 +305,7 @@
   }
 
   .avatar-placeholder {
-    background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+    background: var(--color-primary);
     color: white;
     display: flex;
     align-items: center;
@@ -317,16 +317,16 @@
   .online-indicator {
     position: absolute;
     bottom: 0;
-    right: 0;
+    inset-inline-end: 0;
     width: 12px;
     height: 12px;
     border-radius: 50%;
-    background: #9ca3af;
+    background: var(--color-text-faint);
     border: 2px solid white;
   }
 
   .online-indicator.online {
-    background: #22c55e;
+    background: var(--color-success);
   }
 
   .user-info {
@@ -336,13 +336,13 @@
 
   .user-name {
     font-weight: 600;
-    color: #1f2937;
+    color: var(--color-text);
     margin-bottom: 0.25rem;
   }
 
   .user-details {
     font-size: 0.875rem;
-    color: #6b7280;
+    color: var(--color-text-muted);
     margin-bottom: 0.25rem;
   }
 
@@ -351,7 +351,7 @@
   }
 
   .online-text {
-    color: #22c55e;
+    color: var(--color-success);
     font-weight: 500;
   }
 
@@ -359,7 +359,7 @@
   .no-users {
     padding: 2rem;
     text-align: center;
-    color: #6b7280;
+    color: var(--color-text-muted);
   }
 
   .no-users-message,
@@ -371,7 +371,7 @@
   }
 
   .start-conversation-btn {
-    background: #3b82f6;
+    background: var(--color-primary);
     color: white;
     border: none;
     padding: 0.5rem 1rem;
@@ -382,6 +382,6 @@
   }
 
   .start-conversation-btn:hover {
-    background: #2563eb;
+    background: var(--color-primary-hover);
   }
 </style>

@@ -2,25 +2,35 @@
   import {
     deleteAllNotification,
     fetchMyNotifications,
-    getAvatar,
     markNotification,
   } from "@/lib/dmart_services";
+  import { getAvatarsCached } from "@/lib/dmart_services/avatars";
   import { user } from "@/stores/user";
-  import { onMount, onDestroy } from "svelte";
+  import { onMount } from "svelte";
   import Avatar from "@/components/Avatar.svelte";
-  import { SyncLoader } from "svelte-loading-spinners";
   import { newNotificationType } from "@/stores/newNotificationType";
   import { ResourceType } from "@edraj/tsdmart";
+  import {
+    BellOutline,
+    CheckCircleOutline,
+    EyeOutline,
+    EyeSlashOutline,
+    RefreshOutline,
+    TrashBinOutline,
+  } from "flowbite-svelte-icons";
 
   import { _, locale } from "@/i18n";
   import { formatDate } from "@/lib/format";
+  import { setTitle } from "@/lib/title";
+  import { confirm } from "@/lib/confirm";
+  import { toasts } from "@/lib/toast";
   import { goto as gotoStore } from "@roxi/routify";
-  import {
-    successToastMessage,
-    errorToastMessage,
-  } from "@/lib/toasts_messages";
-  import { getWebSocketService } from "@/lib/services/websocket";
-  import { wsConnected, wsStatus } from "@/stores/websocket";
+  import { wsStatus } from "@/stores/websocket";
+  import PageHeader from "@/components/ui/PageHeader.svelte";
+  import Badge from "@/components/ui/Badge.svelte";
+  import EmptyState from "@/components/ui/EmptyState.svelte";
+  import ErrorState from "@/components/ui/ErrorState.svelte";
+  import LoadingState from "@/components/ui/LoadingState.svelte";
 
   // Routify's helpers read the fragment context when first subscribed, and
   // Svelte 5 subscribes to a `$store` lazily on first read — so a `$gotoStore`
@@ -28,49 +38,73 @@
   // Capture the navigate function once, during component init.
   const goto = $gotoStore;
 
-  let notifications = $state<any[]>([]);
-  let isNotificationsLoading = $state(false);
-  let connectionStatus = $derived(
-    $wsStatus.charAt(0).toUpperCase() + $wsStatus.slice(1),
-  );
-  let notificationError: any = $state(null);
+  interface NotificationItem {
+    shortname: string;
+    created_at: string;
+    action_by: string;
+    entry_shortname?: string;
+    entry_subpath?: string;
+    entry_space?: string;
+    parent_shortname?: string;
+    parent_space_name?: string;
+    parent_subpath?: string;
+    resource_type: string;
+    is_read: string;
+  }
 
-  let removeListener: (() => void) | null = null;
+  let notifications = $state<NotificationItem[]>([]);
+  let avatars = $state<Map<string, string | null>>(new Map());
+  let isNotificationsLoading = $state(false);
+  let hasLoaded = $state(false);
+  let notificationError = $state<unknown>(null);
+  let busy = $state(false);
+
+  $effect(() => setTitle($_("Notifications")));
+
+  const connectionLabel = $derived(
+    $wsStatus === "connected"
+      ? $_("notifications_page.connection.connected")
+      : $wsStatus === "connecting"
+        ? $_("notifications_page.connection.connecting")
+        : $_("notifications_page.connection.disconnected"),
+  );
+  const connectionTone = $derived(
+    $wsStatus === "connected" ? "success" : $wsStatus === "connecting" ? "warning" : "danger",
+  );
+  const unreadCount = $derived(notifications.filter((n) => n.is_read !== "yes").length);
 
   onMount(async () => {
     $newNotificationType = "";
     await loadNotifications();
   });
 
-  // Register WS listener reactively — handles cases where global WS
-  // connects after the page has already mounted
+  // The shared websocket (stores/websocket.ts) already turns every create /
+  // update broadcast into a `newNotificationType` change, so this effect is
+  // the one reload per event: no page-level listener on top of it (perf #12).
   $effect(() => {
-    if ($wsConnected) {
-      const ws = getWebSocketService();
-      if (ws && !removeListener) {
-        removeListener = ws.addMessageListener(handleRealtimeMessage);
-      }
+    if ($newNotificationType && hasLoaded) {
+      loadNotifications(true).then(() => {
+        $newNotificationType = "";
+      });
     }
   });
 
-  onDestroy(() => {
-    removeListener?.();
-  });
-
-  function handleRealtimeMessage(data: any) {
-    if (data.type === "connection_response") {
-      return;
-    }
-
-    // csdmart plugin broadcasts arrive as "notification_subscription" with action_type
-    if (data.type === "notification_subscription" && data.message?.action_type) {
-      const action = data.message.action_type;
-      if (action === "create" || action === "update") {
-        $newNotificationType = `${action}_event`;
-        loadNotifications(true);
-      }
-      return;
-    }
+  function toItem(record: { shortname: string; attributes: { created_at?: string; payload?: { body?: Record<string, unknown> } } }): NotificationItem {
+    const body = record.attributes?.payload?.body ?? {};
+    const str = (key: string) => (typeof body[key] === "string" ? (body[key] as string) : undefined);
+    return {
+      shortname: record.shortname,
+      created_at: record.attributes?.created_at ?? "",
+      action_by: str("action_by") ?? "",
+      entry_shortname: str("entry_shortname"),
+      entry_subpath: str("entry_subpath"),
+      entry_space: str("entry_space"),
+      parent_shortname: str("parent_shortname"),
+      parent_space_name: str("parent_space_name"),
+      parent_subpath: str("parent_subpath"),
+      resource_type: str("resource_type") ?? "unknown",
+      is_read: str("is_read") ?? "no",
+    };
   }
 
   async function loadNotifications(force: boolean = false) {
@@ -78,487 +112,201 @@
     notificationError = null;
 
     try {
-      let _notifications = await fetchMyNotifications($user.shortname!);
-
-      const __notifications = await Promise.all(
-        _notifications.map(async (n) => {
-          try {
-            const {
-              action_by,
-              entry_shortname,
-              entry_subpath,
-              entry_space,
-              resource_type,
-              is_read,
-            } = n.attributes.payload.body;
-
-            const resourceTypeString = (function () {
-              switch (resource_type) {
-                case "ticket":
-                  return "new updates";
-
-                default:
-                  return "notification";
-              }
-            })();
-
-            let _notification: any = {
-              shortname: n.shortname,
-              created_at: formatDate(n.attributes.created_at, "datetime", $locale),
-              action_by,
-              entry_shortname,
-              entry_subpath,
-              entry_space,
-              resource_type,
-              resourceTypeString: resourceTypeString,
-              is_read,
-              title: "Notification",
-              body: "",
-            };
-
-            return _notification;
-          } catch {
-            return {
-              shortname: n.shortname,
-              created_at: formatDate(n.attributes.created_at, "datetime", $locale),
-              action_by: n.attributes.payload.body.action_by || "Unknown",
-              resource_type:
-                n.attributes.payload.body.resource_type || "unknown",
-              resourceTypeString: "notification",
-              is_read: n.attributes.payload.body.is_read || "no",
-              title: "Notification",
-              body: "",
-            };
-          }
-        })
-      );
+      const records = await fetchMyNotifications($user.shortname!);
+      const next = records.map(toItem);
 
       if (notifications.length === 0 || force) {
-        notifications = __notifications;
+        notifications = next;
       } else {
-        const newNotifications = __notifications.filter((__notification) => {
-          return !notifications.some(
-            (notification) =>
-              __notification.shortname === notification.shortname
-          );
-        });
-
-        const removedNotifications = notifications.filter((notification) => {
-          return !__notifications.some(
-            (__notification) =>
-              __notification.shortname === notification.shortname
-          );
-        });
-
-        notifications = notifications.filter((notification) => {
-          return !removedNotifications.some(
-            (removedNotification) =>
-              removedNotification.shortname === notification.shortname
-          );
-        });
-
-        notifications = [...newNotifications, ...notifications];
+        const known = new Set(notifications.map((n) => n.shortname));
+        const fresh = next.filter((n) => !known.has(n.shortname));
+        const stillThere = new Set(next.map((n) => n.shortname));
+        notifications = [...fresh, ...notifications.filter((n) => stillThere.has(n.shortname))];
       }
-    } catch {
-      errorToastMessage("Failed to load notifications");
+
+      // One lookup per distinct author, cached for the session.
+      avatars = await getAvatarsCached(notifications.map((n) => n.action_by));
+    } catch (error) {
+      notificationError = error;
     }
 
     isNotificationsLoading = false;
+    hasLoaded = true;
   }
 
-  async function handleNotificationClick(notification: any) {
+  async function handleNotificationClick(notification: NotificationItem) {
     try {
       await markNotification($user.shortname!, notification.shortname);
+      notification.is_read = "yes";
 
-      if (
-        notification.resource_type === ResourceType.ticket ||
-        notification.resource_type === "ticket"
-      ) {
+      if (notification.resource_type === ResourceType.ticket || notification.resource_type === "ticket") {
         // Report (ticket) notifications have no detail page to open yet.
         return;
       }
 
-      if (
-        notification.parent_shortname &&
-        notification.parent_space_name &&
-        notification.parent_subpath
-      ) {
-        goto(
-          "/dashboard/admin/[space_name]/[subpath]/[shortname]/[resource_type]",
-          {
-            space_name: notification.parent_space_name,
-            subpath: notification.parent_subpath.startsWith("/")
-              ? notification.parent_subpath.substring(1)
-              : notification.parent_subpath,
-            shortname: notification.parent_shortname,
-            resource_type: "content",
-          }
-        );
+      const strip = (p: string) => (p.startsWith("/") ? p.substring(1) : p);
+      if (notification.parent_shortname && notification.parent_space_name && notification.parent_subpath) {
+        goto("/dashboard/admin/[space_name]/[subpath]/[shortname]/[resource_type]", {
+          space_name: notification.parent_space_name,
+          subpath: strip(notification.parent_subpath),
+          shortname: notification.parent_shortname,
+          resource_type: "content",
+        });
       } else if (notification.entry_shortname && notification.entry_subpath) {
-        goto(
-          "/dashboard/admin/[space_name]/[subpath]/[shortname]/[resource_type]",
-          {
-            space_name: notification.entry_space || "catalog",
-            subpath: notification.entry_subpath.startsWith("/")
-              ? notification.entry_subpath.substring(1)
-              : notification.entry_subpath,
-            shortname: notification.entry_shortname,
-            resource_type: "content",
-          }
-        );
+        goto("/dashboard/admin/[space_name]/[subpath]/[shortname]/[resource_type]", {
+          space_name: notification.entry_space || "catalog",
+          subpath: strip(notification.entry_subpath),
+          shortname: notification.entry_shortname,
+          resource_type: "content",
+        });
       } else {
         goto("/dashboard/admin");
       }
     } catch {
-      errorToastMessage("Failed to open notification");
+      toasts.error($_("notifications_page.open_failed"));
     }
   }
 
-  $effect(() => {
-    if ($newNotificationType) {
-      loadNotifications(true).then((_) => {
-        $newNotificationType = "";
-      });
-    }
-  });
-
-  async function handleReadAll() {
+  async function markAll(read: boolean) {
+    busy = true;
     try {
       await Promise.all(
-        notifications.map(async (notification) => {
-          if (notification.is_read !== "yes") {
-      await markNotification($user.shortname!, notification.shortname);
-          }
-        })
+        notifications
+          .filter((n) => (read ? n.is_read !== "yes" : n.is_read === "yes"))
+          .map((n) => markNotification($user.shortname!, n.shortname, read)),
       );
       await loadNotifications(true);
-      successToastMessage("All notifications marked as read");
+      toasts.success(read ? $_("notifications_page.all_read") : $_("notifications_page.all_unread"));
     } catch {
-      errorToastMessage("Failed to mark all as read");
-    }
-  }
-
-  async function handleUnReadAll() {
-    try {
-      await Promise.all(
-        notifications.map(async (notification) => {
-          if (notification.is_read === "yes") {
-            await markNotification(
-              $user.shortname!,
-              notification.shortname,
-              false
-            );
-          }
-        })
-      );
-      await loadNotifications(true);
-      successToastMessage("All notifications marked as unread");
-    } catch {
-      errorToastMessage("Failed to mark all as unread");
+      toasts.error(read ? $_("notifications_page.mark_read_failed") : $_("notifications_page.mark_unread_failed"));
+    } finally {
+      busy = false;
     }
   }
 
   async function handleDeleteAll() {
-    try {
-      const shortnames = notifications.map((n) => n.shortname);
-      await deleteAllNotification($user.shortname!, shortnames);
-      await loadNotifications(true);
-      successToastMessage("All notifications deleted");
-    } catch {
-      errorToastMessage("Failed to delete all notifications");
-    }
-  }
-
-  async function handleRefresh() {
+    const count = notifications.length;
+    const confirmed = await confirm({
+      title: $_("notifications_page.delete_all_title", { values: { count } }),
+      body: $_("notifications_page.delete_all_body"),
+      variant: "danger",
+      action: () => deleteAllNotification($user.shortname!, notifications.map((n) => n.shortname)),
+    });
+    if (!confirmed) return;
     await loadNotifications(true);
+    toasts.success($_("notifications_page.all_deleted"));
   }
 </script>
 
-<div class="min-h-screen bg-gray-50">
-  <div class="container mx-auto px-4 py-8 max-w-4xl">
-    <div
-      class="flex flex-col sm:flex-row sm:items-center justify-between gap-4 mb-8"
-    >
-      <div>
-        <h1 class="text-3xl font-bold text-gray-900">
-          {$_("Notifications")}
-        </h1>
-        <p class="text-gray-600 mt-1">
-          {$_("NotificationsMsg")}
-        </p>
-      </div>
+<div class="mx-auto max-w-4xl px-4 sm:px-6 py-6 sm:py-8">
+  <PageHeader title={$_("Notifications")} description={$_("NotificationsMsg")} icon={BellOutline}>
+    {#snippet actions()}
+      <Badge variant={connectionTone} size="sm">
+        <span class="w-1.5 h-1.5 rounded-full bg-current" aria-hidden="true"></span>
+        {connectionLabel}
+      </Badge>
+      <button
+        type="button"
+        class="app-btn app-btn-secondary app-btn-sm"
+        onclick={() => loadNotifications(true)}
+        disabled={isNotificationsLoading}
+      >
+        <RefreshOutline size="sm" aria-hidden="true" />
+        {$_("Refresh")}
+      </button>
+      <button
+        type="button"
+        class="app-btn app-btn-secondary app-btn-sm"
+        onclick={() => markAll(true)}
+        disabled={busy || unreadCount === 0}
+      >
+        <EyeOutline size="sm" aria-hidden="true" />
+        {$_("ReadAll")}
+      </button>
+      <button
+        type="button"
+        class="app-btn app-btn-secondary app-btn-sm"
+        onclick={() => markAll(false)}
+        disabled={busy || unreadCount === notifications.length}
+      >
+        <EyeSlashOutline size="sm" aria-hidden="true" />
+        {$_("UnReadAll")}
+      </button>
+      <button
+        type="button"
+        class="app-btn app-btn-danger app-btn-sm"
+        onclick={handleDeleteAll}
+        disabled={busy || notifications.length === 0}
+      >
+        <TrashBinOutline size="sm" aria-hidden="true" />
+        {$_("DeleteAll")}
+      </button>
+    {/snippet}
+  </PageHeader>
 
-      <div class="flex items-center gap-2">
-        <!-- Connection Status Indicator -->
-        <div class="flex items-center gap-2 text-xs">
-          <div class="flex items-center gap-1">
-            <div
-              class="w-2 h-2 rounded-full {connectionStatus === 'Connected'
-                ? 'bg-green-500'
-                : connectionStatus === 'Connecting...'
-                  ? 'bg-yellow-500'
-                  : 'bg-red-500'}"
-            ></div>
-            <span class="text-gray-600">{connectionStatus}</span>
-          </div>
-        </div>
+  {#if notificationError}
+    <ErrorState
+      class="mb-6"
+      compact
+      title={$_("notifications_page.load_failed")}
+      error={notificationError}
+      onRetry={() => loadNotifications(true)}
+    />
+  {/if}
 
-        <button
-          onclick={handleRefresh}
-          class="flex items-center gap-2 px-4 py-2 text-sm font-medium text-indigo-700 bg-indigo-50 hover:bg-indigo-100 rounded-lg transition-colors duration-200"
-          aria-label="Refresh notifications"
-        >
-          <svg
-            xmlns="http://www.w3.org/2000/svg"
-            x="0px"
-            y="0px"
-            class="w-4 h-4"
-            stroke="currentColor"
-            viewBox="0 0 32 32"
-          >
-            <path
-              d="M 16 4 C 10.886719 4 6.617188 7.160156 4.875 11.625 L 6.71875 12.375 C 8.175781 8.640625 11.710938 6 16 6 C 19.242188 6 22.132813 7.589844 23.9375 10 L 20 10 L 20 12 L 27 12 L 27 5 L 25 5 L 25 8.09375 C 22.808594 5.582031 19.570313 4 16 4 Z M 25.28125 19.625 C 23.824219 23.359375 20.289063 26 16 26 C 12.722656 26 9.84375 24.386719 8.03125 22 L 12 22 L 12 20 L 5 20 L 5 27 L 7 27 L 7 23.90625 C 9.1875 26.386719 12.394531 28 16 28 C 21.113281 28 25.382813 24.839844 27.125 20.375 Z"
-            ></path>
-          </svg>
-          <span class="hidden sm:inline">
-            {$_("Refresh")}
-          </span>
-        </button>
-        <button
-          onclick={handleReadAll}
-          class="flex items-center gap-2 px-4 py-2 text-sm font-medium text-indigo-700 bg-indigo-50 hover:bg-indigo-100 rounded-lg transition-colors duration-200"
-          aria-label="Mark all as read"
-        >
-          <svg
-            class="w-4 h-4"
-            fill="none"
-            stroke="currentColor"
-            viewBox="0 0 24 24"
-          >
-            <path
-              stroke-linecap="round"
-              stroke-linejoin="round"
-              stroke-width="2"
-              d="M15 12a3 3 0 11-6 0 3 3 0 016 0z"
-            ></path>
-            <path
-              stroke-linecap="round"
-              stroke-linejoin="round"
-              stroke-width="2"
-              d="M2.458 12C3.732 7.943 7.523 5 12 5c4.478 0 8.268 2.943 9.542 7-1.274 4.057-5.064 7-9.542 7-4.477 0-8.268-2.943-9.542-7z"
-            ></path>
-          </svg>
-          <span class="hidden sm:inline">
-            {$_("ReadAll")}
-          </span>
-        </button>
+  {#if isNotificationsLoading && notifications.length === 0}
+    <LoadingState label={$_("notifications_page.loading")} />
+  {:else if notifications.length === 0 && !notificationError}
+    <EmptyState icon={BellOutline} title={$_("NoNotifications")} hint={$_("NoNotificationsMsg")} />
+  {:else}
+    <LoadingState variant="overlay" loading={isNotificationsLoading}>
+      <ul class="space-y-3 list-none p-0 m-0">
+        {#each notifications as notification (notification.shortname)}
+          {@const unread = notification.is_read !== "yes"}
+          {@const isTicket =
+            notification.resource_type === ResourceType.ticket || notification.resource_type === "ticket"}
+          <li>
+            <button
+              type="button"
+              class="w-full text-start flex gap-4 p-4 sm:p-5 rounded-card border bg-surface-2 shadow-card transition-[box-shadow,border-color] hover:shadow-modal hover:border-border-strong focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-primary cursor-pointer
+ {unread ? 'border-primary/40' : 'border-border'}"
+              aria-label={$_("notifications_page.open", { values: { name: notification.action_by } })}
+              onclick={() => handleNotificationClick(notification)}
+            >
+              <span class="shrink-0">
+                <Avatar src={avatars.get(notification.action_by)} size="48" />
+              </span>
 
-        <button
-          onclick={handleUnReadAll}
-          class="flex items-center gap-2 px-4 py-2 text-sm font-medium text-gray-700 bg-gray-100 hover:bg-gray-200 rounded-lg transition-colors duration-200"
-          aria-label="Mark all as unread"
-        >
-          <svg
-            class="w-4 h-4"
-            fill="none"
-            stroke="currentColor"
-            viewBox="0 0 24 24"
-          >
-            <path
-              stroke-linecap="round"
-              stroke-linejoin="round"
-              stroke-width="2"
-              d="M13.875 18.825A10.05 10.05 0 0112 19c-4.478 0-8.268-2.943-9.543-7a9.97 9.97 0 011.563-3.029m5.858.908a3 3 0 114.243 4.243M9.878 9.878l4.242 4.242M9.878 9.878L3 3m6.878 6.878L21 21"
-            ></path>
-          </svg>
-          <span class="hidden sm:inline">{$_("UnReadAll")}</span>
-        </button>
+              <span class="flex-1 min-w-0 flex flex-col gap-1">
+                <span class="flex items-center gap-2">
+                  <span class="font-semibold text-text truncate">{notification.action_by}</span>
+                  {#if unread}
+                    <Badge variant="primary" size="sm">{$_("notifications_page.unread")}</Badge>
+                  {/if}
+                </span>
 
-        <button
-          onclick={handleDeleteAll}
-          class="flex items-center gap-2 px-4 py-2 text-sm font-medium text-red-700 bg-red-50 hover:bg-red-100 rounded-lg transition-colors duration-200"
-          aria-label="Delete all notifications"
-        >
-          <svg
-            class="w-4 h-4"
-            fill="none"
-            stroke="currentColor"
-            viewBox="0 0 24 24"
-          >
-            <path
-              stroke-linecap="round"
-              stroke-linejoin="round"
-              stroke-width="2"
-              d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16"
-            ></path>
-          </svg>
-          <span class="hidden sm:inline">
-            {$_("DeleteAll")}
-          </span>
-        </button>
-      </div>
-    </div>
+                <span class="text-sm text-text-muted">
+                  {#if isTicket}
+                    {$_("notifications_page.ticket_update")}
+                  {:else}
+                    {$_("notifications_page.notification")}
+                  {/if}
+                </span>
 
-    <!-- Error Banner -->
-    {#if notificationError}
-      <div class="mb-6 p-4 bg-red-50 border border-red-200 rounded-lg">
-        <div class="flex items-start gap-3">
-          <svg
-            class="w-5 h-5 text-red-600 shrink-0 mt-0.5"
-            fill="currentColor"
-            viewBox="0 0 20 20"
-          >
-            <path
-              fill-rule="evenodd"
-              d="M10 18a8 8 0 100-16 8 8 0 000 16zM8.707 7.293a1 1 0 00-1.414 1.414L8.586 10l-1.293 1.293a1 1 0 101.414 1.414L10 11.414l1.293 1.293a1 1 0 001.414-1.414L11.414 10l1.293-1.293a1 1 0 00-1.414-1.414L10 8.586 8.707 7.293z"
-              clip-rule="evenodd"
-            ></path>
-          </svg>
-          <div class="flex-1">
-            <p class="text-sm font-medium text-red-800">Error</p>
-            <p class="text-sm text-red-700">{notificationError}</p>
-          </div>
-          <button
-            onclick={() => (notificationError = null)}
-            class="text-red-400 hover:text-red-600"
-            aria-label="Close error message"
-          >
-            <svg class="w-5 h-5" fill="currentColor" viewBox="0 0 20 20">
-              <path
-                fill-rule="evenodd"
-                d="M4.293 4.293a1 1 0 011.414 0L10 8.586l4.293-4.293a1 1 0 111.414 1.414L11.414 10l4.293 4.293a1 1 0 01-1.414 1.414L10 11.414l-4.293 4.293a1 1 0 01-1.414-1.414L8.586 10 4.293 5.707a1 1 0 010-1.414z"
-                clip-rule="evenodd"
-              ></path>
-            </svg>
-          </button>
-        </div>
-      </div>
-    {/if}
+                <span class="text-xs text-text-faint tabular-nums">
+                  {formatDate(notification.created_at, "relative", $locale) || $_("common.not_available")}
+                </span>
+              </span>
 
-    {#if isNotificationsLoading}
-      <div class="flex justify-center py-16">
-        <SyncLoader color="#6366f1" size="50" unit="px" />
-      </div>
-    {/if}
-
-    {#if !isNotificationsLoading && notifications.length === 0}
-      <div class="text-center py-16">
-        <div
-          class="mx-auto w-24 h-24 bg-gray-100 rounded-full flex items-center justify-center mb-6"
-        >
-          <svg
-            class="w-12 h-12 text-gray-400"
-            fill="none"
-            stroke="currentColor"
-            viewBox="0 0 24 24"
-          >
-            <path
-              stroke-linecap="round"
-              stroke-linejoin="round"
-              stroke-width="2"
-              d="M15 17h5l-1.405-12.142A2.032 2.032 0 0118 14.158V11a6.002 6.002 0 00-4-5.659V5a2 2 0 10-4 0v.341C7.67 6.165 6 8.388 6 11v3.159c0 .538-.214 1.055-.595 1.436L4 17h5m6 0v1a3 3 0 11-6 0v-1m6 0H9"
-            ></path>
-          </svg>
-        </div>
-        <h3 class="text-xl font-semibold text-gray-900 mb-2">
-          {$_("NoNotifications")}
-        </h3>
-        <p class="text-gray-600">
-          {$_("NoNotificationsMsg")}
-        </p>
-      </div>
-    {/if}
-
-    <div class="space-y-4">
-      {#each notifications as notification (notification.shortname)}
-        <div
-          class="bg-white rounded-xl border border-gray-200 hover:border-gray-300 transition-all duration-200 cursor-pointer {notification.is_read ===
-          'yes'
-            ? ''
-            : 'ring-2 ring-indigo-100 border-indigo-200'}"
-          role="button"
-          tabindex="0"
-          onclick={() => handleNotificationClick(notification)}
-          onkeydown={(e) => {
-            if (e.key === "Enter" || e.key === " ") {
-              handleNotificationClick(notification);
-            }
-          }}
-        >
-          <div class="p-6">
-            <div class="flex gap-4">
-              <div class="shrink-0">
-                {#await getAvatar(notification.action_by) then avatar}
-                  <Avatar src={avatar ?? undefined} size="48" />
-                {:catch}
-                  <Avatar src={null as any} size="48" />
-                {/await}
-              </div>
-
-              <div class="flex-1 min-w-0">
-                <div class="flex items-start justify-between gap-4">
-                  <div class="flex-1 min-w-0">
-                    <div class="flex items-center gap-2 mb-1">
-                      <h3 class="font-semibold text-gray-900 truncate">
-                        {notification.action_by}
-                      </h3>
-                      {#if notification.is_read !== "yes"}
-                        <span
-                          class="w-2 h-2 bg-blue-500 rounded-full shrink-0"
-                        ></span>
-                      {/if}
-                    </div>
-
-                    <h4 class="font-medium text-gray-800 mb-2 line-clamp-2">
-                      {notification.title || "Notification"}
-                    </h4>
-
-                    <div class="text-gray-600 mb-3">
-                      {#if notification.resource_type === ResourceType.ticket || notification.resource_type === "ticket"}
-                        <p>
-                          Has <span class="font-medium text-blue-600"
-                            >{notification.resourceTypeString}</span
-                          > for your entity
-                        </p>
-                      {:else}
-                        <p>
-                          <span class="font-medium text-gray-600"
-                            >{notification.resourceTypeString}</span
-                          >
-                        </p>
-                      {/if}
-                    </div>
-
-                    <p class="text-sm text-gray-500">
-                      {notification.created_at}
-                    </p>
-                  </div>
-
-                  <div class="shrink-0">
-                    <div
-                      class="w-8 h-8 bg-green-100 rounded-full flex items-center justify-center"
-                    >
-                      <svg
-                        class="w-4 h-4 text-green-600"
-                        fill="none"
-                        stroke="currentColor"
-                        viewBox="0 0 24 24"
-                      >
-                        <path
-                          stroke-linecap="round"
-                          stroke-linejoin="round"
-                          stroke-width="2"
-                          d="M9 12l2 2 4-4m6 2a9 9 0 11-18 0 9 9 0 0118 0z"
-                        ></path>
-                      </svg>
-                    </div>
-                  </div>
-                </div>
-              </div>
-            </div>
-          </div>
-        </div>
-      {/each}
-    </div>
-  </div>
+              {#if !unread}
+                <span class="shrink-0 text-success" aria-hidden="true">
+                  <CheckCircleOutline size="md" />
+                </span>
+              {/if}
+            </button>
+          </li>
+        {/each}
+      </ul>
+    </LoadingState>
+  {/if}
 </div>

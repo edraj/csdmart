@@ -1,44 +1,78 @@
 <script lang="ts">
   import { onMount } from "svelte";
-  import { _, locale, isRTL } from "@/i18n";
+  import { _, locale } from "@/i18n";
   import { formatDate } from "@/lib/format";
+  import { localized } from "@/lib/catalogItems";
+  import { setTitle } from "@/lib/title";
+  import { log } from "@/lib/logger";
   import { getPolls, userVote } from "@/lib/dmart_services";
+  import { APPLICATIONS_SPACE } from "@/lib/constants";
   import { DmartScope } from "@edraj/tsdmart";
-
-  import {
-    errorToastMessage,
-    successToastMessage,
-  } from "@/lib/toasts_messages";
+  import { toasts } from "@/lib/toast";
   import {
     CheckCircleOutline,
     ClockOutline,
     EyeOutline,
-    SearchOutline,
     UserOutline,
     ChartOutline,
+    PlusOutline,
   } from "flowbite-svelte-icons";
   import { user } from "@/stores/user";
-  // Create Poll imports
   import CreatePollModal from "./CreatePollModal.svelte";
   import Modal from "@/components/Modal.svelte";
+  import Avatar from "@/components/Avatar.svelte";
+  import PageHeader from "@/components/ui/PageHeader.svelte";
+  import CatalogToolbar from "@/components/ui/CatalogToolbar.svelte";
+  import Card from "@/components/ui/Card.svelte";
+  import Badge from "@/components/ui/Badge.svelte";
+  import EmptyState from "@/components/ui/EmptyState.svelte";
+  import ErrorState from "@/components/ui/ErrorState.svelte";
+  import LoadingState from "@/components/ui/LoadingState.svelte";
 
-  let polls = $state<any[]>([]);
+  interface Candidate {
+    key: string;
+    name: string;
+    votes: number;
+    voters: string[];
+    percentage: number;
+    attachment: unknown;
+  }
+
+  interface Poll {
+    shortname: string;
+    displayname: unknown;
+    description: unknown;
+    candidates: Candidate[];
+    isActive: boolean;
+    hasVoted: boolean;
+    userVote: string | null;
+    totalVotes: number;
+    createdBy: string;
+    createdAt: string | null;
+    tags: string[];
+  }
+
+  type StatusFilter = "all" | "active" | "ended";
+
+  let polls = $state<Poll[]>([]);
   let loading = $state(true);
+  let loadError = $state<unknown>(null);
   let searchTerm = $state("");
-  let filterStatus = $state("all");
-  let selectedPoll: any = $state(null);
+  let filterStatus = $state<StatusFilter>("all");
+  let selectedPoll = $state<Poll | null>(null);
   let showVoteModal = $state(false);
   let selectedCandidate = $state("");
   let votingInProgress = $state(false);
   let showResults = $state(false);
-
   let showCreateModal = $state(false);
 
+  $effect(() => setTitle($_("polls.title")));
 
-  let userValue: any = null;
-  user.subscribe((value: any) => {
-    userValue = value;
-  });
+  const statusFilters: Array<{ id: StatusFilter; label: () => string }> = [
+    { id: "all", label: () => $_("polls.filter_all") },
+    { id: "active", label: () => $_("polls.filter_active") },
+    { id: "ended", label: () => $_("polls.filter_ended") },
+  ];
 
   onMount(async () => {
     await loadPolls();
@@ -46,444 +80,412 @@
 
   async function loadPolls() {
     loading = true;
+    loadError = null;
     try {
-      const response = await getPolls("applications", DmartScope.managed);
+      const response = await getPolls(APPLICATIONS_SPACE, DmartScope.managed);
 
       if (response?.status === "success" && response?.records) {
-        const processedPolls = response.records.map((poll: any) => {
-          const body = poll.attributes?.payload?.body || {};
-          const candidates = body.candidates || [];
-          const attachments = (poll as any).attachments?.json || [];
+        const me = $user?.shortname;
+        polls = response.records.map((poll): Poll => {
+          const attrs = (poll.attributes ?? {}) as Record<string, unknown>;
+          const body = ((attrs.payload as { body?: Record<string, unknown> } | undefined)?.body ?? {}) as Record<string, unknown>;
+          const rawCandidates = Array.isArray(body.candidates) ? (body.candidates as Array<{ key: string; value: string }>) : [];
+          const attachments = ((poll as unknown as { attachments?: { json?: unknown[] } }).attachments?.json ?? []) as Array<{
+            shortname?: string;
+            attributes?: { payload?: { body?: { voters?: unknown } } };
+          }>;
 
-          const candidatesWithResults = candidates.map((candidate: any) => {
-            const candidateAttachment = attachments.find(
-              (att: any) => att.shortname === candidate.key,
-            );
-
-            let voters = [];
-            let voteCount = 0;
-
-            if (candidateAttachment?.attributes?.payload?.body?.voters) {
-              voters = candidateAttachment.attributes.payload.body.voters || [];
-              voteCount = Array.isArray(voters) ? voters.length : 0;
-            }
-
+          const candidates: Candidate[] = rawCandidates.map((candidate) => {
+            const attachment = attachments.find((att) => att.shortname === candidate.key);
+            const rawVoters = attachment?.attributes?.payload?.body?.voters;
+            const voters = Array.isArray(rawVoters) ? (rawVoters as string[]) : [];
             return {
               key: candidate.key,
               name: candidate.value,
-              votes: voteCount,
-              voters: voters,
+              votes: voters.length,
+              voters,
               percentage: 0,
-              attachment: candidateAttachment,
+              attachment,
             };
           });
 
-          const totalVotes = candidatesWithResults.reduce(
-            (sum: any, candidate: any) => sum + candidate.votes,
-            0,
-          );
-
-          candidatesWithResults.forEach((candidate: any) => {
-            candidate.percentage =
-              totalVotes > 0
-                ? Math.round((candidate.votes / totalVotes) * 100)
-                : 0;
-          });
-
-          let hasVoted = false;
-          let userVote = null;
-
-          if (userValue) {
-            for (const candidate of candidatesWithResults) {
-              if (candidate.voters.includes(userValue.shortname)) {
-                hasVoted = true;
-                userVote = candidate.name;
-                break;
-              }
-            }
+          const totalVotes = candidates.reduce((sum, c) => sum + c.votes, 0);
+          for (const c of candidates) {
+            c.percentage = totalVotes > 0 ? Math.round((c.votes / totalVotes) * 100) : 0;
           }
 
-          const isActive = poll.attributes?.is_active !== false;
+          const mine = me ? candidates.find((c) => c.voters.includes(me)) : undefined;
 
           return {
-            ...poll,
-            title:
-              poll.attributes?.displayname?.en ||
-              poll.attributes?.displayname ||
-              poll.shortname ||
-              $_("polls.untitled"),
-            description:
-              poll.attributes?.description?.en ||
-              poll.attributes?.description ||
-              "",
-            candidates: candidatesWithResults,
-            isActive,
-            hasVoted,
-            userVote,
+            shortname: poll.shortname,
+            displayname: attrs.displayname,
+            description: attrs.description,
+            candidates,
+            isActive: attrs.is_active !== false,
+            hasVoted: !!mine,
+            userVote: mine?.name ?? null,
             totalVotes,
-            createdBy: poll.attributes?.owner_shortname || "Unknown",
-            createdAt: poll.attributes?.created_at
-              ? new Date(poll.attributes.created_at)
-              : null,
-            tags: poll.attributes?.tags || [],
+            createdBy: typeof attrs.owner_shortname === "string" ? attrs.owner_shortname : "",
+            createdAt: typeof attrs.created_at === "string" ? attrs.created_at : null,
+            tags: Array.isArray(attrs.tags) ? (attrs.tags as string[]) : [],
           };
         });
-
-        polls = processedPolls;
+      } else {
+        polls = [];
       }
     } catch (error) {
-      console.error("Error loading polls:", error);
-      errorToastMessage($_("polls.load_error"));
+      log.error("Error loading polls:", error);
+      loadError = error;
     } finally {
       loading = false;
     }
   }
 
-  const filteredPolls = $derived(
-    polls.filter((poll: any) => {
-      const matchesSearch =
-        !searchTerm ||
-        poll.title.toLowerCase().includes(searchTerm.toLowerCase()) ||
-        poll.description.toLowerCase().includes(searchTerm.toLowerCase()) ||
-        poll.candidates.some((candidate: any) =>
-          candidate.name.toLowerCase().includes(searchTerm.toLowerCase()),
-        );
+  function titleOf(poll: Poll): string {
+    return localized(poll.displayname as never, $locale) || poll.shortname || $_("polls.untitled");
+  }
 
+  function descriptionOf(poll: Poll): string {
+    return localized(poll.description as never, $locale);
+  }
+
+  const filteredPolls = $derived.by(() => {
+    const q = searchTerm.trim().toLowerCase();
+    return polls.filter((poll) => {
+      const matchesSearch =
+        !q ||
+        titleOf(poll).toLowerCase().includes(q) ||
+        descriptionOf(poll).toLowerCase().includes(q) ||
+        poll.candidates.some((c) => c.name.toLowerCase().includes(q));
       const matchesStatus =
         filterStatus === "all" ||
         (filterStatus === "active" && poll.isActive) ||
         (filterStatus === "ended" && !poll.isActive);
-
       return matchesSearch && matchesStatus;
-    }),
-  );
+    });
+  });
 
-  function openVoteModal(poll: any) {
+  const activeCount = $derived(polls.filter((p) => p.isActive).length);
+
+  function leadingOf(poll: Poll): Candidate | null {
+    if (poll.candidates.length === 0) return null;
+    return poll.candidates.reduce((best, c) => (c.votes > best.votes ? c : best), poll.candidates[0]);
+  }
+
+  function openVoteModal(poll: Poll) {
     selectedPoll = poll;
     selectedCandidate = "";
     showVoteModal = true;
     showResults = false;
   }
 
-  function openResultsModal(poll: any) {
+  function openResultsModal(poll: Poll) {
     selectedPoll = poll;
     showResults = true;
     showVoteModal = true;
   }
 
   function closeModal() {
+    if (votingInProgress) return;
     showVoteModal = false;
     showResults = false;
     selectedPoll = null;
     selectedCandidate = "";
   }
 
-  function selectCandidate(candidateKey: any) {
-    selectedCandidate = candidateKey;
-  }
-
   async function submitVote() {
-    if (!selectedPoll || !userValue || !selectedCandidate) {
-      errorToastMessage($_("polls.select_option"));
+    const me = $user?.shortname;
+    if (!selectedPoll || !me || !selectedCandidate) {
+      toasts.error($_("polls.select_option"));
       return;
     }
 
     votingInProgress = true;
     try {
-      const candidateObj = selectedPoll.candidates.find(
-        (c: any) => c.key === selectedCandidate,
-      );
-
+      const candidateObj = selectedPoll.candidates.find((c) => c.key === selectedCandidate);
       if (!candidateObj) {
-        errorToastMessage($_("polls.invalid_candidate"));
+        toasts.error($_("polls.invalid_candidate"));
+        return;
+      }
+      if (candidateObj.voters.includes(me)) {
+        toasts.error($_("polls.already_voted"));
         return;
       }
 
-      if (candidateObj.voters.includes(userValue.shortname)) {
-        errorToastMessage($_("polls.already_voted"));
-        votingInProgress = false;
-        return;
-      }
-
-      for (const otherCandidate of selectedPoll.candidates) {
-        if (
-          otherCandidate.key !== selectedCandidate &&
-          otherCandidate.voters.includes(userValue.shortname)
-        ) {
-          const filteredVoters = otherCandidate.voters.filter(
-            (voter: any) => voter !== userValue.shortname,
-          );
-
+      for (const other of selectedPoll.candidates) {
+        if (other.key !== selectedCandidate && other.voters.includes(me)) {
           await userVote(
             selectedPoll.shortname,
-            otherCandidate.key,
-            filteredVoters,
+            other.key,
+            other.voters.filter((voter) => voter !== me),
             true,
           );
         }
       }
 
-      let updatedVoters = [...candidateObj.voters];
-      if (!updatedVoters.includes(userValue.shortname)) {
-        updatedVoters.push(userValue.shortname);
-      }
-
-      const hasExistingAttachment = candidateObj.attachment != null;
-
       const response = await userVote(
         selectedPoll.shortname,
         selectedCandidate,
-        updatedVoters,
-        hasExistingAttachment,
+        [...candidateObj.voters, me],
+        candidateObj.attachment != null,
       );
 
       if (response) {
-        successToastMessage($_("polls.vote_success"));
+        toasts.success($_("polls.vote_success"));
+        votingInProgress = false;
         closeModal();
         await loadPolls();
       } else {
-        errorToastMessage($_("polls.vote_error"));
+        toasts.error($_("polls.vote_error"));
       }
     } catch (error) {
-      console.error("Error submitting vote:", error);
-      errorToastMessage($_("polls.vote_error"));
+      log.error("Error submitting vote:", error);
+      toasts.error($_("polls.vote_error"));
     } finally {
       votingInProgress = false;
     }
   }
-
 </script>
 
-<div class="polls-container min-h-screen bg-white" class:rtl={$isRTL}>
-  <!-- Header -->
-  <div class="polls-header flex justify-between items-center mb-10 pt-10 px-8 max-w-7xl mx-auto">
-    <div class="header-text">
-      <h1 class="text-3xl font-bold text-gray-900 mb-2">{$_("polls.title")}</h1>
-      <p class="text-gray-500 text-sm">{$_("polls.description")}</p>
-    </div>
-    <button class="bg-indigo-600 hover:bg-indigo-700 text-white px-5 py-2 rounded-full font-medium flex items-center gap-2 transition-colors shadow-sm text-sm" onclick={() => showCreateModal = true}>
-      <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 4v16m8-8H4"></path></svg>
-      {$_("polls.create_poll")}
-    </button>
+<div class="mx-auto max-w-6xl px-4 sm:px-6 py-6 sm:py-8">
+  <PageHeader title={$_("polls.title")} description={$_("polls.description")} icon={ChartOutline}>
+    {#snippet actions()}
+      <button type="button" class="app-btn app-btn-primary" onclick={() => (showCreateModal = true)}>
+        <PlusOutline size="sm" aria-hidden="true" />
+        {$_("polls.create_poll")}
+      </button>
+    {/snippet}
+  </PageHeader>
+
+  <div class="flex flex-wrap items-center gap-2 mb-4" aria-label={$_("statistics")} role="group">
+    <Badge>
+      <ChartOutline size="sm" aria-hidden="true" />
+      {$_("route_labels.label_total")}: {polls.length}
+    </Badge>
+    <Badge variant="success">
+      <ClockOutline size="sm" aria-hidden="true" />
+      {$_("route_labels.label_active")}: {activeCount}
+    </Badge>
+    <Badge>
+      <CheckCircleOutline size="sm" aria-hidden="true" />
+      {$_("route_labels.label_ended")}: {polls.length - activeCount}
+    </Badge>
   </div>
 
-  <div class="max-w-7xl mx-auto border-t border-gray-100 mb-8 pt-8 px-8">
-    <!-- Stats Row -->
-    <div class="polls-stats flex gap-4 mb-10">
-      <div class="stat-pill flex items-center gap-2 px-5 py-2 bg-white border border-gray-100 rounded-full text-sm shadow-sm shadow-[0_0_0_1px_rgba(0,0,0,0.04)]">
-        <ChartOutline class="w-4 h-4 text-indigo-500" />
-        <span class="text-gray-500">{$_("route_labels.label_total")}</span> <span class="font-bold text-gray-900 ml-1">{polls.length}</span>
+  <CatalogToolbar
+    class="mb-6"
+    bind:search={searchTerm}
+    placeholder={$_("polls.search_placeholder")}
+    onSearch={(q) => (searchTerm = q)}
+  >
+    {#snippet filters()}
+      <div class="inline-flex rounded-control border border-border bg-surface-2 p-0.5" role="group" aria-label={$_("polls.filter_label")}>
+        {#each statusFilters as filter (filter.id)}
+          <button
+            type="button"
+            class="px-3 h-8 rounded-control text-sm font-medium transition-colors cursor-pointer
+ {filterStatus === filter.id ? 'bg-primary text-text-on-primary' : 'text-text-muted hover:text-text hover:bg-surface-3'}"
+            aria-pressed={filterStatus === filter.id}
+            onclick={() => (filterStatus = filter.id)}
+          >
+            {filter.label()}
+          </button>
+        {/each}
       </div>
-      <div class="stat-pill flex items-center gap-2 px-5 py-2 bg-white border border-gray-100 rounded-full text-sm shadow-sm shadow-[0_0_0_1px_rgba(0,0,0,0.04)]">
-        <ClockOutline class="w-4 h-4 text-green-500" />
-        <span class="text-gray-500">{$_("route_labels.label_active")}</span> <span class="font-bold text-gray-900 ml-1">{polls.filter(p => p.isActive).length}</span>
-      </div>
-      <div class="stat-pill flex items-center gap-2 px-5 py-2 bg-white border border-gray-100 rounded-full text-sm shadow-sm shadow-[0_0_0_1px_rgba(0,0,0,0.04)]">
-        <CheckCircleOutline class="w-4 h-4 text-gray-400" />
-        <span class="text-gray-500">{$_("route_labels.label_ended")}</span> <span class="font-bold text-gray-900 ml-1">{polls.filter(p => !p.isActive).length}</span>
-      </div>
-    </div>
+    {/snippet}
+  </CatalogToolbar>
 
-    <!-- Controls Row -->
-    <div class="polls-controls flex flex-col sm:flex-row gap-6 mb-8 items-center">
-      <div class="search-wrapper relative w-full sm:max-w-md">
-        <SearchOutline class="absolute left-4 top-1/2 transform -translate-y-1/2 w-4 h-4 text-gray-400" />
-        <input
-          type="text"
-          bind:value={searchTerm}
-          placeholder={$_("polls.search_placeholder")}
-          class="w-full pl-10 pr-4 py-2 bg-white border border-gray-200 rounded-full text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500 focus:border-transparent shadow-sm"
-        />
-      </div>
-
-      <div class="filter-pills flex items-center bg-white border border-gray-200 rounded-full p-1 shadow-sm h-10">
-        <button
-          class="px-6 h-full rounded-full text-sm font-medium transition-colors {filterStatus === 'all' ? 'bg-gray-900 text-white' : 'text-gray-500 hover:text-gray-900'}"
-          onclick={() => filterStatus = 'all'}
-        >
-          {$_("polls.filter_all")}
+  {#if loading && polls.length === 0}
+    <LoadingState label={$_("polls.loading")} />
+  {:else if loadError}
+    <ErrorState title={$_("polls.load_error")} error={loadError} onRetry={loadPolls} />
+  {:else if filteredPolls.length === 0}
+    <EmptyState
+      icon={ChartOutline}
+      title={$_("polls.no_polls")}
+      hint={polls.length === 0 ? $_("polls.no_polls_description") : $_("search_filters.no_results.description")}
+    >
+      {#if polls.length === 0}
+        <button type="button" class="app-btn app-btn-primary app-btn-sm" onclick={() => (showCreateModal = true)}>
+          <PlusOutline size="sm" aria-hidden="true" />
+          {$_("polls.create_poll")}
         </button>
-        <button
-          class="px-6 h-full rounded-full text-sm font-medium transition-colors {filterStatus === 'active' ? 'bg-gray-900 text-white' : 'text-gray-500 hover:text-gray-900'}"
-          onclick={() => filterStatus = 'active'}
-        >
-          {$_("polls.filter_active")}
-        </button>
-        <button
-          class="px-6 h-full rounded-full text-sm font-medium transition-colors {filterStatus === 'ended' ? 'bg-gray-900 text-white' : 'text-gray-500 hover:text-gray-900'}"
-          onclick={() => filterStatus = 'ended'}
-        >
-          {$_("polls.filter_ended")}
-        </button>
-      </div>
-    </div>
-
-    <!-- Polls Grid -->
-    <div class="polls-content min-h-100">
-      {#if loading}
-        <div class="flex justify-center items-center h-64">
-          <div class="spinner spinner-lg"></div>
-        </div>
-      {:else if filteredPolls.length === 0}
-        <div class="empty-state flex flex-col items-center justify-center py-16 text-gray-500">
-          <h3 class="text-xl font-medium text-gray-900 mb-1">{$_("polls.no_polls")}</h3>
-        </div>
-      {:else}
-        <div class="grid grid-cols-1 md:grid-cols-2 gap-6 pb-20">
-          {#each filteredPolls as poll (poll.shortname)}
-            <div class="bg-white rounded-2xl p-8 border border-gray-100 shadow-sm hover:shadow-md transition-shadow relative shadow-[0_0_0_1px_rgba(0,0,0,0.04)]">
-              
-              <!-- Card Top -->
-              <div class="flex justify-between items-start mb-6">
-                <div class="flex items-center gap-3">
-                  <div class="w-10 h-10 rounded-full bg-gray-100 flex items-center justify-center text-gray-500 font-semibold text-xs border border-gray-200">
-                    {poll.createdBy.substring(0, 2).toUpperCase()}
-                  </div>
-                  <div>
-                    <h4 class="text-sm font-semibold text-gray-800 tracking-tight">{poll.createdBy}</h4>
-                    <p class="text-[11px] text-gray-400 font-medium">{formatDate(poll.createdAt, "relative", $locale)}</p>
+      {/if}
+    </EmptyState>
+  {:else}
+    <LoadingState variant="overlay" {loading}>
+      <ul class="grid grid-cols-1 md:grid-cols-2 gap-6 list-none p-0 m-0">
+        {#each filteredPolls as poll (poll.shortname)}
+          {@const leading = leadingOf(poll)}
+          <li class="flex">
+            <Card class="w-full flex flex-col" padding="md">
+              <div class="flex flex-wrap items-start justify-between gap-3 mb-4">
+                <div class="flex items-center gap-3 min-w-0">
+                  <Avatar alt={poll.createdBy} size="40" />
+                  <div class="min-w-0">
+                    <p class="text-sm font-semibold text-text truncate">{poll.createdBy || $_("common.unknown")}</p>
+                    <p class="text-xs text-text-faint">{formatDate(poll.createdAt, "relative", $locale)}</p>
                   </div>
                 </div>
-                <div class="px-3 py-1 rounded-full text-[11px] font-bold tracking-wide uppercase {poll.isActive ? 'bg-green-50 text-green-600' : 'bg-gray-100 text-gray-500'}">
+                <Badge variant={poll.isActive ? "success" : "neutral"} size="sm">
                   {poll.isActive ? $_("polls.filter_active") : $_("polls.filter_ended")}
-                </div>
+                </Badge>
               </div>
 
-              <!-- Content -->
-              <h3 class="text-xl font-bold text-gray-900 mb-3 tracking-tight">{poll.title}</h3>
-              <p class="text-[13px] text-gray-500 mb-8 line-clamp-2 leading-relaxed">
-                {poll.description}
-              </p>
+              <h3 class="text-lg font-semibold text-text mb-1">{titleOf(poll)}</h3>
+              {#if descriptionOf(poll)}
+                <p class="text-sm text-text-muted mb-5 line-clamp-2">{descriptionOf(poll)}</p>
+              {/if}
 
-              <!-- Leading Option (if any candidate has votes or is a valid array) -->
-              <div class="mb-8">
-                {#if poll.candidates.length > 0}
-                   {@const sorted = [...poll.candidates].sort((a,b) => b.votes - a.votes)}
-                   {@const leading = sorted[0]}
-                   <div class="flex justify-between items-center text-xs mb-2.5">
-                     <span class="text-gray-500 font-medium">{$_("polls.leading")}: <span class="text-gray-700">{leading.name}</span></span>
-                     <span class="font-bold text-indigo-600">{leading.percentage}%</span>
-                   </div>
-                   <div class="w-full h-1.5 bg-gray-100 rounded-full overflow-hidden">
-                     <div class="h-full bg-indigo-500 rounded-full transition-all duration-300" style="width: {leading.percentage}%"></div>
-                   </div>
-                {/if}
-              </div>
+              {#if leading}
+                <div class="mb-5">
+                  <div class="flex justify-between items-center text-xs mb-1.5">
+                    <span class="text-text-muted">
+                      {$_("polls.leading")}: <span class="text-text font-medium">{leading.name}</span>
+                    </span>
+                    <span class="font-semibold text-primary tabular-nums">{leading.percentage}%</span>
+                  </div>
+                  <div
+                    class="w-full h-1.5 bg-surface-3 rounded-full overflow-hidden"
+                    role="progressbar"
+                    aria-valuenow={leading.percentage}
+                    aria-valuemin="0"
+                    aria-valuemax="100"
+                    aria-label={leading.name}
+                  >
+                    <div class="h-full bg-primary rounded-full transition-[width]" style="width: {leading.percentage}%"></div>
+                  </div>
+                </div>
+              {/if}
 
-              <!-- Footer Stats and Actions -->
-              <div class="flex items-center justify-between pt-5 border-t border-gray-100 mt-auto">
-                <div class="flex items-center gap-4 text-[11px] font-medium text-gray-400">
-                  <span class="flex items-center gap-1.5"><UserOutline class="w-3.5 h-3.5"/> {$_("polls.votes_short", { values: { count: poll.totalVotes } })}</span>
-                  <span>{$_("polls.options_count", { values: { count: poll.candidates.length } })}</span>
-                  <span>{poll.tags.length > 0 ? poll.tags.join(', ') : $_("polls.default_tag")}</span>
+              <div class="flex flex-wrap items-center justify-between gap-3 pt-4 border-t border-border mt-auto">
+                <div class="flex flex-wrap items-center gap-3 text-xs text-text-faint">
+                  <span class="inline-flex items-center gap-1 tabular-nums">
+                    <UserOutline size="xs" aria-hidden="true" />
+                    {$_("polls.votes_short", { values: { count: poll.totalVotes } })}
+                  </span>
+                  <span class="tabular-nums">{$_("polls.options_count", { values: { count: poll.candidates.length } })}</span>
+                  {#if poll.tags.length > 0}
+                    <span>{poll.tags.join(", ")}</span>
+                  {/if}
                 </div>
 
-                <div class="flex items-center gap-3">
-                  <button class="flex items-center gap-1.5 px-4 py-1.5 rounded-full bg-gray-50 hover:bg-gray-100 text-gray-600 border border-gray-200 text-xs font-semibold transition-colors" onclick={() => openResultsModal(poll)}>
-                    <EyeOutline class="w-3.5 h-3.5"/> {$_("polls.results_title")}
+                <div class="flex items-center gap-2">
+                  <button type="button" class="app-btn app-btn-secondary app-btn-sm" onclick={() => openResultsModal(poll)}>
+                    <EyeOutline size="sm" aria-hidden="true" />
+                    {$_("polls.results_title")}
                   </button>
-
                   {#if poll.hasVoted}
-                    <button class="flex items-center gap-1.5 px-4 py-1.5 rounded-full bg-green-50 text-green-600 border border-green-100 text-xs font-semibold transition-colors cursor-default">
-                      <CheckCircleOutline class="w-3.5 h-3.5"/> {$_("polls.voted")}
-                    </button>
+                    <Badge variant="success">
+                      <CheckCircleOutline size="sm" aria-hidden="true" />
+                      {$_("polls.voted")}
+                    </Badge>
                   {:else if poll.isActive}
-                    <button class="flex items-center gap-1.5 px-5 py-1.5 rounded-full bg-indigo-600 hover:bg-indigo-700 text-white shadow-sm shadow-indigo-200 text-xs font-semibold transition-colors" onclick={() => openVoteModal(poll)}>
+                    <button type="button" class="app-btn app-btn-primary app-btn-sm" onclick={() => openVoteModal(poll)}>
                       {$_("polls.vote_button")}
                     </button>
                   {/if}
                 </div>
               </div>
-
-            </div>
-          {/each}
-        </div>
-      {/if}
-    </div>
-  </div>
+            </Card>
+          </li>
+        {/each}
+      </ul>
+    </LoadingState>
+  {/if}
 </div>
 
-<!-- Vote/Results Modal -->
+{#snippet results(poll: Poll)}
+  <ul class="space-y-5 list-none p-0 m-0">
+    {#each poll.candidates as candidate (candidate.key)}
+      <li>
+        <div class="flex justify-between items-end mb-1.5">
+          <span class="text-sm text-text font-medium">{candidate.name}</span>
+          <span class="text-xs font-semibold text-primary tabular-nums">{candidate.percentage}%</span>
+        </div>
+        <div
+          class="w-full h-2 bg-surface-3 rounded-full overflow-hidden mb-1"
+          role="progressbar"
+          aria-valuenow={candidate.percentage}
+          aria-valuemin="0"
+          aria-valuemax="100"
+          aria-label={candidate.name}
+        >
+          <div class="h-full bg-primary rounded-full" style="width: {candidate.percentage}%"></div>
+        </div>
+        <div class="text-xs text-text-faint tabular-nums">{$_("polls.votes_short", { values: { count: candidate.votes } })}</div>
+      </li>
+    {/each}
+  </ul>
+{/snippet}
+
 {#if showVoteModal && selectedPoll}
-  <Modal
-    onClose={closeModal}
-    title={selectedPoll.title}
-    ariaLabel={selectedPoll.title}
-    size="lg"
-  >
+  {@const poll = selectedPoll}
+  <Modal onClose={closeModal} title={titleOf(poll)} size="lg" dismissable={!votingInProgress}>
     {#snippet icon()}
-      <ChartOutline class="w-6 h-6" />
+      <ChartOutline size="lg" />
     {/snippet}
 
     {#if showResults}
-      <div class="space-y-6">
-        {#each selectedPoll.candidates as candidate (candidate.key)}
-          <div>
-            <div class="flex justify-between items-end mb-2">
-              <span class="text-[13px] text-gray-800 font-semibold">{candidate.name}</span>
-              <span class="text-xs font-bold text-indigo-600">{candidate.percentage}%</span>
-            </div>
-            <div class="w-full h-2 bg-gray-100 rounded-full overflow-hidden mb-1">
-              <div class="h-full bg-indigo-500 rounded-full" style="width: {candidate.percentage}%"></div>
-            </div>
-            <div class="text-[11px] text-gray-400 font-medium">{$_("polls.votes_short", { values: { count: candidate.votes } })}</div>
-          </div>
-        {/each}
-      </div>
-    {:else if selectedPoll.isActive && !selectedPoll.hasVoted}
-      <div class="space-y-3">
-        {#each selectedPoll.candidates as candidate (candidate.key)}
-          <button class="w-full flex items-center gap-4 p-5 rounded-2xl border-2 transition-all text-left {selectedCandidate === candidate.key ? 'border-indigo-600 bg-indigo-50/30' : 'border-gray-100 hover:border-indigo-200'}" onclick={() => selectCandidate(candidate.key)}>
-            <div class="shrink-0">
-              {#if selectedCandidate === candidate.key}
-                <div class="w-5 h-5 rounded-full bg-indigo-600 flex items-center justify-center">
-                   <svg class="w-3 h-3 text-white" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="3" d="M5 13l4 4L19 7"></path></svg>
-                </div>
-              {:else}
-                <div class="w-5 h-5 rounded-full border-2 border-gray-300"></div>
+      {@render results(poll)}
+    {:else if poll.isActive && !poll.hasVoted}
+      <div class="space-y-3" role="radiogroup" aria-label={$_("polls.select_option")}>
+        {#each poll.candidates as candidate (candidate.key)}
+          {@const chosen = selectedCandidate === candidate.key}
+          <button
+            type="button"
+            role="radio"
+            aria-checked={chosen}
+            class="w-full flex items-center gap-4 p-4 rounded-card border-2 transition-colors text-start cursor-pointer
+ {chosen ? 'border-primary bg-primary-soft' : 'border-border hover:border-border-strong'}"
+            onclick={() => (selectedCandidate = candidate.key)}
+          >
+            <span
+              class="shrink-0 w-5 h-5 rounded-full border-2 flex items-center justify-center
+ {chosen ? 'border-primary bg-primary' : 'border-border-strong'}"
+              aria-hidden="true"
+            >
+              {#if chosen}
+                <svg class="w-3 h-3 text-text-on-primary" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path stroke-linecap="round" stroke-linejoin="round" stroke-width="3" d="M5 13l4 4L19 7" />
+                </svg>
               {/if}
-            </div>
-            <span class="text-sm font-semibold text-gray-800">{candidate.name}</span>
+            </span>
+            <span class="text-sm font-medium text-text">{candidate.name}</span>
           </button>
         {/each}
       </div>
     {:else}
-      <div class="text-center pb-6 border-b border-gray-100 mb-6">
-        {#if selectedPoll.hasVoted}
-           <div class="inline-flex items-center justify-center gap-2 bg-green-50 text-green-700 px-5 py-2.5 rounded-full font-semibold text-sm">
-             <CheckCircleOutline class="w-4 h-4" /> {$_("polls.voted_for")}: <span class="text-green-800">{selectedPoll.userVote}</span>
-           </div>
+      <div class="text-center pb-5 border-b border-border mb-5">
+        {#if poll.hasVoted}
+          <Badge variant="success">
+            <CheckCircleOutline size="sm" aria-hidden="true" />
+            {$_("polls.voted_for")}: {poll.userVote}
+          </Badge>
         {:else}
-           <div class="inline-flex items-center justify-center gap-2 bg-gray-100 text-gray-600 px-5 py-2.5 rounded-full font-semibold text-sm">
-             <ClockOutline class="w-4 h-4" /> {$_("polls.poll_ended")}
-           </div>
+          <Badge>
+            <ClockOutline size="sm" aria-hidden="true" />
+            {$_("polls.poll_ended")}
+          </Badge>
         {/if}
       </div>
-
-      <div class="space-y-6">
-        {#each selectedPoll.candidates as candidate (candidate.key)}
-          <div>
-            <div class="flex justify-between items-end mb-2">
-              <span class="text-[13px] text-gray-800 font-semibold">{candidate.name}</span>
-              <span class="text-xs font-bold text-indigo-600">{candidate.percentage}%</span>
-            </div>
-            <div class="w-full h-2 bg-gray-100 rounded-full overflow-hidden mb-1">
-              <div class="h-full bg-indigo-500 rounded-full" style="width: {candidate.percentage}%"></div>
-            </div>
-            <div class="text-[11px] text-gray-400 font-medium">{$_("polls.votes_short", { values: { count: candidate.votes } })}</div>
-          </div>
-        {/each}
-      </div>
+      {@render results(poll)}
     {/if}
 
     {#snippet footer()}
-      <button class="px-6 py-2.5 rounded-xl text-sm font-semibold text-gray-600 hover:bg-gray-200 transition-colors" onclick={closeModal}>
+      <button type="button" class="app-btn app-btn-secondary" onclick={closeModal} disabled={votingInProgress}>
         {$_("polls.cancel")}
       </button>
-      {#if !showResults && selectedPoll.isActive && !selectedPoll.hasVoted}
-        <button class="px-8 py-2.5 rounded-xl text-sm font-semibold text-white bg-indigo-600 hover:bg-indigo-700 transition-colors disabled:opacity-50 disabled:cursor-not-allowed flex items-center gap-2 shadow-sm shadow-indigo-200" onclick={submitVote} disabled={!selectedCandidate || votingInProgress}>
+      {#if !showResults && poll.isActive && !poll.hasVoted}
+        <button
+          type="button"
+          class="app-btn app-btn-primary"
+          onclick={submitVote}
+          disabled={!selectedCandidate || votingInProgress}
+          aria-busy={votingInProgress}
+        >
           {#if votingInProgress}
-             <div class="w-4 h-4 border-2 border-white/30 border-t-white rounded-full animate-spin"></div>
+            <span class="spinner spinner-xs spinner-white" aria-hidden="true"></span>
           {/if}
           {$_("polls.vote_button")}
         </button>

@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { log } from "@/lib/logger";
     import { onMount } from 'svelte';
     import { Dmart, QueryType } from '@edraj/tsdmart';
     import { _ } from 'svelte-i18n';
@@ -108,7 +109,7 @@
                 updateFilteredRoles();
             }
         } catch (error) {
-            console.error('Failed to load roles:', error);
+            log.error('Failed to load roles:', error);
         } finally {
             loadingRoles = false;
         }
@@ -128,7 +129,7 @@
                 updateFilteredGroups();
             }
         } catch (error) {
-            console.error('Failed to load groups:', error);
+            log.error('Failed to load groups:', error);
         } finally {
             loadingGroups = false;
         }
@@ -242,7 +243,7 @@
 
 <div class={fullWidth ? 'form-card-full' : 'form-card'}>
     <div class="form-container">
-        <h2 class="section-title">User Information</h2>
+        <h2 class="section-title">{$_("view_user.user_information")}</h2>
 
         <form bind:this={form} class="form-body">
             <!-- Passwords are OPTIONAL: an admin must be able to edit any other
@@ -251,7 +252,7 @@
                  minlength only applies once a value is typed. -->
             {#if !isCreate}
                 <div class="field-group">
-                    <label for="old_password" class="field-label">Old Password</label>
+                    <label for="old_password" class="field-label">{$_("meta_user_form.old_password")}</label>
                     <input
                         id="old_password"
                         type="password"
@@ -260,7 +261,7 @@
                         bind:value={formData.old_password}
                         minlength={8}
                     />
-                    <p class="field-help">Only needed when changing the password</p>
+                    <p class="field-help">{$_("meta_user_form.old_password_help")}</p>
                 </div>
             {/if}
 
@@ -276,30 +277,30 @@
                     bind:value={formData.password}
                     minlength={8}
                 />
-                <p class="field-help">Minimum 8 characters; leave blank to keep unchanged</p>
+                <p class="field-help">{$_("meta_user_form.password_help")}</p>
             </div>
 
             <FieldGate field="email" space="management" subpath="/users" resourceType="user">
             <div class="field-group">
-                <label for="email" class="field-label">Email</label>
+                <label for="email" class="field-label">{$_("view_user.email")}</label>
                 <input
                     id="email"
                     type="email"
                     class="input-field"
                     class:input-error={!isEmailValid && emailTouched}
-                    placeholder="user@example.com"
+                    placeholder={$_("labels.email_example")}
                     bind:value={formData.email}
                     onblur={() => emailTouched = true}
                 />
                 {#if !isEmailValid && emailTouched}
-                    <p class="error-text">Please enter a valid email address</p>
+                    <p class="error-text">{$_("InvalidEmail")}</p>
                 {/if}
             </div>
             </FieldGate>
 
             <FieldGate field="msisdn" space="management" subpath="/users" resourceType="user">
             <div class="field-group">
-                <label for="msisdn" class="field-label">Mobile Number (MSISDN)</label>
+                <label for="msisdn" class="field-label">{$_("view_user.mobile_number")}</label>
                 <input
                     id="msisdn"
                     class="input-field"
@@ -310,8 +311,8 @@
             </FieldGate>
 
             {#if !isCreate}
-                <div class="field-group">
-                    <label class="field-label">Failed Login Attempts</label>
+                <div class="field-group" role="group" aria-labelledby="failed-attempts-label">
+                    <span class="field-label" id="failed-attempts-label">{$_("meta_user_form.failed_login_attempts")}</span>
                     <div class="checkbox-row compact">
                         <span class="attempt-count" class:attempt-count-warn={showClearLockout}>
                             {failedAttempts}
@@ -319,7 +320,7 @@
                         {#if showClearLockout}
                             <div class="checkbox-group">
                                 <input type="checkbox" id="reset_attempt_count" class="checkbox" bind:checked={resetAttempts} onchange={applyAttemptReset} />
-                                <label for="reset_attempt_count" class="checkbox-label">Clear on save</label>
+                                <label for="reset_attempt_count" class="checkbox-label">{$_("meta_user_form.clear_on_save")}</label>
                             </div>
                         {/if}
                     </div>
@@ -335,21 +336,21 @@
             <div class="checkbox-row compact">
                 <div class="checkbox-group">
                     <input type="checkbox" id="force_password_change" class="checkbox" bind:checked={formData.force_password_change} />
-                    <label for="force_password_change" class="checkbox-label">Force Change</label>
+                    <label for="force_password_change" class="checkbox-label">{$_("view_user.force_password_change")}</label>
                 </div>
                 <div class="checkbox-group">
                     <input type="checkbox" id="is_email_verified" class="checkbox" bind:checked={formData.is_email_verified} />
-                    <label for="is_email_verified" class="checkbox-label">Email Verified</label>
+                    <label for="is_email_verified" class="checkbox-label">{$_("view_user.email_verified")}</label>
                 </div>
                 <div class="checkbox-group">
                     <input type="checkbox" id="is_msisdn_verified" class="checkbox" bind:checked={formData.is_msisdn_verified} />
-                    <label for="is_msisdn_verified" class="checkbox-label">Phone Verified</label>
+                    <label for="is_msisdn_verified" class="checkbox-label">{$_("view_user.phone_verified")}</label>
                 </div>
             </div>
 
             <div class="grid-row">
                 <div class="field-group">
-                    <label for="user_type" class="field-label">User Type</label>
+                    <label for="user_type" class="field-label">{$_("meta_user_form.user_type")}</label>
                     <select id="user_type" class="input-field" bind:value={formData.type}>
                         {#each userTypeOptions as option (option.value)}
                             <option value={option.value}>{option.name}</option>
@@ -357,8 +358,8 @@
                     </select>
                 </div>
                 <div class="field-group">
-                    <label for="language" class="field-label">Preferred Language</label>
-                    <input id="language" class="input-field" bind:value={formData.language} placeholder="en, ar, etc." />
+                    <label for="language" class="field-label">{$_("meta_user_form.preferred_language")}</label>
+                    <input id="language" class="input-field" bind:value={formData.language} placeholder={$_("labels.language_example")} />
                 </div>
             </div>
 
@@ -368,7 +369,7 @@
                     class="accordion-header"
                     onclick={() => (isRolesOpen = !isRolesOpen)}
                 >
-                    <span class="accordion-title">Roles and Groups</span>
+                    <span class="accordion-title">{$_("meta_user_form.roles_and_groups")}</span>
                     <svg class="accordion-icon" class:rotated={isRolesOpen} viewBox="0 0 24 24" fill="none" stroke="currentColor">
                         <path d="M19 9l-7 7-7-7" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" />
                     </svg>
@@ -377,8 +378,7 @@
                 {#if isRolesOpen}
                     <div class="accordion-content">
                         <div class="field-group">
-                            <!-- svelte-ignore a11y_label_has_associated_control -->
-                            <label class="field-label">Roles</label>
+                            <p class="field-label">{$_("roles")}</p>
                             {#if loadingRoles}
                                 <div class="loading-pulse"></div>
                             {:else}
@@ -389,7 +389,7 @@
                                         </svg>
                                         <input
                                             class="input-field search-input"
-                                            placeholder="Search roles..."
+                                            placeholder={$_("search_roles")}
                                             bind:value={rolesSearchTerm}
                                             onfocus={() => showRolesDropdown = true}
                                         />
@@ -405,7 +405,7 @@
                                                 >
                                                     <span>{role.key}</span>
                                                     {#if formData.roles.includes(role.value)}
-                                                        <span class="badge">Selected</span>
+                                                        <span class="badge">{$_("selected")}</span>
                                                     {/if}
                                                 </button>
                                             {/each}
@@ -422,15 +422,14 @@
                                             </span>
                                         {/each}
                                     {:else}
-                                        <p class="empty-text">No roles added</p>
+                                        <p class="empty-text">{$_("no_roles_assigned")}</p>
                                     {/if}
                                 </div>
                             {/if}
                         </div>
 
                         <div class="field-group">
-                            <!-- svelte-ignore a11y_label_has_associated_control -->
-                            <label class="field-label">Groups</label>
+                            <p class="field-label">{$_("view_user.groups")}</p>
                             {#if loadingGroups}
                                 <div class="loading-pulse"></div>
                             {:else}
@@ -441,7 +440,7 @@
                                         </svg>
                                         <input
                                             class="input-field search-input"
-                                            placeholder="Search groups..."
+                                            placeholder={$_("labels.search_groups")}
                                             bind:value={groupsSearchTerm}
                                             onfocus={() => showGroupsDropdown = true}
                                         />
@@ -457,7 +456,7 @@
                                                 >
                                                     <span>{group.key}</span>
                                                     {#if formData.groups.includes(group.value)}
-                                                        <span class="badge">Selected</span>
+                                                        <span class="badge">{$_("selected")}</span>
                                                     {/if}
                                                 </button>
                                             {/each}
@@ -474,7 +473,7 @@
                                             </span>
                                         {/each}
                                     {:else}
-                                        <p class="empty-text">No groups added</p>
+                                        <p class="empty-text">{$_("meta_user_form.no_groups")}</p>
                                     {/if}
                                 </div>
                             {/if}
@@ -489,7 +488,7 @@
                     class="accordion-header"
                     onclick={() => (isSocialOpen = !isSocialOpen)}
                 >
-                    <span class="accordion-title">Social and External IDs</span>
+                    <span class="accordion-title">{$_("meta_user_form.social_ids")}</span>
                     <svg class="accordion-icon" class:rotated={isSocialOpen} viewBox="0 0 24 24" fill="none" stroke="currentColor">
                         <path d="M19 9l-7 7-7-7" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" />
                     </svg>
@@ -498,28 +497,28 @@
                 {#if isSocialOpen}
                     <div class="accordion-content">
                         <div class="field-group">
-                            <label for="firebase_token" class="field-label">Firebase Token</label>
-                            <textarea id="firebase_token" class="textarea-field" placeholder="Firebase authentication token" bind:value={formData.firebase_token} rows={2}></textarea>
+                            <label for="firebase_token" class="field-label">{$_("meta_user_form.firebase_token")}</label>
+                            <textarea id="firebase_token" class="textarea-field" placeholder={$_("labels.firebase_token")} bind:value={formData.firebase_token} rows={2}></textarea>
                         </div>
 
                         <div class="grid-row">
                             <div class="field-group">
-                                <label for="google_id" class="field-label">Google ID</label>
+                                <label for="google_id" class="field-label">{$_("meta_user_form.google_id")}</label>
                                 <input id="google_id" class="input-field" bind:value={formData.google_id} />
                             </div>
                             <div class="field-group">
-                                <label for="facebook_id" class="field-label">Facebook ID</label>
+                                <label for="facebook_id" class="field-label">{$_("meta_user_form.facebook_id")}</label>
                                 <input id="facebook_id" class="input-field" bind:value={formData.facebook_id} />
                             </div>
                             <div class="field-group">
-                                <label for="apple_id" class="field-label">Apple ID</label>
+                                <label for="apple_id" class="field-label">{$_("meta_user_form.apple_id")}</label>
                                 <input id="apple_id" class="input-field" bind:value={formData.apple_id} />
                             </div>
                         </div>
 
                         <div class="field-group">
-                            <label for="social_avatar_url" class="field-label">Social Profile Image URL</label>
-                            <input id="social_avatar_url" type="url" class="input-field" bind:value={formData.social_avatar_url} placeholder="https://..." />
+                            <label for="social_avatar_url" class="field-label">{$_("meta_user_form.social_avatar_url")}</label>
+                            <input id="social_avatar_url" type="url" class="input-field" bind:value={formData.social_avatar_url} placeholder={$_("labels.url_placeholder")} />
                         </div>
                     </div>
                 {/if}
@@ -537,7 +536,7 @@
         max-width: 56rem;
         margin: 0.5rem auto;
         padding: 1.5rem;
-        border: 1px solid #e5e7eb;
+        border: 1px solid var(--color-border);
     }
 
     .form-card-full {
@@ -557,7 +556,7 @@
     .section-title {
         font-size: 1.25rem;
         font-weight: 700;
-        color: #111827;
+        color: var(--color-text);
         margin: 0;
     }
 
@@ -576,7 +575,7 @@
     .field-label {
         font-weight: 600;
         font-size: 0.8125rem;
-        color: #374151;
+        color: var(--color-text);
         display: flex;
         align-items: center;
     }
@@ -584,56 +583,56 @@
 .input-field {
         width: 100%;
         padding: 0.5rem 0.75rem;
-        border: 1.5px solid #e5e7eb;
+        border: 1.5px solid var(--color-border);
         border-radius: 8px;
         font-size: 0.875rem;
-        background: #fdfdfd;
-        color: #111827;
+        background: var(--color-surface-2);
+        color: var(--color-text);
         transition: all 0.2s ease;
     }
 
     .input-field:focus {
         outline: none;
-        border-color: #4f46e5;
+        border-color: var(--color-primary);
         background: white;
         box-shadow: 0 0 0 3px rgba(79, 70, 229, 0.1);
     }
 
     .input-field::placeholder {
-        color: #9ca3af;
+        color: var(--color-text-faint);
     }
 
     .input-error {
-        border-color: #ef4444;
+        border-color: var(--color-danger);
     }
 
     .textarea-field {
         width: 100%;
         padding: 0.5rem 0.75rem;
-        border: 1.5px solid #e5e7eb;
+        border: 1.5px solid var(--color-border);
         border-radius: 8px;
         font-size: 0.875rem;
-        background: #fdfdfd;
-        color: #111827;
+        background: var(--color-surface-2);
+        color: var(--color-text);
         resize: vertical;
         min-height: 80px;
     }
 
     .textarea-field:focus {
         outline: none;
-        border-color: #4f46e5;
+        border-color: var(--color-primary);
         background: white;
         box-shadow: 0 0 0 3px rgba(79, 70, 229, 0.1);
     }
 
     .field-help {
         font-size: 0.75rem;
-        color: #6b7280;
+        color: var(--color-text-muted);
     }
 
     .error-text {
         font-size: 0.75rem;
-        color: #ef4444;
+        color: var(--color-danger);
         margin: 0;
     }
 
@@ -653,14 +652,14 @@
     .checkbox {
         width: 1rem;
         height: 1rem;
-        border: 1.5px solid #d1d5db;
+        border: 1.5px solid var(--color-border-strong);
         border-radius: 4px;
         cursor: pointer;
     }
 
     .checkbox-label {
         font-size: 0.8125rem;
-        color: #4b5563;
+        color: var(--color-text-muted);
         font-weight: 500;
         cursor: pointer;
     }
@@ -674,18 +673,18 @@
         border-radius: 9999px;
         font-size: 0.8125rem;
         font-weight: 600;
-        background: #dcfce7;
-        color: #166534;
+        background: var(--color-success-soft);
+        color: var(--color-success);
     }
 
     .attempt-count-warn {
-        background: #fee2e2;
-        color: #991b1b;
+        background: var(--color-danger-soft);
+        color: var(--color-danger);
     }
 
     .field-hint {
         font-size: 0.75rem;
-        color: #6b7280;
+        color: var(--color-text-muted);
         margin: 0.25rem 0 0;
     }
 
@@ -702,11 +701,11 @@
     }
 
     .accordion {
-        border: 1px solid #e5e7eb;
+        border: 1px solid var(--color-border);
         border-radius: 10px;
         overflow: hidden;
         margin-top: 0.25rem;
-        background: #fafaf9;
+        background: var(--color-surface-2);
     }
 
     .accordion-header {
@@ -722,31 +721,31 @@
     }
 
     .accordion-header:hover {
-        background-color: #f3f4f6;
+        background-color: var(--color-surface-3);
     }
 
     .accordion-title {
         font-weight: 600;
-        color: #374151;
+        color: var(--color-text);
         font-size: 0.875rem;
     }
 
     .accordion-icon {
         width: 1.125rem;
         height: 1.125rem;
-        color: #9ca3af;
+        color: var(--color-text-faint);
         transition: transform 0.2s ease;
     }
 
     .accordion-icon.rotated {
         transform: rotate(180deg);
-        color: #4f46e5;
+        color: var(--color-primary);
     }
 
     .accordion-content {
         padding: 1.25rem;
         background-color: white;
-        border-top: 1px solid #e5e7eb;
+        border-top: 1px solid var(--color-border);
         display: flex;
         flex-direction: column;
         gap: 1.25rem;
@@ -762,26 +761,26 @@
 
     .search-icon {
         position: absolute;
-        left: 0.75rem;
+        inset-inline-start: 0.75rem;
         top: 50%;
         transform: translateY(-50%);
         width: 1rem;
         height: 1rem;
-        color: #9ca3af;
+        color: var(--color-text-faint);
     }
 
     .search-input {
-        padding-left: 2.25rem;
+        padding-inline-start: 2.25rem;
     }
 
     .dropdown-menu {
         position: absolute;
         top: 100%;
-        left: 0;
-        right: 0;
+        inset-inline-start: 0;
+        inset-inline-end: 0;
         margin-top: 0.25rem;
         background: white;
-        border: 1px solid #e5e7eb;
+        border: 1px solid var(--color-border);
         border-radius: 8px;
         box-shadow: 0 10px 15px -3px rgba(0, 0, 0, 0.08);
         z-index: 20;
@@ -792,11 +791,11 @@
     .dropdown-item {
         width: 100%;
         padding: 0.5rem 1rem;
-        text-align: left;
+        text-align: start;
         background: none;
         border: none;
         font-size: 0.875rem;
-        color: #4b5563;
+        color: var(--color-text-muted);
         cursor: pointer;
         display: flex;
         justify-content: space-between;
@@ -804,13 +803,13 @@
     }
 
     .dropdown-item:hover {
-        background-color: #f9fafb;
-        color: #111827;
+        background-color: var(--color-surface);
+        color: var(--color-text);
     }
 
     .badge {
-        background-color: #eef2ff;
-        color: #4f46e5;
+        background-color: var(--color-primary-soft);
+        color: var(--color-primary);
         font-size: 0.7rem;
         padding: 0.125rem 0.5rem;
         border-radius: 9999px;
@@ -824,16 +823,16 @@
         margin-top: 0.75rem;
         min-height: 2.25rem;
         padding: 0.5rem;
-        background-color: #f8fafc;
+        background-color: var(--color-surface);
         border-radius: 8px;
-        border: 1px dashed #cbd5e1;
+        border: 1px dashed var(--color-border-strong);
         align-items: center;
     }
 
     .tag {
         display: inline-flex;
         align-items: center;
-        background-color: #4f46e5;
+        background-color: var(--color-primary);
         color: white;
         padding: 0.2rem 0.75rem;
         border-radius: 6px;
@@ -842,14 +841,14 @@
     }
 
     .tag-gray {
-        background-color: #475569;
+        background-color: var(--color-text-muted);
         color: white;
     }
 
     .tag-remove {
         background: none;
         border: none;
-        margin-left: 0.375rem;
+        margin-inline-start: 0.375rem;
         cursor: pointer;
         color: white;
         opacity: 0.8;
@@ -864,7 +863,7 @@
     }
 
     .empty-text {
-        color: #94a3b8;
+        color: var(--color-text-faint);
         font-size: 0.75rem;
         margin: 0;
         width: 100%;
@@ -874,7 +873,7 @@
 
     .loading-pulse {
         height: 2.5rem;
-        background-color: #f1f5f9;
+        background-color: var(--color-surface-3);
         border-radius: 8px;
         animation: pulse 2s cubic-bezier(0.4, 0, 0.6, 1) infinite;
     }

@@ -9,6 +9,7 @@
     PlaySolid,
   } from "flowbite-svelte-icons";
   import { _ } from "@/i18n";
+  import { confirm } from "@/lib/confirm";
   import { getFileExtension } from "@shared/file-extension";
   import {
     getFileTypeIcon,
@@ -94,13 +95,14 @@
   }
 
   async function handleDelete(attachment: any) {
-    if (
-      confirm(
-        `Are you sure want to delete ${attachment.shortname} attachment`
-      ) === false
-    ) {
-      return;
-    }
+    const confirmed = await confirm({
+      title: $_("attachment_list.delete_title"),
+      body: $_("attachment_list.delete_body", {
+        values: { name: attachment.shortname },
+      }),
+      variant: "danger",
+    });
+    if (!confirmed) return;
 
     const request_dict = {
       space_name,
@@ -163,7 +165,8 @@
                     e.stopPropagation();
                     downloadFile(attachment);
                   }}
-                  title="Download"
+                  title={$_("labels.download")}
+                  aria-label={$_("labels.download")}
                 >
                   <DownloadOutline class="w-4 h-4" />
                 </button>
@@ -174,7 +177,8 @@
                       e.stopPropagation();
                       handleDelete(attachment);
                     }}
-                    title="Delete"
+                    title={$_("common.delete")}
+                    aria-label={$_("common.delete")}
                   >
                     <TrashBinSolid class="w-4 h-4" />
                   </button>
@@ -199,7 +203,8 @@
                     e.stopPropagation();
                     downloadFile(attachment);
                   }}
-                  title="Download"
+                  title={$_("labels.download")}
+                  aria-label={$_("labels.download")}
                 >
                   <DownloadOutline class="w-4 h-4" />
                 </button>
@@ -210,7 +215,8 @@
                       e.stopPropagation();
                       handleDelete(attachment);
                     }}
-                    title="Delete"
+                    title={$_("common.delete")}
+                    aria-label={$_("common.delete")}
                   >
                     <TrashBinSolid class="w-4 h-4" />
                   </button>
@@ -225,13 +231,14 @@
               <div class="audio-icon">🎵</div>
               <div class="audio-info">
                 <div class="audio-name">{attachment.shortname}</div>
-                <div class="audio-meta">Audio file</div>
+                <div class="audio-meta">{$_("attachment_list.audio_file")}</div>
               </div>
               <div class="audio-actions">
                 <button
                   class="action-btn"
                   onclick={() => downloadFile(attachment)}
-                  title="Download"
+                  title={$_("labels.download")}
+                  aria-label={$_("labels.download")}
                 >
                   <DownloadOutline class="w-4 h-4" />
                 </button>
@@ -239,7 +246,8 @@
                   <button
                     class="action-btn delete"
                     onclick={() => handleDelete(attachment)}
-                    title="Delete"
+                    title={$_("common.delete")}
+                    aria-label={$_("common.delete")}
                   >
                     <TrashBinSolid class="w-4 h-4" />
                   </button>
@@ -275,7 +283,8 @@
                 <button
                   class="action-btn preview"
                   onclick={() => openPreview(attachment)}
-                  title="Preview"
+                  title={$_("labels.preview")}
+                  aria-label={$_("labels.preview")}
                 >
                   <EyeOutline class="w-4 h-4" />
                 </button>
@@ -283,7 +292,8 @@
               <button
                 class="action-btn download"
                 onclick={() => downloadFile(attachment)}
-                title="Download"
+                title={$_("labels.download")}
+                  aria-label={$_("labels.download")}
               >
                 <DownloadOutline class="w-4 h-4" />
               </button>
@@ -291,7 +301,8 @@
                 <button
                   class="action-btn delete"
                   onclick={() => handleDelete(attachment)}
-                  title="Delete"
+                  title={$_("common.delete")}
+                    aria-label={$_("common.delete")}
                 >
                   <TrashBinSolid class="w-4 h-4" />
                 </button>
@@ -314,7 +325,7 @@
     onkeydown={(e) => {
       if (e.key === "Enter" || e.key === " ") closePreview();
     }}
-    aria-label="Close preview modal"
+    aria-label={$_("labels.close_preview")}
   >
     <div
       class="modal-content"
@@ -331,7 +342,7 @@
         <button
           class="modal-close"
           onclick={closePreview}
-          aria-label="Close modal"
+          aria-label={$_("common.close")}
         >
           <CloseOutline class="w-6 h-6" />
         </button>
@@ -339,7 +350,7 @@
 
       <div class="modal-body">
         {#if currentPreview.type === "image"}
-          <img
+          <img loading="lazy" decoding="async"
             src={currentPreview.url}
             alt={currentPreview.shortname || "preview"}
             class="modal-image"
@@ -399,7 +410,7 @@
   .no-attachments {
     text-align: center;
     padding: 1rem;
-    color: #65676b;
+    color: var(--color-text-muted);
   }
 
   .no-attachments-icon {
@@ -444,8 +455,8 @@
   .image-overlay {
     position: absolute;
     top: 0;
-    left: 0;
-    right: 0;
+    inset-inline-start: 0;
+    inset-inline-end: 0;
     bottom: 0;
     background: rgba(0, 0, 0, 0.3);
     opacity: 0;
@@ -471,7 +482,7 @@
     border-radius: 6px;
     border: none;
     background: rgba(255, 255, 255, 0.9);
-    color: #1c1e21;
+    color: var(--color-text);
     display: flex;
     align-items: center;
     justify-content: center;
@@ -490,7 +501,7 @@
   }
 
   .overlay-btn.delete:hover {
-    background: #f44336;
+    background: var(--color-danger);
   }
 
   /* Video Attachments */
@@ -518,8 +529,8 @@
   .video-overlay {
     position: absolute;
     top: 0;
-    left: 0;
-    right: 0;
+    inset-inline-start: 0;
+    inset-inline-end: 0;
     bottom: 0;
     background: rgba(0, 0, 0, 0.3);
     display: flex;
@@ -541,7 +552,7 @@
     display: flex;
     align-items: center;
     justify-content: center;
-    color: #1c1e21;
+    color: var(--color-text);
     transition: all 0.2s ease;
   }
 
@@ -553,15 +564,15 @@
   .video-overlay .overlay-actions {
     position: absolute;
     top: 8px;
-    right: 8px;
+    inset-inline-end: 8px;
   }
 
   /* Audio Attachments */
   .audio-attachment {
-    background: #f0f2f5;
+    background: var(--color-surface);
     border-radius: 12px;
     padding: 12px;
-    border: 1px solid #e4e6ea;
+    border: 1px solid var(--color-border);
   }
 
   .audio-header {
@@ -575,7 +586,7 @@
     width: 32px;
     height: 32px;
     border-radius: 8px;
-    background: #1877f2;
+    background: var(--color-primary);
     display: flex;
     align-items: center;
     justify-content: center;
@@ -591,7 +602,7 @@
   .audio-name {
     font-size: 0.875rem;
     font-weight: 500;
-    color: #1c1e21;
+    color: var(--color-text);
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;
@@ -599,7 +610,7 @@
 
   .audio-meta {
     font-size: 0.75rem;
-    color: #65676b;
+    color: var(--color-text-muted);
   }
 
   .audio-actions {
@@ -614,10 +625,10 @@
 
   /* File Attachments */
   .file-attachment {
-    background: #f0f2f5;
+    background: var(--color-surface);
     border-radius: 12px;
     padding: 12px;
-    border: 1px solid #e4e6ea;
+    border: 1px solid var(--color-border);
     display: flex;
     align-items: center;
     gap: 12px;
@@ -625,14 +636,14 @@
   }
 
   .file-attachment:hover {
-    background: #e4e6ea;
+    background: var(--color-border);
   }
 
   .file-icon {
     width: 40px;
     height: 40px;
     border-radius: 8px;
-    background: #1877f2;
+    background: var(--color-primary);
     display: flex;
     align-items: center;
     justify-content: center;
@@ -649,7 +660,7 @@
   .file-name {
     font-size: 0.875rem;
     font-weight: 500;
-    color: #1c1e21;
+    color: var(--color-text);
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;
@@ -661,11 +672,11 @@
     gap: 8px;
     align-items: center;
     font-size: 0.75rem;
-    color: #65676b;
+    color: var(--color-text-muted);
   }
 
   .file-type {
-    background: #e4e6ea;
+    background: var(--color-border);
     padding: 2px 6px;
     border-radius: 4px;
     font-weight: 500;
@@ -682,8 +693,8 @@
     height: 28px;
     border-radius: 6px;
     border: none;
-    background: #e4e6ea;
-    color: #65676b;
+    background: var(--color-border);
+    color: var(--color-text-muted);
     display: flex;
     align-items: center;
     justify-content: center;
@@ -692,43 +703,43 @@
   }
 
   .action-btn:hover {
-    background: #d0d2d7;
-    color: #1c1e21;
+    background: var(--color-border);
+    color: var(--color-text);
   }
 
   .action-btn.preview {
-    color: #1877f2;
+    color: var(--color-primary);
   }
 
   .action-btn.preview:hover {
-    background: #e7f3ff;
-    color: #1565c0;
+    background: var(--color-info-soft);
+    color: var(--color-info);
   }
 
   .action-btn.download {
-    color: #42b883;
+    color: var(--color-success);
   }
 
   .action-btn.download:hover {
-    background: #e8f5e8;
-    color: #2e7d32;
+    background: var(--color-success-soft);
+    color: var(--color-success);
   }
 
   .action-btn.delete {
-    color: #f44336;
+    color: var(--color-danger);
   }
 
   .action-btn.delete:hover {
-    background: #ffebee;
-    color: #d32f2f;
+    background: var(--color-danger-soft);
+    color: var(--color-danger);
   }
 
   /* Modal Styles */
   .modal-overlay {
     position: fixed;
     top: 0;
-    left: 0;
-    right: 0;
+    inset-inline-start: 0;
+    inset-inline-end: 0;
     bottom: 0;
     background: rgba(0, 0, 0, 0.8);
     display: flex;
@@ -754,14 +765,14 @@
     justify-content: space-between;
     align-items: center;
     padding: 1rem 1.5rem;
-    border-bottom: 1px solid #e4e6ea;
-    background: #f0f2f5;
+    border-bottom: 1px solid var(--color-border);
+    background: var(--color-surface);
   }
 
   .modal-title {
     font-size: 1.125rem;
     font-weight: 600;
-    color: #1c1e21;
+    color: var(--color-text);
     margin: 0;
   }
 
@@ -770,8 +781,8 @@
     height: 32px;
     border-radius: 50%;
     border: none;
-    background: #e4e6ea;
-    color: #65676b;
+    background: var(--color-border);
+    color: var(--color-text-muted);
     display: flex;
     align-items: center;
     justify-content: center;
@@ -780,8 +791,8 @@
   }
 
   .modal-close:hover {
-    background: #d0d2d7;
-    color: #1c1e21;
+    background: var(--color-border);
+    color: var(--color-text);
   }
 
   .modal-body {
@@ -824,7 +835,7 @@
   .audio-modal-title {
     font-size: 1.125rem;
     font-weight: 500;
-    color: #1c1e21;
+    color: var(--color-text);
     text-align: center;
     margin: 0;
   }
@@ -847,8 +858,8 @@
     justify-content: flex-end;
     gap: 0.75rem;
     padding: 1rem 1.5rem;
-    border-top: 1px solid #e4e6ea;
-    background: #f0f2f5;
+    border-top: 1px solid var(--color-border);
+    background: var(--color-surface);
   }
 
   .modal-button {
@@ -865,21 +876,21 @@
   }
 
   .modal-button.download {
-    background: #42b883;
+    background: var(--color-success);
     color: white;
   }
 
   .modal-button.download:hover {
-    background: #369870;
+    background: var(--color-success);
   }
 
   .modal-button.delete {
-    background: #f44336;
+    background: var(--color-danger);
     color: white;
   }
 
   .modal-button.delete:hover {
-    background: #d32f2f;
+    background: var(--color-danger);
   }
 
   /* Responsive */

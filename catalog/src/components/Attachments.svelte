@@ -9,6 +9,7 @@
     TrashBinSolid,
   } from "flowbite-svelte-icons";
   import { _, locale } from "@/i18n";
+  import { confirm } from "@/lib/confirm";
   import { getFileExtension } from "@shared/file-extension";
   import {
     getFileTypeIcon,
@@ -252,13 +253,14 @@
   }
 
   async function handleDelete(attachment: any) {
-    if (
-      confirm(
-        `Are you sure want to delete ${attachment.shortname} attachment`,
-      ) === false
-    ) {
-      return;
-    }
+    const confirmed = await confirm({
+      title: $_("attachment_list.delete_title"),
+      body: $_("attachment_list.delete_body", {
+        values: { name: attachment.shortname },
+      }),
+      variant: "danger",
+    });
+    if (!confirmed) return;
 
     const request_dict = {
       space_name,
@@ -289,7 +291,7 @@
     <div class="no-attachments">
       <div class="no-attachments-icon">📎</div>
       <p class="no-attachments-text">{$_("NoAttachments")}</p>
-      <p class="no-attachments-subtitle">Files and media will appear here</p>
+      <p class="no-attachments-subtitle">{$_("attachment_list.empty_hint")}</p>
     </div>
   {:else}
     <div class="attachments-grid">
@@ -310,30 +312,30 @@
             <div class="attachment-actions">
               {#if isImageFile(attachment.attributes?.payload?.body) || isVideoFile(attachment.attributes?.payload?.body) || isPdfFile(attachment.attributes?.payload?.body) || isAudioFile(attachment.attributes?.payload?.body)}
                 <button
-                  aria-label={`Preview ${attachment.shortname}`}
+                  aria-label={$_("labels.preview_named", { values: { name: attachment.shortname } })}
                   class="action-button preview-button"
                   onclick={() => openPreview(attachment)}
-                  title="Preview"
+                  title={$_("labels.preview")}
                 >
                   <EyeOutline class="w-4 h-4" />
                 </button>
               {/if}
 
               <button
-                aria-label={`Download ${attachment.shortname}`}
+                aria-label={$_("labels.download_named", { values: { name: attachment.shortname } })}
                 class="action-button download-button"
                 onclick={() => downloadFile(attachment)}
-                title="Download"
+                title={$_("labels.download")}
               >
                 <DownloadOutline class="w-4 h-4" />
               </button>
 
               {#if isOwner}
                 <button
-                  aria-label={`Delete ${attachment.shortname}`}
+                  aria-label={$_("labels.delete_named", { values: { name: attachment.shortname } })}
                   class="action-button delete-button"
                   onclick={() => handleDelete(attachment)}
-                  title="Delete"
+                  title={$_("common.delete")}
                 >
                   <TrashBinSolid class="w-4 h-4" />
                 </button>
@@ -353,7 +355,7 @@
                 />
                 <div class="media-overlay">
                   <button
-                    aria-label={`Preview ${attachment.shortname}`}
+                    aria-label={$_("labels.preview_named", { values: { name: attachment.shortname } })}
                     class="preview-overlay-button"
                     onclick={() => openPreview(attachment)}
                   >
@@ -412,7 +414,7 @@
     onkeydown={(e) => {
       if (e.key === "Enter" || e.key === " ") closePreview();
     }}
-    aria-label="Close preview modal"
+    aria-label={$_("labels.close_preview")}
   >
     <div
       class="modal-content"
@@ -434,7 +436,7 @@
         <button
           class="modal-close"
           onclick={closePreview}
-          aria-label="Close modal"
+          aria-label={$_("common.close")}
         >
           <CloseOutline class="w-6 h-6" />
         </button>
@@ -442,25 +444,25 @@
 
       <div class="modal-edit">
         <div class="edit-field">
-          <div class="edit-label">Display name</div>
+          <div class="edit-label">{$_("fields.displayname")}</div>
           <div class="edit-translations">
             <input
               type="text"
-              placeholder="English"
+              placeholder={$_("english")}
               bind:value={editDisplayname.en}
               disabled={isSavingMeta}
               class="edit-input"
             />
             <input
               type="text"
-              placeholder="Arabic"
+              placeholder={$_("arabic")}
               bind:value={editDisplayname.ar}
               disabled={isSavingMeta}
               class="edit-input"
             />
             <input
               type="text"
-              placeholder="Kurdish"
+              placeholder={$_("kurdish")}
               bind:value={editDisplayname.ku}
               disabled={isSavingMeta}
               class="edit-input"
@@ -473,21 +475,21 @@
           <div class="edit-translations">
             <textarea
               rows="2"
-              placeholder="English"
+              placeholder={$_("english")}
               bind:value={editDescription.en}
               disabled={isSavingMeta}
               class="edit-input"
             ></textarea>
             <textarea
               rows="2"
-              placeholder="Arabic"
+              placeholder={$_("arabic")}
               bind:value={editDescription.ar}
               disabled={isSavingMeta}
               class="edit-input"
             ></textarea>
             <textarea
               rows="2"
-              placeholder="Kurdish"
+              placeholder={$_("kurdish")}
               bind:value={editDescription.ku}
               disabled={isSavingMeta}
               class="edit-input"
@@ -502,7 +504,7 @@
           </div>
           <input
             type="text"
-            placeholder="tag1, tag2"
+            placeholder={$_("labels.tags_placeholder")}
             bind:value={editTagsInput}
             disabled={isSavingMeta}
             class="edit-input"
@@ -517,7 +519,7 @@
           </div>
         {:else if previewBlobUrl}
           {#if currentPreview.type === "image"}
-            <img
+            <img loading="lazy" decoding="async"
               src={previewBlobUrl}
               alt={currentPreview.shortname || "no-image"}
               class="modal-image"
@@ -553,7 +555,7 @@
         {:else}
           <div
             class="modal-loading"
-            style="color: var(--color-gray-400); font-size: 0.875rem;"
+            style="color: var(--color-text-faint); font-size: 0.875rem;"
           >
             Failed to load preview
           </div>
@@ -562,7 +564,7 @@
 
       <div class="modal-footer">
         <button
-          aria-label="Cancel"
+          aria-label={$_("common.cancel")}
           class="modal-button cancel"
           onclick={closePreview}
           disabled={isSavingMeta}
@@ -570,7 +572,7 @@
           {$_("cancel") || "Cancel"}
         </button>
         <button
-          aria-label="Save"
+          aria-label={$_("labels.save")}
           class="modal-button save"
           onclick={handleSaveMeta}
           disabled={isSavingMeta}
@@ -594,7 +596,7 @@
     min-height: 300px;
     border: none;
     border-radius: 8px;
-    background: #f8f9fa;
+    background: var(--color-surface);
     box-shadow: 0 2px 10px rgba(0, 0, 0, 0.1);
   }
 
@@ -619,7 +621,7 @@
     justify-content: center;
     height: 100%;
     font-size: 16px;
-    color: #6b7280;
+    color: var(--color-text-muted);
   }
   .attachments-container {
     width: 100%;
@@ -630,7 +632,7 @@
     align-items: center;
     gap: 1.5rem;
     padding: 2rem;
-    background: linear-gradient(135deg, #f8fafc 0%, #f1f5f9 100%);
+    background: linear-gradient(135deg, var(--color-surface) 0%, var(--color-surface-3) 100%);
     border-radius: 16px;
     min-width: 400px;
   }
@@ -643,7 +645,7 @@
   .audio-title {
     font-size: 1.125rem;
     font-weight: 600;
-    color: #1e293b;
+    color: var(--color-text);
     text-align: center;
     margin: 0;
     word-break: break-word;
@@ -661,9 +663,9 @@
   .no-attachments {
     text-align: center;
     padding: 3rem 1rem;
-    background: var(--color-gray-50);
-    border-radius: var(--radius-xl);
-    border: 2px dashed var(--color-gray-300);
+    background: var(--color-surface);
+    border-radius: var(--radius-card);
+    border: 2px dashed var(--color-border-strong);
   }
 
   .no-attachments-icon {
@@ -673,14 +675,14 @@
   }
 
   .no-attachments-text {
-    color: var(--color-gray-600);
+    color: var(--color-text-muted);
     font-size: 1.125rem;
     font-weight: 600;
     margin-bottom: 0.5rem;
   }
 
   .no-attachments-subtitle {
-    color: var(--color-gray-400);
+    color: var(--color-text-faint);
     font-size: 0.875rem;
   }
 
@@ -706,18 +708,18 @@
   }
 
   .attachment-card {
-    background: var(--surface-card);
-    border-radius: var(--radius-xl);
+    background: var(--color-surface-2);
+    border-radius: var(--radius-card);
     overflow: hidden;
-    box-shadow: var(--shadow-sm);
+    box-shadow: var(--shadow-card);
     transition: all var(--duration-normal) var(--ease-out);
-    border: 1px solid var(--color-gray-200);
+    border: 1px solid var(--color-border);
   }
 
   .attachment-card:hover {
     transform: translateY(-3px);
-    box-shadow: var(--shadow-lg);
-    border-color: var(--color-gray-300);
+    box-shadow: var(--shadow-modal);
+    border-color: var(--color-border-strong);
   }
 
   .attachment-header {
@@ -725,8 +727,8 @@
     justify-content: space-between;
     align-items: center;
     padding: 1rem;
-    background: var(--color-gray-50);
-    border-bottom: 1px solid var(--color-gray-200);
+    background: var(--color-surface);
+    border-bottom: 1px solid var(--color-border);
   }
 
   .file-type-badge {
@@ -734,9 +736,9 @@
     align-items: center;
     gap: 0.5rem;
     padding: 0.5rem 0.75rem;
-    background: var(--surface-card);
-    border-radius: var(--radius-md);
-    border: 1px solid var(--color-gray-200);
+    background: var(--color-surface-2);
+    border-radius: var(--radius-control);
+    border: 1px solid var(--color-border);
   }
 
   .file-icon {
@@ -746,7 +748,7 @@
   .file-ext {
     font-size: 0.75rem;
     font-weight: 600;
-    color: #64748b;
+    color: var(--color-text-muted);
     text-transform: uppercase;
     letter-spacing: 0.5px;
   }
@@ -762,36 +764,36 @@
     justify-content: center;
     width: 2rem;
     height: 2rem;
-    border-radius: var(--radius-md);
-    border: 1px solid var(--color-gray-200);
-    background: var(--surface-card);
+    border-radius: var(--radius-control);
+    border: 1px solid var(--color-border);
+    background: var(--color-surface-2);
     cursor: pointer;
     transition: all var(--duration-normal) var(--ease-out);
   }
 
   .preview-button:hover {
-    background: #dbeafe;
-    border-color: #3b82f6;
-    color: #3b82f6;
+    background: var(--color-info-soft);
+    border-color: var(--color-primary);
+    color: var(--color-primary);
   }
 
   .download-button:hover {
-    background: #f0fdf4;
-    border-color: #22c55e;
-    color: #22c55e;
+    background: var(--color-success-soft);
+    border-color: var(--color-success);
+    color: var(--color-success);
   }
 
   .delete-button:hover {
-    background: #fef2f2;
-    border-color: #ef4444;
-    color: #ef4444;
+    background: var(--color-danger-soft);
+    border-color: var(--color-danger);
+    color: var(--color-danger);
   }
 
   .attachment-preview {
     position: relative;
     height: 200px;
     overflow: hidden;
-    background: #f9fafb;
+    background: var(--color-surface);
   }
 
   .media-wrapper {
@@ -803,8 +805,8 @@
   .media-overlay {
     position: absolute;
     top: 0;
-    left: 0;
-    right: 0;
+    inset-inline-start: 0;
+    inset-inline-end: 0;
     bottom: 0;
     background: rgba(0, 0, 0, 0.5);
     display: flex;
@@ -827,7 +829,7 @@
     background: rgba(255, 255, 255, 0.9);
     border: none;
     border-radius: 8px;
-    color: #374151;
+    color: var(--color-text);
     font-weight: 500;
     cursor: pointer;
     transition: all 0.2s ease;
@@ -845,7 +847,7 @@
     align-items: center;
     justify-content: center;
     height: 100%;
-    color: #64748b;
+    color: var(--color-text-muted);
   }
 
   .unsupported-icon {
@@ -867,7 +869,7 @@
   .attachment-name {
     font-size: 0.875rem;
     font-weight: 600;
-    color: #1e293b;
+    color: var(--color-text);
     margin-bottom: 0.25rem;
     word-break: break-word;
     line-height: 1.4;
@@ -875,7 +877,7 @@
 
   .attachment-shortname {
     font-size: 0.6875rem;
-    color: #94a3b8;
+    color: var(--color-text-faint);
     margin: 0 0 0.5rem 0;
     font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
     word-break: break-all;
@@ -883,7 +885,7 @@
 
   .attachment-description {
     font-size: 0.75rem;
-    color: #475569;
+    color: var(--color-text-muted);
     margin: 0 0 0.5rem 0;
     line-height: 1.45;
     display: -webkit-box;
@@ -904,16 +906,16 @@
     font-size: 0.625rem;
     padding: 0.125rem 0.5rem;
     border-radius: 9999px;
-    background: #eef2ff;
-    color: #4338ca;
+    background: var(--color-primary-soft);
+    color: var(--color-primary-hover);
     font-weight: 500;
   }
 
   .modal-overlay {
     position: fixed;
     top: 0;
-    left: 0;
-    right: 0;
+    inset-inline-start: 0;
+    inset-inline-end: 0;
     bottom: 0;
     background: rgba(0, 0, 0, 0.8);
     display: flex;
@@ -924,14 +926,14 @@
   }
 
   .modal-content {
-    background: var(--surface-card);
-    border-radius: var(--radius-xl);
+    background: var(--color-surface-2);
+    border-radius: var(--radius-card);
     width: min(900px, 92vw);
     max-height: 92vh;
     overflow: hidden;
     display: flex;
     flex-direction: column;
-    box-shadow: var(--shadow-xl);
+    box-shadow: var(--shadow-modal);
   }
 
   .modal-header,
@@ -948,8 +950,8 @@
     justify-content: space-between;
     align-items: center;
     padding: 1.5rem;
-    border-bottom: 1px solid var(--color-gray-200);
-    background: var(--color-gray-50);
+    border-bottom: 1px solid var(--color-border);
+    background: var(--color-surface);
   }
 
   .modal-title-wrap {
@@ -962,14 +964,14 @@
   .modal-title {
     font-size: 1.25rem;
     font-weight: 600;
-    color: var(--color-gray-800);
+    color: var(--color-text);
     margin: 0;
     word-break: break-word;
   }
 
   .modal-shortname {
     font-size: 0.75rem;
-    color: var(--color-gray-400);
+    color: var(--color-text-faint);
     margin: 0.125rem 0 0 0;
     font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
     word-break: break-all;
@@ -981,16 +983,16 @@
     justify-content: center;
     width: 2.5rem;
     height: 2.5rem;
-    border-radius: var(--radius-md);
-    border: 1px solid var(--color-gray-200);
-    background: var(--surface-card);
+    border-radius: var(--radius-control);
+    border: 1px solid var(--color-border);
+    background: var(--color-surface-2);
     cursor: pointer;
     transition: all var(--duration-fast) ease;
   }
 
   .modal-close:hover {
-    background: var(--color-gray-100);
-    border-color: var(--color-gray-300);
+    background: var(--color-surface-3);
+    border-color: var(--color-border-strong);
   }
 
   .modal-body {
@@ -1032,8 +1034,8 @@
     justify-content: flex-end;
     gap: 1rem;
     padding: 1.5rem;
-    border-top: 1px solid var(--color-gray-200);
-    background: var(--color-gray-50);
+    border-top: 1px solid var(--color-border);
+    background: var(--color-surface);
   }
 
   .modal-button {
@@ -1041,7 +1043,7 @@
     align-items: center;
     gap: 0.5rem;
     padding: 0.75rem 1.5rem;
-    border-radius: var(--radius-lg);
+    border-radius: var(--radius-card);
     font-weight: 500;
     cursor: pointer;
     transition: all var(--duration-normal) var(--ease-out);
@@ -1050,24 +1052,24 @@
 
   .modal-button.cancel {
     background: white;
-    border-color: var(--color-gray-300);
-    color: var(--color-gray-700);
+    border-color: var(--color-border-strong);
+    color: var(--color-text);
   }
 
   .modal-button.cancel:hover:not(:disabled) {
-    background: var(--color-gray-50);
-    border-color: var(--color-gray-400);
+    background: var(--color-surface);
+    border-color: var(--color-text-faint);
   }
 
   .modal-button.save {
-    background: #4f46e5;
-    border-color: #4f46e5;
+    background: var(--color-primary);
+    border-color: var(--color-primary);
     color: white;
   }
 
   .modal-button.save:hover:not(:disabled) {
-    background: #4338ca;
-    border-color: #4338ca;
+    background: var(--color-primary-hover);
+    border-color: var(--color-primary-hover);
   }
 
   .modal-button:disabled {
@@ -1090,8 +1092,8 @@
     display: flex;
     flex-direction: column;
     gap: 0.875rem;
-    border-bottom: 1px solid var(--color-gray-200);
-    background: var(--color-gray-50);
+    border-bottom: 1px solid var(--color-border);
+    background: var(--color-surface);
   }
 
   .edit-field {
@@ -1103,7 +1105,7 @@
   .edit-label {
     font-size: 0.6875rem;
     font-weight: 600;
-    color: var(--color-gray-500);
+    color: var(--color-text-muted);
     text-transform: uppercase;
     letter-spacing: 0.04em;
   }
@@ -1111,7 +1113,7 @@
   .edit-label-hint {
     text-transform: none;
     font-weight: 400;
-    color: var(--color-gray-400);
+    color: var(--color-text-faint);
     letter-spacing: 0;
   }
 
@@ -1125,9 +1127,9 @@
     width: 100%;
     padding: 0.5rem 0.75rem;
     font-size: 0.8125rem;
-    color: var(--color-gray-800);
+    color: var(--color-text);
     background: white;
-    border: 1px solid var(--color-gray-200);
+    border: 1px solid var(--color-border);
     border-radius: 0.5rem;
     transition:
       border-color 0.15s ease,
@@ -1136,13 +1138,13 @@
 
   .edit-input:focus {
     outline: none;
-    border-color: #6366f1;
+    border-color: var(--color-primary);
     box-shadow: 0 0 0 3px rgba(99, 102, 241, 0.2);
   }
 
   .edit-input:disabled {
-    background: var(--color-gray-50);
-    color: var(--color-gray-400);
+    background: var(--color-surface);
+    color: var(--color-text-faint);
   }
 
   textarea.edit-input {

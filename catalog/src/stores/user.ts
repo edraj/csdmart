@@ -11,6 +11,8 @@ import { storage } from "@/lib/storage";
 import { log } from "@/lib/logger";
 import { DEFAULT_ROW_PER_PAGE } from "@/lib/constants";
 import { teardownGlobalWebSocket } from "@/stores/websocket";
+import { invalidateSpacesCache } from "@/lib/dmart_services/spacesCache";
+import { clearMessageCache } from "@/lib/utils/messagingUtils";
 import { resolveAutoShortname } from "@/lib/helpers";
 import {
   permissions,
@@ -251,6 +253,9 @@ export async function signout() {
   // "stuck" state where the server call failed but localStorage still says
   // we're signed in.
   teardownGlobalWebSocket();
+  // Session caches: the next visitor must not see this one's spaces or chats.
+  invalidateSpacesCache();
+  clearMessageCache();
   storage.remove("rowPerPage");
   storage.remove("authToken");
   storage.remove("roles");

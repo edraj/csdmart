@@ -176,24 +176,65 @@ export function getCacheKey(
   return `chat_${currentUserShortname}_${selectedUserShortname}`;
 }
 
+// Conversations are kept in memory for the session (review perf #31): the
+// page used to JSON.stringify every conversation into localStorage on each
+// message, never evicted it and left it behind after sign-out. Now a capped
+// LRU map — the oldest conversation goes once there are more than
+// MAX_CACHED_CONVERSATIONS, each one trimmed to its newest
+// MAX_CACHED_MESSAGES — cleared by clearMessageCache() on sign-out.
+export const MAX_CACHED_CONVERSATIONS = 30;
+export const MAX_CACHED_MESSAGES = 200;
+
+const LEGACY_STORAGE_PREFIXES = ["chat_", "group_chat_"];
+
+const messageCache = new Map<string, MessageData[]>();
+
 export function cacheMessages(cacheKey: string, messages: MessageData[]): void {
-  try {
-    localStorage.setItem(cacheKey, JSON.stringify(messages));
-  } catch (error) {
-    console.error("Cache update error:", error);
+  messageCache.delete(cacheKey);
+  messageCache.set(cacheKey, messages.slice(-MAX_CACHED_MESSAGES));
+  while (messageCache.size > MAX_CACHED_CONVERSATIONS) {
+    const oldest = messageCache.keys().next().value;
+    if (oldest === undefined) break;
+    messageCache.delete(oldest);
   }
 }
 
 export function getCachedMessages(cacheKey: string): MessageData[] {
+  const hit = messageCache.get(cacheKey);
+  if (!hit) return [];
+  // Re-insert so the conversation counts as recently used.
+  messageCache.delete(cacheKey);
+  messageCache.set(cacheKey, hit);
+  return hit.slice();
+}
+
+/** How many conversations are cached (for tests). */
+export function cachedConversationCount(): number {
+  return messageCache.size;
+}
+
+/**
+ * Remove the conversations an earlier version persisted to localStorage, so
+ * a visitor who signs out leaves no chat history in the browser.
+ */
+export function purgeLegacyMessageStorage(): void {
+  if (typeof localStorage === "undefined") return;
   try {
-    const cachedMessages = localStorage.getItem(cacheKey);
-    if (cachedMessages) {
-      return JSON.parse(cachedMessages);
+    const stale: string[] = [];
+    for (let i = 0; i < localStorage.length; i++) {
+      const key = localStorage.key(i);
+      if (key && LEGACY_STORAGE_PREFIXES.some((p) => key.startsWith(p))) stale.push(key);
     }
-  } catch (error) {
-    console.error("Cache retrieval error:", error);
+    stale.forEach((key) => localStorage.removeItem(key));
+  } catch {
+    // Storage may be unavailable (private mode, blocked site data).
   }
-  return [];
+}
+
+/** Forget every cached conversation (sign-out). */
+export function clearMessageCache(): void {
+  messageCache.clear();
+  purgeLegacyMessageStorage();
 }
 
 export function isRelevantMessage(

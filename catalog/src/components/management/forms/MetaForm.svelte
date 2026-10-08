@@ -46,7 +46,7 @@
 
 <div class={fullWidth ? 'form-card-full' : 'form-card'}>
     <div class="form-container">
-        <h2 class="section-title">Meta Information</h2>
+        <h2 class="section-title">{$_("admin_content.settings_modal.meta_info")}</h2>
 
         <form bind:this={form} class="form-body">
             <!-- Shortname Field -->
@@ -59,20 +59,20 @@
                     id="shortname"
                     class="input-field"
                     class:input-readonly={!isCreate}
-                    placeholder="e.g. user_profile"
+                    placeholder={$_("labels.shortname_example")}
                     bind:value={formData.shortname}
                     readonly={!isCreate}
                 />
-                <p class="field-help">Lowercase alphanumeric and underscores only.</p>
+                <p class="field-help">{$_("validation.shortname_format")}</p>
             </div>
 
             <!-- Slug Field -->
             <div class="field-group">
-                <label for="slug" class="field-label">Slug</label>
+                <label for="slug" class="field-label">{$_("fields.slug")}</label>
                 <input
                     id="slug"
                     class="input-field"
-                    placeholder="e.g. user-profile"
+                    placeholder={$_("labels.slug_example")}
                     bind:value={formData.slug}
                 />
             </div>
@@ -85,7 +85,7 @@
                     class="checkbox"
                     bind:checked={formData.is_active}
                 />
-                <label for="is_active" class="checkbox-label">Active</label>
+                <label for="is_active" class="checkbox-label">{$_("fields.active")}</label>
             </div>
 
             <!-- Translations Accordion -->
@@ -95,7 +95,7 @@
                     class="accordion-header"
                     onclick={() => (isTranslationsOpen = !isTranslationsOpen)}
                 >
-                    <span class="accordion-title">Translations</span>
+                    <span class="accordion-title">{$_("sections.translations")}</span>
                     <svg class="accordion-icon" class:rotated={isTranslationsOpen} viewBox="0 0 24 24" fill="none" stroke="currentColor">
                         <path d="M19 9l-7 7-7-7" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" />
                     </svg>
@@ -105,7 +105,7 @@
                     <div class="accordion-content">
                         <!-- Display Names -->
                         <div class="field-group horizontal">
-                            <label class="field-label mini" for="displayname-en">Display Name</label>
+                            <label class="field-label mini" for="displayname-en">{$_("fields.displayname")}</label>
                             <div class="translation-grid flex">
                                 <div class="translation-item">
                                     <span class="lang-badge">EN</span>
@@ -124,7 +124,7 @@
 
                         <!-- Descriptions -->
                         <div class="field-group horizontal">
-                            <label class="field-label mini" for="description-en">Description</label>
+                            <label class="field-label mini" for="description-en">{$_("fields.description")}</label>
                             <div class="translation-grid flex">
                                 <div class="translation-item">
                                     <span class="lang-badge">EN</span>
@@ -156,7 +156,7 @@
         max-width: 56rem;
         margin: 0.5rem auto;
         padding: 1.5rem;
-        border: 1px solid #e5e7eb;
+        border: 1px solid var(--color-border);
     }
 
     .form-card-full {
@@ -176,7 +176,7 @@
     .section-title {
         font-size: 1.125rem;
         font-weight: 700;
-        color: #111827;
+        color: var(--color-text);
         margin: 0;
     }
 
@@ -201,7 +201,7 @@
     .field-label {
         font-weight: 600;
         font-size: 0.8125rem;
-        color: #374151;
+        color: var(--color-text);
         display: flex;
         align-items: center;
         min-width: 120px;
@@ -213,19 +213,19 @@
     }
 
     .required {
-        color: #ef4444;
-        margin-right: 0.25rem;
+        color: var(--color-danger);
+        margin-inline-end: 0.25rem;
         font-weight: bold;
     }
 
     .input-field {
         width: 100%;
         padding: 0.375rem 0.625rem;
-        border: 1.5px solid #e5e7eb;
+        border: 1.5px solid var(--color-border);
         border-radius: 6px;
         font-size: 0.8125rem;
-        background: #fdfdfd;
-        color: #111827;
+        background: var(--color-surface-2);
+        color: var(--color-text);
         transition: all 0.2s ease;
     }
 
@@ -235,35 +235,35 @@
 
     .input-field:focus {
         outline: none;
-        border-color: #4f46e5;
+        border-color: var(--color-primary);
         background: white;
         box-shadow: 0 0 0 3px rgba(79, 70, 229, 0.1);
     }
 
     .input-field::placeholder {
-        color: #9ca3af;
+        color: var(--color-text-faint);
     }
 
     .input-readonly {
-        background-color: #f3f4f6;
-        color: #6b7280;
+        background-color: var(--color-surface-3);
+        color: var(--color-text-muted);
         cursor: not-allowed;
-        border-color: #e5e7eb;
+        border-color: var(--color-border);
     }
 
     .input-readonly:focus {
-        border-color: #e5e7eb;
+        border-color: var(--color-border);
         box-shadow: none;
     }
 
     .textarea-field {
         width: 100%;
         padding: 0.375rem 0.625rem;
-        border: 1.5px solid #e5e7eb;
+        border: 1.5px solid var(--color-border);
         border-radius: 6px;
         font-size: 0.8125rem;
-        background: #fdfdfd;
-        color: #111827;
+        background: var(--color-surface-2);
+        color: var(--color-text);
         resize: vertical;
         min-height: 40px;
     }
@@ -275,14 +275,14 @@
 
     .textarea-field:focus {
         outline: none;
-        border-color: #4f46e5;
+        border-color: var(--color-primary);
         background: white;
         box-shadow: 0 0 0 3px rgba(79, 70, 229, 0.1);
     }
 
     .field-help {
         font-size: 0.7125rem;
-        color: #6b7280;
+        color: var(--color-text-muted);
     }
 
     .checkbox-group {
@@ -295,24 +295,24 @@
     .checkbox {
         width: 0.875rem;
         height: 0.875rem;
-        border: 1.5px solid #d1d5db;
+        border: 1.5px solid var(--color-border-strong);
         border-radius: 3px;
         cursor: pointer;
     }
 
     .checkbox-label {
         font-size: 0.8125rem;
-        color: #4b5563;
+        color: var(--color-text-muted);
         font-weight: 500;
         cursor: pointer;
     }
 
     .accordion {
-        border: 1px solid #e5e7eb;
+        border: 1px solid var(--color-border);
         border-radius: 8px;
         overflow: hidden;
         margin-top: 0.25rem;
-        background: #fafaf9;
+        background: var(--color-surface-2);
     }
 
     .accordion-header {
@@ -328,31 +328,31 @@
     }
 
     .accordion-header:hover {
-        background-color: #f3f4f6;
+        background-color: var(--color-surface-3);
     }
 
     .accordion-title {
         font-weight: 600;
-        color: #374151;
+        color: var(--color-text);
         font-size: 0.8125rem;
     }
 
     .accordion-icon {
         width: 1rem;
         height: 1rem;
-        color: #9ca3af;
+        color: var(--color-text-faint);
         transition: transform 0.2s ease;
     }
 
     .accordion-icon.rotated {
         transform: rotate(180deg);
-        color: #4f46e5;
+        color: var(--color-primary);
     }
 
     .accordion-content {
         padding: 0.75rem 1rem;
         background-color: white;
-        border-top: 1px solid #e5e7eb;
+        border-top: 1px solid var(--color-border);
         display: flex;
         flex-direction: column;
         gap: 0.75rem;
@@ -380,11 +380,11 @@
         min-width: 28px;
         height: 24px;
         padding: 0 6px;
-        background: #f3f4f6;
-        color: #6b7280;
+        background: var(--color-surface-3);
+        color: var(--color-text-muted);
         font-size: 10px;
         font-weight: 700;
         border-radius: 4px;
-        border: 1px solid #e5e7eb;
+        border: 1px solid var(--color-border);
     }
 </style>

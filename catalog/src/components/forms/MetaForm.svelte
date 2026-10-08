@@ -244,7 +244,7 @@
 
     <div class="accordion">
       <button
-        aria-label="Toggle translations"
+        aria-label={$_("labels.toggle_translations")}
         type="button"
         class="accordion-header"
         onclick={() => (isTranslationsOpen = !isTranslationsOpen)}
@@ -354,15 +354,22 @@
 
 <!-- Modal -->
 {#if isShortnameUpdateOpen}
-  <!-- svelte-ignore a11y_click_events_have_key_events -->
-  <div class="modal-overlay" role="presentation" onclick={() => (isShortnameUpdateOpen = false)}>
-    <!-- svelte-ignore a11y_click_events_have_key_events -->
-    <div class="modal-content" role="dialog" tabindex="-1" onclick={(e) => e.stopPropagation()}>
+  <div
+    class="modal-overlay"
+    role="presentation"
+    onclick={(e) => {
+      if (e.target === e.currentTarget) isShortnameUpdateOpen = false;
+    }}
+    onkeydown={(e) => {
+      if (e.key === "Escape") isShortnameUpdateOpen = false;
+    }}
+  >
+    <div class="modal-content" role="dialog" aria-modal="true" tabindex="-1">
       <div class="modal-header">
         <h3 class="modal-title">{$_("modal.update_shortname.title")}</h3>
         <button
           class="modal-close"
-          aria-label="Close"
+          aria-label={$_("common.close")}
           onclick={() => (isShortnameUpdateOpen = false)}
         >
           <svg fill="none" stroke="currentColor" viewBox="0 0 24 24">
@@ -440,7 +447,7 @@
     max-width: 56rem;
     margin: 0.5rem auto;
     padding: 1.5rem;
-    border: 1px solid #e5e7eb;
+    border: 1px solid var(--color-border);
   }
 
   .form-card-full {
@@ -466,26 +473,26 @@
   .field-label {
     font-weight: 500;
     font-size: 0.875rem;
-    color: #374151;
+    color: var(--color-text);
     margin-bottom: 0.5rem;
   }
 
   .required {
-    color: #ef4444;
+    color: var(--color-danger);
     font-size: 1.125rem;
     vertical-align: middle;
-    margin-right: 0.25rem;
+    margin-inline-end: 0.25rem;
   }
 
   .field-help {
     font-size: 0.75rem;
-    color: #6b7280;
+    color: var(--color-text-muted);
     margin-top: 0.25rem;
   }
 
   .input-field {
     padding: 0.625rem 0.75rem;
-    border: 1px solid #d1d5db;
+    border: 1px solid var(--color-border-strong);
     border-radius: 0.5rem;
     font-size: 0.875rem;
     transition: all 0.15s ease-in-out;
@@ -494,19 +501,19 @@
 
   .input-field:focus {
     outline: none;
-    border-color: #3b82f6;
+    border-color: var(--color-primary);
     box-shadow: 0 0 0 3px rgba(59, 130, 246, 0.1);
   }
 
   .input-field:disabled {
-    background-color: #f9fafb;
-    color: #6b7280;
+    background-color: var(--color-surface);
+    color: var(--color-text-muted);
     cursor: not-allowed;
   }
 
   .textarea-field {
     padding: 0.625rem 0.75rem;
-    border: 1px solid #d1d5db;
+    border: 1px solid var(--color-border-strong);
     border-radius: 0.5rem;
     font-size: 0.875rem;
     transition: all 0.15s ease-in-out;
@@ -517,32 +524,32 @@
 
   .textarea-field:focus {
     outline: none;
-    border-color: #3b82f6;
+    border-color: var(--color-primary);
     box-shadow: 0 0 0 3px rgba(59, 130, 246, 0.1);
   }
 
   .input-with-button {
     display: flex;
-    margin-right: 12px;
+    margin-inline-end: 12px;
   }
 
   .input-left {
-    border-top-right-radius: 0;
-    border-bottom-right-radius: 0;
-    border-right: 0;
+    border-start-end-radius: 0;
+    border-end-end-radius: 0;
+    border-inline-end: 0;
     flex: 1;
   }
 
   .button-right {
-    border-top-left-radius: 0;
-    border-bottom-left-radius: 0;
-    border-left: 1px solid #d1d5db;
+    border-start-start-radius: 0;
+    border-end-start-radius: 0;
+    border-inline-start: 1px solid var(--color-border-strong);
   }
 
   .button-primary {
-    background-color: #3b82f6;
+    background-color: var(--color-primary);
     color: white;
-    border: 1px solid #3b82f6;
+    border: 1px solid var(--color-primary);
     padding: 0.625rem 1rem;
     border-radius: 0.5rem;
     font-size: 0.875rem;
@@ -552,20 +559,20 @@
   }
 
   .button-primary:hover:not(:disabled) {
-    background-color: #2563eb;
-    border-color: #2563eb;
+    background-color: var(--color-primary-hover);
+    border-color: var(--color-primary-hover);
   }
 
   .button-primary:disabled {
-    background-color: #9ca3af;
-    border-color: #9ca3af;
+    background-color: var(--color-text-faint);
+    border-color: var(--color-text-faint);
     cursor: not-allowed;
   }
 
   .button-secondary {
     background-color: white;
-    color: #374151;
-    border: 1px solid #d1d5db;
+    color: var(--color-text);
+    border: 1px solid var(--color-border-strong);
     padding: 0.625rem 1rem;
     border-radius: 0.5rem;
     font-size: 0.875rem;
@@ -575,8 +582,8 @@
   }
 
   .button-secondary:hover {
-    background-color: #f9fafb;
-    border-color: #9ca3af;
+    background-color: var(--color-surface);
+    border-color: var(--color-text-faint);
   }
 
   .checkbox-group {
@@ -588,14 +595,14 @@
   .checkbox {
     width: 1rem;
     height: 1rem;
-    border: 1px solid #d1d5db;
+    border: 1px solid var(--color-border-strong);
     border-radius: 0.25rem;
     cursor: pointer;
   }
 
   .checkbox-label {
     font-size: 0.875rem;
-    color: #374151;
+    color: var(--color-text);
     cursor: pointer;
     margin: 0;
   }
@@ -614,14 +621,14 @@
 
   .translation-label {
     font-size: 0.875rem;
-    color: #6b7280;
+    color: var(--color-text-muted);
     font-weight: 500;
     margin-bottom: 0.25rem;
     display: block;
   }
 
   .accordion {
-    border: 1px solid #e5e7eb;
+    border: 1px solid var(--color-border);
     border-radius: 0.5rem;
     overflow: hidden;
   }
@@ -629,7 +636,7 @@
   .accordion-header {
     width: 100%;
     padding: 1rem;
-    background-color: #f9fafb;
+    background-color: var(--color-surface);
     border: none;
     display: flex;
     justify-content: space-between;
@@ -639,12 +646,12 @@
   }
 
   .accordion-header:hover {
-    background-color: #f3f4f6;
+    background-color: var(--color-surface-3);
   }
 
   .accordion-title {
     font-weight: 500;
-    color: #374151;
+    color: var(--color-text);
   }
 
   .accordion-icon {
@@ -660,7 +667,7 @@
   .accordion-content {
     padding: 1.5rem;
     background-color: white;
-    border-top: 1px solid #e5e7eb;
+    border-top: 1px solid var(--color-border);
     display: flex;
     flex-direction: column;
     gap: 1.5rem;
@@ -669,8 +676,8 @@
   .modal-overlay {
     position: fixed;
     top: 0;
-    left: 0;
-    right: 0;
+    inset-inline-start: 0;
+    inset-inline-end: 0;
     bottom: 0;
     background-color: rgba(0, 0, 0, 0.5);
     display: flex;
@@ -694,7 +701,7 @@
 
   .modal-header {
     padding: 1.5rem;
-    border-bottom: 1px solid #e5e7eb;
+    border-bottom: 1px solid var(--color-border);
     display: flex;
     align-items: center;
     justify-content: space-between;
@@ -703,7 +710,7 @@
   .modal-title {
     font-size: 1.125rem;
     font-weight: 600;
-    color: #111827;
+    color: var(--color-text);
     margin: 0;
   }
 
@@ -711,14 +718,14 @@
     background: none;
     border: none;
     cursor: pointer;
-    color: #6b7280;
+    color: var(--color-text-muted);
     padding: 0.25rem;
     border-radius: 0.25rem;
     transition: color 0.15s ease-in-out;
   }
 
   .modal-close:hover {
-    color: #374151;
+    color: var(--color-text);
   }
 
   .modal-close svg {
@@ -735,13 +742,13 @@
 
   .modal-warning {
     font-size: 0.875rem;
-    color: #6b7280;
+    color: var(--color-text-muted);
     margin: 0;
   }
 
   .modal-footer {
     padding: 1.5rem;
-    border-top: 1px solid #e5e7eb;
+    border-top: 1px solid var(--color-border);
     display: flex;
     justify-content: flex-end;
     gap: 0.75rem;
@@ -757,9 +764,9 @@
   }
 
   .alert-error {
-    background-color: #fef2f2;
-    color: #991b1b;
-    border: 1px solid #fecaca;
+    background-color: var(--color-danger-soft);
+    color: var(--color-danger);
+    border: 1px solid var(--color-danger-soft);
   }
 
   .alert-icon {
@@ -770,18 +777,18 @@
   }
 
   .input-error {
-    border-color: #ef4444 !important;
+    border-color: var(--color-danger) !important;
     box-shadow: 0 0 0 3px rgba(239, 68, 68, 0.1) !important;
   }
 
   .input-error:focus {
-    border-color: #ef4444 !important;
+    border-color: var(--color-danger) !important;
     box-shadow: 0 0 0 3px rgba(239, 68, 68, 0.2) !important;
   }
 
   .field-error {
     font-size: 0.75rem;
-    color: #dc2626;
+    color: var(--color-danger);
     margin-top: 0.25rem;
     display: flex;
     align-items: center;

@@ -10,48 +10,43 @@ import {
 } from "@edraj/tsdmart";
 import type { Translation } from "@edraj/tsdmart/dmart.model";
 import { log } from "@/lib/logger";
-import { MANAGEMENT_SPACE, APPLICATIONS_SPACE, DEFAULT_SPACE_ORDINAL } from "@/lib/constants";
+import { APPLICATIONS_SPACE, DEFAULT_SPACE_ORDINAL } from "@/lib/constants";
 import { getCurrentScope } from "@/stores/user";
 import { buildFieldFilterClause } from "@/lib/searchFilters";
+import { getSpacesCached, invalidateSpacesCache } from "./spacesCache";
+
+export { getSpacesCached, invalidateSpacesCache } from "./spacesCache";
 
 export async function getSpaces(
     ignoreFilter = false,
     scope: DmartScope = DmartScope.managed,
     hiddenspaces: string[] = []
 ): Promise<ApiQueryResponse> {
-    const _spaces: any = await Dmart.query(
-        {
-            type: QueryType.spaces,
-            space_name: MANAGEMENT_SPACE,
-            subpath: "/",
-            search: "",
-            limit: 100,
-        },
-        scope
-    );
+    // One request per scope for the session (lib/dmart_services/spacesCache);
+    // the filters below run on a copy so no caller can trim the cached list.
+    const cached = await getSpacesCached(scope);
+    let records: any[] = [...(cached.records ?? [])];
 
     if (ignoreFilter === false) {
-        _spaces.records = _spaces.records.filter((e: any) => !e.attributes.hide_space);
+        records = records.filter((e: any) => !e.attributes.hide_space);
         hiddenspaces.forEach((space) => {
-            _spaces.records = _spaces.records.filter(
-                (e: any) => !e.shortname.includes(space)
-            );
+            records = records.filter((e: any) => !e.shortname.includes(space));
         });
-        _spaces.records = _spaces.records.filter(
+        records = records.filter(
             (e: any) => !e.shortname.includes(APPLICATIONS_SPACE)
         );
     }
 
-    _spaces.records = _spaces.records.map((e: any) => {
+    records = records.map((e: any) => {
         if (e.attributes.ordinal === null) {
             e.attributes.ordinal = DEFAULT_SPACE_ORDINAL;
         }
         return e;
     });
 
-    _spaces.records.sort((a: any, b: any) => a.attributes.ordinal - b.attributes.ordinal);
+    records.sort((a: any, b: any) => a.attributes.ordinal - b.attributes.ordinal);
 
-    return _spaces;
+    return { ...cached, records } as ApiQueryResponse;
 }
 
 /**
@@ -354,7 +349,7 @@ export async function createSpace({
                 },
             ],
         });
-        await getSpaces();
+        invalidateSpacesCache();
         return response.status;
     } catch (error) {
         log.error(`Error creating space "${shortname}":`, error);
@@ -376,7 +371,7 @@ export async function deleteSpace(shortname: string) {
                 },
             ],
         });
-        await getSpaces();
+        invalidateSpacesCache();
     } catch (error) {
         log.error(`Error deleting space "${shortname}":`, error);
         throw error;
@@ -400,7 +395,7 @@ export async function editSpace(
                 },
             ],
         });
-        await getSpaces();
+        invalidateSpacesCache();
     } catch (error) {
         log.error(`Error editing space "${shortname}":`, error);
         throw error;

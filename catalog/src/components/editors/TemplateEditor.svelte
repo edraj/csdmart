@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { _ } from "@/i18n";
   import { onMount } from "svelte";
   import { getTemplates } from "@/lib/dmart_services";
 
@@ -202,11 +203,11 @@
               rows={field.type === "list" || field.type === "object" || field.type === "list_object" ? 5 : 3}
             ></textarea>
             {#if field.type === "list"}
-              <small class="field-hint">Enter values separated by commas</small>
+              <small class="field-hint">{$_("json_editor.csv_placeholder")}</small>
             {:else if field.type === "object"}
-              <small class="field-hint">Enter valid JSON object</small>
+              <small class="field-hint">{$_("template_generator.hint_json_object")}</small>
             {:else if field.type === "list_object"}
-              <small class="field-hint">Enter valid JSON array of objects</small>
+              <small class="field-hint">{$_("template_generator.hint_json_array")}</small>
             {/if}
           {:else if getFieldType(field.type) === "checkbox"}
             <input
@@ -232,7 +233,7 @@
 
     {#if previewContent}
       <div class="template-preview">
-        <h5>Preview</h5>
+        <h5>{$_("labels.preview")}</h5>
         <div class="preview-content">
           {previewContent}
         </div>
@@ -241,14 +242,14 @@
   </div>
 {:else}
   <div class="template-loading">
-    <p>Loading template editor...</p>
+    <p>{$_("template_generator.loading_editor")}</p>
   </div>
 {/if}
 
 <style>
   .template-editor {
-    background: #f8f9fa;
-    border: 1px solid #e9ecef;
+    background: var(--color-surface);
+    border: 1px solid var(--color-surface-3);
     border-radius: 8px;
     padding: 20px;
   }
@@ -256,19 +257,19 @@
   .template-info {
     margin-bottom: 20px;
     padding-bottom: 15px;
-    border-bottom: 1px solid #dee2e6;
+    border-bottom: 1px solid var(--color-border);
   }
 
   .template-info h4 {
     margin: 0 0 8px 0;
-    color: #495057;
+    color: var(--color-text-muted);
     font-size: 16px;
     font-weight: 600;
   }
 
   .template-description {
     margin: 0;
-    color: #6c757d;
+    color: var(--color-text-muted);
     font-size: 14px;
   }
 
@@ -284,7 +285,7 @@
     display: block;
     margin-bottom: 6px;
     font-weight: 500;
-    color: #495057;
+    color: var(--color-text-muted);
     font-size: 14px;
     text-transform: capitalize;
   }
@@ -293,7 +294,7 @@
   .field-textarea {
     width: 100%;
     padding: 10px 12px;
-    border: 1px solid #ced4da;
+    border: 1px solid var(--color-border);
     border-radius: 4px;
     font-size: 14px;
     transition:
@@ -305,7 +306,7 @@
   .field-input:focus,
   .field-textarea:focus {
     outline: none;
-    border-color: #007bff;
+    border-color: var(--color-primary);
     box-shadow: 0 0 0 2px rgba(0, 123, 255, 0.25);
   }
 
@@ -323,39 +324,39 @@
     display: block;
     margin-top: 6px;
     font-size: 12px;
-    color: #6c757d;
+    color: var(--color-text-muted);
     font-style: italic;
   }
 
   .template-preview {
     background: white;
-    border: 1px solid #dee2e6;
+    border: 1px solid var(--color-border);
     border-radius: 4px;
     padding: 15px;
   }
 
   .template-preview h5 {
     margin: 0 0 12px 0;
-    color: #495057;
+    color: var(--color-text-muted);
     font-size: 14px;
     font-weight: 600;
   }
 
   .preview-content {
-    background: #f8f9fa;
-    border: 1px solid #e9ecef;
+    background: var(--color-surface);
+    border: 1px solid var(--color-surface-3);
     border-radius: 4px;
     padding: 12px;
     white-space: pre-wrap;
     font-family: "Monaco", "Menlo", monospace;
     font-size: 13px;
     line-height: 1.5;
-    color: #495057;
+    color: var(--color-text-muted);
   }
 
   .template-loading {
     text-align: center;
     padding: 40px;
-    color: #6c757d;
+    color: var(--color-text-muted);
   }
 </style>

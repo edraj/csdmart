@@ -1,51 +1,92 @@
 <script lang="ts">
   import { resolveTotal } from "@shared/query-total";
   import { onMount } from "svelte";
-  import { _, locale, isRTL } from "@/i18n";
+  import { _, locale } from "@/i18n";
   import { formatDate } from "@/lib/format";
+  import { setTitle } from "@/lib/title";
+  import { log } from "@/lib/logger";
   import { APPLICATIONS_SPACE, CONTACTS_SUBPATH } from "@/lib/constants";
-
   import {
     fetchContactMessages,
     markMessageAsReplied,
   } from "@/lib/dmart_services";
+  import { toasts } from "@/lib/toast";
   import {
-    errorToastMessage,
-    successToastMessage,
-  } from "@/lib/toasts_messages";
+    ChevronLeftOutline,
+    ChevronRightOutline,
+    MessagesOutline,
+    PaperPlaneOutline,
+    RefreshOutline,
+    ReplyOutline,
+  } from "flowbite-svelte-icons";
+  import Modal from "@/components/Modal.svelte";
+  import PageHeader from "@/components/ui/PageHeader.svelte";
+  import Card from "@/components/ui/Card.svelte";
+  import Badge from "@/components/ui/Badge.svelte";
+  import EmptyState from "@/components/ui/EmptyState.svelte";
+  import ErrorState from "@/components/ui/ErrorState.svelte";
+  import LoadingState from "@/components/ui/LoadingState.svelte";
 
-  let messages: any[] = $state([]);
+  interface ContactBody {
+    full_name?: string;
+    email?: string;
+    contact_email?: string;
+    subject?: string;
+    message?: string;
+    attachments?: Array<{ name?: string; filename?: string }>;
+  }
+
+  interface ContactMessage {
+    shortname: string;
+    attributes: {
+      created_at?: string;
+      payload?: { body?: ContactBody; replied?: boolean };
+    };
+    attachments?: Record<string, unknown> | unknown[];
+  }
+
+  let messages = $state<ContactMessage[]>([]);
   let loading = $state(true);
-  let error = $state("");
+  let error = $state<unknown>(null);
   let currentPage = $state(0);
-  let limit = 20;
+  const limit = 20;
   let totalMessages = $state(0);
 
   let showModal = $state(false);
-  let selectedMessage: any = $state(null);
+  let selectedMessage = $state<ContactMessage | null>(null);
   let replyContent = $state("");
   let sendingReply = $state(false);
 
+  $effect(() => setTitle($_("contactMessages")));
 
-  function hasAttachment(message: any): boolean {
-    return message.attachments && message.attachments.length > 0;
+  const totalPages = $derived(Math.max(1, Math.ceil(totalMessages / limit)));
+  const rangeStart = $derived(totalMessages === 0 ? 0 : currentPage * limit + 1);
+  const rangeEnd = $derived(Math.min((currentPage + 1) * limit, totalMessages));
+
+  function bodyOf(message: ContactMessage): ContactBody {
+    return message.attributes?.payload?.body ?? {};
   }
 
-  function isReplied(message: any): boolean {
-    if (!message.attachments || Object.keys(message.attachments).length === 0) {
-      return false;
-    }
-    return true;
+  function hasAttachment(message: ContactMessage): boolean {
+    const list = bodyOf(message).attachments;
+    return Array.isArray(list) && list.length > 0;
+  }
+
+  function isReplied(message: ContactMessage): boolean {
+    const a = message.attachments;
+    if (!a) return false;
+    return Array.isArray(a) ? a.length > 0 : Object.keys(a).length > 0;
   }
 
   // Replies are stored as `comment` attachments with
   // payload.body = { state: "replied", body: <text> } (see markMessageAsReplied).
-  function getReplyMessage(message: any): string {
-    if (!message.attachments) return "";
-    for (const group of Object.values(message.attachments) as any[]) {
+  function getReplyMessage(message: ContactMessage): string {
+    if (!message.attachments || Array.isArray(message.attachments)) return "";
+    for (const group of Object.values(message.attachments)) {
       const list = Array.isArray(group) ? group : [group];
       for (const attachment of list) {
-        const body = attachment?.attributes?.payload?.body;
+        const body = (attachment as { attributes?: { payload?: { body?: { state?: string; body?: unknown } } } })
+          ?.attributes?.payload?.body;
         if (body?.state === "replied") {
           return typeof body.body === "string" ? body.body : "";
         }
@@ -56,29 +97,26 @@
 
   async function loadMessages() {
     loading = true;
-    error = "";
+    error = null;
     try {
       const response = await fetchContactMessages();
       if (response && response.status === "success") {
-        messages = response.records || [];
-        totalMessages = resolveTotal((response.attributes as any)?.total);
-
+        messages = (response.records ?? []) as unknown as ContactMessage[];
+        totalMessages = resolveTotal((response.attributes as { total?: number })?.total);
         await autoMarkAttachmentMessages();
       } else {
         error = $_("failedToFetchContactMessages");
       }
     } catch (err) {
-      console.error("Error fetching contact messages:", err);
-      error = $_("errorFetchingMessages");
+      log.error("Error fetching contact messages:", err);
+      error = err;
     } finally {
       loading = false;
     }
   }
 
   async function autoMarkAttachmentMessages() {
-    const messagesToMark = messages.filter(
-      (message) => hasAttachment(message) && !isReplied(message),
-    );
+    const messagesToMark = messages.filter((m) => hasAttachment(m) && !isReplied(m));
 
     for (const message of messagesToMark) {
       try {
@@ -88,23 +126,19 @@
           message.shortname,
           "Auto-replied: Message contains attachment",
         );
-
-        message.attributes.payload.replied = true;
-      } catch (error) {
-        console.error(
-          `Error auto-marking message ${message.shortname}:`,
-          error,
-        );
+        if (message.attributes.payload) message.attributes.payload.replied = true;
+      } catch (err) {
+        log.error(`Error auto-marking message ${message.shortname}:`, err);
       }
     }
   }
 
-  function openReplyModal(message: any) {
-    const messageBody = message.attributes.payload?.body;
-    const ownerEmail = messageBody?.email || messageBody?.contact_email || "";
+  function openReplyModal(message: ContactMessage) {
+    const body = bodyOf(message);
+    const ownerEmail = body.email || body.contact_email || "";
 
     if (!ownerEmail) {
-      errorToastMessage($_("noEmailFoundForMessage"));
+      toasts.error($_("noEmailFoundForMessage"));
       return;
     }
 
@@ -114,26 +148,26 @@
   }
 
   function closeModal() {
+    if (sendingReply) return;
     showModal = false;
     selectedMessage = null;
     replyContent = "";
-    sendingReply = false;
   }
 
-  async function sendReply() {
+  async function sendReply(event?: SubmitEvent) {
+    event?.preventDefault();
     if (!selectedMessage || !replyContent.trim()) {
-      errorToastMessage($_("toast.reply_required"));
+      toasts.error($_("toast.reply_required"));
       return;
     }
 
     sendingReply = true;
+    const target = selectedMessage;
 
     try {
-      const messageBody = selectedMessage.attributes.payload?.body;
-      const ownerEmail = messageBody?.email || messageBody?.contact_email || "";
-      const subject = messageBody?.subject
-        ? `${messageBody.subject} - ${$_("reply")}`
-        : $_("replyToYourMessage");
+      const body = bodyOf(target);
+      const ownerEmail = body.email || body.contact_email || "";
+      const subject = body.subject ? `${body.subject} - ${$_("reply")}` : $_("replyToYourMessage");
 
       window.open(
         `mailto:${ownerEmail}?subject=${encodeURIComponent(subject)}&body=${encodeURIComponent(replyContent)}`,
@@ -142,25 +176,23 @@
       const success = await markMessageAsReplied(
         APPLICATIONS_SPACE,
         CONTACTS_SUBPATH,
-        selectedMessage.shortname,
+        target.shortname,
         replyContent,
       );
 
-      if (success) {
-        selectedMessage.attributes.payload.replied = true;
-        await loadMessages();
-        closeModal();
-        successToastMessage($_("toast.reply_sent_marked"));
-      } else {
-        errorToastMessage($_("toast.reply_sent_failed"));
-        closeModal();
-      }
-    } catch (error) {
-      console.error("Error marking message as replied:", error);
-      errorToastMessage($_("toast.reply_sent_error"));
-      closeModal();
-    } finally {
       sendingReply = false;
+      closeModal();
+      if (success) {
+        await loadMessages();
+        toasts.success($_("toast.reply_sent_marked"));
+      } else {
+        toasts.error($_("toast.reply_sent_failed"));
+      }
+    } catch (err) {
+      log.error("Error marking message as replied:", err);
+      sendingReply = false;
+      closeModal();
+      toasts.error($_("toast.reply_sent_error"));
     }
   }
 
@@ -183,364 +215,193 @@
   });
 </script>
 
-<div class="container mx-auto p-6">
-  <div class="bg-white rounded-lg shadow-md">
-    <div class="p-6 border-b border-gray-200">
-      <div class="flex justify-between items-center">
-        <h2 class="text-2xl font-bold text-gray-900">
-          {$_("contactMessages")}
-        </h2>
-        <button
-          aria-label={$_("route_labels.aria_refresh_contact_messages")}
-          onclick={loadMessages}
-          class="px-4 py-2 bg-blue-600 text-white rounded-md hover:bg-blue-700 transition-colors"
-          disabled={loading}
-        >
-          {loading ? $_("refreshing") : $_("refresh")}
-        </button>
-      </div>
+<div class="mx-auto max-w-5xl px-4 sm:px-6 py-6 sm:py-8">
+  <PageHeader
+    title={$_("contactMessages")}
+    description={totalMessages > 0
+      ? $_("contact_inbox.showing", { values: { start: rangeStart, end: rangeEnd, total: totalMessages } })
+      : undefined}
+    icon={MessagesOutline}
+  >
+    {#snippet actions()}
+      <button
+        type="button"
+        class="app-btn app-btn-secondary app-btn-sm"
+        onclick={loadMessages}
+        disabled={loading}
+      >
+        <RefreshOutline size="sm" class={loading ? "animate-spin" : ""} aria-hidden="true" />
+        {loading ? $_("refreshing") : $_("refresh")}
+      </button>
+    {/snippet}
+  </PageHeader>
 
-      {#if totalMessages > 0}
-        <p class="text-sm text-gray-600 mt-2">
-          {$_("showing")}
-          {currentPage * limit + 1}
-          {$_("to")}
-          {Math.min((currentPage + 1) * limit, totalMessages)}
-          {$_("of")}
-          {totalMessages}
-          {$_("messages")}
-        </p>
-      {/if}
-    </div>
-
-    <div class="p-6">
-      {#if loading}
-        <div class="flex justify-center items-center py-12">
-          <div
-            class="animate-spin rounded-full h-8 w-8 border-b-2 border-blue-600"
-          ></div>
-          <span class="ml-2 text-gray-600">{$_("loadingMessages")}</span>
-        </div>
-      {:else if error}
-        <div class="bg-red-50 border border-red-200 rounded-md p-4">
-          <div class="flex">
-            <div class="shrink-0">
-              <svg
-                class="h-5 w-5 text-red-400"
-                viewBox="0 0 20 20"
-                fill="currentColor"
-              >
-                <path
-                  fill-rule="evenodd"
-                  d="M10 18a8 8 0 100-16 8 8 0 000 16zM8.707 7.293a1 1 0 00-1.414 1.414L8.586 10l-1.293 1.293a1 1 0 101.414 1.414L10 11.414l1.293 1.293a1 1 0 001.414-1.414L11.414 10l1.293-1.293a1 1 0 00-1.414-1.414L10 8.586 8.707 7.293z"
-                  clip-rule="evenodd"
-                />
-              </svg>
-            </div>
-            <div class="ml-3">
-              <h3 class="text-sm font-medium text-red-800">{$_("error")}</h3>
-              <p class="text-sm text-red-700 mt-1">{error}</p>
-            </div>
-          </div>
-        </div>
-      {:else if messages.length === 0}
-        <div class="text-center py-12">
-          <svg
-            class="mx-auto h-12 w-12 text-gray-400"
-            fill="none"
-            viewBox="0 0 24 24"
-            stroke="currentColor"
-          >
-            <path
-              stroke-linecap="round"
-              stroke-linejoin="round"
-              stroke-width="2"
-              d="M20 13V6a2 2 0 00-2-2H6a2 2 0 00-2 2v7m16 0v5a2 2 0 01-2 2H6a2 2 0 01-2-2v-5m16 0h-4m-4 0H9m-4 0h4m0 0V9a2 2 0 012-2h2a2 2 0 012 2v4.01"
-            />
-          </svg>
-          <h3 class="mt-2 text-sm font-medium text-gray-900">
-            {$_("noContactMessages")}
-          </h3>
-          <p class="mt-1 text-sm text-gray-500">
-            {$_("noMessagesSubmitted")}
-          </p>
-        </div>
-      {:else}
-        <div class="space-y-4">
-          {#each messages as message (message.shortname)}
-            <div
-              class="border border-gray-200 rounded-lg p-4 hover:shadow-md transition-shadow"
-            >
-              <div class="flex justify-between items-start mb-3">
-                <div class="flex-1">
-                  <h3 class="text-lg font-semibold text-gray-900">
-                    {message.attributes.payload.body.full_name ||
-                      $_("anonymous")}
+  {#if loading && messages.length === 0}
+    <LoadingState label={$_("loadingMessages")} />
+  {:else if error}
+    <ErrorState title={$_("failedToFetchContactMessages")} {error} onRetry={loadMessages} />
+  {:else if messages.length === 0}
+    <EmptyState icon={MessagesOutline} title={$_("noContactMessages")} hint={$_("noMessagesSubmitted")} />
+  {:else}
+    <LoadingState variant="overlay" {loading}>
+      <ul class="space-y-4 list-none p-0 m-0">
+        {#each messages as message (message.shortname)}
+          {@const body = bodyOf(message)}
+          {@const replied = isReplied(message)}
+          <li>
+            <Card>
+              <div class="flex flex-wrap items-start justify-between gap-3 mb-3">
+                <div class="min-w-0">
+                  <h3 class="text-lg font-semibold text-text break-words">
+                    {body.full_name || $_("anonymous")}
                   </h3>
-                  <p class="text-sm text-gray-600">
-                    {message.attributes.payload.body.email ||
-                      $_("noEmailProvided")}
+                  <p class="text-sm text-text-muted break-all">
+                    {body.email || $_("noEmailProvided")}
                   </p>
-                  <p class="text-xs text-gray-500 mt-1">
+                  <p class="text-xs text-text-faint mt-1 tabular-nums">
                     {$_("submitted")}: {formatDate(message.attributes.created_at, "datetime", $locale)}
                   </p>
                 </div>
-                <div class="flex space-x-2">
-                  <span
-                    class="inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium bg-blue-100 text-blue-800"
-                  >
-                    {message.shortname}
-                  </span>
-
+                <div class="flex flex-wrap items-center gap-2">
+                  <Badge size="sm">{message.shortname}</Badge>
                   {#if hasAttachment(message)}
-                    <span
-                      class="inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium bg-yellow-100 text-yellow-800"
-                    >
-                      📎 {$_("attachment")}
-                    </span>
+                    <Badge variant="warning" size="sm">{$_("attachment")}</Badge>
                   {/if}
-
-                  {#if isReplied(message)}
-                    <span
-                      class="inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium bg-green-100 text-green-800"
-                    >
-                      ✓ {$_("replied")}
-                    </span>
+                  {#if replied}
+                    <Badge variant="success" size="sm">{$_("replied")}</Badge>
                   {/if}
-
-                  {#if message.attributes.payload?.body?.email && !isReplied(message)}
+                  {#if body.email && !replied}
                     <button
-                      aria-label={`Reply to ${message.attributes.payload.body.full_name}`}
+                      type="button"
+                      class="app-btn app-btn-primary app-btn-sm"
                       onclick={() => openReplyModal(message)}
-                      class="inline-flex items-center px-3 py-1 border border-transparent text-xs font-medium rounded-md text-white bg-green-600 hover:bg-green-700 transition-colors"
                     >
+                      <ReplyOutline size="sm" aria-hidden="true" />
                       {$_("reply")}
                     </button>
                   {/if}
                 </div>
               </div>
 
-              {#if message.attributes.payload?.body?.subject}
-                <div class="mt-2 text-sm text-gray-600">
-                  <strong>{$_("subject")}:</strong>
-                  {message.attributes.payload.body.subject}
-                </div>
+              {#if body.subject}
+                <p class="text-sm text-text-muted mb-2">
+                  <strong class="text-text">{$_("subject")}:</strong>
+                  {body.subject}
+                </p>
               {/if}
 
               {#if hasAttachment(message)}
-                <div class="mt-2 text-sm text-gray-600">
-                  <strong>{$_("attachments")}:</strong>
-                  <ul class="mt-1 text-xs text-gray-500">
-                    {#each message.attributes.payload.body.attachments as attachment, i (i)}
-                      <li>
-                        • {attachment.name ||
-                          attachment.filename ||
-                          $_("unknownFile")}
-                      </li>
+                <div class="text-sm text-text-muted mb-2">
+                  <strong class="text-text">{$_("attachments")}:</strong>
+                  <ul class="mt-1 text-xs list-disc ps-5">
+                    {#each body.attachments ?? [] as attachment, i (i)}
+                      <li>{attachment.name || attachment.filename || $_("unknownFile")}</li>
                     {/each}
                   </ul>
                 </div>
               {/if}
 
-              <div class="bg-gray-50 rounded-md p-3">
-                <h4 class="text-sm font-medium text-gray-900 mb-2">
-                  {$_("message")}:
-                </h4>
-                <p class="text-sm text-gray-700 whitespace-pre-wrap">
-                  {message.attributes.payload?.body?.message ||
-                    $_("noMessageContent")}
+              <div class="rounded-control bg-surface-3 p-3">
+                <h4 class="text-sm font-medium text-text mb-1">{$_("message")}</h4>
+                <p class="text-sm text-text-muted whitespace-pre-wrap break-words">
+                  {body.message || $_("noMessageContent")}
                 </p>
               </div>
 
-              {#if isReplied(message)}
-                <div class="bg-green-50 rounded-md p-3 mt-3">
-                  <h4 class="text-sm font-medium text-green-900 mb-2">
-                    {$_("reply")}:
-                  </h4>
-                  <p class="text-sm text-green-700 whitespace-pre-wrap">
+              {#if replied}
+                <div class="rounded-control bg-success-soft p-3 mt-3">
+                  <h4 class="text-sm font-medium text-success mb-1">{$_("reply")}</h4>
+                  <p class="text-sm text-text whitespace-pre-wrap break-words">
                     {getReplyMessage(message) || $_("noReplyContent")}
                   </p>
                 </div>
               {/if}
-            </div>
-          {/each}
-        </div>
+            </Card>
+          </li>
+        {/each}
+      </ul>
+    </LoadingState>
 
-        {#if totalMessages > limit}
-          <div
-            class="flex justify-between items-center mt-6 pt-4 border-t border-gray-200"
-          >
-            <button
-              aria-label={$_("route_labels.aria_previous_page")}
-              onclick={prevPage}
-              disabled={currentPage === 0}
-              class="px-4 py-2 text-sm font-medium text-gray-700 bg-white border border-gray-300 rounded-md hover:bg-gray-50 disabled:opacity-50 disabled:cursor-not-allowed"
-            >
-              {$_("previous")}
-            </button>
+    {#if totalMessages > limit}
+      <nav class="flex items-center justify-between gap-4 mt-6 pt-4 border-t border-border" aria-label={$_("contact_inbox.pagination")}>
+        <button
+          type="button"
+          class="app-btn app-btn-secondary app-btn-sm"
+          onclick={prevPage}
+          disabled={currentPage === 0 || loading}
+        >
+          <ChevronLeftOutline size="sm" class="rtl:rotate-180" aria-hidden="true" />
+          {$_("previous")}
+        </button>
 
-            <span class="text-sm text-gray-700">
-              {$_("page")}
-              {currentPage + 1}
-              {$_("of")}
-              {Math.ceil(totalMessages / limit)}
-            </span>
+        <span class="text-sm text-text-muted tabular-nums" aria-current="page">
+          {$_("contact_inbox.page_of", { values: { page: currentPage + 1, total: totalPages } })}
+        </span>
 
-            <button
-              aria-label={$_("route_labels.aria_next_page")}
-              onclick={nextPage}
-              disabled={(currentPage + 1) * limit >= totalMessages}
-              class="px-4 py-2 text-sm font-medium text-gray-700 bg-white border border-gray-300 rounded-md hover:bg-gray-50 disabled:opacity-50 disabled:cursor-not-allowed"
-            >
-              {$_("next")}
-            </button>
-          </div>
-        {/if}
-      {/if}
-    </div>
-  </div>
+        <button
+          type="button"
+          class="app-btn app-btn-secondary app-btn-sm"
+          onclick={nextPage}
+          disabled={(currentPage + 1) * limit >= totalMessages || loading}
+        >
+          {$_("next")}
+          <ChevronRightOutline size="sm" class="rtl:rotate-180" aria-hidden="true" />
+        </button>
+      </nav>
+    {/if}
+  {/if}
 </div>
 
 {#if showModal && selectedMessage}
-  <div
-    class="fixed inset-0 z-50 overflow-y-auto"
-    aria-labelledby="modal-title"
-    role="dialog"
-    aria-modal="true"
-  >
-    <div
-      class="flex items-end justify-center min-h-screen pt-4 px-4 pb-20 text-center"
-    >
-      <div
-        class="fixed inset-0 bg-gray-500 bg-opacity-75 transition-opacity"
-        aria-hidden="true"
-        onclick={closeModal}
-      ></div>
-
-      <div
-        style="width: 80%;"
-        class="inline-block align-bottom bg-white rounded-lg overflow-hidden shadow-xl transform transition-all sm:my-8 sm:align-middle sm:max-w-lg sm:w-full"
-        dir={$isRTL ? "rtl" : "ltr"}
-      >
-        <div class="bg-white px-4 pt-5 pb-4 sm:p-6 sm:pb-4">
-          <div
-            class="sm:flex"
-            class:items-start={!$isRTL}
-            class:items-end={$isRTL}
-          >
-            <div
-              class="mt-3 text-center sm:mt-0 w-full"
-              class:sm:text-left={!$isRTL}
-              class:sm:text-right={$isRTL}
-            >
-              <h3
-                class="text-lg leading-6 font-medium text-gray-900 mb-4"
-                id="modal-title"
-              >
-                {$_("replyToMessage")}
-              </h3>
-
-              <div class="mb-4 p-3 bg-gray-50 rounded-md">
-                <div
-                  class="text-sm text-gray-600 mb-2"
-                  class:text-left={!$isRTL}
-                  class:text-right={$isRTL}
-                >
-                  <strong>{$_("name")}:</strong>
-                  {selectedMessage.attributes.payload.body.full_name ||
-                    $_("anonymous")}
-                </div>
-                <div
-                  class="text-sm text-gray-600 mb-2"
-                  class:text-left={!$isRTL}
-                  class:text-right={$isRTL}
-                >
-                  <strong>{$_("email")}:</strong>
-                  {selectedMessage.attributes.payload.body.email ||
-                    $_("noEmailProvided")}
-                </div>
-                <div
-                  class="text-sm text-gray-600 mb-2"
-                  class:text-left={!$isRTL}
-                  class:text-right={$isRTL}
-                >
-                  <strong>{$_("subject")}:</strong>
-                  {selectedMessage.attributes.payload.body.subject ||
-                    $_("noSubject")}
-                </div>
-                <div
-                  class="text-sm text-gray-600"
-                  class:text-left={!$isRTL}
-                  class:text-right={$isRTL}
-                >
-                  <strong>{$_("originalMessage")}:</strong>
-                  <div
-                    class="mt-1 text-gray-700 bg-white p-2 rounded border max-h-20 overflow-y-auto"
-                    class:text-left={!$isRTL}
-                    class:text-right={$isRTL}
-                  >
-                    {selectedMessage.attributes.payload?.body?.message ||
-                      $_("noMessageContent")}
-                  </div>
-                </div>
-              </div>
-
-              <div class="mb-4">
-                <label
-                  for="reply-content"
-                  class="block text-sm font-medium text-gray-700 mb-2"
-                  class:text-left={!$isRTL}
-                  class:text-right={$isRTL}
-                >
-                  {$_("yourReply")}:
-                </label>
-                <textarea
-                  id="reply-content"
-                  bind:value={replyContent}
-                  rows="6"
-                  class="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-blue-500 resize-none"
-                  class:text-left={!$isRTL}
-                  class:text-right={$isRTL}
-                  placeholder={$_("typeReplyPlaceholder")}
-                  disabled={sendingReply}
-                  dir={$isRTL ? "rtl" : "ltr"}
-                ></textarea>
-              </div>
-            </div>
-          </div>
-        </div>
-
-        <div
-          class="bg-gray-50 px-4 py-3 sm:px-6 sm:flex"
-          class:sm:flex-row-reverse={!$isRTL}
-          class:sm:flex-row={$isRTL}
-        >
-          <button
-            aria-label={$_("route_labels.aria_send_reply")}
-            type="button"
-            onclick={sendReply}
-            disabled={sendingReply}
-            class="mx-2 w-full inline-flex justify-center rounded-md border border-transparent shadow-sm px-4 py-2 bg-blue-600 text-base font-medium text-white hover:bg-blue-700 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-blue-500 sm:w-auto sm:text-sm disabled:opacity-50 disabled:cursor-not-allowed"
-          >
-            {sendingReply ? $_("sending") : $_("sendReply")}
-          </button>
-          <button
-            aria-label={$_("route_labels.aria_cancel_replying")}
-            type="button"
-            onclick={closeModal}
-            disabled={sendingReply}
-            class="mx-2 mt-3 w-full inline-flex justify-center rounded-md border border-gray-300 shadow-sm px-4 py-2 bg-white text-base font-medium text-gray-700 hover:bg-gray-50 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-indigo-500 sm:mt-0 sm:w-auto sm:text-sm disabled:opacity-50 disabled:cursor-not-allowed"
-          >
-            {$_("cancel")}
-          </button>
+  {@const body = bodyOf(selectedMessage)}
+  <Modal title={$_("replyToMessage")} size="xl" dismissable={!sendingReply} onClose={closeModal}>
+    <div class="rounded-control bg-surface-3 p-3 mb-4 text-sm text-text-muted space-y-2">
+      <p><strong class="text-text">{$_("name")}:</strong> {body.full_name || $_("anonymous")}</p>
+      <p><strong class="text-text">{$_("email")}:</strong> {body.email || $_("noEmailProvided")}</p>
+      <p><strong class="text-text">{$_("subject")}:</strong> {body.subject || $_("noSubject")}</p>
+      <div>
+        <strong class="text-text">{$_("originalMessage")}:</strong>
+        <div class="mt-1 rounded-control border border-border bg-surface-2 p-2 max-h-24 overflow-y-auto whitespace-pre-wrap break-words text-text">
+          {body.message || $_("noMessageContent")}
         </div>
       </div>
     </div>
-  </div>
-{/if}
 
-<style>
-  .container {
-    max-width: 1200px;
-  }
-</style>
+    <form id="contact-reply-form" onsubmit={sendReply}>
+      <label for="reply-content" class="block text-sm font-medium text-text mb-2">
+        {$_("yourReply")}
+      </label>
+      <textarea
+        id="reply-content"
+        bind:value={replyContent}
+        rows="6"
+        class="w-full px-3 py-2 text-sm rounded-control border border-border bg-surface-2 text-text placeholder:text-text-faint focus:border-primary focus:ring-1 focus:ring-primary resize-none"
+        placeholder={$_("typeReplyPlaceholder")}
+        disabled={sendingReply}
+        required
+        data-autofocus
+      ></textarea>
+    </form>
+
+    {#snippet footer()}
+      <button type="button" class="app-btn app-btn-secondary" onclick={closeModal} disabled={sendingReply}>
+        {$_("cancel")}
+      </button>
+      <button
+        type="submit"
+        form="contact-reply-form"
+        class="app-btn app-btn-primary"
+        disabled={sendingReply}
+        aria-busy={sendingReply}
+      >
+        {#if sendingReply}
+          <span class="spinner spinner-xs spinner-white" aria-hidden="true"></span>
+          {$_("sending")}
+        {:else}
+          <PaperPlaneOutline size="sm" aria-hidden="true" />
+          {$_("sendReply")}
+        {/if}
+      </button>
+    {/snippet}
+  </Modal>
+{/if}

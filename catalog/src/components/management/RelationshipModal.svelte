@@ -1,9 +1,10 @@
 <script lang="ts">
   import { _ } from "@/i18n";
   import Modal from "@/components/Modal.svelte";
-  import { Dmart, RequestType, ResourceType } from "@edraj/tsdmart";
+  import { confirm } from "@/lib/confirm";
+  import { Dmart, DmartScope, RequestType, ResourceType } from "@edraj/tsdmart";
   import { successToastMessage, errorToastMessage } from "@/lib/toasts_messages";
-  import { getChildren, getChildrenAndSubChildren } from "@/lib/dmart_services";
+  import { getChildren, getChildrenAndSubChildren, getSpaces } from "@/lib/dmart_services";
   import {
     PlusOutline,
     TrashBinSolid,
@@ -53,8 +54,9 @@
 
   async function loadSpaces() {
     try {
-      const result = await Dmart.getSpaces();
-      spaces = (result as any).records || [];
+      // Served from the session cache (lib/dmart_services/spacesCache).
+      const result = await getSpaces(true, DmartScope.managed);
+      spaces = result.records || [];
     } catch {
       spaces = [];
     }
@@ -218,9 +220,12 @@
   }
 
   async function removeRelationship(index: number) {
-    if (!confirm($_("relationship_modal.confirm_delete"))) {
-      return;
-    }
+    const confirmed = await confirm({
+      title: $_("relationship_modal.delete_title"),
+      body: $_("relationship_modal.confirm_delete"),
+      variant: "danger",
+    });
+    if (!confirmed) return;
     const updated = relationships.filter(
       (_: any, i: number) => i !== index,
     );
@@ -246,45 +251,47 @@
     {#if relationships && relationships.length > 0}
       <div class="space-y-3 w-full">
         {#each relationships as rel, index (index)}
-          <div class="p-4 bg-white border border-gray-200 rounded-lg shadow-sm">
+          <div class="p-4 bg-surface-2 border border-border rounded-lg shadow-sm">
             <div class="flex items-center justify-between">
               <div class="flex-1 min-w-0">
                 <div class="flex items-center gap-3">
                   <span
-                    class="inline-block px-2.5 py-1 text-xs font-medium rounded bg-blue-100 text-blue-800"
+                    class="inline-block px-2.5 py-1 text-xs font-medium rounded bg-info-soft text-info"
                   >
                     {rel.related_to?.type || "content"}
                   </span>
-                  <span class="font-medium text-sm text-black truncate">
+                  <span class="font-medium text-sm text-text truncate">
                     {getLocatorDisplay(rel)}
                   </span>
                 </div>
                 {#if rel.related_to?.schema_shortname}
-                  <p class="text-sm text-gray-600 mt-2">
+                  <p class="text-sm text-text-muted mt-2">
                     Schema: {rel.related_to.schema_shortname}
                   </p>
                 {/if}
                 {#if rel.attributes && Object.keys(rel.attributes).length > 0}
-                  <p class="text-sm text-gray-500 mt-2">
+                  <p class="text-sm text-text-muted mt-2">
                     Attributes: {JSON.stringify(rel.attributes).substring(0, 100)}{JSON.stringify(rel.attributes).length > 100
                       ? "..."
                       : ""}
                   </p>
                 {/if}
               </div>
-              <div class="flex items-center gap-2 ml-4">
+              <div class="flex items-center gap-2 ms-4">
                 <button
-                  class="p-2 bg-white border border-gray-300 rounded-lg hover:bg-gray-100 text-gray-700"
+                  class="p-2 bg-surface-2 border border-border-strong rounded-lg hover:bg-surface-3 text-text"
                   onclick={() => populateFormForEdit(index)}
-                  title="Edit"
+                  title={$_("common.edit")}
+                  aria-label={$_("common.edit")}
                 >
                   <PenSolid size="sm" />
                 </button>
                 <button
-                  class="p-2 bg-white border border-gray-300 rounded-lg hover:bg-gray-100 text-red-500"
+                  class="p-2 bg-surface-2 border border-border-strong rounded-lg hover:bg-surface-3 text-danger"
                   onclick={() => removeRelationship(index)}
                   disabled={isSaving}
-                  title="Delete"
+                  title={$_("common.delete")}
+                  aria-label={$_("common.delete")}
                 >
                   <TrashBinSolid size="sm" />
                 </button>
@@ -294,7 +301,7 @@
         {/each}
       </div>
     {:else}
-      <p class="text-gray-500 text-center py-8">
+      <p class="text-text-muted text-center py-8">
         {$_("relationship_modal.no_relationships")}
       </p>
     {/if}
@@ -306,20 +313,20 @@
           onclick={() => {
             showForm = true;
           }}
-          class="inline-flex items-center px-4 py-2 text-sm font-medium text-white bg-black border border-black rounded-lg hover:bg-gray-800"
+          class="inline-flex items-center px-4 py-2 text-sm font-medium text-text-on-primary bg-text border border-border-strong rounded-lg hover:bg-text"
         >
-          <PlusOutline size="sm" class="mr-2" />
+          <PlusOutline size="sm" class="me-2" />
           {$_("relationship_modal.add_relationship")}
         </button>
       </div>
     {:else}
-      <div class="p-6 bg-gray-50 rounded-xl border border-gray-200 w-full">
+      <div class="p-6 bg-surface rounded-xl border border-border w-full">
         <div class="flex items-center justify-between mb-6">
-          <h4 class="text-lg font-semibold text-black">
+          <h4 class="text-lg font-semibold text-text">
             {isEditing ? $_("relationship_modal.edit_title") : $_("relationship_modal.new_title")}
           </h4>
           <button
-            class="w-8 h-8 flex items-center justify-center rounded-lg bg-white border border-gray-300 text-gray-500 hover:text-gray-700 hover:bg-gray-100 transition-colors"
+            class="w-8 h-8 flex items-center justify-center rounded-lg bg-surface-2 border border-border-strong text-text-muted hover:text-text hover:bg-surface-3 transition-colors"
             onclick={resetForm}
           >
             <CloseOutline size="sm" />
@@ -329,11 +336,11 @@
         <div class="space-y-4">
           <!-- Space Name -->
           <div>
-            <label for="rel-space" class="block text-sm font-medium text-gray-900">{$_("relationship_modal.fields.space_name")}</label>
+            <label for="rel-space" class="block text-sm font-medium text-text">{$_("relationship_modal.fields.space_name")}</label>
             <select
               id="rel-space"
               bind:value={relSpaceName}
-              class="mt-1 w-full px-3 py-2 bg-white text-black border border-gray-300 rounded-lg focus:ring-2 focus:ring-indigo-500 focus:border-indigo-500"
+              class="mt-1 w-full px-3 py-2 bg-surface-2 text-text border border-border-strong rounded-lg focus:ring-2 focus:ring-primary focus:border-primary"
             >
               <option value="">-- {$_("relationship_modal.select_space")} --</option>
               {#each spaces as space (space.shortname)}
@@ -344,12 +351,12 @@
 
           <!-- Subpath -->
           <div>
-            <label for="rel-subpath" class="block text-sm font-medium text-gray-900">{$_("relationship_modal.fields.subpath")}</label>
+            <label for="rel-subpath" class="block text-sm font-medium text-text">{$_("relationship_modal.fields.subpath")}</label>
             <select
               id="rel-subpath"
               bind:value={relSubpath}
               disabled={!relSpaceName || isLoadingSubpaths}
-              class="mt-1 w-full px-3 py-2 bg-white text-black border border-gray-300 rounded-lg focus:ring-2 focus:ring-indigo-500 focus:border-indigo-500 disabled:bg-gray-100 disabled:text-gray-500"
+              class="mt-1 w-full px-3 py-2 bg-surface-2 text-text border border-border-strong rounded-lg focus:ring-2 focus:ring-primary focus:border-primary disabled:bg-surface-3 disabled:text-text-muted"
             >
               <option value="/">/</option>
               {#each subpaths as path (path)}
@@ -357,7 +364,7 @@
               {/each}
             </select>
             {#if isLoadingSubpaths}
-              <p class="text-xs text-gray-500 mt-1">
+              <p class="text-xs text-text-muted mt-1">
                 {$_("relationship_modal.loading_subpaths")}
               </p>
             {/if}
@@ -365,12 +372,12 @@
 
           <!-- Shortname -->
           <div>
-            <label for="rel-shortname" class="block text-sm font-medium text-gray-900">{$_("relationship_modal.fields.shortname")}</label>
+            <label for="rel-shortname" class="block text-sm font-medium text-text">{$_("relationship_modal.fields.shortname")}</label>
             <select
               id="rel-shortname"
               bind:value={relShortname}
               disabled={!relSpaceName || isLoadingShortnames}
-              class="mt-1 w-full px-3 py-2 bg-white text-black border border-gray-300 rounded-lg focus:ring-2 focus:ring-indigo-500 focus:border-indigo-500 disabled:bg-gray-100 disabled:text-gray-500"
+              class="mt-1 w-full px-3 py-2 bg-surface-2 text-text border border-border-strong rounded-lg focus:ring-2 focus:ring-primary focus:border-primary disabled:bg-surface-3 disabled:text-text-muted"
             >
               <option value="">-- {$_("relationship_modal.select_entry")} --</option>
               {#each shortnames as item (item.shortname)}
@@ -378,7 +385,7 @@
               {/each}
             </select>
             {#if isLoadingShortnames}
-              <p class="text-xs text-gray-500 mt-1">
+              <p class="text-xs text-text-muted mt-1">
                 {$_("relationship_modal.loading_entries")}
               </p>
             {/if}
@@ -386,11 +393,11 @@
 
           <!-- Resource Type -->
           <div>
-            <label for="rel-type" class="block text-sm font-medium text-gray-900">{$_("relationship_modal.fields.resource_type")}</label>
+            <label for="rel-type" class="block text-sm font-medium text-text">{$_("relationship_modal.fields.resource_type")}</label>
             <select
               id="rel-type"
               bind:value={relType}
-              class="mt-1 w-full px-3 py-2 bg-white text-black border border-gray-300 rounded-lg focus:ring-2 focus:ring-indigo-500 focus:border-indigo-500"
+              class="mt-1 w-full px-3 py-2 bg-surface-2 text-text border border-border-strong rounded-lg focus:ring-2 focus:ring-primary focus:border-primary"
             >
               {#each Object.values(ResourceType) as rt (rt)}
                 <option value={rt}>{rt}</option>
@@ -400,7 +407,7 @@
 
           <!-- Schema Shortname (optional) -->
           <div>
-            <label for="rel-schema" class="block text-sm font-medium text-gray-900">
+            <label for="rel-schema" class="block text-sm font-medium text-text">
               {$_("relationship_modal.fields.schema_shortname")}
             </label>
             <input
@@ -408,27 +415,27 @@
               type="text"
               bind:value={relSchemaShortname}
               placeholder={$_("relationship_modal.schema_placeholder")}
-              class="mt-1 w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-indigo-500 focus:border-indigo-500"
+              class="mt-1 w-full px-3 py-2 border border-border-strong rounded-lg focus:ring-2 focus:ring-primary focus:border-primary"
             />
           </div>
 
           <!-- Attributes JSON editor -->
           <div>
-            <label for="rel-attributes" class="block text-sm font-medium text-gray-900">{$_("relationship_modal.fields.attributes")}</label>
+            <label for="rel-attributes" class="block text-sm font-medium text-text">{$_("relationship_modal.fields.attributes")}</label>
             <textarea
               id="rel-attributes"
               bind:value={relAttributesJson}
-              class="mt-1 w-full h-32 px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-indigo-500 focus:border-indigo-500 font-mono text-sm"
-              placeholder="JSON attributes"
+              class="mt-1 w-full h-32 px-3 py-2 border border-border-strong rounded-lg focus:ring-2 focus:ring-primary focus:border-primary font-mono text-sm"
+              placeholder={$_("labels.json_attributes")}
             ></textarea>
-            <p class="text-xs text-gray-500 mt-1">{$_("relationship_modal.json_format_hint")}</p>
+            <p class="text-xs text-text-muted mt-1">{$_("relationship_modal.json_format_hint")}</p>
           </div>
 
           <!-- Actions -->
-          <div class="flex justify-end gap-3 pt-4 border-t border-gray-200">
+          <div class="flex justify-end gap-3 pt-4 border-t border-border">
             <button
               onclick={resetForm}
-              class="px-4 py-2 text-sm font-medium text-black bg-white border border-gray-300 rounded-lg hover:bg-gray-50 disabled:opacity-50"
+              class="px-4 py-2 text-sm font-medium text-text bg-surface-2 border border-border-strong rounded-lg hover:bg-surface disabled:opacity-50"
             >
               {$_("common.cancel")}
             </button>
@@ -437,7 +444,7 @@
               disabled={!relSpaceName ||
                 !relShortname ||
                 isSaving}
-              class="px-4 py-2 text-sm font-medium text-white bg-black border border-black rounded-lg hover:bg-gray-800 disabled:opacity-50 disabled:cursor-not-allowed"
+              class="px-4 py-2 text-sm font-medium text-text-on-primary bg-text border border-border-strong rounded-lg hover:bg-text disabled:opacity-50 disabled:cursor-not-allowed"
             >
               {#if isSaving}
                 {$_("common.saving")}...
@@ -456,7 +463,7 @@
       onclick={() => {
         isOpen = false;
       }}
-      class="px-5 py-2.5 text-sm font-medium text-gray-700 bg-white border border-gray-200 rounded-xl hover:bg-gray-50"
+      class="px-5 py-2.5 text-sm font-medium text-text bg-surface-2 border border-border rounded-xl hover:bg-surface"
     >
       {$_("common.close")}
     </button>

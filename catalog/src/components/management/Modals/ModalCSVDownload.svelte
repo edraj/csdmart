@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { _ } from "@/i18n";
     import {
         Dmart,
         QueryType,
@@ -195,7 +196,7 @@
 {#if isOpen}
     <Modal
         onClose={() => (isOpen = false)}
-        title="Download CSV"
+        title={$_("users_page.download_csv")}
         ariaLabel="Download CSV"
         size="xl"
     >
@@ -221,12 +222,12 @@
                         <div class="space-y-1.5">
                             <label
                                 for="space"
-                                class="block text-[10px] uppercase font-bold text-gray-400 tracking-wider px-1"
-                                >Space</label
+                                class="block text-[10px] uppercase font-bold text-text-faint tracking-wider px-1"
+                                >{$_("fields.space")}</label
                             >
                             <select
                                 id="space"
-                                class="w-full px-4 py-2 bg-gray-50 border border-gray-200 rounded-xl text-sm focus:ring-2 focus:ring-indigo-500 text-gray-900"
+                                class="w-full px-4 py-2 bg-surface border border-border rounded-xl text-sm focus:ring-2 focus:ring-primary text-text"
                                 bind:value={selectedSpace}
                             >
                                 {#each parseSpacesForSelect(availableSpaces) as space (space.value)}
@@ -241,47 +242,47 @@
                     <div class="space-y-1.5">
                         <label
                             for="limit"
-                            class="block text-[10px] uppercase font-bold text-gray-400 tracking-wider px-1"
-                            >Limit</label
+                            class="block text-[10px] uppercase font-bold text-text-faint tracking-wider px-1"
+                            >{$_("csv_modal.limit")}</label
                         >
                         <input
                             id="limit"
                             type="number"
-                            placeholder="Enter limit"
+                            placeholder={$_("labels.enter_limit")}
                             bind:value={limit}
                             min="1"
                             disabled={downloadAll}
-                            class="w-full px-4 py-2 bg-gray-50 border border-gray-200 rounded-xl text-sm focus:ring-2 focus:ring-indigo-500 text-gray-900 disabled:opacity-50"
+                            class="w-full px-4 py-2 bg-surface border border-border rounded-xl text-sm focus:ring-2 focus:ring-primary text-text disabled:opacity-50"
                         />
                     </div>
 
                     <div class="space-y-1.5">
                         <label
                             for="startDate"
-                            class="block text-[10px] uppercase font-bold text-gray-400 tracking-wider px-1"
-                            >Start Date</label
+                            class="block text-[10px] uppercase font-bold text-text-faint tracking-wider px-1"
+                            >{$_("csv_modal.start_date")}</label
                         >
                         <input
                             id="startDate"
                             type="date"
                             bind:value={startDate}
                             disabled={downloadAll}
-                            class="w-full px-4 py-2 bg-gray-50 border border-gray-200 rounded-xl text-sm focus:ring-2 focus:ring-indigo-500 text-gray-900 disabled:opacity-50"
+                            class="w-full px-4 py-2 bg-surface border border-border rounded-xl text-sm focus:ring-2 focus:ring-primary text-text disabled:opacity-50"
                         />
                     </div>
 
                     <div class="space-y-1.5">
                         <label
                             for="endDate"
-                            class="block text-[10px] uppercase font-bold text-gray-400 tracking-wider px-1"
-                            >End Date</label
+                            class="block text-[10px] uppercase font-bold text-text-faint tracking-wider px-1"
+                            >{$_("csv_modal.end_date")}</label
                         >
                         <input
                             id="endDate"
                             type="date"
                             bind:value={endDate}
                             disabled={downloadAll}
-                            class="w-full px-4 py-2 bg-gray-50 border border-gray-200 rounded-xl text-sm focus:ring-2 focus:ring-indigo-500 text-gray-900 disabled:opacity-50"
+                            class="w-full px-4 py-2 bg-surface border border-border rounded-xl text-sm focus:ring-2 focus:ring-primary text-text disabled:opacity-50"
                         />
                     </div>
 
@@ -290,34 +291,35 @@
                             id="downloadAll"
                             type="checkbox"
                             bind:checked={downloadAll}
-                            class="w-4 h-4 text-indigo-600 bg-gray-50 border border-gray-200 rounded focus:ring-indigo-500 focus:ring-2"
+                            class="w-4 h-4 text-primary bg-surface border border-border rounded focus:ring-primary focus:ring-2"
                         />
                         <label
                             for="downloadAll"
-                            class="text-[10px] uppercase font-bold text-gray-400 tracking-wider cursor-pointer"
-                            >Download all</label
+                            class="text-[10px] uppercase font-bold text-text-faint tracking-wider cursor-pointer"
+                            >{$_("csv_modal.download_all")}</label
                         >
                     </div>
                 </div>
 
-                <div class="mt-8 pt-6 border-t border-gray-100">
+                <div class="mt-8 pt-6 border-t border-border">
                     <div class="flex items-center justify-between mb-4">
-                        <h3 class="text-sm font-bold text-gray-900">
+                        <h3 class="text-sm font-bold text-text">
                             CSV Columns Config
                         </h3>
                         <div class="flex items-center gap-2 flex-wrap">
                             <button
                                 type="button"
-                                class="text-[10px] uppercase font-bold text-indigo-600 hover:text-indigo-800 bg-indigo-50 hover:bg-indigo-100 px-3 py-1.5 rounded-lg transition-colors"
+                                class="text-[10px] uppercase font-bold text-primary hover:text-primary bg-primary-soft hover:bg-primary-soft px-3 py-1.5 rounded-lg transition-colors"
                                 onclick={copyIndexAttributes}
                             >
                                 Copy table columns to CSV headers
                             </button>
                             <button
                                 type="button"
-                                class="p-1.5 text-indigo-600 hover:bg-indigo-50 rounded-lg transition-colors border border-transparent hover:border-indigo-100"
+                                class="p-1.5 text-primary hover:bg-primary-soft rounded-lg transition-colors border border-transparent hover:border-primary/30"
                                 onclick={addCsvColumnSetting}
-                                title="Add Column"
+                                title={$_("users_page.add_column")}
+                                aria-label={$_("users_page.add_column")}
                             >
                                 <svg
                                     class="w-4 h-4"
@@ -338,16 +340,16 @@
 
                     {#if editingCsvColumns.length === 0}
                         <div
-                            class="text-center py-6 bg-gray-50 border border-gray-100 rounded-xl mb-4"
+                            class="text-center py-6 bg-surface border border-border rounded-xl mb-4"
                         >
                             <p
-                                class="text-[11px] text-gray-400 font-medium uppercase tracking-wider"
+                                class="text-[11px] text-text-faint font-medium uppercase tracking-wider"
                             >
                                 No columns configured
                             </p>
                             <button
                                 type="button"
-                                class="mt-2 text-xs font-semibold text-indigo-600 hover:text-indigo-700"
+                                class="mt-2 text-xs font-semibold text-primary hover:text-primary"
                                 onclick={addCsvColumnSetting}
                             >
                                 + Add First Column
@@ -357,42 +359,42 @@
                         <div class="space-y-3 mb-4">
                             {#each editingCsvColumns as attr, index (index)}
                                 <div
-                                    class="flex items-start gap-3 bg-white p-3 border border-gray-100 rounded-xl shadow-sm"
+                                    class="flex items-start gap-3 bg-surface-2 p-3 border border-border rounded-xl shadow-sm"
                                 >
                                     <div class="flex-1 space-y-3">
                                         <div class="space-y-1.5">
                                             <label
-                                                class="block text-[10px] uppercase font-bold text-gray-400 tracking-wider px-1"
-                                                for="csv-column-label-{index}">Column Label</label
+                                                class="block text-[10px] uppercase font-bold text-text-faint tracking-wider px-1"
+                                                for="csv-column-label-{index}">{$_("users_page.column_label")}</label
                                             >
                                             <input
                                                 id="csv-column-label-{index}"
                                                 type="text"
                                                 bind:value={attr.name}
-                                                placeholder="e.g. Display Name"
-                                                class="w-full px-4 py-2 bg-gray-50 border border-gray-200 rounded-xl text-sm focus:ring-2 focus:ring-indigo-500 text-gray-900"
+                                                placeholder={$_("users_page.column_label_placeholder")}
+                                                class="w-full px-4 py-2 bg-surface border border-border rounded-xl text-sm focus:ring-2 focus:ring-primary text-text"
                                             />
                                         </div>
                                         <div class="space-y-1.5">
                                             <label
-                                                class="block text-[10px] uppercase font-bold text-gray-400 tracking-wider px-1"
-                                                for="csv-data-key-{index}">Data Key</label
+                                                class="block text-[10px] uppercase font-bold text-text-faint tracking-wider px-1"
+                                                for="csv-data-key-{index}">{$_("users_page.column_key")}</label
                                             >
                                             <input
                                                 id="csv-data-key-{index}"
                                                 type="text"
                                                 bind:value={attr.key}
-                                                placeholder="e.g. displayname or payload.body.type"
-                                                class="w-full px-4 py-2 bg-gray-50 border border-gray-200 rounded-xl text-sm font-mono text-indigo-600 focus:ring-2 focus:ring-indigo-500"
+                                                placeholder={$_("labels.column_key_example")}
+                                                class="w-full px-4 py-2 bg-surface border border-border rounded-xl text-sm font-mono text-primary focus:ring-2 focus:ring-primary"
                                             />
                                         </div>
                                     </div>
                                     <button
                                         type="button"
-                                        class="mt-6 p-2 text-red-400 hover:text-red-600 hover:bg-red-50 rounded-lg transition-colors border border-transparent hover:border-red-100"
+                                        class="mt-6 p-2 text-danger hover:text-danger hover:bg-danger-soft rounded-lg transition-colors border border-transparent hover:border-danger/30"
                                         onclick={() =>
                                             removeCsvColumnSetting(index)}
-                                        aria-label="Remove column"
+                                        aria-label={$_("users_page.remove_column")}
                                     >
                                         <svg
                                             class="w-4 h-4"
@@ -417,11 +419,11 @@
                         <button
                             onclick={handleUpdateCsvColumns}
                             disabled={isSavingColumns || !folderMetadata}
-                            class="px-5 py-2 bg-white border border-gray-200 text-gray-700 rounded-xl text-xs font-bold hover:bg-gray-50 hover:border-gray-300 disabled:opacity-50 disabled:cursor-not-allowed transition-all flex items-center gap-2 shadow-sm"
+                            class="px-5 py-2 bg-surface-2 border border-border text-text rounded-xl text-xs font-bold hover:bg-surface hover:border-border-strong disabled:opacity-50 disabled:cursor-not-allowed transition-all flex items-center gap-2 shadow-sm"
                         >
                             {#if isSavingColumns}
                                 <div
-                                    class="w-3 h-3 border-2 border-gray-400 border-t-transparent rounded-full animate-spin"
+                                    class="w-3 h-3 border-2 border-border-strong border-t-transparent rounded-full animate-spin"
                                 ></div>
                                 Saving...
                             {:else}
@@ -434,18 +436,18 @@
         {#snippet footer()}
             <button
                 onclick={() => (isOpen = false)}
-                class="px-6 py-2.5 text-sm font-medium text-gray-600 hover:text-gray-900 hover:bg-gray-50 rounded-xl transition-colors border border-transparent"
+                class="px-6 py-2.5 text-sm font-medium text-text-muted hover:text-text hover:bg-surface rounded-xl transition-colors border border-transparent"
             >
                 Cancel
             </button>
             <button
                 onclick={handleDownloadCSV}
                 disabled={isCSVDownloadInProgress}
-                class="px-8 py-2.5 bg-indigo-600 text-white rounded-xl text-sm font-semibold hover:bg-indigo-700 shadow-md shadow-indigo-200 disabled:opacity-50 disabled:cursor-not-allowed transition-all flex items-center gap-2"
+                class="px-8 py-2.5 bg-primary text-text-on-primary rounded-xl text-sm font-semibold hover:bg-primary-hover shadow-md shadow-card disabled:opacity-50 disabled:cursor-not-allowed transition-all flex items-center gap-2"
             >
                 {#if isCSVDownloadInProgress}
                     <div
-                        class="w-4 h-4 border-2 border-white/30 border-t-white rounded-full animate-spin"
+                        class="w-4 h-4 border-2 border-text-on-primary/30 border-t-white rounded-full animate-spin"
                     ></div>
                     Downloading...
                 {:else}

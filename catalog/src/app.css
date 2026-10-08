@@ -80,9 +80,11 @@
 }
 
 /* ─── Legacy tokens ───
-   Still referenced by components outside this pass (catalog browse pages,
-   dashboard, messaging). Kept so nothing breaks, and redefined in the dark
-   blocks so those pages flip too. New markup should use the @theme names. */
+   Aliases still referenced by the pass-A/B files (Modal, DashboardHeader,
+   the auth/home/help pages, the catalog browse pages). Every alias that
+   nothing referenced any more was removed in pass C; the dashboard, entries,
+   messaging and editor files use the @theme names directly. Redefined in the
+   dark blocks so the remaining users flip too. */
 :root,
 [data-theme="light"] {
   color-scheme: light;
@@ -94,50 +96,27 @@
 
   /* Neutrals (slate). Inverted in dark so legacy text-gray-800 stays readable. */
   --color-gray-50: #f8fafc;
-  --color-gray-100: #f1f5f9;
-  --color-gray-200: #e2e8f0;
   --color-gray-300: #cbd5e1;
   --color-gray-400: #94a3b8;
   --color-gray-500: #64748b;
-  --color-gray-600: #475569;
-  --color-gray-700: #334155;
-  --color-gray-800: #1e293b;
   --color-gray-900: #0f172a;
-
-  /* Semantic aliases */
-  --color-error: var(--color-danger);
 
   /* Semantic pairs — danger */
   --color-danger-bg: #fef2f2;
   --color-danger-border: #fca5a5;
   --color-danger-fg: #991b1b;
-  --color-danger-strong: #b91c1c;
-  --color-danger-500: #ef4444;
-  --color-danger-600: #dc2626;
 
   /* Semantic pairs — success */
   --color-success-bg: #ecfdf5;
   --color-success-border: #86efac;
   --color-success-fg: #065f46;
-  --color-success-strong: #047857;
 
   /* Semantic pairs — warning */
   --color-warning-bg: #fffbeb;
   --color-warning-border: #fcd34d;
   --color-warning-fg: #92400e;
-  --color-warning-strong: #b45309;
-
-  /* Semantic pairs — info */
-  --color-info-bg: #eff6ff;
-  --color-info-border: #93c5fd;
-  --color-info-fg: #1e40af;
-  --color-info-strong: #1d4ed8;
 
   /* Surfaces */
-  --surface-page: var(--color-surface);
-  --surface-card: var(--color-surface-2);
-  --surface-elevated: var(--color-surface-2);
-  --surface-muted: var(--color-surface-3);
   --surface-overlay: rgba(15, 23, 42, 0.45);
 
   /* Gradients */
@@ -159,12 +138,10 @@
   --radius-md: 0.5rem;
   --radius-lg: 0.75rem;
   --radius-xl: 1rem;
-  --radius-2xl: 1.25rem;
   --radius-full: 9999px;
 
   /* Timing */
   --ease-out: cubic-bezier(0.16, 1, 0.3, 1);
-  --ease-spring: cubic-bezier(0.34, 1.56, 0.64, 1);
   --duration-fast: 150ms;
   --duration-normal: 250ms;
   --duration-slow: 400ms;
@@ -179,14 +156,11 @@
   --font-size-lg: 1.125rem;   /* 18px */
   --font-size-xl: 1.25rem;    /* 20px */
   --font-size-2xl: 1.5rem;    /* 24px */
-  --font-size-3xl: 1.875rem;  /* 30px */
-  --font-size-4xl: 2.25rem;   /* 36px */
 
   --line-height-tight: 1.2;
   --line-height-normal: 1.5;
   --line-height-relaxed: 1.7;
 
-  --font-weight-regular: 400;
   --font-weight-medium: 500;
   --font-weight-semibold: 600;
   --font-weight-bold: 700;
@@ -231,32 +205,20 @@
     --color-info-soft: #172554;
 
     --color-gray-50: #1e293b;
-    --color-gray-100: #243044;
-    --color-gray-200: #334155;
     --color-gray-300: #475569;
     --color-gray-400: #64748b;
     --color-gray-500: #94a3b8;
-    --color-gray-600: #cbd5e1;
-    --color-gray-700: #e2e8f0;
-    --color-gray-800: #f1f5f9;
     --color-gray-900: #f8fafc;
 
     --color-danger-bg: #3f1d1d;
     --color-danger-border: #7f1d1d;
     --color-danger-fg: #fca5a5;
-    --color-danger-strong: #f87171;
     --color-success-bg: #14341f;
     --color-success-border: #166534;
     --color-success-fg: #86efac;
-    --color-success-strong: #4ade80;
     --color-warning-bg: #3b2a0e;
     --color-warning-border: #92400e;
     --color-warning-fg: #fcd34d;
-    --color-warning-strong: #fbbf24;
-    --color-info-bg: #172554;
-    --color-info-border: #1e40af;
-    --color-info-fg: #93c5fd;
-    --color-info-strong: #60a5fa;
 
     --surface-overlay: rgba(0, 0, 0, 0.6);
     --gradient-page: linear-gradient(160deg, #0b1120 0%, #111a2e 50%, #0f172a 100%);
@@ -301,32 +263,20 @@
   --color-info-soft: #172554;
 
   --color-gray-50: #1e293b;
-  --color-gray-100: #243044;
-  --color-gray-200: #334155;
   --color-gray-300: #475569;
   --color-gray-400: #64748b;
   --color-gray-500: #94a3b8;
-  --color-gray-600: #cbd5e1;
-  --color-gray-700: #e2e8f0;
-  --color-gray-800: #f1f5f9;
   --color-gray-900: #f8fafc;
 
   --color-danger-bg: #3f1d1d;
   --color-danger-border: #7f1d1d;
   --color-danger-fg: #fca5a5;
-  --color-danger-strong: #f87171;
   --color-success-bg: #14341f;
   --color-success-border: #166534;
   --color-success-fg: #86efac;
-  --color-success-strong: #4ade80;
   --color-warning-bg: #3b2a0e;
   --color-warning-border: #92400e;
   --color-warning-fg: #fcd34d;
-  --color-warning-strong: #fbbf24;
-  --color-info-bg: #172554;
-  --color-info-border: #1e40af;
-  --color-info-fg: #93c5fd;
-  --color-info-strong: #60a5fa;
 
   --surface-overlay: rgba(0, 0, 0, 0.6);
   --gradient-page: linear-gradient(160deg, #0b1120 0%, #111a2e 50%, #0f172a 100%);
@@ -649,43 +599,4 @@ dialog[open] {
     transition-duration: 0.01ms !important;
     scroll-behavior: auto !important;
   }
-}
-
-/* ─── RTL Helpers ───
-   Tailwind's physical utilities (text-left, text-right, border-l/r, floats)
-   do not auto-flip under [dir="rtl"]. The rules below mirror the common
-   offenders still present in the dashboard/messaging/entries pages. New
-   markup must use logical classes (ms-/me-/ps-/pe-/start-/end-/text-start)
-   and needs none of this; retire each rule once its last physical class is
-   gone. The `.flex-row` reversal is the most dubious one: a flex row already
-   mirrors under dir=rtl, so this un-mirrors containers that were written
-   with physical margins — 33 sites in the dashboard pages still rely on it. */
-[dir="rtl"] {
-  /* Text alignment */
-  .text-left  { text-align: right; }
-  .text-right { text-align: left; }
-
-  /* Force LTR-style flex rows to mirror in RTL */
-  .flex-row  { flex-direction: row-reverse; }
-  .inline-flex.flex-row { flex-direction: row-reverse; }
-
-  /* Action buttons / breadcrumb chevrons that explicitly rotate must flip */
-  .rtl-mirror,
-  .group-open\:rotate-90.rtl-mirror { transform: scaleX(-1); }
-
-  /* Tables: keep header/cell alignment with text direction */
-  table th,
-  table td { text-align: right; }
-  table th[align="left"],
-  table td[align="left"] { text-align: right; }
-  table th[align="right"],
-  table td[align="right"] { text-align: left; }
-
-  /* Common border-side overrides used for tabs / dividers */
-  .border-l { border-left: 0; border-right: 1px solid; }
-  .border-r { border-right: 0; border-left: 1px solid; }
-
-  /* Floats (rare but used by some legacy components) */
-  .float-left  { float: right; }
-  .float-right { float: left; }
 }

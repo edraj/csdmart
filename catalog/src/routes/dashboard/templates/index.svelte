@@ -1,55 +1,80 @@
 <script lang="ts">
   import MarkdownEditor from "@/components/editors/MarkdownEditor.svelte";
-  import {
-    createTemplate,
-    deleteTemplate,
-    getAllTemplates,
-    updateTemplates,
-    getSpaces,
-    getSpaceSchema,
-  } from "@/lib/dmart_services";
+  import { createTemplate, deleteTemplate, getAllTemplates, updateTemplates, getSpaces, getSpaceSchema } from "@/lib/dmart_services";
+  import { APPLICATIONS_SPACE } from "@/lib/constants";
   import { DmartScope } from "@edraj/tsdmart";
   import { onMount } from "svelte";
   import { _, locale } from "@/i18n";
   import { formatDate } from "@/lib/format";
+  import { localized } from "@/lib/catalogItems";
+  import { setTitle } from "@/lib/title";
+  import { log } from "@/lib/logger";
+  import { toasts } from "@/lib/toast";
+  import { confirm } from "@/lib/confirm";
   import { params } from "@roxi/routify";
+  import { EditOutline, FileLinesOutline, PlusOutline, TrashBinOutline } from "flowbite-svelte-icons";
+  import Modal from "@/components/Modal.svelte";
+  import PageHeader from "@/components/ui/PageHeader.svelte";
+  import Badge from "@/components/ui/Badge.svelte";
+  import IconButton from "@/components/ui/IconButton.svelte";
+  import EmptyState from "@/components/ui/EmptyState.svelte";
+  import ErrorState from "@/components/ui/ErrorState.svelte";
+  import LoadingState from "@/components/ui/LoadingState.svelte";
 
-  let templates = $state<any[]>([]);
+  interface TemplateRecord {
+    uuid?: string;
+    shortname: string;
+    subpath: string;
+    attributes: {
+      space_name?: string;
+      owner_shortname?: string;
+      created_at?: string;
+      updated_at?: string;
+      payload?: { body?: { title?: string; content?: string; space_name?: string; schema_shortname?: string } };
+    };
+  }
+
+  interface SchemaKey {
+    name: string;
+    type: string;
+    title: string;
+  }
+
+  interface NamedRecord {
+    shortname: string;
+    attributes?: { displayname?: unknown; payload?: { body?: unknown } };
+  }
+
+  let templates = $state<TemplateRecord[]>([]);
   let isLoading = $state(true);
-  let loadError = $state("");
+  let loadError = $state<unknown>(null);
 
-  let showCreateModal = $state(false);
-  let showEditModal = $state(false);
-  let showDeleteModal = $state(false);
-  let editingTemplate: any = $state(null);
-  let deletingTemplate: any = $state(null);
+  let showModal = $state(false);
+  let editingTemplate = $state<TemplateRecord | null>(null);
 
   let templateName = $state("");
   let templateShortname = $state("");
-  let content = $state(
-    "# New Template\n\nStart writing your template content here...",
-  );
+  let content = $state("");
   let isSaving = $state(false);
-  let isDeleting = $state(false);
-  let saveMessage = $state("");
   let saveError = $state("");
-  let deleteError = $state("");
-  
+
   // Optional fields
   let targetSpaceName = $state("");
   let schemaShortname = $state("");
   let showOptionalFields = $state(false);
-  let availableSpaces = $state<any[]>([]);
-  let availableSchemas = $state<any[]>([]);
+  let availableSpaces = $state<NamedRecord[]>([]);
+  let availableSchemas = $state<NamedRecord[]>([]);
   let loadingSpaces = $state(false);
   let loadingSchemas = $state(false);
-  let schemaKeys = $state<any[]>([]);
-  
-  // Get space_name from query params (when coming from admin space selection)
-  let querySpaceName = $derived($params?.space_name || "");
-  let isSpaceLocked = $derived(!!querySpaceName);
+  let schemaKeys = $state<SchemaKey[]>([]);
 
-  let saveSpace = $derived(schemaShortname && targetSpaceName ? targetSpaceName : "applications");
+  $effect(() => setTitle($_("templates.title")));
+
+  // Get space_name from query params (when coming from admin space selection)
+  const querySpaceName = $derived(($params?.space_name as string | undefined) || "");
+  const isSpaceLocked = $derived(!!querySpaceName);
+  const saveSpace = $derived(schemaShortname && targetSpaceName ? targetSpaceName : APPLICATIONS_SPACE);
+  const defaultContent = $derived(`# ${$_("templates.default_content_title")}\n\n${$_("templates.default_content_body")}`);
 
   onMount(async () => {
     await loadTemplates();
@@ -58,17 +83,16 @@
   async function loadTemplates() {
     try {
       isLoading = true;
-      loadError = "";
+      loadError = null;
       const response = await getAllTemplates();
-
       if (response.status === "success") {
-        templates = response.records || [];
+        templates = (response.records ?? []) as unknown as TemplateRecord[];
       } else {
-        loadError = "Failed to load templates";
+        loadError = $_("templates.messages.load_failed");
       }
     } catch (error) {
-      console.error("[v0] Error loading templates:", error);
-      loadError = "An error occurred while loading templates";
+      log.error("Error loading templates:", error);
+      loadError = error;
     } finally {
       isLoading = false;
     }
@@ -79,10 +103,10 @@
     try {
       const response = await getSpaces(false, DmartScope.managed, []);
       if (response.status === "success") {
-        availableSpaces = response.records || [];
+        availableSpaces = (response.records ?? []) as unknown as NamedRecord[];
       }
     } catch (error) {
-      console.error("Error loading spaces:", error);
+      log.error("Error loading spaces:", error);
     } finally {
       loadingSpaces = false;
     }
@@ -96,11 +120,9 @@
     loadingSchemas = true;
     try {
       const response = await getSpaceSchema(spaceName, DmartScope.managed);
-      if (response.status === "success") {
-        availableSchemas = response.records || [];
-      }
+      availableSchemas = response.status === "success" ? ((response.records ?? []) as unknown as NamedRecord[]) : [];
     } catch (error) {
-      console.error("Error loading schemas:", error);
+      log.error("Error loading schemas:", error);
       availableSchemas = [];
     } finally {
       loadingSchemas = false;
@@ -108,1490 +130,397 @@
   }
 
   function handleTargetSpaceChange(event: Event) {
-    const select = event.target as HTMLSelectElement;
-    targetSpaceName = select.value;
-    schemaShortname = ""; // Reset schema when space changes
-    schemaKeys = []; // Reset schema keys
-    if (targetSpaceName) {
-      loadSchemasForSpace(targetSpaceName);
-    } else {
-      availableSchemas = [];
-      schemaKeys = [];
-    }
+    targetSpaceName = (event.currentTarget as HTMLSelectElement).value;
+    schemaShortname = "";
+    schemaKeys = [];
+    if (targetSpaceName) loadSchemasForSpace(targetSpaceName);
+    else availableSchemas = [];
   }
 
   function handleSchemaChange(event: Event) {
-    const select = event.target as HTMLSelectElement;
-    schemaShortname = select.value;
-    schemaKeys = []; // Reset keys
-    
+    schemaShortname = (event.currentTarget as HTMLSelectElement).value;
+    schemaKeys = [];
     if (schemaShortname && targetSpaceName) {
-      // Find the selected schema and extract keys
-      const selectedSchema = availableSchemas.find((s: any) => s.shortname === schemaShortname);
-      if (selectedSchema?.attributes?.payload?.body) {
-        extractSchemaKeys(selectedSchema.attributes.payload.body);
-      }
+      const selected = availableSchemas.find((s) => s.shortname === schemaShortname);
+      extractSchemaKeys(selected?.attributes?.payload?.body);
     }
   }
 
-  function extractSchemaKeys(schemaBody: any) {
+  function extractSchemaKeys(schemaBody: unknown) {
     schemaKeys = [];
-    if (!schemaBody) return;
-    
-    // Handle JSON Schema format
-    if (schemaBody.properties) {
-      Object.keys(schemaBody.properties).forEach((key: any) => {
-        const prop = schemaBody.properties[key];
-        schemaKeys.push({
-          name: key,
-          type: prop.type || 'string',
-          title: prop.title || key
-        });
-      });
-    } else if (typeof schemaBody === 'object') {
-      // Handle simple object format
-      Object.keys(schemaBody).forEach((key: any) => {
-        schemaKeys.push({
-          name: key,
-          type: 'string',
-          title: key
-        });
-      });
+    if (!schemaBody || typeof schemaBody !== "object") return;
+    const body = schemaBody as { properties?: Record<string, { type?: string; title?: string }> };
+    if (body.properties) {
+      schemaKeys = Object.entries(body.properties).map(([key, prop]) => ({
+        name: key,
+        type: prop?.type ?? "string",
+        title: prop?.title ?? key,
+      }));
+    } else {
+      schemaKeys = Object.keys(body).map((key) => ({ name: key, type: "string", title: key }));
     }
   }
 
   function openCreateModal() {
+    editingTemplate = null;
     templateName = "";
     templateShortname = "";
-    content = "# New Template\n\nStart writing your template content here...";
-    saveMessage = "";
+    content = defaultContent;
     saveError = "";
-    // If coming from admin with a space_name, use it and lock the field
     targetSpaceName = querySpaceName || "";
     schemaShortname = "";
-    // Show optional fields by default when space is locked (schema becomes mandatory)
     showOptionalFields = isSpaceLocked;
     availableSchemas = [];
     schemaKeys = [];
     loadSpaces();
-    // If space is locked, load schemas for that space
-    if (targetSpaceName) {
-      loadSchemasForSpace(targetSpaceName);
-    }
-    showCreateModal = true;
+    if (targetSpaceName) loadSchemasForSpace(targetSpaceName);
+    showModal = true;
   }
 
-  function openEditModal(template: any) {
+  function openEditModal(template: TemplateRecord) {
     editingTemplate = template;
-    templateName = getTemplateName(template);
-    content =
-      template.attributes?.payload?.body?.content ||
-      "# Template Content\n\nEdit your template content here...";
-    
-    // Populate target space and schema if they exist in the template body
+    templateName = getTemplateTitle(template);
+    templateShortname = template.shortname;
+    content = template.attributes?.payload?.body?.content || defaultContent;
     const body = template.attributes?.payload?.body;
     targetSpaceName = body?.space_name || "";
     schemaShortname = body?.schema_shortname || "";
-    
-    // Load schemas for the target space if set
-    if (targetSpaceName) {
-      loadSchemasForSpace(targetSpaceName);
-    }
-    
-    saveMessage = "";
+    showOptionalFields = !!(targetSpaceName || schemaShortname);
+    schemaKeys = [];
+    loadSpaces();
+    if (targetSpaceName) loadSchemasForSpace(targetSpaceName);
     saveError = "";
-    showEditModal = true;
+    showModal = true;
   }
 
-  function openDeleteModal(template: any) {
-    deletingTemplate = template;
-    deleteError = "";
-    showDeleteModal = true;
-  }
-
-  function closeModals() {
-    showCreateModal = false;
-    showEditModal = false;
-    showDeleteModal = false;
+  function closeModal() {
+    if (isSaving) return;
+    showModal = false;
     editingTemplate = null;
-    deletingTemplate = null;
   }
 
-  async function handleSave() {
+  async function handleSave(event: SubmitEvent) {
+    event.preventDefault();
     if (!templateName.trim()) {
-      saveError = "Please enter a template name";
+      saveError = $_("templates.messages.name_required");
       return;
     }
-
-    // Shortname is only required for new templates (not when editing)
     if (!editingTemplate && !templateShortname.trim()) {
-      saveError = "Please enter a template shortname";
+      saveError = $_("templates.messages.shortname_required");
       return;
     }
-
     if (!content.trim()) {
-      saveError = "Please enter some content";
+      saveError = $_("templates.messages.content_required");
       return;
     }
-
-    // If target space is set, schema is required
-    if (targetSpaceName.trim() && !schemaShortname.trim()) {
-      saveError = "Please select a schema for the target space";
-      return;
-    }
-    
-    // When space is locked (from admin), schema is mandatory
-    if (isSpaceLocked && !schemaShortname.trim()) {
-      saveError = "Schema is required when creating a template from space admin";
+    if ((targetSpaceName.trim() || isSpaceLocked) && !schemaShortname.trim()) {
+      saveError = $_("templates.messages.schema_required");
       return;
     }
 
     isSaving = true;
     saveError = "";
-    saveMessage = "";
-    let data: any = {
+    const data: { title: string; content: string; space_name?: string; schema_shortname?: string } = {
       title: templateName.trim(),
       content: content.trim(),
     };
-    
-    // Add schema-based fields if selected
-    if (targetSpaceName.trim()) {
-      data.space_name = targetSpaceName.trim();
-    }
-    if (schemaShortname.trim()) {
-      data.schema_shortname = schemaShortname.trim();
-    }
+    if (targetSpaceName.trim()) data.space_name = targetSpaceName.trim();
+    if (schemaShortname.trim()) data.schema_shortname = schemaShortname.trim();
 
     try {
-      let success;
-
-      if (editingTemplate) {
-        success = await updateTemplates(
-          editingTemplate.shortname,
-          editingTemplate.attributes.space_name,
-          editingTemplate.subpath,
-          data,
-        );
-      } else {
-        success = await createTemplate(
-          templateShortname.trim(),
-          data,
-        );
-      }
+      const success = editingTemplate
+        ? await updateTemplates(editingTemplate.shortname, editingTemplate.attributes.space_name ?? APPLICATIONS_SPACE, editingTemplate.subpath, data)
+        : await createTemplate(templateShortname.trim(), data);
 
       if (success) {
-        saveMessage = editingTemplate
-          ? "Template updated successfully!"
-          : "Template saved successfully!";
+        toasts.success(editingTemplate ? $_("templates.messages.updated") : $_("templates.messages.saved"));
+        isSaving = false;
+        closeModal();
         await loadTemplates();
-        setTimeout(() => {
-          closeModals();
-        }, 1500);
       } else {
-        saveError = editingTemplate
-          ? "Failed to update template. Please try again."
-          : "Failed to save template. Please try again.";
+        saveError = editingTemplate ? $_("templates.messages.update_failed") : $_("templates.messages.save_failed");
       }
     } catch (error) {
-      console.error("[v0] Error saving template:", error);
-      saveError = "An error occurred while saving. Please try again.";
+      log.error("Error saving template:", error);
+      saveError = $_("templates.messages.save_error");
     } finally {
       isSaving = false;
     }
   }
 
-  async function handleDelete() {
-    if (!deletingTemplate) return;
-
-    isDeleting = true;
-    deleteError = "";
-
-    try {
-      const success = await deleteTemplate(
-        deletingTemplate.shortname,
-        deletingTemplate.attributes.space_name,
-        deletingTemplate.subpath,
-      );
-
-      if (success) {
-        await loadTemplates();
-        closeModals();
-      } else {
-        deleteError = "Failed to delete template. Please try again.";
-      }
-    } catch (error) {
-      console.error("[v0] Error deleting template:", error);
-      deleteError = "An error occurred while deleting. Please try again.";
-    } finally {
-      isDeleting = false;
-    }
+  async function handleDelete(template: TemplateRecord) {
+    const name = getTemplateTitle(template);
+    const deleted = await confirm({
+      title: $_("templates.delete_modal.delete_button"),
+      body: `${$_("templates.delete_modal.confirm", { values: { name } })} ${$_("templates.delete_modal.warning")}`,
+      variant: "danger",
+      confirmLabel: $_("templates.delete_modal.delete_button"),
+      action: async () => {
+        const ok = await deleteTemplate(template.shortname, template.attributes.space_name ?? APPLICATIONS_SPACE, template.subpath);
+        if (!ok) throw new Error($_("templates.messages.delete_failed"));
+      },
+    });
+    if (!deleted) return;
+    toasts.success($_("templates.messages.deleted"));
+    await loadTemplates();
   }
 
-  function handleContentChange() {
-    if (saveMessage || saveError) {
-      saveMessage = "";
-      saveError = "";
-    }
+  function getTemplateTitle(template: TemplateRecord): string {
+    const parts = template.subpath.split("/");
+    return template.attributes?.payload?.body?.title || parts[parts.length - 1] || template.shortname;
   }
 
-  function getTemplateName(template: any) {
-    const pathParts = template.subpath.split("/");
-    return (
-      template.attributes?.payload?.body?.title ||
-      pathParts[pathParts.length - 1]
-    );
+  function nameOf(record: NamedRecord): string {
+    return localized(record.attributes?.displayname as never, $locale) || record.shortname;
   }
 
-  function getTemplateTitle(template: any) {
-    return (
-      template.attributes?.payload?.body?.title || getTemplateName(template)
-    );
-  }
+  const inputClass =
+    "w-full px-3 py-2 text-sm rounded-control border border-border bg-surface-2 text-text placeholder:text-text-faint focus:border-primary focus:ring-1 focus:ring-primary disabled:opacity-60";
 </script>
 
-<svelte:head>
-  <title>{$_("route_labels.templates_title")}</title>
-</svelte:head>
+<div class="mx-auto max-w-6xl px-4 sm:px-6 py-6 sm:py-8">
+  <PageHeader title={$_("templates.title")} description={$_("templates.subtitle")} icon={FileLinesOutline}>
+    {#snippet actions()}
+      <button type="button" class="app-btn app-btn-primary" onclick={openCreateModal}>
+        <PlusOutline size="sm" aria-hidden="true" />
+        {$_("templates.create_button")}
+      </button>
+    {/snippet}
+  </PageHeader>
 
-<div class="page-container">
-  <header class="page-header">
-    <div class="header-content">
-      <h1>{$_("templates.title")}</h1>
-      <p>{$_("templates.subtitle")}</p>
+  {#if isLoading && templates.length === 0}
+    <LoadingState label={$_("templates.loading")} />
+  {:else if loadError}
+    <ErrorState title={$_("templates.messages.load_failed")} error={loadError} onRetry={loadTemplates} />
+  {:else if templates.length === 0}
+    <EmptyState icon={FileLinesOutline} title={$_("templates.empty_title")} hint={$_("templates.empty_subtitle")}>
+      <button type="button" class="app-btn app-btn-primary app-btn-sm" onclick={openCreateModal}>
+        <PlusOutline size="sm" aria-hidden="true" />
+        {$_("templates.empty_create_button")}
+      </button>
+    </EmptyState>
+  {:else}
+    <div class="mb-3">
+      <Badge>{$_("templates.total_count", { values: { count: templates.length } })}</Badge>
     </div>
-    <button class="btn btn-primary" onclick={openCreateModal}>
-      + {$_("templates.create_button")}
-    </button>
-  </header>
-
-  {#if isLoading}
-    <div class="loading-container">
-      <div class="spinner"></div>
-      <span>{$_("templates.loading")}</span>
-    </div>
-  {/if}
-
-  {#if loadError}
-    <div class="error-alert">
-      <strong>{$_("common.error")}</strong>
-      {loadError}
-      <button class="btn btn-sm" onclick={loadTemplates}
-        >{$_("common.retry")}</button
-      >
-    </div>
-  {/if}
-
-  {#if !isLoading && !loadError}
-    {#if templates.length === 0}
-      <div class="empty-state">
-        <div class="empty-icon">📄</div>
-        <h3>{$_("templates.empty_title")}</h3>
-        <p>{$_("templates.empty_subtitle")}</p>
-        <button class="btn btn-primary" onclick={openCreateModal}>
-          + {$_("templates.empty_create_button")}
-        </button>
-      </div>
-    {:else}
-      <div class="table-controls">
-        <span class="badge">Total {templates.length}</span>
-      </div>
-      <div class="table-container">
-        <table class="templates-table">
-          <thead>
-            <tr>
-              <th>{$_("templates.table.template")}</th>
-              <th>Space</th>
-              <th>Schema</th>
-              <th>{$_("templates.table.uuid")}</th>
-              <th>{$_("templates.table.owner")}</th>
-              <th>{$_("templates.table.created")}</th>
-              <th>{$_("templates.table.updated")}</th>
-              <th>{$_("templates.table.actions")}</th>
-            </tr>
-          </thead>
-          <tbody>
-            {#each templates as template (template.uuid)}
+    <LoadingState variant="overlay" loading={isLoading}>
+      <div class="rounded-card border border-border bg-surface-2 shadow-card overflow-hidden">
+        <div class="overflow-x-auto">
+          <table class="w-full text-sm text-start border-collapse">
+            <thead class="sticky top-0 z-10 bg-surface-3 text-xs text-text-muted">
               <tr>
-                <td class="template-name">
-                  <strong>{getTemplateTitle(template)}</strong>
-                  <div class="subpath">{template.subpath}</div>
-                </td>
-                <td>
-                  <span class="space-badge">
-                    {template.attributes?.space_name || "applications"}
-                  </span>
-                </td>
-                <td>
-                  {#if template.attributes?.payload?.body?.schema_shortname}
-                    <span class="schema-badge">
-                      {template.attributes.payload.body.schema_shortname}
-                    </span>
-                  {:else}
-                    <span class="text-gray-400 text-sm">-</span>
-                  {/if}
-                </td>
-                <td class="uuid">
-                  <code>{template.shortname}</code>
-                </td>
-                <td>{template.attributes.owner_shortname}</td>
-                <td>{formatDate(template.attributes.created_at, "datetime", $locale)}</td>
-                <td>{formatDate(template.attributes.updated_at, "datetime", $locale)}</td>
-                <td class="actions">
-                  <button
-                    class="btn btn-sm btn-outline"
-                    onclick={() => openEditModal(template)}
-                  >
-                    {$_("templates.table.edit")}
-                  </button>
-                  <button
-                    class="btn btn-sm btn-danger"
-                    onclick={() => openDeleteModal(template)}
-                  >
-                    {$_("templates.table.delete")}
-                  </button>
-                </td>
+                <th scope="col" class="px-4 py-3 text-start font-semibold">{$_("templates.table.template")}</th>
+                <th scope="col" class="px-4 py-3 text-start font-semibold">{$_("fields.space")}</th>
+                <th scope="col" class="px-4 py-3 text-start font-semibold">{$_("templates.form.schema_label")}</th>
+                <th scope="col" class="px-4 py-3 text-start font-semibold">{$_("fields.shortname")}</th>
+                <th scope="col" class="px-4 py-3 text-start font-semibold">{$_("templates.table.owner")}</th>
+                <th scope="col" class="px-4 py-3 text-start font-semibold">{$_("templates.table.created")}</th>
+                <th scope="col" class="px-4 py-3 text-start font-semibold">{$_("templates.table.updated")}</th>
+                <th scope="col" class="px-4 py-3 text-end font-semibold">{$_("templates.table.actions")}</th>
               </tr>
-            {/each}
-          </tbody>
-        </table>
+            </thead>
+            <tbody class="divide-y divide-border">
+              {#each templates as template (template.uuid ?? template.shortname)}
+                <tr class="hover:bg-surface-3 transition-colors">
+                  <td class="px-4 py-3">
+                    <div class="font-medium text-text">{getTemplateTitle(template)}</div>
+                    <div class="text-xs text-text-faint break-all">{template.subpath}</div>
+                  </td>
+                  <td class="px-4 py-3"><Badge size="sm">{template.attributes?.space_name || APPLICATIONS_SPACE}</Badge></td>
+                  <td class="px-4 py-3">
+                    {#if template.attributes?.payload?.body?.schema_shortname}
+                      <Badge variant="info" size="sm">{template.attributes.payload.body.schema_shortname}</Badge>
+                    {:else}
+                      <span class="text-text-faint">—</span>
+                    {/if}
+                  </td>
+                  <td class="px-4 py-3"><code class="text-xs text-text-muted">{template.shortname}</code></td>
+                  <td class="px-4 py-3 text-text-muted">{template.attributes.owner_shortname}</td>
+                  <td class="px-4 py-3 text-text-muted tabular-nums whitespace-nowrap">{formatDate(template.attributes.created_at, "datetime", $locale)}</td>
+                  <td class="px-4 py-3 text-text-muted tabular-nums whitespace-nowrap">{formatDate(template.attributes.updated_at, "datetime", $locale)}</td>
+                  <td class="px-4 py-3">
+                    <div class="flex items-center justify-end gap-1">
+                      <IconButton label="{$_('templates.table.edit')} {getTemplateTitle(template)}" size="sm" onclick={() => openEditModal(template)}>
+                        <EditOutline size="sm" />
+                      </IconButton>
+                      <IconButton label="{$_('templates.table.delete')} {getTemplateTitle(template)}" size="sm" variant="danger" onclick={() => handleDelete(template)}>
+                        <TrashBinOutline size="sm" />
+                      </IconButton>
+                    </div>
+                  </td>
+                </tr>
+              {/each}
+            </tbody>
+          </table>
+        </div>
       </div>
-    {/if}
+    </LoadingState>
   {/if}
 </div>
 
-<!-- Create Modal -->
-{#if showCreateModal}
-  <div
-    class="modal-overlay"
-    role="button"
-    tabindex="0"
-    onclick={closeModals}
-    onkeydown={(e) => {
-      if (e.key === "Enter" || e.key === " ") closeModals();
-    }}
+{#if showModal}
+  <Modal
+    title={editingTemplate ? $_("templates.edit_modal.title") : $_("templates.create_modal.title")}
+    size="4xl"
+    dismissable={!isSaving}
+    onClose={closeModal}
   >
-    <div
-      class="modal"
-      role="dialog"
-      aria-modal="true"
-      tabindex="-1"
-      onclick={(event) => event.stopPropagation()}
-      onkeydown={(event) => event.stopPropagation()}
-    >
-      <div class="modal-header">
-        <h2>{$_("templates.create_modal.title")}</h2>
-        <button class="close-btn" type="button" onclick={closeModals}
-          >&times;</button
-        >
-      </div>
-
-      <div class="modal-body">
-        <div class="form-group">
-          <label for="create-template-name"
-            >{$_("templates.form.name_label")}</label
-          >
-          <input
-            id="create-template-name"
-            type="text"
-            bind:value={templateName}
-            placeholder={$_("templates.form.name_placeholder")}
-            disabled={isSaving}
-          />
+    <form id="template-form" class="space-y-5" onsubmit={handleSave}>
+      <div class="grid grid-cols-1 sm:grid-cols-2 gap-4">
+        <div>
+          <label for="template-name" class="block text-sm font-medium text-text mb-1.5">{$_("templates.form.name_label")}</label>
+          <input id="template-name" type="text" class={inputClass} bind:value={templateName} placeholder={$_("templates.form.name_placeholder")} disabled={isSaving} required data-autofocus />
         </div>
 
-        <div class="form-group">
-          <label for="create-template-shortname"
-            >{$_("templates.form.shortname_label")}</label
-          >
-          <div class="shortname-input-group">
+        <div>
+          <label for="template-shortname" class="block text-sm font-medium text-text mb-1.5">{$_("templates.form.shortname_label")}</label>
+          <div class="flex gap-2">
             <input
-              id="create-template-shortname"
+              id="template-shortname"
               type="text"
+              class={inputClass}
               bind:value={templateShortname}
               placeholder={$_("templates.form.shortname_placeholder")}
-              disabled={isSaving}
-              class="shortname-input"
+              disabled={isSaving || !!editingTemplate}
+              required={!editingTemplate}
             />
-            <button
-              class="shortname-auto-btn"
-              onclick={() => (templateShortname = "auto")}
-              title="Use auto-generated shortname"
-              disabled={isSaving}
-              type="button"
-            >
-              Auto
-            </button>
-          </div>
-          <small class="shortname-help">{$_("create_entry.shortname.help_text")}</small>
-        </div>
-
-        <!-- Optional Fields Toggle (hidden when space is locked) -->
-        {#if !isSpaceLocked}
-          <button
-            type="button"
-            class="optional-fields-toggle"
-            onclick={() => showOptionalFields = !showOptionalFields}
-          >
-            <span class="toggle-icon">{showOptionalFields ? "▼" : "▶"}</span>
-            {$_("templates.form.optional_fields_toggle")}
-          </button>
-        {/if}
-        
-        {#if showOptionalFields || isSpaceLocked}
-          <div class="optional-fields" class:locked={isSpaceLocked}>
-            <div class="form-row">
-              <div class="form-group flex-1">
-                <label for="template-target-space">
-                  {$_("templates.form.target_space_label")}
-                  {#if isSpaceLocked}
-                    <!-- No badge when locked - it's pre-filled -->
-                  {:else}
-                    <span class="optional-badge">{$_("common.optional")}</span>
-                  {/if}
-                </label>
-                {#if isSpaceLocked}
-                  <!-- Read-only display when space is locked -->
-                  <input
-                    id="template-target-space"
-                    type="text"
-                    value={targetSpaceName}
-                    disabled={true}
-                    class="form-select locked-input"
-                  />
-                {:else}
-                  <select
-                    id="template-target-space"
-                    value={targetSpaceName}
-                    onchange={handleTargetSpaceChange}
-                    disabled={isSaving || loadingSpaces}
-                    class="form-select"
-                  >
-                    <option value="">{$_("templates.form.select_space")}</option>
-                    {#each availableSpaces as space (space.shortname)}
-                      <option value={space.shortname}>
-                        {space.attributes?.displayname?.en || space.shortname}
-                      </option>
-                    {/each}
-                  </select>
-                  {#if loadingSpaces}
-                    <small class="field-hint">{$_("common.loading")}</small>
-                  {/if}
-                {/if}
-              </div>
-              <div class="form-group flex-1">
-                <label for="template-schema">
-                  {$_("templates.form.schema_label")}
-                  {#if targetSpaceName || isSpaceLocked}
-                    <span class="required-badge">*</span>
-                  {:else}
-                    <span class="optional-badge">{$_("common.optional")}</span>
-                  {/if}
-                </label>
-                <select
-                  id="template-schema"
-                  value={schemaShortname}
-                  onchange={handleSchemaChange}
-                  disabled={isSaving || !targetSpaceName || loadingSchemas}
-                  class="form-select"
-                >
-                  <option value="">
-                    {#if loadingSchemas}
-                      {$_("common.loading")}
-                    {:else if !targetSpaceName}
-                      {$_("templates.form.select_space_first")}
-                    {:else}
-                      {$_("templates.form.select_schema")}
-                    {/if}
-                  </option>
-                  {#each availableSchemas as schema (schema.shortname)}
-                    <option value={schema.shortname}>
-                      {schema.attributes?.displayname?.en || schema.shortname}
-                    </option>
-                  {/each}
-                </select>
-              </div>
-            </div>
-            
-            <!-- Schema Keys - Draggable Badges -->
-            {#if schemaKeys.length > 0}
-              <div class="schema-keys-section">
-                <h4 class="schema-keys-title">
-                  {$_("templates.form.schema_keys_title")}
-                  <span class="schema-keys-hint">{$_("templates.form.schema_keys_hint")}</span>
-                </h4>
-                <div class="schema-keys-container">
-                  {#each schemaKeys as key (key.name)}
-                    <div
-                      class="schema-key-badge"
-                      role="listitem"
-                      draggable={true}
-                      ondragstart={(e: any) => {
-                        e.dataTransfer!.setData("application/json", JSON.stringify(key));
-                        e.dataTransfer!.effectAllowed = "copy";
-                      }}
-                      title={`${key.title} (${key.type})`}
-                    >
-                      <span class="key-name">{key.name}</span>
-                      <span class="key-type">{key.type}</span>
-                    </div>
-                  {/each}
-                </div>
-              </div>
+            {#if !editingTemplate}
+              <button type="button" class="app-btn app-btn-secondary app-btn-sm shrink-0" onclick={() => (templateShortname = "auto")} disabled={isSaving}>
+                {$_("buttons.auto")}
+              </button>
             {/if}
           </div>
-        {/if}
-
-        {#if saveMessage}
-          <div class="alert alert-success">
-            <strong>{$_("common.success")}</strong>
-            {saveMessage}
-          </div>
-        {/if}
-
-        {#if saveError}
-          <div class="alert alert-error">
-            <strong>{$_("common.error")}</strong>
-            {saveError}
-          </div>
-        {/if}
-
-        <div class="editor-container">
-          <MarkdownEditor 
-            bind:content 
-            handleSave={handleContentChange} 
-          />
+          {#if !editingTemplate}
+            <p class="mt-1 text-xs text-text-muted">{$_("create_entry.shortname.help_text")}</p>
+          {/if}
         </div>
+      </div>
 
-        <div class="template-info">
-          <h3>{$_("templates.info.title")}</h3>
-          <div class="info-grid">
+      {#if !isSpaceLocked}
+        <button
+          type="button"
+          class="app-btn app-btn-ghost app-btn-sm"
+          aria-expanded={showOptionalFields}
+          aria-controls="template-optional-fields"
+          onclick={() => (showOptionalFields = !showOptionalFields)}
+        >
+          <span class="inline-block transition-transform {showOptionalFields ? 'rotate-90' : 'rtl:rotate-180'}" aria-hidden="true">▸</span>
+          {$_("templates.form.optional_fields_toggle")}
+        </button>
+      {/if}
+
+      {#if showOptionalFields || isSpaceLocked}
+        <div id="template-optional-fields" class="rounded-card border border-border bg-surface p-4 space-y-4">
+          <div class="grid grid-cols-1 sm:grid-cols-2 gap-4">
             <div>
-              <strong>{$_("templates.info.space")}</strong>
-              {saveSpace}
-              {#if schemaShortname}
-                <span class="space-badge target">{$_("templates.info.target_space")}</span>
+              <label for="template-target-space" class="block text-sm font-medium text-text mb-1.5">
+                {$_("templates.form.target_space_label")}
+                {#if !isSpaceLocked}
+                  <span class="text-xs text-text-faint font-normal">({$_("common.optional")})</span>
+                {/if}
+              </label>
+              {#if isSpaceLocked}
+                <input id="template-target-space" type="text" value={targetSpaceName} disabled class={inputClass} />
+              {:else}
+                <select id="template-target-space" value={targetSpaceName} onchange={handleTargetSpaceChange} disabled={isSaving || loadingSpaces} class={inputClass}>
+                  <option value="">{loadingSpaces ? $_("common.loading") : $_("templates.form.select_space")}</option>
+                  {#each availableSpaces as space (space.shortname)}
+                    <option value={space.shortname}>{nameOf(space)}</option>
+                  {/each}
+                </select>
               {/if}
             </div>
             <div>
-              <strong>{$_("templates.info.subpath")}</strong>
-              templates/{templateShortname || "[shortname]"}
+              <label for="template-schema" class="block text-sm font-medium text-text mb-1.5">
+                {$_("templates.form.schema_label")}
+                {#if targetSpaceName || isSpaceLocked}
+                  <span class="text-danger" aria-hidden="true">*</span>
+                {:else}
+                  <span class="text-xs text-text-faint font-normal">({$_("common.optional")})</span>
+                {/if}
+              </label>
+              <select
+                id="template-schema"
+                value={schemaShortname}
+                onchange={handleSchemaChange}
+                disabled={isSaving || !targetSpaceName || loadingSchemas}
+                class={inputClass}
+                required={!!targetSpaceName || isSpaceLocked}
+              >
+                <option value="">
+                  {#if loadingSchemas}
+                    {$_("common.loading")}
+                  {:else if !targetSpaceName}
+                    {$_("templates.form.select_space_first")}
+                  {:else}
+                    {$_("templates.form.select_schema")}
+                  {/if}
+                </option>
+                {#each availableSchemas as schema (schema.shortname)}
+                  <option value={schema.shortname}>{nameOf(schema)}</option>
+                {/each}
+              </select>
             </div>
+          </div>
+
+          {#if schemaKeys.length > 0}
             <div>
-              <strong>{$_("templates.info.content_type")}</strong> Markdown
+              <h4 class="text-sm font-medium text-text mb-2">
+                {$_("templates.form.schema_keys_title")}
+                <span class="text-xs text-text-faint font-normal">{$_("templates.form.schema_keys_hint")}</span>
+              </h4>
+              <ul class="flex flex-wrap gap-2 list-none p-0 m-0">
+                {#each schemaKeys as key (key.name)}
+                  <li
+                    class="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-xs bg-primary-soft text-primary cursor-grab select-none"
+                    draggable={true}
+                    ondragstart={(e: DragEvent) => {
+                      e.dataTransfer?.setData("application/json", JSON.stringify(key));
+                      if (e.dataTransfer) e.dataTransfer.effectAllowed = "copy";
+                    }}
+                    title="{key.title} ({key.type})"
+                  >
+                    <span class="font-medium">{key.name}</span>
+                    <span class="opacity-70">{key.type}</span>
+                  </li>
+                {/each}
+              </ul>
             </div>
-            <div>
-              <strong>{$_("templates.info.resource_type")}</strong> Template
-            </div>
-            {#if targetSpaceName}
-              <div>
-                <strong>{$_("templates.form.target_space_label")}:</strong>
-                {targetSpaceName}
-              </div>
-            {/if}
-            {#if schemaShortname}
-              <div>
-                <strong>{$_("templates.form.schema_label")}:</strong>
-                {schemaShortname}
-              </div>
-            {/if}
-          </div>
-        </div>
-      </div>
-
-      <div class="modal-footer">
-        <button
-          class="btn btn-primary"
-          onclick={handleSave}
-          disabled={isSaving || !templateName.trim() || !templateShortname.trim()}
-        >
-          {#if isSaving}
-            <span class="spinner-sm"></span>
-            {$_("common.saving")}
-          {:else}
-            {$_("templates.form.save_button")}
           {/if}
-        </button>
-        <button
-          class="btn btn-secondary"
-          onclick={closeModals}
-          disabled={isSaving}
-        >
-          {$_("common.cancel")}
-        </button>
-      </div>
-    </div>
-  </div>
-{/if}
-
-<!-- Edit Modal -->
-{#if showEditModal}
-  <!-- svelte-ignore a11y_click_events_have_key_events -->
-  <div class="modal-overlay" role="presentation" onclick={closeModals}>
-    <div class="modal" role="dialog" tabindex="-1" onclick={(event) => event.stopPropagation()}>
-      <div class="modal-header">
-        <h2>{$_("templates.edit_modal.title")}</h2>
-        <button class="close-btn" onclick={closeModals}>&times;</button>
-      </div>
-
-      <div class="modal-body">
-        <div class="form-group">
-          <label for="edit-template-name"
-            >{$_("templates.form.name_label")}</label
-          >
-          <input
-            id="edit-template-name"
-            type="text"
-            bind:value={templateName}
-            placeholder={$_("templates.form.name_placeholder")}
-            disabled={isSaving}
-          />
         </div>
+      {/if}
 
-        {#if saveMessage}
-          <div class="alert alert-success">
-            <strong>{$_("common.success")}</strong>
-            {saveMessage}
-          </div>
-        {/if}
+      {#if saveError}
+        <ErrorState compact message={saveError} />
+      {/if}
 
-        {#if saveError}
-          <div class="alert alert-error">
-            <strong>{$_("common.error")}</strong>
-            {saveError}
-          </div>
-        {/if}
-
-        <div class="editor-container">
-          <MarkdownEditor 
-            bind:content 
-            handleSave={handleContentChange}
-          />
-        </div>
-
-        {#if editingTemplate}
-          <div class="template-info">
-            <h3>{$_("templates.info.title")}</h3>
-            <div class="info-grid">
-              <div>
-                <strong>{$_("templates.info.uuid")}</strong>
-                {editingTemplate.uuid}
-              </div>
-              <div>
-                <strong>{$_("templates.info.space")}</strong>
-                {editingTemplate.attributes.space_name}
-              </div>
-              <div>
-                <strong>{$_("templates.info.subpath")}</strong>
-                {editingTemplate.subpath}
-              </div>
-              <div>
-                <strong>{$_("templates.info.owner")}</strong>
-                {editingTemplate.attributes.owner_shortname}
-              </div>
-            </div>
-          </div>
-        {/if}
+      <div>
+        <MarkdownEditor bind:content />
       </div>
 
-      <div class="modal-footer">
-        <button
-          class="btn btn-primary"
-          onclick={handleSave}
-          disabled={isSaving || !templateName.trim()}
-        >
-          {#if isSaving}
-            <span class="spinner-sm"></span>
-            {$_("common.updating")}
-          {:else}
-            {$_("templates.form.update_button")}
-          {/if}
-        </button>
-        <button
-          class="btn btn-secondary"
-          onclick={closeModals}
-          disabled={isSaving}
-        >
-          {$_("common.cancel")}
-        </button>
-      </div>
-    </div>
-  </div>
+      <dl class="grid grid-cols-1 sm:grid-cols-2 gap-x-6 gap-y-1 text-sm rounded-card border border-border bg-surface p-4">
+        <div class="flex gap-1"><dt class="font-medium text-text">{$_("templates.info.space")}</dt><dd class="text-text-muted">{saveSpace}</dd></div>
+        <div class="flex gap-1"><dt class="font-medium text-text">{$_("templates.info.subpath")}</dt><dd class="text-text-muted break-all">templates/{templateShortname || "…"}</dd></div>
+        <div class="flex gap-1"><dt class="font-medium text-text">{$_("templates.info.content_type")}</dt><dd class="text-text-muted">Markdown</dd></div>
+        <div class="flex gap-1"><dt class="font-medium text-text">{$_("templates.info.resource_type")}</dt><dd class="text-text-muted">{$_("templates._val")}</dd></div>
+        {#if schemaShortname}
+          <div class="flex gap-1"><dt class="font-medium text-text">{$_("templates.form.schema_label")}:</dt><dd class="text-text-muted">{schemaShortname}</dd></div>
+        {/if}
+      </dl>
+    </form>
+
+    {#snippet footer()}
+      <button type="button" class="app-btn app-btn-secondary" onclick={closeModal} disabled={isSaving}>
+        {$_("common.cancel")}
+      </button>
+      <button type="submit" form="template-form" class="app-btn app-btn-primary" disabled={isSaving} aria-busy={isSaving}>
+        {#if isSaving}
+          <span class="spinner spinner-xs spinner-white" aria-hidden="true"></span>
+          {$_("common.saving")}
+        {:else}
+          {editingTemplate ? $_("templates.form.update_button") : $_("templates.form.save_button")}
+        {/if}
+      </button>
+    {/snippet}
+  </Modal>
 {/if}
-
-<!-- Delete Confirmation Modal -->
-{#if showDeleteModal}
-  <div
-    class="modal-overlay"
-    role="button"
-    tabindex="0"
-    onclick={closeModals}
-    onkeydown={(e) => {
-      if (e.key === "Enter" || e.key === " ") closeModals();
-    }}
-  >
-    <!-- svelte-ignore a11y_no_static_element_interactions -->
-    <div
-      class="modal modal-sm"
-      onclick={(event) => event.stopPropagation()}
-      onkeydown={(event) => event.stopPropagation()}
-    >
-      <div class="modal-header">
-        <h2>{$_("templates.delete_modal.title")}</h2>
-        <button class="close-btn" onclick={closeModals}>&times;</button>
-      </div>
-
-      <div class="modal-body">
-        {#if deletingTemplate}
-          <p>
-            {$_("templates.delete_modal.confirm", {
-              values: { name: getTemplateTitle(deletingTemplate) },
-            })}
-          </p>
-          <p class="warning-text">{$_("templates.delete_modal.warning")}</p>
-        {/if}
-
-        {#if deleteError}
-          <div class="alert alert-error">
-            <strong>{$_("common.error")}</strong>
-            {deleteError}
-          </div>
-        {/if}
-      </div>
-
-      <div class="modal-footer">
-        <button
-          class="btn btn-danger"
-          onclick={handleDelete}
-          disabled={isDeleting}
-        >
-          {#if isDeleting}
-            <span class="spinner-sm"></span>
-            {$_("common.deleting")}
-          {:else}
-            {$_("templates.delete_modal.delete_button")}
-          {/if}
-        </button>
-        <button
-          class="btn btn-secondary"
-          onclick={closeModals}
-          disabled={isDeleting}
-        >
-          {$_("common.cancel")}
-        </button>
-      </div>
-    </div>
-  </div>
-{/if}
-
-<style>
-  /* Page Layout */
-  .page-container {
-    max-width: 1200px;
-    margin: 0 auto;
-    padding: 2rem;
-    min-height: calc(100vh - 4rem);
-  }
-
-  .page-header {
-    display: flex;
-    justify-content: space-between;
-    align-items: flex-start;
-    margin-bottom: 2rem;
-    gap: 2rem;
-  }
-
-  .header-content h1 {
-    font-size: 2rem;
-    font-weight: 700;
-    color: #111827;
-    margin: 0 0 0.5rem 0;
-  }
-
-  .header-content p {
-    color: #6b7280;
-    margin: 0;
-  }
-
-  /* Buttons */
-  .btn {
-    display: inline-flex;
-    align-items: center;
-    gap: 0.5rem;
-    padding: 0.5rem 1rem;
-    border: none;
-    border-radius: 0.375rem;
-    font-size: 0.875rem;
-    font-weight: 500;
-    cursor: pointer;
-    transition: all 0.2s ease;
-    text-decoration: none;
-  }
-
-  .btn:disabled {
-    opacity: 0.6;
-    cursor: not-allowed;
-  }
-
-  .btn-primary {
-    background-color: #5850ec;
-    color: white;
-  }
-
-  .btn-primary:hover:not(:disabled) {
-    background-color: #4338ca;
-    transform: translateY(-1px);
-  }
-
-  .btn-secondary {
-    background-color: #f3f4f6;
-    color: #374151;
-  }
-
-  .btn-secondary:hover:not(:disabled) {
-    background-color: #e5e7eb;
-  }
-
-  .btn-outline {
-    background-color: transparent;
-    color: #374151;
-    border: 1px solid #d1d5db;
-  }
-
-  .btn-outline:hover:not(:disabled) {
-    background-color: #f9fafb;
-    border-color: #9ca3af;
-  }
-
-  .btn-danger {
-    background-color: #ef4444;
-    color: white;
-  }
-
-  .btn-danger:hover:not(:disabled) {
-    background-color: #dc2626;
-    transform: translateY(-1px);
-  }
-
-  .btn-sm {
-    padding: 0.25rem 0.75rem;
-    font-size: 0.75rem;
-  }
-
-  /* Actions column */
-  .actions {
-    display: flex;
-    gap: 0.5rem;
-  }
-
-  /* Loading State */
-  .loading-container {
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    padding: 3rem 0;
-    gap: 0.75rem;
-    color: #6b7280;
-  }
-
-  .spinner {
-    width: 2rem;
-    height: 2rem;
-    border: 3px solid #e5e7eb;
-    border-top: 3px solid #3b82f6;
-    border-radius: 50%;
-    animation: spin 1s linear infinite;
-  }
-
-  .spinner-sm {
-    width: 1rem;
-    height: 1rem;
-    border: 2px solid #e5e7eb;
-    border-top: 2px solid #ffffff;
-    border-radius: 50%;
-    animation: spin 1s linear infinite;
-  }
-
-
-  /* Error State */
-  .error-alert {
-    display: flex;
-    align-items: center;
-    gap: 1rem;
-    padding: 1rem;
-    background-color: #fef2f2;
-    border: 1px solid #fecaca;
-    border-radius: 0.375rem;
-    color: #dc2626;
-    margin-bottom: 1rem;
-  }
-
-  /* Empty State */
-  .empty-state {
-    text-align: center;
-    padding: 4rem 0;
-  }
-
-  .empty-icon {
-    font-size: 3rem;
-    margin-bottom: 1rem;
-  }
-
-  .empty-state h3 {
-    font-size: 1.125rem;
-    font-weight: 600;
-    color: #111827;
-    margin: 0 0 0.5rem 0;
-  }
-
-  .empty-state p {
-    color: #6b7280;
-    margin: 0 0 1.5rem 0;
-  }
-
-  /* Table Styles */
-  .table-controls {
-    display: flex;
-    justify-content: flex-end;
-    margin-bottom: 0.5rem;
-  }
-
-  .badge {
-    background-color: #f3f4f6;
-    color: #374151;
-    font-size: 0.75rem;
-    font-weight: 500;
-    padding: 0.25rem 0.75rem;
-    border-radius: 9999px;
-    border: 1px solid #e5e7eb;
-  }
-
-  .table-container {
-    background: white;
-    border-radius: 12px;
-    overflow: hidden;
-    border: none;
-    box-shadow:
-      0 4px 6px -1px rgba(0, 0, 0, 0.05),
-      0 2px 4px -1px rgba(0, 0, 0, 0.03);
-  }
-
-  .templates-table {
-    width: 100%;
-    border-collapse: collapse;
-  }
-
-  .templates-table th {
-    background-color: #f9fafb;
-    padding: 1rem 1.5rem;
-    text-align: left;
-    font-weight: 500;
-    color: #6b7280;
-    border-bottom: 1px solid #f3f4f6;
-    font-size: 0.75rem;
-    text-transform: uppercase;
-    letter-spacing: 0.05em;
-  }
-
-  .templates-table td {
-    padding: 1rem 1.5rem;
-    border-bottom: 1px solid #f3f4f6;
-    vertical-align: middle;
-    color: #374151;
-    font-size: 0.875rem;
-  }
-
-  .templates-table tbody tr:hover {
-    background-color: #fafafa;
-  }
-
-  .templates-table tbody tr:last-child td {
-    border-bottom: none;
-  }
-
-  .template-name strong {
-    color: #111827;
-    font-weight: 600;
-  }
-
-  .subpath {
-    font-size: 0.75rem;
-    color: #6b7280;
-    margin-top: 0.25rem;
-  }
-
-  .uuid code {
-    background-color: #eff6ff;
-    padding: 0.25rem 0.6rem;
-    border-radius: 9999px;
-    font-size: 0.75rem;
-    font-weight: 500;
-    color: #2563eb;
-    font-family: inherit;
-    border: 1px solid #bfdbfe;
-  }
-
-  /* Modal Styles */
-  .modal-overlay {
-    position: fixed;
-    top: 0;
-    left: 0;
-    width: 100%;
-    height: 100%;
-    background-color: rgba(0, 0, 0, 0.5);
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    z-index: 1000;
-    padding: 1rem;
-  }
-
-  .modal {
-    background: white;
-    border-radius: 0.5rem;
-    box-shadow: 0 20px 25px -5px rgba(0, 0, 0, 0.1);
-    max-width: 90vw;
-    max-height: 90vh;
-    width: 100%;
-    max-width: 800px;
-    overflow: hidden;
-    display: flex;
-    flex-direction: column;
-  }
-
-  .modal-sm {
-    max-width: 500px;
-  }
-
-  .modal-header {
-    display: flex;
-    justify-content: space-between;
-    align-items: center;
-    padding: 1.5rem;
-    border-bottom: 1px solid #e5e7eb;
-  }
-
-  .modal-header h2 {
-    font-size: 1.5rem;
-    font-weight: 700;
-    color: #111827;
-    margin: 0;
-  }
-
-  .close-btn {
-    background: none;
-    border: none;
-    font-size: 1.5rem;
-    cursor: pointer;
-    color: #6b7280;
-    padding: 0;
-    width: 2rem;
-    height: 2rem;
-    display: flex;
-    align-items: center;
-    justify-content: center;
-  }
-
-  .close-btn:hover {
-    color: #374151;
-  }
-
-  .modal-body {
-    padding: 1.5rem;
-    overflow-y: auto;
-    flex: 1;
-  }
-
-  .modal-footer {
-    display: flex;
-    gap: 1rem;
-    padding: 1.5rem;
-    border-top: 1px solid #e5e7eb;
-    justify-content: flex-end;
-  }
-
-  /* Form Styles */
-  .form-group {
-    margin-bottom: 1.5rem;
-  }
-
-  .shortname-input-group {
-    display: flex;
-    gap: 0.5rem;
-    align-items: stretch;
-  }
-
-  .shortname-input {
-    flex: 1;
-    padding: 0.5rem 0.75rem;
-    border: 1px solid #d1d5db;
-    border-radius: 0.375rem;
-    font-size: 0.875rem;
-    transition: border-color 0.2s ease, box-shadow 0.2s ease;
-  }
-
-  .shortname-input:focus {
-    outline: none;
-    border-color: #3b82f6;
-    box-shadow: 0 0 0 3px rgba(59, 130, 246, 0.1);
-  }
-
-  .shortname-auto-btn {
-    padding: 0.5rem 1rem;
-    background: #f3f4f6;
-    border: 1px solid #d1d5db;
-    border-radius: 0.375rem;
-    color: #374151;
-    font-size: 0.875rem;
-    font-weight: 500;
-    cursor: pointer;
-    transition: all 0.2s ease;
-    white-space: nowrap;
-  }
-
-  .shortname-auto-btn:hover:not(:disabled) {
-    background: #e5e7eb;
-    border-color: #9ca3af;
-  }
-
-  .shortname-auto-btn:disabled {
-    opacity: 0.6;
-    cursor: not-allowed;
-  }
-
-  .shortname-help {
-    display: block;
-    margin-top: 0.375rem;
-    color: #6b7280;
-    font-size: 0.75rem;
-  }
-
-  .optional-fields-toggle {
-    display: flex;
-    align-items: center;
-    gap: 0.5rem;
-    background: none;
-    border: none;
-    color: #5850ec;
-    font-size: 0.875rem;
-    font-weight: 500;
-    cursor: pointer;
-    padding: 0.5rem 0;
-    margin-bottom: 1rem;
-  }
-
-  .optional-fields-toggle:hover {
-    color: #4338ca;
-  }
-
-  .toggle-icon {
-    font-size: 0.75rem;
-  }
-
-  .optional-fields {
-    background: #f9fafb;
-    border: 1px solid #e5e7eb;
-    border-radius: 0.5rem;
-    padding: 1rem;
-    margin-bottom: 1.5rem;
-  }
-  
-  .optional-fields.locked {
-    background: #eff6ff;
-    border-color: #bfdbfe;
-  }
-
-  .optional-badge {
-    display: inline-block;
-    font-size: 0.625rem;
-    font-weight: 500;
-    color: #6b7280;
-    background: #e5e7eb;
-    padding: 0.125rem 0.375rem;
-    border-radius: 0.25rem;
-    margin-left: 0.5rem;
-    text-transform: uppercase;
-  }
-
-  .required-badge {
-    display: inline-block;
-    font-size: 0.625rem;
-    font-weight: 500;
-    color: #dc2626;
-    background: #fee2e2;
-    padding: 0.125rem 0.375rem;
-    border-radius: 0.25rem;
-    margin-left: 0.5rem;
-  }
-
-  .space-badge {
-    display: inline-block;
-    font-size: 0.625rem;
-    font-weight: 500;
-    padding: 0.125rem 0.375rem;
-    border-radius: 0.25rem;
-    margin-left: 0.5rem;
-  }
-
-  .space-badge.target {
-    color: #059669;
-    background: #d1fae5;
-  }
-
-  .form-select {
-    width: 100%;
-    padding: 0.5rem 0.75rem;
-    border: 1px solid #d1d5db;
-    border-radius: 0.375rem;
-    font-size: 0.875rem;
-    background-color: white;
-    color: #374151;
-    cursor: pointer;
-    transition: border-color 0.2s ease, box-shadow 0.2s ease;
-  }
-
-  .form-select:focus {
-    outline: none;
-    border-color: #3b82f6;
-    box-shadow: 0 0 0 3px rgba(59, 130, 246, 0.1);
-  }
-
-  .form-select:disabled {
-    background-color: #f3f4f6;
-    color: #6b7280;
-    cursor: not-allowed;
-  }
-  
-  .locked-input {
-    background-color: #eff6ff !important;
-    color: #1e40af !important;
-    border-color: #bfdbfe !important;
-    font-weight: 500;
-    cursor: default !important;
-  }
-
-  .schema-keys-section {
-    margin-top: 1.5rem;
-    padding-top: 1.5rem;
-    border-top: 1px dashed #e5e7eb;
-  }
-
-  .schema-keys-title {
-    font-size: 0.875rem;
-    font-weight: 600;
-    color: #374151;
-    margin: 0 0 0.75rem 0;
-    display: flex;
-    align-items: center;
-    gap: 0.5rem;
-  }
-
-  .schema-keys-hint {
-    font-size: 0.75rem;
-    font-weight: 400;
-    color: #6b7280;
-    font-style: italic;
-  }
-
-  .schema-keys-container {
-    display: flex;
-    flex-wrap: wrap;
-    gap: 0.5rem;
-  }
-
-  .schema-key-badge {
-    display: inline-flex;
-    align-items: center;
-    gap: 0.375rem;
-    background: linear-gradient(135deg, #eff6ff 0%, #dbeafe 100%);
-    border: 2px solid #3b82f6;
-    border-radius: 0.5rem;
-    padding: 0.375rem 0.75rem;
-    cursor: grab;
-    transition: all 0.15s ease;
-    user-select: none;
-  }
-
-  .schema-key-badge:hover {
-    background: linear-gradient(135deg, #dbeafe 0%, #bfdbfe 100%);
-    transform: translateY(-1px);
-    box-shadow: 0 2px 4px rgba(59, 130, 246, 0.2);
-  }
-
-  .schema-key-badge:active {
-    cursor: grabbing;
-  }
-
-  .key-name {
-    font-size: 0.875rem;
-    font-weight: 600;
-    color: #1e40af;
-  }
-
-  .key-type {
-    font-size: 0.625rem;
-    font-weight: 500;
-    color: #3b82f6;
-    background: rgba(255, 255, 255, 0.7);
-    padding: 0.125rem 0.375rem;
-    border-radius: 0.25rem;
-    text-transform: uppercase;
-  }
-
-  .form-group label {
-    display: block;
-    font-size: 0.875rem;
-    font-weight: 600;
-    color: #374151;
-    margin-bottom: 0.5rem;
-  }
-
-  .form-group input {
-    width: 100%;
-    padding: 0.5rem 0.75rem;
-    border: 1px solid #d1d5db;
-    border-radius: 0.375rem;
-    font-size: 0.875rem;
-    transition: border-color 0.2s ease;
-  }
-
-  .form-group input:focus {
-    outline: none;
-    border-color: #3b82f6;
-    box-shadow: 0 0 0 3px rgba(59, 130, 246, 0.1);
-  }
-
-  .form-group input:disabled {
-    background-color: #f9fafb;
-    color: #6b7280;
-  }
-
-  /* Alert Styles */
-  .alert {
-    padding: 1rem;
-    border-radius: 0.375rem;
-    margin-bottom: 1.5rem;
-  }
-
-  .alert-success {
-    background-color: #f0fdf4;
-    border: 1px solid #bbf7d0;
-    color: #166534;
-  }
-
-  .alert-error {
-    background-color: #fef2f2;
-    border: 1px solid #fecaca;
-    color: #dc2626;
-  }
-
-  /* Editor Container */
-  .editor-container {
-    border: 1px solid var(--gray-200);
-    border-radius: var(--radius-lg);
-    overflow: hidden;
-    height: 500px;
-    margin-bottom: 1.5rem;
-  }
-
-  /* Template Info */
-  .template-info {
-    padding: 1rem;
-    background-color: #f9fafb;
-    border-radius: 0.5rem;
-    border: 1px solid #e5e7eb;
-  }
-
-  .template-info h3 {
-    font-weight: 600;
-    color: #111827;
-    margin: 0 0 0.75rem 0;
-    font-size: 0.875rem;
-  }
-
-  .info-grid {
-    display: grid;
-    grid-template-columns: 1fr 1fr;
-    gap: 0.5rem;
-    font-size: 0.875rem;
-    color: #6b7280;
-  }
-
-  .warning-text {
-    color: #dc2626;
-    font-size: 0.875rem;
-    margin: 0.5rem 0 0 0;
-  }
-
-  .space-badge {
-    display: inline-block;
-    padding: 0.25rem 0.5rem;
-    background: #eef2ff;
-    color: #4338ca;
-    border-radius: 0.375rem;
-    font-size: 0.75rem;
-    font-weight: 600;
-    text-transform: uppercase;
-    letter-spacing: 0.025em;
-  }
-
-  .schema-badge {
-    display: inline-block;
-    padding: 0.25rem 0.5rem;
-    background: #f0fdf4;
-    color: #15803d;
-    border-radius: 0.375rem;
-    font-size: 0.75rem;
-    font-weight: 600;
-    text-transform: uppercase;
-    letter-spacing: 0.025em;
-    border: 1px solid #bbf7d0;
-  }
-
-  /* Responsive Design */
-  @media (max-width: 768px) {
-    .page-container {
-      padding: 1rem;
-    }
-
-    .page-header {
-      flex-direction: column;
-      align-items: flex-start;
-      gap: 1rem;
-    }
-
-    .shortname-input-group {
-      flex-direction: column;
-    }
-
-    .templates-table {
-      font-size: 0.875rem;
-    }
-
-    .templates-table th,
-    .templates-table td {
-      padding: 0.5rem;
-    }
-
-    .info-grid {
-      grid-template-columns: 1fr;
-    }
-
-    .modal {
-      max-width: 95vw;
-    }
-
-    .actions {
-      flex-direction: column;
-      gap: 0.25rem;
-    }
-  }
-
-  @media (max-width: 640px) {
-    .templates-table th:nth-child(4),
-    .templates-table td:nth-child(4),
-    .templates-table th:nth-child(5),
-    .templates-table td:nth-child(5) {
-      display: none;
-    }
-  }
-</style>

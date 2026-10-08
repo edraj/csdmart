@@ -21,7 +21,8 @@
   } from "@/lib/schemaTypes";
   import { createFolder } from "@/lib/dmart_services/entries";
   import { collectSchemaPropertyBags, resolveSchemaDef } from "@/lib/jsonSchema";
-  import { _, locale, isRTL } from "@/i18n";
+  import { _, locale } from "@/i18n";
+  import { setTitle } from "@/lib/title";
   import { formatDate } from "@/lib/format";
   import {
     Dmart,
@@ -49,7 +50,8 @@
     errorToastMessage,
     successToastMessage,
   } from "@/lib/toasts_messages";
-  import DeleteConfirmationDialog from "@/components/DeleteConfirmationDialog.svelte";
+  import ConfirmDialog from "@/components/ui/ConfirmDialog.svelte";
+  import { log } from "@/lib/logger";
   import ModalCSVUpload from "@/components/management/Modals/ModalCSVUpload.svelte";
   import ModalCSVDownload from "@/components/management/Modals/ModalCSVDownload.svelte";
   import ModalCopy from "@/components/management/Modals/ModalCopy.svelte";
@@ -72,6 +74,8 @@
   let subpath = "";
   let actualSubpath = writable("");
   let breadcrumbs = $state<any[]>([]);
+
+  $effect(() => setTitle(breadcrumbs[breadcrumbs.length - 1]?.name, spaceName));
 
   const ITEMS_PER_PAGE_KEY = "itemsPerPage";
   const SORT_BY_KEY = "admin_sortBy";
@@ -174,7 +178,7 @@
         );
       }
     } catch (err: any) {
-      console.error("Duplicate error:", err);
+      log.error("Duplicate error:", err);
       errorToastMessage(
         err?.response?.data?.error?.message ||
           $_("admin_content.actions.duplicate_failed"),
@@ -245,7 +249,33 @@
     });
 
     currentPage = 1;
-    spaceHideFolders = await getSpaceHideFolders(spaceName, DmartScope.managed);
+    // The folder entity, the space tags and the hidden-folder list change only
+    // with the subpath, so they are fetched once here, in parallel, and every
+    // page / search / filter change below sends the one list query (perf #10).
+    const parts = [...pathParts];
+    const folderShortname = parts.pop();
+    const parentPath = "/" + parts.join("/");
+    const [hide, folderMeta, tagsResponse] = await Promise.all([
+      getSpaceHideFolders(spaceName, DmartScope.managed),
+      folderShortname
+        ? getEntity(folderShortname, spaceName, parentPath, ResourceType.folder, DmartScope.managed).catch(() => null)
+        : Promise.resolve(null),
+      getSpaceTags(spaceName).catch(() => null),
+    ]);
+    spaceHideFolders = hide;
+    folderMetadata = folderMeta;
+
+    const schemaShortnames: string[] = folderMeta?.payload?.body?.content_schema_shortnames || [];
+    const schemaShortnamesKey = schemaShortnames.slice().sort().join(",");
+    if (schemaShortnamesKey !== _prevSchemaShortnamesKey) {
+      _prevSchemaShortnamesKey = schemaShortnamesKey;
+      loadSchemaFilterFields(schemaShortnames);
+    }
+
+    const tagsData = tagsResponse?.records?.[0]?.attributes;
+    availableTags = tagsData?.tags || [];
+    tagCounts = tagsData?.tag_counts || {};
+
     await loadContents(true);
   }
 
@@ -378,7 +408,7 @@
         ),
       );
     } catch (err) {
-      console.error("Error loading schema filter fields:", err);
+      log.error("Error loading schema filter fields:", err);
       schemaFilterFields = [];
     }
   }
@@ -395,29 +425,15 @@
     error = null;
 
     try {
-      const pathParts = $actualSubpath.split("/").filter((p) => p);
-      const folderShortname = pathParts.pop();
-      const parentPath = "/" + pathParts.join("/");
       const offset = (currentPage - 1) * itemsPerPage;
-
-      const folderMeta = folderShortname
-        ? await getEntity(
-            folderShortname,
-            spaceName,
-            parentPath,
-            ResourceType.folder,
-            DmartScope.managed,
-          )
-        : null;
       const expandChildren =
-        folderMeta?.payload?.body?.expand_children === true;
+        folderMetadata?.payload?.body?.expand_children === true;
 
       const statusSearch = buildStatusFilterSearch();
       const schemaFieldsSearch = buildSchemaFieldFiltersSearch();
       const tagsSearch = buildFieldFilterClause("tags", selectedTags);
 
-      const [response, tagsResponse] = await Promise.all([
-        Dmart.query(
+      const response = await Dmart.query(
           {
             type: QueryType.search,
             space_name: spaceName,
@@ -435,35 +451,11 @@
               sortOrder === "desc" ? SortType.descending : SortType.ascending,
             offset: offset,
             retrieve_json_payload: true,
-            retrieve_attachments: true,
+            retrieve_attachments: false,
             exact_subpath: !expandChildren,
           },
           DmartScope.managed,
-        ),
-        // 3. Space tags
-        getSpaceTags(spaceName).catch(() => null),
-      ]);
-
-      // Process folder metadata
-      folderMetadata = folderMeta;
-
-      const schemaShortnames: string[] =
-        folderMeta?.payload?.body?.content_schema_shortnames || [];
-      const schemaShortnamesKey = schemaShortnames.slice().sort().join(",");
-      if (schemaShortnamesKey !== _prevSchemaShortnamesKey) {
-        _prevSchemaShortnamesKey = schemaShortnamesKey;
-        loadSchemaFilterFields(schemaShortnames);
-      }
-
-      // Process tags
-      if (tagsResponse?.records?.[0]?.attributes) {
-        const tagsData = tagsResponse.records[0].attributes;
-        availableTags = tagsData.tags || [];
-        tagCounts = tagsData.tag_counts || {};
-      } else {
-        availableTags = [];
-        tagCounts = {};
-      }
+        );
 
       if (response && response.records) {
         $allContents = response.records;
@@ -478,7 +470,7 @@
         totalPages = 1;
       }
     } catch (err) {
-      console.error("Error fetching space contents:", err);
+      log.error("Error fetching space contents:", err);
       error = $_("admin_content.error.failed_load_contents");
       $allContents = [];
       displayedContents = [];
@@ -597,7 +589,7 @@
         createSchema = response.payload.body;
       }
     } catch (err) {
-      console.error("Error loading schema for new item:", err);
+      log.error("Error loading schema for new item:", err);
     } finally {
       loadingCreateSchema = false;
     }
@@ -711,7 +703,7 @@
         errorToastMessage($_("toast.item_create_failed"));
       }
     } catch (err: any) {
-      console.error("Error creating item:", err);
+      log.error("Error creating item:", err);
       errorToastMessage(
         err?.response?.data?.error?.message || $_("toast.item_create_failed"),
       );
@@ -723,47 +715,36 @@
   // Delete confirmation dialog state
   let showDeleteDialog = $state(false);
   let itemToDelete: any = $state(null);
-  let isDeletingItem = $state(false);
+  let forceDelete = $state(false);
 
   function openDeleteDialog(item: any, event: any) {
     event.stopPropagation();
     itemToDelete = item;
+    forceDelete = false;
     showDeleteDialog = true;
   }
 
   function closeDeleteDialog() {
     showDeleteDialog = false;
     itemToDelete = null;
-    isDeletingItem = false;
   }
 
-  async function handleConfirmDelete(force: boolean) {
+  async function performDelete() {
     if (!itemToDelete) return;
+    const success = await deleteEntity(
+      itemToDelete.shortname,
+      spaceName,
+      `/${$actualSubpath}`,
+      itemToDelete.resource_type,
+      forceDelete,
+    );
+    if (!success) throw new Error($_("toast.item_delete_failed"));
+  }
 
-    isDeletingItem = true;
-    try {
-      const success = await deleteEntity(
-        itemToDelete.shortname,
-        spaceName,
-        `/${$actualSubpath}`,
-        itemToDelete.resource_type,
-        force,
-      );
-      if (success) {
-        successToastMessage($_("toast.item_deleted"));
-        await loadContents(true);
-        closeDeleteDialog();
-      } else {
-        errorToastMessage($_("toast.item_delete_failed"));
-      }
-    } catch (err) {
-      console.error("Error deleting item:", err);
-      errorToastMessage(
-        $_("toast.item_delete_failed") + ": " + (err as any).message,
-      );
-    } finally {
-      isDeletingItem = false;
-    }
+  async function afterDelete() {
+    successToastMessage($_("toast.item_deleted"));
+    closeDeleteDialog();
+    await loadContents(true);
   }
 
   function getItemIcon(item: any) {
@@ -788,19 +769,19 @@
   function getResourceTypeColor(resourceType: any) {
     switch (resourceType) {
       case "folder":
-        return "bg-blue-100 text-blue-800";
+        return "bg-info-soft text-info";
       case "content":
-        return "bg-green-100 text-green-800";
+        return "bg-success-soft text-success";
       case "post":
-        return "bg-purple-100 text-purple-800";
+        return "bg-primary-soft text-primary";
       case "ticket":
-        return "bg-orange-100 text-orange-800";
+        return "bg-warning-soft text-warning";
       case "user":
-        return "bg-indigo-100 text-indigo-800";
+        return "bg-primary-soft text-primary";
       case "media":
-        return "bg-pink-100 text-pink-800";
+        return "bg-primary-soft text-primary";
       default:
-        return "bg-gray-100 text-gray-800";
+        return "bg-surface-3 text-text-muted";
     }
   }
 
@@ -948,7 +929,7 @@
       clearSelection();
       await loadContents(true);
     } catch (err) {
-      console.error("Error in bulk delete:", err);
+      log.error("Error in bulk delete:", err);
       errorToastMessage($_("admin_content.bulk_actions.delete_error"));
     } finally {
       isBulkDeleting = false;
@@ -1003,7 +984,7 @@
       clearSelection();
       await loadContents(true);
     } catch (err) {
-      console.error("Error in bulk trash:", err);
+      log.error("Error in bulk trash:", err);
       errorToastMessage($_("admin_content.bulk_actions.trash_error"));
     } finally {
       isBulkDeleting = false;
@@ -1031,8 +1012,8 @@
         ? indexAttributes
         : [
             { key: "status", name: "Status" },
-            { key: "created_at", name: "Created At" },
-            { key: "updated_at", name: "Updated At" },
+            { key: "created_at", name: $_("data_table.columns.created_at") },
+            { key: "updated_at", name: $_("data_table.columns.updated_at") },
             { key: "author", name: "Author" },
           ];
 
@@ -1231,7 +1212,7 @@
       clearSelection();
       await loadContents(true);
     } catch (err) {
-      console.error("Error in bulk edit:", err);
+      log.error("Error in bulk edit:", err);
       errorToastMessage($_("admin_content.bulk_actions.edit_error"));
     } finally {
       isBulkSaving = false;
@@ -1317,7 +1298,7 @@
         errorToastMessage($_("toast.folder_create_failed"));
       }
     } catch (err) {
-      console.error("Error creating folder:", err);
+      log.error("Error creating folder:", err);
       errorToastMessage(
         $_("toast.folder_create_failed") + ": " + (err as any).message,
       );
@@ -1445,7 +1426,7 @@
         errorToastMessage($_("toast.folder_update_failed"));
       }
     } catch (err) {
-      console.error("Error updating columns:", err);
+      log.error("Error updating columns:", err);
       errorToastMessage(
         $_("toast.folder_update_failed") + ": " + (err as any).message,
       );
@@ -1503,7 +1484,7 @@
         errorToastMessage($_("toast.schema_create_failed"));
       }
     } catch (err) {
-      console.error("Error creating schema:", err);
+      log.error("Error creating schema:", err);
       errorToastMessage(
         $_("toast.schema_create_failed") + ": " + (err as any).message,
       );
@@ -1551,7 +1532,7 @@
         errorToastMessage($_("toast.workflow_create_failed"));
       }
     } catch (err) {
-      console.error("Error creating workflow:", err);
+      log.error("Error creating workflow:", err);
       errorToastMessage(
         $_("toast.workflow_create_failed") + ": " + (err as any).message,
       );
@@ -1631,8 +1612,8 @@
   }
 </script>
 
-<div class="min-h-screen bg-gray-50" class:rtl={$isRTL}>
-  <div class="bg-gray-50">
+<div class="min-h-screen bg-surface">
+  <div class="bg-surface">
     <div class="mx-auto py-8 max-w-375">
       <div
         class="flex flex-col md:flex-row md:items-center justify-between gap-4"
@@ -1641,8 +1622,8 @@
           <button
             onclick={() =>
               navigateToBreadcrumb(breadcrumbs[1]?.path || "/dashboard/admin")}
-            class="w-10 h-10 bg-indigo-50 hover:bg-indigo-100 text-indigo-600 rounded-xl flex items-center justify-center transition-colors shadow-sm"
-            aria-label="Go back"
+            class="w-10 h-10 bg-primary-soft hover:bg-primary-soft text-primary rounded-xl flex items-center justify-center transition-colors shadow-sm"
+            aria-label={$_("admin_space.navigation.go_back")}
           >
             <svg
               class="w-5 h-5"
@@ -1673,15 +1654,15 @@
               })}
             </h1>
             <nav
-              class="flex text-sm text-gray-500 font-medium mb-1"
-              aria-label="Breadcrumb"
+              class="flex text-sm text-text-muted font-medium mb-1"
+              aria-label={$_("ui.breadcrumb")}
             >
               <ol class="inline-flex items-center space-x-2">
                 {#each breadcrumbs as crumb, index (index)}
                   <li class="inline-flex items-center">
                     {#if index > 0}
                       <svg
-                        class="w-4 h-4 mx-1 text-gray-400"
+                        class="w-4 h-4 mx-1 text-text-faint"
                         fill="none"
                         stroke="currentColor"
                         viewBox="0 0 24 24"
@@ -1717,10 +1698,10 @@
               {#if $can("create", spaceName, $actualSubpath, ResourceType.folder)}
                 <button
                   onclick={handleCreateFolder}
-                  class="bg-white hover:bg-gray-50 border border-gray-200 text-gray-700 px-4 py-2 rounded-[14px] cursor-pointer font-medium transition-colors duration-200 flex items-center gap-2 shadow-sm"
+                  class="bg-surface-2 hover:bg-surface border border-border text-text px-4 py-2 rounded-[14px] cursor-pointer font-medium transition-colors duration-200 flex items-center gap-2 shadow-sm"
                 >
                   <svg
-                    class="w-4 h-4 text-gray-500"
+                    class="w-4 h-4 text-text-muted"
                     fill="none"
                     stroke="currentColor"
                     viewBox="0 0 24 24"
@@ -1745,7 +1726,7 @@
               {#if $can("create", spaceName, $actualSubpath, createResourceType)}
                 <button
                   onclick={handleCreateItem}
-                  class="bg-indigo-500 hover:bg-indigo-600 text-white px-4 py-2 rounded-[14px] cursor-pointer font-medium transition-colors duration-200 flex items-center gap-2 shadow-sm"
+                  class="bg-primary hover:bg-primary-hover text-text-on-primary px-4 py-2 rounded-[14px] cursor-pointer font-medium transition-colors duration-200 flex items-center gap-2 shadow-sm"
                 >
                   <svg
                     class="w-4 h-4"
@@ -1768,7 +1749,7 @@
             {#if $actualSubpath === "schema" && $can("create", spaceName, $actualSubpath, ResourceType.schema)}
               <button
                 onclick={handleCreateSchema}
-                class="bg-purple-600 hover:bg-purple-700 text-white px-4 py-2 rounded-xl font-medium transition-colors shadow-sm"
+                class="bg-primary hover:bg-primary-hover text-text-on-primary px-4 py-2 rounded-xl font-medium transition-colors shadow-sm"
               >
                 {$_("admin_content.actions.create_schema")}
               </button>
@@ -1776,7 +1757,7 @@
             {#if $actualSubpath === "workflows" && $can("create", spaceName, $actualSubpath, ResourceType.content)}
               <button
                 onclick={handleCreateWorkflow}
-                class="bg-indigo-600 hover:bg-indigo-700 text-white px-4 py-2 rounded-xl font-semibold transition-colors shadow-sm"
+                class="bg-primary hover:bg-primary-hover text-text-on-primary px-4 py-2 rounded-xl font-semibold transition-colors shadow-sm"
               >
                 Workflow
               </button>
@@ -1787,17 +1768,17 @@
     </div>
   </div>
 
-  <div class=" mx-auto pb-12 max-w-375">
+  <div class="mx-auto pb-12 max-w-375">
     {#if $isLoading || isInitialLoad}
       <div class="flex justify-center py-16">
         <div class="spinner spinner-lg"></div>
       </div>
     {:else if error}
       <div
-        class="bg-white rounded-3xl shadow-[0_2px_8px_rgba(0,0,0,0.04)] border border-gray-100 p-12 text-center max-w-lg mx-auto"
+        class="bg-surface-2 rounded-3xl shadow-[0_2px_8px_rgba(0,0,0,0.04)] border border-border p-12 text-center max-w-lg mx-auto"
       >
         <div
-          class="w-16 h-16 bg-red-50 text-red-500 rounded-2xl flex items-center justify-center mx-auto mb-4"
+          class="w-16 h-16 bg-danger-soft text-danger rounded-2xl flex items-center justify-center mx-auto mb-4"
         >
           <svg
             class="w-8 h-8"
@@ -1813,13 +1794,13 @@
             ></path>
           </svg>
         </div>
-        <h3 class="text-xl font-bold text-gray-900 mb-2">
+        <h3 class="text-xl font-bold text-text mb-2">
           {$_("admin_content.error.title")}
         </h3>
-        <p class="text-gray-500 mb-6">{error}</p>
+        <p class="text-text-muted mb-6">{error}</p>
         <button
           onclick={() => loadContents(true)}
-          class="bg-gray-900 hover:bg-gray-800 text-white px-6 py-2.5 rounded-xl font-medium transition-colors"
+          class="bg-text hover:bg-text text-text-on-primary px-6 py-2.5 rounded-xl font-medium transition-colors"
         >
           {$_("admin_content.error.try_again")}
         </button>
@@ -1883,7 +1864,7 @@
         <div class="tags-section mb-6">
           <div class="tags-label">
             <svg
-              class="w-4 h-4 mr-1 text-gray-400"
+              class="w-4 h-4 me-1 text-text-faint"
               fill="none"
               stroke="currentColor"
               viewBox="0 0 24 24"
@@ -1930,19 +1911,19 @@
 
       <!-- Main Content Container -->
       <div
-        class="bg-white rounded-3xl shadow-[0_2px_8px_rgba(0,0,0,0.04)] border border-gray-100 overflow-hidden"
+        class="bg-surface-2 rounded-3xl shadow-[0_2px_8px_rgba(0,0,0,0.04)] border border-border overflow-hidden"
       >
         <!-- Search and Filters Bar -->
-        <div class="p-6 border-b border-gray-100">
+        <div class="p-6 border-b border-border">
           <div
             class="flex flex-col md:flex-row md:items-center justify-between gap-4"
           >
             <div class="relative max-w-sm flex-1">
               <div
-                class="absolute inset-y-0 left-0 pl-4 flex items-center pointer-events-none"
+                class="absolute inset-y-0 start-0 ps-4 flex items-center pointer-events-none"
               >
                 <svg
-                  class="h-5 w-5 text-gray-400"
+                  class="h-5 w-5 text-text-faint"
                   fill="none"
                   stroke="currentColor"
                   viewBox="0 0 24 24"
@@ -1960,7 +1941,7 @@
                 bind:value={searchQuery}
                 oninput={handleSearchInput}
                 placeholder={$_("admin_content.search.placeholder")}
-                class="block w-full pl-11 pr-10 py-2.5 bg-gray-50 border-none rounded-xl text-sm focus:ring-2 focus:ring-indigo-500 focus:bg-white transition-colors"
+                class="block w-full ps-11 pe-10 py-2.5 bg-surface border-none rounded-xl text-sm focus:ring-2 focus:ring-primary focus:bg-surface-2 transition-colors"
                 title={$_("admin_content.search.placeholder")}
                 aria-label={$_("admin_content.search.placeholder")}
               />
@@ -1970,11 +1951,11 @@
                     searchQuery = "";
                     loadContents(true);
                   }}
-                  aria-label="Clear search"
-                  class="absolute inset-y-0 right-0 pr-3 flex items-center"
+                  aria-label={$_("ui.clear_search")}
+                  class="absolute inset-y-0 end-0 pe-3 flex items-center"
                 >
                   <svg
-                    class="h-5 w-5 text-gray-400 hover:text-gray-600 transition-colors"
+                    class="h-5 w-5 text-text-faint hover:text-text-muted transition-colors"
                     fill="none"
                     stroke="currentColor"
                     viewBox="0 0 24 24"
@@ -2003,7 +1984,7 @@
                   currentPage = 1;
                   loadContents(true);
                 }}
-                class="bg-gray-50 border-none text-sm font-medium text-gray-700 rounded-xl px-4 py-2.5 focus:ring-2 focus:ring-indigo-500 cursor-pointer"
+                class="bg-surface border-none text-sm font-medium text-text rounded-xl px-4 py-2.5 focus:ring-2 focus:ring-primary cursor-pointer"
                 title={$_("catalog_contents.filters.sort_by")}
                 aria-label={$_("catalog_contents.filters.sort_by")}
               >
@@ -2014,7 +1995,7 @@
 
               <button
                 onclick={toggleSortOrder}
-                class="p-2.5 bg-gray-50 text-gray-500 hover:text-gray-900 hover:bg-gray-100 rounded-xl transition-colors"
+                class="p-2.5 bg-surface text-text-muted hover:text-text hover:bg-surface-3 rounded-xl transition-colors"
                 title={$_("admin_content.filters.toggle_sort")}
                 aria-label={$_("admin_content.filters.toggle_sort")}
               >
@@ -2038,7 +2019,7 @@
               <div class="relative">
                 <button
                   onclick={() => (showFilterPanel = !showFilterPanel)}
-                  class="p-2.5 bg-gray-50 text-gray-500 hover:text-indigo-600 hover:bg-indigo-50 rounded-xl transition-all border border-transparent hover:border-indigo-100 relative"
+                  class="p-2.5 bg-surface text-text-muted hover:text-primary hover:bg-primary-soft rounded-xl transition-all border border-transparent hover:border-primary/30 relative"
                   title={$_("admin_content.filters.filter_by_column")}
                   aria-label={$_("admin_content.filters.filter_by_column")}
                 >
@@ -2057,7 +2038,7 @@
                   </svg>
                   {#if activeFilterCount > 0}
                     <span
-                      class="absolute -top-1 -right-1 bg-indigo-600 text-white text-[10px] font-bold rounded-full w-4 h-4 flex items-center justify-center"
+                      class="absolute -top-1 -end-1 bg-primary text-text-on-primary text-[10px] font-bold rounded-full w-4 h-4 flex items-center justify-center"
                     >
                       {activeFilterCount}
                     </span>
@@ -2072,18 +2053,16 @@
                     aria-label={$_("admin_content.modal.close")}
                   ></button>
                   <div
-                    class="absolute {$isRTL
-                      ? 'left-0'
-                      : 'right-0'} mt-2 w-72 bg-white border border-gray-200 rounded-xl shadow-lg z-20 p-4 max-h-96 overflow-y-auto"
+                    class="absolute end-0 mt-2 w-72 bg-surface-2 border border-border rounded-xl shadow-lg z-20 p-4 max-h-96 overflow-y-auto"
                   >
                     <div class="flex items-center justify-between mb-3">
-                      <span class="text-sm font-semibold text-gray-700">
+                      <span class="text-sm font-semibold text-text">
                         {$_("admin_content.filters.filter_by_column")}
                       </span>
                       {#if activeFilterCount > 0}
                         <button
                           onclick={clearPanelFilters}
-                          class="text-xs text-indigo-600 hover:text-indigo-700 font-medium"
+                          class="text-xs text-primary hover:text-primary font-medium"
                         >
                           {$_("admin_content.filters.clear_all")}
                         </button>
@@ -2092,7 +2071,7 @@
 
                     <div class="mb-4">
                       <div
-                        class="text-xs font-semibold text-gray-400 uppercase tracking-wider mb-2"
+                        class="text-xs font-semibold text-text-faint uppercase tracking-wider mb-2"
                       >
                         {$_("catalog_contents.filters.status")}
                       </div>
@@ -2103,9 +2082,9 @@
                           type="checkbox"
                           checked={statusFilter.active}
                           onchange={() => toggleStatusFilter("active")}
-                          class="w-4 h-4 text-indigo-600 border-gray-300 rounded focus:ring-indigo-500 cursor-pointer"
+                          class="w-4 h-4 text-primary border-border-strong rounded focus:ring-primary cursor-pointer"
                         />
-                        <span class="text-sm text-gray-700"
+                        <span class="text-sm text-text"
                           >{$_("admin_content.status.active")}</span
                         >
                       </label>
@@ -2114,9 +2093,9 @@
                           type="checkbox"
                           checked={statusFilter.inactive}
                           onchange={() => toggleStatusFilter("inactive")}
-                          class="w-4 h-4 text-indigo-600 border-gray-300 rounded focus:ring-indigo-500 cursor-pointer"
+                          class="w-4 h-4 text-primary border-border-strong rounded focus:ring-primary cursor-pointer"
                         />
-                        <span class="text-sm text-gray-700"
+                        <span class="text-sm text-text"
                           >{$_("admin_content.status.inactive")}</span
                         >
                       </label>
@@ -2125,7 +2104,7 @@
                     {#each schemaFilterFields as field (field.key)}
                       <div class="mb-4">
                         <div
-                          class="text-xs font-semibold text-gray-400 uppercase tracking-wider mb-2"
+                          class="text-xs font-semibold text-text-faint uppercase tracking-wider mb-2"
                         >
                           {field.label}
                         </div>
@@ -2140,9 +2119,9 @@
                               ]}
                               onchange={() =>
                                 toggleSchemaFieldOption(field.key, option)}
-                              class="w-4 h-4 text-indigo-600 border-gray-300 rounded focus:ring-indigo-500 cursor-pointer"
+                              class="w-4 h-4 text-primary border-border-strong rounded focus:ring-primary cursor-pointer"
                             />
-                            <span class="text-sm text-gray-700">
+                            <span class="text-sm text-text">
                               {field.type === "boolean"
                                 ? option === "true"
                                   ? $_("common.yes")
@@ -2155,7 +2134,7 @@
                     {/each}
 
                     {#if schemaFilterFields.length === 0}
-                      <p class="text-xs text-gray-400">
+                      <p class="text-xs text-text-faint">
                         {$_("admin_content.filters.no_schema_filters")}
                       </p>
                     {/if}
@@ -2165,7 +2144,7 @@
 
               <button
                 onclick={handleOpenColumnSettings}
-                class="p-2.5 bg-gray-50 text-gray-500 hover:text-indigo-600 hover:bg-indigo-50 rounded-xl transition-all border border-transparent hover:border-indigo-100"
+                class="p-2.5 bg-surface text-text-muted hover:text-primary hover:bg-primary-soft rounded-xl transition-all border border-transparent hover:border-primary/30"
                 title={$_("admin_content.settings_modal.title")}
                 aria-label={$_("admin_content.settings_modal.title")}
               >
@@ -2194,9 +2173,9 @@
               {#if canUploadCSV}
                 <button
                   onclick={() => (isCSVUploadModalOpen = true)}
-                  class="p-2.5 bg-gray-50 text-gray-500 hover:text-emerald-600 hover:bg-emerald-50 rounded-xl transition-all border border-transparent hover:border-emerald-100"
-                  title="Upload CSV"
-                  aria-label="Upload CSV"
+                  class="p-2.5 bg-surface text-text-muted hover:text-success hover:bg-success-soft rounded-xl transition-all border border-transparent hover:border-success/30"
+                  title={$_("users_page.upload_csv")}
+                  aria-label={$_("users_page.upload_csv")}
                 >
                   <UploadOutline class="w-5 h-5" />
                 </button>
@@ -2206,9 +2185,9 @@
               {#if canDownloadCSV}
                 <button
                   onclick={() => (isCSVDownloadModalOpen = true)}
-                  class="p-2.5 bg-gray-50 text-gray-500 hover:text-blue-600 hover:bg-blue-50 rounded-xl transition-all border border-transparent hover:border-blue-100"
-                  title="Download CSV"
-                  aria-label="Download CSV"
+                  class="p-2.5 bg-surface text-text-muted hover:text-info hover:bg-info-soft rounded-xl transition-all border border-transparent hover:border-info/30"
+                  title={$_("users_page.download_csv")}
+                  aria-label={$_("users_page.download_csv")}
                 >
                   <DownloadOutline class="w-5 h-5" />
                 </button>
@@ -2220,7 +2199,7 @@
         {#if displayedContents.length === 0}
           <div class="text-center py-16">
             <div
-              class="w-16 h-16 bg-gray-50 rounded-2xl flex items-center justify-center mx-auto mb-4 text-gray-400"
+              class="w-16 h-16 bg-surface rounded-2xl flex items-center justify-center mx-auto mb-4 text-text-faint"
             >
               <svg
                 class="w-8 h-8"
@@ -2236,10 +2215,10 @@
                 ></path>
               </svg>
             </div>
-            <h3 class="text-lg font-bold text-gray-900 mb-2">
+            <h3 class="text-lg font-bold text-text mb-2">
               {$_("admin_content.empty.title")}
             </h3>
-            <p class="text-gray-500 mb-6">
+            <p class="text-text-muted mb-6">
               {searchQuery || activeFilterCount > 0 || selectedTags.length > 0
                 ? $_("admin_content.empty.no_matches")
                 : $_("admin_content.empty.description")}
@@ -2247,7 +2226,7 @@
             {#if searchQuery || activeFilterCount > 0 || selectedTags.length > 0}
               <button
                 onclick={clearFilters}
-                class="text-indigo-600 hover:text-indigo-700 font-medium"
+                class="text-primary hover:text-primary font-medium"
               >
                 {$_("admin_content.filters.clear_all")}
               </button>
@@ -2284,7 +2263,6 @@
             onPageChange={(page) => goToPage(page)}
             onItemsPerPageChange={(count) => handleItemsPerPageChange(count)}
             {itemsPerPageOptions}
-            rtl={$isRTL}
           >
             {#snippet cell({ item, attr })}
               {#if attr.key === "displayname"}
@@ -2297,11 +2275,11 @@
                     {item.resource_type}
                   </span>
                   <div class="flex items-center gap-2">
-                    <span class="text-lg text-gray-400"
+                    <span class="text-lg text-text-faint"
                       >{getItemIcon(item)}</span
                     >
                     <span
-                      class="text-sm font-semibold text-gray-900 group-hover:text-indigo-600 transition-colors truncate max-w-xs"
+                      class="text-sm font-semibold text-text group-hover:text-primary transition-colors truncate max-w-xs"
                       >{getDisplayName(item)}</span
                     >
                   </div>
@@ -2310,13 +2288,13 @@
                 <span
                   class="inline-flex items-center px-2.5 py-1 rounded-md text-xs font-medium {item
                     .attributes?.is_active
-                    ? 'bg-emerald-50 text-emerald-700'
-                    : 'bg-red-50 text-red-700'}"
+                    ? 'bg-success-soft text-success'
+                    : 'bg-danger-soft text-danger'}"
                 >
                   <span
                     class="w-1.5 h-1.5 rounded-full {item.attributes?.is_active
-                      ? 'bg-emerald-500'
-                      : 'bg-red-500'} mr-1.5"
+                      ? 'bg-success'
+                      : 'bg-danger'} me-1.5"
                   ></span>
                   {item.attributes?.is_active
                     ? $_("admin_content.status.active")
@@ -2326,26 +2304,26 @@
                 <div class="flex items-center gap-2">
                   {#if item.attributes?.owner_shortname}
                     <div
-                      class="w-6 h-6 rounded-full bg-gray-200 flex items-center justify-center text-[10px] font-medium text-gray-600"
+                      class="w-6 h-6 rounded-full bg-surface-3 flex items-center justify-center text-[10px] font-medium text-text-muted"
                     >
                       {item.attributes?.owner_shortname.charAt(0).toUpperCase()}
                     </div>
-                    <span class="text-sm font-medium text-gray-700"
+                    <span class="text-sm font-medium text-text"
                       >{item.attributes?.owner_shortname}</span
                     >
                   {:else}
                     <div
-                      class="w-6 h-6 rounded-full bg-gray-100 flex items-center justify-center text-[10px] font-medium text-gray-400"
+                      class="w-6 h-6 rounded-full bg-surface-3 flex items-center justify-center text-[10px] font-medium text-text-faint"
                     >
                       ?
                     </div>
-                    <span class="text-sm text-gray-500"
+                    <span class="text-sm text-text-muted"
                       >{$_("common.unknown")}</span
                     >
                   {/if}
                 </div>
               {:else}
-                <span class="text-sm text-gray-500 font-medium"
+                <span class="text-sm text-text-muted font-medium"
                   >{getAttributeValue(item, attr.key)}</span
                 >
               {/if}
@@ -2358,7 +2336,7 @@
                     e.stopPropagation();
                     handleItemClick(item);
                   }}
-                  class="text-[12px] font-semibold text-indigo-500 hover:text-indigo-700 flex items-center gap-1.5"
+                  class="text-[12px] font-semibold text-primary hover:text-primary flex items-center gap-1.5"
                 >
                   <svg
                     class="w-4 h-4"
@@ -2375,13 +2353,13 @@
                 </button>
               {:else}
                 <button
-                  title="View"
-                  aria-label="View"
+                  title={$_("actions.view")}
+                  aria-label={$_("actions.view")}
                   onclick={(e) => {
                     e.stopPropagation();
                     handleItemClick(item);
                   }}
-                  class="text-[12px] font-semibold text-indigo-500 hover:text-indigo-700 flex items-center"
+                  class="text-[12px] font-semibold text-primary hover:text-primary flex items-center"
                 >
                   <svg
                     class="w-4 h-4"
@@ -2411,7 +2389,7 @@
                     handleDuplicateItem(item);
                   }}
                   disabled={duplicatingShortname === item.shortname}
-                  class="text-[12px] font-semibold text-purple-600 hover:text-purple-800 flex items-center disabled:opacity-50 disabled:cursor-not-allowed"
+                  class="text-[12px] font-semibold text-primary hover:text-primary flex items-center disabled:opacity-50 disabled:cursor-not-allowed"
                 >
                   {#if duplicatingShortname === item.shortname}
                     <div class="spinner spinner-sm"></div>
@@ -2432,13 +2410,13 @@
                   {/if}
                 </button>
                 <button
-                  title="Copy"
-                  aria-label="Copy"
+                  title={$_("admin_content.bulk_actions.copy")}
+                  aria-label={$_("admin_content.bulk_actions.copy")}
                   onclick={(e) => {
                     e.stopPropagation();
                     openCopyModal([item], "copy");
                   }}
-                  class="text-[12px] font-semibold text-emerald-600 hover:text-emerald-800 flex items-center"
+                  class="text-[12px] font-semibold text-success hover:text-success flex items-center"
                 >
                   <svg
                     class="w-4 h-4"
@@ -2455,13 +2433,13 @@
                   </svg>
                 </button>
                 <button
-                  title="Move"
-                  aria-label="Move"
+                  title={$_("admin_content.bulk_actions.move")}
+                  aria-label={$_("admin_content.bulk_actions.move")}
                   onclick={(e) => {
                     e.stopPropagation();
                     openCopyModal([item], "move");
                   }}
-                  class="text-[12px] font-semibold text-amber-600 hover:text-amber-800 flex items-center"
+                  class="text-[12px] font-semibold text-warning hover:text-warning flex items-center"
                 >
                   <svg
                     class="w-4 h-4"
@@ -2480,10 +2458,10 @@
               {/if}
               {#if $can("delete", spaceName, $actualSubpath, item.resource_type)}
                 <button
-                  title="Delete"
-                  aria-label="Delete"
+                  title={$_("delete")}
+                  aria-label={$_("delete")}
                   onclick={(e) => openDeleteDialog(item, e)}
-                  class="text-[12px] font-semibold text-red-500 hover:text-red-700 flex items-center"
+                  class="text-[12px] font-semibold text-danger hover:text-danger flex items-center"
                 >
                   <svg
                     class="w-4 h-4"
@@ -2621,7 +2599,7 @@
               >
                 {#if isBulkDeleting}
                   <div
-                    class="w-4 h-4 border-2 border-white/30 border-t-white rounded-full animate-spin"
+                    class="w-4 h-4 border-2 border-text-on-primary/30 border-t-white rounded-full animate-spin"
                   ></div>
                   {$_("admin_content.bulk_actions.deleting")}
                 {:else}
@@ -2652,9 +2630,9 @@
 <!-- Bulk Delete Confirmation Dialog -->
 {#if showBulkDeleteConfirm}
   <div class="modal-overlay">
-    <div class="modal-container" class:rtl={$isRTL}>
+    <div class="modal-container">
       <div class="modal-header">
-        <div class="modal-header-content" class:text-right={$isRTL}>
+        <div class="modal-header-content">
           <h3 class="modal-title">
             {$_("admin_content.bulk_actions.confirm_delete_title")}
           </h3>
@@ -2716,9 +2694,9 @@
 <!-- Bulk Trash Confirmation Dialog -->
 {#if showBulkTrashConfirm}
   <div class="modal-overlay">
-    <div class="modal-container" class:rtl={$isRTL}>
+    <div class="modal-container">
       <div class="modal-header">
-        <div class="modal-header-content" class:text-right={$isRTL}>
+        <div class="modal-header-content">
           <h3 class="modal-title">
             {$_("admin_content.bulk_actions.confirm_trash_title")}
           </h3>
@@ -2788,15 +2766,15 @@
           { key: "shortname", name: "Shortname" },
           { key: "schema_shortname", name: "Schema" },
           { key: "status", name: "Status" },
-          { key: "created_at", name: "Created At" },
-          { key: "updated_at", name: "Updated At" },
+          { key: "created_at", name: $_("data_table.columns.created_at") },
+          { key: "updated_at", name: $_("data_table.columns.updated_at") },
         ]}
   <!-- Key only re-renders when items are added/removed, not on every edit -->
   {#key Object.keys(bulkEditData).length}
     <div class="modal-overlay bulk-edit-overlay">
-      <div class="modal-container bulk-edit-container" class:rtl={$isRTL}>
+      <div class="modal-container bulk-edit-container">
         <div class="modal-header">
-          <div class="modal-header-content" class:text-right={$isRTL}>
+          <div class="modal-header-content">
             <h3 class="modal-title">
               {$_("admin_content.bulk_actions.edit_title")}
             </h3>
@@ -2886,7 +2864,7 @@
                                     }}
                                     class="edit-tag-remove"
                                     type="button"
-                                    aria-label="Remove tag"
+                                    aria-label={$_("route_labels.search_remove_tag")}
                                   >
                                     <svg
                                       class="w-3 h-3"
@@ -2908,7 +2886,7 @@
                             <div class="tag-input-wrapper">
                               <input
                                 type="text"
-                                placeholder="Add item + Enter"
+                                placeholder={$_("admin_content.bulk_actions.placeholders.add_tag")}
                                 onkeydown={(e) => {
                                   if (e.key === "Enter") {
                                     e.preventDefault();
@@ -2970,7 +2948,7 @@
                                 e.currentTarget.value,
                               )}
                             class="bulk-edit-input"
-                            placeholder="Owner"
+                            placeholder={$_("admin_dashboard.columns.owner")}
                           />
                         {:else if attr.key === "created_at"}
                           <!-- Created At (editable date) -->
@@ -3020,7 +2998,7 @@
                                 e.currentTarget.value,
                               )}
                             class="bulk-edit-input"
-                            placeholder="Schema"
+                            placeholder={$_("templates.form.schema_label")}
                           />
                         {:else if getFieldType(attr.key) === "object" || getFieldType(attr.key) === "array-object"}
                           <!-- Object/Array-Object - JSON editor -->
@@ -3124,9 +3102,9 @@
 
 {#if showCreateFolderModal}
   <div class="modal-overlay">
-    <div class="modal-container" class:rtl={$isRTL}>
+    <div class="modal-container">
       <div class="modal-header">
-        <div class="modal-header-content" class:text-right={$isRTL}>
+        <div class="modal-header-content">
           <h3 class="modal-title">{$_("admin_content.modal.create.title")}</h3>
           <p class="modal-subtitle">
             {$_("admin_content.modal.create.subtitle")}
@@ -3155,7 +3133,7 @@
 
       <div class="modal-content">
         <div class="form-section">
-          <div class="section-header" class:text-right={$isRTL}>
+          <div class="section-header">
             <h4 class="section-title">
               {$_("admin_content.modal.basic_info.title")}
             </h4>
@@ -3172,7 +3150,7 @@
         </div>
 
         <div class="form-section">
-          <div class="section-header" class:text-right={$isRTL}>
+          <div class="section-header">
             <h4 class="section-title">
               {$_("admin_content.modal.folder_config.title")}
             </h4>
@@ -3188,7 +3166,7 @@
         </div>
       </div>
 
-      <div class="modal-footer" class:flex-row-reverse={$isRTL}>
+      <div class="modal-footer">
         <button
           type="button"
           onclick={() => (showCreateFolderModal = false)}
@@ -3216,9 +3194,9 @@
 
 {#if showCreateSchemaModal}
   <div class="modal-overlay">
-    <div class="modal-container" class:rtl={$isRTL}>
+    <div class="modal-container">
       <div class="modal-header">
-        <div class="modal-header-content" class:text-right={$isRTL}>
+        <div class="modal-header-content">
           <h3 class="modal-title">{$_("admin_content.modal.create.title")}</h3>
           <p class="modal-subtitle">
             {$_("admin_content.modal.create.subtitle")}
@@ -3253,7 +3231,7 @@
       >
         <div class="modal-content">
           <div class="form-section">
-            <div class="section-header" class:text-right={$isRTL}>
+            <div class="section-header">
               <h4 class="section-title">
                 {$_("admin_content.modal.basic_info.title")}
               </h4>
@@ -3270,8 +3248,8 @@
           </div>
 
           <div class="form-section">
-            <div class="section-header" class:text-right={$isRTL}>
-              <h4 class="section-title">Schema Definition</h4>
+            <div class="section-header">
+              <h4 class="section-title">{$_("admin_content.schema_definition")}</h4>
               <p class="section-description">
                 Define the JSON schema structure for this resource.
               </p>
@@ -3280,7 +3258,7 @@
           </div>
         </div>
 
-        <div class="modal-footer" class:flex-row-reverse={$isRTL}>
+        <div class="modal-footer">
           <button
             type="button"
             onclick={() => (showCreateSchemaModal = false)}
@@ -3309,9 +3287,9 @@
 
 {#if showCreateWorkflowModal}
   <div class="modal-overlay">
-    <div class="modal-container" class:rtl={$isRTL}>
+    <div class="modal-container">
       <div class="modal-header">
-        <div class="modal-header-content" class:text-right={$isRTL}>
+        <div class="modal-header-content">
           <h3 class="modal-title">{$_("admin_content.modal.create.title")}</h3>
           <p class="modal-subtitle">
             {$_("admin_content.modal.create.subtitle")}
@@ -3346,7 +3324,7 @@
       >
         <div class="modal-content">
           <div class="form-section">
-            <div class="section-header" class:text-right={$isRTL}>
+            <div class="section-header">
               <h4 class="section-title">
                 {$_("admin_content.modal.basic_info.title")}
               </h4>
@@ -3363,8 +3341,8 @@
           </div>
 
           <div class="form-section">
-            <div class="section-header" class:text-right={$isRTL}>
-              <h4 class="section-title">Workflow Definition</h4>
+            <div class="section-header">
+              <h4 class="section-title">{$_("admin_content.workflow_definition")}</h4>
               <p class="section-description">
                 Define the workflow states and transitions.
               </p>
@@ -3373,7 +3351,7 @@
           </div>
         </div>
 
-        <div class="modal-footer" class:flex-row-reverse={$isRTL}>
+        <div class="modal-footer">
           <button
             type="button"
             onclick={() => (showCreateWorkflowModal = false)}
@@ -3402,9 +3380,9 @@
 
 {#if showCreateItemModal}
   <div class="modal-overlay">
-    <div class="modal-container" class:rtl={$isRTL}>
+    <div class="modal-container">
       <div class="modal-header">
-        <div class="modal-header-content" class:text-right={$isRTL}>
+        <div class="modal-header-content">
           <h3 class="modal-title">
             {$_("admin_content.actions.create_new_item")}
           </h3>
@@ -3436,7 +3414,7 @@
       <form onsubmit={handleSaveItem}>
         <div class="modal-content">
           <div class="form-section">
-            <div class="section-header" class:text-right={$isRTL}>
+            <div class="section-header">
               <h4 class="section-title">
                 {$_("admin_content.modal.basic_info.title")}
               </h4>
@@ -3478,7 +3456,7 @@
             </div>
           {:else if createItemSchemaShortnames.length > 0}
             <div class="form-section">
-              <div class="section-header" class:text-right={$isRTL}>
+              <div class="section-header">
                 <h4 class="section-title">
                   {createItemSchemaShortnames.length > 1
                     ? $_("create_entry.schema.selection_title")
@@ -3489,14 +3467,13 @@
               {#if createItemSchemaShortnames.length > 1}
                 <label
                   for="create-item-schema-select"
-                  class="block text-sm font-semibold text-gray-700 mb-2"
-                  class:text-right={$isRTL}
+                  class="block text-sm font-semibold text-text mb-2"
                 >
                   {$_("create_entry.schema.select_label")}
                 </label>
                 <select
                   id="create-item-schema-select"
-                  class="w-full px-4 py-3 border-2 border-gray-200 rounded-lg text-sm bg-white text-gray-700 focus:outline-none focus:border-blue-500 mb-2"
+                  class="w-full px-4 py-3 border-2 border-border rounded-lg text-sm bg-surface-2 text-text focus:outline-none focus:border-info mb-2"
                   value={selectedCreateSchemaShortname}
                   onchange={handleCreateSchemaChange}
                 >
@@ -3510,7 +3487,7 @@
               {/if}
 
               {#if loadingCreateSchema}
-                <p class="text-sm text-gray-500 py-2">
+                <p class="text-sm text-text-muted py-2">
                   {$_("create_entry.schema.loading")}
                 </p>
               {:else if createSchema}
@@ -3526,7 +3503,7 @@
           {/if}
         </div>
 
-        <div class="modal-footer" class:flex-row-reverse={$isRTL}>
+        <div class="modal-footer">
           <button
             type="button"
             onclick={() => (showCreateItemModal = false)}
@@ -3556,17 +3533,17 @@
 <!-- Column Settings Modal -->
 {#if showColumnSettingsModal}
   <div
-    class="fixed inset-0 z-[60] flex items-center justify-center p-4 bg-black/50 backdrop-blur-sm"
+    class="fixed inset-0 z-[60] flex items-center justify-center p-4 bg-[var(--surface-overlay)] backdrop-blur-sm"
   >
     <div
-      class="bg-white rounded-3xl shadow-2xl w-full max-w-lg overflow-hidden border border-gray-100 modal-container"
+      class="bg-surface-2 rounded-3xl shadow-2xl w-full max-w-lg overflow-hidden border border-border modal-container"
     >
       <div
-        class="p-6 border-b border-gray-100 flex items-center justify-between bg-white modal-header"
+        class="p-6 border-b border-border flex items-center justify-between bg-surface-2 modal-header"
       >
         <div class="flex items-center gap-3">
           <div
-            class="w-10 h-10 bg-indigo-50 rounded-xl flex items-center justify-center text-indigo-600"
+            class="w-10 h-10 bg-primary-soft rounded-xl flex items-center justify-center text-primary"
           >
             <svg
               class="w-6 h-6"
@@ -3588,14 +3565,14 @@
               ></path>
             </svg>
           </div>
-          <h2 class="text-xl font-bold text-gray-900">
+          <h2 class="text-xl font-bold text-text">
             {$_("admin_content.settings_modal.title")}
           </h2>
         </div>
         <button
           onclick={() => (showColumnSettingsModal = false)}
-          aria-label="Close"
-          class="p-2 text-gray-400 hover:text-gray-600 hover:bg-gray-50 rounded-lg transition-colors modal-close-btn"
+          aria-label={$_("common.close")}
+          class="p-2 text-text-faint hover:text-text-muted hover:bg-surface rounded-lg transition-colors modal-close-btn"
         >
           <svg
             class="w-6 h-6"
@@ -3613,39 +3590,35 @@
         </button>
       </div>
 
-      <div class="p-6 max-h-[60vh] overflow-y-auto bg-gray-50/30 modal-content">
+      <div class="p-6 max-h-[60vh] overflow-y-auto bg-surface/30 modal-content">
         <!-- Meta Info -->
         <div class="mb-6">
-          <h3 class="text-sm font-semibold text-gray-700 mb-3 px-1">
+          <h3 class="text-sm font-semibold text-text mb-3 px-1">
             {$_("admin_content.settings_modal.meta_info")}
           </h3>
           <div
-            class="p-4 bg-white rounded-2xl border border-gray-100 shadow-sm space-y-4"
+            class="p-4 bg-surface-2 rounded-2xl border border-border shadow-sm space-y-4"
           >
             <div class="space-y-2">
-              <!-- svelte-ignore a11y_label_has_associated_control -->
-              <label
-                class="text-[10px] uppercase font-bold text-gray-400 tracking-wider px-1"
-                >{$_("fields.displayname")}</label
-              >
+              <p class="text-xs font-semibold text-text-muted px-1 m-0">{$_("fields.displayname")}</p>
               <div class="grid grid-cols-3 gap-2">
                 <div class="space-y-1">
                   <label
                     for="settings-displayname-en"
-                    class="text-[10px] font-medium text-gray-500 px-1"
+                    class="text-[10px] font-medium text-text-muted px-1"
                     >{$_("languages.english")}</label
                   >
                   <input
                     id="settings-displayname-en"
                     type="text"
                     bind:value={editingMeta.displayname.en}
-                    class="w-full px-4 py-2 bg-gray-50 border-none rounded-xl text-sm focus:ring-2 focus:ring-indigo-500"
+                    class="w-full px-4 py-2 bg-surface border-none rounded-xl text-sm focus:ring-2 focus:ring-primary"
                   />
                 </div>
                 <div class="space-y-1">
                   <label
                     for="settings-displayname-ar"
-                    class="text-[10px] font-medium text-gray-500 px-1"
+                    class="text-[10px] font-medium text-text-muted px-1"
                     >{$_("languages.arabic")}</label
                   >
                   <input
@@ -3653,13 +3626,13 @@
                     type="text"
                     bind:value={editingMeta.displayname.ar}
                     dir="rtl"
-                    class="w-full px-4 py-2 bg-gray-50 border-none rounded-xl text-sm focus:ring-2 focus:ring-indigo-500"
+                    class="w-full px-4 py-2 bg-surface border-none rounded-xl text-sm focus:ring-2 focus:ring-primary"
                   />
                 </div>
                 <div class="space-y-1">
                   <label
                     for="settings-displayname-ku"
-                    class="text-[10px] font-medium text-gray-500 px-1"
+                    class="text-[10px] font-medium text-text-muted px-1"
                     >{$_("languages.kurdish")}</label
                   >
                   <input
@@ -3667,35 +3640,31 @@
                     type="text"
                     bind:value={editingMeta.displayname.ku}
                     dir="rtl"
-                    class="w-full px-4 py-2 bg-gray-50 border-none rounded-xl text-sm focus:ring-2 focus:ring-indigo-500"
+                    class="w-full px-4 py-2 bg-surface border-none rounded-xl text-sm focus:ring-2 focus:ring-primary"
                   />
                 </div>
               </div>
             </div>
             <div class="space-y-2">
-              <!-- svelte-ignore a11y_label_has_associated_control -->
-              <label
-                class="text-[10px] uppercase font-bold text-gray-400 tracking-wider px-1"
-                >{$_("fields.description")}</label
-              >
+              <p class="text-xs font-semibold text-text-muted px-1 m-0">{$_("fields.description")}</p>
               <div class="grid grid-cols-3 gap-2">
                 <div class="space-y-1">
                   <label
                     for="settings-description-en"
-                    class="text-[10px] font-medium text-gray-500 px-1"
+                    class="text-[10px] font-medium text-text-muted px-1"
                     >{$_("languages.english")}</label
                   >
                   <textarea
                     id="settings-description-en"
                     bind:value={editingMeta.description.en}
                     rows="3"
-                    class="w-full px-4 py-2 bg-gray-50 border-none rounded-xl text-sm focus:ring-2 focus:ring-indigo-500 resize-none"
+                    class="w-full px-4 py-2 bg-surface border-none rounded-xl text-sm focus:ring-2 focus:ring-primary resize-none"
                   ></textarea>
                 </div>
                 <div class="space-y-1">
                   <label
                     for="settings-description-ar"
-                    class="text-[10px] font-medium text-gray-500 px-1"
+                    class="text-[10px] font-medium text-text-muted px-1"
                     >{$_("languages.arabic")}</label
                   >
                   <textarea
@@ -3703,13 +3672,13 @@
                     bind:value={editingMeta.description.ar}
                     rows="3"
                     dir="rtl"
-                    class="w-full px-4 py-2 bg-gray-50 border-none rounded-xl text-sm focus:ring-2 focus:ring-indigo-500 resize-none"
+                    class="w-full px-4 py-2 bg-surface border-none rounded-xl text-sm focus:ring-2 focus:ring-primary resize-none"
                   ></textarea>
                 </div>
                 <div class="space-y-1">
                   <label
                     for="settings-description-ku"
-                    class="text-[10px] font-medium text-gray-500 px-1"
+                    class="text-[10px] font-medium text-text-muted px-1"
                     >{$_("languages.kurdish")}</label
                   >
                   <textarea
@@ -3717,7 +3686,7 @@
                     bind:value={editingMeta.description.ku}
                     rows="3"
                     dir="rtl"
-                    class="w-full px-4 py-2 bg-gray-50 border-none rounded-xl text-sm focus:ring-2 focus:ring-indigo-500 resize-none"
+                    class="w-full px-4 py-2 bg-surface border-none rounded-xl text-sm focus:ring-2 focus:ring-primary resize-none"
                   ></textarea>
                 </div>
               </div>
@@ -3730,9 +3699,9 @@
                 id="settings-is-active"
                 type="checkbox"
                 bind:checked={editingMeta.is_active}
-                class="w-4 h-4 rounded border-gray-300 text-indigo-600 focus:ring-indigo-500"
+                class="w-4 h-4 rounded border-border-strong text-primary focus:ring-primary"
               />
-              <span class="text-sm font-medium text-gray-700"
+              <span class="text-sm font-medium text-text"
                 >{$_("fields.active")}</span
               >
             </label>
@@ -3740,46 +3709,49 @@
         </div>
 
         <!-- Column Settings -->
-        <h3 class="text-sm font-semibold text-gray-700 mb-3 px-1">
+        <h3 class="text-sm font-semibold text-text mb-3 px-1">
           {$_("admin_content.settings_modal.column_settings")}
         </h3>
         <div class="space-y-4">
           {#each editingIndexAttributes as attr, i (i)}
             <div
-              class="flex items-center gap-3 p-4 bg-white rounded-2xl border border-gray-100 shadow-sm"
+              class="flex items-center gap-3 p-4 bg-surface-2 rounded-2xl border border-border shadow-sm"
             >
               <div class="flex-1 grid grid-cols-2 gap-4">
                 <div class="space-y-1.5">
-                  <!-- svelte-ignore a11y_label_has_associated_control -->
                   <label
-                    class="text-[10px] uppercase font-bold text-gray-400 tracking-wider px-1"
-                    >Label Name</label
+                    for="col-name-{i}"
+                    class="text-xs font-semibold text-text-muted px-1"
+                    >{$_("users_page.column_label")}</label
                   >
                   <input
+                    id="col-name-{i}"
                     type="text"
                     bind:value={attr.name}
-                    placeholder="e.g. Server Name"
-                    class="w-full px-4 py-2 bg-gray-50 border-none rounded-xl text-sm focus:ring-2 focus:ring-indigo-500"
+                    placeholder={$_("users_page.column_label_placeholder")}
+                    class="w-full px-4 py-2 bg-surface border-none rounded-xl text-sm focus:ring-2 focus:ring-primary"
                   />
                 </div>
                 <div class="space-y-1.5">
-                  <!-- svelte-ignore a11y_label_has_associated_control -->
                   <label
-                    class="text-[10px] uppercase font-bold text-gray-400 tracking-wider px-1"
-                    >Data Key</label
+                    for="col-key-{i}"
+                    class="text-xs font-semibold text-text-muted px-1"
+                    >{$_("users_page.column_key")}</label
                   >
                   <input
+                    id="col-key-{i}"
                     type="text"
                     bind:value={attr.key}
-                    placeholder="e.g. server_name"
-                    class="w-full px-4 py-2 bg-gray-50 border-none rounded-xl text-sm focus:ring-2 focus:ring-indigo-500 font-mono"
+                    placeholder={$_("users_page.column_key_placeholder")}
+                    class="w-full px-4 py-2 bg-surface border-none rounded-xl text-sm focus:ring-2 focus:ring-primary font-mono"
                   />
                 </div>
               </div>
               <button
                 onclick={() => removeColumnSetting(i)}
-                class="mt-6 p-2 text-red-400 hover:text-red-600 hover:bg-red-50 rounded-lg transition-colors"
-                title="Remove Column"
+                class="mt-6 p-2 text-danger hover:text-danger hover:bg-danger-soft rounded-lg transition-colors"
+                title={$_("users_page.remove_column")}
+                aria-label={$_("users_page.remove_column")}
               >
                 <svg
                   class="w-5 h-5"
@@ -3801,7 +3773,7 @@
 
         <button
           onclick={addColumnSetting}
-          class="w-full mt-6 py-3 border-2 border-dashed border-gray-200 rounded-2xl text-sm font-medium text-gray-500 hover:border-indigo-300 hover:text-indigo-600 hover:bg-indigo-50/30 transition-all flex items-center justify-center gap-2"
+          class="w-full mt-6 py-3 border-2 border-dashed border-border rounded-2xl text-sm font-medium text-text-muted hover:border-primary hover:text-primary hover:bg-primary-soft transition-all flex items-center justify-center gap-2"
         >
           <svg
             class="w-5 h-5"
@@ -3821,22 +3793,22 @@
       </div>
 
       <div
-        class="p-6 border-t border-gray-100 flex items-center justify-end gap-3 bg-white modal-footer"
+        class="p-6 border-t border-border flex items-center justify-end gap-3 bg-surface-2 modal-footer"
       >
         <button
           onclick={() => (showColumnSettingsModal = false)}
-          class="px-6 py-2.5 text-sm font-medium text-gray-600 hover:text-gray-900 transition-colors"
+          class="px-6 py-2.5 text-sm font-medium text-text-muted hover:text-text transition-colors"
         >
           {$_("common.cancel")}
         </button>
         <button
           onclick={handleUpdateColumns}
           disabled={isSavingColumns}
-          class="px-8 py-2.5 bg-indigo-600 text-white rounded-xl text-sm font-semibold hover:bg-indigo-700 shadow-md shadow-indigo-200 disabled:opacity-50 disabled:cursor-not-allowed transition-all flex items-center gap-2"
+          class="px-8 py-2.5 bg-primary text-text-on-primary rounded-xl text-sm font-semibold hover:bg-primary-hover shadow-md shadow-card disabled:opacity-50 disabled:cursor-not-allowed transition-all flex items-center gap-2"
         >
           {#if isSavingColumns}
             <div
-              class="w-4 h-4 border-2 border-white/30 border-t-white rounded-full animate-spin"
+              class="w-4 h-4 border-2 border-text-on-primary/30 border-t-white rounded-full animate-spin"
             ></div>
             {$_("common.saving") || "Saving..."}
           {:else}
@@ -3848,15 +3820,23 @@
   </div>
 {/if}
 
-<DeleteConfirmationDialog
+<ConfirmDialog
   bind:open={showDeleteDialog}
-  title={$_("delete")}
-  itemName={itemToDelete ? getDisplayName(itemToDelete) : ""}
-  itemType={itemToDelete?.resource_type || "item"}
-  isDeleting={isDeletingItem}
-  onConfirm={handleConfirmDelete}
+  title={$_("delete_confirmation.title", { values: { type: itemToDelete?.resource_type || $_("delete_confirmation.item_label") } })}
+  body={itemToDelete ? `${getDisplayName(itemToDelete)}\n${$_("delete_confirmation.warning")}` : ""}
+  variant="danger"
+  action={performDelete}
+  onConfirm={afterDelete}
   onCancel={closeDeleteDialog}
-/>
+>
+  <label class="flex items-start gap-2 text-sm text-text cursor-pointer">
+    <input type="checkbox" class="mt-0.5 accent-primary" bind:checked={forceDelete} />
+    <span>
+      {$_("force_delete")}
+      <span class="block text-xs text-text-muted">{$_("force_delete_help")}</span>
+    </span>
+  </label>
+</ConfirmDialog>
 
 <!-- CSV Import/Export Modals -->
 <ModalCSVUpload
@@ -3888,29 +3868,15 @@
 {/if}
 
 <style>
-  .rtl {
-    direction: rtl;
-  }
 
-  .rtl .header-content {
-    text-align: right;
-  }
 
   .section-title {
     font-size: 1.125rem;
     font-weight: 600;
-    color: var(--color-gray-800);
+    color: var(--color-text);
   }
 
-  .rtl .search-icon {
-    left: auto;
-    right: 0.75rem;
-  }
 
-  .rtl .search-input {
-    padding: 0.75rem 2.75rem 0.75rem 1rem;
-    text-align: right;
-  }
 
   .search-input:focus {
     outline: none;
@@ -3918,31 +3884,15 @@
     box-shadow: 0 0 0 3px rgba(99, 102, 241, 0.1);
   }
 
-  .rtl .clear-search-button {
-    right: auto;
-    left: 0.75rem;
-  }
 
   .clear-search-button:hover {
-    color: var(--color-gray-500);
+    color: var(--color-text-muted);
     background-color: rgba(107, 114, 128, 0.1);
   }
 
-  .rtl .filter-controls {
-    flex-direction: row-reverse;
-  }
 
-  .rtl .filter-label {
-    text-align: right;
-  }
 
-  .rtl .filter-select {
-    text-align: right;
-  }
 
-  .rtl .sort-controls {
-    flex-direction: row-reverse;
-  }
 
   .sort-select {
     flex: 1;
@@ -3964,16 +3914,16 @@
 
   .modal-container {
     overflow: scroll;
-    background: var(--surface-card);
-    border-radius: var(--radius-xl);
-    box-shadow: var(--shadow-xl);
+    background: var(--color-surface-2);
+    border-radius: var(--radius-card);
+    box-shadow: var(--shadow-modal);
     width: 100%;
     max-width: 80rem;
     max-height: 95vh;
     display: flex;
     flex-direction: column;
     animation: scaleIn var(--duration-slow) var(--ease-out);
-    border: 1px solid var(--color-gray-200);
+    border: 1px solid var(--color-border);
   }
 
   .modal-header {
@@ -3981,19 +3931,16 @@
     align-items: center;
     justify-content: space-between;
     padding: 1.5rem 2rem;
-    border-bottom: 1px solid var(--color-gray-100);
+    border-bottom: 1px solid var(--color-surface-3);
     background: linear-gradient(
       135deg,
-      var(--color-gray-50) 0%,
-      var(--surface-card) 100%
+      var(--color-surface) 0%,
+      var(--color-surface-2) 100%
     );
-    border-radius: var(--radius-xl) var(--radius-xl) 0 0;
+    border-radius: var(--radius-card) var(--radius-card) 0 0;
     flex-shrink: 0;
   }
 
-  .rtl .modal-header {
-    flex-direction: row-reverse;
-  }
 
   .modal-header-content {
     flex: 1;
@@ -4002,23 +3949,23 @@
   .modal-title {
     font-size: 1.5rem;
     font-weight: 600;
-    color: var(--color-gray-900);
+    color: var(--color-text);
     margin: 0 0 0.25rem 0;
   }
 
   .modal-subtitle {
     font-size: 0.875rem;
-    color: var(--color-gray-500);
+    color: var(--color-text-muted);
     margin: 0;
   }
 
   .modal-close-btn {
     background: none;
     border: none;
-    color: var(--color-gray-500);
+    color: var(--color-text-muted);
     cursor: pointer;
     padding: 0.5rem;
-    border-radius: var(--radius-md);
+    border-radius: var(--radius-control);
     transition: all var(--duration-normal) var(--ease-out);
     display: flex;
     align-items: center;
@@ -4027,8 +3974,8 @@
   }
 
   .modal-close-btn:hover {
-    background: var(--color-gray-100);
-    color: var(--color-gray-700);
+    background: var(--color-surface-3);
+    color: var(--color-text);
     transform: scale(1.05);
   }
 
@@ -4049,20 +3996,20 @@
   }
 
   .section-header {
-    border-bottom: 1px solid var(--color-gray-200);
+    border-bottom: 1px solid var(--color-border);
     padding-bottom: 0.75rem;
   }
 
   .section-title {
     font-size: 1.125rem;
     font-weight: 600;
-    color: var(--color-gray-900);
+    color: var(--color-text);
     margin: 0 0 0.25rem 0;
   }
 
   .section-description {
     font-size: 0.875rem;
-    color: var(--color-gray-500);
+    color: var(--color-text-muted);
     margin: 0;
   }
 
@@ -4071,9 +4018,9 @@
     justify-content: flex-end;
     gap: 0.75rem;
     padding: 1.5rem 2rem;
-    border-top: 1px solid var(--color-gray-100);
-    background: var(--color-gray-50);
-    border-radius: 0 0 var(--radius-xl) var(--radius-xl);
+    border-top: 1px solid var(--color-surface-3);
+    background: var(--color-surface);
+    border-radius: 0 0 var(--radius-card) var(--radius-card);
     flex-shrink: 0;
   }
 
@@ -4081,7 +4028,7 @@
     padding: 0.75rem 1.5rem;
     font-size: 0.875rem;
     font-weight: 600;
-    border-radius: var(--radius-lg);
+    border-radius: var(--radius-card);
     border: none;
     cursor: pointer;
     transition: all var(--duration-normal) var(--ease-out);
@@ -4098,27 +4045,27 @@
   }
 
   .btn-secondary {
-    background: var(--surface-page);
-    color: var(--color-gray-600);
-    border: 2px solid var(--color-gray-200);
+    background: var(--color-surface);
+    color: var(--color-text-muted);
+    border: 2px solid var(--color-border);
   }
 
   .btn-secondary:hover:not(:disabled) {
-    background: var(--color-gray-100);
-    border-color: var(--color-gray-300);
+    background: var(--color-surface-3);
+    border-color: var(--color-border-strong);
     transform: translateY(-1px);
   }
 
   .btn-primary {
-    background: var(--gradient-brand);
+    background: var(--color-primary);
     color: white;
-    box-shadow: var(--shadow-brand);
+    box-shadow: var(--shadow-card);
   }
 
   .btn-primary:hover:not(:disabled) {
-    background: var(--gradient-brand-hover);
+    background: var(--color-primary-hover);
     transform: translateY(-2px);
-    box-shadow: var(--shadow-brand-lg);
+    box-shadow: var(--shadow-modal);
   }
 
   @media (min-width: 640px) {
@@ -4136,9 +4083,6 @@
       justify-content: flex-start;
     }
 
-    .rtl .filter-controls {
-      justify-content: flex-end;
-    }
 
     .results-summary {
       flex-direction: row;
@@ -4165,8 +4109,8 @@
 
   @media (max-width: 768px) {
     .container {
-      padding-left: 1rem;
-      padding-right: 1rem;
+      padding-inline-start: 1rem;
+      padding-inline-end: 1rem;
     }
 
     .search-filter-controls {
@@ -4178,9 +4122,6 @@
       align-items: stretch;
     }
 
-    .rtl .filter-controls {
-      flex-direction: column;
-    }
 
     .filter-group {
       min-width: auto;
@@ -4192,9 +4133,6 @@
       align-items: flex-start;
     }
 
-    .rtl .results-summary {
-      align-items: flex-end;
-    }
 
     .admin-content-card {
       padding: 1rem;
@@ -4207,9 +4145,6 @@
       gap: 0.5rem;
     }
 
-    .rtl .card-header {
-      align-items: flex-end;
-    }
 
     .card-actions {
       align-items: stretch;
@@ -4257,9 +4192,6 @@
       gap: 1rem;
     }
 
-    .rtl .modal-header {
-      align-items: flex-end;
-    }
 
     .modal-header-content {
       flex: none;
@@ -4269,13 +4201,9 @@
     .modal-close-btn {
       position: absolute;
       top: 1rem;
-      right: 1rem;
+      inset-inline-end: 1rem;
     }
 
-    .rtl .modal-close-btn {
-      right: auto;
-      left: 1rem;
-    }
 
     .modal-content {
       padding: 1rem;
@@ -4286,9 +4214,6 @@
       flex-direction: column-reverse;
     }
 
-    .rtl .modal-footer {
-      flex-direction: column;
-    }
 
     .btn {
       width: 100%;
@@ -4300,27 +4225,27 @@
   }
 
   .modal-content::-webkit-scrollbar-track {
-    background: var(--color-gray-100);
+    background: var(--color-surface-3);
     border-radius: 4px;
   }
 
   .modal-content::-webkit-scrollbar-thumb {
-    background: var(--color-gray-300);
+    background: var(--color-border-strong);
     border-radius: 4px;
   }
 
   .modal-content::-webkit-scrollbar-thumb:hover {
-    background: var(--color-gray-400);
+    background: var(--color-text-faint);
   }
 
   /* Bulk Actions Bar */
   .bulk-actions-bar {
-    background: var(--surface-card);
-    border: 1px solid var(--color-gray-200);
-    border-radius: var(--radius-lg);
+    background: var(--color-surface-2);
+    border: 1px solid var(--color-border);
+    border-radius: var(--radius-card);
     padding: 0.875rem 1.25rem;
     margin: 1rem 0;
-    box-shadow: var(--shadow-md);
+    box-shadow: var(--shadow-card);
   }
 
   .bulk-actions-bar.rtl {
@@ -4342,7 +4267,7 @@
   }
 
   .bulk-actions-count {
-    color: var(--color-gray-800);
+    color: var(--color-text);
     font-weight: 600;
     font-size: 0.9375rem;
   }
@@ -4358,7 +4283,7 @@
     align-items: center;
     gap: 0.5rem;
     padding: 0.5rem 1rem;
-    border-radius: var(--radius-md);
+    border-radius: var(--radius-control);
     font-size: 0.875rem;
     font-weight: 500;
     transition: all var(--duration-normal) var(--ease-out);
@@ -4372,47 +4297,47 @@
   }
 
   .bulk-btn-secondary {
-    background-color: var(--color-gray-100);
-    color: var(--color-gray-700);
+    background-color: var(--color-surface-3);
+    color: var(--color-text);
   }
 
   .bulk-btn-secondary:hover:not(:disabled) {
-    background-color: var(--color-gray-200);
+    background-color: var(--color-border);
   }
 
   .bulk-btn-warning {
-    background: linear-gradient(135deg, #f59e0b 0%, #d97706 100%);
+    background: linear-gradient(135deg, var(--color-warning) 0%, var(--color-warning) 100%);
     color: white;
     box-shadow: 0 2px 4px rgba(217, 119, 6, 0.2);
   }
 
   .bulk-btn-warning:hover:not(:disabled) {
-    background: linear-gradient(135deg, #fbbf24 0%, #f59e0b 100%);
+    background: linear-gradient(135deg, var(--color-warning) 0%, var(--color-warning) 100%);
     transform: translateY(-1px);
     box-shadow: 0 4px 8px rgba(217, 119, 6, 0.3);
   }
 
   .bulk-btn-danger {
-    background: linear-gradient(135deg, #ef4444 0%, #dc2626 100%);
+    background: linear-gradient(135deg, var(--color-danger) 0%, var(--color-danger) 100%);
     color: white;
     box-shadow: 0 2px 4px rgba(220, 38, 38, 0.2);
   }
 
   .bulk-btn-danger:hover:not(:disabled) {
-    background: linear-gradient(135deg, #f87171 0%, #ef4444 100%);
+    background: linear-gradient(135deg, var(--color-danger) 0%, var(--color-danger) 100%);
     transform: translateY(-1px);
     box-shadow: 0 4px 8px rgba(220, 38, 38, 0.3);
   }
 
   /* Button styles for modal */
   .btn-warning {
-    background: linear-gradient(135deg, #f59e0b 0%, #d97706 100%);
+    background: linear-gradient(135deg, var(--color-warning) 0%, var(--color-warning) 100%);
     color: white;
     box-shadow: 0 2px 4px rgba(217, 119, 6, 0.2);
   }
 
   .btn-warning:hover:not(:disabled) {
-    background: linear-gradient(135deg, #fbbf24 0%, #f59e0b 100%);
+    background: linear-gradient(135deg, var(--color-warning) 0%, var(--color-warning) 100%);
     transform: translateY(-1px);
     box-shadow: 0 4px 8px rgba(217, 119, 6, 0.3);
   }
@@ -4447,7 +4372,7 @@
     text-transform: uppercase;
     letter-spacing: 0.05em;
     font-weight: 600;
-    color: var(--color-gray-500);
+    color: var(--color-text-muted);
   }
 
   .tag-pills {
@@ -4461,20 +4386,20 @@
     align-items: center;
     gap: 0.375rem;
     padding: 0.375rem 0.75rem;
-    background: var(--surface-card);
-    border: 1px solid var(--color-gray-200);
+    background: var(--color-surface-2);
+    border: 1px solid var(--color-border);
     border-radius: var(--radius-full);
     font-size: 0.875rem;
-    color: var(--color-gray-600);
+    color: var(--color-text-muted);
     font-weight: 500;
     cursor: pointer;
     transition: all var(--duration-fast) var(--ease-out);
-    box-shadow: var(--shadow-xs);
+    box-shadow: var(--shadow-card);
   }
 
   .tag-pill:hover {
-    background: var(--color-gray-50);
-    border-color: var(--color-gray-300);
+    background: var(--color-surface);
+    border-color: var(--color-border-strong);
   }
 
   .tag-pill-active {
@@ -4503,7 +4428,7 @@
     width: 6px;
     height: 6px;
     border-radius: 50%;
-    background: var(--color-gray-300);
+    background: var(--color-border-strong);
   }
 
   .bullet-active {
@@ -4511,8 +4436,8 @@
   }
 
   .tag-count {
-    color: var(--color-gray-400);
-    margin-left: 0.25rem;
+    color: var(--color-text-faint);
+    margin-inline-start: 0.25rem;
     font-size: 0.75rem;
   }
 
@@ -4520,18 +4445,8 @@
     color: var(--color-primary-500);
   }
 
-  .rtl .tags-section {
-    direction: rtl;
-  }
 
-  .rtl .tag-pill {
-    flex-direction: row-reverse;
-  }
 
-  .rtl .tag-count {
-    margin-left: 0;
-    margin-right: 0.25rem;
-  }
 
   /* Bulk Edit Modal Styles */
   .bulk-edit-overlay {
@@ -4565,25 +4480,22 @@
   .bulk-edit-th {
     position: sticky;
     top: 0;
-    background: var(--color-gray-50);
+    background: var(--color-surface);
     padding: 0.875rem 1rem;
-    text-align: left;
+    text-align: start;
     font-weight: 600;
     font-size: 0.75rem;
     text-transform: uppercase;
     letter-spacing: 0.05em;
-    color: var(--color-gray-500);
-    border-bottom: 1px solid var(--color-gray-200);
+    color: var(--color-text-muted);
+    border-bottom: 1px solid var(--color-border);
     white-space: nowrap;
     z-index: 10;
   }
 
-  .rtl .bulk-edit-th {
-    text-align: right;
-  }
 
   .bulk-edit-row {
-    border-bottom: 1px solid var(--color-gray-100);
+    border-bottom: 1px solid var(--color-surface-3);
     transition: background-color var(--duration-fast);
   }
 
@@ -4598,7 +4510,7 @@
   .bulk-edit-td {
     padding: 1rem;
     vertical-align: top;
-    border-bottom: 1px solid var(--color-gray-100);
+    border-bottom: 1px solid var(--color-surface-3);
   }
 
   .localized-inputs {
@@ -4626,8 +4538,8 @@
     display: flex;
     align-items: center;
     justify-content: center;
-    background: var(--color-gray-200);
-    color: var(--color-gray-500);
+    background: var(--color-border);
+    color: var(--color-text-muted);
     font-size: 0.625rem;
     font-weight: 700;
     text-transform: uppercase;
@@ -4643,11 +4555,11 @@
   .bulk-edit-input {
     flex: 1;
     padding: 0.5rem 0.75rem;
-    border: 1px solid var(--color-gray-200);
-    border-radius: var(--radius-md);
+    border: 1px solid var(--color-border);
+    border-radius: var(--radius-control);
     font-size: 0.875rem;
-    color: var(--color-gray-700);
-    background: var(--surface-card);
+    color: var(--color-text);
+    background: var(--color-surface-2);
     transition: all var(--duration-normal) var(--ease-out);
     min-width: 0;
   }
@@ -4659,7 +4571,7 @@
   }
 
   .bulk-edit-input::placeholder {
-    color: var(--color-gray-400);
+    color: var(--color-text-faint);
   }
 
   .bulk-edit-input[type="datetime-local"] {
@@ -4693,7 +4605,7 @@
     position: relative;
     width: 2.75rem;
     height: 1.5rem;
-    background: var(--color-gray-200);
+    background: var(--color-border);
     border-radius: var(--radius-full);
     transition: background-color var(--duration-normal);
     flex-shrink: 0;
@@ -4703,7 +4615,7 @@
     content: "";
     position: absolute;
     top: 0.125rem;
-    left: 0.125rem;
+    inset-inline-start: 0.125rem;
     width: 1.25rem;
     height: 1.25rem;
     background: white;
@@ -4723,7 +4635,7 @@
   .status-toggle-label {
     font-size: 0.875rem;
     font-weight: 500;
-    color: var(--color-gray-700);
+    color: var(--color-text);
   }
 
   /* Tags Editor */
@@ -4754,7 +4666,7 @@
     color: var(--color-primary-700);
     font-size: 0.75rem;
     font-weight: 500;
-    border-radius: var(--radius-sm);
+    border-radius: var(--radius-control);
   }
 
   .edit-tag-remove {
@@ -4762,7 +4674,7 @@
     align-items: center;
     justify-content: center;
     padding: 0.125rem;
-    margin-left: 0.25rem;
+    margin-inline-start: 0.25rem;
     color: var(--color-primary-500);
     background: none;
     border: none;
@@ -4772,7 +4684,7 @@
   }
 
   .edit-tag-remove:hover {
-    color: var(--color-error);
+    color: var(--color-danger);
   }
 
   .tag-input-wrapper {
@@ -4785,15 +4697,15 @@
 
   /* Bulk Edit Button */
   .bulk-btn-primary {
-    background: var(--gradient-brand);
+    background: var(--color-primary);
     color: white;
-    box-shadow: var(--shadow-brand);
+    box-shadow: var(--shadow-card);
   }
 
   .bulk-btn-primary:hover:not(:disabled) {
-    background: var(--gradient-brand-hover);
+    background: var(--color-primary-hover);
     transform: translateY(-1px);
-    box-shadow: var(--shadow-brand-lg);
+    box-shadow: var(--shadow-modal);
   }
 
   /* Responsive Bulk Edit */
@@ -4847,28 +4759,21 @@
     }
   }
 
-  .rtl .localized-input-row {
-    flex-direction: row-reverse;
-  }
 
-  .rtl .edit-tag-remove {
-    margin-left: 0;
-    margin-right: 0.25rem;
-  }
 
   /* Admin header classes */
   .admin-page-title {
-    font-family: var(--font-display);
+    font-family: var(--font-sans);
     font-weight: 700;
     font-size: clamp(1.5rem, 3vw, 1.75rem);
     line-height: 1.2;
     letter-spacing: -0.02em;
-    color: var(--color-gray-900);
+    color: var(--color-text);
   }
 
   .admin-breadcrumb-link {
     font-size: 0.875rem;
-    color: var(--color-gray-400);
+    color: var(--color-text-faint);
     cursor: pointer;
     transition: color var(--duration-fast) var(--ease-out);
   }
@@ -4880,7 +4785,7 @@
   .admin-breadcrumb-current {
     font-size: 0.875rem;
     font-weight: 500;
-    color: var(--color-gray-900);
+    color: var(--color-text);
   }
 
   .admin-stat-card {
@@ -4888,21 +4793,21 @@
     align-items: center;
     padding: 0.5rem 0.75rem;
     gap: 0.5rem;
-    border-radius: var(--radius-xl);
-    border: 1px solid var(--color-gray-100);
-    background: var(--surface-card);
-    box-shadow: var(--shadow-xs);
+    border-radius: var(--radius-card);
+    border: 1px solid var(--color-surface-3);
+    background: var(--color-surface-2);
+    box-shadow: var(--shadow-card);
   }
 
   .admin-stat-label {
     font-size: 0.75rem;
-    color: var(--color-gray-400);
+    color: var(--color-text-faint);
     margin-inline-end: 0.25rem;
   }
 
   .admin-stat-value {
     font-size: 0.8125rem;
     font-weight: 700;
-    color: var(--color-gray-900);
+    color: var(--color-text);
   }
 </style>

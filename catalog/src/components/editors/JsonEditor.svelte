@@ -1,6 +1,7 @@
 <script lang="ts">
   import { untrack } from "svelte";
   import { _ } from "@/i18n";
+  import { confirm } from "@/lib/confirm";
 
   const {
     content = {},
@@ -172,18 +173,19 @@
     newFieldValue = "";
   }
 
-  function removeField(key: any) {
-    if (
-      confirm(
-        $_("json_editor.remove_field_confirm") || `Remove field "${key}"?`
-      )
-    ) {
-      delete jsonData[key];
-      delete fieldTypes[key];
-      jsonData = { ...jsonData };
-      fieldTypes = { ...fieldTypes };
-      onContentChange(jsonData);
-    }
+  async function removeField(key: string) {
+    const confirmed = await confirm({
+      title: $_("json_editor.remove_field_title", { values: { key } }),
+      body: $_("json_editor.remove_field_confirm"),
+      variant: "danger",
+      confirmLabel: $_("ui.remove"),
+    });
+    if (!confirmed) return;
+    delete jsonData[key];
+    delete fieldTypes[key];
+    jsonData = { ...jsonData };
+    fieldTypes = { ...fieldTypes };
+    onContentChange(jsonData);
   }
 
   function changeFieldType(key: any, newType: any) {
@@ -286,7 +288,8 @@
               type="button"
               class="remove-field-btn"
               onclick={() => removeField(key)}
-              title="Remove field"
+              title={$_("json_editor.remove_field")}
+              aria-label={$_("json_editor.remove_field")}
             >
               <svg
                 class="btn-icon"
@@ -339,14 +342,14 @@
               value={formatArrayValue(value)}
               onchange={(e: any) => handleFieldChange(key, (e.target as HTMLInputElement).value, "array")}
               class="field-input-element"
-              placeholder="Enter comma-separated values"
+              placeholder={$_("json_editor.csv_placeholder")}
             />
           {:else if fieldTypes[key] === "object"}
             <textarea
               value={formatObjectValue(value)}
               onchange={(e: any) => handleFieldChange(key, (e.target as HTMLInputElement).value, "object")}
               class="field-textarea"
-              placeholder="Enter JSON object"
+              placeholder={$_("json_editor.object_placeholder")}
               rows="3"
             ></textarea>
           {:else}
@@ -376,7 +379,7 @@
             d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z"
           />
         </svg>
-        <p class="empty-text">No fields available</p>
+        <p class="empty-text">{$_("json_editor.no_fields")}</p>
         <button type="button" class="add-first-field-btn" onclick={openAddFieldModal}>
           Add your first field
         </button>
@@ -394,7 +397,7 @@
         <h3 class="modal-title">
           {$_("json_editor.add_field_title") || "Add New Field"}
         </h3>
-        <button class="modal-close-btn" onclick={closeAddFieldModal} aria-label="Close">
+        <button class="modal-close-btn" onclick={closeAddFieldModal} aria-label={$_("common.close")}>
           <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
             <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12" />
           </svg>
@@ -503,8 +506,8 @@
 
 <style>
   .json-editor {
-    background: #ffffff;
-    border: 1px solid #e5e7eb;
+    background: var(--color-surface-2);
+    border: 1px solid var(--color-border);
     border-radius: 12px;
     padding: 20px;
     min-height: 300px;
@@ -516,7 +519,7 @@
     align-items: center;
     margin-bottom: 20px;
     padding-bottom: 12px;
-    border-bottom: 1px solid #e5e7eb;
+    border-bottom: 1px solid var(--color-border);
   }
 
   .editor-title {
@@ -526,13 +529,13 @@
     margin: 0;
     font-size: 16px;
     font-weight: 600;
-    color: #111827;
+    color: var(--color-text);
   }
 
   .title-icon {
     width: 20px;
     height: 20px;
-    color: #6b7280;
+    color: var(--color-text-muted);
   }
 
   .add-field-btn {
@@ -540,7 +543,7 @@
     align-items: center;
     gap: 6px;
     padding: 8px 14px;
-    background: #3b82f6;
+    background: var(--color-primary);
     color: white;
     border: none;
     border-radius: 8px;
@@ -551,7 +554,7 @@
   }
 
   .add-field-btn:hover {
-    background: #2563eb;
+    background: var(--color-primary-hover);
   }
 
   .btn-icon {
@@ -567,9 +570,9 @@
 
   .field-row {
     padding: 16px;
-    border: 1px solid #e5e7eb;
+    border: 1px solid var(--color-border);
     border-radius: 8px;
-    background: #f9fafb;
+    background: var(--color-surface);
   }
 
   .field-header {
@@ -581,7 +584,7 @@
 
   .field-label {
     font-weight: 500;
-    color: #374151;
+    color: var(--color-text);
     font-size: 14px;
   }
 
@@ -593,16 +596,16 @@
 
   .type-select {
     padding: 4px 8px;
-    border: 1px solid #d1d5db;
+    border: 1px solid var(--color-border-strong);
     border-radius: 6px;
     font-size: 12px;
     background: white;
-    color: #374151;
+    color: var(--color-text);
   }
 
   .remove-field-btn {
     padding: 4px;
-    background: #ef4444;
+    background: var(--color-danger);
     color: white;
     border: none;
     border-radius: 4px;
@@ -611,7 +614,7 @@
   }
 
   .remove-field-btn:hover {
-    background: #dc2626;
+    background: var(--color-danger);
   }
 
   .field-input {
@@ -621,7 +624,7 @@
   .field-input-element {
     width: 100%;
     padding: 10px 12px;
-    border: 1px solid #d1d5db;
+    border: 1px solid var(--color-border-strong);
     border-radius: 6px;
     font-size: 14px;
     transition: border-color 0.2s;
@@ -629,14 +632,14 @@
 
   .field-input-element:focus {
     outline: none;
-    border-color: #3b82f6;
+    border-color: var(--color-primary);
     box-shadow: 0 0 0 3px rgba(59, 130, 246, 0.1);
   }
 
   .field-textarea {
     width: 100%;
     padding: 10px 12px;
-    border: 1px solid #d1d5db;
+    border: 1px solid var(--color-border-strong);
     border-radius: 6px;
     font-size: 14px;
     font-family: "Monaco", "Menlo", "Ubuntu Mono", monospace;
@@ -646,7 +649,7 @@
 
   .field-textarea:focus {
     outline: none;
-    border-color: #3b82f6;
+    border-color: var(--color-primary);
     box-shadow: 0 0 0 3px rgba(59, 130, 246, 0.1);
   }
 
@@ -664,7 +667,7 @@
 
   .checkbox-label {
     font-size: 14px;
-    color: #374151;
+    color: var(--color-text);
   }
 
   .empty-state {
@@ -679,19 +682,19 @@
   .empty-icon {
     width: 48px;
     height: 48px;
-    color: #9ca3af;
+    color: var(--color-text-faint);
     margin-bottom: 12px;
   }
 
   .empty-text {
-    color: #6b7280;
+    color: var(--color-text-muted);
     font-size: 16px;
     margin: 0 0 16px 0;
   }
 
   .add-first-field-btn {
     padding: 10px 20px;
-    background: #3b82f6;
+    background: var(--color-primary);
     color: white;
     border: none;
     border-radius: 8px;
@@ -702,15 +705,15 @@
   }
 
   .add-first-field-btn:hover {
-    background: #2563eb;
+    background: var(--color-primary-hover);
   }
 
   /* Modal Styles */
   .modal-overlay {
     position: fixed;
     top: 0;
-    left: 0;
-    right: 0;
+    inset-inline-start: 0;
+    inset-inline-end: 0;
     bottom: 0;
     background: rgba(0, 0, 0, 0.5);
     display: flex;
@@ -721,7 +724,7 @@
   }
 
   .modal-container {
-    background: #ffffff;
+    background: var(--color-surface-2);
     border-radius: 12px;
     width: 100%;
     max-width: 480px;
@@ -734,14 +737,14 @@
     justify-content: space-between;
     align-items: center;
     padding: 20px 24px;
-    border-bottom: 1px solid #e5e7eb;
-    background: #ffffff;
+    border-bottom: 1px solid var(--color-border);
+    background: var(--color-surface-2);
   }
 
   .modal-title {
     font-size: 18px;
     font-weight: 600;
-    color: #111827;
+    color: var(--color-text);
     margin: 0;
   }
 
@@ -752,21 +755,21 @@
     width: 32px;
     height: 32px;
     border: none;
-    background: #f3f4f6;
-    color: #6b7280;
+    background: var(--color-surface-3);
+    color: var(--color-text-muted);
     border-radius: 8px;
     cursor: pointer;
     transition: all 0.2s;
   }
 
   .modal-close-btn:hover {
-    background: #e5e7eb;
-    color: #374151;
+    background: var(--color-border);
+    color: var(--color-text);
   }
 
   .modal-body {
     padding: 24px;
-    background: #ffffff;
+    background: var(--color-surface-2);
   }
 
   .form-field {
@@ -781,42 +784,42 @@
     display: block;
     font-size: 14px;
     font-weight: 500;
-    color: #374151;
+    color: var(--color-text);
     margin-bottom: 8px;
   }
 
   .value-hint {
     font-size: 12px;
     font-weight: 400;
-    color: #6b7280;
-    margin-left: 4px;
+    color: var(--color-text-muted);
+    margin-inline-start: 4px;
   }
 
   .field-input {
     width: 100%;
     padding: 10px 14px;
-    border: 1px solid #d1d5db;
+    border: 1px solid var(--color-border-strong);
     border-radius: 8px;
     font-size: 14px;
-    color: #111827;
-    background: #ffffff;
+    color: var(--color-text);
+    background: var(--color-surface-2);
     transition: border-color 0.2s, box-shadow 0.2s;
   }
 
   .field-input:focus {
     outline: none;
-    border-color: #3b82f6;
+    border-color: var(--color-primary);
     box-shadow: 0 0 0 3px rgba(59, 130, 246, 0.1);
   }
 
   .field-textarea {
     width: 100%;
     padding: 10px 14px;
-    border: 1px solid #d1d5db;
+    border: 1px solid var(--color-border-strong);
     border-radius: 8px;
     font-size: 14px;
-    color: #111827;
-    background: #ffffff;
+    color: var(--color-text);
+    background: var(--color-surface-2);
     font-family: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace;
     resize: vertical;
     transition: border-color 0.2s, box-shadow 0.2s;
@@ -824,7 +827,7 @@
 
   .field-textarea:focus {
     outline: none;
-    border-color: #3b82f6;
+    border-color: var(--color-primary);
     box-shadow: 0 0 0 3px rgba(59, 130, 246, 0.1);
   }
 
@@ -836,11 +839,11 @@
   .custom-select {
     width: 100%;
     padding: 10px 40px 10px 14px;
-    border: 1px solid #d1d5db;
+    border: 1px solid var(--color-border-strong);
     border-radius: 8px;
     font-size: 14px;
-    color: #111827;
-    background: #ffffff;
+    color: var(--color-text);
+    background: var(--color-surface-2);
     cursor: pointer;
     appearance: none;
     -webkit-appearance: none;
@@ -850,27 +853,27 @@
 
   .custom-select:focus {
     outline: none;
-    border-color: #3b82f6;
+    border-color: var(--color-primary);
     box-shadow: 0 0 0 3px rgba(59, 130, 246, 0.1);
   }
 
   .select-arrow {
     position: absolute;
-    right: 12px;
+    inset-inline-end: 12px;
     top: 50%;
     transform: translateY(-50%);
     width: 16px;
     height: 16px;
-    color: #6b7280;
+    color: var(--color-text-muted);
     pointer-events: none;
   }
 
   .error-message {
     padding: 10px 14px;
-    background: #fef2f2;
-    border: 1px solid #fecaca;
+    background: var(--color-danger-soft);
+    border: 1px solid var(--color-danger-soft);
     border-radius: 8px;
-    color: #dc2626;
+    color: var(--color-danger);
     font-size: 13px;
     font-weight: 500;
   }
@@ -881,8 +884,8 @@
     justify-content: flex-end;
     gap: 12px;
     padding: 16px 24px;
-    border-top: 1px solid #e5e7eb;
-    background: #f9fafb;
+    border-top: 1px solid var(--color-border);
+    background: var(--color-surface);
   }
 
   .btn {
@@ -899,22 +902,22 @@
   }
 
   .btn-cancel {
-    background: #ffffff;
-    color: #374151;
-    border: 1px solid #d1d5db;
+    background: var(--color-surface-2);
+    color: var(--color-text);
+    border: 1px solid var(--color-border-strong);
   }
 
   .btn-cancel:hover {
-    background: #f9fafb;
-    border-color: #9ca3af;
+    background: var(--color-surface);
+    border-color: var(--color-text-faint);
   }
 
   .btn-add {
-    background: #3b82f6;
-    color: #ffffff;
+    background: var(--color-primary);
+    color: var(--color-surface-2);
   }
 
   .btn-add:hover {
-    background: #2563eb;
+    background: var(--color-primary-hover);
   }
 </style>

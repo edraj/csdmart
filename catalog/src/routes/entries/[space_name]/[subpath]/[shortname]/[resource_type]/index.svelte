@@ -8,7 +8,6 @@
     createReaction,
     deleteEntity,
     deleteReactionComment,
-    getAvatar,
     getEntity,
   } from "@/lib/dmart_services";
   import { formatNumberInText } from "@/lib/helpers";
@@ -36,20 +35,17 @@
     TrashBinSolid,
     UserCircleOutline,
   } from "flowbite-svelte-icons";
-  import { _, locale, isRTL } from "@/i18n";
+  import { _, locale } from "@/i18n";
   import { formatDate } from "@/lib/format";
-  import { marked } from "marked";
+  import { renderMarkdown } from "@/lib/markdown";
+  import { confirm } from "@/lib/confirm";
   import JsonViewer from "@/components/JsonViewer.svelte";
-  import { mangle } from "marked-mangle";
-  import { gfmHeadingId } from "marked-gfm-heading-id";
   import { getTemplate } from "@/lib/dmart_services/templates";
-
-  marked.use(mangle());
-  marked.use(
-    gfmHeadingId({
-      prefix: "my-prefix-",
-    }),
-  );
+  import { getAvatarsCached } from "@/lib/dmart_services/avatars";
+  import { setTitle } from "@/lib/title";
+  import { log } from "@/lib/logger";
+  import LoadingState from "@/components/ui/LoadingState.svelte";
+  import ErrorState from "@/components/ui/ErrorState.svelte";
 
   // Routify's helpers read the fragment context when first subscribed, and
   // Svelte 5 subscribes to a `$store` lazily on first read — so a `$gotoStore`
@@ -63,6 +59,12 @@
   let isOwner = $state(false);
   let userReactionEntry: any = $state(null);
   let counts: any = $state({});
+  // One cached lookup per distinct commenter instead of an {#await} per row.
+  let commentAvatars = $state<Map<string, string | null>>(new Map());
+
+  $effect(() => {
+    if (entity) setTitle(getLocalizedDisplayName(entity), $params.space_name);
+  });
   
   // Template rendering state
   let templateRenderedContent = $state("");
@@ -174,15 +176,14 @@
   }
 
   async function handleDeleteItem(entity: any) {
-    if (
-      !confirm(
-        $_("admin_item_detail.confirm.delete_item", {
-          values: { name: entity.shortname },
-        }),
-      )
-    ) {
-      return;
-    }
+    const confirmed = await confirm({
+      title: $_("admin_item_detail.delete_modal.title"),
+      body: $_("admin_item_detail.delete_modal.message", {
+        values: { name: entity.shortname },
+      }),
+      variant: "danger",
+    });
+    if (!confirmed) return;
 
     try {
       const success = await deleteEntity(
@@ -196,7 +197,7 @@
         goto("/entries");
       }
     } catch (err) {
-      console.error("Error deleting item:", err);
+      log.error("Error deleting item:", err);
     }
   }
 
@@ -215,6 +216,9 @@
         comment: entity.attachments?.comment?.length || 0,
         media: entity.attachments?.media?.length || 0,
       };
+
+      const commenters = (entity.attachments?.comment ?? []).map((c: any) => c.attributes?.owner_shortname);
+      commentAvatars = await getAvatarsCached(commenters);
 
       userReactionEntry = await checkCurrentUserReactedIdea(
         $user.shortname ?? "",
@@ -270,7 +274,7 @@
       }
       
       if (!template) {
-        templateError = `Template "${templateShortname}" not found`;
+        templateError = $_("entry_detail.template.not_found", { values: { name: templateShortname } });
         templateRenderedContent = "";
         return;
       }
@@ -282,13 +286,13 @@
       const renderedContent = renderTemplateWithData(content, templateData);
       
       // Parse markdown to HTML
-      templateRenderedContent = await marked.parse(renderedContent) as string;
+      templateRenderedContent = renderMarkdown(renderedContent);
       
       // Mark this template as loaded to prevent duplicate loads
       loadedTemplateKey = keyToUse;
     } catch (err) {
-      console.error("Error loading template:", err);
-      templateError = "Failed to load template content";
+      log.error("Error loading template:", err);
+      templateError = $_("entry_detail.template.load_failed");
     } finally {
       isLoadingTemplate = false;
     }
@@ -388,7 +392,7 @@
     if (contentType === "html") {
       return typeof body === "string" ? body : String(body);
     } else if (contentType === "markdown" || contentType === "md") {
-      return typeof body === "string" ? marked(body) : marked(String(body));
+      return renderMarkdown(typeof body === "string" ? body : String(body));
     } else if (contentType === "json") {
       // Return a placeholder for JSON - will be rendered by JsonViewer
       return "__JSON_CONTENT__";
@@ -406,14 +410,13 @@
 </script>
 
 {#if isLoadingPage}
-  <div class="loading-container">
-    <div class="loading-content">
-      <div class="spinner spinner-lg"></div>
-      <p class="loading-text">{$_("entry_detail.loading")}</p>
+  <div class="page-container">
+    <div class="content-wrapper">
+      <LoadingState label={$_("entry_detail.loading")} />
     </div>
   </div>
 {:else if entity}
-  <div class="page-container" class:rtl={$isRTL}>
+  <div class="page-container">
     <div class="content-wrapper">
       <BreadcrumbNavigation
         breadcrumbs={catalogBreadcrumbs({
@@ -428,20 +431,12 @@
 
       {#if isOwner}
         <div class="entry-actions">
-          <button
-            aria-label={$_("entry_detail.navigation.edit_entry")}
-            class="edit-button mx-2"
-            onclick={() => handleEdit(entity)}
-          >
-            <EditOutline class="w-4 h-4" />
+          <button type="button" class="app-btn app-btn-secondary app-btn-sm" onclick={() => handleEdit(entity)}>
+            <EditOutline size="sm" aria-hidden="true" />
             {$_("entry_detail.edit_entry")}
           </button>
-          <button
-            aria-label={$_("entry_detail.navigation.edit_entry")}
-            class="delete-button mx-2"
-            onclick={() => handleDeleteItem(entity)}
-          >
-            <TrashBinOutline class="w-4 h-4" />
+          <button type="button" class="app-btn app-btn-danger app-btn-sm" onclick={() => handleDeleteItem(entity)}>
+            <TrashBinOutline size="sm" aria-hidden="true" />
             {$_("entry_detail.delete_entry")}
           </button>
         </div>
@@ -459,7 +454,7 @@
             {/key}
           {/if}
         </div>
-        <div class="status-info" class:text-right={$isRTL}>
+        <div class="status-info">
           <div class="status-header">
             <span class="status-badge {getStatusInfo(entity).class}">
               {getStatusInfo(entity).text}
@@ -478,20 +473,20 @@
       <!-- Main Content -->
       <div class="main-card">
         <!-- Title -->
-        <h1 class="entry-title" class:text-right={$isRTL}>
+        <h1 class="entry-title">
           {getLocalizedDisplayName(entity)}
         </h1>
 
         <!-- Tags -->
         {#if entity.tags && entity.tags.length > 0}
           <div class="tags-section">
-            <h3 class="section-title" class:flex-row-reverse={$isRTL}>
+            <h3 class="section-title">
               <TagOutline class="w-5 h-5" />
               {$_("entry_detail.tags")}
             </h3>
-            <div class="tags-container" class:flex-row-reverse={$isRTL}>
+            <div class="tags-container">
               {#each entity.tags as tag (tag)}
-                <span class="tag" class:flex-row-reverse={$isRTL}>
+                <span class="tag">
                   <TagOutline class="w-3 h-3" />
                   {tag}
                 </span>
@@ -503,16 +498,15 @@
         <!-- Relationships -->
         {#if entity.relationships && entity.relationships.length > 0}
           <div class="relationships-section">
-            <h3 class="section-title" class:flex-row-reverse={$isRTL}>
+            <h3 class="section-title">
               <UserCircleOutline class="w-5 h-5" />
               {$_("entry_detail.contributors")}
             </h3>
             <div
               class="relationships-container"
-              class:flex-row-reverse={$isRTL}
             >
               {#each entity.relationships as relationship, i (i)}
-                <div class="relationship-item" class:flex-row-reverse={$isRTL}>
+                <div class="relationship-item">
                   <span class="relationship-role"
                     >{relationship.attributes.relation}:</span
                   >
@@ -526,18 +520,15 @@
         {/if}
 
         <!-- Content -->
-        <div class="entry-content prose max-w-none" class:text-right={$isRTL}>
+        <div class="entry-content prose max-w-none">
           {#if isTemplateEntry}
             {#if isLoadingTemplate}
-              <div class="template-loading">
-                <div class="spinner"></div>
-                <span>Loading template...</span>
-              </div>
+              <LoadingState label={$_("entry_detail.template.loading")} />
             {:else if templateError}
               <div class="template-error">
-                <p class="error-message">{templateError}</p>
+                <ErrorState compact message={templateError} />
                 <div class="fallback-data">
-                  <h4>Template: {entity.payload.body.template}</h4>
+                  <h4>{$_("templates._val")}: {entity.payload.body.template}</h4>
                   <dl>
                     {#each Object.entries(entity.payload.body.data || {}) as [key, value] (key)}
                       <dt>{key}:</dt>
@@ -565,7 +556,7 @@
         <!-- Attachments -->
         {#if entity.attachments.media && entity.attachments.media.length > 0}
           <div class="attachments-section">
-            <h3 class="section-title" class:flex-row-reverse={$isRTL}>
+            <h3 class="section-title">
               {$_("entry_detail.attachments")}
             </h3>
             <Attachments
@@ -639,7 +630,7 @@
                   xmlns:xlink="http://www.w3.org/1999/xlink"
                   viewBox="0 0 512 512"
                   xml:space="preserve"
-                  fill="#000000"
+                  fill="var(--color-text)"
                 >
                   <g id="SVGRepo_bgCarrier" stroke-width="0"></g>
                   <g
@@ -649,23 +640,23 @@
                   ></g>
                   <g id="SVGRepo_iconCarrier">
                     <polygon
-                      style="fill:#5EBAE7;"
+                      style="fill:var(--color-primary);"
                       points="490.452,21.547 16.92,235.764 179.068,330.053 179.068,330.053 "
                     ></polygon>
                     <polygon
-                      style="fill:#36A9E1;"
+                      style="fill:var(--color-primary-hover);"
                       points="490.452,21.547 276.235,495.079 179.068,330.053 179.068,330.053 "
                     ></polygon>
                     <rect
                       x="257.137"
                       y="223.122"
                       transform="matrix(-0.7071 -0.7071 0.7071 -0.7071 277.6362 609.0793)"
-                      style="fill:#FFFFFF;"
+                      style="fill:var(--color-surface-2);"
                       width="15.652"
                       height="47.834"
                     ></rect>
                     <path
-                      style="fill:#1D1D1B;"
+                      style="fill:var(--color-text);"
                       d="M0,234.918l174.682,102.4L277.082,512L512,0L0,234.918z M275.389,478.161L190.21,332.858 l52.099-52.099l-11.068-11.068l-52.099,52.099L33.839,236.612L459.726,41.205L293.249,207.682l11.068,11.068L470.795,52.274 L275.389,478.161z"
                     ></path>
                   </g>
@@ -681,9 +672,7 @@
             {#each entity.attachments.comment as reply (reply.shortname)}
               <div class="comment-item">
                 <div class="comment-avatar">
-                  {#await getAvatar(reply.attributes.owner_shortname) then avatar}
-                    <Avatar src={avatar ?? undefined} size="40" />
-                  {/await}
+                  <Avatar src={commentAvatars.get(reply.attributes.owner_shortname)} size="40" />
                 </div>
                 <div class="comment-content">
                   <div class="comment-header">
@@ -702,12 +691,7 @@
                         class="delete-comment"
                         onclick={() => deleteComment(reply.shortname)}
                       >
-                        <TrashBinSolid
-                          aria-label={$_(
-                            "entry_detail.comments.delete_comment",
-                          )}
-                          class="w-3 h-3"
-                        />
+                        <TrashBinSolid class="w-3 h-3" aria-hidden="true" />
                       </button>
                     {/if}
                   </div>
@@ -735,34 +719,22 @@
     </div>
   </div>
 {:else}
-  <div class="error-container">
-    <div class="error-content">
-      <div class="error-icon">
-        <CloseCircleSolid class="w-12 h-12" />
-      </div>
-      <h2 class="error-title">{$_("entry_detail.error.not_found_title")}</h2>
-      <p class="error-message">
-        {$_("entry_detail.error.not_found_message")}
-      </p>
-      <button
-        class="error-button"
-        onclick={() =>
-          goto(`/catalogs/${$params.space_name}/${$params.subpath}`)}
-      >
-        {$_("entry_detail.back_to_folder") || "Back to folder"}
-      </button>
+  <div class="page-container">
+    <div class="content-wrapper">
+      <ErrorState title={$_("entry_detail.error.not_found_title")} message={$_("entry_detail.error.not_found_message")}>
+        <button type="button" class="app-btn app-btn-secondary app-btn-sm" onclick={() => goto(`/catalogs/${$params.space_name}/${$params.subpath}`)}>
+          {$_("entry_detail.back_to_folder")}
+        </button>
+      </ErrorState>
     </div>
   </div>
 {/if}
 
 <style>
-  .rtl {
-    direction: rtl;
-  }
 
   .page-container {
     min-height: 100vh;
-    background: linear-gradient(135deg, #f8fafc 0%, #e2e8f0 100%);
+    background: linear-gradient(135deg, var(--color-surface) 0%, var(--color-border) 100%);
     padding: 2rem 1rem;
   }
 
@@ -776,7 +748,7 @@
     display: flex;
     align-items: center;
     justify-content: center;
-    background: linear-gradient(135deg, #f8fafc 0%, #e2e8f0 100%);
+    background: linear-gradient(135deg, var(--color-surface) 0%, var(--color-border) 100%);
   }
 
   .loading-content {
@@ -784,7 +756,7 @@
   }
 
   .loading-text {
-    color: #64748b;
+    color: var(--color-text-muted);
     margin-top: 1rem;
     font-size: 1.125rem;
   }
@@ -808,18 +780,18 @@
     gap: 0.5rem;
     padding: 0.75rem 1.5rem;
     background: white;
-    border: 1px solid #e2e8f0;
+    border: 1px solid var(--color-border);
     border-radius: 12px;
-    color: #64748b;
+    color: var(--color-text-muted);
     font-weight: 500;
     transition: all 0.2s ease;
     cursor: pointer;
   }
 
   .back-button:hover {
-    background: #f8fafc;
-    border-color: #cbd5e1;
-    color: #475569;
+    background: var(--color-surface);
+    border-color: var(--color-border-strong);
+    color: var(--color-text-muted);
   }
 
   .edit-button {
@@ -827,7 +799,7 @@
     align-items: center;
     gap: 0.5rem;
     padding: 0.75rem 1.5rem;
-    background: linear-gradient(135deg, #3b82f6 0%, #1d4ed8 100%);
+    background: linear-gradient(135deg, var(--color-primary) 0%, var(--color-primary-hover) 100%);
     border: none;
     border-radius: 12px;
     color: white;
@@ -837,7 +809,7 @@
   }
 
   .edit-button:hover {
-    background: linear-gradient(135deg, #1d4ed8 0%, #1e40af 100%);
+    background: linear-gradient(135deg, var(--color-primary-hover) 0%, var(--color-info) 100%);
     transform: translateY(-1px);
   }
 
@@ -847,7 +819,7 @@
     justify-content: center;
     gap: 0.5rem;
     padding: 0.75rem 1.5rem;
-    background: linear-gradient(135deg, #ef4444 0%, #b91c1c 100%);
+    background: linear-gradient(135deg, var(--color-danger) 0%, var(--color-danger-hover) 100%);
     border: none;
     border-radius: 12px;
     color: white;
@@ -857,7 +829,7 @@
   }
 
   .delete-button:hover {
-    background: linear-gradient(135deg, #dc2626 0%, #991b1b 100%);
+    background: linear-gradient(135deg, var(--color-danger) 0%, var(--color-danger) 100%);
     transform: translateY(-1px);
   }
 
@@ -882,9 +854,9 @@
     display: flex;
     align-items: center;
     justify-content: center;
-    background: #f1f5f9;
+    background: var(--color-surface-3);
     border-radius: 12px;
-    color: #3b82f6;
+    color: var(--color-primary);
   }
 
   .status-info {
@@ -906,37 +878,37 @@
   }
 
   .status-draft {
-    background: #f1f5f9;
-    color: #475569;
+    background: var(--color-surface-3);
+    color: var(--color-text-muted);
   }
 
   .status-pending {
-    background: #fef3c7;
-    color: #d97706;
+    background: var(--color-warning-soft);
+    color: var(--color-warning);
   }
 
   .status-published {
-    background: #d1fae5;
-    color: #059669;
+    background: var(--color-success-soft);
+    color: var(--color-success);
   }
 
   .status-rejected {
-    background: #fecaca;
-    color: #dc2626;
+    background: var(--color-danger-soft);
+    color: var(--color-danger);
   }
 
   .status-active {
-    background: #dbeafe;
-    color: #2563eb;
+    background: var(--color-info-soft);
+    color: var(--color-primary-hover);
   }
 
   .created-date {
     font-size: 0.875rem;
-    color: #64748b;
+    color: var(--color-text-muted);
   }
 
   .status-description {
-    color: #64748b;
+    color: var(--color-text-muted);
     font-size: 0.875rem;
     line-height: 1.4;
   }
@@ -952,7 +924,7 @@
   .entry-title {
     font-size: 2.25rem;
     font-weight: 700;
-    color: #1e293b;
+    color: var(--color-text);
     margin-bottom: 1.5rem;
     line-height: 1.2;
   }
@@ -963,7 +935,7 @@
     align-items: center;
     gap: 1.5rem;
     padding-bottom: 1.5rem;
-    border-bottom: 1px solid #e2e8f0;
+    border-bottom: 1px solid var(--color-border);
     margin-bottom: 2rem;
   }
 
@@ -971,7 +943,7 @@
     display: flex;
     align-items: center;
     gap: 0.5rem;
-    color: #64748b;
+    color: var(--color-text-muted);
   }
 
   .meta-text {
@@ -982,7 +954,7 @@
     display: flex;
     align-items: center;
     gap: 1rem;
-    margin-left: auto;
+    margin-inline-start: auto;
   }
 
   .stat-item {
@@ -992,11 +964,11 @@
   }
 
   .stat-item.likes {
-    color: #ef4444;
+    color: var(--color-danger);
   }
 
   .stat-item.comments {
-    color: #3b82f6;
+    color: var(--color-primary);
   }
 
   .stat-count {
@@ -1013,7 +985,7 @@
     gap: 0.5rem;
     font-size: 1.125rem;
     font-weight: 600;
-    color: #1e293b;
+    color: var(--color-text);
     margin-bottom: 1rem;
   }
 
@@ -1028,18 +1000,18 @@
     align-items: center;
     gap: 0.25rem;
     padding: 0.5rem 0.75rem;
-    background: #f1f5f9;
-    color: #3b82f6;
+    background: var(--color-surface-3);
+    color: var(--color-primary);
     border-radius: 20px;
     font-size: 0.875rem;
     font-weight: 500;
-    border: 1px solid #e2e8f0;
+    border: 1px solid var(--color-border);
   }
 
   .entry-content {
     margin-bottom: 2rem;
     line-height: 1.7;
-    color: #374151;
+    color: var(--color-text);
   }
 
   .entry-content :global(h1),
@@ -1048,7 +1020,7 @@
   .entry-content :global(h4),
   .entry-content :global(h5),
   .entry-content :global(h6) {
-    color: #1e293b;
+    color: var(--color-text);
     font-weight: 600;
     margin-top: 2rem;
     margin-bottom: 1rem;
@@ -1059,23 +1031,23 @@
   }
 
   .entry-content :global(a) {
-    color: #3b82f6;
+    color: var(--color-primary);
     text-decoration: underline;
   }
 
   .entry-content :global(blockquote) {
-    border-left: 4px solid #3b82f6;
-    padding-left: 1rem;
+    border-inline-start: 4px solid var(--color-primary);
+    padding-inline-start: 1rem;
     margin: 1.5rem 0;
     font-style: italic;
-    color: #64748b;
+    color: var(--color-text-muted);
   }
 
   /* Enhanced markdown styles */
   .entry-content :global(ul),
   .entry-content :global(ol) {
     margin: 0.75rem 0;
-    padding-left: 1.5rem;
+    padding-inline-start: 1.5rem;
   }
 
   .entry-content :global(li) {
@@ -1083,7 +1055,7 @@
   }
 
   .entry-content :global(code) {
-    background: #f3f4f6;
+    background: var(--color-surface-3);
     padding: 0.125rem 0.25rem;
     border-radius: 0.25rem;
     font-family: "uthmantn", "Monaco", "Menlo", "Ubuntu Mono", monospace;
@@ -1091,8 +1063,8 @@
   }
 
   .entry-content :global(pre) {
-    background: #1f2937;
-    color: #f9fafb;
+    background: var(--color-text);
+    color: var(--color-surface);
     padding: 1rem;
     border-radius: 0.5rem;
     overflow-x: auto;
@@ -1114,12 +1086,12 @@
   .entry-content :global(th),
   .entry-content :global(td) {
     padding: 0.5rem 0.75rem;
-    border: 1px solid #d1d5db;
-    text-align: left;
+    border: 1px solid var(--color-border-strong);
+    text-align: start;
   }
 
   .entry-content :global(th) {
-    background: #f9fafb;
+    background: var(--color-surface);
     font-weight: 600;
   }
 
@@ -1149,13 +1121,13 @@
   }
 
   .attachments-section {
-    border-top: 1px solid #e2e8f0;
+    border-top: 1px solid var(--color-border);
     padding-top: 2rem;
     margin-bottom: 2rem;
   }
 
   .actions-section {
-    border-top: 1px solid #e2e8f0;
+    border-top: 1px solid var(--color-border);
     padding-top: 1.5rem;
   }
 
@@ -1165,29 +1137,29 @@
     gap: 0.5rem;
     padding: 0.75rem 1.5rem;
     background: white;
-    border: 1px solid #e2e8f0;
+    border: 1px solid var(--color-border);
     border-radius: 12px;
-    color: #64748b;
+    color: var(--color-text-muted);
     font-weight: 500;
     transition: all 0.2s ease;
     cursor: pointer;
   }
 
   .like-button:hover {
-    background: #fef2f2;
-    border-color: #fecaca;
-    color: #ef4444;
+    background: var(--color-danger-soft);
+    border-color: var(--color-danger-soft);
+    color: var(--color-danger);
   }
 
   .like-button.liked {
-    background: #ef4444;
-    border-color: #ef4444;
+    background: var(--color-danger);
+    border-color: var(--color-danger);
     color: white;
   }
 
   .like-button.liked:hover {
-    background: #dc2626;
-    border-color: #dc2626;
+    background: var(--color-danger);
+    border-color: var(--color-danger);
   }
 
   .like-button:disabled {
@@ -1208,12 +1180,12 @@
     gap: 0.5rem;
     font-size: 1.5rem;
     font-weight: 700;
-    color: #1e293b;
+    color: var(--color-text);
     margin-bottom: 1.5rem;
   }
 
   .comment-form {
-    background: #f8fafc;
+    background: var(--color-surface);
     border-radius: 12px;
     padding: 1.5rem;
     margin-bottom: 2rem;
@@ -1239,24 +1211,21 @@
   .comment-input {
     flex: 1;
     padding: 0.75rem;
-    border: 1px solid #e2e8f0;
+    border: 1px solid var(--color-border);
     border-radius: 8px;
     transition: border-color 0.2s ease;
   }
 
   /* RTL support for comment input */
-  .rtl .comment-input {
-    text-align: right;
-  }
 
   .comment-input:focus {
     outline: none;
-    border-color: #3b82f6;
+    border-color: var(--color-primary);
   }
 
   .comment-submit {
     padding: 0.75rem;
-    background: linear-gradient(135deg, #3b82f6 0%, #1d4ed8 100%);
+    background: linear-gradient(135deg, var(--color-primary) 0%, var(--color-primary-hover) 100%);
     border: none;
     border-radius: 8px;
     color: white;
@@ -1267,7 +1236,7 @@
   }
 
   .comment-submit:hover {
-    background: linear-gradient(135deg, #1d4ed8 0%, #1e40af 100%);
+    background: linear-gradient(135deg, var(--color-primary-hover) 0%, var(--color-info) 100%);
   }
 
   .comment-submit:disabled {
@@ -1285,9 +1254,9 @@
     display: flex;
     gap: 1rem;
     padding: 1.5rem;
-    background: #f8fafc;
+    background: var(--color-surface);
     border-radius: 12px;
-    border: 1px solid #e2e8f0;
+    border: 1px solid var(--color-border);
   }
 
   .comment-content {
@@ -1303,45 +1272,41 @@
 
   .comment-author {
     font-weight: 600;
-    color: #1e293b;
+    color: var(--color-text);
   }
 
   .comment-date {
     font-size: 0.875rem;
-    color: #64748b;
+    color: var(--color-text-muted);
   }
 
   .delete-comment {
     padding: 0.25rem;
-    background: #fef2f2;
-    border: 1px solid #fecaca;
+    background: var(--color-danger-soft);
+    border: 1px solid var(--color-danger-soft);
     border-radius: 6px;
-    color: #ef4444;
+    color: var(--color-danger);
     cursor: pointer;
     transition: all 0.2s ease;
-    margin-left: auto;
+    margin-inline-start: auto;
   }
 
   /* RTL support for delete button */
-  .rtl .delete-comment {
-    margin-left: 0;
-    margin-right: auto;
-  }
 
   .delete-comment:hover {
-    background: #fee2e2;
-    border-color: #fca5a5;
+    background: var(--color-danger-soft);
+    border-color: var(--color-danger-soft);
   }
 
   .comment-text {
-    color: #374151;
+    color: var(--color-text);
     line-height: 1.6;
   }
 
   .no-comments {
     text-align: center;
     padding: 3rem 1rem;
-    color: #64748b;
+    color: var(--color-text-muted);
   }
 
   .no-comments-icon {
@@ -1364,7 +1329,7 @@
     display: flex;
     align-items: center;
     justify-content: center;
-    background: linear-gradient(135deg, #f8fafc 0%, #e2e8f0 100%);
+    background: linear-gradient(135deg, var(--color-surface) 0%, var(--color-border) 100%);
   }
 
   .error-content {
@@ -1375,31 +1340,31 @@
   .error-icon {
     width: 96px;
     height: 96px;
-    background: #fef2f2;
+    background: var(--color-danger-soft);
     border-radius: 50%;
     display: flex;
     align-items: center;
     justify-content: center;
     margin: 0 auto 1.5rem;
-    color: #ef4444;
+    color: var(--color-danger);
   }
 
   .error-title {
     font-size: 1.5rem;
     font-weight: 700;
-    color: #1e293b;
+    color: var(--color-text);
     margin-bottom: 0.75rem;
   }
 
   .error-message {
-    color: #64748b;
+    color: var(--color-text-muted);
     margin-bottom: 1.5rem;
     max-width: 400px;
   }
 
   .error-button {
     padding: 0.75rem 1.5rem;
-    background: linear-gradient(135deg, #3b82f6 0%, #1d4ed8 100%);
+    background: linear-gradient(135deg, var(--color-primary) 0%, var(--color-primary-hover) 100%);
     border: none;
     border-radius: 12px;
     color: white;
@@ -1409,7 +1374,7 @@
   }
 
   .error-button:hover {
-    background: linear-gradient(135deg, #1d4ed8 0%, #1e40af 100%);
+    background: linear-gradient(135deg, var(--color-primary-hover) 0%, var(--color-info) 100%);
     transform: translateY(-1px);
   }
 
@@ -1429,16 +1394,16 @@
     align-items: center;
     gap: 0.5rem;
     padding: 0.5rem 0.75rem;
-    background: #f1f5f9;
-    color: #475569;
+    background: var(--color-surface-3);
+    color: var(--color-text-muted);
     border-radius: 20px;
     font-size: 0.875rem;
-    border: 1px solid #e2e8f0;
+    border: 1px solid var(--color-border);
   }
 
   .relationship-role {
     font-weight: 600;
-    color: #3b82f6;
+    color: var(--color-primary);
   }
 
   .relationship-name {
@@ -1480,7 +1445,7 @@
     }
 
     .engagement-stats {
-      margin-left: 0;
+      margin-inline-start: 0;
       justify-content: center;
     }
 
@@ -1508,32 +1473,19 @@
     justify-content: center;
     gap: 0.75rem;
     padding: 2rem;
-    color: #6b7280;
+    color: var(--color-text-muted);
   }
 
-  .template-loading .spinner {
-    width: 1.5rem;
-    height: 1.5rem;
-    border: 2px solid #e5e7eb;
-    border-top-color: #3b82f6;
-    border-radius: 50%;
-    animation: spin 1s linear infinite;
-  }
 
 
   .template-error {
     padding: 1rem;
   }
 
-  .template-error .error-message {
-    color: #dc2626;
-    font-weight: 500;
-    margin-bottom: 1rem;
-  }
 
   .template-error .fallback-data {
-    background: #f9fafb;
-    border: 1px solid #e5e7eb;
+    background: var(--color-surface);
+    border: 1px solid var(--color-border);
     padding: 1rem;
     border-radius: 0.5rem;
     margin-bottom: 1rem;
@@ -1541,7 +1493,7 @@
 
   .template-error .fallback-data h4 {
     margin: 0 0 0.75rem 0;
-    color: #374151;
+    color: var(--color-text);
     font-size: 1rem;
   }
 
@@ -1551,21 +1503,21 @@
 
   .template-error .fallback-data dt {
     font-weight: 600;
-    color: #4b5563;
+    color: var(--color-text-muted);
     margin-top: 0.5rem;
   }
 
   .template-error .fallback-data dd {
-    margin-left: 0;
-    color: #6b7280;
+    margin-inline-start: 0;
+    color: var(--color-text-muted);
     margin-top: 0.25rem;
   }
 
   .template-error .fallback-content {
-    background: #f3f4f6;
+    background: var(--color-surface-3);
     padding: 1rem;
     border-radius: 0.5rem;
     font-size: 0.875rem;
-    color: #6b7280;
+    color: var(--color-text-muted);
   }
 </style>

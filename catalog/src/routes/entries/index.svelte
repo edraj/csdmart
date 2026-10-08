@@ -1,882 +1,319 @@
 <script lang="ts">
   import { onMount } from "svelte";
-  import { goto as gotoStore, params } from "@roxi/routify";
+  import { goto as gotoStore } from "@roxi/routify";
   import { getMyEntities } from "@/lib/dmart_services";
   import { formatNumberInText } from "@/lib/helpers";
-  import { errorToastMessage } from "@/lib/toasts_messages";
-  import { _, locale, isRTL } from "@/i18n";
+  import { toasts } from "@/lib/toast";
+  import { log } from "@/lib/logger";
+  import { _, locale } from "@/i18n";
   import { formatDate } from "@/lib/format";
-  import {
-    EditOutline,
-    EyeOutline,
-    PlusOutline,
-    SearchOutline,
-    LayersSolid,
-    UploadOutline,
-    DownloadOutline,
-  } from "flowbite-svelte-icons";
+  import { localized } from "@/lib/catalogItems";
+  import { setTitle } from "@/lib/title";
+  import { encodeSubpath, withBase } from "@/lib/paths";
+  import { EditOutline, EyeOutline, PlusOutline, FileLinesOutline, UploadOutline, DownloadOutline } from "flowbite-svelte-icons";
   import ModalCSVUpload from "@/components/management/Modals/ModalCSVUpload.svelte";
   import ModalCSVDownload from "@/components/management/Modals/ModalCSVDownload.svelte";
+  import DataTable from "@/components/DataTable.svelte";
+  import PageHeader from "@/components/ui/PageHeader.svelte";
+  import CatalogToolbar, { type SortOrder } from "@/components/ui/CatalogToolbar.svelte";
+  import Badge from "@/components/ui/Badge.svelte";
+  import IconButton from "@/components/ui/IconButton.svelte";
+  import EmptyState from "@/components/ui/EmptyState.svelte";
+  import ErrorState from "@/components/ui/ErrorState.svelte";
+  import LoadingState from "@/components/ui/LoadingState.svelte";
 
   // Routify's helpers read the fragment context when first subscribed, and
   // Svelte 5 subscribes to a `$store` lazily on first read — so a `$gotoStore`
   // first touched inside an async callback logs "Unable to access context".
   // Capture the navigate function once, during component init.
   const goto = $gotoStore;
-  let entities = $state<any[]>([]);
-  let filteredEntities = $state<any[]>([]);
-  let availableSpaces = $state<any[]>([]);
+
+  interface EntryRow {
+    resource_type: string;
+    shortname: string;
+    displayname: unknown;
+    tags: string[];
+    state: string | null;
+    is_active: boolean;
+    created_at: string;
+    updated_at: string;
+    space_name: string;
+    subpath: string;
+    owner_shortname: string;
+  }
+
+  type SortKey = "updated_at" | "created_at" | "title";
+
+  let entities = $state<EntryRow[]>([]);
   let isLoading = $state(true);
+  let loadError = $state<unknown>(null);
   let searchTerm = $state("");
-  let statusFilter = $state("all");
   let resourceTypeFilter = $state("all");
   let spaceFilter = $state("all");
-  let sortBy = $state("updated_at");
-  let sortOrder = $state("desc");
+  let sortBy = $state<SortKey>("updated_at");
+  let sortOrder = $state<SortOrder>("desc");
   let isCSVUploadModalOpen = $state(false);
   let isCSVDownloadModalOpen = $state(false);
 
+  $effect(() => setTitle($_("my_entries.title")));
 
-  function getLocalizedDisplayName(entity: any) {
-    const displayname = entity.attributes?.displayname;
+  const sortOptions = $derived([
+    { value: "updated_at", label: $_("my_entries.sort.updated") },
+    { value: "created_at", label: $_("my_entries.sort.created") },
+    { value: "title", label: $_("my_entries.sort.title") },
+  ]);
 
-    if (!displayname) {
-      return entity.shortname || $_("my_entries.untitled");
-    }
+  const typeOptions = $derived([
+    { value: "all", label: $_("my_entries.filters.all_types") },
+    { value: "content", label: $_("admin_dashboard.filters.content") },
+    { value: "media", label: $_("admin_dashboard.filters.media") },
+    { value: "folder", label: $_("admin_dashboard.filters.folder") },
+  ]);
 
-    if (typeof displayname === "string") {
-      return displayname;
-    }
+  const indexAttributes = $derived([
+    { key: "title", name: $_("my_entries.columns.entry") },
+    { key: "resource_type", name: $_("my_entries.columns.type") },
+    { key: "space_name", name: $_("my_entries.columns.space") },
+    { key: "status", name: $_("my_entries.columns.status") },
+    { key: "updated_at", name: $_("my_entries.columns.updated") },
+  ]);
 
-    const localizedName =
-      displayname[$locale ?? ""] ||
-      displayname.en ||
-      displayname.ar ||
-      displayname.ku;
-    return localizedName || entity.shortname || $_("my_entries.untitled");
+  function titleOf(entity: EntryRow): string {
+    return localized(entity.displayname as never, $locale) || entity.shortname || $_("my_entries.untitled");
   }
 
-  function getLocalizedSpaceName(space: any) {
-    const displayname = space.attributes?.displayname;
-
-    if (!displayname) {
-      return space.shortname;
-    }
-
-    if (typeof displayname === "string") {
-      return displayname;
-    }
-
-    const localizedName =
-      displayname[$locale ?? ""] ||
-      displayname.en ||
-      displayname.ar ||
-      displayname.ku;
-    return localizedName || space.shortname;
-  }
-
-  function getContentPreview(entity: any) {
-    const payload = entity.attributes?.payload;
-    if (!payload || !payload.body) return "";
-
-    const body = payload.body;
-
-    if (entity.resource_type === "content") {
-      if (payload.content_type === "html" && typeof body === "string") {
-        return body;
-      }
-
-      if (payload.content_type === "json") {
-        if (typeof body === "object") {
-          if (body.body && typeof body.body === "string") {
-            return body.body;
-          }
-          return JSON.stringify(body).substring(0, 100) + "...";
-        }
-        if (typeof body === "string") {
-          return body;
-        }
-      }
-
-      if (typeof body === "string") {
-        return body;
-      }
-    }
-
-    return "";
-  }
-
-  onMount(async () => {
-    await fetchEntities();
-  });
-
-  function extractUserSpaces() {
-    availableSpaces = [];
-
-    if (!entities || entities.length === 0) {
-      return;
-    }
-
-    const spaceCountMap = new Map();
-
-    entities.forEach((entity: any) => {
-      if (entity.space_name) {
-        const count = spaceCountMap.get(entity.space_name) || 0;
-        spaceCountMap.set(entity.space_name, count + 1);
-      }
-    });
-
-    availableSpaces = Array.from(spaceCountMap.keys())
-      .sort()
-      .map((spaceName: any) => ({
-        shortname: spaceName,
-        entryCount: spaceCountMap.get(spaceName),
-        attributes: {
-          displayname: spaceName,
-        },
-      }));
-  }
-
-  $effect(() => {
-    if ($params.space_name && $params.subpath && $params.shortname) {
-      fetchEntities();
-    }
-    if (searchTerm !== undefined) {
-      handleSearch();
-    }
-  });
+  onMount(fetchEntities);
 
   async function fetchEntities() {
     isLoading = true;
+    loadError = null;
     try {
-      const response = await getMyEntities();
-
-      const rawEntities = (
-        (response as any)?.records || response || []
-      ).filter((entity: any) => entity?.resource_type !== "poll");
-
-      entities = rawEntities.map((entity: any) => ({
-        resource_type: entity?.resource_type || "",
-        shortname: entity.shortname,
-        uuid: entity?.uuid,
-        title: getLocalizedDisplayName(entity),
-        content: getContentPreview(entity),
-        tags: entity.attributes?.tags || [],
-        state: entity.attributes?.state || null,
-        is_active: entity.attributes?.is_active !== false,
-        created_at: entity.attributes?.created_at
-          ? formatDate(entity.attributes.created_at, "datetime", $locale)
-          : "",
-        updated_at: entity.attributes?.updated_at
-          ? formatDate(entity.attributes.updated_at, "datetime", $locale)
-          : "",
-        raw_created_at: entity.attributes?.created_at || "",
-        raw_updated_at: entity.attributes?.updated_at || "",
-        space_name: entity.attributes?.space_name || "",
-        subpath: entity?.subpath || "",
-        owner_shortname: entity.attributes?.owner_shortname || "",
-        comment: entity.attachments?.comment?.length ?? 0,
-        reaction: entity.attachments?.reaction?.length ?? 0,
-        _raw: entity,
-      }));
+      const records = await getMyEntities();
+      entities = records
+        .filter((entity) => entity?.resource_type !== "poll")
+        .map((entity): EntryRow => {
+          const attrs = (entity.attributes ?? {}) as Record<string, unknown>;
+          return {
+            resource_type: entity.resource_type || "",
+            shortname: entity.shortname,
+            displayname: attrs.displayname,
+            tags: Array.isArray(attrs.tags) ? (attrs.tags as string[]) : [],
+            state: typeof attrs.state === "string" ? attrs.state : null,
+            is_active: attrs.is_active !== false,
+            created_at: typeof attrs.created_at === "string" ? attrs.created_at : "",
+            updated_at: typeof attrs.updated_at === "string" ? attrs.updated_at : "",
+            space_name: typeof attrs.space_name === "string" ? attrs.space_name : "",
+            subpath: entity.subpath || "",
+            owner_shortname: typeof attrs.owner_shortname === "string" ? attrs.owner_shortname : "",
+          };
+        });
     } catch (error) {
-      console.error("Error fetching entities:", error);
-      errorToastMessage($_("my_entries.error.fetch_failed"));
+      log.error("Error fetching entities:", error);
+      loadError = error;
+      toasts.error($_("my_entries.error.fetch_failed"));
       entities = [];
     } finally {
       isLoading = false;
-      extractUserSpaces();
-      filterAndSortEntities();
     }
   }
 
-  function filterAndSortEntities() {
-    let filtered = [...entities];
+  const availableSpaces = $derived.by(() => {
+    const counts = new Map<string, number>();
+    for (const e of entities) if (e.space_name) counts.set(e.space_name, (counts.get(e.space_name) ?? 0) + 1);
+    return [...counts.entries()].sort(([a], [b]) => a.localeCompare(b)).map(([shortname, entryCount]) => ({ shortname, entryCount }));
+  });
 
-    if (searchTerm.trim()) {
-      const search = searchTerm.toLowerCase();
+  const filteredEntities = $derived.by(() => {
+    const q = searchTerm.trim().toLowerCase();
+    let filtered = entities;
+    if (q) {
       filtered = filtered.filter(
-        (entity: any) =>
-          entity.title?.toLowerCase().includes(search) ||
-          entity.content?.toLowerCase().includes(search) ||
-          entity.tags?.some((tag: any) => tag.toLowerCase().includes(search)) ||
-          entity.resource_type?.toLowerCase().includes(search) ||
-          entity.space_name?.toLowerCase().includes(search),
+        (e) =>
+          titleOf(e).toLowerCase().includes(q) ||
+          e.tags.some((tag) => tag.toLowerCase().includes(q)) ||
+          e.resource_type.toLowerCase().includes(q) ||
+          e.space_name.toLowerCase().includes(q),
       );
     }
+    if (resourceTypeFilter !== "all") filtered = filtered.filter((e) => e.resource_type === resourceTypeFilter);
+    if (spaceFilter !== "all") filtered = filtered.filter((e) => e.space_name === spaceFilter);
 
-    if (resourceTypeFilter !== "all") {
-      filtered = filtered.filter(
-        (entity: any) => entity.resource_type === resourceTypeFilter,
-      );
-    }
-
-    if (spaceFilter !== "all") {
-      filtered = filtered.filter((entity: any) => entity.space_name === spaceFilter);
-    }
-
-    filtered.sort((a: any, b: any) => {
-      let aValue, bValue;
-
+    const dir = sortOrder === "asc" ? 1 : -1;
+    return [...filtered].sort((a, b) => {
+      let av: string | number;
+      let bv: string | number;
       switch (sortBy) {
         case "title":
-          aValue = a.title || "";
-          bValue = b.title || "";
+          av = titleOf(a).toLowerCase();
+          bv = titleOf(b).toLowerCase();
           break;
         case "created_at":
-          aValue = new Date(a.raw_created_at);
-          bValue = new Date(b.raw_created_at);
-          break;
-        case "reactions":
-          aValue = a.reaction || 0;
-          bValue = b.reaction || 0;
-          break;
-        case "comments":
-          aValue = a.comment || 0;
-          bValue = b.comment || 0;
+          av = new Date(a.created_at).getTime() || 0;
+          bv = new Date(b.created_at).getTime() || 0;
           break;
         default:
-          aValue = new Date(a.raw_updated_at);
-          bValue = new Date(b.raw_updated_at);
+          av = new Date(a.updated_at).getTime() || 0;
+          bv = new Date(b.updated_at).getTime() || 0;
       }
-
-      if (sortOrder === "asc") {
-        return aValue > bValue ? 1 : -1;
-      } else {
-        return aValue < bValue ? 1 : -1;
-      }
+      return av < bv ? -dir : av > bv ? dir : 0;
     });
+  });
 
-    filteredEntities = filtered;
-  }
-
-  function handleSearch() {
-    filterAndSortEntities();
-  }
-
-  function handleFilterChange() {
-    filterAndSortEntities();
-  }
-
-  function handleSortChange() {
-    filterAndSortEntities();
-  }
+  const filtersActive = $derived(searchTerm.trim() !== "" || resourceTypeFilter !== "all" || spaceFilter !== "all");
 
   function clearAllFilters() {
     searchTerm = "";
     spaceFilter = "all";
     resourceTypeFilter = "all";
-    filterAndSortEntities();
   }
 
-  function viewEntity(entity: any) {
+  function viewHref(entity: EntryRow): string {
+    return withBase(
+      `/entries/${encodeURIComponent(entity.space_name)}/${encodeSubpath(entity.subpath)}/${encodeURIComponent(entity.shortname)}/${encodeURIComponent(entity.resource_type)}`,
+    );
+  }
+
+  function viewEntity(entity: EntryRow, event?: MouseEvent | KeyboardEvent) {
+    event?.preventDefault?.();
     goto("/entries/[space_name]/[subpath]/[shortname]/[resource_type]", {
       shortname: entity.shortname,
       space_name: entity.space_name,
-      subpath: entity.subpath,
+      subpath: encodeSubpath(entity.subpath),
       resource_type: entity.resource_type,
     });
   }
 
-  function editEntity(entity: any) {
+  function editEntity(entity: EntryRow) {
     goto("/entries/[space_name]/[subpath]/[shortname]/[resource_type]/edit", {
       shortname: entity.shortname,
       space_name: entity.space_name,
-      subpath: entity.subpath,
+      subpath: encodeSubpath(entity.subpath),
       resource_type: entity.resource_type,
     });
   }
 
-  function createNewEntry() {
-    goto("/entries/create");
+  function isPublished(entity: EntryRow): boolean {
+    return entity.is_active && entity.state !== "pending" && entity.state !== "rejected";
   }
 
+  const csvSpace = $derived(spaceFilter !== "all" ? spaceFilter : availableSpaces[0]?.shortname || "catalog");
+  const csvSpaces = $derived(availableSpaces.map((s) => ({ shortname: s.shortname, displayname: s.shortname })));
 </script>
 
-<div class="min-h-screen" class:rtl={$isRTL}>
-  <div class="mx-auto py-8 px-4 sm:px-6 max-w-[1400px]">
-    <!-- Header -->
-    <div
-      class="mb-8 flex flex-col sm:flex-row sm:items-center justify-between gap-5"
-    >
-      <div>
-        <h1 class="text-2xl font-bold text-gray-900 mb-1 tracking-tight">
-          {$_("my_entries.title") || "My Entries"}
-        </h1>
-        <p class="text-gray-500 text-sm">
-          {$_("my_entries.subtitle") ||
-            "Manage and track your content submissions"}
-        </p>
-      </div>
-      <div class="flex items-center gap-2.5">
-        <button
-          aria-label="Upload CSV"
-          onclick={() => isCSVUploadModalOpen = true}
-          class="bg-white hover:bg-gray-50 text-gray-600 border border-gray-200 hover:border-gray-300 px-3.5 py-2 rounded-xl font-medium flex items-center justify-center gap-1.5 transition-all text-[13px]"
-        >
-          <UploadOutline class="w-3.5 h-3.5" />
-          Import
-        </button>
-        <button
-          aria-label="Download CSV"
-          onclick={() => isCSVDownloadModalOpen = true}
-          class="bg-white hover:bg-gray-50 text-gray-600 border border-gray-200 hover:border-gray-300 px-3.5 py-2 rounded-xl font-medium flex items-center justify-center gap-1.5 transition-all text-[13px]"
-        >
-          <DownloadOutline class="w-3.5 h-3.5" />
-          Export
-        </button>
-        <button
-          aria-label={$_("my_entries.create_new") || "Create New Entry"}
-          onclick={createNewEntry}
-          class="bg-indigo-600 hover:bg-indigo-700 text-white px-5 py-2 rounded-xl font-semibold flex items-center justify-center gap-1.5 transition-all shadow-[0_2px_8px_rgba(99,102,241,0.25)] hover:shadow-[0_4px_14px_rgba(99,102,241,0.3)] text-[13px]"
-        >
-          <PlusOutline class="w-3.5 h-3.5" />
-          {$_("my_entries.create_new") || "Create New Entry"}
-        </button>
-      </div>
+<div class="mx-auto max-w-7xl px-4 sm:px-6 py-6 sm:py-8">
+  <PageHeader title={$_("my_entries.title")} description={$_("my_entries.subtitle")} icon={FileLinesOutline}>
+    {#snippet actions()}
+      <IconButton label={$_("users_page.upload_csv")} variant="outline" onclick={() => (isCSVUploadModalOpen = true)}>
+        <UploadOutline size="sm" />
+      </IconButton>
+      <IconButton label={$_("users_page.download_csv")} variant="outline" onclick={() => (isCSVDownloadModalOpen = true)}>
+        <DownloadOutline size="sm" />
+      </IconButton>
+      <button type="button" class="app-btn app-btn-primary" onclick={() => goto("/entries/create")}>
+        <PlusOutline size="sm" aria-hidden="true" />
+        {$_("my_entries.create_new")}
+      </button>
+    {/snippet}
+  </PageHeader>
+
+  {#if isLoading}
+    <LoadingState />
+  {:else if loadError}
+    <ErrorState title={$_("my_entries.error.fetch_failed")} error={loadError} onRetry={fetchEntities} />
+  {:else if entities.length === 0}
+    <EmptyState icon={FileLinesOutline} title={$_("my_entries.empty.title")} hint={$_("my_entries.empty.hint")}>
+      <button type="button" class="app-btn app-btn-primary app-btn-sm" onclick={() => goto("/entries/create")}>
+        <PlusOutline size="sm" aria-hidden="true" />
+        {$_("my_entries.empty.action")}
+      </button>
+    </EmptyState>
+  {:else}
+    <div class="flex flex-wrap items-center gap-2 mb-4" role="group" aria-label={$_("statistics")}>
+      <Badge>{$_("my_entries.stats.total", { values: { count: formatNumberInText(entities.length, $locale ?? "") } })}</Badge>
+      <Badge variant="success">
+        {$_("my_entries.stats.spaces", { values: { count: formatNumberInText(availableSpaces.length, $locale ?? "") } })}
+      </Badge>
     </div>
 
-    <!-- Top Bar (Search & Filters) -->
-    <div
-      class="bg-white rounded-2xl border border-gray-100 p-2.5 mb-5 shadow-sm flex flex-col md:flex-row gap-2.5"
+    <CatalogToolbar
+      class="mb-4"
+      bind:search={searchTerm}
+      placeholder={$_("route_labels.placeholder_search_entries")}
+      onSearch={(q) => (searchTerm = q)}
+      bind:sort={sortBy}
+      {sortOptions}
+      bind:order={sortOrder}
     >
-      <!-- Search -->
-      <div class="relative flex-grow min-w-[200px]">
-        <SearchOutline
-          class="absolute left-4 top-1/2 transform -translate-y-1/2 w-[18px] h-[18px] text-gray-400"
-        />
-        <input
-          type="text"
-          bind:value={searchTerm}
-          placeholder={$_("route_labels.placeholder_search_entries")}
-          class="w-full pl-11 pr-4 py-2.5 bg-gray-50/50 border border-transparent rounded-xl text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500 focus:bg-white transition-all text-gray-700 placeholder-gray-400"
-        />
-      </div>
-
-      <!-- Resource Type Filter -->
-      <div class="relative min-w-[150px] md:max-w-[180px]">
-        <select
-          bind:value={resourceTypeFilter}
-          onchange={handleFilterChange}
-          class="w-full appearance-none px-4 py-2.5 bg-gray-50/50 border border-transparent rounded-xl text-sm font-semibold text-gray-600 focus:outline-none focus:ring-2 focus:ring-indigo-500 focus:bg-white transition-all cursor-pointer"
-        >
-          <option value="all">All Types</option>
-          <option value="content">Content</option>
-          <option value="media">Media</option>
-          <option value="folder">Folder</option>
-        </select>
-        <div
-          class="pointer-events-none absolute inset-y-0 right-4 flex items-center text-gray-400"
-        >
-        </div>
-      </div>
-
-      <!-- Space Filter -->
-      <div class="relative min-w-[150px] md:max-w-[200px]">
-        <LayersSolid
-          class="absolute left-4 top-1/2 transform -translate-y-1/2 w-4 h-4 text-gray-400"
-        />
-        <select
-          bind:value={spaceFilter}
-          onchange={handleFilterChange}
-          class="w-full appearance-none pl-11 pr-10 py-2.5 bg-gray-50/50 border border-transparent rounded-xl text-sm font-semibold text-gray-600 focus:outline-none focus:ring-2 focus:ring-indigo-500 focus:bg-white transition-all cursor-pointer"
-        >
-          <option value="all">All Spaces</option>
-          {#each availableSpaces as space (space.shortname)}
-            <option value={space.shortname}>
-              {getLocalizedSpaceName(space)} ({space.entryCount})
-            </option>
+      {#snippet filters()}
+        <label for="entry-type-filter" class="sr-only">{$_("my_entries.columns.type")}</label>
+        <select id="entry-type-filter" bind:value={resourceTypeFilter} class="h-9 ps-3 pe-8 text-sm rounded-control border border-border bg-surface-2 text-text focus:border-primary focus:ring-1 focus:ring-primary">
+          {#each typeOptions as option (option.value)}
+            <option value={option.value}>{option.label}</option>
           {/each}
         </select>
-        <div
-          class="pointer-events-none absolute inset-y-0 right-4 flex items-center text-gray-400"
-        >
-       
-        </div>
-      </div>
-
-      <!-- Sort By -->
-      <div class="relative min-w-[150px] md:max-w-[180px]">
-        <select
-          bind:value={sortBy}
-          onchange={handleSortChange}
-          class="w-full appearance-none px-4 py-2.5 bg-gray-50/50 border border-transparent rounded-xl text-sm font-semibold text-gray-600 focus:outline-none focus:ring-2 focus:ring-indigo-500 focus:bg-white transition-all cursor-pointer"
-        >
-          <option value="updated_at">Last Updated</option>
-          <option value="created_at">Date Created</option>
-          <option value="title">Title</option>
-          <option value="reactions">Reactions</option>
-          <option value="comments">Comments</option>
+        <label for="entry-space-filter" class="sr-only">{$_("my_entries.columns.space")}</label>
+        <select id="entry-space-filter" bind:value={spaceFilter} class="h-9 ps-3 pe-8 text-sm rounded-control border border-border bg-surface-2 text-text focus:border-primary focus:ring-1 focus:ring-primary">
+          <option value="all">{$_("my_entries.filters.all_spaces")}</option>
+          {#each availableSpaces as space (space.shortname)}
+            <option value={space.shortname}>{space.shortname} ({space.entryCount})</option>
+          {/each}
         </select>
-        <div
-          class="pointer-events-none absolute inset-y-0 right-4 flex items-center text-gray-400"
-        >
-        
-        </div>
-      </div>
-    </div>
-
-    <!-- Active Filters Display -->
-    {#if spaceFilter !== "all" || statusFilter !== "all" || resourceTypeFilter !== "all" || searchTerm.trim()}
-      <div class="mb-6 flex flex-wrap gap-2 items-center">
-        <!-- Render tags cleanly -->
-        {#if searchTerm.trim()}
-          <span
-            class="inline-flex items-center px-3 py-1 rounded-full text-xs font-semibold bg-gray-100 text-gray-600 border border-gray-200"
-          >
-            Search: {searchTerm}
-            <button
-              aria-label="Clear search"
-              onclick={() => {
-                searchTerm = "";
-                handleSearch();
-              }}
-              class="ml-1.5 hover:text-gray-900"
-              ><svg
-                class="w-3.5 h-3.5"
-                fill="none"
-                stroke="currentColor"
-                viewBox="0 0 24 24"
-              >
-                <path
-                  stroke-linecap="round"
-                  stroke-linejoin="round"
-                  stroke-width="2"
-                  d="M6 18L18 6M6 6l12 12"
-                >
-                </path>
-              </svg></button
-            >
-          </span>
+        {#if filtersActive}
+          <button type="button" class="app-btn app-btn-ghost app-btn-sm" onclick={clearAllFilters}>
+            {$_("search_filters.clear_filters")}
+          </button>
         {/if}
-        {#if resourceTypeFilter !== "all"}
-          <span
-            class="inline-flex items-center px-3 py-1 rounded-full text-xs font-semibold bg-gray-100 text-gray-600 border border-gray-200"
-          >
-            Type: {resourceTypeFilter}
-            <button
-              aria-label="Clear type filter"
-              onclick={() => {
-                resourceTypeFilter = "all";
-                handleFilterChange();
-              }}
-              class="ml-1.5
-                    hover:text-gray-900"
-              ><svg
-                class="w-3.5 h-3.5"
-                fill="none"
-                stroke="currentColor"
-                viewBox="0 0 24 24"
-              >
-                <path
-                  stroke-linecap="round"
-                  stroke-linejoin="round"
-                  stroke-width="2"
-                  d="M6 18L18 6M6 6l12 12"
-                >
-                </path>
-              </svg></button
-            >
-          </span>
+      {/snippet}
+    </CatalogToolbar>
+
+    <DataTable
+      items={filteredEntities}
+      {indexAttributes}
+      rowHref={viewHref}
+      rowLabel={titleOf}
+      onRowClick={viewEntity}
+      totalItems={filteredEntities.length}
+      itemsPerPage={filteredEntities.length || 1}
+      emptyMessage={$_("my_entries.no_match")}
+    >
+      {#snippet cell({ item, attr })}
+        {#if attr.key === "title"}
+          <div class="min-w-0 max-w-xs">
+            <div class="font-medium text-text truncate">{titleOf(item)}</div>
+            {#if item.tags.length > 0}
+              <div class="text-xs text-text-faint truncate">{item.tags.map((t: string) => `#${t}`).join(" ")}</div>
+            {/if}
+          </div>
+        {:else if attr.key === "resource_type"}
+          <Badge size="sm" variant={item.resource_type === "content" ? "info" : item.resource_type === "media" ? "primary" : "neutral"}>
+            {item.resource_type || $_("common.unknown")}
+          </Badge>
+        {:else if attr.key === "space_name"}
+          <Badge size="sm">{item.space_name}</Badge>
+        {:else if attr.key === "status"}
+          <Badge size="sm" variant={isPublished(item) ? "success" : "warning"}>
+            {isPublished(item) ? $_("my_entries.status.active") : $_("my_entries.status.draft")}
+          </Badge>
+        {:else if attr.key === "updated_at"}
+          <span class="text-text-muted whitespace-nowrap">{formatDate(item.updated_at, "datetime", $locale)}</span>
         {/if}
-        {#if spaceFilter !== "all"}
-          <span
-            class="inline-flex items-center px-3 py-1 rounded-full text-xs font-semibold bg-gray-100 text-gray-600 border border-gray-200"
-          >
-            Space: {spaceFilter}
-            <button
-              aria-label="Clear space filter"
-              onclick={() => {
-                spaceFilter = "all";
-                handleFilterChange();
-              }}
-              class="ml-1.5
-                    hover:text-gray-900"
-              ><svg
-                class="w-3.5 h-3.5"
-                fill="none"
-                stroke="currentColor"
-                viewBox="0 0 24 24"
-              >
-                <path
-                  stroke-linecap="round"
-                  stroke-linejoin="round"
-                  stroke-width="2"
-                  d="M6 18L18 6M6 6l12 12"
-                >
-                </path>
-              </svg></button
-            >
-          </span>
-        {/if}
-        <button
-          onclick={clearAllFilters}
-          class="text-xs font-semibold text-indigo-600 hover:text-indigo-800 ml-2"
-          >Clear all</button
-        >
-      </div>
-    {/if}
+      {/snippet}
 
-    {#if isLoading}
-      <div class="flex justify-center items-center py-32">
-        <div
-          class="animate-spin rounded-full h-10 w-10 border-2 border-indigo-200 border-t-indigo-600"
-        ></div>
-      </div>
-    {:else}
-      <!-- Stats Summary -->
-      <div class="grid grid-cols-1 md:grid-cols-2 gap-4 mb-6">
-        <div
-          class="bg-white rounded-xl p-5 border border-gray-100 shadow-sm flex items-center justify-between hover:shadow-md transition-shadow"
-        >
-          <div>
-            <p
-              class="text-[11px] font-semibold text-gray-400 uppercase tracking-wider mb-1"
-            >
-              Total Entries
-            </p>
-            <p class="text-3xl font-bold text-gray-900">
-              {formatNumberInText(entities.length, $locale ?? "")}
-            </p>
-          </div>
-          <div
-            class="w-11 h-11 bg-indigo-50 rounded-xl flex items-center justify-center"
-          >
-            <svg
-              class="w-5 h-5 text-indigo-500"
-              fill="none"
-              stroke="currentColor"
-              viewBox="0 0 24 24"
-            >
-              <path
-                stroke-linecap="round"
-                stroke-linejoin="round"
-                stroke-width="2"
-                d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z"
-              >
-              </path>
-            </svg>
-          </div>
-        </div>
+      {#snippet actions({ item })}
+        <IconButton label="{$_('actions.view')} {titleOf(item)}" size="sm" href={viewHref(item)} onclick={(e: MouseEvent) => viewEntity(item, e)}>
+          <EyeOutline size="sm" />
+        </IconButton>
+        <IconButton label="{$_('common.edit')} {titleOf(item)}" size="sm" onclick={() => editEntity(item)}>
+          <EditOutline size="sm" />
+        </IconButton>
+      {/snippet}
+    </DataTable>
 
-        <div
-          class="bg-white rounded-xl p-5 border border-gray-100 shadow-sm flex items-center justify-between hover:shadow-md transition-shadow"
-        >
-          <div>
-            <p
-              class="text-[11px] font-semibold text-gray-400 uppercase tracking-wider mb-1"
-            >
-              Spaces Used
-            </p>
-            <p class="text-3xl font-bold text-emerald-500">
-              {formatNumberInText(
-                new Set(entities.map((e: any) => e.space_name)).size,
-                $locale ?? "",
-              )}
-            </p>
-          </div>
-          <div
-            class="w-11 h-11 bg-emerald-50 rounded-xl flex items-center justify-center"
-          >
-            <svg
-              class="w-5 h-5 text-emerald-500"
-              fill="none"
-              stroke="currentColor"
-              viewBox="0 0 24 24"
-            >
-              <path
-                stroke-linecap="round"
-                stroke-linejoin="round"
-                stroke-width="2"
-                d="M21 12a9 9 0 01-9 9m9-9a9 9 0 00-9-9m9 9H3m9 9a9 9 0 01-9-9m9 9c1.657 0 3-4.03 3-9s-1.343-9-3-9m0 18c-1.657 0-3-4.03-3-9s1.343-9 3-9m-9 9a9 9 0 019-9"
-              >
-              </path>
-            </svg>
-          </div>
-        </div>
-      </div>
-
-      {#if filteredEntities.length === 0}
-        <div
-          class="text-center py-24 bg-white rounded-3xl border border-gray-100 shadow-sm mt-8"
-        >
-          <svg
-            class="w-12 h-12 text-gray-300 mx-auto mb-4"
-            fill="none"
-            stroke="currentColor"
-            viewBox="0 0 24 24"
-          >
-            <path
-              stroke-linecap="round"
-              stroke-linejoin="round"
-              stroke-width="2"
-              d="M20 13V6a2 2 0 00-2-2H6a2 2 0 00-2 2v7m16 0v5a2 2 0 01-2 2H6a2 2 0 01-2-2v-5m16 0h-2.586a1 1 0 00-.707.293l-2.414 2.414a1 1 0 01-.707.293h-3.172a1 1 0 01-.707-.293l-2.414-2.414A1 1 0 006.586 13H4"
-            >
-            </path>
-          </svg>
-          <h3 class="text-xl font-bold text-gray-900">
-            {entities.length === 0 ? "No entries found" : "No matching entries"}
-          </h3>
-          <p class="text-gray-500 mt-2">
-            {entities.length === 0
-              ? "Create your first entry to get started."
-              : "Try adjusting your search or filters."}
-          </p>
-          {#if entities.length === 0}
-            <button
-              onclick={createNewEntry}
-              class="mt-6 bg-indigo-600 hover:bg-indigo-700 text-white px-6 py-2 rounded-full font-semibold transition-colors shadow-sm text-sm inline-flex items-center gap-2"
-            >
-              <PlusOutline class="w-4 h-4" /> Create First Entry
-            </button>
-          {/if}
-        </div>
-      {:else}
-        <!-- Entries Table -->
-        <div
-          class="bg-white rounded-2xl border border-gray-100 shadow-sm overflow-hidden"
-        >
-          <div class="overflow-x-auto">
-            <table class="w-full text-left whitespace-nowrap">
-              <thead>
-                <tr class="border-b border-gray-100">
-                  <th
-                    class="px-8 py-5 text-[11px] font-bold text-gray-400 uppercase tracking-widest bg-white"
-                  >
-                    ENTRY</th
-                  >
-                  <th
-                    class="px-6 py-5 text-[11px] font-bold text-gray-400 uppercase tracking-widest bg-white"
-                  >
-                    TYPE</th
-                  >
-                  <th
-                    class="px-6 py-5 text-[11px] font-bold text-gray-400 uppercase tracking-widest bg-white"
-                  >
-                    SPACE</th
-                  >
-                  <th
-                    class="px-6 py-5 text-[11px] font-bold text-gray-400 uppercase tracking-widest bg-white"
-                  >
-                    STATUS</th
-                  >
-                  <th
-                    class="px-6 py-5 text-[11px] font-bold text-gray-400 uppercase tracking-widest bg-white"
-                  >
-                    ENGAGEMENT</th
-                  >
-                  <th
-                    class="px-6 py-5 text-[11px] font-bold text-gray-400 uppercase tracking-widest bg-white"
-                  >
-                    UPDATED</th
-                  >
-                  <th
-                    class="px-8 py-5 text-[11px] font-bold text-gray-400 uppercase tracking-widest text-right bg-white"
-                  >
-                    ACTIONS</th
-                  >
-                </tr>
-              </thead>
-              <tbody class="divide-y divide-gray-50">
-                {#each filteredEntities as entity (`${entity.space_name}/${entity.subpath}/${entity.shortname}`)}
-                  <tr class="hover:bg-gray-50/50 transition-colors group">
-                    <!-- ENTRY -->
-                    <td class="px-8 py-5 flex items-start gap-4">
-                      <div
-                        class="w-10 h-10 rounded-xl bg-gray-50 border border-gray-100 flex items-center justify-center flex-shrink-0 mt-0.5"
-                      >
-                        <svg
-                          class="w-5 h-5 text-gray-400"
-                          fill="none"
-                          stroke="currentColor"
-                          viewBox="0 0 24 24"
-                        >
-                          <path
-                            stroke-linecap="round"
-                            stroke-linejoin="round"
-                            stroke-width="2"
-                            d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z"
-                          >
-                          </path>
-                        </svg>
-                      </div>
-                      <div class="min-w-0 max-w-[280px]">
-                        <h3
-                          class="text-[14px] font-bold text-gray-900 truncate tracking-tight"
-                        >
-                          {entity.title || "Untitled"}
-                        </h3>
-                        <p
-                          class="text-[12px] text-gray-400 truncate mt-0.5 font-medium"
-                        >
-                          #{entity.tags?.join(" #") || "general"}
-                        </p>
-                      </div>
-                    </td>
-
-                    <!-- TYPE -->
-                    <td class="px-6 py-5">
-                      {#if entity.resource_type === "media"}
-                        <span
-                          class="inline-flex items-center px-3 py-1 rounded-full text-[11px] font-bold bg-purple-50 text-purple-600"
-                          >media</span
-                        >
-                      {:else if entity.resource_type === "content"}
-                        <span
-                          class="inline-flex items-center px-3 py-1 rounded-full text-[11px] font-bold bg-cyan-50 text-cyan-600"
-                          >content</span
-                        >
-                      {:else if entity.resource_type === "json"}
-                        <span
-                          class="inline-flex items-center px-3 py-1 rounded-full text-[11px] font-bold bg-green-50 text-green-600"
-                          >json</span
-                        >
-                      {:else if entity.resource_type === "poll"}
-                        <span
-                          class="inline-flex items-center px-3 py-1 rounded-full text-[11px] font-bold bg-pink-50 text-pink-600"
-                          >poll</span
-                        >
-                      {:else if entity.resource_type === "template"}
-                        <span
-                          class="inline-flex items-center px-3 py-1 rounded-full text-[11px] font-bold bg-orange-50 text-orange-600"
-                          >template</span
-                        >
-                      {:else}
-                        <span
-                          class="inline-flex items-center px-3 py-1 rounded-full text-[11px] font-bold bg-gray-100 text-gray-600"
-                          >{entity.resource_type || "unknown"}</span
-                        >
-                      {/if}
-                    </td>
-
-                    <!-- SPACE -->
-                    <td class="px-6 py-5">
-                      <span
-                        class="inline-flex items-center px-3 py-1 rounded-full text-[11px] font-bold bg-[#f1f5f9] text-[#64748b]"
-                      >
-                        {entity.space_name}
-                      </span>
-                    </td>
-
-                    <!-- STATUS -->
-                    <td class="px-6 py-5">
-                      {#if entity.is_active && entity.state !== "pending" && entity.state !== "rejected"}
-                        <div
-                          class="flex items-center gap-1.5 text-[12px] font-extrabold text-[#00d084]"
-                        >
-                          <div
-                            class="w-1.5 h-1.5 rounded-full bg-[#00d084]"
-                          ></div>
-                           Active
-                        </div>
-                      {:else}
-                        <div
-                          class="flex items-center gap-1.5 text-[12px] font-extrabold text-orange-400"
-                        >
-                          <div
-                            class="w-1.5 h-1.5 rounded-full bg-orange-400"
-                          ></div>
-                           Draft
-                        </div>
-                      {/if}
-                    </td>
-
-                    <!-- ENGAGEMENT -->
-                    <td class="px-6 py-5">
-                      <div
-                        class="flex items-center gap-3 text-[13px] font-medium text-gray-400"
-                      >
-                        <div class="flex items-center gap-1">
-                          <svg
-                            class="w-4 h-4 text-red-400"
-                            fill="none"
-                            stroke="currentColor"
-                            viewBox="0 0 24 24"
-                          >
-                            <path
-                              stroke-linecap="round"
-                              stroke-linejoin="round"
-                              stroke-width="2"
-                              d="M4.318 6.318a4.5 4.5 0 000 6.364L12 20.364l7.682-7.682a4.5 4.5 0 00-6.364-6.364L12 7.636l-1.318-1.318a4.5 4.5 0 00-6.364 0z"
-                            >
-                            </path>
-                          </svg>
-                          {formatNumberInText(entity.reaction, $locale ?? "") || 0}
-                        </div>
-                        <div class="flex items-center gap-1">
-                          <svg
-                            class="w-4 h-4 text-blue-400"
-                            fill="none"
-                            stroke="currentColor"
-                            viewBox="0 0 24 24"
-                          >
-                            <path
-                              stroke-linecap="round"
-                              stroke-linejoin="round"
-                              stroke-width="2"
-                              d="M8 12h.01M12 12h.01M16 12h.01M21 12c0 4.418-4.03 8-9 8a9.863 9.863 0 01-4.255-.949L3 20l1.395-3.72C3.512 15.042 3 13.574 3 12c0-4.418 4.03-8 9-8s9 3.582 9 8z"
-                            >
-                            </path>
-                          </svg>
-                          {formatNumberInText(entity.comment, $locale ?? "") || 0}
-                        </div>
-                      </div>
-                    </td>
-
-                    <!-- UPDATED -->
-                    <td class="px-6 py-5 text-[12px] font-medium text-gray-400">
-                      {entity.updated_at.replace(",", "")}
-                    </td>
-
-                    <!-- ACTIONS -->
-                    <td class="px-8 py-5 text-right">
-                      <div
-                        class="flex items-center justify-end gap-3 opacity-0 group-hover:opacity-100 transition-opacity"
-                      >
-                        <button
-                          onclick={() => viewEntity(entity)}
-                          class="flex items-center gap-1 text-[12px]
-                                        font-bold text-gray-400 hover:text-indigo-600 transition-colors"
-                        >
-                          <EyeOutline class="w-4 h-4" /> View
-                        </button>
-                        <button
-                          onclick={() => editEntity(entity)}
-                          class="flex items-center gap-1 text-[12px]
-                                        font-bold text-gray-400 hover:text-indigo-600 transition-colors"
-                        >
-                          <EditOutline class="w-4 h-4" /> Edit
-                        </button>
-                      </div>
-                    </td>
-                  </tr>
-                {/each}
-              </tbody>
-            </table>
-          </div>
-          <div
-            class="py-4 border-t border-gray-50 text-center text-xs font-semibold text-indigo-400 bg-white"
-          >
-            Showing {filteredEntities.length} of {entities.length} entries
-          </div>
-        </div>
-      {/if}
-    {/if}
-  </div>
+    <p class="mt-3 text-xs text-text-muted tabular-nums">
+      {$_("my_entries.showing", { values: { shown: filteredEntities.length, total: entities.length } })}
+    </p>
+  {/if}
 </div>
 
-<!-- CSV Import/Export Modals -->
-<ModalCSVUpload 
-  space_name={spaceFilter !== "all" ? spaceFilter : (availableSpaces[0]?.shortname || "catalog")}
-  subpath="/" 
-  bind:isOpen={isCSVUploadModalOpen}
-  onUploadSuccess={fetchEntities}
-  availableSpaces={availableSpaces.map(s => ({ shortname: s.shortname, displayname: getLocalizedSpaceName(s) }))}
-/>
-
-<ModalCSVDownload 
-  space_name={spaceFilter !== "all" ? spaceFilter : (availableSpaces[0]?.shortname || "catalog")}
-  subpath="/" 
-  bind:isOpen={isCSVDownloadModalOpen}
-  availableSpaces={availableSpaces.map(s => ({ shortname: s.shortname, displayname: getLocalizedSpaceName(s) }))}
-/>
+<ModalCSVUpload space_name={csvSpace} subpath="/" bind:isOpen={isCSVUploadModalOpen} onUploadSuccess={fetchEntities} availableSpaces={csvSpaces} />
+<ModalCSVDownload space_name={csvSpace} subpath="/" bind:isOpen={isCSVDownloadModalOpen} availableSpaces={csvSpaces} />
