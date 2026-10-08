@@ -40,13 +40,11 @@ export default defineConfig(({ command }) => ({
       compilerOptions: { dev: !production },
       preprocess: [vitePreprocess()],
       onwarn: (warning, defaultHandler) => {
-        // Ignore a11y_click_events_have_key_events warning from sveltestrap
-        if (
-          warning.code?.startsWith("a11y") || // warning.filename?.startsWith("/node_modules/svelte-jsoneditor")
-          warning.filename?.startsWith("/node_modules")
-        )
-          return;
-        if (typeof defaultHandler != "undefined") defaultHandler(warning);
+        // Only third-party code is exempt. Every a11y warning in this tree is
+        // now fixed; a new one must be visible, not muted (the old filter
+        // silenced all a11y_* codes, which is how the debt accumulated).
+        if (warning.filename?.startsWith("/node_modules")) return;
+        if (typeof defaultHandler !== "undefined") defaultHandler(warning);
       },
     }),
     // Build-time .br/.gz next to every hashed asset. The server
