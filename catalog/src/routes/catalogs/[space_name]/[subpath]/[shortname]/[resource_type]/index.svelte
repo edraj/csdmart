@@ -485,7 +485,7 @@
               {#each relatedContent as item (`${item.subpath}/${item.shortname}`)}
                 {@const tags = tagsOf(item)}
                 <Card href={relatedHref(item)} padding="sm" class="h-full">
-                  <h3 class="text-sm font-semibold text-text leading-snug break-words">{itemTitle(item, $locale)}</h3>
+                  <h3 class="text-sm font-semibold text-text leading-snug break-words" dir="auto">{itemTitle(item, $locale)}</h3>
                   <p class="mt-1.5 flex flex-wrap items-center gap-x-2 gap-y-0.5 text-xs text-text-muted">
                     <span class="truncate">{relatedAuthor(item)}</span>
                     {#if item.attributes?.updated_at}

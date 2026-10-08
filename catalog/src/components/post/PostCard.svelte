@@ -109,10 +109,10 @@
         {/if}
       </header>
 
-      <h3 class="mt-3 text-base sm:text-lg font-semibold text-text leading-snug break-words">{title}</h3>
+      <h3 class="mt-3 text-base sm:text-lg font-semibold text-text leading-snug break-words" dir="auto">{title}</h3>
 
       {#if preview}
-        <p class="mt-1.5 text-sm text-text-muted leading-relaxed line-clamp-3 break-words">{preview}</p>
+        <p class="mt-1.5 text-sm text-text-muted leading-relaxed line-clamp-3 break-words" dir="auto">{preview}</p>
       {/if}
 
       {#if tags.length > 0 && !interactiveTags}

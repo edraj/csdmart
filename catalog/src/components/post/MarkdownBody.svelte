@@ -17,7 +17,7 @@
 </script>
 
 {#if html}
-  <div class="md-body {compact ? 'md-compact' : ''} {className}">
+  <div class="md-body {compact ? 'md-compact' : ''} {className}" dir="auto">
     <!-- eslint-disable-next-line svelte/no-at-html-tags -- sanitized in lib/markdown -->
     {@html html}
   </div>

@@ -66,7 +66,7 @@
     </div>
   </div>
 
-  <h1 class="mt-5 text-2xl sm:text-3xl font-semibold text-text leading-tight break-words">{title}</h1>
+  <h1 class="mt-5 text-2xl sm:text-3xl font-semibold text-text leading-tight break-words" dir="auto">{title}</h1>
 
   {#if tags.length > 0}
     <div class="mt-3 flex flex-wrap gap-1.5">
