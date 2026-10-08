@@ -2,6 +2,7 @@
     import {params} from "@roxi/routify";
     import {Dmart, ResourceType} from "@edraj/tsdmart";
     import EntryRenderer from "@/components/management/renderers/EntryRenderer.svelte";
+    import NotFoundState from "@/components/ui/NotFoundState.svelte";
     import {TextPlaceholder} from "flowbite-svelte";
 </script>
 
@@ -16,7 +17,8 @@
      validate_schema: $params.validate_schema !== "false"
   })}
     <div class="flex flex-col w-full">
-      {#each Array(5) as _, i}
+      <!-- A fixed number of placeholder rows: the position is the identity. -->
+      {#each Array(5) as _, i (i)}
         <TextPlaceholder class="m-5" size="lg" style="width: 100vw"/>
       {/each}
     </div>
@@ -31,6 +33,5 @@
     <p style="color: red">{error.message}</p>
   {/await}
 {:else}
-  <h4>We shouldn't be here ...</h4>
-  <pre>{JSON.stringify($params)}</pre>
+  <NotFoundState />
 {/if}

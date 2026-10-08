@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { clampPage, hasMoreRecords, pageCount } from "./paging";
+import { clampPage, hasMoreRecords, pageCount, pageRange, visiblePages } from "./paging";
 
 describe("pageCount", () => {
     it("rounds up and never drops below one page", () => {
@@ -62,5 +62,51 @@ describe("hasMoreRecords", () => {
         expect(hasMoreRecords(-1, 37, 37, 50)).toBe(false);
         expect(hasMoreRecords(null, 0, 0, 50)).toBe(false);
         expect(hasMoreRecords(null, 10, 10, 0)).toBe(false);
+    });
+});
+
+describe("visiblePages", () => {
+    it("centres the window on the current page", () => {
+        expect(visiblePages(5, 10, 5)).toEqual([3, 4, 5, 6, 7]);
+        expect(visiblePages(6, 10, 4)).toEqual([4, 5, 6, 7]);
+    });
+
+    it("keeps the window full at both ends", () => {
+        expect(visiblePages(1, 10, 5)).toEqual([1, 2, 3, 4, 5]);
+        expect(visiblePages(2, 10, 5)).toEqual([1, 2, 3, 4, 5]);
+        expect(visiblePages(10, 10, 5)).toEqual([6, 7, 8, 9, 10]);
+        expect(visiblePages(9, 10, 5)).toEqual([6, 7, 8, 9, 10]);
+    });
+
+    it("shows every page when there are fewer than the window", () => {
+        expect(visiblePages(1, 1, 5)).toEqual([1]);
+        expect(visiblePages(2, 3, 5)).toEqual([1, 2, 3]);
+    });
+
+    it("tolerates a current page outside the range and odd inputs", () => {
+        expect(visiblePages(0, 3, 5)).toEqual([1, 2, 3]);
+        expect(visiblePages(99, 3, 5)).toEqual([1, 2, 3]);
+        expect(visiblePages(1, 0, 5)).toEqual([1]);
+        expect(visiblePages(1, NaN, 5)).toEqual([1]);
+        expect(visiblePages(3, 10, 0)).toEqual([3]);
+    });
+});
+
+describe("pageRange", () => {
+    it("reports the rows a page shows", () => {
+        expect(pageRange(1, 15, 42)).toEqual({ from: 1, to: 15 });
+        expect(pageRange(2, 15, 42)).toEqual({ from: 16, to: 30 });
+        expect(pageRange(3, 15, 42)).toEqual({ from: 31, to: 42 });
+    });
+
+    it("is empty for an empty list or a broken page size", () => {
+        expect(pageRange(1, 15, 0)).toEqual({ from: 0, to: 0 });
+        expect(pageRange(1, 0, 10)).toEqual({ from: 0, to: 0 });
+        expect(pageRange(1, 15, -1)).toEqual({ from: 0, to: 0 });
+    });
+
+    it("never points past the total", () => {
+        expect(pageRange(10, 15, 42)).toEqual({ from: 42, to: 42 });
+        expect(pageRange(0, 15, 42)).toEqual({ from: 1, to: 15 });
     });
 });

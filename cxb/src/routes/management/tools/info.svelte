@@ -19,7 +19,9 @@
     import { goto } from "@roxi/routify";
     import { _ } from "@/i18n";
     import { Level, showToast } from "@/utils/toast";
-    $goto;
+
+    // Injected by vite.config.ts from `git rev-parse`; "N/A" outside a checkout.
+    const gitHash: string = import.meta.env.VITE_GIT_HASH ?? "N/A";
 
     const TabMode = {
         settings: "settings",
@@ -100,6 +102,9 @@
             <p class="text-gray-500">
                 Get information about connected instance of Dmart.
             </p>
+            <p class="text-xs text-gray-500 dark:text-gray-400 mt-1 font-mono">
+                {$_("build_hash")}: {gitHash}
+            </p>
         </div>
     </div>
 
@@ -167,13 +172,13 @@
             class={activeTab === TabMode.settings ? "" : "hidden"}
             role="tabpanel"
         >
-            <Table2Cols bind:entry={settings} />
+            <Table2Cols entry={settings} />
         </div>
         <div
             class={activeTab === TabMode.manifest ? "" : "hidden"}
             role="tabpanel"
         >
-            <Table2Cols bind:entry={manifest} />
+            <Table2Cols entry={manifest} />
         </div>
         <div
             class={activeTab === TabMode.plugins ? "" : "hidden"}
@@ -199,7 +204,7 @@
                             <TableHeadCell>Type</TableHeadCell>
                         </TableHead>
                         <TableBody>
-                            {#each plugins as p}
+                            {#each plugins as p (p.shortname)}
                                 <TableBodyRow>
                                     <TableBodyCell>{p.shortname}</TableBodyCell>
                                     <TableBodyCell>{p.version}</TableBodyCell>

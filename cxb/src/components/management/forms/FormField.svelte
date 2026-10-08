@@ -241,7 +241,7 @@
     {:else if schema?.enum}
         <Select id={idPath} bind:value {required}>
             <option value="">Select an option</option>
-            {#each schema.enum as option}
+            {#each schema.enum as option (option)}
                 <option value={option}>{option}</option>
             {/each}
         </Select>

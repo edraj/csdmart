@@ -27,7 +27,7 @@
 <Table>
   <thead>
   <tr>
-    {#each columns as key}
+    {#each columns as key (key)}
       <th>{key[0].toUpperCase() + key.slice(1)}</th>
     {/each}
       <th>Action</th>
@@ -35,16 +35,16 @@
   </thead>
   <tbody>
 
-    {#each entries.items as entry, index}
+    {#each entries.items as entry, index (index)}
       <tr class="mt-2">
-        {#each columns as key}
+        {#each columns as key (key)}
           <td><Input bind:value={entry[key]} /></td>
         {/each}
         <td><Button class="cursor-pointer bg-red-600" onclick={() => removeEntry(index)}><TrashBinSolid size="sm" /></Button></td>
       </tr>
     {/each}
     <tr class="mt-2">
-      {#each columns as key}
+      {#each columns as key (key)}
         <td><Input bind:value={tempNew[key]} placeholder={`New ${key}`} /></td>
       {/each}
       <td><Button class="cursor-pointer bg-primary" onclick={appendEntry}><PlusOutline size="sm" /></Button></td>

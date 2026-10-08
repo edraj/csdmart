@@ -19,6 +19,7 @@
 
     let {
         formData = $bindable(),
+        // eslint-disable-next-line @typescript-eslint/no-unused-vars, no-useless-assignment -- $bindable() written back to the parent, never read here
         validateFn = $bindable(),
         readOnly = false
     }: {
@@ -190,7 +191,7 @@
     function updateJsonEditor() {
         try {
             jsonEditorContent = JSON.stringify(formData.allowed_fields_values, null, 2);
-        } catch (e) {
+        } catch {
             jsonEditorContent = '{}';
         }
     }
@@ -198,7 +199,7 @@
     function saveJsonEditor() {
         try {
             if (formData) formData.allowed_fields_values = JSON.parse(jsonEditorContent);
-        } catch (e) {
+        } catch {
             alert('Invalid JSON format');
         }
     }
@@ -208,7 +209,7 @@
     function validate() {
         try {
             if (formData) formData.allowed_fields_values = JSON.parse(jsonEditorContent);
-        } catch (e) {
+        } catch {
             showToast(Level.warn, 'Invalid JSON format in Allowed Fields Values', 'Please correct the JSON syntax.');
         }
 
@@ -273,7 +274,7 @@
 
             {#if formData.resource_types.length > 0}
                 <div class="mt-2 flex flex-wrap gap-2">
-                    {#each formData.resource_types as item}
+                    {#each formData.resource_types as item (item)}
                         <div class="bg-blue-100 text-blue-800 px-3 py-1 rounded-full flex items-center">
                             <span>{item}</span>
                             {#if !readOnly}
@@ -310,7 +311,7 @@
 
             {#if formData.actions.length > 0}
                 <div class="mt-2 flex flex-wrap gap-2">
-                    {#each formData.actions as item}
+                    {#each formData.actions as item (item)}
                         <div class="bg-green-100 text-green-800 px-3 py-1 rounded-full flex items-center">
                             <span>{item}</span>
                             {#if !readOnly}
@@ -383,11 +384,11 @@
                     {/if}
                     {#if Object.keys(formData.subpaths).length > 0}
                         <div class="mt-4 border rounded-lg p-4 bg-gray-50">
-                            {#each subpathEntries as [space, paths]}
+                            {#each subpathEntries as [space, paths] (space)}
                                 <div class="mb-4">
                                     <div class="font-medium text-gray-700 mb-2">{space}</div>
                                     <div class="flex flex-wrap gap-2">
-                                        {#each paths as path}
+                                        {#each paths as path (path)}
                                             <div class="bg-purple-100 text-purple-800 px-3 py-1 rounded-full flex items-center">
                                                 <span>{path}</span>
                                                 {#if !readOnly}
@@ -435,7 +436,7 @@
 
                         {#if formData.conditions.length > 0}
                             <div class="mt-2 flex flex-wrap gap-2">
-                                {#each formData.conditions as item}
+                                {#each formData.conditions as item (item)}
                                     <div class="bg-yellow-100 text-yellow-800 px-3 py-1 rounded-full flex items-center">
                                         <span>{item}</span>
                                         {#if !readOnly}
@@ -474,7 +475,7 @@
 
                         {#if formData.restricted_fields.length > 0}
                             <div class="mt-2 flex flex-wrap gap-2">
-                                {#each formData.restricted_fields as item}
+                                {#each formData.restricted_fields as item (item)}
                                     <div class="bg-red-100 text-red-800 px-3 py-1 rounded-full flex items-center">
                                         <span>{item}</span>
                                         {#if !readOnly}

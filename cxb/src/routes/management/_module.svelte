@@ -1,6 +1,5 @@
 <!-- routify:meta reset -->
 <script lang="ts">
-    import {goto} from '@roxi/routify';
     import {Dmart, DmartScope} from "@edraj/tsdmart";
     import {clearLocalSession, ensureDmartAxios} from "@/lib/dmart_axios";
     import Login from "@/components/Login.svelte";
@@ -9,7 +8,6 @@
     import {getSpaces} from "@/lib/dmart_services.js";
     import {user} from "@/stores/user.js";
 
-    $goto
 
     // The axios instance (and its 401 interceptor) now lives in
     // src/lib/dmart_axios.ts so routes outside /management — the
@@ -93,7 +91,7 @@
             </div>
         </div>
     {/if}
-{:catch error}
+{:catch}
     <Login />
     <div style="display:none"><slot /></div>
 {/await}

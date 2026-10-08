@@ -12,7 +12,6 @@
         CloseOutline,
     } from "flowbite-svelte-icons";
 
-    $goto;
 
     interface HistoryEntry {
         entries_count: number;
@@ -206,7 +205,7 @@
         <p class="text-gray-500 text-center mt-16">No data available.</p>
     {:else}
         <div class="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-6">
-            {#each spaces as space}
+            {#each spaces as space (space.spacename)}
                 {@const t = trend(space)}
                 {@const canGraph = space.data?.length >= 2}
                 {@const mode = viewModes[space.spacename] ?? "table"}
@@ -317,7 +316,7 @@
                                 </defs>
 
                                 <!-- Y-axis grid lines + labels -->
-                                {#each chart.yTicks as tick}
+                                {#each chart.yTicks as tick, i (i)}
                                     {@const cy = chart.scaleY(tick)}
                                     <line
                                         x1={PAD.left}
@@ -348,7 +347,7 @@
                                 />
 
                                 <!-- Dots with tooltips -->
-                                {#each chart.dots as dot}
+                                {#each chart.dots as dot (dot.cx)}
                                     <g>
                                         <title
                                             >{dot.label}: {dot.count.toLocaleString()}</title
@@ -365,7 +364,7 @@
                                 {/each}
 
                                 <!-- X-axis labels -->
-                                {#each chart.xLabels as lbl}
+                                {#each chart.xLabels as lbl, i (i)}
                                     <text
                                         x={lbl.x}
                                         y={H - 4}
@@ -397,7 +396,7 @@
                                         </tr>
                                     </thead>
                                     <tbody>
-                                        {#each [...space.data].reverse() as entry}
+                                        {#each [...space.data].reverse() as entry (entry.recorded_at)}
                                             <tr
                                                 class="border-b border-gray-50 hover:bg-gray-50"
                                             >
@@ -564,7 +563,7 @@
                         </linearGradient>
                     </defs>
 
-                    {#each fsChart.yTicks as tick}
+                    {#each fsChart.yTicks as tick, i (i)}
                         {@const cy = fsChart.scaleY(tick)}
                         <line
                             x1={fsChart.pad.left}
@@ -584,7 +583,7 @@
                     {/each}
 
                     <!-- X-axis tick for every point -->
-                    {#each fs.data as entry, i}
+                    {#each fs.data as entry, i (entry.recorded_at)}
                         <text
                             x={fsChart.scaleX(i)}
                             y={H - 2}
@@ -604,7 +603,7 @@
                         stroke-linecap="round"
                     />
 
-                    {#each fsChart.dots as dot}
+                    {#each fsChart.dots as dot (dot.cx)}
                         <g>
                             <title
                                 >{dot.label}: {dot.count.toLocaleString()}</title

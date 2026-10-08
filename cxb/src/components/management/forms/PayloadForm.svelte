@@ -34,6 +34,7 @@
         selectedWorkflow = $bindable(),
         selectedInputMode = $bindable(),
         content = $bindable(),
+        // eslint-disable-next-line @typescript-eslint/no-unused-vars, no-useless-assignment -- $bindable() written back to the parent, never read here
         errorContent = $bindable(),
     } = $props();
 
@@ -216,7 +217,7 @@
         const records = schemas?.records ?? [];
         tmpSchemas = records;
 
-        let result: string[] = [];
+        let result: string[];
         const _schemas = records.map((e) => e.shortname);
         if (selectedResourceType === ResourceType.folder) {
             result = ["folder_rendering", ..._schemas];
@@ -260,7 +261,7 @@
                                 2,
                             ),
                         };
-                    } catch (e) {}
+            } catch {}
                 });
             } else if (selectedInputMode === InputMode.form) {
                 untrack(() => {
@@ -270,7 +271,7 @@
                                 $state.snapshot(content),
                             ),
                         };
-                    } catch (e) {}
+            } catch {}
                 });
             }
         }
@@ -389,8 +390,6 @@
             {/if}
         {/if}
 
-        <!--{#if selectedResourceType === ResourceType.content && selectedSchema === "configuration"}-->
-        <!--    <ConfigForm bind:entries={content.json.items}/>-->
         {#if selectedResourceType === ResourceType.content && selectedSchema === "translation"}
             {#if selectedSchemaContent}
                 {#if isCreate}
@@ -441,7 +440,7 @@
                             <ul
                                 class="list-disc list-inside text-sm text-blue-800 mt-1 dark:text-blue-200"
                             >
-                                {#each mismatchedProperties as prop}
+                                {#each mismatchedProperties as prop (prop)}
                                     <li>
                                         <code
                                             class="bg-blue-100 px-1 rounded dark:bg-blue-800"

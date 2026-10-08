@@ -1,15 +1,13 @@
-<script>
+<script lang="ts">
     import { spaces } from "@/stores/management/spaces";
-    import { Card } from "flowbite-svelte";
     import {
         CalendarMonthOutline,
         ArrowLeftOutline,
     } from "flowbite-svelte-icons";
     import { goto } from "@roxi/routify";
+    import SpaceGrid from "@/components/ui/SpaceGrid.svelte";
 
-    $goto;
-
-    async function handleSelectedSpace(spaceShortname) {
+    function handleSelectedSpace(spaceShortname: string) {
         $goto(`/management/tools/events/[space_name]`, {
             space_name: spaceShortname,
         });
@@ -37,39 +35,5 @@
         </div>
     </div>
     <hr class="mb-6 border-gray-300" />
-    <div
-        class="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 lg:grid-cols-4 xl:grid-cols-4 gap-4 w-full place-items-center"
-    >
-        {#each ($spaces ?? []) as space}
-            <Card class="relative w-full">
-                <!-- svelte-ignore a11y_no_static_element_interactions -->
-                <!-- svelte-ignore a11y_click_events_have_key_events -->
-                <div
-                    class="flex flex-col items-center text-center p-4"
-                    style="cursor: pointer"
-                    onclick={() => handleSelectedSpace(space.shortname)}
-                >
-                    <span
-                        class="inline-block px-3 py-1 mb-3 border border-gray-300 rounded-md text-sm font-medium"
-                    >
-                        {space.shortname}
-                    </span>
-
-                    <h3 class="font-semibold text-lg">
-                        {space.attributes?.displayname?.en || space.shortname}
-                    </h3>
-
-                    <p class="text-gray-600 mt-2 mb-4 line-clamp-3">
-                        {space?.attributes?.description?.en || ""}
-                    </p>
-
-                    <div class="text-xs text-gray-500 mt-auto">
-                        Updated: {new Date(
-                            space?.attributes.updated_at,
-                        ).toLocaleDateString()}
-                    </div>
-                </div>
-            </Card>
-        {/each}
-    </div>
+    <SpaceGrid spaces={$spaces ?? []} onSelect={handleSelectedSpace} />
 </div>

@@ -109,7 +109,6 @@
     }
   }
 
-  let shortname = $state("auto");
   let isModalInUpdateMode = $state(false);
   let openViewAttachmentModal = $state(false);
 
@@ -233,7 +232,6 @@
     openCreateAttachmentModal = true;
   }
 
-  // svelte-ignore state_referenced_locally
   let selectedFilter = $state("all");
   // svelte-ignore state_referenced_locally
   let filteredAttachments: any = $state(Object.values(attachments).flat(1));
@@ -282,7 +280,7 @@
   });
 </script>
 
-<Modal bind:open={openViewAttachmentModal} size={"lg"}>
+<Modal bind:open={openViewAttachmentModal} size="lg">
   <div class="p-6">
     <JSONEditor
       onRenderMenu={handleRenderMenu}
@@ -293,9 +291,6 @@
   </div>
 </Modal>
 
-<!-- svelte-ignore a11y_click_events_have_key_events -->
-<!-- svelte-ignore a11y_no_static_element_interactions -->
-<div class="d-flex justify-content-between mx-2 flex-row"></div>
 
 {#await fetchDataAssetsForAttachments()}
   <div class="flex flex-row">
@@ -320,7 +315,7 @@
           ALL ({contentTypeGroups.all?.length || 0})
         </Badge>
 
-        {#each Object.keys(contentTypeGroups).filter((key) => key !== "all") as contentType}
+        {#each Object.keys(contentTypeGroups).filter((key) => key !== "all") as contentType (contentType)}
           <Badge
             class={selectedFilter === contentType
               ? "m-1 bg-primary text-white"
@@ -367,7 +362,7 @@
     <div
       class="my-5 grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 lg:grid-cols-4 xl:grid-cols-4 gap-4 w-full place-items-center"
     >
-      {#each filteredAttachments as attachment}
+      {#each filteredAttachments as attachment (attachment.uuid ?? `${attachment.resource_type}:${attachment.shortname}`)}
         <Card class="relative w-full">
           <div class="absolute top-2 left-2">
             <Button class="!p-1" color="light">
@@ -402,8 +397,6 @@
           </div>
 
           <div class="flex flex-col items-center text-center p-4">
-            <!-- svelte-ignore a11y_no_static_element_interactions -->
-            <!-- svelte-ignore a11y_click_events_have_key_events -->
             <span
               class="inline-block px-3 py-1 mb-3 border border-gray-300 rounded-md text-sm font-medium bg-primary"
             >

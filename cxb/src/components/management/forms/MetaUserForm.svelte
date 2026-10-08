@@ -18,9 +18,15 @@
 
     let {
         formData = $bindable(),
+        // eslint-disable-next-line @typescript-eslint/no-unused-vars, no-useless-assignment -- $bindable() written back to the parent, never read here
         validateFn = $bindable(),
         isCreate = false
     } = $props();
+
+    // Kept as script constants: a literal `{` in a markup attribute would
+    // otherwise need `{'{'}` escapes.
+    const EMAIL_PATTERN = "[a-z0-9._%+-]+@[a-z0-9.-]+\\.[a-z]{2,6}$";
+    const MSISDN_PATTERN = "^\\+?\\d{7,15}$";
 
     let form;
 
@@ -241,7 +247,7 @@
                 id="email"
                 type="email"
                 placeholder="user@example.com"
-                pattern="[a-z0-9._%+-]+@[a-z0-9.-]+\.[a-z]{'{'}2,6{'}'}$"
+                pattern={EMAIL_PATTERN}
                 bind:value={formData.email}
                 class={!isEmailValid ? "border-red-500" : ""}
                 onblur={() => emailTouched = true}
@@ -257,7 +263,7 @@
                     id="msisdn"
                     placeholder="+964723456789 / 0712345678"
                     bind:value={formData.msisdn}
-                    pattern="^\+?\d{'{'}7,15{'}'}$" />
+                    pattern={MSISDN_PATTERN} />
         </div>
 
         {#if !isCreate}
@@ -335,7 +341,7 @@
                                     <div class="relative flex-grow">
                                         {#if showRolesDropdown && filteredRoles.length > 0}
                                             <div class="absolute w-full mt-1 bg-white border border-gray-200 rounded-lg shadow-lg z-10 max-h-60 overflow-auto">
-                                                {#each filteredRoles as role}
+                                                {#each filteredRoles as role (role.value)}
                                                     <!-- svelte-ignore a11y_no_static_element_interactions -->
                                                     <!-- svelte-ignore a11y_click_events_have_key_events -->
                                                     <div
@@ -359,7 +365,7 @@
                                     <Label class="mb-2">Added Roles</Label>
                                     <div class="border rounded-lg p-4 bg-gray-50">
                                         <div class="flex flex-wrap gap-2">
-                                            {#each formData.roles as role}
+                                            {#each formData.roles as role (role)}
                                                 <div class="bg-blue-100 text-blue-800 px-3 py-1 rounded-full flex items-center">
                                                     <span>{role}</span>
                                                     <button
@@ -407,7 +413,7 @@
                                     <div class="relative flex-grow">
                                         {#if showGroupsDropdown && filteredGroups.length > 0}
                                             <div class="absolute w-full mt-1 bg-white border border-gray-200 rounded-lg shadow-lg z-10 max-h-60 overflow-auto">
-                                                {#each filteredGroups as group}
+                                                {#each filteredGroups as group (group.value)}
                                                     <!-- svelte-ignore a11y_no_static_element_interactions -->
                                                     <!-- svelte-ignore a11y_click_events_have_key_events -->
                                                     <div
@@ -431,7 +437,7 @@
                                     <Label class="mb-2">Added Groups</Label>
                                     <div class="border rounded-lg p-4 bg-gray-50">
                                         <div class="flex flex-wrap gap-2">
-                                            {#each formData.groups as group}
+                                            {#each formData.groups as group (group)}
                                                 <div class="bg-gray-100 text-gray-800 px-3 py-1 rounded-full flex items-center">
                                                     <span>{group}</span>
                                                     <button

@@ -37,7 +37,6 @@
     import { checkAccess } from "@/utils/checkAccess";
     import { Level, showToast } from "@/utils/toast";
 
-    $goto;
 
     type SearchType = "shortname" | "email" | "msisdn";
 
@@ -147,7 +146,7 @@
             if (userMatches.length === 1) {
                 selectedUserShortname = userMatches[0].shortname;
             }
-        } catch (e) {
+        } catch {
             showToast(Level.warn, "User search failed");
             userMatches = [];
             userSearched = true;
@@ -173,7 +172,7 @@
                 retrieve_attachments: false,
                 validate_schema: null,
             });
-        } catch (e) {
+        } catch {
             showToast(Level.warn, "Failed to fetch user entry");
             userEntry = null;
             isFetching = false;
@@ -226,7 +225,7 @@
                                 break;
                             }
                             offset += OWNED_PAGE_SIZE;
-                        } catch (e) {
+                        } catch {
                             allFetched = false;
                             break;
                         }
@@ -235,7 +234,7 @@
                 }),
             );
             ownedEntries = results.flat();
-        } catch (e) {
+        } catch {
             showToast(Level.warn, "Failed to load owned entries");
             ownedEntries = [];
             allFetched = false;
@@ -317,9 +316,11 @@
         succeededKeys: Set<string>;
         failures: FailedDelete[];
     }> {
+        // eslint-disable-next-line svelte/prefer-svelte-reactivity -- plain local accumulator, never rendered
         const succeededKeys = new Set<string>();
         const failures: FailedDelete[] = [];
 
+        // eslint-disable-next-line svelte/prefer-svelte-reactivity -- plain local accumulator, never rendered
         const bySpace = new Map<string, OwnedEntry[]>();
         for (const entry of c) {
             const list = bySpace.get(entry.space_name) ?? [];
@@ -372,6 +373,7 @@
         isDeleting = true;
         deleteProgress = { done: 0, total: targets.length };
         const chunks = chunk(targets, batchSize);
+        // eslint-disable-next-line svelte/prefer-svelte-reactivity -- plain local accumulator, never rendered
         const deletedKeys = new Set<string>();
         const newFailures: FailedDelete[] = [];
         for (const c of chunks) {

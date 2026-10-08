@@ -9,11 +9,11 @@
         ArrowLeftOutline,
     } from "flowbite-svelte-icons";
     import { goto } from "@roxi/routify";
-    $goto;
 
     let zipFile: File | null = $state(null);
     let isUploading: boolean = $state(false);
     let importEvents: Array<{
+        id: string;
         timestamp: string;
         status: "success" | "error";
         filename: string;
@@ -83,6 +83,7 @@
                 showToast(Level.info, $_("import_successful"));
                 importEvents = [
                     {
+                        id: crypto.randomUUID(),
                         timestamp: new Date().toLocaleTimeString(),
                         status: "success",
                         filename: fileName,
@@ -100,6 +101,7 @@
                 showToast(Level.warn, $_("import_failed"));
                 importEvents = [
                     {
+                        id: crypto.randomUUID(),
                         timestamp: new Date().toLocaleTimeString(),
                         status: "error",
                         filename: fileName,
@@ -118,6 +120,7 @@
             showToast(Level.warn, errorMsg);
             importEvents = [
                 {
+                    id: crypto.randomUUID(),
                     timestamp: new Date().toLocaleTimeString(),
                     status: "error",
                     filename: fileName,
@@ -216,7 +219,7 @@
                         </tr>
                         </thead>
                         <tbody>
-                        {#each importEvents as event}
+                        {#each importEvents as event (event.id)}
                             <tr
                                     class="border-b {event.status === 'success'
                                         ? 'bg-green-50 text-green-800'

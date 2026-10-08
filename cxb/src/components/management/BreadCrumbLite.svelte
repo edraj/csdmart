@@ -5,7 +5,6 @@
     import {ChevronDoubleRightOutline, CodeForkSolid} from "flowbite-svelte-icons";
     import {subpathSegments} from "@/utils/subpath";
 
-    $goto
 
     let {
         space_name,

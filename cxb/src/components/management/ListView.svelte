@@ -1,6 +1,8 @@
 <script lang="ts">
     import { resolveTotal } from "@shared/query-total";
-    import {functionCreateDatatable, Pagination, RowsPerPage, Sort,} from "@/components/management/datatable";
+    import {functionCreateDatatable, Sort} from "@/components/management/datatable";
+    import Pagination from "@/components/ui/Pagination.svelte";
+    import {rowKey} from "@/utils/rowKey";
     import {Dmart, DmartScope, type ApiResponseRecord, type QueryRequest, QueryType, SortyType,} from "@edraj/tsdmart";
     import cols from "@/utils/jsons/list_cols.json";
     import {searchListView} from "@/stores/management/triggers";
@@ -33,10 +35,8 @@
     import {filterRequestHeaders, getAttributeValue, getRowsPerPageSetting} from "@/utils/listViewUtils";
     import {website} from "@/config";
     import {resolveBackendBase} from "@shared/backend-url";
-    import {clampPage, pageCount} from "@/utils/paging";
+    import {clampPage} from "@/utils/paging";
     import {_} from "@/i18n";
-
-    $goto;
 
     $bulkBucket = [];
 
@@ -127,19 +127,6 @@
     // Last values the effects below acted on, so they only react to changes.
     let numberActivePage: number = clampPage(page, null, initialRowsPerPage);
     let numberRowsPerPage: number = initialRowsPerPage;
-    let propNumberOfPages: number = $state(1);
-
-    let paginationBottomInfoFrom = $derived(
-        (total ?? 0) === 0
-            ? 0
-            : objectDatatable.numberRowsPerPage * (objectDatatable.numberActivePage - 1) + 1,
-    );
-    let paginationBottomInfoTo = $derived(
-        Math.min(
-            objectDatatable.numberRowsPerPage * objectDatatable.numberActivePage,
-            total ?? 0,
-        ),
-    );
 
     function syncPageParam(pageNo: number) {
         const { page: _page, ...rest } = $params;
@@ -155,7 +142,6 @@
 
     function publishTotal(value: number) {
         total = value;
-        propNumberOfPages = pageCount(value, objectDatatable.numberRowsPerPage);
         if ($currentListView) {
             $currentListView.total = value;
         }
@@ -583,7 +569,7 @@
     void fetchPageRecords(true, {});
 </script>
 
-<Modal bind:open size={"lg"}>
+<Modal bind:open size="lg">
     <div class="modal-header">
         <h5 class="modal-title">
             {modalData.shortname}
@@ -664,7 +650,7 @@
                                 <Checkbox class="bg-[color:var(--color-bg)]" onchange={handleAllBulk}/>
                             </TableHeadCell>
                         {/if}
-                        {#each Object.keys(columns ?? {}) as col}
+                        {#each Object.keys(columns ?? {}) as col (col)}
                             <TableHeadCell class="p-2 border-b border-[color:var(--color-border)] font-semibold text-xs uppercase tracking-wide">
                                 <Sort bind:propDatatable={objectDatatable} propColumn={col}>
                                     {columns?.[col]?.title}
@@ -673,7 +659,7 @@
                         {/each}
                     </TableHead>
                     <TableBody>
-                        {#each objectDatatable.arrayRawData as row, index}
+                        {#each objectDatatable.arrayRawData as row, index (rowKey(row))}
                             {@const typedRow = row as any}
                             <TableBodyRow
                                     class="hover:bg-[color:var(--color-surface-hover)] transition-colors"
@@ -681,8 +667,6 @@
                             >
                                 <div style="all: unset;display: contents;">
                                     {#if canDelete}
-                                        <!-- svelte-ignore a11y_no_static_element_interactions -->
-                                        <!-- svelte-ignore a11y_click_events_have_key_events -->
                                         <span
                                                 style="all: unset;display: contents;"
                                                 role="presentation"
@@ -714,7 +698,7 @@
                                             </TableBodyCell>
                                         </span>
                                     {/if}
-                                    {#each Object.keys(columns ?? {}) as col}
+                                    {#each Object.keys(columns ?? {}) as col (col)}
                                         {@const value = cellText(typedRow, col)}
                                         <TableBodyCell
                                                 class="p-2 border-b border-[color:var(--color-border)] cursor-pointer max-w-xs"
@@ -730,36 +714,14 @@
                 </div>
                 <!-- The pager stays whenever there is anything to page, even
                      while a page is momentarily empty. -->
-                <div
-                        class="flex flex-col md:flex-row justify-between items-center gap-2 mt-4"
-                >
-                    <RowsPerPage
-                            bind:propDatatable={objectDatatable}
-                            class="form-select form-select-sm w-auto"
-                    >
-                        <option value="15">15</option>
-                        <option value="30">30</option>
-                        <option value="50">50</option>
-                        <option value="100">100</option>
-                    </RowsPerPage>
-                    <p class="text-sm text-[color:var(--color-text-muted)] tabular-nums">
-                        {$_("showing_entries", {
-                            values: {
-                                from: paginationBottomInfoFrom,
-                                to: paginationBottomInfoTo,
-                                total: total,
-                            },
-                        })}
-                    </p>
-                    {#key propNumberOfPages}
-                        <Pagination
-                                bind:propDatatable={objectDatatable}
-                                bind:propNumberOfPages
-                                maxPageDisplay={5}
-                                propSize="default"
-                        />
-                    {/key}
-                </div>
+                <Pagination
+                        class="mt-4"
+                        page={objectDatatable.numberActivePage}
+                        pageSize={objectDatatable.numberRowsPerPage}
+                        {total}
+                        onPageChange={(p) => (objectDatatable.numberActivePage = p)}
+                        onPageSizeChange={(size) => (objectDatatable.numberRowsPerPage = size)}
+                />
             {/if}
         </div>
     {/if}

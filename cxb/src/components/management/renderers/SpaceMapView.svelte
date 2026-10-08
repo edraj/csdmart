@@ -85,7 +85,7 @@
     </div>
 {:else}
     <div class="space-y-4">
-        {#each entries(spaceMap) as [space, subpathMap]}
+        {#each entries(spaceMap) as [space, subpathMap] (space)}
             <div
                 class="border border-gray-200 rounded-xl shadow-sm overflow-hidden"
             >
@@ -108,7 +108,7 @@
 
                 <!-- Subpaths -->
                 <div class="divide-y divide-gray-100">
-                    {#each entries(subpathMap) as [subpath, info]}
+                    {#each entries(subpathMap) as [subpath, info] (subpath)}
                         <div class="px-5 py-3 space-y-1.5">
                             <div class="flex items-center gap-2">
                                 <span class="text-base">📁</span>
@@ -126,7 +126,7 @@
                                     <span class="text-xs text-gray-400 mr-1"
                                         >Types:</span
                                     >
-                                    {#each info.resource_types as rt}
+                                    {#each info.resource_types as rt (rt)}
                                         <span
                                             class="bg-purple-100 text-purple-800 text-xs px-2 py-0.5 rounded-full font-medium"
                                             >{rt}</span
@@ -143,7 +143,7 @@
                                     <span class="text-xs text-gray-400 mr-1"
                                         >Actions:</span
                                     >
-                                    {#each info.actions as action}
+                                    {#each info.actions as action (action)}
                                         <span
                                             class="{actionColor(
                                                 action,
@@ -162,7 +162,7 @@
                                     <span class="text-xs text-gray-400 mr-1"
                                         >Conditions:</span
                                     >
-                                    {#each info.conditions as cond}
+                                    {#each info.conditions as cond (cond)}
                                         <span
                                             class="{conditionColor(
                                                 cond,

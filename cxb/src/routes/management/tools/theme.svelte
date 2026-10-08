@@ -14,7 +14,6 @@
         ClipboardOutline,
     } from "flowbite-svelte-icons";
 
-    $goto;
 
     const solidPresets: { name: string; value: string }[] = [
         { name: "Midnight Navy", value: "#1B2A4A" },
@@ -112,7 +111,7 @@
             Solid Colors
         </h2>
         <div class="grid grid-cols-5 gap-4">
-            {#each solidPresets as preset}
+            {#each solidPresets as preset (preset.value)}
                 <!-- svelte-ignore a11y_click_events_have_key_events -->
                 <!-- svelte-ignore a11y_no_static_element_interactions -->
                 <div
@@ -186,7 +185,7 @@
             Gradient Colors
         </h2>
         <div class="grid grid-cols-5 gap-4">
-            {#each gradientPresets as preset}
+            {#each gradientPresets as preset (preset.value)}
                 <!-- svelte-ignore a11y_click_events_have_key_events -->
                 <!-- svelte-ignore a11y_no_static_element_interactions -->
                 <div
@@ -329,7 +328,7 @@
                     class="flex-1 text-sm border border-gray-300 rounded-lg px-2 py-2"
                     bind:value={gradientDirection}
                 >
-                    {#each gradientDirections as dir}
+                    {#each gradientDirections as dir (dir.value)}
                         <option value={dir.value}>{dir.label}</option>
                     {/each}
                 </select>

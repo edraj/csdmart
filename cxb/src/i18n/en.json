@@ -297,5 +297,22 @@
   "entries_restore_failed": "Failed to restore the entries.",
   "entry_restored": "Entry restored successfully.",
   "entry_restore_failed": "Failed to restore the entry.",
-  "not_in_trash": "This entry is not inside a trash folder."
+  "not_in_trash": "This entry is not inside a trash folder.",
+  "pagination": "Pagination",
+  "updated": "Updated",
+  "saving": "Saving...",
+  "confirm_update": "Confirm update",
+  "permission_update_warning": "Permission update warning",
+  "role_update_warning": "Role update warning",
+  "schema_update_warning": "Schema update warning",
+  "permission_impact_message": "{count, plural, one {# role} other {# roles}} will be affected by this permission change.",
+  "role_impact_message": "{count, plural, one {# user} other {# users}} will be affected by this role change.",
+  "schema_impact_message": "{count, plural, one {# record} other {# records}} may be affected by this schema change.",
+  "confirm_update_permission": "Are you sure you want to update the permission",
+  "confirm_update_role": "Are you sure you want to update the role",
+  "confirm_update_schema": "Are you sure you want to update the schema",
+  "page_not_found": "Page not found",
+  "page_not_found_hint": "The address is wrong or the item it points to no longer exists.",
+  "go_to_spaces": "Go to spaces",
+  "build_hash": "Build"
 }

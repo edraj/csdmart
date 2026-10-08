@@ -2,7 +2,7 @@ import {writable} from "svelte/store";
 import {ResourceType, type ResponseEntry} from "@edraj/tsdmart";
 
 export const currentEntry = writable<{entry: ResponseEntry | null; [key: string]: any} | null>(null);
-export const currentListView = writable<{fetchPageRecords: (isSetPage?: boolean, requestExtra?: {}) => Promise<void>; query?: any; [key: string]: any} | null>(null);
+export const currentListView = writable<{fetchPageRecords: (isSetPage?: boolean, requestExtra?: Record<string, unknown>) => Promise<void>; query?: any; [key: string]: any} | null>(null);
 /**
  * The sidebar's folder-children cache. Keys come from `sidebarCacheKey()` in
  * `@/utils/subpath` — every writer and reader must build them there, or a

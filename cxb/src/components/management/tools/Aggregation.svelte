@@ -59,7 +59,7 @@
   {/if}
 
   <div class="space-y-4">
-    {#each aggregation_data[currentSection] as input, index}
+    {#each aggregation_data[currentSection] as input, index (index)}
       {#if currentSection === "reducers"}
         <div class="grid grid-cols-3 gap-4">
           <div>

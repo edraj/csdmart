@@ -6,7 +6,6 @@
     import {getAvatar} from "@/lib/dmart_services";
     import {locale, switchLocale} from "@/i18n";
 
-    $goto
 
     function setLanguage(lang: string) {
         switchLocale(lang);
@@ -56,14 +55,14 @@
                     <Avatar src={undefined} size="xs" class="ring-2 ring-white"/>
                 {:then avatar}
                     <Avatar src={avatar ?? undefined} size="xs" class="ring-2 ring-white"/>
-                {:catch error}
+                {:catch}
                     <Avatar src={undefined} size="xs" class="ring-2 ring-white"/>
                 {/await}
 
                 <span class="text-sm">{$user.shortname}</span>
 
                 <Dropdown simple>
-                    <DropdownItem onclick={(e) => $goto('/management')}>
+                    <DropdownItem onclick={() => $goto('/management')}>
                         <div class="flex items-center gap-2">
                             <ToggleHeaderRowOutline size="md" /> Dashboard
                         </div>
@@ -82,7 +81,6 @@
                 </Dropdown>
             </Button>
         {/if}
-    <!-- TODO add lang switcher en,ar   -->
 
     </div>
 </div>

@@ -244,7 +244,7 @@
                 parsedContent = jsonEditorContentParser(
                     $state.snapshot(content),
                 );
-            } catch (e) {
+            } catch {
                 errorModalMessage = "Invalid JSON format in payload.";
                 isHandleCreateEntryLoading = false;
                 return;
@@ -309,12 +309,6 @@
                         content_type: "json",
                     },
                 };
-                if (
-                    requestCreate.attributes.payload === null &&
-                    requestCreate.attributes.schema_shortname === null
-                ) {
-                    delete requestCreate.attributes.payload;
-                }
             }
 
             const request = {
@@ -436,7 +430,7 @@
 
         {#if errorContent}
             <div id="error-content" class="mt-3">
-                <Prism code={errorContent} language={"json"} />
+                <Prism code={errorContent} language="json" />
             </div>
         {/if}
     </div>

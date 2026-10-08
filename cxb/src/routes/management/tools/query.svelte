@@ -25,7 +25,6 @@
         ArrowLeftOutline,
     } from "flowbite-svelte-icons";
     import { goto } from "@roxi/routify";
-    $goto;
     import Aggregation from "@/components/management/tools/Aggregation.svelte";
     import Prism from "@/components/Prism.svelte";
     import {
@@ -208,7 +207,7 @@
                         <Label for="type" class="mb-2">{$_("query_type")}</Label
                         >
                         <Select id="type" required bind:value={queryType}>
-                            {#each Object.keys(QueryType) as _queryType}
+                            {#each Object.keys(QueryType) as _queryType (_queryType)}
                                 <option value={_queryType}>{_queryType}</option>
                             {/each}
                         </Select>
@@ -218,7 +217,7 @@
                             >{$_("space_name")}</Label
                         >
                         <Select id="space_name" bind:value={space_name}>
-                            {#each spaces as space}
+                            {#each spaces as space (space.shortname)}
                                 <option value={space.shortname}
                                     >{space.shortname}</option
                                 >
@@ -229,8 +228,8 @@
                         <Label for="subpath" class="mb-2">{$_("subpath")}</Label
                         >
                         <Select id="subpath" bind:value={subpath}>
-                            <option value={"/"}>/</option>
-                            {#each subpaths as path}
+                            <option value="/">/</option>
+                            {#each subpaths as path (path)}
                                 <option value={path}>{path}</option>
                             {/each}
                         </Select>
@@ -251,7 +250,7 @@
                                     bind:value={resource_type}
                                 >
                                     <option value={null}></option>
-                                    {#each Object.keys(ResourceType) as type}
+                                    {#each Object.keys(ResourceType) as type (type)}
                                         <option value={type}>{type}</option>
                                     {/each}
                                 </Select>

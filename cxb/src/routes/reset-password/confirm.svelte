@@ -21,7 +21,6 @@
   } from "@/lib/password_reset";
   import { ensureDmartAxios } from "@/lib/dmart_axios";
 
-  $goto;
 
   let target: ResetIdentifier | null = $state(null);
   let otp: string = $state("");

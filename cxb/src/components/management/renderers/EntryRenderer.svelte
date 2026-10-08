@@ -50,6 +50,7 @@
     import WorkflowDiagram from "@/components/management/diagram/WorkflowDiagram.svelte";
     import SchemaDiagram from "@/components/management/diagram/SchemaDiagram.svelte";
     import { Button, Card, Modal } from "flowbite-svelte";
+    import ImpactModal from "@/components/ui/ImpactModal.svelte";
     import { searchListView } from "@/stores/management/triggers";
     import { isDeepEqual } from "@/utils/compare";
     import { user } from "@/stores/user";
@@ -94,7 +95,6 @@
         resource_type: ResourceType;
     } = $props();
 
-    $goto;
 
     $searchListView = "";
 
@@ -128,7 +128,6 @@
 
     // svelte-ignore state_referenced_locally
     const canUpdate = checkAccess("update", space_name, subpath, resource_type);
-    // svelte-ignore state_referenced_locally
     const canDelete = (() => {
         if (space_name === "management" && subpath === "/") {
             if (
@@ -233,7 +232,7 @@
                     showSchemaImpactModal = true;
                     return;
                 }
-            } catch (e) {
+            } catch {
                 isActionLoading = false;
             }
         } else if (resource_type === ResourceType.permission) {
@@ -257,7 +256,7 @@
                     showPermissionImpactModal = true;
                     return;
                 }
-            } catch (e) {
+            } catch {
                 isActionLoading = false;
             }
         } else if (resource_type === ResourceType.role) {
@@ -278,7 +277,7 @@
                     showRoleImpactModal = true;
                     return;
                 }
-            } catch (e) {
+            } catch {
                 isActionLoading = false;
             }
         }
@@ -482,7 +481,7 @@
                         $state.snapshot(jeContent),
                     );
                     jeContent = { text: JSON.stringify(_jeContent, null, 2) };
-                } catch (e) {}
+                } catch {}
             });
         } else if (activeTab === TabMode.form) {
             untrack(() => {
@@ -491,12 +490,11 @@
                         $state.snapshot(jeContent),
                     );
                     jeContent = { json: _jeContent };
-                } catch (e) {}
+                } catch {}
             });
         }
     });
 
-    let isRefreshLoading = $state(false);
     let hasStreamChanges = $state(false);
     async function handleRefresh(e) {
         if (e) {
@@ -524,7 +522,7 @@
                     jsonEditorContentParser($state.snapshot(jeContent)),
                     $state.snapshot(originalJeContent),
                 );
-            } catch (e) {
+            } catch {
                 isJEDirty = true;
             }
         }
@@ -881,10 +879,7 @@
                         : "inline-flex items-center p-4 border-b-2 rounded-t-lg border-transparent hover:text-primary hover:border-primary"}
                         type="button"
                         onclick={handleRefresh}
-                        disabled={isRefreshLoading}
-                        style={isRefreshLoading
-                        ? "cursor: not-allowed"
-                        : "cursor: pointer"}
+                        style="cursor: pointer"
                         title={hasStreamChanges ? "Changes available — click to refresh" : "Refresh"}
                 >
                     <div class="flex items-center gap-2">
@@ -1161,121 +1156,36 @@
     </div>
 </Modal>
 
-<Modal
-        bind:open={showPermissionImpactModal}
-        size="md"
-        title="Permission Update Warning"
->
-    <div class="text-center mb-6">
-        <div
-                class="bg-yellow-50 border-l-4 border-yellow-400 p-4 mb-4 text-left dark:bg-yellow-900/20 dark:border-yellow-500"
-        >
-            <p class="text-sm text-yellow-700 font-medium dark:text-yellow-400">
-                ⚠ <strong>{permissionAffectedRoles.length}</strong>
-                role{permissionAffectedRoles.length === 1 ? "" : "s"} will be affected by this
-                permission change.
-            </p>
-            <ul class="mt-2 list-disc list-inside text-sm text-yellow-700 dark:text-yellow-400">
-                {#each permissionAffectedRoles as role}
-                    <li>{role}</li>
-                {/each}
-            </ul>
-        </div>
-        <p>
-            Are you sure you want to update the permission <span class="font-bold"
-        >{entry.shortname}</span
-        >?
-        </p>
-    </div>
+<ImpactModal
+    bind:open={showPermissionImpactModal}
+    title={$_("permission_update_warning")}
+    message={$_("permission_impact_message", { values: { count: permissionAffectedRoles.length } })}
+    details={permissionAffectedRoles}
+    question={$_("confirm_update_permission")}
+    subject={entry.shortname}
+    loading={isActionLoading}
+    onConfirm={confirmPermissionUpdate}
+    onCancel={cancelPermissionUpdate}
+/>
 
-    <div class="flex justify-between w-full">
-        <Button
-                class="cursor-pointer"
-                color="alternative"
-                onclick={cancelPermissionUpdate}>Cancel</Button
-        >
-        <Button
-                class="bg-primary cursor-pointer"
-                onclick={confirmPermissionUpdate}
-                disabled={isActionLoading}
-        >
-            {isActionLoading ? "Saving..." : "Confirm Update"}
-        </Button>
-    </div>
-</Modal>
+<ImpactModal
+    bind:open={showRoleImpactModal}
+    title={$_("role_update_warning")}
+    message={$_("role_impact_message", { values: { count: roleAffectedUsersCount } })}
+    question={$_("confirm_update_role")}
+    subject={entry.shortname}
+    loading={isActionLoading}
+    onConfirm={confirmRoleUpdate}
+    onCancel={cancelRoleUpdate}
+/>
 
-<Modal
-        bind:open={showRoleImpactModal}
-        size="md"
-        title="Role Update Warning"
->
-    <div class="text-center mb-6">
-        <div
-                class="bg-yellow-50 border-l-4 border-yellow-400 p-4 mb-4 text-left dark:bg-yellow-900/20 dark:border-yellow-500"
-        >
-            <p class="text-sm text-yellow-700 font-medium dark:text-yellow-400">
-                ⚠ <strong>{roleAffectedUsersCount}</strong>
-                user{roleAffectedUsersCount === 1 ? "" : "s"} will be affected by this
-                role change.
-            </p>
-        </div>
-        <p>
-            Are you sure you want to update the role <span class="font-bold"
-        >{entry.shortname}</span
-        >?
-        </p>
-    </div>
-
-    <div class="flex justify-between w-full">
-        <Button
-                class="cursor-pointer"
-                color="alternative"
-                onclick={cancelRoleUpdate}>Cancel</Button
-        >
-        <Button
-                class="bg-primary cursor-pointer"
-                onclick={confirmRoleUpdate}
-                disabled={isActionLoading}
-        >
-            {isActionLoading ? "Saving..." : "Confirm Update"}
-        </Button>
-    </div>
-</Modal>
-
-<Modal
-        bind:open={showSchemaImpactModal}
-        size="md"
-        title="Schema Update Warning"
->
-    <div class="text-center mb-6">
-        <div
-                class="bg-yellow-50 border-l-4 border-yellow-400 p-4 mb-4 text-left dark:bg-yellow-900/20 dark:border-yellow-500"
-        >
-            <p class="text-sm text-yellow-700 font-medium dark:text-yellow-400">
-                ⚠ <strong>{schemaAffectedCount}</strong>
-                record{schemaAffectedCount === 1 ? "" : "s"} may be affected by this
-                schema change.
-            </p>
-        </div>
-        <p>
-            Are you sure you want to update the schema <span class="font-bold"
-        >{entry.shortname}</span
-        >?
-        </p>
-    </div>
-
-    <div class="flex justify-between w-full">
-        <Button
-                class="cursor-pointer"
-                color="alternative"
-                onclick={cancelSchemaUpdate}>Cancel</Button
-        >
-        <Button
-                class="bg-primary cursor-pointer"
-                onclick={confirmSchemaUpdate}
-                disabled={isActionLoading}
-        >
-            {isActionLoading ? "Saving..." : "Confirm Update"}
-        </Button>
-    </div>
-</Modal>
+<ImpactModal
+    bind:open={showSchemaImpactModal}
+    title={$_("schema_update_warning")}
+    message={$_("schema_impact_message", { values: { count: schemaAffectedCount } })}
+    question={$_("confirm_update_schema")}
+    subject={entry.shortname}
+    loading={isActionLoading}
+    onConfirm={confirmSchemaUpdate}
+    onCancel={cancelSchemaUpdate}
+/>

@@ -297,5 +297,22 @@
   "entries_restore_failed": "فشلت استعادة المدخلات.",
   "entry_restored": "تمت استعادة المدخل بنجاح.",
   "entry_restore_failed": "فشلت استعادة المدخل.",
-  "not_in_trash": "هذا المدخل ليس داخل مجلد المهملات."
+  "not_in_trash": "هذا المدخل ليس داخل مجلد المهملات.",
+  "pagination": "ترقيم الصفحات",
+  "updated": "آخر تحديث",
+  "saving": "جارٍ الحفظ...",
+  "confirm_update": "تأكيد التحديث",
+  "permission_update_warning": "تحذير تحديث الصلاحية",
+  "role_update_warning": "تحذير تحديث الدور",
+  "schema_update_warning": "تحذير تحديث المخطط",
+  "permission_impact_message": "{count, plural, one {دور واحد سيتأثر} two {دوران سيتأثران} few {# أدوار ستتأثر} many {# دورًا سيتأثر} other {# دور سيتأثر}} بهذا التغيير في الصلاحية.",
+  "role_impact_message": "{count, plural, one {مستخدم واحد سيتأثر} two {مستخدمان سيتأثران} few {# مستخدمين سيتأثرون} many {# مستخدمًا سيتأثرون} other {# مستخدم سيتأثرون}} بهذا التغيير في الدور.",
+  "schema_impact_message": "{count, plural, one {سجل واحد قد يتأثر} two {سجلان قد يتأثران} few {# سجلات قد تتأثر} many {# سجلًا قد يتأثر} other {# سجل قد يتأثر}} بهذا التغيير في المخطط.",
+  "confirm_update_permission": "هل أنت متأكد من تحديث الصلاحية",
+  "confirm_update_role": "هل أنت متأكد من تحديث الدور",
+  "confirm_update_schema": "هل أنت متأكد من تحديث المخطط",
+  "page_not_found": "الصفحة غير موجودة",
+  "page_not_found_hint": "العنوان غير صحيح أو أن العنصر الذي يشير إليه لم يعد موجودًا.",
+  "go_to_spaces": "الانتقال إلى الفضاءات",
+  "build_hash": "رقم البناء"
 }

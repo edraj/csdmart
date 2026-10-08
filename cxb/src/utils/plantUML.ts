@@ -19,7 +19,7 @@ export function plantUmlSvgUrl(server: string | null | undefined, encoded: strin
 }
 
 function schemaVisualizationParser(properties) {
-    let output: any = {};
+    const output: any = {};
 
     for (const key in properties) {
         const property = properties[key];
@@ -62,7 +62,7 @@ export function schemaVisualizationEncoder(entry) {
             },
         };
         return currentDiagram.encodedContent();
-    } catch (error) {
+    } catch {
         return {
             name: "",
             content: `${startjsonForPlantUML}\n{"error": "something is wrong with the schema"}\n@endjson`,

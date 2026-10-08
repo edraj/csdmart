@@ -59,7 +59,7 @@ export async function saveEntry(
     let content;
     try {
         content = jsonEditorContentParser(jeContent);
-    } catch (error) {
+    } catch {
         return { success: false, errorMessage: "Invalid JSON format" };
     }
 

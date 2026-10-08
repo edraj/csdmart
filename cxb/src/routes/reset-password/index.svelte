@@ -13,7 +13,6 @@
   } from "@/lib/password_reset";
   import { ensureDmartAxios } from "@/lib/dmart_axios";
 
-  $goto;
 
   let rawIdentifier: string = $state("");
   let isSubmitting: boolean = $state(false);

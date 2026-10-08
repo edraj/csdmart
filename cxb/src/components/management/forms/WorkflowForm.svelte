@@ -118,7 +118,7 @@
     <Card class="p-4 max-w-4xl mx-auto">
         <h3 class="text-xl font-semibold mb-2">Initial States</h3>
         <div class="space-y-4">
-            {#each content.initial_state as initialState, index}
+            {#each content.initial_state as initialState, index (index)}
                 <Card class="p-4 w-full">
                     <div class="flex justify-between items-center mb-2">
                         <h4 class="text-lg font-medium">
@@ -166,7 +166,7 @@
     <Card class="p-4 max-w-4xl mx-auto">
         <h3 class="text-xl font-semibold mb-2">States</h3>
         <div class="space-y-4">
-            {#each content.states as state, stateIndex}
+            {#each content.states as state, stateIndex (stateIndex)}
                 <Accordion>
                     <AccordionItem>
                         {#snippet header()}
@@ -215,7 +215,7 @@
                             <div class="mt-4">
                                 <Label class="text-lg">Next Transitions</Label>
                                 <div class="space-y-3">
-                                    {#each state.next as transition, transitionIndex}
+                                    {#each state.next as transition, transitionIndex (transitionIndex)}
                                         <Card class="p-3">
                                             <div
                                                 class="flex justify-between items-center mb-2"
@@ -284,7 +284,7 @@
                             <div class="mt-4">
                                 <Label class="text-lg">Resolutions</Label>
                                 <div class="space-y-3">
-                                    {#each state.resolutions as resolution, resolutionIndex}
+                                    {#each state.resolutions as resolution, resolutionIndex (resolutionIndex)}
                                         <Card class="p-3">
                                             <div
                                                 class="flex justify-between items-center mb-2"

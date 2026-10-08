@@ -5,7 +5,6 @@
     import { Spinner } from "flowbite-svelte";
     import { ArrowLeftOutline, DatabaseSolid } from "flowbite-svelte-icons";
 
-    $goto;
 
     interface DbSizeEntry {
         table_name: string;
@@ -123,7 +122,7 @@
                     </tr>
                 </thead>
                 <tbody>
-                    {#each data as row, index}
+                    {#each data as row, index (row.table_name)}
                         <tr
                             class="border-b border-gray-100 hover:bg-gray-50 transition-colors"
                         >

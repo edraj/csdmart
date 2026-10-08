@@ -29,7 +29,6 @@
 
 <script lang="ts">
   import { setupI18n, dir } from "./i18n";
-  import refresh_spaces from "@/stores/management/refresh_spaces";
   import {locale} from "svelte-i18n";
   function findRoute(routers, paths, lang) {
     if (paths.length === 0) {
@@ -61,7 +60,6 @@
           if (url.startsWith("/management")){
             return url;
           }
-          // eslint-disable-next-line svelte/valid-compile
           const lang = $locale;
           const paths = url.split("/");
           paths.shift();
@@ -135,7 +133,7 @@
     return appRouter;
   }
   setupI18n();
-  $effect(() => { document.dir = $dir; refresh_spaces.refresh(); });
+  $effect(() => { document.dir = $dir; });
 </script>
 
 <div id="routify-app">

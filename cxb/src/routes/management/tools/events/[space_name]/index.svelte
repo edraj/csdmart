@@ -10,7 +10,7 @@
     <ListView
       type={QueryType.events}
       space_name={$params.space_name}
-      subpath={"/"}
+      subpath="/"
       folderColumns={cols_events}
     />
   {/if}

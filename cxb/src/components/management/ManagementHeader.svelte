@@ -25,7 +25,6 @@
     import { theme } from "@/stores/theme.svelte";
     import { navbarTheme, isDarkBackground } from "@/stores/navbar_theme";
 
-    $goto;
 
     let customBg = $derived($navbarTheme?.value);
     let onCustomDark = $derived(isDarkBackground($navbarTheme));
@@ -89,7 +88,7 @@
 >
     <!-- Desktop tabs -->
     <ul class="hidden md:flex flex-row gap-8 me-auto" aria-label="Primary">
-        {#each tabs as tab}
+        {#each tabs as tab (tab.href)}
             {@const Icon = tab.icon}
             {@const current = isActive(tab.match)}
             <li class="relative">
@@ -127,7 +126,7 @@
                 role="tablist"
                 aria-label="Language"
             >
-                {#each availableLangs as lang}
+                {#each availableLangs as lang (lang)}
                     <button
                         type="button"
                         role="tab"
@@ -198,7 +197,7 @@
     </div>
     <nav aria-label="Primary mobile">
         <ul class="flex flex-col gap-1">
-            {#each tabs as tab}
+            {#each tabs as tab (tab.href)}
                 {@const Icon = tab.icon}
                 {@const current = isActive(tab.match)}
                 <li>

@@ -47,14 +47,12 @@
         trashRoot,
     } from "@/utils/subpath";
 
-    $goto;
     let { space_name, subpath }: { space_name: string; subpath: string } =
         $props();
 
     let canCreate = $state(false);
     let canUploadCSV = $state(false);
     let canDownloadCSV = $state(false);
-    let canDelete = $state(false);
     let isCSVDownloadModalOpen = $state(false);
 
     const isEntryTrash = $derived(
@@ -72,7 +70,6 @@
 
         if (space_name === "management" && subpath === "/") {
             canCreate = false;
-            canDelete = false;
             canUploadCSV = false;
             return;
         } else if (space_name === "management" && subpath === "health_check") {
@@ -177,7 +174,7 @@
                     await $currentListView?.fetchPageRecords();
                     $bulkBucket = [];
                 }
-            } catch (e) {
+            } catch {
                 showToast(
                     Level.warn,
                     "Failed to move entries to trash. Please try again later.",
@@ -326,15 +323,6 @@
                     onclick={() => (isCSVDownloadModalOpen = true)}
                 >
                     <DownloadOutline size="md" /> Download
-                </Button>
-            {/if}
-            {#if canDelete}
-                <Button
-                    class="text-red-600 cursor-pointer"
-                    size="xs"
-                    outline
-                >
-                    <TrashBinOutline size="md" /> Delete
                 </Button>
             {/if}
         {/if}

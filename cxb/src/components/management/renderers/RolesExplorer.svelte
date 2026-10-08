@@ -145,6 +145,7 @@
         );
 
         // Collect all unique permission names from successful role fetches
+        // eslint-disable-next-line svelte/prefer-svelte-reactivity -- plain local accumulator, never rendered
         const permissionNamesSet = new Set<string>();
         for (const result of roleEntries) {
             if (result.status === "fulfilled") {

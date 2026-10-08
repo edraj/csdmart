@@ -7,54 +7,34 @@
         Dmart,
         type QueryRequest,
         QueryType,
-        ResourceType,
     } from "@edraj/tsdmart";
     import { getChildren, getChildrenAndSubChildren } from "@/lib/dmart_services";
     import { untrack } from "svelte";
     import {
         Button,
         Card,
-        Checkbox,
-        Input,
         Label,
         Select,
     } from "flowbite-svelte";
     import {
-        FilterOutline,
-        FilterSolid,
         FileExportOutline,
         ArrowLeftOutline,
     } from "flowbite-svelte-icons";
     import Prism from "@/components/Prism.svelte";
     import { goto } from "@roxi/routify";
-    $goto;
     import {
-        addDateFilters,
         createBaseQuery,
     } from "@/utils/routes/queryHelpers";
     import { headers } from "@edraj/tsdmart";
 
-    // Constants
-    const DEFAULT_QUERY_LIMIT = 10;
-
     let spaces: any[] = $state([]);
     let space_name: string = $state("");
-    // let queryType: QueryType = $state(null);
     let subpath: string = $state("/");
-    // let resource_type: ResourceType = $state(null);
-    // let resource_shortnames: string = $state("");
-    // let search: string = $state("");
-    // let from_date: string = $state("");
-    // let to_date: string = $state("");
-    // let offset: number = $state(0);
-    // let limit: number = $state(DEFAULT_QUERY_LIMIT);
-    // let retrieve_attachments: boolean = $state(false);
-    // let retrieve_json_payload: boolean = $state(false);
 
     let response: any = $state(null);
-    let isDisplayFilter = $state(false);
     let isExporting: boolean = $state(false);
     let exportEvents: Array<{
+        id: string;
         timestamp: string;
         status: "success" | "error";
         filename: string;
@@ -161,6 +141,7 @@
                 showToast(Level.warn);
                 exportEvents = [
                     {
+                        id: crypto.randomUUID(),
                         timestamp: new Date().toLocaleTimeString(),
                         status: "error",
                         filename: fileName,
@@ -174,6 +155,7 @@
                 downloadFile(response.data, fileName, "application/zip");
                 exportEvents = [
                     {
+                        id: crypto.randomUUID(),
                         timestamp: new Date().toLocaleTimeString(),
                         status: "success",
                         filename: fileName,
@@ -183,10 +165,11 @@
                     ...exportEvents,
                 ];
             }
-        } catch (error: any) {
+        } catch {
             showToast(Level.warn);
             exportEvents = [
                 {
+                    id: crypto.randomUUID(),
                     timestamp: new Date().toLocaleTimeString(),
                     status: "error",
                     filename: fileName,
@@ -242,7 +225,7 @@
                             bind:value={space_name}
                             disabled={isExporting}
                         >
-                            {#each spaces as space}
+                            {#each spaces as space (space.shortname)}
                                 <option value={space.shortname}
                                     >{space.shortname}</option
                                 >
@@ -257,8 +240,8 @@
                             bind:value={subpath}
                             disabled={isExporting}
                         >
-                            <option value={"/"}>/</option>
-                            {#each subpaths as path}
+                            <option value="/">/</option>
+                            {#each subpaths as path (path)}
                                 <option value={path}>{path}</option>
                             {/each}
                         </Select>
@@ -301,7 +284,7 @@
                         </tr>
                         </thead>
                         <tbody>
-                        {#each exportEvents as event}
+                        {#each exportEvents as event (event.id)}
                             <tr
                                     class="border-b {event.status === 'success'
                                         ? 'bg-green-50 text-green-800'

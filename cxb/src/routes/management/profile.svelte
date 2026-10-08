@@ -62,7 +62,7 @@
                     <P class="text-gray-500 mb-2">@{profile.shortname}</P>
 
                     <div class="flex flex-wrap gap-2 mt-2">
-                        {#each attrs.roles ?? [] as role}
+                        {#each attrs.roles ?? [] as role (role)}
                             <Badge color="blue">{role}</Badge>
                         {/each}
                     </div>
@@ -141,7 +141,7 @@
                 <div>
                     <Heading tag="h3" class="text-xl font-semibold mb-3">Groups</Heading>
                     <div class="flex flex-wrap gap-2">
-                        {#each attrs.groups as group}
+                        {#each attrs.groups as group (group)}
                             <Badge color="gray">{group}</Badge>
                         {/each}
                     </div>

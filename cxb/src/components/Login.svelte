@@ -1,5 +1,5 @@
 <script lang="ts">
-    import {Button, ButtonGroup, Heading, Input, InputAddon, Label, Spinner,} from "flowbite-svelte";
+    import {Button, ButtonGroup, Heading, Input, Label, Spinner,} from "flowbite-svelte";
     import {EyeSlashSolid, EyeSolid} from 'flowbite-svelte-icons';
     import {goto} from "@roxi/routify";
     import {signin} from "@/stores/user";
@@ -7,7 +7,6 @@
     import {onMount} from "svelte";
     import {consumeResetDone} from "@/lib/password_reset";
 
-    $goto;
 
   let username: string = $state("");
   let password: string = $state("");

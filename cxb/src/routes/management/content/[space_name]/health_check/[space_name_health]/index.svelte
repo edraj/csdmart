@@ -6,7 +6,6 @@
     import BreadCrumbLite from "@/components/management/BreadCrumbLite.svelte";
     import {normalizeSubpath, toRouteSubpath} from "@/utils/subpath";
 
-    $goto
 
     // Route: /management/content/[space_name]/health_check/[space_name_health].
     // `space_name` is the space that holds the health_check folder (always
@@ -64,7 +63,7 @@
                 validate_schema: false
             })
             isEntryExist = true
-        } catch (error) {
+        } catch {
             isEntryExist = false
         }
 
@@ -101,10 +100,10 @@
 </Modal>
 
 <BreadCrumbLite
-    space_name={"management"}
-    subpath={"health_check"}
+            space_name="management"
+            subpath="health_check"
     resource_type={ResourceType.content}
-    schema_name={"health_check"}
+                schema_name="health_check"
     shortname={reportedSpace}
 />
 
@@ -122,17 +121,17 @@
                 {`Invalid folders (${body["invalid_folders"].length} invalid entries)`}
             </ListgroupItem>
             {#if body["invalid_folders"].length}
-                {#each body["invalid_folders"] as entry}
+                {#each body["invalid_folders"] as entry (entry)}
                     <ListgroupItem class="bg-gray-200">{entry}</ListgroupItem>
                 {/each}
             {/if}
         {/if}
 
         <ListgroupItem class="bg-blue-500 text-white">
-            {`Folders report`}
+            Folders report
         </ListgroupItem>
         {#if body?.["folders_report"]}
-            {#each Object.keys(body["folders_report"]) as key_entry}
+            {#each Object.keys(body["folders_report"]) as key_entry (key_entry)}
                 <ListgroupItem class="bg-gray-200">{key_entry}</ListgroupItem>
                 {#if body["folders_report"][key_entry].valid_entries}
                     <ListgroupItem class="bg-green-500 text-white">
@@ -143,7 +142,7 @@
                     <ListgroupItem class="bg-red-500 text-white">
                         {`Invalid entries ${body["folders_report"][key_entry].invalid_entries.length}`}
                     </ListgroupItem>
-                    {#each body["folders_report"][key_entry].invalid_entries as err_entry}
+                    {#each body["folders_report"][key_entry].invalid_entries as err_entry (err_entry.shortname)}
                         <button
                             type="button"
                             class="w-full text-start"
@@ -160,7 +159,7 @@
                 {`Invalid meta folders (${body["invalid_meta_folders"].length} invalid entries)`}
             </ListgroupItem>
             {#if body["invalid_meta_folders"].length}
-                {#each body["invalid_meta_folders"] as entry}
+                {#each body["invalid_meta_folders"] as entry (entry)}
                     <ListgroupItem class="bg-gray-200">{entry}</ListgroupItem>
                 {/each}
             {/if}

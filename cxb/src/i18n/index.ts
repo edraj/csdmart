@@ -8,9 +8,9 @@ import en from './en.json';
 
 addMessages('ar', ar);
 addMessages('en', en);
-let l17ns = { "ar": ar, "en": en };
-let available_locales = ["ar", "en"];
-let actual_locales = available_locales.filter((x) => x in website.languages);
+const l17ns = { "ar": ar, "en": en };
+const available_locales = ["ar", "en"];
+const actual_locales = available_locales.filter((x) => x in website.languages);
 
 
 function switchLocale(_locale: string) {

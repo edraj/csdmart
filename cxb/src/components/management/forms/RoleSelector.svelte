@@ -114,7 +114,7 @@
                     <div
                         class="absolute w-full mt-1 bg-white border border-gray-200 rounded-lg shadow-lg z-10 max-h-60 overflow-auto"
                     >
-                        {#each filteredRoles as role}
+                        {#each filteredRoles as role (role.value)}
                             <button
                                 type="button"
                                 class="w-full px-4 py-2 hover:bg-gray-100 cursor-pointer flex items-center justify-between text-left"
@@ -135,7 +135,7 @@
     {#if selectedRoles.length > 0}
         <div class="mt-4">
             <div class="flex flex-wrap gap-2">
-                {#each selectedRoles as role}
+                {#each selectedRoles as role (role)}
                     <div
                         class="bg-blue-100 text-blue-800 px-3 py-1 rounded-full flex items-center"
                     >

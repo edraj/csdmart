@@ -85,7 +85,7 @@
         <div class="border p-4 rounded-lg bg-gray-50 dark:bg-gray-800">
             <Label for="hide_folders" class="mb-2 font-semibold">Hide Folders</Label>
             <div class="flex flex-wrap gap-2 mb-3">
-                {#each formData.hide_folders as folder}
+                {#each formData.hide_folders as folder (folder)}
                     <Badge color="blue" class="flex items-center gap-1">
                         {folder}
                         <button type="button" onclick={() => removeItem('hide_folders', folder)} class="ml-1">
@@ -113,7 +113,7 @@
         <div class="border p-4 rounded-lg bg-gray-50 dark:bg-gray-800">
             <Label for="active_plugins" class="mb-2 font-semibold">Active Plugins</Label>
             <div class="flex flex-wrap gap-2 mb-3">
-                {#each formData.active_plugins as plugin}
+                {#each formData.active_plugins as plugin (plugin)}
                     <Badge color="green" class="flex items-center gap-1">
                         {plugin}
                         <button type="button" onclick={() => removeItem('active_plugins', plugin)} class="ml-1">

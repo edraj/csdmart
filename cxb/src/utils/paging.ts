@@ -38,3 +38,28 @@ export function hasMoreRecords(total: unknown, loaded: number, pageLength: numbe
     if (counted >= 0) return loaded < counted;
     return pageSize > 0 && pageLength >= pageSize;
 }
+
+/**
+ * The page numbers a pager shows: up to `max` consecutive pages, centred on
+ * `current` and shifted back at either end so the window stays full while
+ * there are enough pages to fill it.
+ */
+export function visiblePages(current: number, totalPages: number, max = 5): number[] {
+    const total = Math.max(1, Number.isFinite(totalPages) ? Math.floor(totalPages) : 1);
+    const count = Math.min(Math.max(1, Math.floor(max) || 1), total);
+    const cur = Math.min(Math.max(1, Number.isFinite(current) ? Math.floor(current) : 1), total);
+    const start = Math.max(1, Math.min(cur - Math.floor(count / 2), total - count + 1));
+    return Array.from({ length: count }, (_, i) => start + i);
+}
+
+/**
+ * The 1-based, inclusive row range a page shows ("Showing 16 to 30 of 42").
+ * An empty list, or a nonsensical page size, gives {from: 0, to: 0}.
+ */
+export function pageRange(page: number, pageSize: number, total: number): { from: number; to: number } {
+    if (!(total > 0) || !(pageSize > 0)) return { from: 0, to: 0 };
+    const p = Math.max(1, Math.floor(page) || 1);
+    const from = Math.min(total, pageSize * (p - 1) + 1);
+    const to = Math.min(total, pageSize * p);
+    return { from, to };
+}

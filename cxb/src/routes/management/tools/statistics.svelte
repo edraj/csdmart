@@ -1,6 +1,6 @@
 <script lang="ts">
   import { resolveTotal } from "@shared/query-total";
-    import { onMount, type ComponentProps } from "svelte";
+    import { onMount } from "svelte";
     import { Card, Spinner } from "flowbite-svelte";
     import {
         UsersSolid,
@@ -16,7 +16,6 @@
     import { getSpaces } from "@/lib/dmart_services";
     import { goto } from "@roxi/routify";
 
-    $goto;
 
     let isLoading = $state(true);
     let error: string | null = $state(null);
@@ -81,7 +80,6 @@
             // Fetch space level stats
             const spacesObj = await getSpaces();
             let totalOverallRecords = 0;
-            const sStats: SpaceStat[] = [];
 
             // Loop sequentially or wait for all map fetches depending on network stress
             const spacePromises = spacesObj.records.map(
@@ -221,7 +219,7 @@
         <!-- Space Breakdown -->
         <h2 class="text-2xl font-bold mb-4 mt-8">Space Statistics</h2>
         <div class="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-6">
-            {#each spaceStats as stat}
+            {#each spaceStats as stat (stat.shortname)}
                 <Card
                     class="w-full max-w-none hover:shadow-lg transition-shadow"
                 >

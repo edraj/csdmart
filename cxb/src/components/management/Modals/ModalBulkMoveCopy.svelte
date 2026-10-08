@@ -1,6 +1,6 @@
 <script lang="ts">
     import {Button, Label, Modal, Select, Spinner} from "flowbite-svelte";
-    import {Dmart, RequestType, ResourceType} from "@edraj/tsdmart";
+    import {Dmart, RequestType} from "@edraj/tsdmart";
     import {Level, showToast} from "@/utils/toast";
     import {currentListView} from "@/stores/global";
     import {bulkBucket} from "@/stores/management/bulk_bucket";

@@ -33,8 +33,7 @@ function guess_locale(): Locale {
   return fallback_locale;
 }
 
-let signedout: User = { signedin: false, locale: guess_locale() };
-export let user: Writable<User>;
+const signedout: User = { signedin: false, locale: guess_locale() };
 
 // Load the user information from store, if it exists
 let initialUser: User = signedout;
@@ -49,7 +48,7 @@ if (typeof localStorage !== "undefined") {
         initialUser = signedout;
     }
 }
-user = writable<User>(initialUser);
+export const user: Writable<User> = writable<User>(initialUser);
 
 export async function signin(username: string, password: string) {
   const response = await Dmart.login(username, password);
@@ -107,14 +106,4 @@ export async function signout() {
     authToken.set("");
     user.set(signedout);
   }
-}
-
-export function switchLocale(locale: Locale) {
-  user.update((user) => {
-    user.locale = locale;
-    signedout.locale = locale; // remember the locale value in case we logout
-    if (typeof localStorage !== 'undefined')
-      localStorage.setItem(KEY, JSON.stringify(user));
-    return user;
-  });
 }

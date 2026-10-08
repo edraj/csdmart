@@ -117,9 +117,8 @@
     function parseQuerySchemaResponse(schemas) {
         const records = schemas?.records ?? [];
 
-        let result = [];
         const _schemas = records.map((e) => e.shortname);
-        result = _schemas.filter(
+        const result = _schemas.filter(
             (e: any) => !["meta_schema", "folder_rendering"].includes(e),
         );
 
@@ -317,7 +316,7 @@
                         Continue from row {formatCount(result.resumeRow)}
                     </Button>
                 {/if}
-                {#each failureGroups.slice(0, MAX_GROUPS) as group}
+                {#each failureGroups.slice(0, MAX_GROUPS) as group (group.error)}
                     <div class="mt-3">
                         <p class="text-sm font-medium break-words">
                             {group.error}
@@ -326,7 +325,7 @@
                             </span>
                         </p>
                         <ul class="mt-1 text-xs space-y-0.5">
-                            {#each group.rows.slice(0, MAX_ROWS_PER_GROUP) as failure}
+                            {#each group.rows.slice(0, MAX_ROWS_PER_GROUP) as failure (failure.row)}
                                 <li class="break-all">{describeCsvFailureRow(failure)}</li>
                             {/each}
                             {#if group.rows.length > MAX_ROWS_PER_GROUP}

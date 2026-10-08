@@ -31,7 +31,10 @@ export default ts.config(
     },
   },
   {
-    files: ["**/*.svelte"],
+    // `.svelte.ts` / `.svelte.js` modules are parsed by the Svelte parser too
+    // (the recommended set routes them there); without the TS sub-parser the
+    // rune files fail to parse at all.
+    files: ["**/*.svelte", "**/*.svelte.ts", "**/*.svelte.js"],
     languageOptions: { parserOptions: { parser: ts.parser } },
   },
 );

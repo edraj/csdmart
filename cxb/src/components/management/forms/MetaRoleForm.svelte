@@ -6,6 +6,7 @@
 
     let {
         formData = $bindable(),
+        // eslint-disable-next-line @typescript-eslint/no-unused-vars, no-useless-assignment -- $bindable() written back to the parent, never read here
         validateFn = $bindable()
     } = $props();
 
@@ -125,7 +126,7 @@
                     <div class="relative flex-grow">
                         {#if showDropdown && filteredPermissions.length > 0}
                             <div class="absolute w-full mt-1 bg-white border border-gray-200 rounded-lg shadow-lg z-10 max-h-60 overflow-auto">
-                                {#each filteredPermissions as permission}
+                                {#each filteredPermissions as permission (permission.value)}
                                     <!-- svelte-ignore a11y_no_static_element_interactions -->
                                     <!-- svelte-ignore a11y_click_events_have_key_events -->
                                     <div
@@ -151,7 +152,7 @@
                 <Label class="mb-2">Added Permissions</Label>
                 <div class="border rounded-lg p-4 bg-gray-50">
                     <div class="flex flex-wrap gap-2">
-                        {#each formData.permissions as permission}
+                        {#each formData.permissions as permission (permission)}
                             <div class="bg-blue-100 text-blue-800 px-3 py-1 rounded-full flex items-center">
                                 <span>{permission}</span>
                                 <button

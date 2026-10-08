@@ -14,11 +14,11 @@
     import {goto, params} from "@roxi/routify";
     import {Dmart, RequestType, ResourceType} from "@edraj/tsdmart";
 
-    $goto
 
     let {
         isCreate,
         formData = $bindable(),
+        // eslint-disable-next-line @typescript-eslint/no-unused-vars, no-useless-assignment -- $bindable() written back to the parent, never read here
         validateFn = $bindable()
     } = $props();
 
@@ -27,7 +27,7 @@
         if (value === null || value === undefined) return null;
         if (typeof value === 'string') {
             // Detect and unwrap stringified i18n objects from previous corrupted saves
-            if (value.startsWith('{"en":') || value.startsWith('{\"en\":')) {
+            if (value.startsWith('{"en":')) {
                 try {
                     const parsed = JSON.parse(value);
                     if (typeof parsed === 'object' && parsed !== null && 'en' in parsed) {

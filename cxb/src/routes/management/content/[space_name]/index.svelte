@@ -3,6 +3,7 @@
     import {Dmart, ResourceType} from "@edraj/tsdmart";
     import {ListPlaceholder} from 'flowbite-svelte';
     import EntryRenderer from "@/components/management/renderers/EntryRenderer.svelte";
+    import NotFoundState from "@/components/ui/NotFoundState.svelte";
 
     // Derive from the one param that matters, not from `$params` as a whole:
     // the list below rewrites `page`/`sort`/`search` query params in place, and
@@ -28,7 +29,7 @@
             entry={entry!}
             resource_type={ResourceType.space}
             space_name={spaceName ?? ""}
-            subpath={'/'}
+            subpath="/"
         />
     {:catch error}
         <div class="alert alert-danger text-center m-5">
@@ -36,7 +37,5 @@
         </div>
     {/await}
 {:else}
-    <h4>For some reason ... params doesn't have the needed info</h4>
-    <pre>{JSON.stringify($params, null, 2)}</pre>
+    <NotFoundState />
 {/if}
-

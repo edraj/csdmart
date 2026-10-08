@@ -2,6 +2,7 @@
     import {params} from "@roxi/routify";
     import {Dmart, ResourceType} from "@edraj/tsdmart";
     import EntryRenderer from "@/components/management/renderers/EntryRenderer.svelte";
+    import NotFoundState from "@/components/ui/NotFoundState.svelte";
     import {Alert, ListPlaceholder} from "flowbite-svelte";
 
     // Derive from the two params that matter, as strings: the list below
@@ -44,7 +45,5 @@
             </div>
     {/await}
 {:else}
-    <h4>For some reason ... params doesn't have the needed info</h4>
-    <pre>{JSON.stringify($params, null, 2)}</pre>
+    <NotFoundState />
 {/if}
-

@@ -65,7 +65,7 @@
         try {
             const result = await Dmart.getSpaces();
             spaces = result?.records || [];
-        } catch (e) {
+        } catch {
             spaces = [];
         }
     }
@@ -86,7 +86,7 @@
                 rootChildren,
             );
             subpaths = tempSubpaths.reverse();
-        } catch (e) {
+        } catch {
             subpaths = [];
         } finally {
             isLoadingSubpaths = false;
@@ -104,7 +104,7 @@
             shortnames = (result.records || []).filter(
                 (r: any) => r.resource_type !== "folder",
             );
-        } catch (e) {
+        } catch {
             shortnames = [];
         } finally {
             isLoadingShortnames = false;
@@ -253,11 +253,6 @@
         relationships = updated;
     }
 
-    function getLocatorDisplay(rel: any) {
-        const loc = rel.related_to || {};
-        return `${loc.space_name || "?"}:${loc.subpath || "/"}/${loc.shortname || "?"}`;
-    }
-
     let isDetailsOpen = $state(false);
     let detailsRel: any = $state(null);
 
@@ -279,7 +274,7 @@
                     <TableHeadCell class="text-right">Actions</TableHeadCell>
                 </TableHead>
                 <TableBody>
-                    {#each relationships as rel, index}
+                    {#each relationships as rel, index (index)}
                         <TableBodyRow
                             class="cursor-pointer"
                             onclick={() => openDetails(rel)}
@@ -365,7 +360,7 @@
                 onchange={onSpaceChange}
             >
                 <option value="">-- Select Space --</option>
-                {#each spaces as space}
+                {#each spaces as space (space.shortname)}
                     <option value={space.shortname}>{space.shortname}</option>
                 {/each}
             </Select>
@@ -380,7 +375,7 @@
                 disabled={!relSpaceName || isLoadingSubpaths}
             >
                 <option value="/">/</option>
-                {#each subpaths as path}
+                {#each subpaths as path (path)}
                     <option value={path}>{path}</option>
                 {/each}
             </Select>
@@ -399,7 +394,7 @@
                 disabled={!relSpaceName || isLoadingShortnames}
             >
                 <option value="">-- Select --</option>
-                {#each shortnames as item}
+                {#each shortnames as item (item.shortname)}
                     <option value={item.shortname}>{item.shortname}</option>
                 {/each}
             </Select>
@@ -413,7 +408,7 @@
         <div>
             <Label for="rel-type">Resource Type</Label>
             <Select id="rel-type" bind:value={relType}>
-                {#each Object.values(ResourceType) as rt}
+                {#each Object.values(ResourceType) as rt (rt)}
                     <option value={rt}>{rt}</option>
                 {/each}
             </Select>

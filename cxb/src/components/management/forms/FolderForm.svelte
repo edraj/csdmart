@@ -1,9 +1,7 @@
 <script lang="ts">
-    import {createEventDispatcher} from "svelte";
     import {Button, Card, Checkbox, Input, Label, Select,} from "flowbite-svelte";
     import {Dmart, QueryType, ResourceType} from "@edraj/tsdmart";
 
-    const dispatch = createEventDispatcher();
 
     let {
         content = $bindable({})
@@ -52,24 +50,6 @@
     };
 
     if (!content.query) content.query = {};
-
-    let errors = $state({});
-
-    function validateForm() {
-        errors = {};
-
-        if (!content.index_attributes || content.index_attributes.length === 0) {
-            errors['index_attributes'] = 'Index attributes is required';
-        }
-
-        return Object.keys(errors).length === 0;
-    }
-
-    function onSave() {
-        if (validateForm()) {
-            dispatch('save', content);
-        }
-    }
 
     function addItem(path, template = {}) {
         let target = content;
@@ -154,7 +134,7 @@
             <div class="mt-3">
                 <Label>Filter Types</Label>
                 {#if content.query.filter_types?.length > 0}
-                    {#each content.query.filter_types as filterType, index}
+                    {#each content.query.filter_types as _filterType, index (index)}
                         <div class="flex items-center gap-2 mt-1">
                             <Input bind:value={content.query.filter_types[index]} placeholder="Filter type" />
                             <Button size="xs" color="red" onclick={() => removeItem('query.filter_types', index)}>Remove</Button>
@@ -169,12 +149,9 @@
             <h3 class="font-semibold mb-2">Index Attributes</h3>
             <p class="text-sm text-gray-500 mb-2">The attributes from the schema that should be displayed in index page</p>
 
-            {#if errors['index_attributes']}
-                <p class="text-red-500 text-sm">{errors['index_attributes']}</p>
-            {/if}
 
             {#if content.index_attributes?.length > 0}
-                {#each content.index_attributes as attribute, index}
+                {#each content.index_attributes as attribute, index (index)}
                     <div class="flex items-center gap-2 mt-2 p-2 bg-gray-50 rounded">
                         <div class="flex-1">
                             <Input bind:value={attribute.key} placeholder="Key" />
@@ -194,7 +171,7 @@
                 <h3 class="font-semibold mb-2">Search Columns</h3>
 
                 {#if content.search_columns?.length > 0}
-                    {#each content.search_columns as column, index}
+                    {#each content.search_columns as column, index (index)}
                         <div class="flex items-center gap-2 mt-2">
                             <div class="flex-1">
                                 <Input bind:value={column.key} placeholder="Key" size="sm" />
@@ -213,7 +190,7 @@
                 <h3 class="font-semibold mb-2">CSV Columns</h3>
 
                 {#if content.csv_columns?.length > 0}
-                    {#each content.csv_columns as column, index}
+                    {#each content.csv_columns as column, index (index)}
                         <div class="flex items-center gap-2 mt-2">
                             <div class="flex-1">
                                 <Input bind:value={column.key} placeholder="Key" size="sm" />
@@ -250,7 +227,7 @@
 
                 <div class="mb-3">
                     <div class="flex flex-wrap gap-1 mt-1">
-                        {#each content.content_resource_types as type}
+                        {#each content.content_resource_types as type (type)}
                 <span class="bg-blue-100 text-blue-800 px-2 py-1 text-xs rounded-md flex items-center gap-1">
                     {type}
                     <button type="button" class="text-xs" onclick={() => {
@@ -262,7 +239,7 @@
                 </div>
 
                 <div class="border rounded-md p-2 max-h-48 overflow-y-auto bg-white">
-                    {#each Object.values(ResourceType) as type}
+                    {#each Object.values(ResourceType) as type (type)}
                         <div class="flex items-center mb-2">
                             <Checkbox
                                     id={`resource-type-${type}`}
@@ -286,7 +263,7 @@
 
                 <div class="mb-3">
                     <div class="flex flex-wrap gap-1 mt-1">
-                        {#each content.content_schema_shortnames as schema}
+                        {#each content.content_schema_shortnames as schema (schema)}
                 <span class="bg-blue-100 text-blue-800 px-2 py-1 text-xs rounded-md flex items-center gap-1">
                     {schema}
                     <button type="button" class="text-xs" onclick={() => {
@@ -305,7 +282,7 @@
                     }
                 }}>
                     {#await Dmart.query({ space_name: "management", type: QueryType.search, subpath: "/schema", search: "", retrieve_json_payload: true, limit: 99 }) then schemas}
-                        {#each (schemas?.records ?? []).map(e => e.shortname) as schema}
+                        {#each (schemas?.records ?? []).map(e => e.shortname) as schema (schema)}
                             <option value={schema}>{schema}</option>
                         {/each}
                     {/await}
@@ -317,7 +294,7 @@
 
                 <div class="mb-3">
                     <div class="flex flex-wrap gap-1 mt-1">
-                        {#each content.workflow_shortnames as workflow}
+                        {#each content.workflow_shortnames as workflow (workflow)}
                 <span class="bg-blue-100 text-blue-800 px-2 py-1 text-xs rounded-md flex items-center gap-1">
                     {workflow}
                     <button type="button" class="text-xs" onclick={() => {
@@ -336,7 +313,7 @@
                         }
                     }}>
                     {#await Dmart.query({ space_name: "management", type: QueryType.search, subpath: "/workflow", search: "", retrieve_json_payload: true, limit: 99 }) then workflows}
-                        {#each (workflows?.records ?? []).map(e => e.shortname) as workflow}
+                        {#each (workflows?.records ?? []).map(e => e.shortname) as workflow (workflow)}
                             <option value={workflow}>{workflow}</option>
                         {/each}
                     {/await}
@@ -349,7 +326,7 @@
                 <h3 class="font-semibold mb-2">PDF Schema Shortnames</h3>
 
                 {#if content.enable_pdf_schema_shortnames?.length > 0}
-                    {#each content.enable_pdf_schema_shortnames as shortname, index}
+                    {#each content.enable_pdf_schema_shortnames as _shortname, index (index)}
                         <div class="flex items-center gap-2 mt-1">
                             <Input bind:value={content.enable_pdf_schema_shortnames[index]} placeholder="Schema shortname" />
                             <Button size="xs" color="red" onclick={() => removeItem('enable_pdf_schema_shortnames', index)}>×</Button>

@@ -135,7 +135,7 @@ export async function fetchWorkflows(space_name: string) {
             subpath: '/workflows'
         });
         return result?.records || [];
-    } catch (e) {
+    } catch {
         showToast(Level.warn, "Failed to fetch workflows");
         return [];
     }

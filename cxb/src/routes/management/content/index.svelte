@@ -2,7 +2,6 @@
     import { spaces } from "@/stores/management/spaces";
     import {
         Button,
-        Card,
         Dropdown,
         DropdownItem,
         Modal,
@@ -23,9 +22,8 @@
     import Prism from "@/components/Prism.svelte";
     import { goto } from "@roxi/routify";
     import MetaForm from "@/components/management/forms/MetaForm.svelte";
+    import SpaceGrid from "@/components/ui/SpaceGrid.svelte";
     import { removeEmpty } from "@/utils/compare.js";
-
-    $goto;
 
     let viewMetaModal = $state(false);
     let editModal = $state(false);
@@ -56,6 +54,10 @@
     let isActionLoading = $state(false);
 
     let jeContent = $state({ json: undefined });
+
+    const visibleSpaces = $derived(
+        ($spaces ?? []).filter((space) => space?.attributes?.hide_space !== true),
+    );
 
     function showAddSpaceModal() {
         modelError = null;
@@ -137,7 +139,7 @@
             let record;
             try {
                 record = jsonEditorContentParser($state.snapshot(jeContent));
-            } catch (e) {
+            } catch {
                 modelError = "Invalid JSON format";
                 return;
             }
@@ -209,7 +211,7 @@
         }
     }
 
-    async function handleSelectedSpace(spaceShortname) {
+    function handleSelectedSpace(spaceShortname) {
         $goto(`/management/content/[space_name]`, {
             space_name: spaceShortname,
         });
@@ -229,75 +231,30 @@
         </Button>
     </div>
     <hr class="mb-6 border-gray-300" />
-    <div
-        class="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 lg:grid-cols-4 xl:grid-cols-4 gap-4 w-full place-items-center"
-    >
-        {#each ($spaces ?? []).filter((space) => space?.attributes?.hide_space !== true) as space}
-            <Card class="relative w-full">
-                <div class="absolute top-2 left-2">
-                    <Button class="!p-1" color="light">
-                        <DotsHorizontalOutline />
-                        <Dropdown simple>
-                            <DropdownItem
-                                class="w-full"
-                                onclick={() => viewMeta(space)}
-                            >
-                                <div class="flex items-center gap-2">
-                                    <EyeSolid size="sm" /> View Meta
-                                </div>
-                            </DropdownItem>
-                            <DropdownItem
-                                class="w-full"
-                                onclick={() => editSpace(space)}
-                            >
-                                <div class="flex items-center gap-2">
-                                    <PenSolid size="sm" /> Edit
-                                </div>
-                            </DropdownItem>
-                            <DropdownItem
-                                class="w-full"
-                                onclick={() => confirmDelete(space)}
-                            >
-                                <div
-                                    class="flex items-center gap-2 text-red-600"
-                                >
-                                    <TrashBinSolid size="sm" /> Delete
-                                </div>
-                            </DropdownItem>
-                        </Dropdown>
-                    </Button>
-                </div>
-
-                <!-- svelte-ignore a11y_no_static_element_interactions -->
-                <!-- svelte-ignore a11y_click_events_have_key_events -->
-                <div
-                    class="flex flex-col items-center text-center p-4"
-                    style="cursor: pointer"
-                    onclick={() => handleSelectedSpace(space.shortname)}
-                >
-                    <span
-                        class="inline-block px-3 py-1 mb-3 border border-gray-300 rounded-md text-sm font-medium"
-                    >
-                        {space.shortname}
-                    </span>
-
-                    <h3 class="font-semibold text-lg">
-                        {space.attributes?.displayname?.en || space.shortname}
-                    </h3>
-
-                    <p class="text-gray-600 mt-2 mb-4 line-clamp-3">
-                        {space?.attributes?.description?.en || ""}
-                    </p>
-
-                    <div class="text-xs text-gray-500 mt-auto">
-                        Updated: {new Date(
-                            space?.attributes.updated_at,
-                        ).toLocaleDateString()}
-                    </div>
-                </div>
-            </Card>
-        {/each}
-    </div>
+    <SpaceGrid spaces={visibleSpaces} onSelect={handleSelectedSpace}>
+        {#snippet actions(space)}
+            <Button class="!p-1" color="light">
+                <DotsHorizontalOutline />
+                <Dropdown simple>
+                    <DropdownItem class="w-full" onclick={() => viewMeta(space)}>
+                        <div class="flex items-center gap-2">
+                            <EyeSolid size="sm" /> View Meta
+                        </div>
+                    </DropdownItem>
+                    <DropdownItem class="w-full" onclick={() => editSpace(space)}>
+                        <div class="flex items-center gap-2">
+                            <PenSolid size="sm" /> Edit
+                        </div>
+                    </DropdownItem>
+                    <DropdownItem class="w-full" onclick={() => confirmDelete(space)}>
+                        <div class="flex items-center gap-2 text-red-600">
+                            <TrashBinSolid size="sm" /> Delete
+                        </div>
+                    </DropdownItem>
+                </Dropdown>
+            </Button>
+        {/snippet}
+    </SpaceGrid>
 </div>
 
 <Modal bind:open={addSpaceModal} size="xl" title="Add New Space">

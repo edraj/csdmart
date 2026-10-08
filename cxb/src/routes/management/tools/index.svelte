@@ -18,9 +18,6 @@
     import { _ } from "@/i18n";
     import { Level, showToast } from "@/utils/toast";
 
-    $goto;
-    let gitHash = import.meta.env.VITE_GIT_HASH ?? "N/A";
-
     let plugins: string[] = $state([]);
 
     onMount(async () => {
@@ -37,7 +34,6 @@
 </script>
 
 <div class="container mx-auto p-8">
-    <p class="text-2xl mb-5">HASH: {gitHash}</p>
     <div class="grid grid-cols-1 md:grid-cols-3 gap-6">
         <Card
             class="p-4 hover:shadow-lg transition-shadow cursor-pointer"

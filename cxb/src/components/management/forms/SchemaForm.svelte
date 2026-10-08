@@ -81,7 +81,7 @@
 
             {#if formContent.properties && formContent.properties.length > 0}
                 <Accordion flush>
-                    {#each formContent.properties as property, index}
+                    {#each formContent.properties as property, index (index)}
                         <AccordionItem>
                             {#snippet header()}
                                 <span class="font-medium">{property.name || 'New Property'}</span>
@@ -102,7 +102,7 @@
                                     <div>
                                         <Label for={`property-type-${index}`}>Property Type</Label>
                                         <Select id={`property-type-${index}`} bind:value={property.type}>
-                                            {#each schemaTypes as type}
+                                            {#each schemaTypes as type (type)}
                                                 <option value={type.value}>{type.name}</option>
                                             {/each}
                                         </Select>
@@ -172,7 +172,7 @@
                                                     <div>
                                                         <Label for={`items-type-${index}`}>Items Type</Label>
                                                         <Select id={`items-type-${index}`} bind:value={property.items.type}>
-                                                            {#each schemaTypes as type}
+                                                            {#each schemaTypes as type (type)}
                                                                 <option value={type.value}>{type.name}</option>
                                                             {/each}
                                                         </Select>
@@ -185,7 +185,7 @@
                                                                 <Button size="xs" color="blue" onclick={() => handleAddProperty(`properties.${index}.items`)}>Add Object Property</Button>
 
                                                                 {#if property.items.properties.length > 0}
-                                                                    {#each property.items.properties as itemProperty, itemIndex}
+                                                                    {#each property.items.properties as itemProperty, itemIndex (itemIndex)}
                                                                         <div class="mt-2 p-2 bg-white rounded border">
                                                                             <div class="grid grid-cols-1 md:grid-cols-2 gap-2">
                                                                                 <div>
@@ -195,7 +195,7 @@
                                                                                 <div>
                                                                                     <Label for={`item-property-type-${index}-${itemIndex}`}>Type</Label>
                                                                                     <Select id={`item-property-type-${index}-${itemIndex}`} bind:value={itemProperty.type}>
-                                                                                        {#each schemaTypes as type}
+                                                                                        {#each schemaTypes as type (type)}
                                                                                             <option value={type.value}>{type.name}</option>
                                                                                         {/each}
                                                                                     </Select>
@@ -233,7 +233,7 @@
                                         </div>
 
                                         {#if property.properties && property.properties.length > 0}
-                                            {#each property.properties as nestedProperty, nestedIndex}
+                                            {#each property.properties as nestedProperty, nestedIndex (nestedIndex)}
                                                 <div class="mt-2 p-2 bg-white rounded border">
                                                     <div class="grid grid-cols-1 md:grid-cols-2 gap-2">
                                                         <div>
@@ -243,7 +243,7 @@
                                                         <div>
                                                             <Label for={`nested-property-type-${index}-${nestedIndex}`}>Type</Label>
                                                             <Select id={`nested-property-type-${index}-${nestedIndex}`} bind:value={nestedProperty.type}>
-                                                                {#each schemaTypes as type}
+                                                                {#each schemaTypes as type (type)}
                                                                     <option value={type.value}>{type.name}</option>
                                                                 {/each}
                                                             </Select>

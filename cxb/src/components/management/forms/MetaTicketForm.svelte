@@ -33,7 +33,6 @@
     }
 
     let ticket_status: string | null = $state(null);
-    let ticket_action: string | null = $state(null);
     let resolution: string | null = $state(null);
     let comment = $state("");
 
@@ -41,6 +40,10 @@
     let ticketStates: any[] = $state([]);
     let ticketResolutions: any[] = $state([]);
     let errorMessage = $state("");
+    // The action belongs to whichever state is selected; nothing else sets it.
+    const ticket_action: string | null = $derived(
+        ticketStates?.filter((e) => e.state === ticket_status)[0]?.action || null,
+    );
 
     async function get_ticket_payload() {
         const response = await Dmart.retrieveEntry({
@@ -63,12 +66,6 @@
 
     // Store the promise once at initialization to avoid re-calling on re-renders
     const ticketPromise = get_ticket_payload();
-
-    $effect(() => {
-        ticket_action =
-            ticketStates?.filter((e) => e.state === ticket_status)[0]?.action ||
-            null;
-    });
 
     $effect(() => {
         if (ticketStates.length) {
@@ -124,7 +121,7 @@
                         <Label for="status" class="block mb-2">State</Label>
                         <Select id="status" bind:value={ticket_status}>
                             <option value={null}>Select an action</option>
-                            {#each ticketStates as e}
+                            {#each ticketStates as e (e.state)}
                                 <option
                                     value={e.state}
                                     disabled={!e.roles.some((el) =>
@@ -152,7 +149,7 @@
                             >
                             <Select id="resolution" bind:value={resolution}>
                                 <option value={null}>Select resolution</option>
-                                {#each ticketResolutions as res}
+                                {#each ticketResolutions as res (typeof res === "string" ? res : res.key)}
                                     {#if typeof res === "string"}
                                         <option value={res}>{res}</option>
                                     {:else}
@@ -192,10 +189,6 @@
                     {/if}
                 </div>
 
-                <!--            <div class="mb-4">-->
-                <!--                <Label for="transfer" class="block mb-2">Transfer</Label>-->
-                <!--                <Input id="transfer" type="text" placeholder="Transfer to..." bind:value={to_shortname} />-->
-                <!--            </div>-->
             {/await}
         </form>
     {:else}

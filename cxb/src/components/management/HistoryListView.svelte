@@ -5,6 +5,9 @@
     import {onMount} from "svelte";
     import {_} from "@/i18n";
     import Prism from "../Prism.svelte";
+    import Pagination from "@/components/ui/Pagination.svelte";
+    import {pageCount} from "@/utils/paging";
+    import {rowKey} from "@/utils/rowKey";
 
     let { space_name, subpath, shortname }: { space_name:string, subpath:string, shortname:string } = $props();
 
@@ -18,15 +21,6 @@
     let modalData: any = $state(null);
 
     const currentPage = $derived(Math.floor(offset / limit) + 1);
-    const totalPages = $derived(Math.max(1, Math.ceil(totalItems / limit)));
-    const hasPrev = $derived(offset > 0);
-    const hasNext = $derived(offset + limit < totalItems);
-    // Up to five page buttons centred on the current page.
-    const pageNumbers = $derived.by(() => {
-        const count = Math.min(5, totalPages);
-        const start = Math.max(1, Math.min(currentPage - 2, totalPages - count + 1));
-        return Array.from({ length: count }, (_, i) => start + i);
-    });
 
     // Monotonic request id: a slow earlier page must not overwrite a newer one.
     let requestSeq = 0;
@@ -58,7 +52,7 @@
     }
 
     function goToPage(page: number) {
-        const target = Math.min(Math.max(1, page), totalPages);
+        const target = Math.min(Math.max(1, page), pageCount(totalItems, limit));
         offset = (target - 1) * limit;
         fetchHistory();
     }
@@ -94,7 +88,7 @@
             </div>
         {/if}
 
-        {#each records as record}
+        {#each records as record (rowKey(record))}
             <div class="flex justify-between mt-4 mb-2">
                 <p class="text-lg">
                     <strong>By: </strong> {record.attributes?.owner_shortname || $_("unknown")}
@@ -115,7 +109,7 @@
                         </tr>
                         </thead>
                         <tbody>
-                        {#each Object.entries(record.attributes.diff) as [key, change]}
+                        {#each Object.entries(record.attributes.diff) as [key, change] (key)}
                             {@const typedChange = change as {old?: any, new?: any}}
                             <tr class="border-b hover:bg-gray-50">
                                 <td class="px-4 py-2 font-medium">{formatKey(key)}</td>
@@ -140,62 +134,15 @@
         {/if}
 
         {#if totalItems > 0}
-            <div class="flex flex-col sm:flex-row justify-between my-6">
-                <div class="mb-2 sm:mb-0">
-                    <span class="me-2">{$_("items_per_page")}:</span>
-                    <div class="inline-flex gap-1">
-                        {#each [5, 10, 25, 50] as pageSize}
-                            <button
-                                type="button"
-                                class="px-3 py-1 text-sm rounded {limit === pageSize ? 'bg-blue-600 text-white' : 'bg-gray-200 text-gray-800 dark:bg-gray-700 dark:text-gray-200'}"
-                                aria-pressed={limit === pageSize}
-                                onclick={() => changeLimit(pageSize)}
-                            >
-                                {pageSize}
-                            </button>
-                        {/each}
-                    </div>
-                </div>
-
-                <div class="flex items-center gap-2">
-                    <span class="text-sm text-gray-700 dark:text-gray-300">
-                        {$_("page_of_pages", { values: { page: currentPage, pages: totalPages } })}
-                    </span>
-
-                    <nav class="flex gap-1" aria-label="History pages">
-                        <button
-                            type="button"
-                            class="px-2 py-1 rounded {!hasPrev ? 'bg-gray-100 text-gray-400 cursor-not-allowed' : 'bg-gray-200 text-gray-800 hover:bg-gray-300 dark:bg-gray-700 dark:text-gray-200'}"
-                            disabled={!hasPrev}
-                            aria-label={$_("previous")}
-                            onclick={() => goToPage(currentPage - 1)}
-                        >
-                            <span class="rtl:hidden">&lt;</span><span class="hidden rtl:inline">&gt;</span> {$_("previous")}
-                        </button>
-
-                        {#each pageNumbers as page (page)}
-                            <button
-                                type="button"
-                                class="px-3 py-1 rounded {page === currentPage ? 'bg-blue-600 text-white' : 'bg-gray-200 text-gray-800 hover:bg-gray-300 dark:bg-gray-700 dark:text-gray-200'}"
-                                aria-current={page === currentPage ? "page" : undefined}
-                                onclick={() => goToPage(page)}
-                            >
-                                {page}
-                            </button>
-                        {/each}
-
-                        <button
-                            type="button"
-                            class="px-2 py-1 rounded {!hasNext ? 'bg-gray-100 text-gray-400 cursor-not-allowed' : 'bg-gray-200 text-gray-800 hover:bg-gray-300 dark:bg-gray-700 dark:text-gray-200'}"
-                            disabled={!hasNext}
-                            aria-label={$_("next")}
-                            onclick={() => goToPage(currentPage + 1)}
-                        >
-                            {$_("next")} <span class="rtl:hidden">&gt;</span><span class="hidden rtl:inline">&lt;</span>
-                        </button>
-                    </nav>
-                </div>
-            </div>
+            <Pagination
+                class="my-6"
+                page={currentPage}
+                pageSize={limit}
+                total={totalItems}
+                pageSizes={[5, 10, 25, 50]}
+                onPageChange={goToPage}
+                onPageSizeChange={changeLimit}
+            />
         {/if}
     </div>
 

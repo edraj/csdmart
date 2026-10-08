@@ -411,7 +411,7 @@
                     <div>
                         <Label for="resourceType">Attachment Typee</Label>
                         <Select id="resourceType" bind:value={resourceType} disabled={isUpdateMode}>
-                            {#each Object.values(ResourceAttachmentType).filter(type => type !== ResourceAttachmentType.alteration) as type}
+                            {#each Object.values(ResourceAttachmentType).filter(type => type !== ResourceAttachmentType.alteration) as type (type)}
                                 <option value={type}>{type}</option>
                             {/each}
                         </Select>
@@ -421,7 +421,7 @@
                         <div>
                             <Label for="contentType">Content Type</Label>
                             <Select id="contentType" bind:value={contentType} disabled={isUpdateMode}>
-                                {#each Object.values(ContentType).filter(c => ![ContentType.json, ContentType.csv, ContentType.jsonl, ContentType.sqlite, ContentType.parquet].includes(c)) as type}
+                                {#each Object.values(ContentType).filter(c => ![ContentType.json, ContentType.csv, ContentType.jsonl, ContentType.sqlite, ContentType.parquet].includes(c)) as type (type)}
                                     <option value={type}>{type}</option>
                                 {/each}
                             </Select>
@@ -501,7 +501,7 @@
                                         retrieve_json_payload: true,
                                         limit: 99
                                     }) then schemas}
-                                        {#each (schemas?.records ?? []).map(e => e.shortname) as schema}
+                                        {#each (schemas?.records ?? []).map(e => e.shortname) as schema (schema)}
                                             <option value={schema}>{schema}</option>
                                         {/each}
                                     {/await}
@@ -530,7 +530,7 @@
 
             {#if errorContent}
                 <div class="mt-3">
-                    <Prism code={errorContent} language={"json"}/>
+                    <Prism code={errorContent} language="json"/>
                 </div>
             {/if}
         </div>
