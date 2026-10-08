@@ -43,6 +43,30 @@ public sealed class OAuthStateBindingTests : IClassFixture<DmartFactory>
         body!.Error!.Message.ShouldContain("state");
     }
 
+    // A deployment that only runs the mobile id-token flow has a client id and
+    // no callback URL. The web start must say so rather than redirect to the
+    // provider with an empty redirect_uri (Google answers that with its own
+    // "Missing required parameter: redirect_uri" page, which names nothing).
+    [Theory]
+    [InlineData("google", "Dmart:GoogleClientId", "GOOGLE_OAUTH_CALLBACK")]
+    [InlineData("facebook", "Dmart:FacebookClientId", "FACEBOOK_OAUTH_CALLBACK")]
+    public async Task Login_Start_Without_A_Callback_Url_Names_The_Setting(string provider, string clientIdKey, string settingName)
+    {
+        using var host = _factory.WithWebHostBuilder(b => b.ConfigureAppConfiguration((_, cfg) =>
+            cfg.AddInMemoryCollection(new Dictionary<string, string?>
+            {
+                [clientIdKey] = "test-client-id",
+                ["Dmart:FacebookClientSecret"] = provider == "facebook" ? "test-secret" : null,
+            })));
+        var client = host.CreateClient(new WebApplicationFactoryClientOptions { AllowAutoRedirect = false });
+
+        var start = await client.GetAsync($"/user/{provider}/login");
+        start.StatusCode.ShouldBe(HttpStatusCode.Unauthorized);
+        start.Headers.Location.ShouldBeNull();
+        var body = await start.Content.ReadFromJsonAsync(DmartJsonContext.Default.Response);
+        body!.Error!.Message.ShouldContain(settingName);
+    }
+
     [FactIfPg]
     public async Task Login_Start_Mints_State_And_Callback_Refuses_A_Mismatch()
     {

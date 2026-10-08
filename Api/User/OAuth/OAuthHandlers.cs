@@ -71,6 +71,13 @@ public static class OAuthHandlers
         g.MapGet("/google/login", (GoogleProvider provider, IOptions<DmartSettings> settings, HttpContext http) =>
         {
             if (!provider.IsConfigured) return ProviderError("google oauth not configured");
+            // IsConfigured only needs the client id — enough for the mobile
+            // id-token flow — but the web flow also needs the callback URL.
+            // Redirecting with an empty redirect_uri hands the user Google's
+            // "Missing required parameter: redirect_uri" page instead of a
+            // message that names the setting.
+            if (string.IsNullOrWhiteSpace(settings.Value.GoogleOauthCallback))
+                return ProviderError("google web login not configured: GOOGLE_OAUTH_CALLBACK must be the absolute URL of /user/google/callback and be registered with Google as an authorized redirect URI");
             var state = IssueState(http);
             return Results.Redirect("https://accounts.google.com/o/oauth2/v2/auth"
                 + "?client_id=" + Uri.EscapeDataString(settings.Value.GoogleClientId)
@@ -122,6 +129,8 @@ public static class OAuthHandlers
         g.MapGet("/facebook/login", (FacebookProvider provider, IOptions<DmartSettings> settings, HttpContext http) =>
         {
             if (!provider.IsConfigured) return ProviderError("facebook oauth not configured");
+            if (string.IsNullOrWhiteSpace(settings.Value.FacebookOauthCallback))
+                return ProviderError("facebook web login not configured: FACEBOOK_OAUTH_CALLBACK must be the absolute URL of /user/facebook/callback and be registered with Facebook as a valid OAuth redirect URI");
             var state = IssueState(http);
             return Results.Redirect("https://www.facebook.com/v18.0/dialog/oauth"
                 + "?client_id=" + Uri.EscapeDataString(settings.Value.FacebookClientId)
