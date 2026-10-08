@@ -1,0 +1,90 @@
+{
+  "brand": "DMART",
+  "title_suffix": " — DMART",
+  "base_url": "https://dmart.cc",
+  "header_links": [
+    {
+      "label": "Home",
+      "href": "/"
+    },
+    {
+      "label": "Features",
+      "href": "/features"
+    },
+    {
+      "label": "Why DMART?",
+      "href": "/why"
+    },
+    {
+      "label": "Docs",
+      "href": "/technical",
+      "docs": true
+    }
+  ],
+  "nav": [
+    {
+      "title": "Concepts",
+      "items": [
+        {
+          "page": "technical",
+          "label": "Technical Overview"
+        },
+        {
+          "page": "data-model",
+          "label": "Data Model"
+        },
+        {
+          "page": "folders",
+          "label": "Folders & Rendering"
+        },
+        {
+          "page": "entity-lifecycle",
+          "label": "Entity Lifecycle"
+        },
+        {
+          "page": "tickets",
+          "label": "Tickets & Workflows"
+        }
+      ]
+    },
+    {
+      "title": "Reference",
+      "items": [
+        {
+          "page": "api-docs",
+          "label": "API Reference"
+        },
+        {
+          "page": "query-search",
+          "label": "Query Search"
+        },
+        {
+          "page": "cli",
+          "label": "CLI"
+        },
+        {
+          "page": "settings",
+          "label": "Settings"
+        }
+      ]
+    },
+    {
+      "title": "Security & Extensibility",
+      "items": [
+        {
+          "page": "access-control",
+          "label": "Access Control"
+        },
+        {
+          "page": "plugins",
+          "label": "Plugins"
+        },
+        {
+          "page": "drivers",
+          "label": "Drivers & SDKs"
+        }
+      ]
+    }
+  ],
+  "footer": "© DMART. Open Source Data Platform.\n\n[GitHub](https://github.com/edraj/csdmart)  |  [AGPL-3.0](https://github.com/edraj/csdmart/blob/master/LICENSE)"
+}

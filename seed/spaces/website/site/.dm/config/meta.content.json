@@ -1,0 +1,19 @@
+{
+  "uuid": "d1b812b2-d2a8-56f1-bb69-0e197183c62c",
+  "shortname": "config",
+  "is_active": true,
+  "displayname": {
+    "en": "Site configuration"
+  },
+  "tags": [
+    "site"
+  ],
+  "created_at": "2026-10-08T00:00:00",
+  "updated_at": "2026-10-08T00:00:00",
+  "owner_shortname": "dmart",
+  "payload": {
+    "content_type": "json",
+    "schema_shortname": "site_config",
+    "body": "config.json"
+  }
+}

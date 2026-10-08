@@ -205,6 +205,37 @@ internal static class CliBootstrap
             ? (Dmart.QueryGrammar.ISqlDialect)Dmart.QueryGrammar.SqliteSqlDialect.Instance
             : Dmart.QueryGrammar.PostgresSqlDialect.Instance);
 
+    // The read path `dmart website build` queries through — the same
+    // QueryService /public/query runs, so the build sees exactly what an
+    // anonymous API caller would. Same ephemeral-graph caveat as above.
+    public static QueryService BuildQueryService(DmartSettings s, IDbConnectionFactory db)
+    {
+        var nlog = LoggerFactory.Create(b => b
+            .SetMinimumLevel(LogLevel.Warning)
+            .AddProvider(new StderrLoggerProvider(LogLevel.Warning)));
+        var refresher = new AuthzCacheRefresher();
+        var userRepo = new UserRepository(db, refresher, new SessionTokenHasher(s));
+        var dialect = db is SqliteConnectionFactory
+            ? (Dmart.QueryGrammar.ISqlDialect)Dmart.QueryGrammar.SqliteSqlDialect.Instance
+            : Dmart.QueryGrammar.PostgresSqlDialect.Instance;
+        var accessRepo = new AccessRepository(db, dialect, refresher, userRepo);
+        var options = Options.Create(s);
+        return new QueryService(
+            new EntryRepository(db),
+            new SpaceRepository(db),
+            userRepo,
+            accessRepo,
+            new AttachmentRepository(db, dialect),
+            new HistoryRepository(db, dialect),
+            new PermissionService(userRepo, accessRepo, refresher),
+            new SpaceEventLogger(options, nlog.CreateLogger<SpaceEventLogger>()),
+            db,
+            new LockRepository(db, dialect),
+            options,
+            nlog.CreateLogger<QueryService>(),
+            new Microsoft.AspNetCore.Http.HttpContextAccessor());
+    }
+
     // The Parquet archiver needs most of the graph the zip one does, now that
     // it writes spaces, users, roles and permissions alongside entries.
     public static ParquetArchiveService BuildParquetArchiveService(

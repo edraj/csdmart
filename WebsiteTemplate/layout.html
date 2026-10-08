@@ -1,0 +1,39 @@
+<!doctype html>
+<html lang="{{lang}}">
+<head>
+{{head}}
+<meta name="theme-color" content="#7c5cf5">
+<link rel="icon" type="image/svg+xml" href="{{assets}}/favicon.svg">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Archivo:wght@500;600;700;800&amp;family=IBM+Plex+Sans:wght@400;500;600&amp;family=IBM+Plex+Mono:wght@400;500;600&amp;display=swap">
+<link rel="stylesheet" href="{{assets}}/site.css?v={{version}}">
+<script src="{{assets}}/site.js?v={{version}}"></script>
+{{scripts}}
+</head>
+<body class="{{body_class}}">
+<a class="skip-link" href="#content">Skip to content</a>
+<div class="aurora" aria-hidden="true"></div>
+
+<header class="site-header">
+  <div class="header-inner">
+    <button type="button" class="nav-toggle" aria-controls="sidebar" aria-expanded="false"><span class="nav-toggle-icon" aria-hidden="true">☰</span> Menu</button>
+    <a class="brand" href="{{home}}">{{brand}}</a>
+    <nav class="header-nav" aria-label="Primary">{{header_links}}</nav>
+    <button type="button" class="theme-toggle" aria-label="Toggle dark mode"><span class="theme-icon theme-icon-moon" aria-hidden="true">🌙</span><span class="theme-icon theme-icon-sun" aria-hidden="true">☀️</span></button>
+  </div>
+</header>
+<div class="nav-scrim" hidden></div>
+
+<div class="layout">
+{{sidebar}}
+<main id="content" class="content" tabindex="-1">
+{{main}}
+</main>
+</div>
+
+<footer class="site-footer">
+{{footer}}
+</footer>
+</body>
+</html>

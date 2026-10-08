@@ -1,0 +1,1989 @@
+/* dmart website — one stylesheet for the generated site.
+ *
+ * Ported from the Svelte site that served dmart.cc (app.css, App.svelte,
+ * Home.svelte, AuroraBackground.svelte and the docs pages), adapted to the
+ * fixed HTML the generator emits: layout.html wraps every page, docs pages
+ * are plain markdown inside <article class="prose">, and the landing page is
+ * built from a small set of section kinds (cards, steps, figures, prose,
+ * banner).
+ *
+ * Theme: the `dark` class on <html> (set by site.js before first paint from
+ * localStorage or the OS setting). site.js also sets `light` when the choice
+ * is light, so the prefers-color-scheme block below only applies when no
+ * script has run at all.
+ *
+ * Contents
+ *   1. Tokens (light, dark)          7. Footer
+ *   2. Base                          8. Prose (docs + standalone pages)
+ *   3. Aurora background             9. Landing: hero, buttons, stats
+ *   4. Header                       10. Landing: bands, cards, figures,
+ *   5. Page layouts                      steps, banner
+ *   6. Docs sidebar + drawer        11. Responsive
+ */
+
+/* ── 1. Tokens ─────────────────────────────────────────────────────────── */
+
+:root {
+  /* One deliberate violet. The iri-* ramp is a tight range of the same hue. */
+  --primary-color: #4f46e5;
+  --primary-hover: #4338ca;
+  --secondary-color: #5d6478;
+
+  /* Neutrals biased toward the brand hue rather than pure grey. */
+  --bg-color: #ffffff;
+  --bg-secondary: #f6f7fb;
+  --text-main: #15161f;
+  --text-secondary: #5d6478;
+  --border-color: #e3e5ee;
+
+  --code-bg: #f3f4f9;
+  --accent-light: #eef0fe;
+
+  /* Signal: reserved for MEASURED values and nothing else. */
+  --signal: #8a5200;
+  --signal-soft: #fbf1e2;
+
+  --iri-1: #6366f1;
+  --iri-2: #7c5cf5;
+  --iri-3: #9b6bf0;
+  --iri-4: #5b7cf8;
+  --iri-5: #c9bdfb;
+
+  --gradient-iri: linear-gradient(120deg, var(--iri-1) 0%, var(--iri-3) 100%);
+  --gradient-iri-soft: linear-gradient(120deg, #f2f1fe 0%, #f7f5ff 100%);
+  --gradient-iri-v: linear-gradient(180deg, var(--iri-1), var(--iri-3), var(--iri-4));
+  --gradient-iri-h: linear-gradient(90deg, var(--iri-1), var(--iri-3), var(--iri-4));
+  --gradient-hairline: linear-gradient(90deg, transparent, var(--border-color) 50%, transparent);
+  --gradient-hairline-v: linear-gradient(180deg, transparent, var(--border-color) 50%, transparent);
+
+  /* Surfaces are opaque; no blur-behind. */
+  --glass-bg: #ffffff;
+  --glass-border: #e3e5ee;
+
+  --radius-sm: 3px;
+  --radius-md: 5px;
+  --radius-lg: 10px;
+  --radius-card: 14px;
+
+  --nav-h: 64px;
+
+  --shadow-sm: 0 1px 2px rgba(21, 22, 31, 0.05);
+  --shadow-md: 0 1px 2px rgba(21, 22, 31, 0.05), 0 4px 14px rgba(21, 22, 31, 0.06);
+  --shadow-lg: 0 2px 4px rgba(21, 22, 31, 0.05), 0 12px 32px rgba(21, 22, 31, 0.09);
+
+  --header-bg: rgba(255, 255, 255, 0.72);
+  --header-shadow: 0 1px 3px rgba(0, 0, 0, 0.06), 0 1px 2px rgba(0, 0, 0, 0.04);
+  --scrim: rgba(0, 0, 0, 0.45);
+
+  /* Aurora wash strength, per blob. */
+  --aurora-1: 22%;
+  --aurora-2: 16%;
+  --aurora-3: 22%;
+
+  /* Which glyph the theme toggle shows: the mode you would switch TO. */
+  --theme-moon: inline;
+  --theme-sun: none;
+
+  /* Archivo for display, IBM Plex Sans for reading, IBM Plex Mono for
+     anything numeric or literal. */
+  --font-display: 'Archivo', 'Helvetica Neue', Arial, sans-serif;
+  --font-sans: 'IBM Plex Sans', system-ui, -apple-system, sans-serif;
+  --font-mono: 'IBM Plex Mono', ui-monospace, 'SF Mono', Menlo, monospace;
+
+  font-family: var(--font-sans);
+  font-feature-settings: "ss01", "cv11";
+  line-height: 1.6;
+  font-weight: 400;
+
+  color-scheme: light;
+  color: var(--text-main);
+  background-color: var(--bg-color);
+
+  font-synthesis: none;
+  text-rendering: optimizeLegibility;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+  -webkit-text-size-adjust: 100%;
+  text-size-adjust: 100%;
+}
+
+:root.dark {
+  --primary-color: #9d94ff;
+  --primary-hover: #b8b1ff;
+  --secondary-color: #9096ad;
+
+  --bg-color: #0d0e15;
+  --bg-secondary: #14161f;
+  --text-main: #e7e9f2;
+  --text-secondary: #9096ad;
+  --border-color: #262a39;
+
+  --code-bg: #171a25;
+  --accent-light: #1b1a3a;
+  --signal: #d59a4a;
+  --signal-soft: #2a2114;
+
+  --iri-1: #8b8cf8;
+  --iri-2: #9d94ff;
+  --iri-3: #b08bf5;
+  --iri-4: #7f9bff;
+  --iri-5: #cdc4fb;
+  --gradient-iri-soft: linear-gradient(120deg, #17172b 0%, #1b1a32 100%);
+  --glass-bg: #14161f;
+  --glass-border: #262a39;
+
+  --shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.2), 0 1px 3px rgba(0, 0, 0, 0.3);
+  --shadow-md: 0 2px 4px rgba(0, 0, 0, 0.2), 0 4px 12px rgba(0, 0, 0, 0.3);
+  --shadow-lg: 0 4px 8px rgba(0, 0, 0, 0.2), 0 8px 24px rgba(0, 0, 0, 0.4);
+
+  --header-bg: rgba(15, 15, 26, 0.85);
+  --header-shadow: 0 1px 3px rgba(0, 0, 0, 0.3), 0 1px 2px rgba(0, 0, 0, 0.2);
+  --scrim: rgba(0, 0, 0, 0.6);
+
+  --aurora-1: 28%;
+  --aurora-2: 22%;
+  --aurora-3: 18%;
+
+  --theme-moon: none;
+  --theme-sun: inline;
+
+  color-scheme: dark;
+}
+
+/* Scripts disabled: follow the OS. Identical to the block above. */
+@media (prefers-color-scheme: dark) {
+  :root:not(.light):not(.dark) {
+    --primary-color: #9d94ff;
+    --primary-hover: #b8b1ff;
+    --secondary-color: #9096ad;
+
+    --bg-color: #0d0e15;
+    --bg-secondary: #14161f;
+    --text-main: #e7e9f2;
+    --text-secondary: #9096ad;
+    --border-color: #262a39;
+
+    --code-bg: #171a25;
+    --accent-light: #1b1a3a;
+    --signal: #d59a4a;
+    --signal-soft: #2a2114;
+
+    --iri-1: #8b8cf8;
+    --iri-2: #9d94ff;
+    --iri-3: #b08bf5;
+    --iri-4: #7f9bff;
+    --iri-5: #cdc4fb;
+    --gradient-iri-soft: linear-gradient(120deg, #17172b 0%, #1b1a32 100%);
+    --glass-bg: #14161f;
+    --glass-border: #262a39;
+
+    --shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.2), 0 1px 3px rgba(0, 0, 0, 0.3);
+    --shadow-md: 0 2px 4px rgba(0, 0, 0, 0.2), 0 4px 12px rgba(0, 0, 0, 0.3);
+    --shadow-lg: 0 4px 8px rgba(0, 0, 0, 0.2), 0 8px 24px rgba(0, 0, 0, 0.4);
+
+    --header-bg: rgba(15, 15, 26, 0.85);
+    --header-shadow: 0 1px 3px rgba(0, 0, 0, 0.3), 0 1px 2px rgba(0, 0, 0, 0.2);
+    --scrim: rgba(0, 0, 0, 0.6);
+
+    --aurora-1: 28%;
+    --aurora-2: 22%;
+    --aurora-3: 18%;
+
+    --theme-moon: none;
+    --theme-sun: inline;
+
+    color-scheme: dark;
+  }
+}
+
+/* ── 2. Base ───────────────────────────────────────────────────────────── */
+
+*,
+*::before,
+*::after {
+  box-sizing: border-box;
+}
+
+html {
+  overflow-x: hidden;
+}
+
+@supports (overflow: clip) {
+  html {
+    overflow-x: clip;
+  }
+}
+
+body {
+  margin: 0;
+  min-height: 100vh;
+  display: flex;
+  flex-direction: column;
+  background-color: var(--bg-color);
+  color: var(--text-main);
+}
+
+h1, h2, h3, h4, h5, h6 {
+  font-family: var(--font-display);
+  line-height: 1.15;
+  margin-top: 0;
+  color: var(--text-main);
+  letter-spacing: -0.015em;
+  text-wrap: balance;
+}
+
+h1 { font-size: 2.6rem; font-weight: 700; margin-bottom: 1.5rem; }
+h2 { font-size: 2rem; font-weight: 600; margin-bottom: 1.25rem; }
+h3 { font-size: 1.5rem; font-weight: 600; margin-bottom: 1rem; }
+
+p {
+  margin-top: 0;
+  margin-bottom: 1.5rem;
+  color: var(--text-secondary);
+}
+
+a {
+  color: var(--primary-color);
+  text-decoration: none;
+  transition: color 0.2s;
+}
+
+a:hover {
+  color: var(--primary-hover);
+}
+
+button {
+  font: inherit;
+  color: inherit;
+}
+
+:focus-visible {
+  outline: 2px solid var(--primary-color);
+  outline-offset: 2px;
+}
+
+main:focus {
+  outline: none;
+}
+
+[hidden] {
+  display: none !important;
+}
+
+.skip-link {
+  position: absolute;
+  left: 1rem;
+  top: -100px;
+  z-index: 1000;
+  padding: 0.6rem 1rem;
+  border-radius: var(--radius-md);
+  background: var(--text-main);
+  color: var(--bg-color);
+  font-weight: 600;
+  font-size: 0.9rem;
+}
+
+.skip-link:focus {
+  top: 0.75rem;
+  color: var(--bg-color);
+}
+
+/* Off-screen buffer site.js uses for the execCommand copy fallback. */
+.copy-buffer {
+  position: fixed;
+  top: 0;
+  left: -9999px;
+  opacity: 0;
+}
+
+/* ── 3. Aurora background ──────────────────────────────────────────────────
+   Three soft violet washes behind everything, static (no animation), as
+   plain gradients on one fixed layer. Each stop mirrors a blurred blob of the
+   old component: same centre, same reach, same per-theme strength. */
+
+.aurora {
+  position: fixed;
+  inset: 0;
+  z-index: -1;
+  pointer-events: none;
+  background-image:
+    radial-gradient(circle 32vw at 17.5% calc(27.5vw - 20%),
+      color-mix(in srgb, var(--iri-1) var(--aurora-1), transparent) 0%,
+      transparent 100%),
+    radial-gradient(circle 35vw at 85% calc(30vw + 10%),
+      color-mix(in srgb, var(--iri-3) var(--aurora-2), transparent) 0%,
+      transparent 100%),
+    radial-gradient(circle 38vw at 42.5% calc(125% - 32.5vw),
+      color-mix(in srgb, var(--iri-4) var(--aurora-3), transparent) 0%,
+      transparent 100%);
+}
+
+/* ── 4. Header ─────────────────────────────────────────────────────────── */
+
+.site-header {
+  position: sticky;
+  top: 0;
+  z-index: 100;
+  padding: 0.75rem 0;
+  background: var(--header-bg);
+  box-shadow: var(--header-shadow);
+  border-bottom: 1px solid transparent;
+  border-image: var(--gradient-hairline) 1;
+}
+
+.header-inner {
+  max-width: 1200px;
+  margin: 0 auto;
+  padding: 0 2rem;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.5rem;
+}
+
+.brand {
+  margin-right: auto;
+  font-family: var(--font-display);
+  font-size: 1.5rem;
+  font-weight: 800;
+  line-height: 1.6;
+  letter-spacing: 0.02em;
+  text-transform: uppercase;
+  color: var(--iri-2);
+  transition: filter 0.3s ease;
+}
+
+.brand:hover {
+  color: var(--iri-2);
+  filter: brightness(1.12) saturate(1.1);
+}
+
+.header-nav {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.5rem;
+}
+
+.header-link {
+  display: inline-block;
+  padding: 0.5rem 0.75rem;
+  font-size: 0.95rem;
+  font-weight: 500;
+  line-height: normal;
+  color: var(--text-secondary);
+  border-bottom: 2px solid transparent;
+  border-radius: var(--radius-sm);
+  white-space: nowrap;
+  transition: color 0.2s ease, border-color 0.2s ease;
+}
+
+.header-link:hover,
+.header-link[aria-current="page"] {
+  color: var(--primary-color);
+  border-image: var(--gradient-iri-h) 1;
+}
+
+.header-link[aria-current="page"] {
+  font-weight: 600;
+}
+
+.theme-toggle,
+.nav-toggle {
+  display: none;
+  align-items: center;
+  justify-content: center;
+  gap: 0.4rem;
+  margin: 0;
+  border: 1px solid var(--border-color);
+  border-radius: var(--radius-md);
+  background: transparent;
+  color: var(--text-main);
+  line-height: normal;
+  cursor: pointer;
+  transition: border-color 0.2s ease, background-color 0.2s ease, color 0.2s ease;
+}
+
+.theme-toggle:hover,
+.nav-toggle:hover {
+  border-color: var(--primary-color);
+  background: var(--accent-light);
+}
+
+.nav-toggle:hover {
+  color: var(--primary-color);
+}
+
+.theme-toggle:active,
+.nav-toggle:active {
+  transform: translateY(1px);
+}
+
+/* The toggle only works with script, so it only appears with script. */
+html.js .theme-toggle {
+  display: inline-flex;
+  margin-left: 0.75rem;
+  padding: 0.35rem 0.55rem;
+  font-size: 1.15rem;
+}
+
+.theme-icon-moon { display: var(--theme-moon); }
+.theme-icon-sun { display: var(--theme-sun); }
+
+.nav-toggle {
+  padding: 0.4rem 0.7rem;
+  font-size: 0.9rem;
+  font-weight: 600;
+}
+
+.nav-toggle[aria-expanded="true"] {
+  border-color: var(--primary-color);
+  color: var(--primary-color);
+}
+
+/* ── 5. Page layouts ───────────────────────────────────────────────────── */
+
+.layout {
+  flex: 1 0 auto;
+  width: 100%;
+  min-width: 0;
+}
+
+.content {
+  display: block;
+  min-width: 0;
+  color: var(--text-main);
+}
+
+/* Docs: one opaque panel hanging off the header's hairline, split into a
+   sidebar column and the article. */
+.page-doc .layout {
+  display: grid;
+  grid-template-columns: 250px minmax(0, 1fr);
+  max-width: 1200px;
+  margin: 0 auto;
+  min-height: 80vh;
+  background: var(--glass-bg);
+  border: 1px solid var(--glass-border);
+  border-top: none;
+  border-radius: 0 0 var(--radius-lg) var(--radius-lg);
+}
+
+.page-doc .content {
+  padding: 3rem 2.5rem;
+}
+
+/* Standalone pages (Features, Why, 404): the same panel, no sidebar. */
+.page-standalone .layout {
+  max-width: 960px;
+  margin: 0 auto;
+  min-height: 80vh;
+  padding: 3.5rem 2.5rem;
+  background: var(--glass-bg);
+  border: 1px solid var(--glass-border);
+  border-top: none;
+  border-radius: 0 0 var(--radius-lg) var(--radius-lg);
+}
+
+/* ── 6. Docs sidebar + drawer ──────────────────────────────────────────── */
+
+.sidebar {
+  min-width: 0;
+  border-right: 1px solid transparent;
+  border-image: var(--gradient-hairline-v) 1;
+}
+
+.sidebar-nav {
+  position: sticky;
+  top: var(--nav-h);
+  max-height: calc(100vh - var(--nav-h));
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  padding: 2rem 1rem 2.5rem;
+}
+
+.nav-group + .nav-group {
+  margin-top: 1.5rem;
+}
+
+.nav-group-title {
+  margin: 0 0 0.35rem 0.8rem;
+  font-size: 0.72rem;
+  font-weight: 700;
+  line-height: 1.6;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  color: var(--text-secondary);
+}
+
+.nav-links {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+
+.nav-links a {
+  position: relative;
+  display: block;
+  padding: 0.45rem 0.8rem;
+  font-size: 0.9rem;
+  line-height: 1.6;
+  color: var(--text-secondary);
+  border-radius: var(--radius-sm);
+}
+
+/* Mirrors the article h1's violet left bar. */
+.nav-links a::before {
+  content: "";
+  position: absolute;
+  left: 0;
+  top: 6px;
+  bottom: 6px;
+  width: 3px;
+  border-radius: 2px;
+  background: var(--gradient-iri-v);
+  opacity: 0;
+}
+
+.nav-links a:hover,
+.nav-links a[aria-current="page"] {
+  background: var(--accent-light);
+  color: var(--primary-color);
+}
+
+.nav-links a[aria-current="page"] {
+  font-weight: 600;
+}
+
+.nav-links a[aria-current="page"]::before {
+  opacity: 1;
+}
+
+.nav-scrim {
+  position: fixed;
+  inset: 0;
+  z-index: 250;
+  background: var(--scrim);
+}
+
+@media (prefers-reduced-motion: no-preference) {
+  .nav-links a {
+    transition: background-color 0.15s ease, color 0.15s ease;
+  }
+  .nav-links a::before {
+    transition: opacity 0.18s ease;
+  }
+}
+
+/* ── 7. Footer ─────────────────────────────────────────────────────────── */
+
+.site-footer {
+  margin-top: auto;
+  padding: 1.5rem 1rem;
+  text-align: center;
+  font-size: 0.85rem;
+  color: var(--text-secondary);
+  border-top: 1px solid transparent;
+  border-image: var(--gradient-hairline) 1;
+}
+
+.site-footer p {
+  margin: 0;
+  line-height: 1.6;
+  color: var(--text-secondary);
+}
+
+.site-footer p + p {
+  margin-top: 0.4rem;
+}
+
+.site-footer a {
+  color: var(--text-secondary);
+}
+
+.site-footer a:hover {
+  color: var(--primary-color);
+}
+
+/* ── 8. Prose ──────────────────────────────────────────────────────────────
+   Generic markdown output, styled the way the hand-written docs pages
+   looked. The old pages boxed each h2 section in its own card; markdown has
+   no wrapper to hang that on, so sections are separated by a hairline above
+   each h2 instead. */
+
+.prose {
+  color: var(--text-main);
+  overflow-wrap: break-word;
+}
+
+.prose > :first-child {
+  margin-top: 0;
+}
+
+.prose > :last-child {
+  margin-bottom: 0;
+}
+
+.prose [id] {
+  scroll-margin-top: calc(var(--nav-h) + 1rem);
+}
+
+.prose h1 {
+  font-size: 2rem;
+  margin-bottom: 1.5rem;
+  padding-left: 1rem;
+  border-left: 4px solid transparent;
+  border-image: var(--gradient-iri-v) 1;
+}
+
+/* A paragraph straight after the title is the page's lede. */
+.prose > h1 + p {
+  font-size: 1.05rem;
+  line-height: 1.7;
+  margin-bottom: 2.5rem;
+}
+
+.prose h2 {
+  font-size: 1.5rem;
+  margin: 3rem 0 1rem;
+  padding-top: 2.25rem;
+  border-top: 1px solid transparent;
+  border-image: var(--gradient-hairline) 1;
+}
+
+.prose > h1 + h2,
+.prose > h2:first-child {
+  margin-top: 0;
+  padding-top: 0;
+  border-top: none;
+}
+
+.prose h3 {
+  width: fit-content;
+  max-width: 100%;
+  font-size: 1.1rem;
+  margin: 2rem 0 1rem;
+  padding-bottom: 0.2rem;
+  letter-spacing: 0.5px;
+  border-bottom: 2px solid transparent;
+  border-image: var(--gradient-iri-h) 1;
+}
+
+.prose h2 + h3 {
+  margin-top: 1.25rem;
+}
+
+.prose h4 {
+  font-size: 0.95rem;
+  margin: 1.5rem 0 0.6rem;
+  letter-spacing: 0.5px;
+}
+
+.prose h5,
+.prose h6 {
+  font-size: 0.85rem;
+  margin: 1.25rem 0 0.5rem;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+}
+
+.prose h6 {
+  color: var(--text-secondary);
+}
+
+.prose p {
+  margin: 0 0 1rem;
+  line-height: 1.6;
+}
+
+.prose a {
+  text-decoration: underline;
+  text-decoration-thickness: 1px;
+  text-underline-offset: 0.18em;
+  text-decoration-color: color-mix(in srgb, currentColor 35%, transparent);
+}
+
+.prose a:hover {
+  text-decoration-color: currentColor;
+}
+
+.prose strong,
+.prose b {
+  color: var(--text-main);
+  font-weight: 700;
+}
+
+.prose em,
+.prose i {
+  font-style: italic;
+  font-synthesis: style;
+}
+
+.prose ul,
+.prose ol {
+  margin: 0 0 1rem;
+  padding-left: 1.2rem;
+}
+
+.prose ul {
+  list-style-type: disc;
+}
+
+.prose li {
+  margin-bottom: 0.5rem;
+  color: var(--text-secondary);
+  line-height: 1.5;
+}
+
+.prose li::marker {
+  color: var(--text-secondary);
+}
+
+.prose li > p {
+  margin: 0 0 0.5rem;
+}
+
+.prose li > :last-child {
+  margin-bottom: 0;
+}
+
+.prose li > ul,
+.prose li > ol {
+  margin-top: 0.5rem;
+  margin-bottom: 0.5rem;
+}
+
+/* GitHub-style task lists. */
+.prose .contains-task-list,
+.prose ul:has(> li > input[type="checkbox"]) {
+  list-style: none;
+  padding-left: 0.25rem;
+}
+
+.prose .task-list-item input[type="checkbox"],
+.prose li > input[type="checkbox"] {
+  margin: 0 0.55rem 0 0;
+  vertical-align: -0.1em;
+  accent-color: var(--iri-2);
+}
+
+.prose blockquote {
+  margin: 1.5rem 0;
+  padding: 0.9rem 1.25rem;
+  background: var(--gradient-iri-soft);
+  border: 1px solid var(--glass-border);
+  border-left: 3px solid var(--iri-2);
+  border-radius: var(--radius-md);
+}
+
+.prose blockquote p,
+.prose blockquote li {
+  color: var(--text-main);
+}
+
+.prose blockquote > :last-child {
+  margin-bottom: 0;
+}
+
+.prose hr {
+  height: 1px;
+  margin: 2.5rem 0;
+  border: 0;
+  background: var(--gradient-hairline);
+}
+
+.prose img {
+  max-width: 100%;
+  height: auto;
+  border-radius: var(--radius-md);
+}
+
+.prose dl {
+  margin: 0 0 1rem;
+}
+
+.prose dt {
+  font-weight: 600;
+  color: var(--text-main);
+}
+
+.prose dd {
+  margin: 0 0 0.75rem 1.2rem;
+  color: var(--text-secondary);
+}
+
+.prose kbd {
+  font-family: var(--font-mono);
+  font-size: 0.8em;
+  padding: 0.1rem 0.4rem;
+  border: 1px solid var(--border-color);
+  border-bottom-width: 2px;
+  border-radius: var(--radius-sm);
+  background: var(--bg-secondary);
+  color: var(--text-main);
+}
+
+/* Inline code. */
+.prose code {
+  font-family: var(--font-mono);
+  font-size: 0.85em;
+  padding: 0.15rem 0.4rem;
+  border: 1px solid var(--border-color);
+  border-radius: var(--radius-sm);
+  background: var(--code-bg);
+  color: var(--text-main);
+}
+
+.prose h1 code,
+.prose h2 code,
+.prose h3 code,
+.prose h4 code {
+  font-size: 0.8em;
+}
+
+/* Code blocks. */
+.prose pre {
+  margin: 1rem 0 1.5rem;
+  padding: 1.25rem;
+  overflow-x: auto;
+  background: var(--code-bg);
+  border: 1px solid var(--border-color);
+  border-radius: var(--radius-md);
+  -webkit-overflow-scrolling: touch;
+}
+
+.prose pre code {
+  display: block;
+  padding: 0;
+  border: none;
+  border-radius: 0;
+  background: transparent;
+  font-size: 0.8rem;
+  line-height: 1.6;
+  white-space: pre;
+  overflow-wrap: normal;
+  color: var(--text-main);
+  tab-size: 4;
+}
+
+/* site.js wraps each block to pin a copy button outside the scroller. */
+.code-block {
+  position: relative;
+  margin: 1rem 0 1.5rem;
+}
+
+.code-block > pre {
+  margin: 0;
+}
+
+.copy-button {
+  position: absolute;
+  top: 0.5rem;
+  right: 0.5rem;
+  padding: 0.3rem 0.55rem;
+  font-family: var(--font-sans);
+  font-size: 0.68rem;
+  font-weight: 600;
+  line-height: 1.2;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--text-secondary);
+  background: var(--bg-color);
+  border: 1px solid var(--border-color);
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+  opacity: 0;
+  transition: opacity 0.15s ease, color 0.15s ease, border-color 0.15s ease;
+}
+
+.code-block:hover .copy-button,
+.copy-button:focus-visible,
+.copy-button.copied {
+  opacity: 1;
+}
+
+.copy-button:hover,
+.copy-button.copied {
+  color: var(--primary-color);
+  border-color: var(--primary-color);
+}
+
+@media (hover: none) {
+  .copy-button {
+    opacity: 1;
+  }
+}
+
+/* Tables scroll inside their own wrapper, never the page. */
+.table-wrap {
+  margin: 1rem 0 1.5rem;
+  overflow-x: auto;
+  border: 1px solid var(--border-color);
+  border-radius: var(--radius-md);
+  -webkit-overflow-scrolling: touch;
+}
+
+.prose table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 0.85rem;
+}
+
+.prose thead {
+  background: var(--gradient-iri-soft);
+}
+
+.prose th {
+  padding: 0.75rem 1rem;
+  text-align: left;
+  font-size: 0.75rem;
+  font-weight: 700;
+  letter-spacing: 0.5px;
+  text-transform: uppercase;
+  color: var(--text-main);
+  border-bottom: 2px solid var(--border-color);
+  vertical-align: bottom;
+}
+
+.prose td {
+  padding: 0.75rem 1rem;
+  color: var(--text-secondary);
+  border-bottom: 1px solid var(--border-color);
+  vertical-align: top;
+  line-height: 1.5;
+}
+
+.prose tbody tr:last-child td {
+  border-bottom: none;
+}
+
+.prose td code,
+.prose th code {
+  font-size: 0.8em;
+  white-space: nowrap;
+}
+
+/* Mermaid: the bordered diagram panel of the old pages. Until a diagram has
+   rendered its source is hidden so the page does not flash a wall of text;
+   if it cannot render (no mermaid, syntax error, scripts off) the source is
+   shown instead. */
+.prose pre.mermaid,
+pre.mermaid {
+  margin: 1.5rem 0;
+  padding: 1rem;
+  overflow-x: auto;
+  text-align: center;
+  font-family: var(--font-mono);
+  font-size: 0.8rem;
+  line-height: 1.6;
+  white-space: pre;
+  color: var(--text-main);
+  background: var(--bg-color);
+  border: 1px solid var(--border-color);
+  border-radius: var(--radius-lg);
+}
+
+pre.mermaid.mermaid-source {
+  text-align: left;
+}
+
+html.js pre.mermaid:not([data-processed]):not(.mermaid-source),
+pre.mermaid.mermaid-pending {
+  color: transparent;
+}
+
+pre.mermaid svg {
+  max-width: 100%;
+  height: auto;
+}
+
+/* 404 */
+.prose.not-found {
+  padding: 3rem 0;
+  text-align: center;
+}
+
+.prose.not-found h1 {
+  padding-left: 0;
+  border-left: none;
+  font-size: 3rem;
+}
+
+/* ── 9. Landing: hero, buttons, stats ──────────────────────────────────── */
+
+.hero {
+  max-width: 1200px;
+  margin: 0 auto;
+  padding: 6rem 2rem 3rem;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 4rem;
+}
+
+.hero-inner {
+  flex: 1;
+  min-width: 0;
+  max-width: 540px;
+}
+
+.hero-badge {
+  display: inline-block;
+  margin: 0 0 1.5rem;
+  padding: 0.3rem 1rem;
+  font-size: 0.7rem;
+  font-weight: 700;
+  letter-spacing: 3px;
+  text-transform: uppercase;
+  color: var(--primary-color);
+  background: var(--gradient-iri-soft);
+  border: 1px solid var(--glass-border);
+  border-radius: 100px;
+  box-shadow: 0 1px 2px rgba(139, 92, 246, 0.08);
+}
+
+.hero-title {
+  margin: 0 0 1.5rem;
+  font-size: 5rem;
+  font-weight: 900;
+  line-height: 0.95;
+  letter-spacing: -3px;
+}
+
+.hero-title-line {
+  display: block;
+}
+
+.hero-title-line.accent,
+.band-banner .accent {
+  background: var(--gradient-iri);
+  background-size: 220% 220%;
+  -webkit-background-clip: text;
+  background-clip: text;
+  color: transparent;
+}
+
+.hero-subtitle {
+  max-width: 420px;
+  margin: 0 0 2rem;
+  font-size: 1.1rem;
+  line-height: 1.8;
+  color: var(--text-secondary);
+}
+
+.hero-figure {
+  flex-shrink: 0;
+  width: 380px;
+  max-width: 100%;
+}
+
+.hero-figure svg {
+  display: block;
+  width: 100%;
+  height: auto;
+}
+
+/* Architecture figure (figures/architecture.svg). One stroke weight, one type
+   size, three roles distinguished by fill: clients and store are outlines,
+   the engine is the filled object, the index sits between them. */
+.hf rect {
+  fill: var(--bg-color);
+  stroke: var(--border-color);
+  stroke-width: 1;
+}
+
+.hf .hf-engine > rect {
+  fill: var(--accent-light);
+  stroke: var(--iri-2);
+}
+
+.hf .hf-chip rect {
+  fill: var(--bg-color);
+  stroke: var(--border-color);
+}
+
+.hf .hf-index rect {
+  fill: var(--bg-secondary);
+}
+
+.hf text {
+  font-family: var(--font-mono);
+  font-size: 8.5px;
+  fill: var(--text-secondary);
+  text-anchor: middle;
+}
+
+.hf .hf-clients text,
+.hf .hf-chip text {
+  fill: var(--text-main);
+}
+
+.hf .hf-title {
+  text-anchor: start;
+  font-family: var(--font-display);
+  font-size: 10px;
+  font-weight: 600;
+  fill: var(--text-main);
+}
+
+.hf .hf-store text:not(.hf-title),
+.hf .hf-index text:not(.hf-title) {
+  text-anchor: start;
+}
+
+.hf .hf-wire path {
+  fill: none;
+  stroke: var(--border-color);
+  stroke-width: 1;
+}
+
+.hf .hf-edge {
+  font-size: 7.5px;
+  fill: var(--text-secondary);
+}
+
+/* Action rows (hero, sections, banner). */
+.actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 1rem;
+}
+
+.btn {
+  display: inline-block;
+  padding: 0.7rem 1.8rem;
+  font-family: var(--font-sans);
+  font-size: 0.9rem;
+  font-weight: 600;
+  line-height: normal;
+  letter-spacing: 1px;
+  text-align: center;
+  border-radius: 6px;
+  cursor: pointer;
+}
+
+.btn:active {
+  transform: translateY(1px);
+}
+
+.btn-primary {
+  color: #fff;
+  font-weight: 700;
+  border-radius: 8px;
+  background: var(--gradient-iri);
+  background-size: 160% 160%;
+  background-position: 0% 50%;
+  box-shadow: 0 4px 14px -4px rgba(139, 92, 246, 0.55);
+  transition: background-position 0.4s ease, box-shadow 0.2s ease, transform 0.15s ease;
+}
+
+.btn-primary:hover {
+  color: #fff;
+  background-position: 100% 50%;
+  box-shadow: 0 6px 20px -4px rgba(217, 70, 239, 0.55);
+  transform: translateY(-1px);
+}
+
+.btn-primary:active {
+  transform: translateY(0);
+}
+
+.btn-secondary {
+  color: var(--primary-color);
+  background: transparent;
+  border: 1px solid var(--primary-color);
+  transition: background-color 0.2s, color 0.2s;
+}
+
+.btn-secondary:hover {
+  color: #fff;
+  background-color: var(--primary-color);
+}
+
+.btn-link {
+  padding: 0;
+  font-size: 0.85rem;
+  line-height: 1.6;
+  font-weight: 700;
+  text-transform: uppercase;
+  color: var(--text-secondary);
+  border-radius: 0;
+  transition: color 0.2s;
+}
+
+.btn-link:hover {
+  color: var(--primary-color);
+}
+
+.btn-link:active {
+  transform: none;
+}
+
+/* Stats strip. */
+.stats {
+  background: var(--gradient-iri-soft);
+  border-top: 1px solid transparent;
+  border-bottom: 1px solid transparent;
+  border-image: var(--gradient-hairline) 1;
+}
+
+.stats-inner {
+  max-width: 1200px;
+  margin: 0 auto;
+  padding: 0;
+  list-style: none;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.stat {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 0.25rem;
+  padding: 2.5rem 3rem;
+  text-align: center;
+}
+
+.stat + .stat::before {
+  content: "";
+  position: absolute;
+  left: 0;
+  top: 50%;
+  width: 1px;
+  height: 3rem;
+  margin-top: -1.5rem;
+  background: var(--gradient-hairline-v);
+}
+
+.stat-value {
+  font-size: 1.8rem;
+  font-weight: 900;
+  letter-spacing: -1px;
+  white-space: nowrap;
+  background: var(--gradient-iri);
+  -webkit-background-clip: text;
+  background-clip: text;
+  color: transparent;
+}
+
+.stat-label {
+  font-size: 0.7rem;
+  letter-spacing: 2px;
+  text-transform: uppercase;
+  color: var(--text-secondary);
+}
+
+/* ── 10. Landing: bands ────────────────────────────────────────────────── */
+
+.band {
+  max-width: 1200px;
+  margin: 0 auto;
+  padding: 4rem 2rem;
+}
+
+.section-title {
+  margin: 0 0 3rem;
+  font-size: 1.5rem;
+  font-weight: 700;
+  text-align: center;
+  text-transform: uppercase;
+  letter-spacing: 3px;
+  color: var(--text-main);
+}
+
+.section-body {
+  max-width: 720px;
+  margin: -1.5rem auto 2.5rem;
+  text-align: center;
+}
+
+.section-body > :last-child {
+  margin-bottom: 0;
+}
+
+.band > .actions {
+  justify-content: center;
+  margin-top: 2.5rem;
+}
+
+/* Prose band: free text under a section title. */
+.band-prose .section-body {
+  margin-top: 0;
+  text-align: left;
+}
+
+/* After the steps, bands are divided by a hairline, as on the old page. */
+.band-steps,
+.band-steps + .band:not(.band-banner) {
+  border-top: 1px solid transparent;
+  border-image: var(--gradient-hairline) 1;
+}
+
+/* ── Cards ── */
+
+.cards {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 15rem), 1fr));
+  gap: 1.5rem;
+}
+
+/* Column counts by item count, so four tiles sit in one row, not 3 + 1. */
+.cards:has(> :nth-child(2):last-child) { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+.cards:has(> :nth-child(3):last-child) { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+.cards:has(> :nth-child(4):last-child) { grid-template-columns: repeat(4, minmax(0, 1fr)); }
+
+/* Linked card: the pillar tile. */
+a.card {
+  position: relative;
+  isolation: isolate;
+  display: flex;
+  flex-direction: column;
+  padding: 2rem;
+  color: inherit;
+  background: var(--glass-bg);
+  border: 1px solid var(--glass-border);
+  border-radius: var(--radius-card);
+  transition: box-shadow 0.25s ease, transform 0.25s ease, border-color 0.25s ease;
+}
+
+/* Violet ring that fades in on hover. */
+a.card::before {
+  content: "";
+  position: absolute;
+  inset: -1px;
+  padding: 1px;
+  border-radius: inherit;
+  background: conic-gradient(from 0deg, var(--iri-1), var(--iri-3), var(--iri-4), var(--iri-1));
+  -webkit-mask: linear-gradient(#000, #000) content-box, linear-gradient(#000, #000);
+  -webkit-mask-composite: xor;
+  mask: linear-gradient(#000, #000) content-box, linear-gradient(#000, #000);
+  mask-composite: exclude;
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity 0.3s ease;
+}
+
+a.card:hover {
+  color: inherit;
+  box-shadow: 0 12px 30px -12px rgba(139, 92, 246, 0.4), var(--shadow-md);
+  transform: translateY(-3px);
+}
+
+a.card:hover::before {
+  opacity: 1;
+}
+
+a.card:focus-visible {
+  outline: 2px solid var(--iri-2);
+  outline-offset: 3px;
+}
+
+.card-icon {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+  width: 34px;
+  height: 34px;
+  margin-bottom: 1.1rem;
+  color: var(--iri-2);
+  background: var(--bg-color);
+  border: 1px solid var(--border-color);
+  border-radius: var(--radius-md);
+  transition: border-color 0.2s ease;
+}
+
+.card-icon svg {
+  display: block;
+  width: 18px;
+  height: 18px;
+}
+
+a.card:hover .card-icon {
+  border-color: var(--iri-2);
+}
+
+.card-title {
+  margin: 0 0 0.5rem;
+  font-size: 1rem;
+  letter-spacing: 1px;
+  text-transform: uppercase;
+}
+
+.card-body {
+  flex: 1;
+  margin: 0 0 1rem;
+  font-size: 0.85rem;
+  line-height: 1.5;
+  color: var(--text-secondary);
+}
+
+.card-body p {
+  margin: 0;
+  color: inherit;
+}
+
+.card-body p + p {
+  margin-top: 0.5rem;
+}
+
+.card-arrow {
+  font-size: 1.2rem;
+  line-height: 1.6;
+  color: var(--text-secondary);
+  transition: transform 0.2s, color 0.2s;
+}
+
+a.card:hover .card-arrow {
+  transform: translateX(4px);
+  color: var(--primary-color);
+}
+
+/* Unlinked cards: one panel split by hairlines, with a mono eyebrow for a
+   title (the "Your Data Stays Yours" look). */
+.band-cards:has(> .cards > div.card) {
+  max-width: 1100px;
+  padding: 4.5rem 1.5rem 0;
+}
+
+.cards:has(> div.card) {
+  gap: 1px;
+  background: var(--border-color);
+  border: 1px solid var(--border-color);
+  border-radius: var(--radius-lg);
+  overflow: hidden;
+}
+
+div.card {
+  display: flex;
+  flex-direction: column;
+  padding: 1.6rem 1.5rem;
+  background: var(--bg-color);
+}
+
+div.card .card-title {
+  margin: 0 0 0.6rem;
+  font-family: var(--font-mono);
+  font-size: 0.72rem;
+  font-weight: 400;
+  line-height: 1.6;
+  letter-spacing: 0.1em;
+  color: var(--iri-2);
+}
+
+div.card .card-body {
+  margin: 0;
+  font-size: 0.93rem;
+  line-height: 1.6;
+}
+
+div.card .card-icon {
+  margin-bottom: 0.9rem;
+}
+
+/* The Explore section: two wide cards per row, icon and arrow on one line,
+   a violet edge that draws in on hover. Keyed on the section id so other
+   card sections keep the tile look. */
+#explore .cards {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
+#explore a.card {
+  display: grid;
+  grid-template-columns: auto 1fr;
+  grid-template-rows: auto auto 1fr;
+  grid-template-areas:
+    "icon arrow"
+    "title title"
+    "body body";
+  align-items: center;
+  overflow: hidden;
+}
+
+#explore a.card::before {
+  display: none;
+}
+
+#explore a.card::after {
+  content: "";
+  position: absolute;
+  left: 0;
+  top: 0;
+  bottom: 0;
+  width: 3px;
+  background: var(--gradient-iri);
+  transform: scaleY(0);
+  transform-origin: top;
+  transition: transform 0.3s ease;
+}
+
+#explore a.card:hover {
+  border-color: transparent;
+  box-shadow: 0 10px 28px -12px rgba(139, 92, 246, 0.35), var(--shadow-md);
+}
+
+#explore a.card:hover::after {
+  transform: scaleY(1);
+}
+
+#explore .card-icon {
+  grid-area: icon;
+  margin-bottom: 1rem;
+}
+
+#explore .card-arrow {
+  grid-area: arrow;
+  justify-self: end;
+  margin-bottom: 1rem;
+}
+
+#explore .card-title {
+  grid-area: title;
+  font-size: 1.2rem;
+  letter-spacing: -0.015em;
+  text-transform: none;
+}
+
+#explore .card-body {
+  grid-area: body;
+  align-self: start;
+  margin: 0;
+  font-size: 0.9rem;
+}
+
+/* ── Figures: a lede, a paragraph, and a column of measured values. ── */
+
+.band-figures {
+  max-width: 1100px;
+  padding: 4.5rem 1.5rem 0;
+}
+
+.figures-grid {
+  display: grid;
+  grid-template-columns: 1.35fr 1fr;
+  gap: 3rem;
+  align-items: start;
+}
+
+.figures-main p {
+  max-width: 58ch;
+  margin: 0 0 1rem;
+  color: var(--text-secondary);
+}
+
+.figures-main p:last-child {
+  margin-bottom: 0;
+}
+
+.figures-main > p:first-child {
+  max-width: none;
+  font-size: 1.15rem;
+  line-height: 1.55;
+  color: var(--text-main);
+}
+
+.figures-main strong {
+  color: inherit;
+}
+
+.figures {
+  display: flex;
+  flex-direction: column;
+  margin: 0;
+  border-top: 1px solid var(--border-color);
+}
+
+.figure {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 1rem;
+  padding: 0.85rem 0;
+  border-bottom: 1px solid var(--border-color);
+}
+
+/* Signal colour, used here and nowhere else: these values came off an
+   instrument, not a marketing deck. */
+.figure dt {
+  font-family: var(--font-mono);
+  font-size: 1.35rem;
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+  color: var(--signal);
+}
+
+.figure dd {
+  max-width: 22ch;
+  margin: 0;
+  font-size: 0.85rem;
+  text-align: right;
+  color: var(--text-secondary);
+}
+
+.figure dd p {
+  margin: 0;
+  color: inherit;
+}
+
+/* ── Steps ── */
+
+.band-steps {
+  max-width: 800px;
+}
+
+.steps {
+  display: flex;
+  flex-direction: column;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.step {
+  display: flex;
+  align-items: flex-start;
+  gap: 2rem;
+  padding: 1.5rem 0;
+  border-bottom: 1px solid transparent;
+  border-image: var(--gradient-hairline) 1;
+}
+
+.step:last-child {
+  border-bottom: none;
+}
+
+.step-num {
+  min-width: 3rem;
+  font-size: 2.2rem;
+  font-weight: 900;
+  line-height: 1;
+  letter-spacing: -1px;
+  background: var(--gradient-iri);
+  -webkit-background-clip: text;
+  background-clip: text;
+  color: transparent;
+  opacity: 0.55;
+}
+
+.step-content {
+  min-width: 0;
+}
+
+.step-title {
+  margin: 0 0 0.3rem;
+  font-size: 1rem;
+}
+
+.step-body {
+  font-size: 0.9rem;
+  line-height: 1.5;
+  color: var(--text-secondary);
+}
+
+.step-body p {
+  margin: 0;
+  color: inherit;
+}
+
+.step-body p + p {
+  margin-top: 0.5rem;
+}
+
+/* ── Banner ── */
+
+.band-banner {
+  max-width: none;
+  padding: 5rem 2rem;
+  text-align: center;
+  background: var(--gradient-iri-soft);
+  border-top: 1px solid transparent;
+  border-image: var(--gradient-hairline) 1;
+}
+
+.band-banner > * {
+  max-width: 600px;
+  margin-left: auto;
+  margin-right: auto;
+}
+
+.band-banner .section-title {
+  margin-bottom: 2rem;
+  font-weight: 600;
+  line-height: 1.4;
+  letter-spacing: -0.015em;
+  text-transform: none;
+}
+
+.band-banner .section-body {
+  margin-top: -1rem;
+}
+
+.band-banner > .actions {
+  justify-content: center;
+  margin-top: 0;
+}
+
+/* ── 11. Responsive ────────────────────────────────────────────────────── */
+
+@media (max-width: 1100px) {
+  .stat {
+    padding: 2.5rem 2rem;
+  }
+}
+
+@media (max-width: 900px) {
+  /* Landing */
+  .hero {
+    flex-direction: column;
+    gap: 2rem;
+    padding: 3rem 1.5rem 2rem;
+    text-align: center;
+  }
+
+  .hero-inner {
+    max-width: 100%;
+  }
+
+  .hero-title {
+    font-size: 3.5rem;
+  }
+
+  .hero-subtitle {
+    margin-left: auto;
+    margin-right: auto;
+  }
+
+  .hero .actions {
+    justify-content: center;
+  }
+
+  .stats-inner {
+    flex-wrap: wrap;
+  }
+
+  .stat {
+    padding: 2rem 1.5rem;
+  }
+
+  .band {
+    padding: 3.5rem 1.5rem;
+  }
+
+  .band-figures,
+  .band-cards:has(> .cards > div.card) {
+    padding: 3.5rem 1.5rem 0;
+  }
+
+  .band-banner {
+    padding: 4rem 1.5rem;
+  }
+
+  .cards:has(> :nth-child(4):last-child) {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 1rem;
+  }
+
+  .cards:has(> :nth-child(3):last-child),
+  #explore .cards {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .cards:has(> div.card) {
+    gap: 1px;
+  }
+
+  .figures-grid {
+    grid-template-columns: minmax(0, 1fr);
+    gap: 2rem;
+  }
+
+  .figure dd {
+    max-width: none;
+  }
+
+  /* Docs: the sidebar leaves the grid. With script it becomes an off-canvas
+     drawer behind the Menu button; without script it sits above the
+     article as a plain list, so the docs stay navigable. */
+  .page-doc .layout {
+    display: block;
+  }
+
+  .page-doc .content {
+    padding: 2rem 1.25rem;
+  }
+
+  .page-doc .sidebar {
+    border-right: none;
+    border-image: none;
+    border-bottom: 1px solid var(--border-color);
+  }
+
+  .page-doc .sidebar-nav {
+    position: static;
+    max-height: none;
+    padding: 1.5rem 1.25rem;
+  }
+
+  html.js .page-doc .nav-toggle {
+    display: inline-flex;
+  }
+
+  html.js .page-doc .sidebar {
+    position: fixed;
+    top: 0;
+    bottom: 0;
+    left: 0;
+    z-index: 300;
+    width: min(300px, 82vw);
+    overflow-y: auto;
+    overscroll-behavior: contain;
+    background: var(--bg-secondary);
+    border-right: 1px solid var(--glass-border);
+    border-bottom: none;
+    box-shadow: var(--shadow-lg);
+    transform: translateX(-100%);
+    visibility: hidden;
+  }
+
+  html.js .page-doc .sidebar.open {
+    transform: none;
+    visibility: visible;
+  }
+
+  html.js .page-doc .sidebar-nav {
+    padding: 2rem 1rem 2.5rem;
+  }
+
+  body.nav-open {
+    overflow: hidden;
+  }
+
+  .page-standalone .layout {
+    padding: 2rem 1.25rem;
+  }
+}
+
+@media (max-width: 900px) and (prefers-reduced-motion: no-preference) {
+  html.js .page-doc .sidebar {
+    transition: transform 0.25s ease, visibility 0s linear 0.25s;
+  }
+
+  html.js .page-doc .sidebar.open {
+    transition: transform 0.25s ease, visibility 0s linear 0s;
+  }
+}
+
+@media (max-width: 768px) {
+  /* Two header rows cover more of the page; keep text from showing through. */
+  .site-header {
+    padding: 0.6rem 0;
+    background: var(--bg-color);
+  }
+
+  .header-inner {
+    padding: 0 1rem;
+    row-gap: 0.35rem;
+  }
+
+  /* Brand and toggles on the first row, the links on their own row. */
+  .header-nav {
+    order: 3;
+    flex-basis: 100%;
+    justify-content: center;
+    gap: 0.25rem;
+  }
+
+  .header-link {
+    padding: 0.4rem 0.6rem;
+    font-size: 0.9rem;
+  }
+
+  html.js .theme-toggle {
+    margin-left: 0;
+  }
+
+  .page-doc .layout,
+  .page-standalone .layout {
+    border-left: none;
+    border-right: none;
+    border-radius: 0;
+  }
+
+  .prose h1 {
+    font-size: 1.75rem;
+  }
+
+  .prose.not-found h1 {
+    font-size: 2.4rem;
+  }
+
+  .prose h2 {
+    font-size: 1.3rem;
+  }
+}
+
+@media (max-width: 600px) {
+  .hero-title {
+    font-size: 2.5rem;
+    letter-spacing: -2px;
+  }
+
+  .hero-figure {
+    width: 100%;
+  }
+
+  .stats-inner {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .stat {
+    padding: 1.5rem 1rem;
+  }
+
+  .stat + .stat::before {
+    display: none;
+  }
+
+  .stat-value {
+    font-size: 1.3rem;
+  }
+
+  .section-title {
+    margin-bottom: 2rem;
+    font-size: 1.25rem;
+    letter-spacing: 2px;
+  }
+
+  .cards:has(> :nth-child(2):last-child),
+  .cards:has(> :nth-child(4):last-child) {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  a.card {
+    padding: 1.5rem;
+  }
+
+  .step {
+    gap: 1.25rem;
+  }
+
+  .step-num {
+    min-width: 2.5rem;
+    font-size: 1.8rem;
+  }
+
+  .figure {
+    flex-direction: column;
+    gap: 0.15rem;
+  }
+
+  .figure dd {
+    text-align: left;
+  }
+}

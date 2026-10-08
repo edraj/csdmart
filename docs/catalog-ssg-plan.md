@@ -3,9 +3,10 @@
 Design note for making `/cat` emit a real static website from entries held in
 dmart, with **dmart.cc as the reference migration**.
 
-**Status: the go/no-go spike has passed and the generator exists**
-(`catalog/ssg/generate.mjs`). Steps 1 and 2 of the sequencing below are done;
-the remainder is open. Evidence is in the two new sections at the end.
+**Status: built.** The Node prototype (`catalog/ssg/generate.mjs`) proved the
+approach and has been replaced by `dmart website build` in the binary; the
+open questions at the end were decided on 2026-10-08 (see "Decided" below).
+The operator guide is `docs/website.md`. This note keeps the design record.
 
 Context: this closes the one objection that otherwise ends every CMS
 comparison. Today dmart is a headless backend — `PayloadHandler.RendersInline`
@@ -338,3 +339,22 @@ Worth deciding before building it.
 resolution is to make the seed authoritative and retire the Svelte pages so the
 site builds from dmart — but that retires 8,046 lines of working markup and is
 a decision for the site's owner, not a side effect of this migration.
+
+---
+
+## Decided (2026-10-08)
+
+1. **Public by default: no.** Seeding still grants nothing; the operator
+   widens `world` with the one API call above. The build reads as anonymous,
+   so that same switch decides what the site contains.
+2. **Serving and regeneration: a CLI command.** `dmart website build` renders
+   into `WEBSITE_DIR/builds/<stamp>/` and swaps `WEBSITE_DIR/current`; the
+   server serves it under `WEBSITE_URL` (`/website`). Not a hook on write,
+   which would publish an edit in progress, and not per-request rendering,
+   which would re-open the XSS question `PayloadHandler` closed.
+3. **Drift: the seed becomes the only source.** The Svelte pages in
+   `edraj/website` are retired after dmart.cc is cut over to the dmart-built
+   site and checked. The per-page styling loss is accepted.
+4. **The home page** (never part of the 14) is a `landing_page` entry at
+   `/site/home`: its text is content, its layout and figure ship with the
+   template. Navigation and footer are `/site/config`.

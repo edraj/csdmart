@@ -50,7 +50,26 @@ dmart seed files-only
 dmart seed db-only --force
 ```
 
-### 4. import
+### 4. website
+
+Builds the static site from the `website` space and hands it to the server, which serves it under `WEBSITE_URL` (default `/website`). The build reads as an anonymous visitor, so it publishes only what the `world` permission makes public, and it refuses to replace a site with an empty one. The server picks up a new build on its next request.
+
+**Options:**
+
+- `--base <url>`: public origin for canonical links and `sitemap.xml` (default: `base_url` in `site/config`).
+
+- `--mount <path>`: URL path links are built for (default `WEBSITE_URL`; use `/` behind a proxy that maps a domain's root onto `/website`).
+
+- `--out <dir>`: output root (default `WEBSITE_DIR`).
+
+- `--space <name>`, `--template <dir>`: another space, or your own layout and assets.
+
+```
+dmart website build
+dmart website build --base https://dmart.cc --mount /
+```
+
+### 5. import
 
 Loads a zip or folder export into the database. By default, existing rows are skipped (idempotent).
 
@@ -67,7 +86,7 @@ dmart import school.zip
 dmart import ./spaces --fast --replace
 ```
 
-### 5. export
+### 6. export
 
 Exports a space to a zip archive in the DMART on-disk layout (`spaces/` + `.dm/meta.*.json`). This layout is a transfer/backup format — PostgreSQL remains the source of truth.
 
@@ -87,7 +106,7 @@ dmart export school --output .
 dmart export school --output snapshots/school.zip
 ```
 
-### 6. preflight
+### 7. preflight
 
 Scans a legacy filesystem export for integrity issues (duplicate UUIDs, missing owners, schema-noncompliant payloads) and auto-fixes them before `dmart import`.
 
@@ -96,7 +115,7 @@ dmart preflight ./spaces
 dmart preflight --dry-run --workers 4 ./spaces
 ```
 
-### 7. settings
+### 8. settings
 
 Prints the effective settings as JSON (secrets redacted). Shares its projection with `GET /info/settings` so CLI and API output stay in sync.
 
@@ -104,7 +123,7 @@ Prints the effective settings as JSON (secrets redacted). Shares its projection 
 dmart settings
 ```
 
-### 8. passwd
+### 9. passwd
 
 Sets the password for a user (Argon2-hashed). The shortname may be passed positionally; passwords are read from a prompt, never the command line.
 
@@ -113,7 +132,7 @@ dmart passwd
 dmart passwd dmart
 ```
 
-### 9. check
+### 10. check
 
 Runs health checks on a space.
 
@@ -122,7 +141,7 @@ dmart check
 dmart check school hard
 ```
 
-### 10. selfcheck
+### 11. selfcheck
 
 Smoke-tests the running HTTP surface (login + CRUD + query) against a live server.
 
@@ -130,7 +149,7 @@ Smoke-tests the running HTTP surface (login + CRUD + query) against a live serve
 dmart selfcheck --url http://localhost:8282 --admin dmart --password-stdin
 ```
 
-### 11. fix-folder-rendering
+### 12. fix-folder-rendering
 
 Repairs legacy folder payload bodies to match the canonical `folder_rendering` schema (strips unknown fields, adds required-but-missing ones, widens policy arrays). Content is never touched. Dry-run by default; pass `--apply` to write.
 
@@ -139,7 +158,7 @@ dmart fix-folder-rendering school
 dmart fix-folder-rendering school --apply
 ```
 
-### 12. update_query_policies
+### 13. update_query_policies
 
 Recomputes `query_policies` for every entry and updates rows whose stored value drifted (e.g. owner / is_active changed outside the write path).
 
@@ -148,7 +167,7 @@ dmart update_query_policies
 dmart update_query_policies --batch-size 500
 ```
 
-### 13. fix_query_policies
+### 14. fix_query_policies
 
 Backfills `entries.query_policies` for rows written before write-time population landed. Idempotent.
 
@@ -157,7 +176,7 @@ dmart fix_query_policies
 dmart fix_query_policies school --dry-run
 ```
 
-### 14. create-users-folders
+### 15. create-users-folders
 
 Backfills each user's personal folders (`notifications`, `private`, `protected`, `public`, `inbox`). Idempotent — existing folders are left untouched.
 
@@ -165,7 +184,7 @@ Backfills each user's personal folders (`notifications`, `private`, `protected`,
 dmart create-users-folders
 ```
 
-### 15. init
+### 16. init
 
 Initializes `~/.dmart` with config files, generating a fresh random `JWT_SECRET`.
 
@@ -173,7 +192,7 @@ Initializes `~/.dmart` with config files, generating a fresh random `JWT_SECRET`
 dmart init
 ```
 
-### 16. cli
+### 17. cli
 
 Interactive CLI client for talking to a running DMART server. Supports a REPL, a single command, or a script.
 
@@ -183,7 +202,7 @@ dmart cli c myspace get /myspace/folder
 dmart cli s ./script.txt
 ```
 
-### 17. version
+### 18. version
 
 Prints version and build info as JSON (version, branch, build date, and .NET runtime).
 
@@ -191,7 +210,7 @@ Prints version and build info as JSON (version, branch, build date, and .NET run
 dmart version
 ```
 
-### 18. help
+### 19. help
 
 Prints the list of available subcommands.
 

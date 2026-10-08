@@ -1,0 +1,61 @@
+<svg xmlns="http://www.w3.org/2000/svg" class="hf" viewBox="0 0 320 260" role="img" aria-label="Four client SDKs call one dmart binary, which serves the API, access control, schema validation and admin UI; entries are stored as files, with a rebuildable SQL index beside them.">
+  <g class="hf-clients">
+    <rect x="8" y="8" width="70" height="30" rx="4"/>
+    <rect x="86" y="8" width="70" height="30" rx="4"/>
+    <rect x="164" y="8" width="70" height="30" rx="4"/>
+    <rect x="242" y="8" width="70" height="30" rx="4"/>
+    <text x="43" y="27">Flutter</text>
+    <text x="121" y="27">TS</text>
+    <text x="199" y="27">Python</text>
+    <text x="277" y="27">.NET</text>
+  </g>
+
+  <g class="hf-wire">
+    <path d="M43 38v16h234V38"/>
+    <path d="M121 38v16"/><path d="M199 38v16"/>
+    <path d="M160 54v14"/>
+  </g>
+  <text class="hf-edge" x="166" y="50">HTTPS · JSON</text>
+
+  <g class="hf-engine">
+    <rect x="8" y="68" width="304" height="86" rx="6"/>
+    <text class="hf-title" x="20" y="88">dmart — one binary, ~50 MB</text>
+    <g class="hf-chip">
+      <rect x="20" y="98" width="66" height="20" rx="3"/>
+      <rect x="94" y="98" width="66" height="20" rx="3"/>
+      <rect x="168" y="98" width="66" height="20" rx="3"/>
+      <rect x="242" y="98" width="62" height="20" rx="3"/>
+      <text x="53" y="112">REST API</text>
+      <text x="127" y="112">ACL</text>
+      <text x="201" y="112">Schema</text>
+      <text x="273" y="112">MCP</text>
+    </g>
+    <g class="hf-chip">
+      <rect x="20" y="124" width="104" height="20" rx="3"/>
+      <rect x="132" y="124" width="104" height="20" rx="3"/>
+      <rect x="244" y="124" width="60" height="20" rx="3"/>
+      <text x="72" y="138">Admin UI</text>
+      <text x="184" y="138">Workflows</text>
+      <text x="274" y="138">WS</text>
+    </g>
+  </g>
+
+  <g class="hf-wire">
+    <path d="M86 154v20"/><path d="M234 154v20"/>
+  </g>
+
+  <g class="hf-store">
+    <rect x="8" y="174" width="148" height="56" rx="6"/>
+    <text class="hf-title" x="20" y="194">Files on disk</text>
+    <text x="20" y="212">source of truth</text>
+  </g>
+  <g class="hf-index">
+    <rect x="164" y="174" width="148" height="56" rx="6"/>
+    <text class="hf-title" x="176" y="194">PostgreSQL / SQLite</text>
+    <text x="176" y="212">rebuildable index</text>
+  </g>
+  <g class="hf-wire hf-rebuild">
+    <path d="M156 202h8"/>
+  </g>
+  <text class="hf-edge" x="160" y="248">dmart import rebuilds the index from disk</text>
+</svg>
