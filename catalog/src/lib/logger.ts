@@ -30,27 +30,27 @@ class Logger {
     this.logLevel = level;
   }
 
-  public debug(message: string, data?: any): void {
+  public debug(message: string, data?: unknown): void {
     if (this.shouldLog(LogLevel.DEBUG)) {
       // eslint-disable-next-line no-console -- the dev-gated central logger is the one place debug output may print
       console.debug(`[DEBUG] ${message}`, data || '');
     }
   }
 
-  public info(message: string, data?: any): void {
+  public info(message: string, data?: unknown): void {
     if (this.shouldLog(LogLevel.INFO)) {
       // eslint-disable-next-line no-console -- the dev-gated central logger is the one place info output may print
       console.info(`[INFO] ${message}`, data || '');
     }
   }
 
-  public warn(message: string, data?: any): void {
+  public warn(message: string, data?: unknown): void {
     if (this.shouldLog(LogLevel.WARN)) {
       console.warn(`[WARN] ${message}`, data || '');
     }
   }
 
-  public error(message: string, error?: Error | any): void {
+  public error(message: string, error?: unknown): void {
     if (this.shouldLog(LogLevel.ERROR)) {
       console.error(`[ERROR] ${message}`, error || '');
     }
@@ -66,8 +66,8 @@ export const logger = Logger.getInstance();
 
 // Convenience functions for cleaner imports
 export const log = {
-  debug: (message: string, data?: any) => logger.debug(message, data),
-  info: (message: string, data?: any) => logger.info(message, data),
-  warn: (message: string, data?: any) => logger.warn(message, data),
-  error: (message: string, error?: Error | any) => logger.error(message, error)
+  debug: (message: string, data?: unknown) => logger.debug(message, data),
+  info: (message: string, data?: unknown) => logger.info(message, data),
+  warn: (message: string, data?: unknown) => logger.warn(message, data),
+  error: (message: string, error?: unknown) => logger.error(message, error)
 };

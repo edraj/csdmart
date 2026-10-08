@@ -6,41 +6,53 @@
  * and define discriminated unions as a root-level `oneOf`/`anyOf` with no
  * top-level `properties` at all (each branch has its own).
  */
+import { isIndexable, isJsonObject, type JsonSchemaNode } from "./types";
+
+/**
+ * A schema body read as a schema node, or null for anything that is not an
+ * object. The one place the stored document is given its declared shape.
+ */
+export function asSchemaNode(value: unknown): JsonSchemaNode | null {
+  return isJsonObject(value) ? (value as JsonSchemaNode) : null;
+}
 
 /** Resolves a "#/definitions/x"-style pointer against the root schema document. */
-export function resolveSchemaRef(root: any, ref: string): any {
+export function resolveSchemaRef(root: JsonSchemaNode | null | undefined, ref: string): JsonSchemaNode | null {
   if (!ref || typeof ref !== "string" || !ref.startsWith("#/")) return null;
   const path = ref.slice(2).split("/");
-  let cur = root;
+  let cur: unknown = root;
   for (const segment of path) {
-    if (cur == null) return null;
+    if (!isIndexable(cur)) return null;
     cur = cur[segment];
   }
-  return cur ?? null;
+  return asSchemaNode(cur);
 }
 
 /** Flattens `$ref`/`allOf` indirection so callers can read type/title/enum directly. */
-export function resolveSchemaDef(root: any, def: any): any {
-  if (!def || typeof def !== "object") return def;
-  if (!def.allOf && !def.$ref) return def;
+export function resolveSchemaDef(root: JsonSchemaNode | null | undefined, def: unknown): JsonSchemaNode | null {
+  const node = asSchemaNode(def);
+  if (!node) return null;
+  if (!node.allOf && !node.$ref) return node;
 
-  const sources: any[] = [];
-  if (typeof def.$ref === "string") {
-    const resolved = resolveSchemaRef(root, def.$ref);
-    if (resolved) sources.push(resolveSchemaDef(root, resolved));
+  const sources: JsonSchemaNode[] = [];
+  if (typeof node.$ref === "string") {
+    const resolved = resolveSchemaRef(root, node.$ref);
+    const flattened = resolved && resolveSchemaDef(root, resolved);
+    if (flattened) sources.push(flattened);
   }
-  if (Array.isArray(def.allOf)) {
-    for (const part of def.allOf) {
-      if (part && typeof part === "object") {
-        sources.push(resolveSchemaDef(root, part));
-      }
+  if (Array.isArray(node.allOf)) {
+    for (const part of node.allOf) {
+      const flattened = resolveSchemaDef(root, part);
+      if (flattened) sources.push(flattened);
     }
   }
 
-  const own = { ...def };
+  const own: JsonSchemaNode = { ...node };
   delete own.allOf;
   delete own.$ref;
-  return Object.assign({}, ...sources, own);
+  const merged: JsonSchemaNode = {};
+  for (const source of sources) Object.assign(merged, source);
+  return Object.assign(merged, own);
 }
 
 /**
@@ -48,18 +60,19 @@ export function resolveSchemaDef(root: any, def: any): any {
  * plain schema, or one per `oneOf`/`anyOf` branch for a discriminated union
  * that has no top-level `properties`.
  */
-export function collectSchemaPropertyBags(body: any): Array<Record<string, any>> {
-  if (!body || typeof body !== "object") return [];
-  if (body.properties && typeof body.properties === "object") {
-    return [body.properties];
+export function collectSchemaPropertyBags(body: unknown): Array<Record<string, JsonSchemaNode>> {
+  const node = asSchemaNode(body);
+  if (!node) return [];
+  if (node.properties && typeof node.properties === "object") {
+    return [node.properties];
   }
-  const branches: any[] | undefined = Array.isArray(body.oneOf)
-    ? body.oneOf
-    : Array.isArray(body.anyOf)
-      ? body.anyOf
+  const branches = Array.isArray(node.oneOf)
+    ? node.oneOf
+    : Array.isArray(node.anyOf)
+      ? node.anyOf
       : undefined;
   if (!branches) return [];
   return branches
-    .map((b) => b?.properties)
-    .filter((p): p is Record<string, any> => !!p && typeof p === "object");
+    .map((branch) => asSchemaNode(branch)?.properties)
+    .filter((p): p is Record<string, JsonSchemaNode> => !!p && typeof p === "object");
 }

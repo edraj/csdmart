@@ -1,6 +1,6 @@
 <script lang="ts">
   import { _ } from "@/i18n";
-    import {Dmart, QueryType, ResourceType} from "@edraj/tsdmart";
+    import {Dmart, QueryType, ResourceType, type ApiQueryResponse} from "@edraj/tsdmart";
     import {warningToastMessage, successToastMessage} from "@/lib/toasts_messages";
     import Modal from "@/components/Modal.svelte";
     import {
@@ -60,19 +60,17 @@
         }
     });
 
-    function parseQuerySchemaResponse(schemas: any){
+    function parseQuerySchemaResponse(schemas: ApiQueryResponse | null): Array<{ name: string; value: string }> {
         if (schemas === null) {
             return [];
         }
-        const result = schemas.records
-            .map((e: any) => e.shortname)
-            .filter((e: any) => !["meta_schema", "folder_rendering"].includes(e));
-
-        let r = result.map((e: any) => ({
-            name: e,
-            value: e
-        }));
-        return r;
+        return schemas.records
+            .map((e) => e.shortname)
+            .filter((e) => !["meta_schema", "folder_rendering"].includes(e))
+            .map((e) => ({
+                name: e,
+                value: e
+            }));
     }
 
     function parseSpacesForSelect(spaces: typeof availableSpaces) {

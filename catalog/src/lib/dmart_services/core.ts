@@ -15,6 +15,7 @@ import { log } from "../logger";
 import { ROOT_SUBPATH } from "../constants";
 import { getCurrentScope } from "@/stores/user";
 import { AUTO_UUID_RULE, resolveAutoShortname } from "@/lib/helpers";
+import type { AttachmentsMap, EntryAttributes, EntryDetail, JsonObject } from "@/lib/types";
 
 /**
  * Maximum size (bytes) for a single multipart upload. Matches the dmart
@@ -57,8 +58,11 @@ export function validateShortname(shortname: string): boolean {
 /**
  * Like getEntityByShortname but lets the failure propagate, so a page can
  * tell "not found" from "forbidden" from "network down" and say so.
+ *
+ * `A` names the attributes the caller reads beyond the common meta (a user's
+ * roles, a space's hide_folders, ...).
  */
-export async function getEntityStrict(
+export async function getEntityStrict<A extends EntryAttributes = EntryAttributes>(
     shortname: string,
     spaceName: string,
     subpath: string,
@@ -66,10 +70,10 @@ export async function getEntityStrict(
     scope: DmartScope = DmartScope.managed,
     retrieve_json_payload: boolean = true,
     retrieve_attachments: boolean = true
-) {
+): Promise<EntryDetail<A> | null> {
     const cleanedSubpath = cleanSubpath(subpath) || ROOT_SUBPATH;
 
-    return await Dmart.retrieveEntry(
+    const entry = await Dmart.retrieveEntry(
         {
             resource_type: resourceType,
             space_name: spaceName,
@@ -81,9 +85,17 @@ export async function getEntityStrict(
         },
         scope
     );
+    if (!entry) return null;
+    // The SDK's ResponseEntry leaves the attachments as Record<string, unknown>;
+    // the server groups them by resource type ({ media: [...], json: [...] }).
+    const detail: EntryDetail = {
+        ...entry,
+        attachments: entry.attachments as AttachmentsMap | undefined,
+    };
+    return detail as EntryDetail<A>;
 }
 
-export async function getEntityByShortname(
+export async function getEntityByShortname<A extends EntryAttributes = EntryAttributes>(
     shortname: string,
     spaceName: string,
     subpath: string,
@@ -91,9 +103,9 @@ export async function getEntityByShortname(
     scope: DmartScope = DmartScope.managed,
     retrieve_json_payload: boolean = true,
     retrieve_attachments: boolean = true
-) {
+): Promise<EntryDetail<A> | null> {
     try {
-        return await getEntityStrict(
+        return await getEntityStrict<A>(
             shortname,
             spaceName,
             subpath,
@@ -216,10 +228,10 @@ export async function createEntity(
     spaceName: string,
     subpath: string,
     resourceType: ResourceType,
-    attributes: any,
+    attributes: JsonObject | null | undefined,
     shortname: string = AUTO_UUID_RULE
 ) {
-    const recordAttributes = attributes ?? {};
+    const recordAttributes: JsonObject = attributes ?? {};
     const { shortname: resolvedShortname } = resolveAutoShortname(
         shortname,
         recordAttributes,
@@ -264,7 +276,7 @@ export async function updateEntity(
     spaceName: string,
     subpath: string,
     resourceType: ResourceType,
-    attributes: any,
+    attributes: JsonObject,
 ) {
     const actionRequest: ActionRequest = {
         space_name: spaceName,
@@ -335,7 +347,7 @@ export async function createAttachment(
     ensureUploadSize(file);
     const targetSubpath = buildAttachmentSubpath(subpath, shortname);
 
-    const attributes: Record<string, any> = { is_active: true };
+    const attributes: JsonObject = { is_active: true };
     const { shortname: attachmentShortname } = resolveAutoShortname(
         AUTO_UUID_RULE,
         attributes,

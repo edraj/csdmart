@@ -15,6 +15,8 @@
   import { getFileExtension } from "@shared/file-extension";
   import { isImageFile } from "@/lib/fileUtils";
   import { AUTO_UUID_RULE, resolveAutoShortname } from "@/lib/helpers";
+  import { errorMessage } from "@/lib/apiError";
+  import type { JsonObject } from "@/lib/types";
 
   interface Translation {
     en: string;
@@ -219,7 +221,7 @@
         const tags = parseTags(fileItem.tagsInput);
         const displaynamePayload = toTranslationPayload(fileItem.displayname);
         const descriptionPayload = toTranslationPayload(fileItem.description);
-        const attributes: Record<string, any> = {
+        const attributes: JsonObject = {
           is_active: true,
           ...(displaynamePayload ? { displayname: displaynamePayload } : {}),
           ...(descriptionPayload ? { description: descriptionPayload } : {}),
@@ -255,12 +257,7 @@
           errorCount++;
         }
       } catch (error) {
-        let errorMsg = "Upload error";
-        if (error && typeof error === "object") {
-          errorMsg = (error as any).message || String(error);
-        } else if (typeof error === "string") {
-          errorMsg = error;
-        }
+        const errorMsg = errorMessage(error, "Upload error");
         selectedFiles = selectedFiles.map((f) =>
           f.id === fileItem.id
             ? { ...f, status: "error", errorMessage: errorMsg }

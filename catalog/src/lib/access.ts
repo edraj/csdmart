@@ -30,7 +30,8 @@ export interface Permission {
   allowed_actions?: string[];
   conditions?: string[];
   restricted_fields?: string[];
-  allowed_fields_values?: Record<string, any>;
+  /** Field name → the values it may take (one value or a list). */
+  allowed_fields_values?: Record<string, unknown>;
 }
 
 export type PermissionsMap = Record<string, Permission>;

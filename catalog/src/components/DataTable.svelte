@@ -1,8 +1,9 @@
-<script lang="ts">
+<script lang="ts" generics="T extends { shortname?: string; id?: string | number }">
   import type { Snippet } from "svelte";
   import { _, locale } from "@/i18n";
   import { formatNumber } from "@/lib/helpers";
   import { ELLIPSIS, pageRange, pageWindow } from "@/lib/pagination";
+  import { isIndexable, type IndexAttribute } from "@/lib/types";
   import { ChevronLeftOutline, ChevronRightOutline } from "flowbite-svelte-icons";
   import EmptyState from "@/components/ui/EmptyState.svelte";
   import LoadingState from "@/components/ui/LoadingState.svelte";
@@ -12,23 +13,20 @@
   // mouse), tabular numerals, selection with bulk actions, and a pager with
   // named prev/next and aria-current. A refresh overlays the rows instead of
   // blanking them.
-
-  interface IndexAttribute {
-    key: string;
-    name: string | Record<string, string>;
-    sortable?: boolean;
-  }
+  //
+  // Generic over the row type `T`: the row callbacks and the `cell` / `actions`
+  // snippets see the caller's own row type, inferred from `items`.
 
   type SortDirection = "asc" | "desc";
 
   interface CellSnippetContext {
-    item: any;
+    item: T;
     attr: IndexAttribute;
     index: number;
   }
 
   interface ActionsSnippetContext {
-    item: any;
+    item: T;
     index: number;
   }
 
@@ -37,28 +35,28 @@
   }
 
   interface StateSnippetContext {
-    items: any[];
+    items: T[];
   }
 
   interface Props {
-    items: any[];
+    items: T[];
     indexAttributes?: IndexAttribute[];
     selectable?: boolean;
     selectedItems?: Set<string>;
     onSelectAll?: (checked: boolean) => void;
     onSelectItem?: (id: string) => void;
-    onRowClick?: (item: any, event: MouseEvent | KeyboardEvent) => void;
+    onRowClick?: (item: T, event: MouseEvent | KeyboardEvent) => void;
     /** When given, the row's primary control is a real link to this URL (withBase applied by the caller). */
-    rowHref?: (item: any) => string | undefined;
+    rowHref?: (item: T) => string | undefined;
     /** Accessible name of the row's link/button; defaults to the first attribute's value or the id. */
-    rowLabel?: (item: any) => string;
+    rowLabel?: (item: T) => string;
     /**
      * Identity of a row for keyed rendering. Defaults to shortname/id, which is
      * unique inside one folder but not across spaces — a listing that mixes
      * spaces (My Entries) must supply a composite key or Svelte throws
      * each_key_duplicate and the page never leaves its loading state.
      */
-    rowKey?: (item: any) => string | number;
+    rowKey?: (item: T) => string | number;
     loading?: boolean;
     emptyMessage?: string;
     currentPage?: number;
@@ -153,11 +151,11 @@
     return "";
   }
 
-  function getItemId(item: any): string {
-    return item.shortname || item.id || String(items.indexOf(item));
+  function getItemId(item: T): string {
+    return item.shortname || (item.id !== undefined && item.id !== "" ? String(item.id) : "") || String(items.indexOf(item));
   }
 
-  function labelOf(item: any): string {
+  function labelOf(item: T): string {
     if (rowLabel) return rowLabel(item);
     const first = effectiveIndexAttributes[0];
     const value = first ? getNestedValue(item, first.key) : null;
@@ -168,7 +166,7 @@
     onSelectAll?.((e.target as HTMLInputElement).checked);
   }
 
-  function handleRowClick(item: any, event: MouseEvent) {
+  function handleRowClick(item: T, event: MouseEvent) {
     // Clicks on the row's own controls (checkbox, actions, the primary link)
     // handle themselves; a click on the rest of the row opens the item.
     const target = event.target as HTMLElement;
@@ -192,19 +190,21 @@
     onSortChange?.(attr.key, nextDir);
   }
 
-  function getNestedValue(obj: any, key: string): any {
-    if (obj == null) return null;
+  /** A row's value for a column: the key itself, the same key under `attributes`, or a dotted path. */
+  function getNestedValue(obj: unknown, key: string): unknown {
+    if (!isIndexable(obj)) return null;
     if (key in obj) return obj[key];
-    if (obj.attributes && key in obj.attributes) return obj.attributes[key];
-    let cur: any = obj;
+    const attributes = obj.attributes;
+    if (isIndexable(attributes) && key in attributes) return attributes[key];
+    let cur: unknown = obj;
     for (const part of key.split(".")) {
-      if (cur == null) return null;
+      if (!isIndexable(cur)) return null;
       cur = cur[part];
     }
     return cur;
   }
 
-  function compareValues(a: any, b: any): number {
+  function compareValues(a: unknown, b: unknown): number {
     if (a == null && b == null) return 0;
     if (a == null) return -1;
     if (b == null) return 1;

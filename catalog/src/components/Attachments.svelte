@@ -21,11 +21,12 @@
   } from "../lib/fileUtils";
   import { log } from "../lib/logger";
   import { getCurrentScope } from "@/stores/user";
+  import { asResourceType, attachmentFilename, isJsonObject, type EntryRecord, type JsonObject } from "@/lib/types";
 
-  function pickTranslation(value: any, activeLocale: string): string {
+  function pickTranslation(value: unknown, activeLocale: string): string {
     if (!value) return "";
     if (typeof value === "string") return value;
-    if (typeof value !== "object") return String(value ?? "");
+    if (!isJsonObject(value)) return String(value ?? "");
     const langs = [activeLocale, "en", "ar", "ku"];
     for (const lang of langs) {
       const v = value[lang];
@@ -37,23 +38,30 @@
     return "";
   }
 
-  function getDisplayName(attachment: any, activeLocale: string): string {
+  function getDisplayName(attachment: EntryRecord, activeLocale: string): string {
     const fromAttr = pickTranslation(
-      attachment?.attributes?.displayname,
+      attachment.attributes?.displayname,
       activeLocale,
     );
-    return fromAttr || attachment?.shortname || "";
+    return fromAttr || attachment.shortname || "";
   }
 
-  function getDescription(attachment: any, activeLocale: string): string {
-    return pickTranslation(attachment?.attributes?.description, activeLocale);
+  function getDescription(attachment: EntryRecord, activeLocale: string): string {
+    return pickTranslation(attachment.attributes?.description, activeLocale);
   }
 
-  function getTags(attachment: any): string[] {
-    const raw = attachment?.attributes?.tags;
+  function getTags(attachment: EntryRecord): string[] {
+    const raw = attachment.attributes?.tags;
     return Array.isArray(raw)
       ? raw.filter((t) => typeof t === "string" && t.length > 0)
       : [];
+  }
+
+  /** The attachment being previewed, with the resolved URL and media kind. */
+  interface PreviewItem extends EntryRecord {
+    url: string;
+    type: string;
+    filename: string;
   }
 
   let {
@@ -63,7 +71,7 @@
     parent_shortname,
     isOwner = false,
   }: {
-    attachments: any[];
+    attachments: EntryRecord[];
     resource_type: ResourceType;
     space_name: string;
     subpath: string;
@@ -72,7 +80,7 @@
   } = $props();
 
   let previewModal = $state(false);
-  let currentPreview: any = $state(null);
+  let currentPreview = $state<PreviewItem | null>(null);
   let previewBlobUrl: string | null = $state(null);
   let previewLoading = $state(false);
 
@@ -87,8 +95,8 @@
   let editTagsInput = $state("");
   let isSavingMeta = $state(false);
 
-  function coerceTranslation(value: any): EditTranslation {
-    if (!value || typeof value !== "object") {
+  function coerceTranslation(value: unknown): EditTranslation {
+    if (!isJsonObject(value)) {
       return { en: typeof value === "string" ? value : "", ar: "", ku: "" };
     }
     return {
@@ -115,10 +123,10 @@
       .filter((t) => t.length > 0);
   }
 
-  function getAttachmentApiUrl(attachment: any): string {
-    const filename = attachment?.attributes?.payload?.body ?? "";
+  function getAttachmentApiUrl(attachment: EntryRecord): string {
+    const filename = attachmentFilename(attachment);
     return Dmart.getAttachmentUrl({
-      resource_type: attachment.resource_type as ResourceType,
+      resource_type: asResourceType(attachment.resource_type),
       space_name,
       subpath,
       parent_shortname,
@@ -136,8 +144,8 @@
     return null;
   }
 
-  async function openPreview(attachment: any) {
-    const filename = attachment?.attributes?.payload?.body ?? "";
+  async function openPreview(attachment: EntryRecord) {
+    const filename = attachmentFilename(attachment);
 
     if (
       isImageFile(filename) ||
@@ -155,11 +163,9 @@
       currentPreview = { ...attachment, url: apiUrl, type, filename };
 
       // Seed editable fields from the attachment's attributes
-      editDisplayname = coerceTranslation(attachment?.attributes?.displayname);
-      editDescription = coerceTranslation(attachment?.attributes?.description);
-      editTagsInput = Array.isArray(attachment?.attributes?.tags)
-        ? attachment.attributes.tags.join(", ")
-        : "";
+      editDisplayname = coerceTranslation(attachment.attributes?.displayname);
+      editDescription = coerceTranslation(attachment.attributes?.description);
+      editTagsInput = getTags(attachment).join(", ");
 
       previewModal = true;
       previewLoading = true;
@@ -180,19 +186,20 @@
       const descriptionPayload = translationPayload(editDescription);
       const tags = parseTagsInput(editTagsInput);
 
-      const attributes: Record<string, any> = {
+      const attributes: JsonObject = {
         displayname: displaynamePayload ?? {},
         description: descriptionPayload ?? {},
         tags,
       };
+      const previewShortname = currentPreview.shortname;
 
       const response = await Dmart.request({
         space_name,
         request_type: RequestType.update,
         records: [
           {
-            resource_type: currentPreview.resource_type,
-            shortname: currentPreview.shortname,
+            resource_type: asResourceType(currentPreview.resource_type),
+            shortname: previewShortname,
             subpath: `${currentPreview.subpath}/${parent_shortname}`,
             attributes,
           },
@@ -201,8 +208,8 @@
 
       if (response?.status === "success") {
         // Patch the local list so the card reflects the change without a reload
-        attachments = attachments.map((a: any) =>
-          a.shortname === currentPreview.shortname
+        attachments = attachments.map((a) =>
+          a.shortname === previewShortname
             ? {
                 ...a,
                 attributes: {
@@ -217,7 +224,7 @@
       } else {
         log.error(
           "Failed to update attachment metadata:",
-          (response as any)?.error,
+          response?.error,
         );
       }
     } catch (err) {
@@ -236,7 +243,7 @@
     }
   }
 
-  async function downloadFile(attachment: any) {
+  async function downloadFile(attachment: EntryRecord) {
     const apiUrl = getAttachmentApiUrl(attachment);
     const blob = await fetchWithAuth(apiUrl);
     if (!blob) return;
@@ -244,15 +251,14 @@
     const blobUrl = URL.createObjectURL(blob);
     const link = document.createElement("a");
     link.href = blobUrl;
-    link.download =
-      attachment.attributes?.payload?.body || attachment.shortname;
+    link.download = attachmentFilename(attachment) || attachment.shortname;
     document.body.appendChild(link);
     link.click();
     document.body.removeChild(link);
     URL.revokeObjectURL(blobUrl);
   }
 
-  async function handleDelete(attachment: any) {
+  async function handleDelete(attachment: EntryRecord) {
     const confirmed = await confirm({
       title: $_("attachment_list.delete_title"),
       body: $_("attachment_list.delete_body", {
@@ -262,22 +268,21 @@
     });
     if (!confirmed) return;
 
-    const request_dict = {
+    const response = await Dmart.request({
       space_name,
       request_type: RequestType.delete,
       records: [
         {
-          resource_type: attachment.resource_type,
+          resource_type: asResourceType(attachment.resource_type),
           shortname: attachment.shortname,
           subpath: `${attachment.subpath}/${parent_shortname}`,
           attributes: {},
         },
       ],
-    };
-    const response = await Dmart.request(request_dict as any);
+    });
     if (response.status === "success") {
       attachments = attachments.filter(
-        (e: { shortname: string }) => e.shortname !== attachment.shortname,
+        (e) => e.shortname !== attachment.shortname,
       );
       successToastMessage(`Attachment deleted successfully.`);
     } else {
@@ -296,21 +301,22 @@
   {:else}
     <div class="attachments-grid">
       {#each attachments as attachment (attachment.shortname)}
+        {@const filename = attachmentFilename(attachment)}
         <div class="attachment-card">
           <!-- Card Header with Actions -->
           <div class="attachment-header">
             <div class="file-type-badge">
               <span class="file-icon"
-                >{getFileTypeIcon(attachment.attributes?.payload?.body)}</span
+                >{getFileTypeIcon(filename)}</span
               >
               <span class="file-ext"
-                >{getFileExtension(attachment.attributes?.payload?.body) ||
+                >{getFileExtension(filename) ||
                   "Unknown"}</span
               >
             </div>
 
             <div class="attachment-actions">
-              {#if isImageFile(attachment.attributes?.payload?.body) || isVideoFile(attachment.attributes?.payload?.body) || isPdfFile(attachment.attributes?.payload?.body) || isAudioFile(attachment.attributes?.payload?.body)}
+              {#if isImageFile(filename) || isVideoFile(filename) || isPdfFile(filename) || isAudioFile(filename)}
                 <button
                   aria-label={$_("labels.preview_named", { values: { name: attachment.shortname } })}
                   class="action-button preview-button"
@@ -345,10 +351,10 @@
 
           <!-- Media Preview -->
           <div class="attachment-preview">
-            {#if attachment && [ResourceType.media].includes(attachment.resource_type)}
+            {#if attachment.resource_type === ResourceType.media}
               <div class="media-wrapper">
                 <Media
-                  resource_type={attachment.resource_type}
+                  resource_type={asResourceType(attachment.resource_type)}
                   attributes={attachment.attributes}
                   displayname={attachment.shortname}
                   url={getAttachmentApiUrl(attachment)}
@@ -367,7 +373,7 @@
             {:else}
               <div class="unsupported-file">
                 <div class="unsupported-icon">
-                  {getFileTypeIcon(attachment.attributes?.payload?.body)}
+                  {getFileTypeIcon(filename)}
                 </div>
                 <span class="unsupported-text">{$_("Unsupportedformat")}</span>
               </div>

@@ -13,6 +13,19 @@ import {
 import { log } from "@/lib/logger";
 import { PERSONAL_SPACE } from "@/lib/constants";
 import { getCurrentScope } from "@/stores/user";
+import { bodyAs, type DirectMessageBody, type EntryRecord } from "@/lib/types";
+
+/** A direct message fetched by shortname, as the chat page consumes it. */
+export interface FetchedDirectMessage {
+    id: string;
+    senderId: string;
+    receiverId: string;
+    content: string;
+    timestamp: Date;
+    messageType: string;
+    isGroupMessage: false;
+    attachments: EntryRecord[] | null;
+}
 
 const PROTECTED_SUBPATH_BASE = "people";
 
@@ -144,10 +157,10 @@ export async function getMessageByShortname(
     senderShortname?: string,
     receiverShortname?: string,
     subpath?: string
-) {
+): Promise<FetchedDirectMessage | null> {
     try {
         // Try to find the message in either user's protected folder
-        const possibleLocations = [];
+        const possibleLocations: Array<{ space: string; subpath: string }> = [];
 
         if (subpath) {
             // If we know the exact subpath from a notification, try it first
@@ -184,19 +197,18 @@ export async function getMessageByShortname(
                 );
 
                 if (record) {
-                    const payload = (record as any).payload;
-                    const body = payload?.body;
+                    const body = bodyAs<DirectMessageBody>(record.payload);
 
                     if (body) {
                         return {
                             id: record.shortname,
-                            senderId: body.sender,
-                            receiverId: body.receiver,
-                            content: body.content,
-                            timestamp: new Date((record as any).created_at || Date.now()),
+                            senderId: body.sender ?? "",
+                            receiverId: body.receiver ?? "",
+                            content: body.content ?? "",
+                            timestamp: new Date(record.created_at || Date.now()),
                             messageType: body.message_type || "text",
                             isGroupMessage: false,
-                            attachments: (record as any).attachments?.media || null,
+                            attachments: record.attachments?.media || null,
                         };
                     }
                 }

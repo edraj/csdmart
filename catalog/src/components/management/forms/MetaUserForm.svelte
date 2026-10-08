@@ -1,33 +1,74 @@
+<script module lang="ts">
+  import type { MetaFormData } from "@/components/forms/MetaForm.svelte";
+
+  /**
+   * A user's attributes as this form edits them, on top of the common meta
+   * fields (the same object is bound to MetaForm beside this one). Lists
+   * are optional on the way in — the server strips empty ones — and present
+   * once the form has normalized its data.
+   */
+  export interface UserFormData extends MetaFormData {
+    email?: string | null;
+    password?: string;
+    old_password?: string;
+    msisdn?: string | null;
+    is_email_verified?: boolean;
+    is_msisdn_verified?: boolean;
+    force_password_change?: boolean;
+    type?: string;
+    language?: string | null;
+    roles?: string[];
+    groups?: string[];
+    firebase_token?: string | null;
+    google_id?: string | null;
+    facebook_id?: string | null;
+    apple_id?: string | null;
+    social_avatar_url?: string | null;
+    attempt_count?: unknown;
+  }
+</script>
+
 <script lang="ts">
   import { log } from "@/lib/logger";
     import { onMount } from 'svelte';
-    import { Dmart, QueryType } from '@edraj/tsdmart';
+    import { Dmart, QueryType, type ApiResponseRecord } from '@edraj/tsdmart';
     import { _ } from 'svelte-i18n';
     import FieldGate from '@/components/access/FieldGate.svelte';
     import { permissions } from '@/stores/permissions';
     import { constrainEnumOptions } from '@/lib/access-fields';
     import { canClearLockout, readFailedAttempts, resolveAttemptCount } from '@shared/user-lockout';
 
+    /** One choice in the roles / groups pickers. */
+    interface PickerOption {
+        key: string;
+        value: string;
+    }
+
     let {
-        formData = $bindable(),
+        formData = $bindable({}),
         // eslint-disable-next-line @typescript-eslint/no-unused-vars, no-useless-assignment -- $bindable() prop: assigned here, read by the parent through bind:validateFn
         validateFn = $bindable(),
         isCreate = false,
         fullWidth = false
+    }: {
+        formData: UserFormData;
+        validateFn?: (() => boolean) | null;
+        isCreate?: boolean;
+        fullWidth?: boolean;
     } = $props();
 
     let form = $state<HTMLFormElement | null>(null);
 
-    let availableRoles = $state<any[]>([]);
+    let availableRoles = $state<ApiResponseRecord[]>([]);
     let loadingRoles = $state(true);
-    let filteredRoles = $state<any[]>([]);
+    let filteredRoles = $state<PickerOption[]>([]);
     let rolesSearchTerm = $state('');
     let showRolesDropdown = $state(false);
     let rolesDropdownRef = $state<HTMLDivElement | null>(null);
 
-    let availableGroups = $state<any[]>([]);
+    let availableGroups = $state<ApiResponseRecord[]>([]);
     let loadingGroups = $state(true);
-    let filteredGroups = $state<any[]>([]);
+    let filteredGroups = $state<PickerOption[]>([]);
     let groupsSearchTerm = $state('');
     let showGroupsDropdown = $state(false);
     let groupsDropdownRef = $state<HTMLDivElement | null>(null);
@@ -73,6 +114,10 @@
         attempt_count: undefined
     }
 
+    // The lists the pickers edit; the normalization above has made them arrays.
+    const roles = $derived(formData.roles ?? []);
+    const groups = $derived(formData.groups ?? []);
+
     // The unlock gesture. Deliberately NOT is_active: a locked account is still
     // active (the lock is counter-only), and this form emits is_active on every
     // save — so keying an unlock off that flag would mean renaming a locked user
@@ -97,7 +142,7 @@
 
     async function getRoles() {
         try {
-            const rolesResponse: any = await Dmart.query({
+            const rolesResponse = await Dmart.query({
                 space_name: 'management',
                 subpath: '/roles',
                 type: QueryType.search,
@@ -117,7 +162,7 @@
 
     async function getGroups() {
         try {
-            const groupsResponse: any = await Dmart.query({
+            const groupsResponse = await Dmart.query({
                 space_name: 'management',
                 subpath: '/groups',
                 type: QueryType.search,
@@ -160,18 +205,18 @@
             .map(role => ({ key: role.shortname, value: role.shortname }));
     }
 
-    function toggleRole(event: MouseEvent, role: { key: string, value: string }) {
+    function toggleRole(event: MouseEvent, role: PickerOption) {
         event.stopPropagation();
-        const index = formData.roles.indexOf(role.value);
+        const index = roles.indexOf(role.value);
         if (index === -1) {
-            formData.roles = [...formData.roles, role.value];
+            formData.roles = [...roles, role.value];
         } else {
-            formData.roles = formData.roles.filter((r: string) => r !== role.value);
+            formData.roles = roles.filter((r) => r !== role.value);
         }
     }
 
     function removeRole(role: string) {
-        formData.roles = formData.roles.filter((r: string) => r !== role);
+        formData.roles = roles.filter((r) => r !== role);
     }
 
     function updateFilteredGroups() {
@@ -180,24 +225,24 @@
             .map(group => ({ key: group.shortname, value: group.shortname }));
     }
 
-    function toggleGroup(event: MouseEvent, group: { key: string, value: string }) {
+    function toggleGroup(event: MouseEvent, group: PickerOption) {
         event.stopPropagation();
-        const index = formData.groups.indexOf(group.value);
+        const index = groups.indexOf(group.value);
         if (index === -1) {
-            formData.groups = [...formData.groups, group.value];
+            formData.groups = [...groups, group.value];
         } else {
-            formData.groups = formData.groups.filter((g: string) => g !== group.value);
+            formData.groups = groups.filter((g) => g !== group.value);
         }
     }
 
     function removeGroup(group: string) {
-        formData.groups = formData.groups.filter((g: string) => g !== group);
+        formData.groups = groups.filter((g) => g !== group);
     }
 
     function validate() {
         if (!form) return false;
         const isValid = form.checkValidity();
-        isEmailValid = validateEmail(formData.email)
+        isEmailValid = validateEmail(formData.email ?? null)
 
         if (!isValid || !isEmailValid) {
             form.reportValidity();
@@ -236,7 +281,7 @@
     }
     $effect(() => {
         if (emailTouched) {
-            isEmailValid = validateEmail(formData.email);
+            isEmailValid = validateEmail(formData.email ?? null);
         }
     });
 </script>
@@ -404,7 +449,7 @@
                                                     onclick={(e) => toggleRole(e, role)}
                                                 >
                                                     <span>{role.key}</span>
-                                                    {#if formData.roles.includes(role.value)}
+                                                    {#if roles.includes(role.value)}
                                                         <span class="badge">{$_("selected")}</span>
                                                     {/if}
                                                 </button>
@@ -414,8 +459,8 @@
                                 </div>
 
                                 <div class="tags-container">
-                                    {#if formData.roles.length > 0}
-                                        {#each formData.roles as role (role)}
+                                    {#if roles.length > 0}
+                                        {#each roles as role (role)}
                                             <span class="tag">
                                                 {role}
                                                 <button type="button" class="tag-remove" onclick={() => removeRole(role)}>×</button>
@@ -455,7 +500,7 @@
                                                     onclick={(e) => toggleGroup(e, group)}
                                                 >
                                                     <span>{group.key}</span>
-                                                    {#if formData.groups.includes(group.value)}
+                                                    {#if groups.includes(group.value)}
                                                         <span class="badge">{$_("selected")}</span>
                                                     {/if}
                                                 </button>
@@ -465,8 +510,8 @@
                                 </div>
 
                                 <div class="tags-container">
-                                    {#if formData.groups.length > 0}
-                                        {#each formData.groups as group (group)}
+                                    {#if groups.length > 0}
+                                        {#each groups as group (group)}
                                             <span class="tag tag-gray">
                                                 {group}
                                                 <button type="button" class="tag-remove" onclick={() => removeGroup(group)}>×</button>

@@ -9,6 +9,7 @@ import {
     ResourceType,
     SortType,
 } from "@edraj/tsdmart";
+import { bodyObject, type EntryPayload } from "@/lib/types";
 
 export async function createComment(
     spaceName: string,
@@ -91,15 +92,21 @@ export async function deleteMultipleComments(
     return response.status === "success";
 }
 
+/** The fields of a comment record this walk reads. */
+type CommentLike = {
+    shortname: string;
+    attributes?: { payload?: EntryPayload | null } | null;
+};
+
 export function findAllChildComments(
     parentCommentId: string,
-    allComments: any[]
+    allComments: CommentLike[]
 ): string[] {
     const childIds: string[] = [];
 
     const directChildren = allComments.filter(
         (comment) =>
-            comment.attributes?.payload?.body?.parent_comment_id === parentCommentId
+            bodyObject(comment.attributes?.payload)?.parent_comment_id === parentCommentId
     );
 
     directChildren.forEach((child) => {

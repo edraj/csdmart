@@ -10,9 +10,15 @@
 <script lang="ts">
   import { dir, locale } from "./i18n";
 
-  function findRoute(routers: any, paths: any): any {
+  /** A node of routify's generated route tree: the fields the URL rewrite walks. */
+  interface RouteNode {
+    name?: string;
+    children?: RouteNode[];
+  }
+
+  function findRoute(node: RouteNode, paths: string[]): RouteNode | null {
     if (paths.length === 0) {
-      return routers;
+      return node;
     }
 
     let [currentPath, ...remainingPaths] = paths;
@@ -20,8 +26,8 @@
       currentPath = currentPath.slice(0, -1);
     }
 
-    const matchingChild = routers.children.find(
-      (child: any) => child.name === `${currentPath}`
+    const matchingChild = node.children?.find(
+      (child) => child.name === `${currentPath}`
     );
 
     if (matchingChild) {
@@ -31,7 +37,7 @@
     }
   }
 
-  let createdRouter: any = null;
+  let createdRouter: ReturnType<typeof createRouter> | null = null;
 
   function prepareRouter() {
     if (createdRouter === null) {

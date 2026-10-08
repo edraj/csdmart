@@ -9,9 +9,20 @@
     isPropertyRequired,
     setNestedProperty,
   } from "../../lib/formUtils";
-  import type { Schema } from "../../lib/types";
+  import { isJsonObject, type JsonObject, type Schema } from "../../lib/types";
   import { permissions } from "@/stores/permissions";
   import { constrainEnumOptions, isFieldRestricted } from "@/lib/access-fields";
+
+  interface Props {
+    /** The form's data bag: one entry per schema property. */
+    content: JsonObject;
+    /** The schema to render; without one the form shows its empty state. */
+    schema: Schema | null | undefined;
+    readOnly?: boolean;
+    space?: string;
+    subpath?: string;
+    resourceType?: string;
+  }
 
   let {
     content = $bindable({}),
@@ -20,14 +31,7 @@
     space = "",
     subpath = "",
     resourceType = "",
-  }: {
-    content: Record<string, any>;
-    schema: Schema;
-    readOnly?: boolean;
-    space?: string;
-    subpath?: string;
-    resourceType?: string;
-  } = $props();
+  }: Props = $props();
 
   $effect.pre(() => {
     if (schema && schema.properties) {
@@ -38,11 +42,12 @@
     }
   });
 
-  function createEmptyItemFromExisting(existing: any): any {
+  /** An item shaped like `existing`, with every field reset to its empty value. */
+  function createEmptyItemFromExisting(existing: unknown): unknown {
     if (existing === null || existing === undefined) return '';
     if (Array.isArray(existing)) return [];
-    if (typeof existing === 'object') {
-      const empty: Record<string, any> = {};
+    if (isJsonObject(existing)) {
+      const empty: JsonObject = {};
       for (const key of Object.keys(existing)) {
         const val = existing[key];
         if (typeof val === 'boolean') empty[key] = false;
@@ -59,27 +64,66 @@
     return '';
   }
 
-  function addArrayItem(path: any) {
-    let target = getNestedProperty(content, path);
-    if (!target) {
+  // --- Typed views over the content bag ------------------------------------
+  // The form is schema-driven, so the bag's values are only known at runtime;
+  // each field's markup reads its value through the view that matches the
+  // field's shape, and writes through the matching setter.
+
+  /** The array under `name`, or [] when the value is not one. */
+  function listAt(name: string): unknown[] {
+    const value = content[name];
+    return Array.isArray(value) ? value : [];
+  }
+
+  /** The object at `index` of the array under `name`, or {} when it is not one. */
+  function itemAt(name: string, index: number): JsonObject {
+    const item = listAt(name)[index];
+    return isJsonObject(item) ? item : {};
+  }
+
+  /** The object under `name`, or {} when the value is not one. */
+  function objectAt(name: string): JsonObject {
+    const value = content[name];
+    return isJsonObject(value) ? value : {};
+  }
+
+  function setListItem(name: string, index: number, value: unknown) {
+    const list = content[name];
+    if (Array.isArray(list)) list[index] = value;
+    content = { ...content };
+  }
+
+  function setItemField(name: string, index: number, key: string, value: unknown) {
+    const item = listAt(name)[index];
+    if (isJsonObject(item)) item[key] = value;
+    content = { ...content };
+  }
+
+  function setObjectField(name: string, key: string, value: unknown) {
+    const existing = content[name];
+    const target: JsonObject = isJsonObject(existing) ? existing : {};
+    if (target !== existing) content[name] = target;
+    target[key] = value;
+  }
+
+  function addArrayItem(path: string) {
+    const existing = getNestedProperty(content, path);
+    let target: unknown[];
+    if (Array.isArray(existing)) {
+      target = existing;
+    } else {
       target = [];
       setNestedProperty(content, path, target);
     }
 
-    const schemaProp = getSchemaPropertyByPath(schema, path);
-    let newItem: any;
-    if (schemaProp?.items && schemaProp.items.properties && Object.keys(schemaProp.items.properties).length > 0) {
-      newItem = createArrayItemFromSchema(schemaProp.items);
-    } else if (schemaProp?.items) {
-      newItem = createArrayItemFromSchema(schemaProp.items);
-    } else {
-      newItem = '';
-    }
+    const schemaProp = schema ? getSchemaPropertyByPath(schema, path) : null;
+    let newItem: unknown = schemaProp?.items ? createArrayItemFromSchema(schemaProp.items) : '';
 
     // If existing items are objects, ensure the new item has the same keys
-    if (target.length > 0 && typeof target[0] === 'object' && target[0] !== null && !Array.isArray(target[0])) {
-      const template = createEmptyItemFromExisting(target[0]);
-      if (typeof newItem === 'object' && newItem !== null && !Array.isArray(newItem)) {
+    const first = target[0];
+    if (target.length > 0 && isJsonObject(first)) {
+      const template = createEmptyItemFromExisting(first);
+      if (isJsonObject(newItem) && isJsonObject(template)) {
         newItem = { ...template, ...newItem };
       } else {
         newItem = template;
@@ -90,25 +134,22 @@
     content = { ...content };
   }
 
-  function removeArrayItem(path: any, index: any) {
-    let target = content;
+  function removeArrayItem(path: string, index: number) {
     const parts = path.split(".");
-
-    for (let i = 0; i < parts.length - 1; i++) {
-      if (!target[parts[i]]) return;
-      target = target[parts[i]];
-    }
-
     const lastPart = parts[parts.length - 1];
-    if (!target[lastPart]) return;
+    const parent = parts.length > 1 ? getNestedProperty(content, parts.slice(0, -1).join(".")) : content;
+    if (!isJsonObject(parent)) return;
 
-    target[lastPart].splice(index, 1);
+    const list = parent[lastPart];
+    if (!Array.isArray(list)) return;
+
+    list.splice(index, 1);
 
     content = { ...content };
   }
 
-  function isRequired(propertyName: any) {
-    return isPropertyRequired(schema, propertyName);
+  function isRequired(propertyName: string) {
+    return schema ? isPropertyRequired(schema, propertyName) : false;
   }
 </script>
 
@@ -222,7 +263,10 @@
               <input
                 id={propName}
                 type="checkbox"
-                bind:checked={content[propName]}
+                checked={content[propName] === true}
+                onchange={(e) => {
+                  content[propName] = e.currentTarget.checked;
+                }}
                 disabled={readOnly}
                 class="form-checkbox"
               />
@@ -258,9 +302,9 @@
                 {/if}
               </div>
 
-              {#if content[propName] && content[propName].length > 0}
+              {#if listAt(propName).length > 0}
                 <div class="array-items">
-                  {#each content[propName] as item, index (index)}
+                  {#each listAt(propName) as item, index (index)}
                     <div class="array-item">
                       <div class="array-item-content">
                         {#if property.items?.type === "object" && property.items?.properties && Object.keys(property.items.properties).length > 0}
@@ -281,11 +325,8 @@
                                     <input
                                       id={`${propName}-${index}-${itemPropName}`}
                                       type="date"
-                                      value={content[propName][index][itemPropName] ?? ''}
-                                      oninput={(e) => {
-                                        content[propName][index][itemPropName] = e.currentTarget.value;
-                                        content = { ...content };
-                                      }}
+                                      value={itemAt(propName, index)[itemPropName] ?? ''}
+                                      oninput={(e) => setItemField(propName, index, itemPropName, e.currentTarget.value)}
                                       disabled={readOnly}
                                       class="form-input form-input-small"
                                     />
@@ -293,11 +334,8 @@
                                     <input
                                       id={`${propName}-${index}-${itemPropName}`}
                                       type="time"
-                                      value={content[propName][index][itemPropName] ?? ''}
-                                      oninput={(e) => {
-                                        content[propName][index][itemPropName] = e.currentTarget.value;
-                                        content = { ...content };
-                                      }}
+                                      value={itemAt(propName, index)[itemPropName] ?? ''}
+                                      oninput={(e) => setItemField(propName, index, itemPropName, e.currentTarget.value)}
                                       disabled={readOnly}
                                       class="form-input form-input-small"
                                     />
@@ -305,11 +343,8 @@
                                     <input
                                       id={`${propName}-${index}-${itemPropName}`}
                                       type="email"
-                                      value={content[propName][index][itemPropName] ?? ''}
-                                      oninput={(e) => {
-                                        content[propName][index][itemPropName] = e.currentTarget.value;
-                                        content = { ...content };
-                                      }}
+                                      value={itemAt(propName, index)[itemPropName] ?? ''}
+                                      oninput={(e) => setItemField(propName, index, itemPropName, e.currentTarget.value)}
                                       disabled={readOnly}
                                       class="form-input form-input-small"
                                     />
@@ -317,22 +352,16 @@
                                     <input
                                       id={`${propName}-${index}-${itemPropName}`}
                                       type="url"
-                                      value={content[propName][index][itemPropName] ?? ''}
-                                      oninput={(e) => {
-                                        content[propName][index][itemPropName] = e.currentTarget.value;
-                                        content = { ...content };
-                                      }}
+                                      value={itemAt(propName, index)[itemPropName] ?? ''}
+                                      oninput={(e) => setItemField(propName, index, itemPropName, e.currentTarget.value)}
                                       disabled={readOnly}
                                       class="form-input form-input-small"
                                     />
                                   {:else if itemProperty.enum}
                                     <select
                                       id={`${propName}-${index}-${itemPropName}`}
-                                      value={content[propName][index][itemPropName] ?? ''}
-                                      onchange={(e) => {
-                                        content[propName][index][itemPropName] = e.currentTarget.value;
-                                        content = { ...content };
-                                      }}
+                                      value={String(itemAt(propName, index)[itemPropName] ?? '')}
+                                      onchange={(e) => setItemField(propName, index, itemPropName, e.currentTarget.value)}
                                       disabled={readOnly}
                                       class="form-select form-input-small"
                                     >
@@ -345,11 +374,8 @@
                                     <textarea
                                       id={`${propName}-${index}-${itemPropName}`}
                                       rows="3"
-                                      value={content[propName][index][itemPropName] ?? ''}
-                                      oninput={(e) => {
-                                        content[propName][index][itemPropName] = e.currentTarget.value;
-                                        content = { ...content };
-                                      }}
+                                      value={String(itemAt(propName, index)[itemPropName] ?? '')}
+                                      oninput={(e) => setItemField(propName, index, itemPropName, e.currentTarget.value)}
                                       disabled={readOnly}
                                       class="form-textarea form-input-small"
                                     ></textarea>
@@ -357,11 +383,8 @@
                                     <input
                                       id={`${propName}-${index}-${itemPropName}`}
                                       type="text"
-                                      value={content[propName][index][itemPropName] ?? ''}
-                                      oninput={(e) => {
-                                        content[propName][index][itemPropName] = e.currentTarget.value;
-                                        content = { ...content };
-                                      }}
+                                      value={itemAt(propName, index)[itemPropName] ?? ''}
+                                      oninput={(e) => setItemField(propName, index, itemPropName, e.currentTarget.value)}
                                       minlength={itemProperty.minLength}
                                       maxlength={itemProperty.maxLength}
                                       pattern={itemProperty.pattern}
@@ -373,11 +396,8 @@
                                   <input
                                     id={`${propName}-${index}-${itemPropName}`}
                                     type="number"
-                                    value={content[propName][index][itemPropName] ?? ''}
-                                    oninput={(e) => {
-                                      content[propName][index][itemPropName] = e.currentTarget.valueAsNumber;
-                                      content = { ...content };
-                                    }}
+                                    value={itemAt(propName, index)[itemPropName] ?? ''}
+                                    oninput={(e) => setItemField(propName, index, itemPropName, e.currentTarget.valueAsNumber)}
                                     min={itemProperty.minimum}
                                     max={itemProperty.maximum}
                                     step={itemProperty.type === "integer" ? 1 : itemProperty.multipleOf || "any"}
@@ -389,11 +409,8 @@
                                     <input
                                       id={`${propName}-${index}-${itemPropName}`}
                                       type="checkbox"
-                                      checked={content[propName][index][itemPropName] ?? false}
-                                      onchange={(e) => {
-                                        content[propName][index][itemPropName] = e.currentTarget.checked;
-                                        content = { ...content };
-                                      }}
+                                      checked={itemAt(propName, index)[itemPropName] === true}
+                                      onchange={(e) => setItemField(propName, index, itemPropName, e.currentTarget.checked)}
                                       disabled={readOnly}
                                       class="form-checkbox"
                                     />
@@ -404,22 +421,16 @@
                           </div>
                         {:else if property.items?.type === "string" || (typeof item === "string")}
                           <input
-                            value={content[propName][index] ?? ''}
-                            oninput={(e) => {
-                              content[propName][index] = e.currentTarget.value;
-                              content = { ...content };
-                            }}
+                            value={item ?? ''}
+                            oninput={(e) => setListItem(propName, index, e.currentTarget.value)}
                             disabled={readOnly}
                             class="form-input"
                           />
                         {:else if property.items?.type === "number" || property.items?.type === "integer" || (typeof item === "number")}
                           <input
                             type="number"
-                            value={content[propName][index] ?? ''}
-                            oninput={(e) => {
-                              content[propName][index] = e.currentTarget.valueAsNumber;
-                              content = { ...content };
-                            }}
+                            value={item ?? ''}
+                            oninput={(e) => setListItem(propName, index, e.currentTarget.valueAsNumber)}
                             disabled={readOnly}
                             class="form-input"
                           />
@@ -427,16 +438,13 @@
                           <div class="checkbox-container">
                             <input
                               type="checkbox"
-                              checked={content[propName][index] ?? false}
-                              onchange={(e) => {
-                                content[propName][index] = e.currentTarget.checked;
-                                content = { ...content };
-                              }}
+                              checked={item === true}
+                              onchange={(e) => setListItem(propName, index, e.currentTarget.checked)}
                               disabled={readOnly}
                               class="form-checkbox"
                             />
                           </div>
-                        {:else if typeof item === "object" && item !== null}
+                        {:else if isJsonObject(item)}
                           <div class="object-fields">
                             {#each Object.keys(item) as itemKey (itemKey)}
                               <div class="object-field">
@@ -451,11 +459,8 @@
                                     <input
                                       id={`${propName}-${index}-${itemKey}`}
                                       type="checkbox"
-                                      checked={content[propName][index][itemKey] ?? false}
-                                      onchange={(e) => {
-                                        content[propName][index][itemKey] = e.currentTarget.checked;
-                                        content = { ...content };
-                                      }}
+                                      checked={item[itemKey] === true}
+                                      onchange={(e) => setItemField(propName, index, itemKey, e.currentTarget.checked)}
                                       disabled={readOnly}
                                       class="form-checkbox"
                                     />
@@ -464,11 +469,8 @@
                                   <input
                                     id={`${propName}-${index}-${itemKey}`}
                                     type="number"
-                                    value={content[propName][index][itemKey] ?? ''}
-                                    oninput={(e) => {
-                                      content[propName][index][itemKey] = e.currentTarget.valueAsNumber;
-                                      content = { ...content };
-                                    }}
+                                    value={item[itemKey] ?? ''}
+                                    oninput={(e) => setItemField(propName, index, itemKey, e.currentTarget.valueAsNumber)}
                                     disabled={readOnly}
                                     class="form-input form-input-small"
                                   />
@@ -476,11 +478,8 @@
                                   <input
                                     id={`${propName}-${index}-${itemKey}`}
                                     type="text"
-                                    value={content[propName][index][itemKey] ?? ''}
-                                    oninput={(e) => {
-                                      content[propName][index][itemKey] = e.currentTarget.value;
-                                      content = { ...content };
-                                    }}
+                                    value={item[itemKey] ?? ''}
+                                    oninput={(e) => setItemField(propName, index, itemKey, e.currentTarget.value)}
                                     disabled={readOnly}
                                     class="form-input form-input-small"
                                   />
@@ -543,11 +542,8 @@
                     {#if nestedProperty.type === "string"}
                       <input
                         id={`${propName}-${nestedPropName}`}
-                        value={content[propName]?.[nestedPropName] ?? ''}
-                        oninput={(e) => {
-                          if (!content[propName]) content[propName] = {};
-                          content[propName][nestedPropName] = e.currentTarget.value;
-                        }}
+                        value={objectAt(propName)[nestedPropName] ?? ''}
+                        oninput={(e) => setObjectField(propName, nestedPropName, e.currentTarget.value)}
                         disabled={readOnly}
                         class="form-input form-input-small"
                       />
@@ -555,11 +551,8 @@
                       <input
                         id={`${propName}-${nestedPropName}`}
                         type="number"
-                        value={content[propName]?.[nestedPropName] ?? ''}
-                        oninput={(e) => {
-                          if (!content[propName]) content[propName] = {};
-                          content[propName][nestedPropName] = e.currentTarget.valueAsNumber;
-                        }}
+                        value={objectAt(propName)[nestedPropName] ?? ''}
+                        oninput={(e) => setObjectField(propName, nestedPropName, e.currentTarget.valueAsNumber)}
                         disabled={readOnly}
                         class="form-input form-input-small"
                       />
@@ -568,11 +561,8 @@
                         <input
                           id={`${propName}-${nestedPropName}`}
                           type="checkbox"
-                          checked={content[propName]?.[nestedPropName] ?? false}
-                          onchange={(e) => {
-                            if (!content[propName]) content[propName] = {};
-                            content[propName][nestedPropName] = e.currentTarget.checked;
-                          }}
+                          checked={objectAt(propName)[nestedPropName] === true}
+                          onchange={(e) => setObjectField(propName, nestedPropName, e.currentTarget.checked)}
                           disabled={readOnly}
                           class="form-checkbox"
                         />

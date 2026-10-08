@@ -1,7 +1,7 @@
 /**
  * Form utility functions for schema-based forms and property initialization
  */
-import type {Schema, SchemaProperty, ValidationResult} from './types';
+import { isIndexable, isJsonObject, type JsonObject, type Schema, type SchemaProperty, type ValidationResult } from './types';
 import { ROOT_SUBPATH } from './constants';
 
 /**
@@ -10,22 +10,41 @@ import { ROOT_SUBPATH } from './constants';
  * @param existingContent - Existing content object to merge with
  * @returns Initialized content object
  */
-export function initializeContentFromSchema(properties: Record<string, SchemaProperty>, existingContent: Record<string, any> = {}): Record<string, any> {
+export function initializeContentFromSchema(properties: Record<string, SchemaProperty>, existingContent: JsonObject = {}): JsonObject {
     const content = { ...existingContent };
-    
+
     for (const key in properties) {
         const prop = properties[key];
-        
+
         if (content[key] !== undefined) continue;
-        
+
         content[key] = getDefaultValueForProperty(prop);
-        
+
         if (prop.type === 'object' && prop.properties) {
-            content[key] = initializeContentFromSchema(prop.properties, content[key] || {});
+            const nested = content[key];
+            content[key] = initializeContentFromSchema(prop.properties, isJsonObject(nested) ? nested : {});
         }
     }
-    
+
     return content;
+}
+
+/**
+ * A schema entry's body read as the object schema the dynamic form renders,
+ * or null when it has no `properties` bag. The one place the stored document
+ * is given that shape.
+ */
+export function asFormSchema(value: unknown): Schema | null {
+    if (!isJsonObject(value) || !isJsonObject(value.properties)) return null;
+    return {
+        type: typeof value.type === 'string' ? value.type : 'object',
+        // The properties bag is read as the dynamic form's own property shape.
+        properties: value.properties as Record<string, SchemaProperty>,
+        title: typeof value.title === 'string' ? value.title : undefined,
+        description: typeof value.description === 'string' ? value.description : undefined,
+        required: Array.isArray(value.required) ? value.required.filter((r): r is string => typeof r === 'string') : undefined,
+        additionalProperties: typeof value.additionalProperties === 'boolean' ? value.additionalProperties : undefined,
+    };
 }
 
 /**
@@ -33,7 +52,7 @@ export function initializeContentFromSchema(properties: Record<string, SchemaPro
  * @param property - Schema property definition
  * @returns Default value for the property
  */
-export function getDefaultValueForProperty(property: SchemaProperty): any {
+export function getDefaultValueForProperty(property: SchemaProperty): unknown {
     if (property.default !== undefined) {
         return property.default;
     }
@@ -60,7 +79,7 @@ export function getDefaultValueForProperty(property: SchemaProperty): any {
  * File, Blob, Map, Set, or any class instance. Prototype comparison rather
  * than a constructor-name check, so it survives minification.
  */
-function isPlainObject(value: unknown): value is Record<string, any> {
+function isPlainObject(value: unknown): value is JsonObject {
     if (value === null || typeof value !== 'object') return false;
     const proto = Object.getPrototypeOf(value);
     return proto === Object.prototype || proto === null;
@@ -79,7 +98,7 @@ function isPlainObject(value: unknown): value is Record<string, any> {
  * @param value - Form value (usually the whole form-data object)
  * @returns The pruned value, or undefined when nothing remains
  */
-export function pruneEmptyFormValues(value: any): any {
+export function pruneEmptyFormValues(value: unknown): unknown {
     if (value === null || value === undefined) return undefined;
 
     if (typeof value === 'string') {
@@ -105,7 +124,7 @@ export function pruneEmptyFormValues(value: any): any {
     // live bug; the first file-upload or date-valued field added to a schema
     // form is where it would have bitten.
     if (isPlainObject(value)) {
-        const pruned: Record<string, any> = {};
+        const pruned: JsonObject = {};
         for (const key of Object.keys(value)) {
             const cleaned = pruneEmptyFormValues(value[key]);
             if (cleaned !== undefined) pruned[key] = cleaned;
@@ -121,7 +140,7 @@ export function pruneEmptyFormValues(value: any): any {
  * @param itemSchema - Schema definition for array items
  * @returns New item object initialized with default values
  */
-export function createArrayItemFromSchema(itemSchema: SchemaProperty): any {
+export function createArrayItemFromSchema(itemSchema: SchemaProperty): unknown {
     if (itemSchema.type === 'object' && itemSchema.properties) {
         return initializeContentFromSchema(itemSchema.properties);
     }
@@ -135,18 +154,18 @@ export function createArrayItemFromSchema(itemSchema: SchemaProperty): any {
  * @param path - Dot notation path (e.g., "user.profile.name")
  * @returns Target object or undefined if path doesn't exist
  */
-export function getNestedProperty(obj: Record<string, any>, path: string): any {
+export function getNestedProperty(obj: JsonObject, path: string): unknown {
     const parts = path.split('.');
-    let current = obj;
-    
+    let current: unknown = obj;
+
     for (const part of parts) {
-        if (current && typeof current === 'object' && part in current) {
+        if (isIndexable(current) && part in current) {
             current = current[part];
         } else {
             return undefined;
         }
     }
-    
+
     return current;
 }
 
@@ -157,18 +176,22 @@ export function getNestedProperty(obj: Record<string, any>, path: string): any {
  * @param value - Value to set
  * @returns Modified object
  */
-export function setNestedProperty(obj: Record<string, any>, path: string, value: any): Record<string, any> {
+export function setNestedProperty(obj: JsonObject, path: string, value: unknown): JsonObject {
     const parts = path.split('.');
-    let current = obj;
-    
+    let current: JsonObject = obj;
+
     for (let i = 0; i < parts.length - 1; i++) {
         const part = parts[i];
-        if (!(part in current) || typeof current[part] !== 'object') {
-            current[part] = {};
+        const next = current[part];
+        if (isIndexable(next)) {
+            current = next;
+        } else {
+            const created: JsonObject = {};
+            current[part] = created;
+            current = created;
         }
-        current = current[part];
     }
-    
+
     current[parts[parts.length - 1]] = value;
     return obj;
 }
@@ -179,15 +202,19 @@ export function setNestedProperty(obj: Record<string, any>, path: string, value:
  * @param path - Dot notation path
  * @returns Schema property or null if not found
  */
+/** A property definition, as opposed to a bag of them (whose values are the definitions). */
+function isSchemaProperty(node: SchemaProperty | Record<string, SchemaProperty>): node is SchemaProperty {
+    return typeof node.type === 'string';
+}
+
 export function getSchemaPropertyByPath(schema: Schema, path: string): SchemaProperty | null {
     if (!schema || !schema.properties) return null;
-    
+
     const parts = path.split('.');
-    let current: any = schema.properties;
-    
+    let current: SchemaProperty | Record<string, SchemaProperty> = schema.properties;
+
     for (const part of parts) {
-        if (typeof current === 'object' && 'type' in current) {
-            // current is a SchemaProperty
+        if (isSchemaProperty(current)) {
             if (current.type === 'object' && current.properties && current.properties[part]) {
                 current = current.properties[part];
             } else if (current.type === 'array' && current.items?.properties && current.items.properties[part]) {
@@ -196,13 +223,12 @@ export function getSchemaPropertyByPath(schema: Schema, path: string): SchemaPro
                 return null;
             }
         } else {
-            // current is Record<string, SchemaProperty>
             if (!current[part]) return null;
             current = current[part];
         }
     }
-    
-    return typeof current === 'object' && 'type' in current ? current as SchemaProperty : null;
+
+    return isSchemaProperty(current) ? current : null;
 }
 
 /**
@@ -221,7 +247,7 @@ export function isPropertyRequired(schema: Schema, propertyName: string): boolea
  * @param schema - Schema to validate against
  * @returns Validation result with errors
  */
-export function validateFormData(data: Record<string, any>, schema: Schema): ValidationResult {
+export function validateFormData(data: JsonObject, schema: Schema): ValidationResult {
     const errors: string[] = [];
     
     if (!schema || !schema.properties) {

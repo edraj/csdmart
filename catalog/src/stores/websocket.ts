@@ -17,6 +17,7 @@ import {
   type WebSocketMessage,
 } from "@/lib/services/websocket";
 import { newNotificationType } from "@/stores/newNotificationType";
+import { isJsonObject } from "@/lib/types";
 
 export const wsConnected = writable(false);
 export const wsStatus = writable<ConnectionStatus>("disconnected");
@@ -80,7 +81,7 @@ function handleGlobalMessage(data: WebSocketMessage): void {
   if (data.type === "connection_response") return;
 
   // Plugin broadcast: a CRUD event happened in a subscribed channel
-  if (data.type === "notification_subscription" && data.message?.action_type) {
+  if (data.type === "notification_subscription" && isJsonObject(data.message)) {
     const action = data.message.action_type;
 
     if (action === "create" || action === "update") {

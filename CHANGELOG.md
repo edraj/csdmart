@@ -50,6 +50,21 @@
 
 ### Tooling
 
+- **The catalog is `any`-free too**: 667 `no-explicit-any` warnings are
+  gone (shared types in `lib/types.ts`, a generic `DataTable`, typed
+  messaging and schema-form shapes) and the rule is an error. The typing
+  exposed real bugs on the retrieved-entry shape (flat, not under
+  `attributes`) and on the server's stripped empties, all fixed: assigning
+  a role replaced every role the user had; template-based entries never
+  rendered; the users folder's CSV flags and configured columns never
+  loaded; the admin schema title always fell back to the shortname and the
+  author rows always showed "inactive" with no date; group-message
+  attachments threw (they were uploaded to a null user's folder); a
+  refreshed message with attachments crashed the preview; the create-group
+  modal showed "[object Object]" participants; editing a group opened an
+  empty description; bulk delete/trash toasts showed a literal "{count}";
+  saving column settings threw on localized column names or with no folder
+  loaded; a missing space ordinal produced a NaN sort.
 - **cxb is `any`-free**: the 156 remaining `@typescript-eslint/no-explicit-any`
   warnings are gone (SDK types, small interfaces for the per-resource-type
   form shapes in `utils/entryShapes.ts`, `unknown` plus an `isRecord` guard

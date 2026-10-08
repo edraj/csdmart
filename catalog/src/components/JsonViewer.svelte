@@ -42,10 +42,11 @@
   import { ResourceType, DmartScope } from "@edraj/tsdmart";
   import { successToastMessage, errorToastMessage } from "@/lib/toasts_messages";
   import { log } from "@/lib/logger";
+  import { isIndexable, isJsonObject } from "@/lib/types";
 
   interface Props {
     /** The JSON data to display */
-    data: any;
+    data: JsonValue;
     /** Header title */
     title?: string;
     /** Diagram type — kept for backward compat, only "json" is rendered as table */
@@ -74,7 +75,7 @@
     /** DMART resource type — needed for saving */
     resourceType?: ResourceType;
     /** Callback after successful save, receives the updated data */
-    onSaved?: (data: any) => void;
+    onSaved?: (data: JsonValue) => void;
   }
 
   let {
@@ -95,7 +96,7 @@
   /* ── State ── */
   // Starts as a copy of `data` and follows it when the prop changes; edits
   // write to it in place (writable $derived).
-  let editData: any = $derived(safeClone(data));
+  let editData: JsonValue = $derived(safeClone(data));
   let saving: boolean = $state(false);
   let saveFlash: boolean = $state(false);
   let showRawPayload: boolean = $state(false);
@@ -146,7 +147,7 @@
   async function fetchSchema(schemaName: string, space: string): Promise<void> {
     loadingSchema = true;
     try {
-      const response: any = await getEntityByShortname(
+      const response = await getEntityByShortname(
         schemaName,
         space,
         "/schema",
@@ -155,8 +156,10 @@
         true,
         false
       );
-      if (response?.payload?.body) {
-        fetchedSchema = response.payload.body as JsonSchema;
+      const body = response?.payload?.body;
+      if (isJsonObject(body)) {
+        // The schema entry's body is the JSON-schema document itself.
+        fetchedSchema = body as JsonSchema;
       }
     } catch (error) {
       log.warn(`Could not load schema "${schemaName}" from ${space}/schema:`, error);
@@ -166,13 +169,15 @@
   }
 
   /* ── Data helpers ── */
-  function setAtPath(obj: any, path: JsonPath, value: JsonValue): any {
+  /** A copy of `obj` with the value at `path` replaced; a path through a non-container leaves the copy unchanged. */
+  function setAtPath(obj: JsonValue, path: JsonPath, value: JsonValue): JsonValue {
     const clone = safeClone(obj);
-    let cursor: any = clone;
+    let cursor: unknown = clone;
     for (let i = 0; i < path.length - 1; i++) {
-      cursor = cursor[path[i]];
+      if (!isIndexable(cursor)) return clone;
+      cursor = cursor[String(path[i])];
     }
-    cursor[path[path.length - 1] as string] = value;
+    if (isIndexable(cursor)) cursor[String(path[path.length - 1])] = value;
     return clone;
   }
 

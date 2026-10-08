@@ -14,6 +14,7 @@ import { getEntity, updateEntity } from "./core";
 import { createComment } from "./comments_reactions";
 import { log } from "@/lib/logger";
 import { APPLICATIONS_SPACE } from "@/lib/constants";
+import { bodyAs, bodyObject, type EntryDetail, type ReportBody } from "@/lib/types";
 
 export async function createReport(
     reportData: {
@@ -98,7 +99,7 @@ export async function getReports(
 
 export async function getReportDetails(
     reportShortname: string
-): Promise<any | null> {
+): Promise<EntryDetail | null> {
     try {
         const entity = await getEntity(
             reportShortname,
@@ -127,7 +128,7 @@ export async function updateReportStatus(
             return false;
         }
 
-        const currentBody = currentReport.payload?.body || {};
+        const currentBody = bodyObject(currentReport.payload) ?? {};
 
         if (adminReply) {
             await createComment(
@@ -193,7 +194,9 @@ export async function replyToReport(
             : "Pending";
 
         const reportDetails = await getReportDetails(reportShortname);
-        if (!reportDetails?.payload.body.entry && !reportDetails?.payload.body.reported_entry) {
+        const reportBody = bodyAs<ReportBody>(reportDetails?.payload);
+        const entryShortname = reportBody?.entry || reportBody?.reported_entry;
+        if (!reportBody || !entryShortname) {
             log.warn("No reported entry found in report details");
             return await updateReportStatus(
                 reportShortname,
@@ -202,11 +205,10 @@ export async function replyToReport(
             );
         }
 
-        const entryShortname = reportDetails.payload.body.entry || reportDetails.payload.body.reported_entry;
-        const spaceName = reportDetails.payload.body.space_name || reportDetails.payload.body.reported_space;
-        const subpath = reportDetails.payload.body.subpath || reportDetails.payload.body.reported_subpath;
+        const spaceName = reportBody.space_name || reportBody.reported_space || "";
+        const subpath = reportBody.subpath || reportBody.reported_subpath || "";
 
-        let reportedEntity = null;
+        let reportedEntity: EntryDetail | null = null;
 
         try {
             const resourceTypesToTry = [
@@ -240,11 +242,14 @@ export async function replyToReport(
 
         if (action === "delete_entry" && reportedEntity) {
             try {
+                const resourceType = reportedEntity.resource_type
+                    ? (reportedEntity.resource_type as ResourceType)
+                    : ResourceType.content;
                 await updateEntity(
                     entryShortname,
                     spaceName,
                     subpath,
-                    (reportedEntity as any).resource_type || ResourceType.content,
+                    resourceType,
                     { is_active: false }
                 );
             } catch (error) {

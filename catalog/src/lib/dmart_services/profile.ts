@@ -9,6 +9,8 @@ import { PERSONAL_SPACE } from "@/lib/constants";
 import { getCurrentScope, syncRolesFromStorage } from "@/stores/user";
 import { syncPermissionsFromStorage } from "@/stores/permissions";
 import { ensureUploadSize } from "./core";
+import { errorStatus } from "@/lib/apiError";
+import type { EntryPayload } from "@/lib/types";
 
 /**
  * Retrieves the current user's profile information
@@ -27,10 +29,10 @@ export async function getProfile() {
         }
 
         return null;
-    } catch (e: any) {
+    } catch (e) {
         // 401 is the expected signal for "not signed in" during the boot
         // probe; don't surface it as a console error.
-        if (e?.response?.status !== 401 && e?.status !== 401) {
+        if (errorStatus(e) !== 401) {
             log.error("Error fetching profile:", e);
         }
         return null;
@@ -98,7 +100,7 @@ export async function setAvatar(shortname: string, attachment: File) {
  * @param data - Object containing user data with shortname, displayname, description, and email
  * @returns True if profile was successfully updated, false otherwise
  */
-export async function updateProfile(data: { shortname: string; displayname?: Record<string, string>; description?: Record<string, string>; email?: string; payload?: Record<string, any> }) {
+export async function updateProfile(data: { shortname: string; displayname?: Record<string, string>; description?: Record<string, string>; email?: string; payload?: EntryPayload }) {
     const request = {
         resource_type: ResourceType.user,
         shortname: data.shortname,

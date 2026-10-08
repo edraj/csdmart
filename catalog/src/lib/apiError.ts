@@ -15,8 +15,9 @@ export type ApiErrorKind =
 interface ErrorShape {
   code?: unknown;
   status?: unknown;
+  message?: unknown;
   request?: unknown;
-  response?: { status?: unknown } | null;
+  response?: { status?: unknown; data?: { error?: { message?: unknown } } | null } | null;
 }
 
 function asShape(err: unknown): ErrorShape {
@@ -30,6 +31,36 @@ function statusOf(err: ErrorShape): number | null {
     if (Number.isFinite(n) && n > 0) return n;
   }
   return null;
+}
+
+/**
+ * The HTTP status a failed call carries (axios `response.status`, or the
+ * `status` of a tsdmart ClientError), or null when there is none.
+ */
+export function errorStatus(err: unknown): number | null {
+  return statusOf(asShape(err));
+}
+
+/**
+ * The most specific message a failed call carries: the server's own
+ * (`response.data.error.message`), then the Error's `message`, then
+ * `fallback`. Replaces the `error.response?.data?.error?.message ||
+ * error.message || "..."` chain the catch blocks used to spell out against
+ * an `any`.
+ */
+export function errorMessage(err: unknown, fallback = ""): string {
+  if (typeof err === "string") return err || fallback;
+  const e = asShape(err);
+  const server = serverMessage(err);
+  if (server) return server;
+  if (typeof e.message === "string" && e.message) return e.message;
+  return fallback;
+}
+
+/** The server's own message for a failed call (`response.data.error.message`), or undefined. */
+export function serverMessage(err: unknown): string | undefined {
+  const server = asShape(err).response?.data?.error?.message;
+  return typeof server === "string" && server ? server : undefined;
 }
 
 export function classifyApiError(err: unknown): ApiErrorKind {

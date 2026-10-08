@@ -10,7 +10,8 @@
   import { toasts } from "@/lib/toast";
   import { confirm } from "@/lib/confirm";
   import { MANAGEMENT_SPACE } from "@/lib/constants";
-  import MetaForm from "@/components/forms/MetaForm.svelte";
+  import MetaForm, { type MetaFormData } from "@/components/forms/MetaForm.svelte";
+  import type { LocalizedText } from "@/lib/types";
   import Modal from "@/components/Modal.svelte";
   import DataTable from "@/components/DataTable.svelte";
   import Avatar from "@/components/Avatar.svelte";
@@ -42,8 +43,8 @@
       owner_shortname?: string;
       created_at?: string;
       updated_at?: string;
-      displayname?: unknown;
-      description?: unknown;
+      displayname?: LocalizedText;
+      description?: LocalizedText;
       payload?: { body?: { title?: string; content?: string } | string };
     };
   }
@@ -58,7 +59,7 @@
   let showCreateModal = $state(false);
   let isCreating = $state(false);
   let createError = $state("");
-  let metaContent = $state<Record<string, unknown>>({});
+  let metaContent = $state<MetaFormData>({});
   let validateMetaForm = $state<(() => boolean) | null>(null);
 
   let showEditModal = $state(false);
@@ -66,7 +67,7 @@
   let editIsActive = $state(true);
   let isEditing = $state(false);
   let editError = $state("");
-  let editMetaContent = $state<Record<string, unknown>>({});
+  let editMetaContent = $state<MetaFormData>({});
   let validateEditMetaForm = $state<(() => boolean) | null>(null);
 
   let searchQuery = $state("");

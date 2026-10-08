@@ -1,6 +1,9 @@
 <script lang="ts">
   import { setTitle } from "@/lib/title";
   import { log } from "@/lib/logger";
+  import { isJsonObject, recordsOf, type EntryDetail, type JsonObject, type Schema } from "@/lib/types";
+  import { asFormSchema } from "@/lib/formUtils";
+  import { isJsonValue } from "@/components/json-table/types";
   import { goto as gotoStore, params } from "@roxi/routify";
   import { onMount } from "svelte";
   import HtmlEditor from "@/components/editors/HtmlEditor.svelte";
@@ -45,13 +48,13 @@
   // Capture the navigate function once, during component init.
   const goto = $gotoStore;
 
-  let entity: any = $state(null);
+  let entity = $state<EntryDetail | null>(null);
   let isLoading = $state(false);
   let isLoadingPage = $state(true);
-  let content = "";
+  let content: string | JsonObject = "";
   let title = $state("");
   let isEditing = $state(false);
-  let tags = $state<any[]>([]);
+  let tags = $state<string[]>([]);
   let newTag = $state("");
   type AttachmentTranslation = { en: string; ar: string; ku: string };
 
@@ -81,33 +84,40 @@
   let editorReady = $state(false);
   let isTemplateBasedItem = $state(false);
   let templateEditorContent = $state("");
-  let jsonEditorContent: Record<string, any> = $state({});
+  let jsonEditorContent = $state<JsonObject>({});
 
   // Schema-based form state
+  /** The schema a schema-based entry is edited with. */
+  interface SelectedSchema {
+    shortname: string;
+    title: string;
+    schema: Schema | null;
+    description: string;
+  }
   let isSchemaBasedItem = $state(false);
-  let selectedSchema: any = $state(null);
-  let schemaFormData: Record<string, any> = $state({});
+  let selectedSchema = $state<SelectedSchema | null>(null);
+  let schemaFormData = $state<JsonObject>({});
   let loadingSchema = $state(false);
 
 
-  function getItemContent(item: any) {
+  /** The editable content of an entry: its text body, or its JSON body as an object. */
+  function getItemContent(item: EntryDetail | null): string | JsonObject {
     if (!item?.payload) return "";
 
     const contentType = item.payload.content_type;
+    const body = item.payload.body;
 
-    if (contentType === "html") {
-      return item.payload.body || "";
-    } else if (contentType === "json") {
-      if (item.payload.body && typeof item.payload.body === "object") {
-        return item.payload.body;
-      }
-      return {};
+    if (contentType === "json") {
+      return isJsonObject(body) ? body : {};
     }
 
-    return item.payload.body || "";
+    return typeof body === "string" ? body : "";
   }
 
-  function prepareContentForSave(content: any, originalContentType: any) {
+  function prepareContentForSave(
+    content: string | JsonObject | undefined,
+    originalContentType: string | undefined,
+  ): string | JsonObject {
     if (originalContentType === "json") {
       return jsonEditorContent;
     }
@@ -115,13 +125,13 @@
     return content || "";
   }
 
-  function handleTemplateContentChange(newContent: any) {
+  function handleTemplateContentChange(newContent: string) {
     templateEditorContent = newContent;
     htmlEditor = newContent;
     content = newContent;
   }
 
-  function handleJsonContentChange(newContent: any) {
+  function handleJsonContentChange(newContent: JsonObject) {
     jsonEditorContent = newContent;
   }
 
@@ -174,18 +184,18 @@
     return null;
   }
 
-  async function handleUpdate(isPublish: any) {
+  async function handleUpdate(isPublish: boolean) {
     isLoading = true;
 
-    let htmlContent;
-    let contentToSave;
+    let htmlContent: string | JsonObject | undefined;
+    let contentToSave: string | JsonObject;
 
     // Handle different content types like admin page
     if (isSchemaBasedItem && selectedSchema) {
       // For schema-based entries, use the form data
       const originalContent = getItemContent(entity);
       // Preserve structured entry format if it exists
-      if (originalContent && typeof originalContent === "object" && originalContent.schema_data) {
+      if (isJsonObject(originalContent) && originalContent.schema_data) {
         // This is a structured entry with schema_data and template
         contentToSave = {
           ...originalContent,
@@ -209,9 +219,9 @@
     const entityData = {
       displayname: {
         [$locale ?? ""]: title,
-        en: $locale === "en" ? title : entity.displayname?.en || "",
-        ar: $locale === "ar" ? title : entity.displayname?.ar || "",
-        ku: $locale === "ku" ? title : entity.displayname?.ku || "",
+        en: $locale === "en" ? title : entity?.displayname?.en || "",
+        ar: $locale === "ar" ? title : entity?.displayname?.ar || "",
+        ku: $locale === "ku" ? title : entity?.displayname?.ku || "",
       },
       content_type: entity?.payload?.content_type || "html",
       content: contentToSave,
@@ -266,14 +276,14 @@
     try {
       const response = await getSpaceSchema($params.space_name, DmartScope.managed);
       if (response?.status === "success" && response?.records) {
-        const schemaRecord = response.records.find(
-          (record: any) => record.shortname === schemaShortname
+        const schemaRecord = recordsOf(response).find(
+          (record) => record.shortname === schemaShortname
         );
         if (schemaRecord) {
           selectedSchema = {
             shortname: schemaRecord.shortname,
             title: schemaRecord.attributes?.displayname?.en || schemaRecord.shortname,
-            schema: schemaRecord.attributes?.payload?.body,
+            schema: asFormSchema(schemaRecord.attributes?.payload?.body),
             description: schemaRecord.attributes?.description?.en || "",
           };
           return true;
@@ -304,17 +314,17 @@
 
       // Detect content type and set up appropriate editor
       if (entity.payload?.content_type === "json") {
-        jsonEditorContent = itemContent;
+        jsonEditorContent = isJsonObject(itemContent) ? itemContent : {};
         htmlEditor = "";
       } else {
-        htmlEditor = itemContent;
+        htmlEditor = typeof itemContent === "string" ? itemContent : "";
       }
 
       // Check if it's template-based
       isTemplateBasedItem = entity.payload?.schema_shortname === "templates";
 
       if (isTemplateBasedItem) {
-        templateEditorContent = itemContent || "";
+        templateEditorContent = typeof itemContent === "string" ? itemContent : "";
       }
 
       // Check if it's schema-based: must be JSON content type AND have a schema_shortname (but not templates or meta_schema)
@@ -326,12 +336,9 @@
         if (schemaLoaded) {
           // Initialize form data from the entity body
           // Handle structured entry format: { schema_data: {...}, template: {...} }
-          if (itemContent && typeof itemContent === "object") {
-            if (itemContent.schema_data) {
-              schemaFormData = itemContent.schema_data;
-            } else {
-              schemaFormData = itemContent;
-            }
+          if (isJsonObject(itemContent)) {
+            const schemaData = itemContent.schema_data;
+            schemaFormData = isJsonObject(schemaData) ? schemaData : itemContent;
           } else {
             schemaFormData = {};
           }
@@ -346,7 +353,7 @@
     isLoadingPage = false;
   });
 
-  function getStatusInfo(entity: any) {
+  function getStatusInfo(entity: EntryDetail) {
     if (!entity.is_active) {
       return {
         text: $_("entry_edit.status.draft"),
@@ -380,7 +387,7 @@
     }
   }
 
-  function getLocalizedDisplayName(entity: any) {
+  function getLocalizedDisplayName(entity: EntryDetail | null): string {
     if (!entity?.displayname) return entity?.shortname || "";
 
     const displayname = entity.displayname;
@@ -631,14 +638,14 @@
                   </div>
                   <div class="preview-section">
                     <h4 class="preview-heading">Preview</h4>
-                    <JsonViewer 
-                      data={jsonEditorContent} 
+                    <JsonViewer
+                      data={isJsonValue(jsonEditorContent) ? jsonEditorContent : null}
                       title={$_("labels.json_preview")}
                       schemaShortname={entity?.payload?.schema_shortname}
                       spaceName={$params.space_name}
                       subpath={$params.subpath}
                       shortname={$params.shortname}
-                      onSaved={(d) => { jsonEditorContent = d; }}
+                      onSaved={(d) => { if (isJsonObject(d)) jsonEditorContent = d; }}
                     />
                   </div>
                 </div>
@@ -650,7 +657,7 @@
                   parent_shortname={entity.shortname}
                   uid="main-editor"
                   isEditMode={true}
-                  attachments={entity?.attachments || []}
+                  attachments={entity?.attachments ?? null}
                   changed={() => {}}
                 />
               {/if}

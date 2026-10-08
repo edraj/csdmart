@@ -37,7 +37,7 @@ export function allowedValuesForField(
   space: string,
   subpath: string,
   resourceType: string,
-): any[] | null {
+): unknown[] | null {
   const perm = resolvePermission(permissions, space, subpath, resourceType);
   const v = perm?.allowed_fields_values?.[field];
   if (v == null) return null;
@@ -78,15 +78,15 @@ export function visibleColumns<T extends { key: string }>(
  * value outside the whitelist is appended so edit forms still round-trip
  * (legacy data is never silently dropped).
  */
-export function constrainEnumOptions(
-  options: any[],
+export function constrainEnumOptions<T>(
+  options: T[],
   permissions: PermissionsMap,
   field: string,
   space: string,
   subpath: string,
   resourceType: string,
-  currentValue?: any,
-): any[] {
+  currentValue?: T,
+): T[] {
   const allowed = allowedValuesForField(permissions, field, space, subpath, resourceType);
   if (allowed == null) return options;
   const result = options.filter((o) => allowed.includes(o));

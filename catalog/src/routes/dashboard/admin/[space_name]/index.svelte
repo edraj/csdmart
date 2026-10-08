@@ -11,7 +11,9 @@
   import { encodeSubpath, withBase } from "@/lib/paths";
   import { Dmart, RequestType, DmartScope, ResourceType, QueryType, SortType } from "@edraj/tsdmart";
   import FolderForm from "@/components/forms/FolderForm.svelte";
-  import MetaForm from "@/components/forms/MetaForm.svelte";
+  import MetaForm, { type MetaFormData } from "@/components/forms/MetaForm.svelte";
+  import { applyFolderContentDefaults } from "@/lib/folder_defaults";
+  import { recordsOf, type LocalizedText, type SpaceAttributes } from "@/lib/types";
   import Modal from "@/components/Modal.svelte";
   import PageHeader from "@/components/ui/PageHeader.svelte";
   import CatalogToolbar, { type SortOrder } from "@/components/ui/CatalogToolbar.svelte";
@@ -48,8 +50,8 @@
       owner_shortname?: string;
       created_at?: string;
       updated_at?: string;
-      displayname?: unknown;
-      description?: unknown;
+      displayname?: LocalizedText;
+      description?: LocalizedText;
       payload?: { body?: Record<string, unknown> };
     };
   }
@@ -96,34 +98,21 @@
     { value: "owner", label: $_("admin_dashboard.sort.owner") },
   ]);
 
-  // Folder modal state
-  const emptyFolder = () => ({
-    title: "",
-    content: "",
-    is_active: true,
-    tags: [] as string[],
-    index_attributes: [] as string[],
-    sort_by: "created_at",
-    sort_type: "descending",
-    content_resource_types: [] as string[],
-    content_schema_shortnames: [] as string[],
-    workflow_shortnames: [] as string[],
-    allow_view: true,
-    allow_create: true,
-    allow_update: true,
-    allow_delete: false,
-    allow_create_category: false,
-    allow_csv: false,
-    allow_upload_csv: false,
-    use_media: false,
-    stream: false,
-    expand_children: false,
-    disable_filter: false,
-  });
+  // Folder modal state. A new folder's listing settings: the FolderForm
+  // defaults, sorted newest first.
+  const emptyFolder = () =>
+    applyFolderContentDefaults({
+      title: "",
+      content: "",
+      is_active: true,
+      tags: [] as string[],
+      sort_by: "created_at",
+      sort_type: "descending",
+    });
   let showFolderModal = $state(false);
   let folderContent = $state(emptyFolder());
   let isSavingFolder = $state(false);
-  let metaContent = $state<Record<string, unknown>>({});
+  let metaContent = $state<MetaFormData>({});
   let validateMetaForm = $state<(() => boolean) | null>(null);
 
   // Space settings modal state
@@ -210,14 +199,14 @@
     showSpaceConfigModal = true;
     try {
       const response = await getSpaces(true, DmartScope.managed);
-      const match = response.records.find((record) => record.shortname === spaceName);
-      const attrs = (match?.attributes ?? {}) as Record<string, any>;
+      const match = recordsOf<SpaceAttributes>(response).find((record) => record.shortname === spaceName);
+      const attrs: SpaceAttributes = match?.attributes ?? {};
       spaceConfig = {
         is_active: attrs.is_active ?? true,
         displayname: { en: attrs.displayname?.en ?? "", ar: attrs.displayname?.ar ?? "", ku: attrs.displayname?.ku ?? "" },
         description: { en: attrs.description?.en ?? "", ar: attrs.description?.ar ?? "", ku: attrs.description?.ku ?? "" },
         slug: attrs.slug ?? null,
-        ordinal: Number.isFinite(attrs.ordinal) ? attrs.ordinal : 0,
+        ordinal: typeof attrs.ordinal === "number" && Number.isFinite(attrs.ordinal) ? attrs.ordinal : 0,
         icon: attrs.icon ?? "",
         root_registration_signature: attrs.root_registration_signature ?? "",
         primary_website: attrs.primary_website ?? "",
@@ -432,9 +421,8 @@
       displayname: item.attributes?.displayname || {},
       description: item.attributes?.description || {},
     };
-    const existing = (item.attributes?.payload?.body ?? {}) as Record<string, unknown>;
-    const defaults = emptyFolder();
-    folderContent = { ...defaults, ...(existing as Partial<typeof defaults>) } as typeof defaults;
+    const existing = item.attributes?.payload?.body ?? {};
+    folderContent = applyFolderContentDefaults({ ...emptyFolder(), ...existing });
     showFolderModal = true;
   }
 

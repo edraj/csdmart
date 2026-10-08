@@ -12,6 +12,7 @@ import {
 } from "./core";
 import { log } from "@/lib/logger";
 import { MESSAGES_SPACE } from "@/lib/constants";
+import { bodyAs, type GroupBody, type GroupMessageBody } from "@/lib/types";
 
 export async function createGroup(data: {
     name: string;
@@ -62,7 +63,7 @@ export async function updateGroup(
 
     if (!group) return false;
 
-    const currentPayload = group.payload?.body || {};
+    const currentPayload = bodyAs<GroupBody>(group.payload) ?? {};
 
     const attributes = {
         displayname: data.name
@@ -169,7 +170,7 @@ export async function getGroupMessages(
 
         if (response && response.status === "success") {
             const filteredRecords = response.records.filter((record) => {
-                const payload = record.attributes.payload?.body;
+                const payload = bodyAs<GroupMessageBody>(record.attributes.payload);
                 if (!payload) return false;
                 return payload.groupId === groupId;
             });
@@ -200,15 +201,15 @@ export async function getGroupMessageByShortname(shortname: string) {
         );
 
         if (record) {
-            const payload = record.payload?.body;
+            const payload = bodyAs<GroupMessageBody>(record.payload);
             if (payload) {
                 return {
                     id: record.shortname,
-                    senderId: payload.sender,
-                    groupId: payload.groupId,
-                    content: payload.content,
+                    senderId: payload.sender ?? "",
+                    groupId: payload.groupId ?? "",
+                    content: payload.content ?? "",
                     timestamp: new Date(record.created_at || Date.now()),
-                    attachments: (record.attachments as any)?.media || null,
+                    attachments: record.attachments?.media || null,
                 };
             }
         }
@@ -227,7 +228,7 @@ export async function addUserToGroup(
     if (!group) return false;
 
     const currentParticipants =
-        group.payload?.body?.participants || [];
+        bodyAs<GroupBody>(group.payload)?.participants || [];
     if (currentParticipants.includes(userShortname)) {
         return true;
     }
@@ -245,14 +246,14 @@ export async function removeUserFromGroup(
     const group = await getGroupDetails(groupShortname);
     if (!group) return false;
 
-    const currentParticipants =
-        group.payload?.body?.participants || [];
+    const body = bodyAs<GroupBody>(group.payload);
+    const currentParticipants = body?.participants || [];
     const updatedParticipants = currentParticipants.filter(
-        (p: string) => p !== userShortname
+        (p) => p !== userShortname
     );
 
-    const currentAdmins = group.payload?.body?.adminIds || [];
-    const updatedAdmins = currentAdmins.filter((a: string) => a !== userShortname);
+    const currentAdmins = body?.adminIds || [];
+    const updatedAdmins = currentAdmins.filter((a) => a !== userShortname);
 
     return await updateGroup(groupShortname, {
         participants: updatedParticipants,
@@ -267,7 +268,7 @@ export async function makeUserGroupAdmin(
     const group = await getGroupDetails(groupShortname);
     if (!group) return false;
 
-    const currentAdmins = group.payload?.body?.adminIds || [];
+    const currentAdmins = bodyAs<GroupBody>(group.payload)?.adminIds || [];
     if (currentAdmins.includes(userShortname)) {
         return true;
     }

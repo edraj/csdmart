@@ -39,6 +39,21 @@ export type JsonPrimitive = string | number | boolean | null;
 /** A JSON-compatible value */
 export type JsonValue = JsonPrimitive | JsonValue[] | { [key: string]: JsonValue };
 
+/** True when `value` is made only of JSON values (what JSON.parse can return). */
+export function isJsonValue(value: unknown): value is JsonValue {
+  if (value === null) return true;
+  switch (typeof value) {
+    case "string":
+    case "number":
+    case "boolean":
+      return true;
+    case "object":
+      return Array.isArray(value) ? value.every(isJsonValue) : Object.values(value).every(isJsonValue);
+    default:
+      return false;
+  }
+}
+
 /** Path to a value within a JSON structure */
 export type JsonPath = (string | number)[];
 

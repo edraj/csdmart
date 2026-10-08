@@ -79,7 +79,7 @@
           <div class="group-info">
             <div class="group-name">{group.name}</div>
             <div class="group-description">
-              {(group as any).description?.en || $_("messaging.no_description")}
+              {group.description || $_("messaging.no_description")}
             </div>
             <div class="group-participants">
               {group.participants.length}

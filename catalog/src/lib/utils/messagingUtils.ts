@@ -1,4 +1,14 @@
-export function getDisplayName(displayname: any): string | null {
+import {
+  bodyAs,
+  type DirectMessageBody,
+  type EntryRecord,
+  type GroupBody,
+  type GroupMessageBody,
+  type LocalizedText,
+  type UserAttributes,
+} from "@/lib/types";
+
+export function getDisplayName(displayname: LocalizedText | null | undefined): string | null {
   if (!displayname) return null;
   return displayname.en || displayname.ar || displayname.ku || null;
 }
@@ -53,6 +63,12 @@ export function scrollToBottom(chatContainer: HTMLElement | null): void {
   }, 100);
 }
 
+/**
+ * What a message's attachments hold: the stored records once the message is
+ * persisted, the Files still being uploaded before that.
+ */
+export type MessageAttachment = EntryRecord | File;
+
 export interface MessageData {
   id: string;
   senderId: string;
@@ -61,7 +77,7 @@ export interface MessageData {
   timestamp: Date;
   isOwn: boolean;
   hasAttachments?: boolean;
-  attachments?: any[] | null;
+  attachments?: MessageAttachment[] | null;
   isUploading?: boolean;
   uploadFailed?: boolean;
 }
@@ -97,7 +113,10 @@ export interface GroupMessageData extends Omit<MessageData, "receiverId"> {
   receiverId?: never;
 }
 
-export function transformUserRecord(record: any): UserData {
+/** A message in either kind of conversation. */
+export type ChatMessage = MessageData | GroupMessageData;
+
+export function transformUserRecord(record: EntryRecord<UserAttributes>): UserData {
   const attrs = record.attributes;
   return {
     id: record.shortname,
@@ -106,43 +125,42 @@ export function transformUserRecord(record: any): UserData {
     email: attrs.email,
     avatar: attrs.social_avatar_url || null,
     online: false,
-    lastSeen: new Date(attrs.updated_at || attrs.created_at),
+    lastSeen: new Date(attrs.updated_at || attrs.created_at || Date.now()),
     roles: attrs.roles || [],
     isActive: attrs.is_active !== false,
   };
 }
 
 export function transformMessageRecord(
-  record: any,
+  record: EntryRecord,
   currentUserShortname: string
 ): MessageData {
-  const attachments = record?.attachments?.media || null;
-  const payload = record.attributes.payload;
-  const body = payload.body;
+  const attachments = record.attachments?.media || null;
+  const body = bodyAs<DirectMessageBody>(record.attributes.payload) ?? {};
 
   return {
     id: record.shortname,
-    senderId: body.sender,
-    receiverId: body.receiver,
-    content: body.content,
+    senderId: body.sender ?? "",
+    receiverId: body.receiver ?? "",
+    content: body.content ?? "",
     attachments: attachments,
     timestamp: new Date(record.attributes.created_at || Date.now()),
     isOwn: body.sender === currentUserShortname,
   };
 }
 
-export function transformGroupRecord(record: any): GroupData {
+export function transformGroupRecord(record: EntryRecord<UserAttributes>): GroupData {
   const attrs = record.attributes;
-  const payload = attrs.payload?.body || {};
+  const payload = bodyAs<GroupBody>(attrs.payload) ?? {};
 
   return {
     id: record.shortname,
     shortname: record.shortname,
     name: getDisplayName(attrs.displayname) || record.shortname,
-    description: attrs.description || "",
+    description: getDisplayName(attrs.description) || "",
     avatar: attrs.social_avatar_url || null,
     participants: payload.participants || [],
-    adminIds: payload.adminIds || [payload.createdBy],
+    adminIds: payload.adminIds || (payload.createdBy ? [payload.createdBy] : []),
     createdBy: payload.createdBy || "",
     createdAt: new Date(attrs.created_at || Date.now()),
     isActive: attrs.is_active !== false,
@@ -151,18 +169,17 @@ export function transformGroupRecord(record: any): GroupData {
 }
 
 export function transformGroupMessageRecord(
-  record: any,
+  record: EntryRecord,
   currentUserShortname: string
 ): GroupMessageData {
-  const attachments = record?.attachments?.media || null;
-  const payload = record.attributes.payload;
-  const body = payload.body;
+  const attachments = record.attachments?.media || null;
+  const body = bodyAs<GroupMessageBody>(record.attributes.payload) ?? {};
 
   return {
     id: record.shortname,
-    senderId: body.sender,
-    groupId: body.groupId,
-    content: body.content,
+    senderId: body.sender ?? "",
+    groupId: body.groupId ?? "",
+    content: body.content ?? "",
     attachments: attachments,
     timestamp: new Date(record.attributes.created_at || Date.now()),
     isOwn: body.sender === currentUserShortname,
@@ -187,9 +204,9 @@ export const MAX_CACHED_MESSAGES = 200;
 
 const LEGACY_STORAGE_PREFIXES = ["chat_", "group_chat_"];
 
-const messageCache = new Map<string, MessageData[]>();
+const messageCache = new Map<string, ChatMessage[]>();
 
-export function cacheMessages(cacheKey: string, messages: MessageData[]): void {
+export function cacheMessages(cacheKey: string, messages: ChatMessage[]): void {
   messageCache.delete(cacheKey);
   messageCache.set(cacheKey, messages.slice(-MAX_CACHED_MESSAGES));
   while (messageCache.size > MAX_CACHED_CONVERSATIONS) {
@@ -199,13 +216,17 @@ export function cacheMessages(cacheKey: string, messages: MessageData[]): void {
   }
 }
 
-export function getCachedMessages(cacheKey: string): MessageData[] {
+/**
+ * The cached messages of one conversation. A direct-chat key holds
+ * MessageData, a group key holds GroupMessageData; the caller names which.
+ */
+export function getCachedMessages<T extends ChatMessage = ChatMessage>(cacheKey: string): T[] {
   const hit = messageCache.get(cacheKey);
   if (!hit) return [];
   // Re-insert so the conversation counts as recently used.
   messageCache.delete(cacheKey);
   messageCache.set(cacheKey, hit);
-  return hit.slice();
+  return hit.slice() as T[];
 }
 
 /** How many conversations are cached (for tests). */
@@ -237,8 +258,15 @@ export function clearMessageCache(): void {
   purgeLegacyMessageStorage();
 }
 
+/** The routing fields of a message as it arrives over the websocket. */
+export interface MessageRouting {
+  senderId?: unknown;
+  receiverId?: unknown;
+  groupId?: unknown;
+}
+
 export function isRelevantMessage(
-  data: any,
+  data: MessageRouting,
   selectedUserShortname: string,
   currentUserShortname: string
 ): boolean {
@@ -250,16 +278,16 @@ export function isRelevantMessage(
   );
 }
 
-export function sortMessagesByTimestamp(
-  messages: MessageData[]
-): MessageData[] {
+export function sortMessagesByTimestamp<T extends { timestamp: Date }>(
+  messages: T[]
+): T[] {
   return messages.sort(
     (a, b) => new Date(a.timestamp).getTime() - new Date(b.timestamp).getTime()
   );
 }
 
 export function isRelevantGroupMessage(
-  data: any,
+  data: MessageRouting,
   groupId: string,
   currentUserShortname: string
 ): boolean {

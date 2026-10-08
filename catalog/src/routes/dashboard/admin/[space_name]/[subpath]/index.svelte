@@ -12,7 +12,7 @@
     getSpaceTags,
   } from "@/lib/dmart_services";
   import { buildFieldFilterClause } from "@/lib/searchFilters";
-  import { pruneEmptyFormValues } from "@/lib/formUtils";
+  import { asFormSchema, pruneEmptyFormValues } from "@/lib/formUtils";
   import {
     parseValueByType,
     getFieldType,
@@ -20,7 +20,23 @@
     setNestedValue,
   } from "@/lib/schemaTypes";
   import { createFolder } from "@/lib/dmart_services/entries";
-  import { collectSchemaPropertyBags, resolveSchemaDef } from "@/lib/jsonSchema";
+  import { asSchemaNode, collectSchemaPropertyBags, resolveSchemaDef } from "@/lib/jsonSchema";
+  import {
+    asResourceType,
+    bodyObject,
+    isIndexable,
+    isJsonObject,
+    recordsOf,
+    type EntryDetail,
+    type EntryRecord,
+    type IndexAttribute,
+    type JsonObject,
+    type Schema,
+  } from "@/lib/types";
+  import { errorMessage, serverMessage } from "@/lib/apiError";
+  import type { Breadcrumb } from "@/lib/paths";
+  import type { MetaFormData } from "@/components/forms/MetaForm.svelte";
+  import type { UserFormData } from "@/components/management/forms/MetaUserForm.svelte";
   import { _, locale } from "@/i18n";
   import { setTitle } from "@/lib/title";
   import { formatDate } from "@/lib/format";
@@ -32,6 +48,7 @@
     DmartScope,
     SortType,
     ContentType,
+    type ActionRequestRecord,
   } from "@edraj/tsdmart";
   import { writable } from "svelte/store";
   import MetaForm from "@/components/forms/MetaForm.svelte";
@@ -39,13 +56,14 @@
   import { formatNumber, getParentPath } from "@/lib/helpers";
   import { parseBreadcrumbPath } from "@/lib/breadcrumb";
   import { stripServerManagedFields } from "@/lib/duplicate";
+  import { applyFolderContentDefaults } from "@/lib/folder_defaults";
   import SchemaForm from "@/components/forms/SchemaForm.svelte";
   import DynamicSchemaBasedForms from "@/components/forms/DynamicSchemaBasedForms.svelte";
   import MetaUserForm from "@/components/management/forms/MetaUserForm.svelte";
   import MetaRoleForm from "@/components/forms/MetaRoleForm.svelte";
   import MetaPermissionForm from "@/components/forms/MetaPermissionForm.svelte";
   import { MANAGEMENT_SPACE } from "@/lib/constants";
-  import WorkflowForm from "@/components/forms/WorkflowForm.svelte";
+  import WorkflowForm, { normalizeWorkflowContent, type WorkflowContent } from "@/components/forms/WorkflowForm.svelte";
   import {
     errorToastMessage,
     successToastMessage,
@@ -64,16 +82,33 @@
   // Capture the navigate function once, during component init.
   const goto = $gotoStore;
 
+  /**
+   * The new-item form's data. The meta form and whichever resource-type form
+   * the location calls for (user / role / permission) all bind to it, so it
+   * carries the fields of each.
+   */
+  type CreateItemMeta = UserFormData & {
+    permissions?: string[];
+    subpaths?: Record<string, string[]>;
+    resource_types?: string[];
+    actions?: string[];
+    conditions?: string[];
+    restricted_fields?: string[];
+    allowed_fields_values?: Record<string, unknown>;
+  };
+
   let isLoading = writable(false);
-  let allContents = writable<any[]>([]);
-  let displayedContents = $state<any[]>([]);
-  let folderMetadata: any = $state(null);
+  let allContents = writable<EntryRecord[]>([]);
+  let displayedContents = $state<EntryRecord[]>([]);
+  let folderMetadata = $state<EntryDetail | null>(null);
+  // The folder's listing settings (its payload body), or null.
+  const folderBody = $derived(bodyObject(folderMetadata?.payload));
   let spaceHideFolders = $state<string[]>([]);
-  let error: any = $state(null);
+  let error = $state<string | null>(null);
   let spaceName = $state("");
   let subpath = "";
   let actualSubpath = writable("");
-  let breadcrumbs = $state<any[]>([]);
+  let breadcrumbs = $state<Breadcrumb[]>([]);
 
   $effect(() => setTitle(breadcrumbs[breadcrumbs.length - 1]?.name, spaceName));
 
@@ -128,14 +163,15 @@
   let showBulkTrashConfirm = $state(false);
   let showBulkEditModal = $state(false);
   let isBulkSaving = $state(false);
-  let bulkEditData = $state<Record<string, any>>({});
+  // One row of editable fields per selected item, keyed by its shortname.
+  let bulkEditData = $state<Record<string, JsonObject>>({});
 
   // Copy / Move (single + bulk)
   let showCopyModal = $state(false);
-  let copyRecords = $state<any[]>([]);
+  let copyRecords = $state<EntryRecord[]>([]);
   let copyAction = $state<"copy" | "move">("copy");
 
-  function openCopyModal(items: any[], action: "copy" | "move" = "copy") {
+  function openCopyModal(items: EntryRecord[], action: "copy" | "move" = "copy") {
     if (!items || items.length === 0) return;
     copyRecords = items.map((r) => $state.snapshot(r));
     copyAction = action;
@@ -151,7 +187,7 @@
   }
 
   let duplicatingShortname = $state<string | null>(null);
-  async function handleDuplicateItem(item: any) {
+  async function handleDuplicateItem(item: EntryRecord) {
     if (!item || duplicatingShortname) return;
     duplicatingShortname = item.shortname;
     try {
@@ -161,7 +197,7 @@
         request_type: RequestType.create,
         records: [
           {
-            resource_type: item.resource_type,
+            resource_type: asResourceType(item.resource_type),
             shortname: "auto",
             subpath: `/${$actualSubpath}`,
             attributes: cleanAttributes,
@@ -173,14 +209,14 @@
         await loadContents(true);
       } else {
         errorToastMessage(
-          (response as any)?.error?.message ||
+          response?.error?.message ||
             $_("admin_content.actions.duplicate_failed"),
         );
       }
-    } catch (err: any) {
+    } catch (err) {
       log.error("Duplicate error:", err);
       errorToastMessage(
-        err?.response?.data?.error?.message ||
+        serverMessage(err) ||
           $_("admin_content.actions.duplicate_failed"),
       );
     } finally {
@@ -189,7 +225,7 @@
   }
 
   let searchQuery = $state("");
-  let searchTimeout: any = null;
+  let searchTimeout: ReturnType<typeof setTimeout> | undefined;
 
   function handleSearchInput() {
     clearTimeout(searchTimeout);
@@ -199,9 +235,9 @@
   }
 
   // Tags filtering state
-  let availableTags = $state<any[]>([]);
-  let selectedTags = $state<any[]>([]);
-  let tagCounts: Record<string, any> = $state({});
+  let availableTags = $state<string[]>([]);
+  let selectedTags = $state<string[]>([]);
+  let tagCounts = $state<JsonObject>({});
   let showAllTags = $state(false);
 
 
@@ -265,16 +301,21 @@
     spaceHideFolders = hide;
     folderMetadata = folderMeta;
 
-    const schemaShortnames: string[] = folderMeta?.payload?.body?.content_schema_shortnames || [];
+    const folderBody = bodyObject(folderMeta?.payload);
+    const schemaShortnames: string[] = Array.isArray(folderBody?.content_schema_shortnames)
+      ? folderBody.content_schema_shortnames
+      : [];
     const schemaShortnamesKey = schemaShortnames.slice().sort().join(",");
     if (schemaShortnamesKey !== _prevSchemaShortnamesKey) {
       _prevSchemaShortnamesKey = schemaShortnamesKey;
       loadSchemaFilterFields(schemaShortnames);
     }
 
-    const tagsData = tagsResponse?.records?.[0]?.attributes;
-    availableTags = tagsData?.tags || [];
-    tagCounts = tagsData?.tag_counts || {};
+    const tagsData: JsonObject = tagsResponse?.records?.[0]?.attributes ?? {};
+    availableTags = Array.isArray(tagsData.tags)
+      ? tagsData.tags.filter((tag): tag is string => typeof tag === "string")
+      : [];
+    tagCounts = isJsonObject(tagsData.tag_counts) ? tagsData.tag_counts : {};
 
     await loadContents(true);
   }
@@ -357,7 +398,7 @@
       >();
 
       for (const schema of schemas) {
-        const body = (schema as any)?.payload?.body;
+        const body = asSchemaNode(schema?.payload?.body);
         // Discriminated-union schemas (e.g. "subaccount") have no top-level
         // `properties` — each oneOf/anyOf branch defines its own. Collect
         // every bag so filters cover fields from any branch.
@@ -380,10 +421,11 @@
               continue;
             }
 
-            const enumValues: any[] | undefined = Array.isArray(propDef.enum)
+            const items = asSchemaNode(propDef.items);
+            const enumValues: unknown[] | undefined = Array.isArray(propDef.enum)
               ? propDef.enum
-              : Array.isArray(propDef.items?.enum)
-                ? propDef.items.enum
+              : Array.isArray(items?.enum)
+                ? items.enum
                 : undefined;
 
             if (enumValues && enumValues.length > 0) {
@@ -426,8 +468,7 @@
 
     try {
       const offset = (currentPage - 1) * itemsPerPage;
-      const expandChildren =
-        folderMetadata?.payload?.body?.expand_children === true;
+      const expandChildren = folderBody?.expand_children === true;
 
       const statusSearch = buildStatusFilterSearch();
       const schemaFieldsSearch = buildSchemaFieldFiltersSearch();
@@ -458,7 +499,7 @@
         );
 
       if (response && response.records) {
-        $allContents = response.records;
+        $allContents = recordsOf(response);
         totalItemsCount = resolveTotal(response.attributes?.total, response.records.length);
         totalPages = Math.ceil(totalItemsCount / itemsPerPage) || 1;
 
@@ -510,7 +551,7 @@
     loadContents(true);
   }
 
-  function handleItemClick(item: any) {
+  function handleItemClick(item: EntryRecord) {
     if (item.resource_type === "folder") {
       const newSubpath = `${subpath}-${item.shortname}`;
       goto("/dashboard/admin/[space_name]/[subpath]", {
@@ -532,10 +573,10 @@
 
   let showCreateItemModal = $state(false);
   let isCreatingItem = $state(false);
-  let createItemMeta: any = $state({});
-  let validateCreateItemForm: any = $state(null);
+  let createItemMeta = $state<CreateItemMeta>({});
+  let validateCreateItemForm = $state<(() => boolean) | null>(null);
   // Validation for the resource-type-specific form (user/role/permission).
-  let validateCreateRTForm: any = $state(null);
+  let validateCreateRTForm = $state<(() => boolean) | null>(null);
 
   // The resource type the modal creates, derived from the current location
   // (cxb style): in the management space, /users -> user, /roles -> role,
@@ -562,8 +603,8 @@
   // `content_schema_shortnames`: 0 -> none, 1 -> auto, >1 -> user selects.
   let createItemSchemaShortnames = $state<string[]>([]);
   let selectedCreateSchemaShortname = $state("");
-  let createSchema: any = $state(null);
-  let createSchemaFormData: any = $state({});
+  let createSchema = $state<Schema | null>(null);
+  let createSchemaFormData = $state<JsonObject>({});
   let loadingCreateSchema = $state(false);
 
   async function loadCreateItemSchema(shortname: string) {
@@ -576,7 +617,7 @@
     createSchema = null;
     createSchemaFormData = {};
     try {
-      const response: any = await getEntity(
+      const response = await getEntity(
         shortname,
         spaceName,
         "/schema",
@@ -585,9 +626,7 @@
         true,
         true,
       );
-      if (response?.payload?.body) {
-        createSchema = response.payload.body;
-      }
+      createSchema = asFormSchema(response?.payload?.body);
     } catch (err) {
       log.error("Error loading schema for new item:", err);
     } finally {
@@ -595,8 +634,8 @@
     }
   }
 
-  function handleCreateSchemaChange(event: any) {
-    selectedCreateSchemaShortname = event.target.value;
+  function handleCreateSchemaChange(event: Event) {
+    selectedCreateSchemaShortname = (event.target as HTMLSelectElement).value;
     loadCreateItemSchema(selectedCreateSchemaShortname);
   }
 
@@ -619,10 +658,9 @@
     // The dynamic schema form only applies to plain content entries. Roles,
     // permissions and users carry their own meta props via their forms.
     if (createItemResourceType === ResourceType.content) {
-      const schemaShortnames =
-        folderMetadata?.payload?.body?.content_schema_shortnames;
+      const schemaShortnames = folderBody?.content_schema_shortnames;
       createItemSchemaShortnames = Array.isArray(schemaShortnames)
-        ? schemaShortnames
+        ? schemaShortnames.filter((s): s is string => typeof s === "string")
         : [];
       // 0 schemas -> nothing; 1 -> fetch & render; >1 -> wait for selection.
       if (createItemSchemaShortnames.length === 1) {
@@ -634,7 +672,7 @@
     showCreateItemModal = true;
   }
 
-  async function handleSaveItem(event: any) {
+  async function handleSaveItem(event: Event) {
     event.preventDefault();
     if (validateCreateItemForm && !validateCreateItemForm()) return;
     if (validateCreateRTForm && !validateCreateRTForm()) return;
@@ -644,8 +682,11 @@
       // The meta form and the resource-type-specific form both bind to
       // `createItemMeta`, so it already holds the merged attributes
       // (shortname + base meta + user/role/permission props).
-      const attributes: any = $state.snapshot(createItemMeta) || {};
-      const shortname = attributes.shortname || "auto";
+      const attributes: JsonObject = { ...$state.snapshot(createItemMeta) };
+      const shortname =
+        typeof attributes.shortname === "string" && attributes.shortname
+          ? attributes.shortname
+          : "auto";
       delete attributes.shortname;
 
       // Persist the dynamic-schema form as the item's JSON payload (content only).
@@ -664,7 +705,7 @@
         };
       }
 
-      const response: any = await Dmart.request({
+      const response = await Dmart.request({
         space_name: spaceName,
         request_type: RequestType.create,
         records: [
@@ -702,10 +743,10 @@
       } else {
         errorToastMessage($_("toast.item_create_failed"));
       }
-    } catch (err: any) {
+    } catch (err) {
       log.error("Error creating item:", err);
       errorToastMessage(
-        err?.response?.data?.error?.message || $_("toast.item_create_failed"),
+        serverMessage(err) || $_("toast.item_create_failed"),
       );
     } finally {
       isCreatingItem = false;
@@ -714,10 +755,10 @@
 
   // Delete confirmation dialog state
   let showDeleteDialog = $state(false);
-  let itemToDelete: any = $state(null);
+  let itemToDelete = $state<EntryRecord | null>(null);
   let forceDelete = $state(false);
 
-  function openDeleteDialog(item: any, event: any) {
+  function openDeleteDialog(item: EntryRecord, event: Event) {
     event.stopPropagation();
     itemToDelete = item;
     forceDelete = false;
@@ -735,7 +776,7 @@
       itemToDelete.shortname,
       spaceName,
       `/${$actualSubpath}`,
-      itemToDelete.resource_type,
+      asResourceType(itemToDelete.resource_type),
       forceDelete,
     );
     if (!success) throw new Error($_("toast.item_delete_failed"));
@@ -747,7 +788,7 @@
     await loadContents(true);
   }
 
-  function getItemIcon(item: any) {
+  function getItemIcon(item: EntryRecord) {
     switch (item.resource_type) {
       case "folder":
         return "📁";
@@ -766,7 +807,7 @@
     }
   }
 
-  function getResourceTypeColor(resourceType: any) {
+  function getResourceTypeColor(resourceType: string) {
     switch (resourceType) {
       case "folder":
         return "bg-info-soft text-info";
@@ -785,7 +826,7 @@
     }
   }
 
-  function getDisplayName(item: any) {
+  function getDisplayName(item: EntryRecord) {
     if (item.attributes?.displayname) {
       return (
         item.attributes.displayname.ar ||
@@ -796,7 +837,7 @@
     return item.shortname;
   }
 
-  function navigateToBreadcrumb(path: any) {
+  function navigateToBreadcrumb(path: string | null) {
     const target = parseBreadcrumbPath(path);
     if (!target) return;
     if (target.kind === "admin-root") {
@@ -898,7 +939,7 @@
               item.shortname,
               spaceName,
               `/${$actualSubpath}`,
-              item.resource_type,
+              asResourceType(item.resource_type),
             );
             if (success) {
               successCount++;
@@ -914,15 +955,15 @@
       if (successCount > 0) {
         successToastMessage(
           $_("admin_content.bulk_actions.delete_success", {
-            count: successCount,
-          } as any),
+            values: { count: successCount },
+          }),
         );
       }
       if (failCount > 0) {
         errorToastMessage(
           $_("admin_content.bulk_actions.delete_failed", {
-            count: failCount,
-          } as any),
+            values: { count: failCount },
+          }),
         );
       }
 
@@ -953,7 +994,7 @@
               item.shortname,
               spaceName,
               `/${$actualSubpath}`,
-              item.resource_type,
+              asResourceType(item.resource_type),
             );
             if (success) {
               successCount++;
@@ -969,15 +1010,15 @@
       if (successCount > 0) {
         successToastMessage(
           $_("admin_content.bulk_actions.trash_success", {
-            count: successCount,
-          } as any),
+            values: { count: successCount },
+          }),
         );
       }
       if (failCount > 0) {
         errorToastMessage(
           $_("admin_content.bulk_actions.trash_failed", {
-            count: failCount,
-          } as any),
+            values: { count: failCount },
+          }),
         );
       }
 
@@ -1008,7 +1049,7 @@
     const effectiveColumns =
       indexAttributes &&
       indexAttributes.length > 0 &&
-      indexAttributes.some((attr: any) => attr && Object.keys(attr).length > 0)
+      indexAttributes.some((attr) => attr && Object.keys(attr).length > 0)
         ? indexAttributes
         : [
             { key: "status", name: "Status" },
@@ -1017,12 +1058,12 @@
             { key: "author", name: "Author" },
           ];
 
-    const initialData: Record<string, any> = {};
+    const initialData: Record<string, JsonObject> = {};
     const selectedShortnames = Array.from(selectedItems);
     for (const shortname of selectedShortnames) {
       const item = $allContents.find((i) => i.shortname === shortname);
       if (item) {
-        const editData: any = {
+        const editData: JsonObject = {
           shortname: item.shortname,
           new_shortname: item.shortname,
           is_active: item.attributes?.is_active ?? true,
@@ -1083,10 +1124,10 @@
             );
           } else if (key.includes(".")) {
             const parts = key.split(".");
-            let current = item;
+            let current: unknown = item;
             for (const part of parts) {
               if (current === null || current === undefined) break;
-              current = current[part];
+              current = isIndexable(current) ? current[part] : undefined;
             }
             const rawValue = current !== undefined ? current : "";
             editData[key] = formatValueForEdit(rawValue, fieldType);
@@ -1104,12 +1145,32 @@
     showBulkEditModal = true;
   }
 
+  /** A bulk-edit cell read as a list (tags and other array fields). */
+  function editList(row: JsonObject, key: string): unknown[] {
+    const value = row[key];
+    return Array.isArray(value) ? value : [];
+  }
+
+  /** A bulk-edit cell read as text, "" when it holds none. */
+  function editText(row: JsonObject, key: string): string {
+    const value = row[key];
+    return typeof value === "string" ? value : "";
+  }
+
+  /** One language of a localized bulk-edit cell, "" when unset. */
+  function editLocale(row: JsonObject, key: string, lang: string): string {
+    const value = row[key];
+    if (!isJsonObject(value)) return "";
+    const text = value[lang];
+    return typeof text === "string" ? text : "";
+  }
+
   function closeBulkEditModal() {
     showBulkEditModal = false;
     bulkEditData = {};
   }
 
-  function updateBulkEditField(shortname: string, field: string, value: any) {
+  function updateBulkEditField(shortname: string, field: string, value: unknown) {
     if (bulkEditData[shortname]) {
       bulkEditData[shortname] = { ...bulkEditData[shortname], [field]: value };
       bulkEditData = { ...bulkEditData };
@@ -1123,7 +1184,8 @@
     value: string,
   ) {
     if (bulkEditData[shortname]) {
-      const currentField = bulkEditData[shortname][field] || {};
+      const existing = bulkEditData[shortname][field];
+      const currentField = isJsonObject(existing) ? existing : {};
       bulkEditData[shortname] = {
         ...bulkEditData[shortname],
         [field]: { ...currentField, [locale]: value },
@@ -1133,17 +1195,17 @@
   }
 
   async function handleBulkSave() {
-    if (bulkEditData.size === 0) return;
+    if (Object.keys(bulkEditData).length === 0) return;
 
     isBulkSaving = true;
 
     try {
-      const records: any[] = [];
+      const records: ActionRequestRecord[] = [];
 
       for (const [shortname, editData] of Object.entries(bulkEditData)) {
         const item = $allContents.find((i) => i.shortname === shortname);
         if (item) {
-          const attributes: any = {};
+          const attributes: JsonObject = {};
 
           for (const [key, value] of Object.entries(editData)) {
             if (key === "shortname" || key === "new_shortname") continue;
@@ -1166,7 +1228,7 @@
           }
 
           records.push({
-            resource_type: item.resource_type,
+            resource_type: asResourceType(item.resource_type),
             shortname: item.shortname,
             subpath: `/${$actualSubpath}`,
             attributes,
@@ -1222,61 +1284,29 @@
   const totalItemsDerived = $derived.by(() => totalItemsCount);
 
   let isCreatingFolder = $state(false);
-  let metaContent: any = $state({});
+  let metaContent = $state<MetaFormData>({});
   let showCreateFolderModal = $state(false);
-  let validateMetaForm: any = $state(null);
-  let folderContent = $state({
-    title: "",
-    content: "",
-    is_active: true,
-    tags: [],
-    index_attributes: [],
-    sort_by: "created_at",
-    sort_type: "descending",
-    content_resource_types: [],
-    content_schema_shortnames: [],
-    workflow_shortnames: [],
-    allow_view: true,
-    allow_create: true,
-    allow_update: true,
-    allow_delete: false,
-    allow_create_category: false,
-    allow_csv: false,
-    allow_upload_csv: false,
-    use_media: false,
-    stream: false,
-    expand_children: false,
-    disable_filter: false,
-  });
-
-  function handleCreateFolder() {
-    folderContent = {
+  let validateMetaForm = $state<(() => boolean) | null>(null);
+  // A new folder's listing settings: the defaults, sorted newest first. The
+  // FolderForm applies the same defaults on mount, so the shape is the one it
+  // has always bound to.
+  const newFolderContent = () =>
+    applyFolderContentDefaults({
       title: "",
       content: "",
       is_active: true,
       tags: [],
-      index_attributes: [],
       sort_by: "created_at",
       sort_type: "descending",
-      content_resource_types: [],
-      content_schema_shortnames: [],
-      workflow_shortnames: [],
-      allow_view: true,
-      allow_create: true,
-      allow_update: true,
-      allow_delete: false,
-      allow_create_category: false,
-      allow_csv: false,
-      allow_upload_csv: false,
-      use_media: false,
-      stream: false,
-      expand_children: false,
-      disable_filter: false,
-    };
+    });
+  let folderContent = $state(newFolderContent());
+
+  function handleCreateFolder() {
+    folderContent = newFolderContent();
     showCreateFolderModal = true;
   }
 
-  async function handleSaveFolder(event: any) {
+  async function handleSaveFolder(event: Event) {
     event.preventDefault();
     isCreatingFolder = true;
 
@@ -1300,7 +1330,7 @@
     } catch (err) {
       log.error("Error creating folder:", err);
       errorToastMessage(
-        $_("toast.folder_create_failed") + ": " + (err as any).message,
+        $_("toast.folder_create_failed") + ": " + errorMessage(err),
       );
     } finally {
       isCreatingFolder = false;
@@ -1308,15 +1338,15 @@
   }
 
   let showCreateSchemaModal = $state(false);
-  let schemaContent: Record<string, any> = $state({});
+  let schemaContent = $state<JsonObject>({});
   let isCreatingSchema = $state(false);
   let showCreateWorkflowModal = $state(false);
-  let workflowContent: Record<string, any> = $state({});
+  let workflowContent = $state<WorkflowContent>(normalizeWorkflowContent({}));
   let isCreatingWorkflow = $state(false);
 
   // Column Settings
   let showColumnSettingsModal = $state(false);
-  let editingIndexAttributes = $state<any[]>([]);
+  let editingIndexAttributes = $state<IndexAttribute[]>([]);
   let isSavingColumns = $state(false);
   let editingMeta = $state<{
     displayname: { en: string | null; ar: string | null; ku: string | null };
@@ -1333,12 +1363,8 @@
   let isCSVDownloadModalOpen = $state(false);
 
   // Computed permissions from folder metadata
-  let canUploadCSV = $derived(
-    (folderMetadata as any)?.payload?.body?.allow_upload_csv === true,
-  );
-  let canDownloadCSV = $derived(
-    (folderMetadata as any)?.payload?.body?.allow_csv === true,
-  );
+  let canUploadCSV = $derived(folderBody?.allow_upload_csv === true);
+  let canDownloadCSV = $derived(folderBody?.allow_csv === true);
 
   function handleOpenColumnSettings() {
     // Preserve the saved index_attributes exactly. Auto-filling defaults here
@@ -1346,7 +1372,7 @@
     // fields (e.g. display name) because the defaults differed from the
     // render-time fallback in the table.
     editingIndexAttributes = JSON.parse(JSON.stringify(indexAttributes));
-    const meta: any = folderMetadata ?? {};
+    const meta = folderMetadata;
     editingMeta = {
       displayname: {
         en: meta?.displayname?.en ?? null,
@@ -1367,13 +1393,36 @@
     editingIndexAttributes = [...editingIndexAttributes, { key: "", name: "" }];
   }
 
-  function removeColumnSetting(index: any) {
+  function removeColumnSetting(index: number) {
     editingIndexAttributes = editingIndexAttributes.filter(
       (_, i) => i !== index,
     );
   }
 
+  /** A column's label in the current language (its key when it has none). */
+  function columnLabel(attr: IndexAttribute): string {
+    if (typeof attr.name === "string") return attr.name;
+    return (
+      attr.name[$locale ?? ""] ||
+      attr.name.en ||
+      attr.name.ar ||
+      attr.name.ku ||
+      attr.key
+    );
+  }
+
+  /** True when a column has a label in some language. */
+  function hasColumnName(name: IndexAttribute["name"] | undefined): boolean {
+    if (typeof name === "string") return name.trim() !== "";
+    return Object.values(name ?? {}).some((text) => !!text?.trim());
+  }
+
   async function handleUpdateColumns() {
+    const folder = folderMetadata;
+    if (!folder) {
+      errorToastMessage($_("toast.folder_update_failed"));
+      return;
+    }
     isSavingColumns = true;
     try {
       // Drop empty locales so saving English-only edits doesn't wipe out
@@ -1394,7 +1443,7 @@
         records: [
           {
             resource_type: ResourceType.folder,
-            shortname: folderMetadata.shortname,
+            shortname: folder.shortname,
             subpath: getParentPath(`/${$actualSubpath}`),
             attributes: {
               is_active: editingMeta.is_active,
@@ -1405,11 +1454,11 @@
                 ? { description: cleanedDescription }
                 : {}),
               payload: {
-                ...folderMetadata?.payload,
+                ...folder.payload,
                 body: {
-                  ...folderMetadata?.payload?.body,
+                  ...bodyObject(folder.payload),
                   index_attributes: editingIndexAttributes.filter(
-                    (a) => a?.key?.trim() && a?.name?.trim(),
+                    (a) => a?.key?.trim() && hasColumnName(a?.name),
                   ),
                 },
               },
@@ -1428,7 +1477,7 @@
     } catch (err) {
       log.error("Error updating columns:", err);
       errorToastMessage(
-        $_("toast.folder_update_failed") + ": " + (err as any).message,
+        $_("toast.folder_update_failed") + ": " + errorMessage(err),
       );
     } finally {
       isSavingColumns = false;
@@ -1441,16 +1490,11 @@
   }
 
   function handleCreateWorkflow() {
-    workflowContent = {
-      name: "",
-      states: [],
-      illustration: "",
-      initial_state: [],
-    };
+    workflowContent = normalizeWorkflowContent({});
     showCreateWorkflowModal = true;
   }
 
-  async function handleSaveschema(event: any) {
+  async function handleSaveschema(event: Event) {
     event.preventDefault();
     isCreatingSchema = true;
 
@@ -1486,14 +1530,14 @@
     } catch (err) {
       log.error("Error creating schema:", err);
       errorToastMessage(
-        $_("toast.schema_create_failed") + ": " + (err as any).message,
+        $_("toast.schema_create_failed") + ": " + errorMessage(err),
       );
     } finally {
       isCreatingSchema = false;
     }
   }
 
-  async function handleSaveWorkflow(event: any) {
+  async function handleSaveWorkflow(event: Event) {
     event.preventDefault();
     isCreatingWorkflow = true;
 
@@ -1508,11 +1552,10 @@
             subpath: `/${$actualSubpath}`,
             attributes: {
               displayname:
-                metaContent.displayname ||
-                ({
-                  ar: (workflowContent as any).name || "",
-                  en: (workflowContent as any).name || "",
-                } as any),
+                metaContent.displayname || {
+                  ar: workflowContent.name || "",
+                  en: workflowContent.name || "",
+                },
               description: metaContent.description || {},
               payload: {
                 body: workflowContent,
@@ -1534,14 +1577,14 @@
     } catch (err) {
       log.error("Error creating workflow:", err);
       errorToastMessage(
-        $_("toast.workflow_create_failed") + ": " + (err as any).message,
+        $_("toast.workflow_create_failed") + ": " + errorMessage(err),
       );
     } finally {
       isCreatingWorkflow = false;
     }
   }
   const indexAttributes = $derived(
-    folderMetadata?.payload?.body?.index_attributes || [],
+    applyFolderContentDefaults(folderBody).index_attributes,
   );
 
   // Count of distinct filter groups currently constraining results — a
@@ -1560,7 +1603,7 @@
       }, 0),
   );
 
-  function getAttributeValue(item: any, key: any) {
+  function getAttributeValue(item: EntryRecord | null | undefined, key: string): string {
     if (!item) return "";
     if (!key) return "";
     if (key === "displayname") return getDisplayName(item);
@@ -1574,18 +1617,18 @@
       return formatDate(item.attributes?.[key], "date", $locale);
     }
 
-    const findValue = (obj: any, k: any) => {
-      if (!obj || typeof obj !== "object") return undefined;
+    const findValue = (obj: unknown, k: string): unknown => {
+      if (!isIndexable(obj)) return undefined;
       if (obj[k] !== undefined) return obj[k];
       const tk = k.toLowerCase();
       const foundKey = Object.keys(obj).find((ok) => ok.toLowerCase() === tk);
       return foundKey ? obj[foundKey] : undefined;
     };
 
-    let value;
+    let value: unknown;
     if (key.includes(".")) {
       const parts = key.split(".");
-      let current = item;
+      let current: unknown = item;
       for (const part of parts) {
         current = findValue(current, part);
         if (current === undefined || current === null) break;
@@ -1601,7 +1644,7 @@
 
     if (value === null || value === undefined) return "";
 
-    if (typeof value === "object" && !Array.isArray(value)) {
+    if (isJsonObject(value)) {
       const localized =
         value[$locale ?? ""] || value.en || value.ar || value.ku;
       if (localized !== undefined) return String(localized);
@@ -1644,10 +1687,10 @@
               {$_("admin_content.title", {
                 values: {
                   name:
-                    (folderMetadata as any)?.displayname?.[$locale ?? ""] ||
-                    (folderMetadata as any)?.displayname?.en ||
-                    (folderMetadata as any)?.displayname?.ar ||
-                    (folderMetadata as any)?.displayname?.ku ||
+                    folderMetadata?.displayname?.[$locale ?? ""] ||
+                    folderMetadata?.displayname?.en ||
+                    folderMetadata?.displayname?.ar ||
+                    folderMetadata?.displayname?.ku ||
                     breadcrumbs[breadcrumbs.length - 1]?.name ||
                     $actualSubpath.split("/").pop(),
                 },
@@ -1851,7 +1894,7 @@
             <p class="admin-stat-label">Active</p>
             <h3 class="admin-stat-value">
               {formatNumber(
-                $allContents.filter((i: any) => i.attributes?.is_active).length,
+                $allContents.filter((i) => i.attributes?.is_active).length,
                 $locale ?? "",
               )}
             </h3>
@@ -1974,7 +2017,7 @@
             <div class="flex flex-wrap items-center gap-3">
               <select
                 bind:value={sortBy}
-                onchange={(e: any) => {
+                onchange={(e) => {
                   if (typeof localStorage !== "undefined") {
                     localStorage.setItem(
                       SORT_BY_KEY,
@@ -2523,7 +2566,7 @@
               <button
                 onclick={() =>
                   openCopyModal(
-                    $allContents.filter((item: any) =>
+                    $allContents.filter((item) =>
                       selectedItems.has(item.shortname),
                     ),
                     "copy",
@@ -2549,7 +2592,7 @@
               <button
                 onclick={() =>
                   openCopyModal(
-                    $allContents.filter((item: any) =>
+                    $allContents.filter((item) =>
                       selectedItems.has(item.shortname),
                     ),
                     "move",
@@ -2760,7 +2803,7 @@
   {@const effectiveColumns =
     indexAttributes &&
     indexAttributes.length > 0 &&
-    indexAttributes.some((attr: any) => attr && Object.keys(attr).length > 0)
+    indexAttributes.some((attr) => attr && Object.keys(attr).length > 0)
       ? indexAttributes
       : [
           { key: "shortname", name: "Shortname" },
@@ -2806,7 +2849,7 @@
               <thead>
                 <tr>
                   {#each effectiveColumns as attr (attr.key)}
-                    <th class="bulk-edit-th">{attr.name}</th>
+                    <th class="bulk-edit-th">{columnLabel(attr)}</th>
                   {/each}
                 </tr>
               </thead>
@@ -2823,7 +2866,7 @@
                           <label class="status-toggle">
                             <input
                               type="checkbox"
-                              checked={editData.is_active}
+                              checked={editData.is_active === true}
                               onchange={(e) =>
                                 updateBulkEditField(
                                   shortname,
@@ -2834,10 +2877,10 @@
                             />
                             <span
                               class="status-toggle-slider"
-                              class:active={editData.is_active}
+                              class:active={editData.is_active === true}
                             ></span>
                             <span class="status-toggle-label">
-                              {editData.is_active
+                              {editData.is_active === true
                                 ? $_("admin_content.status.active")
                                 : $_("admin_content.status.inactive")}
                             </span>
@@ -2847,13 +2890,13 @@
                           {@const arrayKey = attr.key}
                           <div class="tags-editor">
                             <div class="tags-list compact">
-                              {#each editData[arrayKey] || [] as tagItem, idx (idx)}
+                              {#each editList(editData, arrayKey) as tagItem, idx (idx)}
                                 <span class="edit-tag">
                                   {tagItem}
                                   <button
                                     onclick={() => {
                                       const arr = [
-                                        ...(editData[arrayKey] || []),
+                                        ...editList(editData, arrayKey),
                                       ];
                                       arr.splice(idx, 1);
                                       updateBulkEditField(
@@ -2893,7 +2936,7 @@
                                     const val = e.currentTarget.value.trim();
                                     if (val) {
                                       const arr = [
-                                        ...(editData[arrayKey] || []),
+                                        ...editList(editData, arrayKey),
                                       ];
                                       arr.push(val);
                                       updateBulkEditField(
@@ -2920,7 +2963,7 @@
                                 <span class="locale-badge">{lang}</span>
                                 <input
                                   type="text"
-                                  value={editData[fieldName]?.[lang] || ""}
+                                  value={editLocale(editData, fieldName, lang)}
                                   oninput={(e) =>
                                     updateBulkEditLocalizedField(
                                       shortname,
@@ -2938,7 +2981,7 @@
                           <!-- Author/Owner (editable) -->
                           <input
                             type="text"
-                            value={editData.owner_shortname ||
+                            value={editText(editData, "owner_shortname") ||
                               item?.attributes?.owner_shortname ||
                               ""}
                             oninput={(e) =>
@@ -2988,7 +3031,7 @@
                           <!-- Schema (editable) -->
                           <input
                             type="text"
-                            value={editData.schema_shortname ||
+                            value={editText(editData, "schema_shortname") ||
                               item?.attributes?.schema_shortname ||
                               ""}
                             oninput={(e) =>
@@ -3049,7 +3092,7 @@
                                 e.currentTarget.value,
                               )}
                             class="bulk-edit-input"
-                            placeholder={attr.name}
+                            placeholder={columnLabel(attr)}
                           />
                         {/if}
                       </td>

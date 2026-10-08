@@ -2,6 +2,7 @@ import {
     type ActionRequest,
     type ActionResponse,
     type ApiQueryResponse,
+    type ApiResponseRecord,
     ContentType,
     Dmart,
     QueryType,
@@ -13,6 +14,14 @@ import {
 import { getSpaces, createTemplatesSchema } from "./spaces";
 import { log } from "@/lib/logger";
 import { APPLICATIONS_SPACE, MAX_QUERY_LIMIT } from "@/lib/constants";
+import {
+    isJsonObject,
+    type EntryDetail,
+    type EntryRecord,
+    type JsonObject,
+    type LocalizedText,
+    type TemplateBody,
+} from "@/lib/types";
 
 export async function getTemplates(
     space_name: string = "applications",
@@ -47,7 +56,7 @@ export async function getTemplate(
     space_name: string,
     template_shortname: string,
     scope: DmartScope = DmartScope.managed
-): Promise<any | null> {
+): Promise<EntryDetail | null> {
     try {
         const response = await Dmart.retrieveEntry(
             {
@@ -61,7 +70,9 @@ export async function getTemplate(
             },
             scope
         );
-        return response || null;
+        // No attachments were requested, so the SDK's loosely typed
+        // `attachments` is dropped rather than reinterpreted.
+        return response ? { ...response, attachments: undefined } : null;
     } catch (error) {
         log.error(`Failed to fetch template ${template_shortname} from ${space_name}:`, error);
         return null;
@@ -82,7 +93,7 @@ export async function getAllTemplates(): Promise<ApiQueryResponse> {
         } as ApiQueryResponse;
     }
 
-    const allTemplates: any[] = [];
+    const allTemplates: ApiResponseRecord[] = [];
     const spaces = spacesResponse.records;
 
     // Fetch templates from each space
@@ -91,7 +102,7 @@ export async function getAllTemplates(): Promise<ApiQueryResponse> {
             const response = await getTemplates(space.shortname, DmartScope.managed, MAX_QUERY_LIMIT);
             if (response.status === "success" && response.records) {
                 // Add space_name info to each template
-                const templatesWithSpace = response.records.map((t: any) => ({
+                const templatesWithSpace = response.records.map((t) => ({
                     ...t,
                     attributes: {
                         ...t.attributes,
@@ -164,7 +175,7 @@ export async function createTemplate(
         schema_shortname?: string;
     }
 ) {
-    const body: any = {
+    const body: TemplateBody = {
         title: data.title,
         content: data.content,
     };
@@ -222,13 +233,22 @@ export async function createTemplate(
     return response.status === "success" && response.records.length > 0;
 }
 
+/** What an edit of a template may change. */
+export type TemplateUpdate = {
+    title: string;
+    content: string;
+    is_active?: boolean;
+    displayname?: LocalizedText;
+    tags?: string[];
+};
+
 export async function updateTemplates(
     shortname: string,
     space_name: string,
     subpath: string,
-    data: any
+    data: TemplateUpdate
 ) {
-    const attributes: any = {
+    const attributes = {
         is_active: data.is_active,
         displayname: data.displayname,
         relationships: [],
@@ -283,48 +303,55 @@ export async function deleteTemplate(
     return response.status === "success";
 }
 
-/**
- * Extracts template from schema attachments
- * Schemas can have attachments, and if a schema has an attachment with shortname 'template',
- * it is treated as the template for that schema.
- * 
- * @param schemaRecord - The schema record object from getSpaceSchema response
- * @returns The template object if found, null otherwise
- */
-export function getTemplateFromSchemaAttachment(schemaRecord: any): {
+/** A template carried as an attachment of a schema. */
+export interface SchemaTemplate {
     shortname: string;
     title: string;
     schema: string;
     description: string;
-    attachment_data?: any;
-} | null {
-    if (!schemaRecord) {
-        return null;
+    attachment_data?: EntryRecord;
+}
+
+/**
+ * The attachment list of a schema record, when it is stored as a list
+ * (either at the top level or under `attributes`).
+ */
+function attachmentListOf(schemaRecord: EntryRecord): EntryRecord[] | null {
+    const attributes: JsonObject = schemaRecord.attributes;
+    const raw: unknown = schemaRecord.attachments ?? attributes.attachments;
+    const attachments: EntryRecord[] | null = Array.isArray(raw) ? raw : null;
+    return attachments;
+}
+
+function isMarkdownAttachment(attachment: EntryRecord): boolean {
+    const contentType = attachment.attributes?.payload?.content_type;
+    return contentType === "markdown" || contentType === "md";
+}
+
+/** The first non-empty string among `values`. */
+function firstText(...values: unknown[]): string | undefined {
+    for (const value of values) {
+        if (typeof value === "string" && value) return value;
     }
+    return undefined;
+}
 
-    // Check for attachments in the schema record
-    const attachments = schemaRecord.attachments || schemaRecord.attributes?.attachments;
-    
-    if (!attachments || !Array.isArray(attachments)) {
-        return null;
-    }
+/**
+ * Reads the template content out of a `template` attachment. The content
+ * may be stored as a plain string, or as an object with `content`/`body`.
+ */
+function templateFromAttachment(templateAttachment: EntryRecord): SchemaTemplate | null {
+    const attributes = templateAttachment.attributes;
+    const templateBody = attributes?.payload?.body;
 
-    // Find attachment with shortname 'template'
-    const templateAttachment = attachments.find(
-        (att) => att.shortname === "template"
-    );
-
-    if (!templateAttachment) {
-        return null;
-    }
-
-    // Extract template content from the attachment
-    // The template content could be in different places depending on how it was stored
-    const templateBody = templateAttachment.attributes?.payload?.body;
-    
     if (!templateBody) {
         return null;
     }
+
+    const attributeTitle = firstText(
+        attributes?.displayname?.en,
+        (attributes as JsonObject).title,
+    );
 
     // Handle different formats of template storage
     let templateContent: string;
@@ -333,16 +360,12 @@ export function getTemplateFromSchemaAttachment(schemaRecord: any): {
     if (typeof templateBody === "string") {
         // Direct string content
         templateContent = templateBody;
-        templateTitle = templateAttachment.attributes?.displayname?.en || 
-                       templateAttachment.attributes?.title || 
-                       "Template";
-    } else if (typeof templateBody === "object") {
+        templateTitle = attributeTitle || "Template";
+    } else if (isJsonObject(templateBody)) {
         // Object format with content property
-        templateContent = templateBody.content || templateBody.body || JSON.stringify(templateBody);
-        templateTitle = templateBody.title || 
-                       templateAttachment.attributes?.displayname?.en || 
-                       templateAttachment.attributes?.title || 
-                       "Template";
+        templateContent =
+            firstText(templateBody.content, templateBody.body) || JSON.stringify(templateBody);
+        templateTitle = firstText(templateBody.title) || attributeTitle || "Template";
     } else {
         return null;
     }
@@ -351,25 +374,53 @@ export function getTemplateFromSchemaAttachment(schemaRecord: any): {
         shortname: "template",
         title: templateTitle,
         schema: templateContent,
-        description: templateAttachment.attributes?.description?.en || "",
+        description: attributes?.description?.en || "",
         attachment_data: templateAttachment,
     };
 }
 
 /**
+ * Extracts template from schema attachments
+ * Schemas can have attachments, and if a schema has an attachment with shortname 'template',
+ * it is treated as the template for that schema.
+ *
+ * @param schemaRecord - The schema record object from getSpaceSchema response
+ * @returns The template object if found, null otherwise
+ */
+export function getTemplateFromSchemaAttachment(
+    schemaRecord: EntryRecord | null | undefined,
+): SchemaTemplate | null {
+    if (!schemaRecord) {
+        return null;
+    }
+
+    const attachments = attachmentListOf(schemaRecord);
+    if (!attachments) {
+        return null;
+    }
+
+    // Find attachment with shortname 'template'
+    const templateAttachment = attachments.find((att) => att.shortname === "template");
+    if (!templateAttachment) {
+        return null;
+    }
+
+    return templateFromAttachment(templateAttachment);
+}
+
+/**
  * Checks if a schema has a template attachment
- * 
+ *
  * @param schemaRecord - The schema record object
  * @returns true if the schema has a 'template' attachment
  */
-export function hasTemplateAttachment(schemaRecord: any): boolean {
+export function hasTemplateAttachment(schemaRecord: EntryRecord | null | undefined): boolean {
     if (!schemaRecord) {
         return false;
     }
 
-    const attachments = schemaRecord.attachments || schemaRecord.attributes?.attachments;
-    
-    if (!attachments || !Array.isArray(attachments)) {
+    const attachments = attachmentListOf(schemaRecord);
+    if (!attachments) {
         return false;
     }
 
@@ -379,100 +430,54 @@ export function hasTemplateAttachment(schemaRecord: any): boolean {
 /**
  * Checks if a schema has a markdown template attachment
  * A markdown template attachment has shortname 'template' and content_type of 'markdown' or 'md'
- * 
+ *
  * @param schemaRecord - The schema record object
  * @returns true if the schema has a markdown 'template' attachment
  */
-export function hasMarkdownTemplateAttachment(schemaRecord: any): boolean {
+export function hasMarkdownTemplateAttachment(schemaRecord: EntryRecord | null | undefined): boolean {
     if (!schemaRecord) {
         return false;
     }
 
-    const attachments = schemaRecord.attachments || schemaRecord.attributes?.attachments;
-    
-    if (!attachments || !Array.isArray(attachments)) {
+    const attachments = attachmentListOf(schemaRecord);
+    if (!attachments) {
         return false;
     }
 
     const templateAttachment = attachments.find((att) => att.shortname === "template");
-    
     if (!templateAttachment) {
         return false;
     }
 
-    const contentType = templateAttachment.attributes?.payload?.content_type;
-    return contentType === "markdown" || contentType === "md";
+    return isMarkdownAttachment(templateAttachment);
 }
 
 /**
  * Extracts markdown template from schema attachments
  * Similar to getTemplateFromSchemaAttachment but specifically for markdown templates
- * 
+ *
  * @param schemaRecord - The schema record object from getSpaceSchema response
  * @returns The markdown template object if found, null otherwise
  */
-export function getMarkdownTemplateFromSchemaAttachment(schemaRecord: any): {
-    shortname: string;
-    title: string;
-    schema: string;
-    description: string;
-    attachment_data?: any;
-} | null {
+export function getMarkdownTemplateFromSchemaAttachment(
+    schemaRecord: EntryRecord | null | undefined,
+): SchemaTemplate | null {
     if (!schemaRecord) {
         return null;
     }
 
-    // Check for attachments in the schema record
-    const attachments = schemaRecord.attachments || schemaRecord.attributes?.attachments;
-    
-    if (!attachments || !Array.isArray(attachments)) {
+    const attachments = attachmentListOf(schemaRecord);
+    if (!attachments) {
         return null;
     }
 
     // Find attachment with shortname 'template' and markdown content type
     const templateAttachment = attachments.find(
-        (att) => att.shortname === "template" && 
-                 (att.attributes?.payload?.content_type === "markdown" || 
-                  att.attributes?.payload?.content_type === "md")
+        (att) => att.shortname === "template" && isMarkdownAttachment(att)
     );
-
     if (!templateAttachment) {
         return null;
     }
 
-    // Extract template content from the attachment
-    const templateBody = templateAttachment.attributes?.payload?.body;
-    
-    if (!templateBody) {
-        return null;
-    }
-
-    // Handle different formats of template storage
-    let templateContent: string;
-    let templateTitle: string;
-
-    if (typeof templateBody === "string") {
-        // Direct string content
-        templateContent = templateBody;
-        templateTitle = templateAttachment.attributes?.displayname?.en || 
-                       templateAttachment.attributes?.title || 
-                       "Template";
-    } else if (typeof templateBody === "object") {
-        // Object format with content property
-        templateContent = templateBody.content || templateBody.body || JSON.stringify(templateBody);
-        templateTitle = templateBody.title || 
-                       templateAttachment.attributes?.displayname?.en || 
-                       templateAttachment.attributes?.title || 
-                       "Template";
-    } else {
-        return null;
-    }
-
-    return {
-        shortname: "template",
-        title: templateTitle,
-        schema: templateContent,
-        description: templateAttachment.attributes?.description?.en || "",
-        attachment_data: templateAttachment,
-    };
+    return templateFromAttachment(templateAttachment);
 }

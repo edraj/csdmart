@@ -8,16 +8,19 @@
   import { toasts } from "@/lib/toast";
   import { user } from "@/stores/user";
   import { createComment, deleteComment, deleteMultipleComments, findAllChildComments } from "@/lib/dmart_services";
+  import { bodyObject, type EntryPayload } from "@/lib/types";
 
   // Two-level comment threads under an entry: top-level comments with their
   // replies, reply in place, delete (own comment, or any comment on your own
   // entry) behind the shared ConfirmDialog.
+  //
+  // A comment's payload body is `{ body: <text>, parent_comment_id?: <id> }`.
   interface CommentRecord {
     shortname: string;
     attributes?: {
       owner_shortname?: string;
       created_at?: string;
-      payload?: { body?: { body?: string; parent_comment_id?: string | null } };
+      payload?: EntryPayload;
     };
   }
 
@@ -52,8 +55,8 @@
     for (const comment of list) byId.set(comment.shortname, { ...comment, replies: [] });
     for (const comment of list) {
       const node = byId.get(comment.shortname)!;
-      const parentId = comment.attributes?.payload?.body?.parent_comment_id;
-      const parent = parentId ? byId.get(parentId) : undefined;
+      const parentId = bodyObject(comment.attributes?.payload)?.parent_comment_id;
+      const parent = typeof parentId === "string" && parentId ? byId.get(parentId) : undefined;
       if (parent) parent.replies.push(node);
       else topLevel.push(node);
     }
@@ -64,7 +67,8 @@
   const number = (n: number) => formatNumberInText(n, $locale ?? "");
 
   function commentText(comment: CommentRecord): string {
-    return comment.attributes?.payload?.body?.body ?? "";
+    const text = bodyObject(comment.attributes?.payload)?.body;
+    return typeof text === "string" ? text : "";
   }
 
   function commentAuthor(comment: CommentRecord): string {

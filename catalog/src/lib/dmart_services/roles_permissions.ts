@@ -6,9 +6,50 @@ import {
     ResourceType,
 } from "@edraj/tsdmart";
 import { checkAccess } from "@/stores/permissions";
+import type { JsonObject } from "@/lib/types";
+
+/** `value` when it is a non-empty string, else `fallback`. */
+function textOr(value: unknown, fallback: string): string {
+    return typeof value === "string" && value ? value : fallback;
+}
+
+/**
+ * The attributes of a role, from the role form's data bag. Every field falls
+ * back to its empty value so a partially filled form still makes a valid
+ * request.
+ */
+function roleAttributes(data: JsonObject): JsonObject {
+    return {
+        is_active: data.is_active ?? true,
+        tags: data.tags || [],
+        relationships: data.relationships || [],
+        permissions: data.permissions || [],
+        displayname: data.displayname || {},
+        description: data.description || {},
+        slug: data.slug || null,
+    };
+}
+
+/** The attributes of a permission, from the permission form's data bag. */
+function permissionAttributes(data: JsonObject): JsonObject {
+    return {
+        is_active: data.is_active ?? true,
+        tags: data.tags || [],
+        relationships: data.relationships || [],
+        acl: data.acl || [],
+        subpaths: data.subpaths || {},
+        resource_types: data.resource_types || [],
+        actions: data.actions || [],
+        conditions: data.conditions || [],
+        restricted_fields: data.restricted_fields || [],
+        allowed_fields_values: data.allowed_fields_values || {},
+        attachments: data.attachments || {},
+        slug: data.slug || null,
+    };
+}
 
 export async function createRole(
-    data: any,
+    data: JsonObject,
     space_name: string,
     subpath: string,
     resourceType: ResourceType,
@@ -18,15 +59,7 @@ export async function createRole(
     if (!checkAccess("create", space_name, subpath, resourceType)) {
         throw new Error("Permission denied: cannot create role");
     }
-    const attributes: any = {
-        is_active: data.is_active ?? true,
-        tags: data.tags || [],
-        relationships: data.relationships || [],
-        permissions: data.permissions || [],
-        displayname: data.displayname || {},
-        description: data.description || {},
-        slug: data.slug || null,
-    };
+    const attributes = roleAttributes(data);
     if (workflow_shortname && schema_shortname) {
         attributes.workflow_shortname = workflow_shortname;
         attributes.schema_shortname = schema_shortname;
@@ -38,7 +71,7 @@ export async function createRole(
         records: [
             {
                 resource_type: resourceType,
-                shortname: data.title || "auto",
+                shortname: textOr(data.title, "auto"),
                 subpath,
                 attributes,
             },
@@ -56,22 +89,14 @@ export async function updateRole(
     space_name: string,
     subpath: string,
     resourceType: ResourceType,
-    data: any,
+    data: JsonObject,
     workflow_shortname: string,
     schema_shortname: string
 ) {
     if (!checkAccess("update", space_name, subpath, resourceType)) {
         throw new Error("Permission denied: cannot update role");
     }
-    const attributes: any = {
-        is_active: data.is_active ?? true,
-        tags: data.tags || [],
-        relationships: data.relationships || [],
-        permissions: data.permissions || [],
-        displayname: data.displayname || {},
-        description: data.description || {},
-        slug: data.slug || null,
-    };
+    const attributes = roleAttributes(data);
 
     if (workflow_shortname && schema_shortname) {
         attributes.workflow_shortname = workflow_shortname;
@@ -98,7 +123,7 @@ export async function updateRole(
 }
 
 export async function createPermission(
-    data: any,
+    data: JsonObject,
     space_name: string,
     subpath: string,
     resourceType: ResourceType,
@@ -108,20 +133,7 @@ export async function createPermission(
     if (!checkAccess("create", space_name, subpath, resourceType)) {
         throw new Error("Permission denied: cannot create permission");
     }
-    const attributes: any = {
-        is_active: data.is_active ?? true,
-        tags: data.tags || [],
-        relationships: data.relationships || [],
-        acl: data.acl || [],
-        subpaths: data.subpaths || {},
-        resource_types: data.resource_types || [],
-        actions: data.actions || [],
-        conditions: data.conditions || [],
-        restricted_fields: data.restricted_fields || [],
-        allowed_fields_values: data.allowed_fields_values || {},
-        attachments: data.attachments || {},
-        slug: data.slug || null,
-    };
+    const attributes = permissionAttributes(data);
 
     if (workflow_shortname && schema_shortname) {
         attributes.workflow_shortname = workflow_shortname;
@@ -134,7 +146,7 @@ export async function createPermission(
         records: [
             {
                 resource_type: resourceType,
-                shortname: data.shortname || "auto",
+                shortname: textOr(data.shortname, "auto"),
                 subpath,
                 attributes,
             },
@@ -153,27 +165,14 @@ export async function updatePermission(
     space_name: string,
     subpath: string,
     resourceType: ResourceType,
-    data: any,
+    data: JsonObject,
     workflow_shortname: string,
     schema_shortname: string
 ) {
     if (!checkAccess("update", space_name, subpath, resourceType)) {
         throw new Error("Permission denied: cannot update permission");
     }
-    const attributes: any = {
-        is_active: data.is_active ?? true,
-        tags: data.tags || [],
-        relationships: data.relationships || [],
-        acl: data.acl || [],
-        subpaths: data.subpaths || {},
-        resource_types: data.resource_types || [],
-        actions: data.actions || [],
-        conditions: data.conditions || [],
-        restricted_fields: data.restricted_fields || [],
-        allowed_fields_values: data.allowed_fields_values || {},
-        attachments: data.attachments || {},
-        slug: data.slug || null,
-    };
+    const attributes = permissionAttributes(data);
 
     if (workflow_shortname && schema_shortname) {
         attributes.workflow_shortname = workflow_shortname;

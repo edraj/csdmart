@@ -7,6 +7,7 @@ import {
 } from "@edraj/tsdmart";
 import { log } from "@/lib/logger";
 import { MANAGEMENT_SPACE } from "@/lib/constants";
+import { errorMessage, errorStatus } from "@/lib/apiError";
 
 /**
  * Resources the app depends on at runtime. They are bootstrapped on demand;
@@ -37,15 +38,12 @@ const CRITICAL_RESOURCES: ActionRequest[] = [
     },
 ];
 
-function isNotFoundError(error: any): boolean {
-    if (error?.status === 404) return true;
-    if (error?.response?.status === 404) return true;
-    const message = error?.message || error?.response?.data?.error?.message || "";
-    if (typeof message === "string") {
-        if (message.includes("not found")) return true;
-        if (message.includes("does not exist")) return true;
-        if (message.includes("not_found")) return true;
-    }
+function isNotFoundError(error: unknown): boolean {
+    if (errorStatus(error) === 404) return true;
+    const message = errorMessage(error);
+    if (message.includes("not found")) return true;
+    if (message.includes("does not exist")) return true;
+    if (message.includes("not_found")) return true;
     return false;
 }
 
@@ -72,7 +70,7 @@ export async function checkCriticalResources(): Promise<{ missing: string[] }> {
                             retrieve_attachments: false,
                         },
                     );
-                } catch (error: any) {
+                } catch (error) {
                     if (isNotFoundError(error)) {
                         missing.push(record.shortname);
                     }

@@ -125,7 +125,7 @@ export const AUTO_UUID_RULE = "auto";
  */
 export function resolveAutoShortname(
   shortname: string,
-  attributes?: Record<string, any>,
+  attributes?: Record<string, unknown>,
 ): { shortname: string; uuid: string | null } {
   if (shortname !== AUTO_UUID_RULE) {
     return { shortname, uuid: null };
