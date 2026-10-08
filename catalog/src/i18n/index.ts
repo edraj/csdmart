@@ -1,16 +1,15 @@
-import {_, addMessages, date, getLocaleFromNavigator, init, locale, number, time,} from "svelte-i18n";
+import {_, date, getLocaleFromNavigator, init, isLoading, locale, number, register, time, waitLocale,} from "svelte-i18n";
 import {website} from "@/config";
 import {derived} from "svelte/store";
 import {resolvePreferredLocale} from "@/lib/preferredLocale";
-import ar from "./ar.json";
-import en from "./en.json";
-import ku from "./ku.json";
+// Each locale is its own chunk, fetched when first needed. Importing all
+// three statically put ~298 kB of translations into the entry chunk of every
+// cold load (en 70 kB, ar 92 kB, ku 136 kB minified) for a visitor who reads
+// exactly one of them.
+register("ar", () => import("./ar.json"));
+register("en", () => import("./en.json"));
+register("ku", () => import("./ku.json"));
 
-addMessages("ar", ar);
-addMessages("en", en);
-addMessages("ku", ku);
-
-const l17ns = { ar: ar, en: en, ku: ku };
 const available_locales = ["ar", "en", "ku"];
 
 // English is the fallback for a key missing from the active locale: it is the
@@ -76,12 +75,14 @@ let documentSynced = false;
 
 /**
  * Initializes the internationalization system with the preferred locale and
- * keeps <html lang dir> in step with every later switch.
+ * keeps <html lang dir> in step with every later switch. Resolves once the
+ * initial locale (and its fallback) have loaded — mount the app after that,
+ * or the first paint shows raw keys.
  */
-function setupI18n() {
+function setupI18n(): Promise<void> {
   let _locale: string = getPreferredLocale();
 
-  if (!(_locale in l17ns) && website.default_language) {
+  if (!available_locales.includes(_locale) && website.default_language) {
     _locale = website.default_language;
   }
 
@@ -98,6 +99,7 @@ function setupI18n() {
       document.documentElement.dir = directionOf($locale);
     });
   }
+  return waitLocale();
 }
 
 const dir = derived(locale, ($locale) => directionOf($locale));
@@ -119,6 +121,7 @@ export {
   number,
   locale,
   isLocaleLoaded,
+  isLoading,
   switchLocale,
   available_locales,
   FALLBACK_LOCALE,

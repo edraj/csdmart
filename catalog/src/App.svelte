@@ -8,7 +8,7 @@
 </script>
 
 <script lang="ts">
-  import { setupI18n, dir, locale } from "./i18n";
+  import { dir, locale } from "./i18n";
 
   function findRoute(routers: any, paths: any): any {
     if (paths.length === 0) {
@@ -102,7 +102,6 @@
 
   // Also subscribes `locale` to <html lang dir>, so RTL/LTR flips on switch
   // without a reload (see i18n/index.ts).
-  setupI18n();
 </script>
 
 <div id="routify-app">

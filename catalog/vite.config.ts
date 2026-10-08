@@ -84,9 +84,15 @@ export default defineConfig(({ command }) => ({
         entryFileNames: "assets/js/[name]-[hash].js",
         manualChunks(id) {
           if (!id.includes("node_modules")) return;
-          if (id.includes("/flowbite")) return "vendor-flowbite";
           if (id.includes("/@roxi/routify/")) return "vendor-routify";
-          return "vendor";
+          // Only the packages every page needs share a chunk. The old
+          // catch-all "vendor" (430 kB, preloaded everywhere) also held
+          // typewriter-editor, marked and DOMPurify — defeating the lazy
+          // imports that are supposed to keep them off the first paint —
+          // and one flowbite chunk carried every component used anywhere.
+          // Everything else follows the route that imports it.
+          if (/\/node_modules\/(svelte|@edraj\/tsdmart|axios|svelte-i18n)\//.test(id)) return "vendor";
+          return undefined;
         },
       },
     },
