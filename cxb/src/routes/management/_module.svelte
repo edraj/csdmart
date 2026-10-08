@@ -45,7 +45,9 @@
         ? Dmart.getProfile()
         : Promise.reject(new Error("no local session"));
 
-    const profilePromise = probe.then((r) => {
+    let phase = $state<"pending" | "authed" | "anon">("pending");
+
+    void probe.then((r) => {
         // Both checks are load-bearing: getProfile REJECTS on a transport or
         // auth failure, and RESOLVES with a non-success envelope when the
         // server answered but refused. Dropping either lets one of those two
@@ -55,45 +57,37 @@
         }
         // Authed — fire the spaces fetch (best-effort) and resolve.
         getSpaces().catch(() => {});
+        phase = "authed";
         return r;
-    }).catch((error) => {
+    }).catch(() => {
         // Anonymous or expired session — clean up any stale local state so
         // the Login form shows. permissions/roles are written by the SDK as a
         // side effect of getProfile and must go with the rest: stale privilege
         // data outliving the session is what drives the next user's UI gating.
         clearLocalSession();
         user.set({ signedin: false, locale: $user?.locale });
-        throw error;
+        phase = "anon";
     });
 </script>
 
-{#await profilePromise}
+{#if phase === "pending"}
     <div class="flex w-full h-svh justify-center items-center">
         <LoadingState />
     </div>
-    <!-- Routify expects the parent of an active child route to put its
-         children in the DOM within 5s of navigation. While we're still
-         resolving auth (or showing Login), they would otherwise be absent and
-         Routify logs "Failed to render index within 5s". Render them hidden
-         so the timer is satisfied; the child mounts silently and gets
-         revealed once the user signs in. Boot 401s from this early mount are
-         silenced by per-callsite log gating; the session probe itself no
-         longer contributes one, because it skips the request entirely when
-         there is no local session. -->
-    <div hidden>{@render children?.()}</div>
-{:then _}
-    {#if !$user || !$user.signedin}
-        <Login />
-        <div hidden>{@render children?.()}</div>
-    {:else}
-        <div class="flex flex-col h-screen bg-surface text-text">
-            <ManagementHeader />
-            <div class="flex-grow overflow-auto">
-                {@render children?.()}
-            </div>
-        </div>
-    {/if}
-{:catch}
+{:else if phase === "anon"}
     <Login />
-    <div hidden>{@render children?.()}</div>
-{/await}
+{/if}
+<!-- The child route is rendered exactly ONCE, here, and only revealed when
+     the session is live. Routify expects the parent of an active child route
+     to put its children in the DOM within 5s of navigation, so they cannot
+     wait for the probe; but rendering them hidden during the probe AND again
+     in the signed-in branch (as this used to) mounted every page twice on a
+     cold load and sent every request twice. -->
+<div class="flex flex-col h-screen bg-surface text-text" hidden={phase !== "authed"}>
+    {#if phase === "authed"}
+        <ManagementHeader />
+    {/if}
+    <div class="flex-grow overflow-auto">
+        {@render children?.()}
+    </div>
+</div>

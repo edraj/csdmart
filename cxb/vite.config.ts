@@ -155,7 +155,12 @@ export default defineConfig(({command}) => ({
             // Skip packages that produce empty chunks after tree-shaking
             const skipChunks = [
               '@popperjs', 'date-fns', 'fast-deep-equal', 'fast-uri',
-              'jmespath', 'json-schema-traverse', 'jsonpath-plus'
+              'jmespath', 'json-schema-traverse', 'jsonpath-plus',
+              // Not one chunk each: a per-package chunk for these two holds
+              // every component/icon used anywhere in the app and is pulled
+              // in by the first route. Left to the default splitting, each
+              // route carries only what it renders.
+              'flowbite-svelte', 'flowbite-svelte-icons',
             ];
             if (skipChunks.includes(pkg)) return;
             return pkg;

@@ -3,6 +3,9 @@
   <head>
     <meta charset="UTF-8" />
     <base href="/cxb/" />
+    <!-- config.json is the first thing main.ts waits for; start it with the HTML
+         instead of after the module graph has loaded and run. -->
+    <link rel="preload" href="./config.json" as="fetch" crossorigin />
     <link rel="icon" type="image/x-icon" href="./favicon.ico" />
     <link rel="icon" type="image/png" href="./favicon.png" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
