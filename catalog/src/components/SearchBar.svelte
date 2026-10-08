@@ -5,6 +5,7 @@
   import { goto, params } from "@roxi/routify";
   import { _ } from "@/i18n";
   import SkeletonBlock from "@/components/SkeletonBlock.svelte";
+  import { encodeSubpath, ROOT_SUBPATH_SEGMENT } from "@/lib/paths";
 
   $goto;
   let isProjectBeingFetched = $state(false);
@@ -167,24 +168,19 @@
     }, 500);
   }
 
-  function toRouteSubpath(apiSubpath: string): string {
-    return (apiSubpath ?? "")
-      .replace(/^\/+|\/+$/g, "")
-      .replace(/\//g, "-");
-  }
-
   function gotoEntityDetails(entity: any) {
-    const parentRouteSubpath = toRouteSubpath(entity.subpath);
+    const parentRouteSubpath = encodeSubpath(entity.subpath);
+    const atRoot = parentRouteSubpath === ROOT_SUBPATH_SEGMENT;
 
     if (entity.resource_type === "folder") {
-      const folderSubpath = parentRouteSubpath
-        ? `${parentRouteSubpath}-${entity.shortname}`
-        : entity.shortname;
+      const folderSubpath = atRoot
+        ? entity.shortname
+        : `${parentRouteSubpath}-${entity.shortname}`;
       $goto("/dashboard/admin/[space_name]/[subpath]", {
         space_name: entity.space_name,
         subpath: folderSubpath,
       });
-    } else if (parentRouteSubpath) {
+    } else if (!atRoot) {
       $goto(
         "/dashboard/admin/[space_name]/[subpath]/[shortname]/[resource_type]",
         {

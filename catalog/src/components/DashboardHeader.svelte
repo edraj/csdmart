@@ -12,12 +12,12 @@
   import { wsConnected } from "@/stores/websocket";
   import { isPublicRoute } from "@/lib/constants";
   import { website } from "@/config";
-  import { stripBasePrefix } from "@/lib/basePath";
+  import { stripBase, withBase } from "@/lib/paths";
 
   $goto;
 
   $effect(() => {
-    const path = stripBasePrefix(window.location.pathname);
+    const path = stripBase(window.location.pathname);
     if (!$user?.signedin && path !== "/login" && !isPublicRoute(path)) {
       $goto("/login");
     }
@@ -152,7 +152,7 @@
           : "flex items-center w-3/6"}
       >
         <a
-          href="/"
+          href={withBase("/")}
           class={`flex items-center justify-start group ${$user.signedin ? "space-x-2" : "space-x-3"}`}
         >
           <svg

@@ -1,6 +1,7 @@
 import {_, addMessages, date, getLocaleFromNavigator, init, locale, number, time,} from "svelte-i18n";
 import {website} from "@/config";
 import {derived} from "svelte/store";
+import {resolvePreferredLocale} from "@/lib/preferredLocale";
 import ar from "./ar.json";
 import en from "./en.json";
 import ku from "./ku.json";
@@ -42,48 +43,22 @@ function switchLocale(_locale: string) {
 }
 
 /**
- * Determines the preferred locale based on localStorage and browser settings
- * @returns The preferred locale code as a string
+ * Determines the locale to start in: an earlier explicit choice, else the
+ * deployment's default_language, else the browser language, else English.
+ * Nothing is persisted here — only switchLocale records a choice, so a later
+ * change to default_language still applies to visitors who never picked one.
  */
 function getPreferredLocale(): string {
-  let preferred_locale = "en";
-
-  if (typeof localStorage !== "undefined") {
-    const stored = localStorage.getItem("preferred_locale");
-    try {
-      preferred_locale = JSON.parse(stored || '"en"');
-    } catch {
-      preferred_locale = "en";
-    }
-  }
-
-  if (preferred_locale && preferred_locale in website.languages) {
-    return preferred_locale;
-  }
-
-  let fallback: string = "";
-  let _locale = getLocaleFromNavigator();
-  let _locale_found = false;
-
-  for (const key in website.languages) {
-    if (fallback.trim().length === 0) {
-      fallback = key;
-    }
-    if (!_locale_found && _locale && _locale.startsWith(key)) {
-      _locale = key;
-      _locale_found = true;
-    }
-  }
-
-  if (!_locale_found) {
-    _locale = fallback || "en";
-  }
-
-  if (typeof localStorage !== "undefined") {
-    localStorage.setItem("preferred_locale", JSON.stringify(_locale));
-  }
-
-  return _locale!;
+  const stored =
+    typeof localStorage !== "undefined"
+      ? localStorage.getItem("preferred_locale")
+      : null;
+  return resolvePreferredLocale({
+    stored,
+    defaultLanguage: website.default_language,
+    languages: website.languages,
+    navigatorLocale: getLocaleFromNavigator(),
+  });
 }
 
 /**

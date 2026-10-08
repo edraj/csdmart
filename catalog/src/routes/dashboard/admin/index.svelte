@@ -17,6 +17,7 @@
   import { derived as derivedStore } from "svelte/store";
   import { formatNumberInText } from "@/lib/helpers";
   import { DmartScope } from "@edraj/tsdmart";
+  import { encodeSubpath } from "@/lib/paths";
   import {
     successToastMessage,
     errorToastMessage,
@@ -153,7 +154,9 @@
       handleSpaceClick(record);
       return;
     }
-    const encodedSubpath = encodeURIComponent(record.subpath);
+    // Dash-encoded like every other [subpath] link; the target page decodes
+    // dashes, so a percent-encoded "/" would reach the API verbatim.
+    const encodedSubpath = encodeSubpath(record.subpath);
 
     $goto(
       "/dashboard/admin/[space_name]/[subpath]/[shortname]/[resource_type]",

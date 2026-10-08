@@ -5,9 +5,11 @@
     createComment,
     createReaction,
     deleteReactionComment,
-    getEntity,
+    getEntityStrict,
     getRelatedContents,
   } from "@/lib/dmart_services";
+  import { apiErrorKey } from "@/lib/apiError";
+  import { catalogBreadcrumbs, decodeSubpath } from "@/lib/paths";
   import { _, locale } from "@/i18n";
   import { derived as derivedStore } from "svelte/store";
   import { ResourceType } from "@edraj/tsdmart/dmart.model";
@@ -28,7 +30,6 @@
   import { formatDate, formatNumberInText } from "@/lib/helpers";
   import {
     categorizeAttachments,
-    generateBreadcrumbs,
     getAuthorInfo,
     getDescription,
     getDisplayName,
@@ -45,7 +46,6 @@
   let itemShortname = $state("");
   let actualSubpath: any = $state(null);
   let breadcrumbs = $state<any[]>([]);
-  let isOwner = $state(false);
   let newComment = $state("");
   let isSubmittingComment = $state(false);
   let isSubmittingReaction = $state(false);
@@ -56,9 +56,10 @@
     ($locale: any) => $locale === "ar" || $locale === "ku",
   );
 
-  $effect(() => {
-    isOwner = $user?.shortname === itemShortname;
-  });
+  // The entry's owner, not "a user whose shortname equals the entry's".
+  const isOwner = $derived(
+    !!$user?.shortname && $user.shortname === postData?.owner_shortname,
+  );
 
   let loadToken = 0;
 
@@ -67,15 +68,26 @@
     subpath = $params.subpath;
     itemShortname = $params.shortname;
 
-    actualSubpath = subpath.replace(/-/g, "/");
-    breadcrumbs = generateBreadcrumbs(
-      spaceName,
-      actualSubpath,
-      itemShortname,
-      $_("post_detail.breadcrumb.catalogs"),
-    );
+    actualSubpath = decodeSubpath(subpath);
+    breadcrumbs = catalogBreadcrumbs({
+      space: spaceName,
+      subpath: actualSubpath,
+      shortname: itemShortname,
+      catalogsLabel: $_("post_detail.breadcrumb.catalogs"),
+    });
 
     loadPostData();
+  }
+
+  function fetchEntry() {
+    return getEntityStrict(
+      itemShortname,
+      spaceName,
+      actualSubpath,
+      $params.resource_type,
+      getCurrentScope(),
+      true,
+    );
   }
 
   async function loadPostData() {
@@ -84,14 +96,7 @@
     error = null;
 
     try {
-      const response = await getEntity(
-        itemShortname,
-        spaceName,
-        actualSubpath,
-        $params.resource_type,
-        getCurrentScope(),
-        true,
-      );
+      const response = await fetchEntry();
 
       if (token !== loadToken) return;
 
@@ -109,10 +114,27 @@
     } catch (err) {
       if (token !== loadToken) return;
       console.error("Error fetching post data:", err);
-      error = (err as any).message || $_("post_detail.error.failed_load");
+      // A translated category ("not found", "no permission", "offline"),
+      // never axios's raw "Request failed with status code …".
+      error = $_(apiErrorKey(err));
       postData = null;
     } finally {
       if (token === loadToken) isLoading = false;
+    }
+  }
+
+  // After a comment or reaction only the attachments change, so re-fetch the
+  // entry and swap those in. The article stays mounted: no spinner over the
+  // content and the scroll position is kept.
+  async function refreshInteractions() {
+    const token = loadToken;
+    try {
+      const fresh = await fetchEntry();
+      if (token !== loadToken || !fresh?.uuid || !postData) return;
+      postData = { ...postData, attachments: fresh.attachments };
+      await checkUserReaction(token);
+    } catch (err) {
+      console.error("Error refreshing comments and reactions:", err);
     }
   }
 
@@ -184,7 +206,7 @@
 
       if (success) {
         newComment = "";
-        await loadPostData();
+        await refreshInteractions();
       } else {
         errorToastMessage($_("post_detail.comments.add_failed"));
       }
@@ -216,7 +238,7 @@
         if (success) {
           userReactionId = null;
           successToastMessage($_("post_detail.reactions.removed_successfully"));
-          await loadPostData();
+          await refreshInteractions();
         } else {
           errorToastMessage($_("post_detail.reactions.remove_failed"));
         }
@@ -229,7 +251,7 @@
 
         if (success) {
           successToastMessage($_("post_detail.reactions.added_successfully"));
-          await loadPostData();
+          await refreshInteractions();
         } else {
           errorToastMessage($_("post_detail.reactions.add_failed"));
         }
@@ -321,9 +343,9 @@
         </div>
       </div>
     {:else if error}
-      <div class="error-container">
+      <div class="error-container" role="alert">
         <div class="error-icon">
-          <svg fill="none" stroke="currentColor" viewBox="0 0 24 24">
+          <svg fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
             <path
               stroke-linecap="round"
               stroke-linejoin="round"
@@ -333,6 +355,15 @@
           </svg>
         </div>
         <h3 class="error-title">{$_("post_detail.error.title")}</h3>
+        <p class="error-message">{error}</p>
+        <div class="error-actions">
+          <button class="error-action error-action-primary" onclick={() => loadPostData()}>
+            {$_("catalog_contents.error.try_again")}
+          </button>
+          <button class="error-action" onclick={goBack}>
+            {$_("navigation.go_back")}
+          </button>
+        </div>
       </div>
     {:else if postData}
       {@const { reactions, comments, mediaFiles } =
@@ -392,7 +423,7 @@
                 subpath={actualSubpath}
                 {itemShortname}
                 entryOwnerShortname={postData.owner_shortname}
-                onCommentAdded={loadPostData}
+                onCommentAdded={refreshInteractions}
               />
             </div>
           {/if}
@@ -666,6 +697,48 @@
     font-weight: 700;
     color: #0f172a;
     margin-bottom: 0.75rem;
+  }
+
+  .error-message {
+    color: var(--color-gray-500);
+    font-size: 0.9375rem;
+    max-width: 32rem;
+    margin: 0 auto 1.5rem;
+  }
+
+  .error-actions {
+    display: flex;
+    justify-content: center;
+    gap: 0.75rem;
+    flex-wrap: wrap;
+  }
+
+  .error-action {
+    padding: 0.625rem 1.25rem;
+    border-radius: var(--radius-md);
+    border: 1px solid var(--color-gray-200);
+    background: var(--surface-card);
+    color: var(--color-gray-700);
+    font-size: 0.875rem;
+    font-weight: 600;
+    cursor: pointer;
+    transition: all var(--duration-normal) var(--ease-out);
+  }
+
+  .error-action:hover {
+    background: var(--color-gray-50);
+    border-color: var(--color-gray-300);
+  }
+
+  .error-action-primary {
+    background: var(--color-primary-600);
+    border-color: var(--color-primary-600);
+    color: white;
+  }
+
+  .error-action-primary:hover {
+    background: var(--color-primary-700);
+    border-color: var(--color-primary-700);
   }
 
   .post-card {

@@ -8,7 +8,7 @@
     getEntityAttachmentsCount,
     getSpaceContentsByTags,
     getSpaceTags,
-    searchInCatalog,
+    searchInSpace,
   } from "@/lib/dmart_services";
   import { _, locale } from "@/i18n";
   import Avatar from "@/components/Avatar.svelte";
@@ -16,8 +16,8 @@
   import { derived as derivedStore } from "svelte/store";
   import { formatNumberInText } from "@/lib/helpers";
   import { Dmart, QueryType, SortType } from "@edraj/tsdmart";
-  import { getCurrentScope } from "@/stores/user";
-  import { withBasePrefix } from "@/lib/basePath";
+  import { getCurrentScope, user } from "@/stores/user";
+  import { absoluteUrl, catalogPath } from "@/lib/paths";
 
   $goto;
 
@@ -37,12 +37,23 @@
   let showAllTags = $state(false);
   let searchResults = $state<any[]>([]);
   let isSearching = $state(false);
+  // Search failures are shown next to the search box; they must not replace
+  // the whole page the way a listing failure does.
+  let searchError = $state<string | null>(null);
   let searchTimeout: any;
   let tagCounts: Record<string, any> = $state({});
 
   let showReportModal = $state(false);
   let reportItem: any = $state(null);
-  let subpath = $state("/");
+  // The reported item's own folder. Kept apart from the listing's subpath so
+  // reporting an item from a sub-folder cannot redirect "Load more".
+  let reportSubpath = $state("/");
+  const subpath = "/";
+
+  // Request sequence numbers: a response that arrives after a newer request
+  // was issued is dropped instead of overwriting the newer results.
+  let loadSeq = 0;
+  let searchSeq = 0;
 
   let currentOffset = $state(0);
   let itemsPerLoad = $state(20);
@@ -62,12 +73,31 @@
     ($locale: any) => $locale === "ar" || $locale === "ku",
   );
 
-  const sortOptions = [
+  const sortOptions = $derived([
     { value: "created", label: $_("admin_dashboard.sort.created") },
     { value: "updated", label: $_("admin_dashboard.sort.updated") },
     { value: "name", label: $_("space.sort.name") },
     { value: "reactions", label: $_("space.sort.reactions") },
-  ];
+  ]);
+
+  // Server-side sort field for each option. "reactions" has no server field
+  // (the count comes from a per-item attachments query), so it is the one
+  // sort still applied client-side over the loaded rows — see
+  // applyFiltersAndSort.
+  const SERVER_SORT_FIELD: Record<string, string | null> = {
+    created: "created_at",
+    updated: "updated_at",
+    name: "shortname",
+    reactions: null,
+  };
+
+  function serverSortBy(): string {
+    return SERVER_SORT_FIELD[sortBy] ?? "created_at";
+  }
+
+  function serverSortType(): SortType {
+    return sortOrder === "asc" ? SortType.ascending : SortType.descending;
+  }
 
   onMount(async () => {
     spaceName = $params.space_name;
@@ -75,6 +105,7 @@
   });
 
   async function loadContents(reset = false, tags: any[] = []) {
+    const seq = ++loadSeq;
     if (reset) {
       isLoading = true;
       currentOffset = 0;
@@ -105,6 +136,8 @@
           itemsPerLoad,
           isTagFiltered ? tagFilteredOffset : currentOffset,
           tags,
+          serverSortBy(),
+          serverSortType(),
         );
       } else {
         response = await Dmart.query(
@@ -114,8 +147,8 @@
             subpath: subpath,
             search: "-@shortname:schema -@resource_type:folder|schema",
             limit: itemsPerLoad,
-            sort_by: "shortname",
-            sort_type: SortType.ascending,
+            sort_by: serverSortBy(),
+            sort_type: serverSortType(),
             offset: currentOffset,
             retrieve_json_payload: true,
             retrieve_attachments: true,
@@ -124,6 +157,7 @@
           getCurrentScope(),
         );
       }
+      if (seq !== loadSeq) return;
       totalItemsCount = resolveTotal(response?.attributes?.total);
 
       if (!response || !response.records) {
@@ -191,6 +225,7 @@
 
       applyFiltersAndSort();
     } catch (err) {
+      if (seq !== loadSeq) return;
       console.error("Error fetching space contents:", err);
       error = $_("space.error.failed_load_contents");
       if (reset) {
@@ -204,13 +239,17 @@
         }
       }
     } finally {
-      isLoading = false;
-      isLoadingMore = false;
-      isInitialLoad = false;
+      if (seq === loadSeq) {
+        isLoading = false;
+        isLoadingMore = false;
+        isInitialLoad = false;
+      }
     }
   }
 
   async function performSearch(query: string) {
+    const seq = ++searchSeq;
+    searchError = null;
     if (!query.trim()) {
       searchResults = [];
       applyFiltersAndSort();
@@ -219,7 +258,17 @@
 
     isSearching = true;
     try {
-      const results = await searchInCatalog(query.trim(), itemsPerLoad);
+      // Scoped to this space: result clicks build /catalogs/{this space}/...
+      // so a hit from another space would open the wrong entry.
+      const results = await searchInSpace(
+        spaceName,
+        query.trim(),
+        itemsPerLoad,
+        serverSortBy(),
+        serverSortType(),
+        getCurrentScope(),
+      );
+      if (seq !== searchSeq) return;
 
       const basicSearchResults = results.map((item: any) => ({
         ...item,
@@ -245,40 +294,39 @@
 
       enhanceSearchResultsAsync(basicSearchResults);
 
-      const sortedResults = [...searchResults];
-      sortedResults.sort((a: any, b: any) => {
-        let result: number;
-        switch (sortBy) {
-          case "name":
-            result = a.title.localeCompare(b.title);
-            break;
-          case "updated":
-            result =
-              new Date(b.attributes?.updated_at || 0).getTime() -
-              new Date(a.attributes?.updated_at || 0).getTime();
-            break;
-          case "reactions":
-            result = (b.reactionCount || 0) - (a.reactionCount || 0);
-            break;
-          default:
-            result =
-              new Date(b.attributes?.created_at || 0).getTime() -
-              new Date(a.attributes?.created_at || 0).getTime();
-        }
-        return sortOrder === "asc" ? -result : result;
-      });
-
-      displayedContents = sortedResults;
-      filteredContents = sortedResults;
+      // The server already applied the chosen sort; only the client-only
+      // "reactions" order is re-applied once counts arrive.
+      displayedContents = sortLoadedRows(searchResults);
+      filteredContents = displayedContents;
     } catch (err) {
+      if (seq !== searchSeq) return;
       console.error("Error performing search:", err);
-      error = $_("catalogs.error.search_failed");
+      searchError = $_("catalogs.error.search_failed");
       searchResults = [];
       displayedContents = [];
       filteredContents = [];
     } finally {
-      isSearching = false;
+      if (seq === searchSeq) isSearching = false;
     }
+  }
+
+  // The one sort the server cannot do. Everything else arrives in server
+  // order and is returned untouched so paging stays consistent.
+  function sortLoadedRows(rows: any[]): any[] {
+    if (sortBy !== "reactions") return [...rows];
+    const sorted = [...rows];
+    sorted.sort((a: any, b: any) => {
+      const result = (b.reactionCount || 0) - (a.reactionCount || 0);
+      return sortOrder === "asc" ? -result : result;
+    });
+    return sorted;
+  }
+
+  // Any change of sort order re-queries: the server orders the whole set,
+  // not just the rows already on screen.
+  function handleSortChange() {
+    if (searchQuery.trim()) performSearch(searchQuery);
+    else loadContents(true, selectedContentTags);
   }
 
   function handleSearchInput() {
@@ -422,6 +470,10 @@
         updateItemInArray(searchResults, item.shortname, enhancedData);
 
         searchResults = searchResults;
+        if (searchQuery.trim()) {
+          displayedContents = sortLoadedRows(searchResults);
+          filteredContents = displayedContents;
+        }
       } catch (error) {
         console.warn(`Error enhancing search item ${item.shortname}:`, error);
         updateItemInArray(searchResults, item.shortname, { isLoading: false });
@@ -502,27 +554,7 @@
       }
     }
 
-    filtered.sort((a: any, b: any) => {
-      let result: number;
-      switch (sortBy) {
-        case "name":
-          result = a.title.localeCompare(b.title);
-          break;
-        case "updated":
-          result =
-            new Date(b.attributes?.updated_at || 0).getTime() -
-            new Date(a.attributes?.updated_at || 0).getTime();
-          break;
-        case "reactions":
-          result = (b.reactionCount || 0) - (a.reactionCount || 0);
-          break;
-        default:
-          result =
-            new Date(b.attributes?.created_at || 0).getTime() -
-            new Date(a.attributes?.created_at || 0).getTime();
-      }
-      return sortOrder === "asc" ? -result : result;
-    });
+    filtered = sortLoadedRows(filtered);
 
     filteredContents = filtered;
     displayedContents = filtered;
@@ -546,16 +578,23 @@
     else loadContents(true, selectedContentTags);
   }
 
-  function handleItemClick(item: any) {
-    const subpath = item.subpath === "/" ? "/" : item.subpath;
-    const subpathParam = subpath.replace(/\//g, "-");
-
-    $goto(`/catalogs/[space_name]/[subpath]/[shortname]/[resource_type]`, {
-      space_name: spaceName,
-      subpath: subpathParam,
+  function itemPath(item: any): string {
+    return catalogPath({
+      space: spaceName,
+      subpath: item.subpath || "/",
       shortname: item.shortname,
-      resource_type: item.resource_type,
+      resourceType: item.resource_type,
     });
+  }
+
+  function handleItemClick(item: any) {
+    $goto(itemPath(item));
+  }
+
+  function handleNewPost() {
+    // The create page reads space_name from the query string to preselect
+    // the space (see routes/entries/create.svelte loadPrefilledData).
+    $goto("/entries/create", { space_name: spaceName });
   }
 
   function getItemIcon(item: any) {
@@ -577,7 +616,8 @@
 
   function formatDate(dateString: any) {
     if (!dateString) return $_("common.not_available");
-    return new Date(dateString).toLocaleDateString($locale ?? "", {
+    // `undefined`, not "": an empty locale string throws a RangeError.
+    return new Date(dateString).toLocaleDateString($locale || undefined, {
       year: "numeric",
       month: "short",
       day: "numeric",
@@ -623,6 +663,7 @@
     selectedContentTags = [];
     searchQuery = "";
     searchResults = [];
+    searchError = null;
     sortBy = "created";
     sortOrder = "desc";
     isTagFiltered = false;
@@ -634,12 +675,11 @@
 
   function toggleSortOrder() {
     sortOrder = sortOrder === "asc" ? "desc" : "asc";
-    if (searchQuery.trim()) performSearch(searchQuery);
-    else applyFiltersAndSort();
+    handleSortChange();
   }
 
   function shareItem(item: any) {
-    const url = `${window.location.origin}${withBasePrefix(`/catalogs/${spaceName}/${item.subpath?.replace(/\//g, "-") || "-"}/${item.shortname}`)}?resource_type=${item.resource_type}`;
+    const url = absoluteUrl(itemPath(item));
     const title = item.title;
 
     if (navigator.share) {
@@ -663,7 +703,7 @@
   }
   function openReportModal(item: any) {
     reportItem = item;
-    subpath = item.subpath || "/";
+    reportSubpath = item.subpath || "/";
     showReportModal = true;
   }
 
@@ -700,6 +740,7 @@
   $effect(() => {
     if (!searchQuery.trim()) {
       searchResults = [];
+      searchError = null;
       applyFiltersAndSort();
     }
   });
@@ -743,22 +784,25 @@
             </p>
           </div>
         </div>
-        <button class="new-post-btn">
-          <svg
-            class="w-5 h-5 mr-2"
-            fill="none"
-            stroke="currentColor"
-            viewBox="0 0 24 24"
-          >
-            <path
-              stroke-linecap="round"
-              stroke-linejoin="round"
-              stroke-width="2"
-              d="M12 4v16m8-8H4"
-            />
-          </svg>
-          {$_("space.new_post")}
-        </button>
+        {#if $user.signedin}
+          <button class="new-post-btn" onclick={handleNewPost}>
+            <svg
+              class="w-5 h-5 me-2"
+              fill="none"
+              stroke="currentColor"
+              viewBox="0 0 24 24"
+              aria-hidden="true"
+            >
+              <path
+                stroke-linecap="round"
+                stroke-linejoin="round"
+                stroke-width="2"
+                d="M12 4v16m8-8H4"
+              />
+            </svg>
+            {$_("space.new_post")}
+          </button>
+        {/if}
       </div>
 
       <!-- Stats Bar -->
@@ -951,10 +995,7 @@
             <select
               id="space-sort-by-select"
               bind:value={sortBy}
-              onchange={() => {
-                if (searchQuery.trim()) performSearch(searchQuery);
-                else applyFiltersAndSort();
-              }}
+              onchange={handleSortChange}
               class="filter-select sort-select"
               title={$_("catalog_contents.filters.sort_by")}
               aria-label={$_("catalog_contents.filters.sort_by")}
@@ -1107,11 +1148,15 @@
       {:else if searchQuery.trim()}
         <div class="showing-status">
           <span class="showing-text">
-            {@html sanitizeHtml(
-              $_("space.search_results_count", {
-                values: { count: searchResults.length, query: searchQuery },
-              }),
-            )}
+            {#if searchError}
+              <span class="search-error" role="alert">{searchError}</span>
+            {:else}
+              {@html sanitizeHtml(
+                $_("space.search_results_count", {
+                  values: { count: searchResults.length, query: searchQuery },
+                }),
+              )}
+            {/if}
           </span>
         </div>
       {/if}
@@ -1194,7 +1239,8 @@
                   {/if}
                   <button
                     class="more-options-btn"
-                    aria-label="More options"
+                    aria-label={$_("catalog_contents.card.report")}
+                    title={$_("catalog_contents.card.report")}
                     onclick={(e) => {
                       e.stopPropagation();
                       openReportModal(item);
@@ -1351,7 +1397,7 @@
           {/each}
         </div>
 
-        {#if hasMoreItems && !searchQuery.trim()}
+        {#if (isTagFiltered ? tagFilteredHasMore : hasMoreItems) && !searchQuery.trim()}
           <div class="flex justify-center mt-6 mb-12">
             <button
               onclick={loadMoreItems}
@@ -1423,12 +1469,12 @@
   entryShortname={reportItem?.shortname || ""}
   entryTitle={reportItem?.title || ""}
   {spaceName}
-  {subpath}
-  on:close={() => {
+  subpath={reportSubpath}
+  onClose={() => {
     showReportModal = false;
     reportItem = null;
   }}
-  on:reportSubmitted={() => {
+  onReportSubmitted={() => {
     showReportModal = false;
     reportItem = null;
   }}
@@ -1869,6 +1915,10 @@
   .showing-text {
     font-size: 0.875rem;
     color: var(--color-gray-500);
+  }
+  .search-error {
+    color: var(--color-error);
+    font-weight: 500;
   }
   .live-indicator {
     display: flex;

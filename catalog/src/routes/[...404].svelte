@@ -1,4 +1,4 @@
-<script context="module" lang="ts">
+<script module lang="ts">
     // User-level override of .routify/components/[...404].svelte. Exists so
     // svelte-check sees a typed `route` parameter instead of implicitly `any`
     // in the auto-generated file. Routify picks up the root-level catch-all
@@ -12,15 +12,19 @@
 </script>
 
 <script lang="ts">
-    export let url: string;
+    import { _ } from "@/i18n";
+    import { withBase } from "@/lib/paths";
+
+    let { url }: { url: string } = $props();
 </script>
 
 <div class="four04">
-    <h1>404 - Page Not Found</h1>
+    <h1>{$_("not_found.title")}</h1>
     <p>
-        The page <code>{url}</code> could not be found. Please check the URL or go back
-        to the <a href="/">homepage</a>.
+        {$_("not_found.message", { values: { url } })}
     </p>
+    <!-- Root-absolute "/" would leave the <base href="/cat/"> deployment. -->
+    <a href={withBase("/")}>{$_("not_found.go_home")}</a>
 </div>
 
 <style>

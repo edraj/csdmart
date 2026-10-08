@@ -9,10 +9,10 @@
   import { get } from "svelte/store";
   import { initGlobalWebSocket } from "@/stores/websocket";
   import { isPublicRoute } from "@/lib/constants";
-  import { stripBasePrefix, withBasePrefix } from "@/lib/basePath";
+  import { stripBase, withBase } from "@/lib/paths";
 
   function redirectTo(path: string) {
-    const target = withBasePrefix(path);
+    const target = withBase(path);
     if (window.location.pathname !== target) {
       window.location.href = target;
     }
@@ -50,7 +50,7 @@
       if (error.response?.status === 401 && [47, 48, 49].includes(errorCode)) {
         // Route literals are app-relative; window.location.pathname carries
         // the <base href> prefix (e.g. "/cat/"). Strip it before comparing.
-        const currentPath = stripBasePrefix(window.location.pathname);
+        const currentPath = stripBase(window.location.pathname);
         if (!isPublicRoute(currentPath)) {
           console.log(`401 Unauthorized (code ${errorCode}) - redirecting to login`);
           redirectTo("/login");
@@ -65,7 +65,7 @@
   Dmart.setAxiosInstance(dmartAxios as any);
 
   onMount(async () => {
-    const currentPath = stripBasePrefix(window.location.pathname);
+    const currentPath = stripBase(window.location.pathname);
 
     if (isPublicRoute(currentPath)) {
       return;

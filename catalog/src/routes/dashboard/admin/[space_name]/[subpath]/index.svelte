@@ -209,6 +209,16 @@
     { value: "owner", label: $_("admin_dashboard.sort.owner") },
   ];
 
+  // The server sorts the whole folder (sort_by/sort_type in loadContents);
+  // re-sorting one page on the client put the wrong items first.
+  const SERVER_SORT_FIELD: Record<string, string> = {
+    name: "shortname",
+    created: "created_at",
+    updated: "updated_at",
+    owner: "owner_shortname",
+    type: "resource_type",
+  };
+
   async function initializeContent() {
     spaceName = $params.space_name;
     subpath = $params.subpath;
@@ -423,8 +433,9 @@
               tagsSearch,
             ),
             limit: itemsPerPage,
-            sort_by: "shortname",
-            sort_type: SortType.ascending,
+            sort_by: SERVER_SORT_FIELD[sortBy] ?? "shortname",
+            sort_type:
+              sortOrder === "desc" ? SortType.descending : SortType.ascending,
             offset: offset,
             retrieve_json_payload: true,
             retrieve_attachments: true,
@@ -487,44 +498,8 @@
   }
 
   function applyFilters() {
-    let filtered = [...$allContents];
-
-    filtered.sort((a, b) => {
-      let aValue, bValue;
-
-      switch (sortBy) {
-        case "name":
-          aValue = getDisplayName(a).toLowerCase();
-          bValue = getDisplayName(b).toLowerCase();
-          break;
-        case "type":
-          aValue = a.resource_type;
-          bValue = b.resource_type;
-          break;
-        case "owner":
-          aValue = (a.attributes?.owner_shortname || "").toLowerCase();
-          bValue = (b.attributes?.owner_shortname || "").toLowerCase();
-          break;
-        case "created":
-          aValue = new Date(a.attributes?.created_at || 0);
-          bValue = new Date(b.attributes?.created_at || 0);
-          break;
-        case "updated":
-          aValue = new Date(a.attributes?.updated_at || 0);
-          bValue = new Date(b.attributes?.updated_at || 0);
-          break;
-        default:
-          aValue = a.shortname.toLowerCase();
-          bValue = b.shortname.toLowerCase();
-      }
-
-      let result;
-      if (aValue > bValue) result = 1;
-      else if (aValue < bValue) result = -1;
-      else result = 0;
-
-      return sortOrder === "desc" ? -result : result;
-    });
+    // Already in server order — see SERVER_SORT_FIELD.
+    const filtered = [...$allContents];
 
     filteredContents = filtered;
     paginatedContents = filtered;

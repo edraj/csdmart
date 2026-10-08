@@ -14,7 +14,7 @@
   import { formatDate, formatNumberInText } from "@/lib/helpers";
   import Attachments from "@/components/Attachments.svelte";
   import BreadcrumbNavigation from "@/components/navigation/BreadcrumbNavigation.svelte";
-  import { generateBreadcrumbs } from "@/lib/utils/postUtils";
+  import { catalogBreadcrumbs, decodeSubpath } from "@/lib/paths";
   import { ResourceType, DmartScope } from "@edraj/tsdmart";
   import { user } from "@/stores/user";
   import {
@@ -416,12 +416,12 @@
   <div class="page-container" class:rtl={$isRTL}>
     <div class="content-wrapper">
       <BreadcrumbNavigation
-        breadcrumbs={generateBreadcrumbs(
-          $params.space_name,
-          ($params.subpath || "").replace(/-/g, "/"),
-          $params.shortname,
-          $_("post_detail.breadcrumb.catalogs"),
-        )}
+        breadcrumbs={catalogBreadcrumbs({
+          space: $params.space_name,
+          subpath: decodeSubpath($params.subpath),
+          shortname: $params.shortname,
+          catalogsLabel: $_("post_detail.breadcrumb.catalogs"),
+        })}
         onGoBack={() =>
           $goto(`/catalogs/${$params.space_name}/${$params.subpath}`)}
       />

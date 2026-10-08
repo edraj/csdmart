@@ -10,6 +10,7 @@
     UserSolid,
   } from "flowbite-svelte-icons";
   import { _ } from "@/i18n";
+  import { withBase } from "@/lib/paths";
 
   $goto;
 
@@ -160,14 +161,14 @@
         <div class="footer-column">
           <h4 class="footer-column-title">{$_("Support")}</h4>
           <ul class="footer-links">
-            <li><a href="/help">{$_("HelpCenter")}</a></li>
-            <li><a href="/community">{$_("Community")}</a></li>
+            <li><a href={withBase("/help")}>{$_("HelpCenter")}</a></li>
+            <li><a href={withBase("/community")}>{$_("Community")}</a></li>
             <li>
               <button onclick={handleContactUs} class="footer-link-button"
                 >{$_("ContactUs")}</button
               >
             </li>
-            <li><a href="/privacy">{$_("Privacy")}</a></li>
+            <li><a href={withBase("/privacy")}>{$_("Privacy")}</a></li>
           </ul>
         </div>
       </div>

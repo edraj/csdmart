@@ -606,8 +606,8 @@
     "card": {
       "posted_by": "posted by",
       "read_more": "Read more...",
-      "share": "Share",
-      "report": "catalog"
+      "report": "Report",
+      "share": "Share"
     },
     "empty": {
       "folder_empty": "This folder appears to be empty.",
@@ -637,6 +637,7 @@
       "items_per_load": "Items Per Load",
       "load_more": "Load More",
       "loading": "Loading...",
+      "showing_count": "Showing {displayed} items",
       "showing_items": "Showing {displayed} of {total} items",
       "showing_of": "Showing {displayed} of {total} items",
       "total_items": "Total: {count} items"
@@ -672,10 +673,6 @@
       "hours_ago": "h ago",
       "just_now": "Just now",
       "minutes_ago": "m ago"
-    },
-    "report": {
-      "reason_prompt": "Please provide a reason for reporting this content:",
-      "submitted": "Report submitted successfully. Thank you for helping keep our community safe."
     }
   },
   "catalog_user_permissions_info": "Catalog User permissions apply to authenticated users with catalog access. These users can interact with content.",
@@ -696,10 +693,9 @@
     "filter": {
       "all": "All",
       "all_tags": "All Tags",
-      "category": "Category",
+      "most_entries": "Most entries",
       "name": "Name",
       "newest": "Newest",
-      "popular": "Popular",
       "sort_by": "Sort by",
       "tags": "Tags"
     },
@@ -1105,10 +1101,17 @@
   },
   "errorFetchingMessages": "An error occurred while fetching messages",
   "errors": {
+    "forbidden": "You don't have permission to view this content.",
     "invalid_json": "Invalid JSON format",
     "loading_schemas": "Error loading schemas",
     "loading_workflows": "Error loading workflows",
-    "shortname_update_failed": "An error occurred while updating the shortname."
+    "network": "Could not reach the server. Check your connection and try again.",
+    "not_found": "This content could not be found. It may have been moved or removed.",
+    "server": "The server reported an error. Please try again later.",
+    "shortname_update_failed": "An error occurred while updating the shortname.",
+    "timeout": "The server took too long to respond. Please try again.",
+    "unauthorized": "You need to sign in to view this content.",
+    "unknown": "Something went wrong. Please try again."
   },
   "existing_configuration": "Existing configuration",
   "existing_role": "Existing role",
@@ -2111,5 +2114,10 @@
       "uuid": "UUID"
     },
     "title": "Templates"
+  },
+  "not_found": {
+    "go_home": "Go to homepage",
+    "message": "The page {url} could not be found. Check the address or go back to the homepage.",
+    "title": "Page not found"
   }
 }

@@ -45,6 +45,7 @@ export const ALWAYS_PUBLIC_ROUTES: PublicRoute[] = [
 // website.enable_public_view is true (the public browsing experience).
 export const PUBLIC_VIEW_ROUTES: PublicRoute[] = [
   "/contact",
+  "/community",
   "/help",
   "/privacy",
   "/home",

@@ -106,7 +106,11 @@ export async function getSpaceContents(
     offset = 0,
     exact_subpath = false,
     queryType: QueryType = QueryType.search,
-    search = ""
+    search = "",
+    // Sorting is done by the server so that paging stays consistent: a client
+    // re-sort of one page puts the wrong items first.
+    sortBy = "shortname",
+    sortType: SortType = SortType.ascending
 ): Promise<ApiQueryResponse> {
     let searchQuery = search;
     if (!searchQuery && scope === DmartScope.public) {
@@ -119,8 +123,8 @@ export async function getSpaceContents(
             subpath: subpath,
             search: searchQuery,
             limit: limit,
-            sort_by: "shortname",
-            sort_type: SortType.ascending,
+            sort_by: sortBy,
+            sort_type: sortType,
             offset: offset,
             retrieve_json_payload: true,
             retrieve_attachments: true,
@@ -215,7 +219,9 @@ export async function getSpaceContentsByTags(
     scope: DmartScope,
     limit = 100,
     offset = 0,
-    tags: string[] = []
+    tags: string[] = [],
+    sortBy = "shortname",
+    sortType: SortType = SortType.ascending
 ): Promise<ApiQueryResponse> {
     const searchQuery = buildFieldFilterClause("tags", tags);
 
@@ -226,8 +232,8 @@ export async function getSpaceContentsByTags(
             subpath: subpath,
             search: searchQuery,
             limit: limit,
-            sort_by: "shortname",
-            sort_type: SortType.ascending,
+            sort_by: sortBy,
+            sort_type: sortType,
             offset: offset,
             retrieve_json_payload: true,
             retrieve_attachments: true,

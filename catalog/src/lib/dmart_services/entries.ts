@@ -226,6 +226,42 @@ export async function attachAttachmentsToEntity(
     return response.status === "success" && response.records.length > 0;
 }
 
+/**
+ * Free-text search inside ONE space (the space browse page). Folders and
+ * schemas are excluded the same way the page's main listing excludes them,
+ * and the server applies the sort so results match the listing's order.
+ */
+export async function searchInSpace(
+    spaceName: string,
+    search: string,
+    limit: number = 20,
+    sortBy: string = "created_at",
+    sortType: SortType = SortType.descending,
+    scope: DmartScope = getCurrentScope()
+) {
+    const queryRequest: QueryRequest = {
+        filter_shortnames: [],
+        type: QueryType.search,
+        space_name: spaceName,
+        subpath: "/",
+        exact_subpath: false,
+        sort_by: sortBy,
+        sort_type: sortType,
+        search: `${search} -@shortname:schema -@resource_type:folder|schema`,
+        limit,
+        offset: 0,
+        retrieve_json_payload: true,
+        retrieve_attachments: true,
+    };
+    const response: ApiQueryResponse = (await Dmart.query(queryRequest, scope))!;
+    return response?.records ?? [];
+}
+
+/**
+ * Free-text search across every visible space (the catalog index page). Each
+ * record is tagged with the `space_name` it came from — the query response
+ * does not carry it, and without it a result cannot be linked to.
+ */
 export async function searchInCatalog(search: string = "", limit: number = 20, offset: number = 0) {
     const result = await getSpaces(false, getCurrentScope());
     const spaces = result.records.map((space) => space.shortname);
@@ -250,7 +286,10 @@ export async function searchInCatalog(search: string = "", limit: number = 20, o
             queryRequest,
             getCurrentScope()
         ))!;
-        return response?.records ?? [];
+        return (response?.records ?? []).map((record) => ({
+            ...record,
+            space_name: space,
+        }));
     });
 
     const allRecordsArrays = await Promise.all(promises);

@@ -175,37 +175,6 @@ export function getReactionEmoji(type: string): string {
   }
 }
 
-export interface Breadcrumb {
-  name: string;
-  path: string | null;
-}
-
-export function generateBreadcrumbs(
-  spaceName: string,
-  actualSubpath: string,
-  itemShortname: string,
-  catalogsLabel: string
-): Breadcrumb[] {
-  const pathParts = actualSubpath.split("/").filter((part) => part.length > 0);
-
-  const breadcrumbs: Breadcrumb[] = [
-    { name: catalogsLabel, path: "/catalogs" },
-    { name: spaceName, path: `/catalog/${spaceName}` },
-  ];
-
-  let currentUrlPath = "";
-  pathParts.forEach((part, index) => {
-    currentUrlPath += (index === 0 ? "" : "-") + part;
-    breadcrumbs.push({
-      name: part,
-      path: `/catalog/${spaceName}/${currentUrlPath}`,
-    });
-  });
-
-  breadcrumbs.push({
-    name: itemShortname,
-    path: null,
-  });
-
-  return breadcrumbs;
-}
+// Breadcrumb building lives in @/lib/paths (catalogBreadcrumbs); the copy that
+// used to be here linked to a non-existent /catalog/... prefix.
+export type { Breadcrumb } from "@/lib/paths";

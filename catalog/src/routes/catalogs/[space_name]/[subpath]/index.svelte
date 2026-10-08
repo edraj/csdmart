@@ -1,18 +1,19 @@
 <script lang="ts">
-  import { resolveTotal } from "@shared/query-total";
+  import { isTotalUnknown, resolveTotal } from "@shared/query-total";
     import {onDestroy} from "svelte";
     import { sanitizeHtml } from "@/lib/utils/sanitize";
     import {goto, params} from "@roxi/routify";
     import {getAvatar, getSpaceContents, getEntity, getSpaceHideFolders, buildHideFoldersSearch, mergeSearch} from "@/lib/dmart_services";
     import {_, locale} from "@/i18n";
     import Avatar from "@/components/Avatar.svelte";
+    import ReportModal from "@/components/ReportModal.svelte";
     import {derived as derivedStore, get} from "svelte/store";
-    import {ResourceType} from "@edraj/tsdmart";
+    import {ResourceType, SortType} from "@edraj/tsdmart";
     import {getCurrentScope, user} from "@/stores/user";
     import {UploadOutline, DownloadOutline} from "flowbite-svelte-icons";
     import ModalCSVUpload from "@/components/management/Modals/ModalCSVUpload.svelte";
     import ModalCSVDownload from "@/components/management/Modals/ModalCSVDownload.svelte";
-    import {withBasePrefix} from "@/lib/basePath";
+    import {absoluteUrl, catalogBreadcrumbs, catalogPath, decodeSubpath, type Breadcrumb} from "@/lib/paths";
     import {getWebSocketService} from "@/lib/services/websocket";
 
     $goto;
@@ -23,13 +24,26 @@
   let error: any = $state(null);
   let spaceName = $state("");
   let subpath = $state("");
-  let actualSubpath = $state("");
-  let breadcrumbs: any[] = $state([]);
+  // API-style subpath with a leading slash ("/" for the root), decoded from
+  // the dash-encoded route segment.
+  let actualSubpath = $state("/");
+  let breadcrumbs: Breadcrumb[] = $state([]);
 
   let itemsPerLoad = $state(10);
   let currentOffset = $state(0);
   let totalItemsCount = $state(0);
+  // False when the server skipped counting (total -1, e.g.
+  // RETRIEVE_TOTAL_DEFAULT=false). The count is then hidden rather than shown
+  // as 0, and emptiness is judged by the rows actually received.
+  let totalKnown = $state(true);
   let hasMoreServerItems = $state(true);
+
+  // Drops a response that arrives after a newer request was issued.
+  let loadSeq = 0;
+
+  let showReportModal = $state(false);
+  let reportItem: any = $state(null);
+  let reportSubpath = $state("/");
 
   let searchQuery = $state("");
   let sortBy = $state("name");
@@ -114,39 +128,26 @@
     return types;
   }
 
-  const sortOptions = [
+  const sortOptions = $derived([
     { value: "name", label: $_("admin_dashboard.sort.name") },
     { value: "created", label: $_("admin_dashboard.sort.created") },
     { value: "updated", label: $_("admin_dashboard.sort.updated") },
     { value: "owner", label: $_("admin_dashboard.sort.owner") },
-  ];
+  ]);
+
+  // The server sorts the whole folder; the client never re-sorts a page.
+  const SERVER_SORT_FIELD: Record<string, string> = {
+    name: "shortname",
+    created: "created_at",
+    updated: "updated_at",
+    owner: "owner_shortname",
+  };
 
   async function initializeContent() {
     spaceName = $params.space_name;
     subpath = $params.subpath;
-    actualSubpath = subpath.replace(/-/g, "/");
-
-    const pathParts = actualSubpath
-      .split("/")
-      .filter((part) => part.length > 0);
-    breadcrumbs = [
-      { name: spaceName, path: `${spaceName}` },
-      { name: spaceName, path: `/${spaceName}/${subpath}` },
-    ];
-
-    let currentPath = "";
-    let currentUrlPath = "";
-    pathParts.forEach((part, index) => {
-      currentPath += `/${part}`;
-      currentUrlPath += (index === 0 ? "" : "-") + part;
-      breadcrumbs.push({
-        name: part,
-        path:
-          index === pathParts.length - 1
-            ? null
-            : `/${spaceName}/${subpath}/${currentUrlPath}`,
-      });
-    });
+    actualSubpath = decodeSubpath(subpath);
+    breadcrumbs = catalogBreadcrumbs({ space: spaceName, subpath: actualSubpath });
 
     // Resolve the space-level hide list BEFORE fetching contents so the
     // server-side `-@shortname:...` filter lands on the first query.
@@ -217,7 +218,7 @@
   });
 
   $effect(() => {
-    const path = `/${actualSubpath}`;
+    const path = actualSubpath;
     if (streamEnabled && spaceName && actualSubpath) {
       setupStream(spaceName, path);
     } else if (streamSubscribedKey) {
@@ -235,6 +236,7 @@
   }
 
   async function loadContents(reset = false) {
+    const seq = ++loadSeq;
     if (reset) {
       isLoading = true;
       currentOffset = 0;
@@ -247,15 +249,19 @@
     try {
       const response = await getSpaceContents(
         spaceName,
-        `/${actualSubpath}`,
+        actualSubpath,
         getCurrentScope(),
         itemsPerLoad,
         currentOffset,
         false,
         undefined,
-        mergeSearch(searchQuery.trim(), buildHideFoldersSearch(spaceHideFolders))
+        mergeSearch(searchQuery.trim(), buildHideFoldersSearch(spaceHideFolders)),
+        SERVER_SORT_FIELD[sortBy] ?? "shortname",
+        sortOrder === "desc" ? SortType.descending : SortType.ascending
       );
+      if (seq !== loadSeq) return;
 
+      totalKnown = !isTotalUnknown(response?.attributes?.total);
       totalItemsCount = resolveTotal(response?.attributes?.total);
 
       if (response && response.records) {
@@ -271,6 +277,7 @@
             return { ...item, avatarUrl };
           })
         );
+        if (seq !== loadSeq) return;
 
         if (reset) {
           allContents = newItems;
@@ -290,16 +297,19 @@
         hasMoreServerItems = false;
       }
     } catch (err) {
+      if (seq !== loadSeq) return;
       console.error("Error fetching space contents:", err);
-      error = "Failed to load space contents";
+      error = $_("space.error.failed_load_contents");
       if (reset) {
         allContents = [];
         availableTags = [];
       }
       hasMoreServerItems = false;
     } finally {
-      isLoading = false;
-      isLoadingMore = false;
+      if (seq === loadSeq) {
+        isLoading = false;
+        isLoadingMore = false;
+      }
     }
   }
 
@@ -329,21 +339,23 @@
     loadContents(true);
   }
 
-  function handleItemClick(item: any) {
+  function itemPath(item: any): string {
     if (item.resource_type === "folder") {
-      const newSubpath = `${subpath}-${item.shortname}`;
-      $goto("/catalogs/[space_name]/[subpath]", {
-        space_name: spaceName,
-        subpath: newSubpath,
-      });
-    } else {
-      $goto("/catalogs/[space_name]/[subpath]/[shortname]/[resource_type]", {
-        space_name: spaceName,
-        subpath: subpath,
-        shortname: item.shortname,
-        resource_type: item.resource_type,
+      return catalogPath({
+        space: spaceName,
+        subpath: `${actualSubpath}/${item.shortname}`,
       });
     }
+    return catalogPath({
+      space: spaceName,
+      subpath: item.subpath || actualSubpath,
+      shortname: item.shortname,
+      resourceType: item.resource_type,
+    });
+  }
+
+  function handleItemClick(item: any) {
+    $goto(itemPath(item));
   }
 
   // function getItemIcon(item: any) {
@@ -410,10 +422,13 @@
     sortOrder = "asc";
     filterType = "all";
     filterStatus = "all";
+    // Search and sort are applied by the server, so clearing them re-queries.
+    loadContents(true);
   }
 
   function toggleSortOrder() {
     sortOrder = sortOrder === "asc" ? "desc" : "asc";
+    loadContents(true);
   }
 
   function toggleTag(tag: any) {
@@ -464,46 +479,15 @@
       });
     }
 
-    filtered.sort((a, b) => {
-      let aValue, bValue;
-
-      switch (sortBy) {
-        case "name":
-          aValue = getDisplayName(a).toLowerCase();
-          bValue = getDisplayName(b).toLowerCase();
-          break;
-        case "type":
-          aValue = a.resource_type;
-          bValue = b.resource_type;
-          break;
-        case "owner":
-          aValue = (a.attributes?.owner_shortname || "").toLowerCase();
-          bValue = (b.attributes?.owner_shortname || "").toLowerCase();
-          break;
-        case "created":
-          aValue = new Date(a.attributes?.created_at || 0);
-          bValue = new Date(b.attributes?.created_at || 0);
-          break;
-        default:
-          aValue = a.shortname.toLowerCase();
-          bValue = b.shortname.toLowerCase();
-      }
-
-      let result;
-      if (aValue > bValue) result = 1;
-      else if (aValue < bValue) result = -1;
-      else result = 0;
-
-      return sortOrder === "desc" ? -result : result;
-    });
-
+    // Order is the server's (sort_by/sort_type in loadContents); re-sorting
+    // only the loaded page here would put the wrong items first.
     return filtered;
   });
 
   const hasMoreItems = $derived(hasMoreServerItems);
 
   function shareItem(item: any) {
-    const url = `${window.location.origin}${withBasePrefix(`/catalogs/${spaceName}/${subpath}/${item.shortname}`)}?resource_type=${item.resource_type}`;
+    const url = absoluteUrl(itemPath(item));
     const title = getDisplayName(item);
 
     if (navigator.share) {
@@ -526,11 +510,10 @@
     }
   }
 
-  function reportItem(item: any) {
-    const reason = prompt($_("catalog_contents.report.reason_prompt"));
-    if (reason && reason.trim()) {
-      alert($_("catalog_contents.report.submitted"));
-    }
+  function openReportModal(item: any) {
+    reportItem = item;
+    reportSubpath = item.subpath || actualSubpath;
+    showReportModal = true;
   }
 
   const displayedTags = $derived.by(() => {
@@ -589,8 +572,8 @@
           <p class="page-description">
             {$_("catalog_contents.browse_contents")}
             <span class="space-name">{spaceName}</span>
-            {#if actualSubpath !== ""}
-              / <span class="subpath-name">{actualSubpath}</span>
+            {#if actualSubpath !== "/"}
+              <span class="subpath-name">{actualSubpath}</span>
             {/if}
           </p>
         </div>
@@ -649,7 +632,7 @@
         <p class="error-message">{error}</p>
         <button
           aria-label={$_("route_labels.aria_retry_loading_content")}
-          onclick={() => loadContents()}
+          onclick={() => loadContents(true)}
           class="retry-button"
         >
           {$_("catalog_contents.error.try_again")}
@@ -752,42 +735,8 @@
         </div>
       {/if}
 
-      {#if totalItemsCount === 0}
-        <div class="empty-state">
-          <div class="empty-icon">
-            <svg
-              class="w-12 h-12 text-gray-400"
-              fill="none"
-              stroke="currentColor"
-              viewBox="0 0 24 24"
-            >
-              <path
-                stroke-linecap="round"
-                stroke-linejoin="round"
-                stroke-width="2"
-                d="M9 13h6m-3-3v6m5 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z"
-              ></path>
-            </svg>
-          </div>
-          <h3 class="empty-title">
-            {$_("catalog_contents.empty.title")}
-          </h3>
-          <p class="empty-message">
-            {searchQuery || selectedTags.length > 0
-              ? $_("catalog_contents.empty.no_matches")
-              : $_("catalog_contents.empty.folder_empty")}
-          </p>
-          {#if searchQuery || selectedTags.length > 0}
-            <button
-              aria-label={$_("route_labels.aria_clear_all_filters")}
-              onclick={clearFilters}
-              class="clear-filters-button"
-            >
-              {$_("catalog_contents.filters.clear_all")}
-            </button>
-          {/if}
-        </div>
-      {:else}
+      <!-- The toolbar is always available: an empty folder (or an unknown
+           total) must not take the search box away. -->
         <div class="search-filter-section">
           <!-- Compact search row: search + sort + expand button -->
           <div class="search-compact-row">
@@ -844,6 +793,7 @@
               <select
                 id="sort-by-select"
                 bind:value={sortBy}
+                onchange={() => loadContents(true)}
                 class="filter-select sort-select"
                 title={$_("catalog_contents.filters.sort_by")}
                 aria-label={$_("catalog_contents.filters.sort_by")}
@@ -985,28 +935,73 @@
             </div>
           {/if}
 
-          <div class="results-summary">
-            <div class="results-info">
-              {$_("catalog_contents.infinite_scroll.showing_items", {
-                values: {
-                  displayed: filteredContentsDerived.length,
-                  total: totalItemsCount,
-                },
-              })}
-              {#if searchQuery}
-                {$_("catalog_contents.results.for_query", {
-                  values: { query: searchQuery },
-                })}
-              {/if}
-              {#if selectedTags.length > 0}
-                {$_("catalog_contents.results.with_tags", {
-                  values: { count: selectedTags.length },
-                })}
-              {/if}
+          {#if allContents.length > 0}
+            <div class="results-summary">
+              <div class="results-info">
+                {#if totalKnown}
+                  {$_("catalog_contents.infinite_scroll.showing_items", {
+                    values: {
+                      displayed: filteredContentsDerived.length,
+                      total: totalItemsCount,
+                    },
+                  })}
+                {:else}
+                  {$_("catalog_contents.infinite_scroll.showing_count", {
+                    values: { displayed: filteredContentsDerived.length },
+                  })}
+                {/if}
+                {#if searchQuery}
+                  {$_("catalog_contents.results.for_query", {
+                    values: { query: searchQuery },
+                  })}
+                {/if}
+                {#if selectedTags.length > 0}
+                  {$_("catalog_contents.results.with_tags", {
+                    values: { count: selectedTags.length },
+                  })}
+                {/if}
+              </div>
             </div>
-          </div>
+          {/if}
         </div>
 
+      {#if allContents.length === 0}
+        <div class="empty-state">
+          <div class="empty-icon">
+            <svg
+              class="w-12 h-12 text-gray-400"
+              fill="none"
+              stroke="currentColor"
+              viewBox="0 0 24 24"
+              aria-hidden="true"
+            >
+              <path
+                stroke-linecap="round"
+                stroke-linejoin="round"
+                stroke-width="2"
+                d="M9 13h6m-3-3v6m5 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z"
+              ></path>
+            </svg>
+          </div>
+          <h3 class="empty-title">
+            {$_("catalog_contents.empty.title")}
+          </h3>
+          <p class="empty-message">
+            {searchQuery || selectedTags.length > 0
+              ? $_("catalog_contents.empty.no_matches")
+              : $_("catalog_contents.empty.folder_empty")}
+          </p>
+          {#if searchQuery || selectedTags.length > 0}
+            <button
+              aria-label={$_("route_labels.aria_clear_all_filters")}
+              onclick={clearFilters}
+              class="clear-filters-button"
+            >
+              {$_("catalog_contents.filters.clear_all")}
+            </button>
+          {/if}
+        </div>
+      {:else}
         <div class="card-list-container">
           <div class="card-list">
             {#each filteredContentsDerived as item, index}
@@ -1222,11 +1217,11 @@
                     </button>
 
                     <button
-                      aria-label={`Report ${getDisplayName(item)}`}
+                      aria-label={$_("catalog_contents.card.report")}
                       class="action-button report-button"
                       onclick={(e) => {
                         e.stopPropagation();
-                        reportItem(item);
+                        openReportModal(item);
                       }}
                       title={$_("catalog_contents.card.report")}
                     >
@@ -1254,12 +1249,18 @@
             <div class="load-more-section">
               <div class="load-more-info">
                 <span class="load-more-text">
-                  {$_("catalog_contents.infinite_scroll.showing_of", {
-                    values: {
-                      displayed: filteredContentsDerived.length,
-                      total: totalItemsCount,
-                    },
-                  })}
+                  {#if totalKnown}
+                    {$_("catalog_contents.infinite_scroll.showing_of", {
+                      values: {
+                        displayed: filteredContentsDerived.length,
+                        total: totalItemsCount,
+                      },
+                    })}
+                  {:else}
+                    {$_("catalog_contents.infinite_scroll.showing_count", {
+                      values: { displayed: filteredContentsDerived.length },
+                    })}
+                  {/if}
                 </span>
               </div>
               <button
@@ -1311,11 +1312,13 @@
               <p class="end-of-results-text">
                 {$_("catalog_contents.infinite_scroll.end_of_results")}
               </p>
-              <p class="end-of-results-count">
-                {$_("catalog_contents.infinite_scroll.total_items", {
-                  values: { count: totalItemsCount },
-                })}
-              </p>
+              {#if totalKnown}
+                <p class="end-of-results-count">
+                  {$_("catalog_contents.infinite_scroll.total_items", {
+                    values: { count: totalItemsCount },
+                  })}
+                </p>
+              {/if}
             </div>
           {/if}
         </div>
@@ -1325,17 +1328,33 @@
 </div>
 
 <!-- CSV Import/Export Modals -->
-<ModalCSVUpload 
+<ModalCSVUpload
   space_name={spaceName}
-  subpath={actualSubpath || "/"} 
+  subpath={actualSubpath}
   bind:isOpen={isCSVUploadModalOpen}
-  onUploadSuccess={loadContents}
+  onUploadSuccess={() => loadContents(true)}
 />
 
-<ModalCSVDownload 
+<ModalCSVDownload
   space_name={spaceName}
-  subpath={actualSubpath || "/"} 
+  subpath={actualSubpath}
   bind:isOpen={isCSVDownloadModalOpen}
+/>
+
+<ReportModal
+  bind:isVisible={showReportModal}
+  entryShortname={reportItem?.shortname || ""}
+  entryTitle={reportItem ? getDisplayName(reportItem) : ""}
+  {spaceName}
+  subpath={reportSubpath}
+  onClose={() => {
+    showReportModal = false;
+    reportItem = null;
+  }}
+  onReportSubmitted={() => {
+    showReportModal = false;
+    reportItem = null;
+  }}
 />
 
 <style>

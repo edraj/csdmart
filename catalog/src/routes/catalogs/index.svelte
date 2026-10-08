@@ -12,11 +12,22 @@
   import { _, locale } from "@/i18n";
   import { derived as derivedStore } from "svelte/store";
   import { formatNumber, formatNumberInText } from "@/lib/helpers";
-  import { QueryType } from "@edraj/tsdmart";
+  import { QueryType, type DmartScope } from "@edraj/tsdmart";
   import { user, getCurrentScope } from "@/stores/user";
   import { website } from "@/config";
+  import { catalogPath } from "@/lib/paths";
 
   $goto;
+
+  interface SpaceTag {
+    name: string;
+    count: number;
+  }
+
+  interface SpaceSummary {
+    spaceName: string;
+    total: number;
+  }
 
   let isLoading = $state(true);
   let isStatsLoading = $state(true);
@@ -26,22 +37,58 @@
   let searchQuery = $state("");
   let sortBy = $state("name");
   let sortOrder = $state("asc");
-  let filterCategory = $state("all");
   let filterTags = $state("all");
   let filterActive = $state("all");
   let showFilters = $state(false);
   let searchResults = $state<any[]>([]);
   let isSearching = $state(false);
+  // A failed search is reported beside the results, not as a page error:
+  // the spaces are still loaded and usable.
+  let searchError = $state<string | null>(null);
   let searchTimeout: any;
-  let spaceStats: any[] = [];
+  // Drops a search response that arrives after a newer query was typed.
+  let searchSeq = 0;
+  let spaceStats = $state<SpaceSummary[]>([]);
   let totalSpaceItems = $state(0);
   let totalUsers = $state(0);
-  let spaceTags: Record<string, any> = $state({});
+  let spaceTags = $state<Record<string, SpaceTag[]>>({});
 
   const isRTL = derivedStore(
     locale,
     ($locale: any) => $locale === "ar" || $locale === "ku",
   );
+
+  // Every tag seen across the loaded spaces, most used first — the real
+  // values behind the Tags filter.
+  const allTags = $derived.by(() => {
+    const counts = new Map<string, number>();
+    for (const tags of Object.values(spaceTags)) {
+      for (const tag of tags) {
+        counts.set(tag.name, (counts.get(tag.name) ?? 0) + tag.count);
+      }
+    }
+    return [...counts.entries()]
+      .sort((a, b) => b[1] - a[1])
+      .map(([name]) => name);
+  });
+
+  async function loadSpaceSummary(
+    shortname: string,
+    scope: DmartScope,
+  ): Promise<{ total: number; tags: SpaceTag[] }> {
+    const [counters, tags] = await Promise.all([
+      getSpaceContents(shortname, "/", scope, 100, 0, false, QueryType.counters),
+      getSpaceTags(shortname),
+    ]);
+    const tagCounts: Record<string, unknown> | undefined =
+      tags?.records?.[0]?.attributes?.tag_counts;
+    const sortedTags: SpaceTag[] = tagCounts
+      ? Object.entries(tagCounts)
+          .map(([name, count]) => ({ name, count: Number(count) || 0 }))
+          .sort((a, b) => b.count - a.count)
+      : [];
+    return { total: resolveTotal(counters?.attributes?.total), tags: sortedTags };
+  }
 
   onMount(async () => {
     const scope = getCurrentScope();
@@ -58,58 +105,43 @@
       isLoading = false;
     }
 
-    // Phase 2: Load stats, users, and tags in background
-    try {
-      const [usersResponse, ...statsArr] = await Promise.all([
-        getAllUsers(0, 0),
-        ...spaces.map(async (space: any) => {
-          const data = await getSpaceContents(
-            space.shortname,
-            "/",
-            scope,
-            100,
-            0,
-            false,
-            QueryType.counters,
-          );
-          const tags = await getSpaceTags(space.shortname);
+    // Phase 2: stats, users and tags in the background. Settled per space so
+    // one space the visitor cannot read does not blank every other space's
+    // numbers and tags.
+    const [usersResult, ...summaryResults] = await Promise.allSettled([
+      getAllUsers(0, 0),
+      ...spaces.map((space: any) => loadSpaceSummary(space.shortname, scope)),
+    ]);
 
-          if (tags.status === "success" && tags.records.length > 0) {
-            const tagData = tags.records[0]?.attributes;
-            if (tagData?.tag_counts) {
-              const sortedTags = Object.entries(tagData.tag_counts)
-                .map(([name, count]: any) => ({ name, count }))
-                .sort((a: any, b: any) => Number(b.count) - Number(a.count));
-              spaceTags[space.shortname] = sortedTags;
-            }
-          } else {
-            spaceTags[space.shortname] = [];
-          }
-
-          return {
-            spaceName: space.shortname,
-            total: resolveTotal(data.attributes.total),
-          };
-        }),
-      ]);
-
-      totalUsers = resolveTotal(usersResponse?.attributes?.total);
-      spaceStats = statsArr;
-      totalSpaceItems = statsArr.reduce((sum: any, stat: any) => sum + stat.total, 0);
-    } catch (err) {
-      console.error("Error fetching stats:", err);
-    } finally {
-      isStatsLoading = false;
+    if (usersResult.status === "fulfilled") {
+      totalUsers = resolveTotal(usersResult.value?.attributes?.total);
+    } else {
+      console.error("Error fetching users count:", usersResult.reason);
     }
+
+    const summaries: SpaceSummary[] = [];
+    summaryResults.forEach((result, index) => {
+      const shortname: string = spaces[index].shortname;
+      if (result.status === "fulfilled") {
+        summaries.push({ spaceName: shortname, total: result.value.total });
+        spaceTags[shortname] = result.value.tags;
+      } else {
+        console.error(`Error fetching stats for space "${shortname}":`, result.reason);
+        spaceTags[shortname] = [];
+      }
+    });
+    spaceStats = summaries;
+    totalSpaceItems = summaries.reduce((sum, stat) => sum + stat.total, 0);
+    isStatsLoading = false;
   });
 
-  function getTagsSpaces(shortname: any) {
+  function getTagsSpaces(shortname: string): SpaceTag[] {
     return spaceTags[shortname] || [];
   }
 
-  function getSpaceStats(spaceShortname: any) {
+  function getSpaceStats(spaceShortname: string): number {
     return (
-      spaceStats.find((stat: any) => stat.spaceName === spaceShortname)?.total || 0
+      spaceStats.find((stat) => stat.spaceName === spaceShortname)?.total || 0
     );
   }
 
@@ -122,14 +154,15 @@
   }
 
   function handleRecordClick(record: any) {
-    const encodedSubpath = encodeURIComponent(record.subpath);
-
-    $goto("/catalogs/[space_name]/[subpath]/[shortname]/[resource_type]", {
-      space_name: record.attributes?.space_name,
-      subpath: encodedSubpath,
-      shortname: record.shortname,
-      resource_type: record.resource_type,
-    });
+    // searchInCatalog tags each hit with the space it came from.
+    $goto(
+      catalogPath({
+        space: record.space_name ?? record.attributes?.space_name,
+        subpath: record.subpath || "/",
+        shortname: record.shortname,
+        resourceType: record.resource_type,
+      }),
+    );
   }
 
   function getDisplayName(space: any): string {
@@ -259,7 +292,8 @@
 
   function formatDate(dateString: string): string {
     if (!dateString) return $_("common.not_available");
-    return new Date(dateString).toLocaleDateString($locale ?? "", {
+    // `undefined`, not "": an empty locale string throws a RangeError.
+    return new Date(dateString).toLocaleDateString($locale || undefined, {
       year: "numeric",
       month: "short",
       day: "numeric",
@@ -267,6 +301,8 @@
   }
 
   async function performSearch(query: string) {
+    const seq = ++searchSeq;
+    searchError = null;
     if (!query.trim()) {
       searchResults = [];
       filteredSpaces = spaces;
@@ -276,15 +312,17 @@
     isSearching = true;
     try {
       const results = await searchInCatalog(query.trim(), 20);
+      if (seq !== searchSeq) return;
       searchResults = results;
 
       filteredSpaces = [];
     } catch (err) {
+      if (seq !== searchSeq) return;
       console.error("Error performing search:", err);
-      error = $_("catalogs.error.search_failed");
+      searchError = $_("catalogs.error.search_failed");
       searchResults = [];
     } finally {
-      isSearching = false;
+      if (seq === searchSeq) isSearching = false;
     }
   }
 
@@ -293,13 +331,21 @@
       return;
     }
 
-    let filtered = spaces;
+    // A copy: sorting `spaces` in place would write to the state this
+    // function is derived from.
+    let filtered = [...spaces];
 
     if (filterActive !== "all") {
       filtered = filtered.filter((space: any) =>
         filterActive === "active"
           ? space.attributes?.is_active
           : !space.attributes?.is_active,
+      );
+    }
+
+    if (filterTags !== "all") {
+      filtered = filtered.filter((space: any) =>
+        getTagsSpaces(space.shortname).some((tag) => tag.name === filterTags),
       );
     }
 
@@ -310,9 +356,10 @@
           result = new Date(b.attributes?.created_at || 0).getTime() -
             new Date(a.attributes?.created_at || 0).getTime();
           break;
-        case "updated":
-          result = new Date(b.attributes?.updated_at || 0).getTime() -
-            new Date(a.attributes?.updated_at || 0).getTime();
+        case "entries":
+          // The one popularity signal the index actually has: how much
+          // content each space holds (loaded with the stats).
+          result = getSpaceStats(b.shortname) - getSpaceStats(a.shortname);
           break;
         default:
           result = getDisplayName(a).localeCompare(getDisplayName(b));
@@ -345,6 +392,7 @@
   $effect(() => {
     if (!searchQuery.trim()) {
       searchResults = [];
+      searchError = null;
       applyFilters();
     }
   });
@@ -522,7 +570,7 @@
           >
             <option value="name">{$_("catalogs.filter.name")}</option>
             <option value="created">{$_("catalogs.filter.newest")}</option>
-            <option value="updated">{$_("catalogs.filter.popular")}</option>
+            <option value="entries">{$_("catalogs.filter.most_entries")}</option>
           </select>
           <button
             onclick={toggleSortOrder}
@@ -543,7 +591,7 @@
         <button
           onclick={() => (showFilters = !showFilters)}
           class="expand-filters-button"
-          class:filters-active={showFilters || filterCategory !== "all" || filterTags !== "all" || filterActive !== "all"}
+          class:filters-active={showFilters || filterTags !== "all" || filterActive !== "all"}
           title={showFilters ? $_("catalog_contents.filters.collapse_filters") : $_("catalog_contents.filters.expand_filters")}
           aria-label={showFilters ? $_("catalog_contents.filters.collapse_filters") : $_("catalog_contents.filters.expand_filters")}
         >
@@ -560,27 +608,20 @@
       {#if showFilters}
         <div class="collapsible-filters">
           <div class="filter-group">
-            <span class="filter-label">{$_("catalogs.filter.category")}</span>
+            <label class="filter-label" for="catalog-tags-filter">{$_("catalogs.filter.tags")}</label>
             <select
-              bind:value={filterCategory}
-              class="filter-select"
-              onchange={() => applyFilters()}
-              title={$_("catalogs.filter.category")}
-              aria-label={$_("catalogs.filter.category")}
-            >
-              <option value="all">{$_("catalogs.filter.all")}</option>
-            </select>
-          </div>
-          <div class="filter-group">
-            <span class="filter-label">{$_("catalogs.filter.tags")}</span>
-            <select
+              id="catalog-tags-filter"
               bind:value={filterTags}
               class="filter-select"
               onchange={() => applyFilters()}
               title={$_("catalogs.filter.tags")}
               aria-label={$_("catalogs.filter.tags")}
+              disabled={isStatsLoading}
             >
               <option value="all">{$_("catalogs.filter.all_tags")}</option>
+              {#each allTags as tag (tag)}
+                <option value={tag}>{tag}</option>
+              {/each}
             </select>
           </div>
           <div class="filter-group">
@@ -636,6 +677,26 @@
         </div>
         <h2 class="error-title">{$_("catalogs.error.title")}</h2>
         <p class="error-message">{error}</p>
+      </div>
+    {:else if searchQuery.trim() && searchError}
+      <div class="error-state" role="alert">
+        <div class="error-icon-wrap">
+          <svg fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
+            <path
+              stroke-linecap="round"
+              stroke-linejoin="round"
+              stroke-width="2"
+              d="M12 8v4m0 4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z"
+            ></path>
+          </svg>
+        </div>
+        <p class="error-message">{searchError}</p>
+        <button
+          class="clear-search-btn"
+          onclick={() => performSearch(searchQuery)}
+        >
+          {$_("catalog_contents.error.try_again")}
+        </button>
       </div>
     {:else if searchQuery.trim() && searchResults.length === 0 && !isSearching}
       <div class="empty-state">
@@ -1374,6 +1435,11 @@
   }
 
   .clear-search-btn:hover { background: var(--color-gray-100); }
+
+  .error-state .clear-search-btn {
+    display: inline-flex;
+    margin: 1rem auto 0;
+  }
 
   .clear-icon { width: 0.8125rem; height: 0.8125rem; }
 

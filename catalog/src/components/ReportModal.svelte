@@ -1,29 +1,39 @@
 <script lang="ts">
-  import { createEventDispatcher } from "svelte";
   import { _ } from "@/i18n";
   import { createReport } from "@/lib/dmart_services";
-  import {
-    successToastMessage,
-    errorToastMessage,
-  } from "@/lib/toasts_messages";
+  import { errorToastMessage } from "@/lib/toasts_messages";
   import ReportThankYouModal from "./ReportThankYouModal.svelte";
   import Modal from "./Modal.svelte";
   import { FlagSolid } from "flowbite-svelte-icons";
 
-  const dispatch = createEventDispatcher();
+  interface Props {
+    isVisible?: boolean;
+    entryShortname?: string;
+    entryTitle?: string;
+    spaceName?: string;
+    subpath?: string;
+    onClose?: () => void;
+    onReportSubmitted?: () => void;
+  }
 
-  export let isVisible = false;
-  export let entryShortname = "";
-  export let entryTitle = "";
-  export let spaceName = "";
-  export let subpath = "";
+  let {
+    isVisible = $bindable(false),
+    entryShortname = "",
+    entryTitle = "",
+    spaceName = "",
+    subpath = "",
+    onClose = () => {},
+    onReportSubmitted = () => {},
+  }: Props = $props();
 
-  let isSubmitting = false;
-  let reportTitle = "";
-  let reportDescription = "";
-  let showThankYouModal = false;
+  let isSubmitting = $state(false);
+  let reportTitle = $state("");
+  let reportDescription = $state("");
+  let showThankYouModal = $state(false);
+  let selectedReportType = $state("other");
 
-  const reportTypes = [
+  // $derived so the labels follow a locale switch while the modal is open.
+  const reportTypes = $derived([
     {
       value: "inappropriate_content",
       label: $_("reports.types.inappropriate_content"),
@@ -36,14 +46,16 @@
     },
     { value: "harassment", label: $_("reports.types.harassment") },
     { value: "other", label: $_("reports.types.other") },
-  ];
+  ]);
 
-  let selectedReportType = "other";
+  const canSubmit = $derived(
+    !isSubmitting && reportTitle.trim() !== "" && reportDescription.trim() !== "",
+  );
 
   function closeModal() {
     isVisible = false;
     resetForm();
-    dispatch("close");
+    onClose();
   }
 
   function resetForm() {
@@ -51,22 +63,18 @@
     reportDescription = "";
     selectedReportType = "other";
     isSubmitting = false;
-    showThankYouModal = false;
   }
 
   async function submitReport() {
     if (!reportTitle.trim() || !reportDescription.trim()) {
-      errorToastMessage(
-        $_("reports.validation.required_fields") ||
-          "Please fill in all required fields"
-      );
+      errorToastMessage($_("reports.validation.required_fields"));
       return;
     }
 
     isSubmitting = true;
 
     try {
-      const reportData = {
+      const success = await createReport({
         title: reportTitle,
         description: reportDescription,
         reported_entry: entryShortname,
@@ -76,24 +84,18 @@
         report_type: selectedReportType,
         status: "pending",
         type: "ticket",
-      };
-
-      const success = await createReport(reportData);
+      });
 
       if (success) {
         closeModal();
         showThankYouModal = true;
-        dispatch("reportSubmitted");
+        onReportSubmitted();
       } else {
-        errorToastMessage(
-          $_("reports.error.submission_failed") || "Failed to submit report"
-        );
+        errorToastMessage($_("reports.error.submission_failed"));
       }
     } catch (error) {
       console.error("Error submitting report:", error);
-      errorToastMessage(
-        $_("reports.error.submission_failed") || "Failed to submit report"
-      );
+      errorToastMessage($_("reports.error.submission_failed"));
     } finally {
       isSubmitting = false;
     }
@@ -119,7 +121,13 @@
       </p>
     </div>
 
-    <form on:submit|preventDefault={submitReport} class="report-form">
+    <form
+      onsubmit={(e) => {
+        e.preventDefault();
+        submitReport();
+      }}
+      class="report-form"
+    >
       <div class="form-group">
         <label for="reportType" class="form-label">
           {$_("reports.modal.report_type")}
@@ -130,7 +138,7 @@
           class="form-select"
           required
         >
-          {#each reportTypes as type}
+          {#each reportTypes as type (type.value)}
             <option value={type.value}>{type.label}</option>
           {/each}
         </select>
@@ -176,7 +184,7 @@
       <button
         type="button"
         class="cancel-button"
-        on:click={closeModal}
+        onclick={closeModal}
         disabled={isSubmitting}
       >
         {$_("common.cancel")}
@@ -184,13 +192,11 @@
       <button
         type="button"
         class="submit-button"
-        on:click={submitReport}
-        disabled={isSubmitting ||
-          !reportTitle.trim() ||
-          !reportDescription.trim()}
+        onclick={submitReport}
+        disabled={!canSubmit}
       >
         {#if isSubmitting}
-          <svg class="spinner" viewBox="0 0 24 24">
+          <svg class="spinner" viewBox="0 0 24 24" aria-hidden="true">
             <circle
               cx="12"
               cy="12"
@@ -280,7 +286,8 @@
     border-radius: var(--radius-md);
     padding: 0.75rem;
     font-size: 0.875rem;
-    background: white;
+    background: var(--surface-card);
+    color: var(--color-gray-900);
     transition:
       border-color var(--duration-fast) ease,
       box-shadow var(--duration-fast) ease;
@@ -300,7 +307,7 @@
   }
 
   .character-count {
-    text-align: right;
+    text-align: end;
     font-size: 0.75rem;
     color: var(--color-gray-400);
     margin-top: 0.25rem;
@@ -337,8 +344,7 @@
   }
 
   .submit-button:hover:not(:disabled) {
-    background-color: #b91c1c;
-    border-color: #b91c1c;
+    filter: brightness(0.9);
   }
 
   .submit-button:disabled,
