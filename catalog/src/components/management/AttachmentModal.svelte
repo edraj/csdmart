@@ -741,15 +741,15 @@
 
 <style>
   :global(.attachment-modal) {
-    background-color: white !important;
+    background-color: var(--color-surface) !important;
   }
 
   :global(.attachment-modal .modal-content) {
-    background-color: white !important;
+    background-color: var(--color-surface) !important;
   }
 
   :global(.attachment-modal h3) {
-    color: black !important;
+    color: var(--color-text) !important;
   }
 
   .border-3 {

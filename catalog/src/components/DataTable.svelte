@@ -52,6 +52,13 @@
     rowHref?: (item: any) => string | undefined;
     /** Accessible name of the row's link/button; defaults to the first attribute's value or the id. */
     rowLabel?: (item: any) => string;
+    /**
+     * Identity of a row for keyed rendering. Defaults to shortname/id, which is
+     * unique inside one folder but not across spaces — a listing that mixes
+     * spaces (My Entries) must supply a composite key or Svelte throws
+     * each_key_duplicate and the page never leaves its loading state.
+     */
+    rowKey?: (item: any) => string | number;
     loading?: boolean;
     emptyMessage?: string;
     currentPage?: number;
@@ -84,6 +91,7 @@
     onRowClick,
     rowHref,
     rowLabel,
+    rowKey,
     loading = false,
     emptyMessage,
     currentPage = 1,
@@ -313,7 +321,7 @@
               </tr>
             </thead>
             <tbody class="divide-y divide-border">
-              {#each displayItems as item, index (item.shortname ?? item.id ?? index)}
+              {#each displayItems as item, index (rowKey ? rowKey(item) : (item.shortname ?? item.id ?? index))}
                 {@const itemId = getItemId(item)}
                 {@const href = rowHref?.(item)}
                 <tr

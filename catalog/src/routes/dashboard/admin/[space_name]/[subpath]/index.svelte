@@ -4618,7 +4618,7 @@
     inset-inline-start: 0.125rem;
     width: 1.25rem;
     height: 1.25rem;
-    background: white;
+    background: var(--color-surface);
     border-radius: 50%;
     transition: transform 0.2s;
     box-shadow: 0 1px 3px rgba(0, 0, 0, 0.1);

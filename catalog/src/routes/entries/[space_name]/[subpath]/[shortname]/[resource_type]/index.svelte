@@ -554,7 +554,7 @@
         </div>
 
         <!-- Attachments -->
-        {#if entity.attachments.media && entity.attachments.media.length > 0}
+        {#if (entity.attachments?.media?.length ?? 0) > 0}
           <div class="attachments-section">
             <h3 class="section-title">
               {$_("entry_detail.attachments")}
@@ -667,7 +667,7 @@
         </div>
 
         <!-- Comments List -->
-        {#if entity.attachments && entity.attachments.comment && entity.attachments.comment.length > 0}
+        {#if (entity.attachments?.comment?.length ?? 0) > 0}
           <div class="comments-list">
             {#each entity.attachments.comment as reply (reply.shortname)}
               <div class="comment-item">
@@ -779,7 +779,7 @@
     align-items: center;
     gap: 0.5rem;
     padding: 0.75rem 1.5rem;
-    background: white;
+    background: var(--color-surface);
     border: 1px solid var(--color-border);
     border-radius: 12px;
     color: var(--color-text-muted);
@@ -842,7 +842,7 @@
     align-items: center;
     gap: 1rem;
     padding: 1.5rem;
-    background: white;
+    background: var(--color-surface);
     border-radius: 16px;
     box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.1);
     margin-bottom: 2rem;
@@ -914,7 +914,7 @@
   }
 
   .main-card {
-    background: white;
+    background: var(--color-surface);
     border-radius: 16px;
     box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.1);
     padding: 2rem;
@@ -1136,7 +1136,7 @@
     align-items: center;
     gap: 0.5rem;
     padding: 0.75rem 1.5rem;
-    background: white;
+    background: var(--color-surface);
     border: 1px solid var(--color-border);
     border-radius: 12px;
     color: var(--color-text-muted);
@@ -1168,7 +1168,7 @@
   }
 
   .comments-section {
-    background: white;
+    background: var(--color-surface);
     border-radius: 16px;
     box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.1);
     padding: 2rem;

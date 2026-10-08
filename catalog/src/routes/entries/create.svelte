@@ -1099,7 +1099,7 @@
     await loadPrefilledData();
   });
 
-  $effect(() => setTitle($_("create_entry.title")));
+  $effect(() => setTitle($_("my_entries.create_new")));
 </script>
 
 <div class="page-container">
@@ -1255,7 +1255,7 @@
       </div>
       <div class="section-content details-content">
         <div class="form-row">
-          <span class="form-row-label">Type</span>
+          <span class="form-row-label">{$_("ui.resource_type")}</span>
           <div class="entry-type-selector compact">
             {#if !allowedSchemaShortnames.length}
               <label class="entry-type-option">
@@ -2166,7 +2166,7 @@
   }
 
   .action-section {
-    background: var(--white);
+    background: var(--color-surface);
     border-radius: var(--radius-card);
     padding: 2rem;
     margin-bottom: 2rem;
@@ -2191,7 +2191,7 @@
     width: 3rem;
     height: 3rem;
     background: var(--primary-color);
-    color: var(--white);
+    color: white;
     border-radius: 50%;
     display: flex;
     align-items: center;
@@ -2244,7 +2244,7 @@
 
   .publish-button {
     background: var(--primary-color);
-    color: var(--white);
+    color: white;
   }
 
   .publish-button:hover:not(:disabled) {
@@ -2260,7 +2260,7 @@
   }
 
   .section {
-    background: var(--white);
+    background: var(--color-surface);
     border-radius: var(--radius-card);
     margin-bottom: 2rem;
     box-shadow: var(--shadow-card);
@@ -2326,7 +2326,7 @@
     color: var(--gray-800);
     transition: all 0.2s ease;
     outline: none;
-    background: var(--white);
+    background: var(--color-surface);
   }
 
   .form-row-input:focus {
@@ -2347,7 +2347,7 @@
     border: 1px solid var(--gray-200);
     border-radius: var(--radius-card);
     overflow: hidden;
-    background: var(--white);
+    background: var(--color-surface);
     transition:
       border-color 0.2s ease,
       box-shadow 0.2s ease;
@@ -2449,7 +2449,7 @@
     gap: 0.5rem;
     padding: 0.75rem 1.5rem;
     background: var(--primary-color);
-    color: var(--white);
+    color: white;
     border: none;
     border-radius: var(--radius-card);
     font-weight: 500;
@@ -2500,7 +2500,7 @@
 
   .tag-remove {
     background: var(--danger-color);
-    color: var(--white);
+    color: white;
     border: none;
     border-radius: 50%;
     width: 1.25rem;
@@ -2546,7 +2546,7 @@
     gap: 0.5rem;
     padding: 0.75rem 1.5rem;
     background: var(--primary-color);
-    color: var(--white);
+    color: white;
     border: none;
     border-radius: var(--radius-card);
     font-weight: 500;
@@ -2567,7 +2567,7 @@
   }
 
   .attachment-row {
-    background: var(--white);
+    background: var(--color-surface);
     border: 1px solid var(--gray-200);
     border-radius: var(--radius-card);
     overflow: hidden;
@@ -2687,7 +2687,7 @@
     border-radius: var(--radius-md, 0.5rem);
     font-size: 0.8125rem;
     color: var(--gray-800);
-    background: var(--white);
+    background: var(--color-surface);
     transition: border-color 0.15s ease, box-shadow 0.15s ease;
     resize: vertical;
     font-family: inherit;
@@ -2812,7 +2812,7 @@
     top: 0.5rem;
     inset-inline-end: 0.5rem;
     background: var(--danger-color);
-    color: var(--white);
+    color: white;
     border: none;
     border-radius: 50%;
     width: 2rem;
@@ -2949,7 +2949,7 @@
   }
 
   .editor-toggle-btn.active {
-    background: var(--white);
+    background: var(--color-surface);
     color: var(--primary-color);
     box-shadow: var(--shadow-card);
   }
@@ -3116,7 +3116,7 @@
     padding: 0.75rem;
     border: 2px solid var(--color-border-strong);
     border-radius: 0.5rem;
-    background-color: white;
+    background-color: var(--color-surface);
     color: var(--color-text);
     font-size: 0.875rem;
     transition: all 0.2s ease;
@@ -3128,7 +3128,7 @@
     outline: none;
     border-color: var(--color-primary);
     box-shadow: 0 0 0 3px rgba(59, 130, 246, 0.15);
-    background-color: white;
+    background-color: var(--color-surface);
   }
 
   .field-input:hover {
@@ -3235,7 +3235,7 @@
   }
 
   .template-data-card {
-    background: white;
+    background: var(--color-surface);
     border: 1px solid var(--color-border);
     border-radius: 0.75rem;
     box-shadow: 0 1px 3px rgba(0, 0, 0, 0.1);
@@ -3274,7 +3274,7 @@
   }
 
   .template-preview.markdown-preview {
-    background: white;
+    background: var(--color-surface);
     border: 1px solid var(--color-border);
     border-radius: 0.5rem;
     padding: 1rem;

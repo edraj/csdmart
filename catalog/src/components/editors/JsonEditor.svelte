@@ -599,7 +599,7 @@
     border: 1px solid var(--color-border-strong);
     border-radius: 6px;
     font-size: 12px;
-    background: white;
+    background: var(--color-surface);
     color: var(--color-text);
   }
 

@@ -936,7 +936,6 @@
       "shortname_required": "Shortname is required! Please enter a shortname for the entry.",
       "select_space": "Please select a space!"
     },
-    "navigation": {},
     "schema": {
       "choose_option": "Choose a schema...",
       "entry_data_title": "Entry Data",
@@ -1099,6 +1098,7 @@
     "title_click_to_add": "Click to add a compelling title...",
     "title_placeholder": "Enter your entry title...",
     "update_description": "Save your changes or publish your updated entry",
+    "update_failed": "Failed to update the entry",
     "update_entry": "Update Your Entry",
     "attachments": {
       "add_files": "Add files"
@@ -2148,6 +2148,7 @@
   "ui": {
     "search": "Search",
     "clear_search": "Clear search",
+    "resource_type": "Type",
     "sort_by": "Sort by",
     "sort_ascending": "Ascending",
     "sort_descending": "Descending",

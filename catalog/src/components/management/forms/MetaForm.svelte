@@ -149,7 +149,7 @@
 
 <style>
     .form-card {
-        background: white;
+        background: var(--color-surface);
         border-radius: 12px;
         box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.1), 0 2px 4px -1px rgba(0, 0, 0, 0.06);
         width: 100%;
@@ -236,7 +236,7 @@
     .input-field:focus {
         outline: none;
         border-color: var(--color-primary);
-        background: white;
+        background: var(--color-surface);
         box-shadow: 0 0 0 3px rgba(79, 70, 229, 0.1);
     }
 
@@ -276,7 +276,7 @@
     .textarea-field:focus {
         outline: none;
         border-color: var(--color-primary);
-        background: white;
+        background: var(--color-surface);
         box-shadow: 0 0 0 3px rgba(79, 70, 229, 0.1);
     }
 
@@ -351,7 +351,7 @@
 
     .accordion-content {
         padding: 0.75rem 1rem;
-        background-color: white;
+        background-color: var(--color-surface);
         border-top: 1px solid var(--color-border);
         display: flex;
         flex-direction: column;

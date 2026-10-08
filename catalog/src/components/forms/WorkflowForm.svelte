@@ -552,7 +552,7 @@
   }
 
   .card {
-    background: white;
+    background: var(--color-surface);
     border: 1px solid var(--color-border);
     border-radius: 8px;
     padding: 16px;
@@ -689,7 +689,7 @@
   }
 
   .btn-secondary {
-    background: white;
+    background: var(--color-surface);
     border-color: var(--color-primary);
     color: var(--color-primary);
   }
@@ -699,7 +699,7 @@
   }
 
   .btn-danger {
-    background: white;
+    background: var(--color-surface);
     border-color: var(--color-danger);
     color: var(--color-danger);
   }

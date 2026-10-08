@@ -543,7 +543,7 @@
       bind:order={sortOrder}
     >
       {#snippet filters()}
-        <label for="type-filter" class="sr-only">{$_("resource_type")}</label>
+        <label for="type-filter" class="sr-only">{$_("ui.resource_type")}</label>
         <select id="type-filter" bind:value={selectedType} class="h-9 ps-3 pe-8 text-sm rounded-control border border-border bg-surface-2 text-text focus:border-primary focus:ring-1 focus:ring-primary">
           {#each typeOptions as option (option.value)}
             <option value={option.value}>{option.label}</option>

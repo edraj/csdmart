@@ -473,14 +473,14 @@
 
 <style>
   :global(.relationship-modal) {
-    background-color: white !important;
+    background-color: var(--color-surface) !important;
   }
   
   :global(.relationship-modal .modal-content) {
-    background-color: white !important;
+    background-color: var(--color-surface) !important;
   }
   
   :global(.relationship-modal h3) {
-    color: black !important;
+    color: var(--color-text) !important;
   }
 </style>

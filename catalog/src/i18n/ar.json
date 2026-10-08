@@ -894,7 +894,6 @@
       "select_space": "يرجى اختيار مساحة!",
       "shortname_required": "الاسم المختصر مطلوب! يرجى إدخال اسم مختصر للإدخال."
     },
-    "navigation": {},
     "schema": {
       "choose_option": "اختر مخططًا...",
       "entry_data_title": "بيانات الإدخال",
@@ -1057,6 +1056,7 @@
     "title_click_to_add": "انقر لإضافة عنوان جذاب...",
     "title_placeholder": "أدخل عنوان إدخالك...",
     "update_description": "احفظ تغييراتك أو انشر إدخالك المحدث",
+    "update_failed": "تعذّر تحديث المدخل",
     "update_entry": "تحديث إدخالك",
     "attachments": {
       "add_files": "إضافة ملفات"
@@ -2106,6 +2106,7 @@
   "ui": {
     "search": "بحث",
     "clear_search": "مسح البحث",
+    "resource_type": "النوع",
     "sort_by": "ترتيب حسب",
     "sort_ascending": "تصاعدي",
     "sort_descending": "تنازلي",

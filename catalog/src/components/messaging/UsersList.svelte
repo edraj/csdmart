@@ -174,7 +174,7 @@
     display: flex;
     justify-content: space-between;
     align-items: center;
-    background: white;
+    background: var(--color-surface);
   }
 
   .users-header h3 {
@@ -213,7 +213,7 @@
     position: relative;
     padding: 0.5rem 1rem;
     border-bottom: 1px solid var(--color-border);
-    background: white;
+    background: var(--color-surface);
   }
 
   .search-icon {
@@ -240,7 +240,7 @@
 
   .search-input:focus {
     border-color: var(--color-primary);
-    background: white;
+    background: var(--color-surface);
   }
 
   .search-input::placeholder {
@@ -278,7 +278,7 @@
     border-bottom: 1px solid var(--color-border);
     cursor: pointer;
     transition: background-color 0.2s;
-    background: white;
+    background: var(--color-surface);
     margin-bottom: 1px;
   }
 

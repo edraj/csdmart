@@ -32,7 +32,7 @@
   .chat-mode-tabs {
     display: flex;
     border-bottom: 1px solid var(--color-border);
-    background: white;
+    background: var(--color-surface);
   }
 
   .tab-btn {

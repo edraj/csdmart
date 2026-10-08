@@ -465,7 +465,7 @@
   }
 
   .preview-section {
-    background: white;
+    background: var(--color-surface);
     border: 1px solid var(--color-border);
     border-radius: 8px;
     padding: 20px;
@@ -491,7 +491,7 @@
   }
 
   .markdown-preview {
-    background: white;
+    background: var(--color-surface);
     border: 1px solid var(--color-surface-3);
     border-radius: 4px;
     padding: 15px;

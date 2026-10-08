@@ -668,7 +668,7 @@
 
 <style>
   .schema-editor {
-    background: white;
+    background: var(--color-surface);
     border-radius: 16px;
     box-shadow: 0 25px 50px -12px rgba(0, 0, 0, 0.25);
     border: 1px solid rgba(229, 231, 235, 0.8);
@@ -727,7 +727,7 @@
     transition:
       border-color 0.2s ease,
       box-shadow 0.2s ease;
-    background: white;
+    background: var(--color-surface);
   }
 
   .form-group input:focus,
@@ -831,7 +831,7 @@
   .accordion-header {
     width: 100%;
     padding: 1rem 1.5rem;
-    background: white;
+    background: var(--color-surface);
     border: none;
     display: flex;
     justify-content: space-between;
@@ -896,7 +896,7 @@
     border: 1px solid var(--color-border);
     border-radius: 8px;
     padding: 1rem;
-    background: white;
+    background: var(--color-surface);
   }
 
   .type-options h4 {
@@ -936,7 +936,7 @@
     border: 1px solid var(--color-border);
     border-radius: 6px;
     padding: 1rem;
-    background: white;
+    background: var(--color-surface);
   }
 
   .nested-header {

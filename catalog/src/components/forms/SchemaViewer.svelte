@@ -255,7 +255,7 @@
         border-radius: 12px;
         border: 1px solid var(--color-border);
         overflow: hidden;
-        background: white;
+        background: var(--color-surface);
     }
 
     .viewer-header {

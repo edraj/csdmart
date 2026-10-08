@@ -2046,7 +2046,7 @@
     height: 100%;
     padding: 1rem;
     overflow-y: auto;
-    background: white;
+    background: var(--color-surface);
     font-family:
       "uthmantn",
       -apple-system,
@@ -2239,7 +2239,7 @@
   }
 
   .modal-container {
-    background: white;
+    background: var(--color-surface);
     border-radius: 1rem;
     box-shadow: 0 25px 50px -12px rgba(0, 0, 0, 0.25);
     width: 100%;
@@ -2346,12 +2346,12 @@
   }
 
   .form-input:hover {
-    background: white;
+    background: var(--color-surface);
     border-color: var(--color-border-strong);
   }
 
   .form-input:focus {
-    background: white;
+    background: var(--color-surface);
     border-color: var(--color-primary);
     box-shadow: 0 0 0 3px rgba(59, 130, 246, 0.1);
   }
@@ -2384,7 +2384,7 @@
     inset-inline-start: 2px;
     width: 1.25rem;
     height: 1.25rem;
-    background: white;
+    background: var(--color-surface);
     border-radius: 50%;
     box-shadow: 0 2px 4px rgba(0, 0, 0, 0.2);
     transition: transform 0.2s ease;
@@ -2413,7 +2413,7 @@
     padding: 12px;
     border: 2px solid var(--color-border);
     border-radius: 0.75rem;
-    background: white;
+    background: var(--color-surface);
     box-shadow: 0 1px 3px rgba(0, 0, 0, 0.1);
     transition: border-color 0.2s ease;
     min-height: 400px;
@@ -2452,7 +2452,7 @@
   }
 
   .cancel-button {
-    background: white;
+    background: var(--color-surface);
     color: var(--color-text);
     border: 2px solid var(--color-border);
   }

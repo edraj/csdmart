@@ -648,7 +648,7 @@
     height: 100%;
     display: flex;
     flex-direction: column;
-    background: white;
+    background: var(--color-surface);
     border-radius: 0.75rem;
     overflow: hidden;
     border: 1px solid var(--color-border);
@@ -682,7 +682,7 @@
     justify-content: center;
     width: 2rem;
     height: 2rem;
-    background: white;
+    background: var(--color-surface);
     border: 1px solid var(--color-border-strong);
     border-radius: 0.375rem;
     color: var(--color-text);
@@ -732,7 +732,7 @@
 
   .tab-btn.active {
     color: var(--color-primary-hover);
-    background: white;
+    background: var(--color-surface);
     border-bottom-color: var(--color-primary-hover);
   }
 
@@ -776,7 +776,7 @@
       sans-serif;
     font-size: 0.875rem;
     line-height: 1.6;
-    background: white;
+    background: var(--color-surface);
     color: var(--color-text);
     transition: background-color 0.2s ease;
   }
@@ -790,7 +790,7 @@
     height: 100%;
     padding: 1rem;
     overflow-y: auto;
-    background: white;
+    background: var(--color-surface);
     font-family:
       "uthmantn",
       -apple-system,
@@ -931,7 +931,7 @@
     top: calc(100% + 8px);
     inset-inline-end: 0;
     width: 280px;
-    background: white;
+    background: var(--color-surface);
     border: 1px solid var(--color-border);
     border-radius: 0.5rem;
     box-shadow: 0 10px 15px -3px rgba(0, 0, 0, 0.1), 0 4px 6px -2px rgba(0, 0, 0, 0.05);
@@ -975,7 +975,7 @@
     border: 1px solid var(--color-border-strong);
     border-radius: 0.375rem;
     font-size: 0.875rem;
-    background: white;
+    background: var(--color-surface);
     color: var(--color-text);
     transition: border-color 0.15s ease, box-shadow 0.15s ease;
   }
@@ -1034,7 +1034,7 @@
   }
 
   .btn-cancel {
-    background: white;
+    background: var(--color-surface);
     color: var(--color-text-muted);
     border: 1px solid var(--color-border-strong);
   }

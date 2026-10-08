@@ -439,7 +439,7 @@
 
 <style>
   .form-card {
-    background: white;
+    background: var(--color-surface);
     border-radius: 12px;
     box-shadow:
       0 4px 6px -1px rgba(0, 0, 0, 0.1),
@@ -496,7 +496,7 @@
     border-radius: 0.5rem;
     font-size: 0.875rem;
     transition: all 0.15s ease-in-out;
-    background: white;
+    background: var(--color-surface);
   }
 
   .input-field:focus {
@@ -517,7 +517,7 @@
     border-radius: 0.5rem;
     font-size: 0.875rem;
     transition: all 0.15s ease-in-out;
-    background: white;
+    background: var(--color-surface);
     resize: vertical;
     font-family: inherit;
   }
@@ -570,7 +570,7 @@
   }
 
   .button-secondary {
-    background-color: white;
+    background-color: var(--color-surface);
     color: var(--color-text);
     border: 1px solid var(--color-border-strong);
     padding: 0.625rem 1rem;
@@ -666,7 +666,7 @@
 
   .accordion-content {
     padding: 1.5rem;
-    background-color: white;
+    background-color: var(--color-surface);
     border-top: 1px solid var(--color-border);
     display: flex;
     flex-direction: column;
@@ -688,7 +688,7 @@
   }
 
   .modal-content {
-    background: white;
+    background: var(--color-surface);
     border-radius: 0.75rem;
     box-shadow:
       0 20px 25px -5px rgba(0, 0, 0, 0.1),

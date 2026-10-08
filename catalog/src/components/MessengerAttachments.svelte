@@ -491,7 +491,7 @@
   }
 
   .overlay-btn:hover {
-    background: white;
+    background: var(--color-surface);
     transform: scale(1.1);
   }
 
@@ -557,7 +557,7 @@
   }
 
   .video-attachment:hover .play-button {
-    background: white;
+    background: var(--color-surface);
     transform: scale(1.1);
   }
 
@@ -750,7 +750,7 @@
   }
 
   .modal-content {
-    background: white;
+    background: var(--color-surface);
     border-radius: 16px;
     max-width: 90vw;
     max-height: 90vh;

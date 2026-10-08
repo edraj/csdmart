@@ -656,7 +656,7 @@
     max-width: 400px;
     height: 40px;
     border-radius: 8px;
-    background: white;
+    background: var(--color-surface);
     box-shadow: 0 2px 10px rgba(0, 0, 0, 0.1);
   }
 
@@ -837,7 +837,7 @@
   }
 
   .preview-overlay-button:hover {
-    background: white;
+    background: var(--color-surface);
     transform: scale(1.05);
   }
 
@@ -863,7 +863,7 @@
 
   .attachment-info {
     padding: 1rem;
-    background: white;
+    background: var(--color-surface);
   }
 
   .attachment-name {
@@ -1051,7 +1051,7 @@
   }
 
   .modal-button.cancel {
-    background: white;
+    background: var(--color-surface);
     border-color: var(--color-border-strong);
     color: var(--color-text);
   }
@@ -1128,7 +1128,7 @@
     padding: 0.5rem 0.75rem;
     font-size: 0.8125rem;
     color: var(--color-text);
-    background: white;
+    background: var(--color-surface);
     border: 1px solid var(--color-border);
     border-radius: 0.5rem;
     transition:

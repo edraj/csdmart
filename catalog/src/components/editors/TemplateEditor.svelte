@@ -329,7 +329,7 @@
   }
 
   .template-preview {
-    background: white;
+    background: var(--color-surface);
     border: 1px solid var(--color-border);
     border-radius: 4px;
     padding: 15px;

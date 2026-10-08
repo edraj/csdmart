@@ -271,6 +271,7 @@
       {indexAttributes}
       rowHref={viewHref}
       rowLabel={titleOf}
+      rowKey={(e: EntryRow) => `${e.space_name}/${e.subpath}/${e.resource_type}/${e.shortname}`}
       onRowClick={viewEntity}
       totalItems={filteredEntities.length}
       itemsPerPage={filteredEntities.length || 1}

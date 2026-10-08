@@ -256,7 +256,7 @@
         });
       }, 500);
     } else {
-      errorToastMessage($_("entry_edit.error"));
+      errorToastMessage($_("entry_edit.update_failed"));
       isLoading = false;
     }
   }
@@ -664,13 +664,13 @@
         </div>
       </div>
 
-      {#if entity.attachments?.media && entity.attachments.media.length > 0}
+      {#if (entity.attachments?.media?.length ?? 0) > 0}
         <div class="section">
           <div class="section-header">
             <PaperClipOutline class="section-icon" />
             <h2>
               {$_("entry_edit.current_attachments")} ({formatNumberInText(
-                entity.attachments.media.length,
+                (entity.attachments?.media?.length ?? 0),
                 $locale ?? ""
               )})
             </h2>
@@ -681,7 +681,7 @@
               space_name={$params.space_name}
               subpath={$params.subpath}
               parent_shortname={entity.shortname}
-              attachments={entity.attachments.media}
+              attachments={entity.attachments?.media ?? []}
               isOwner={true}
             />
           </div>
@@ -936,7 +936,7 @@
     width: 6rem;
     height: 6rem;
     background: var(--danger-color);
-    color: var(--white);
+    color: white;
     border-radius: 50%;
     display: flex;
     align-items: center;
@@ -995,7 +995,7 @@
     align-items: center;
     gap: 0.5rem;
     padding: 0.75rem 1.5rem;
-    background: var(--white);
+    background: var(--color-surface);
     border: 1px solid var(--gray-200);
     border-radius: var(--radius-card);
     color: var(--gray-600);
@@ -1018,14 +1018,14 @@
     gap: 0.5rem;
     padding: 0.5rem 1rem;
     background: var(--primary-color);
-    color: var(--white);
+    color: white;
     border-radius: var(--radius-card);
     font-size: 0.875rem;
     font-weight: 500;
   }
 
   .status-section {
-    background: var(--white);
+    background: var(--color-surface);
     border-radius: var(--radius-card);
     padding: 2rem;
     margin-bottom: 2rem;
@@ -1043,7 +1043,7 @@
     width: 3rem;
     height: 3rem;
     background: var(--primary-color);
-    color: var(--white);
+    color: white;
     border-radius: 50%;
     display: flex;
     align-items: center;
@@ -1111,7 +1111,7 @@
   }
 
   .action-section {
-    background: var(--white);
+    background: var(--color-surface);
     border-radius: var(--radius-card);
     padding: 2rem;
     margin-bottom: 2rem;
@@ -1136,7 +1136,7 @@
     width: 3rem;
     height: 3rem;
     background: var(--primary-color);
-    color: var(--white);
+    color: white;
     border-radius: 50%;
     display: flex;
     align-items: center;
@@ -1189,7 +1189,7 @@
 
   .publish-button {
     background: var(--primary-color);
-    color: var(--white);
+    color: white;
   }
 
   .publish-button:hover:not(:disabled) {
@@ -1205,7 +1205,7 @@
   }
 
   .section {
-    background: var(--white);
+    background: var(--color-surface);
     border-radius: var(--radius-card);
     margin-bottom: 2rem;
     box-shadow: var(--shadow-card);
@@ -1274,7 +1274,7 @@
 
   .title-display:hover {
     border-color: var(--primary-color);
-    background: var(--white);
+    background: var(--color-surface);
     transform: translateY(-1px);
     box-shadow: var(--shadow-card);
   }
@@ -1310,7 +1310,7 @@
     gap: 0.5rem;
     padding: 0.75rem 1.5rem;
     background: var(--primary-color);
-    color: var(--white);
+    color: white;
     border: none;
     border-radius: var(--radius-card);
     font-weight: 500;
@@ -1367,7 +1367,7 @@
 
   .tag-remove {
     background: var(--danger-color);
-    color: var(--white);
+    color: white;
     border: none;
     border-radius: 50%;
     width: 1.25rem;
@@ -1432,7 +1432,7 @@
     gap: 0.5rem;
     padding: 0.75rem 1.5rem;
     background: var(--primary-color);
-    color: var(--white);
+    color: white;
     border: none;
     border-radius: var(--radius-card);
     font-weight: 500;
@@ -1453,7 +1453,7 @@
   }
 
   .attachment-row {
-    background: var(--white);
+    background: var(--color-surface);
     border: 1px solid var(--gray-200);
     border-radius: var(--radius-card);
     overflow: hidden;
@@ -1504,7 +1504,7 @@
   .play-icon {
     width: 1.5rem;
     height: 1.5rem;
-    color: var(--white);
+    color: white;
   }
 
   .file-preview {
@@ -1583,7 +1583,7 @@
     border-radius: var(--radius-md, 0.5rem);
     font-size: 0.8125rem;
     color: var(--gray-800);
-    background: var(--white);
+    background: var(--color-surface);
     transition: border-color 0.15s ease, box-shadow 0.15s ease;
     resize: vertical;
     font-family: inherit;
@@ -1606,7 +1606,7 @@
     top: 0.5rem;
     inset-inline-end: 0.5rem;
     background: var(--danger-color);
-    color: var(--white);
+    color: white;
     border: none;
     border-radius: 50%;
     width: 2rem;

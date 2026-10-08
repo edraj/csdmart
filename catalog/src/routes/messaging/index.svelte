@@ -1795,7 +1795,7 @@
   /* Default LTR Layout */
   .users-sidebar {
     width: 320px;
-    background: white;
+    background: var(--color-surface);
     border-inline-end: 1px solid var(--color-border);
     display: flex;
     flex-direction: column;
@@ -1806,7 +1806,7 @@
     flex: 1;
     display: flex;
     flex-direction: column;
-    background: white;
+    background: var(--color-surface);
     order: 2;
   }
 
@@ -1818,7 +1818,7 @@
   .chat-user-header {
     padding: 1rem 1.5rem;
     border-bottom: 1px solid var(--color-border);
-    background: white;
+    background: var(--color-surface);
     display: flex;
     justify-content: space-between;
     align-items: center;
@@ -1973,7 +1973,7 @@
 
   .message-content {
     max-width: 70%;
-    background: white;
+    background: var(--color-surface);
     padding: 0.75rem 1rem;
     border-radius: 1rem;
     box-shadow: 0 1px 3px rgba(0, 0, 0, 0.1);
@@ -2183,7 +2183,7 @@
     display: flex;
     align-items: center;
     justify-content: center;
-    background: white;
+    background: var(--color-surface);
     border-radius: 0.25rem;
   }
 
@@ -2289,7 +2289,7 @@
     align-items: center;
     padding: 1rem;
     border-bottom: 1px solid var(--color-border);
-    background: white;
+    background: var(--color-surface);
     justify-content: space-between;
   }
 

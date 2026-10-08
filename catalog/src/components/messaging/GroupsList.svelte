@@ -105,7 +105,7 @@
     display: flex;
     justify-content: space-between;
     align-items: center;
-    background: white;
+    background: var(--color-surface);
   }
 
   .groups-header h3 {
@@ -167,7 +167,7 @@
     border-bottom: 1px solid var(--color-border);
     cursor: pointer;
     transition: background-color 0.2s;
-    background: white;
+    background: var(--color-surface);
     margin-bottom: 1px;
   }
 

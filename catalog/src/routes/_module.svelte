@@ -1,8 +1,8 @@
 <script lang="ts">
   import DashboardHeader from "@/components/DashboardHeader.svelte";
-  import { signout, user } from "@/stores/user";
+  import { getCurrentScope, signout, user } from "@/stores/user";
   import { onMount } from "svelte";
-  import { Dmart } from "@edraj/tsdmart";
+  import { Dmart, type DmartScope } from "@edraj/tsdmart";
   import { goto as gotoStore } from "@roxi/routify";
   import { website } from "@/config";
   import { resolveAxiosBaseUrl } from "@shared/backend-url";
@@ -71,6 +71,16 @@
   );
 
   Dmart.setAxiosInstance(dmartAxios as any);
+
+  // The bearer token reaches the server through the request interceptor
+  // above (and the HttpOnly cookie), never through Dmart.setToken(), so the
+  // SDK believes it is anonymous and routes every call that omits a scope to
+  // `public/*` — which is why the admin pages could not list users, roles or
+  // permissions after a reload. Its default scope follows the session
+  // instead: managed when signed in, public for visitors. Callers that pass
+  // a scope explicitly are unaffected. (The SDK types the method private; it
+  // is a plain static the SDK itself calls through `Dmart.defaultScope()`.)
+  (Dmart as unknown as { defaultScope: () => DmartScope }).defaultScope = getCurrentScope;
 
   onMount(async () => {
     const currentPath = stripBase(window.location.pathname);
