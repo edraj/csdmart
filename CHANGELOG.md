@@ -1,5 +1,15 @@
 # Changelog
 
+## Unreleased
+
+### Tooling
+
+- cxb no longer depends on `vite-plugin-static-copy`: Vite's public
+  directory already ships `config.json`, and the plugin was the only
+  dependent of the chokidar 3 chain that pinned `braces` <= 3.0.3
+  (GHSA-vfj7-8cjw-p6xm, no patched release) — the last open Dependabot
+  alert. Sixteen packages leave the lockfile.
+
 ## v1.5.21 — 2026-10-08
 
 ### Changed

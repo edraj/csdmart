@@ -51,7 +51,6 @@
     "svelte-jsoneditor": "^3.12.0",
     "tailwindcss": "^4.2.4",
     "typewriter-editor": "^0.12.9",
-    "vite-plugin-static-copy": "^4.1.0",
     "vite-plugin-svelte-md": "^0.6.0"
   }
 }
